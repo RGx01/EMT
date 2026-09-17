@@ -1,0 +1,33 @@
+# Contributing
+
+EMT is currently developed by one person. These conventions exist so that stays workable when it
+isn't — and because most of them pay for themselves solo.
+
+## Pull requests
+
+Every change arrives by PR, including the owner's. See [DEVELOPMENT.md](DEVELOPMENT.md) for the
+branch model.
+
+A PR should be **one idea**. A PR that fixes a bug and tidies three unrelated things is a PR whose
+diff nobody can read, and whose revert is a gamble.
+
+## What a change must carry
+
+- **Evidence.** A claim about behaviour cites the code, a log line, or a query against a real
+  database. "This should fix it" is not a rationale.
+- **A test that would have failed before.** For a bug fix, the test encodes the bug, not just the
+  fix. Name what regression it guards in the docstring.
+- **Raw precision in any verification.** Never conclude from a rounded or formatted value. Several
+  wrong diagnoses in the v4 codebase came from 4dp log lines and 6dp histograms agreeing with a
+  hypothesis that the stored values did not support.
+- **The rationale, where it will be found later.** Non-obvious decisions belong in a comment at the
+  code, not only in the PR description — PRs are hard to find from a line of code two years on.
+
+## What not to do
+
+- Do not commit code that nothing calls. Unreferenced code reads as load-bearing to whoever comes
+  next, and sends them down it. The v4 codebase carried a 169-line pricing module with zero callers
+  for over a year and it actively misdirected debugging.
+- Do not add a parameter that defaults to "behave as if you had no context". If a function needs the
+  tariff era to be correct, it takes the tariff era as a required argument. A silent default is how
+  one caller in v4 rendered charts differently from another for two days without anyone noticing.

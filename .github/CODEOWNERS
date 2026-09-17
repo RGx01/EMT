@@ -1,0 +1,9 @@
+# Every path is owned by the repository owner until there are other maintainers.
+# When collaborators arrive, narrow this: the point of CODEOWNERS is that the
+# person who knows an area is required on PRs that touch it, not that one person
+# is required on everything.
+*                       @RGx01
+
+# Suggested shape once there is a second maintainer:
+# /docs/design/         @RGx01          # design decisions stay with the owner
+# /tests/               @RGx01 @other

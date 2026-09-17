@@ -1,0 +1,30 @@
+# ── Python ───────────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# ── Local databases, backups, dumps ──────────────────────────────────────────
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+/backups/
+*.tar.gz
+*.zip
+
+# ── Local diagnostics ────────────────────────────────────────────────────────
+# ROOT-ANCHORED on purpose. v4 carried an unanchored `*probe*.py`, which also
+# swallowed legitimate committed files anywhere in the tree — including
+# `tests/test_consumption_retention_probe.py`. Leading slash = repo root only,
+# which is where throwaway probes actually get written.
+/*probe*.py
+/scratch/
+/tmp/
+
+# ── Editor / OS ──────────────────────────────────────────────────────────────
+.DS_Store
+.vscode/
+*.swp
