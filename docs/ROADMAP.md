@@ -1,23 +1,34 @@
 # Roadmap
 
-*Workstream status. The reasoning behind the ordering is in
-[design/EMT-v5_programme.md](design/EMT-v5_programme.md) — this file tracks state only.*
+*Workstream status. The agreed picture of what v5 is made of is
+[design/EMT-v5_architecture.md](design/EMT-v5_architecture.md); the reasoning behind the ordering is
+in [design/EMT-v5_programme.md](design/EMT-v5_programme.md) — this file tracks state only.*
 
 **Nothing here has shipped.** EMT is pre-release.
 
+**How this gets built** ([architecture §6](design/EMT-v5_architecture.md)): v4 ships **4.5.14**
+(BL-71 + BL-72, plus BL-73 if taken) and is then **frozen** — users stay on a stable release. This repo is seeded with a
+**verbatim copy** of 4.5.14 so the 2,711-test suite is green from commit one, and the workstreams
+below are deconstruction steps against it. After 4.5.14 v4 accepts **critical fixes only**, each
+cherry-picked here the same day.
+
 | # | Workstream | Depends on | State |
 |---|---|---|---|
-| A | Storage and access model | — | 📋 not started |
+| A | Storage and access model | — | 📝 design drafted |
 | B | Job coordinator (BL-50) | A | 📋 not started |
-| C | One API for every surface | A | 📋 not started |
+| C | One API for every surface | A | 📝 design drafted |
 | D | Surfacing performance | A, C | 📋 not started |
-| E | Importer | A–D | 📝 spec drafted (v2) |
+| E | Importer | A–D | 📝 spec drafted (v4) |
 
 ---
 
 ## A. Storage and access model
 
 *The root. One writer owned by the engine; read-only connections per request.*
+Design: [design/EMT-v5_A_storage_design.md](design/EMT-v5_A_storage_design.md).
+
+Not "build the mechanism" — v4 built it three times. **4% of call sites use it**, and 41 GET routes
+still read on the engine's writer handle. A is about making the unsafe path hard to reach.
 
 Generalises a fix v4 already made once under duress — `_generate_charts_offloaded` has its own
 read-only `BlockStore` because of a cross-thread SQLite segfault — and applies it to every reader
@@ -40,6 +51,7 @@ job is denied rather than interleaved.
 ## C. One API for every surface
 
 *Break the write → wholesale-recompute coupling. No pre-generated HTML.*
+Design: [design/EMT-v5_C_surfaces_design.md](design/EMT-v5_C_surfaces_design.md).
 
 Not a format change. In v4, 17 call sites schedule a regeneration and regeneration is wholesale, so
 one half-hour finalising re-renders two years. Five layers of compensation have accumulated around
@@ -60,13 +72,98 @@ surface that CI can assert.
 
 ## E. Importer
 
-*Ingest a 4.5.13 backup. Spec at [design/EMT-v5_import_spec.md](design/EMT-v5_import_spec.md).*
+*Ingest a 4.5.14+ backup that is at v4's final heal high-water mark. Spec at
+[design/EMT-v5_import_spec.md](design/EMT-v5_import_spec.md).*
+
+Four things the importer needs from a source. **Two are new in 4.5.14; two already exist** — an
+earlier draft of BL-73 proposed adding duplicates of both, before the 4.5.13 schema was checked.
+What genuinely cannot be added later is a *new* marker, because a backup already written can never
+be annotated:
+
+| marker | from | why v5 needs it |
+|---|---|---|
+| `heal_level` | BL-72 | which one-off repairs currently hold. The §3 gate. |
+| `written_by` | BL-72 | names the version in a refusal message. |
+| `supplier` | **BL-73, optional** | a lowercase machine token for the first-run wizard's credential prompt. Derivable instead from `written_by` (v4 is Octopus-only, frozen) — shipping it converts an inference into a recorded fact. |
+| *account stamp* | **already exists** | `kraken_state.kraken_account_number`, with `get_db_account()` and `kraken_account_mismatch()` already implemented. No new field. |
+
+EMT keeps the heal mechanism and starts its own heal set from an empty one.
+
+**The bar is v4's final high-water mark — not 4.5.14** (spec v4, 19 Sep 2026). 4.5.14 is only the
+*earliest* a source can be, because it is the first release able to express a level at all. v4 is
+frozen to critical fixes after .14, and a fix that repairs already-written data raises the mark, so
+the bar may end at .15, .17, wherever v4 actually stops. The level is a claim about **invariants**,
+not a version number: a database cannot report a level for a heal its software never heard of, which
+is why updating v4 is always the remedy.
+
+Because only 4.5.14+ can present a level at all, the importer supports **one schema era**: the
+4.4.0–4.5.4 era (segments present, settled provenance entirely absent) cannot reach it. Three gates
+collapse into one, the era-detection code is never written, and 4.5.12/4.5.13 databases become
+**negative** fixtures — near-misses with every table the importer wants and no attestation.
+
+**Done when** (in addition to the spec's §9 gates):
+
+- `REQUIRED_HEAL_LEVEL` exists as a **single named constant**, no version literal anywhere in the
+  gate or its messages.
+- The below-the-bar test **generates** its fixture by decrementing the positive one, so it keeps
+  testing something after the bar moves.
+
+> ⚠️ **Release-day checklist item, easily missed.** `REQUIRED_HEAL_LEVEL` is pinned as the last step
+> before v5's first release, from whatever v4 has actually reached by then, and the positive fixture
+> is regenerated at that level — not carried forward from development. Until then it is a
+> placeholder, and every post-.14 v4 fix that adds a heal bumps it in the same cherry-pick
+> ([architecture §6](design/EMT-v5_architecture.md)).
 
 Last deliberately: its contract is "write the EMT schema", so it cannot be finished until A–D have
 settled what that schema is.
 
-**Done when:** the acceptance gates in §9 of the spec pass against the real 4.5.12 and prod-dev
-databases, and the 4.3.1 database is refused.
+---
+
+## Picking this up again
+
+*Written 19 Sep 2026, before a pause to ship 4.5.14. Everything below is what a reader needs that
+is **not** already stated in the design documents.*
+
+### Where things stand
+
+The **design is settled enough to resume from these documents alone.** Every decision taken has a
+home, with its reasoning and its rejected alternatives, and the remaining open items are listed
+above with what would answer each. No workstream is blocked on a decision that exists only in
+someone's head.
+
+**Not started: any code.** This repository is documentation. Commit one is still a verbatim copy of
+4.5.14 ([architecture §6](design/EMT-v5_architecture.md)), which cannot happen until .14 ships.
+
+### The next three actions, in order
+
+1. **Ship 4.5.14 from the v4 repository.** BL-71 and BL-72 are required; BL-73 is the optional
+   `supplier` token. BL-72 is the hard dependency — without `heal_level` in users' databases, the
+   importer has no gate and EMT cannot retrofit one.
+2. **Seed this repository:** copy 4.5.14 verbatim as commit one, confirm the suite is green, then
+   begin deconstruction step 1 (remove the unwired paths, [architecture §4](design/EMT-v5_architecture.md)).
+3. **Benchmark on the Pi** — this needs no v5 code and can run against a 4.5.13 install at any
+   point, including while .14 is in progress. It answers two of the open questions above.
+
+### Two dependencies that live in the v4 repository
+
+Everything else needed to resume is in this repository. These two are not, because they are v4
+actions:
+
+| | |
+|---|---|
+| **BL-73** | The `supplier` token is a **v4** backlog item. This repository only records the dependency; the specification has to land in v4's roadmap. |
+| **Tag 4.5.14 at release** | Commit one here is a verbatim copy of exactly the tree that shipped, so it needs to be identifiable later. |
+
+### Two things deliberately absent
+
+- **No design documents for B (job coordinator) or D (performance).** B is carried from v4's BL-50
+  design, which lives in the v4 repository; D is mostly delivered by A and C and its own work starts
+  with measurement, not design. Both get a document when picked up — the same rule
+  [DEVELOPMENT.md](DEVELOPMENT.md) applies to its own architecture sections, and for the same
+  reason: a document written before the work is wrong on the day it lands.
+- **No record of how any decision changed.** These documents state positions, not their history.
+  That is intentional; the reasoning that survived is here, the drafts that did not are kept outside
+  the repository.
 
 ---
 
@@ -75,14 +172,54 @@ databases, and the 4.3.1 database is refused.
 Carried from the programme map §4 and the import spec §10. These need answers before the
 workstreams that depend on them start.
 
-- [ ] **Does EMT publish anything to Home Assistant?** Entity/statistic names are the one shared
-      namespace `instance.py` does not arbitrate — two running add-ons would collide. Blocks the
-      first release that publishes anything. *(A/C)*
-- [ ] **Is on-demand computation actually cheaper than pre-rendering once?** True at 78 MB and one
-      user; it is the assumption all of C rests on, so measure before it becomes doctrine. *(C/D)*
+- [x] **Does EMT publish anything to Home Assistant?** **No** (18 Sep 2026). EMT is read-only
+      toward HA: it subscribes to sensors and creates no entities or statistics. The one namespace
+      `instance.py` cannot arbitrate is one EMT never enters, so side-by-side is unconditionally safe
+      on that axis. Accepted consequence: EMT's figures appear only in EMT's own UI. Reopens only if
+      EMT ever starts publishing.
+- [x] **Is on-demand computation cheaper than pre-rendering once?** **Withdrawn — false dichotomy**
+      (18 Sep 2026). v4 does not pre-render once: the chart is a complete document inside an iframe,
+      so the document is the unit of update and *any* change re-renders every year held. Scoping to
+      the viewport is strictly cheaper at every size; there is nothing to trade off. See
+      [C §5](design/EMT-v5_C_surfaces_design.md).
+- [x] **What is the client?** **Defaulted: server-routed pages, no framework** (19 Sep 2026). The
+      choice has no bearing on the API, the fingerprint, or the write-triggers-recompute fix — both
+      options fetch from the same API over a viewport range and neither pre-renders anything. It
+      decides only whether a nav link reloads the document. Pages keeps the client closest to v4,
+      needs no bundler, and avoids SPA routing inside HA's ingress iframe. *Revisit only if* carrying
+      date range and meter selection across navigation proves annoying enough to pay for tooling.
+      See [architecture §8.1](design/EMT-v5_architecture.md).
+- [x] **Read snapshot lifetime** — **per-request freshness**; `ReadStore` ends its read transaction
+      between requests (19 Sep 2026). Was recorded in two places; now lives in
+      [A §7.1](design/EMT-v5_A_storage_design.md) alone, with an acceptance test, because the
+      failure is a coherent page showing stale numbers and no error anywhere. *(A)*
+- [x] **How does a v4 user actually reach the importer?** **A first-run fork** (19 Sep 2026). Every
+      earlier draft described what the importer does and never how it is reached, implicitly assuming
+      a fresh install — the wrong default for the entire population E exists to serve. v5's first
+      start now offers *new setup* or *restore from a v4 backup*, and on the restore path the backup
+      drives the credential prompt rather than the reverse. Forces §3's gates to split: everything
+      checkable from the file runs **before** the user is asked to authenticate.
+      See [import spec §3a](design/EMT-v5_import_spec.md). *(client + E)*
+- [ ] **Viewport range vs materialised period summary** — once scoped to what the user can see, is
+      per-request computation cheap enough, or does the writer maintain an incremental summary?
+      Benchmark on the Pi: TTFB for a month and a year, cold and warm, plus queries-per-surface.
+      *(C/D)*
 - [ ] **Test-suite portage** — wholesale (keeps the v4-equivalence proof) or rebuilt against the new
       API (suits the new shape)? Probably both, in that order. *(C)*
 - [ ] **What is the first public release's bar?** "Imports my history and shows it correctly" is a
       far earlier date than "replaces v4 for daily use", and decides how much of B–D is pre-release.
+- [x] **Is the `reads` table safe to drop?** **Yes — it is dead, not transient** (19 Sep 2026).
+      Its five store methods have no caller outside tests; nothing has ever written a row. Goes in
+      the unwired-paths inventory, not the import question list. *(E)*
+- [x] **Does anything read the DB off the engine thread?** **No** (19 Sep 2026). v4's rule is
+      offload network/CPU, keep DB access on the loop thread; the two workers that do touch SQLite
+      each own their connection. v5's `store()` makes that structural instead of comment-enforced.
+      *(A)*
 - [ ] **Attribution state in a backup** — is a source with an unfinished attribution job importable,
-      or refused like an unfinished 4.4.0 migration? *(B/E)*
+      or refused? Possibly needs no new gate: if an in-flight run leaves an invariant broken, the
+      computed `heal_level` should already fail to reach the bar. Check against BL-72's heal set
+      before adding a separate check. *(B/E)*
+- [x] **Does v5's required heal level ever rise?** **Yes, and it is not a policy question**
+      (19 Sep 2026). The bar is v4's final high-water mark; it moves whenever a post-.14 critical fix
+      adds a heal, and previously-admissible backups correctly stop being admissible. Nothing to
+      decide — only a number to supply on release day. See E above.

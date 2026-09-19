@@ -188,9 +188,37 @@ queries per surface. A surface issuing 200 small queries is the likely shape of 
 
 ### E. Importer (see [EMT-v5_import_spec.md](EMT-v5_import_spec.md))
 
-Ingests a 4.5.13 backup zip, or a `blocks.db` taken from one. No cooperating exporter — the source
-is validated by the importer itself. Contract, gates and table-by-table disposition are in that
-document.
+Ingests a backup zip from **4.5.14 or later**, at v4's final heal high-water mark, or a `blocks.db`
+taken from one. No cooperating exporter — the source is validated by the importer itself. Contract,
+gates and table-by-table disposition are in that document.
+
+Two things that were missing from every draft before 19 Sep and are now in the spec: the **first-run
+fork** (§3a — new setup or restore, with the backup driving the credential prompt rather than the
+reverse), and the rule that **absent credentials never block an import** on either side, which is
+what keeps the diagnostic path working where a maintainer disconnects before importing someone
+else's database.
+
+**E is the only workstream with a retirement rule, and it needs one.** Everything v4-shaped lives
+here — the 4.5.14 gate, the column rules, the `store_meta` allow-list, the band relabel — and all
+of it is dead the day 4.5.13 sources stop being supported. That is a long way off and deliberately
+undated (§1 of the import spec: the two add-ons coexist indefinitely), which is exactly why the
+excision has to be cheap *by construction* rather than by a future decision:
+
+> **E is one module. Dependencies point inward only — no domain code imports from it — and no
+> importer-only concept appears in the domain layer. It is removed in the release after v4 sources
+> stop being supported.**
+
+§3 below is the argument for this. v4's three legacy backfills (162 lines) are still in `engine.py`
+today, two years after being retired, **because they were retired by unwiring** — there was no
+boundary to cut along, so unwiring was the cheap move and deletion never followed. The importer is
+the one part of v5 guaranteed to become obsolete. It is the one part that must be shaped so that
+obsolete means *deletable*, not *unwired*.
+
+*Consequence for the band question:* the SMB-era `house off_peak → night` relabel lives here as a
+declarative column rule. It is a schema translation, not a heal — it runs once, in one direction,
+and expires with the module. Putting it in the domain instead would have made it permanent, because
+imported and natively-derived rows would otherwise label the same tariff era two different ways and
+every reader would have to accept both forever.
 
 ---
 
@@ -231,13 +259,30 @@ person to read the file.
 
 ## 4. Open questions for the programme
 
-1. **Does v5 publish anything to Home Assistant?** If it publishes statistics or entities under
-   names v4 also uses, two running add-ons collide — the one shared namespace `instance.py` does not
-   arbitrate. Must be settled before the first release that publishes anything.
-2. **Where does the band vocabulary decision land?** The import spec (§5.2) commits v5 to one
-   vocabulary, `off_peak` / `peak`, with `day → peak` mapped on the way in and `standard` carried as
-   an explicit unknown. If a workstream wants a different internal representation, it changes the
-   importer's contract and must be raised there, not decided locally.
+1. ~~**Does v5 publish anything to Home Assistant?**~~ **Closed 18 Sep 2026: no.** EMT is
+   **read-only toward Home Assistant** — it subscribes to sensors and creates nothing. No entities,
+   no statistics, no Energy Dashboard feed. Side-by-side is therefore unconditionally safe on that
+   axis: the one namespace `instance.py` cannot arbitrate is one EMT never enters. *Accepted
+   consequence:* EMT's figures appear only in EMT's own UI. *Reopens if* that ever changes —
+   publishing to HA would make collision with a running v4 a first-class problem again, needing
+   distinct entity prefixes or an explicit ownership flag.
+2. ~~**Where does the band vocabulary decision land?**~~ **Closed 18 Sep 2026 — and the earlier
+   answer was wrong.** This question previously recorded that the import spec committed v5 to one
+   vocabulary, `off_peak` / `peak`, with `day → peak` mapped on the way in. That would have
+   destroyed information. The four v4 words are a **2×2 of attribution × band** — house
+   `day`/`night` (clock-determined, Economy-7) and EV `peak`/`off_peak` (dispatch-determined) — plus
+   `standard` for unknown. They are different determinations that happen to share the adjectives
+   "cheap" and "expensive".
+
+   **v5 keeps all four.** The importer makes exactly one change: house low `off_peak → night`,
+   **IOG-SMB era only**, because only SMB has an `ECO7_NIGHT` bucket; pre-SMB house low genuinely
+   means dispatch-discounted and `off_peak` is correct there. Full rule in import spec §5.2;
+   schema consequences in [EMT-v5_schema_notes.md](EMT-v5_schema_notes.md) §3a; API shape in
+   [EMT-v5_C_surfaces_design.md](EMT-v5_C_surfaces_design.md) §3–§4, which now carries **four** rate
+   series keyed by *(attribution, band)* rather than a low/high pair.
+
+   *Reopens if* a workstream wants a different internal representation — that changes the importer's
+   contract and is raised there, not decided locally.
 3. **Test-suite portage.** Carried wholesale, or rebuilt against the new API surface as C lands?
    Wholesale keeps the v4-equivalence proof; rebuilding suits the new shape. Probably both, in that
    order — but the decision affects how C is sequenced.

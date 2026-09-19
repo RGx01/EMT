@@ -6,7 +6,11 @@
 |---|---|---|
 | `main` | Released. Every commit is a version that has run on real hardware. | PR from `dev` |
 | `dev` | Integration. Complete work, testable on other machines, not yet released. | PR from a work branch |
-| `work/<topic>` | One change in progress. Short-lived; deleted after merge. | — |
+| `fix/…` `feat/…` `chore/…` | One change in progress. Short-lived; deleted after merge. | PR to `dev` |
+
+Branch naming follows the v4 add-on unchanged — `fix/rate-line-zero-on-current-day`,
+`feat/gas-meter`, `chore/update-dependencies`. There is no reason for the two repositories to differ
+here, and muscle memory is worth more than novelty.
 
 Nothing is committed straight to `main` or `dev`, including by the repository owner. The rule holds
 when there is one developer for the same reason it holds when there are five: the PR is where the
@@ -15,9 +19,9 @@ month later.
 
 ```bash
 git switch dev
-git switch -c work/storage-readonly-connections
+git switch -c feat/storage-readonly-connections
 # ... commits ...
-git push -u origin work/storage-readonly-connections
+git push -u origin feat/storage-readonly-connections
 # open PR → dev
 ```
 
@@ -42,6 +46,27 @@ repository. To pick up new commits: `git pull`, then rebuild the add-on from its
 If a released version is already installed from a repository, stop it first — two instances of the
 same add-on running against the same Home Assistant is exactly the entity-collision case that is
 still an open question (see [ROADMAP.md](ROADMAP.md)).
+
+## Relationship to the v4 add-on's docs
+
+The v4 repository has its own `CONTRIBUTING.md` and `DEVELOPMENT.md`. What carries across, and what
+deliberately does not:
+
+| v4 content | Here |
+|---|---|
+| Branch naming, fork-and-PR workflow, `dev`-not-`main` rule | **Reused as-is** — see above |
+| Bug reports, feature suggestions, adding a supplier, what won't be accepted | **Port when the repo goes public.** Written for external contributors; no audience yet. |
+| Running tests, local development modes, swapping databases between environments | **Port when there is code to run** — the process is unchanged, the commands are not yet true here |
+| Architecture: schema, block lifecycle, billing periods, file structure (~250 of its 375 lines) | **Do not port.** It documents v4's implementation, and the storage model, job boundaries and surfaces are precisely what EMT is changing. |
+
+That last row is the important one. Copying v4's architecture sections now would produce a document
+that is wrong on the day it lands and drifts further with every workstream — the same failure as the
+v4 roadmap's BL-63 entry, which described a shelved code layer that had since been half-wired, and
+so misled anyone who acted on it.
+
+**So: written as each workstream lands, not up front.** Workstream A writes the storage section
+because A decides what it says. Until then this file covers process only, which is the part that is
+actually true today.
 
 ## Releasing
 
