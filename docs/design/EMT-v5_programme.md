@@ -188,7 +188,7 @@ queries per surface. A surface issuing 200 small queries is the likely shape of 
 
 ### E. Importer (see [EMT-v5_import_spec.md](EMT-v5_import_spec.md))
 
-Ingests a backup zip from **4.5.14 or later**, at v4's final heal high-water mark, or a `blocks.db`
+Ingests a backup zip from **4.5.14 or later**, at or above the floor version, or a `blocks.db`
 taken from one. No cooperating exporter — the source is validated by the importer itself. Contract,
 gates and table-by-table disposition are in that document.
 
@@ -230,8 +230,9 @@ matches any function of that name), so anything reported unreachable is confiden
 ```
 reprice.py            4 defs   LIVE=0   dead: _band_label, _reconcile_house,
                                               reprice_block, resolve_ev_energy
-carbon.py             5 defs   LIVE=4   dead: carbon_from_reprice
-pricing_segments.py  15 defs   LIVE=12  dead: attribute_devices, import_segments,
+carbon.py             5 pub    LIVE=2   dead: carbon_from_reprice, and ev_carbon +
+                                              house_carbon, reachable only via it
+pricing_segments.py  11 pub    LIVE=8   dead: attribute_devices, import_segments,
                                               total_cost_exc
 ```
 
@@ -241,19 +242,29 @@ this costs nothing: they simply never arrive, and their ~37 test references stay
 repo where the suite still proves v4.
 
 **Correct BL-63 in the v4 roadmap.** It describes the shelved layer as including
-`carbon.ev_carbon` / `house_carbon` and "9 of 11 public functions in `pricing_segments`". Neither
-holds: the Δ5 wiring made the carbon functions live, and `pricing_segments` is 12 live / 3 dead. A
-backlog item that exists to clean up misleading code has itself become misleading.
+`carbon.ev_carbon` / `house_carbon` and *"9 of 11 public functions in `pricing_segments`"*. The
+second is wrong — three of eleven are unreachable, and its recommendation to retire "the projection
+layer" would delete six live functions. The first is **correct**: those carbon functions are
+reachable only through the dead `carbon_from_reprice`. *(An earlier version of this paragraph said
+Δ5 made them live. It made `period_ev_saving` and `slot_intensity` live, not these.)*
+
+A backlog item that exists to clean up misleading code had itself become misleading — and so, in the
+other direction, had this correction.
 
 Note also that 85 of 1,116 production function names are unreachable overall, so the three modules
 above are a floor, not the whole surface. A full pass belongs in whichever workstream touches each
 module — not as a separate cleanup project.
 
-**Why this matters more than the byte count.** During 4.5.13 development the EV-split bug was
-diagnosed at length against `_hybrid_ev_by_block`, confidently and wrongly; the live path was
-`_dispatch_ev_split_by_bucket`. The wrong function was chosen *because unreferenced code reads as
-load-bearing*. The cost of the shelved model was never disk space — it was misdirecting the next
-person to read the file.
+**Why this matters more than the byte count.** The cost of the shelved model was never disk space —
+it is misdirecting the next person to read the file.
+
+*Corrected 21 Sep 2026.* This paragraph used to cite the 4.5.13 EV-split misdiagnosis as its
+example, saying `_hybrid_ev_by_block` was chosen *"because unreferenced code reads as load-bearing"*.
+That function has two live callers (`web/server.py:2763`, `:2926`) — it is the EV rule for accounts
+**with** a physical EV meter, while `_dispatch_ev_split_by_bucket` serves accounts without one. The
+misdiagnosis was picking the right function for the wrong account shape, not mistaking dead code for
+live. The argument for removing genuinely unwired paths stands on its own; it did not need that
+example, and the example was not true.
 
 ---
 

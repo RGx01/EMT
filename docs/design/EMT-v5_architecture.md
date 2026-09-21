@@ -47,7 +47,7 @@ same number.
 | `web/server.py` | 9,109 | **Consolidated, not rewritten.** 126 `/api/*` routes triaged into one surface; 22 page routes and the `CHART_DIR` pipeline go. |
 | `web/templates/` | 19,233 | **Replaced** by a client that fetches from the API. |
 | `reprice.py` | 169 | **Deleted.** Zero reachable functions. |
-| `carbon.py` | 146 | **Carried** minus `carbon_from_reprice` (unreachable). |
+| `carbon.py` | 146 | **Carried** minus `carbon_from_reprice`, `ev_carbon` and `house_carbon` (§4 — the last two reachable only via the first). |
 | `pricing_segments.py` | — | **Carried** minus 3 unreachable functions. |
 | `kraken_*`, `ha_client`, `iog_cap`, `bill_parser`, `instance`, `vat_calendar`, … | — | **Carried.** Untouched by this restructuring. |
 
@@ -88,9 +88,19 @@ rendering are the same 377 lines.
 
 ## 4. The unwired paths
 
-Code nothing calls is not free. It misleads whoever reads next — during 4.5.13 development a bug was
-diagnosed at length against `_hybrid_ev_by_block`, confidently and wrongly, because the unreferenced
-path read as load-bearing. None of this is ported.
+Code nothing calls is not free. It misleads whoever reads next. None of this is ported.
+
+> **The example this section used to give was wrong, and the true version is more useful.** It read:
+> *"a bug was diagnosed at length against `_hybrid_ev_by_block`, confidently and wrongly, because
+> the unreferenced path read as load-bearing."* `_hybrid_ev_by_block` is **not** unreferenced — it
+> has two live callers (`web/server.py:2763`, `:2926`). It is the EV rule for accounts **with** a
+> physical EV meter, while `_dispatch_ev_split_by_bucket` serves accounts without one.
+>
+> So the misdiagnosis was not dead code reading as live. It was **the right function for a different
+> account shape** — which is harder to spot, because no amount of reachability analysis would have
+> flagged it. Dead code misleads; *conditionally live* code misleads more quietly, and this section
+> cannot help with that. What can: reading which branch selects the function before assuming it is
+> the one that ran.
 
 AST reachability from real entry points, deliberately over-approximating (a call by bare name or
 attribute matches any function of that name), so anything still reported unreachable is confidently
@@ -117,15 +127,98 @@ unreachable:
 That is the pattern this section exists to stop: the retirement was real, the removal never happened,
 and the code has sat since looking like part of the system.
 
-### Whole modules
+### Whole modules and tables
 
 - **`reprice.py` — 169 lines, all four functions unreachable.** Does not come across.
-- `carbon.py` — `carbon_from_reprice` only.
-- `pricing_segments.py` — `attribute_devices`, `import_segments`, `total_cost_exc`.
+- **The `reads` table — unreachable, not merely empty.** Five store methods (`insert_read`,
+  `link_reads_to_block`, `get_reads_for_block`, `get_reads_for_range`, `purge_reads_older_than`)
+  with **no caller outside the test suite**. Nothing has ever written a row; it is empty in all
+  three real databases because it cannot be reached. The `# ── Reads (Phase 2+) ──` banner above it
+  dates the intent: a raw-read store the block model made unnecessary. Same pattern as the three
+  legacy backfills — planned, superseded, never removed.
+- **`web/server.py` — `_format_billing` (server.py:857).** No callers. An older copy of the Overview
+  card's row formatter, superseded by `_fmt_total` inside `api_billing()`. Found while fixing #468,
+  and it carries that same bug: it builds its breakdown from `totals` alone, so it would show no EV
+  on a no-device account. A second formatter for one surface, silently behind by a bug fix — exactly
+  the two-implementations-of-one-idea pattern A §3.4 names.
+- **`carbon.py` — three functions, not one.** `carbon_from_reprice` has no caller anywhere, and
+  `ev_carbon` / `house_carbon` are called **only from inside it**, so all three fall together.
+  *(An earlier version of this list said "`carbon_from_reprice` only" — it under-reported by two,
+  because the apparent callers of `ev_carbon` and `house_carbon` in `web/server.py` are local
+  variable names, `ev_carbon_block` and `house_carbon_g`, not calls.)* `period_ev_saving` and
+  `slot_intensity` are live and stay.
+- `pricing_segments.py` — `attribute_devices`, `import_segments`, `total_cost_exc`. **Three of
+  eleven public functions**, and the other eight are live: six of them have no *external* caller
+  but are reached transitively from `segments_from_legacy` and `price_devices_hybrid`.
 
-**Correct the v4 roadmap.** BL-63 describes the shelved layer as including `carbon.ev_carbon` /
-`house_carbon` and "9 of 11 public functions in `pricing_segments`". Neither holds: the Δ5 wiring
-made the carbon functions live, and `pricing_segments` is 12 live / 3 dead.
+**Correct the v4 roadmap — and this note was itself half wrong until 19 Sep 2026.** BL-63 describes
+the shelved layer as including `carbon.ev_carbon` / `house_carbon` and *"9 of 11 public functions in
+`pricing_segments`"*.
+
+- **`pricing_segments`: BL-63 is wrong, and dangerously so.** Three of eleven are unreachable, not
+  nine. Acting on "retire the projection layer" would delete six working functions. This is the
+  headline correction for the v4 roadmap.
+- **Carbon: BL-63 is right and this document was wrong.** An earlier version of this paragraph
+  claimed *"the Δ5 wiring made the carbon functions live"*. Δ5 made `period_ev_saving` and
+  `slot_intensity` live; it did not touch `ev_carbon`/`house_carbon`, which remain reachable only
+  through the dead `carbon_from_reprice`.
+
+The two errors point opposite ways, which is the useful part. **Under-reporting dead code is safe
+— you delete less than you could. Over-reporting it is not.** BL-63 over-reported, and its
+recommendation would have acted on the over-report. That asymmetry is why §4a fixes the default at
+*when the trace is ambiguous, it stays*.
+
+---
+
+### 4a. The deletion protocol
+
+*Added 19 Sep 2026. v5 is a **subtractive** project against a codebase that works: three years of
+tariff edge cases, 2,722 passing tests, and a production install people rely on. The risk that
+matters is not writing a bug — it is removing something that was load-bearing and not finding out
+for months.*
+
+**Nothing is removed unless all four hold.**
+
+1. **An over-approximating AST reachability trace reports it unreachable.** Deliberately
+   over-approximating: a call by bare name or attribute matches *any* function of that name, so the
+   trace over-reports what is live and anything it still calls dead is confidently dead.
+2. **The full suite is green after the removal**, run through `run_tests.sh` — the suite is
+   file-isolated and a plain `pytest tests/` collides at collection, so a "passing" run that did not
+   use the runner has proved nothing.
+3. **The removal is its own commit.** No mixed refactor. If it turns out to have been load-bearing
+   in six months, the fix is `git revert <sha>`, not an archaeology session picking one deletion out
+   of a rewrite.
+4. **The commit message records the evidence**, not the intention: what the trace said, and what
+   was searched. "Appears unused" is not evidence.
+
+#### What none of that covers, and where the real exposure is
+
+The suite proves the **engine and the store**. It does not prove a **surface**. Delete a chart
+function and nothing goes red, because what it produced was HTML no test asserts on — and the
+presentation layer is exactly what this programme demolishes. So for anything in the surfaces:
+
+> **A deletion with no test covering it needs a before/after comparison against a real database**
+> — the parity harness. The programme map downgrades that harness from prerequisite to "useful"
+> because the copied suite is the primary check. That downgrade is correct for the domain and
+> **wrong for the surfaces**, which are the part with no test to be primary.
+
+#### Two kinds of proof that do not count
+
+Both have already produced a wrong answer in this project, so they are named rather than assumed:
+
+- **Grep is not proof.** A pattern search classified `needs_pass2_rerun` as write-only while
+  `_drain_pass2_queue` plainly reads it. Four `SELECT * FROM blocks` sites and a `_row_to_block`
+  mapper mean columns are returned without ever being named.
+- **Data is not proof.** `finalised_from_cad` holds a single value across 136,202 rows on the
+  reference account — because that account runs `mini_provisional=off`, not because the column is
+  dead. Single-valued on one database is not dead; it is one configuration.
+
+#### The asymmetry that sets the default
+
+Leaving dead code in costs a reader's attention — real, and the reason §4 exists at all. Removing
+live code costs a user their data or their surfaces, silently, and is found by someone else later.
+**When the trace is ambiguous, it stays.** A second pass with better evidence is cheap; an
+unnoticed regression in a billing figure is not.
 
 ---
 
@@ -150,17 +243,21 @@ behind them. Far less risk than "build an API", and the work is mostly deciding 
 ### The shape
 
 ```
-4.5.14   BL-71 + BL-72 (+ BL-73, optional). The LAST v4 feature release.
-   │     BL-72 is mandatory: `heal_level` and `written_by` must be written
-   │     into the user's database BY v4 — EMT cannot retrofit a marker it
-   │     was not present for, and a marker added later never covers the
-   │     backups already sitting on users' disks.
-   │     `heal_level` is what makes .14 the importer's SOURCE FLOOR,
-   │     collapsing E from two schema eras to one (import spec §1.1, §3, §4).
-   │     BL-73 (a `supplier` token) is optional — v4 is frozen and therefore
-   │     Octopus-only, so `written_by` already implies it. The ACCOUNT stamp
-   │     needs nothing: `kraken_account_number` and the mismatch guard are
-   │     already built (import spec §1.1, §7).
+4.5.14   BL-71 + BL-72 + BL-73. The LAST v4 feature release.
+   │     BL-72 is mandatory: the app version must be stamped into the
+   │     user's database BY v4 — EMT cannot retrofit a marker it was not
+   │     present for, and one added later never covers the backups already
+   │     sitting on users' disks.
+   │     That stamp is what makes .14 the importer's EARLIEST source and
+   │     collapses E from two schema eras to one (import spec §1.1, §3, §4).
+   │     NOT a computed heal level — heals are marker-gated and ungated
+   │     markers run at startup, so a version is sufficient.
+   │     BL-73 stamps the supplier registry key. NOT optional: v4 is not
+   │     Octopus-only — `not-listed` (local metering, no supplier API) is a
+   │     supported state with real kWh history, so the supplier cannot be
+   │     derived from `written_by`. The ACCOUNT stamp needs nothing:
+   │     `kraken_account_number` and the mismatch guard are already built
+   │     (import spec §1.1, §7).
    │
    ├──▶  v4 FROZEN. Users sit on a stable release for as long as they like.
    │
@@ -217,14 +314,15 @@ A copy means a fix can land twice. That needs a stated rule, not good intentions
 > **After 4.5.14, v4 accepts critical fixes only — data-loss, crash-on-start, or a pricing error. No
 > features, no refactors. Every such fix is cherry-picked into EMT the same day it lands in v4.**
 
-**A critical fix that repairs already-written data raises v4's `heal_level` high-water mark**, and a
-pricing-error fix is exactly that kind. So the rule has a second clause:
+**A critical fix that repairs already-written data adds a heal**, and a pricing-error fix is exactly
+that kind. So the rule has a second clause:
 
-> **Any v4 fix that adds a heal also bumps EMT's `REQUIRED_HEAL_LEVEL`, in the same cherry-pick.**
+> **Any v4 fix that adds a heal also bumps EMT's `FLOOR_VERSION`, in the same cherry-pick.**
 
-Otherwise the importer keeps admitting backups that v4 now knows are unrepaired, and v5 has no heals
-to fix them on arrival. This is why .14 is the *earliest* source floor rather than the floor: the
-actual bar is wherever v4 stops, and it is pinned before v5's first release (import spec §1.1, Q9).
+Otherwise the importer keeps admitting backups written before that heal existed, and v5 has no
+v4-era heals to fix them on arrival. This is why .14 is the *earliest* source rather than the floor:
+the actual bar is wherever v4 stops, and it is pinned before v5's first release (import spec §1.1,
+Q9).
 
 Without it the two drift until reconciling them is its own project. With it, divergence stays a
 handful of small commits that apply cleanly, because EMT's early history is v4's history.

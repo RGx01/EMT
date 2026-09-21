@@ -7,8 +7,8 @@ in [design/EMT-v5_programme.md](design/EMT-v5_programme.md) — this file tracks
 **Nothing here has shipped.** EMT is pre-release.
 
 **How this gets built** ([architecture §6](design/EMT-v5_architecture.md)): v4 ships **4.5.14**
-(BL-71 + BL-72, plus BL-73 if taken) and is then **frozen** — users stay on a stable release. This repo is seeded with a
-**verbatim copy** of 4.5.14 so the 2,711-test suite is green from commit one, and the workstreams
+(BL-71 + BL-72 + BL-73) and is then **frozen** — users stay on a stable release. This repo is seeded with a
+**verbatim copy** of 4.5.14 so the suite (**2,764 at 4.5.14, 21 Sep 2026**) is green from commit one, and the workstreams
 below are deconstruction steps against it. After 4.5.14 v4 accepts **critical fixes only**, each
 cherry-picked here the same day.
 
@@ -18,7 +18,7 @@ cherry-picked here the same day.
 | B | Job coordinator (BL-50) | A | 📋 not started |
 | C | One API for every surface | A | 📝 design drafted |
 | D | Surfacing performance | A, C | 📋 not started |
-| E | Importer | A–D | 📝 spec drafted (v4) |
+| E | Importer | A–D | 📝 spec drafted (v7) |
 
 ---
 
@@ -72,45 +72,59 @@ surface that CI can assert.
 
 ## E. Importer
 
-*Ingest a 4.5.14+ backup that is at v4's final heal high-water mark. Spec at
+*Ingest a 4.5.14+ backup at or above the floor version. Spec at
 [design/EMT-v5_import_spec.md](design/EMT-v5_import_spec.md).*
 
-Four things the importer needs from a source. **Two are new in 4.5.14; two already exist** — an
-earlier draft of BL-73 proposed adding duplicates of both, before the 4.5.13 schema was checked.
-What genuinely cannot be added later is a *new* marker, because a backup already written can never
-be annotated:
+Three things the importer needs from a source. **Two are new in 4.5.14; one already exists** — an
+earlier draft of BL-73 proposed adding a duplicate of that one, before the 4.5.13 schema was
+checked. What genuinely cannot be added later is a *new* marker, because a backup already written
+can never be annotated:
 
 | marker | from | why v5 needs it |
 |---|---|---|
-| `heal_level` | BL-72 | which one-off repairs currently hold. The §3 gate. |
-| `written_by` | BL-72 | names the version in a refusal message. |
-| `supplier` | **BL-73, optional** | a lowercase machine token for the first-run wizard's credential prompt. Derivable instead from `written_by` (v4 is Octopus-only, frozen) — shipping it converts an inference into a recorded fact. |
+| `written_by` | BL-72 | the app version that last opened the database. **The §3 gate.** |
+| `supplier` | **BL-73** | the normalised supplier registry key (`octopus` / `not-listed` / absent). **Not optional after all** — v4 is *not* Octopus-only: `not-listed` is a supported local-metering state, so it cannot be derived from `written_by`. |
 | *account stamp* | **already exists** | `kraken_state.kraken_account_number`, with `get_db_account()` and `kraken_account_mismatch()` already implemented. No new field. |
 
-EMT keeps the heal mechanism and starts its own heal set from an empty one.
+EMT keeps the marker-gated heal mechanism and starts its own heal set from an empty one, and stamps
+its **own** release version on the imported database — so "last opened by X means healed to X's
+standard" keeps holding on the far side of the migration.
 
-**The bar is v4's final high-water mark — not 4.5.14** (spec v4, 19 Sep 2026). 4.5.14 is only the
-*earliest* a source can be, because it is the first release able to express a level at all. v4 is
-frozen to critical fixes after .14, and a fix that repairs already-written data raises the mark, so
-the bar may end at .15, .17, wherever v4 actually stops. The level is a claim about **invariants**,
-not a version number: a database cannot report a level for a heal its software never heard of, which
-is why updating v4 is always the remedy.
+**The floor is the last release of v4 — not necessarily 4.5.14** (spec v6, 19 Sep 2026). 4.5.14 is
+only the *earliest* a source can be, because it is the first release that stamps its version. v4 is
+frozen to critical fixes after .14, and a fix that repairs already-written data adds a heal, so the
+floor may end at .15, .17, wherever v4 actually stops. It is pinned when v5 is written.
 
-Because only 4.5.14+ can present a level at all, the importer supports **one schema era**: the
+Why a version suffices: every heal is marker-gated and an ungated marker runs at startup, so
+upgrading any older database runs every heal that release carries. **"Last opened by X" means
+"healed to X's standard."** *An earlier design proposed a computed `heal_level` integer; dropped
+19 Sep 2026 as unjustified — heals are historical, so a later release that adds one simply raises
+the floor.*
+
+Because only 4.5.14+ stamps a version at all, the importer supports **one schema era**: the
 4.4.0–4.5.4 era (segments present, settled provenance entirely absent) cannot reach it. Three gates
 collapse into one, the era-detection code is never written, and 4.5.12/4.5.13 databases become
 **negative** fixtures — near-misses with every table the importer wants and no attestation.
 
+**Gate verified against a real 4.5.14 database** (prod-dev, 21 Sep 2026): `written_by='4.5.14'`,
+`supplier='octopus'`, account stamped — admitted, restore path prompts for an Octopus key. That is
+the first genuine *positive* fixture; keep it. Two failure modes it exposed are now §9 gates: values
+in `store_meta` are **JSON-encoded** (the column holds `'"4.5.14"'`, so a plain SELECT-and-compare
+finds no marker on a perfectly good database), and versions must compare **numerically** — under
+string comparison v5's own CalVer `2026.9.0` sorts *below* the v4 floor.
+
 **Done when** (in addition to the spec's §9 gates):
 
-- `REQUIRED_HEAL_LEVEL` exists as a **single named constant**, no version literal anywhere in the
-  gate or its messages.
-- The below-the-bar test **generates** its fixture by decrementing the positive one, so it keeps
-  testing something after the bar moves.
+- `FLOOR_VERSION` exists as a **single named constant**, no version literal anywhere in the gate or
+  its messages.
+- Versions compare **numerically**, never as strings — `"4.5.9" > "4.5.13"` lexically — and v4's
+  `4.5.x` orders below v5's CalVer `2026.x.y`.
+- The below-the-floor test **generates** its fixture by rewriting the positive one's `written_by`,
+  so it keeps testing something after the floor moves.
 
-> ⚠️ **Release-day checklist item, easily missed.** `REQUIRED_HEAL_LEVEL` is pinned as the last step
+> ⚠️ **Release-day checklist item, easily missed.** `FLOOR_VERSION` is pinned as the last step
 > before v5's first release, from whatever v4 has actually reached by then, and the positive fixture
-> is regenerated at that level — not carried forward from development. Until then it is a
+> is regenerated at that version — not carried forward from development. Until then it is a
 > placeholder, and every post-.14 v4 fix that adds a heal bumps it in the same cherry-pick
 > ([architecture §6](design/EMT-v5_architecture.md)).
 
@@ -136,11 +150,14 @@ someone's head.
 
 ### The next three actions, in order
 
-1. **Ship 4.5.14 from the v4 repository.** BL-71 and BL-72 are required; BL-73 is the optional
-   `supplier` token. BL-72 is the hard dependency — without `heal_level` in users' databases, the
-   importer has no gate and EMT cannot retrofit one.
+1. **Ship 4.5.14 from the v4 repository.** BL-71, BL-72 and BL-73 — all three built and merged.
+   BL-72 is the hard dependency: without a version stamp in users' databases the importer has no
+   gate, and EMT cannot retrofit one. BL-73 is required too — `not-listed` is a real state, so the
+   supplier cannot be inferred from the version.
 2. **Seed this repository:** copy 4.5.14 verbatim as commit one, confirm the suite is green, then
-   begin deconstruction step 1 (remove the unwired paths, [architecture §4](design/EMT-v5_architecture.md)).
+   begin deconstruction step 1 (remove the unwired paths, [architecture §4](design/EMT-v5_architecture.md))
+   — under the deletion protocol in [§4a](design/EMT-v5_architecture.md), which is what makes a
+   subtractive programme against working code safe to run.
 3. **Benchmark on the Pi** — this needs no v5 code and can run against a 4.5.13 install at any
    point, including while .14 is in progress. It answers two of the open questions above.
 
@@ -151,7 +168,7 @@ actions:
 
 | | |
 |---|---|
-| **BL-73** | The `supplier` token is a **v4** backlog item. This repository only records the dependency; the specification has to land in v4's roadmap. |
+| **BL-73** | A **v4** backlog item. This repository only records the dependency; the specification and the delta land in v4's roadmap and tree. |
 | **Tag 4.5.14 at release** | Commit one here is a verbatim copy of exactly the tree that shipped, so it needs to be identifiable later. |
 
 ### Two things deliberately absent
@@ -216,10 +233,11 @@ workstreams that depend on them start.
       each own their connection. v5's `store()` makes that structural instead of comment-enforced.
       *(A)*
 - [ ] **Attribution state in a backup** — is a source with an unfinished attribution job importable,
-      or refused? Possibly needs no new gate: if an in-flight run leaves an invariant broken, the
-      computed `heal_level` should already fail to reach the bar. Check against BL-72's heal set
-      before adding a separate check. *(B/E)*
-- [x] **Does v5's required heal level ever rise?** **Yes, and it is not a policy question**
-      (19 Sep 2026). The bar is v4's final high-water mark; it moves whenever a post-.14 critical fix
+      or refused? An earlier note leaned on the computed `heal_level` catching this for free; that
+      mechanism was dropped, so the question stands on its own terms again — does a half-finished
+      attribution leave the database in a state v5 would import wrongly, or does the ledger it
+      carries make it recoverable? *(B/E)*
+- [x] **Does v5's required version ever rise?** **Yes, and it is not a policy question**
+      (19 Sep 2026). The floor is the last release of v4; it moves whenever a post-.14 critical fix
       adds a heal, and previously-admissible backups correctly stop being admissible. Nothing to
-      decide — only a number to supply on release day. See E above.
+      decide — only a version to supply on release day. See E above.
