@@ -1,10 +1,10 @@
 # EMT v5 — database import specification
 
-*The contract for bringing an existing Energy Meter Tracker database — **4.5.14 or later, and at
-v4's final heal high-water mark** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
+*The contract for bringing an existing Energy Meter Tracker database — **at or above the floor
+version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v4 — revised 19 Sep 2026 against merged 4.5.13 plus the 4.5.14 decision. Numbers below
+**Status:** v7 — revised 21 Sep 2026, §3's gate verified end to end against a real 4.5.14 database. Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -19,8 +19,9 @@ importer's retirement rule.*
 
 *Changes in v4: **the source floor moves from 4.4.0 to v4's final heal high-water mark, and the
 importer supports one schema era instead of two.** v1–v3 were written before 4.5.14 was decided and
-still claimed there would be no final v4 release. There is: 4.5.14 ships BL-72's `heal_level`, and
-that marker — not table presence, not a "done" flag — is now the gate. §3's first three gates
+still claimed there would be no final v4 release. There is: 4.5.14 ships BL-72's stamp, and that
+marker — not table presence, not a "done" flag — is now the gate. *(v4 described the stamp as a
+computed `heal_level`; v6 corrects that to a plain version.)* §3's first three gates
 collapse into one that is strictly stronger, §4's era table is deleted, and the 4.5.12/4.5.13
 databases on hand become **negative** test cases alongside the 4.3.1 one.*
 
@@ -28,15 +29,36 @@ databases on hand become **negative** test cases alongside the 4.3.1 one.*
 v4 **stops**, which post-.14 critical fixes can move, and it is a release-day input rather than a
 design-time constant (§1.1, Q9).*
 
+*Changes in v5 (19 Sep 2026, after reading 4.5.13): **`not-listed` is a real supplier value and this
+spec previously denied it.** v4 has had a supplier registry (`octopus` / `not-listed`) and
+`normalize_supplier()` since the setup wizard shipped; BL-73 now stamps the normalised key into
+`store_meta`. The retracted claim was "every v4 database that will ever exist is Octopus" — false,
+because a local-only install has real CAD kWh history and no Octopus account at any point. §3 gate 3
+becomes four cases, and the supplier is read **before** the account check rather than after.*
+
+*Changes in v6 (19 Sep 2026): **`heal_level` is dropped.** BL-72 shipped as a plain version stamp,
+`store_meta.written_by`, and the gate is a version comparison against a floor set when v5 is
+written. Heals are historical: a later v4 release that adds one just raises the floor. The computed
+level bought nothing the markers did not already provide, and its premise did not survive the code
+(more than eight heals, mostly in `kraken_state`, one of them a backup with no invariant). §1.1,
+§3, §6, §9 and Q9 all change; the *reasoning* about a moving bar survives intact — only the thing
+being compared is now a version, not an integer.*
+
+*Changes in v7 (21 Sep 2026, verified against a real 4.5.14 prod-dev database): §9 gains two
+acceptance gates that were prose before and are now demonstrated — `store_meta` values must be
+**JSON-decoded** (the column holds `'"4.5.14"'`, quotes included), and versions must compare
+**numerically** (`2026.9.0` sorts BELOW `4.5.14` as a string, so v5 would reject its own backup).
+That database becomes the first real **positive** fixture; everything held until now was a negative.*
+
 ---
 
 ## 1. Purpose and shape
 
 v5 ships as a **new add-on with a new slug**, so users get a *fresh install*, not an in-place
 upgrade. There is therefore no schema migration inside the new app — instead there is a
-**one-directional importer** that reads a **4.5.14+ database that is also at v4's final heal
-high-water mark** (§1.1) and writes the v5 schema. 4.5.14 is the earliest such source, not
-necessarily an admissible one.
+**one-directional importer** that reads a **4.5.14-or-later database at or above the floor
+version** (§1.1) and writes the v5 schema. 4.5.14 is the earliest such source, not necessarily an
+admissible one.
 
 Consequences that follow from that choice, and which this spec exists to protect:
 
@@ -52,21 +74,19 @@ Consequences that follow from that choice, and which this spec exists to protect
 - There is **no cooperating exporter**. The source is what v4 already writes — the backup zip — and
   the importer validates it itself (§3) rather than trusting a contract.
 
-### 1.1 The floor is v4's high-water mark; 4.5.14 is where the marker begins
+### 1.1 The floor is a version, and 4.5.14 is where the stamp begins
 
-**Decided 19 Sep 2026.** Earlier drafts of this spec set the floor at 4.4.0 and stated there would
-be no final v4 release. Both are wrong. **4.5.14 ships BL-72**, whose job is to stamp the database
-with a claim v5 can act on:
+**Decided 19 Sep 2026.** Earlier drafts set the floor at 4.4.0 and said there would be no final v4
+release. Both were wrong: **4.5.14 ships BL-72**, which records the running version in the database.
 
 | marker | where | status |
 |---|---|---|
-| `heal_level` INTEGER | `store_meta` | **New — BL-72.** Which one-off heals hold **against this database's current contents**. Computed by each heal re-verifying its own invariant, not a sticky "I ran once" flag. |
-| `written_by` TEXT | `store_meta` | **New — BL-72.** The software that last wrote the database. |
+| `written_by` TEXT | `store_meta` | **New — BL-72** (shipped in .14). The app version that last opened the database. **The gate.** |
 | account identity | `kraken_state.kraken_account_number` | **Already exists.** Populated in every real database checked (4.5.12, 4.5.13 prod and prod-dev). |
-| supplier | `config_periods.supplier` | **Already exists, but as display text** (`'Octopus Energy'`), not a machine token. See below. |
+| `supplier` TEXT | `store_meta` | **New — BL-73** (shipped in .14). The normalised supplier registry key. Values: `'octopus'`, `'not-listed'`, or absent. |
 
-EMT cannot retrofit a marker it was not present for — but two of the four are already there, and an
-earlier draft of this section proposed adding duplicates of both. Corrected 19 Sep 2026 after
+EMT cannot retrofit a marker it was not present for — but the account identity was already there,
+and an earlier draft of this section proposed adding a duplicate of it. Corrected 19 Sep 2026 after
 checking the schema.
 
 #### The account is already stamped, and v4 already guards it
@@ -82,55 +102,87 @@ So v5 does **not** need a new `account_ref` field. A draft of BL-73 proposed one
 reading a Kraken-specific key would leak v4's layout into v5 — a weak argument, since the importer
 reads v4's entire schema by definition, and a bad trade against duplicating a value that exists.
 
-#### The supplier field that exists is the wrong kind
+#### The supplier registry already existed; BL-73 records its answer
 
-`config_periods.supplier` is documented in the schema as *"energy supplier name (display +
-historical record)"* and holds `'Octopus Energy'`. Free text meant for a header, not a token to
-switch an authentication flow on — nobody should branch on a string a user might type three ways.
+v4 has had a supplier registry since the setup wizard shipped — `engine.py`:
 
-**But a v4-side machine token may not be needed either.** v4 is frozen after .14, so it will never
-support a second supplier: **every v4 database that will ever exist is Octopus.** `written_by`
-already identifies a source as v4, which makes the supplier derivable with certainty, in one line,
-inside the module that already knows everything about v4 and gets deleted when v4 support ends.
+```python
+_API_CAPABLE_SUPPLIERS = frozenset({"octopus"})
+```
 
-Where the requirement genuinely lives is **v5's own schema** — v5 *will* be multi-supplier, so v5's
-databases and backups need a stable machine token from the start, for exactly the reason a marker
-cannot be added after the fact. That is a v5 schema item, not a .14 item.
+with `normalize_supplier()` mapping input onto it, and the wizard's `WIZ_SUPPLIERS` dropdown
+offering exactly two keys:
 
-> **Open, and the user's call (see BL-73).** Ship a `store_meta.supplier` token in .14 anyway — it
-> costs one string, and "derivable in the importer" is an argument that has to stay true — or rely
-> on `written_by` and put the token only in v5's schema.
+| key | label |
+|---|---|
+| `octopus` | Octopus Energy |
+| `not-listed` | My supplier isn't listed / local metering only |
 
-#### The level is a claim about invariants, not a version number
+What v4 never did is **write the answer down in one place**. `config_periods.supplier` is the
+*display and historical record* and holds either kind of value: a registry key on an install set up
+through the wizard, free text on one that predates it (`'Octopus Energy'` — which is what every real
+database we hold contains). BL-73 stamps the normalised key into `store_meta.supplier` so the
+importer reads v4's own reading of its own field, rather than reimplementing the mapping against a
+mixed column.
 
-This is the distinction the whole gate rests on. `heal_level = 8` does not mean "this database came
-from a release that had 8 heals". It means **eight named invariants have been checked and currently
-hold**. A database cannot report a level for a heal its software has never heard of — so an install
-sitting on .14 reports .14's mark however long it sits there, and updating is what raises it.
+#### `not-listed` is a real value, and an earlier draft of this section denied it
 
-#### So the floor is not a fixed number, and must not be written as one
+That draft argued a v4-side token might be unnecessary, because *"v4 is frozen after .14, so every
+v4 database that will ever exist is Octopus"*, making the supplier derivable from `written_by`.
+**That is false.** `not-listed` means *local metering only, no supplier API* — a supported
+configuration with real CAD-read kWh history and no Octopus account at any point. Deriving
+`written_by ⇒ octopus` would read such a database as an Octopus account and prompt for credentials
+that cannot exist.
 
-4.5.14 is the **earliest** a source can be, because it is the first release able to express a level
-at all. It is not necessarily the floor. v4 is frozen to critical fixes after .14, and a pricing-error
-fix is exactly the kind that repairs already-written data — so the mark can move to .15, .17,
-wherever v4 actually stops.
+So the three states are distinct and all three matter to the first-run wizard (§3a):
 
-> **v5's required level is v4's final high-water mark, and it is pinned before v5's release —
-> not now.** It is a single named constant with one definition site, supplied as a release-day
-> input (§10 Q9). The importer must never hard-code a version string, and no gate, message or test
-> may assume the answer is 4.5.14's value.
+| `store_meta.supplier` | means | credential prompt |
+|---|---|---|
+| `'octopus'` | an API-capable supplier was chosen | **yes** — that supplier's |
+| `'not-listed'` | local metering only, chosen deliberately | **no** |
+| absent | never asked (a config predating the field) | **no** |
 
-The consequence is deliberate and correct: if v4 ends at .17, a user who migrated their backup from
-.14 **is refused**, because three invariants .17 defines have never been verified against their
-data — and v5 has no heals to repair what v4 didn't. They update v4, let it re-verify, back up
-again, import. The refusal is a one-line inconvenience; importing silently-unrepaired history is
-not.
+`not-listed` and absent take the same path but are not the same fact, and BL-73 keeps them apart by
+writing nothing rather than a placeholder when the question was never put.
 
-**What this buys either way: the importer supports one schema era, not two.** Any database carrying
-a `heal_level` is 4.5.14 or later, so it always has `block_segments`, `rate_source` and
-`measured_cost`. The 4.4.0–4.5.4 era — segments present, settled provenance entirely absent — can no
-longer reach the importer at all. §4 is deleted rather than defended, and §3's first three gates
-become one.
+**v5's own schema still needs its own token.** v5 *will* be multi-supplier, so its databases and
+backups need one from the start — same reasoning, applied to v5's side of the boundary rather than
+satisfied by what .14 stamps.
+
+#### Why a version is sufficient — the heals are gated by markers that travel with the data
+
+Every one-off heal in v4 is gated on a marker in `kraken_state` or `store_meta`, and an **ungated
+marker runs at startup**. So upgrading any older database to a given release runs every heal that
+release carries: a 4.4.0 database opened by 4.5.14 has no markers at all, and therefore runs all of
+them. A restored 4.5.12 backup carries 4.5.12's markers, so a heal introduced in .13 is ungated and
+runs, while the older ones correctly do not.
+
+**"Last opened by version X" therefore means "healed to X's standard."** That is the whole
+inference, and it is why nothing more elaborate is needed.
+
+> **The floor is the last release of v4, decided when v5 is written — not now.** If a post-.14
+> critical fix adds a heal, the floor rises to that release. A reader gates on one version
+> comparison; it never needs to know how many heals exist or what they are called.
+
+*Rejected: a computed `heal_level` integer.* An earlier design proposed one, with each heal
+verifying its own invariant at startup so the level could fall when unhealed history arrived. It was
+dropped on 19 Sep 2026 as unjustified — it required an invariant per heal, a migration, and a
+mechanism, to solve a problem the markers already solve. **Heals are historical.** A later release
+that adds one simply raises the floor a reader accepts. The design also did not survive contact with
+the code: it assumed eight heals in `store_meta`, when there are more than eight and they live
+mostly in `kraken_state`, and one of its eight (`pre_live_snapshot_done`) is a backup with no data
+invariant to verify at all.
+
+**One schema era, not two.** Any database at or above the floor is 4.5.14+, so it always has
+`block_segments`, `rate_source` and `measured_cost`. The 4.4.0–4.5.4 era — segments present, settled
+provenance entirely absent — cannot reach the importer. §4 is deleted rather than defended.
+
+#### v5 stamps its own version on import, and inherits the mechanism
+
+The imported database is stamped with the **v5 release** that wrote it (`2026.9.0` or whatever
+ships), by the same means. v5's own heals, as they accumulate, use the same marker gating — so the
+same inference holds for whatever reads a v5 database later. The stamp is not a v4 migration
+artefact; it is how a database says what it is, permanently.
 
 **Nobody is stranded, at any level.** A user on 4.4.0, on 4.5.13, or on 4.5.14 when the mark has
 moved past it, is never refused permanently — they are told to update the old add-on, let it finish,
@@ -199,7 +251,7 @@ credentials, and it comes last.
 PHASE 1 — file only, no credentials                PHASE 2 — after auth
   1  no hot -wal sibling                             4  account stamp matches the
   2  opens read-only; integrity clean                   credentials just supplied (§7)
-  3  heal_level ≥ REQUIRED_HEAL_LEVEL
+  3  written_by >= FLOOR_VERSION
   4  supplier present and supported
         ↓                                                    ↑
    supplier tells the wizard WHICH credential prompt to show ┘
@@ -207,7 +259,7 @@ PHASE 1 — file only, no credentials                PHASE 2 — after auth
 
 **The order within phase 1 is operational, not arbitrary.** The WAL check is a filesystem test and
 happens before the file is opened at all. Integrity comes next, because **a marker read out of a
-damaged database is not evidence of anything** — `heal_level` and `supplier` are only trustworthy
+damaged database is not evidence of anything** — `written_by` and `supplier` are only trustworthy
 once `quick_check` has passed. Then the two markers, cheapest and most decisive last.
 
 **Why not check the account first?** Because asking someone to sign in and *then* telling them their
@@ -231,39 +283,52 @@ necessary.
    The importer never opens a source read-write, and never checkpoints someone else's database —
    recovering a hot WAL would mean writing to the live app's file from another container.
 
-2. **`store_meta.heal_level` is present and ≥ `REQUIRED_HEAL_LEVEL`** — v4's final high-water mark,
-   pinned at v5's release (§1.1), never a literal in the gate. This one gate replaces the three that
-   earlier drafts used (does `block_segments` exist · did `reprice_history_state` say `done` · is
-   `count_blocks_needing_reprice()` zero), and is **strictly stronger** than all three together.
+2. **`store_meta.written_by` is present and ≥ `FLOOR_VERSION`** — the last release of v4, pinned
+   when v5 is written (§1.1), never a literal in the gate. This one gate replaces the three earlier
+   drafts used (does `block_segments` exist · did `reprice_history_state` say `done` · is
+   `count_blocks_needing_reprice()` zero), and subsumes all three: every heal is marker-gated and an
+   ungated marker runs at startup, so a database last opened by version X has had every heal X
+   carries.
 
-   Stronger because of how BL-72 defines the level: each heal **re-verifies its own invariant
-   against the database's current contents** rather than setting a sticky "I ran once" flag. A
-   marker written optimistically, or written truthfully and then invalidated by a later import,
-   restore or delete, does not survive re-verification. The old gate 3 existed precisely as "belt
-   and braces against a marker written optimistically"; a computed level makes that belt structural.
+   **Absence is decisive.** Only 4.5.14+ writes the stamp, so a database without one is pre-4.5.14
+   whatever else it contains — and pre-4.5.14 means no supplier key either, so the wizard has
+   nothing to work from.
 
-   Absence of `heal_level` is itself decisive: only 4.5.14+ writes it, so a database without one is
-   pre-4.5.14 whatever else it contains. `written_by` supplies the version to name in the refusal.
+   > **Compare versions numerically, never as strings.** `"4.5.9" > "4.5.13"` is true lexically and
+   > false in every sense that matters here. Parse to a tuple. v4 already has `_parse_version` in
+   > `web/server.py` for its own update check; v5 needs the equivalent, and it must also order
+   > v4's `4.5.x` below v5's CalVer `2026.x.y` — a v5-stamped database is *above* any v4 floor, and
+   > a naive numeric parse would put 4 below 2026 correctly but only by luck of the first field.
 
-3. **If `store_meta.supplier` is present, this build must support it.** Today that means
-   `'octopus'`. A future EMT that has not implemented a supplier refuses its backups plainly rather
-   than importing history it cannot price or extend.
+3. **`store_meta.supplier` must be one this build understands — which is not the same as one it
+   can authenticate.** Four cases, and only the last is a refusal:
 
-   **If `supplier` is absent, that is not a refusal — it is a branch.** BL-73 writes `supplier` and
-   the account stamp only once credentials have been established, so an install that was never
-   connected to an energy account carries no stamp (`get_db_account()` returns None). Such a database can still hold **real meter
-   history**: kWh read locally from a CAD is genuine, irreplaceable consumption data that simply
-   never got priced. Refusing it would throw away the user's record to enforce a check that has
-   nothing to check.
+   | value | meaning | what happens |
+   |---|---|---|
+   | `'octopus'` (any API-capable key) | an API-capable supplier was chosen | prompt for that supplier's credentials → phase 2 |
+   | `'not-listed'` | local metering only, chosen deliberately | **import**, no prompt, no phase 2 |
+   | absent | never asked — a config predating the field | **import**, no prompt, no phase 2 |
+   | anything else | a supplier this build has not implemented | **refuse** |
 
-   So: **no `supplier` ⇒ skip the credential prompt, skip phase 2 entirely, and import the
-   history.** The user lands in the normal account-setup flow afterwards and starts costing from
-   there — exactly what a v4 install does when credentials arrive after some history already exists.
+   **The two middle rows are the point.** Neither is a refusal, because both describe a database
+   that holds **real meter history**: kWh read locally from a CAD is genuine, irreplaceable
+   consumption data that simply never got priced. Refusing it would throw away the user's record to
+   enforce a check that has nothing to check.
+
+   `not-listed` and absent take the same path for different reasons — *"asked, and the answer was
+   local-only"* versus *"never asked"* — and BL-73 keeps them apart deliberately (§1.1). The
+   importer does not need to distinguish them; the audit record (§9) should, because a support
+   question about missing costs has two different answers.
 
    *The asymmetry decides it.* Wrongly importing unpriced kWh costs nothing — it is visible, it is
    the user's own data, and connecting an account later fixes it. Wrongly refusing it destroys
    history that no API can re-serve. When a check has no subject, skip the check; do not refuse the
    subject.
+
+   > **The supplier gates the account check, not the other way round.** A user who was on Octopus
+   > and has since moved to a local-only setup carries `supplier='not-listed'` *and* a leftover
+   > account stamp from the Octopus era. The stamp is stale — it describes history, not the current
+   > account — so phase 2 must not run on it. Read the supplier first.
 
    **Treat the account stamp as the signal, not a marker pair.** `get_db_account()` already answers
    "was this database ever associated with an account?", which is the only question gate 3 needs.
@@ -296,33 +361,30 @@ not own" below:
 
 **Refusal must be explicit and actionable**, never a partial import:
 
-- *no `heal_level`* → "This database was written by Energy Meter Tracker `<written_by>`, which is too
-  old to say whether its one-time repairs are complete. Update the old add-on, let it finish, then
-  take a backup and import that." The user is delayed, not stranded — §1.1.
-- *`heal_level` below `REQUIRED_HEAL_LEVEL`* → "This backup was checked against `<found>` of the
-  `<required>` repairs EMT needs (written by `<written_by>`). Update the old add-on, let it
-  re-check, then back up again."
+- *no `written_by`* → "This backup is from a version of Energy Meter Tracker too old to say what
+  produced it. Update the old add-on, then take a backup and import that." The user is delayed, not
+  stranded — §1.1.
+- *`written_by` below `FLOOR_VERSION`* → "This backup was written by Energy Meter Tracker
+  `<written_by>`, which is older than EMT can import from. Update the old add-on, then back up
+  again."
 
-  **Both messages name a version only from `written_by`, never a target.** The target version is
-  whatever v4 ended at, which this document does not know and the code must not assert — so the
-  instruction is *"update the old add-on"*, not *"update to 4.5.14"*. This second case also covers
-  the two distinct situations the gate deliberately does not distinguish: a source whose repairs
-  never finished, and a source that finished the repairs **its** release knew about while the mark
-  has since moved. The remedy is identical, so the message is one message.
-
-  This is also the case a presence check would wave through: the marker exists, and the invariants
-  still don't all hold.
+  **Neither message names a target version.** The floor is whatever v4 ended at, which this document
+  does not know and the code must not assert — so the instruction is *"update the old add-on"*, not
+  *"update to 4.5.14"*. Both cases have the identical remedy, which is why they are two messages
+  only for accuracy about what was found, not because the user does anything different.
 - *hot WAL present* → "This looks like a copy taken while Energy Meter Tracker was running, and
   some of your most recent half-hours are not in it yet. In the old add-on take a backup, then
   import the zip it writes."
 - *integrity check fails* → "This database is damaged and cannot be imported safely." Never
   attempt repair: the user still has the working original.
 - *unsupported supplier* → "This backup is from a `<supplier>` account, which this version of EMT
-  cannot import yet."
+  cannot import yet." Only for a key this build does not know — **never** for `not-listed`, which is
+  a supported state and imports normally.
 - *account mismatch* → §7.
 
-**Not a refusal:** *both* markers absent. That is the unconfigured-source branch — import proceeds
-without a credential prompt (gate 3), and the user connects an account afterwards.
+**Not a refusal:** `supplier = 'not-listed'`, or no supplier at all. Both are the local-only /
+never-asked branch — import proceeds without a credential prompt (gate 3), and the user connects an
+account afterwards if they ever have one to connect.
 
 ### Credentials are not in the backup, and a missing key is not a refusal
 
@@ -356,17 +418,17 @@ removes the credentials file, so the target instance has no account identity at 
 The rule that follows is symmetric with §3 gate 3:
 
 > **Phase 2 runs only when *both* sides present an account identity** — the source carries
-> an account stamp, and the target has credentials configured. If either is absent there is nothing
-> to compare, so the check is skipped rather than failed.
+> an API-capable supplier **and** an account stamp, and the target has credentials configured. If
+> any of those is absent there is nothing to compare, so the check is skipped rather than failed.
 
 That single rule covers every case without a special diagnostic mode:
 
 | source | target | phase 2 |
 |---|---|---|
-| stamped | connected | **checked** — on mismatch the history still imports; the account is not associated and the API is not auto-activated (§7) |
-| stamped | disconnected | skipped — the diagnostic path |
-| never stamped | connected | skipped — nothing to compare (§3 gate 3) |
-| never stamped | disconnected | skipped |
+| `octopus` + stamped | connected | **checked** — on mismatch the history still imports; the account is not associated and the API is not auto-activated (§7) |
+| `octopus` + stamped | disconnected | skipped — the diagnostic path |
+| `not-listed` | either | skipped — no API account to compare, whatever stamp may linger |
+| never stamped | either | skipped — nothing to compare (§3 gate 3) |
 
 No override is needed for the checked row either, because a mismatch was never a refusal — v4's
 `kraken_account_mismatch()` imports the data and declines to associate the account (§7). Disconnecting
@@ -394,11 +456,11 @@ first start
    └── "Restore from an Energy Meter Tracker backup"
               │
               ├─ upload the zip
-              ├─ PHASE 1 gate: not-live · integrity · heal_level · supplier     (§3)
+              ├─ PHASE 1 gate: not-live · integrity · written_by · supplier    (§3)
               │     └─ refuse here, before asking the user for anything
               │
-              ├─ supplier present? ──── no ──┐   (never configured: real kWh
-              │                              │    history, never priced)
+              ├─ API-capable supplier? ─ no ─┐   ('not-listed', or never asked:
+              │                              │    real kWh history, never priced)
               │   yes                        │
               │    ├─ show THAT supplier's   │
               │    │  credential prompt,     │
@@ -415,7 +477,7 @@ first start
               │
               ├─ import (§8) — one job, all-or-nothing, takes the job lock
               │     └─ NO heals run: v5 contains none, which is what the
-              │        heal_level gate exists to make safe (§1.1)
+              │        version floor exists to make safe (§1.1)
               ├─ write the audit record (§9)
               └─ start the engine — history in place
                     └─ if no account was connected (no supplier, or the user
@@ -448,8 +510,8 @@ mismatch imports anyway without associating the account. The fork is about makin
 
 > **Scope note.** The fork is client-layer work, not importer work — the gates and the ingest are
 > the same in both orders. It lands with the client (architecture §6 step 6), and the only thing
-> that has to be true earlier is that the account stamp exists — and it already does, in every
-> version in scope.
+> that has to be true earlier is that the markers exist: the account stamp already did, and BL-73
+> adds the supplier key in .14.
 
 ---
 
@@ -458,7 +520,7 @@ mismatch imports anyway without associating the account. The fork is about makin
 *Earlier drafts carried a two-era table here — 4.4.0–4.5.4 (segments present, settled provenance
 entirely absent) versus 4.5.5+ — with detection by column presence and a rule that a 4.4.x import
 must never produce settled history. **Deleted 19 Sep 2026.** With the floor at 4.5.14 (§1.1), the
-first era cannot reach the importer: a database carrying a `heal_level` always has
+first era cannot reach the importer: a database at or above the floor always has
 `block_segments`, `rate_source` and `measured_cost`. There is no era detection, no column-presence
 probing, and no conditional carry.*
 
@@ -639,15 +701,22 @@ suppresses a pass that should run. Default is **DROP**; carry only by explicit a
 **REGEN:** `db_uuid` — the v5 database is a new identity. Record the *source* uuid in the import
 audit record (§9) for traceability.
 
-**DROP, but record in the audit trail: `heal_level` and `written_by`.** These are the §3 gate's
-input and they must **not** cross. v4's `heal_level` describes v4's heal set; v5 starts from an
-empty one and computes its own level from its own invariants. Carrying the number would be the
-purest form of the mistake this section exists to prevent — importing a "this already ran" claim
-about passes the new app has never run. The two values are written into the §9 audit record instead,
-where they answer "what produced this history" without suppressing anything.
+**`written_by` — REGEN, and record the source value in the audit trail.** It is the §3 gate's
+input, and it must not cross as-is: the new database is written by **v5**, so v5 stamps its own
+release version (`2026.9.0` or whatever ships) by the same mechanism. Carrying v4's value forward
+would make a v5 database claim to have been produced by v4 — and every later reader of that database
+would draw the wrong conclusion about which heals have run against it.
+
+The source's value goes into the §9 audit record, where it answers "what produced this history"
+without being mistaken for what produced this *database*.
+
+> **v5 inherits the mechanism, not the markers.** v5's own heals are marker-gated exactly as v4's
+> are, so "last opened by version X" keeps meaning "healed to X's standard" on the far side of the
+> migration. That is why the stamp is not a migration artefact: it is how a database says what it
+> is, and it keeps doing so after v4 is gone.
 
 **DROP (one-time heal / sweep markers — must not suppress v5 passes):** `reprice_history_state`
-(no longer read at all — the §3 gate reads `heal_level`), `carbon_backfill_state`,
+(no longer read at all — the §3 gate reads `written_by`), `carbon_backfill_state`,
 `carbon_backfill_done`,
 `exc_backfill_state`, `iog_split_backfill_state`, `stale_exc_repair_state`,
 `stale_iog_split_repair_state`, `region_probe_clobber_done`, `export_zero_fill_v1`,
@@ -749,20 +818,47 @@ The import is not "done" when it completes; it is done when it **reconciles**. M
    values, which is how several false results were reached during 4.5.13 development.
 6. **Tombstones honoured.** After import, a backfill pass must not re-create any range in
    `deleted_ranges`.
-7. **An import audit record** is written: source `db_uuid`, source `written_by` and `heal_level`
-   (§6 — recorded here precisely because they must not cross as live markers), row counts in/out,
-   and the reconciliation results above.
+7. **`store_meta` values are JSON-DECODED before use.** `BlockStore.set_meta` JSON-encodes, so the
+   column holds `'"4.5.14"'` — **with quotes**. The importer opens the source read-only with plain
+   SQL rather than through `BlockStore`, so nothing decodes for it:
+
+   ```
+   raw == '4.5.14'               False   ← a plain SELECT + compare fails
+   json.loads(raw) == '4.5.14'   True
+   ```
+
+   Verified against a real 4.5.14 prod-dev database, 21 Sep 2026. This fails **silently and in the
+   worst direction**: a perfectly good database reads as having no marker, and the user is told to
+   update an add-on that is already current. `db_uuid` and `supplier` have the same shape — it is a
+   property of `store_meta`, not of these keys.
+
+8. **Versions compare NUMERICALLY, never as strings.** Two of four real cases disagree:
+
+   | | string | tuple |
+   |---|---|---|
+   | `4.5.9 >= 4.5.13` | **True** | False |
+   | `2026.9.0 >= 4.5.14` | **False** | True |
+
+   The first is the familiar lexical trap. **The second is the one that bites v5 itself:** a
+   v5-stamped database (CalVer `2026.x.y`) compares as *older* than the v4 floor under string
+   comparison, so v5 would reject its own backup — and any later reader would too. Parse to a tuple
+   of integers.
+
+9. **An import audit record** is written: source `db_uuid`, source `written_by` and `supplier`
+   (§6 — the source's `written_by` is recorded here precisely because the new database carries v5's
+   own), row counts in/out, and the reconciliation results above.
 
 **Test corpus — and note the floor gives us a much better negative set.** The real databases already
 on hand:
 
 | database | expected | why |
 |---|---|---|
-| 4.3.1 | **refused** | no `heal_level`, and no `block_segments` either |
-| 4.5.12 production | **refused** | no `heal_level`. Previously this was a *positive* case. |
-| 4.5.13 prod-dev | **refused** | no `heal_level`, despite being one release short |
-| at `REQUIRED_HEAL_LEVEL` | **admitted** | the only positive case |
-| **below** `REQUIRED_HEAL_LEVEL` | **refused** | the marker is present and the bar has moved past it |
+| 4.3.1 | **refused** | no `written_by`, and no `block_segments` either |
+| 4.5.12 production | **refused** | no `written_by`. Previously this was a *positive* case. |
+| 4.5.13 prod-dev | **refused** | no `written_by`, despite being one release short |
+| **4.5.14 prod-dev** (21 Sep 2026) | **admitted** | the first real positive case — `written_by='4.5.14'`, `supplier='octopus'`, account stamped. Keep it. |
+| at `FLOOR_VERSION` | **admitted** | regenerated at release if the floor moves past .14 |
+| **below** `FLOOR_VERSION` | **refused** | stamped, but from a release older than the floor |
 
 Two of these carry most of the value.
 
@@ -771,12 +867,13 @@ and still inadmissible because nothing has attested the heals hold. Under the ol
 it would have passed. Keep a .13 database as a permanent negative fixture.
 
 **The below-the-bar case cannot be a fixed file**, because the bar moves (§1.1, Q9). Generate it —
-take the positive fixture and decrement its `heal_level` — so the test stays honest whatever
-`REQUIRED_HEAL_LEVEL` is pinned to. A test that hard-codes "level 8 is admissible" silently stops
-testing anything the day v4 reaches 9.
+take the positive fixture and rewrite its `written_by` to a version below the floor — so the test
+stays honest whatever `FLOOR_VERSION` is pinned to. A test that hard-codes "4.5.14 is admissible"
+silently stops testing anything the day v4 reaches .15.
 
-> **The positive fixture is a release-day artefact.** It must be regenerated from a v4 install at
-> the final high-water mark, not carried forward from whatever .14 produced during development.
+> **The positive fixture is a release-day artefact** *if the floor moves*. The 4.5.14 prod-dev
+> database above is a genuine positive today; regenerate only if a post-.14 fix raises the floor
+> past it.
 
 ---
 
@@ -842,21 +939,33 @@ testing anything the day v4 reaches 9.
    subscribes to sensors and creates no entities or statistics, so the one shared namespace
    `instance.py` does not arbitrate is never entered. Two add-ons run side by side indefinitely with
    no contention beyond the `/share` backup directory, which `instance.py` already resolves.
-7. **`reads`** is empty in the reference DB — confirm it is always transient before DROP.
+7. ~~**`reads`**~~ **Closed 19 Sep 2026: DROP — and it is not "transient", it is dead.** Traced in
+   4.5.13 rather than inferred from row counts. The table has a full API —
+   `insert_read`, `link_reads_to_block`, `get_reads_for_block`, `get_reads_for_range`,
+   `purge_reads_older_than` — and **not one of them has a caller outside the test suite.** Nothing
+   has ever written a row. Empty in all three real databases because it is unreachable, not because
+   it drains.
+
+   The `# ── Reads (Phase 2+) ──` comment above `insert_read` dates it: a planned raw-read store
+   that the block model made unnecessary and that was never removed. It belongs in the unwired-paths
+   inventory ([architecture §4](EMT-v5_architecture.md)) alongside the three legacy backfills, not
+   in an import question — and it means the DROP costs nothing, because there is nothing to lose.
 8. **Attribution state (new, 17 Sep 2026).** The device-history attribution ledger is carried
    (§5.3), but v5 is expected to re-found attribution on a job coordinator. Decide whether an
    attribution run that was *in flight* when the backup was taken is importable at all, or whether
-   the gate should refuse it. *Sharpened 19 Sep:* with §3 now resting on a **computed** `heal_level`,
-   the cleanest answer may be that no new gate is needed — if an in-flight attribution run leaves an
-   invariant broken, the level re-verification should already fail. Worth checking against BL-72's
-   actual heal set before adding a separate check.
-9. ~~**Does v5's required `heal_level` ever rise?**~~ **Closed 19 Sep 2026, and it was never a
-   policy question.** The bar is **v4's final high-water mark**, whatever that turns out to be. It
-   rises whenever a post-.14 critical fix adds a heal, and previously-admissible backups do stop
-   being admissible — correctly, because v5 has no heals and would otherwise import history v4 knows
-   is unrepaired. There is nothing to decide, only something to **supply**: the number is a
-   release-day input, not a design-time constant.
+   the gate should refuse it. *Reopened 19 Sep:* an earlier note leaned on the computed
+   `heal_level` re-verifying invariants to catch this for free. That mechanism is gone, so the
+   question is open again on its own terms — does a half-finished attribution leave the database in
+   a state v5 would import wrongly, or does the ledger it carries (§5.3) make it recoverable?
+9. ~~**Does v5's required version ever rise?**~~ **Closed 19 Sep 2026, and it was never a policy
+   question.** The floor is **the last release of v4**, whatever that turns out to be. It rises
+   whenever a post-.14 critical fix adds a heal, and previously-admissible backups do stop being
+   admissible — correctly, because v5 has no v4-era heals and would otherwise import history that
+   release knows is unrepaired. There is nothing to decide, only something to **supply**.
 
-   *Action, not an answer:* `REQUIRED_HEAL_LEVEL` is pinned as the last step before v5's first
-   release, from whatever v4 has actually reached by then, and §9's positive fixture is regenerated
-   at that level. On the release checklist, not in this paragraph.
+   *Action, not an answer:* `FLOOR_VERSION` is pinned as the last step before v5's first release,
+   from whatever v4 has actually reached by then, and §9's positive fixture is regenerated at that
+   version. On the release checklist, not in this paragraph.
+
+   *(This question originally read "does the required `heal_level` ever rise?" and the answer is
+   unchanged in substance — only the thing being compared is now a version rather than an integer.)*

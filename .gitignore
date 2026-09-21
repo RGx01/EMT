@@ -28,3 +28,32 @@ venv/
 .DS_Store
 .vscode/
 *.swp
+
+# ── From v4, carried with the copy ───────────────────────────────────────────
+# The test runner creates these symlinks and removes them on exit; ignoring
+# them keeps a interrupted run from leaving git status full of scaffolding.
+*.patch
+!statistics_probe.py
+!consumption_probe.py
+emt_shape_tracker.py
+emt_shape_history*.csv
+*.csv
+dir.txt
+*.patch
+*.log
+test_results.json
+tests/block_store.py
+tests/energy_charts.py
+tests/energy_engine_io.py
+tests/engine.py
+tests/ha_client.py
+tests/instance.py
+tests/kraken_api_client.py
+tests/kraken_ingester.py
+tests/kraken_mini.py
+tests/kraken_rates.py
+tests/main.py
+tests/server.py
+tests/web
+tests/templates
+tests/_test_meters_config.json

@@ -78,6 +78,13 @@ actually true today.
 
 - The full test suite passes on the **Pi**, not only on a development machine. ARM and SD-card I/O
   are the target's real constraints; a timing-sensitive test that passes on a laptop proves little.
+- **Run it through `run_tests.sh`.** The suite is file-isolated — several modules install
+  `sys.modules` stubs at import time, so a plain `pytest tests/` collides at collection and a
+  "passing" run that skipped the runner has proved nothing.
+- **A PR that removes code satisfies the deletion protocol**
+  ([architecture §4a](design/EMT-v5_architecture.md)): AST trace, suite green, **one deletion per
+  commit**, evidence in the message rather than intention. A reviewer should be able to revert a
+  single sha if the removal turns out to have been load-bearing.
 - Figures quoted in a commit message or doc name their source and date.
 - No probe or scratch file is included — `.gitignore` anchors `/*probe*.py` at the repo root only,
   so a deliberately committed `tests/..._probe.py` is kept while a throwaway at the root is ignored.
