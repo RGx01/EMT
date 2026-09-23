@@ -1,12 +1,6 @@
 {
   "unregistered": [
-    "api_backfill_run",
-    "api_corrections_apply",
     "api_db_vacuum",
-    "api_historical_csv_apply",
-    "api_historical_reprice_from_csv",
-    "api_historical_site_plan_apply",
-    "api_meter_delete_data",
-    "api_region_reconcile_apply"
+    "api_meter_delete_data"
   ]
 }

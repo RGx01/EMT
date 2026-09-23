@@ -76,16 +76,19 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
                 if isinstance(f, ast.Attribute) and f.attr == "route":
                     routes.add(n.name)
         handlers = sorted(set(inv["write"]) & routes)
-        self.assertEqual(len(handlers), 8)
-        self.assertIn("**8 bulk route handlers**", self.doc)
+        # The count is falling as handlers move onto `_engine_write` or become
+        # jobs. Asserted against the doc rather than pinned to a number, so the
+        # doc has to be updated in the same commit as the port.
+        self.assertIn("**%d bulk route handlers**" % len(handlers), self.doc,
+                      "the doc's handler count is stale: tool says %d" % len(handlers))
         for h in handlers:
             self.assertIn(h, self.doc, "%s is a member and is not listed" % h)
 
     def test_membership_total(self):
         self.assertIn("member 23", self.doc, "the live tick was omitted once already")
         d = json.loads(_tool("check_job_membership.py", "--json"))
-        self.assertEqual(d["members"], 26)
-        self.assertIn("26 members", self.doc)
+        self.assertEqual(d["members"], 20)
+        self.assertIn("20 members", self.doc)
         d = json.loads(_tool("check_job_guards.py", "--json"))
         inv = json.loads(_tool("write_inventory.py", "web/server.py", "--json"))[0]
         with open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8") as fh:
@@ -135,7 +138,7 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
             os.path.join(_ROOT, ".build", "check_job_membership.py")))
         self.assertIn("check_job_membership.py", self.doc)
         d = json.loads(_tool("check_job_membership.py", "--json"))
-        self.assertEqual(d["members"], 26)
+        self.assertEqual(d["members"], 20)
         # the doc records the standing; the tool is the source of truth for it
         reg, total = len(d["registered"]), d["members"]
         self.assertIn("%d/%d" % (reg, total), self.doc.replace("**", ""),

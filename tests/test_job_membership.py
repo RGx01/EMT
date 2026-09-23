@@ -56,13 +56,16 @@ class TestMembershipRatchet(unittest.TestCase):
         self.assertIn("engine_loop_task", all_members)
 
     def test_the_count_matches_the_design(self):
-        """26, not the 23 first enumerated. The three background WORKERS —
+        """20 — and the number has moved twice, in both directions, for good
+        reasons rather than because it was guessed at.
+
+        23 first, which missed the three background WORKERS —
         `_delete_worker`, `_purge_worker`, `_restore_worker` — were missed because
         the first list was built from "engine jobs" + "route handlers" and had no
         category for a thread spawned by a route. They are the members others most
         want to avoid: `delete_in_progress()` is the second most consulted guard in
         the codebase."""
-        self.assertEqual(self.d["members"], 26)
+        self.assertEqual(self.d["members"], 20)
 
     def test_the_baseline_is_a_countdown_not_a_record(self):
         """If this ever reaches zero the ratchet is finished and acceptance 1 is
@@ -92,6 +95,11 @@ class TestConsumptionNotJustRegistration(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.d = json.loads(_run("--json").stdout)
+
+    def test_the_two_outstanding_members_are_the_world_stoppers(self):
+        """Not "the handlers that write" — the handlers that STOP the live tick."""
+        self.assertEqual(sorted(self.d["unregistered"]),
+                         ["api_db_vacuum", "api_meter_delete_data"])
 
     def test_the_consumers_so_far(self):
         self.assertEqual(sorted(self.d["consuming"]),

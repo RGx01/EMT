@@ -70,11 +70,23 @@ ENGINE_JOBS = [
 WORKER_JOBS = [
     "_delete_worker", "_purge_worker", "_restore_worker",
 ]
+# Route handlers that must be members. NOT "every handler that writes" — six of
+# the eight originally listed here stopped needing membership entirely once they
+# moved onto `_engine_write`, because a synchronous write on the engine thread is
+# not a job: nothing admits it, nothing defers to it, it just runs where every
+# other engine write runs.
+#
+# What is left are the two that STOP THE WORLD. Both call `pause_engine()`, which
+# suspends member 23 — the live tick, the one member that is never deferred — so
+# they are exactly the things other members should know about.
+#
+#   api_db_vacuum          rewrites the whole file; minutes on a Pi
+#   api_meter_delete_data  pauses, cancels the import, drains the tick, deletes
+#
+# (`_delete_worker` is a different member, "delete": the BACKGROUND delete. This
+# one is the synchronous path.)
 ROUTE_JOBS = [
-    "api_backfill_run", "api_corrections_apply", "api_db_vacuum",
-    "api_historical_csv_apply", "api_historical_reprice_from_csv",
-    "api_historical_site_plan_apply", "api_meter_delete_data",
-    "api_region_reconcile_apply",
+    "api_db_vacuum", "api_meter_delete_data",
 ]
 
 

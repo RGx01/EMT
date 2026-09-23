@@ -43,12 +43,22 @@ done
 [ -e tests/templates ]  || ln -sfn ../web/templates tests/templates
 
 # ── Run each test file in its own process ────────────────────────────────────
-# test_harness.py is a manual chart-inspection script, not a unit test.
+# Three of these files are named test_* and are not unit tests — manual tools
+# that take arguments and do work. Each contributed nothing and said nothing to
+# every green run until the no-result guard below named them:
+#
+#   test_harness.py         manual chart inspection
+#   test_data_generator.py  `python3 test_data_generator.py --days 7 --output ...`
+#   test_gap_automated.py   `python3 tests/test_gap_automated.py <blocks.db>`
+_MANUAL=(test_harness.py test_data_generator.py test_gap_automated.py)
 PYTEST="${PYTEST:-python3 -m pytest}"
 total_pass=0 total_fail=0 total_err=0 failed_files=()
 total_skip=0 silent_files=()
 for f in tests/test_*.py; do
-  [ "$(basename "$f")" = "test_harness.py" ] && continue
+  _b=$(basename "$f")
+  # `continue 2` — leave the inner loop AND skip the file; a bare `continue`
+  # would only advance to the next name in _MANUAL.
+  for _m in "${_MANUAL[@]}"; do [ "$_b" = "$_m" ] && continue 2; done
   # Capture the FULL output (with -rf short summary) so a failure surfaces the
   # test id + traceback — otherwise a CI failure is invisible (only the count).
   full=$($PYTEST "$f" -rf -p no:cacheprovider "$@" 2>&1)

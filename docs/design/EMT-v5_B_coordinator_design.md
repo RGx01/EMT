@@ -5,7 +5,7 @@ and the writer thread-affine, what is left to coordinate is writers.*
 
 **Status:** the coordinator exists and 15 of 23 members are declared, 23 Sep 2026. `job_coordinator.py`
 holds the decision logic and the dependency manifest; `tests/test_job_coordinator.py` covers it.
-Membership stands at **18/26** registered, of which **4 consume** `admission()` —
+Membership stands at **18/20** registered, of which **4 consume** `admission()` —
 every engine job including the live tick, plus the three background workers. The 8 outstanding are
 the bulk route handlers, which join as they become jobs.
 
@@ -229,7 +229,14 @@ What is true today, measured:
 
 ### 4.1 The other 22
 
-**25 further members**, enumerated rather than estimated — **26 members** in all.
+**19 further members**, enumerated rather than estimated — **20 members** in all.
+
+*Corrected twice, in both directions. First 23, which missed the three background workers. Then 26.
+Now 20, because **six of the eight route handlers stopped needing membership at all**: once a
+handler moves onto `_engine_write`, a synchronous write on the engine thread is not a job — nothing
+admits it, nothing defers to it, it runs where every other engine write runs. Listing them as
+members-to-be was a category error, corrected by doing the port and watching the requirement
+evaporate.*
 
 *Corrected 23 Sep 2026: the first enumeration said 23 and missed three. It was built from "engine
 jobs" + "route handlers" and had no category for a **background worker** — a thread spawned by a
@@ -250,12 +257,43 @@ and iog-split backfills — are unreachable and do not come across):
 `run_band_rate_snap`, `run_smb_ev_resplit`, `run_settled_ev_split_heal`,
 `run_reprice_history_sweep_to_done`.
 
-**8 bulk route handlers** still writing on the request thread (`.build/write_inventory.py`). These
+**2 bulk route handlers** still writing on the request thread (`.build/write_inventory.py`). These
 cannot become synchronous `_engine_write` hops — a CSV apply would block the request for minutes —
 so they become jobs: claim, schedule, return, poll.
-`api_backfill_run`, `api_corrections_apply`, `api_db_vacuum`, `api_historical_csv_apply`,
-`api_historical_reprice_from_csv`, `api_historical_site_plan_apply`, `api_meter_delete_data`,
-`api_region_reconcile_apply`.
+`api_db_vacuum`, `api_meter_delete_data` — and one of those two never moves.
+
+*`api_corrections_apply` moved on 23 Sep 2026, as ONE unit rather than write by write. It is not a
+single statement: three alternative UPDATEs, a device-row propagation, a `block_segments` rate
+rewrite and an exc recompute, with explicit commits between them. Hopping each separately would let
+another writer interleave between the main-meter update and the device rows that are supposed to
+follow it — the "partial heal" its own comments warn about, which left the 2026-08-18 EV columns
+100× out. The whole block became a nested function on the engine thread; `updated` is the only
+value the rest of the handler needs back.*
+
+**`api_db_vacuum` is a permanent exception, not an outstanding item.** VACUUM rewrites the entire
+database file — minutes on a Pi — and the engine thread is where member 23 lives, so hopping it onto
+the loop would stall live capture for the duration: the one thing §4.0 says must not happen. It
+pauses the engine and works on its OWN connection now, which is the right shape; it was only ever
+using the shared web store that four waitress threads also write through. So **acceptance 2's target
+is 1, not 0**, and the 1 is named here.
+
+*`api_region_reconcile_apply` and `api_historical_site_plan_apply` moved too: each performs three
+writes that belong together (apply, stamp the marker, re-arm carbon), so they go in ONE hop — split
+across three, a half-applied reconciliation could sit between two engine turns. Both loop over
+SITES, a handful of regions rather than blocks, so a synchronous hop costs nothing. Each also called
+`_rebuild_config_period_chain(store)` outside the hop, which is what kept them flagged after the
+obvious writes moved.*
+
+*`api_backfill_run` and `api_historical_reprice_from_csv` moved onto `_engine_write` on
+23 Sep 2026 — neither needed the job treatment, because both already block the request for up to
+1800 s on an engine-loop hop further down. The synchronous write adds no blocking they did not
+already have; it only stops the write going through the connection four waitress threads share.*
+
+*`api_meter_delete_data` is the awkward one and is deliberately untouched. It pauses the engine,
+cancels a running import, drains the in-flight tick with `run_exclusive(lambda: None)` and only
+then writes — so it is defended, not racing. But it is also the one call site where
+`run_exclusive` should have been used to RUN the work rather than as a barrier, and moving it
+means deciding what `run_exclusive` becomes in v5 (§6 q6). That is a design question, not a port.*
 
 *(19 route handlers wrote on the request thread before 22 Sep. Six were ported to `_engine_write`,
 three were never in scope — already on the loop via `_config_mutation_on_loop` — and two more fell
@@ -296,7 +334,8 @@ same way.
    a dependency: attribution, reprice_sweep, carbon_backfill, measured_drain. `verify_pricing` and
    `import` declare and do not yet consult.
 2. **No unregistered write from a request thread.** `.build/write_inventory.py` already measures
-   this; the count is 8 and must reach 0.
+   this. The count was 8 and must reach **1** — `api_db_vacuum`, which cannot move without stalling
+   member 23 (see §4). Anything else in that list is outstanding work.
 3. **Declared dependencies are honoured.** For each `depends_on` edge, a test that starting the
    dependant while the dependency runs defers or waits — never proceeds.
 4. **A claim is taken before any slow work.** The attribution window, generalised: a test asserting
