@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """102 read-only methods of BlockStore, and nothing else.
+    """115 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -63,10 +63,12 @@ class ReadStore:
     # ── bound read methods ──────────────────────────────────────────────────
     AUTO_CORRECTION_REASONS = _BS.AUTO_CORRECTION_REASONS
     BACKFILL_INTERPOLATED = _BS.BACKFILL_INTERPOLATED
+    CHECKPOINT_MODES = _BS.CHECKPOINT_MODES
     RECORDER_ATTRIBUTED_SOURCE = _BS.RECORDER_ATTRIBUTED_SOURCE
     _ATTRIBUTION_RUNS_KEY = _BS._ATTRIBUTION_RUNS_KEY
     _BUMP_SOURCES = _BS._BUMP_SOURCES
     _CARBON_ELIGIBLE = _BS._CARBON_ELIGIBLE
+    _EV_RESTAMP_SQL = _BS._EV_RESTAMP_SQL
     _NEEDS_REPRICE_WHERE = _BS._NEEDS_REPRICE_WHERE
     _UNSETTLED_WHERE = _BS._UNSETTLED_WHERE
     _UNSETTLED_WHERE_IMPORT_ONLY = _BS._UNSETTLED_WHERE_IMPORT_ONLY
@@ -101,8 +103,11 @@ class ReadStore:
     count_import_blocks_missing_exc = _BS.count_import_blocks_missing_exc
     count_imported_history = _BS.count_imported_history
     count_meter_rows = _BS.count_meter_rows
+    count_mix_history = _BS.count_mix_history
     count_recorder_attributed = _BS.count_recorder_attributed
+    count_stale_band_segments = _BS.count_stale_band_segments
     count_unsettled_blocks = _BS.count_unsettled_blocks
+    distinct_segment_rates = _BS.distinct_segment_rates
     emt_recording_continuously = _BS.emt_recording_continuously
     find_block_gaps = _BS.find_block_gaps
     get_all_blocks = _BS.get_all_blocks
@@ -112,15 +117,19 @@ class ReadStore:
     get_block_by_start = _BS.get_block_by_start
     get_block_dict_by_start = _BS.get_block_dict_by_start
     get_block_segments = _BS.get_block_segments
+    get_block_split_columns = _BS.get_block_split_columns
     get_block_starts_missing_carbon = _BS.get_block_starts_missing_carbon
     get_block_starts_missing_carbon_in_range = _BS.get_block_starts_missing_carbon_in_range
+    get_blocks_awaiting_ev_carve = _BS.get_blocks_awaiting_ev_carve
     get_blocks_for_range = _BS.get_blocks_for_range
     get_blocks_for_utc_range = _BS.get_blocks_for_utc_range
     get_blocks_lightweight = _BS.get_blocks_lightweight
+    get_blocks_missing_ev_split = _BS.get_blocks_missing_ev_split
     get_blocks_missing_iog_split = _BS.get_blocks_missing_iog_split
     get_blocks_missing_segments = _BS.get_blocks_missing_segments
     get_blocks_needing_pass2_rerun = _BS.get_blocks_needing_pass2_rerun
     get_blocks_needing_reprice = _BS.get_blocks_needing_reprice
+    get_blocks_pricing_for_range = _BS.get_blocks_pricing_for_range
     get_config_period = _BS.get_config_period
     get_config_period_for_date = _BS.get_config_period_for_date
     get_config_periods = _BS.get_config_periods
@@ -130,11 +139,13 @@ class ReadStore:
     get_deleted_ranges = _BS.get_deleted_ranges
     get_device_live_coverage_start = _BS.get_device_live_coverage_start
     get_dispatch_history = _BS.get_dispatch_history
+    get_dispatch_history_for_slot = _BS.get_dispatch_history_for_slot
     get_dispatch_slot = _BS.get_dispatch_slot
     get_dispatch_slots_in_range = _BS.get_dispatch_slots_in_range
     get_drift_alerts = _BS.get_drift_alerts
     get_generation_mix = _BS.get_generation_mix
     get_generation_mix_for_range = _BS.get_generation_mix_for_range
+    get_generation_mix_since = _BS.get_generation_mix_since
     get_historical_derivation = _BS.get_historical_derivation
     get_import_blocks_missing_exc = _BS.get_import_blocks_missing_exc
     get_imported_block_pricing = _BS.get_imported_block_pricing
@@ -157,6 +168,7 @@ class ReadStore:
     get_provisional_sub_meter_blocks = _BS.get_provisional_sub_meter_blocks
     get_reads_for_block = _BS.get_reads_for_block
     get_reads_for_range = _BS.get_reads_for_range
+    get_reconcile_candidates = _BS.get_reconcile_candidates
     get_reprice_queue = _BS.get_reprice_queue
     get_retired_meters = _BS.get_retired_meters
     get_review_blocks = _BS.get_review_blocks
@@ -166,9 +178,12 @@ class ReadStore:
     get_timed_out_provisionals = _BS.get_timed_out_provisionals
     get_unsettled_blocks = _BS.get_unsettled_blocks
     get_vat_calendar = _BS.get_vat_calendar
+    has_interpolated_block = _BS.has_interpolated_block
     imported_block_replaceable = _BS.imported_block_replaceable
     is_meter_retired = _BS.is_meter_retired
     is_slot_tombstoned = _BS.is_slot_tombstoned
+    last_block_end = _BS.last_block_end
+    last_standing_charge = _BS.last_standing_charge
     list_historical_derivations = _BS.list_historical_derivations
     load_current_block = _BS.load_current_block
     measured_slots_missing = _BS.measured_slots_missing
@@ -183,7 +198,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 93 writers.
+    """The full store: every read method, plus the 99 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or

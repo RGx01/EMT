@@ -627,10 +627,8 @@ def _iog_slot_ev_kwh(block_start: str, chosen_kwh: float) -> float:
     if _store is None or not chosen_kwh or chosen_kwh <= 0:
         return 0.0
     try:
-        rows = _store._conn.execute(
-            "SELECT energy_kwh FROM dispatch_history "
-            "WHERE kind='completed' AND slot_start = ?",
-            (_snap_to_slot(block_start),)).fetchall()
+        rows = _store.get_dispatch_history_for_slot(
+            _snap_to_slot(block_start), kind="completed")
     except Exception:
         return 0.0
     ev = sum(abs(float(r["energy_kwh"])) for r in rows if r["energy_kwh"] is not None)
@@ -1166,26 +1164,28 @@ def engine_paused(reason: str):
         resume_engine()
 
 
-async def run_exclusive(fn, *args, **kwargs):
-    """BL-46/BL-48: run a blocking DB op on the engine loop while holding the tick
-    lock, so it can't overlap an in-flight capture/finalise tick. The store is a
-    single SQLite connection shared across the web + engine threads; pausing the
-    engine only stops the NEXT tick, not one already running, so a delete/recompute
-    fired on a block boundary could otherwise touch the connection concurrently with
-    a finalise (logical race + the two-threads-one-connection segfault the restore
-    path already guards against). Acquiring _engine_loop_lock here drains any
-    in-flight tick and blocks the next one, giving the op exclusive DB access.
-    Caller must pause_engine() and drain any running import first. Falls back to a
-    direct call when the loop lock isn't set up (no engine — nothing to race)."""
+async def drain_tick() -> None:
+    """Wait for any in-flight capture/finalise tick to finish.
+
+    Named for what it does. This replaced `run_exclusive(lambda: None)`, whose
+    single caller used a mutual-exclusion primitive as a barrier and never ran
+    anything under it — so the primitive read as load-bearing while doing nothing
+    but this.
+
+    Acquiring `_engine_loop_lock` blocks until the running tick releases it; the
+    lock is dropped again on return, so this DRAINS the in-flight tick rather than
+    holding the next one off. That is all the caller needs: `pause_engine()`
+    already stops the next tick, but not one already running.
+
+    (`run_exclusive` itself is gone — B §6 q6. It ran its function on an executor
+    thread, which A §3.3 forbids; it excluded only the tick, not the fourteen
+    other loop writers; and what closed that gap was a docstring telling callers
+    to pause and drain first.)
+    """
     if _engine_loop_lock is None:
-        return fn(*args, **kwargs)
-    import functools as _ft
+        return
     async with _engine_loop_lock:
-        # Run in an executor, not inline: a heavy fn run directly on the loop thread
-        # would freeze the loop (HA websocket drops, request queue backs up). Holding
-        # the lock still serialises against the tick; the executor keeps the loop live.
-        return await asyncio.get_event_loop().run_in_executor(
-            None, _ft.partial(fn, *args, **kwargs))
+        return
 
 
 def reset_store():
@@ -1352,12 +1352,12 @@ def load_config() -> dict:
 
     if _store is not None:
         try:
-            cp = _store._conn.execute(
-                "SELECT id FROM config_periods "
-                "WHERE effective_to IS NULL ORDER BY effective_from DESC LIMIT 1"
-            ).fetchone()
-            if cp:
-                return _store.config_from_db(cp["id"])
+            # BlockStore.get_current_config_period_id() is this query, character
+            # for character. It was re-implemented here against the raw
+            # connection rather than called.
+            cp_id = _store.get_current_config_period_id()
+            if cp_id is not None:
+                return _store.config_from_db(cp_id)
             # DB open but no config period — fresh DB
             if db_exists:
                 logger.warning("load_config: DB open but no active config period")
@@ -1626,7 +1626,22 @@ def ensure_correct_block(ha: HAClient, current_block: dict, now: datetime,
             api_mode = mode_uses_api()
         except Exception:
             api_mode = False
-        if not has_sensors and not api_mode:
+        # The API arm must ALSO require configuration, not just a mode. The
+        # setup wizard writes the mode BEFORE it writes the meters
+        # (POST /api/data-source-mode, then POST /api/billing-source, then
+        # POST /api/config), and the 10s engine loop is already running --
+        # main.py starts it unconditionally, it is merely inert until this
+        # gate opens. A tick landing in that window saw api_mode True against
+        # an empty config and created a block anyway, with the DEFAULT
+        # block_minutes (no meter meta to read yet) and an empty seeded shell
+        # (nothing to seed FROM) -- exactly the block-size mismatch and
+        # wizard-save race the CAD arm above exists to prevent. Measured in
+        # tests/test_first_run_gate.py.
+        has_main_meter = any(
+            not (meter.get("meta") or {}).get("sub_meter")
+            for meter in (cfg.get("meters") or {}).values()
+        )
+        if not has_sensors and not (api_mode and has_main_meter):
             return current_block  # pre-wizard / CAD-without-sensors: no block yet
         logger.info("Creating first block %s%s", iso(start),
                     " (API mode — seeded meter shell)" if (api_mode and not has_sensors) else "")
@@ -4089,14 +4104,9 @@ def finalise_block(ha: HAClient, block_data: dict | None = None, interpolated: b
         if (raw_sc is None or raw_sc == 0.0) and standing_charge_sensor and not _sc_force_api:
             # Sensor unavailable — fall back to last known value from DB
             try:
-                _sc_row = _store._conn.execute(
-                    """SELECT standing_charge FROM blocks
-                       WHERE meter_id = ? AND standing_charge > 0
-                       ORDER BY block_start DESC LIMIT 1""",
-                    (meter_name,)
-                ).fetchone()
-                if _sc_row:
-                    raw_sc = float(_sc_row["standing_charge"])
+                _sc_last = _store.last_standing_charge(meter_name)
+                if _sc_last is not None:
+                    raw_sc = _sc_last
                     logger.debug("finalise_block: standing charge sensor unavailable, using last known value %.4f", raw_sc)
             except Exception:
                 pass
@@ -5340,14 +5350,7 @@ async def _engine_tick(ha: HAClient):
                 # Get last known standing charge from most recent finalised main-meter block
                 last_sc = 0.0
                 try:
-                    row = _store._conn.execute(
-                        """SELECT standing_charge FROM blocks
-                           WHERE meter_id = 'electricity_main'
-                             AND standing_charge > 0
-                           ORDER BY block_start DESC LIMIT 1"""
-                    ).fetchone()
-                    if row:
-                        last_sc = float(row["standing_charge"])
+                    last_sc = _store.last_standing_charge("electricity_main") or 0.0
                 except Exception:
                     pass
                 gap_blocks = build_gap_blocks(
@@ -6941,10 +6944,7 @@ def reprice_history_conformance(from_iso: str, to_iso: str,
         rate_segs = _hist_rate_segs_cache.get("import")
     exc_checked = rate_segs is not None
 
-    rows = _store._conn.execute(
-        "SELECT block_start, meter_id, imp_kwh, imp_rate, imp_cost, imp_kwh_ev, imp_rate_exc, "
-        "source, imp_kwh_api FROM blocks WHERE meter_id=? AND block_start>=? AND block_start<? "
-        "ORDER BY block_start LIMIT ?", (meter_id, from_iso, to_iso, limit)).fetchall()
+    rows = _store.get_blocks_pricing_for_range(meter_id, from_iso, to_iso, limit)
     checked = exact = dispatched = 0
     regressions: list = []   # sweep CHANGES or LOSES a stored value — must be zero
     fills: list = []         # sweep ADDS where stored was NULL — the sweep is more complete
@@ -7295,15 +7295,7 @@ async def run_iog_split_carve(max_blocks: int = 2000) -> dict:
     if isched is None or isched.is_empty():
         return {"ok": True, "deferred": "schedule not ready"}
     tz_name = _iog_site_tz()
-    conn = _store._conn
-    rows = conn.execute(
-        "SELECT b.block_start, b.imp_kwh, b.imp_rate, b.imp_rate_exc "
-        "FROM blocks b WHERE b.meter_id = 'electricity_main' AND b.imp_kwh_ev IS NULL "
-        "  AND b.imp_kwh > 0 "
-        "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('measured','corrected')) "
-        "  AND EXISTS (SELECT 1 FROM dispatch_history d WHERE d.kind = 'completed' "
-        "              AND d.slot_start = b.block_start AND d.energy_kwh IS NOT NULL) "
-        "ORDER BY b.block_start LIMIT ?", (int(max_blocks),)).fetchall()
+    rows = _store.get_blocks_awaiting_ev_carve(max_blocks)
     carved = 0
     for r in rows:
         bs = r["block_start"]; kwh = float(r["imp_kwh"] or 0.0); rate = float(r["imp_rate"] or 0.0)
@@ -7334,14 +7326,8 @@ async def run_iog_split_carve(max_blocks: int = 2000) -> dict:
             segs.append((house, rate, rexc, home_band, "house"))
         try:
             _store.set_block_segments(bs, "electricity_main", segs)
-            with conn:
-                conn.execute(
-                    "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ?, imp_rate_ev = ?, "
-                    "imp_ev_band = COALESCE(imp_ev_band, ?), "
-                    "imp_home_band = COALESCE(imp_home_band, ?) "
-                    "WHERE meter_id = 'electricity_main' AND block_start = ? "
-                    "AND imp_kwh_ev IS NULL",
-                    (ev, round(ev * rate, 6), rate, ev_band, home_band, bs))
+            _store.carve_ev_split(bs, ev, round(ev * rate, 6), rate,
+                                  ev_band, home_band)
             carved += 1
         except Exception as e:
             logger.warning("run_iog_split_carve: persist failed (%s): %s", bs, e)
@@ -10194,10 +10180,13 @@ def _kraken_pre_live_snapshot() -> bool:
         ensure_dir(bk_dir)
         ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
         bk_path = f"{bk_dir}/{ts}_pre_kraken_live.zip"
-        try:
-            _store._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-        except Exception:
-            pass
+        # NO wal_checkpoint before the backup. SQLite's online backup reads the
+        # database through a normal connection, so committed transactions still
+        # sitting in the WAL are already included — measured in
+        # tests/test_backup_needs_no_checkpoint.py. The same reasoning is
+        # recorded at _create_backup_zip in web/server.py and pinned by
+        # tests/test_writer_exclusion.py; it was never applied to the engine's
+        # own two copies.
         with _zf.ZipFile(bk_path, "w", _zf.ZIP_DEFLATED) as bkz:
             _store.backup(BLOCKS_DB_PATH + ".kraken_bak")
             bkz.write(BLOCKS_DB_PATH + ".kraken_bak", "blocks.db")
@@ -12670,20 +12659,7 @@ def _attribute_missing_ev_split() -> int:
         # and the NULL-only rule never revisits it. Forward-hardening — runs every reconcile
         # pass, so any outage self-heals once the completed dispatch arrives; idempotent after.
         # rate_corrected blocks are excluded so a manual correction is never stomped.
-        rows = _store._conn.execute(
-            "SELECT b.block_start, b.imp_kwh, b.imp_cost, b.imp_rate FROM blocks b "
-            "WHERE b.meter_id = 'electricity_main' "
-            "AND COALESCE(b.imp_kwh, 0) > 0 "
-            "AND (b.source IS NULL OR b.source NOT LIKE 'imported%') "
-            "AND COALESCE(b.rate_corrected, 0) = 0 "
-            "AND EXISTS (SELECT 1 FROM dispatch_history h WHERE h.slot_start = b.block_start "
-            "            AND h.kind = 'completed' AND h.energy_kwh IS NOT NULL) "
-            "AND (b.imp_kwh_ev IS NULL "
-            "     OR (b.interpolated = 1 AND EXISTS ("
-            "           SELECT 1 FROM dispatch_history h2 WHERE h2.slot_start = b.block_start "
-            "           AND h2.kind = 'completed' AND h2.energy_kwh IS NOT NULL "
-            "           AND ABS(MIN(ABS(h2.energy_kwh), COALESCE(b.imp_kwh, 0)) "
-            "                   - COALESCE(b.imp_kwh_ev, 0)) > 0.1)))").fetchall()
+        rows = _store.get_blocks_missing_ev_split()
     except Exception as e:
         logger.warning("_attribute_missing_ev_split: query failed: %s", e)
         return 0
@@ -12702,13 +12678,9 @@ def _attribute_missing_ev_split() -> int:
         if imp_ch.get("kwh_ev") is None:        # completed dispatch clipped to no grid EV
             continue
         try:
-            with _store._conn:
-                _store._conn.execute(
-                    "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ?, imp_rate_ev = ?, "
-                    "imp_ev_band = ?, imp_home_band = ? "
-                    "WHERE block_start = ? AND meter_id = 'electricity_main'",
-                    (imp_ch["kwh_ev"], imp_ch["cost_ev"], imp_ch["rate_ev"],
-                     imp_ch.get("ev_band"), imp_ch.get("home_band"), r["block_start"]))
+            _store.replace_ev_split(
+                r["block_start"], imp_ch["kwh_ev"], imp_ch["cost_ev"],
+                imp_ch["rate_ev"], imp_ch.get("ev_band"), imp_ch.get("home_band"))
             # BL-27: rewrite the segments too (the readers' source of truth). Own txn.
             _persist_block_segments(r["block_start"], "electricity_main", imp_ch)
             n += 1
@@ -12779,33 +12751,10 @@ async def reconcile_dispatch_overlay() -> dict:
     started_cutoff = (now - timedelta(minutes=_RECONCILE_STARTED_GATE_MIN)).isoformat()
     settle_cutoff = (now - timedelta(hours=_RECONCILE_SETTLE_HOURS)).isoformat()
     try:
-        rows = store._conn.execute(
-            """SELECT b.block_start, b.imp_kwh, b.imp_rate, b.needs_review,
-                      b.imp_kwh_api, b.interpolated
-               FROM blocks b
-               WHERE b.meter_id = 'electricity_main' AND b.rate_corrected = 0
-                 -- BL-53: never reconcile a block priced by a HIGHER authority than
-                 -- the heuristic — Octopus's billed cost (measured) or a user
-                 -- correction. rate_corrected=0 already covers 'corrected'; this adds
-                 -- 'measured' so the sweep can't overwrite the bill.
-                 AND (b.rate_source IS NULL OR b.rate_source NOT IN ('measured','corrected'))
-                 -- NEVER reconcile IMPORTED history. Imported blocks carry Octopus's
-                 -- ACTUAL BILLED, dispatch-aware rate (the ground truth) — the local
-                 -- lifecycle heuristic ("we never saw it start → it didn't charge")
-                 -- is invalid for history EMT wasn't running for, and would revert a
-                 -- genuinely-off-peak charge to peak overnight, silently un-fixing an
-                 -- import (the 'October regressed on its own' bug).
-                 AND (b.source IS NULL OR b.source NOT LIKE 'imported%')
-                 AND b.block_start < ?
-                 AND EXISTS (SELECT 1 FROM dispatch_slots s
-                             WHERE s.slot_start = b.block_start AND s.off_peak = 1)
-                 -- Candidate if we saw a 'planned' dispatch OR a 'completed' one:
-                 -- a completed-only slot (EMT offline / re-imported) is repriced from
-                 -- the authoritative completed record (see _reconcile_decision).
-                 AND EXISTS (SELECT 1 FROM dispatch_history h
-                             WHERE h.slot_start = b.block_start
-                               AND h.kind IN ('planned', 'completed'))
-               ORDER BY b.block_start""", (started_cutoff,)).fetchall()
+        # The exclusions (BL-53 authority, imported history, the started-gate,
+        # the off-peak slot and planned/completed evidence) now live with the
+        # query in BlockStore.get_reconcile_candidates, each one named.
+        rows = store.get_reconcile_candidates(started_cutoff)
     except Exception as e:
         logger.warning("reconcile_dispatch_overlay: query failed: %s", e)
         return {}
@@ -12820,14 +12769,13 @@ async def reconcile_dispatch_overlay() -> dict:
             # agreement-stitched — pricing it here would apply the current tariff.
             n_boundary += 1
             continue
-        drows = store._conn.execute(
-            "SELECT kind, energy_kwh, first_seen FROM dispatch_history WHERE slot_start = ?",
-            (bs,)).fetchall()
-        kinds = {x[0] for x in drows}
+        drows = store.get_dispatch_history_for_slot(bs)
+        kinds = {x["kind"] for x in drows}
         # Octopus's completed energy for the slot (negative = charged); drives the
         # negligible-completion → peak decision. None if no completed record yet.
         completed_energy = next(
-            (x[1] for x in drows if x[0] == "completed" and x[1] is not None), None)
+            (x["energy_kwh"] for x in drows
+             if x["kind"] == "completed" and x["energy_kwh"] is not None), None)
         # 4.5.0 fix: a bump verdict needs CONTEMPORANEOUS evidence — the completed
         # dispatch must have been first seen close to the slot (EMT live AND accumulating
         # then). A rebuild/re-import re-fetches 'completed' from the API but the locally-
@@ -12835,8 +12783,8 @@ async def reconcile_dispatch_overlay() -> dict:
         # so an old genuine smart charge would look completed-only and be mis-flagged a
         # bump. If the completed was first seen >36h after the slot, treat absence-of-
         # started as LOST HISTORY, not a bump (§11.3 accumulation principle).
-        _comp_fs = min((x[2] for x in drows
-                        if x[0] == "completed" and x[2]), default=None)
+        _comp_fs = min((x["first_seen"] for x in drows
+                        if x["kind"] == "completed" and x["first_seen"]), default=None)
         contemporaneous = True
         if _comp_fs:
             try:
@@ -12950,21 +12898,14 @@ async def reconcile_dispatch_overlay() -> dict:
             # Capped-SAFE: only when the block is SINGLE-RATE (one distinct segment rate); a
             # real multi-band cap block (>=2 rates) is left for step-3. Self-limiting.
             try:
-                _srows = store._conn.execute(
-                    "SELECT DISTINCT ROUND(inc_rate, 6) FROM block_segments "
-                    "WHERE block_start = ? AND meter_id = 'electricity_main'",
-                    (bs,)).fetchall()
-                _distinct = [x[0] for x in _srows if x[0] is not None]
+                _distinct = store.distinct_segment_rates(bs)
                 _seg_band = None
                 if _distinct:
                     _sr = _distinct[0]
                     _seg_band = "off_peak" if abs(_sr - off_peak) <= abs(_sr - base) else "peak"
                 if len(_distinct) == 1 and _seg_band != _blk_band:
                     import pricing_segments as _ps_ok
-                    _brow = store._conn.execute(
-                        "SELECT imp_kwh, imp_kwh_ev, imp_rate_exc FROM blocks "
-                        "WHERE block_start = ? AND meter_id = 'electricity_main'",
-                        (bs,)).fetchone()
+                    _brow = store.get_block_split_columns(bs)
                     if _brow is not None and (_brow["imp_kwh"] or 0) > 0:
                         _exc_ok = _brow["imp_rate_exc"]
                         if _exc_ok is None:
@@ -12985,16 +12926,7 @@ async def reconcile_dispatch_overlay() -> dict:
                             _segs_ok.append(_ps_ok.Segment(round(float(_brow["imp_kwh"]), 6),
                                             cur_rate, _exc_ok, _want_home, "house"))
                         store.set_block_segments(bs, "electricity_main", _segs_ok)
-                        with store._conn:
-                            store._conn.execute(
-                                "UPDATE blocks SET imp_rate_ev = ?, "
-                                "imp_cost_ev = ROUND(COALESCE(imp_kwh_ev, 0) * ?, 6), "
-                                "imp_ev_band = ?, imp_home_band = ?, "
-                                "imp_cost_remainder = ROUND("
-                                "  (COALESCE(imp_kwh, 0) - COALESCE(imp_kwh_ev, 0)) * ?, 6) "
-                                "WHERE block_start = ? AND meter_id = 'electricity_main' "
-                                "AND imp_kwh_ev IS NOT NULL",
-                                (cur_rate, cur_rate, _want_ev, _want_home, cur_rate, bs))
+                        store.restamp_ev_columns(bs, cur_rate, _want_ev, _want_home)
                         n_band += 1
                         changed = True
                         logger.info("reconcile: %s split re-price %.5f->%.5f ev=%s home=%s "
@@ -13019,21 +12951,9 @@ async def reconcile_dispatch_overlay() -> dict:
                 _want_ev = "off_peak" if currently_off_peak else "peak"
                 _want_home = "off_peak" if currently_off_peak else "day"
                 try:
-                    _stale = store._conn.execute(
-                        "SELECT COUNT(*) FROM block_segments "
-                        "WHERE block_start = ? AND meter_id = 'electricity_main' "
-                        "AND ((attribution = 'ev' AND band != ?) "
-                        "     OR (attribution = 'house' AND band != ?))",
-                        (bs, _want_ev, _want_home)).fetchone()[0]
+                    _stale = store.count_stale_band_segments(bs, _want_ev, _want_home)
                     if _stale:
-                        with store._conn:
-                            store._conn.execute(
-                                "UPDATE block_segments SET band = CASE attribution "
-                                "WHEN 'ev' THEN ? WHEN 'house' THEN ? ELSE band END "
-                                "WHERE block_start = ? AND meter_id = 'electricity_main' "
-                                "AND ((attribution = 'ev' AND band != ?) "
-                                "     OR (attribution = 'house' AND band != ?))",
-                                (_want_ev, _want_home, bs, _want_ev, _want_home))
+                        store.relabel_segment_bands(bs, _want_ev, _want_home)
                         n_band += 1
                         changed = True
                         logger.info("reconcile: %s band relabel -> ev=%s home=%s "
@@ -13049,21 +12969,18 @@ async def reconcile_dispatch_overlay() -> dict:
                 # difference into Direct, diverging from Billing. Re-stamp to the block
                 # rate (uncapped: EV shares it). Self-limiting: re-stamps once, then matches.
                 try:
-                    _evrow = store._conn.execute(
-                        "SELECT imp_kwh, imp_kwh_ev, imp_rate_ev FROM blocks "
-                        "WHERE block_start = ? AND meter_id = 'electricity_main' "
-                        "AND imp_kwh_ev IS NOT NULL", (bs,)).fetchone()
-                    if _evrow is not None and \
+                    # The `AND imp_kwh_ev IS NOT NULL` that used to filter this
+                    # row is now a test on the COLUMN — get_block_split_columns
+                    # returns the block, split or not.
+                    _evrow = store.get_block_split_columns(bs)
+                    if _evrow is not None and _evrow["imp_kwh_ev"] is not None and \
                        abs(float(_evrow["imp_rate_ev"] or 0.0) - cur_rate) > 1e-6:
-                        with store._conn:
-                            store._conn.execute(
-                                "UPDATE blocks SET imp_rate_ev = ?, "
-                                "imp_cost_ev = ROUND(COALESCE(imp_kwh_ev, 0) * ?, 6), "
-                                "imp_ev_band = ?, imp_home_band = ?, "
-                                "imp_cost_remainder = ROUND("
-                                "  (COALESCE(imp_kwh, 0) - COALESCE(imp_kwh_ev, 0)) * ?, 6) "
-                                "WHERE block_start = ? AND meter_id = 'electricity_main'",
-                                (cur_rate, cur_rate, _want_ev, _want_home, cur_rate, bs))
+                        # This site carried NO `imp_kwh_ev IS NOT NULL` guard while
+                        # the other two did. It is now guarded by construction --
+                        # see BlockStore.restamp_ev_columns, where the guard is the
+                        # invariant rather than the caller's filter. A no-op here:
+                        # `_evrow` above already established the split exists.
+                        store.restamp_ev_columns(bs, cur_rate, _want_ev, _want_home)
                         n_band += 1
                         changed = True
                         logger.info("reconcile: %s EV-cols re-stamp rate_ev->%.5f "
@@ -13102,47 +13019,14 @@ async def reconcile_dispatch_overlay() -> dict:
         # premium into Direct). Restamp unconditionally; the band LABELS carry the capped
         # distinction (EV peak / house day). A genuine multi-band cap split is step-3
         # measured-apply, not this single-rate revert.
-        with store._conn:
-            # A definite verdict also clears any prior ambiguous-review flag on
-            # the main row (needs_review / review_reason).
-            store._conn.execute(
-                "UPDATE blocks SET imp_rate = ?, rate_reconciled = 1, "
-                "needs_review = 0, review_reason = NULL, "
-                "imp_cost = ROUND(COALESCE(imp_kwh, 0) * ?, 6), "
-                "imp_rate_exc = ?, "
-                "imp_cost_exc = ROUND(COALESCE(imp_kwh, 0) * ?, 6), "
-                "exc_source = ? "
-                "WHERE block_start = ? AND meter_id = 'electricity_main'",
-                (new_rate, new_rate, _exc_rate, _exc_rate, _exc_src, bs))
-            store._conn.execute(
-                "UPDATE blocks SET imp_rate = ?, rate_reconciled = 1, "
-                "imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
-                "imp_rate_exc = ?, "
-                "imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
-                "exc_source = ? "
-                "WHERE block_start = ? AND rate_corrected = 0 AND meter_id IN "
-                "(SELECT meter_id FROM meters WHERE is_sub_meter = 1)",
-                (new_rate, new_rate, _exc_rate, _exc_rate, _exc_src, bs))
-            # 4.5.0 fix: Usage Stats (/blocks-summary, /blocks-day) reads the legacy EV-split
-            # columns imp_kwh_ev / imp_cost_ev (+ imp_rate_ev, bands, imp_cost_remainder) for
-            # its device breakdown, so a reconcile that rewrites the SEGMENTS must ALSO
-            # re-stamp these columns — otherwise Usage Stats keeps the OLD (e.g. off-peak) EV
-            # cost and spills the shortfall into Direct import, diverging from Billing (which
-            # reads segments). Surfaced by a reverted BUMP: segments went to peak but EV cost
-            # stayed off-peak. Uncapped only (EV shares the block rate); capped's EV≠house rate
-            # rides the seam and is left alone.
-            _ev_band_col = "off_peak" if target == "off_peak" else "peak"
-            _home_band_col = "off_peak" if target == "off_peak" else "day"
-            store._conn.execute(
-                "UPDATE blocks SET "
-                "imp_rate_ev = ?, "
-                "imp_cost_ev = ROUND(COALESCE(imp_kwh_ev, 0) * ?, 6), "
-                "imp_ev_band = ?, imp_home_band = ?, "
-                "imp_cost_remainder = ROUND("
-                "  (COALESCE(imp_kwh, 0) - COALESCE(imp_kwh_ev, 0)) * ?, 6) "
-                "WHERE block_start = ? AND meter_id = 'electricity_main' "
-                "AND imp_kwh_ev IS NOT NULL",
-                (new_rate, new_rate, _ev_band_col, _home_band_col, new_rate, bs))
+        # Main row, sub-meters and the EV columns in ONE transaction — a partial
+        # verdict leaves sub-meters at the OLD rate while the main row moves, and
+        # sub-meter cost derives from the main rate, so the block would disagree
+        # with itself. BlockStore.apply_reconcile_verdict owns that atomicity.
+        _ev_band_col = "off_peak" if target == "off_peak" else "peak"
+        _home_band_col = "off_peak" if target == "off_peak" else "day"
+        store.apply_reconcile_verdict(bs, new_rate, _exc_rate, _exc_src,
+                                      _ev_band_col, _home_band_col)
         # BL-27 / BL-58: the bill split / Usage Stats / chart price from block_segments
         # (source of truth), so the reconcile REWRITES THE SEGMENTS too. (The legacy EV columns
         # above are re-stamped in lock-step because /blocks-summary + /blocks-day still read
@@ -13151,9 +13035,7 @@ async def reconcile_dispatch_overlay() -> dict:
         # directly at new_rate. Runs AFTER the column txn commits (set_block_segments opens its own).
         try:
             import pricing_segments as _ps_rc
-            _mrow = store._conn.execute(
-                "SELECT imp_kwh, imp_kwh_ev, imp_ev_band, imp_home_band FROM blocks "
-                "WHERE block_start = ? AND meter_id = 'electricity_main'", (bs,)).fetchone()
+            _mrow = store.get_block_split_columns(bs)
             if _mrow is not None and (_mrow["imp_kwh"] or 0) > 0:
                 _evk = _mrow["imp_kwh_ev"]
                 _segs_rc = []
@@ -13553,8 +13435,20 @@ async def _engine_startup_impl(ha: HAClient):
     _meter_reset_detected = False  # Reset on every startup so reconnects don't carry stale state
 
     try:
-        _store._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        logger.info("engine_startup: WAL checkpoint complete")
+        # Report what actually happened. `PRAGMA wal_checkpoint` does not raise
+        # when it cannot run -- it returns busy=1 -- so the previous version
+        # logged "complete" whether or not a single page had moved.
+        _busy, _log_pages, _done = _store.checkpoint("TRUNCATE")
+        if _busy:
+            logger.info(
+                "engine_startup: WAL checkpoint INCOMPLETE — %d of %d page(s) "
+                "copied, log NOT truncated (a reader holds an open "
+                "transaction). Harmless: SQLite auto-checkpoints at 1000 pages "
+                "and journal_size_limit reclaims the file once one completes.",
+                _done, _log_pages)
+        else:
+            logger.info("engine_startup: WAL checkpoint complete (%d page(s))",
+                        _done)
     except Exception as _wce:
         logger.warning("engine_startup: WAL checkpoint failed: %s", _wce)
 
@@ -13919,11 +13813,12 @@ async def _engine_startup_impl(ha: HAClient):
                     _vfw.write(_cur_ver)
             else:
               with _zf.ZipFile(_bk_path, "w", _zf.ZIP_DEFLATED) as _bkz:
-                # Commit any pending transactions before backup to avoid WAL lock
-                try:
-                    _store._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                except Exception:
-                    pass
+                # The line removed here said "Commit any pending transactions
+                # before backup to avoid WAL lock" and ran a PASSIVE checkpoint.
+                # A checkpoint is not a commit, and there is no lock to avoid:
+                # the online backup reads through a normal connection and so
+                # already includes committed transactions still in the WAL
+                # (measured — tests/test_backup_needs_no_checkpoint.py).
                 _store.backup(BLOCKS_DB_PATH + ".upgrade_bak")
                 _bkz.write(BLOCKS_DB_PATH + ".upgrade_bak", "blocks.db")
                 os.remove(BLOCKS_DB_PATH + ".upgrade_bak")
@@ -14144,13 +14039,10 @@ async def _engine_startup_impl(ha: HAClient):
                 for _mid in list(pre_reads.keys()):
                     if _mid == "electricity_main":
                         continue
-                    _last_sub = _store._conn.execute(
-                        "SELECT MAX(block_end) as last_end FROM blocks WHERE meter_id=?",
-                        (_mid,)
-                    ).fetchone()
-                    if not _last_sub or not _last_sub["last_end"]:
+                    _last_end = _store.last_block_end(_mid)
+                    if not _last_end:
                         continue
-                    _last_dt  = datetime.fromisoformat(_last_sub["last_end"])
+                    _last_dt  = datetime.fromisoformat(_last_end)
                     _now_utc  = datetime.now(timezone.utc).replace(tzinfo=None)
                     _gap_hrs  = (_now_utc - _last_dt).total_seconds() / 3600
                     if _gap_hrs > GAP_FILL_LIMIT_HOURS:
@@ -14233,14 +14125,7 @@ async def _engine_startup_impl(ha: HAClient):
                     logger.info("engine_startup: filling gap immediately using preloaded sensor states")
                     _startup_sc = 0.0
                     try:
-                        _sc_row = _store._conn.execute(
-                            """SELECT standing_charge FROM blocks
-                               WHERE meter_id = 'electricity_main'
-                                 AND standing_charge > 0
-                               ORDER BY block_start DESC LIMIT 1"""
-                        ).fetchone()
-                        if _sc_row:
-                            _startup_sc = float(_sc_row["standing_charge"])
+                        _startup_sc = _store.last_standing_charge("electricity_main") or 0.0
                     except Exception:
                         pass
                     _startup_gap_blocks = build_gap_blocks(
@@ -14259,14 +14144,7 @@ async def _engine_startup_impl(ha: HAClient):
                         # (Regression: 2.10.9.)
                         _gb_start = _gb.get("start")
                         if _gb_start:
-                            _existing = _store._conn.execute(
-                                """SELECT block_start FROM blocks
-                                   WHERE meter_id = 'electricity_main'
-                                     AND block_start = ?
-                                     AND interpolated = 1""",
-                                (_gb_start,)
-                            ).fetchone()
-                            if _existing:
+                            if _store.has_interpolated_block(_gb_start):
                                 logger.info(
                                     "engine_startup: gap block %s already exists "
                                     "(interpolated) — skipping", _gb_start
@@ -14333,20 +14211,12 @@ async def _engine_startup_impl(ha: HAClient):
     # CI tick (which fires every 30 min and might race with block finalise).
     global _current_slot_mix
     try:
-        _seed_rows = _store._conn.execute(
-            """SELECT b.block_start, gm.fuel, gm.perc
-               FROM blocks b
-               JOIN generation_mix gm ON gm.block_id = b.id
-               WHERE b.meter_id = 'electricity_main'
-                 AND b.block_start >= datetime('now', '-4 hours')
-               ORDER BY b.block_start ASC, gm.fuel ASC"""
-        ).fetchall()
-        _seed_slots = {}
-        for row in _seed_rows:
-            bs = row["block_start"]
-            if bs not in _seed_slots:
-                _seed_slots[bs] = []
-            _seed_slots[bs].append({"fuel": row["fuel"], "perc": row["perc"]})
+        # NB this window used to be wider than it read. See
+        # BlockStore.get_generation_mix_since: the old `datetime('now',
+        # '-4 hours')` comparison matched every block from the same CALENDAR DAY,
+        # because SQLite renders that with a space where block_start carries a
+        # 'T'. The seed is now the 4 hours it always claimed to be.
+        _seed_slots = _store.get_generation_mix_since(hours=4)
         for bs, mix in _seed_slots.items():
             _current_slot_mix[bs] = mix
         if _seed_slots:
@@ -14356,7 +14226,7 @@ async def _engine_startup_impl(ha: HAClient):
             )
             # Also backfill mix_history from generation_mix if mix_history is sparse
             try:
-                mh_count = _store._conn.execute("SELECT COUNT(*) FROM mix_history").fetchone()[0]
+                mh_count = _store.count_mix_history()
                 if mh_count == 0:
                     logger.info("engine_startup: backfilling mix_history from generation_mix")
                     for bs, mix in _seed_slots.items():

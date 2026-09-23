@@ -1,0 +1,168 @@
+"""
+`_attribute_missing_ev_split`'s store access — A acceptance 5.
+
+The job re-derives the EV/Home split on blocks that should have one and don't.
+Octopus reports a slot's COMPLETED dispatch energy hours after the fact, usually
+after the block was priced from a merely 'planned' dispatch, so the charge sits
+silently in Home and nothing else revisits it — the reconcile's segment resync
+only rewrites blocks that already have a split.
+
+Two methods, and the interesting design point is that there are TWO write methods
+for what looks like one operation:
+
+    carve_ev_split      fills a BLANK   (guarded `imp_kwh_ev IS NULL`, COALESCE bands)
+    replace_ev_split    OVERWRITES      (the re-attribution path)
+
+A single method with an `overwrite=` flag would put "never stomp a manual
+correction" one boolean away from being got wrong at a call site. Separate names
+make the wrong one look wrong. The contrast is asserted below.
+"""
+import os
+import sys
+import tempfile
+import unittest
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
+
+from block_store import BlockStore          # noqa: E402
+
+
+def _mk_store():
+    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st._conn.execute("PRAGMA foreign_keys=OFF")
+    return st
+
+
+def _block(st, start, **cols):
+    base = {"block_start": start, "block_end": start, "config_period_id": 1,
+            "meter_id": "electricity_main", "imp_kwh": 5.0, "imp_cost": 1.25,
+            "imp_rate": 0.25}
+    base.update(cols)
+    st._conn.execute("INSERT INTO blocks (%s) VALUES (%s)"
+                     % (",".join(base), ",".join("?" * len(base))),
+                     tuple(base.values()))
+    st._conn.commit()
+
+
+def _completed(st, slot, kwh=3.0):
+    st.record_dispatch_history(slot_start=slot, kind="completed", provider="octopus",
+                               source=None, energy_kwh=kwh, raw_start=None, raw_end=None)
+
+
+S = "2026-09-01T00:00:00"
+
+
+class MissingSplitSelection(unittest.TestCase):
+
+    def setUp(self):
+        self.st = _mk_store()
+
+    def test_a_null_split_with_a_completed_dispatch_is_selected(self):
+        _block(self.st, S)
+        _completed(self.st, S)
+        self.assertEqual(len(self.st.get_blocks_missing_ev_split()), 1)
+
+    def test_no_completed_dispatch_means_nothing_to_derive_from(self):
+        _block(self.st, S)
+        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+
+    def test_a_block_that_already_has_a_split_is_left_alone(self):
+        _block(self.st, S, imp_kwh_ev=3.0)
+        _completed(self.st, S)
+        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+
+    def test_imported_history_is_not_ours_to_rederive(self):
+        _block(self.st, S, source="imported_csv")
+        _completed(self.st, S)
+        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+
+    def test_a_manual_correction_is_never_stomped(self):
+        _block(self.st, S, rate_corrected=1)
+        _completed(self.st, S)
+        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+
+    def test_zero_kwh_has_nothing_to_split(self):
+        _block(self.st, S, imp_kwh=0.0)
+        _completed(self.st, S)
+        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+
+
+class GapFilledDisagreement(unittest.TestCase):
+    """BL-39. A gap fill can stamp a WRONG non-NULL split from a stale or planned
+    fragment, and the NULL-only rule above would never revisit it."""
+
+    def setUp(self):
+        self.st = _mk_store()
+
+    def test_a_materially_wrong_gap_fill_is_reselected(self):
+        _block(self.st, S, interpolated=1, imp_kwh_ev=0.5)
+        _completed(self.st, S, kwh=3.0)          # stored 0.5 vs actual 3.0
+        self.assertEqual(len(self.st.get_blocks_missing_ev_split()), 1)
+
+    def test_agreement_within_tolerance_is_left_alone(self):
+        _block(self.st, S, interpolated=1, imp_kwh_ev=3.0)
+        _completed(self.st, S, kwh=3.02)
+        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+
+    def test_a_normally_captured_block_is_not_reselected_on_disagreement(self):
+        """The BL-39 arm is scoped to gap-filled blocks. A finalised block that
+        disagrees is settlement's business, not this job's."""
+        _block(self.st, S, interpolated=0, imp_kwh_ev=0.5)
+        _completed(self.st, S, kwh=3.0)
+        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+
+    def test_the_dispatch_is_grid_clipped_before_comparing(self):
+        """`MIN(a, b)` is SQLite's two-argument SCALAR min. A dispatch larger
+        than the block's own import is clipped to it, so it cannot manufacture a
+        disagreement out of a figure the grid never delivered."""
+        _block(self.st, S, imp_kwh=2.0, interpolated=1, imp_kwh_ev=2.0)
+        _completed(self.st, S, kwh=9.0)          # clipped to 2.0 == stored
+        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+
+
+class ReplaceVersusCarve(unittest.TestCase):
+
+    def setUp(self):
+        self.st = _mk_store()
+        _block(self.st, S)
+
+    def _row(self):
+        return self.st._conn.execute(
+            "SELECT imp_kwh_ev, imp_ev_band FROM blocks WHERE block_start=?",
+            (S,)).fetchone()
+
+    def test_replace_overwrites_where_carve_refuses(self):
+        """The two methods on the same already-split block, side by side."""
+        self.st.replace_ev_split(S, 2.0, 0.5, 0.25, "off_peak", "day")
+        self.assertEqual(self.st.carve_ev_split(S, 9.9, 9.9, 9.9, "peak", "night"), 0)
+        self.assertAlmostEqual(self._row()["imp_kwh_ev"], 2.0)
+        self.assertEqual(self.st.replace_ev_split(S, 4.0, 1.0, 0.25, "peak", "night"), 1)
+        self.assertAlmostEqual(self._row()["imp_kwh_ev"], 4.0)
+
+    def test_replace_sets_bands_outright(self):
+        """carve COALESCEs the bands; replace does not — its caller has already
+        established that what is stored is wrong."""
+        self.st.replace_ev_split(S, 2.0, 0.5, 0.25, "off_peak", "day")
+        self.assertEqual(self._row()["imp_ev_band"], "off_peak")
+        self.st.replace_ev_split(S, 2.0, 0.5, 0.25, "peak", "night")
+        self.assertEqual(self._row()["imp_ev_band"], "peak")
+
+    def test_it_is_meter_scoped(self):
+        self.assertEqual(
+            self.st.replace_ev_split(S, 2.0, 0.5, 0.25, "off_peak", "day",
+                                     meter_id="sub_meter_ev"), 0)
+
+
+class Surfaces(unittest.TestCase):
+
+    def test_the_read_reads_and_the_write_writes(self):
+        from store_types import ReadStore, WriteStore
+        self.assertTrue(hasattr(ReadStore, "get_blocks_missing_ev_split"))
+        self.assertTrue(hasattr(WriteStore, "replace_ev_split"))
+        self.assertFalse(hasattr(ReadStore, "replace_ev_split"),
+                         "a write on the read surface has no thread guard")
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -79,8 +79,12 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
         # The count is falling as handlers move onto `_engine_write` or become
         # jobs. Asserted against the doc rather than pinned to a number, so the
         # doc has to be updated in the same commit as the port.
-        self.assertIn("**%d bulk route handlers**" % len(handlers), self.doc,
-                      "the doc's handler count is stale: tool says %d" % len(handlers))
+        # singular/plural, and don't dump the whole document on failure
+        import re as _re
+        m = _re.search(r"\*\*(\d+) bulk route handlers?\*\*", self.doc)
+        self.assertIsNotNone(m, "the doc no longer states a handler count")
+        self.assertEqual(int(m.group(1)), len(handlers),
+                         "doc says %s, tool says %d" % (m.group(1), len(handlers)))
         for h in handlers:
             self.assertIn(h, self.doc, "%s is a member and is not listed" % h)
 

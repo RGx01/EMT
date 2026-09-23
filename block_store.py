@@ -1145,13 +1145,36 @@ class BlockStore:
         # other connection fail INSTANTLY with "database is locked" instead of
         # waiting. 5s lets brief contention resolve transparently. This was the
         # cause of the every-tick "database is locked" loop errors on fresh DBs.
+        #
+        # journal_size_limit bounds the WAL's RECOVERY, not its growth. Measured:
+        # with no concurrent reader, SQLite's own wal_autocheckpoint (1000 pages
+        # = ~4 MB at a 4096-byte page) holds the WAL at 4.1 MB over 3,000
+        # committed writes and it stays there indefinitely. A reader holding an
+        # open transaction is the ONLY thing that breaks that -- a checkpoint
+        # cannot reclaim pages a reader still needs -- and the same 3,000 writes
+        # then take the WAL to 24.8 MB.
+        #
+        # Today that inflation is PERMANENT: once the reader goes away the WAL is
+        # reused in place, never shrunk, so a single unlucky coincidence leaves
+        # 25 MB on disk until the next restart -- and this add-on can run for
+        # months. With the limit set, the next completed checkpoint truncates it
+        # back (measured: 24.8 MB -> 4.2 MB, unattended).
+        #
+        # It cannot lose data. The truncation happens AFTER a checkpoint has
+        # copied the WAL's contents into the main database; at that instant the
+        # WAL is empty scratch space. If a checkpoint cannot complete, nothing is
+        # truncated -- exactly today's behaviour.
+        #
+        # 4 MB matches the autocheckpoint threshold, so the file returns to where
+        # normal running already keeps it rather than churning.
         self._conn.executescript("""
-            PRAGMA busy_timeout = 5000;
-            PRAGMA journal_mode = WAL;
-            PRAGMA synchronous  = NORMAL;
-            PRAGMA cache_size   = -8000;
-            PRAGMA temp_store   = MEMORY;
-            PRAGMA foreign_keys = ON;
+            PRAGMA busy_timeout        = 5000;
+            PRAGMA journal_mode        = WAL;
+            PRAGMA synchronous         = NORMAL;
+            PRAGMA cache_size          = -8000;
+            PRAGMA temp_store          = MEMORY;
+            PRAGMA foreign_keys        = ON;
+            PRAGMA journal_size_limit  = 4194304;
         """)
 
     def _ensure_schema(self) -> None:
@@ -1956,6 +1979,34 @@ class BlockStore:
                 "first_seen, last_seen, raw_start, raw_end FROM dispatch_history "
                 "WHERE slot_start >= ? AND slot_start < ? "
                 "ORDER BY slot_start, kind", (start_iso, end_iso)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_dispatch_history_for_slot(self, slot_start: str,
+                                      kind: str | None = None) -> list:
+        """Dispatch observations for ONE slot, by exact `slot_start`.
+
+        The sibling `get_dispatch_history` takes a half-open range, and a range
+        of [slot, next_slot) would select exactly these rows -- but only if the
+        caller does slot arithmetic to find `next_slot`, which is a dependency
+        the question does not need. `dispatch_slots` already has its exact-match
+        accessor in `get_dispatch_slot(slot_start)`; this is the same shape for
+        `dispatch_history`.
+
+        Same columns and ordering as `get_dispatch_history`, deliberately: two
+        methods over one table that returned different shapes would be a trap
+        for whoever reads them side by side.
+        """
+        if kind is not None:
+            rows = self._conn.execute(
+                "SELECT slot_start, kind, provider, source, energy_kwh, "
+                "first_seen, last_seen, raw_start, raw_end FROM dispatch_history "
+                "WHERE slot_start = ? AND kind = ? ORDER BY slot_start",
+                (slot_start, kind)).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT slot_start, kind, provider, source, energy_kwh, "
+                "first_seen, last_seen, raw_start, raw_end FROM dispatch_history "
+                "WHERE slot_start = ? ORDER BY kind", (slot_start,)).fetchall()
         return [dict(r) for r in rows]
 
     def prune_dispatch_history(self, days: int = 90) -> int:
@@ -3981,6 +4032,45 @@ class BlockStore:
                 except Exception:
                     pass
         return out
+
+    CHECKPOINT_MODES = ("PASSIVE", "FULL", "RESTART", "TRUNCATE")
+
+    def checkpoint(self, mode: str = "PASSIVE") -> tuple:
+        """Copy the write-ahead log into the main database. Returns SQLite's own
+        `(busy, log_pages, checkpointed)` row.
+
+        **`busy = 1` means the checkpoint could not COMPLETE** -- and it is not
+        an error, so it does not raise. A reader holding an open transaction
+        blocks it; the caller decides whether that matters.
+
+        Note "could not complete" is not "did nothing". Measured: a blocked
+        TRUNCATE still returned `(busy=1, log_pages=N, checkpointed=207)` -- it
+        copied 207 pages across and then failed to reset the log, because
+        resetting needs a lock the reader holds. So `checkpointed` is real work
+        done and `busy` is about whether the WAL was left in the state the mode
+        asked for. Only `busy = 0` means the mode was honoured.
+
+        Every call site before this method existed discarded the row, and
+        `engine_startup` logged "WAL checkpoint complete" unconditionally --
+        including when the log had not been truncated at all.
+
+        On the WRITE surface deliberately. A checkpoint rewrites the main
+        database file, and the restore path in `web/server.py` records what
+        issuing one from the wrong thread costs -- *"a concurrent use of one
+        SQLite connection from two threads -> Segmentation fault"*. Reaching it
+        through `writer()` turns that from a comment into a `WrongThread`.
+
+        An unrecognised mode is rejected rather than passed through: SQLite does
+        NOT error on `PRAGMA wal_checkpoint(NONSENSE)`, it silently performs a
+        PASSIVE checkpoint, so a typo would degrade a TRUNCATE to a no-op without
+        a word anywhere.
+        """
+        m = (mode or "").upper()
+        if m not in self.CHECKPOINT_MODES:
+            raise ValueError("checkpoint mode must be one of %s, got %r"
+                             % (", ".join(self.CHECKPOINT_MODES), mode))
+        row = self._conn.execute("PRAGMA wal_checkpoint(%s)" % m).fetchone()
+        return tuple(row) if row else (0, 0, 0)
 
     def backup(self, dst_path: str) -> None:
         """Hot backup to dst_path using SQLite's online backup API."""
@@ -7123,6 +7213,32 @@ class BlockStore:
             return None
         return _row_to_block(rows)
 
+    def last_standing_charge(self, meter_id: str) -> Optional[float]:
+        """The most recent non-zero standing charge recorded for `meter_id`.
+
+        Three call sites in `engine.py` each wrote this SELECT against the raw
+        connection, independently, because `BlockStore` had no standing-charge
+        accessor at all: the finalise fallback for an unavailable SC sensor, and
+        the two gap-fill paths (tick and startup) that seed
+        `build_gap_blocks(last_standing_charge=...)`. Identical query, three
+        copies, one of them parameterised by meter and two hardcoded to
+        'electricity_main'.
+
+        `standing_charge > 0` is part of the question, not an optimisation: a
+        stored 0.0 means "not known for this block", so a zero row is not a
+        newer answer and must not shadow an older real one. Returns None when
+        nothing qualifies — the callers each have their own default, and
+        conflating "no charge recorded" with 0.0 here would take that choice
+        away from them.
+        """
+        row = self._conn.execute(
+            "SELECT standing_charge FROM blocks "
+            "WHERE meter_id = ? AND standing_charge > 0 "
+            "ORDER BY block_start DESC LIMIT 1",
+            (meter_id,)
+        ).fetchone()
+        return float(row["standing_charge"]) if row else None
+
     def get_blocks_for_range(self,
                              start: datetime,
                              end: datetime,
@@ -7206,6 +7322,439 @@ class BlockStore:
                 seen.add(d)
                 dates.append(d)
         return dates
+
+    def last_block_end(self, meter_id: str) -> Optional[str]:
+        """The latest `block_end` recorded for `meter_id`, or None.
+
+        Startup uses it to spot a sub-meter whose last block is old enough that
+        resuming from its stored pre-gap read would reconcile an entire
+        retirement absence into one block.
+        """
+        row = self._conn.execute(
+            "SELECT MAX(block_end) AS last_end FROM blocks WHERE meter_id = ?",
+            (meter_id,)).fetchone()
+        return row["last_end"] if row and row["last_end"] else None
+
+    def has_interpolated_block(self, block_start: str,
+                               meter_id: str = "electricity_main") -> bool:
+        """True when an INTERPOLATED block already exists at `block_start`.
+
+        The gap filler asks before writing, so two startups in quick succession
+        (consecutive HA disconnects) cannot have the second overwrite the first
+        with slightly different interpolated values. Regression 2.10.9.
+
+        Deliberately a bool: the caller had a row it only ever tested for
+        truthiness, and returning the row invites someone to start reading
+        columns off a question that was only ever "does this exist".
+        """
+        row = self._conn.execute(
+            "SELECT 1 FROM blocks WHERE meter_id = ? AND block_start = ? "
+            "AND interpolated = 1 LIMIT 1", (meter_id, block_start)).fetchone()
+        return row is not None
+
+    def get_generation_mix_since(self, hours: int = 4,
+                                 meter_id: str = "electricity_main") -> dict:
+        """Per-block generation mix for the last `hours` hours, as
+        `{block_start: [{fuel, perc}, ...]}`.
+
+        Distinct from `get_generation_mix_for_range`, which returns ONE
+        kWh-weighted average across a range. This one keeps the blocks apart,
+        because its caller re-seeds an in-memory per-slot cache.
+
+        THE CUTOFF IS COMPUTED IN PYTHON, and that is a fix rather than a
+        preference. The query this replaced compared against
+        `datetime('now', '-4 hours')`, which SQLite renders as
+        `'2026-09-23 17:44:05'` -- a SPACE between date and time, where
+        `block_start` is stored ISO-style with a 'T'. String comparison then puts
+        every same-date row above the cutoff, because 'T' (84) > ' ' (32):
+
+            '2026-09-23T00:30:00' >= '2026-09-23 17:44:05'   ->  True
+
+        So the "-4 hours" window was really "everything from today" -- nearly
+        empty just after midnight and a whole day by late evening. Matching the
+        stored format makes it the window it always claimed to be.
+        """
+        from datetime import datetime, timedelta, timezone
+        cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
+                  - timedelta(hours=hours)).isoformat()
+        rows = self._conn.execute(
+            """SELECT b.block_start, gm.fuel, gm.perc
+               FROM blocks b
+               JOIN generation_mix gm ON gm.block_id = b.id
+               WHERE b.meter_id = ? AND b.block_start >= ?
+               ORDER BY b.block_start ASC, gm.fuel ASC""",
+            (meter_id, cutoff)).fetchall()
+        slots: dict = {}
+        for r in rows:
+            slots.setdefault(r["block_start"], []).append(
+                {"fuel": r["fuel"], "perc": r["perc"]})
+        return slots
+
+    def count_mix_history(self) -> int:
+        """Rows in mix_history. Startup backfills from generation_mix when 0."""
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM mix_history").fetchone()[0]
+
+    # The EV-split derived columns, restamped to one rate. Written once and used
+    # twice -- standalone by `restamp_ev_columns`, and inside
+    # `apply_reconcile_verdict`'s transaction -- because it appeared THREE times
+    # in reconcile_dispatch_overlay and two of the three carried the guard below.
+    _EV_RESTAMP_SQL = (
+        "UPDATE blocks SET imp_rate_ev = ?, "
+        "imp_cost_ev = ROUND(COALESCE(imp_kwh_ev, 0) * ?, 6), "
+        "imp_ev_band = ?, imp_home_band = ?, "
+        "imp_cost_remainder = ROUND("
+        "  (COALESCE(imp_kwh, 0) - COALESCE(imp_kwh_ev, 0)) * ?, 6) "
+        "WHERE block_start = ? AND meter_id = ? AND imp_kwh_ev IS NOT NULL")
+
+    def restamp_ev_columns(self, block_start: str, rate: float, ev_band: str,
+                           home_band: str,
+                           meter_id: str = "electricity_main") -> int:
+        """Re-derive the EV-split columns at `rate`. Returns rows changed.
+
+        Usage Stats reads `imp_rate_ev` / `imp_cost_ev` / the bands /
+        `imp_cost_remainder`, while Billing prices from `block_segments`. A
+        reconcile that rewrote the segments without these columns left Usage
+        Stats on the OLD (e.g. off-peak) EV cost and spilled the shortfall into
+        Direct import -- the two surfaces then disagree about one block.
+
+        **`AND imp_kwh_ev IS NOT NULL` IS THE INVARIANT, NOT AN OPTIMISATION.**
+        These columns are DERIVED from the split. Stamping them where no split
+        exists leaves the row saying two contradictory things: `imp_kwh_ev` still
+        NULL ("split unknown") while `imp_cost_ev = 0` and
+        `imp_cost_remainder = imp_kwh x rate` assert "evaluated, all house".
+        Anything reading the cost columns without checking `imp_kwh_ev` then
+        reports a confident answer for a block that has not been derived.
+
+        Measured: the unguarded form leaves `imp_kwh_ev` NULL, so the block stays
+        eligible for back-attribution -- the damage is column INCOHERENCE, not a
+        lost split. `web/server.py`'s correction tool states the same invariant a
+        third way, with `CASE WHEN imp_kwh_ev IS NOT NULL ... ELSE <unchanged>`:
+        *"so imp_cost_ev + imp_cost_remainder == imp_cost"*.
+        """
+        with self._conn:
+            cur = self._conn.execute(
+                self._EV_RESTAMP_SQL,
+                (rate, rate, ev_band, home_band, rate, block_start, meter_id))
+        return cur.rowcount
+
+    def relabel_segment_bands(self, block_start: str, ev_band: str,
+                              home_band: str,
+                              meter_id: str = "electricity_main") -> int:
+        """Point each segment's band at the band its attribution should carry.
+
+        BL-34: a block already at the correct RATE can still hold a stale band
+        from provisional pricing, because the code that stamps the band only runs
+        when the rate changes. A pure LABEL update -- kwh, rate, exc and
+        attribution are untouched -- so the reconciliation invariant holds and it
+        is self-limiting: rewrites once, then matches.
+        """
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE block_segments SET band = CASE attribution "
+                "WHEN 'ev' THEN ? WHEN 'house' THEN ? ELSE band END "
+                "WHERE block_start = ? AND meter_id = ? "
+                "AND ((attribution = 'ev' AND band != ?) "
+                "     OR (attribution = 'house' AND band != ?))",
+                (ev_band, home_band, block_start, meter_id, ev_band, home_band))
+        return cur.rowcount
+
+    def apply_reconcile_verdict(self, block_start: str, rate: float,
+                                rate_exc, exc_source, ev_band: str,
+                                home_band: str,
+                                meter_id: str = "electricity_main") -> dict:
+        """Apply a dispatch-overlay verdict to a block: main row, its sub-meters
+        and the EV columns, in ONE transaction. Returns rows changed per part.
+
+        The atomicity is load-bearing and is why this is one method rather than
+        three. A partial verdict leaves sub-meters priced at the OLD rate while
+        the main row moves -- the sub-meter costs are derived from the main rate,
+        so the block would disagree with itself until something else happened to
+        rewrite it.
+
+        The main row's update also clears `needs_review` / `review_reason`: a
+        definite verdict supersedes an earlier ambiguous one.
+
+        Sub-meters bill on `COALESCE(imp_kwh_grid, imp_kwh)` -- the GRID portion,
+        not the meter's own total, which for a battery or V2X device differ.
+        `rate_corrected = 0` keeps a user's manual correction out of it.
+        """
+        with self._conn:
+            main = self._conn.execute(
+                "UPDATE blocks SET imp_rate = ?, rate_reconciled = 1, "
+                "needs_review = 0, review_reason = NULL, "
+                "imp_cost = ROUND(COALESCE(imp_kwh, 0) * ?, 6), "
+                "imp_rate_exc = ?, "
+                "imp_cost_exc = ROUND(COALESCE(imp_kwh, 0) * ?, 6), "
+                "exc_source = ? "
+                "WHERE block_start = ? AND meter_id = ?",
+                (rate, rate, rate_exc, rate_exc, exc_source,
+                 block_start, meter_id)).rowcount
+            subs = self._conn.execute(
+                "UPDATE blocks SET imp_rate = ?, rate_reconciled = 1, "
+                "imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
+                "imp_rate_exc = ?, "
+                "imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
+                "exc_source = ? "
+                "WHERE block_start = ? AND rate_corrected = 0 AND meter_id IN "
+                "(SELECT meter_id FROM meters WHERE is_sub_meter = 1)",
+                (rate, rate, rate_exc, rate_exc, exc_source,
+                 block_start)).rowcount
+            ev = self._conn.execute(
+                self._EV_RESTAMP_SQL,
+                (rate, rate, ev_band, home_band, rate,
+                 block_start, meter_id)).rowcount
+        return {"main": main, "sub_meters": subs, "ev_columns": ev}
+
+    def get_reconcile_candidates(self, before_iso: str,
+                                 meter_id: str = "electricity_main") -> list:
+        """Main blocks eligible for dispatch-overlay reconciliation, oldest first.
+
+        Every exclusion here was added after something went wrong, so each is
+        named rather than left to read as a filter:
+
+          * `rate_corrected = 0` and `rate_source NOT IN ('measured','corrected')`
+            -- BL-53. Never reconcile a block priced by a HIGHER authority than
+            this heuristic: Octopus's billed cost, or a user's own correction.
+          * `source NOT LIKE 'imported%'` -- imported history carries Octopus's
+            ACTUAL billed, dispatch-aware rate. The local lifecycle heuristic
+            ("we never saw it start, so it didn't charge") is invalid for periods
+            EMT wasn't running, and reverting on it silently un-fixes an import.
+            This is the "October regressed on its own" bug.
+          * `block_start < ?` -- the started-gate. `started` is captured live, so
+            a RESTORE can act as soon as the slot has ended.
+          * an off-peak `dispatch_slots` row -- the slot was a smart-charge
+            candidate at all.
+          * a 'planned' OR 'completed' history row -- a completed-only slot (EMT
+            offline, or re-imported) is still repriceable from the authoritative
+            completed record.
+
+        Returns dicts.
+        """
+        rows = self._conn.execute(
+            """SELECT b.block_start, b.imp_kwh, b.imp_rate, b.needs_review,
+                      b.imp_kwh_api, b.interpolated
+               FROM blocks b
+               WHERE b.meter_id = ? AND b.rate_corrected = 0
+                 AND (b.rate_source IS NULL OR b.rate_source NOT IN ('measured','corrected'))
+                 AND (b.source IS NULL OR b.source NOT LIKE 'imported%')
+                 AND b.block_start < ?
+                 AND EXISTS (SELECT 1 FROM dispatch_slots s
+                             WHERE s.slot_start = b.block_start AND s.off_peak = 1)
+                 AND EXISTS (SELECT 1 FROM dispatch_history h
+                             WHERE h.slot_start = b.block_start
+                               AND h.kind IN ('planned', 'completed'))
+               ORDER BY b.block_start""",
+            (meter_id, before_iso)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_block_split_columns(self, block_start: str,
+                                meter_id: str = "electricity_main") -> Optional[dict]:
+        """One block's EV/house split columns, or None if there is no such block.
+
+        Three sites in `reconcile_dispatch_overlay` each selected an overlapping
+        subset of these -- the split re-price, the EV-column re-stamp and the
+        post-verdict segment rebuild. One projection serves all three; the cost
+        of the extra columns is nil and the cost of three near-identical SELECTs
+        drifting apart is not.
+
+        NOTE for the caller that used to filter `AND imp_kwh_ev IS NOT NULL` in
+        SQL: that is no longer part of the query, so a block with no split comes
+        back as a row with `imp_kwh_ev` None rather than as None. Test the
+        COLUMN, not the row.
+        """
+        row = self._conn.execute(
+            "SELECT imp_kwh, imp_kwh_ev, imp_rate, imp_rate_ev, imp_rate_exc, "
+            "imp_ev_band, imp_home_band FROM blocks "
+            "WHERE block_start = ? AND meter_id = ?",
+            (block_start, meter_id)).fetchone()
+        return dict(row) if row else None
+
+    def distinct_segment_rates(self, block_start: str,
+                               meter_id: str = "electricity_main") -> list:
+        """The distinct inc-VAT rates across a block's segments, rounded to 6dp.
+
+        The count is the question: exactly one means a SINGLE-RATE block, which
+        is the only shape the stale-rated-split heal touches. A genuine
+        multi-band capped block has two or more and is left for the measured
+        apply.
+        """
+        rows = self._conn.execute(
+            "SELECT DISTINCT ROUND(inc_rate, 6) AS rate FROM block_segments "
+            "WHERE block_start = ? AND meter_id = ?",
+            (block_start, meter_id)).fetchall()
+        return [r["rate"] for r in rows if r["rate"] is not None]
+
+    def count_stale_band_segments(self, block_start: str, ev_band: str,
+                                  home_band: str,
+                                  meter_id: str = "electricity_main") -> int:
+        """How many of a block's segments carry a band that disagrees with the
+        band its attribution should have.
+
+        BL-34: a block at the correct RATE can still carry a stale band from
+        provisional pricing, because the code that stamps the band only runs when
+        the rate changes. Asking first keeps the relabel self-limiting -- it
+        rewrites once and then matches.
+        """
+        return self._conn.execute(
+            "SELECT COUNT(*) FROM block_segments "
+            "WHERE block_start = ? AND meter_id = ? "
+            "AND ((attribution = 'ev' AND band != ?) "
+            "     OR (attribution = 'house' AND band != ?))",
+            (block_start, meter_id, ev_band, home_band)).fetchone()[0]
+
+    def get_blocks_missing_ev_split(self, meter_id: str = "electricity_main",
+                                    tolerance: float = 0.1) -> list:
+        """Main import blocks that have a completed dispatch but no usable EV
+        split. Two populations, deliberately in one query:
+
+          * `imp_kwh_ev IS NULL` -- priced before the completed dispatch arrived,
+            so the charge sits entirely in Home. Octopus reports a slot's
+            completed energy hours after the fact, and the reconcile's segment
+            resync only rewrites blocks that ALREADY have a split, so nothing
+            else revisits these.
+          * a GAP-FILLED block (`interpolated = 1`) whose stored EV kWh disagrees
+            with the completed dispatch by more than `tolerance` (BL-39). A gap
+            fill can stamp a WRONG non-NULL split from a stale or planned
+            fragment; the NULL-only rule above would never look at it again.
+
+        Excluded, each for its own reason: imported history (not ours to
+        re-derive), `rate_corrected` blocks (a manual correction is never
+        stomped), and zero-kWh blocks (nothing to split).
+
+        `MIN(a, b)` here is SQLite's two-argument SCALAR min, not the aggregate --
+        it grid-clips the dispatch figure to the block's own import before
+        comparing, so a dispatch larger than the grid draw cannot fake a
+        disagreement.
+        """
+        rows = self._conn.execute(
+            "SELECT b.block_start, b.imp_kwh, b.imp_cost, b.imp_rate FROM blocks b "
+            "WHERE b.meter_id = ? "
+            "AND COALESCE(b.imp_kwh, 0) > 0 "
+            "AND (b.source IS NULL OR b.source NOT LIKE 'imported%') "
+            "AND COALESCE(b.rate_corrected, 0) = 0 "
+            "AND EXISTS (SELECT 1 FROM dispatch_history h WHERE h.slot_start = b.block_start "
+            "            AND h.kind = 'completed' AND h.energy_kwh IS NOT NULL) "
+            "AND (b.imp_kwh_ev IS NULL "
+            "     OR (b.interpolated = 1 AND EXISTS ("
+            "           SELECT 1 FROM dispatch_history h2 WHERE h2.slot_start = b.block_start "
+            "           AND h2.kind = 'completed' AND h2.energy_kwh IS NOT NULL "
+            "           AND ABS(MIN(ABS(h2.energy_kwh), COALESCE(b.imp_kwh, 0)) "
+            "                   - COALESCE(b.imp_kwh_ev, 0)) > ?)))",
+            (meter_id, tolerance)).fetchall()
+        return [dict(r) for r in rows]
+
+    def replace_ev_split(self, block_start: str, kwh_ev: float, cost_ev: float,
+                         rate_ev: float, ev_band: str, home_band: str,
+                         meter_id: str = "electricity_main") -> int:
+        """Write an EV/house split OVER whatever is there. Returns rows changed.
+
+        The counterpart to `carve_ev_split`, and the difference is the whole
+        point of having two methods rather than one with a flag:
+
+          carve_ev_split    fills a BLANK. Guarded by `imp_kwh_ev IS NULL` and
+                            COALESCE on the bands, so it cannot overwrite an
+                            answer something better-informed already gave.
+          replace_ev_split  is the RE-ATTRIBUTION path. Its caller has already
+                            established that what is stored is absent or wrong
+                            (priced before the completed dispatch landed, or a
+                            gap fill that guessed), so overwriting is the job.
+
+        The caller's selection is what makes this safe -- imported history and
+        `rate_corrected` blocks are excluded there. A single method with an
+        `overwrite=` argument would put that distinction one boolean away from
+        being got wrong at a call site, which is how a manual correction gets
+        stomped.
+        """
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ?, imp_rate_ev = ?, "
+                "imp_ev_band = ?, imp_home_band = ? "
+                "WHERE block_start = ? AND meter_id = ?",
+                (kwh_ev, cost_ev, rate_ev, ev_band, home_band, block_start, meter_id))
+        return cur.rowcount
+
+    def carve_ev_split(self, block_start: str, kwh_ev: float, cost_ev: float,
+                       rate_ev: float, ev_band: str, home_band: str,
+                       meter_id: str = "electricity_main") -> int:
+        """Write a PREDICTED EV/house split onto an un-carved block. Returns the
+        number of rows changed (0 or 1).
+
+        Two guards, both part of the operation rather than caller hygiene:
+
+          * `AND imp_kwh_ev IS NULL` in the WHERE -- the sweep selects un-carved
+            blocks and then writes them one at a time, so the row can have been
+            carved in between. Re-writing it would double-count. Making the
+            UPDATE itself conditional means the check and the write cannot come
+            apart.
+          * `COALESCE(imp_ev_band, ?)` -- a band already recorded for this block
+            was determined by something with better information (settlement, a
+            user correction). A predicted carve fills a blank; it does not
+            overwrite an answer.
+
+        Own transaction, because the caller pairs it with `set_block_segments`
+        and a partial pair is worse than neither.
+        """
+        with self._conn:
+            cur = self._conn.execute(
+                "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ?, imp_rate_ev = ?, "
+                "imp_ev_band = COALESCE(imp_ev_band, ?), "
+                "imp_home_band = COALESCE(imp_home_band, ?) "
+                "WHERE meter_id = ? AND block_start = ? AND imp_kwh_ev IS NULL",
+                (kwh_ev, cost_ev, rate_ev, ev_band, home_band, meter_id, block_start))
+        return cur.rowcount
+
+    def get_blocks_pricing_for_range(self, meter_id: str, from_iso: str,
+                                     to_iso: str, limit: int) -> list:
+        """The pricing columns for blocks in [from_iso, to_iso), oldest first.
+
+        A projection rather than `get_blocks_for_range`'s full block: the
+        conformance report re-prices each row and compares the result against
+        what is stored, so it needs the stored pricing values and nothing else.
+
+        Rows come back as dicts. The consumer passes each one straight to
+        `_reprice_history_block`, which subscripts by column name only -- the
+        same access a `sqlite3.Row` supports, so the suite's hand-built Row
+        fixtures and these dicts are interchangeable there.
+        """
+        rows = self._conn.execute(
+            "SELECT block_start, meter_id, imp_kwh, imp_rate, imp_cost, "
+            "imp_kwh_ev, imp_rate_exc, source, imp_kwh_api FROM blocks "
+            "WHERE meter_id = ? AND block_start >= ? AND block_start < ? "
+            "ORDER BY block_start LIMIT ?",
+            (meter_id, from_iso, to_iso, limit)).fetchall()
+        return [dict(r) for r in rows]
+
+    def get_blocks_awaiting_ev_carve(self, limit: int,
+                                     meter_id: str = "electricity_main") -> list:
+        """Unsettled import blocks that have a completed dispatch but no EV
+        split yet, oldest first.
+
+        Every clause is part of the question, not a filter bolted on:
+
+          * `imp_kwh_ev IS NULL`  -- not yet carved. Re-carving a block that
+            already has a split would double-count.
+          * `imp_kwh > 0`         -- nothing to carve out of an empty block.
+          * `rate_source NOT IN ('measured','corrected')` -- settled and
+            user-corrected splits belong to settlement, not to this sweep.
+            NULL passes, which is why the clause is written with the explicit
+            `IS NULL` arm: `NOT IN` is UNKNOWN against NULL and would drop every
+            never-stamped block.
+          * `EXISTS (completed dispatch with energy)` -- the carve derives EV
+            kWh from Octopus's own per-slot figure, so a slot without one has
+            nothing to derive from.
+
+        Returns dicts.
+        """
+        rows = self._conn.execute(
+            "SELECT b.block_start, b.imp_kwh, b.imp_rate, b.imp_rate_exc "
+            "FROM blocks b WHERE b.meter_id = ? AND b.imp_kwh_ev IS NULL "
+            "  AND b.imp_kwh > 0 "
+            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('measured','corrected')) "
+            "  AND EXISTS (SELECT 1 FROM dispatch_history d WHERE d.kind = 'completed' "
+            "              AND d.slot_start = b.block_start AND d.energy_kwh IS NOT NULL) "
+            "ORDER BY b.block_start LIMIT ?", (meter_id, int(limit))).fetchall()
+        return [dict(r) for r in rows]
 
     def count_blocks(self) -> int:
         """Total distinct block count (by block_start)."""

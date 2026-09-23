@@ -319,6 +319,89 @@ class TestTheManifestIsMeasuredNotInvented(unittest.TestCase):
                          "manifest comment before adding it here")
 
 
+class TestRunExclusiveDoesNotComeAcross(unittest.TestCase):
+    """B §6 q6, closed. The evidence, pinned — because the conclusion rests on it
+    and all three parts are quiet properties of the code rather than anything a
+    reader would notice."""
+
+    @classmethod
+    def setUpClass(cls):
+        import os as _os
+        root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        with open(_os.path.join(root, "engine.py"), encoding="utf-8") as fh:
+            cls.src = fh.read()
+        cls.lines = cls.src.split("\n")
+
+    def test_the_tick_lock_is_taken_in_exactly_two_places(self):
+        """`run_exclusive` and the tick. If a long-running job ever starts taking
+        it, the "exclusion is partial" argument changes and q6 should be re-opened.
+        """
+        import ast
+        uses = [n.lineno for n in ast.walk(ast.parse(self.src))
+                if isinstance(n, ast.AsyncWith)
+                for item in n.items
+                if isinstance(item.context_expr, ast.Name)
+                and item.context_expr.id == "_engine_loop_lock"]
+        self.assertEqual(len(uses), 2, "acquired at lines %s" % uses)
+
+    def test_no_long_running_job_takes_it(self):
+        """So it excludes the TICK, not the other writers."""
+        import ast
+        funcs = {n.name: n for n in ast.walk(ast.parse(self.src))
+                 if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
+        for job in ("run_api_import_job", "_run_historical_reprice_sweep",
+                    "run_measured_history_drain", "run_attribution_job",
+                    "run_gap_fill_job"):
+            fn = funcs[job]
+            body = "\n".join(self.lines[fn.lineno - 1:fn.end_lineno])
+            self.assertNotIn("_engine_loop_lock", body, job)
+
+    def test_what_replaced_it_does_not_use_an_executor(self):
+        """The part A §3.3 forbids. `drain_tick` waits on the lock and returns —
+        no thread, no work run anywhere but the loop."""
+        import ast
+        fn = next(n for n in ast.walk(ast.parse(self.src))
+                  if isinstance(n, ast.AsyncFunctionDef) and n.name == "drain_tick")
+        body = "\n".join(self.lines[fn.lineno - 1:fn.end_lineno])
+        self.assertNotIn("run_in_executor", body)
+
+    def test_it_is_gone(self):
+        """Deleted 23 Sep 2026 under §4a, after its single caller — which passed
+        `lambda: None` and never ran anything under the lock — was replaced by
+        `drain_tick()`, named for what it actually did.
+
+        The three findings above are why, and they are kept rather than deleted
+        with the code: if anyone reintroduces a mutual-exclusion primitive here,
+        the argument against this one should be readable without archaeology.
+        """
+        # By AST. A text search matches `drain_tick`'s own docstring, which
+        # explains what it replaced — the seventh time in this work that a
+        # source-text check has matched prose rather than code.
+        import ast
+        import os as _os
+        root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+        for dirpath, dirnames, files in _os.walk(root):
+            dirnames[:] = [d for d in dirnames if d not in
+                           (".git", "__pycache__", "tests", "docs", ".build", "scratch")]
+            for f in files:
+                if not f.endswith(".py"):
+                    continue
+                path = _os.path.join(dirpath, f)
+                with open(path, encoding="utf-8") as fh:
+                    try:
+                        tree = ast.parse(fh.read())
+                    except SyntaxError:
+                        continue
+                for n in ast.walk(tree):
+                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) \
+                            and n.name == "run_exclusive":
+                        self.fail("run_exclusive defined again in %s" % f)
+                    if isinstance(n, ast.Call) and \
+                            getattr(n.func, "attr", getattr(n.func, "id", None)) \
+                            == "run_exclusive":
+                        self.fail("run_exclusive called again in %s:%d" % (f, n.lineno))
+
+
 class TestPreemptIsTheFourthOutcome(unittest.TestCase):
     """The design named three admission outcomes. v4 uses four.
 

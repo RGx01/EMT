@@ -40,6 +40,23 @@ async def main():
     # 1 — Initialise engine (dirs, locks)
     setup()
 
+    # 1a — Bind the storage read/write split (workstream A §3.1, §5b).
+    # BEFORE both engine_startup() and server.init(): the engine loop starts
+    # unconditionally but is inert until configured (ensure_correct_block's
+    # first-run gate), so on a fresh install -- or after a main-meter reset --
+    # the web server serving the setup wizard is the ONLY reader, and it needs
+    # store() from the first request. Runs on the engine thread, which is what
+    # establishes the writer's thread affinity. Depends only on DATA_DIR, which
+    # setup() has just ensured exists.
+    #
+    # NB `os` is a LOCAL name in main() -- it is imported inside this function
+    # twice further down, so the module-level `os` is shadowed for the whole
+    # body and referencing it here would raise UnboundLocalError. Use a
+    # distinct name rather than relying on statement order.
+    import os as _os
+    import store_access
+    store_access.bind(_os.path.join(DATA_DIR, "blocks.db"))
+
     # In standalone mode, also log to file so the UI logs page can read it
     import os
     if os.environ.get("EMT_MODE") == "standalone":

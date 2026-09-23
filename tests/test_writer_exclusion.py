@@ -206,10 +206,37 @@ class TestASnapshotMidJobIsRecoverable(unittest.TestCase):
         """`run_iog_split_carve` is the one job with no marker, deliberately:
         *"No done-marker — it runs each tick and is cheap (only late-dispatch
         stragglers ever match)."* It self-selects on `imp_kwh_ev IS NULL`, so a
-        block it has carved stops matching. That is idempotence by query, and it
-        is only true while that predicate is in the SELECT."""
-        body = self._body("run_iog_split_carve")
-        self.assertIn("imp_kwh_ev IS NULL", body)
+        block it has carved stops matching. That is idempotence by query.
+
+        The predicate MOVED (workstream A acceptance 5). It used to sit in a raw
+        SELECT inside this function; it now lives in
+        `BlockStore.get_blocks_awaiting_ev_carve`, and `carve_ev_split` repeats
+        it in the UPDATE's own WHERE. That is strictly stronger than before — the
+        old version could select a block and then write it after something else
+        had carved it, because the check and the write were separate statements.
+
+        So this asserts the PROPERTY at both halves rather than a string in one
+        function body, which is what went stale.
+        """
+        import ast as _ast
+        bs_src = open(os.path.join(_ROOT, "block_store.py"), encoding="utf-8").read()
+        bs_lines = bs_src.split("\n")
+        bs_funcs = {n.name: n for n in _ast.walk(_ast.parse(bs_src))
+                    if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))}
+
+        def body(name):
+            f = bs_funcs[name]
+            return "\n".join(bs_lines[f.lineno - 1:f.end_lineno])
+
+        self.assertIn("imp_kwh_ev IS NULL", body("get_blocks_awaiting_ev_carve"),
+                      "the carve no longer self-selects un-carved blocks")
+        self.assertIn("imp_kwh_ev IS NULL", body("carve_ev_split"),
+                      "the write lost its own guard — selection and write can "
+                      "now come apart")
+        # And the job still routes through them rather than round them.
+        job = self._body("run_iog_split_carve")
+        self.assertIn("get_blocks_awaiting_ev_carve", job)
+        self.assertIn("carve_ev_split", job)
 
 
 class TestAttributionStartWindow(unittest.TestCase):

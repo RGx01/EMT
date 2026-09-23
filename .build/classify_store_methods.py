@@ -60,6 +60,26 @@ WRITE_VERBS = {"INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP",
 READ_VERBS = {"SELECT", "WITH", "PRAGMA", "EXPLAIN", "BEGIN", "COMMIT", "ROLLBACK",
               "ANALYZE", "ATTACH", "DETACH"}
 
+# PRAGMA is in READ_VERBS because most pragmas interrogate or configure the
+# connection -- `table_info`, `query_only`, `busy_timeout`. A few MUTATE THE
+# DATABASE FILE, and filing those as reads puts them on ReadStore, where they are
+# callable from any thread with no affinity check. `wal_checkpoint` is the one
+# that matters: it rewrites the main database from the write-ahead log, and the
+# restore path in web/server.py already documents what a cross-thread checkpoint
+# on the shared connection does --
+#
+#     "a PRAGMA wal_checkpoint / close() issued here while the loop is mid-query
+#      on the SAME connection is a concurrent use of one SQLite connection from
+#      two threads -> Segmentation fault"
+#
+# So the pragma NAME is consulted, not just the verb. Matched on the token after
+# PRAGMA, lowercased, with any argument list already split off by first_verb's
+# paren handling.
+MUTATING_PRAGMAS = {"wal_checkpoint", "incremental_vacuum", "optimize",
+                    "shrink_memory", "journal_mode", "wal_autocheckpoint",
+                    "journal_size_limit", "auto_vacuum", "user_version",
+                    "application_id", "secure_delete"}
+
 READ, WRITE, NONE, UNDECIDED = "read", "write", "no-sql", "undecided"
 
 
@@ -104,6 +124,23 @@ def first_verb(sql):
     return ""
 
 
+def _mutating_pragma(sql):
+    """True when the statement is a PRAGMA that writes the database file.
+
+    Reads the token AFTER `PRAGMA`. Note `first_verb` already replaces parens
+    with spaces, so `wal_checkpoint(TRUNCATE)` arrives as two tokens and the name
+    is matched cleanly. A `PRAGMA` with no following token (dynamic string) is
+    NOT treated as mutating -- it falls through to the normal read verdict and,
+    if genuinely undecidable, to UNDECIDED, which is the bucket that gets looked
+    at rather than the one that gets trusted.
+    """
+    toks = sql.replace("(", " ").replace(")", " ").replace(";", " ").replace("=", " ").split()
+    for i, raw in enumerate(toks):
+        if raw.strip().upper() == "PRAGMA" and i + 1 < len(toks):
+            return toks[i + 1].strip().lower() in MUTATING_PRAGMAS
+    return False
+
+
 def local_sql_vars(fn):
     """SQL is routinely assembled in a local before being executed:
 
@@ -142,11 +179,40 @@ def local_sql_vars(fn):
     return out
 
 
-def classify_body(fn):
+def class_sql_consts(cls_node):
+    """SQL held as a CLASS-LEVEL constant, e.g.
+
+        class BlockStore:
+            _EV_RESTAMP_SQL = "UPDATE blocks SET ..."
+
+            def restamp_ev_columns(self, ...):
+                self._conn.execute(self._EV_RESTAMP_SQL, (...))
+
+    `local_sql_vars` only resolves names assigned inside the function, so a
+    statement factored onto the class came back UNDECIDED -- which is the honest
+    bucket, but it means the first method to share its SQL between two callers
+    cannot be classified, and sharing is exactly what you do when a statement
+    appears three times. Keyed by bare name; both `self.X` and `Cls.X` resolve
+    to it.
+    """
+    out = {}
+    for n in cls_node.body:
+        if isinstance(n, ast.Assign) and isinstance(n.value, (ast.Constant, ast.BinOp, ast.JoinedStr)):
+            text = sql_text(n.value)
+            if not text.strip():
+                continue
+            for t in n.targets:
+                if isinstance(t, ast.Name):
+                    out[t.id] = text
+    return out
+
+
+def classify_body(fn, class_consts=None):
     """Direct verdict from this method's own SQL, ignoring what it calls."""
     verdicts = set()
     unknown = []
-    locals_ = local_sql_vars(fn)
+    locals_ = dict(class_consts or {})
+    locals_.update(local_sql_vars(fn))
     for n in ast.walk(fn):
         if not isinstance(n, ast.Call):
             continue
@@ -160,9 +226,14 @@ def classify_body(fn):
             arg = n.args[0]
             sql = sql_text(arg)
             verb = first_verb(sql)
+            if verb == "PRAGMA" and _mutating_pragma(sql):
+                verb = "VACUUM"          # any WRITE_VERB; the bucket is what matters
             if verb not in WRITE_VERBS and verb not in READ_VERBS:
                 # the argument is (or starts from) a local — resolve it
                 names = [x.id for x in ast.walk(arg) if isinstance(x, ast.Name)]
+                # `self._EV_RESTAMP_SQL` is an Attribute, not a Name -- add the
+                # attribute names so a class-level constant resolves too.
+                names += [x.attr for x in ast.walk(arg) if isinstance(x, ast.Attribute)]
                 for nm in names:
                     if nm in locals_:
                         v2 = first_verb(locals_[nm])
@@ -203,9 +274,10 @@ def analyse():
     methods = {m.name: m for m in cls.body
                if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
 
+    consts = class_sql_consts(cls)
     direct, unknowns, calls = {}, {}, {}
     for name, fn in methods.items():
-        v, unk = classify_body(fn)
+        v, unk = classify_body(fn, consts)
         direct[name] = v
         if unk:
             unknowns[name] = sorted(set(unk))

@@ -345,10 +345,12 @@ def init(data_dir: str, chart_dir: str, ha_client):
     DATA_DIR   = data_dir
     CHART_DIR  = chart_dir
     _ha_client = ha_client
-    # Workstream A: bind the read/write split. init() runs on the engine thread
-    # (it captures that thread's loop on the line above), so this is where the
-    # writer's thread identity is established.
-    store_access.bind(_os.path.join(data_dir, "blocks.db"))
+    # Workstream A §5b: store_access.bind() is NOT called here. It moved to
+    # main.py, ahead of BOTH engine_startup() and this init(), because the read
+    # path has to serve the pre-wizard state -- a fresh install, or one just
+    # reset by api_meter_main_reset, runs with no configuration at all, and the
+    # setup wizard it must serve is read-only. bind() takes a path and nothing
+    # else, so it has no business depending on either subsystem's lifecycle.
 
 
 def _run_on_engine_loop(coro, timeout: float = 30.0):
@@ -2090,16 +2092,26 @@ def api_meter_delete_data(meter_id: str):
         # The whole DB mutation (capture window → delete → EV-aware parent recompute)
         # as one callable, run with exclusive DB access. Uses `store`/`new_cfg`/`meter_id`
         # from the closure — never `request` (not valid off the web thread).
-        def _do_delete_and_recompute():
+        # Runs on the ENGINE thread. The tick is already paused and a running
+        # import already cancelled by the time we get here, so this is the
+        # exclusivity `run_exclusive` was reaching for — without its executor
+        # thread, which A §3.3 forbids.
+        #
+        # It does NOT need to be a paced job: the deletes are four bulk SQL
+        # statements (`DELETE FROM ... WHERE meter_id = ?`), not a Python loop
+        # over blocks, and the one loop inside iterates METERS — a handful. The
+        # loop stalls for as long as SQLite takes, which is not the same problem
+        # a chunked sweep exists to solve.
+        def _do_delete_and_recompute(st):
             deleted = {}
 
             # BL-46: capture the deleted device's parent + block window BEFORE deleting.
             _bl46_parent = _bl46_lo = _bl46_hi = None
             try:
-                _pr = store._conn.execute(
+                _pr = st._conn.execute(
                     "SELECT parent_meter_id FROM meters WHERE meter_id = ?", (meter_id,)).fetchone()
                 _bl46_parent = ((_pr["parent_meter_id"] if _pr else None) or "electricity_main")
-                _rng = store._conn.execute(
+                _rng = st._conn.execute(
                     "SELECT MIN(block_start) lo, MAX(block_start) hi FROM blocks WHERE meter_id = ?",
                     (meter_id,)).fetchone()
                 if _rng:
@@ -2107,32 +2119,32 @@ def api_meter_delete_data(meter_id: str):
             except Exception:
                 pass
 
-            with store._conn:
+            with st._conn:
                 # 1. Delete all data for this meter
-                cur = store._conn.execute("DELETE FROM blocks WHERE meter_id = ?", (meter_id,))
+                cur = st._conn.execute("DELETE FROM blocks WHERE meter_id = ?", (meter_id,))
                 deleted["blocks"] = cur.rowcount
 
                 # P3.1: block_segments keyed by block_start (no block_id FK) → not
                 # cascade-cleaned; remove this meter's segments so none are orphaned.
-                cur = store._conn.execute("DELETE FROM block_segments WHERE meter_id = ?", (meter_id,))
+                cur = st._conn.execute("DELETE FROM block_segments WHERE meter_id = ?", (meter_id,))
                 deleted["block_segments"] = cur.rowcount
 
-                cur = store._conn.execute("DELETE FROM sub_meter_history WHERE meter_id = ?", (meter_id,))
+                cur = st._conn.execute("DELETE FROM sub_meter_history WHERE meter_id = ?", (meter_id,))
                 deleted["sub_meter_history"] = cur.rowcount
 
-                cur = store._conn.execute("DELETE FROM current_reads WHERE meter_id = ?", (meter_id,))
+                cur = st._conn.execute("DELETE FROM current_reads WHERE meter_id = ?", (meter_id,))
                 deleted["current_reads"] = cur.rowcount
 
                 # Remove from current_block JSON if present
                 try:
-                    cb_row = store._conn.execute(
+                    cb_row = st._conn.execute(
                         "SELECT id, last_checkpoint FROM current_block WHERE id = 1").fetchone()
                     if cb_row and cb_row["last_checkpoint"]:
                         import json as _json
                         cb = _json.loads(cb_row["last_checkpoint"])
                         if meter_id in (cb.get("meters") or {}):
                             del cb["meters"][meter_id]
-                            store._conn.execute(
+                            st._conn.execute(
                                 "UPDATE current_block SET last_checkpoint = ? WHERE id = 1",
                                 (_json.dumps(cb),))
                             deleted["current_block"] = 1
@@ -2141,13 +2153,13 @@ def api_meter_delete_data(meter_id: str):
 
                 # 2. Save updated config (meter removed) in the same transaction.
                 if new_cfg:
-                    period_id = store.get_current_config_period_id()
-                    old_meter_ids = [r["id"] for r in store._conn.execute(
+                    period_id = st.get_current_config_period_id()
+                    old_meter_ids = [r["id"] for r in st._conn.execute(
                         "SELECT id FROM meters WHERE config_period_id=?", (period_id,)).fetchall()]
                     for old_mid in old_meter_ids:
-                        store._conn.execute("DELETE FROM meter_channels WHERE meter_id=?", (old_mid,))
-                    store._conn.execute("DELETE FROM meters WHERE config_period_id=?", (period_id,))
-                    store._write_meters(new_cfg, period_id)
+                        st._conn.execute("DELETE FROM meter_channels WHERE meter_id=?", (old_mid,))
+                    st._conn.execute("DELETE FROM meters WHERE config_period_id=?", (period_id,))
+                    st._write_meters(new_cfg, period_id)
 
             logger.info("api_meter_delete_data: deleted %s for meter %s", deleted, meter_id)
 
@@ -2182,10 +2194,10 @@ def api_meter_delete_data(meter_id: str):
             try:
                 import asyncio as _asyncio
                 _asyncio.run_coroutine_threadsafe(
-                    _eng_d.run_exclusive(lambda: None), _event_loop).result(timeout=30)
+                    _eng_d.drain_tick(), _event_loop).result(timeout=30)
             except Exception as _de:
                 logger.warning("api_meter_delete_data: tick-drain barrier failed: %s", _de)
-        deleted = _do_delete_and_recompute()
+        deleted = _engine_write(_do_delete_and_recompute, timeout=600.0)
 
         # Data is committed & consistent → clear the pause so the tick runs again.
         # (engine_startup does NOT resume on its own — every pause caller must.)
@@ -7467,6 +7479,15 @@ def api_storage_info():
 
     # DB and disk sizes
     db_bytes  = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+    # The write-ahead log and shared-memory file sit next to blocks.db and are
+    # real disk. Reporting blocks.db alone under-reports what EMT occupies, and
+    # hides the one case where that matters: a reader holding an open
+    # transaction during heavy writing inflates the WAL, and before
+    # journal_size_limit was set it stayed inflated until a restart. ~4 MB is
+    # normal (SQLite auto-checkpoints at 1000 pages); a persistently larger
+    # figure is worth investigating rather than invisible.
+    wal_bytes = os.path.getsize(db_path + "-wal") if os.path.exists(db_path + "-wal") else 0
+    shm_bytes = os.path.getsize(db_path + "-shm") if os.path.exists(db_path + "-shm") else 0
     try:
         du = _shutil.disk_usage(DATA_DIR)
         disk_total = du.total
@@ -7497,6 +7518,10 @@ def api_storage_info():
     return jsonify({
         "db_bytes":         db_bytes,
         "db_mb":            round(db_bytes / 1024 / 1024, 2),
+        "wal_bytes":        wal_bytes,
+        "wal_mb":           round(wal_bytes / 1024 / 1024, 2),
+        "shm_bytes":        shm_bytes,
+        "total_db_mb":      round((db_bytes + wal_bytes + shm_bytes) / 1024 / 1024, 2),
         "disk_total_mb":    round(disk_total / 1024 / 1024, 1),
         "disk_free_mb":     round(disk_free / 1024 / 1024, 1),
         "disk_used_mb":     round(disk_used / 1024 / 1024, 1),

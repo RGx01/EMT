@@ -259,6 +259,65 @@ buys. The boundary that matters is the absent write methods.
 
 ---
 
+## 5b. The pre-wizard state, and where `bind()` goes
+
+`bind()` does not belong inside either subsystem's startup, and the reason is a state neither
+workstream had written down: on a fresh install — and after a main-meter delete — the application
+runs **fully configuration-less**, and the web server is the only thing with anything to do.
+
+What v4 actually does, measured rather than assumed:
+
+- `main.py` starts `engine_loop_task` **unconditionally** (inside the final `gather`). There is no
+  configuration precondition anywhere between `setup()` and the loop. The engine is not deferred —
+  it ticks every 10 seconds from boot.
+- It is nonetheless **inert**. `ensure_correct_block` refuses to form the first block until either a
+  main import read sensor exists or an API mode has been explicitly chosen. Until then every tick
+  returns without creating, capturing or finalising anything, and `capture_samples` bails on
+  `if not config` as a second line of defence.
+- `api_meter_main_reset` puts the install back into exactly that state: it deletes `blocks.db` and
+  its `-wal`/`-shm`, rewrites `meters_config.json` to `{"meters": {}}`, clears the stored API
+  credentials — *"a DB wipe alone leaves them orphaned and the API wrongly re-activates on next
+  start"* — and restarts the add-on. The mode reverts to `'unset'`, which `_detect_upgrade_mode`
+  deliberately leaves alone on an install with no import sensor.
+
+So "the engine does not start until there is configuration" is true of its **effects** and false of
+its **lifecycle**. That distinction is the point for A: the process is up, the loop is running, and
+the user is in the setup wizard — which is served entirely by `store()` reads. A `bind()` inside
+`engine_startup()` would happen to work today, precisely because startup is unconditional, but it
+would make the read path depend on a lifecycle decision that has nothing to do with reading.
+
+**Therefore:** `bind()` is called in `main.py`, after `setup()` has ensured `DATA_DIR` and before
+**both** `engine_startup()` and `server.init()`. One call site, no ordering subtlety, and the
+pre-wizard state is served by construction rather than by luck.
+
+One trap worth recording, because it is invisible to review: `main()` imports `os` twice *inside its
+own body*, which makes `os` a local name for the whole function. A `bind(os.path.join(...))` placed
+above those imports raises `UnboundLocalError` at boot — on the very first line of a fresh install.
+The call uses a distinct name rather than relying on statement order.
+
+### The gate had a hole, and the wizard ordering is load-bearing
+
+The API arm of the first-run gate was added after the CAD arm and opened on the mode alone. The
+setup wizard writes the mode **before** it writes the meters, so a tick landing in that window
+created a block with the default `block_minutes` and an empty seeded shell — precisely the
+block-size mismatch the CAD arm's own comment exists to prevent. Measured: a `12:00–12:30` block at
+`block_minutes=30` on an install about to save 5.
+
+The fix is on the gate, **not** the ordering. The wizard's order is deliberate: of the three POSTs it
+makes, only the config save reschedules `engine_startup`, and startup is what activates the supplier
+API. Put the config first and a `cad+api` install finishes setup with the API dormant until the next
+restart, while `_detect_upgrade_mode` stamps `'cad'` and logs *"upgrade detected"* on a brand-new
+install. The last call has to be the one that triggers startup.
+
+So the arm now requires a configured main meter as well as a mode, and it tolerates the window
+rather than trying to close it. `tests/test_first_run_gate.py` pins all five states — both arms
+closed, both arms open, and the window itself.
+
+Recorded here because nothing in the suite had asserted the gate's behaviour before, which is how an
+arm could be added that reopened a hazard the adjacent comment described in full.
+
+---
+
 ## 6. Migration and porting implications
 
 This workstream lands **before** the pricing engine is ported, not after. Porting 21k lines of

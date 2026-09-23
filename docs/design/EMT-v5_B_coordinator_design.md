@@ -3,11 +3,11 @@
 *BL-50. Sits on top of [A](EMT-v5_A_storage_design.md): with reads structurally unable to mutate
 and the writer thread-affine, what is left to coordinate is writers.*
 
-**Status:** the coordinator exists and 15 of 23 members are declared, 23 Sep 2026. `job_coordinator.py`
+**Status:** the coordinator exists, 23 Sep 2026. `job_coordinator.py`
 holds the decision logic and the dependency manifest; `tests/test_job_coordinator.py` covers it.
 Membership stands at **18/20** registered, of which **4 consume** `admission()` —
-every engine job including the live tick, plus the three background workers. The 8 outstanding are
-the bulk route handlers, which join as they become jobs.
+every engine job including the live tick, plus the three background workers. The 2 outstanding are
+`api_db_vacuum` (which never joins — see §4) and `api_meter_delete_data`.
 
 *Registration changes no behaviour: `@job(...)` records a declaration and returns the function
 unchanged. That is why the whole engine membership could be declared in one commit — the ratchet
@@ -55,7 +55,7 @@ requirement appear:
 not "is anyone else writing?" but **"is what I am about to read settled yet?"** — and separately,
 "is now a polite moment?".
 
-That distinction is the whole design. A mutual-exclusion coordinator would serialise 22 members
+That distinction is the whole design. A mutual-exclusion coordinator would serialise 20 members
 that mostly do not conflict, and would still not fix the attribution-over-unverified-blocks bug,
 because that is a *dependency*, not a race.
 
@@ -193,8 +193,8 @@ happens at job start and at batch boundaries — never per block. Guarded by
 
 ### 4.0 The live tick is a member, and it is the one that can never be deferred
 
-*Added 23 Sep 2026 — it was missing from the first draft of this document, which listed 22 members
-and omitted the only one with a real-time obligation.*
+*Added 23 Sep 2026 — it was missing from the first draft of this document, which omitted the only
+member with a real-time obligation.*
 
 `engine_loop_task` ticks every 10s under `_engine_loop_lock` and writes the current block. It is a
 writer like the others, but unlike any of them **deferring it has a cost outside the database**: it
@@ -217,17 +217,17 @@ What is true today, measured:
 
 **Consequences for the design:**
 
-1. The tick is **member 23**, with a declared property no other member has: it is never deferred and
+1. The tick is **a member**, with a declared property no other member has: it is never deferred and
    never waits. Every `exclusive_with` is read as "not against the tick".
 2. **`pause_engine()` belongs to the coordinator.** It is currently a bare module flag set by four
    callers, and it is the only thing in the system that can stop live capture. A coordinator that
-   admits and defers 22 members while a separate global flag silently suspends the 23rd has not
+   admits and defers the rest while a separate global flag silently suspends this one has not
    actually taken charge of anything.
 3. A member that needs the tick stopped — restore genuinely does — asks for it explicitly, and the
    interpolated boundary is the declared, visible price. Today that price is paid without being
    named anywhere.
 
-### 4.1 The other 22
+### 4.1 The other 19
 
 **19 further members**, enumerated rather than estimated — **20 members** in all.
 
@@ -257,10 +257,8 @@ and iog-split backfills — are unreachable and do not come across):
 `run_band_rate_snap`, `run_smb_ev_resplit`, `run_settled_ev_split_heal`,
 `run_reprice_history_sweep_to_done`.
 
-**2 bulk route handlers** still writing on the request thread (`.build/write_inventory.py`). These
-cannot become synchronous `_engine_write` hops — a CSV apply would block the request for minutes —
-so they become jobs: claim, schedule, return, poll.
-`api_db_vacuum`, `api_meter_delete_data` — and one of those two never moves.
+**1 bulk route handler** still writing on the request thread (`.build/write_inventory.py`):
+`api_db_vacuum`. It never moves — see below.
 
 *`api_corrections_apply` moved on 23 Sep 2026, as ONE unit rather than write by write. It is not a
 single statement: three alternative UPDATEs, a device-row propagation, a `block_segments` rate
@@ -289,11 +287,14 @@ obvious writes moved.*
 1800 s on an engine-loop hop further down. The synchronous write adds no blocking they did not
 already have; it only stops the write going through the connection four waitress threads share.*
 
-*`api_meter_delete_data` is the awkward one and is deliberately untouched. It pauses the engine,
-cancels a running import, drains the in-flight tick with `run_exclusive(lambda: None)` and only
-then writes — so it is defended, not racing. But it is also the one call site where
-`run_exclusive` should have been used to RUN the work rather than as a barrier, and moving it
-means deciding what `run_exclusive` becomes in v5 (§6 q6). That is a design question, not a port.*
+*`api_meter_delete_data` moved on 23 Sep 2026, and did NOT need to become a paced job — which is
+a correction to §6 q6, made an hour after writing it. The concern was that running the delete on the
+loop would stall it. Measured: the deletes are four bulk `DELETE FROM ... WHERE meter_id = ?`
+statements, not a Python loop over blocks, and the single loop inside iterates METERS — a handful.
+The loop stalls for as long as SQLite takes on four indexed deletes, which is not the problem a
+chunked sweep exists to solve. So `_do_delete_and_recompute` simply runs on the engine thread, with
+the tick already paused and the import already cancelled: the exclusivity `run_exclusive` was
+reaching for, without its executor thread.*
 
 *(19 route handlers wrote on the request thread before 22 Sep. Six were ported to `_engine_write`,
 three were never in scope — already on the loop via `_config_mutation_on_loop` — and two more fell
@@ -311,13 +312,13 @@ same way.
 
 1. ~~**Every writing job is a member.**~~ **Written 23 Sep 2026, before the coordinator has a
    member** — `.build/check_job_membership.py`, `.build/job_membership_baseline.json`,
-   `tests/test_job_membership.py`. Standing at **0 registered / 23**.
+   `tests/test_job_membership.py`. Standing at **0 registered / 23** when written.
 
    Green from the start, because the guard is a **ratchet** rather than an assertion of the
    finished state: the unregistered set may shrink and must never grow. Verified in both
    directions — adding a writing job without a declaration fails the build on that commit
    (*"1 writing job(s) newly outside the coordinator"*), and decorating a member moves it out of
-   the set (23 → 22).
+   the set.
 
    The member list is maintained **by hand**, which is deliberate. "Long-running writer" is a
    judgement no signature exposes, and a list someone must edit is a list someone must think about
@@ -360,9 +361,10 @@ assumption §2.2 corrects.*
 2. **What happens to a deferred job that never gets a turn?** v4's sweeps retry on the next tick
    forever. With 22 members and a busy import, starvation is expressible; no measurement says
    whether it happens today.
-3. **Do the 8 route-handler members need user-visible status, or just completion?** Attribution
-   needed a full status surface because a user watches it. A `db_vacuum` may only need "done".
-   The answer decides how much of the registry each member carries.
+3. ~~**Do the route-handler members need user-visible status?**~~ **Moot: there are none left
+   that need it.** Six became engine-thread writers, `api_meter_delete_data` stayed synchronous
+   because it is fast enough to, and `api_db_vacuum` never joins. The question was premised on
+   claim-schedule-return-poll being necessary, and measuring each case dissolved it.
 4. **Where does the dependency graph live?** Declared at the member (readable at the job, drifts
    independently) or centrally (one place to read, easy to forget when adding a job). A §1's finding
    — that the safe path stays unused unless the unsafe one is hard to reach — argues for whichever
@@ -392,6 +394,35 @@ assumption §2.2 corrects.*
    dependencies are read off the guard audit. Caught by re-checking every entry against the
    pre-migration source.*
 
-6. **Does `run_exclusive` come across?** It is the one correct primitive v4 has, with one caller
-   passing `lambda: None`. Either it becomes the coordinator's internals or it is deleted under
-   §4a — but not carried unused into v5.
+6. ~~**Does `run_exclusive` come across?**~~ **Closed 23 Sep 2026: no. It is deleted under §4a,
+   and its one real use becomes a paced job.**
+
+   It looked like the one correct primitive v4 has. Measured, it is three things at once and
+   none of them survives workstream A:
+
+   - **It runs the work on an EXECUTOR THREAD.** Its own comment explains why — *"a heavy fn run
+     directly on the loop thread would freeze the loop (HA websocket drops, request queue backs
+     up)"* — but A §3.3 makes exactly that illegal: `writer()` raises off the engine thread. The
+     primitive and the workstream solve the same problem in opposite directions.
+   - **Its exclusion is partial.** `_engine_loop_lock` is acquired in exactly two places in the
+     codebase: `run_exclusive` and `engine_loop_task`. **None of the fourteen long-running jobs
+     takes it.** So it excludes the TICK, not the other writers — an import or a sweep would
+     interleave with the executor thread on the one connection regardless.
+   - **What closes that gap is prose.** *"Caller must `pause_engine()` and drain any running
+     import first."* Safety by convention, in a docstring, for a primitive with one caller.
+
+   **The pattern that actually works is already in the codebase fourteen times**: a paced batch job
+   on the loop that `await`s between batches, keeping the loop responsive without a second thread.
+   That is how every sweep, backfill and drain already behaves, and it needs no lock because
+   per-block writes are atomic (§1).
+
+   **Done 23 Sep 2026.** `run_exclusive` is deleted; its barrier is now `drain_tick()`, named for
+   what it actually did. `pause_engine()` stops the NEXT tick but not one already running, and
+   waiting for the lock is all the caller ever needed. The three findings above are kept rather
+   than deleted with the code: if anyone reintroduces a mutual-exclusion primitive here, the
+   argument against this one should be readable without archaeology.
+
+   *Corrected an hour after writing: this said the delete "becomes a paced job". It did not need to
+   — see §4. The paced-job reflex came from assuming the delete loops over blocks; it issues four
+   bulk SQL statements. The pattern was right in general and wrong for this member, which is what
+   measuring each case rather than applying the conclusion is for.*
