@@ -46,6 +46,7 @@ done
 # test_harness.py is a manual chart-inspection script, not a unit test.
 PYTEST="${PYTEST:-python3 -m pytest}"
 total_pass=0 total_fail=0 total_err=0 failed_files=()
+total_skip=0 silent_files=()
 for f in tests/test_*.py; do
   [ "$(basename "$f")" = "test_harness.py" ] && continue
   # Capture the FULL output (with -rf short summary) so a failure surfaces the
@@ -55,6 +56,9 @@ for f in tests/test_*.py; do
   p=$(grep -oE '[0-9]+ passed' <<<"$out" | grep -oE '[0-9]+'); p=${p:-0}
   fl=$(grep -oE '[0-9]+ failed' <<<"$out" | grep -oE '[0-9]+'); fl=${fl:-0}
   er=$(grep -oE '[0-9]+ error'  <<<"$out" | grep -oE '[0-9]+'); er=${er:-0}
+  sk=$(grep -oE '[0-9]+ skipped' <<<"$out" | grep -oE '[0-9]+'); sk=${sk:-0}
+  total_skip=$((total_skip+sk))
+  [ $((p+fl+er+sk)) -eq 0 ] && silent_files+=("$(basename "$f")")
   total_pass=$((total_pass+p)); total_fail=$((total_fail+fl)); total_err=$((total_err+er))
   if [ "$fl" != 0 ] || [ "$er" != 0 ]; then
     failed_files+=("$(basename "$f"): $out")
@@ -63,10 +67,16 @@ for f in tests/test_*.py; do
 done
 
 echo "═══════════════════════════════════════════════"
-echo "  passed=$total_pass  failed=$total_fail  errors=$total_err"
+echo "  passed=$total_pass  failed=$total_fail  errors=$total_err  skipped=$total_skip"
+
+if [ $# -eq 0 ] && [ "${#silent_files[@]}" -ne 0 ]; then
+  echo "  NO RESULT PARSED (counted as nothing):"
+  printf '    %s\n' "${silent_files[@]}"
+fi
+
 if [ "${#failed_files[@]}" -ne 0 ]; then
   echo "  files needing attention:"
   printf '    %s\n' "${failed_files[@]}"
 fi
 echo "═══════════════════════════════════════════════"
-[ "$total_fail" = 0 ] && [ "$total_err" = 0 ]
+[ "$total_fail" = 0 ] && [ "$total_err" = 0 ] && { [ $# -ne 0 ] || [ "${#silent_files[@]}" -eq 0 ]; }
