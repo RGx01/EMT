@@ -2286,14 +2286,6 @@ def build_day_chart_html(day, day_blocks, meter_colors, chart_prefix='', block_m
     total_import      = sum(v for k, v in summary_kwh.items()  if not k.endswith("_export") and v > 0)
     total_import_cost = sum(v for k, v in summary_cost.items() if not k.endswith("_export") and summary_kwh.get(k, 0) > 0)
 
-    def rate_breakdown_html(meter_key, css_extra=""):
-        out = ""
-        for kwh, rate, n in _collapse_rate_kwh(summary_rates[meter_key]):
-            suffix = f' (avg of {n})' if n else ''
-            out += (f'<span class="rate-row {css_extra}">'
-                    f'{kwh:.3f} kWh @ {currency}{rate:.4f}{suffix}</span>')
-        return out
-
     house_kwh  = summary_kwh.get("electricity_main", 0.0)
     exp_kwh    = summary_kwh.get("electricity_main_export", 0.0)
     exp_cost   = summary_cost.get("electricity_main_export", 0.0)

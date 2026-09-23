@@ -18,6 +18,7 @@ is required.
 import sys
 import os
 import json
+import itertools
 import types
 import unittest
 from unittest.mock import patch, MagicMock
@@ -67,6 +68,8 @@ sys.modules["ha_client"] = hc
 # (defined after MINIMAL_BLOCKS below, wired in via make_client)
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import store_access                     # workstream A: store() / writer()
 # Remove any cached stub from previous test runs before importing the real module
 if "block_store" in sys.modules:
     del sys.modules["block_store"]
@@ -82,9 +85,29 @@ open_block_store = _bs_real.open_block_store
 _ldtub  = _bs_real.local_date_to_utc_bounds
 _ldrtub = _bs_real.local_date_range_to_utc_bounds
 
+_store_seq = itertools.count()
+
+
+def _memory_uri():
+    """A NAMED shared-cache in-memory database, so `store_access.store()` can
+    open a real second connection to the same data (A §7 q2). `":memory:"` is
+    anonymous — a second connection gets a different, empty database, which is
+    the whole reason v4's read companion fell back to the shared handle.
+
+    Unique per store so tests cannot leak into one another.
+    """
+    return "file:emt_test_%d?mode=memory&cache=shared" % next(_store_seq)
+
+
 def _make_test_store(blocks=None):
     """Create an in-memory BlockStore pre-loaded with given blocks."""
-    store = BlockStore(":memory:")
+    uri = _memory_uri()
+    store = BlockStore(uri)
+    store_access.reset_for_tests()
+    store_access.bind(uri)
+    # The shared-cache database lives only while a connection is open, so the
+    # writer is parked on the store itself; dropping it would empty the db.
+    store._keepalive = store._conn
     store.insert_config_period({
         "meters": {"electricity_main": {"meta": {
             "billing_day": 1, "block_minutes": 30,
@@ -107,6 +130,7 @@ bs_mod.outward_code          = _bs_real.outward_code
 bs_mod.derive_region_periods = _bs_real.derive_region_periods
 sys.modules["block_store"] = bs_mod
 
+
 # Stub engine (pause/resume only) — plus the pure power converter that the
 # /api/power route delegates to (server.sensor_kw → engine._power_value_to_kw,
 # added when the W/kW unit handling was unified into engine). engine.py isn't
@@ -114,16 +138,18 @@ sys.modules["block_store"] = bs_mod
 # builtins-only function straight from source — no duplicated literal to drift,
 # and its behaviour is independently guarded by test_power_conversion.py.
 eng = types.ModuleType("engine")
-eng.pause_engine  = lambda: None
+eng.pause_engine  = lambda reason=None: None     # takes a reason now (B §4.0)
 eng.resume_engine = lambda: None
 eng.engine_startup = MagicMock()
 eng.set_delete_active = lambda _a: None   # delete/purge workers toggle the carbon-backfill guard
 eng.delete_in_progress = lambda: False
 eng.set_poll_active = lambda _a: None     # kraken poll cycle toggles the delete guard
 eng.poll_in_progress = lambda: False      # a manual delete refuses while a poll/backfill runs
-eng.attribution_running = lambda: False
-eng.api_attribution_status = lambda: {"status": "idle"}
-eng.attribution_control = lambda a: {"status": "idle", "control": a}
+eng.attribution_running = lambda meter_id=None: False
+eng.api_attribution_status = lambda meter_id=None: {"status": "idle", "runs": []}
+eng.attribution_claim = lambda meter_id, sensor_ids: True
+eng.attribution_release = lambda meter_id: None
+eng.attribution_control = lambda a, meter_id=None: {"status": "idle", "control": a}
 eng.backout_recorder_attribution = lambda **kw: {"ok": True, "deleted": 0, "parents": [], "recomputed": 0}
 eng.backout_running = lambda: False
 eng.api_backout_status = lambda: {"status": "idle"}
@@ -177,6 +203,33 @@ MINIMAL_CONFIG = {
     }
 }
 
+# The REAL `_engine_write`, captured before `make_client()` replaces it with a
+# direct call. A test that is specifically about the engine-loop path has to
+# restore this or it exercises the bypass instead.
+_REAL_ENGINE_WRITE = server._engine_write
+
+
+def _use_store(store):
+    """Point BOTH the server and `store_access` at this store.
+
+    Setting `server._store` alone was enough when every path went through
+    `_get_store()`. Now the read paths go through `store_access.store()`, which
+    opens its OWN connection — so an injected store that is not bound leaves the
+    reads looking at whatever was bound last. That shows up as a test reading
+    another test's data, which is a confusing failure to debug from.
+    """
+    server._store = store
+    store_access.reset_for_tests()
+    path = getattr(store, "_path", None)
+    if isinstance(path, str):
+        store_access.bind(path)
+    else:
+        # a MagicMock or other stand-in: there is no path to open a second
+        # connection to, so the read side is handed the object itself
+        store_access.bind_object_for_tests(store)
+    return store
+
+
 MINIMAL_BLOCKS = [
     {
         "start":  "2026-01-15T00:00:00",
@@ -205,12 +258,19 @@ def make_client(blocks=None, store=None):
     server.DATA_DIR  = "/tmp/emt_test_data"
     server.CHART_DIR = "/tmp/emt_test_charts"
     server._ha_client = MagicMock()
+    # Workstream A: routes no longer write through the request thread — mutations
+    # hop to the engine via `_engine_write`. There is no engine loop here, so it
+    # is stood in for by a direct call on the test store. The hop ITSELF is not
+    # what these tests are about: `writer()`'s thread affinity is covered in
+    # tests/test_store_types.py, and that no route writes directly is covered by
+    # the structural check in tests/test_route_store_use.py.
+    server._engine_write = lambda op, timeout=30.0: op(server._store)
     # Allow caller to inject a pre-built store (e.g. with custom config periods)
     if store is not None:
-        server._store = store
+        _use_store(store)
     else:
         blks = blocks if blocks is not None else MINIMAL_BLOCKS
-        server._store = _make_test_store(blks)
+        _use_store(_make_test_store(blks))
     return server.app.test_client()
 
 
@@ -679,7 +739,7 @@ class TestApiBlocksSummaryCarbonG(unittest.TestCase):
                 "export": {"read": "sensor.exp", "rate": "sensor.exp_rate"},
             }}}
         }
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         store.insert_config_period(cfg)
         cp_id = store.get_current_config_period_id()
         from datetime import datetime, timedelta
@@ -704,7 +764,7 @@ class TestApiBlocksSummaryCarbonG(unittest.TestCase):
 
     def _get_rows(self, store, cfg):
         eio.load_json = lambda path, default=None: cfg if "meters_config" in path else default
-        server._store = store
+        _use_store(store)
         client = make_client(store=store)
         r = client.get("/api/charts/blocks-summary")
         self.assertEqual(r.status_code, 200)
@@ -857,7 +917,7 @@ class TestApiCarbonCurrent(unittest.TestCase):
 
     def _make_store_with_postcode(self, postcode="DE1"):
         """Store whose DB config includes a postcode_prefix."""
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         store.insert_config_period({"meters": {"electricity_main": {"meta": {
             "billing_day": 1, "block_minutes": 30,
             "timezone": "Europe/London",
@@ -869,7 +929,7 @@ class TestApiCarbonCurrent(unittest.TestCase):
     def test_returns_404_no_data(self):
         """Postcode configured in DB but no CI data → 404."""
         store = self._make_store_with_postcode("DE1")
-        server._store = store
+        _use_store(store)
         r = self.client.get("/api/carbon/current")
         self.assertEqual(r.status_code, 404)
         self.assertEqual(r.get_json()["error"], "no_data")
@@ -877,7 +937,7 @@ class TestApiCarbonCurrent(unittest.TestCase):
     def test_returns_intensity_when_data_present(self):
         """CI data in DB → 200 with intensity and ci_index."""
         store = self._make_store_with_postcode("DE1")
-        server._store = store
+        _use_store(store)
         from datetime import datetime, timezone
         now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
         store.upsert_carbon_intensity(now, "DE1", 138.0, "moderate")
@@ -1243,7 +1303,7 @@ class TestCorrectionsApiGate(unittest.TestCase):
             "import": {"read": "sensor.imp", "rate": "sensor.rate"},
             "export": {"read": "sensor.exp", "rate": "sensor.exp_rate"},
         }}}}
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         store.insert_config_period(cfg)
         cp = store.get_current_config_period_id()
         def ins(bs, be, kwh_api):
@@ -1324,7 +1384,7 @@ class TestApiConfigHistoryPostcode(unittest.TestCase):
     only, provenance 'user') and is exposed by the history endpoint."""
 
     def _store(self):
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         cfg = {"meters": {"electricity_main": {"meta": {
             "billing_day": 3, "block_minutes": 30, "timezone": "Europe/London",
             "currency_symbol": "£", "currency_code": "GBP", "site": "Staging",
@@ -1437,7 +1497,7 @@ class TestApiHistoricalPurge(unittest.TestCase):
         server._delete_job = {"status": "idle"}
 
     def _store(self):
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         with store._conn:
             cp = store._conn.execute(
                 "INSERT INTO config_periods (effective_from, billing_day, block_minutes, "
@@ -1550,7 +1610,7 @@ class TestApiRegionReconcile(unittest.TestCase):
     it (split + stamp), and clear the pending marker."""
 
     def _store(self):
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         with store._conn:
             cur = store._conn.execute(
                 "INSERT INTO config_periods (effective_from, effective_to, billing_day, "
@@ -1604,7 +1664,7 @@ class TestApiPreImportSitePlan(unittest.TestCase):
     periods BEFORE the import runs."""
 
     def _preimport_store(self, postcode=None, source=None):
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         with store._conn:
             cur = store._conn.execute(
                 "INSERT INTO config_periods (effective_from, effective_to, billing_day, "
@@ -1691,7 +1751,7 @@ class TestApiConfigHistoryDelete(unittest.TestCase):
     def _make_two_period_store(self):
         """In-memory store with two config periods."""
         import json
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         cfg_old = {"meters": {"electricity_main": {"meta": {
             "billing_day": 1, "block_minutes": 30, "timezone": "Europe/London",
             "currency_symbol": "£", "currency_code": "GBP", "site": "Old Site",
@@ -1793,7 +1853,7 @@ class TestApiConfigHistoryDelete(unittest.TestCase):
 
     def test_delete_only_period_returns_400(self):
         """Cannot delete the only period."""
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         store.insert_config_period({"meters": {"electricity_main": {"meta": {
             "billing_day": 1, "block_minutes": 30, "timezone": "UTC",
             "currency_symbol": "£", "currency_code": "GBP",
@@ -1839,11 +1899,14 @@ class TestConfigMutationBusy(unittest.TestCase):
             except Exception: pass
             raise concurrent.futures.TimeoutError()
         server._run_on_engine_loop = _boom
+        saved_ew = server._engine_write
+        server._engine_write = _REAL_ENGINE_WRITE
         try:
             with self.assertRaises(server._ConfigBusy):
                 server._config_mutation_on_loop(lambda store: {"ok": True})
         finally:
             server._event_loop, server._run_on_engine_loop = saved_loop, saved_run
+            server._engine_write = saved_ew
 
     def test_delete_reports_queued_503_when_busy(self):
         saved = server._config_mutation_on_loop
@@ -1869,7 +1932,7 @@ class TestApiBackupRestoreSync(unittest.TestCase):
     """
 
     def _make_store_with_active_period(self, billing_day=1, site="Test"):
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         cfg = {"meters": {"electricity_main": {"meta": {
             "billing_day": billing_day, "block_minutes": 30,
             "timezone": "Europe/London", "currency_symbol": "£",
@@ -2025,7 +2088,7 @@ class TestApiImportBlocksDb(unittest.TestCase):
     def _make_db_bytes(self):
         """Create a minimal valid SQLite blocks.db as bytes."""
         import tempfile, os
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         store.insert_config_period({"meters": {"electricity_main": {"meta": {
             "billing_day": 15, "block_minutes": 30,
             "timezone": "Europe/London",
@@ -2140,7 +2203,7 @@ class TestApiCorrectionsEnhanced(unittest.TestCase):
     """Tests for the enhanced Historical Corrections endpoints."""
 
     def _make_store_with_blocks(self):
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         store.insert_config_period({"meters": {"electricity_main": {"meta": {
             "billing_day": 1, "block_minutes": 30, "timezone": "Europe/London",
             "currency_symbol": "£", "currency_code": "GBP", "site": "Home",
@@ -2317,7 +2380,7 @@ class TestApiCorrectionsEnhanced(unittest.TestCase):
         Blocks at 23:30 UTC (local_date next day BST) must be included.
         Blocks at 12:00 UTC (midday) must be excluded.
         """
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         store.insert_config_period({"meters": {"electricity_main": {"meta": {
             "billing_day": 1, "block_minutes": 30, "timezone": "Europe/London",
             "currency_symbol": "£", "currency_code": "GBP", "site": "Home",
@@ -2610,7 +2673,7 @@ class TestOverviewGating(unittest.TestCase):
         return {"meters": {"electricity_main": {"meta": meta, "channels": {}}}}
 
     def _get(self, power, postcode):
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         client = make_client(store=store)
         with patch.object(server, "load_config", return_value=self._cfg(power, postcode)):
             return client.get("/live-power")
@@ -2678,7 +2741,7 @@ class TestMiniPowerSource(unittest.TestCase):
         return {"meters": {"electricity_main": {"meta": meta, "channels": {}}}}
 
     def _power(self, cfg, **patches):
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         import contextlib
         with contextlib.ExitStack() as es:
             es.enter_context(patch.object(server, "load_config", return_value=cfg))
@@ -2688,7 +2751,7 @@ class TestMiniPowerSource(unittest.TestCase):
 
     def test_overview_reveals_with_mini_source(self):
         cfg = self._cfg(power_source="mini")
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config", return_value=cfg), \
              patch.object(server, "_mini_device_id", return_value="dev-1"):
             r = client.get("/live-power")
@@ -2717,7 +2780,7 @@ class TestMiniPowerSource(unittest.TestCase):
     def test_mini_available_when_no_other_source(self):
         import engine
         cfg = self._cfg()
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config", return_value=cfg), \
              patch.object(server, "_mini_device_id", return_value="dev-1"), \
              patch.object(engine, "_detected_integrations", {"bcd": {"found": False}}, create=True):
@@ -2728,7 +2791,7 @@ class TestMiniPowerSource(unittest.TestCase):
     def test_mini_not_available_with_bcd(self):
         import engine
         cfg = self._cfg()
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config", return_value=cfg), \
              patch.object(server, "_mini_device_id", return_value="dev-1"), \
              patch.object(engine, "_detected_integrations", {"bcd": {"found": True}}, create=True):
@@ -2756,7 +2819,7 @@ class TestMiniPowerSource(unittest.TestCase):
     def test_enable_sets_marker(self):
         cfg = self._cfg()
         saved = {}
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config", return_value=cfg), \
              patch.object(server, "save_config", side_effect=lambda d: saved.update(cfg=d)):
             r = client.post("/api/power-source/mini", json={"enabled": True})
@@ -2768,7 +2831,7 @@ class TestMiniPowerSource(unittest.TestCase):
     def test_disable_clears_marker(self):
         cfg = self._cfg(power_source="mini")
         saved = {}
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config", return_value=cfg), \
              patch.object(server, "save_config", side_effect=lambda d: saved.update(cfg=d)):
             r = client.post("/api/power-source/mini", json={"enabled": False})
@@ -2779,7 +2842,7 @@ class TestMiniPowerSource(unittest.TestCase):
     def test_enable_blocked_when_sensor_present(self):
         # never override a real device sensor — 409, no save
         cfg = self._cfg(power_sensor="sensor.house")
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config", return_value=cfg), \
              patch.object(server, "save_config",
                           side_effect=AssertionError("must not save")):
@@ -2789,7 +2852,7 @@ class TestMiniPowerSource(unittest.TestCase):
     # ── render: enable-card / disable-note / generic-hint ──
     def test_render_enable_card_when_available(self):
         import engine
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config", return_value=self._cfg()), \
              patch.object(server, "_mini_device_id", return_value="dev-1"), \
              patch.object(engine, "_detected_integrations",
@@ -2800,7 +2863,7 @@ class TestMiniPowerSource(unittest.TestCase):
         self.assertNotIn(b'id="mini-active-note"', r.data)
 
     def test_render_disable_note_when_chosen(self):
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config",
                           return_value=self._cfg(power_source="mini")), \
              patch.object(server, "_mini_device_id", return_value="dev-1"):
@@ -2811,7 +2874,7 @@ class TestMiniPowerSource(unittest.TestCase):
 
     def test_render_generic_hint_when_no_mini(self):
         import engine
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config", return_value=self._cfg()), \
              patch.object(server, "_mini_device_id", return_value=None), \
              patch.object(engine, "_detected_integrations",
@@ -2823,7 +2886,7 @@ class TestMiniPowerSource(unittest.TestCase):
 
     # ── poll cadence + visibility (chunk 3a) ──
     def test_render_mini_poll_cadence(self):
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config",
                           return_value=self._cfg(power_source="mini")), \
              patch.object(server, "_mini_device_id", return_value="dev-1"):
@@ -2833,7 +2896,7 @@ class TestMiniPowerSource(unittest.TestCase):
 
     def test_render_sensor_poll_cadence(self):
         ha = MagicMock(); ha.get_state.return_value = None
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config",
                           return_value=self._cfg(power_sensor="sensor.house")), \
              patch.object(server, "_ha_client", ha):
@@ -2860,7 +2923,7 @@ class TestMiniPowerSource(unittest.TestCase):
 
     def test_render_bcd_adopted_reveals_gauge(self):
         import engine
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config", return_value=self._cfg()), \
              patch.object(engine, "_detected_integrations",
                           {"bcd": {"found": True, "demand_sensor": "sensor.bcd_demand"}}, create=True), \
@@ -2872,7 +2935,7 @@ class TestMiniPowerSource(unittest.TestCase):
 
     def test_api_power_bcd_adopted_beats_mini(self):
         import engine
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config",
                           return_value=self._cfg(power_source="mini")), \
              patch.object(engine, "_detected_integrations",
@@ -2886,7 +2949,7 @@ class TestMiniPowerSource(unittest.TestCase):
         ha = MagicMock()
         ha.get_state.return_value = "1500"
         ha.get_attributes.return_value = {"unit_of_measurement": "W"}
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config",
                           return_value=self._cfg(power_sensor="sensor.house_w")), \
              patch.object(server, "_ha_client", ha):
@@ -2897,7 +2960,7 @@ class TestMiniPowerSource(unittest.TestCase):
         ha = MagicMock()
         ha.get_state.return_value = "2.5"
         ha.get_attributes.return_value = {"unit_of_measurement": "kW"}
-        client = make_client(store=BlockStore(":memory:"))
+        client = make_client(store=BlockStore(_memory_uri()))
         with patch.object(server, "load_config",
                           return_value=self._cfg(power_sensor="sensor.house_kw")), \
              patch.object(server, "_ha_client", ha):
@@ -3064,7 +3127,7 @@ class TestApiMeterDeleteData(unittest.TestCase):
     }
 
     def setUp(self):
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         store.insert_config_period(self.CONFIG_WITH_SUB)
         # Add a block for the sub-meter using the correct format
         store.append_blocks([{
@@ -3246,7 +3309,7 @@ class TestApiSaveConfigFreshInstall(unittest.TestCase):
 
     def setUp(self):
         # Fresh store with zero blocks
-        self.store = BlockStore(":memory:")
+        self.store = BlockStore(_memory_uri())
         self.store.insert_config_period({
             "meters": {
                 "electricity_main": {
@@ -3363,6 +3426,7 @@ class TestApiInsightsDataBoundsCarbonVsUsage(unittest.TestCase):
 
     def test_carbon_range_excludes_precarbon_but_usage_range_includes_it(self):
         store = self._store_with_split_history()
+        _use_store(store)          # patching _get_store no longer reaches reads
         with patch.object(server, "_get_store", return_value=store), \
              patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
             r = server.app.test_client().get("/api/insights/data-bounds")
@@ -3826,6 +3890,7 @@ class TestApiPowerMixHistory(unittest.TestCase):
             {"fuel": "gas",  "perc": 35.0},
         ])
         server.app.config["TESTING"] = True
+        _use_store(self.store)
         self.client = server.app.test_client()
 
     def tearDown(self):
@@ -3862,6 +3927,7 @@ class TestApiPowerMixHistory(unittest.TestCase):
         try:
             from block_store import BlockStore
             empty_store = BlockStore(tmp2)
+            _use_store(empty_store)
             with patch.object(server, "_get_store", return_value=empty_store):
                 r = self.client.get("/api/power/mix-history")
             d = json.loads(r.data)
@@ -4003,6 +4069,7 @@ class TestApiBlocksSummaryDirectImportCost(unittest.TestCase):
                 (cp_id,)
             )
         server.app.config["TESTING"] = True
+        _use_store(self.store)
         self.client = server.app.test_client()
 
     def tearDown(self):
@@ -4061,6 +4128,7 @@ class TestGaugeScaleFromPowerHistory(unittest.TestCase):
                     (ts, kw)
                 )
         server.app.config["TESTING"] = True
+        _use_store(self.store)
         self.client = server.app.test_client()
 
     def tearDown(self):
@@ -4331,7 +4399,7 @@ class TestDeletedRangesEndpoints(unittest.TestCase):
 
     def _store_with_tombstone(self):
         from block_store import BlockStore
-        st = BlockStore(":memory:")
+        st = BlockStore(_memory_uri())
         with st._conn:
             cp = st._conn.execute(
                 "INSERT INTO config_periods (effective_from, billing_day, "
@@ -5487,6 +5555,7 @@ class TestProbeDevicesEndpoint(unittest.TestCase):
         }}
         orig = server.load_config
         server.load_config = lambda: cfg
+        _use_store(_make_test_store([]))
         try:
             r = server.app.test_client().get("/api/historical/probe-devices")
         finally:
@@ -5534,7 +5603,7 @@ class TestAttributionEndpoints(unittest.TestCase):
 
     def tearDown(self):
         import engine
-        engine.attribution_running = lambda: False
+        engine.attribution_running = lambda meter_id=None: False
 
     def test_start_requires_meter_and_sensors(self):
         r = make_client().post("/api/historical/attribute/start",
@@ -5553,16 +5622,28 @@ class TestAttributionEndpoints(unittest.TestCase):
             server.load_config = orig
 
     def test_start_409_when_a_run_is_active(self):
+        """The refusal now comes from `attribution_claim()` failing, not from a
+        separate `attribution_running()` check — the claim IS the check, taken
+        under a lock before any slow work."""
         import engine
         orig = server.load_config
+        _claim = engine.attribution_claim
         server.load_config = lambda: {"meters": {"ev": {"meta": {"sub_meter": True}}}}
-        engine.attribution_running = lambda: True
+        engine.attribution_running = lambda meter_id=None: True
+        engine.attribution_claim = lambda meter_id, sensor_ids: False
+        # The route checks for a running loop BEFORE claiming, so that a refusal
+        # costs nothing and nothing is left claimed. That ordering means this test
+        # has to supply one.
+        _loop = server._event_loop
+        server._event_loop = MagicMock(is_running=lambda: True)
         try:
             r = make_client().post("/api/historical/attribute/start",
                                    json={"meter_id": "ev", "sensor_ids": ["sensor.ev"]})
             self.assertEqual(r.status_code, 409)
         finally:
             server.load_config = orig
+            engine.attribution_claim = _claim
+            server._event_loop = _loop
 
     def test_status_and_control(self):
         cli = make_client()
@@ -5590,14 +5671,14 @@ class TestAttributionEndpoints(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(seen.get("run_id"), "r1")
         self.assertEqual(r.get_json()["deleted"], 3)
-        engine.attribution_running = lambda: True
+        engine.attribution_running = lambda meter_id=None: True
         self.assertEqual(make_client().post("/api/historical/attribute/backout",
                                             json={"run_id": "r1"}).status_code, 409)
-        engine.attribution_running = lambda: False
+        engine.attribution_running = lambda meter_id=None: False
 
     def test_backout_refused_while_another_backout_in_flight(self):
         import engine
-        engine.attribution_running = lambda: False
+        engine.attribution_running = lambda meter_id=None: False
         engine.backout_running = lambda: True
         try:
             r = make_client().post("/api/historical/attribute/backout", json={"run_id": "r1"})
@@ -5608,7 +5689,7 @@ class TestAttributionEndpoints(unittest.TestCase):
 
     def test_backout_unknown_run_returns_409_not_500(self):
         import engine
-        engine.attribution_running = lambda: False
+        engine.attribution_running = lambda meter_id=None: False
         engine.backout_running = lambda: False
         engine.backout_recorder_attribution = lambda **kw: {"ok": False, "error": "run_not_found"}
         r = make_client().post("/api/historical/attribute/backout", json={"run_id": "gone"})
@@ -5877,6 +5958,7 @@ class TestSweepImplausibleEndpoint(unittest.TestCase):
             "6137.592,0.0,0.0,0.0,6137.592,859262.88,140.0)", (cp,))
         s._conn.commit()
         self.store = s
+        _use_store(s)
         self.client = server.app.test_client()
 
     def tearDown(self):
@@ -6040,8 +6122,12 @@ class TestBackfillRun(unittest.TestCase):
 
     def test_gaps_api_runs_inline(self):
         import engine, server
-        server._store.find_block_gaps = lambda **k: [
+        # Reads go through store_access.store(); this route's POST half still
+        # goes through _get_store(). Stub both, or the halves disagree.
+        _gaps = lambda **k: [
             {"start": "2026-01-10T00:00:00", "end": "2026-01-10T00:00:00", "slots": 1}]
+        store_access.store().find_block_gaps = _gaps
+        server._store.find_block_gaps = _gaps
         engine.resolve_history_gaps = lambda: "CORO"            # non-coroutine sentinel
         server._run_on_engine_loop = lambda coro, **k: {"ok": True, "filled": 5}
         self._api(True)
@@ -6073,7 +6159,9 @@ class TestBackfillGaps(unittest.TestCase):
         import server, engine
         engine.kraken_available = lambda: True
         # a missing block-row hole (import) ...
-        server._store.find_block_gaps = lambda **k: [
+        # The read paths go through store_access.store(), so a stub on the
+        # injected writer alone is invisible to them.
+        store_access.store().find_block_gaps = lambda **k: [
             {"start": "2026-05-01T00:00:00", "end": "2026-05-01T00:30:00", "slots": 2}]
         # ... and a persisted EXPORT-channel data gap (blocks exist, export absent)
         engine.api_import_gaps = lambda: {"channels": {
@@ -6097,7 +6185,9 @@ class TestBackfillGaps(unittest.TestCase):
         import server, engine
         engine.kraken_available = lambda: True
         engine.api_import_gaps = lambda: {"channels": {}}
-        server._store.find_block_gaps = lambda **k: [
+        # The read paths go through store_access.store(), so a stub on the
+        # injected writer alone is invisible to them.
+        store_access.store().find_block_gaps = lambda **k: [
             {"start": "2026-05-01T00:00:00", "end": "2026-05-01T00:30:00", "slots": 2}]
         _orig = server.load_config
         server.load_config = lambda: {"meters": {"electricity_main": {
@@ -6549,7 +6639,7 @@ class TestUsageSubMeterGridShare(unittest.TestCase):
     with the (grid-share) Billing breakdown, worst on the house battery."""
 
     def _store(self):
-        store = BlockStore(":memory:")
+        store = BlockStore(_memory_uri())
         store.insert_config_period({"meters": {
             "electricity_main": {"meta": {"block_minutes": 30, "timezone": "UTC",
                 "currency_symbol": "£", "currency_code": "GBP"}},
@@ -6595,14 +6685,14 @@ class TestConfigHistoryConsistency(unittest.TestCase):
     def setUp(self):
         self._orig_loop = server._event_loop
         server._event_loop = None                     # force the inline fallback
-        self.store = BlockStore(":memory:")
+        self.store = BlockStore(_memory_uri())
         self.store.insert_config_period({
             "meters": {"electricity_main": {"meta": {
                 "timezone": "UTC", "billing_day": 3, "block_minutes": 30,
                 "currency_symbol": "£", "currency_code": "GBP", "site_name": "Home"}}}},
             effective_from="2024-06-03T00:00:00")
         server.DATA_DIR = "/tmp/emt_test_361"
-        server._store = self.store
+        _use_store(self.store)
         self.client = server.app.test_client()
 
     def tearDown(self):
@@ -6642,13 +6732,13 @@ class TestVatToggleRegen(unittest.TestCase):
     so the billing summary switches immediately, not after the next finalise."""
 
     def setUp(self):
-        self.store = BlockStore(":memory:")
+        self.store = BlockStore(_memory_uri())
         self.store.insert_config_period({
             "meters": {"electricity_main": {"meta": {
                 "timezone": "UTC", "billing_day": 1, "block_minutes": 30,
                 "currency_symbol": "£", "currency_code": "GBP", "site_name": "Home"}}}})
         server.DATA_DIR = "/tmp/emt_test_vat"
-        server._store = self.store
+        _use_store(self.store)
         self.client = server.app.test_client()
         self._orig = server._schedule_offloaded_regen
         self.calls = {"n": 0}

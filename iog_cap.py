@@ -68,10 +68,6 @@ def merge_intervals(intervals: Iterable[tuple]) -> list:
     return out
 
 
-def _hours(s: str, e: str) -> float:
-    return (datetime.fromisoformat(e) - datetime.fromisoformat(s)).total_seconds() / 3600.0
-
-
 def cap_usage(completed_slots: Iterable[tuple], tz_name: str,
               cap_hours: "float | None" = None) -> dict:
     """Cap usage per noon→noon cap-day, measured in ACTUAL CHARGING TIME.

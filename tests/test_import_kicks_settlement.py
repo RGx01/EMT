@@ -113,8 +113,20 @@ class TestDrainGuardsAreIntact(unittest.TestCase):
         self.assertIn("_measured_history_drain_running", self.src)
 
     def test_defers_to_a_running_import_or_delete(self):
-        self.assertIn("api_import_running", self.src)
-        self.assertIn("delete_in_progress", self.src)
+        """Via the coordinator now. The two predicates used to be named here; the
+        reason for naming them is the declaration on `measured_drain`
+        (`depends_on=("import",)`, `exclusive_with=("delete",)`), so the scheduler
+        asks one question instead."""
+        # `self.src` is an ast.dump, not source text — assert against that form
+        self.assertIn("attr='admission'", self.src)
+        self.assertIn("value='measured_drain'", self.src)
+        self.assertNotIn("api_import_running", self.src)
+
+    def test_the_api_precondition_stays_out_of_the_coordinator(self):
+        """`kraken_available()` is a precondition, not a dependency — the supplier
+        API is not a job and cannot be waited for. Folding it in would make "is
+        the API up" answerable by the job registry."""
+        self.assertIn("kraken_available", self.src)
 
     def test_smb_gated(self):
         self.assertIn("_import_is_smb_capped", self.src)

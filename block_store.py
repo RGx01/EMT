@@ -993,7 +993,13 @@ class BlockStore:
     def __init__(self, db_path: str, *, read_only: bool = False):
         self._path = db_path
         self._read_only = read_only
-        self._conn = sqlite3.connect(db_path, check_same_thread=False)
+        # `uri=True` for a `file:...` path so a NAMED shared-cache in-memory
+        # database can be opened by more than one connection — the fixture story
+        # for the ReadStore/WriteStore split (A §7 q2). `":memory:"` is anonymous:
+        # a second connection to it is a different, empty database, which is why
+        # v4's read companion had to fall back to the shared handle.
+        self._conn = sqlite3.connect(db_path, check_same_thread=False,
+                                     uri=str(db_path).startswith("file:"))
         self._conn.row_factory = sqlite3.Row
         if read_only:
             # Lightweight read-only companion (e.g. off-loop chart rendering):
@@ -2163,10 +2169,6 @@ class BlockStore:
             (_json.dumps(settings),)
         )
         self._conn.commit()
-
-    def get_setting(self, key: str, default=None):
-        """Return a single setting value by key."""
-        return self.get_settings().get(key, default)
 
     def get_meta(self, key: str, default=None):
         """Generic KV read from store_meta. Values are JSON-encoded; the raw

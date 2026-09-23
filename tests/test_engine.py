@@ -3861,13 +3861,13 @@ class TestRunAttributionJob(unittest.IsolatedAsyncioTestCase):
         self._saved = (engine._engine_ha, engine.get_store, engine._attribute_hour,
                        engine.get_block_minutes, engine.delete_in_progress,
                        engine._generate_charts_offloaded)
-        self._j = dict(engine._attribution_job)
+        self._j = dict(engine._attribution_jobs)
 
     def tearDown(self):
         (engine._engine_ha, engine.get_store, engine._attribute_hour,
          engine.get_block_minutes, engine.delete_in_progress,
          engine._generate_charts_offloaded) = self._saved
-        engine._attribution_job.clear(); engine._attribution_job.update(self._j)
+        engine._attribution_jobs.clear(); engine._attribution_jobs.update(self._j)
 
     async def test_stitches_walks_and_records_run(self):
         ha = MagicMock()
@@ -3891,7 +3891,7 @@ class TestRunAttributionJob(unittest.IsolatedAsyncioTestCase):
         res = await engine.run_attribution_job("ev_charger", ["sensor.ev"])
         self.assertTrue(res["ok"])
         self.assertEqual(res["written"], 4)                     # 2 hours × 2 blocks
-        self.assertEqual(engine._attribution_job["status"], "done")
+        self.assertEqual(engine._attribution_jobs["ev_charger"]["status"], "done")
         self.assertEqual(len(chart_calls), 1)                   # charts regenerated after a real run
         store.record_attribution_run.assert_called_once()
         self.assertEqual([c[0] for c in calls],
@@ -3925,7 +3925,7 @@ class TestRunAttributionJob(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(calls, ["2025-03-01T00:00:00", "2025-03-01T01:00:00"])  # both hours walked
         self.assertEqual(res["written"], 4)                     # 2 hours × 2 blocks (mock)
-        self.assertEqual(engine._attribution_job.get("seam"), "2025-03-01T01:00:00")  # still reported
+        self.assertEqual(engine._attribution_jobs["house_battery"].get("seam"), "2025-03-01T01:00:00")  # still reported
 
 
 class TestAttributionPreflight(unittest.IsolatedAsyncioTestCase):

@@ -16,6 +16,10 @@ PyScript → add-on mapping:
 
 import asyncio
 import logging
+from contextlib import contextmanager
+
+import job_coordinator as _coord
+from job_coordinator import job, ADMIT, DEFER, WAIT
 import os
 import shutil
 import threading
@@ -1078,18 +1082,88 @@ def setup():
     ensure_dir(CHART_DIR)
 
 
-def pause_engine():
-    """Pause the engine loop — called by the import page before writing files."""
-    global _engine_paused
+_engine_pause_reason: "str | None" = None
+_engine_paused_since: "float | None" = None
+
+
+def pause_engine(reason: str = None):
+    """Stop the live tick.
+
+    This is the only thing in the system that can stop live capture, and it is
+    worth being precise about what it costs. `_engine_tick` opens with
+    `if _engine_paused: return` — a paused tick is SKIPPED, not queued. Energy is
+    not lost by that, because blocks store register readings
+    (`imp_read_start`/`imp_read_end`) rather than samples, so the delta across the
+    gap is still correct. What a pause can cost is a block BOUNDARY: if one falls
+    inside the pause, its closing register is estimated by `interpolate_value()`
+    and the block is stamped `interpolated = 1`.
+
+    That price was previously paid silently — the log said "engine: paused" and
+    nothing else. `reason` and the duration are recorded so a pause is
+    attributable, and `resume_engine()` says when a boundary was crossed.
+
+    B §4.0: the live tick is the one coordinator member that is never deferred, so
+    this function belongs to the coordinator rather than being a module flag four
+    callers set by hand.
+    """
+    global _engine_paused, _engine_pause_reason, _engine_paused_since
+    import time as _t
     _engine_paused = True
-    logger.info("engine: paused")
+    _engine_pause_reason = reason or "unspecified"
+    _engine_paused_since = _t.monotonic()
+    logger.info("engine: paused (%s)", _engine_pause_reason)
 
 
 def resume_engine():
-    """Resume the engine loop — called by the import page after files are written."""
-    global _engine_paused
+    """Restart the live tick, and say what the pause cost."""
+    global _engine_paused, _engine_pause_reason, _engine_paused_since
+    import time as _t
+    held = (_t.monotonic() - _engine_paused_since) if _engine_paused_since else 0.0
+    why = _engine_pause_reason or "unspecified"
     _engine_paused = False
-    logger.info("engine: resumed")
+    _engine_pause_reason = None
+    _engine_paused_since = None
+    # A pause shorter than a block cannot straddle a boundary; one longer than a
+    # block certainly does. In between it depends where the boundary fell, which
+    # this cannot know without the block clock — so it reports "may have".
+    try:
+        block_s = get_block_minutes() * 60
+    except Exception:
+        block_s = 1800
+    if held >= block_s:
+        logger.warning("engine: resumed after %.0fs (%s) — longer than one %ds "
+                       "block, so at least one boundary was interpolated",
+                       held, why, block_s)
+    elif held > 0:
+        logger.info("engine: resumed after %.1fs (%s) — a boundary inside that "
+                    "span would have been interpolated", held, why)
+    else:
+        logger.info("engine: resumed (%s)", why)
+
+
+def engine_pause_state() -> dict:
+    """Who paused the tick and for how long — for the status surface and for a
+    coordinator that needs to know whether member 23 is running."""
+    import time as _t
+    return {"paused": _engine_paused, "reason": _engine_pause_reason,
+            "held_s": round(_t.monotonic() - _engine_paused_since, 1)
+                      if _engine_paused_since else 0.0}
+
+
+@contextmanager
+def engine_paused(reason: str):
+    """Pause for the duration of a block, resuming on every path.
+
+    The four callers today each hand-roll this: three with `try/finally`, one with
+    a resume at each of three exits. All correct, all separately arrived at —
+    which is the pattern that produced seventeen coordination primitives across
+    four mechanisms. One shape instead.
+    """
+    pause_engine(reason)
+    try:
+        yield
+    finally:
+        resume_engine()
 
 
 async def run_exclusive(fn, *args, **kwargs):
@@ -1138,10 +1212,6 @@ def reset_store():
 # ─────────────────────────────────────────────────────────────────────────────
 # IO helpers
 # ─────────────────────────────────────────────────────────────────────────────
-
-def io_save(path: str, data):
-    save_json_atomic(path, data)
-
 
 def append_block(block: dict):
     get_store().append_block(block)
@@ -3215,27 +3285,117 @@ def _attribute_hour(hour_iso: str, device_meter_id: str, parent_meter_id: str,
     return (written, skipped, no_house)
 
 
-_attribution_job: dict = {"status": "idle"}
+# One entry per device. Was a single dict, which made two problems at once:
+# a second start CLOBBERED the first run's counters, run_id and device, and the
+# one `control` key meant pausing either paused both.
+#
+# Attributing two devices concurrently is fine in itself — different meter_ids,
+# disjoint rows, and the job already skips any block where the device has a row.
+# It was only the bookkeeping that was single-tenant.
+_attribution_jobs: dict = {}
+_attribution_lock = threading.Lock()
+
+_ACTIVE = ("claimed", "running", "paused")
 
 
-def api_attribution_status() -> dict:
-    """JSON-safe snapshot of the recorder-attribution background job."""
-    return {k: v for k, v in _attribution_job.items() if k != "task"}
+def attribution_claim(meter_id: str, sensor_ids: list) -> bool:
+    """Reserve `meter_id` for a run, atomically. False if it is already taken.
+
+    THIS is the fix for the start-route window. The route used to check
+    `attribution_running()` and then, still on the Flask thread, run a preflight
+    (`timeout=180`) and zip the whole database before scheduling the coroutine —
+    and the status only flipped to "running" INSIDE that coroutine. So the gap
+    between "nobody is running" and "someone is running" was however long a
+    preflight plus a database backup takes, and two starts arriving inside it
+    both passed.
+
+    Claiming synchronously, under a lock, closes it: the second caller is refused
+    before it does any of that slow work. Callers MUST `attribution_release()` on
+    every path that then fails to schedule the job.
+    """
+    with _attribution_lock:
+        cur = _attribution_jobs.get(meter_id) or {}
+        if cur.get("status") in _ACTIVE:
+            return False
+        # FIRST MEMBER MIGRATED (B §3.3). The coordinator now owns the fact that
+        # this device is taken; `_attribution_jobs` keeps the run's counters and
+        # control, because those are the UI's shape and workstream C owns that
+        # surface. Two records of one thing would be the §3.4 failure again, so
+        # the split is deliberate: coordinator = identity and admission,
+        # `_attribution_jobs` = progress.
+        ok, _why = _coord.claim("attribution", meter_id)
+        if not ok:
+            return False
+        _attribution_jobs[meter_id] = {
+            "status": "claimed", "device": meter_id,
+            "sensors": list(sensor_ids or []), "control": "run",
+            "written": 0, "skipped": 0, "gaps": 0,
+            "done_hours": 0, "total_hours": 0,
+            "started_at": _dt_now_iso_safe(),
+        }
+        return True
 
 
-def attribution_running() -> bool:
-    return _attribution_job.get("status") in ("running", "paused")
+def attribution_release(meter_id: str) -> None:
+    """Drop a claim that never became a run (preflight refused, backup failed)."""
+    with _attribution_lock:
+        if (_attribution_jobs.get(meter_id) or {}).get("status") == "claimed":
+            _attribution_jobs.pop(meter_id, None)
+            _coord.release("attribution", meter_id)
 
 
-def attribution_control(action: str) -> dict:
-    """pause / resume / cancel the attribution job (mirrors the import controls)."""
-    if action == "pause":
-        _attribution_job["control"] = "pause"
-    elif action == "resume":
-        _attribution_job["control"] = "run"
-    elif action == "cancel":
-        _attribution_job["control"] = "cancel"
-    return api_attribution_status()
+def api_attribution_status(meter_id: str = None) -> dict:
+    """JSON-safe snapshot.
+
+    Shape is backward compatible on purpose: the existing page polls a FLAT
+    object (`status`, `device`, `done_hours`, `written`, ...) and has one
+    pause/cancel pair. So the active run — or the most recent one — is still
+    returned flat, with every run alongside it under `runs`. Workstream C
+    rewrites this surface; until then the page keeps working untouched.
+    """
+    with _attribution_lock:
+        runs = [{k: v for k, v in j.items() if k != "task"}
+                for j in _attribution_jobs.values()]
+    if meter_id is not None:
+        one = next((r for r in runs if r.get("device") == meter_id), {"status": "idle"})
+        return dict(one, runs=runs)
+    active = [r for r in runs if r.get("status") in _ACTIVE]
+    if active:
+        flat = active[0]
+    elif runs:
+        flat = sorted(runs, key=lambda r: r.get("started_at") or "")[-1]
+    else:
+        flat = {"status": "idle"}
+    return dict(flat, runs=runs)
+
+
+def attribution_running(meter_id: str = None) -> bool:
+    """Any run active, or that device's run. The no-argument form keeps its old
+    meaning, because the back-out route uses it to mean "anything at all"."""
+    with _attribution_lock:
+        jobs = list(_attribution_jobs.values())
+    if meter_id is not None:
+        jobs = [j for j in jobs if j.get("device") == meter_id]
+    return any(j.get("status") in _ACTIVE for j in jobs)
+
+
+def attribution_control(action: str, meter_id: str = None) -> dict:
+    """pause / resume / cancel (mirrors the import controls).
+
+    `meter_id` is optional: with one run active this addresses it, which is what
+    the current page sends. With several and no meter_id it addresses ALL of
+    them — deliberate, because the alternative is silently picking one.
+    """
+    ctl = {"pause": "pause", "resume": "run", "cancel": "cancel"}.get(action)
+    if ctl is None:
+        return api_attribution_status()
+    with _attribution_lock:
+        for mid, j in _attribution_jobs.items():
+            if meter_id is not None and mid != meter_id:
+                continue
+            if j.get("status") in _ACTIVE:
+                j["control"] = ctl
+    return api_attribution_status(meter_id)
 
 
 async def attribution_preflight(device_meter_id: str, sensor_ids: list) -> dict:
@@ -3280,6 +3440,8 @@ async def attribution_preflight(device_meter_id: str, sensor_ids: list) -> dict:
         return {"ok": True, "verdict": "error", "device_kwh": None, "house_kwh": None}
 
 
+@job("attribution", depends_on=("import", "verify_pricing"),
+     exclusive_with=("delete",), on_conflict=WAIT)
 async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
                               pace_s: float = 0.0) -> dict:
     """Background: attribute a device's HA recorder history onto the house blocks it
@@ -3289,20 +3451,28 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
     between hours and PAUSES while a delete/purge runs, so it coexists with the live
     tick and the pass-2 settlement drain. Records a ledger run. Never raises."""
     import asyncio as _aio
-    j = _attribution_job
+    # This device's own entry — created by `attribution_claim()` when the route
+    # reserved it, or here if the job was started directly (tests, a future
+    # scheduler). Never `clear()`: that is what let a second start wipe the
+    # first run's counters.
+    with _attribution_lock:
+        j = _attribution_jobs.setdefault(device_meter_id, {})
     # NB: always fetch the store fresh via get_store() at each use — never capture it
     # across an `await`. engine_startup (a config save OR an HA WebSocket reconnect)
     # closes and reopens _store, so a handle captured before the long recorder fetch
     # would be closed by the time we used it → "Cannot operate on a closed database".
-    j.clear()
-    j.update({"status": "running", "phase": "fetching", "control": "run",
+    _coord.mark("attribution", device_meter_id, status="running")
+    j.update({"status": "running", "phase": "fetching",
+              "control": j.get("control") or "run",
               "device": device_meter_id, "sensors": list(sensor_ids or []),
               "written": 0, "skipped": 0, "gaps": 0, "done_hours": 0,
-              "total_hours": 0, "started_at": _dt_now_iso_safe()})
+              "total_hours": 0,
+              "started_at": j.get("started_at") or _dt_now_iso_safe()})
     run_id = _dt_now_iso_safe() + "|" + device_meter_id
     try:
         if _engine_ha is None:
             j.update({"status": "error", "error": "no HA connection"})
+            _coord.mark("attribution", device_meter_id, status="error")
             return {"ok": False, "error": "no HA connection"}
         parent = get_store().get_parent_meter_id(device_meter_id) or "electricity_main"
         now = datetime.now(timezone.utc)
@@ -3343,18 +3513,44 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
         for i, hour in enumerate(hours):
             if j.get("control") == "cancel":
                 j["status"] = "cancelled"
+                _coord.mark("attribution", device_meter_id, status="cancelled")
                 break
-            # Wait out a running import OR verify too: both write the pricing the
-            # attribution reads, and attributing over a not-yet-verified (imp_rate
-            # NULL) block used to crash PASS 2 and could cost the device at 0.
-            while (j.get("control") == "pause" or delete_in_progress()
-                   or api_import_running() or _verify_running()):
-                j["status"] = "paused"
+            # THE FIRST MEMBER TO CONSUME THE COORDINATOR, rather than only feed
+            # it. This was three hand-rolled predicate calls —
+            # `delete_in_progress() or api_import_running() or _verify_running()`
+            # — and the reason for each lived in the comment above them:
+            #
+            #   "both write the pricing the attribution reads, and attributing
+            #    over a not-yet-verified (imp_rate NULL) block used to crash
+            #    PASS 2 and could cost the device at 0."
+            #
+            # That reason is now the DECLARATION on this job — depends_on
+            # ("import", "verify_pricing"), exclusive_with ("delete") — so the
+            # loop asks one question instead of naming three jobs. Adding a
+            # fourth blocker becomes a declaration rather than an edit here, and
+            # `validate()` catches a blocker that names nothing declared.
+            #
+            # The member's OWN pause control stays separate: a user pausing this
+            # run is not a dependency, and conflating the two would make
+            # `admission()` answerable by the UI.
+            while True:
+                if j.get("control") == "pause":
+                    j["status"] = "paused"
+                    j["phase"] = "paused by request"
+                else:
+                    _decision, _blocker = _coord.admission("attribution")
+                    if _decision == ADMIT:
+                        break
+                    # Better than the old loop could manage: the page can now say
+                    # WHAT it is waiting for, because the coordinator knows.
+                    j["status"] = "paused"
+                    j["phase"] = "waiting for %s" % _blocker
                 await _aio.sleep(1.0)
                 if j.get("control") == "cancel":
                     break
             if j.get("control") == "cancel":
                 j["status"] = "cancelled"
+                _coord.mark("attribution", device_meter_id, status="cancelled")
                 break
             j["status"] = "running"
             w, s, nh = _attribute_hour(hour, device_meter_id, parent,
@@ -3376,6 +3572,7 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
                 "blocks_written": written, "created_at": _dt_now_iso_safe()})
         if j.get("status") != "cancelled":
             j["status"] = "done"
+            _coord.mark("attribution", device_meter_id, status="done")
         j["run_id"] = run_id
         if written:
             # Attribution rewrote historical blocks (new device rows + re-derived
@@ -3393,6 +3590,7 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
     except Exception as e:
         logger.warning("run_attribution_job failed: %s", e)
         j.update({"status": "error", "error": str(e)})
+        _coord.mark("attribution", device_meter_id, status="error")
         return {"ok": False, "error": str(e)}
     finally:
         _pass2_quiet = False          # never leave bulk-suppression on after the job
@@ -4391,6 +4589,19 @@ def set_delete_active(active: bool) -> None:
     block before writing and skips any the delete removed."""
     global _delete_active
     _delete_active = bool(active)
+    # One chokepoint, both workers. `_delete_worker` and `_purge_worker` share
+    # this flag, and `delete_in_progress()` means "either" — so they are one
+    # coordinator member with two entry points rather than two members.
+    #
+    # Inherits the flag's existing limitation rather than pretending otherwise:
+    # if both ever ran at once, the first to finish would clear it for both. That
+    # is true of `_delete_active` today; the coordinator does not make it worse,
+    # and does not fix it either. Keyed claims would — `claim("delete", key)` —
+    # but that is a behaviour change and belongs with its own evidence.
+    if active:
+        _coord.claim("delete", force=True)
+    else:
+        _coord.mark("delete", status="done")
 
 
 def delete_in_progress() -> bool:
@@ -4484,6 +4695,7 @@ def _nearest_intensity_from_map(ci_map: dict, block_start: str):
     return best
 
 
+@job("carbon_backfill", depends_on=("import",), exclusive_with=("delete",))
 async def _run_historical_carbon_backfill(window_days: int = 13,
                                           max_windows: int = 60) -> int:
     """One-shot historical carbon backfill. Pages the Carbon Intensity API over
@@ -4717,14 +4929,15 @@ def _maybe_backfill_historical_carbon() -> None:
             return
         if _store.get_meta("carbon_paused", None):     # manual kill switch
             return
-        # Don't compete with an active historical import — both do heavy work on
-        # the engine's single DB connection. Defer; the next CI tick re-checks
-        # (and the import's completion re-arms the marker anyway).
-        if api_import_running():
-            logger.info("_maybe_backfill_historical_carbon: import job active — deferring")
-            return
-        if delete_in_progress():
-            logger.info("_maybe_backfill_historical_carbon: delete job active — deferring")
+        # The reason these two were named here — "Don't compete with an active
+        # historical import — both do heavy work on the engine's single DB
+        # connection" — is now the DECLARATION on this member, so the scheduler
+        # asks one question instead of naming two jobs. Adding a third blocker
+        # becomes a declaration rather than an edit here.
+        _decision, _blocker = _coord.admission("carbon_backfill")
+        if _decision != ADMIT:
+            logger.info("_maybe_backfill_historical_carbon: %s active — deferring",
+                        _blocker)
             return
         state = _store.get_meta(_CARBON_BACKFILL_MARKER, {}) or {}
         if state.get("done"):
@@ -4934,6 +5147,7 @@ async def _tick_carbon_intensity() -> float | None:
     return row["intensity"] if row else None
 
 
+@job("live_tick", on_conflict=ADMIT)                      # member 23: never deferred
 async def engine_loop_task(ha: HAClient):
     """
     Runs forever, ticking every 10 seconds.
@@ -7062,6 +7276,7 @@ def _maybe_backfill_historical_iog_split() -> None:
         _iog_split_backfill_running = False
 
 
+@job("iog_split_carve")
 async def run_iog_split_carve(max_blocks: int = 2000) -> dict:
     """Recurring PREDICTED EV/Home carve for UNSETTLED dispatched blocks whose completed
     dispatch arrived AFTER finalise, so the finalise seam left them house-only (imp_kwh_ev
@@ -7301,6 +7516,7 @@ def _write_reprice_report(*, verdict: str, swept: int, healed: int, skipped: int
         logger.debug("_write_reprice_report: %s", e)
 
 
+@job("reprice_sweep", depends_on=("import",), exclusive_with=("delete",))
 async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 500,
                                         pace_s: float = 0.02, *, force: bool = False) -> int:
     """P3.3b — the UNIFIED historical re-price sweep (Phase 3 / Option A). Walks blocks that
@@ -7463,6 +7679,7 @@ def reprice_history_in_progress() -> bool:
         return False
 
 
+@job("reprice_sweep_to_done")
 async def run_reprice_history_sweep_to_done(max_passes: int = 500) -> None:
     """G2: run the reprice-history sweep FORCED until it marks done — for use right after a manual
     gap-fill (Retry / CSV). A filled or corrected block has had its stale segment invalidated
@@ -7489,7 +7706,9 @@ def _maybe_reprice_history() -> None:
             return
         if not kraken_available():
             return
-        if api_import_running() or delete_in_progress():
+        _decision, _blocker = _coord.admission("reprice_sweep")
+        if _decision != ADMIT:
+            logger.info("_maybe_reprice_history: %s active — deferring", _blocker)
             return
         _m = _store.get_meta(_REPRICE_HISTORY_MARKER, {}) or {}
         if _m.get("done") and int(_m.get("scope") or 1) >= _REPRICE_HISTORY_SCOPE:
@@ -9069,11 +9288,17 @@ def _persist_verify_summary(j: dict) -> None:
         logger.warning("verify pricing: persist summary failed: %s", e)
 
 
-def _verify_running() -> bool:
-    """A deferred pricing-verification pass is actively repricing (running/waiting/
-    paused). Device attribution must wait for it — it backfills the legacy imp_rate
-    the attribution reads."""
-    return _verify_job.get("status") in ("running", "waiting", "paused")
+# `_verify_running()` DELETED here, 23 Sep 2026 — §4a, and the first thing the
+# coordinator has removed rather than added.
+#
+# It existed for one caller: attribution's wait loop. Its docstring WAS the
+# dependency — "Device attribution must wait for it — it backfills the legacy
+# imp_rate the attribution reads" — and that sentence is now the declaration on
+# `run_attribution_job` (`depends_on=("verify_pricing",)`), with
+# `run_deferred_verify_pricing` claiming for the same span the predicate covered.
+#
+# The reachability ratchet is what surfaced it: migrating the loop left this with
+# no callers on the same commit.
 
 
 def api_verify_pricing_status() -> dict:
@@ -9115,6 +9340,7 @@ def _run_wrote_blocks(job: dict) -> int:
         return 0
 
 
+@job("verify_pricing", depends_on=("import",))
 async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: float = 0.5,
                                       wait_s: float = 60.0, max_wait_cycles: int = 120,
                                       restart: bool = True) -> dict:
@@ -9158,6 +9384,13 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
     _t0 = __import__("time").monotonic()
     corrections: list = []        # per-chunk {from,to,repriced} for days actually changed
     _verify_job.clear()
+    # Attribution's second blocker. Its own predicate says why: "Device attribution
+    # must wait for it — it backfills the legacy imp_rate the attribution reads."
+    # Mirrors `_verify_running()` exactly, including counting "waiting" and "paused"
+    # as active: a pass stopped for API allowance has not finished writing. No
+    # stricter a view than v4 here — unlike the import, where "finalising" was
+    # genuinely uncovered.
+    _coord.claim("verify_pricing", force=True)
     _verify_job.update({"status": "running", "phase": "verifying",
                         "chunks_total": total_chunks, "chunks_done": done_chunks,
                         "repriced": 0, "checked": 0, "skipped": 0, "elapsed_s": 0,
@@ -9264,6 +9497,7 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
                             "repriced": repriced, "checked": checked, "skipped": skipped,
                             "elapsed_s": _elapsed, "corrections": list(corrections),
                             "finished_at": _dt_now_iso_safe()})
+        _coord.mark("verify_pricing", status="done")
         _persist_verify_summary(dict(_verify_job))
         logger.info("verify pricing: complete — corrected %d slot(s) across %d day-range(s) "
                     "(re-checked %d, skipped %d already-correct) in %ds",
@@ -9307,6 +9541,7 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
     except Exception as e:
         logger.warning("verify pricing pass failed: %s", e)
         _verify_job.update({"status": "error", "error": str(e)})
+        _coord.mark("verify_pricing", status="done")
         return {"ran": True, "error": str(e)}
 
 
@@ -9615,6 +9850,7 @@ async def _probe_and_apply_region_periods() -> dict | None:
         return None
 
 
+@job("gap_fill")
 async def run_gap_fill_job(from_ts, to_ts, *, channels=("import", "export"),
                            chunk_days: int = 60, max_chunks: int = 6,
                            pace_s: float = 1.5,
@@ -9744,6 +9980,7 @@ async def run_gap_fill_job(from_ts, to_ts, *, channels=("import", "export"),
         j["status"] = "error"; j["error"] = str(e)
 
 
+@job("import", exclusive_with=("delete",))
 async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
                              max_chunks: int = 1, pace_s: float = 1.5,
                              headroom_frac: float = 0.25) -> None:
@@ -9752,6 +9989,16 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
     Updates `_api_import_job` for the status endpoint. Never raises."""
     j = _api_import_job
     j.clear()
+    # The import is the blocker four other members declare, so it is the
+    # member that makes admission() mean anything. NOTE the coordinator takes
+    # a STRICTER view than `api_import_running()`, deliberately: that predicate
+    # excludes "finalising", but finalising runs _probe_and_apply_region_periods,
+    # _drain_reprice_queue_after_import and a chart regen — all writes, including
+    # repricing. A job admitted during finalising is admitted while the import is
+    # still rewriting the pricing it reads, which is exactly the dependency
+    # attribution exists to respect. v4's predicate is left alone; the
+    # coordinator simply has the correct view from the start.
+    _coord.claim("import", force=True)
     j.update({"status": "running", "phase": "importing", "control": "run",
               "started_at": _dt_now_iso_safe(),
               "written": {"import": 0, "export": 0}, "oldest": {},
@@ -9764,6 +10011,7 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
             ctl = j.get("control")
             if ctl == "cancel":
                 j["status"] = "cancelled"
+                _coord.mark("import", status="done")
                 await _regen_charts_after_import_async(j)   # show what did import
                 return
             if ctl == "pause":
@@ -9778,6 +10026,7 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
             first = False
             if not res.get("ok"):
                 j["status"] = "error"
+                _coord.mark("import", status="done")
                 j["error"] = res.get("reason") or "failed"
                 return
             j["go_live"] = res.get("go_live")
@@ -9860,10 +10109,12 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
                                 "pricing verification pass")
                     j["verify_skipped"] = "no_blocks_written"
                 j["status"] = "done"
+                _coord.mark("import", status="done")
                 j["phase"] = "done"
                 return
             if rate_limited:
                 j["status"] = "rate_limited"
+                _coord.mark("import", status="done")
                 for _ in range(60):     # ~60s cooldown, but stay responsive
                     if j.get("control") in ("cancel", "pause"):
                         break
@@ -9871,6 +10122,7 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
     except Exception as e:
         logger.warning("run_api_import_job: failed: %s", e)
         j["status"] = "error"
+        _coord.mark("import", status="done")
         j["error"] = str(e)
 
 
@@ -11428,6 +11680,7 @@ def _write_smb_repair_report(res: dict) -> None:
         logger.debug("_write_smb_repair_report: %s", e)
 
 
+@job("smb_rate_repair")
 async def run_smb_rate_repair(force: bool = False) -> dict:
     """One-off IOG-SMB rate-repair migration (4.5.7). Gated (`smb_rate_repair_done`),
     self-marking, idempotent; retires in v5.0.0. Runs once after the schedule is built —
@@ -11486,6 +11739,7 @@ def _smb_device_recost_core(store) -> dict:
     return {"ok": True, "re_costed": cur.rowcount}
 
 
+@job("smb_device_recost")
 async def run_smb_device_recost(force: bool = False) -> dict:
     """One-off device-cost heal (4.5.7). Gated (`smb_device_recost_done`), self-marking,
     idempotent; retires in v5.0.0. Heals sub-meter blocks the measured settlement left at a
@@ -11689,6 +11943,7 @@ def _band_rate_snap_core(store, limit=None) -> dict:
             "scanned": len(rows)}
 
 
+@job("band_rate_snap")
 async def run_band_rate_snap(force: bool = False) -> dict:
     """One-off band-rate snap (4.5.13). Gated (`band_rate_snap_done`), self-marking,
     idempotent; retires in v5.0.0. Local; no API. The billed cost is never touched."""
@@ -11707,6 +11962,7 @@ async def run_band_rate_snap(force: bool = False) -> dict:
     return res
 
 
+@job("smb_ev_resplit")
 async def run_smb_ev_resplit(force: bool = False) -> dict:
     """One-off EV-split heal (4.5.9). Gated (`smb_ev_resplit_done`), self-marking, idempotent;
     retires in v5.0.0. Re-splits settled off-peak slots where Octopus's EV_DEVICE bucket
@@ -11889,6 +12145,7 @@ _SETTLEABLE_SQL = "(b.source LIKE 'imported%' OR b.imp_kwh_api IS NOT NULL)"
 _measured_history_drain_running = False   # re-entry guard for the scheduled drain task
 
 
+@job("measured_drain", depends_on=("import",), exclusive_with=("delete",))
 async def run_measured_history_drain(max_batches: int = 5000) -> dict:
     """First-time SMB history fill: settle IMPORTED capped-tariff history to Octopus's own billed
     four-bucket breakdown, OLDEST-first, skipping the not-yet-billed recent window.
@@ -12002,6 +12259,7 @@ def _measured_history_backlog() -> int:
         return 0
 
 
+@job("settled_ev_split_heal")
 def run_settled_ev_split_heal(limit: int = 2000) -> dict:
     """Re-apply the bill's EV/Home split to blocks settled WITHOUT one.
 
@@ -12059,7 +12317,15 @@ def _maybe_drain_measured_history() -> None:
     try:
         if _store is None or _measured_history_drain_running or not _import_is_smb_capped():
             return
-        if not kraken_available() or api_import_running() or delete_in_progress():
+        # `kraken_available()` is a PRECONDITION, not a dependency — the supplier
+        # API is not a job and cannot be waited for. B §1 keeps the two apart;
+        # folding a readiness check into the coordinator would make "is the API up"
+        # answerable by the job registry.
+        if not kraken_available():
+            return
+        _decision, _blocker = _coord.admission("measured_drain")
+        if _decision != ADMIT:
+            logger.info("_maybe_drain_measured_history: %s active — deferring", _blocker)
             return
         if _measured_history_backlog() <= 0:
             return
