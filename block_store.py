@@ -7860,8 +7860,15 @@ class BlockStore:
 
         PASS 2 costs each sub-meter at its parent's rate, so when settlement moves
         the main rate the children must follow or the block disagrees with itself
-        -- device == main == bill. kWh, the grid-clipped device draw, is untouched;
-        only the priced rate layer moves.
+        -- device == main == bill. The kWh columns are untouched; only the priced
+        rate layer moves.
+
+        Cost derives from `imp_kwh_grid` -- the portion of the draw the GRID
+        supplied, which is what PASS 2 prices -- falling back to raw `imp_kwh` only
+        where PASS 2 never clipped. Pricing raw `imp_kwh` over-costs any device with
+        non-grid supply (a battery on solar), and the bill's
+        `max(0, main - SUM(devices))` clamp then carries that into the bill
+        (v4 #473, 4.5.15; tests/test_device_cost_clip.py).
 
         `imp_kwh IS NOT NULL` is what excludes an export meter, which has no import
         to re-cost. No-op on a synthetic-EV account, which has no sub-meter blocks.
@@ -7876,9 +7883,9 @@ class BlockStore:
         with self._conn:
             cur = self._conn.execute(
                 "UPDATE blocks SET imp_rate = ?, "
-                "imp_cost = ROUND(COALESCE(imp_kwh,0) * ?, 6), "
+                "imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
                 "imp_rate_exc = ?, "
-                "imp_cost_exc = ROUND(COALESCE(imp_kwh,0) * ?, 6), "
+                "imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
                 "exc_source = 'tariff' "
                 "WHERE block_start = ? AND meter_id != ? AND imp_kwh IS NOT NULL",
                 (rate, rate, rate_exc, rate_exc, block_start, main_meter_id))
@@ -7891,8 +7898,11 @@ class BlockStore:
 
         THE INVARIANT: PASS 2 costs every sub-meter at the parent's rate, so a
         physical device block (ev_charger / battery) must carry the same
-        `imp_rate` as the main block for its slot. kWh -- the grid-clipped device
-        draw -- is never touched; only the priced rate layer moves.
+        `imp_rate` as the main block for its slot. The kWh columns are never
+        touched; only the priced rate layer moves. Cost derives from
+        `COALESCE(imp_kwh_grid, imp_kwh)`, as in `recost_sub_meters` -- v4's body
+        priced raw `imp_kwh`, and running that on every pass would re-apply the
+        over-cost indefinitely (v4 #473, 4.5.15).
 
         This exists because settlement moves the parent and the children can be
         left behind. `apply_measured_to_block` flips the main row to the settled
@@ -7920,11 +7930,11 @@ class BlockStore:
                 "UPDATE blocks SET "
                 "  imp_rate = (SELECT m.imp_rate FROM blocks m "
                 "              WHERE m.meter_id='electricity_main' AND m.block_start=blocks.block_start), "
-                "  imp_cost = ROUND(COALESCE(imp_kwh,0) * (SELECT m.imp_rate FROM blocks m "
+                "  imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * (SELECT m.imp_rate FROM blocks m "
                 "              WHERE m.meter_id='electricity_main' AND m.block_start=blocks.block_start), 6), "
                 "  imp_rate_exc = (SELECT m.imp_rate_exc FROM blocks m "
                 "              WHERE m.meter_id='electricity_main' AND m.block_start=blocks.block_start), "
-                "  imp_cost_exc = ROUND(COALESCE(imp_kwh,0) * (SELECT m.imp_rate_exc FROM blocks m "
+                "  imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * (SELECT m.imp_rate_exc FROM blocks m "
                 "              WHERE m.meter_id='electricity_main' AND m.block_start=blocks.block_start), 6), "
                 "  exc_source = 'tariff' "
                 # sub-meters only; an export meter has no imp_kwh
