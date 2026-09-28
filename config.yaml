@@ -1,7 +1,7 @@
-name: "Energy Meter Tracker"
+name: "Energy Meter Tracker SOAK"
 description: "Electricity metering engine with configurable reconciliation periods, sub-meter support, gap filling, and billing charts"
-version: "4.5.14"
-slug: "energy_meter_tracker"
+version: "4.5.14-a18"
+slug: "emt_soak"
 init: false
 startup: application
 boot: auto
@@ -21,7 +21,7 @@ map:
 # VALUE = port published on the HOST. Change only the VALUE to avoid a clash with
 # another instance; clear it entirely if you only use ingress.
 ports:
-  8099/tcp: 8099
+  8099/tcp: 8098
 ports_description:
   8099/tcp: "Web UI (direct access)"
 
@@ -60,7 +60,7 @@ options:
   # to use the add-on name (from config.yaml). Set it per instance — e.g. "Prod"
   # / "Dev" — when two installs share the same add-on name (the repo-URL
   # workaround), since it's a per-install setting, not stored in the database.
-  instance_name: ""
+  instance_name: "SOAK"
 
 schema:
   log_level: "list(debug|info|warning|error)"

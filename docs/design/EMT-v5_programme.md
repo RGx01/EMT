@@ -98,25 +98,77 @@ rows and no read blocked behind a write.
 
 ### B. Job coordinator (BL-50)
 
+*Designed: [EMT-v5_B_coordinator_design.md](EMT-v5_B_coordinator_design.md). The headline from that work is that **B is not mutual exclusion** — measurement says uncoordinated jobs do not corrupt each other, and what v4 actually coordinates for is data DEPENDENCIES ("is what I am about to read settled?"), resource contention, and preconditions. A lock would serialise 22 members that mostly do not conflict and still not fix the one real bug in the set.*
+
 *v4 got this right for some jobs and not others — that asymmetry is the bug.*
 
-Guard-reference counts across the Tier 1 job registry in 4.5.13:
+**Measured 22 Sep 2026** by `.build/check_job_guards.py`, pinned by
+`tests/test_job_guards.py`. The asymmetry is wider than the four-job table this section used to
+carry: there are **17 long-running write jobs, 14 of them live** (three are the unreachable legacy
+backfills), and v4 has **17 coordination primitives** — 9 module flags and 8 predicate functions —
+spread across them.
 
-| Job | Guard | Refs |
-|---|---|---|
-| Historical import | `api_import_running` | 17 |
-| Device delete | `delete_in_progress` | 14 |
-| Measured-history drain | `_measured_history_drain_running` | 8 |
-| **Device-history attribution** | `attribution_running` | **3** |
+| | |
+|---|---|
+| live long-running write jobs | **14** |
+| …consulting **no** guard at all | **9** |
+| …coordinating with something | 5 |
 
-Backup/restore and historical import were built not to disturb live processing and they behave.
-Attribution was not held to the same standard, and it is the one that has crashed against the
-engine. The fix is not more ad-hoc flags — it is the single coordinator BL-50 specifies, with
-attribution, attribution-backout and the blocks-delete endpoints as first-class members rather than
+And the five that coordinate all coordinate against the **same two things**: `api_import_running`
+and `delete_in_progress`. So it is not that v4 lacks coordination — it is that exactly two jobs were
+ever considered worth avoiding, and nothing else was. Backup/restore and historical import were
+built not to disturb live processing and they behave; everything added since inherited neither the
+habit nor a mechanism that would have made it automatic.
+
+**The one real mutual-exclusion primitive is unused.** `run_exclusive()` takes the engine loop lock
+and runs an operation under it. It has a single caller, and that caller passes `lambda: None` — it
+is used to *drain* the in-flight tick, never to run anything. A correct mechanism at zero adoption,
+which is precisely the shape workstream A found in the read companion (§1 there), and for the same
+reason: nothing punishes the wrong choice at the moment it is made.
+
+**What this is not.** Nine unguarded jobs is not nine races. They all run on the one engine loop, so
+coroutines interleave at `await` points rather than running in parallel — A removed the
+parallel-thread class. The hazard is **logical**: a batch reading rows another job is part-way
+through rewriting. Real, and silent, but a weaker claim than a data race, and the number should not
+be quoted as the stronger one.
+
+The fix is not more ad-hoc flags — it is the single coordinator BL-50 specifies, with attribution,
+attribution-backout and the blocks-delete endpoints as first-class members rather than
 afterthoughts.
 
-Scope note: with workstream A done, this shrinks to coordinating **writers**. That is a materially
-smaller and more tractable problem than the "serialise everything" version.
+**What the coordinator cannot be.** The obvious rule — *two jobs may run together when their write
+scopes are disjoint* — was measured (`.build/write_scope.py`, pinned by `tests/test_write_scope.py`)
+and does not survive at table granularity:
+
+> **13 of the 14 live jobs write `blocks`; 11 also write `block_segments`.**
+
+Everything conflicts with everything, so a table-level rule is a global lock wearing a costume. The
+scope that could work is finer — the block RANGE or the meter — and the information already exists:
+the import has from/to, the sweeps carry cursors, the SMB repairs have a floor, attribution has a
+device and a span.
+
+**Why today's nine uncoordinated jobs nevertheless converge.** The per-block write path is **fully
+synchronous** — no `await` anywhere in its call tree. On the single engine loop that makes one
+block's read-modify-write atomic: another coroutine cannot interleave inside it, so jobs interleave
+*between* blocks and each re-derives from the block's current state.
+
+That is load-bearing and easy to lose. **A coordinator that introduces an `await` inside a block
+write removes the property that currently keeps uncoordinated jobs safe** — which would make the
+coordinator the thing that created the problem it was built to solve. There is a test asserting the
+call tree stays synchronous.
+
+*(Correction, same work: two attribution runs for different devices were described earlier as
+touching "disjoint rows". They do not — the device write re-derives the PARENT meter's remainder,
+so both rewrite the house row. They are safe for the atomicity reason above, not for disjointness.)*
+
+Scope note: with workstream A done, this is coordinating **writers** — and writers are now
+enumerated rather than guessed at (`.build/write_inventory.py`): **92 functions in `engine.py`**,
+26 in `web/server.py` of which 19 are route handlers still writing on a request thread, 1 in
+`kraken_ingester.py`, and **zero** in `backfill.py` / `csv_import.py` / `api_import.py`.
+
+Note this is a *sharper* scope, not a smaller one. A §7 q3 established that all the long-running
+jobs are writers, so the minutes-long work is exactly what B must coordinate. What A bought B is a
+measured boundary in place of "serialise everything".
 
 ### C. One API for every surface
 

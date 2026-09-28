@@ -142,19 +142,248 @@ Every response carries:
 - **`fingerprint`** — per-day for the range, plus the current `epoch` (§2a). Derived from the rows,
   covering every displayed field rather than totals alone. Replaces `_blocks_data_version`, and is a
   property of the data rather than of a pre-generated file.
-- **`tariff_context`** — the agreement(s) covering the range, their bands and cap state. Explicit in
-  the payload so the client never infers a band from a rate, and so the rule-2 argument has an
-  obvious source. **Its band shape is a 2×2, not a pair.** A `(min, max)` rate range or a
-  `day_rate_bounds` field assumes two bands; IOG-SMB has four rate buckets, so the context carries
-  **four series keyed by *(attribution, band)*** — house·`day`, house·`night`, EV·`peak`,
-  EV·`off_peak` — each valid over a stated interval. A two-band context cannot express an EV
-  charging at peak while the house is on night, which is a real and billable state (§4).
+- **`tariff_context`** — the agreement(s) covering the range, their bands and cap state. **Its band
+  shape is a 2×2, not a pair.** A `(min, max)` rate range or a `day_rate_bounds` field assumes two
+  bands; IOG-SMB has four rate buckets, so the context carries **four series keyed by
+  *(attribution, band)*** — house·`day`, house·`night`, EV·`peak`, EV·`off_peak` — each valid over a
+  stated interval. A two-band context cannot express an EV charging at peak while the house is on
+  night, which is a real and billable state (§4).
+
+  > **It is OPTIONAL, and the payload must be complete without it — corrected 25 Sep 2026.** This
+  > bullet said it was there *"so the client never infers a band from a rate"*. That goal is already
+  > met, and not by this field: **`block_segments.band` carries the cell of the 2×2 on every segment
+  > row.** The client is told, per segment, which band it is in; it never has to infer.
+  >
+  > What `tariff_context` adds is narrower and still worth having — the PUBLISHED rate for each band
+  > and where the band boundaries fall in time. That is what draws a rate line, and what lets a
+  > surface show a band no data landed in.
+  >
+  > **But it has no persistent source.** Measured against a 4.5.14 prod database: no table holds a
+  > tariff schedule. `meter_channels.tariff` is a code, not rates; `block_segments.inc_rate` is what
+  > was CHARGED, not what was PUBLISHED. The schedules live only in `engine._kraken_rate_schedules`,
+  > rebuilt from the supplier API at every startup — so they are absent before discovery completes,
+  > absent while the API is unreachable, and absent **permanently** for a `not-listed` install, which
+  > §5 of the import spec insists is a real supported supplier with real kWh history.
+  >
+  > Therefore: **serve it when the schedules are loaded, omit the key when they are not, and never
+  > let a surface depend on it for correctness.** A client that needs "what band was this?" reads the
+  > segment. A client drawing a published-rate line degrades to drawing only what was charged.
+  >
+  > *Deriving it from the data instead was considered and is NOT equivalent.* Across 2,201
+  > *(day, attribution, band)* cells, 1,918 carry a single rate and **283 carry more than one**
+  > (worst: three). Those are concentrated in 2023–24 — 266 of 283, against 17 in 2026 — the same
+  > historical shape as the `standard` band population (§3a of the schema notes). So an observed
+  > "the rate for house·night on this day" is a well-defined value in the modern era and ambiguous
+  > across a tariff change. Observed rates and published rates are different facts and the payload
+  > should not blur them.
 - **`provenance` per block** — `rate_source`, whether a device breakdown is held, whether the block
   is settled. Surfaces differ today partly because each re-derives this; it should be stated once.
 
-**Segments are the unit of truth.** v4 established this (BL-27) and the import spec depends on it —
-legacy derived columns are dropped precisely because segments reproduce them. The API must not
-reintroduce a parallel derivation.
+  > **Measured, 25 Sep 2026 — "settled" is THREE facts, not one, and a device row's provenance is
+  > about the wrong thing.**
+  >
+  > The three signals in use, on a 4.5.14 prod database (137,099 blocks):
+  >
+  > | fact | signal | main-meter blocks |
+  > |---|---|---|
+  > | the kWh is authoritative | `source LIKE 'imported%' OR imp_kwh_api IS NOT NULL` (`_SETTLEABLE_SQL`) | 57,822 |
+  > | the bill has been FETCHED | a `measured_cost` row exists | 633 |
+  > | the bill has been APPLIED | `rate_source = 'measured'` | 603 |
+  >
+  > They are orthogonal and they disagree. 48,050 imported blocks are settleable with **no**
+  > `imp_kwh_api` at all; **29 blocks hold a cached bill that has not been applied** — a real,
+  > durable intermediate state. A surface answering "is this settled?" gets a different answer per
+  > signal, which is the divergence this bullet exists to stop. The payload must therefore carry the
+  > three separately rather than a single `settled` boolean, and name them: `kwh_authoritative`,
+  > `bill_cached`, `bill_applied`.
+  >
+  > **And a sub-meter's `rate_source` describes how its row was written, not where its number came
+  > from.** Of the device blocks sitting under a settled parent, **1,206 carry
+  > `rate_source='schedule'`** — because `recost_sub_meters` copies the parent's rate without
+  > touching the child's provenance (A §5c).
+  >
+  > **CORRECTED 25 Sep 2026 — the evidence first offered for this was vacuous.** It read: *"their
+  > rate matches the settled parent EXACTLY — 1,206 of 1,206 — that is £42.14 of cost derived from
+  > Octopus's bill and labelled schedule-derived."* The match distinguishes nothing. Devices track
+  > the parent's rate **100% of the time whatever the parent's state**:
+  >
+  > | parent `rate_source` | device blocks | rate matches parent |
+  > |---|---|---|
+  > | schedule | 77,854 | 77,854 (100%) |
+  > | measured | 1,206 | 1,206 (100%) |
+  > | corrected | 68 | 68 (100%) |
+  >
+  > That is simply PASS 2 costing every sub-meter at its parent's rate — already documented — and on
+  > IOG-SMB, where the era has exactly two distinct rates, a match is nearly free regardless.
+  >
+  > The right framing is the LIFECYCLE one: **the newest rows are predicted and settlement lags
+  > about two days.** A device is predicted and then corrected in lockstep with its parent, and its
+  > `rate_source` records the path the row took, not the authority behind the number it now holds.
+  > So the claim that survives is the narrow one — a consumer reading a device's own column will
+  > describe cost carried at a SETTLED parent's rate as schedule-derived — and the £42.14 figure is
+  > withdrawn, because that cost sits under a settled parent whatever the label says.
+  >
+  > *A second finding falls out of the same table: **no device block disagrees with its parent,
+  > anywhere**. So `recost_sub_meters` and `repair_device_rate_drift` (A12) are both no-ops on this
+  > database — which is precisely the steady state A12 predicts, now observed rather than argued.*
+  >
+  > So device provenance is **inherited**, and the payload should say so explicitly — a device row
+  > carries its parent's `bill_applied`, not its own `rate_source`. A client that reads the device's
+  > own column will under-report settled cost, silently, on every account with a physical EV charger
+  > or battery.
+  >
+  > *(Whether `recost_sub_meters` should also stamp the child's `rate_source` is a v4 behaviour
+  > question and is NOT settled here. It is recorded because the payload must be right either way,
+  > and inheriting is right even if the column is later fixed.)*
+
+#### What the payload actually weighs
+
+*Measured 25 Sep 2026 on a 4.5.14 prod database — 137,099 blocks, 37,525 segments, 2.37 meters per
+slot (the multiplier is sub-meter rows, which §3 requires as first-class items).*
+
+| request | raw | gzip | ratio |
+|---|---|---|---|
+| one day @ `resolution=block` | 42.2 KB | **2.3 KB** | |
+| one month @ `resolution=day` | 10.1 KB | **1.7 KB** | 93 rows |
+| one month @ `resolution=block` | 1,291.5 KB | **54.9 KB** | 23.5× |
+| one year @ `resolution=block` | ~15 MB | ~650 KB | |
+
+**A month of half-hourly blocks with segments is 55 KB over the wire.** The raw figure looks
+alarming and is not the figure that matters: row-per-object JSON repeats every field name on every
+row, and gzip recovers 23.5× of exactly that. This is worth stating because the obvious reaction to
+1.3 MB is to invent a columnar or tuple-positional payload — which would buy a fraction of what
+transport compression already gives, at the cost of a format nobody can read in a browser's network
+tab.
+
+**So `resolution=block` does not need a hard range limit for a viewport.** A year (~650 KB) is the
+point where it starts to matter, and by then `resolution=day` is the honest answer to the question
+being asked — nobody reads 52,560 half-hours. A limit is a guard against a client asking for all
+history (~1.8 MB gzip), not a constraint on normal use.
+
+And it confirms §2a's polling model is cheap for the right reason: **the poll carries the
+FINGERPRINT, not the data.** Thirty day-tokens for a month is a fraction of a kilobyte; the payload
+is fetched only when one of them moves.
+
+**Segments are the unit of truth — for the MAIN meter's import split, and nothing else.** v4
+established this (BL-27) and the import spec depends on it — legacy derived columns are dropped
+precisely because segments reproduce them. The API must not reintroduce a parallel derivation.
+
+> **Measured against a 4.5.14 prod database, 24 Sep 2026 — the claim holds where it is load-bearing
+> and has three boundaries the payload must respect.** 137,099 blocks; 37,027 main-meter import
+> blocks carrying kWh.
+>
+> **Cost is exact.** Summing `kwh x inc_rate` across a block's segments matches `imp_cost` on
+> **37,027 of 37,027** blocks, worst difference **0.0016** — inside the sub-penny sliver §5.2 already
+> describes. A client may derive cost from segments.
+>
+> **kWh is not, on 13 blocks.** Segment kWh differs from `imp_kwh` by up to **0.029 kWh** on thirteen
+> blocks, ALL on 2026-09-11, all `rate_source='measured'`. The block agrees with the BILL exactly
+> (`imp_kwh == measured_cost.kwh` on every one); it is the segments that match neither, with the
+> rates compensating so cost still lands. So **`imp_kwh` stays authoritative for energy** — which is
+> what the import spec already says by CARRYing it — and a surface showing "total import kWh" must
+> read the block, not sum the split.
+>
+> **SUB-METERS HAVE NO SEGMENTS AT ALL.** 6,845 `ev_charger` blocks and 7,792 `house_battery`
+> blocks: **zero** segments between them. Device energy lives in `blocks` rows keyed by `meter_id`,
+> and no amount of segment reading will produce it. A payload that returns "priced blocks and their
+> segments" therefore has to carry the sub-meter ROWS as first-class items — a client projecting
+> device series from segments alone gets an empty chart, silently.
+>
+> **One drop-list column is NOT safe on that evidence: `imp_kwh_grid`.** The EV/house split columns
+> are indeed NULL on every sub-meter block, so nothing is lost there. But `imp_kwh_grid` is SET on
+> **70,497 sub-meter blocks** (35,438 ev_charger, 35,059 house_battery) — meters with **zero**
+> segments — and it differs from `imp_kwh` on 451 of them, accounting for **86.4 kWh** of device
+> draw that did not come from the grid. It is the value `recost_sub_meters` bills on
+> (`COALESCE(imp_kwh_grid, imp_kwh)`), because a battery or V2X device draws from storage as well as
+> from the grid and only the grid portion is chargeable. Dropping it as "reconstructable from
+> segments" would discard it with nothing to reconstruct it from. Flagged to the import spec §5.2.
+>
+> **And a user correction usually leaves no segments behind.** Of 34 `rate_source='corrected'` main
+> blocks, **23 have no segments** and 11 do. A segments-only reader shows nothing for two thirds of
+> the blocks a user has explicitly corrected — the ones they are most likely to go back and look at.
+> Whether that is a bug in the correction path or an accepted consequence is not settled here; it is
+> recorded because the payload cannot assume segments exist.
+
+---
+
+### 3a. What the seventeen routes map onto, measured
+
+*24 Sep 2026, after extracting `billing.py`. §5 of the architecture puts C at
+"triage 126 endpoints"; for the billing/usage/insights corner the position is
+better than that, and the shape §3 proposes is already the de-facto one in the
+wrong clothes.*
+
+**Every one of these already returns data, not HTML:**
+
+| today | lines | §3 equivalent |
+|---|---|---|
+| `/api/insights/billing-period` | 50 | `resolution=period&include=carbon` |
+| `/api/insights/calendar-month` | 39 | ″ |
+| `/api/insights/calendar-year` | 33 | ″ |
+| `/api/usage/billing-period` | 49 | `resolution=period&include=usage` |
+| `/api/usage/calendar-month` | 36 | ″ |
+| `/api/usage/calendar-year` | 32 | ″ |
+| `/api/charts/blocks-summary` | 233 | `resolution=day` |
+| `/api/charts/blocks-day` | 161 | `resolution=block` |
+| `/api/billing` | 283 | `resolution=period&include=billing` |
+| `/api/insights/periods` · `/api/insights/data-bounds` | 81 | **not covered — see below** |
+| `/api/charts/{daily,heatmap,data-version,regenerate}` | 61 | die with the pipeline |
+
+**Six routes differ in two independent ways and are expressed as six.** The axes
+are *which period* and *what to aggregate*; `api_usage_calendar_month` is 36 lines
+and `calendar_year` 32, differing only in which of `billing.py`'s period
+resolvers they call. That is what the extraction makes visible — all four period
+functions now live in one module, so the duplication has one obvious home.
+
+**Both aggregators are whole-period rollups, not series.** `_aggregate_insights`
+(272 lines) returns `carbon_g_net`, `effective_intensity`, `generation_mix`;
+`_aggregate_usage` (463) returns `imp_cost`, `rate_tiers`, `weighted_rate`,
+`peak_window_start`. Neither emits per-block points. The series exist only in the
+two `/api/charts/blocks-*` routes. So §3's `resolution=period` vs `block` is not a
+new distinction to build — it is the one the code already makes, minus a name.
+
+#### The constraint that makes `resolution=period` worth having
+
+**A period rollup must be its own query, not a block fetch followed by a
+reduction.** Both current aggregators already do this deliberately —
+*"uses a direct lightweight SQL query rather than `get_blocks_for_range` to avoid
+fetching unnecessary columns and joining reads"* — and that property must survive
+the consolidation.
+
+It is what the chart-render problem actually was. `main.py` carries a
+reconnect-storm guard because *"the render is CPU/GIL-bound, so it stalls the WS
+heartbeat for MINUTES ... and IS the usual flap trigger"* — 300-second cooldown
+plus a `render_recently_active()` check to break the loop. A quarter costs a
+quarter's work because totals and series are one artefact. If `resolution=period`
+is implemented as "fetch the blocks, then sum", the quarter still pays for the
+scan and the only thing that changed is where the reduction happens.
+
+So: **a long range asking for totals must not read per-block rows at all.** Then
+"show the summary and no charts for a quarter" is the client declining to make a
+second request, not a threshold anyone has to tune — and the expensive path stops
+being the default rather than being guarded.
+
+#### Period SELECTION is a separate endpoint, and §3 does not cover it
+
+`/api/energy` answers *"what happened between these two instants"*. It cannot
+answer *"which periods can I ask about"*, which today needs `insights/periods`
+(46 lines) and `insights/data-bounds` (35). That is a different question —
+config-period boundaries, billing days, the earliest block — and it is now
+answerable entirely from `billing.py`'s four period functions plus the store's
+bounds.
+
+Keep it separate: `GET /api/periods?kind=billing|month|quarter|year`. Folding it
+into `/api/energy` would mean an endpoint that sometimes takes a range and
+sometimes returns the ranges available.
+
+#### `resolution=` should not grow
+
+`block` and `day` are what the store answers cheaply; `period` is the rollup.
+**Arbitrary bucketing — `week`, `month`, a `bucket_minutes` parameter — must not
+be added.** Anything between `day` and `period` is arithmetic the client can do on
+points it already has, and offering it server-side re-creates the pre-rendering
+problem one parameter at a time: each new bucket is another thing to compute, to
+cache, to invalidate, and to disagree with the others about.
 
 ---
 

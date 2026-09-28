@@ -1,0 +1,6 @@
+{
+  "unregistered": [
+    "api_db_vacuum",
+    "api_meter_delete_data"
+  ]
+}

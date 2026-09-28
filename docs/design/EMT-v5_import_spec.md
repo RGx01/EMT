@@ -582,10 +582,23 @@ differ by a sub-penny sliver which the remainder absorbs.
 Always present on a .14 source (§4), so there is no absent-column branch — carry each row's own
 word. Fold `rate_reconciled` into the provenance model rather than carrying a second flag.
 
-**DROP — derived, reconstructable from segments** (13 columns; this is the legacy-column removal):
-`imp_kwh_grid`, `imp_kwh_remainder`, `imp_cost_remainder`, `imp_provisional` (duplicate of
-`is_provisional`), `imp_cost_exc`, `imp_rate_exc`, `standing_charge_exc`, `exc_source`,
+**DROP — derived, reconstructable from segments** (~~13~~ **12** columns; this is the legacy-column
+removal): ~~`imp_kwh_grid`,~~ `imp_kwh_remainder`, `imp_cost_remainder`, `imp_provisional` (duplicate
+of `is_provisional`), `imp_cost_exc`, `imp_rate_exc`, `standing_charge_exc`, `exc_source`,
 `imp_kwh_ev`, `imp_cost_ev`, `imp_rate_ev`, `imp_ev_band`, `imp_home_band`.
+
+> **`imp_kwh_grid` REMOVED from the drop list, 24 Sep 2026 — it is not reconstructable, because
+> sub-meters have no segments.** Measured on a 4.5.14 prod database: it is set on **70,497 sub-meter
+> blocks** (35,438 ev_charger, 35,059 house_battery), and those meters have **zero** rows in
+> `block_segments` — the segment machinery is main-meter-only. It differs from `imp_kwh` on 451 of
+> them, covering **86.4 kWh** of device draw that did not come from the grid.
+>
+> It is also live: `recost_sub_meters` bills on `COALESCE(imp_kwh_grid, imp_kwh)` because a battery
+> or V2X device draws from storage as well as the grid, and only the grid portion is chargeable.
+> Dropping it would silently re-bill those 451 blocks at their full device draw.
+>
+> The premise "derived, reconstructable from segments" was read as a property of the column. It is a
+> property of the column ON A METER THAT HAS SEGMENTS. See C §3.
 
 > These are exactly the columns whose drift against segments caused the recurring bug class. They
 > are dropped *because* `block_segments` is carried verbatim — the information is not lost, only
@@ -763,9 +776,75 @@ in v5**, so the importer cannot assume a single global database.
   it. This is §3's phase 2, the only gate that needs credentials.
 - **Instance identity.** Carry `instance_name`; do not carry backup-directory ownership — the new
   instance negotiates its own share directory on first run (`resolve_backup_dir` already handles
-  "ideal dir taken by another instance").
+  "ideal dir taken by another instance"). **But see §7a: that negotiation is namespaced by the v4
+  add-on name, and v5 must not inherit it.**
 - **One import per instance.** The importer targets the instance it runs in. Importing property B's
   database into property A's instance is the failure this guard exists to prevent.
+
+---
+
+### 7a. `/share` backup ownership is namespaced by the v4 NAME, and v5 must claim its own
+
+**Found 24 Sep 2026, by running a second instance on the reference Pi.** Not a design review
+finding — a log line from a real start-up.
+
+`instance.py` hard-codes two things, both shaped by the v4 add-on:
+
+```python
+LEGACY_SHARE_BACKUP_DIR = "/share/energy_meter_tracker_backup"
+_SHARE_GLOB             = "energy_meter_tracker_backup*"     # scan for owned dirs
+```
+
+`resolve_backup_dir` uses them in three steps: claim a directory whose `.emt_instance` marker is
+ours; failing that, **adopt an UNMARKED legacy directory**; failing that, take a fresh one. The
+adoption rule is justified for an upgrade — *"EMT only ever supported one instance before BL-5"* —
+and a MARKED directory is correctly never touched, which is what protects a sibling.
+
+**What the soak install did.** A second instance on the same Pi took step 2 and adopted
+`/share/energy_meter_tracker_backup`, renaming it to its own site name:
+
+```
+resolve_backup_dir: migrated legacy backups
+  /share/energy_meter_tracker_backup -> /share/energy_meter_tracker_backup_site_20260924T085212
+resolve_backup_dir: site renamed; backups moved
+  ..._site_20260924T085212 -> /share/energy_meter_tracker_backup_soak
+```
+
+Harmless in that instance — the live 4.5.14 install had already marked its own directory, so what
+was adopted was a stale unmarked leftover. *(An earlier version of this note claimed the production
+backups had been moved. They had not; the marker rule held. Corrected same day — the log showed a
+rename and the conclusion outran the evidence.)*
+
+**Why it matters for v5 anyway.** §6 of the architecture is explicit that users *"install alongside,
+and retire v4 themselves"*, so v4 and v5 coexist on one `/share` for as long as the user wants. In
+that window, a v5 install that inherits these constants:
+
+1. creates directories named `energy_meter_tracker_backup_<site>` — a **v4 name for a v5 install**;
+2. globs `energy_meter_tracker_backup*`, so its ownership scan walks v4's directories;
+3. and **adopts v4's directory outright if it happens to be unmarked** — which is exactly the case
+   for a user arriving from an older v4, or one whose `/share` was restored from a backup predating
+   BL-5. v4 is still their live install at that moment.
+
+The marker rule is what makes this safe, and it is safe only while every v4 install has already
+marked its directory. The one population where that fails is the one this spec exists for.
+
+**Proposed, and not yet decided:**
+
+- **v5 uses its own namespace** — `/share/emt_backup_<site>`, with `_SHARE_GLOB` scoped to it — so a
+  v5 ownership scan cannot see a v4 directory at all. A shared prefix is what makes the sibling
+  question arise; removing it dissolves rather than answers it.
+- **v5 performs NO legacy adoption.** Its backup history starts empty by definition: a fresh install
+  has nothing to carry across, and v4's backups belong to v4 until the user retires it. Nothing in
+  §1's one-directional import requires v5 to take ownership of a folder — the user supplies a
+  backup file, which is a different act.
+- **The importer does not migrate backups**, only the database. Carrying a backup folder across
+  would make the import two-directional in effect: v5 would be mutating v4's state.
+
+**Also worth deciding separately:** the adopt-an-unmarked-legacy-directory rule has no way to
+distinguish *"I am the upgraded original"* from *"I am a new sibling that started first"*. A cheap
+discriminator exists — an install with **no blocks** cannot be the upgraded original — and it would
+have made the soak instance take step 3. That is a v4 fix (BL-5's rule), not a v5 one, and belongs
+to the divergence rule's critical-fix bar rather than here.
 
 ---
 

@@ -47,10 +47,10 @@ class TestNearbyRateClustering(unittest.TestCase):
 
 class TestActivePeriodTimezone(unittest.TestCase):
     def setUp(self):
-        self._save = server._get_read_store
+        self._save = server.store_access.store
 
     def tearDown(self):
-        server._get_read_store = self._save
+        server.store_access.store = self._save
 
     def _install(self, tz_value):
         class _Row(dict):
@@ -63,7 +63,7 @@ class TestActivePeriodTimezone(unittest.TestCase):
                 return _Cur()
         class _Store:
             _conn = _Conn()
-        server._get_read_store = lambda: _Store()
+        server.store_access.store = lambda: _Store()
 
     def test_resolves_period_tz(self):
         self._install("Europe/London")

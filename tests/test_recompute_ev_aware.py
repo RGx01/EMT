@@ -17,7 +17,12 @@ class TestRecomputeEvAware(unittest.TestCase):
                      "kwh": kwh, "kwh_ev": ev, "cost": cost, "cost_ev": cost_ev}}}}}
         captured = {}
         store = mock.MagicMock()
-        store._conn.execute.return_value.fetchall.return_value = [{"block_start": "2026-08-26T01:30:00"}]
+        # A17: the window scan moved from a raw `_conn` SELECT to
+        # BlockStore.get_block_starts_in_range, which returns block_start STRINGS
+        # rather than rows. Stubbing `_conn` here silently did nothing once the
+        # call changed — a MagicMock is iterable-looking but yields nothing, so
+        # the function reported 0 blocks and the assertion caught it.
+        store.get_block_starts_in_range.return_value = ["2026-08-26T01:30:00"]
         store.get_block_dict_by_start.return_value = block
         with mock.patch.object(engine, "_store", store), \
              mock.patch.object(engine, "_apply_pass2", lambda b: None), \

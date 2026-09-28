@@ -201,8 +201,57 @@ _event_loop = None  # asyncio event loop — captured at init time
 # BlockStore — opened lazily on first use, shared across all server requests
 import sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(__file__)))
+
+import store_access                 # workstream A: store() / writer()
+from job_coordinator import job     # workstream B: coordinator membership
 from block_store import BlockStore, open_block_store
 _store: BlockStore | None = None
+
+
+# Set ONLY by the suite, via tests/test_server.py::_use_store. A background
+# worker opens its own connection (below), which a test cannot reach into — so an
+# injected test store would be ignored and the worker would operate on an empty
+# database instead. Same deliberate hole as `store_access.bind_object_for_tests`
+# (A §5a), and conspicuous for the same reason: production never assigns it, so
+# it shows up in a diff if anything ever does.
+_own_store_for_tests = None
+
+
+def _own_store() -> BlockStore:
+    """A BlockStore opened FOR THE CALLING THREAD, to be closed by it.
+
+    Background workers (`_delete_worker`, `_purge_worker`, `_restore_worker`) run
+    long bulk mutations on their own threads. They cannot hop onto the engine
+    loop — a whole-history delete or a restore would stall live capture for
+    minutes, the same reason `api_db_vacuum` is a permanent exception (B §4) —
+    and they must not share a connection with a request thread.
+
+    So each opens its own, which is the pattern `_create_backup_zip` already
+    uses. That is what lets `check_same_thread=False` come off the shared
+    connection: a SQLite connection then belongs to exactly one thread, and the
+    default check enforces it rather than a comment asking nicely.
+    """
+    if _own_store_for_tests is not None:
+        return _own_store_for_tests
+    if DATA_DIR is None:
+        raise RuntimeError("server.init() has not been called")
+    return open_block_store(_os.path.join(DATA_DIR, "blocks.db"))
+
+
+def _release_store(st) -> None:
+    """Close a store obtained from `_own_store()`, if we opened it.
+
+    Paired with `_own_store` rather than inlined as `st.close()`, because under
+    the test override the returned store is the SUITE's — shared across every
+    test in the file — and closing it made 27 unrelated tests fail on a closed
+    database. A worker must close what it opened and only what it opened.
+    """
+    if st is None or st is _own_store_for_tests:
+        return
+    try:
+        st.close()
+    except Exception:
+        pass
 
 
 def _get_store() -> BlockStore:
@@ -226,32 +275,18 @@ def _get_store() -> BlockStore:
 _read_local = threading.local()
 
 
-def _get_read_store() -> BlockStore:
-    """A per-thread READ-ONLY BlockStore for GET endpoints (see BL-18c note above).
-
-    A separate read companion is only valid when it opens the *same on-disk file*
-    the writer holds (WAL lets readers share it). It is NOT valid for an in-memory
-    store or any injected store (e.g. tests set `_store` to a `:memory:` DB): each
-    such connection is a distinct, empty database, so a companion would see "no
-    such table: blocks". In those cases reuse the shared `_store` connection.
-    """
-    if DATA_DIR is None:
-        raise RuntimeError("server.init() has not been called")
-    db_path = _os.path.join(DATA_DIR, "blocks.db")
-    shared = _store
-    if shared is not None and getattr(shared, "_path", None) != db_path:
-        # In-memory or injected store — no shareable file; reuse the primary.
-        return shared
-    st = getattr(_read_local, "store", None)
-    if st is None:
-        try:
-            st = BlockStore(db_path, read_only=True)
-        except Exception:
-            # Fall back to the shared RW store if a read companion can't open
-            # (e.g. DB not yet created) — correctness over the concurrency win.
-            return _get_store()
-        _read_local.store = st
-    return st
+# `_get_read_store()` retired — workstream A §3.4 ("one mechanism, not three").
+# It was the third invention of the read companion in v4 and reached 0% adoption.
+# `store_access.store()` replaces it, without its fallback: that one ended
+# `return _get_store()` when it could not open its own connection, so the safe
+# call could hand back the unsafe object.
+#
+# The line above it still stands, and is the open half of this: "Reads only —
+# writes still go through _get_store()". `_store` is a module global and
+# waitress serves on four threads, so every POST/PUT/DELETE handler writes
+# through ONE connection shared by all of them — the same condition that
+# produced SQLITE_MISUSE for reads, acknowledged and never closed. A §3.3 says
+# how it closes: a route causes a write by asking the engine to perform it.
 
 
 def _config_timezone() -> str:
@@ -279,7 +314,7 @@ def _active_period_timezone(retries: int = 3):
     import time as _time
     for _attempt in range(max(1, retries)):
         try:
-            store = _get_read_store()
+            store = store_access.store()
             row = store._conn.execute(
                 "SELECT timezone FROM config_periods "
                 "WHERE effective_to IS NULL ORDER BY effective_from DESC LIMIT 1"
@@ -356,6 +391,12 @@ def init(data_dir: str, chart_dir: str, ha_client):
     DATA_DIR   = data_dir
     CHART_DIR  = chart_dir
     _ha_client = ha_client
+    # Workstream A §5b: store_access.bind() is NOT called here. It moved to
+    # main.py, ahead of BOTH engine_startup() and this init(), because the read
+    # path has to serve the pre-wizard state -- a fresh install, or one just
+    # reset by api_meter_main_reset, runs with no configuration at all, and the
+    # setup wizard it must serve is read-only. bind() takes a path and nothing
+    # else, so it has no business depending on either subsystem's lifecycle.
 
 
 def _run_on_engine_loop(coro, timeout: float = 30.0):
@@ -373,6 +414,26 @@ def _run_on_engine_loop(coro, timeout: float = 30.0):
         raise RuntimeError("engine event loop not running")
     fut = _asyncio.run_coroutine_threadsafe(coro, _event_loop)
     return fut.result(timeout=timeout)
+
+
+def _engine_write(op, timeout: float = 30.0):
+    """Perform a store MUTATION on the engine thread and block this one.
+
+    A route must never write through its own thread. v4 had three that did, and
+    engine.py names the consequence: *"a DB write from the executor thread races
+    the loop-thread writers on that one connection and corrupts it: 'cannot
+    commit - no transaction is active' / 'error return without exception
+    set'"*. Under workstream A `writer()` raises off the engine thread, so this
+    hop is the only way a route can cause a write.
+
+    `op` receives the engine's store and runs on the loop.
+    """
+    import engine as _eng
+
+    async def _do():
+        return op(_eng.get_store())
+
+    return _run_on_engine_loop(_do(), timeout=timeout)
 
 
 class _ConfigError(Exception):
@@ -412,17 +473,24 @@ def _config_mutation_on_loop(mutate, timeout: float = 30.0):
         _regen_charts_safely()
         return res
     import engine as _eng
-    async def _coro():
-        store = _eng.get_store()
+
+    # ONE mechanism (A §3.4). `_engine_write` is the primitive — run this
+    # mutation on the engine thread — and this function is that plus a chart
+    # regen. They were briefly two implementations of the same idea, which is
+    # precisely the pattern this codebase keeps producing: #361 discovered the
+    # shared-web-connection race here and solved it, and the surfaces port
+    # solved it again under a different name without noticing.
+    def _op(store):
         res = mutate(store)
         try:
             _eng._schedule_chart_regen()      # on-loop → offloaded read-only render
         except Exception as _ce:
             logger.warning("_config_mutation_on_loop: chart regen schedule failed: %s", _ce)
         return res
+
     import concurrent.futures as _cf
     try:
-        return _run_on_engine_loop(_coro(), timeout=timeout)
+        return _engine_write(_op, timeout=timeout)
     except _cf.TimeoutError:
         # The loop was busy (e.g. a slow post-restore engine_startup). The mutation is
         # still queued and will apply — signal 'queued' so the endpoint doesn't report
@@ -599,7 +667,7 @@ def load_config():
     _load_attempts = 3
     for _attempt in range(_load_attempts):
         try:
-            store = _get_store()
+            store = store_access.store()
             cp = store._conn.execute(
                 "SELECT id FROM config_periods "
                 "WHERE effective_to IS NULL ORDER BY effective_from DESC LIMIT 1"
@@ -658,53 +726,59 @@ def save_config(data: dict):
 
     # Write to the active config period in the DB (normalised tables)
     try:
-        store = _get_store()
-        main_meta = {}
-        for md in data.get("meters", {}).values():
-            if not (md.get("meta") or {}).get("sub_meter"):
-                main_meta = md.get("meta") or {}
-                break
-        active = store._conn.execute(
-            "SELECT id FROM config_periods WHERE effective_to IS NULL "
-            "ORDER BY effective_from DESC LIMIT 1"
-        ).fetchone()
-        if active:
-            period_id = active["id"]
-            with store._conn:
-                # Update billing scalar fields on config_periods
-                store._conn.execute(
-                    """UPDATE config_periods
-                       SET billing_day     = ?,
-                           block_minutes   = ?,
-                           timezone        = ?,
-                           currency_symbol = ?,
-                           currency_code   = ?,
-                           site_name       = ?
-                       WHERE id = ?""",
-                    (
-                        int(main_meta.get("billing_day") or 1),
-                        int(main_meta.get("block_minutes") or 30),
-                        main_meta.get("timezone", "UTC"),
-                        main_meta.get("currency_symbol", "£"),
-                        main_meta.get("currency_code", "GBP"),
-                        main_meta.get("site"),
-                        period_id,
-                    )
-                )
-                # Rewrite normalised meter rows for this period
-                # Delete existing rows first (upsert handles adds/updates;
-                # deletion handles meters removed from config)
-                old_meter_ids = [r["id"] for r in store._conn.execute(
-                    "SELECT id FROM meters WHERE config_period_id=?", (period_id,)
-                ).fetchall()]
-                for mid in old_meter_ids:
+        # #361 / A §3.3: this runs on the ENGINE thread now. It used to write
+        # through the shared web BlockStore from a Flask request thread — the
+        # same race `_config_mutation_on_loop` was written for, on the path
+        # that saves the whole configuration.
+        def _mutate(store):
+            main_meta = {}
+            for md in data.get("meters", {}).values():
+                if not (md.get("meta") or {}).get("sub_meter"):
+                    main_meta = md.get("meta") or {}
+                    break
+            active = store._conn.execute(
+                "SELECT id FROM config_periods WHERE effective_to IS NULL "
+                "ORDER BY effective_from DESC LIMIT 1"
+            ).fetchone()
+            if active:
+                period_id = active["id"]
+                with store._conn:
+                    # Update billing scalar fields on config_periods
                     store._conn.execute(
-                        "DELETE FROM meter_channels WHERE meter_id=?", (mid,)
+                        """UPDATE config_periods
+                           SET billing_day     = ?,
+                               block_minutes   = ?,
+                               timezone        = ?,
+                               currency_symbol = ?,
+                               currency_code   = ?,
+                               site_name       = ?
+                           WHERE id = ?""",
+                        (
+                            int(main_meta.get("billing_day") or 1),
+                            int(main_meta.get("block_minutes") or 30),
+                            main_meta.get("timezone", "UTC"),
+                            main_meta.get("currency_symbol", "£"),
+                            main_meta.get("currency_code", "GBP"),
+                            main_meta.get("site"),
+                            period_id,
+                        )
                     )
-                store._conn.execute(
-                    "DELETE FROM meters WHERE config_period_id=?", (period_id,)
-                )
-                store._write_meters(data, period_id)
+                    # Rewrite normalised meter rows for this period
+                    # Delete existing rows first (upsert handles adds/updates;
+                    # deletion handles meters removed from config)
+                    old_meter_ids = [r["id"] for r in store._conn.execute(
+                        "SELECT id FROM meters WHERE config_period_id=?", (period_id,)
+                    ).fetchall()]
+                    for mid in old_meter_ids:
+                        store._conn.execute(
+                            "DELETE FROM meter_channels WHERE meter_id=?", (mid,)
+                        )
+                    store._conn.execute(
+                        "DELETE FROM meters WHERE config_period_id=?", (period_id,)
+                    )
+                    store._write_meters(data, period_id)
+
+        _engine_write(_mutate)
     except Exception as _e:
         logger.error("save_config: DB write failed: %s", _e)
         raise
@@ -842,7 +916,7 @@ def charts_page():
     heatmap_exists = os.path.exists(os.path.join(CHART_DIR, "net_heatmap.html"))
     daily_exists   = os.path.exists(os.path.join(CHART_DIR, "daily_usage.html"))
     try:
-        block_count = _get_store().count_blocks()
+        block_count = store_access.store().count_blocks()
     except Exception:
         block_count = 0
     return render_template(
@@ -919,7 +993,7 @@ def live_power_page():
 
     try:
         cfg      = load_config()
-        store    = _get_store()
+        store    = store_access.store()
         main_meta = {}
         for md in cfg.get("meters", {}).values():
             if not (md.get("meta") or {}).get("sub_meter"):
@@ -1012,7 +1086,7 @@ def live_power_page():
     # when absent — the card element isn't emitted at all.
     has_dispatch_data = False
     try:
-        has_dispatch_data = bool(_get_store()._conn.execute(
+        has_dispatch_data = bool(store_access.store()._conn.execute(
             "SELECT 1 FROM dispatch_history LIMIT 1").fetchone())
     except Exception:
         has_dispatch_data = False
@@ -1181,7 +1255,7 @@ def api_power():
         from energy_engine_io import load_json as _lj
         from datetime import datetime
         cfg        = load_config()
-        block      = _get_store().load_current_block()
+        block      = store_access.store().load_current_block()
         meters_cfg = cfg.get("meters", {}) or {}
         meters_blk = block.get("meters", {}) or {}
 
@@ -1356,7 +1430,7 @@ def api_power():
         # from the live mix and could grab two blocks (fragile LIMIT 9).
         current_mix = []
         try:
-            _mix_store = _get_store()
+            _mix_store = store_access.store()
             # #408: mix_history also holds fw48h FORECAST rows, so MAX(captured_at)
             # alone grabbed a slot up to ~48h ahead (a gas-heavy forecast night read
             # ~56% gas vs ~30% now, while the 48h chart showed the real slot). Bound
@@ -1458,7 +1532,7 @@ def api_billing():
     try:
         from energy_engine_io import load_json as _lj
         cfg      = load_config()
-        store    = _get_store()
+        store    = store_access.store()
         main_meta = {}
         for md in cfg.get("meters", {}).values():
             if not (md.get("meta") or {}).get("sub_meter"):
@@ -1817,7 +1891,7 @@ def api_power_history():
     """
     try:
         hours = min(int(request.args.get("hours", 48)), 48)
-        store = _get_store()
+        store = store_access.store()
         rows  = store.get_power_history(hours=hours)
         return jsonify({"rows": rows})
     except Exception as e:
@@ -1833,7 +1907,7 @@ def api_power_mix_history():
     Returns: { slots: [{captured_at, fuels: {wind, solar, gas, ...}}] }
     """
     try:
-        store = _get_store()
+        store = store_access.store()
         slots = store.get_mix_history(hours=48)
         return jsonify({"slots": slots})
     except Exception as e:
@@ -1854,6 +1928,22 @@ def api_meter_reset_detected():
         return jsonify({"detected": False, "error": str(e)})
 
 
+@app.route("/api/engine/pause-state")
+def api_engine_pause_state():
+    """Is live capture stopped, by what, and for how long.
+
+    The only thing that can stop the live tick is `pause_engine()` — a restore, a
+    device-data delete, a zip import or a VACUUM. A paused tick is skipped rather
+    than queued, so a long pause means at least one block boundary was
+    interpolated. That used to be visible only as one log line with no reason
+    attached; this makes it answerable (B §4.0).
+    """
+    try:
+        return jsonify({"ok": True, **engine.engine_pause_state()})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/meter/<meter_id>/retire", methods=["POST"])
 def api_retire_meter(meter_id: str):
     """Retire a sub-meter from a given date. Preserves all historical data."""
@@ -1863,16 +1953,15 @@ def api_retire_meter(meter_id: str):
         retired_reason = data.get("retired_reason", "")
         if not retired_at:
             return jsonify({"error": "retired_at is required (YYYY-MM-DD)"}), 400
-        store = _get_store()
         # Verify it's a sub-meter
-        row = store._conn.execute(
+        row = store_access.store()._conn.execute(
             "SELECT is_sub_meter FROM meters WHERE meter_id = ?", (meter_id,)
         ).fetchone()
         if not row:
             return jsonify({"error": f"Meter '{meter_id}' not found"}), 404
         if not row["is_sub_meter"]:
             return jsonify({"error": "Cannot retire the main meter"}), 400
-        store.retire_meter(meter_id, retired_at, retired_reason)
+        _engine_write(lambda st: st.retire_meter(meter_id, retired_at, retired_reason))
         try:
             import engine as _eng_retire
             if hasattr(_eng_retire, "reset_store"):
@@ -1891,8 +1980,7 @@ def api_unretire_meter(meter_id: str):
     """Clear retirement status from a sub-meter.
     Returns 409 Conflict if the sensor is already in use by another active meter."""
     try:
-        store = _get_store()
-        store.unretire_meter(meter_id)
+        _engine_write(lambda st: st.unretire_meter(meter_id))
         try:
             import engine as _eng_unretire
             if hasattr(_eng_unretire, "reset_store"):
@@ -2022,7 +2110,7 @@ def api_meter_delete_data(meter_id: str):
         # or a delete fired on a block boundary races a finalise (logical corruption +
         # the two-threads-one-connection segfault the restore path already guards).
         try:
-            _eng_d.pause_engine()
+            _eng_d.pause_engine("meter data delete")
         except Exception:
             pass
 
@@ -2050,16 +2138,26 @@ def api_meter_delete_data(meter_id: str):
         # The whole DB mutation (capture window → delete → EV-aware parent recompute)
         # as one callable, run with exclusive DB access. Uses `store`/`new_cfg`/`meter_id`
         # from the closure — never `request` (not valid off the web thread).
-        def _do_delete_and_recompute():
+        # Runs on the ENGINE thread. The tick is already paused and a running
+        # import already cancelled by the time we get here, so this is the
+        # exclusivity `run_exclusive` was reaching for — without its executor
+        # thread, which A §3.3 forbids.
+        #
+        # It does NOT need to be a paced job: the deletes are four bulk SQL
+        # statements (`DELETE FROM ... WHERE meter_id = ?`), not a Python loop
+        # over blocks, and the one loop inside iterates METERS — a handful. The
+        # loop stalls for as long as SQLite takes, which is not the same problem
+        # a chunked sweep exists to solve.
+        def _do_delete_and_recompute(st):
             deleted = {}
 
             # BL-46: capture the deleted device's parent + block window BEFORE deleting.
             _bl46_parent = _bl46_lo = _bl46_hi = None
             try:
-                _pr = store._conn.execute(
+                _pr = st._conn.execute(
                     "SELECT parent_meter_id FROM meters WHERE meter_id = ?", (meter_id,)).fetchone()
                 _bl46_parent = ((_pr["parent_meter_id"] if _pr else None) or "electricity_main")
-                _rng = store._conn.execute(
+                _rng = st._conn.execute(
                     "SELECT MIN(block_start) lo, MAX(block_start) hi FROM blocks WHERE meter_id = ?",
                     (meter_id,)).fetchone()
                 if _rng:
@@ -2067,32 +2165,32 @@ def api_meter_delete_data(meter_id: str):
             except Exception:
                 pass
 
-            with store._conn:
+            with st._conn:
                 # 1. Delete all data for this meter
-                cur = store._conn.execute("DELETE FROM blocks WHERE meter_id = ?", (meter_id,))
+                cur = st._conn.execute("DELETE FROM blocks WHERE meter_id = ?", (meter_id,))
                 deleted["blocks"] = cur.rowcount
 
                 # P3.1: block_segments keyed by block_start (no block_id FK) → not
                 # cascade-cleaned; remove this meter's segments so none are orphaned.
-                cur = store._conn.execute("DELETE FROM block_segments WHERE meter_id = ?", (meter_id,))
+                cur = st._conn.execute("DELETE FROM block_segments WHERE meter_id = ?", (meter_id,))
                 deleted["block_segments"] = cur.rowcount
 
-                cur = store._conn.execute("DELETE FROM sub_meter_history WHERE meter_id = ?", (meter_id,))
+                cur = st._conn.execute("DELETE FROM sub_meter_history WHERE meter_id = ?", (meter_id,))
                 deleted["sub_meter_history"] = cur.rowcount
 
-                cur = store._conn.execute("DELETE FROM current_reads WHERE meter_id = ?", (meter_id,))
+                cur = st._conn.execute("DELETE FROM current_reads WHERE meter_id = ?", (meter_id,))
                 deleted["current_reads"] = cur.rowcount
 
                 # Remove from current_block JSON if present
                 try:
-                    cb_row = store._conn.execute(
+                    cb_row = st._conn.execute(
                         "SELECT id, last_checkpoint FROM current_block WHERE id = 1").fetchone()
                     if cb_row and cb_row["last_checkpoint"]:
                         import json as _json
                         cb = _json.loads(cb_row["last_checkpoint"])
                         if meter_id in (cb.get("meters") or {}):
                             del cb["meters"][meter_id]
-                            store._conn.execute(
+                            st._conn.execute(
                                 "UPDATE current_block SET last_checkpoint = ? WHERE id = 1",
                                 (_json.dumps(cb),))
                             deleted["current_block"] = 1
@@ -2101,13 +2199,13 @@ def api_meter_delete_data(meter_id: str):
 
                 # 2. Save updated config (meter removed) in the same transaction.
                 if new_cfg:
-                    period_id = store.get_current_config_period_id()
-                    old_meter_ids = [r["id"] for r in store._conn.execute(
+                    period_id = st.get_current_config_period_id()
+                    old_meter_ids = [r["id"] for r in st._conn.execute(
                         "SELECT id FROM meters WHERE config_period_id=?", (period_id,)).fetchall()]
                     for old_mid in old_meter_ids:
-                        store._conn.execute("DELETE FROM meter_channels WHERE meter_id=?", (old_mid,))
-                    store._conn.execute("DELETE FROM meters WHERE config_period_id=?", (period_id,))
-                    store._write_meters(new_cfg, period_id)
+                        st._conn.execute("DELETE FROM meter_channels WHERE meter_id=?", (old_mid,))
+                    st._conn.execute("DELETE FROM meters WHERE config_period_id=?", (period_id,))
+                    st._write_meters(new_cfg, period_id)
 
             logger.info("api_meter_delete_data: deleted %s for meter %s", deleted, meter_id)
 
@@ -2142,10 +2240,10 @@ def api_meter_delete_data(meter_id: str):
             try:
                 import asyncio as _asyncio
                 _asyncio.run_coroutine_threadsafe(
-                    _eng_d.run_exclusive(lambda: None), _event_loop).result(timeout=30)
+                    _eng_d.drain_tick(), _event_loop).result(timeout=30)
             except Exception as _de:
                 logger.warning("api_meter_delete_data: tick-drain barrier failed: %s", _de)
-        deleted = _do_delete_and_recompute()
+        deleted = _engine_write(_do_delete_and_recompute, timeout=600.0)
 
         # Data is committed & consistent → clear the pause so the tick runs again.
         # (engine_startup does NOT resume on its own — every pause caller must.)
@@ -2191,7 +2289,7 @@ def api_sub_meter_history():
         hours    = min(int(request.args.get("hours", 48)), 48)
         if not meter_id:
             return jsonify({"error": "meter_id required"}), 400
-        store = _get_store()
+        store = store_access.store()
         rows  = store.get_sub_meter_history(meter_id, hours=hours)
         # Compute max abs inverter kW for gauge scaling.
         # Use 90th percentile — spurious sensor spikes (e.g. Solax reporting
@@ -2220,7 +2318,7 @@ def api_carbon_current():
     Returns: { intensity, ci_index, postcode, source } or { error }
     """
     try:
-        store    = _get_store()
+        store    = store_access.store()
         cfg      = load_config()
         postcode = None
         for m_data in cfg.get("meters", {}).values():
@@ -2480,7 +2578,16 @@ def _aggregate_block_rows(raw_rows, bucket_of, standing_scope="bucket",
         _tot_main = sum(_mv["cost"] for _mv in (_m.get("_main_by_rate") or {}).values())
         _tot_sub  = sum(_sv["cost"] for _sv in (_m.get("_sub_by_rate") or {}).values())
         _d = _tot_main - _tot_sub
+        # `imp_cost` is the DISPLAYED Direct/House line and stays clamped -- a
+        # negative remainder is nonsense to render as a bar.
         _m["imp_cost"] = _d if _tot_main < 0 else max(0.0, _d)
+        # `imp_cost_metered` is the MAIN METER's cost, unclamped, and is what the
+        # row totals must use. Keeping only the clamped value meant the row total
+        # (`Direct + SUM(subs)`) became SUM(subs) on any day the sub-meters
+        # out-read the main -- which is every sunny day on a site with a battery,
+        # because the battery charges off solar and registers kWh the grid never
+        # supplied. That inflated one 4.5.14 report by £22.42 over 29 days.
+        _m["imp_cost_metered"] = _tot_main
     return _day_data
 
 
@@ -2523,15 +2630,21 @@ def _bucket_to_row_values(_dd):
     meters_out["electricity_main"]["imp_cost"] = _main_imp_cost
     meters_out["electricity_main"]["exp_kwh"]  = _main_exp_kwh
     meters_out["electricity_main"]["exp_cost"] = _main_exp_cost
+    # Row totals price from the METERED main cost, not from the clamped Direct
+    # line plus the sub-meters. `meters_out[...]["imp_cost"]` keeps the clamped
+    # value because that is what the chart draws; only the totals differ, and only
+    # on days where the clamp would have fired.
+    _metered_imp_cost = round(_m.get("imp_cost_metered", _main_imp_cost + sum(
+        m["imp_cost"] for mid, m in meters_out.items() if mid != "electricity_main")), 4)
     return {
         "standing":  round(_dd["standing"], 4),
         "meters":    meters_out,
         "imp_kwh":  round(_main_imp_kwh  + sum(m["imp_kwh"]  for mid, m in meters_out.items() if mid != "electricity_main"), 4),
         "exp_kwh":  round(_main_exp_kwh,  4),
-        "imp_cost": round(_main_imp_cost + sum(m["imp_cost"] for mid, m in meters_out.items() if mid != "electricity_main"), 4),
+        "imp_cost": _metered_imp_cost,
         "exp_cost": round(_main_exp_cost, 4),
         "net_cost": round(
-            round(_main_imp_cost + sum(m["imp_cost"] for mid, m in meters_out.items() if mid != "electricity_main"), 4)
+            _metered_imp_cost
             + round(_dd["standing"], 4)
             - round(_main_exp_cost, 4),
             2),
@@ -2605,7 +2718,7 @@ def _blocks_data_version(store) -> str:
 def api_charts_data_version():
     """Lightweight change token for the Charts UI (see _blocks_data_version)."""
     try:
-        return jsonify({"version": _blocks_data_version(_get_store())})
+        return jsonify({"version": _blocks_data_version(store_access.store())})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -2630,7 +2743,7 @@ def api_blocks_summary():
         from collections import defaultdict
 
         cfg   = load_config()
-        store = _get_store()
+        store = store_access.store()
 
         main_meta = {}
         for md in cfg.get("meters", {}).values():
@@ -2862,7 +2975,7 @@ def api_blocks_day():
         from block_store import local_date_to_utc_bounds as _ldtub
 
         cfg = load_config()
-        store = _get_store()
+        store = store_access.store()
         main_meta = {}
         for md in cfg.get("meters", {}).values():
             if not (md.get("meta") or {}).get("sub_meter"):
@@ -3092,7 +3205,7 @@ def api_get_config():
 def api_config_history():
     """Return config period history with block counts per period."""
     try:
-        store = _get_store()
+        store = store_access.store()
         cur = store._conn.execute(
             """
             SELECT cp.id, cp.effective_from, cp.effective_to, cp.billing_day,
@@ -3151,7 +3264,7 @@ def api_region_reconcile_get():
     """Pending region-reconciliation plan (the post-import 'name your sites'
     step). Returns {pending: False} when there's nothing to confirm."""
     try:
-        store = _get_store()
+        store = store_access.store()
         plan = store.get_meta("region_reconcile_pending", None)
         if not plan or not plan.get("needs_confirmation"):
             return jsonify({"pending": False})
@@ -3166,16 +3279,24 @@ def api_region_reconcile_apply():
     every period's region (outward code) + user-supplied site name.
     Body: {"sites": [{outcode, from, to, site_name}]}."""
     try:
-        store = _get_store()
+        store = store_access.store()
         data = request.get_json(force=True) or {}
         sites = data.get("sites") or []
         if not sites:
             return jsonify({"error": "no sites supplied"}), 400
-        res = store.apply_region_reconciliation(sites)
-        store.set_meta("region_reconcile_pending", None)   # clear pending
-        store.rearm_carbon_backfill()   # new regions → re-scan carbon
+        # One hop for all three: they belong together (apply, clear the pending
+        # marker, re-arm carbon) and splitting them would put a half-applied
+        # reconciliation between two engine turns. Loops over SITES — a handful
+        # of regions, not blocks — so a synchronous hop costs nothing.
+        def _apply_regions(st):
+            out = st.apply_region_reconciliation(sites)
+            st.set_meta("region_reconcile_pending", None)   # clear pending
+            st.rearm_carbon_backfill()                      # new regions → re-scan carbon
+            return out
+
+        res = _engine_write(_apply_regions)
         try:
-            _rebuild_config_period_chain(store)
+            _engine_write(_rebuild_config_period_chain)
         except Exception as _e:
             logger.warning("api_region_reconcile_apply: chain rebuild failed: %s", _e)
         logger.info("api_region_reconcile_apply: %s", res)
@@ -3189,8 +3310,7 @@ def api_region_reconcile_apply():
 def api_region_reconcile_dismiss():
     """Dismiss the pending reconciliation without applying it."""
     try:
-        store = _get_store()
-        store.set_meta("region_reconcile_pending", None)
+        _engine_write(lambda st: st.set_meta("region_reconcile_pending", None))
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -3288,7 +3408,7 @@ def api_config_history_create():
 def api_config_history_update(period_id):
     """Update effective_from, effective_to, or change_reason for a config period."""
     try:
-        store = _get_store()
+        store = store_access.store()
         data  = request.get_json(force=True)
 
         # Validate period exists
@@ -3510,8 +3630,12 @@ def api_save_config():
                     if not config_meta_significant(old_cfg, data):
                         should_create = False
             if should_create:
-                # New billing period — insert_config_period writes to normalised tables
-                store.insert_config_period(data, change_reason=change_reason)
+                # New billing period — insert_config_period writes to normalised
+                # tables, so it runs on the engine thread like every other config
+                # write (A §3.3). It loops over the configured METERS, of which
+                # there are a handful, so a synchronous hop costs nothing.
+                _engine_write(lambda st: st.insert_config_period(
+                    data, change_reason=change_reason))
                 logger.info("server: config period created (reason=%s)", change_reason or "none")
                 # Write file export (not authoritative — convenience only)
                 try:
@@ -3732,6 +3856,7 @@ def api_backup_delete():
         return jsonify({"error": str(e)}), 500
 
 
+@job("restore", depends_on=("import",))
 def _restore_worker(zipname, selected, from_flat, staged=None):
     """Background restore worker (runs in its own thread; survives navigation).
     Updates _restore_job at each phase. Restores selected data files from a named
@@ -3752,7 +3877,7 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
         # ── Step 1: pause engine ─────────────────────────────────────────────
         _eng_r = _sys_r.modules.get("engine")
         if _eng_r and hasattr(_eng_r, "pause_engine"):
-            _eng_r.pause_engine()
+            _eng_r.pause_engine("backup restore")
 
         # ── Step 1b: STOP any running API import before touching the DB ───────
         # The background import writes via the SQLite store on the engine loop.
@@ -3944,8 +4069,9 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
 
         # Run schema migration (2.0.x legacy full_config_json → normalised tables)
         if "blocks.db" in restored or "blocks.json" in restored:
+            store_mig = None
             try:
-                store_mig = _get_store()
+                store_mig = _own_store()      # own thread, own connection
                 n = store_mig.migrate_full_config_json()
                 if n:
                     logger.info(
@@ -3954,6 +4080,11 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
                     )
             except Exception as _mig_e:
                 logger.warning("api_backup_restore: schema migration failed: %s", _mig_e)
+            finally:
+                # Own connection on the restore worker's thread — close it, or a
+                # restore leaks one and holds a handle on a file the restore may
+                # be about to replace.
+                _release_store(store_mig)
 
         # Re-run engine_startup so gap detection runs against the restored DB.
         # resume_engine() alone just unpauses the tick loop — it doesn't detect
@@ -4003,7 +4134,7 @@ def settings_page():
     if tab == "carbon":
         return render_template("settings.html", active="settings")
     # Default: Meter Config tab
-    store = _get_store()
+    store = store_access.store()
     cfg   = load_config()
     tz_select_html = '<select class="js-meta" data-key="timezone"><option value="UTC">UTC</option><option value="Europe/London">Europe/London (UK)</option><option value="Europe/Dublin">Europe/Dublin (Ireland)</option><option value="Europe/Lisbon">Europe/Lisbon (Portugal)</option><option value="Europe/Paris">Europe/Paris (France, Belgium, Netherlands)</option><option value="Europe/Berlin">Europe/Berlin (Germany, Austria)</option><option value="Europe/Amsterdam">Europe/Amsterdam</option><option value="Europe/Rome">Europe/Rome (Italy)</option><option value="Europe/Madrid">Europe/Madrid (Spain)</option><option value="Europe/Stockholm">Europe/Stockholm (Sweden, Norway, Denmark)</option><option value="Europe/Helsinki">Europe/Helsinki (Finland)</option><option value="Europe/Warsaw">Europe/Warsaw (Poland)</option><option value="Europe/Athens">Europe/Athens (Greece)</option><option value="Europe/Istanbul">Europe/Istanbul (Turkey)</option><option value="Europe/Moscow">Europe/Moscow (Russia)</option><option value="America/New_York">America/New_York (US Eastern)</option><option value="America/Chicago">America/Chicago (US Central)</option><option value="America/Denver">America/Denver (US Mountain)</option><option value="America/Los_Angeles">America/Los_Angeles (US Pacific)</option><option value="America/Toronto">America/Toronto (Canada Eastern)</option><option value="America/Vancouver">America/Vancouver (Canada Pacific)</option><option value="America/Sao_Paulo">America/Sao_Paulo (Brazil)</option><option value="Asia/Dubai">Asia/Dubai (UAE)</option><option value="Asia/Kolkata">Asia/Kolkata (India)</option><option value="Asia/Singapore">Asia/Singapore</option><option value="Asia/Tokyo">Asia/Tokyo (Japan)</option><option value="Asia/Shanghai">Asia/Shanghai (China)</option><option value="Australia/Sydney">Australia/Sydney</option><option value="Australia/Perth">Australia/Perth</option><option value="Pacific/Auckland">Pacific/Auckland (New Zealand)</option></select>'
     has_data = bool(store.count_blocks())
@@ -4032,7 +4163,7 @@ def settings_page():
 @app.route("/api/settings", methods=["GET"])
 def api_settings_get():
     """Return current settings merged with defaults."""
-    store = _get_store()
+    store = store_access.store()
     saved = store.get_settings()
     # Merge saved over defaults — any missing key falls back to default
     result = dict(SETTINGS_DEFAULTS)
@@ -4043,9 +4174,8 @@ def api_settings_get():
 @app.route("/api/settings", methods=["POST"])
 def api_settings_post():
     """Save settings. Only known keys accepted."""
-    store = _get_store()
     data = request.get_json(force=True) or {}
-    saved = store.get_settings()
+    saved = store_access.store().get_settings()
     for key in SETTINGS_DEFAULTS:
         if key in data:
             val = data[key]
@@ -4058,7 +4188,7 @@ def api_settings_post():
                 except (TypeError, ValueError):
                     return jsonify({"error": f"{key} must be a number"}), 400
             saved[key] = val
-    store.save_settings(saved)
+    _engine_write(lambda st: st.save_settings(saved))
     # The ex-VAT / bill-rounding option changes how the billing summary is rendered
     # (bill-method vs inc-VAT), so rebuild the pre-built charts now — otherwise the
     # toggle wouldn't show until the next block finalise (same regen gap as #361).
@@ -4390,7 +4520,7 @@ def api_billing_source_get():
     """Return the current global billing source and unsettled-block count."""
     try:
         import engine as _eng
-        store = _get_store()
+        store = store_access.store()
         source = _eng._get_billing_source()
         unsettled = store.count_unsettled_blocks(since_iso=_settlement_horizon_floor())
         _uses_api = _eng.mode_uses_api()
@@ -4434,7 +4564,7 @@ def api_unsettled_blocks():
     (running on CAD fallback). Relevant when billing_source='dcc'. Returns a
     capped list plus the full count."""
     try:
-        store = _get_store()
+        store = store_access.store()
         limit = int(request.args.get("limit", 500))
         _floor = _settlement_horizon_floor()
         count = store.count_unsettled_blocks(since_iso=_floor)
@@ -4593,7 +4723,8 @@ def api_backfill_run():
                                 "use_endpoint": "/api/historical/import-csv",
                                 "message": "Upload the CSV via the import wizard "
                                            "(rate/period confirmation happens there)."}), 200
-            res = store.apply_csv_import(channel_csvs)
+            res = _engine_write(lambda st: st.apply_csv_import(channel_csvs),
+                                timeout=1800.0)
             if isinstance(res, dict) and res.get("blocks_written"):
                 try:
                     _regen_charts_safely()   # imported span shows in billing/usage now
@@ -4786,13 +4917,16 @@ def api_blocks_deleted_ranges():
     try:
         import engine as _eng
         from datetime import datetime, timezone, timedelta
-        store = _get_store()
+        store = store_access.store()
         # 4.5.6: self-heal orphaned tombstones — rows whose range is already fully
         # populated with blocks (deleted in the past, then re-created by another
         # path that didn't clear the tombstone). They clutter the list and make a
         # present block look deleted; the re-import clear path may be IOG-gated.
         try:
-            _npr = store.prune_stale_deleted_ranges()
+            # Workstream A: this MUTATES, so it hops to the engine thread. It used
+            # to DELETE here, on a Flask worker, through the engine's connection —
+            # and on a GET-only route, so a browser prefetch could fire it.
+            _npr = _engine_write(lambda st: st.prune_stale_deleted_ranges())
             if _npr:
                 logger.info("deleted-ranges: pruned %d stale tombstone(s) whose "
                             "range is already fully populated", _npr)
@@ -4829,7 +4963,7 @@ def api_backfill_gaps():
     `fetchable` marks entries an API can (re)fetch. Read-only."""
     try:
         import engine as _eng
-        store = _get_store()
+        store = store_access.store()
         api_available = _eng.kraken_available()
         # Does the main meter export? A whole missing BLOCK then needs BOTH channels
         # filled (import AND export), not just import — otherwise the CSV template and
@@ -4899,7 +5033,7 @@ def api_history_gaps():
     """
     try:
         import engine as _eng
-        store = _get_store()
+        store = store_access.store()
         gaps = store.find_block_gaps()
         return jsonify({"ok": True, "gaps": gaps,
                         "total_slots": sum(g["slots"] for g in gaps),
@@ -4995,7 +5129,7 @@ def api_probe_devices():
         # Sensor ledger: if a device still has a reconstructed layer, remember the
         # sensor(s) that built it (from the run ledger) and pre-populate them until
         # that layer is removed — so revisiting the page shows what was used.
-        store = _get_store()
+        store = store_access.store()
         _latest_run_sensors = {}
         for _r in (store.get_attribution_runs() or []):
             _mid = _r.get("meter_id")
@@ -5060,11 +5194,17 @@ def api_attribute_start():
         if not _meta.get("sub_meter"):
             return jsonify({"ok": False, "error": "attribution applies to sub-meter "
                             "devices only; the house total is the control total"}), 400
-        if _eng.attribution_running():
-            return jsonify({"ok": False, "error": "an attribution run is already active",
-                            "status": _eng.api_attribution_status()}), 409
         if not (_event_loop and _event_loop.is_running()):
             return jsonify({"ok": False, "error": "engine loop not running"}), 500
+        # CLAIM THE DEVICE FIRST, synchronously. Everything below this line is slow
+        # — a preflight that can take 180s and a full database zip — and the run's
+        # status used to be set only inside the coroutine scheduled at the end. A
+        # second start arriving in that gap passed the old check. Reserving the
+        # meter_id under a lock closes it; every early return below must release.
+        if not _eng.attribution_claim(meter_id, sensor_ids):
+            return jsonify({"ok": False,
+                            "error": "an attribution run is already active for this device",
+                            "status": _eng.api_attribution_status(meter_id)}), 409
         # Sanity-check the chosen sensor(s) against the house import before writing:
         # a device that totals MORE than the house drew (or is absurdly small) is
         # almost certainly the wrong sensor or a Wh/kWh mix-up. The user can still
@@ -5088,6 +5228,7 @@ def api_attribute_start():
                         ("This sensor totals only about %s kWh over %s vs the house's %s kWh — "
                          "unusually small, which can mean a unit mismatch or the wrong sensor."
                          % (_dk, _sp, _hk)))
+                _eng.attribution_release(meter_id)
                 return jsonify({"ok": False, "sanity": _v, "warn": _msg,
                                 "device_kwh": _dk, "house_kwh": _hk}), 409
         backup = None
@@ -5095,36 +5236,56 @@ def api_attribute_start():
             backup = os.path.basename(_create_backup_zip(label="pre-attribution"))
         except Exception as be:
             logger.warning("attribution: backup failed (continuing): %s", be)
-        _asyncio.run_coroutine_threadsafe(
-            _eng.run_attribution_job(meter_id, sensor_ids, pace_s=0.05), _event_loop)
-        return jsonify({"ok": True, "status": "running", "backup": backup})
+        try:
+            _asyncio.run_coroutine_threadsafe(
+                _eng.run_attribution_job(meter_id, sensor_ids, pace_s=0.05), _event_loop)
+        except Exception:
+            _eng.attribution_release(meter_id)
+            raise
+        return jsonify({"ok": True, "status": "running", "backup": backup,
+                        "device": meter_id})
     except Exception as e:
         logger.error("api_attribute_start: %s", e)
+        try:
+            import engine as _eng_rel
+            _eng_rel.attribution_release(meter_id)
+        except Exception:
+            pass
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/historical/attribute/status", methods=["GET"])
 def api_attribute_status():
-    """Poll the background attribution job."""
+    """Poll the background attribution job(s).
+
+    Flat keys describe the active run (or the most recent), so the existing page
+    polls unchanged; `runs` carries every device. `?meter_id=` selects one.
+    """
     import engine as _eng
-    return jsonify(_eng.api_attribution_status())
+    return jsonify(_eng.api_attribution_status(
+        (request.args.get("meter_id") or "").strip() or None))
 
 
 @app.route("/api/historical/attribute/control", methods=["POST"])
 def api_attribute_control():
     """pause / resume / cancel the running attribution job."""
     import engine as _eng
-    action = ((request.get_json(force=True, silent=True) or {}).get("action") or "").lower()
+    _body = request.get_json(force=True, silent=True) or {}
+    action = (_body.get("action") or "").lower()
     if action not in ("pause", "resume", "cancel"):
         return jsonify({"ok": False, "error": "action must be pause/resume/cancel"}), 400
-    return jsonify({"ok": True, **_eng.attribution_control(action)})
+    # `meter_id` is optional — the current page does not send one, and with a
+    # single run that addresses it. With several runs and no meter_id it applies
+    # to all of them, which is the honest reading of an unqualified "cancel".
+    return jsonify({"ok": True,
+                    **_eng.attribution_control(action, (_body.get("meter_id") or "").strip() or None)})
 
 
 @app.route("/api/historical/attribute/runs", methods=["GET"])
 def api_attribute_runs():
     """The attribution run ledger + a summary of the reconstructed device layer,
     for the runs/undo list."""
-    store = _get_store()
+    store = store_access.store()
     return jsonify({"ok": True, "runs": store.get_attribution_runs(),
                     "summary": store.count_recorder_attributed()})
 
@@ -5243,7 +5404,7 @@ def api_historical_site_plan_apply():
     first write. Body: {"sites": [{outcode, from, to, site_name?}]}. Sets a marker
     so the post-import region probe doesn't re-stamp the layout. Backs up first."""
     try:
-        store = _get_store()
+        store = store_access.store()
         data = request.get_json(force=True, silent=True) or {}
         sites = data.get("sites") or []
         if not sites:
@@ -5254,11 +5415,15 @@ def api_historical_site_plan_apply():
             backup = None
             logger.warning("site-plan apply: backup failed (continuing): %s", be)
         from datetime import datetime as _dt_now
-        res = store.apply_pre_import_sites(sites)
-        store.set_meta("preimport_sites_applied", _dt_now.utcnow().isoformat())
-        store.rearm_carbon_backfill()   # new regions → re-scan carbon after import
+        def _apply_sites(st):
+            out = st.apply_pre_import_sites(sites)
+            st.set_meta("preimport_sites_applied", _dt_now.utcnow().isoformat())
+            st.rearm_carbon_backfill()   # new regions → re-scan carbon after import
+            return out
+
+        res = _engine_write(_apply_sites)
         try:
-            _rebuild_config_period_chain(store)
+            _engine_write(_rebuild_config_period_chain)
         except Exception as _e:
             logger.warning("site-plan apply: chain rebuild failed: %s", _e)
         logger.info("api_historical_site_plan_apply: %s", res)
@@ -5526,10 +5691,9 @@ def api_historical_retag_imports():
     re-tag reconstruction blocks (pre-go-live, no meter read) as imported_api.
     No re-import, no API cost — pure local repair. Returns {retagged, go_live}."""
     try:
-        store = _get_store()
-        res = store.retag_untagged_imports()
+        res = _engine_write(lambda st: st.retag_untagged_imports())
         try:
-            _rebuild_config_period_chain(store)
+            _engine_write(_rebuild_config_period_chain)
         except Exception as _e:
             logger.warning("api_historical_retag_imports: chain rebuild failed: %s", _e)
         logger.info("api_historical_retag_imports: %s", res)
@@ -5548,9 +5712,12 @@ def api_blocks_sweep_implausible():
     — leaving imp_kwh_grid / imp_cost (billing) untouched. Regenerates charts on
     apply. Returns {ok, count, ceiling_kwh, applied, blocks:[...]}."""
     try:
-        store = _get_store()
+        store = store_access.store()
         apply = (request.method == "POST")
-        res = store.sweep_implausible_sub_blocks(dry_run=not apply)
+        # Workstream A: the sweep mutates on apply, so it runs on the engine
+        # thread rather than through this one.
+        res = _engine_write(
+            lambda st: st.sweep_implausible_sub_blocks(dry_run=not apply))
         if apply and res.get("applied"):
             try:
                 _regen_charts_safely()
@@ -5569,11 +5736,12 @@ def api_carbon_pause():
     """Get or set the carbon-backfill kill switch. POST {"paused": true|false}.
     While paused, the historical backfill and live recovery both stand down."""
     try:
-        store = _get_store()
+        store = store_access.store()
         if request.method == "POST":
             data = request.get_json(force=True, silent=True) or {}
             paused = bool(data.get("paused"))
-            store.set_meta("carbon_paused", True if paused else None)
+            _engine_write(lambda st: st.set_meta(
+                "carbon_paused", True if paused else None))   # A: writes go to the engine
             logger.info("api_carbon_pause: carbon backfill %s",
                         "PAUSED" if paused else "resumed")
             return jsonify({"ok": True, "paused": paused})
@@ -5602,7 +5770,13 @@ def api_historical_reprice_from_csv():
                                          "Please wait for it to finish, then fill from CSV."}), 409
         except Exception:
             pass
-        res = store.reprice_imported_blocks_from_csv(csv_text, channel=channel)
+        # On the engine thread. This endpoint already blocks the request for up to
+        # 1800s on the sweep below, so the hop adds no new blocking — it just
+        # stops the write going through the shared web connection, which four
+        # waitress threads share.
+        res = _engine_write(
+            lambda st: st.reprice_imported_blocks_from_csv(csv_text, channel=channel),
+            timeout=1800.0)
         # G2: re-segment the CSV-filled blocks (their stale segments were invalidated in the store).
         try:
             import engine as _eng_csv
@@ -5781,9 +5955,15 @@ def api_historical_csv_apply():
             logger.warning("csv apply: uncostable ranges unavailable (%s) — "
                            "first-man-wins everywhere", _rr)
             replace_ranges = []
-        result = store.apply_csv_import(
-            texts, meter_id=meter_id, overrides=overrides,
-            replace_ranges=replace_ranges)
+        # On the engine thread. This endpoint already zips the whole database for
+        # a pre-import backup before it gets here, so it is a long request either
+        # way; the hop only stops the write going through the connection four
+        # waitress threads share.
+        result = _engine_write(
+            lambda st: st.apply_csv_import(
+                texts, meter_id=meter_id, overrides=overrides,
+                replace_ranges=replace_ranges),
+            timeout=1800.0)
         if result.get("blocks_replaced"):
             logger.info("csv apply: replaced %d block(s) inside %d uncostable tariff "
                         "period(s); %d protected (live or user-corrected)",
@@ -5797,9 +5977,10 @@ def api_historical_csv_apply():
         try:
             span = result.get("span") or {}
             if span.get("from"):
-                plan = store.plan_csv_reconciliation(span["from"], span.get("to"))
+                plan = store_access.store().plan_csv_reconciliation(
+                    span["from"], span.get("to"))
                 if plan.get("needs_confirmation"):
-                    store.set_meta("region_reconcile_pending", plan)
+                    _engine_write(lambda st: st.set_meta("region_reconcile_pending", plan))
                     result["region_reconcile"] = True
         except Exception as _re:
             logger.warning("csv apply: region plan failed: %s", _re)
@@ -5852,7 +6033,7 @@ def api_historical_gap_template():
         to_local = (request.args.get("to_local") or "").lower() in ("1", "true", "yes")
         if not frm or not to:
             return jsonify({"error": "from and to are required"}), 400
-        bm, tz = _period_block_minutes_tz(_get_store(), frm)
+        bm, tz = _period_block_minutes_tz(store_access.store(), frm)
         # A date-range picker sends LOCAL wall-clock (e.g. the picked day
         # 2026-08-01T00:00:00 meaning local midnight); the generator treats its
         # input as UTC, so in BST that renders the first row as 01:00+01:00 not
@@ -5922,7 +6103,7 @@ def api_historical_csv_template():
     try:
         from flask import Response
         import csv_import as _ci
-        bm, _tz = _period_block_minutes_tz(_get_store(), None)
+        bm, _tz = _period_block_minutes_tz(store_access.store(), None)
         csv_text = _ci.blank_template_csv(block_minutes=bm)
         return Response(csv_text, mimetype="text/csv",
                         headers={"Content-Disposition": 'attachment; filename="emt-consumption-template.csv"'})
@@ -5969,7 +6150,7 @@ def api_reprice_history_status():
     own import an upgrade. Fails safe to not-in-progress so a hiccup never nags."""
     try:
         import engine as _eng
-        store = _get_store()
+        store = store_access.store()
         m = store.get_meta(_eng._REPRICE_HISTORY_MARKER, {}) or {}
         remaining = int(store.count_blocks_needing_reprice())
         done = bool(m.get("done"))
@@ -6014,6 +6195,244 @@ def api_reprice_history_conformance():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+def _resolve_period(kind, store, cfg, tz, args):
+    """Turn a period request into `(utc_start, utc_end, meta)`.
+
+    ONE implementation of the three period kinds. The six
+    `/api/{usage,insights}/{billing-period,calendar-month,calendar-year}` routes
+    each carry their own copy — 83% identical between the usage and insights
+    pair, 71% between the month and year pair — differing only in which period
+    they resolve and which aggregator they then call. Those are two independent
+    axes expressed as six endpoints.
+
+    Returns `(None, None, error_dict)` when the period cannot be found, so the
+    caller can answer 404 without this knowing about HTTP.
+    """
+    from datetime import datetime as _dt, timezone as _tzu, timedelta as _td
+    import billing as _billing
+
+    now_local = _dt.now(tz).replace(tzinfo=None)
+
+    def _utc(d):
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=tz)
+        return d.astimezone(_tzu.utc).replace(tzinfo=None).isoformat()
+
+    if kind == "billing":
+        periods = _billing.get_billing_periods_from_config_periods(
+            store.get_config_periods(), tz=tz)
+        if not periods:
+            return None, None, {"error": "No billing periods found"}
+        requested = args.get("period_start")
+        target = None
+        for (ps, pe) in periods:
+            if requested:
+                if ps.date().isoformat() == requested:
+                    target = (ps, pe)
+                    break
+            else:
+                target = (ps, pe)        # no request → the LAST period, i.e. current
+        if target is None:
+            return None, None, {"error": "Billing period not found"}
+        ps, pe = target
+        return _utc(ps), _utc(pe), {
+            "kind": "billing",
+            "period_start": ps.date().isoformat(),
+            "period_end": pe.date().isoformat(),
+            "is_current": ps <= now_local < pe,
+        }
+
+    if kind in ("month", "quarter", "year"):
+        year = int(args.get("year", now_local.year))
+        if kind == "month":
+            month = int(args.get("month", now_local.month))
+        elif kind == "quarter":
+            q = int(args.get("quarter", (now_local.month - 1) // 3 + 1))
+            month = (q - 1) * 3 + 1
+        else:
+            month = 1
+        first = _dt(year, month, 1)
+        (ps, pe), = _billing.calendar_periods(kind, first, first)
+        label = (ps.strftime("%B %Y") if kind == "month"
+                 else "Q%d %d" % ((ps.month - 1) // 3 + 1, ps.year) if kind == "quarter"
+                 else str(ps.year))
+        return _utc(ps), _utc(pe), {
+            "kind": kind,
+            "period_start": ps.date().isoformat(),
+            "period_end": (pe - _td(days=1)).date().isoformat(),
+            "period_label": label,
+            "is_current": ps <= now_local < pe,
+        }
+
+    return None, None, {"error": "kind must be billing|month|quarter|year"}
+
+
+@app.route("/api/energy")
+def api_energy():
+    """The consolidated read surface — C §3, `resolution=period` only for now.
+
+        GET /api/energy?resolution=period&kind=billing|month|quarter|year
+                       &include=usage,carbon
+                       [&period_start=YYYY-MM-DD | &year=&month=&quarter=]
+
+    Replaces six routes whose only differences are WHICH period and WHAT to
+    aggregate — two independent axes previously expressed as six endpoints, at
+    77-83% textual duplication between them.
+
+    **`include=` rather than separate endpoints, because both aggregators scan
+    the same blocks over the same range.** A page wanting cost and carbon makes
+    one request and the store reads the range once; today it makes two and the
+    range is read twice.
+
+    **`resolution=block|day` is NOT implemented here yet** and returns 501. Those
+    return per-block points and segments, which is a larger payload decision
+    (C §3's `tariff_context`, `provenance`, the fingerprint). Refusing explicitly
+    beats accepting the parameter and quietly returning a period rollup — a
+    caller that asks for series and receives totals has no way to tell.
+
+    Additive: the six routes it replaces are untouched, because the templates
+    still call them and the client is replaced at step 6.
+    """
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+
+        resolution = (request.args.get("resolution") or "period").lower()
+        if resolution not in ("period", "day", "block"):
+            return jsonify({"error": "resolution must be period|day|block"}), 400
+
+        kind = (request.args.get("kind") or "billing").lower()
+        # `include` defaults to `usage` for a period request (that IS the answer)
+        # and to NOTHING for day/block, where the rows are the answer and an
+        # aggregate is an extra scan the caller did not ask for.
+        _default_include = "usage" if resolution == "period" else ""
+        include = {x.strip() for x in (request.args.get("include") or _default_include).split(",") if x.strip()}
+        unknown = include - {"usage", "carbon"}
+        if unknown:
+            return jsonify({"error": "include: unknown facet(s) %s" % sorted(unknown)}), 400
+
+        store = store_access.store()
+        cfg = load_config()
+        # `_config_timezone()` already exists (server.py:292) and takes NO
+        # arguments — it re-reads the config and, unlike a naive first-meter
+        # loop, SKIPS SUB-METERS. A sub-meter-first config would otherwise hand
+        # back a device's timezone as the site's.
+        tz_name = _config_timezone()
+        tz = _ZI(tz_name)
+
+        utc_start, utc_end, meta = _resolve_period(kind, store, cfg, tz, request.args)
+        if utc_start is None:
+            return jsonify(meta), 404 if "not found" in str(meta.get("error", "")).lower() else 400
+
+        out = {"resolution": resolution, "timezone": tz_name, "period": meta,
+               "range": {"start_utc": utc_start, "end_utc": utc_end},
+               # C §2a. Per-day over the range plus the bulk epoch — NOT one
+               # global token: `_blocks_data_version` is global, so a new
+               # half-hour tells a client looking at 2023 to re-fetch four years.
+               "fingerprint": {"epoch": store.get_data_epoch(),
+                               "days": store.day_fingerprints(utc_start, utc_end)}}
+        if resolution == "day":
+            out["days"] = store.get_day_rollups(utc_start, utc_end)
+        elif resolution == "block":
+            # Blocks and segments, not chart geometry (C §3). Sub-meter rows are
+            # first-class: they carry device energy and have no segments, so a
+            # client projecting devices from segments alone gets nothing.
+            out["blocks"] = store.get_energy_blocks(utc_start, utc_end)
+            out["segments"] = store.get_energy_segments(utc_start, utc_end)
+
+        if "usage" in include:
+            out["usage"] = _aggregate_usage(store, cfg, utc_start, utc_end, tz_name)
+        if "carbon" in include:
+            # NB `_aggregate_insights` takes no tz — it aggregates over a UTC
+            # range and emits nothing clock-local. `_aggregate_usage` does, for
+            # its peak-demand window. Their signatures differ by one argument and
+            # that difference is real, not an oversight to paper over.
+            out["carbon"] = _aggregate_insights(store, cfg, utc_start, utc_end)
+        return jsonify(out)
+    except Exception as e:
+        logger.exception("api_energy failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/periods")
+def api_periods():
+    """Which periods can be asked about — C §3a.
+
+    `/api/energy` answers "what happened between these two instants"; it cannot
+    answer "which instants are worth asking about". That is a different question
+    — config-period boundaries, calendar arithmetic, the earliest block — and
+    folding it in would mean an endpoint that sometimes takes a range and
+    sometimes returns the ranges available.
+
+        GET /api/periods?kind=billing|month|quarter|year
+
+    Returns the boundaries and the data bounds, and deliberately NO aggregates.
+    `api_insights_periods`, which this replaces, runs one SQL query PER PERIOD to
+    attach a carbon summary — thirty-six queries on a three-year account, to
+    populate a picker. Totals are `/api/energy` with `resolution=period`, asked
+    for the one period the user actually selects.
+
+    Consolidates `insights/periods` and `insights/data-bounds`. Both stay for
+    now: the current templates call them, and the client is replaced at step 6.
+    """
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        from datetime import datetime as _dt, timezone as _tzu
+        import billing as _billing
+
+        kind = (request.args.get("kind") or "billing").lower()
+        if kind not in ("billing", "month", "quarter", "year"):
+            return jsonify({"error": "kind must be billing|month|quarter|year"}), 400
+
+        store = store_access.store()
+        # Was an inline first-meter loop, which returns a SUB-METER's timezone on
+        # a config that lists one first. `_config_timezone()` skips them.
+        tz_name = _config_timezone()
+        tz = _ZI(tz_name)
+        bounds = store.get_block_bounds()
+
+        if kind == "billing":
+            periods = _billing.get_billing_periods_from_config_periods(
+                store.get_config_periods(), tz=tz)
+        else:
+            first = last = None
+            if bounds.get("earliest") and bounds.get("latest"):
+                first = _billing._parse_block_start(bounds["earliest"], tz).replace(tzinfo=None)
+                last = _billing._parse_block_start(bounds["latest"], tz).replace(tzinfo=None)
+            periods = _billing.calendar_periods(kind, first, last)
+
+        now_local = _dt.now(tz).replace(tzinfo=None)
+
+        def _utc(dt):
+            """Period boundaries are LOCAL — a billing day is a wall-clock thing.
+            The API speaks UTC, so both are returned and no consumer has to guess
+            which it got."""
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=tz)
+            return dt.astimezone(_tzu.utc).replace(tzinfo=None).isoformat()
+
+        out = [{"start": ps.date().isoformat(),
+                "end": pe.date().isoformat(),
+                "start_utc": _utc(ps),
+                "end_utc": _utc(pe),
+                "is_current": ps <= now_local < pe}
+               for ps, pe in periods]
+
+        return jsonify({
+            "kind": kind,
+            "timezone": tz_name,
+            "periods": out,
+            "bounds": {
+                "earliest": (bounds.get("earliest") or "")[:10] or None,
+                "latest": (bounds.get("latest") or "")[:10] or None,
+                "carbon_earliest": (bounds.get("carbon_earliest") or "")[:10] or None,
+                "carbon_latest": (bounds.get("carbon_latest") or "")[:10] or None,
+            },
+        })
+    except Exception as e:
+        logger.exception("api_periods failed")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/insights/periods")
 def api_insights_periods():
     """Return list of all billing periods with basic carbon summary for each."""
@@ -6021,7 +6440,7 @@ def api_insights_periods():
         import energy_charts as _ec
         from zoneinfo import ZoneInfo as _ZI
         from datetime import datetime, timezone
-        store   = _get_store()
+        store   = store_access.store()
         cfg     = load_config()
         tz_name = "Europe/London"
         for mid, md in (cfg.get("meters") or {}).items():
@@ -6366,7 +6785,7 @@ def api_insights_billing_period():
         import energy_charts as _ec
         from zoneinfo import ZoneInfo as _ZI
         from datetime import datetime, timezone
-        store   = _get_store()
+        store   = store_access.store()
         cfg     = load_config()
         tz_name = "Europe/London"
         for mid, md in (cfg.get("meters") or {}).items():
@@ -6423,7 +6842,7 @@ def api_insights_data_bounds():
                                        disabled.
     """
     try:
-        store = _get_store()
+        store = store_access.store()
         row = store._conn.execute(
             """SELECT
                  MIN(block_start) AS usage_earliest,
@@ -6455,7 +6874,7 @@ def api_insights_calendar_month():
     try:
         from zoneinfo import ZoneInfo as _ZI
         from datetime import datetime, timezone, timedelta
-        store   = _get_store()
+        store   = store_access.store()
         cfg     = load_config()
         tz_name = "Europe/London"
         for mid, md in (cfg.get("meters") or {}).items():
@@ -6497,7 +6916,7 @@ def api_insights_calendar_year():
     try:
         from zoneinfo import ZoneInfo as _ZI
         from datetime import datetime, timezone, timedelta
-        store   = _get_store()
+        store   = store_access.store()
         cfg     = load_config()
         tz_name = "Europe/London"
         for mid, md in (cfg.get("meters") or {}).items():
@@ -7240,7 +7659,7 @@ def api_usage_billing_period():
         import energy_charts as _ec
         from zoneinfo import ZoneInfo as _ZI
         from datetime import datetime, timezone
-        store   = _get_store()
+        store   = store_access.store()
         cfg     = load_config()
         tz_name = "UTC"
         for md in (cfg.get("meters") or {}).values():
@@ -7291,7 +7710,7 @@ def api_usage_calendar_month():
     try:
         from zoneinfo import ZoneInfo as _ZI
         from datetime import datetime, timezone, timedelta
-        store   = _get_store()
+        store   = store_access.store()
         cfg     = load_config()
         tz_name = "UTC"
         for md in (cfg.get("meters") or {}).values():
@@ -7330,7 +7749,7 @@ def api_usage_calendar_year():
     try:
         from zoneinfo import ZoneInfo as _ZI
         from datetime import datetime, timezone, timedelta
-        store   = _get_store()
+        store   = store_access.store()
         cfg     = load_config()
         tz_name = "UTC"
         for md in (cfg.get("meters") or {}).values():
@@ -7360,11 +7779,20 @@ def api_usage_calendar_year():
 def api_storage_info():
     """Return DB size, disk usage, growth rate and runway prediction."""
     import shutil as _shutil
-    store = _get_store()
+    store = store_access.store()
     db_path = os.path.join(DATA_DIR, "blocks.db")
 
     # DB and disk sizes
     db_bytes  = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+    # The write-ahead log and shared-memory file sit next to blocks.db and are
+    # real disk. Reporting blocks.db alone under-reports what EMT occupies, and
+    # hides the one case where that matters: a reader holding an open
+    # transaction during heavy writing inflates the WAL, and before
+    # journal_size_limit was set it stayed inflated until a restart. ~4 MB is
+    # normal (SQLite auto-checkpoints at 1000 pages); a persistently larger
+    # figure is worth investigating rather than invisible.
+    wal_bytes = os.path.getsize(db_path + "-wal") if os.path.exists(db_path + "-wal") else 0
+    shm_bytes = os.path.getsize(db_path + "-shm") if os.path.exists(db_path + "-shm") else 0
     try:
         du = _shutil.disk_usage(DATA_DIR)
         disk_total = du.total
@@ -7395,6 +7823,10 @@ def api_storage_info():
     return jsonify({
         "db_bytes":         db_bytes,
         "db_mb":            round(db_bytes / 1024 / 1024, 2),
+        "wal_bytes":        wal_bytes,
+        "wal_mb":           round(wal_bytes / 1024 / 1024, 2),
+        "shm_bytes":        shm_bytes,
+        "total_db_mb":      round((db_bytes + wal_bytes + shm_bytes) / 1024 / 1024, 2),
         "disk_total_mb":    round(disk_total / 1024 / 1024, 1),
         "disk_free_mb":     round(disk_free / 1024 / 1024, 1),
         "disk_used_mb":     round(disk_used / 1024 / 1024, 1),
@@ -7539,27 +7971,42 @@ def _create_backup_zip(label="backup"):
         db_src = os.path.join(DATA_DIR, "blocks.db")
         if os.path.exists(db_src):
             try:
-                # Use the engine's store for backup — it holds the primary write
-                # connection. Force a WAL checkpoint first so all committed pages
-                # are in the main DB file and the backup is complete.
-                import sys as _sys_bk
-                _eng_bk = _sys_bk.modules.get("engine")
-                _bk_store = None
-                if _eng_bk and hasattr(_eng_bk, "get_store"):
-                    try:
-                        _bk_store = _eng_bk.get_store()
-                        _bk_store._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    except Exception:
-                        _bk_store = None
-                if _bk_store is None:
-                    _bk_store = _get_store()
+                # OWN CONNECTION, opened in THIS thread.
+                #
+                # This used to run `PRAGMA wal_checkpoint(TRUNCATE)` and `.backup()`
+                # on the ENGINE's connection. Every one of the eight callers is a
+                # Flask request thread or the restore worker — never the engine loop
+                # — so that was concurrent use of one SQLite connection from two
+                # threads. The restore path three steps below this one spells out
+                # the consequence: *"a PRAGMA wal_checkpoint / close() issued here
+                # while the loop is mid-query on the SAME connection ... →
+                # Segmentation fault"*. The correct pattern was already written
+                # down next to the wrong one.
+                #
+                # The checkpoint is not needed, which is what made the old version
+                # look harmless. SQLite's online backup reads the database through
+                # a normal connection, so committed transactions still in the WAL
+                # are included — measured: a 2-row table with an un-checkpointed
+                # 16 KB WAL backs up as 2 rows, and a row from an OPEN writer
+                # transaction is correctly absent. So a private read connection
+                # gives a consistent snapshot without touching the writer at all.
+                #
                 # Unique temp name per call: two backups can run at once (e.g. a
                 # config-save's pre_config_save and a restore's pre_restore), and a
                 # shared 'blocks.db.bak' let one delete the other's file mid-write →
                 # "No such file: blocks.db.bak". Scope it to this pid+thread.
                 _bak = f"{db_src}.{os.getpid()}.{threading.get_ident()}.bak"
                 try:
-                    _bk_store.backup(_bak)
+                    import sqlite3 as _sq3_bk
+                    _src_conn = _sq3_bk.connect(db_src)
+                    try:
+                        _dst_conn = _sq3_bk.connect(_bak)
+                        try:
+                            _src_conn.backup(_dst_conn, pages=100, sleep=0.05)
+                        finally:
+                            _dst_conn.close()
+                    finally:
+                        _src_conn.close()
                     zf.write(_bak, "blocks.db")
                 finally:
                     if os.path.exists(_bak):
@@ -7638,7 +8085,7 @@ def api_import_from_zip():
 
         engine = sys.modules.get("engine")
         if engine and hasattr(engine, "pause_engine"):
-            engine.pause_engine()
+            engine.pause_engine("zip import")
 
         known    = {"blocks.db", "blocks.json"}
         imported = []
@@ -7816,11 +8263,22 @@ def api_db_vacuum():
         free_pages = store._conn.execute("PRAGMA freelist_count").fetchone()[0]
         free_bytes = free_pages * page_size
 
-        # Pause engine, run VACUUM, resume
-        _eng.pause_engine()
+        # VACUUM gets its OWN connection, and deliberately does NOT go through
+        # `_engine_write`. It rewrites the entire database file — minutes on a
+        # Pi — and the engine thread is where member 23 lives: hopping this onto
+        # the loop would stall live capture for the duration, which is the one
+        # thing B §4.0 says must not happen. Pausing the engine and working on a
+        # private connection is the right shape; it was only ever using the
+        # shared web store, which four waitress threads also write through.
+        _eng.pause_engine("database vacuum")
         try:
-            store._conn.execute("VACUUM")
-            store._conn.commit()
+            import sqlite3 as _sq3_vac
+            _vac = _sq3_vac.connect(db_path)
+            try:
+                _vac.execute("VACUUM")
+                _vac.commit()
+            finally:
+                _vac.close()
         finally:
             _eng.resume_engine()
 
@@ -7920,6 +8378,7 @@ def api_blocks_delete_status():
     return jsonify(_delete_job)
 
 
+@job("delete")
 def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
                    meter_id, tz_name, reconstructed_only):
     """Background date-range delete worker (own thread; survives navigation).
@@ -7928,12 +8387,17 @@ def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
     _j = _delete_job
     import engine as _eng
     _eng.set_delete_active(True)   # pause the carbon backfill from starting mid-delete
+    store = None
     try:
         _delete_step("deleting blocks")
-        store = _get_store()
+        store = _own_store()          # own thread, own connection
         result = store.delete_blocks_for_date_range(
             from_date, to_date, meter_id, from_time_utc, to_time_utc,
             tz_name, reconstructed_only)
+        # C §2a: a bulk operation bumps the EPOCH rather than moving thousands of
+        # day fingerprints. A range delete can span years, and a client holding
+        # per-day state needs telling once, not per day.
+        store.bump_data_epoch()
         # A device-only delete leaves the parent main meter's remainder stale for
         # those windows; recompute it (PASS 2) against the surviving sub-meters.
         if result.get("recompute_parent"):
@@ -7957,16 +8421,20 @@ def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
         _j.update({"status": "error", "error": str(e)})
     finally:
         _eng.set_delete_active(False)
+        # Own connection, own thread — close it here or every delete leaks one.
+        _release_store(store)
 
 
+@job("delete")
 def _purge_worker():
     """Background 'delete all imported data' worker (own thread). Backs up first,
     purges every imported block + derivations + checkpoints, rebuilds charts."""
     _j = _delete_job
     import engine as _eng
     _eng.set_delete_active(True)   # pause the carbon backfill from starting mid-purge
+    store = None
     try:
-        store = _get_store()
+        store = _own_store()          # own thread, own connection
         backup = None
         try:
             _delete_step("taking a safety backup")
@@ -7975,6 +8443,7 @@ def _purge_worker():
             logger.warning("purge: backup failed (continuing): %s", be)
         _delete_step("deleting all imported data")
         result = store.purge_imported_history()
+        store.bump_data_epoch()          # C §2a — removes all imported history
         result["backup"] = backup
         _delete_step("rebuilding charts")
         _regen_charts_safely()
@@ -7987,6 +8456,8 @@ def _purge_worker():
         _j.update({"status": "error", "error": str(e)})
     finally:
         _eng.set_delete_active(False)
+        # Own connection, own thread — close it here or every delete leaks one.
+        _release_store(store)
 
 
 @app.route("/api/blocks/delete", methods=["POST"])
@@ -8053,7 +8524,7 @@ def api_blocks_delete():
 def api_historical_purge_preview():
     """How much historical-import data would a purge remove (block count + span)."""
     try:
-        return jsonify(_get_store().count_imported_history())
+        return jsonify(store_access.store().count_imported_history())
     except Exception as e:
         logger.error("api_historical_purge_preview: %s", e)
         return jsonify({"error": str(e)}), 500
@@ -8531,7 +9002,7 @@ def api_charge_sessions():
     try:
         from zoneinfo import ZoneInfo
         from datetime import datetime as _d2, timedelta as _t2, timezone as _tzc
-        store = _get_store()
+        store = store_access.store()
         try:
             days = max(1, min(int(request.args.get("days", 14)), 90))
         except (TypeError, ValueError):
@@ -8607,7 +9078,7 @@ def api_charge_sessions():
 def api_corrections_meters():
     """Return distinct meter_ids present in the blocks table for the corrections UI."""
     try:
-        store = _get_store()
+        store = store_access.store()
         rows = store._conn.execute(
             "SELECT DISTINCT meter_id FROM blocks ORDER BY meter_id"
         ).fetchall()
@@ -8645,7 +9116,7 @@ def api_corrections_nearby_rates():
         from datetime import date as _date, timedelta as _td
         from block_store import local_date_range_to_utc_bounds as _utc_bounds
 
-        store = _get_store()
+        store = store_access.store()
         cfg = load_config()
         main_meta, main_id = {}, None
         for mid, md in cfg.get("meters", {}).items():
@@ -8690,7 +9161,7 @@ def api_review_blocks():
     Each entry carries block_start, meter_id, a human reason, and the kWh figures.
     """
     try:
-        store = _get_read_store()   # BL-18c: per-thread read connection (no SQLITE_MISUSE)
+        store = store_access.store()   # BL-18c: per-thread read connection (no SQLITE_MISUSE)
         alerts = store.get_review_blocks()
         # Enrich each block with the LOCAL date + 30-min window so the UI can
         # pre-fill the correction tool exactly (block_start is naive UTC). Doing
@@ -8748,8 +9219,7 @@ def api_review_blocks_dismiss():
         block_ids = data.get("block_ids")
         if block_ids is not None and not isinstance(block_ids, list):
             return jsonify({"error": "block_ids must be a list or omitted"}), 400
-        store = _get_store()
-        cleared = store.dismiss_review_blocks(block_ids)
+        cleared = _engine_write(lambda st: st.dismiss_review_blocks(block_ids))
         logger.info("api_review_blocks_dismiss: cleared %d review flag(s)", cleared)
         return jsonify({"cleared": cleared})
     except Exception as e:
@@ -9019,147 +9489,161 @@ def api_corrections_apply():
                 store, from_date, to_date, channel,
                 from_time_utc, to_time_utc, meter_id, tz_name)
 
-        if corr_type == "standing":
-            cur = store._conn.execute(
-                f"UPDATE blocks SET standing_charge = ? WHERE {where}",
-                [value] + params
-            )
-            store._conn.commit()
-            updated = cur.rowcount
-            logger.info(
-                "api_corrections_apply: standing_charge=%.4f %d blocks (%s %s→%s %s→%s)",
-                value, updated, meter_id, from_date, to_date,
-                from_time or "00:00", to_time or "24:00"
-            )
-
-        else:  # rate correction
-            kwh_col = "imp_kwh" if channel == "import" else "exp_kwh"
-            # Stamp a durable marker on manual RATE corrections so the dispatch
-            # reconciliation pass never overwrites a user's override. A manual
-            # correction is also a definite human decision, so it clears any
-            # ambiguous-review flag on the block (BL-18).
-            _mark = (", rate_corrected = 1, rate_source = 'corrected', "
-                     "needs_review = 0, review_reason = NULL"
-                     if col in ("imp_rate", "exp_rate") else "")
-            if recalc_cost and channel == "import":
-                # P4.6 (watch #11) — the corrected rate applies to the WHOLE block: imp_cost
-                # already recomputes over imp_kwh, which INCLUDES the EV kWh. Keep the EV-split
-                # columns consistent in the same UPDATE so imp_cost_ev + imp_cost_remainder ==
-                # imp_cost and imp_rate_ev tracks the correction — otherwise the split surfaces
-                # (EV bar, per-rate breakdown) keep reading the stale pre-correction figure
-                # (the correction-tool "partial-heal" that left the 2026-08-18 EV columns 100x).
-                # Non-EV blocks (imp_kwh_ev IS NULL) leave the split columns untouched.
-                cur = store._conn.execute(
-                    f"""UPDATE blocks
-                        SET imp_rate = ?,
-                            imp_cost = ROUND(imp_kwh * ?, 6),
-                            imp_rate_ev = CASE WHEN imp_kwh_ev IS NOT NULL
-                                               THEN ? ELSE imp_rate_ev END,
-                            imp_cost_ev = CASE WHEN imp_kwh_ev IS NOT NULL
-                                               THEN ROUND(imp_kwh_ev * ?, 6)
-                                               ELSE imp_cost_ev END,
-                            imp_cost_remainder = CASE WHEN imp_kwh_ev IS NOT NULL
-                                               THEN ROUND(imp_kwh * ? - ROUND(imp_kwh_ev * ?, 6), 6)
-                                               ELSE imp_cost_remainder END,
-                            -- BL-57: block-level exc must follow the corrected inc (the
-                            -- reconcile already does this; the corrections tool didn't, so a
-                            -- corrected block kept a stale ex-VAT figure). Rescale by
-                            -- new/old inc to preserve the block's VAT ratio; leave NULL exc
-                            -- (view falls back to inc / VAT).
-                            imp_rate_exc = CASE WHEN imp_rate_exc IS NOT NULL AND imp_rate != 0
-                                               THEN ROUND(imp_rate_exc * ? / imp_rate, 6)
-                                               ELSE imp_rate_exc END,
-                            imp_cost_exc = CASE WHEN imp_cost_exc IS NOT NULL AND imp_rate != 0
-                                               THEN ROUND(imp_cost_exc * ? / imp_rate, 6)
-                                               ELSE imp_cost_exc END{_mark}
-                        WHERE {where}""",
-                    [value, value, value, value, value, value, value, value] + params
-                )
-            elif recalc_cost:
-                cost_col = "imp_cost" if channel == "import" else "exp_cost"
-                cur = store._conn.execute(
-                    f"""UPDATE blocks
-                        SET {col} = ?,
-                            {cost_col} = ROUND({kwh_col} * ?, 6){_mark}
-                        WHERE {where}""",
-                    [value, value] + params
-                )
-            else:
-                cur = store._conn.execute(
-                    f"UPDATE blocks SET {col} = ?{_mark} WHERE {where}",
+        # The whole correction runs on the ENGINE thread as ONE unit.
+        #
+        # It is not a single statement: three alternative UPDATEs, a device-row
+        # propagation, a block_segments rate rewrite and an exc recompute, with
+        # explicit commits between them. Hopping each write separately would let
+        # another writer interleave between the main-meter update and the device
+        # rows that are supposed to follow it — the 'partial heal' the comments
+        # inside already warn about, which left the 2026-08-18 EV columns 100x out.
+        #
+        # `updated` is the only value the rest of the handler needs back.
+        def _apply_correction(st):
+            if corr_type == "standing":
+                cur = st._conn.execute(
+                    f"UPDATE blocks SET standing_charge = ? WHERE {where}",
                     [value] + params
                 )
-            store._conn.commit()
-            updated = cur.rowcount
+                st._conn.commit()
+                updated = cur.rowcount
+                logger.info(
+                    "api_corrections_apply: standing_charge=%.4f %d blocks (%s %s→%s %s→%s)",
+                    value, updated, meter_id, from_date, to_date,
+                    from_time or "00:00", to_time or "24:00"
+                )
 
-            # Devices follow the main meter's rate, so propagate the corrected
-            # IMPORT rate onto device rows for the same blocks (issue #254b). The
-            # settled gate above only matches the main meter — device rows never
-            # carry imp_kwh_api — so without this the correction silently skipped
-            # them. Device cost = grid-attributed kWh × rate, exactly what PASS 2
-            # computes at finalise.
-            if channel == "import" and updated:
-                bs_list = [r["block_start"] for r in store._conn.execute(
-                    f"SELECT DISTINCT block_start FROM blocks WHERE {where}", params)]
-                if bs_list:
-                    ph = ",".join("?" * len(bs_list))
-                    dev = (f"block_start IN ({ph}) AND meter_id IN "
-                           "(SELECT meter_id FROM meters WHERE is_sub_meter = 1)")
-                    if recalc_cost:
-                        store._conn.execute(
-                            f"UPDATE blocks SET imp_rate = ?, "
-                            f"imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6) "
-                            f"WHERE {dev}", [value, value] + bs_list)
-                    else:
-                        store._conn.execute(
-                            f"UPDATE blocks SET imp_rate = ? WHERE {dev}",
-                            [value] + bs_list)
-                    store._conn.commit()
+            else:  # rate correction
+                kwh_col = "imp_kwh" if channel == "import" else "exp_kwh"
+                # Stamp a durable marker on manual RATE corrections so the dispatch
+                # reconciliation pass never overwrites a user's override. A manual
+                # correction is also a definite human decision, so it clears any
+                # ambiguous-review flag on the block (BL-18).
+                _mark = (", rate_corrected = 1, rate_source = 'corrected', "
+                         "needs_review = 0, review_reason = NULL"
+                         if col in ("imp_rate", "exp_rate") else "")
+                if recalc_cost and channel == "import":
+                    # P4.6 (watch #11) — the corrected rate applies to the WHOLE block: imp_cost
+                    # already recomputes over imp_kwh, which INCLUDES the EV kWh. Keep the EV-split
+                    # columns consistent in the same UPDATE so imp_cost_ev + imp_cost_remainder ==
+                    # imp_cost and imp_rate_ev tracks the correction — otherwise the split surfaces
+                    # (EV bar, per-rate breakdown) keep reading the stale pre-correction figure
+                    # (the correction-tool "partial-heal" that left the 2026-08-18 EV columns 100x).
+                    # Non-EV blocks (imp_kwh_ev IS NULL) leave the split columns untouched.
+                    cur = st._conn.execute(
+                        f"""UPDATE blocks
+                            SET imp_rate = ?,
+                                imp_cost = ROUND(imp_kwh * ?, 6),
+                                imp_rate_ev = CASE WHEN imp_kwh_ev IS NOT NULL
+                                                   THEN ? ELSE imp_rate_ev END,
+                                imp_cost_ev = CASE WHEN imp_kwh_ev IS NOT NULL
+                                                   THEN ROUND(imp_kwh_ev * ?, 6)
+                                                   ELSE imp_cost_ev END,
+                                imp_cost_remainder = CASE WHEN imp_kwh_ev IS NOT NULL
+                                                   THEN ROUND(imp_kwh * ? - ROUND(imp_kwh_ev * ?, 6), 6)
+                                                   ELSE imp_cost_remainder END,
+                                -- BL-57: block-level exc must follow the corrected inc (the
+                                -- reconcile already does this; the corrections tool didn't, so a
+                                -- corrected block kept a stale ex-VAT figure). Rescale by
+                                -- new/old inc to preserve the block's VAT ratio; leave NULL exc
+                                -- (view falls back to inc / VAT).
+                                imp_rate_exc = CASE WHEN imp_rate_exc IS NOT NULL AND imp_rate != 0
+                                                   THEN ROUND(imp_rate_exc * ? / imp_rate, 6)
+                                                   ELSE imp_rate_exc END,
+                                imp_cost_exc = CASE WHEN imp_cost_exc IS NOT NULL AND imp_rate != 0
+                                                   THEN ROUND(imp_cost_exc * ? / imp_rate, 6)
+                                                   ELSE imp_cost_exc END{_mark}
+                            WHERE {where}""",
+                        [value, value, value, value, value, value, value, value] + params
+                    )
+                elif recalc_cost:
+                    cost_col = "imp_cost" if channel == "import" else "exp_cost"
+                    cur = st._conn.execute(
+                        f"""UPDATE blocks
+                            SET {col} = ?,
+                                {cost_col} = ROUND({kwh_col} * ?, 6){_mark}
+                            WHERE {where}""",
+                        [value, value] + params
+                    )
+                else:
+                    cur = st._conn.execute(
+                        f"UPDATE blocks SET {col} = ?{_mark} WHERE {where}",
+                        [value] + params
+                    )
+                st._conn.commit()
+                updated = cur.rowcount
 
-                    # P4.10 (watch #11) — on a SEGMENTED account (4.4.0+) the block's pricing
-                    # ALSO lives in block_segments, which the segment-based surfaces read
-                    # (Usage-Stats rate-tiers P4.2, the EV/house split). A rate correction that
-                    # only rewrote the columns would leave segments on the stale rate. The
-                    # correction flattens the block to ONE import rate (imp_cost = imp_kwh ×
-                    # value), so every import segment on the affected blocks takes that rate —
-                    # Σ(kwh×inc_rate) == imp_cost still holds (Σ kwh == imp_kwh is unchanged).
-                    # Segment exc_rate is rescaled PROPORTIONALLY (P4.18) — preserving each
-                    # segment's exc/inc ratio — NOT left as-is: leaving it would break the ratio
-                    # even on a normal correction (inc→0.28 but exc still 0.2857 > inc), and it
-                    # is the exact hole that stopped the Cost-Corrections tool from repairing a
-                    # capped block whose segments the upgrade sweep built in PENCE (segment inc
-                    # AND exc both pence). `exc_rate * value / inc_rate` uses the OLD inc_rate
-                    # (SQLite evaluates all RHS against the original row), so pence→£ and normal
-                    # corrections both land on the right exc. Guarded on non-zero inc + non-NULL
-                    # exc (NULL exc → view falls back to inc÷VAT, leave it). Gated on recalc and
-                    # skipped on pre-4.4.0 DBs with no block_segments table.
-                    if recalc_cost and store._conn.execute(
-                            "SELECT 1 FROM sqlite_master WHERE type = 'table' "
-                            "AND name = 'block_segments'").fetchone():
-                        store._conn.execute(
-                            f"UPDATE block_segments SET "
-                            f"  exc_rate = CASE WHEN exc_rate IS NOT NULL AND inc_rate != 0 "
-                            f"                  THEN ROUND(exc_rate * ? / inc_rate, 6) "
-                            f"                  ELSE exc_rate END, "
-                            f"  inc_rate = ? "
-                            f"WHERE channel = 'import' AND block_start IN ({ph})",
-                            [value, value] + bs_list)
-                        store._conn.commit()
+                # Devices follow the main meter's rate, so propagate the corrected
+                # IMPORT rate onto device rows for the same blocks (issue #254b). The
+                # settled gate above only matches the main meter — device rows never
+                # carry imp_kwh_api — so without this the correction silently skipped
+                # them. Device cost = grid-attributed kWh × rate, exactly what PASS 2
+                # computes at finalise.
+                if channel == "import" and updated:
+                    bs_list = [r["block_start"] for r in st._conn.execute(
+                        f"SELECT DISTINCT block_start FROM blocks WHERE {where}", params)]
+                    if bs_list:
+                        ph = ",".join("?" * len(bs_list))
+                        dev = (f"block_start IN ({ph}) AND meter_id IN "
+                               "(SELECT meter_id FROM meters WHERE is_sub_meter = 1)")
+                        if recalc_cost:
+                            st._conn.execute(
+                                f"UPDATE blocks SET imp_rate = ?, "
+                                f"imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6) "
+                                f"WHERE {dev}", [value, value] + bs_list)
+                        else:
+                            st._conn.execute(
+                                f"UPDATE blocks SET imp_rate = ? WHERE {dev}",
+                                [value] + bs_list)
+                        st._conn.commit()
 
-                    # BL-57b: SUPERSEDES the proportional exc rescales above with an
-                    # AUTHORITATIVE re-derivation of block + segment ex-VAT from the corrected
-                    # inc via the VAT calendar (per-block vat_rate_at). Sets exc explicitly even
-                    # when it was NULL (no more inc÷1.05 view-approximation) and stays correct
-                    # across a VAT-rate change. Import rate corrections only.
-                    if recalc_cost:
-                        store.set_import_exc_from_inc(bs_list, meter_id)
+                        # P4.10 (watch #11) — on a SEGMENTED account (4.4.0+) the block's pricing
+                        # ALSO lives in block_segments, which the segment-based surfaces read
+                        # (Usage-Stats rate-tiers P4.2, the EV/house split). A rate correction that
+                        # only rewrote the columns would leave segments on the stale rate. The
+                        # correction flattens the block to ONE import rate (imp_cost = imp_kwh ×
+                        # value), so every import segment on the affected blocks takes that rate —
+                        # Σ(kwh×inc_rate) == imp_cost still holds (Σ kwh == imp_kwh is unchanged).
+                        # Segment exc_rate is rescaled PROPORTIONALLY (P4.18) — preserving each
+                        # segment's exc/inc ratio — NOT left as-is: leaving it would break the ratio
+                        # even on a normal correction (inc→0.28 but exc still 0.2857 > inc), and it
+                        # is the exact hole that stopped the Cost-Corrections tool from repairing a
+                        # capped block whose segments the upgrade sweep built in PENCE (segment inc
+                        # AND exc both pence). `exc_rate * value / inc_rate` uses the OLD inc_rate
+                        # (SQLite evaluates all RHS against the original row), so pence→£ and normal
+                        # corrections both land on the right exc. Guarded on non-zero inc + non-NULL
+                        # exc (NULL exc → view falls back to inc÷VAT, leave it). Gated on recalc and
+                        # skipped on pre-4.4.0 DBs with no block_segments table.
+                        if recalc_cost and st._conn.execute(
+                                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                                "AND name = 'block_segments'").fetchone():
+                            st._conn.execute(
+                                f"UPDATE block_segments SET "
+                                f"  exc_rate = CASE WHEN exc_rate IS NOT NULL AND inc_rate != 0 "
+                                f"                  THEN ROUND(exc_rate * ? / inc_rate, 6) "
+                                f"                  ELSE exc_rate END, "
+                                f"  inc_rate = ? "
+                                f"WHERE channel = 'import' AND block_start IN ({ph})",
+                                [value, value] + bs_list)
+                            st._conn.commit()
 
-            logger.info(
-                "api_corrections_apply: %s %s_rate=%.6f recalc=%s %d main block(s) "
-                "(%s→%s %s→%s); devices follow",
-                meter_id, channel, value, recalc_cost, updated,
-                from_date, to_date, from_time or "00:00", to_time or "24:00"
-            )
+                        # BL-57b: SUPERSEDES the proportional exc rescales above with an
+                        # AUTHORITATIVE re-derivation of block + segment ex-VAT from the corrected
+                        # inc via the VAT calendar (per-block vat_rate_at). Sets exc explicitly even
+                        # when it was NULL (no more inc÷1.05 view-approximation) and stays correct
+                        # across a VAT-rate change. Import rate corrections only.
+                        if recalc_cost:
+                            st.set_import_exc_from_inc(bs_list, meter_id)
+
+                logger.info(
+                    "api_corrections_apply: %s %s_rate=%.6f recalc=%s %d main block(s) "
+                    "(%s→%s %s→%s); devices follow",
+                    meter_id, channel, value, recalc_cost, updated,
+                    from_date, to_date, from_time or "00:00", to_time or "24:00"
+                )
+            return updated
+
+        updated = _engine_write(_apply_correction, timeout=600.0)
 
         # Regenerate the pre-built billing/heatmap charts so the correction is
         # visible immediately, rather than only after the next block finalises

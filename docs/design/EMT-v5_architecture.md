@@ -74,15 +74,82 @@ HTML generators that die. The other three are domain logic that every surface de
 
 | function | lines | fate |
 |---|---|---|
-| `calculate_billing_summary_for_period` | 377 | **Untangle.** Billing arithmetic and presentation in one function — the arithmetic is what surfaces must agree on. |
+| `calculate_billing_summary_for_period` | 377 | **Move as-is.** Pure domain — see the correction below. |
 | `get_billing_periods_from_config_periods` | 177 | Move to `billing.py` as-is. |
+| `get_billing_periods_from_config_history` | 212 | Move to `billing.py` as-is. |
+| `render_billing_summary` | 219 | **Dies with the charts.** HTML; its six callers are all inside `energy_charts.py`. |
 | `build_meter_colors_from_config` | — | Presentation. Moves to the client. |
 
-`calculate_billing_summary_for_period` is the crux of the whole workstream. Until the arithmetic is
-separable from the markup, "one API for every surface" cannot be true, because the number and its
-rendering are the same 377 lines.
-
 **Sequence:** extract `billing.py` *before* deleting anything. Rescue, then demolish.
+
+> **CORRECTION, 24 Sep 2026 — the crux is not a crux.** This section said
+> `calculate_billing_summary_for_period` was *"the crux of the whole workstream"* because *"the
+> number and its rendering are the same 377 lines"*, and that until they were separable *"one API
+> for every surface cannot be true"*. **Measured, they are already separate:**
+>
+> | function | lines | HTML tags |
+> |---|---|---|
+> | `calculate_billing_summary_for_period` | 377 | **0** |
+> | `get_billing_periods_from_config_periods` | 177 | **0** |
+> | `get_billing_periods_from_config_history` | 212 | **0** |
+> | `bill_slots_from_blocks` · `octopus_bill_total` | 36 | **0** |
+> | `render_billing_summary` | 219 | 78 |
+>
+> `calculate_billing_summary_for_period` returns a dict — `{start, end, meters, totals, …}` — and
+> emits no markup at all. The HTML half is `render_billing_summary`, a separate function that
+> consumes that dict.
+>
+> **Second correction, same day: `render_billing_summary` is NOT dead.** An earlier version of this
+> note said it had "no caller anywhere" and was already dead. It has **six**, all inside
+> `energy_charts.py` — the chart generators call it to render the billing panel they embed. The
+> error came from a `grep` that excluded the defining file to avoid matching the `def` line, and so
+> excluded its callers with it. `.build/check_reachability.py` exists for precisely this question and
+> would have answered it correctly; grep was reached for because the question felt small. That is
+> §4a's *"grep is not proof"*, committed twice in one session.
+>
+> The conclusion is unchanged and slightly strengthened: the renderer is the presentation consuming
+> the domain's dict, which is the shape v5 wants. It dies WITH the chart generators at step 4, not
+> as a separate deletion.
+>
+> So `billing.py` is a **move of roughly 1,000 pure-domain lines**, not an untangling, and the
+> renderer dies with the other presentation rather than being dissected out of it. The step this
+> document flagged as the one most likely to hurt is the cheapest in the sequence. *(The claim was
+> plausible from the function's size and its neighbours; it was never checked against the body.)*
+
+### Plotly is a free choice, not a migration
+
+`plotly` appears in exactly **four places**: a `<script src>` in `energy_charts.py`, one
+`plotly_restyle` handler, and two DOM lookups for `.plotly-plot` in `charts.html`. The 3,482 lines
+of `generate_daily_import_export_charts` (2,027), `generate_net_heatmap` (848) and
+`build_day_chart_html` (607) are **string building** — they emit HTML with a Plotly payload inside.
+
+There is no Plotly abstraction to port. Whatever the client draws with is decided once, in the
+client, and costs nothing in the demolition either way.
+
+### Summary and series are different requests — state it before building
+
+The chart render is not merely slow; `main.py` carries a reconnect-storm guard whose comment records
+what it costs:
+
+> *the render is CPU/GIL-bound, so it stalls the WS heartbeat for **MINUTES** — longer than the
+> startup cooldown — and **IS** the usual flap trigger*
+
+HA drops the socket, EMT reconnects, startup re-runs, it renders again. Breaking that loop needed a
+300-second cooldown AND a `render_recently_active()` check. That is today's behaviour on the
+reference account.
+
+The cause is structural: a billing period's **totals** and its **series** are one pre-rendered
+artefact, so asking for a quarter costs a quarter's rendering even when the answer wanted is four
+numbers. v5 should separate them at the API:
+
+- **summary** — totals per meter and per band for a period. Cheap, bounded, and what most of the
+  billing surface actually shows.
+- **series** — per-block points for plotting. Expensive, and requested only when something is going
+  to draw them.
+
+Then "show a summary and no charts for a long range" is not a performance switch to add later; it is
+the client declining to make a call. The expensive path stops being the default rather than being
+guarded.
 
 ---
 
@@ -104,9 +171,49 @@ Code nothing calls is not free. It misleads whoever reads next. None of this is 
 
 AST reachability from real entry points, deliberately over-approximating (a call by bare name or
 attribute matches any function of that name), so anything still reported unreachable is confidently
-unreachable:
+unreachable.
 
-**Whole codebase: 85 of 1,116 defined names unreachable.**
+**This is now a committed tool, not a one-off analysis:** `.build/check_reachability.py`, with
+`.build/reachability_baseline.json` as a regression guard and `tests/test_reachability_tool.py`
+checking it against cases established by hand. §4a required a trace before any deletion; until the
+tool existed that was a rule with nothing enforcing it.
+
+**Whole codebase: 80 of 1,221 definitions unreachable** (23 Sep 2026 — 84 of 1,162 at the 4.5.14
+seed, 79 of 1,157 after the five deletions below, and the total has since grown with workstreams A
+and B). **This figure is asserted against the tool by `tests/test_b_design_figures.py`** — it had
+drifted five times before that check existed, each time right when written and wrong a week later.
+The
+figures below predate the tool and were produced by an ad-hoc run; re-run it before acting on any
+of them.
+
+> **84, not the 88 first reported.** The tool's first real use — the `reprice.py` deletion — found
+> it calling `IngressMiddleware.__call__` unreachable. That is the WSGI entry point: every request
+> in the add-on passes through it. Python invokes it through syntax, so no AST node anywhere
+> carries the name, and a pure name-trace sees no caller. `__aenter__`/`__aexit__` (`async with`)
+> and `__len__` (`len()`) were wrong the same way. The whole dunder namespace is now excluded.
+>
+> The lesson is not the four names. It is that **"it never lies about dead" was an intent, not a
+> property** — it held only until something was invoked other than by writing its name. §4a's
+> suite-green gate is what catches this class, so it is not optional.
+
+> **Read a clean report as "no evidence of death", never as "proof of life".** The trace treats any
+> identifier-shaped string literal as a possible `getattr`, so a name that appears as a JSON key is
+> reported live. `carbon.ev_carbon` is the worked example: reachable only through the dead
+> `carbon_from_reprice`, but `"ev_carbon"` is a payload key in `server.py`, so the trace cannot
+> settle it. Its sibling `house_carbon` has no such string and traces dead. Narrowing that rule
+> would lose genuine dispatch-by-name and could report a live function as dead — the direction that
+> deletes working code.
+
+> **Unreachable is not unreferenced, and neither is deletable.** The scan skips `tests/`, because
+> the question it answers is "does the application reach this". A name with no application caller
+> can still have fixtures, builders and whole test modules standing on it, so the deletion footprint
+> is a separate measurement and is usually larger than the function. Of the 84 at the seed, only
+> **22 (272 lines)** were never so much as named by the suite — and of those, only **five had no
+> consumer, no recorded intent and nothing behind them**: `io_save`, `iog_cap._hours`, `save_json`
+> (the non-atomic sibling of the live `save_json_atomic`), `BlockStore.get_setting` (a wrapper over
+> `get_settings()`) and the nested `rate_breakdown_html`. Twenty lines, removed 22 Sep 2026 as the
+> first deletions under §4a — deliberately boring ones, chosen to test the protocol's mechanics
+> rather than its judgement. `reprice.py` is the worked example of everything else — §4b.
 
 ### `engine.py` — 14 functions, 330 lines of 13,129 (2.5%)
 
@@ -129,7 +236,21 @@ and the code has sat since looking like part of the system.
 
 ### Whole modules and tables
 
-- **`reprice.py` — 169 lines, all four functions unreachable.** Does not come across.
+- **`reprice.py` — 169 lines, all four functions unreachable from the application. IT STILL COMES
+  ACROSS.** *(Reversed 22 Sep 2026, the first time §4a was exercised for real.)* Three things the
+  trace could not see:
+  1. **It is not 169 lines.** `tests/test_reprice_core.py` (12 tests), `tests/fixture_capped.py`
+     and `tests/test_fixture_capped.py` stand on it — **480 lines and 15 tests**, because the scan
+     skips `tests/` by design.
+  2. **It is unwired, not abandoned.** 4.4.0's *"single, pure per-block pricing model"*, built and
+     tested and never called. Production prices through `engine.py`'s `_reprice_main_import_block`.
+  3. **It and v4 already share the arithmetic.** Both bottom out in `iog_cap.price_slot`, which
+     *is* the four-rate rule. `tests/test_adapter_differential.py` drives both wrappers over 144
+     reachable scenarios — capped/uncapped, boost, in/out of window, three cap-boundary shapes,
+     Agile plunge/zero/spike — and they agree exactly. Two differences, both pinned there: v4 clips
+     EV-above-grid at each of its two call sites where reprice.py clips inside the core, and
+     reprice.py's `_reconcile_house` moves a segment rate by 1e-6 on a cap-boundary straddle with
+     the block total identical.
 - **The `reads` table — unreachable, not merely empty.** Five store methods (`insert_read`,
   `link_reads_to_block`, `get_reads_for_block`, `get_reads_for_range`, `purge_reads_older_than`)
   with **no caller outside the test suite**. Nothing has ever written a row; it is empty in all
@@ -170,6 +291,41 @@ recommendation would have acted on the over-report. That asymmetry is why §4a f
 
 ---
 
+### 4b. Two boundary facts the inventory turned up
+
+Neither was anyone's finding at the time; both fell out of asking why a function had no caller.
+
+**EMT never writes to Home Assistant.** `HAClient` has nine read methods, all live, and two write
+methods — `set_state` and `call_service` — both unreachable. There is no MQTT publisher and no
+other `POST /api/states` anywhere in the codebase, so those two are the whole write surface and
+neither is wired. `call_service`'s docstring names the feature it was built for
+(*"persistent_notification create/dismiss"*), which was never finished.
+
+> **v5 should inherit this deliberately and be able to enforce it.** A read-only HA boundary is a
+> real architectural property — it means EMT cannot corrupt a user's Home Assistant state, ever —
+> and right now it holds by accident. It is one structural test away from holding on purpose.
+
+**`reprice.py` is a pricing core for one channel on one tariff family.** Its docstring calls itself
+*"the one model every code path conforms to"*. Measured against 4.5.14, it is the one model for
+**dispatched IOG import**, and nothing else reaches it:
+
+| | reaches `price_slot`? | priced by |
+|---|---|---|
+| IOG capped | yes — four rates, cap boundary | the rule |
+| IOG uncapped | yes — fall-through, four equal rates | the rule (totals unchanged) |
+| Agile / flat / fixed / Eco7 import | **no** — `_apply_iog_split` returns at `ev_kwh <= 1e-9` | schedule resolver |
+| Agile carrying legacy dispatch rows | yes, as uncapped — *"Agile never caps"* | the rule |
+| **export, any tariff** | **never** | `exp_cost = exp_kwh × exp_rate`, flat |
+
+Export is not an oversight to be fixed later: `_dispatch_overlay_rate` refuses it on its first line
+(*"Import channel only"*), `_apply_iog_split` only touches `imp_ch`, and `reprice.py` contains no
+export concept at all. So adopting it as v5's pricing core still leaves every non-IOG import tariff
+and all of export on the schedule-resolver path — including `_billed_rate`, which carries its own
+tariff-type discriminator and its own two documented hazards (export fragmentation, the price-cap
+transition-day trap). **Plan the port around that scope rather than discovering it mid-port.**
+
+---
+
 ### 4a. The deletion protocol
 
 *Added 19 Sep 2026. v5 is a **subtractive** project against a codebase that works: three years of
@@ -177,7 +333,7 @@ tariff edge cases, 2,722 passing tests, and a production install people rely on.
 matters is not writing a bug — it is removing something that was load-bearing and not finding out
 for months.*
 
-**Nothing is removed unless all four hold.**
+**Nothing is removed unless all five hold.**
 
 1. **An over-approximating AST reachability trace reports it unreachable.** Deliberately
    over-approximating: a call by bare name or attribute matches *any* function of that name, so the
@@ -190,8 +346,26 @@ for months.*
    of a rewrite.
 4. **The commit message records the evidence**, not the intention: what the trace said, and what
    was searched. "Appears unused" is not evidence.
+5. **The comment at the site that would have called it has been read.** *(Added 22 Sep 2026.)*
+   Dead code is sometimes dead on purpose, and the reason is recorded where the wiring isn't — not
+   at the definition, where anyone deleting it would look. The Mini boundary chain
+   (`_mini_boundary_callback` → `_mini_read_and_apply` → `_apply_mini_boundary_read`, 81 lines) is
+   the case: the trace calls it dead, the suite stays green without it, and `engine.py` says at the
+   point it declines to register it —
+
+   > *"We deliberately do NOT register the old post-finalise boundary callback here: that path is
+   > kept defined as a dormant fallback, but registering it too would double-write the block."*
+
+   Gates 1–4 all pass on that code. Only reading the would-be call site stops the deletion.
 
 #### What none of that covers, and where the real exposure is
+
+**Unreachable is not unreferenced, and neither one is deletable.** The trace answers *"does the
+application reach this"* — `tests/` is out of scope by construction, so a name with no application
+caller may still carry fixtures, builders and whole test modules. Of the 84 unreachable at the seed,
+only **22 (272 lines) were never so much as mentioned by the suite**, and reading a name off the report
+as a deletion candidate is how `reprice.py` got listed at 169 lines when the real footprint was 480.
+Measure the footprint separately, every time.
 
 The suite proves the **engine and the store**. It does not prove a **surface**. Delete a chart
 function and nothing goes red, because what it produced was HTML no test asserts on — and the
@@ -202,13 +376,21 @@ presentation layer is exactly what this programme demolishes. So for anything in
 > because the copied suite is the primary check. That downgrade is correct for the domain and
 > **wrong for the surfaces**, which are the part with no test to be primary.
 
-#### Two kinds of proof that do not count
+#### Three kinds of proof that do not count
 
 Both have already produced a wrong answer in this project, so they are named rather than assumed:
 
 - **Grep is not proof.** A pattern search classified `needs_pass2_rerun` as write-only while
   `_drain_pass2_queue` plainly reads it. Four `SELECT * FROM blocks` sites and a `_row_to_block`
   mapper mean columns are returned without ever being named.
+- **A clean reachability report is not proof.** The tool's own docstring claimed it *"never lies
+  about dead"*. Its first real use falsified that: `IngressMiddleware.__call__` was reported
+  unreachable, and it is the WSGI entry point that every request in the add-on passes through.
+  Python invokes it through syntax, so no AST node carries the name. `__aenter__`/`__aexit__`
+  (`async with`) and `__len__` (`len()`) were wrong the same way; the dunder namespace is now
+  excluded, which is what moved the headline from 88 to 84. The general form: **anything invoked
+  other than by writing its name is invisible to a name-trace.** Read a clean report as "no
+  evidence of death", never as "proof of life".
 - **Data is not proof.** `finalised_from_cad` holds a single value across 136,202 rows on the
   reference account — because that account runs `mini_provisional=off`, not because the column is
   dead. Single-valued on one database is not dead; it is one configuration.

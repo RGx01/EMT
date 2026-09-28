@@ -25,17 +25,32 @@ class TestReadStoreConcurrency(unittest.TestCase):
             "('2026-08-14T19:00:00','2026-08-14T19:30:00','electricity_main',1,3.0,0.32,"
             "1,'possible billing error')")
         rw._conn.commit()
+        rw.close()                     # setup done; the writer opens its own below
         errors = []; stop = threading.Event()
 
         def writer():
+            # OPENS ITS OWN CONNECTION, ON ITS OWN THREAD.
+            #
+            # This used to write through `rw`, a store opened on the MAIN thread,
+            # which only worked because BlockStore passed check_same_thread=False.
+            # That flag is what workstream A acceptance 5 exists to retire, so a
+            # test depending on it would have hidden its removal — the suite would
+            # have stayed green for the wrong reason.
+            #
+            # Production does exactly this now: `_delete_worker`, `_purge_worker`
+            # and `_restore_worker` each call `server._own_store()`.
+            w = open_block_store(db)
             c = 0
-            while not stop.is_set():
-                try:
-                    rw._conn.execute("UPDATE blocks SET imp_cost=? "
-                                     "WHERE block_start='2026-08-14T19:00:00'", (c % 100 / 100.0,))
-                    rw._conn.commit(); c += 1
-                except Exception as e:
-                    errors.append(("writer", repr(e)))
+            try:
+                while not stop.is_set():
+                    try:
+                        w._conn.execute("UPDATE blocks SET imp_cost=? "
+                                        "WHERE block_start='2026-08-14T19:00:00'", (c % 100 / 100.0,))
+                        w._conn.commit(); c += 1
+                    except Exception as e:
+                        errors.append(("writer", repr(e)))
+            finally:
+                w.close()
 
         def reader(tid):
             rs = BlockStore(db, read_only=True)   # per-thread read connection (the fix)
