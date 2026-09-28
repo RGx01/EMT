@@ -33,6 +33,28 @@ class TestToolRuns(unittest.TestCase):
         self.assertEqual(d["parse_errors"], [], "every production file must parse")
 
 
+class TestWalkScope(unittest.TestCase):
+    """Regression: `production_files` used `.lstrip("./")` to trim a prefix. lstrip
+    takes a character SET, so a local `.venv/lib/x.py` came back as `venv/lib/x.py`
+    -- a path that does not exist -- and the tool crashed on it. A virtualenv is
+    also not production code, dotted or not, and must not be scanned."""
+
+    def test_virtualenvs_and_dot_dirs_are_not_scanned(self):
+        import importlib.util
+        import tempfile
+        spec = importlib.util.spec_from_file_location("_reach", _TOOL)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as root:
+            for rel in ("main.py", "pkg/mod.py", ".venv/lib/a.py",
+                        "venv/lib/b.py", ".hidden/c.py"):
+                path = os.path.join(root, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                open(path, "w").close()
+            mod.ROOT = root
+            self.assertEqual(mod.production_files(), ["main.py", "pkg/mod.py"])
+
+
 class TestAgreesWithHandEstablishedCases(unittest.TestCase):
     """The trace was checked against cases worked out by reading the code. If a
     future change to the tool breaks one of these, the tool is wrong — not the
