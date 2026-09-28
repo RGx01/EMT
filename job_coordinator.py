@@ -80,6 +80,7 @@ _MANIFEST: dict = {
     # Whether it SHOULD defer to a delete is a real question; it is open in §6,
     # not settled here.
     "import":              ((),                               (),              DEFER),
+    "device_rate_drift":   ((),                               (),              DEFER),
     "verify_pricing":      (("import",),                      (),              DEFER),
     "reprice_sweep":       (("import",),                      ("delete",),     DEFER),
     "reprice_sweep_to_done": ((),                             (),              DEFER),
@@ -88,10 +89,6 @@ _MANIFEST: dict = {
     "attribution":         (("import", "verify_pricing"),     ("delete",),     WAIT),
     "gap_fill":            ((),                               (),              DEFER),
     "iog_split_carve":     ((),                               (),              DEFER),
-    "smb_rate_repair":     ((),                               (),              DEFER),
-    "smb_device_recost":   ((),                               (),              DEFER),
-    "smb_ev_resplit":      ((),                               (),              DEFER),
-    "band_rate_snap":      ((),                               (),              DEFER),
     "settled_ev_split_heal": ((),                             (),              DEFER),
     # PREEMPT, both of them, and evidenced: each cancels a running import, waits
     # up to 60s for it to stop, and ABORTS ITSELF if it will not

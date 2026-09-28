@@ -84,7 +84,7 @@ class TestJobGuards(unittest.TestCase):
         for j in ("_run_historical_exc_backfill", "_run_historical_segment_backfill",
                   "_run_historical_iog_split_backfill"):
             self.assertFalse(self.d["jobs"][j]["live"])
-        self.assertEqual(self.d["live_jobs"], 14)
+        self.assertEqual(self.d["live_jobs"], 11)
 
     def test_run_exclusive_is_still_only_a_barrier(self):
         """`run_exclusive` is v4's one real mutual-exclusion primitive. Its single

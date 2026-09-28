@@ -5,7 +5,7 @@ and the writer thread-affine, what is left to coordinate is writers.*
 
 **Status:** the coordinator exists, 23 Sep 2026. `job_coordinator.py`
 holds the decision logic and the dependency manifest; `tests/test_job_coordinator.py` covers it.
-Membership stands at **18/20** registered, of which **4 consume** `admission()` —
+Membership stands at **15/17** registered, of which **4 consume** `admission()` —
 every engine job including the live tick, plus the three background workers. The 2 outstanding are
 `api_db_vacuum` (which never joins — see §4) and `api_meter_delete_data`.
 
@@ -33,7 +33,7 @@ Three findings, each from A's work:
   `await` anywhere in their call tree, so one block's read-modify-write cannot be interleaved.
   Jobs interleave *between* blocks, each re-deriving from the block's current state.
   (`tests/test_write_scope.py`)
-- **Every long-running job is resumable or idempotent.** 13 of 14 carry a cursor, resume marker or
+- **Every long-running job is resumable or idempotent.** 10 of 11 carry a cursor, resume marker or
   done-key; `run_iog_split_carve` self-selects on `imp_kwh_ev IS NULL` so carved blocks stop
   matching. (`tests/test_writer_exclusion.py`)
 
@@ -55,7 +55,7 @@ requirement appear:
 not "is anyone else writing?" but **"is what I am about to read settled yet?"** — and separately,
 "is now a polite moment?".
 
-That distinction is the whole design. A mutual-exclusion coordinator would serialise 20 members
+That distinction is the whole design. A mutual-exclusion coordinator would serialise 17 members
 that mostly do not conflict, and would still not fix the attribution-over-unverified-blocks bug,
 because that is a *dependency*, not a race.
 
@@ -67,7 +67,7 @@ because that is a *dependency*, not a race.
 
 `.build/write_scope.py`:
 
-> **13 of the 14 live jobs write `blocks`; 11 also write `block_segments`.**
+> **10 of the 11 live jobs write `blocks`; 8 also write `block_segments`.**
 
 Everything conflicts with everything. A table-level admission rule is a global lock wearing a
 costume.
@@ -76,7 +76,7 @@ costume.
 
 The obvious repair is "disjoint block ranges". An earlier draft of this section asserted the
 information already existed — *"the import has from/to, the sweeps carry cursors, attribution has a
-device and a span"*. **Measured against the signatures, that is false.** Only two of fourteen
+device and a span"*. **Measured against the signatures, that is false.** Only two of eleven
 declare a scope:
 
 | job | parameters | is that a scope? |
@@ -87,14 +87,13 @@ declare a scope:
 | `_run_historical_reprice_sweep` | `max_blocks, batch, pace_s, force` | no — a budget |
 | `run_measured_history_drain` | `max_batches` | no — a budget |
 | `run_settled_ev_split_heal` | `limit` | no — a budget |
-| `run_smb_rate_repair` · `_device_recost` · `_ev_resplit` · `band_rate_snap` | `force` | no |
 | `_run_historical_carbon_backfill` | `window_days, max_windows` | no — a budget |
 | `run_iog_split_carve` | `max_blocks` | no — a budget |
 | `run_reprice_history_sweep_to_done` | `max_passes` | no — a budget |
 
 `max_blocks`, `limit`, `batch`, `force` say **how much**, not **which**. The sweeps operate over
 "whatever currently matches a predicate", and the predicate lives inside the SQL, not the signature.
-Twelve of fourteen have no range to declare, so a range-scoped rule would require rewriting every
+Nine of eleven have no range to declare, so a range-scoped rule would require rewriting every
 job's contract before the coordinator could admit anything.
 
 **A dependency is declarable where a range is not.** Each member can name the handful of jobs whose
@@ -229,10 +228,10 @@ What is true today, measured:
 
 ### 4.1 The other 19
 
-**19 further members**, enumerated rather than estimated — **20 members** in all.
+**16 further members**, enumerated rather than estimated — **17 members** in all.
 
-*Corrected twice, in both directions. First 23, which missed the three background workers. Then 26.
-Now 20, because **six of the eight route handlers stopped needing membership at all**: once a
+*Corrected three times, in both directions. First 23, which missed the three background workers.
+Then 26. Then 20, because **six of the eight route handlers stopped needing membership at all**: once a
 handler moves onto `_engine_write`, a synchronous write on the engine thread is not a job — nothing
 admits it, nothing defers to it, it runs where every other engine write runs. Listing them as
 members-to-be was a category error, corrected by doing the port and watching the requirement
@@ -249,13 +248,18 @@ members others most want to avoid: `delete_in_progress()` is the second most con
 codebase. `_delete_worker` and `_purge_worker` are ONE member with two entry points, because that
 is what `delete_in_progress()` already means.
 
-**14 live engine jobs** (`.build/check_job_guards.py`; three further jobs — the legacy exc, segment
+**11 live engine jobs** (`.build/check_job_guards.py`; three further jobs — the legacy exc, segment
 and iog-split backfills — are unreachable and do not come across):
 `run_api_import_job`, `run_deferred_verify_pricing`, `_run_historical_reprice_sweep`,
 `_run_historical_carbon_backfill`, `run_measured_history_drain`, `run_gap_fill_job`,
-`run_iog_split_carve`, `run_attribution_job`, `run_smb_rate_repair`, `run_smb_device_recost`,
-`run_band_rate_snap`, `run_smb_ev_resplit`, `run_settled_ev_split_heal`,
-`run_reprice_history_sweep_to_done`.
+`run_iog_split_carve`, `run_attribution_job`, `run_settled_ev_split_heal`,
+`run_reprice_history_sweep_to_done`, `run_device_rate_drift_repair`.
+
+*Was 14, then 10, now 11. The four v4 one-off heals — `run_smb_rate_repair`, `run_smb_device_recost`,
+`run_band_rate_snap`, `run_smb_ev_resplit` — retired with v4: each was marker-gated and
+self-marking, and the import floor guarantees they have already run against any database v5 will
+open (EMT-v5_import_spec §1.1). Workstream A removed them; `tests/test_v4_heals_removed.py` pins
+it. `run_settled_ev_split_heal` is named like them and is NOT one — ungated, recurring, stays.*
 
 **1 bulk route handler** still writing on the request thread (`.build/write_inventory.py`):
 `api_db_vacuum`. It never moves — see below.

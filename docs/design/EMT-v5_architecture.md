@@ -74,15 +74,82 @@ HTML generators that die. The other three are domain logic that every surface de
 
 | function | lines | fate |
 |---|---|---|
-| `calculate_billing_summary_for_period` | 377 | **Untangle.** Billing arithmetic and presentation in one function — the arithmetic is what surfaces must agree on. |
+| `calculate_billing_summary_for_period` | 377 | **Move as-is.** Pure domain — see the correction below. |
 | `get_billing_periods_from_config_periods` | 177 | Move to `billing.py` as-is. |
+| `get_billing_periods_from_config_history` | 212 | Move to `billing.py` as-is. |
+| `render_billing_summary` | 219 | **Dies with the charts.** HTML; its six callers are all inside `energy_charts.py`. |
 | `build_meter_colors_from_config` | — | Presentation. Moves to the client. |
 
-`calculate_billing_summary_for_period` is the crux of the whole workstream. Until the arithmetic is
-separable from the markup, "one API for every surface" cannot be true, because the number and its
-rendering are the same 377 lines.
-
 **Sequence:** extract `billing.py` *before* deleting anything. Rescue, then demolish.
+
+> **CORRECTION, 24 Sep 2026 — the crux is not a crux.** This section said
+> `calculate_billing_summary_for_period` was *"the crux of the whole workstream"* because *"the
+> number and its rendering are the same 377 lines"*, and that until they were separable *"one API
+> for every surface cannot be true"*. **Measured, they are already separate:**
+>
+> | function | lines | HTML tags |
+> |---|---|---|
+> | `calculate_billing_summary_for_period` | 377 | **0** |
+> | `get_billing_periods_from_config_periods` | 177 | **0** |
+> | `get_billing_periods_from_config_history` | 212 | **0** |
+> | `bill_slots_from_blocks` · `octopus_bill_total` | 36 | **0** |
+> | `render_billing_summary` | 219 | 78 |
+>
+> `calculate_billing_summary_for_period` returns a dict — `{start, end, meters, totals, …}` — and
+> emits no markup at all. The HTML half is `render_billing_summary`, a separate function that
+> consumes that dict.
+>
+> **Second correction, same day: `render_billing_summary` is NOT dead.** An earlier version of this
+> note said it had "no caller anywhere" and was already dead. It has **six**, all inside
+> `energy_charts.py` — the chart generators call it to render the billing panel they embed. The
+> error came from a `grep` that excluded the defining file to avoid matching the `def` line, and so
+> excluded its callers with it. `.build/check_reachability.py` exists for precisely this question and
+> would have answered it correctly; grep was reached for because the question felt small. That is
+> §4a's *"grep is not proof"*, committed twice in one session.
+>
+> The conclusion is unchanged and slightly strengthened: the renderer is the presentation consuming
+> the domain's dict, which is the shape v5 wants. It dies WITH the chart generators at step 4, not
+> as a separate deletion.
+>
+> So `billing.py` is a **move of roughly 1,000 pure-domain lines**, not an untangling, and the
+> renderer dies with the other presentation rather than being dissected out of it. The step this
+> document flagged as the one most likely to hurt is the cheapest in the sequence. *(The claim was
+> plausible from the function's size and its neighbours; it was never checked against the body.)*
+
+### Plotly is a free choice, not a migration
+
+`plotly` appears in exactly **four places**: a `<script src>` in `energy_charts.py`, one
+`plotly_restyle` handler, and two DOM lookups for `.plotly-plot` in `charts.html`. The 3,482 lines
+of `generate_daily_import_export_charts` (2,027), `generate_net_heatmap` (848) and
+`build_day_chart_html` (607) are **string building** — they emit HTML with a Plotly payload inside.
+
+There is no Plotly abstraction to port. Whatever the client draws with is decided once, in the
+client, and costs nothing in the demolition either way.
+
+### Summary and series are different requests — state it before building
+
+The chart render is not merely slow; `main.py` carries a reconnect-storm guard whose comment records
+what it costs:
+
+> *the render is CPU/GIL-bound, so it stalls the WS heartbeat for **MINUTES** — longer than the
+> startup cooldown — and **IS** the usual flap trigger*
+
+HA drops the socket, EMT reconnects, startup re-runs, it renders again. Breaking that loop needed a
+300-second cooldown AND a `render_recently_active()` check. That is today's behaviour on the
+reference account.
+
+The cause is structural: a billing period's **totals** and its **series** are one pre-rendered
+artefact, so asking for a quarter costs a quarter's rendering even when the answer wanted is four
+numbers. v5 should separate them at the API:
+
+- **summary** — totals per meter and per band for a period. Cheap, bounded, and what most of the
+  billing surface actually shows.
+- **series** — per-block points for plotting. Expensive, and requested only when something is going
+  to draw them.
+
+Then "show a summary and no charts for a long range" is not a performance switch to add later; it is
+the client declining to make a call. The expensive path stops being the default rather than being
+guarded.
 
 ---
 
@@ -111,7 +178,7 @@ unreachable.
 checking it against cases established by hand. §4a required a trace before any deletion; until the
 tool existed that was a rule with nothing enforcing it.
 
-**Whole codebase: 80 of 1,201 definitions unreachable** (23 Sep 2026 — 84 of 1,162 at the 4.5.14
+**Whole codebase: 80 of 1,221 definitions unreachable** (23 Sep 2026 — 84 of 1,162 at the 4.5.14
 seed, 79 of 1,157 after the five deletions below, and the total has since grown with workstreams A
 and B). **This figure is asserted against the tool by `tests/test_b_design_figures.py`** — it had
 drifted five times before that check existed, each time right when written and wrong a week later.

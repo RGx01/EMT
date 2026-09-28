@@ -236,8 +236,14 @@ class TestAcceptance5_CheckSameThread(unittest.TestCase):
                             if kw.arg == "check_same_thread":
                                 hits.append("%s:%d" % (os.path.relpath(path, _ROOT),
                                                        n.lineno))
-        self.assertEqual(sorted(hits), ["block_store.py:1001"],
-                         "the census changed: %s" % sorted(hits))
+        # Was `["block_store.py:1001"]` — the single remaining occurrence, which
+        # acceptance 5 existed to retire. Retired 24 Sep 2026; the flag is now
+        # absent everywhere, and tests/test_thread_affinity.py owns the guard
+        # (including the demonstration that a cross-thread use actually raises).
+        # Kept here as well because this census is where the count lived while it
+        # was going down, and an empty list is the honest end state of it.
+        self.assertEqual(sorted(hits), [],
+                         "check_same_thread reappeared: %s" % sorted(hits))
 
 
 class TestGeneratorIsCurrent(unittest.TestCase):

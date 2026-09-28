@@ -208,6 +208,52 @@ from block_store import BlockStore, open_block_store
 _store: BlockStore | None = None
 
 
+# Set ONLY by the suite, via tests/test_server.py::_use_store. A background
+# worker opens its own connection (below), which a test cannot reach into — so an
+# injected test store would be ignored and the worker would operate on an empty
+# database instead. Same deliberate hole as `store_access.bind_object_for_tests`
+# (A §5a), and conspicuous for the same reason: production never assigns it, so
+# it shows up in a diff if anything ever does.
+_own_store_for_tests = None
+
+
+def _own_store() -> BlockStore:
+    """A BlockStore opened FOR THE CALLING THREAD, to be closed by it.
+
+    Background workers (`_delete_worker`, `_purge_worker`, `_restore_worker`) run
+    long bulk mutations on their own threads. They cannot hop onto the engine
+    loop — a whole-history delete or a restore would stall live capture for
+    minutes, the same reason `api_db_vacuum` is a permanent exception (B §4) —
+    and they must not share a connection with a request thread.
+
+    So each opens its own, which is the pattern `_create_backup_zip` already
+    uses. That is what lets `check_same_thread=False` come off the shared
+    connection: a SQLite connection then belongs to exactly one thread, and the
+    default check enforces it rather than a comment asking nicely.
+    """
+    if _own_store_for_tests is not None:
+        return _own_store_for_tests
+    if DATA_DIR is None:
+        raise RuntimeError("server.init() has not been called")
+    return open_block_store(_os.path.join(DATA_DIR, "blocks.db"))
+
+
+def _release_store(st) -> None:
+    """Close a store obtained from `_own_store()`, if we opened it.
+
+    Paired with `_own_store` rather than inlined as `st.close()`, because under
+    the test override the returned store is the SUITE's — shared across every
+    test in the file — and closing it made 27 unrelated tests fail on a closed
+    database. A worker must close what it opened and only what it opened.
+    """
+    if st is None or st is _own_store_for_tests:
+        return
+    try:
+        st.close()
+    except Exception:
+        pass
+
+
 def _get_store() -> BlockStore:
     """Return the server's BlockStore, opening it lazily on first call."""
     global _store
@@ -2532,7 +2578,16 @@ def _aggregate_block_rows(raw_rows, bucket_of, standing_scope="bucket",
         _tot_main = sum(_mv["cost"] for _mv in (_m.get("_main_by_rate") or {}).values())
         _tot_sub  = sum(_sv["cost"] for _sv in (_m.get("_sub_by_rate") or {}).values())
         _d = _tot_main - _tot_sub
+        # `imp_cost` is the DISPLAYED Direct/House line and stays clamped -- a
+        # negative remainder is nonsense to render as a bar.
         _m["imp_cost"] = _d if _tot_main < 0 else max(0.0, _d)
+        # `imp_cost_metered` is the MAIN METER's cost, unclamped, and is what the
+        # row totals must use. Keeping only the clamped value meant the row total
+        # (`Direct + SUM(subs)`) became SUM(subs) on any day the sub-meters
+        # out-read the main -- which is every sunny day on a site with a battery,
+        # because the battery charges off solar and registers kWh the grid never
+        # supplied. That inflated one 4.5.14 report by £22.42 over 29 days.
+        _m["imp_cost_metered"] = _tot_main
     return _day_data
 
 
@@ -2575,15 +2630,21 @@ def _bucket_to_row_values(_dd):
     meters_out["electricity_main"]["imp_cost"] = _main_imp_cost
     meters_out["electricity_main"]["exp_kwh"]  = _main_exp_kwh
     meters_out["electricity_main"]["exp_cost"] = _main_exp_cost
+    # Row totals price from the METERED main cost, not from the clamped Direct
+    # line plus the sub-meters. `meters_out[...]["imp_cost"]` keeps the clamped
+    # value because that is what the chart draws; only the totals differ, and only
+    # on days where the clamp would have fired.
+    _metered_imp_cost = round(_m.get("imp_cost_metered", _main_imp_cost + sum(
+        m["imp_cost"] for mid, m in meters_out.items() if mid != "electricity_main")), 4)
     return {
         "standing":  round(_dd["standing"], 4),
         "meters":    meters_out,
         "imp_kwh":  round(_main_imp_kwh  + sum(m["imp_kwh"]  for mid, m in meters_out.items() if mid != "electricity_main"), 4),
         "exp_kwh":  round(_main_exp_kwh,  4),
-        "imp_cost": round(_main_imp_cost + sum(m["imp_cost"] for mid, m in meters_out.items() if mid != "electricity_main"), 4),
+        "imp_cost": _metered_imp_cost,
         "exp_cost": round(_main_exp_cost, 4),
         "net_cost": round(
-            round(_main_imp_cost + sum(m["imp_cost"] for mid, m in meters_out.items() if mid != "electricity_main"), 4)
+            _metered_imp_cost
             + round(_dd["standing"], 4)
             - round(_main_exp_cost, 4),
             2),
@@ -4008,8 +4069,9 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
 
         # Run schema migration (2.0.x legacy full_config_json → normalised tables)
         if "blocks.db" in restored or "blocks.json" in restored:
+            store_mig = None
             try:
-                store_mig = _get_store()
+                store_mig = _own_store()      # own thread, own connection
                 n = store_mig.migrate_full_config_json()
                 if n:
                     logger.info(
@@ -4018,6 +4080,11 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
                     )
             except Exception as _mig_e:
                 logger.warning("api_backup_restore: schema migration failed: %s", _mig_e)
+            finally:
+                # Own connection on the restore worker's thread — close it, or a
+                # restore leaks one and holds a handle on a file the restore may
+                # be about to replace.
+                _release_store(store_mig)
 
         # Re-run engine_startup so gap detection runs against the restored DB.
         # resume_engine() alone just unpauses the tick loop — it doesn't detect
@@ -6128,6 +6195,244 @@ def api_reprice_history_conformance():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+def _resolve_period(kind, store, cfg, tz, args):
+    """Turn a period request into `(utc_start, utc_end, meta)`.
+
+    ONE implementation of the three period kinds. The six
+    `/api/{usage,insights}/{billing-period,calendar-month,calendar-year}` routes
+    each carry their own copy — 83% identical between the usage and insights
+    pair, 71% between the month and year pair — differing only in which period
+    they resolve and which aggregator they then call. Those are two independent
+    axes expressed as six endpoints.
+
+    Returns `(None, None, error_dict)` when the period cannot be found, so the
+    caller can answer 404 without this knowing about HTTP.
+    """
+    from datetime import datetime as _dt, timezone as _tzu, timedelta as _td
+    import billing as _billing
+
+    now_local = _dt.now(tz).replace(tzinfo=None)
+
+    def _utc(d):
+        if d.tzinfo is None:
+            d = d.replace(tzinfo=tz)
+        return d.astimezone(_tzu.utc).replace(tzinfo=None).isoformat()
+
+    if kind == "billing":
+        periods = _billing.get_billing_periods_from_config_periods(
+            store.get_config_periods(), tz=tz)
+        if not periods:
+            return None, None, {"error": "No billing periods found"}
+        requested = args.get("period_start")
+        target = None
+        for (ps, pe) in periods:
+            if requested:
+                if ps.date().isoformat() == requested:
+                    target = (ps, pe)
+                    break
+            else:
+                target = (ps, pe)        # no request → the LAST period, i.e. current
+        if target is None:
+            return None, None, {"error": "Billing period not found"}
+        ps, pe = target
+        return _utc(ps), _utc(pe), {
+            "kind": "billing",
+            "period_start": ps.date().isoformat(),
+            "period_end": pe.date().isoformat(),
+            "is_current": ps <= now_local < pe,
+        }
+
+    if kind in ("month", "quarter", "year"):
+        year = int(args.get("year", now_local.year))
+        if kind == "month":
+            month = int(args.get("month", now_local.month))
+        elif kind == "quarter":
+            q = int(args.get("quarter", (now_local.month - 1) // 3 + 1))
+            month = (q - 1) * 3 + 1
+        else:
+            month = 1
+        first = _dt(year, month, 1)
+        (ps, pe), = _billing.calendar_periods(kind, first, first)
+        label = (ps.strftime("%B %Y") if kind == "month"
+                 else "Q%d %d" % ((ps.month - 1) // 3 + 1, ps.year) if kind == "quarter"
+                 else str(ps.year))
+        return _utc(ps), _utc(pe), {
+            "kind": kind,
+            "period_start": ps.date().isoformat(),
+            "period_end": (pe - _td(days=1)).date().isoformat(),
+            "period_label": label,
+            "is_current": ps <= now_local < pe,
+        }
+
+    return None, None, {"error": "kind must be billing|month|quarter|year"}
+
+
+@app.route("/api/energy")
+def api_energy():
+    """The consolidated read surface — C §3, `resolution=period` only for now.
+
+        GET /api/energy?resolution=period&kind=billing|month|quarter|year
+                       &include=usage,carbon
+                       [&period_start=YYYY-MM-DD | &year=&month=&quarter=]
+
+    Replaces six routes whose only differences are WHICH period and WHAT to
+    aggregate — two independent axes previously expressed as six endpoints, at
+    77-83% textual duplication between them.
+
+    **`include=` rather than separate endpoints, because both aggregators scan
+    the same blocks over the same range.** A page wanting cost and carbon makes
+    one request and the store reads the range once; today it makes two and the
+    range is read twice.
+
+    **`resolution=block|day` is NOT implemented here yet** and returns 501. Those
+    return per-block points and segments, which is a larger payload decision
+    (C §3's `tariff_context`, `provenance`, the fingerprint). Refusing explicitly
+    beats accepting the parameter and quietly returning a period rollup — a
+    caller that asks for series and receives totals has no way to tell.
+
+    Additive: the six routes it replaces are untouched, because the templates
+    still call them and the client is replaced at step 6.
+    """
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+
+        resolution = (request.args.get("resolution") or "period").lower()
+        if resolution not in ("period", "day", "block"):
+            return jsonify({"error": "resolution must be period|day|block"}), 400
+
+        kind = (request.args.get("kind") or "billing").lower()
+        # `include` defaults to `usage` for a period request (that IS the answer)
+        # and to NOTHING for day/block, where the rows are the answer and an
+        # aggregate is an extra scan the caller did not ask for.
+        _default_include = "usage" if resolution == "period" else ""
+        include = {x.strip() for x in (request.args.get("include") or _default_include).split(",") if x.strip()}
+        unknown = include - {"usage", "carbon"}
+        if unknown:
+            return jsonify({"error": "include: unknown facet(s) %s" % sorted(unknown)}), 400
+
+        store = store_access.store()
+        cfg = load_config()
+        # `_config_timezone()` already exists (server.py:292) and takes NO
+        # arguments — it re-reads the config and, unlike a naive first-meter
+        # loop, SKIPS SUB-METERS. A sub-meter-first config would otherwise hand
+        # back a device's timezone as the site's.
+        tz_name = _config_timezone()
+        tz = _ZI(tz_name)
+
+        utc_start, utc_end, meta = _resolve_period(kind, store, cfg, tz, request.args)
+        if utc_start is None:
+            return jsonify(meta), 404 if "not found" in str(meta.get("error", "")).lower() else 400
+
+        out = {"resolution": resolution, "timezone": tz_name, "period": meta,
+               "range": {"start_utc": utc_start, "end_utc": utc_end},
+               # C §2a. Per-day over the range plus the bulk epoch — NOT one
+               # global token: `_blocks_data_version` is global, so a new
+               # half-hour tells a client looking at 2023 to re-fetch four years.
+               "fingerprint": {"epoch": store.get_data_epoch(),
+                               "days": store.day_fingerprints(utc_start, utc_end)}}
+        if resolution == "day":
+            out["days"] = store.get_day_rollups(utc_start, utc_end)
+        elif resolution == "block":
+            # Blocks and segments, not chart geometry (C §3). Sub-meter rows are
+            # first-class: they carry device energy and have no segments, so a
+            # client projecting devices from segments alone gets nothing.
+            out["blocks"] = store.get_energy_blocks(utc_start, utc_end)
+            out["segments"] = store.get_energy_segments(utc_start, utc_end)
+
+        if "usage" in include:
+            out["usage"] = _aggregate_usage(store, cfg, utc_start, utc_end, tz_name)
+        if "carbon" in include:
+            # NB `_aggregate_insights` takes no tz — it aggregates over a UTC
+            # range and emits nothing clock-local. `_aggregate_usage` does, for
+            # its peak-demand window. Their signatures differ by one argument and
+            # that difference is real, not an oversight to paper over.
+            out["carbon"] = _aggregate_insights(store, cfg, utc_start, utc_end)
+        return jsonify(out)
+    except Exception as e:
+        logger.exception("api_energy failed")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/periods")
+def api_periods():
+    """Which periods can be asked about — C §3a.
+
+    `/api/energy` answers "what happened between these two instants"; it cannot
+    answer "which instants are worth asking about". That is a different question
+    — config-period boundaries, calendar arithmetic, the earliest block — and
+    folding it in would mean an endpoint that sometimes takes a range and
+    sometimes returns the ranges available.
+
+        GET /api/periods?kind=billing|month|quarter|year
+
+    Returns the boundaries and the data bounds, and deliberately NO aggregates.
+    `api_insights_periods`, which this replaces, runs one SQL query PER PERIOD to
+    attach a carbon summary — thirty-six queries on a three-year account, to
+    populate a picker. Totals are `/api/energy` with `resolution=period`, asked
+    for the one period the user actually selects.
+
+    Consolidates `insights/periods` and `insights/data-bounds`. Both stay for
+    now: the current templates call them, and the client is replaced at step 6.
+    """
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        from datetime import datetime as _dt, timezone as _tzu
+        import billing as _billing
+
+        kind = (request.args.get("kind") or "billing").lower()
+        if kind not in ("billing", "month", "quarter", "year"):
+            return jsonify({"error": "kind must be billing|month|quarter|year"}), 400
+
+        store = store_access.store()
+        # Was an inline first-meter loop, which returns a SUB-METER's timezone on
+        # a config that lists one first. `_config_timezone()` skips them.
+        tz_name = _config_timezone()
+        tz = _ZI(tz_name)
+        bounds = store.get_block_bounds()
+
+        if kind == "billing":
+            periods = _billing.get_billing_periods_from_config_periods(
+                store.get_config_periods(), tz=tz)
+        else:
+            first = last = None
+            if bounds.get("earliest") and bounds.get("latest"):
+                first = _billing._parse_block_start(bounds["earliest"], tz).replace(tzinfo=None)
+                last = _billing._parse_block_start(bounds["latest"], tz).replace(tzinfo=None)
+            periods = _billing.calendar_periods(kind, first, last)
+
+        now_local = _dt.now(tz).replace(tzinfo=None)
+
+        def _utc(dt):
+            """Period boundaries are LOCAL — a billing day is a wall-clock thing.
+            The API speaks UTC, so both are returned and no consumer has to guess
+            which it got."""
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=tz)
+            return dt.astimezone(_tzu.utc).replace(tzinfo=None).isoformat()
+
+        out = [{"start": ps.date().isoformat(),
+                "end": pe.date().isoformat(),
+                "start_utc": _utc(ps),
+                "end_utc": _utc(pe),
+                "is_current": ps <= now_local < pe}
+               for ps, pe in periods]
+
+        return jsonify({
+            "kind": kind,
+            "timezone": tz_name,
+            "periods": out,
+            "bounds": {
+                "earliest": (bounds.get("earliest") or "")[:10] or None,
+                "latest": (bounds.get("latest") or "")[:10] or None,
+                "carbon_earliest": (bounds.get("carbon_earliest") or "")[:10] or None,
+                "carbon_latest": (bounds.get("carbon_latest") or "")[:10] or None,
+            },
+        })
+    except Exception as e:
+        logger.exception("api_periods failed")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/insights/periods")
 def api_insights_periods():
     """Return list of all billing periods with basic carbon summary for each."""
@@ -8082,12 +8387,17 @@ def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
     _j = _delete_job
     import engine as _eng
     _eng.set_delete_active(True)   # pause the carbon backfill from starting mid-delete
+    store = None
     try:
         _delete_step("deleting blocks")
-        store = _get_store()
+        store = _own_store()          # own thread, own connection
         result = store.delete_blocks_for_date_range(
             from_date, to_date, meter_id, from_time_utc, to_time_utc,
             tz_name, reconstructed_only)
+        # C §2a: a bulk operation bumps the EPOCH rather than moving thousands of
+        # day fingerprints. A range delete can span years, and a client holding
+        # per-day state needs telling once, not per day.
+        store.bump_data_epoch()
         # A device-only delete leaves the parent main meter's remainder stale for
         # those windows; recompute it (PASS 2) against the surviving sub-meters.
         if result.get("recompute_parent"):
@@ -8111,6 +8421,8 @@ def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
         _j.update({"status": "error", "error": str(e)})
     finally:
         _eng.set_delete_active(False)
+        # Own connection, own thread — close it here or every delete leaks one.
+        _release_store(store)
 
 
 @job("delete")
@@ -8120,8 +8432,9 @@ def _purge_worker():
     _j = _delete_job
     import engine as _eng
     _eng.set_delete_active(True)   # pause the carbon backfill from starting mid-purge
+    store = None
     try:
-        store = _get_store()
+        store = _own_store()          # own thread, own connection
         backup = None
         try:
             _delete_step("taking a safety backup")
@@ -8130,6 +8443,7 @@ def _purge_worker():
             logger.warning("purge: backup failed (continuing): %s", be)
         _delete_step("deleting all imported data")
         result = store.purge_imported_history()
+        store.bump_data_epoch()          # C §2a — removes all imported history
         result["backup"] = backup
         _delete_step("rebuilding charts")
         _regen_charts_safely()
@@ -8142,6 +8456,8 @@ def _purge_worker():
         _j.update({"status": "error", "error": str(e)})
     finally:
         _eng.set_delete_active(False)
+        # Own connection, own thread — close it here or every delete leaks one.
+        _release_store(store)
 
 
 @app.route("/api/blocks/delete", methods=["POST"])

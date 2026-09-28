@@ -56,7 +56,7 @@ class TestMembershipRatchet(unittest.TestCase):
         self.assertIn("engine_loop_task", all_members)
 
     def test_the_count_matches_the_design(self):
-        """20 — and the number has moved twice, in both directions, for good
+        """17 — and the number has moved four times, in both directions, for good
         reasons rather than because it was guessed at.
 
         23 first, which missed the three background WORKERS —
@@ -65,7 +65,7 @@ class TestMembershipRatchet(unittest.TestCase):
         category for a thread spawned by a route. They are the members others most
         want to avoid: `delete_in_progress()` is the second most consulted guard in
         the codebase."""
-        self.assertEqual(self.d["members"], 20)
+        self.assertEqual(self.d["members"], 17)
 
     def test_the_baseline_is_a_countdown_not_a_record(self):
         """If this ever reaches zero the ratchet is finished and acceptance 1 is

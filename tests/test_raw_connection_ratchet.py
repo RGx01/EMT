@@ -44,7 +44,22 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 #    49  after A7 -- _attribute_missing_ev_split: candidate scan + replace write
 #    42  after A8 -- reconcile_dispatch_overlay READS (the writes follow)
 #    32  after A9 -- reconcile_dispatch_overlay WRITES; the function is now clean
-_CEILING = 32
+#    18  after A11 -- the four v4 one-off heals DELETED, not ported. 12 of the 14
+#                    were theirs; porting code whose own docstrings said
+#                    "retires in v5.0.0" would have been work to make a deletion
+#                    harder. See tests/test_v4_heals_removed.py.
+#     9  after A14 -- the settlement family's READS (writes follow); the
+#                    _SETTLEABLE_SQL predicate moved to BlockStore, retiring
+#                    engine's copy
+#     5  after A16 -- the settlement family's WRITES; the family is now clean
+#     0  after A17 -- the scattered five. engine.py holds NO raw connection.
+#
+# At zero the ratchet is spent as a ratchet: `test_it_only_shrinks` and
+# `test_the_ceiling_is_not_slack` now say the same thing, and what remains is a
+# plain assertion that none has come back. Kept rather than deleted, because
+# "engine.py never touches the raw connection" is the property acceptance 5
+# bought and the only thing that stops it eroding one convenient SELECT at a time.
+_CEILING = 0
 
 
 def _sites(path):

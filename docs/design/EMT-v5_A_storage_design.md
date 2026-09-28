@@ -197,7 +197,7 @@ pass whether or not the implementation were right.*
 | 2 writer unreachable off-thread | `tests/test_store_types.py` | met |
 | 3 adoption is 100% and stays | `tests/test_route_store_use.py` | met — baseline empty |
 | 4 soak | — | **not written**; needs the Pi |
-| 5 no `check_same_thread=False` | `tests/test_store_types.py` | census pinned at one, in `block_store.py` |
+| 5 no `check_same_thread=False` | `tests/test_thread_affinity.py` | **MET, 24 Sep 2026** — the flag is gone and a cross-thread use now raises |
 | 6 no stale snapshot | `tests/test_store_types.py` | file-backed; the freshness assertions cannot currently fail (see §5a), so the mechanism is asserted directly instead |
 
 
@@ -217,8 +217,34 @@ pass whether or not the implementation were right.*
    without this test; it is the single most important item on this list.
 4. **Soak** *(file-backed store only, same reason as 6)*: every read surface hammered while the engine writes continuously, asserting no torn
    rows, no `SQLITE_MISUSE`, and no read blocked behind a write. Run on the Pi.
-5. **No `check_same_thread=False`** anywhere in the codebase. Its presence is what made the whole
-   class of bug expressible.
+5. ~~**No `check_same_thread=False`** anywhere in the codebase.~~ **MET, 24 Sep 2026.** Its presence
+   is what made the whole class of bug expressible; its absence is what this workstream was for.
+
+   **The scope was wrong as written, in both directions.** It read as though porting `engine.py`
+   would be sufficient. It was necessary and not sufficient — and the engine half was also larger
+   than stated, because the site census only counted `_store._conn`, missing 38 more on stores passed
+   as parameters and behind aliases (`conn = store._conn`). The true figure was 57, not 19.
+
+   What actually held the flag open, once engine.py reached zero, was **three background workers in
+   `web/server.py`** — `_delete_worker`, `_purge_worker`, `_restore_worker` — writing through the
+   shared web store on threads they had not opened it on. `_delete_worker`'s docstring said so
+   plainly: *"Background date-range delete worker (own thread); same store access as the old
+   synchronous route (off the engine loop thread)"*.
+
+   They could not hop onto the engine loop — a whole-history delete or a restore would stall live
+   capture for minutes, the reason `api_db_vacuum` is a permanent exception (B §4) — so each now
+   opens its **own** connection via `server._own_store()` and closes it via `_release_store()`. That
+   is the pattern `_create_backup_zip` already used.
+
+   **A test was depending on the flag**, which is the part worth remembering: `test_read_store_concurrency`
+   opened its writer store on the main thread and wrote from a spawned one. Green either way, so it
+   would have hidden the flag's removal — the suite staying green for the wrong reason. It now opens
+   per thread, mirroring what production does.
+
+   Guarded by `tests/test_thread_affinity.py`, which asserts the flag is absent from every
+   `sqlite3.connect` in the codebase, that `engine.py` holds no raw connection, and — demonstrated
+   rather than asserted — that a cross-thread use now raises `ProgrammingError` where it used to
+   corrupt silently.
 6. **A reader never serves a stale snapshot.** *(File-backed store only — an in-memory
    database has no WAL, so this passes vacuously on one. See §7 question 2.)* Open a read on a thread, have the engine commit, and
    assert the next request on that same thread sees the new value (§7.1). The failure mode is a
@@ -315,6 +341,57 @@ closed, both arms open, and the window itself.
 
 Recorded here because nothing in the suite had asserted the gate's behaviour before, which is how an
 arm could be added that reopened a hazard the adjacent comment described in full.
+
+---
+
+## 5c. Two things the acceptance-5 port turned up that outlive it
+
+### The EV-column writers are step-5 casualties, and should be labelled as such
+
+`carve_ev_split`, `replace_ev_split` and `restamp_ev_columns` were added by this workstream and are
+correct today. Every column they write is on v5's **drop list** — `imp_kwh_ev`, `imp_cost_ev`,
+`imp_rate_ev`, `imp_ev_band`, `imp_home_band`, `imp_cost_remainder` (import spec §5.2, 13 columns,
+"derived, reconstructable from segments").
+
+So they lose most of their arguments at deconstruction step 5, and `restamp_ev_columns` disappears
+entirely: its whole job is keeping a derived copy in step with its source, which is precisely what
+de-duplicating removes the need for. Recorded here so nobody later reads them as permanent API and
+builds on them.
+
+The three are still worth having. Acceptance 5 is about retiring `check_same_thread=False`, and a
+raw `_conn` write blocks that whether or not the columns survive. But the boundary they cross is
+temporary in a way the read accessors are not.
+
+### A one-off wrapper can hide a permanent invariant, and the docstring will not say so
+
+A11 deleted four marker-gated v4 heals on the import-floor argument — *"last opened by version X
+means healed to X's standard"* — which is sound for a **migration**. Three were migrations. One was
+not, and it was deleted anyway because the judgement was made from the docstring:
+
+```sql
+-- _smb_device_recost_core, under a wrapper saying "retires in v5.0.0"
+WHERE meter_id != 'electricity_main' AND imp_kwh IS NOT NULL
+  AND EXISTS (SELECT 1 FROM blocks m WHERE m.meter_id='electricity_main'
+              AND m.block_start = blocks.block_start
+              AND ABS(COALESCE(m.imp_rate,0) - COALESCE(blocks.imp_rate,0)) > 0.0001)
+```
+
+No era filter, no date range, no tariff gate. It is a drift detector over an invariant v5 KEEPS
+(`imp_rate` is CARRY, not DROP), and v4 ran it exactly once before gating itself off forever.
+Reinstated ungated as `repair_device_rate_drift` + `run_device_rate_drift_repair`, which is stricter
+than v4 ever was.
+
+**The rule this produces:** for code scheduled to retire at a version boundary, the wrapper's
+retirement note is evidence about the WRAPPER. Read the predicate before believing it about the
+body — an era filter, a date floor or a tariff gate makes it a migration; a "differs from expected"
+clause makes it an invariant, and invariants do not retire.
+
+The same reading redeemed one of the other three from the opposite direction: `_band_rate_snap_core`
+has a premise that still recurs (a rate divided out of a rounded cost lands off the published band),
+so the floor argument did NOT dispose of it — but schema notes §2 names that exact symptom as case
+one of the drop-list bug class, and v5 reads the band from `block_segments` rather than inferring it
+from a stored rate. It stays deleted because the COMPARISON goes away, not because it already ran.
+Three heals, three different reasons, none of them readable from the docstrings.
 
 ---
 

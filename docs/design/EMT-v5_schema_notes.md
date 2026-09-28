@@ -11,7 +11,7 @@ rejected — so it is not re-proposed in six months.*
 
 ## 1. The decision
 
-**Keep the wide, one-row-per-block shape. Drop 15 columns. Fix the channel bug at the flag.**
+**Keep the wide, one-row-per-block shape. Drop 14 columns. Fix the channel bug at the flag.**
 
 ---
 
@@ -24,6 +24,13 @@ Every column on the drop list is reproducible from `block_segments`, which v5 ca
 value stored in two places eventually disagrees with itself, and in v4 that produced a recurring bug
 class of real cost:
 
+> **One column came OFF this list on 24 Sep 2026.** `imp_kwh_grid` was listed as derivable from
+> segments. It is not, on the meters that carry it: sub-meters have **zero** rows in
+> `block_segments`, and 70,497 sub-meter blocks set `imp_kwh_grid`. The reasoning below is unchanged
+> and correct — a value stored in two places drifts — but "reconstructable from segments" is a
+> property of a column **on a meter that has segments**, and that qualifier was missing. See import
+> spec §5.2 and C §3.
+
 - a rate divided back out of a billed cost landed a whisker off the published band, so the rate line
   plotted peak across half-hours the bill had charged off-peak;
 - an EV split stored on the block went stale against the segments that actually priced it;
@@ -32,7 +39,7 @@ class of real cost:
 None of those were storage problems. They were two-sources-of-truth problems, and the fix is to keep
 one source.
 
-**The drop list: 15 columns.** The 13 in import spec §5.2, plus:
+**The drop list: ~~15~~ 14 columns.** The ~~13~~ **12** in import spec §5.2, plus:
 
 | extra | why |
 |---|---|
@@ -110,6 +117,83 @@ Measured on the reference database: **169 blocks carry `imp_ev_band = 'peak'`.**
 prunes "unused" enum values, or any surface that assumes an EV segment implies off-peak, is wrong on
 real data. Both cells of the EV row are live.
 
+### Measured against a 4.5.14 prod database, 24 Sep 2026
+
+*Added because three claims in this section rested on the wrong axis, the wrong
+account shape, or a comment that turns out to be false. 137,099 blocks / 37,525
+import segments, June 2023 → Sep 2026, tariff migrated to IOG-SMB on
+**26 Aug 2026** (recorded here so the era boundary is not re-derived: it is the
+first `measured_cost` row, `2026-08-25T23:00:00`, midnight BST).*
+
+**The vocabulary actually in use:**
+
+| attribution | band | segments | kWh |
+|---|---|---|---|
+| house | `off_peak` | 15,021 | 25,325 |
+| house | `standard` | 12,753 | 4,349 |
+| house | `day` | 9,191 | 937 |
+| ev | `off_peak` | 548 | 1,289 |
+| ev | `peak` | **12** | 2.27 |
+| house | `peak` | **0** | — |
+
+**1. `house`/`peak` is structurally unreachable, and the note claiming otherwise is
+wrong.** `_band_rate_snap_core` (deleted in v5) asserted *"a house segment banded
+'peak' may be perfectly correct — common on an account with no home battery, where
+house draw lands in a peak bucket routinely."* That is false, and not merely
+unobserved on a battery account. Every writer of a house band into
+`block_segments` uses the house vocabulary — `apply_measured_to_block` and the
+four sites in `reconcile_dispatch_overlay` all emit `['day', 'off_peak']`. The one
+`['off_peak', 'peak']` assignment, `kraken_api_client._parse_breakdown_node`, is
+consumed **only** to collapse into a three-valued `measured_cost.label`
+(`OFF_PEAK` / `STANDARD_RATE` / `mixed`) and is never stored as a band. So no
+account shape can produce that cell. *(Read the write paths before the
+distribution: a distribution tells you what happened on one account, the writers
+tell you what can happen on all of them.)*
+
+**2. EV·`peak` is live, but this section's evidence is on a column v5 DROPS.** The
+"169 blocks carry `imp_ev_band = 'peak'`" measurement is now 212 blocks — and the
+segment-level count of the same cell is **12**. Both non-zero, so the conclusion
+stands and the cell must not be pruned. But `imp_ev_band` is on the 13-column drop
+list, so once it goes this argument loses its footing; the figure to quote is the
+`block_segments` one.
+
+**3. `standard` before 2025 is OUT OF SCOPE — deliberately, not by oversight.**
+12,746 of the 12,753 unknown-band segments are pre-migration, almost all 2023–24,
+and they sit on days that WERE banded (208 of 210 days in 2023 carried two
+distinct import rates — Economy-7, years before SMB, so the house day/night axis
+long predates IOG). The band was therefore determinable and was not determined.
+
+It stays that way. Those blocks were **authoritative when written and will never be
+re-costed**, so a label nobody will read is not worth an importer rule. Recorded as
+closed so it is not reopened as an open question.
+
+**4. The SMB era is clean, which is the era that matters.** If Octopus's own model
+ever needs re-reconciling, the buckets must be recoverable from what EMT stored.
+Measured across the month since migration:
+
+| | | |
+|---|---|---|
+| `ev`/`off_peak` | 198 | 457.02 kWh |
+| `house`/`off_peak` | 390 | 425.36 kWh |
+| `house`/`day` | 209 | 0.92 kWh |
+| `house`/`standard` | 7 | 3.92 kWh |
+
+and the label→band mapping is coherent: `OFF_PEAK` → the two off-peak cells,
+`STANDARD_RATE` → `house/day` and nothing else, `ZERO` → no segments (BL-70). The
+7 unknowns are all dated within 24 hours of the snapshot, priced at exactly the two
+published SMB rates (5.493p / 32.3092p), so they are the hourly settlement pass
+lagging rather than a gap — `standard` meaning "not yet", which is what it is for.
+
+**`house`/`day` carrying 209 segments for 0.92 kWh** is a battery covering daytime
+draw almost entirely. The cell is labelled correctly while carrying nearly nothing;
+on an account without storage the same segments would carry real energy. Worth
+knowing before reading any band distribution as evidence about the code.
+
+**5. Seven segments where the two copies disagree** — block `imp_home_band =
+'off_peak'` against segment `band = 'day'`, July to September. `imp_home_band` is
+populated on only ~900 of 37,525 house segments, and the segment is what v5 keeps.
+Seven instances of exactly the drift §2 gives as the reason these columns go.
+
 ### The relabel is the importer's job, once
 
 The correction `house off_peak → night` is **SMB-era only** and happens in the importer as a
@@ -132,7 +216,7 @@ Either is cheaper than reshaping the table every reader depends on, and neither 
 
 ---
 
-## 5. Still open: seven columns needing a real trace
+## 5. ~~Still open: seven columns needing a real trace~~ — RESOLVED, 24 Sep 2026
 
 These look dead but are **not** settled, and must not be dropped on the current evidence:
 
@@ -158,6 +242,54 @@ from real entry points, deliberately over-approximating so that anything still r
 is confidently unreachable — corroborated by "never non-null in *any* database we hold", not just
 one. Do it with the databases to hand, and only then extend the drop list.
 
+### The trace, done — six are live, one is write-only
+
+*24 Sep 2026. Method: AST over every string literal in the application EXCLUDING
+docstrings — the counts a first pass produced were inflated by prose, which is the
+trap §4a names — cross-checked against a real 4.5.14 database (137,099 blocks).
+Each column was then followed THROUGH `_row_to_block`, because a column can be
+live without ever being named outside the store.*
+
+| column | on prod | verdict | evidence |
+|---|---|---|---|
+| `imp_read_start` / `imp_read_end` | 29,145 rows, 7,233 distinct | **LIVE** | mapped to `read_start`/`read_end` by `_row_to_block`; 12 consumer sites in `engine.py` |
+| `exp_read_start` / `exp_read_end` | 9,841 rows, 7,206 distinct | **LIVE** | same mapper, same consumers |
+| `finalised_from_cad` | 1 distinct (`0`) | **LIVE** | a PREDICATE: `AND finalised_from_cad = 0` in `get_unsettled_blocks`, `count_unsettled_blocks`, `finalise_past_horizon_blocks` |
+| `review_dismissed` | 1 distinct (`0`) | **LIVE** | a PREDICATE: `WHERE … AND review_dismissed = 0` (`block_store.py:5191`) — what stops a dismissed review being resurrected by the next reconcile scan |
+| `derivation_id` | 17,884 rows, 1 distinct | **write-only** | see below |
+
+**Five of the six would have read as dead to a method that stopped at "who names
+this column".** Two are single-valued on the reference account and both are
+predicates; four never appear outside `block_store.py` and reach the application
+under different names. §5's own warnings — *data is not proof*, *grep is not
+proof* — were both correct, and the thing that actually settled it was following
+the value through the mapper.
+
+**`derivation_id` is write-only, and stays anyway.** It is written
+(`tag_blocks_with_derivation`, preserved by `COALESCE` on imported upserts) and
+17,884 blocks carry it, but it is **absent from `_row_to_block`**, so the value
+never reaches the application; nothing reads it, joins it or tests it; and its FK
+target's accessors — `get_historical_derivation`, `list_historical_derivations` —
+have no caller outside the test suite.
+
+The TABLE is not dead: `historical_derivation` holds four real rows with tier
+breakdowns, confidence scores and provenance strings (*"rate-from-cost (CSV
+import)"*). What is unbuilt is the link BACK — nothing asks "which derivation
+produced this block?". That is an unfinished feature, not dead weight, and §4a's
+asymmetry decides it: leaving it costs a reader's attention, dropping it costs the
+ability to answer a provenance question someone deliberately made answerable. It
+stays, and the import spec already carries it.
+
+### Two columns nobody had listed
+
+- **`needs_pass2_rerun`** — single-valued (`0`) across 137,099 rows. Not a
+  candidate: §4 already decides its future (make the flag channel-aware, or move
+  the queue to a table keyed by *(block_start, channel)*). Noted because it looks
+  exactly like a drop candidate to anyone who meets it without §4.
+- **`review_reason`** — **one** non-null row in 137,099. `needs_review` is live,
+  so the column is not dead; the figure says the review surface has fired
+  essentially never on this account. Worth knowing before anything is built on it.
+
 ---
 
 ## 6. Summary
@@ -165,7 +297,7 @@ one. Do it with the databases to hand, and only then extend the drop list.
 | | |
 |---|---|
 | **Shape** | Wide, one row per block. Unchanged from v4. |
-| **Dropped** | 15 columns — 13 derivable from segments, plus `rate_reconciled` and `imp_provisional`. |
+| **Dropped** | 14 columns — 12 derivable from segments, plus `rate_reconciled` and `imp_provisional`. `imp_kwh_grid` was removed from the list on 24 Sep 2026: sub-meters carry it and have NO segments (import spec §5.2, C §3). |
 | **Rejected** | One row per channel: −5.6% space, +28% rows, and a three-way join on every chart. |
-| **Deferred** | 7 columns pending a reachability trace across multiple databases. |
+| **Deferred** | ~~7 columns pending a trace~~ — **traced 24 Sep 2026 (§5): six live, `derivation_id` write-only and kept.** |
 | **Justification** | Correctness. One source of truth per fact. The 14.3% is a side effect. |

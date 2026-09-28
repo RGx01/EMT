@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """115 read-only methods of BlockStore, and nothing else.
+    """134 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -68,8 +68,10 @@ class ReadStore:
     _ATTRIBUTION_RUNS_KEY = _BS._ATTRIBUTION_RUNS_KEY
     _BUMP_SOURCES = _BS._BUMP_SOURCES
     _CARBON_ELIGIBLE = _BS._CARBON_ELIGIBLE
+    _EPOCH_KEY = _BS._EPOCH_KEY
     _EV_RESTAMP_SQL = _BS._EV_RESTAMP_SQL
     _NEEDS_REPRICE_WHERE = _BS._NEEDS_REPRICE_WHERE
+    _SETTLEABLE_SQL = _BS._SETTLEABLE_SQL
     _UNSETTLED_WHERE = _BS._UNSETTLED_WHERE
     _UNSETTLED_WHERE_IMPORT_ONLY = _BS._UNSETTLED_WHERE_IMPORT_ONLY
 
@@ -91,6 +93,7 @@ class ReadStore:
     cap_day_boundary = _BS.cap_day_boundary
     channel_slots_present = _BS.channel_slots_present
     classify_kraken_block = _BS.classify_kraken_block
+    completed_dispatch_kwh = _BS.completed_dispatch_kwh
     compute_period_net = _BS.compute_period_net
     config_from_db = _BS.config_from_db
     count_backfilled_blocks = _BS.count_backfilled_blocks
@@ -105,19 +108,27 @@ class ReadStore:
     count_meter_rows = _BS.count_meter_rows
     count_mix_history = _BS.count_mix_history
     count_recorder_attributed = _BS.count_recorder_attributed
+    count_settleable_blocks = _BS.count_settleable_blocks
     count_stale_band_segments = _BS.count_stale_band_segments
     count_unsettled_blocks = _BS.count_unsettled_blocks
+    day_fingerprints = _BS.day_fingerprints
+    dispatch_coverage = _BS.dispatch_coverage
     distinct_segment_rates = _BS.distinct_segment_rates
     emt_recording_continuously = _BS.emt_recording_continuously
     find_block_gaps = _BS.find_block_gaps
     get_all_blocks = _BS.get_all_blocks
     get_attribution_runs = _BS.get_attribution_runs
     get_billing_totals_for_utc_range = _BS.get_billing_totals_for_utc_range
+    get_block_bounds = _BS.get_block_bounds
     get_block_by_id = _BS.get_block_by_id
     get_block_by_start = _BS.get_block_by_start
     get_block_dict_by_start = _BS.get_block_dict_by_start
+    get_block_id = _BS.get_block_id
+    get_block_measured_inputs = _BS.get_block_measured_inputs
+    get_block_rate_authority = _BS.get_block_rate_authority
     get_block_segments = _BS.get_block_segments
     get_block_split_columns = _BS.get_block_split_columns
+    get_block_starts_in_range = _BS.get_block_starts_in_range
     get_block_starts_missing_carbon = _BS.get_block_starts_missing_carbon
     get_block_starts_missing_carbon_in_range = _BS.get_block_starts_missing_carbon_in_range
     get_blocks_awaiting_ev_carve = _BS.get_blocks_awaiting_ev_carve
@@ -135,14 +146,19 @@ class ReadStore:
     get_config_periods = _BS.get_config_periods
     get_cumulative_totals = _BS.get_cumulative_totals
     get_current_config_period_id = _BS.get_current_config_period_id
+    get_data_epoch = _BS.get_data_epoch
     get_dates_in_utc_range = _BS.get_dates_in_utc_range
+    get_day_rollups = _BS.get_day_rollups
     get_deleted_ranges = _BS.get_deleted_ranges
     get_device_live_coverage_start = _BS.get_device_live_coverage_start
     get_dispatch_history = _BS.get_dispatch_history
     get_dispatch_history_for_slot = _BS.get_dispatch_history_for_slot
     get_dispatch_slot = _BS.get_dispatch_slot
     get_dispatch_slots_in_range = _BS.get_dispatch_slots_in_range
+    get_dispatched_blocks_awaiting_measure = _BS.get_dispatched_blocks_awaiting_measure
     get_drift_alerts = _BS.get_drift_alerts
+    get_energy_blocks = _BS.get_energy_blocks
+    get_energy_segments = _BS.get_energy_segments
     get_generation_mix = _BS.get_generation_mix
     get_generation_mix_for_range = _BS.get_generation_mix_for_range
     get_generation_mix_since = _BS.get_generation_mix_since
@@ -155,6 +171,7 @@ class ReadStore:
     get_last_block_before = _BS.get_last_block_before
     get_measured_breakdown = _BS.get_measured_breakdown
     get_measured_cost = _BS.get_measured_cost
+    get_measured_costs_to_apply = _BS.get_measured_costs_to_apply
     get_meta = _BS.get_meta
     get_missing_carbon_date_range = _BS.get_missing_carbon_date_range
     get_mix_history = _BS.get_mix_history
@@ -173,6 +190,8 @@ class ReadStore:
     get_retired_meters = _BS.get_retired_meters
     get_review_blocks = _BS.get_review_blocks
     get_settings = _BS.get_settings
+    get_settleable_blocks = _BS.get_settleable_blocks
+    get_settled_blocks_missing_ev_split = _BS.get_settled_blocks_missing_ev_split
     get_settled_to = _BS.get_settled_to
     get_sub_meter_history = _BS.get_sub_meter_history
     get_timed_out_provisionals = _BS.get_timed_out_provisionals
@@ -184,6 +203,7 @@ class ReadStore:
     is_slot_tombstoned = _BS.is_slot_tombstoned
     last_block_end = _BS.last_block_end
     last_standing_charge = _BS.last_standing_charge
+    latest_measured_kwh = _BS.latest_measured_kwh
     list_historical_derivations = _BS.list_historical_derivations
     load_current_block = _BS.load_current_block
     measured_slots_missing = _BS.measured_slots_missing
@@ -191,6 +211,7 @@ class ReadStore:
     plan_pre_import_sites = _BS.plan_pre_import_sites
     plan_region_reconciliation = _BS.plan_region_reconciliation
     reprice_queue_count = _BS.reprice_queue_count
+    site_timezone = _BS.site_timezone
     slots_with_bill_split = _BS.slots_with_bill_split
     sum_meter_import_kwh = _BS.sum_meter_import_kwh
     tombstoned_slots_in = _BS.tombstoned_slots_in
@@ -198,7 +219,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 99 writers.
+    """The full store: every read method, plus the 102 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or

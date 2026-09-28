@@ -219,6 +219,12 @@ def _use_store(store):
     another test's data, which is a confusing failure to debug from.
     """
     server._store = store
+    # Background workers (_delete_worker, _purge_worker, _restore_worker) open
+    # their OWN connection so a bulk delete never shares one with a request
+    # thread. A test cannot reach into a spawned worker, so point that opener at
+    # the injected store too — otherwise the worker operates on an empty database
+    # and reports 0 rows deleted, which is what this line was added for.
+    server._own_store_for_tests = store
     store_access.reset_for_tests()
     path = getattr(store, "_path", None)
     if isinstance(path, str):
@@ -4012,11 +4018,20 @@ class TestAggregateInsightsGenerationMix(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# api_blocks_summary Direct import uses imp_cost_remainder (2.8.0)
+# api_blocks_summary Direct import: rate-based subtraction, NOT imp_cost_remainder
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestApiBlocksSummaryDirectImportCost(unittest.TestCase):
-    """Direct import cost in api_blocks_summary uses imp_cost_remainder not imp_cost."""
+    """Direct import cost in api_blocks_summary is main_cost - sub_cost by rate.
+
+    The fixture deliberately makes `imp_cost_remainder` DISAGREE with that
+    subtraction. Until 2026-09 both came to £0.30 here, so the assertion below
+    passed under either implementation and distinguished nothing -- the original
+    comment even said so: *"imp_cost_remainder would also be £0.30 in this test
+    case"*. `imp_cost_remainder` is being retired (four writers, two meanings,
+    169 self-contradictory rows on prod), so this test has to be able to tell
+    the difference before the column can go.
+    """
 
     def setUp(self):
         import tempfile
@@ -4032,13 +4047,15 @@ class TestApiBlocksSummaryDirectImportCost(unittest.TestCase):
             cp_id = self.store._conn.execute(
                 "SELECT id FROM config_periods LIMIT 1"
             ).fetchone()[0]
-            # Main meter: imp_cost=£1.00, imp_cost_remainder=£0.30 (house-only)
+            # Main meter: imp_cost=£1.00/day, sub=£0.70/day -> subtraction gives £0.30.
+            # imp_cost_remainder is set to £0.50/day instead, so the two implementations
+            # now yield different answers and the assertion can discriminate.
             self.store._conn.execute(
                 "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
                 "imp_kwh, imp_kwh_remainder, imp_rate, imp_cost, imp_cost_remainder, "
                 "exp_kwh, exp_cost, standing_charge) "
                 "VALUES ('2026-04-07T00:00:00', '2026-04-07T00:30:00', "
-                "'electricity_main', ?, 10.0, 3.0, 0.05, 0.50, 0.15, 0.0, 0.0, 0.50)",
+                "'electricity_main', ?, 10.0, 3.0, 0.05, 0.50, 0.25, 0.0, 0.0, 0.50)",
                 (cp_id,)
             )
             self.store._conn.execute(
@@ -4046,7 +4063,7 @@ class TestApiBlocksSummaryDirectImportCost(unittest.TestCase):
                 "imp_kwh, imp_kwh_remainder, imp_rate, imp_cost, imp_cost_remainder, "
                 "exp_kwh, exp_cost, standing_charge) "
                 "VALUES ('2026-04-07T00:30:00', '2026-04-07T01:00:00', "
-                "'electricity_main', ?, 10.0, 3.0, 0.05, 0.50, 0.15, 0.0, 0.0, 0.0)",
+                "'electricity_main', ?, 10.0, 3.0, 0.05, 0.50, 0.25, 0.0, 0.0, 0.0)",
                 (cp_id,)
             )
             # Sub-meter (EV): accounts for the difference between imp_cost and remainder
@@ -4088,22 +4105,32 @@ class TestApiBlocksSummaryDirectImportCost(unittest.TestCase):
                  }
              }):
             r = self.client.get("/api/charts/blocks-summary")
-        if r.status_code != 200:
-            self.skipTest(f"blocks-summary returned {r.status_code}")
+        # NO skipTest BELOW. The three skips this replaces ("returned {status}",
+        # "No day data returned", "Apr 7 not in response") meant the test had never
+        # executed its assertion: the endpoint returns "rows", not "days", so the
+        # second skip fired on every run since 2.8.0. A skip on a missing fixture is
+        # indistinguishable from a skip on a broken endpoint, which is how a test
+        # asserting nothing sat in the suite reporting success.
+        self.assertEqual(r.status_code, 200, r.data[:200])
         d = json.loads(r.data)
-        days = d.get("days", [])
-        if not days:
-            self.skipTest("No day data returned")
-        # Find Apr 7 data
-        apr7 = next((day for day in days if "2026-04-07" in day.get("date", "")), None)
-        if not apr7:
-            self.skipTest("Apr 7 not in response")
-        main = apr7.get("main", {})
-        # Rate-based: main_cost(£1.00) - sub_cost(£0.70) = £0.30
-        # imp_cost_remainder would also be £0.30 in this test case
-        # Key: cost should be ~0.30, NOT ~1.00 (the full imp_cost)
-        self.assertAlmostEqual(main.get("imp_cost", 0), 0.30, places=2,
-                                msg="Direct import cost should be rate-based remainder, not full imp_cost")
+        rows = d.get("rows", [])
+        self.assertTrue(rows, "blocks-summary returned no rows")
+        apr7 = next((row for row in rows
+                     if row.get("billing_period_start") == "2026-04-07"), None)
+        self.assertIsNotNone(apr7, [r.get("billing_period_start") for r in rows])
+        main = (apr7.get("meters") or {}).get("electricity_main", {})
+        self.assertTrue(main, "no electricity_main entry in the row")
+        # Rate-based:            main_cost(£1.00) - sub_cost(£0.70) = £0.30
+        # imp_cost_remainder:     £0.25 x 2 blocks                   = £0.50
+        # full imp_cost:                                               £1.00
+        # Three distinct values, so this assertion now identifies which one is used.
+        _direct = main.get("imp_cost", 0)
+        self.assertAlmostEqual(_direct, 0.30, places=2,
+                               msg="Direct import should be main_cost - sub_cost by rate")
+        self.assertNotAlmostEqual(_direct, 0.50, places=2,
+                                  msg="Direct import must not come from imp_cost_remainder")
+        self.assertNotAlmostEqual(_direct, 1.00, places=2,
+                                  msg="Direct import must not be the full imp_cost")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

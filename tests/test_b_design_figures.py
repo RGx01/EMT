@@ -62,8 +62,8 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
 
     def test_live_job_count(self):
         d = json.loads(_tool("check_job_guards.py", "--json"))
-        self.assertEqual(d["live_jobs"], 14)
-        self.assertIn("**14 live engine jobs**", self.doc)
+        self.assertEqual(d["live_jobs"], 11)
+        self.assertIn("**11 live engine jobs**", self.doc)
 
     def test_bulk_handler_count(self):
         inv = json.loads(_tool("write_inventory.py", "web/server.py", "--json"))[0]
@@ -91,8 +91,8 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
     def test_membership_total(self):
         self.assertIn("member 23", self.doc, "the live tick was omitted once already")
         d = json.loads(_tool("check_job_membership.py", "--json"))
-        self.assertEqual(d["members"], 20)
-        self.assertIn("20 members", self.doc)
+        self.assertEqual(d["members"], 17)
+        self.assertIn("17 members", self.doc)
         d = json.loads(_tool("check_job_guards.py", "--json"))
         inv = json.loads(_tool("write_inventory.py", "web/server.py", "--json"))[0]
         with open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8") as fh:
@@ -142,7 +142,7 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
             os.path.join(_ROOT, ".build", "check_job_membership.py")))
         self.assertIn("check_job_membership.py", self.doc)
         d = json.loads(_tool("check_job_membership.py", "--json"))
-        self.assertEqual(d["members"], 20)
+        self.assertEqual(d["members"], 17)
         # the doc records the standing; the tool is the source of truth for it
         reg, total = len(d["registered"]), d["members"]
         self.assertIn("%d/%d" % (reg, total), self.doc.replace("**", ""),
@@ -154,8 +154,8 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
         out = _tool("write_scope.py")
         m = re.search(r"(\d+) of (\d+) jobs write `blocks`", out)
         self.assertIsNotNone(m)
-        self.assertIn("**13 of the 14 live jobs write `blocks`", self.doc)
-        self.assertEqual((m.group(1), m.group(2)), ("13", "14"))
+        self.assertIn("**10 of the 11 live jobs write `blocks`", self.doc)
+        self.assertEqual((m.group(1), m.group(2)), ("10", "11"))
 
     def test_only_two_jobs_declare_a_scope(self):
         """§2.2 — the correction. `max_blocks`/`limit`/`force` are budgets, not
@@ -174,7 +174,7 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
                 scoped.append(job)
         self.assertEqual(sorted(scoped),
                          ["run_attribution_job", "run_gap_fill_job"])
-        self.assertIn("Only two of fourteen", self.doc)
+        self.assertIn("Only two of eleven", self.doc)
 
     def test_run_exclusive_is_still_the_unused_primitive(self):
         """§6 q5 rests on this."""

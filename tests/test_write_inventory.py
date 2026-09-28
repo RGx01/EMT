@@ -45,8 +45,11 @@ class TestEngineInventory(unittest.TestCase):
                     "_run_historical_exc_backfill", "_run_historical_iog_split_backfill",
                     "_run_historical_carbon_backfill", "run_measured_history_drain",
                     "run_gap_fill_job", "run_iog_split_carve", "run_attribution_job",
-                    "run_smb_rate_repair", "run_smb_device_recost", "run_band_rate_snap",
-                    "run_smb_ev_resplit", "run_settled_ev_split_heal",
+                    # The four v4 one-off heals that used to sit here
+                    # (run_smb_rate_repair, run_smb_device_recost,
+                    # run_band_rate_snap, run_smb_ev_resplit) were removed for
+                    # v5 — see tests/test_v4_heals_removed.py.
+                    "run_settled_ev_split_heal",
                     "run_reprice_history_sweep_to_done"):
             self.assertIn(job, self.write, "%s must be coordinated" % job)
 
@@ -68,10 +71,22 @@ class TestEngineInventory(unittest.TestCase):
         self.assertTrue(self.e["only_via_a_callee"],
                         "a caller-only writer must still be in scope")
 
-    def test_raw_sql_writers_are_counted(self):
-        """7 engine functions mutate through `_conn` directly, bypassing the
-        method split. A tool reading only method names would miss them."""
-        self.assertIn("apply_measured_to_block", self.e["raw_sql_writers"])
+    def test_raw_sql_writers_are_gone(self):
+        """Seven engine functions used to mutate through `_conn` directly,
+        bypassing the method split — a tool reading only method names would miss
+        them, which is why this inventory looks for raw SQL at all.
+
+        There are now none. `apply_measured_to_block` was the last (A16); every
+        write in `engine.py` goes through a `WriteStore` method, so thread
+        affinity is enforceable at the type boundary rather than trusted.
+
+        This asserts EMPTY rather than a shrinking list, because the number it
+        replaced was a count of the problem: the remaining `_conn` uses in
+        engine.py are all reads, tracked separately by
+        tests/test_raw_connection_ratchet.py.
+        """
+        self.assertEqual(self.e["raw_sql_writers"], [],
+                         "a raw SQL write reappeared in engine.py")
 
 
 class TestServerInventory(unittest.TestCase):
