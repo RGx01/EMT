@@ -67,9 +67,10 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# Directories whose contents are never production code.
-SKIP_DIRS = {".git", "__pycache__", ".pytest_cache", "tests", "docs", "screenshots",
-             "web/templates", ".build"}
+# Directories whose contents are never production code. Every dot-directory is
+# skipped too (see production_files) — .git, .build, .pytest_cache, and a local
+# .venv, whose site-packages would otherwise be scanned as the application.
+SKIP_DIRS = {"__pycache__", "tests", "docs", "screenshots", "web/templates", "venv"}
 
 # Files that reference names BY CONSTRUCTION and so can never be evidence of use.
 #
@@ -103,12 +104,16 @@ def production_files():
         rel_dir = os.path.relpath(dirpath, ROOT)
         rel_dir = "" if rel_dir == "." else rel_dir
         dirnames[:] = [d for d in dirnames
-                       if d not in SKIP_DIRS
+                       if not d.startswith(".")
+                       and d not in SKIP_DIRS
                        and os.path.join(rel_dir, d).replace(os.sep, "/") not in SKIP_DIRS]
         for fn in filenames:
             if not fn.endswith(".py"):
                 continue
-            rel = os.path.join(rel_dir, fn).replace(os.sep, "/").lstrip("./")
+            # No prefix strip needed: rel_dir is "" at the root. (This was
+            # `.lstrip("./")`, which strips a character SET, not a prefix — it
+            # turned `.venv/x.py` into `venv/x.py`, a path that does not exist.)
+            rel = os.path.join(rel_dir, fn).replace(os.sep, "/")
             if rel in SKIP_FILES:
                 continue
             out.append(rel)
