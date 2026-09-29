@@ -57,3 +57,6 @@ tests/server.py
 tests/web
 tests/templates
 tests/_test_meters_config.json
+
+# Soak run output (.build/soak.py run --out defaults to soak-<timestamp>/)
+soak-*/
