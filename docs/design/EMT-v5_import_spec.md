@@ -884,6 +884,19 @@ populated. A half-imported database that *looks* complete is the worst outcome h
 **Order of operations.** `config_periods` → `meters` → `meter_channels` → `blocks` →
 `block_segments` → `measured_cost` → dispatch → attribution/ledger → telemetry → allow-listed meta.
 
+**After the import: the whole-history sweep, and what the user is told.** §6 drops
+`reprice_history_state`, so v5's unified re-price sweep runs over every imported block on first
+start. Measured on the Pi (second soak, 29 Sep 2026): **37,103 blocks from 2023-06-05 in about
+17 minutes**. While it ran, every surface was slower — pure reads ×1.9 at the median, a static PNG
+p95 0.10 s → 5.3 s — because the sweep saturates a Pi's CPU and SD card. That is contention, not
+blocking: 0 SQLite faults, and since the engine-loop fixes no read waits behind the loop.
+
+*Decided 29 Sep 2026:* the sweep runs at **full speed**. Throttling it to ~50% duty would halve the
+slowdown and double a one-off job to ~35 minutes, which is the worse trade. Instead the first-run
+flow **says so**: once the import completes, a notice that history is being processed and pages
+may be slow for a few minutes, cleared when `/api/reprice-history-status` reports done. It belongs
+to the importer's acceptance (§9), not to the sweep.
+
 ---
 
 ## 9. Acceptance — how we know an import is correct
@@ -941,6 +954,9 @@ The import is not "done" when it completes; it is done when it **reconciles**. M
 9. **An import audit record** is written: source `db_uuid`, source `written_by` and `supplier`
    (§6 — the source's `written_by` is recorded here precisely because the new database carries v5's
    own), row counts in/out, and the reconciliation results above.
+10. **The user is told the history is being processed** (§8, decided 29 Sep 2026): after a
+    successful import, a first-run notice that pages may be slow for a few minutes, shown while
+    `/api/reprice-history-status` reports `in_progress` and cleared when it reports `done`.
 
 **Test corpus — and note the floor gives us a much better negative set.** The real databases already
 on hand:

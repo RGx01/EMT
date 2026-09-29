@@ -137,6 +137,8 @@ async def main():
         # via the handle keeps it alive and lets the engine own its lifecycle.
         poll_task = asyncio.ensure_future(kraken_poll_task(ha))
         _eng._kraken_poll_task_handle = poll_task
+        # Once per process, like the poll task: engine_startup re-runs on restore.
+        lag_task = asyncio.ensure_future(_eng.engine_loop_lag_monitor())
         await asyncio.gather(
             engine_loop_task(ha),
             ha.listen(),
@@ -150,6 +152,11 @@ async def main():
             h = _eng._kraken_poll_task_handle
             if h is not None and not h.done():
                 h.cancel()
+        except Exception:
+            pass
+        try:
+            if not lag_task.done():
+                lag_task.cancel()
         except Exception:
             pass
         await ha.close()
