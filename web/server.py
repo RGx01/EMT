@@ -436,6 +436,38 @@ def _engine_write(op, timeout: float = 30.0):
     return _run_on_engine_loop(_do(), timeout=timeout)
 
 
+def _engine_call(fn, *args, timeout: float = 30.0, **kwargs):
+    """Run an ENGINE function that writes engine state on the engine thread, and
+    block this one on its result. For the engine's own mutators
+    (`set_data_source_mode`, `apply_billing_source_change`) that write through the
+    engine's `_store` — which raises off the engine thread (A §5.5)."""
+    if _event_loop is None or not _event_loop.is_running():
+        return fn(*args, **kwargs)      # no engine loop (tests, pre-startup)
+
+    async def _do():
+        return fn(*args, **kwargs)
+
+    return _run_on_engine_loop(_do(), timeout=timeout)
+
+
+def _reset_engine_store(timeout: float = 30.0):
+    """Reopen the engine's store on the ENGINE thread after the database file was
+    replaced or its meters changed.
+
+    `reset_store()` opens the engine's new connection on whichever thread calls
+    it. Called from a request thread (retire, unretire, import-from-zip did), the
+    engine would be left holding a connection it may not use — every engine write
+    raising until restart. The restore worker already hopped onto the loop for this;
+    now every caller does, through here.
+    """
+    import engine as _eng
+    if _event_loop is not None and _event_loop.is_running():
+        async def _co():
+            _eng.reset_store()
+        return _run_on_engine_loop(_co(), timeout=timeout)
+    return _eng.reset_store()      # no engine loop (tests, pre-startup)
+
+
 class _ConfigError(Exception):
     """A config-period mutation validation error → surfaced as HTTP 400."""
 
@@ -1963,11 +1995,9 @@ def api_retire_meter(meter_id: str):
             return jsonify({"error": "Cannot retire the main meter"}), 400
         _engine_write(lambda st: st.retire_meter(meter_id, retired_at, retired_reason))
         try:
-            import engine as _eng_retire
-            if hasattr(_eng_retire, "reset_store"):
-                _eng_retire.reset_store()
-        except Exception:
-            pass
+            _reset_engine_store()
+        except Exception as _re:
+            logger.warning("api_retire_meter: engine reset_store failed: %s", _re)
         logger.info("api_retire_meter: %s retired at %s (%s)", meter_id, retired_at, retired_reason)
         return jsonify({"ok": True, "meter_id": meter_id, "retired_at": retired_at})
     except Exception as e:
@@ -1982,11 +2012,9 @@ def api_unretire_meter(meter_id: str):
     try:
         _engine_write(lambda st: st.unretire_meter(meter_id))
         try:
-            import engine as _eng_unretire
-            if hasattr(_eng_unretire, "reset_store"):
-                _eng_unretire.reset_store()
-        except Exception:
-            pass
+            _reset_engine_store()
+        except Exception as _re:
+            logger.warning("api_unretire_meter: engine reset_store failed: %s", _re)
         logger.info("api_unretire_meter: %s unretired", meter_id)
         return jsonify({"ok": True, "meter_id": meter_id})
     except ValueError as e:
@@ -4278,7 +4306,7 @@ def api_data_source_mode_post():
                     "detail": ("mode %r requires Kraken API credentials, but none "
                                "are configured" % (requested_mode,))
                 }), 400
-        mode = _eng.set_data_source_mode(requested_mode)
+        mode = _engine_call(_eng.set_data_source_mode, requested_mode)
         return jsonify({"ok": True, "mode": mode})
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
@@ -4550,7 +4578,7 @@ def api_billing_source_post():
         import engine as _eng
         data = request.get_json(force=True) or {}
         new_source = (data.get("source") or "").lower()
-        result = _eng.apply_billing_source_change(new_source)
+        result = _engine_call(_eng.apply_billing_source_change, new_source)
         return jsonify({"ok": True, **result})
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
@@ -8130,7 +8158,7 @@ def api_import_from_zip():
                     _eng_early = sys.modules.get("engine")
                     if _eng_early and hasattr(_eng_early, "reset_store"):
                         try:
-                            _eng_early.reset_store()
+                            _reset_engine_store()
                             logger.info("api_import_from_zip: engine store reset OK")
                         except Exception as _re:
                             logger.warning("api_import_from_zip: engine reset_store failed: %s", _re)
@@ -8160,7 +8188,7 @@ def api_import_from_zip():
         _eng = _sys.modules.get("engine")
         if _eng and hasattr(_eng, "reset_store"):
             try:
-                _eng.reset_store()
+                _reset_engine_store()
                 logger.info("api_import_from_zip: engine store reset OK")
             except Exception as _re:
                 logger.warning("api_import_from_zip: engine reset_store failed: %s", _re)

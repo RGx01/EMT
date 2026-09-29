@@ -260,7 +260,7 @@ def get_db_account() -> str | None:
     """The Octopus account this DB is stamped to, or None if never stamped
     (legacy/fresh DB)."""
     try:
-        v = _store.get_kraken_state(_ACCOUNT_KEY)
+        v = _reader().get_kraken_state(_ACCOUNT_KEY)
     except Exception:
         v = None
     return v or None
@@ -286,7 +286,7 @@ def get_data_source_mode() -> str:
     'cad', so a flat DB (which has chosen nothing) is distinguishable from a
     user who actually chose cad. The survey sets the mode explicitly."""
     try:
-        val = _store.get_kraken_state(_MODE_KEY)
+        val = _reader().get_kraken_state(_MODE_KEY)
     except Exception:
         val = None
     return val if val in _VALID_MODES else "unset"
@@ -486,7 +486,7 @@ def _get_billing_source() -> str:
     missing).
     """
     try:
-        val = _store.get_kraken_state(_BILLING_SOURCE_KEY)
+        val = _reader().get_kraken_state(_BILLING_SOURCE_KEY)
     except Exception:
         val = None
     return val if val in _VALID_BILLING_SOURCES else "dcc"
@@ -627,7 +627,7 @@ def _iog_slot_ev_kwh(block_start: str, chosen_kwh: float) -> float:
     if _store is None or not chosen_kwh or chosen_kwh <= 0:
         return 0.0
     try:
-        rows = _store.get_dispatch_history_for_slot(
+        rows = _reader().get_dispatch_history_for_slot(
             _snap_to_slot(block_start), kind="completed")
     except Exception:
         return 0.0
@@ -1226,6 +1226,11 @@ def reset_store():
     Must be called while the engine is paused.
     """
     global _store
+    import store_access as _sa
+    if not _sa.on_engine_thread():
+        # The new connection would belong to the caller's thread, and the engine
+        # could never use it. Hop onto the loop (web/server._reset_engine_store).
+        raise _sa.WrongThread("reset_store() must run on the engine thread")
     try:
         if _store is not None:
             try:
@@ -1234,10 +1239,35 @@ def reset_store():
                 pass
             _store = None
         _store = open_block_store(BLOCKS_DB_PATH)
+        # Every request thread's ReadStore is still open on the file that was just
+        # replaced; have each one reopen on its next read (store_access.invalidate).
+        import store_access as _sa
+        _sa.invalidate()
         logger.info("engine: store reset — reopened %s", BLOCKS_DB_PATH)
     except Exception as e:
         logger.error("engine: reset_store failed: %s", e)
         raise
+
+
+def _reader():
+    """The store to READ engine state from, on whichever thread is asking.
+
+    On the engine thread, the engine's own `_store`. Anywhere else — a request
+    thread calling `get_data_source_mode()`, `load_config()` and the like — the
+    per-thread `store_access.store()`. The engine's connection may only be used on
+    the thread that opened it (A §5.5); touched from a request thread it raises,
+    and these accessors each swallowed that and returned their default. Measured on
+    the first Pi soak (29 Sep 2026): the database said `data_source_mode='api'`, the
+    settings page said "unset" and offered to reactivate a supplier that was
+    connected; /api/kraken-config reported no account on a stamped database.
+
+    Falls back to `_store` before `bind()` (tests, pre-startup), where there is no
+    other thread's connection to protect.
+    """
+    import store_access as _sa
+    if _sa._db_path is None or _sa.on_engine_thread():
+        return _store
+    return _sa.store()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1386,9 +1416,9 @@ def load_config() -> dict:
             # BlockStore.get_current_config_period_id() is this query, character
             # for character. It was re-implemented here against the raw
             # connection rather than called.
-            cp_id = _store.get_current_config_period_id()
+            cp_id = _reader().get_current_config_period_id()
             if cp_id is not None:
-                return _store.config_from_db(cp_id)
+                return _reader().config_from_db(cp_id)
             # DB open but no config period — fresh DB
             if db_exists:
                 logger.warning("load_config: DB open but no active config period")
@@ -6992,7 +7022,7 @@ def reprice_history_conformance(from_iso: str, to_iso: str,
         rate_segs = _hist_rate_segs_cache.get("import")
     exc_checked = rate_segs is not None
 
-    rows = _store.get_blocks_pricing_for_range(meter_id, from_iso, to_iso, limit)
+    rows = _reader().get_blocks_pricing_for_range(meter_id, from_iso, to_iso, limit)
     checked = exact = dispatched = 0
     regressions: list = []   # sweep CHANGES or LOSES a stored value — must be zero
     fills: list = []         # sweep ADDS where stored was NULL — the sweep is more complete
@@ -7704,11 +7734,11 @@ def reprice_history_in_progress() -> bool:
         return False
     if _reprice_history_running:
         return True
-    m = _store.get_meta(_REPRICE_HISTORY_MARKER, {}) or {}
+    m = _reader().get_meta(_REPRICE_HISTORY_MARKER, {}) or {}
     if m.get("done"):
         return False
     try:
-        return _store.count_blocks_needing_reprice() > 0
+        return _reader().count_blocks_needing_reprice() > 0
     except Exception:
         return False
 
@@ -8110,7 +8140,7 @@ def _uncostable_ranges(channel: str = "import") -> list:
     """
     out = []
     try:
-        cov = (_store.get_meta(_COST_COVERAGE_KEY, None) or {}).get(channel) or {}
+        cov = (_reader().get_meta(_COST_COVERAGE_KEY, None) or {}).get(channel) or {}
     except Exception:
         return out
     for rec in cov.values():
@@ -8244,7 +8274,7 @@ def api_import_gaps() -> dict:
         return out
     for channel in ("import", "export"):
         try:
-            gaps = _json.loads(_store.get_kraken_state("import_gaps_" + channel) or "[]")
+            gaps = _json.loads(_reader().get_kraken_state("import_gaps_" + channel) or "[]")
         except Exception:
             gaps = []
         # Reconcile against reality — drop gaps whose slots are now all filled.
@@ -8254,16 +8284,21 @@ def api_import_gaps() -> dict:
             gt = g.get("to") or gf
             need = int(g.get("count") or 0)
             try:
-                have = _store.channel_slots_present(channel, gf, gt) if gf else 0
+                have = _reader().channel_slots_present(channel, gf, gt) if gf else 0
             except Exception:
                 have = 0
             if need <= 0 or have < need:
                 kept.append(g)
         if len(kept) != len(gaps):
-            try:
-                _store.set_kraken_state("import_gaps_" + channel, _json.dumps(kept))
-            except Exception:
-                pass
+            # Persist the prune only on the engine thread. From a request thread the
+            # engine's connection raises (A §5.5); the display still shows the pruned
+            # list, and the next engine-side call stores it.
+            import store_access as _sa
+            if _sa.on_engine_thread():
+                try:
+                    _store.set_kraken_state("import_gaps_" + channel, _json.dumps(kept))
+                except Exception:
+                    pass
             gaps = kept
         missing = sum(int(g.get("count") or 0) for g in gaps)
         gaps_sorted = sorted(gaps, key=lambda g: g.get("from") or "", reverse=True)
@@ -9123,7 +9158,7 @@ def api_import_status() -> dict:
     if _api_import_job.get("status") in (None, "idle") and _store is not None:
         try:
             import json as _json
-            raw = _store.get_kraken_state(_IMPORT_RUN_KEY)
+            raw = _reader().get_kraken_state(_IMPORT_RUN_KEY)
             if raw:
                 d = _json.loads(raw)
                 d["persisted"] = True
@@ -9349,7 +9384,7 @@ def api_verify_pricing_status() -> dict:
     import json as _json
     if _verify_job.get("status") in (None, "idle") and _store is not None:
         try:
-            raw = _store.get_kraken_state(_VERIFY_SUMMARY_KEY)
+            raw = _reader().get_kraken_state(_VERIFY_SUMMARY_KEY)
             if raw:
                 return _json.loads(raw)
         except Exception:
@@ -9749,14 +9784,14 @@ def api_import_health() -> dict:
     if _store is None:
         return out
     try:
-        raw = _store.get_kraken_state(_IMPORT_HEALTH_KEY)
+        raw = _reader().get_kraken_state(_IMPORT_HEALTH_KEY)
         if raw:
             out.update(_json.loads(raw))
             out["have"] = True
     except Exception:
         pass
     try:
-        out["remaining"] = int(_store.reprice_queue_count())
+        out["remaining"] = int(_reader().reprice_queue_count())
     except Exception:
         pass
     # Per-agreement billed-cost coverage, with a verdict per era. This is what lets the
@@ -9770,7 +9805,7 @@ def api_import_health() -> dict:
     out["eras"] = []
     out["uncosted_total"] = 0
     try:
-        cov = (_store.get_meta(_COST_COVERAGE_KEY, None) or {}).get("import") or {}
+        cov = (_reader().get_meta(_COST_COVERAGE_KEY, None) or {}).get("import") or {}
         for rec in cov.values():
             slots = int(rec.get("slots") or 0)
             costed = int(rec.get("costed") or 0)
@@ -9797,7 +9832,7 @@ def api_import_health() -> dict:
     # still need a retry" and offer a pre-filled CSV of exactly those to run
     # through the CSV path when the API can't recover them. Capped for payload size.
     try:
-        q = _store.get_reprice_queue() or {}
+        q = _reader().get_reprice_queue() or {}
         out["queue"] = {
             "import": sorted(q.get("import") or [])[:500],
             "export": sorted(q.get("export") or [])[:500],
