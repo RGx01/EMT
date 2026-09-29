@@ -7,19 +7,22 @@ devices, and reconciles against the supplier's settled figures.
 
 ## Where we are
 
-**v4 is frozen at 4.5.15** (repo `RGx01/energy-meter-tracker-addon`). 4.5.14 was the last
-feature release; since then it accepts **critical fixes only** — data loss, crash-on-start, or
-a pricing error. 4.5.15 shipped two: #473 (device cost derived from raw `imp_kwh` instead of the
-grid-clipped `imp_kwh_grid`, with a one-off heal) and #475 (a settled kWh re-banding a block the
-supplier had not yet priced).
+**v4 is at 4.5.16** (repo `RGx01/energy-meter-tracker-addon`). 4.5.14 was the last feature
+release; since then it accepts **critical fixes only** — data loss, crash-on-start, or a pricing
+error. 4.5.15 shipped #473 (device cost from raw `imp_kwh` instead of the grid-clipped
+`imp_kwh_grid`, with a heal) and #475 (a settled kWh re-banding an unpriced block). 4.5.16 shipped
+#481 (Octopus relabelled the device-breakdown buckets; with a heal). A 4.5.17 is expected
+(EV_BOOST band).
 
-**4.5.15 is the v5 import floor.** It carries a heal, and the rule is that a fix adding a heal
+**4.5.16 is the v5 import floor.** It carries a heal, and the rule is that a fix adding a heal
 raises the floor EMT will import from. A below-floor database must be **refused** with "open
 this in the last v4 release first", not imported with a warning. v5 carries **no v4 heals** —
 the floor is what makes that safe — so a v4 fix is ported as its forward fix only.
 
 **The work now is v5**, in this repo (`RGx01/EMT`). It was seeded from v4 4.5.14 and is being
-deconstructed in the open; the 4.5.15 forward fixes (#473, #475) were ported afterwards.
+deconstructed in the open; the forward fixes from 4.5.15 (#473, #475) and 4.5.16 (#481) were
+ported afterwards. **Each new v4 release:** port its forward fixes, not its heal, and raise the
+floor if it carries a heal (import spec, ROADMAP §E, programme §E, this file).
 Steps: 1 dead code, 2 extract `billing.py`, 3 ReadStore/WriteStore, 4 API consolidated + HTML
 pipeline deleted, 5 schema (15 columns dropped, band moves to `block_segments`), 6 client +
 first-run fork, 7 importer. Workstreams A (store split) and B (job coordinator) merged in PR #2.

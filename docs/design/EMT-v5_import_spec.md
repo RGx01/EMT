@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v8 — revised 28 Sep 2026, floor pinned at 4.5.15. §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v9 — revised 29 Sep 2026, floor raised to 4.5.16. §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -55,6 +55,12 @@ which shipped a heal (#473, device cost from `imp_kwh_grid`), so by §1.1 the fl
 v5 ports the two 4.5.15 forward fixes (#473, #475) and not the heal. The 4.5.14 prod-dev database
 moves from the positive set to the negative set — the first real **below-floor** case — and a
 4.5.15 database is needed as the positive fixture (§9).*
+
+*Changes in v9 (29 Sep 2026): **the floor rises to `4.5.16`.** 4.5.16 shipped a heal
+(`run_ev_bucket_refetch`, #481 — Octopus's retrospective bucket relabel), so by §1.1 the floor
+follows it. v5 ports the forward fix (`bucket_side`) and not the heal. v4 is not necessarily
+finished: a 4.5.17 is expected (EV_BOOST band), and if it carries a heal the floor moves again.
+The positive fixture is now a 4.5.16 database; 4.5.14 and 4.5.15 are both below-floor negatives.*
 
 ---
 
@@ -170,8 +176,8 @@ inference, and it is why nothing more elaborate is needed.
 > critical fix adds a heal, the floor rises to that release. A reader gates on one version
 > comparison; it never needs to know how many heals exist or what they are called.
 >
-> **Pinned 28 Sep 2026: the floor is `4.5.15`.** v4 is frozen there, and 4.5.15 carries a heal
-> (#473), so it is the last release and the high-water mark at once. A 4.5.14 database is refused.
+> **Pinned 28 Sep 2026 at `4.5.15` (#473's heal); raised 29 Sep 2026 to `4.5.16`** (#481's heal).
+> A 4.5.14 or 4.5.15 database is refused. A 4.5.17 carrying a heal would raise it again.
 
 *Rejected: a computed `heal_level` integer.* An earlier design proposed one, with each heal
 verifying its own invariant at startup so the level could fall when unhealed history arrived. It was
@@ -944,8 +950,9 @@ on hand:
 | 4.3.1 | **refused** | no `written_by`, and no `block_segments` either |
 | 4.5.12 production | **refused** | no `written_by`. Previously this was a *positive* case. |
 | 4.5.13 prod-dev | **refused** | no `written_by`, despite being one release short |
-| **4.5.14 prod-dev** (21 Sep 2026) | **refused** | was the first positive case; below the 4.5.15 floor since v8. Now the first *real* below-floor negative — stamped, every column present, and inadmissible because it has not run #473's heal. Keep it. |
-| **4.5.15** (not yet on hand) | **admitted** | the positive fixture at `FLOOR_VERSION`. Needed. |
+| **4.5.14 prod-dev** (21 Sep 2026) | **refused** | was the first positive case; below the floor since v8. Now the first *real* below-floor negative — stamped, every column present, and inadmissible because it has not run #473's heal. Keep it. |
+| 4.5.15 | **refused** | below the 4.5.16 floor since v9 — has not run #481's heal |
+| **4.5.16 dev** (on hand) | **admitted** | the positive fixture at `FLOOR_VERSION`. |
 | **below** `FLOOR_VERSION` | **refused** | stamped, but from a release older than the floor |
 
 Two of these carry most of the value.
@@ -959,9 +966,9 @@ take the positive fixture and rewrite its `written_by` to a version below the fl
 stays honest whatever `FLOOR_VERSION` is pinned to. A test that hard-codes "4.5.14 is admissible"
 silently stops testing anything the day v4 reaches .15.
 
-> **The positive fixture is a release-day artefact** *if the floor moves*. It moved: 4.5.15
-> raised it past the 4.5.14 prod-dev database (v8), so a 4.5.15 database must be captured as
-> the positive. v4 is frozen, so this is the last time.
+> **The positive fixture is a release-day artefact** *if the floor moves*. It has moved twice
+> (4.5.15 in v8, 4.5.16 in v9), so the positive is now a 4.5.16 database. It moves again if a
+> later v4 release carries a heal.
 
 ---
 
@@ -1053,9 +1060,9 @@ silently stops testing anything the day v4 reaches .15.
 
    *Action, not an answer:* `FLOOR_VERSION` is pinned as the last step before v5's first release,
    from whatever v4 has actually reached by then, and §9's positive fixture is regenerated at that
-   version. On the release checklist, not in this paragraph. **Supplied 28 Sep 2026: `4.5.15`**
-   — v4 is frozen, so "whatever v4 has reached" is known now (v8). The release-checklist step
-   becomes a confirmation, plus capturing the 4.5.15 positive fixture.
+   version. On the release checklist, not in this paragraph. **Currently `4.5.16`** (v9; was
+   `4.5.15` in v8). The release-checklist step stays: confirm the final v4 release, and capture
+   the positive fixture at it.
 
    *(This question originally read "does the required `heal_level` ever rise?" and the answer is
    unchanged in substance — only the thing being compared is now a version rather than an integer.)*
