@@ -177,7 +177,19 @@ def cmd_run(a):
 
     st = json.loads(_get(a.base, STATUS, a.timeout)[2])
     print("sweep status at start:", st)
-    if not st.get("in_progress"):
+    # The sweep starts from engine_startup AFTER a Data Management restore, and only
+    # once Octopus has connected — so it may not be running yet when this starts.
+    deadline = time.monotonic() + a.wait_for_sweep * 60
+    while not st.get("in_progress") and time.monotonic() < deadline:
+        print("waiting for the sweep to start…", end="\r", flush=True)
+        time.sleep(POLL_S)
+        try:
+            st = json.loads(_get(a.base, STATUS, a.timeout)[2])
+        except Exception:
+            pass
+    if st.get("in_progress"):
+        print("sweep in progress:", st)
+    else:
         print("warning: the sweep is not running — there will be no sweep phase, so "
               "blocking cannot be judged. Was the database prepared with "
               "soak_prepare_db.py, and is the add-on connected to Octopus?")
@@ -454,6 +466,8 @@ def main(argv=None):
     r.add_argument("--quiet-min", type=float, default=30.0,
                    help="minutes of quiet baseline after the sweep finishes")
     r.add_argument("--max-hours", type=float, default=12.0)
+    r.add_argument("--wait-for-sweep", type=float, default=15.0,
+                   help="minutes to wait for the sweep to start before running anyway")
     r.add_argument("--block-ratio", type=float, default=5.0)
     r.add_argument("--out", default="soak-" + dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
     r.set_defaults(fn=cmd_run)

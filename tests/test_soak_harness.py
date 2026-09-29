@@ -319,6 +319,7 @@ class _Stub(http.server.BaseHTTPRequestHandler):
     slow while it does, and one route always fails."""
     polls = 0
     methods = []
+    starts_at = 0          # polls before the sweep is reported running
 
     def log_message(self, *a):
         pass
@@ -328,7 +329,9 @@ class _Stub(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == soak.STATUS:
             _Stub.polls += 1
-            body = {"in_progress": _Stub.polls < 4, "swept": _Stub.polls, "done": _Stub.polls >= 4}
+            running = _Stub.starts_at < _Stub.polls < _Stub.starts_at + 4
+            body = {"in_progress": running, "swept": _Stub.polls,
+                    "done": _Stub.polls >= _Stub.starts_at + 4}
         elif path == "/api/periods":
             body = {"periods": [{"start": "2026-08-01", "end": "2026-09-01"}]}
         elif path == "/api/config":
@@ -351,6 +354,15 @@ class _Stub(http.server.BaseHTTPRequestHandler):
 
 
 class EndToEnd(unittest.TestCase):
+
+    def setUp(self):
+        _Stub.polls, _Stub.methods, _Stub.starts_at = 0, [], 0
+
+    def test_it_waits_for_a_sweep_that_starts_after_it_does(self):
+        """The Data Management restore case: the sweep starts only after
+        engine_startup re-runs and Octopus connects."""
+        _Stub.starts_at = 3
+        self.test_run_goes_sweep_then_quiet_and_reports()
 
     def test_run_goes_sweep_then_quiet_and_reports(self):
         srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Stub)
