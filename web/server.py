@@ -1952,7 +1952,8 @@ def api_meter_reset_detected():
     """Returns whether a meter read reset was detected (possible replacement/move).
     Clears the flag on read — call once per page load."""
     try:
-        detected = engine.get_and_clear_meter_reset()
+        import engine as _eng
+        detected = _eng.get_and_clear_meter_reset()
         if detected:
             logger.warning("api_meter_reset_detected: meter reset flag was set — serving advisory to UI")
         return jsonify({"detected": detected})
@@ -1971,7 +1972,8 @@ def api_engine_pause_state():
     attached; this makes it answerable (B §4.0).
     """
     try:
-        return jsonify({"ok": True, **engine.engine_pause_state()})
+        import engine as _eng
+        return jsonify({"ok": True, **_eng.engine_pause_state()})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
