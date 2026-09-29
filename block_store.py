@@ -4973,47 +4973,60 @@ class BlockStore:
                 "SELECT * FROM deleted_ranges ORDER BY start_utc DESC").fetchall()
         return [dict(r) for r in rows]
 
-    def prune_stale_deleted_ranges(self) -> int:
-        """4.5.6: delete tombstones whose range is ALREADY fully populated with
-        blocks. Such rows are orphaned — the range was deleted in the past, then
-        re-created by another path (live poll / an older refill) that didn't clear
-        the tombstone. A stale tombstone makes a present, correctly-priced block
-        look 'deleted' (`is_deleted_range`) and clutters the Data Management list,
-        and the normal clear path (re-import) may be gated (IOG). Only removes a row
-        when EVERY 30-min slot in [start,end) has a block for the row's meter — a
-        genuinely still-empty deletion is left untouched. Returns rows pruned."""
+    def stale_deleted_range_ids(self) -> list:
+        """Ids of tombstones whose range is ALREADY fully populated with blocks —
+        orphans: deleted in the past, then re-created by another path (live poll /
+        an older refill) that didn't clear the tombstone. A stale tombstone makes a
+        present, correctly-priced block look 'deleted' (`is_deleted_range`) and
+        clutters the Data Management list. Only a row where EVERY slot in
+        [start,end) has a block for its meter counts — a genuinely still-empty or
+        partially-filled deletion is not stale.
+
+        READ-ONLY, so the Data Management GET can hide stale rows without writing:
+        it used to prune them itself, which put a write — and a wait on the engine
+        loop — inside every page view (first Pi soak, 29 Sep 2026: p50 0.02 s quiet,
+        16.9 s while the re-price sweep held the loop). The engine prunes."""
         rows = self._conn.execute(
             "SELECT id, meter_id, start_utc, end_utc FROM deleted_ranges").fetchall()
-        pruned = 0
+        stale = []
+        for r in rows:
+            mid = r["meter_id"]
+            check_mid = "electricity_main" if mid == "*" else mid
+            try:
+                s = datetime.fromisoformat(r["start_utc"])
+                e = datetime.fromisoformat(r["end_utc"])
+            except Exception:
+                continue
+            try:
+                _cp = self.get_config_period_for_date(r["start_utc"])
+                step = int((_cp or {}).get("block_minutes") or 30)
+            except Exception:
+                step = 30
+            span_min = (e - s).total_seconds() / 60.0
+            if span_min <= 0 or step <= 0:
+                continue
+            expected = int(round(span_min / step))
+            if expected <= 0:
+                continue
+            have = self._conn.execute(
+                "SELECT COUNT(DISTINCT block_start) FROM blocks "
+                "WHERE meter_id = ? AND block_start >= ? AND block_start < ?",
+                (check_mid, r["start_utc"], r["end_utc"])).fetchone()[0]
+            if have >= expected:
+                stale.append(r["id"])
+        return stale
+
+    def prune_stale_deleted_ranges(self) -> int:
+        """4.5.6: delete the tombstones `stale_deleted_range_ids()` finds. Returns
+        rows pruned. Run by the engine (`run_prune_stale_tombstones`), not by a
+        request."""
+        ids = self.stale_deleted_range_ids()
+        if not ids:
+            return 0
         with self._conn:
-            for r in rows:
-                mid = r["meter_id"]
-                check_mid = "electricity_main" if mid == "*" else mid
-                try:
-                    s = datetime.fromisoformat(r["start_utc"])
-                    e = datetime.fromisoformat(r["end_utc"])
-                except Exception:
-                    continue
-                try:
-                    _cp = self.get_config_period_for_date(r["start_utc"])
-                    step = int((_cp or {}).get("block_minutes") or 30)
-                except Exception:
-                    step = 30
-                span_min = (e - s).total_seconds() / 60.0
-                if span_min <= 0 or step <= 0:
-                    continue
-                expected = int(round(span_min / step))
-                if expected <= 0:
-                    continue
-                have = self._conn.execute(
-                    "SELECT COUNT(DISTINCT block_start) FROM blocks "
-                    "WHERE meter_id = ? AND block_start >= ? AND block_start < ?",
-                    (check_mid, r["start_utc"], r["end_utc"])).fetchone()[0]
-                if have >= expected:
-                    self._conn.execute(
-                        "DELETE FROM deleted_ranges WHERE id = ?", (r["id"],))
-                    pruned += 1
-        return pruned
+            self._conn.executemany("DELETE FROM deleted_ranges WHERE id = ?",
+                                   [(i,) for i in ids])
+        return len(ids)
 
     def clear_deleted_range(self, meter_id: str, start_utc: str,
                             end_utc: str) -> int:

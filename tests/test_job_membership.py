@@ -104,7 +104,7 @@ class TestConsumptionNotJustRegistration(unittest.TestCase):
     def test_the_consumers_so_far(self):
         self.assertEqual(sorted(self.d["consuming"]),
                          ["attribution", "carbon_backfill", "measured_drain",
-                          "reprice_sweep"])
+                          "prune_tombstones", "reprice_sweep"])
 
     def test_a_declared_dependency_that_is_never_consulted_is_visible(self):
         """Not a failure — `verify_pricing` declares `import` and does not consult
