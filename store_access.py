@@ -24,6 +24,9 @@ _db_path = None
 _engine_thread = None
 _writer = None
 _local = threading.local()
+# Bumped when the database FILE is replaced (restore, upload). Each thread's
+# ReadStore remembers the generation it opened at; `store()` reopens on a mismatch.
+_generation = 0
 
 
 class WrongThread(RuntimeError):
@@ -41,11 +44,39 @@ class WrongThread(RuntimeError):
 def bind(db_path: str, *, engine_thread: int = None) -> None:
     """Call once from the engine thread at startup, before any task runs."""
     global _db_path, _engine_thread, _writer
+    global _generation
     with _lock:
         _db_path = db_path
         _engine_thread = (engine_thread if engine_thread is not None
                           else threading.get_ident())
         _writer = None
+        _generation += 1
+
+
+def invalidate() -> None:
+    """The database file at the bound path has been REPLACED. Call after the swap.
+
+    A SQLite connection holds the file it opened, not the path: after a restore
+    renames a new blocks.db into place, every open reader keeps reading the old
+    one — a whole replaced database served with no error anywhere, until restart.
+    Found by the first Pi soak (29 Sep 2026): after a Data Management restore,
+    storage-info reported the new file's size while every read returned the old
+    file's five days.
+
+    Readers are per-thread, and a connection may only be closed on its own thread,
+    so this cannot close them. It bumps a generation; each thread's next
+    `store()` sees the mismatch, closes its own connection and reopens.
+    """
+    global _generation, _writer
+    with _lock:
+        _generation += 1
+        _writer = None
+
+
+def on_engine_thread() -> bool:
+    """True on the thread `bind()` recorded as the engine's (and before any bind,
+    when there is no engine to be off)."""
+    return _engine_thread is None or threading.get_ident() == _engine_thread
 
 
 def store() -> ReadStore:
@@ -61,9 +92,16 @@ def store() -> ReadStore:
     if _db_path is None:
         raise RuntimeError("store_access.bind() has not been called")
     st = getattr(_local, "read", None)
+    if st is not None and getattr(_local, "generation", None) != _generation:
+        try:
+            st.close()
+        except Exception:
+            pass
+        st = None
     if st is None:
         st = ReadStore(_db_path)
         _local.read = st
+        _local.generation = _generation
     return st
 
 
@@ -105,6 +143,7 @@ def bind_object_for_tests(obj) -> None:
         _engine_thread = threading.get_ident()
         _writer = obj
     _local.read = obj
+    _local.generation = _generation
 
 
 _OBJECT = "<bound-object-for-tests>"
@@ -124,3 +163,5 @@ def reset_for_tests() -> None:
         _db_path = _engine_thread = _writer = None
     if hasattr(_local, "read"):
         del _local.read
+    if hasattr(_local, "generation"):
+        del _local.generation

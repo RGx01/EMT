@@ -395,6 +395,38 @@ Three heals, three different reasons, none of them readable from the docstrings.
 
 ---
 
+## 5d. What the first Pi soak found before it ran — two silent wrong-database reads
+
+*29 Sep 2026, preparing the soak. Neither shows an error; both serve a confident wrong answer —
+the failure shape §7.1 names as the worst one available. Guarded by `tests/test_web_thread_reads.py`.*
+
+**Readers outlived a restore.** `store()` caches one `ReadStore` per thread. A connection holds
+the file it opened, not the path, so after a Data Management restore renamed a new `blocks.db`
+into place every request thread kept reading the old one. Measured: `/api/storage-info` reported
+the new file's size (35,950,592 bytes) while every read returned the old file's five days —
+until the add-on restarted. v4 did not have this: its GET routes read the shared store, which the
+restore resets. **It arrived with A.** Fix: a generation in `store_access`; `reset_store()` calls
+`invalidate()` after reopening the engine's store, and each thread's next `store()` closes its own
+connection and reopens. Closing stays on the owning thread, as §3.3 requires.
+
+**Engine accessors read the engine's connection from request threads.** `get_data_source_mode()`,
+`load_config()`, `get_db_account()`, `_get_billing_source()`, the import/verify status readers and
+others read `_store` directly. §5.5 made that raise, and each accessor swallowed the error and
+returned its default. Measured: the database said `data_source_mode='api'`; the settings page said
+"unset" and offered to reactivate a supplier that was connected; `/api/kraken-config` reported no
+account on a stamped database. The §5 acceptance-5 test checks `server.py` for direct engine-store
+access and could not see a call *into* an engine function that does it. Fix: `engine._reader()` —
+the engine's store on the engine thread, `store()` anywhere else.
+
+**And the write-side twin.** `reset_store()` opens the engine's new connection on whichever thread
+calls it. Retire, unretire and import-from-zip called it on the request thread, which would leave
+the engine holding a connection it may not use. It now refuses off the engine thread, and every
+caller goes through `server._reset_engine_store()` (the pattern the restore worker already used).
+`set_data_source_mode` and `apply_billing_source_change` — engine mutators called from request
+threads — go through `_engine_call`.
+
+---
+
 ## 6. Migration and porting implications
 
 This workstream lands **before** the pricing engine is ported, not after. Porting 21k lines of
