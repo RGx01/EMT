@@ -196,7 +196,7 @@ pass whether or not the implementation were right.*
 | 1 no read path can write | `tests/test_store_types.py` | met |
 | 2 writer unreachable off-thread | `tests/test_store_types.py` | met |
 | 3 adoption is 100% and stays | `tests/test_route_store_use.py` | met — baseline empty |
-| 4 soak | — | **not written**; needs the Pi |
+| 4 soak | `.build/soak.py run` (harness: `tests/test_soak_harness.py`) | **written 29 Sep 2026; not yet run on the Pi** |
 | 5 no `check_same_thread=False` | `tests/test_thread_affinity.py` | **MET, 24 Sep 2026** — the flag is gone and a cross-thread use now raises |
 | 6 no stale snapshot | `tests/test_store_types.py` | file-backed; the freshness assertions cannot currently fail (see §5a), so the mechanism is asserted directly instead |
 

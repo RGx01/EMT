@@ -350,6 +350,13 @@ same way.
 6. **Soak on the Pi:** every member started concurrently against a real database, asserting no
    member starves and none runs while a declared dependency runs.
 
+   *Harness written 29 Sep 2026.* The coordinator now logs every decision as a `coord:` line
+   (claim, refusal, release, status change, and admission refusals with the blocking member and
+   edge), and `.build/soak.py scan-log` checks the add-on log for a dependant becoming active
+   while its dependency is, and for a refusal still standing after `--starve-min`. **It can only
+   see what members report:** until `verify_pricing` and `import` consult `admission()` and
+   every member claims/marks, a clean scan says less than it appears to.
+
 ---
 
 ## 6. Open questions

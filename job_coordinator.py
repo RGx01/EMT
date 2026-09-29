@@ -42,6 +42,7 @@ THE RULE IT MUST NOT BREAK
     block write would remove the property and become the cause of the problem it
     was built to solve.  (B §3.4)
 """
+import logging
 import threading
 import time
 
@@ -117,6 +118,24 @@ _runs: dict = {}         # (name, key) -> {"status", "since", ...}
 
 _ACTIVE = ("claimed", "running", "paused")
 
+# ── OBSERVABILITY ───────────────────────────────────────────────────────────
+#
+# Every decision is logged as one `coord:` line of key=value pairs, so a soak can
+# check B's rules from the add-on log alone (.build/soak.py --scan-log): nothing
+# runs while a declared dependency runs, and nothing deferred waits forever.
+#
+# `admission()` is asked on every tick by the sweeps, so a refusal is logged when
+# it STARTS and again when it CLEARS (`admit_after`), not on every repeat. The
+# live tick admits unconditionally and is never logged.
+logger = logging.getLogger("job_coordinator")
+_last_refusal: dict = {}     # name -> (decision, blocker) of the refusal in force
+
+
+def _log(event: str, name: str, **fields) -> None:
+    parts = ["coord:", event, "job=%s" % name]
+    parts += ["%s=%s" % (k, v) for k, v in fields.items() if v is not None]
+    logger.info(" ".join(parts))
+
 
 def job(name, *, depends_on=None, exclusive_with=None, on_conflict=None):
     """Declare a member. Returns the function unchanged.
@@ -187,13 +206,26 @@ def admission(name: str):
             return ADMIT, None
         if d["on_conflict"] == ADMIT:
             return ADMIT, None
+        verdict = (ADMIT, None)
         for dep in d["depends_on"]:
             if dep in _declared and running(dep):
-                return d["on_conflict"], dep
-        for ex in d["exclusive_with"]:
-            if ex in _declared and running(ex):
-                return d["on_conflict"], ex
-    return ADMIT, None
+                verdict = (d["on_conflict"], dep)
+                break
+        else:
+            for ex in d["exclusive_with"]:
+                if ex in _declared and running(ex):
+                    verdict = (d["on_conflict"], ex)
+                    break
+        prev = _last_refusal.get(name)
+        if verdict[0] != ADMIT:
+            if prev != verdict:
+                _last_refusal[name] = verdict
+                _log(verdict[0], name, blocker=verdict[1],
+                     edge="depends_on" if verdict[1] in d["depends_on"] else "exclusive_with")
+        elif prev is not None:
+            _last_refusal.pop(name, None)
+            _log("admit_after", name, was=prev[0], blocker=prev[1])
+        return verdict
 
 
 def claim(name: str, key: str = None, *, force: bool = False):
@@ -212,13 +244,16 @@ def claim(name: str, key: str = None, *, force: bool = False):
     with _lock:
         cur = _runs.get((name, k)) or {}
         if cur.get("status") in _ACTIVE:
+            _log("claim_refused", name, key=k, reason="already_running")
             return False, "already running"
         if not force:
             decision, blocker = admission(name)
             if decision != ADMIT:
+                _log("claim_refused", name, key=k, reason=decision, blocker=blocker)
                 return False, "%s: %s" % (decision, blocker)
         _runs[(name, k)] = {"status": "claimed", "job": name, "key": k,
                             "since": time.time()}
+        _log("claim", name, key=k, force=True if force else None)
     return True, None
 
 
@@ -229,6 +264,7 @@ def release(name: str, key: str = None) -> None:
     with _lock:
         if (_runs.get((name, k)) or {}).get("status") == "claimed":
             _runs.pop((name, k), None)
+            _log("release", name, key=k)
 
 
 def mark(name: str, key: str = None, **fields) -> None:
@@ -246,7 +282,11 @@ def mark(name: str, key: str = None, **fields) -> None:
     k = key or name
     with _lock:
         if (name, k) in _runs:
+            before = _runs[(name, k)].get("status")
             _runs[(name, k)].update(fields)
+            after = _runs[(name, k)].get("status")
+            if after != before:
+                _log("mark", name, key=k, status=after, was=before)
 
 
 def validate(modules=None) -> dict:
@@ -293,3 +333,4 @@ def reset_for_tests() -> None:
     from the application, which is the same exception `store_access` carries."""
     with _lock:
         _runs.clear()
+        _last_refusal.clear()
