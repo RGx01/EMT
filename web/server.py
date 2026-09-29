@@ -1973,7 +1973,8 @@ def api_engine_pause_state():
     """
     try:
         import engine as _eng
-        return jsonify({"ok": True, **_eng.engine_pause_state()})
+        return jsonify({"ok": True, **_eng.engine_pause_state(),
+                        "loop_lag": _eng.engine_loop_lag()})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 

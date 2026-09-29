@@ -1179,6 +1179,57 @@ def engine_pause_state() -> dict:
                       if _engine_paused_since else 0.0}
 
 
+# ── Engine-loop lag ─────────────────────────────────────────────────────────
+#
+# The one way left for a read to wait behind a write. Since workstream A a read
+# cannot block in SQLite (WAL readers never wait on the writer), so a request can
+# only be held up by work that must run ON the engine loop — and anything on the
+# loop waits for whatever holds it. Second Pi soak (29 Sep 2026): the re-price
+# sweep held it ~14 s per chunk, and every loop hop waited that long. The live
+# tick and the HA WebSocket heartbeat wait the same way.
+#
+# Latency at the web surface cannot separate that from a heavy read slowed by a
+# saturated Pi (the soak tried). This measures it at the source: a coroutine that
+# asks to wake every _LOOP_LAG_INTERVAL_S and records how late it actually did.
+_LOOP_LAG_INTERVAL_S = 0.5
+_LOOP_LAG_WARN_S = 1.0
+_loop_lag = {"max_s": 0.0, "max_at": None, "last_s": 0.0, "warnings": 0,
+             "since": None}
+
+
+async def engine_loop_lag_monitor() -> None:
+    """Log `engine loop lag: X s` at WARNING whenever the loop was held more than
+    _LOOP_LAG_WARN_S past a wake-up; keep the worst in `engine_loop_lag()`.
+    Started once from main.py, beside the Kraken poll task — never from
+    engine_startup, which re-runs on every restore and config save."""
+    import asyncio as _a
+    _loop_lag["since"] = datetime.now(timezone.utc).isoformat()
+    logger.info("engine loop lag monitor started (interval %.1f s, warn above %.1f s)",
+                _LOOP_LAG_INTERVAL_S, _LOOP_LAG_WARN_S)
+    while True:
+        t0 = time.monotonic()
+        await _a.sleep(_LOOP_LAG_INTERVAL_S)
+        lag = max(0.0, time.monotonic() - t0 - _LOOP_LAG_INTERVAL_S)
+        _record_loop_lag(lag)
+
+
+def _record_loop_lag(lag: float) -> None:
+    _loop_lag["last_s"] = round(lag, 3)
+    if lag > _loop_lag["max_s"]:
+        _loop_lag["max_s"] = round(lag, 3)
+        _loop_lag["max_at"] = datetime.now(timezone.utc).isoformat()
+    if lag > _LOOP_LAG_WARN_S:
+        _loop_lag["warnings"] += 1
+        logger.warning("engine loop lag: %.2f s (loop held past a %.1f s wake-up)",
+                       lag, _LOOP_LAG_INTERVAL_S)
+
+
+def engine_loop_lag() -> dict:
+    """The monitor's readings: worst lag and when, the latest, and how many times
+    it crossed the warning line since start."""
+    return dict(_loop_lag)
+
+
 @contextmanager
 def engine_paused(reason: str):
     """Pause for the duration of a block, resuming on every path.

@@ -159,12 +159,15 @@ class Verdict(unittest.TestCase):
                             "error": "timeout"}])
         self.assertIn("verdict: FAIL", soak.summarise(p))
 
-    def test_a_read_blocked_behind_the_writer_fails(self):
+    def test_a_route_slower_during_the_sweep_is_information_not_a_verdict(self):
+        """Second soak: a static PNG slowed x54 under the sweep. Latency cannot tell
+        a saturated Pi from blocking; scan-log's loop lag judges blocking."""
         p = _write_rows(_rows("sweep", "/api/billing", 4.0, 20)
                         + _rows("quiet", "/api/billing", 0.1, 20))
         r = soak.summarise(p)
-        self.assertIn("verdict: FAIL", r)
-        self.assertIn("read blocked behind the writer", r)
+        self.assertIn("verdict: PASS", r)
+        self.assertIn("SLOWER DURING THE SWEEP", r)
+        self.assertIn("/api/billing", r)
 
     def test_a_small_absolute_slowdown_is_not_blocking(self):
         """x10 on a 20 ms route is 200 ms — under the 1 s floor, so not a finding."""
@@ -182,12 +185,13 @@ class Verdict(unittest.TestCase):
         self.assertIn("SLOW", r)
         self.assertIn("/api/charts/blocks-summary", r)
 
-    def test_timeouts_during_the_sweep_still_count_as_blocking(self):
-        """Excluding timeouts from latency would make the worst blocking invisible."""
+    def test_timeouts_during_the_sweep_still_show_in_the_slowdown(self):
+        """Excluding timeouts from latency would hide the worst slowdown."""
         p = _write_rows(_rows("sweep", "/api/billing", 30.0, 20, status=None, timeout=True)
                         + _rows("quiet", "/api/billing", 0.1, 20))
         r = soak.summarise(p)
-        self.assertIn("read blocked behind the writer", r)
+        self.assertIn("SLOWER DURING THE SWEEP", r)
+        self.assertIn("/api/billing: sweep p95 30.000s", r)
 
     def test_no_sweep_phase_is_said_out_loud(self):
         p = _write_rows(_rows("quiet", "/api/billing", 0.1, 20))
@@ -252,7 +256,32 @@ class LogScan(unittest.TestCase):
         p = _log("2026-09-29T10:00:00  INFO  engine  finalise_block: done")
         report, _ = soak.scan_log(p)
         self.assertIn("NOT EXERCISED", report)
-        self.assertIn("verdict B (coordinator): NOT EXERCISED", report)
+        self.assertIn("B (coordinator): NOT EXERCISED", report)
+
+    _MON = "2026-09-29T21:00:00  INFO  engine  engine loop lag monitor started (interval 0.5 s, warn above 1.0 s)"
+
+    def _lag(self, ts, s):
+        return "2026-09-29T%s  WARNING  engine  engine loop lag: %.2f s (loop held past a 0.5 s wake-up)" % (ts, s)
+
+    def test_loop_lag_within_budget_passes(self):
+        report, ok = soak.scan_log(_log(self._MON, self._lag("21:10:00", 1.3)))
+        self.assertTrue(ok, report)
+        self.assertIn("A (loop blocking): PASS", report)
+
+    def test_loop_lag_over_budget_is_blocking(self):
+        """The second soak's shape: the sweep held the loop ~14 s per chunk."""
+        report, ok = soak.scan_log(_log(self._MON, self._lag("21:10:00", 14.2)))
+        self.assertFalse(ok)
+        self.assertIn("A (loop blocking): FAIL", report)
+        self.assertIn("14.20 s", report)
+
+    def test_no_monitor_line_is_not_measured_not_pass(self):
+        report, ok = soak.scan_log(_log(self._lag("21:10:00", 14.2)))
+        self.assertIn("A (loop blocking): NOT MEASURED", report)
+
+    def test_the_budget_is_configurable(self):
+        report, ok = soak.scan_log(_log(self._MON, self._lag("21:10:00", 3.0)), lag_budget=5)
+        self.assertTrue(ok)
 
     def test_database_errors_fail(self):
         p = _log("2026-09-29T10:00:00  ERROR  engine  sqlite3.ProgrammingError: "

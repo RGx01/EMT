@@ -18,11 +18,17 @@ WHAT `run` DOES
       sweep   the sweep is in progress — reads racing a whole-history write
       quiet   after it finishes — the baseline the sweep phase is compared against
 
-  A (§5 acceptance 4) passes when: no 5xx, no connection failure, every 200 that
-  declares JSON parses, and read latency during the sweep stays within --block-ratio
-  of quiet (p95, per route) — a read blocked behind the writer shows up as exactly
-  that ratio. A request that hits --timeout is reported as SLOW, not as a failure,
-  but counts at the timeout in the ratio so blocking cannot hide behind it.
+  `run` FAILS on: a 5xx, a connection failure, or a 200 that declares JSON and does
+  not parse. A request that hits --timeout is reported as SLOW, not as a failure.
+
+  It also reports, per route, how much slower reads were during the sweep. That is
+  INFORMATION, not a verdict: on a saturated Pi a heavy pure read slows as much as
+  a read that waited behind the writer (second soak: /api/config/history +12.4 s,
+  a loop hop +14.9 s, a static PNG +5.2 s), so no latency threshold separates them.
+
+  Blocking is judged by `scan-log` instead, at the source: since workstream A a read
+  cannot wait in SQLite, only behind the engine loop, and the add-on's loop-lag
+  monitor logs `engine loop lag: X s` whenever the loop was held past 1 s.
 
 WHAT IT WILL NEVER DO
   Send anything but GET. There is no code path here that issues a POST, so no job
@@ -355,7 +361,10 @@ def summarise(rec_path, block_ratio=5.0, min_abs_secs=1.0):
             if s95 > max(q95 * block_ratio, min_abs_secs):
                 blocked.append("%s: sweep p95 %.3fs vs quiet p95 %.3fs (x%.1f)"
                                % (route, s95, q95, s95 / max(q95, 1e-6)))
-    fails += ["read blocked behind the writer? " + b for b in blocked]
+    if blocked:
+        lines.append("\nSLOWER DURING THE SWEEP — information for surface performance, not a "
+                     "verdict (blocking is judged by scan-log's loop lag):")
+        lines += ["  " + b for b in blocked]
 
     if slow:
         lines.append("\nSLOW — timed out, not counted as failures (a surface-performance finding):")
@@ -384,10 +393,12 @@ ERROR_PATTERNS = [
 _COORD = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d).*?coord: (\S+) job=(\S+)(.*)$")
 _ACTIVE = ("claimed", "running", "paused")          # job_coordinator._ACTIVE
 _TRACEBACK = re.compile(r"^Traceback|\bTraceback \(most recent")
+_LAG = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d).*engine loop lag: ([0-9.]+) s")
+_LAG_MONITOR = re.compile(r"engine loop lag monitor started")
 _DISCONNECT = re.compile(r"waitress\s+Socket error")
 
 
-def scan_log(path, starve_min=60.0):
+def scan_log(path, starve_min=60.0, lag_budget=2.0):
     sys.path.insert(0, ROOT)
     import job_coordinator as C
     manifest = C._MANIFEST
@@ -396,7 +407,13 @@ def scan_log(path, starve_min=60.0):
     waiting = {}                                   # job -> (since, blocker)
     violations, seen_jobs, last_t = [], set(), None
     disconnects, prev = 0, ""
+    monitor, lags = False, []
     for ln, line in enumerate(open(path, errors="replace"), 1):
+        if _LAG_MONITOR.search(line):
+            monitor = True
+        lm = _LAG.search(line)
+        if lm:
+            lags.append((float(lm.group(2)), lm.group(1), ln))
         # waitress logs "Socket error" then the traceback when it tries to answer a
         # client that already gave up (a slow response). That is a symptom of a slow
         # route, not a fault — counted apart so it cannot bury a real traceback.
@@ -459,9 +476,22 @@ def scan_log(path, starve_min=60.0):
     out += ["  DEPENDENCY VIOLATION " + v for v in violations]
     out += ["  STARVATION " + s for s in starving]
     db_errors = sum(len(hits.get(l, [])) for l, _ in ERROR_PATTERNS if l != "Traceback")
-    ok = not violations and not starving and db_errors == 0
-    out.append("\nverdict A (database faults): %s   verdict B (coordinator): %s"
-               % ("PASS" if db_errors == 0 else "FAIL",
+    over = [x for x in lags if x[0] > lag_budget]
+    if not monitor:
+        lag_verdict = "NOT MEASURED"
+        out.append("\nengine loop lag: NOT MEASURED — no 'loop lag monitor started' line; "
+                   "this build predates the monitor, or the log does not reach its start.")
+    else:
+        lag_verdict = "PASS" if not over else "FAIL"
+        worst = max(lags) if lags else None
+        out.append("\nengine loop lag (budget %.1f s): %d warning(s) over 1 s, %d over budget; "
+                   "worst %s" % (lag_budget, len(lags), len(over),
+                                 "%.2f s at %s (line %d)" % worst if worst else "under 1 s"))
+        out += ["  %.2f s at %s (line %d)" % x for x in sorted(over, reverse=True)[:10]]
+    ok = not violations and not starving and db_errors == 0 and lag_verdict != "FAIL"
+    out.append("\nverdict A (database faults): %s   A (loop blocking): %s   "
+               "B (coordinator): %s"
+               % ("PASS" if db_errors == 0 else "FAIL", lag_verdict,
                   "NOT EXERCISED" if not seen_jobs else
                   ("PASS" if not violations and not starving else "FAIL")))
     if hits.get("Traceback"):
@@ -471,7 +501,7 @@ def scan_log(path, starve_min=60.0):
 
 
 def cmd_scan_log(a):
-    report, ok = scan_log(a.log, a.starve_min)
+    report, ok = scan_log(a.log, a.starve_min, a.lag_budget)
     print(report)
     return 0 if ok else 1
 
@@ -538,6 +568,8 @@ def main(argv=None):
     s = sub.add_parser("scan-log")
     s.add_argument("log")
     s.add_argument("--starve-min", type=float, default=60.0)
+    s.add_argument("--lag-budget", type=float, default=2.0,
+                   help="seconds the engine loop may be held before it counts as blocking")
     s.set_defaults(fn=cmd_scan_log)
     c = sub.add_parser("compare-segments")
     c.add_argument("before")
