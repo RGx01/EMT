@@ -235,6 +235,7 @@
     "reprice_queue_count",
     "site_timezone",
     "slots_with_bill_split",
+    "stale_deleted_range_ids",
     "sum_meter_import_kwh",
     "tombstoned_slots_in",
     "vat_rate_at"

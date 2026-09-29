@@ -306,6 +306,9 @@ class TestTheManifestIsMeasuredNotInvented(unittest.TestCase):
             "verify_pricing": {"import"},
             "restore": {"import"},
             "delete": {"import"},
+            # a delete writes its tombstone before removing blocks; the GET-side
+            # prune could remove it in between (manifest comment, 29 Sep 2026)
+            "prune_tombstones": {"delete"},
         }
         reg = C.registry()
         # manifest entries only — this file declares fixture members with

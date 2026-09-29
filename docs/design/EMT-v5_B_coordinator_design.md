@@ -335,9 +335,10 @@ same way.
    **And registration is not adoption.** A member can declare `depends_on` and never consult
    `admission()`; the declaration is then decorative while the number still looks healthy — exactly
    how the read companion existed, was correct, and reached 0%. So the tool counts **consuming**
-   separately, as a second ratchet that may only grow. Standing at **4 of 6** members that declare
-   a dependency: attribution, reprice_sweep, carbon_backfill, measured_drain. `verify_pricing` and
-   `import` declare and do not yet consult.
+   separately, as a second ratchet that may only grow. Standing at **5 of 7** members that declare
+   a dependency: attribution, reprice_sweep, carbon_backfill, measured_drain, and (29 Sep 2026)
+   prune_tombstones — the stale-tombstone prune moved out of a GET, declared for its one edge,
+   `exclusive_with=("delete",)`. `verify_pricing` and `import` declare and do not yet consult.
 2. **No unregistered write from a request thread.** `.build/write_inventory.py` already measures
    this. The count was 8 and must reach **1** — `api_db_vacuum`, which cannot move without stalling
    member 23 (see §4). Anything else in that list is outstanding work.

@@ -3212,23 +3212,14 @@ def api_entities():
 
 @app.route("/api/config", methods=["GET"])
 def api_get_config():
-    # Read the config on the engine loop (single-threaded owner of the engine's SQLite
-    # connection), NOT the Flask request thread. Concurrent web requests otherwise use
-    # one connection cross-thread, and a garbled read under load can surface a column as
-    # None -> a None dict key -> jsonify's key-sort crashes
-    # (`'<' not supported between 'str' and 'NoneType'`). Mirrors _regen_charts_safely.
-    try:
-        if _event_loop is not None and _event_loop.is_running():
-            import asyncio as _a, engine as _eng_c
-            async def _load():
-                return _eng_c.load_config()
-            cfg = _a.run_coroutine_threadsafe(_load(), _event_loop).result(timeout=15)
-        else:
-            cfg = load_config()
-    except Exception as e:
-        logger.warning("api_get_config: loop-serialised load failed (%s) — inline fallback", e)
-        cfg = load_config()
-    return jsonify(cfg)
+    # Read on THIS thread. This used to hop onto the engine loop — v4's fix for the
+    # 26 Aug 2026 incident, when concurrent requests shared one connection and a
+    # garbled read surfaced a column as None (a None dict key -> jsonify crashed).
+    # Workstream A made that impossible by construction: every request thread has its
+    # own read connection, and this module's `load_config()` reads through it
+    # (`store_access.store()`). The hop then only cost a wait behind whatever held the
+    # loop — second Pi soak (29 Sep 2026): p50 0.02 s quiet, 15.0 s during the sweep.
+    return jsonify(load_config())
 
 
 @app.route("/api/config/history")
@@ -4948,20 +4939,16 @@ def api_blocks_deleted_ranges():
         import engine as _eng
         from datetime import datetime, timezone, timedelta
         store = store_access.store()
-        # 4.5.6: self-heal orphaned tombstones — rows whose range is already fully
-        # populated with blocks (deleted in the past, then re-created by another
-        # path that didn't clear the tombstone). They clutter the list and make a
-        # present block look deleted; the re-import clear path may be IOG-gated.
+        # 4.5.6: orphaned tombstones — rows whose range is already fully populated
+        # again — are HIDDEN here and PRUNED by the engine (run_prune_stale_tombstones,
+        # hourly). This GET used to prune them itself through _engine_write: a write
+        # in a read, and a wait on the engine loop on every page view (first Pi soak:
+        # p50 0.02 s quiet, 16.9 s while the re-price sweep held the loop).
         try:
-            # Workstream A: this MUTATES, so it hops to the engine thread. It used
-            # to DELETE here, on a Flask worker, through the engine's connection —
-            # and on a GET-only route, so a browser prefetch could fire it.
-            _npr = _engine_write(lambda st: st.prune_stale_deleted_ranges())
-            if _npr:
-                logger.info("deleted-ranges: pruned %d stale tombstone(s) whose "
-                            "range is already fully populated", _npr)
+            _stale = set(store.stale_deleted_range_ids())
         except Exception as _pe:
-            logger.warning("deleted-ranges: stale-tombstone prune failed: %s", _pe)
+            logger.warning("deleted-ranges: stale-tombstone check failed: %s", _pe)
+            _stale = set()
         api_ok = _eng.kraken_available()
         horizon_days = getattr(_eng, "_KRAKEN_BACKFILL_DAYS", 400) or 400
         floor = (datetime.now(timezone.utc).replace(tzinfo=None)
@@ -4971,7 +4958,7 @@ def api_blocks_deleted_ranges():
         ranges = [{**r, "fillable": bool(api_ok and r["end_utc"] > floor),
                    "start_local": _lbl(r["start_utc"], _tz),
                    "end_local": _lbl(r["end_utc"], _tz)}
-                  for r in store.get_deleted_ranges()]
+                  for r in store.get_deleted_ranges() if r["id"] not in _stale]
         return jsonify({"ok": True, "ranges": ranges, "api_available": api_ok,
                         "timezone": _tz})
     except Exception as e:

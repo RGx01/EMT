@@ -7539,6 +7539,19 @@ def _reprice_history_blocks(rows, tz_name: "str | None" = None, rate_segs=None) 
 _REPRICE_HISTORY_MARKER = "reprice_history_state"   # store_meta key (P3.3b)
 _REPRICE_HISTORY_SCOPE = 2   # 1=segments-only; 2=P3.3c exc superset
 _REPRICE_HISTORY_PASS_PACE = 1.0
+# Longest the unified sweep may hold the engine loop in one chunk, and where it starts.
+_SWEEP_SLICE_S = 0.25
+_SWEEP_FIRST_CHUNK = 25
+
+
+def _next_sweep_chunk(limit: int, elapsed_s: float, ceiling: int) -> int:
+    """Next chunk size for a time-budgeted sweep: shrink in proportion when the last
+    chunk overran `_SWEEP_SLICE_S`, double when it used under half, else keep."""
+    if elapsed_s > _SWEEP_SLICE_S:
+        return max(1, int(limit * _SWEEP_SLICE_S / elapsed_s))
+    if elapsed_s < _SWEEP_SLICE_S / 2:
+        return min(ceiling, limit * 2)
+    return limit
 _reprice_history_running = False
 
 
@@ -7652,8 +7665,15 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
     total_healed = int(state.get("healed") or 0)
     total_skipped = int(state.get("skipped") or 0)
     reached_end = False
+    # Chunks are sized by TIME, not count: `batch` is only the ceiling. A fixed 500 held
+    # the engine loop ~14 s per chunk on a Pi (first soak, 29 Sep 2026: 37,103 blocks in
+    # ~17 min), and every loop hop waited behind it — GET /api/config went from 0.02 s to
+    # 15 s, and the live tick and the HA WebSocket wait the same way. Still one
+    # synchronous chunk between yields: admission never happens per block (B §3.4).
+    limit = min(batch, _SWEEP_FIRST_CHUNK)
     while scanned < max_blocks:
-        rows = _store.get_blocks_needing_reprice(limit=batch, after_start=cursor)
+        _t0 = time.monotonic()
+        rows = _store.get_blocks_needing_reprice(limit=limit, after_start=cursor)
         if not rows:
             reached_end = True
             break
@@ -7671,9 +7691,10 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
                         {"cursor": cursor, "scope": _REPRICE_HISTORY_SCOPE,
                          "swept": total + swept, "healed": total_healed + healed,
                          "skipped": total_skipped + skipped})
-        if len(rows) < batch:
+        if len(rows) < limit:
             reached_end = True
             break
+        limit = _next_sweep_chunk(limit, time.monotonic() - _t0, batch)
         await _aio.sleep(pace_s)
     total += swept
     total_healed += healed
@@ -11098,6 +11119,10 @@ async def _tick_dispatch_capture() -> None:
             run_device_rate_drift_repair()
         except Exception as e:
             logger.warning("_tick_dispatch_capture: device rate drift repair failed: %s", e)
+        try:
+            run_prune_stale_tombstones()
+        except Exception as e:
+            logger.warning("_tick_dispatch_capture: stale tombstone prune failed: %s", e)
 
 
 async def _log_dispatches_observe_only() -> None:
@@ -12204,6 +12229,37 @@ def run_device_rate_drift_repair() -> dict:
                     "parent rate (device == main == bill)", n)
         _schedule_chart_regen()
     return {"ok": True, "re_costed": n}
+
+
+@job("prune_tombstones")
+def run_prune_stale_tombstones() -> dict:
+    """Delete deletion tombstones whose range is already fully populated again.
+
+    Moved here from `GET /api/blocks/deleted-ranges`, which pruned on every page
+    view through `_engine_write` — a write inside a read, and a wait on the engine
+    loop. First Pi soak (29 Sep 2026): that GET's p50 went from 0.02 s to 16.9 s
+    while the re-price sweep held the loop. The GET now hides stale rows with the
+    read-only `stale_deleted_range_ids()`; persisting the prune is the engine's.
+
+    Defers while a delete runs (manifest: `exclusive_with=("delete",)`): a delete
+    writes its tombstone before removing the blocks, so a prune in between would
+    remove the tombstone it just wrote. Self-limiting — zero rows in the steady
+    state. Runs on the hourly reconcile slot.
+    """
+    if _store is None:
+        return {"ok": False, "reason": "no store"}
+    decision, blocker = _coord.admission("prune_tombstones")
+    if decision != ADMIT:
+        return {"ok": False, "reason": "deferred: %s" % blocker}
+    try:
+        n = _store.prune_stale_deleted_ranges()
+    except Exception as e:
+        logger.warning("stale tombstone prune: failed: %s", e)
+        return {"ok": False, "reason": str(e)}
+    if n:
+        logger.info("stale tombstone prune: removed %d tombstone(s) whose range is "
+                    "already fully populated", n)
+    return {"ok": True, "pruned": n}
 
 
 def _attribute_missing_ev_split() -> int:

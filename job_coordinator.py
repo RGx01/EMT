@@ -82,6 +82,15 @@ _MANIFEST: dict = {
     # not settled here.
     "import":              ((),                               (),              DEFER),
     "device_rate_drift":   ((),                               (),              DEFER),
+    # A delete writes its tombstone and then removes blocks, on its own worker
+    # connection. A prune in between sees the range still fully populated and
+    # deletes the tombstone it just wrote. Measured, not invented: that window
+    # existed when the prune ran inside the Data Management GET.
+    # Declared for that one edge. NOT a long-running writer (one hourly pass over
+    # a handful of tombstone rows), so it is deliberately absent from the
+    # long-running lists in .build/check_job_membership.py, check_job_guards.py
+    # and write_scope.py, whose figures B's doc asserts.
+    "prune_tombstones":    ((),                               ("delete",),     DEFER),
     "verify_pricing":      (("import",),                      (),              DEFER),
     "reprice_sweep":       (("import",),                      ("delete",),     DEFER),
     "reprice_sweep_to_done": ((),                             (),              DEFER),
