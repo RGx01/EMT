@@ -88,6 +88,25 @@ class RouteSelection(unittest.TestCase):
         self.assertIn("/api/blocks/sweep-implausible", mixed)
         self.assertFalse(set(self.routes) & mixed)
 
+    def test_routes_that_need_arguments_get_them(self):
+        """First Pi soak: these three answered 400 on every request, so they were
+        never actually exercised."""
+        import datetime as dt
+        ctx = {"today": dt.date(2026, 9, 29), "periods": [], "months": [], "years": [],
+               "sub_meters": ["ev_charger"]}
+        gt = soak.query_variants("/api/historical/gap-template", ctx)
+        self.assertTrue(gt and all("from=" in u and "to=" in u for u in gt))
+        nr = soak.query_variants("/api/corrections/nearby-rates", ctx)
+        self.assertTrue(nr and all("from_date=" in u and "to_date=" in u for u in nr))
+        self.assertEqual(soak.query_variants("/api/sub-meter/history", ctx),
+                         ["/api/sub-meter/history?meter_id=ev_charger&hours=24"])
+
+    def test_with_no_sub_meter_its_history_is_not_requested(self):
+        import datetime as dt
+        ctx = {"today": dt.date(2026, 9, 29), "periods": [], "months": [], "years": [],
+               "sub_meters": []}
+        self.assertEqual(soak.query_variants("/api/sub-meter/history", ctx), [])
+
     def test_energy_is_only_asked_for_what_exists(self):
         """resolution=day|block return 501 until C builds them."""
         import datetime as dt
@@ -153,6 +172,23 @@ class Verdict(unittest.TestCase):
                         + _rows("quiet", "/api/billing", 0.02, 20))
         self.assertIn("verdict: PASS", soak.summarise(p))
 
+    def test_a_timeout_is_slow_not_a_failure(self):
+        p = _write_rows(_rows("sweep", "/api/billing", 0.1, 20)
+                        + _rows("quiet", "/api/billing", 0.1, 20)
+                        + _rows("quiet", "/api/charts/blocks-summary", 30.0, 1, status=None,
+                                timeout=True, error="TimeoutError"))
+        r = soak.summarise(p)
+        self.assertIn("verdict: PASS", r)
+        self.assertIn("SLOW", r)
+        self.assertIn("/api/charts/blocks-summary", r)
+
+    def test_timeouts_during_the_sweep_still_count_as_blocking(self):
+        """Excluding timeouts from latency would make the worst blocking invisible."""
+        p = _write_rows(_rows("sweep", "/api/billing", 30.0, 20, status=None, timeout=True)
+                        + _rows("quiet", "/api/billing", 0.1, 20))
+        r = soak.summarise(p)
+        self.assertIn("read blocked behind the writer", r)
+
     def test_no_sweep_phase_is_said_out_loud(self):
         p = _write_rows(_rows("quiet", "/api/billing", 0.1, 20))
         self.assertIn("NO SWEEP PHASE", soak.summarise(p))
@@ -201,6 +237,22 @@ class LogScan(unittest.TestCase):
         report, ok = soak.scan_log(p, starve_min=60)
         self.assertFalse(ok)
         self.assertIn("STARVATION carbon_backfill", report)
+
+    def test_a_waitress_client_disconnect_is_not_a_fault(self):
+        p = _log("2026-09-29T20:31:17  ERROR     waitress  Socket error",
+                 "Traceback (most recent call last):",
+                 '  File "/usr/lib/python3.12/site-packages/waitress/channel.py", line 125',
+                 "TimeoutError: [Errno 110] Operation timed out")
+        report, _ = soak.scan_log(p)
+        self.assertIn("verdict A (database faults): PASS", report)
+        self.assertNotIn("other traceback", report)
+        self.assertRegex(report, r"waitress client disconnects\s+1")
+
+    def test_a_log_with_no_coordinator_activity_says_B_was_not_tested(self):
+        p = _log("2026-09-29T10:00:00  INFO  engine  finalise_block: done")
+        report, _ = soak.scan_log(p)
+        self.assertIn("NOT EXERCISED", report)
+        self.assertIn("verdict B (coordinator): NOT EXERCISED", report)
 
     def test_database_errors_fail(self):
         p = _log("2026-09-29T10:00:00  ERROR  engine  sqlite3.ProgrammingError: "
@@ -319,6 +371,7 @@ class _Stub(http.server.BaseHTTPRequestHandler):
     slow while it does, and one route always fails."""
     polls = 0
     methods = []
+    starts_at = 0          # polls before the sweep is reported running
 
     def log_message(self, *a):
         pass
@@ -328,9 +381,17 @@ class _Stub(http.server.BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path == soak.STATUS:
             _Stub.polls += 1
-            body = {"in_progress": _Stub.polls < 4, "swept": _Stub.polls, "done": _Stub.polls >= 4}
+            running = _Stub.starts_at < _Stub.polls < _Stub.starts_at + 4
+            body = {"in_progress": running, "swept": _Stub.polls,
+                    "done": _Stub.polls >= _Stub.starts_at + 4}
         elif path == "/api/periods":
             body = {"periods": [{"start": "2026-08-01", "end": "2026-09-01"}]}
+        elif path == "/api/historical/csv-template":
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv")
+            self.end_headers()
+            self.wfile.write(b"a,b\n1,2\n")
+            return
         elif path == "/api/config":
             self.send_response(500)
             self.end_headers()
@@ -351,6 +412,15 @@ class _Stub(http.server.BaseHTTPRequestHandler):
 
 
 class EndToEnd(unittest.TestCase):
+
+    def setUp(self):
+        _Stub.polls, _Stub.methods, _Stub.starts_at = 0, [], 0
+
+    def test_it_waits_for_a_sweep_that_starts_after_it_does(self):
+        """The Data Management restore case: the sweep starts only after
+        engine_startup re-runs and Octopus connects."""
+        _Stub.starts_at = 3
+        self.test_run_goes_sweep_then_quiet_and_reports()
 
     def test_run_goes_sweep_then_quiet_and_reports(self):
         srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _Stub)
@@ -373,6 +443,7 @@ class EndToEnd(unittest.TestCase):
         self.assertIn("verdict: FAIL", report)        # the stub's /api/config 500
         self.assertIn("500 /api/config", report)
         self.assertEqual(set(_Stub.methods), {"GET"})
+        self.assertNotIn("invalid JSON", report, "a CSV under /api is not bad JSON")
         requested = {r["url"].split("?")[0] for r in rows if "url" in r}
         self.assertFalse(requested & set(soak.DENY))
 

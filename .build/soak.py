@@ -10,7 +10,7 @@ only, so it needs nothing installed.
   compare         python3 .build/soak.py compare-segments segments_before.db blocks.db
 
 WHAT `run` DOES
-  Hammers every database-backed GET route at a capped rate while the engine writes,
+  Drives every database-backed GET route at a capped rate while the engine writes,
   and records every status code and latency. The heavy write is the historical
   re-price sweep, which .build/soak_prepare_db.py arranges to rebuild segments for
   all history on startup. Phases follow /api/reprice-history-status:
@@ -18,10 +18,11 @@ WHAT `run` DOES
       sweep   the sweep is in progress — reads racing a whole-history write
       quiet   after it finishes — the baseline the sweep phase is compared against
 
-  A (§5 acceptance 4) passes when: no 5xx, no connection failure, every 200 from an
-  /api route is valid JSON, and read latency during the sweep stays within
-  --block-ratio of quiet (p95, per route) — a read blocked behind the writer shows
-  up as exactly that ratio.
+  A (§5 acceptance 4) passes when: no 5xx, no connection failure, every 200 that
+  declares JSON parses, and read latency during the sweep stays within --block-ratio
+  of quiet (p95, per route) — a read blocked behind the writer shows up as exactly
+  that ratio. A request that hits --timeout is reported as SLOW, not as a failure,
+  but counts at the timeout in the ratio so blocking cannot hide behind it.
 
 WHAT IT WILL NEVER DO
   Send anything but GET. There is no code path here that issues a POST, so no job
@@ -101,10 +102,18 @@ def query_variants(path, ctx):
     listed is requested bare."""
     today, periods, months, years = ctx["today"], ctx["periods"], ctx["months"], ctx["years"]
     recent = [(today - dt.timedelta(days=d)).isoformat() for d in (1, 2, 7, 30, 180)]
+    week = [((today - dt.timedelta(days=d + 7)).isoformat(),
+             (today - dt.timedelta(days=d)).isoformat()) for d in (1, 60)]
     table = {
         "/api/charts/blocks-day": [{"date": d} for d in recent],
         "/api/power/history": [{"hours": h} for h in (6, 24)],
-        "/api/sub-meter/history": [{"hours": 24}],
+        # meter_id is required; with no sub-meter there is nothing to ask for
+        "/api/sub-meter/history": [{"meter_id": m, "hours": 24}
+                                   for m in ctx.get("sub_meters", [])] or ["SKIP"],
+        "/api/historical/gap-template": [{"from": f + "T00:00:00", "to": t + "T00:00:00"}
+                                         for f, t in week],
+        "/api/corrections/nearby-rates": [{"channel": "import", "from_date": f, "to_date": t}
+                                          for f, t in week],
         "/api/unsettled-blocks": [{"limit": 50}],
         # resolution=day|block return 501 until C builds them — period only.
         "/api/energy": [{"resolution": "period", "kind": k, "include": "usage,carbon"}
@@ -119,7 +128,7 @@ def query_variants(path, ctx):
         "/api/charge-sessions": [{"days": 30}],
     }
     return [path + ("?" + urllib.parse.urlencode(q) if q else "")
-            for q in (table.get(path) or [None])]
+            for q in (table.get(path) or [None]) if q != "SKIP"]
 
 
 def build_context(base, timeout):
@@ -135,22 +144,38 @@ def build_context(base, timeout):
         ctx["periods"] = [p["start"] for p in (body.get("periods") or [])][-6:]
     except Exception as e:
         print("warning: could not read billing periods (%s); period routes run bare" % e)
+    try:
+        body = json.loads(_get(base, "/api/corrections/meters", timeout)[2])
+        ctx["sub_meters"] = [m for m in (body.get("meters") or [])
+                             if m != "electricity_main" and "export" not in m][:3]
+    except Exception as e:
+        ctx["sub_meters"] = []
+        print("warning: could not list meters (%s); sub-meter history is skipped" % e)
     return ctx
 
 
 # ── HTTP ─────────────────────────────────────────────────────────────────────
 
 def _get(base, path, timeout):
-    """(status, seconds, body). The only request this script can make."""
+    """(status, seconds, body, content_type). The only request this script can make."""
     req = urllib.request.Request(base.rstrip("/") + path, method="GET",
                                  headers={"User-Agent": "emt-soak"})
     t0 = time.monotonic()
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             body = r.read()
-            return r.status, time.monotonic() - t0, body
+            return r.status, time.monotonic() - t0, body, r.headers.get("Content-Type", "")
     except urllib.error.HTTPError as e:
-        return e.code, time.monotonic() - t0, e.read() or b""
+        return (e.code, time.monotonic() - t0, e.read() or b"",
+                e.headers.get("Content-Type", "") if e.headers else "")
+
+
+def _is_timeout(e):
+    import socket
+    if isinstance(e, (TimeoutError, socket.timeout)):
+        return True
+    reason = getattr(e, "reason", None)          # URLError wraps the socket error
+    return isinstance(reason, (TimeoutError, socket.timeout))
 
 
 class RateLimiter:
@@ -177,7 +202,19 @@ def cmd_run(a):
 
     st = json.loads(_get(a.base, STATUS, a.timeout)[2])
     print("sweep status at start:", st)
-    if not st.get("in_progress"):
+    # The sweep starts from engine_startup AFTER a Data Management restore, and only
+    # once Octopus has connected — so it may not be running yet when this starts.
+    deadline = time.monotonic() + a.wait_for_sweep * 60
+    while not st.get("in_progress") and time.monotonic() < deadline:
+        print("waiting for the sweep to start…", end="\r", flush=True)
+        time.sleep(POLL_S)
+        try:
+            st = json.loads(_get(a.base, STATUS, a.timeout)[2])
+        except Exception:
+            pass
+    if st.get("in_progress"):
+        print("sweep in progress:", st)
+    else:
         print("warning: the sweep is not running — there will be no sweep phase, so "
               "blocking cannot be judged. Was the database prepared with "
               "soak_prepare_db.py, and is the add-on connected to Octopus?")
@@ -218,9 +255,11 @@ def cmd_run(a):
                 phase = state["phase"]
             r = {"t": time.time(), "phase": phase, "url": url}
             try:
-                code, secs, body = _get(a.base, url, a.timeout)
+                code, secs, body, ctype = _get(a.base, url, a.timeout)
                 r.update(status=code, secs=round(secs, 4), bytes=len(body))
-                if code == 200 and url.startswith("/api/"):
+                # Only a response that SAYS it is JSON has to parse — a CSV template
+                # or a file download under /api is correct as whatever it declares.
+                if code == 200 and "json" in (ctype or "").lower():
                     try:
                         json.loads(body)
                     except ValueError:
@@ -229,7 +268,10 @@ def cmd_run(a):
                     r["body"] = body[:300].decode("utf-8", "replace")
                 timeouts = 0
             except Exception as e:
-                r.update(status=None, error="%s: %s" % (type(e).__name__, e))
+                r.update(status=None, error="%s: %s" % (type(e).__name__, e),
+                         timeout=_is_timeout(e))
+                if r["timeout"]:
+                    r["secs"] = a.timeout
                 timeouts += 1
                 if timeouts >= 3:          # don't pile onto a struggling Pi
                     time.sleep(30)
@@ -275,15 +317,20 @@ def summarise(rec_path, block_ratio=5.0, min_abs_secs=1.0):
     by_phase = collections.defaultdict(list)
     by_route = collections.defaultdict(lambda: collections.defaultdict(list))
     codes = collections.Counter()
+    slow = collections.Counter()
     for r in rows:
-        codes[(r["phase"], r.get("status"))] += 1
-        if r.get("status") is None:
+        codes[(r["phase"], "timeout" if r.get("timeout") else r.get("status"))] += 1
+        if r.get("timeout"):
+            slow[r["url"].split("?")[0]] += 1
+        elif r.get("status") is None:
             fails.append("connection failure %s: %s" % (r["url"], r.get("error")))
         elif r["status"] >= 500 and r["status"] != 501:
             fails.append("%s %s: %s" % (r["status"], r["url"], r.get("body", "")[:120]))
         elif r.get("bad_json"):
             fails.append("invalid JSON from %s" % r["url"])
-        if r.get("secs") is not None and r.get("status") and r["status"] < 500:
+        # A timeout counts at the timeout: leaving it out would make a read that was
+        # blocked behind the writer long enough to time out vanish from the ratio.
+        if r.get("secs") is not None and (r.get("timeout") or (r.get("status") and r["status"] < 500)):
             by_phase[r["phase"]].append(r["secs"])
             by_route[r["url"].split("?")[0]][r["phase"]].append(r["secs"])
 
@@ -310,6 +357,10 @@ def summarise(rec_path, block_ratio=5.0, min_abs_secs=1.0):
                                % (route, s95, q95, s95 / max(q95, 1e-6)))
     fails += ["read blocked behind the writer? " + b for b in blocked]
 
+    if slow:
+        lines.append("\nSLOW — timed out, not counted as failures (a surface-performance finding):")
+        lines += ["  %-48s %d" % (u, n) for u, n in slow.most_common()]
+
     lines.append("\nverdict: %s" % ("PASS" if not fails else "FAIL (%d)" % len(fails)))
     lines += ["  " + f for f in fails[:50]]
     if len(fails) > 50:
@@ -332,6 +383,8 @@ ERROR_PATTERNS = [
 # Timestamp anywhere on the line: the Supervisor log may prefix or colour it.
 _COORD = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d).*?coord: (\S+) job=(\S+)(.*)$")
 _ACTIVE = ("claimed", "running", "paused")          # job_coordinator._ACTIVE
+_TRACEBACK = re.compile(r"^Traceback|\bTraceback \(most recent")
+_DISCONNECT = re.compile(r"waitress\s+Socket error")
 
 
 def scan_log(path, starve_min=60.0):
@@ -342,7 +395,17 @@ def scan_log(path, starve_min=60.0):
     active = collections.defaultdict(set)          # job -> keys active
     waiting = {}                                   # job -> (since, blocker)
     violations, seen_jobs, last_t = [], set(), None
+    disconnects, prev = 0, ""
     for ln, line in enumerate(open(path, errors="replace"), 1):
+        # waitress logs "Socket error" then the traceback when it tries to answer a
+        # client that already gave up (a slow response). That is a symptom of a slow
+        # route, not a fault — counted apart so it cannot bury a real traceback.
+        if _TRACEBACK.search(line) and _DISCONNECT.search(prev):
+            disconnects += 1
+            prev = line
+            continue
+        if line.strip():
+            prev = line
         for label, rx in ERROR_PATTERNS:
             if rx.search(line):
                 hits[label].append((ln, line.rstrip()[:200]))
@@ -380,8 +443,13 @@ def scan_log(path, starve_min=60.0):
         h = hits.get(label, [])
         out.append("  %-38s %d" % (label, len(h)))
         out += ["      line %d: %s" % x for x in h[:5]]
+    out.append("  %-38s %d   (client gave up on a slow response — not a fault)"
+               % ("waitress client disconnects", disconnects))
     out.append("\ncoordinator: %d coord: members seen: %s"
                % (len(seen_jobs), ", ".join(sorted(seen_jobs)) or "none"))
+    if not seen_jobs:
+        out.append("  NOT EXERCISED — no member claimed, marked or was refused, so B's rules "
+                   "were not tested by this log. Start members that overlap to test them.")
     starving = []
     for job, (since, blocker) in sorted(waiting.items()):
         mins = ((last_t - since).total_seconds() / 60.0) if since and last_t else 0.0
@@ -392,8 +460,13 @@ def scan_log(path, starve_min=60.0):
     out += ["  STARVATION " + s for s in starving]
     db_errors = sum(len(hits.get(l, [])) for l, _ in ERROR_PATTERNS if l != "Traceback")
     ok = not violations and not starving and db_errors == 0
-    out.append("\nverdict: %s  (tracebacks: %d — read them; not all are DB faults)"
-               % ("PASS" if ok else "FAIL", len(hits.get("Traceback", []))))
+    out.append("\nverdict A (database faults): %s   verdict B (coordinator): %s"
+               % ("PASS" if db_errors == 0 else "FAIL",
+                  "NOT EXERCISED" if not seen_jobs else
+                  ("PASS" if not violations and not starving else "FAIL")))
+    if hits.get("Traceback"):
+        out.append("  %d other traceback(s) — read them; not all are DB faults"
+                   % len(hits["Traceback"]))
     return "\n".join(out) + "\n", ok
 
 
@@ -448,12 +521,17 @@ def main(argv=None):
     sub = ap.add_subparsers(dest="cmd", required=True)
     r = sub.add_parser("run")
     r.add_argument("--base", default="http://192.168.20.16:8098")
-    r.add_argument("--workers", type=int, default=4)
-    r.add_argument("--rate", type=float, default=8.0, help="max requests/second, all workers")
+    # First Pi soak ran 4 workers at 8 req/s: heavy whole-history routes then queued
+    # behind each other on waitress's 4 threads, and 57 requests hit the 30 s timeout
+    # for reasons that had nothing to do with the writer. 2 at 4 leaves headroom.
+    r.add_argument("--workers", type=int, default=2)
+    r.add_argument("--rate", type=float, default=4.0, help="max requests/second, all workers")
     r.add_argument("--timeout", type=float, default=30.0)
     r.add_argument("--quiet-min", type=float, default=30.0,
                    help="minutes of quiet baseline after the sweep finishes")
     r.add_argument("--max-hours", type=float, default=12.0)
+    r.add_argument("--wait-for-sweep", type=float, default=15.0,
+                   help="minutes to wait for the sweep to start before running anyway")
     r.add_argument("--block-ratio", type=float, default=5.0)
     r.add_argument("--out", default="soak-" + dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
     r.set_defaults(fn=cmd_run)
