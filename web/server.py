@@ -6360,6 +6360,13 @@ def api_energy():
 
         if "usage" in include:
             out["usage"] = _aggregate_usage(store, cfg, utc_start, utc_end, tz_name)
+            # The period's bill total is the SAME derivation a client makes from
+            # resolution=day — per local day, penny-rounded — not
+            # _aggregate_usage's once-over-the-period rounding, which was up to 3p
+            # from v4's Billing card in 49 of 80 real periods (C acceptance 7).
+            from billing import bill_net_from_day_rollups
+            out["usage"]["net_cost"] = bill_net_from_day_rollups(
+                store.get_day_rollups(utc_start, utc_end, tz_name))
         if "carbon" in include:
             # NB `_aggregate_insights` takes no tz — it aggregates over a UTC
             # range and emits nothing clock-local. `_aggregate_usage` does, for

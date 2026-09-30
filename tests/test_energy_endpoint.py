@@ -11,8 +11,10 @@ this replaces:
 
   * `include=` rather than separate endpoints, because both aggregators scan the
     same blocks over the same range. One request, one scan.
-  * `resolution=block|day` returns **501, not a period rollup**. A caller that
-    asks for series and silently receives totals has no way to tell.
+  * `resolution=block|day` return series (blocks / local-day rollups), never a
+    period rollup — a caller that asks for series and silently receives totals has
+    no way to tell. (This said they returned 501; they have not since they were
+    implemented. Corrected 30 Sep 2026.)
   * period resolution is ONE implementation for all four kinds, so a fix to the
     billing-period lookup cannot reach three routes and miss three.
 """
