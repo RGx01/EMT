@@ -26,6 +26,13 @@ floor if it carries a heal (import spec, ROADMAP §E, programme §E, this file).
 Steps: 1 dead code, 2 extract `billing.py`, 3 ReadStore/WriteStore, 4 API consolidated + HTML
 pipeline deleted, 5 schema (15 columns dropped, band moves to `block_segments`), 6 client +
 first-run fork, 7 importer. Workstreams A (store split) and B (job coordinator) merged in PR #2.
+**A is closed (30 Sep 2026)** after five Pi soaks — A design §5e; B's close-out items are still
+open (B §5); **C is next, starting with deleting the pre-rendered chart pipeline** (C §5, Pi
+baseline). The Pi runs from an **SD card**: storage-bound commit stalls are ROADMAP §A.1.
+
+**Soaking on the Pi:** `.build/soak_prepare_db.py` → restore via `http://<pi>:8098/data-management`
+(not ingress — it rejects the upload) → `.build/soak.py run` → save the log with
+`ha addons logs local_emt_soak --lines 50000` → `.build/soak.py scan-log <log> --since <restore time>`.
 
 ## Read these before v5 work
 

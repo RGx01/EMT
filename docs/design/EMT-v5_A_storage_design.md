@@ -12,9 +12,12 @@
 | adoption | 0% | **100%** |
 | suite | 2,834 | **2,833**, green |
 
-**What remains in A is the engine, not the design.** `block_store.py:1001` holds the last
-`check_same_thread=False` (§5.5) and goes when `engine.py` itself moves onto `writer()`. §6 says
-that port produces B's write inventory as a side effect, which is the next step.
+**Closed 30 Sep 2026.** All six acceptance items are met; the soak (4) was run five times on the
+Pi and its record is §5e. What it left behind is not A's: the engine loop still stalls 10–53 s
+under load, and every such stall is the engine's own **commit waiting on the SD card** — no read is
+blocked in SQLite, and no GET waits on the loop for a database read. Writing less (C deletes the
+pre-rendered chart files) or writing off the engine thread is the fix; A's boundary cannot be.
+ROADMAP §A.1 holds the follow-up.
 
 ---
 
@@ -187,7 +190,7 @@ being right and the third being whatever it was in 3.1.3.
 
 ## 5. Acceptance
 
-*Where each one lives, as of 22 Sep 2026. All but the soak are met. Acceptance 6 is file-backed
+*Where each one lives. All six met as of 30 Sep 2026. Acceptance 6 is file-backed
 by necessity: on an in-memory database there is no WAL, so there are no snapshots and the test would
 pass whether or not the implementation were right.*
 
@@ -196,7 +199,7 @@ pass whether or not the implementation were right.*
 | 1 no read path can write | `tests/test_store_types.py` | met |
 | 2 writer unreachable off-thread | `tests/test_store_types.py` | met |
 | 3 adoption is 100% and stays | `tests/test_route_store_use.py` | met — baseline empty |
-| 4 soak | `.build/soak.py run` (harness: `tests/test_soak_harness.py`) | **written 29 Sep 2026; not yet run on the Pi** |
+| 4 soak | `.build/soak.py run` + `scan-log` (harness: `tests/test_soak_harness.py`) | **MET, 30 Sep 2026** — five Pi runs, §5e: 0 SQLite faults; no read blocked in SQLite; no GET waits on the loop for a database read. Loop stalls that remain are storage-bound commits, handed on (ROADMAP §A.1) |
 | 5 no `check_same_thread=False` | `tests/test_thread_affinity.py` | **MET, 24 Sep 2026** — the flag is gone and a cross-thread use now raises |
 | 6 no stale snapshot | `tests/test_store_types.py` | file-backed; the freshness assertions cannot currently fail (see §5a), so the mechanism is asserted directly instead |
 
@@ -424,6 +427,38 @@ the engine holding a connection it may not use. It now refuses off the engine th
 caller goes through `server._reset_engine_store()` (the pattern the restore worker already used).
 `set_data_source_mode` and `apply_billing_source_change` — engine mutators called from request
 threads — go through `_engine_call`.
+
+---
+
+## 5e. The soak, run five times on the Pi (29–30 Sep 2026)
+
+*Raspberry Pi, Home Assistant OS, **SD card** (~28 GB volume). A copy of a real 4.5.16 database —
+58,166 main blocks from 2023-06-05 — prepared by `.build/soak_prepare_db.py` so the unified
+re-price sweep rebuilds 37,103 blocks' segments on start: one heavy, local-only write window.
+`soak.py run` drives the database-backed GET routes (GET only, Octopus/HA/internet routes
+excluded) through the sweep and 30 quiet minutes; `scan-log` reads the add-on log.*
+
+| run | what it found | fixed by |
+|---|---|---|
+| 1 | a restore left every request thread reading the **replaced** database until restart; engine accessors (`get_data_source_mode`, `load_config`, …) raised on request threads and returned defaults ("configured but inactive" on an `api` database); two routes used `engine` unbound | #6 (§5d) |
+| 2 | 0 failures in 3,638 requests; but `/api/config` and `/api/blocks/deleted-ranges` went 0.02 s → 15–17 s p50 during the sweep — the only GETs reaching the database through the engine loop — and the sweep held the loop ~14 s per 500-block chunk | #9: both GETs read on the request thread; the sweep sizes chunks by time |
+| 3 | a per-route latency threshold cannot separate blocking from a saturated Pi (a static PNG slowed ×54); the new loop-lag monitor measured a **445 s** freeze after a restore | #10 (monitor), #11 (watchdog stack dumps) |
+| 4 | 63 dumps: 17 with the engine thread **rendering charts** (`server._regen_charts_safely` ran `generate_charts` on the loop by v4 design), worst 492 s; most of the rest were engine **commits** taking 5–95 s | #12: regen offloaded; slow commits logged with WAL size |
+| 5 | **0 database faults**; charts only ever in executor threads; worst stall **52.7 s** (was 497); 80 slow commits, 69 in `set_block_segments`, **none** with a completed checkpoint inside; one HA WebSocket reconnect, 12 s after the 53 s stall | — handed on |
+
+**What the fifth run shows.** Every remaining stall has the engine thread inside a commit. The WAL
+grew to 30–61 MB during the sweep (readers held it open, so checkpoints could not complete), but
+slow commits also happened at 4 MB, and the worst (53 s) overlapped the restore's safety zip
+being written. In WAL mode with `synchronous=NORMAL` a commit mostly appends to the WAL; taking
+10–53 s means the card is saturated by everything writing at once — WAL, safety zip, chart
+HTML, share backups. *A partial checkpoint (pages copied, WAL not reset while a reader holds it)
+would not shrink the file, so the instrument cannot rule that out; it rules out completed ones.*
+
+**Why that closes A rather than blocking it.** A's claim is about reads: none can write, none is
+blocked in SQLite, none waits behind the writer. The soak confirms all three. The stalls are the
+engine's own writes waiting on the device, which no read-path boundary can change. The
+consequence is real — the HA WebSocket dropped once — and it is owned: C removes the largest
+writer (the pre-rendered chart files), and ROADMAP §A.1 covers the rest.
 
 ---
 

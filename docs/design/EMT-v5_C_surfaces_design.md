@@ -479,6 +479,40 @@ everything. Measure: time-to-first-byte for a month and for a year, cold and war
 per surface. A surface making 200 small queries is the likely shape of any problem, and is invisible
 in a wall-clock figure.
 
+### Measured on the Pi, 29–30 Sep 2026 — the baseline C starts from
+
+*From workstream A's soaks (A design §5e): Raspberry Pi, **SD card**, a real 4.5.16 database with
+58,166 main blocks from 2023-06-05; `.build/soak.py run` at 2 workers / 4 req/s. Quiet phase of the
+fifth run (no sweep; 4,060 requests), so these are the surfaces' own costs. 30 s is the client
+timeout, counted at 30 s.*
+
+| route | p50 | p95 | timeouts | n |
+|---|---|---|---|---|
+| `/api/charts/blocks-summary` | 10.51 s | 19.36 s | 2 | 38 |
+| `/api/charts/daily` | 3.90 s | 4.92 s | 0 | 35 |
+| `/api/usage/calendar-year` | 2.49 s | 7.51 s | 2 | 72 |
+| `/api/billing` | 1.95 s | 9.88 s | 0 | 27 |
+| `/api/charts/heatmap` | 0.96 s | 1.46 s | 0 | 41 |
+| `/api/energy` (`resolution=period`) | 0.63 s | 4.92 s | 0 | 117 |
+| `/api/backfill/gaps` | 0.62 s | 4.66 s | 1 | 33 |
+| `/api/history-gaps` | 0.61 s | 3.40 s | 1 | 47 |
+| `/api/insights/calendar-year` | 0.33 s | 17.43 s | 0 | 66 |
+| `/api/usage/billing-period` | 0.29 s | 1.47 s | 0 | 239 |
+| `/api/usage/calendar-month` | 0.24 s | 1.51 s | 0 | 142 |
+| `/api/insights/billing-period` | 0.13 s | 1.66 s | 0 | 243 |
+| `/api/charts/blocks-day` | 0.04 s | 0.39 s | 0 | 198 |
+
+59 of 76 routes have p95 under 1 s; the whole-history ones are the problem, as §1 predicted.
+
+**§1's cost, measured.** The pre-rendered chart pipeline was the single largest cause of
+engine-loop stalls in those soaks: after a restore, `generate_charts` ran **on the loop** for
+**445 s** and **497 s** (third and fourth runs — `server._regen_charts_safely` rendered there by v4
+design). #12 moved it into the executor, and the fifth run's worst stall fell to 52.7 s — but that
+remaining stall is the engine's commits waiting on an SD card the chart files, the share backups
+and the WAL are all writing to (ROADMAP §A.1), and one of them dropped the HA WebSocket. Deleting
+the pre-rendered files (step 4) removes the largest of those writers. That makes it the first
+thing C does, not the last.
+
 ---
 
 ## 6. Acceptance
