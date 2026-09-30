@@ -116,7 +116,9 @@ class NothingWasLostInTheMove(unittest.TestCase):
     def test_energy_charts_kept_its_presentation(self):
         """The move took the domain and left the drawing. If a chart generator
         went with it, the split was made in the wrong place."""
-        for name in ("generate_daily_import_export_charts", "generate_net_heatmap",
+        # generate_net_heatmap is gone, not moved: the heatmap is drawn in the browser
+        # from /api/energy since 30 Sep 2026 (web/templates/heatmap_module.html).
+        for name in ("generate_daily_import_export_charts",
                      "build_day_chart_html", "render_billing_summary"):
             self.assertTrue(hasattr(energy_charts, name),
                             "energy_charts lost %s" % name)

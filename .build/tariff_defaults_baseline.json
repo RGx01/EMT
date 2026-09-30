@@ -21,7 +21,6 @@
     "energy_charts.py:generate_daily_import_export_charts(cap_from=None)",
     "energy_charts.py:generate_daily_import_export_charts(import_schedule=None)",
     "energy_charts.py:generate_daily_import_export_charts(timezone_name='UTC')",
-    "energy_charts.py:generate_net_heatmap(timezone_name='UTC')",
     "engine.py:_apply_iog_split(tz_name=None)",
     "engine.py:_reprice_history_block(rate_segs=None)",
     "engine.py:_reprice_history_block(tz_name=None)",

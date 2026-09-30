@@ -7054,7 +7054,7 @@ class BlockStore:
         without full _rows_to_blocks reconstruction. Significantly faster than
         get_all_blocks() for large datasets.
 
-        Returns dicts compatible with generate_net_heatmap and
+        Returns dicts compatible with
         generate_daily_import_export_charts:
           - start, totals.import_kwh, totals.export_kwh
           - meters[meter_id].carbon_g, .imp_kwh, .exp_kwh, .imp_cost, .exp_cost
@@ -7738,7 +7738,20 @@ class BlockStore:
             "                  AND b.meter_id != 'electricity_main' "
             "WHERE b.block_start >= ? AND b.block_start < ? "
             "ORDER BY b.block_start, b.meter_id", (utc_start, utc_end)).fetchall()
-        return [dict(r) for r in rows]
+        # `carbon_intensity_g` in the payload is the GRID's intensity for the slot, by
+        # carbon.slot_intensity — the one rule (stored value, else carbon_g/net for a
+        # pre-3.0.0 block, else unknown; never negative: an export slot stores a
+        # negative intensity). v4 applied it inside the heatmap renderer; applied here,
+        # every surface gets the same number (tests/test_heatmap_intensity.py).
+        import carbon as _carbon
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["carbon_intensity_g"] = _carbon.slot_intensity(
+                d.get("carbon_g"), d.get("carbon_intensity_g"),
+                (d.get("imp_kwh") or 0.0) - (d.get("exp_kwh") or 0.0))
+            out.append(d)
+        return out
 
     def get_energy_segments(self, utc_start: str, utc_end: str) -> list:
         """Priced segments over [utc_start, utc_end), ordered within each block.

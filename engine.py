@@ -2452,12 +2452,8 @@ def generate_charts(store: "BlockStore", config: dict = None):
     # for large datasets as it skips full _rows_to_blocks reconstruction.
     blocks = store.get_blocks_lightweight()
 
-    try:
-        html = energy_charts.generate_net_heatmap(blocks, timezone_name=timezone_name, block_minutes=block_minutes, currency=currency_symbol)
-        io_save_file(f"{CHART_DIR}/net_heatmap.html", html)
-        logger.info("generate_charts: net heatmap written (tz=%s, bm=%s, currency=%s)", timezone_name, block_minutes, currency_symbol)
-    except Exception as e:
-        logger.error("generate_charts: heatmap error: %s", e)
+    # The net heatmap is drawn in the browser from /api/energy (heatmap_module.html,
+    # 30 Sep 2026); net_heatmap.html is no longer written.
     # Per-day cap gating for the rate lines: the capped IOG-SMB (6-h cap) era begins at the
     # current SMB agreement's valid_from. Pre-cap days render on the uncapped TOU rules.
     _cap_from = _chart_cap_from()
