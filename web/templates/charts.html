@@ -236,6 +236,8 @@
      own background), so its container takes the page's theme — `.chart-frame-wrap`'s
      white showed through the gaps between cells in the dark theme. */
   #chart-heatmap { background: var(--surface, transparent); }
+  /* The Billing tab too (billing_module.html): the page's background behind its cards. */
+  #chart-daily { background: var(--bg, transparent); }
   #chart-heatmap .chart-content-wrap { padding: 0 12px 16px; }
   /* Content area flex column so iframe charts can fill remaining height */
   .content {
@@ -312,16 +314,9 @@
 
 <!-- Daily usage chart -->
 <div id="chart-daily" class="chart-frame-wrap">
-  {% if daily_exists %}
-    <div id="chart-daily-content" class="chart-content-wrap" style="width:100%;overflow:auto;">
-      <div style="padding:40px;text-align:center;color:var(--muted);">Loading chart...</div>
-    </div>
-  {% else %}
-    <div class="chart-placeholder">
-      <span class="icon">📊</span>
-      <span>No chart data yet — charts generate after the first block finalises.</span>
-    </div>
-  {% endif %}
+  <!-- Drawn in the browser from /api/energy by billing_module.html (C, 30 Sep 2026) —
+       no longer an iframe of the pre-rendered daily_usage.html. -->
+  <div id="chart-daily-content" class="chart-content-wrap" style="width:100%;overflow:auto;"></div>
 </div>
 
 <!-- Heatmap chart -->
@@ -930,6 +925,12 @@ async function loadChartContent(name, force) {
     if (!EMTHeatmap._state.inited) return EMTHeatmap.init(document.getElementById('chart-heatmap-content'));
     return force ? EMTHeatmap.rerender() : EMTHeatmap.refresh();
   }
+  // The Billing tab likewise (billing_module.html) — same contract.
+  if (name === 'daily') {
+    if (!window.EMTBilling) return;
+    if (!EMTBilling._state.inited) return EMTBilling.init(document.getElementById('chart-daily-content'));
+    return force ? EMTBilling.rerender() : EMTBilling.refresh();
+  }
   if (chartsLoaded[name] && !force) return;
   var endpoint = '/api/charts/daily';
   var containerId = name === 'daily' ? 'chart-daily-content' : 'chart-heatmap-content';
@@ -1124,123 +1125,38 @@ function _doPdfExport(win, iconSrc) {
     '<div class="report-date">Generated ' + genDate + '<br><span class="report-version">EMT v' + _EMT_VERSION + '</span></div>' +
     '</div>';
 
-  function _getIframe(name) {
-    var id = name === 'daily' ? 'chart-daily-content' : 'chart-heatmap-content';
-    var el = document.getElementById(id);
-    return el ? el.querySelector('iframe') : null;
-  }
-
   // ── Billing Charts ─────────────────────────────────────────────────────────
   if (_activeChart === 'daily') {
-    var ifrm = _getIframe('daily');
-    if (!ifrm || !ifrm.contentDocument) {
-      win.close(); alert('Billing chart not loaded yet.'); return;
-    }
-    var iDoc = ifrm.contentDocument;
-    var iWin = ifrm.contentWindow;
+    // The Billing tab (billing_module.html): its one mounted period section, the
+    // module's own styles, and each drawn day chart re-drawn on white as a PNG.
+    var bRoot = document.getElementById('chart-daily-content');
+    var visibleSection = bRoot ? bRoot.querySelector('.period-section') : null;
+    if (!window.EMTBilling || !visibleSection) { win.close(); alert('Billing chart not loaded yet.'); return; }
+    var currentView = EMTBilling._state.view || 'vanilla';
 
-    // Get current mode from active pmode-btn
-    var activeMode = 'month';
-    var activeModeBtn = iDoc.querySelector('.pmode-btn.active');
-    if (activeModeBtn) activeMode = activeModeBtn.dataset.mode || 'month';
-
-    // Get active section via select value (exact match)
-    var modeSelectMap = { month:'period-select-month', calmonth:'period-select-calmonth', quarter:'period-select-quarter', year:'period-select-year' };
-    var selectEl = iDoc.getElementById(modeSelectMap[activeMode] || 'period-select-month');
-    var activeSectionId = selectEl ? selectEl.value : null;
-    var visibleSection = activeSectionId ? iDoc.getElementById(activeSectionId) : null;
-    if (!visibleSection) {
-      var allSections = Array.from(iDoc.querySelectorAll('.period-section'));
-      for (var _si = 0; _si < allSections.length; _si++) {
-        if (allSections[_si].style.visibility === 'visible') { visibleSection = allSections[_si]; break; }
-      }
-    }
-    if (!visibleSection) { win.close(); alert('No visible billing period found.'); return; }
-
-    var currentView = 'vanilla';
-    try { currentView = iWin.sessionStorage.getItem('energyView') || 'vanilla'; } catch(e) {}
-
-    // Extract iframe styles, patching out position:fixed/sticky which breaks print layout
-    var iframeStyles = Array.from(iDoc.querySelectorAll('style')).map(function(s) {
-      return s.textContent
-        .replace(/position\s*:\s*fixed/g, 'position:static')
-        .replace(/position\s*:\s*sticky/g, 'position:static')
-        .replace(/overflow\s*:\s*hidden/g, 'overflow:visible')
-        .replace(/overflow\s*:\s*scroll/g, 'overflow:visible')
-        .replace(/overflow\s*:\s*auto/g, 'overflow:visible');
-    }).join('\n');
-
-    // Force light theme — override CSS variables and dark mode media queries
+    // Module styles, patching out position:sticky/overflow which break print layout
+    var iframeStyles = EMTBilling.styles()
+      .replace(/position\s*:\s*fixed/g, 'position:static')
+      .replace(/position\s*:\s*sticky/g, 'position:static')
+      .replace(/overflow\s*:\s*hidden/g, 'overflow:visible')
+      .replace(/overflow\s*:\s*auto/g, 'overflow:visible');
     var lightThemeOverride =
       ':root{color-scheme:light;background:#fff;color:#111;' +
-      '--bg:#fff;--surface:#f9f9f9;--text:#111;--muted:#555;--border:#ddd;' +
-      '--card-bg:#fff;--hover:#f5f5f5;}' +
-      'html,body{background:#fff!important;color:#111!important;}' +
-      // Strip dark mode overrides by re-asserting light values inside the query
-      '@media(prefers-color-scheme:dark){' +
-      ':root{--bg:#fff!important;--surface:#f9f9f9!important;--text:#111!important;' +
-      '--muted:#555!important;--border:#ddd!important;--card-bg:#fff!important;}' +
-      'html,body{background:#fff!important;color:#111!important;}}';
+      '--bg:#fff;--surface:#f9f9f9;--text:#111;--muted:#555;--border:#ddd;--accent:#00a080;}' +
+      'html,body{background:#fff!important;color:#111!important;}';
     iframeStyles = lightThemeOverride + '\n' + iframeStyles;
-
-    // PDF-specific overrides
     var pdfOverrides =
-      '.period-nav,.day-tbl-toolbar,.day-tbl-toggle,.pmode-btn,.view-btn,' +
-      '.period-mode-toggle,.period-select-wrap,.nav-right,.sticky-bill-strip,' +
-      '#sticky-bill-strip,.chart-tab-bar,.pdf-btn,.expand-btn,' +
-      'button:not(.no-hide){display:none!important;}' +
-      '.period-section{visibility:visible!important;position:relative!important;}' +
-      '.bill-toggle-body{display:block!important;}' +
-      '.bill-view{display:none!important;}' +
-      '.bill-view[data-view="' + currentView + '"]{display:block!important;}' +
-      'body{overflow:visible!important;background:#fff!important;}' +
+      '.day-tbl-toolbar,.day-tbl-toggle,button{display:none!important;}' +
       '.day-chart-wrap{break-inside:avoid;}' +
-      '.chart-container{margin-bottom:4px;}' +
-      '.day-data-tables{display:none!important;}' + // hide data tables in chart section (shown separately below chart)
       '@media print{@page{margin:12mm;size:A4;}body{padding:0;}}';
-
-    // Collect chart containers from visible section that need image capture
-    var chartContainers = Array.from(visibleSection.querySelectorAll('.chart-container'));
-    var chartImages = {}; // chartId → dataUrl
-
-    // Async: capture all charts, then write PDF
-    var chartPromises = chartContainers.map(function(container) {
-      var plotDiv = container.querySelector('.js-plotly-plot') || container.querySelector('[id]');
-      var cid = container.id || (plotDiv && plotDiv.id);
-      if (!cid || !iWin.Plotly) return Promise.resolve();
-      var div = iDoc.getElementById(cid) || plotDiv;
-      if (!div || !div._fullLayout) return Promise.resolve();
-      var _fl = div._fullLayout || {};
-      var _savedBg = _fl.paper_bgcolor; var _savedPl = _fl.plot_bgcolor;
-      var _savedFont = (_fl.font || {}).color;
-      // Hide iframe during relayout so user doesn't see the colour change
-      var _iframeEl = document.getElementById('chart-daily-content') && document.getElementById('chart-daily-content').querySelector('iframe');
-      if (_iframeEl) _iframeEl.style.visibility = 'hidden';
-      // Only change background and font colours — touching axis config mangles traces
-      return iWin.Plotly.relayout(div, {
-        paper_bgcolor: '#ffffff',
-        plot_bgcolor:  '#f8f9fa',
-        'font.color':  '#111111'
-      }).then(function() {
-        return iWin.Plotly.toImage(div, {
-          format:'png',
-          width:Math.max(div.offsetWidth||700,700),
-          height:Math.max(div.offsetHeight||220,220)
-        });
-      }).then(function(url) {
-        chartImages[cid] = url;
-        return iWin.Plotly.relayout(div, {
-          paper_bgcolor: _savedBg,
-          plot_bgcolor:  _savedPl,
-          'font.color':  _savedFont || ''
-        });
-      }).then(function() {
-        if (_iframeEl) _iframeEl.style.visibility = '';
-      }).catch(function() {
-        if (_iframeEl) _iframeEl.style.visibility = '';
-      });
-    });
-
+    // The report is written into a page without the module's root, so its styles
+    // (scoped under .emt-bill) apply through a wrapper.
+    // Every day's panel first (only those scrolled to are loaded), then each drawn
+    // chart re-drawn on white as a PNG, keyed 'bchart_<day>'.
+    var chartImages = {};
+    var chartPromises = [EMTBilling.fillAll().then(function () {
+      Object.assign(chartImages, EMTBilling.snapshotCharts());
+    })];
     Promise.all(chartPromises).then(function() {
       var reportHtml = '';
 
@@ -1276,10 +1192,7 @@ function _doPdfExport(win, iconSrc) {
         var scols    = summaryEl.querySelector('.scols');
 
         // Find chart image
-        var chartContainer = wrap.querySelector('.chart-container');
-        var plotDiv = chartContainer ? (chartContainer.querySelector('.js-plotly-plot') || chartContainer.firstElementChild) : null;
-        var cid = chartContainer ? (chartContainer.id || (plotDiv && plotDiv.id)) : null;
-        var imgUrl = cid ? chartImages[cid] : null;
+        var imgUrl = chartImages['bchart_' + wrap.dataset.day] || null;
 
         // Build stotals as block lines — spans are display:block via CSS (not inline style)
         // so we must force display:block explicitly
@@ -1342,7 +1255,7 @@ function _doPdfExport(win, iconSrc) {
         '<style>' + commonStyles + '</style>' +
         '<style>' + iframeStyles + '</style>' +
         '<style>' + pdfOverrides + '</style>' +
-        '</head><body>' + header + reportHtml + '</body></html>');
+        '</head><body>' + header + '<div class="emt-bill">' + reportHtml + '</div></body></html>');
       win.document.close();
     });
 
@@ -3041,4 +2954,5 @@ function showError(msg) {
 }
 </script>
 {% include "heatmap_module.html" %}
+{% include "billing_module.html" %}
 {% endblock %}

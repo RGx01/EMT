@@ -14,6 +14,11 @@ TWO THINGS THIS DELIBERATELY DOES NOT DO, each pinned below:
     query PER PERIOD to attach a carbon summary — thirty-six queries on a
     three-year account, to populate a picker. Totals are `/api/energy` with
     `resolution=period`, for the one period the user selects.
+    (Refined 30 Sep 2026: the Billing tab's picker labels every period with its
+    bill total, as the pre-rendered page did, so `include=net_cost` adds it — opt
+    in, and ONE rollup query over the whole span folded per period, ~0.1 s for
+    three years locally. The default response still carries none: pinned below,
+    and the opt-in in tests/test_billing_client.py.)
   * **No full block scan.** The calendar kinds need two timestamps. They used to
     be handed every block and sort it to find them; they now come from
     `get_block_bounds()`, one query.
