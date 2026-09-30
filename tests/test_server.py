@@ -35,8 +35,6 @@ sys.modules["energy_engine_io"] = eio
 
 # Stub energy_charts
 ec = types.ModuleType("energy_charts")
-ec.generate_net_heatmap                = lambda *a, **kw: "<html>heatmap</html>"
-ec.generate_daily_import_export_charts = lambda *a, **kw: "<html>daily</html>"
 ec.build_meter_colors                  = lambda *a, **kw: {
     "electricity_main": "#1f77b4",
     "electricity_main_export": "#ff7f0e",
@@ -52,7 +50,6 @@ ec.calculate_billing_summary_for_period = lambda *a, **kw: {
     "total_cost": 0.0,
     "meter_meta": {},
 }
-ec.get_billing_periods_from_config_history = lambda *a, **kw: []
 ec.get_billing_periods_from_config_periods = lambda *a, **kw: []
 # server._collapse_rate_tiers (#371) reads this threshold from energy_charts so Usage
 # Insights folds Agile rates the same way the Billing view does; mirror the real value.
@@ -260,9 +257,8 @@ MINIMAL_BLOCKS = [
 
 
 def make_client(blocks=None, store=None):
-    """Return a Flask test client with DATA_DIR, CHART_DIR and BlockStore initialised."""
+    """Return a Flask test client with DATA_DIR and BlockStore initialised."""
     server.DATA_DIR  = "/tmp/emt_test_data"
-    server.CHART_DIR = "/tmp/emt_test_charts"
     server._ha_client = MagicMock()
     # Workstream A: routes no longer write through the request thread — mutations
     # hop to the engine via `_engine_write`. There is no engine loop here, so it
@@ -358,34 +354,12 @@ class TestRouteRegistration(unittest.TestCase):
     def test_api_meter_main_reset_registered(self):
         self.assertTrue(self._registered("api_meter_main_reset"))
 
-    def test_chart_files_removed_on_reset_logic(self):
-        # The main-reset path removes stale chart HTML from CHART_DIR. Verify the
-        # removal contract over a temp dir (the destructive route itself wipes
-        # the DB + restarts, so we exercise the file-cleanup portion directly).
-        import server, os, tempfile
-        d = tempfile.mkdtemp()
-        orig = server.CHART_DIR
-        server.CHART_DIR = d
-        try:
-            for f in ("net_heatmap.html", "daily_usage.html"):
-                with open(os.path.join(d, f), "w") as fh:
-                    fh.write("<html>stale</html>")
-            # Same logic the reset route runs:
-            for f in ("net_heatmap.html", "daily_usage.html"):
-                p = os.path.join(server.CHART_DIR, f)
-                if os.path.exists(p):
-                    os.remove(p)
-            self.assertFalse(os.path.exists(os.path.join(d, "net_heatmap.html")))
-            self.assertFalse(os.path.exists(os.path.join(d, "daily_usage.html")))
-        finally:
-            server.CHART_DIR = orig
-            import shutil; shutil.rmtree(d, ignore_errors=True)
-
     def test_api_chart_heatmap_is_not_registered(self):
         self.assertFalse(self._registered("api_chart_heatmap"))
 
-    def test_api_chart_daily_registered(self):
-        self.assertTrue(self._registered("api_chart_daily"))
+    def test_api_chart_daily_is_not_registered(self):
+        """The pre-rendered Billing page is gone (C, 30 Sep 2026)."""
+        self.assertFalse(self._registered("api_chart_daily"))
 
     def test_api_power_registered(self):
         self.assertTrue(self._registered("api_power"))
@@ -411,8 +385,9 @@ class TestRouteRegistration(unittest.TestCase):
     def test_api_backup_registered(self):
         self.assertTrue(self._registered("api_backup"))
 
-    def test_api_regenerate_charts_registered(self):
-        self.assertTrue(self._registered("api_regenerate_charts"))
+    def test_api_regenerate_charts_is_not_registered(self):
+        """Nothing to regenerate: the charts are drawn in the browser (C, 30 Sep 2026)."""
+        self.assertFalse(self._registered("api_regenerate_charts"))
 
     def test_api_import_registered(self):
         self.assertTrue(self._registered("api_import"))
@@ -626,7 +601,7 @@ class TestApiConfigGet(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# /api/charts/heatmap and /api/charts/daily
+# The chart routes: pre-rendered ones gone, the in-browser ones served
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestApiChartEndpoints(unittest.TestCase):
@@ -654,18 +629,28 @@ class TestApiChartEndpoints(unittest.TestCase):
         self.assertIn("window.EMTHeatmap", body)
         self.assertNotIn("/api/charts/heatmap", body)
 
-    def test_daily_returns_null_html_when_file_missing(self):
-        with patch("os.path.exists", return_value=False):
-            r = self.client.get("/api/charts/daily")
-        self.assertEqual(r.status_code, 200)
-        self.assertIsNone(r.get_json()["html"])
+    def test_the_pre_rendered_billing_routes_are_gone(self):
+        """The Billing tab is drawn in the browser too (C, 30 Sep 2026)."""
+        for url in ("/api/charts/daily", "/charts/daily_usage.html"):
+            self.assertEqual(self.client.get(url).status_code, 404, url)
+        self.assertEqual(self.client.post("/api/charts/regenerate").status_code, 404)
 
-    def test_daily_returns_html_when_file_exists(self):
-        with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", unittest.mock.mock_open(read_data="<html>daily</html>")):
-            r = self.client.get("/api/charts/daily")
+    def test_lovelace_billing_serves_the_in_browser_module(self):
+        """Same URL as ever, so a dashboard card keeps working — no file needed."""
+        with patch("os.path.exists", return_value=False):
+            r = self.client.get("/lovelace/billing")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.get_json()["html"], "<html>daily</html>")
+        body = r.get_data(as_text=True)
+        self.assertIn("window.EMTBilling", body)
+        self.assertIn("EMTBilling.init(", body)
+        self.assertIn("window.PeriodSpinner", body)
+        self.assertIn("setInterval(", body)
+
+    def test_the_charts_page_draws_the_billing_tab_in_the_page(self):
+        body = self.client.get("/charts").get_data(as_text=True)
+        self.assertIn("window.EMTBilling", body)
+        self.assertNotIn("/api/charts/daily", body)
+        self.assertNotIn("<iframe", body)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1534,8 +1519,7 @@ class TestApiHistoricalPurge(unittest.TestCase):
         client = make_client(store=store)
         self.assertEqual(json.loads(client.get("/api/historical/purge-preview").data)["blocks"], 1)
         with patch("server.threading.Thread", _InlineThread), \
-             patch("server._create_backup_zip", return_value="/tmp/b.zip"), \
-             patch("server._regen_charts_safely", return_value=None):
+             patch("server._create_backup_zip", return_value="/tmp/b.zip"):
             r = client.post("/api/historical/purge", json={"confirmed": True})
         # Launch returns immediately with 'running'; the worker (inlined) finished.
         self.assertEqual(r.status_code, 200)
@@ -1550,8 +1534,7 @@ class TestApiHistoricalPurge(unittest.TestCase):
     def test_delete_range_runs_in_background(self):
         store = self._store()
         client = make_client(store=store)
-        with patch("server.threading.Thread", _InlineThread), \
-             patch("server._regen_charts_safely", return_value=None):
+        with patch("server.threading.Thread", _InlineThread):
             r = client.post("/api/blocks/delete", json={
                 "from_date": "2024-03-01", "to_date": "2024-03-01", "confirmed": True})
         self.assertEqual(r.status_code, 200)
@@ -1588,8 +1571,7 @@ class TestApiHistoricalPurge(unittest.TestCase):
         store = self._store()
         client = make_client(store=store)
         with patch.object(eng, "poll_in_progress", lambda: False), \
-             patch("server.threading.Thread", _InlineThread), \
-             patch("server._regen_charts_safely", return_value=None):
+             patch("server.threading.Thread", _InlineThread):
             r = client.post("/api/blocks/delete", json={
                 "from_date": "2024-03-01", "to_date": "2024-03-01", "confirmed": True})
         self.assertEqual(r.status_code, 200)
@@ -2175,8 +2157,7 @@ class TestApiImportBlocksDb(unittest.TestCase):
         with open(staged, "wb") as f:
             f.write(self._make_db_bytes())
         server._restore_job = {"status": "running", "step": "starting"}
-        with patch.object(server, "_create_backup_zip", return_value=None), \
-             patch.object(server, "_regen_charts_safely", return_value=None):
+        with patch.object(server, "_create_backup_zip", return_value=None):
             server._restore_worker("", ["blocks.db"], False, staged=staged)
         self.assertTrue(os.path.exists(os.path.join(self.tmpdir, "blocks.db")))
         self.assertFalse(os.path.exists(staged))          # staging cleaned up
@@ -6013,8 +5994,7 @@ class TestSweepImplausibleEndpoint(unittest.TestCase):
         ).fetchone()[0], 6137.592)                       # dry-run wrote nothing
 
     def test_post_applies_and_clamps(self):
-        with patch.object(server, "_get_store", return_value=self.store), \
-             patch.object(server, "_regen_charts_safely", return_value=None):
+        with patch.object(server, "_get_store", return_value=self.store):
             r = self.client.post("/api/blocks/sweep-implausible")
         d = json.loads(r.data)
         self.assertTrue(d["ok"] and d["applied"])
@@ -6639,31 +6619,46 @@ class TestBlocksDataVersion(unittest.TestCase):
         self.assertEqual(server._blocks_data_version(st),
                          server._blocks_data_version(st))
 
-    def test_chart_file_regen_moves_token(self):
-        # A config-period change (or settlement) rebuilds the pre-rendered chart files
-        # a moment AFTER the DB write. The token must advance when the FILE is rewritten
-        # — not at DB-write time — otherwise the Charts page reloads the stale file,
-        # latches the token, and stays stale until the next finalise. So the rendered
-        # files' mtimes are part of the token.
-        import server, os, time, tempfile, shutil
-        st = self._store()
-        d = tempfile.mkdtemp()
-        daily = os.path.join(d, "daily_usage.html")
-        open(daily, "w").write("x")
-        open(os.path.join(d, "net_heatmap.html"), "w").write("y")
-        _orig = server.CHART_DIR
-        server.CHART_DIR = d
-        try:
-            before = server._blocks_data_version(st)
-            # Simulate the off-loop regen rewriting the daily chart (newer mtime).
-            os.utime(daily, (time.time() + 5, time.time() + 5))
-            after = server._blocks_data_version(st)
-            self.assertNotEqual(before, after)
-            # The block-value prefix (count:max:sums) is unchanged — only the file moved.
-            self.assertEqual(before.split(":")[:7], after.split(":")[:7])
-        finally:
-            server.CHART_DIR = _orig
-            shutil.rmtree(d, ignore_errors=True)
+    def _real_store(self):
+        st = BlockStore(_memory_uri())
+        st.insert_config_period({"meters": {"electricity_main": {"meta": {
+            "timezone": "UTC", "billing_day": 1, "block_minutes": 30,
+            "currency_symbol": "£", "currency_code": "GBP"}}}})
+        return st
+
+    def test_a_billing_day_change_moves_token(self):
+        """REGRESSION (C, 30 Sep 2026): the token covered a config change only through
+        the pre-rendered files' mtimes — every config save regenerated them. With the
+        files gone, a billing-day change must move the token itself, or an open Billing
+        tab keeps the old periods."""
+        import server
+        st = self._real_store()
+        before = server._blocks_data_version(st)
+        st._conn.execute("UPDATE config_periods SET billing_day = 15")
+        st._conn.commit()
+        self.assertNotEqual(before, server._blocks_data_version(st))
+
+    def test_the_bill_rounding_option_moves_token(self):
+        """REGRESSION (C, 30 Sep 2026): the option changes every card and day; it moved
+        the token through a regen, and must now move it directly."""
+        import server
+        st = self._real_store()
+        before = server._blocks_data_version(st)
+        st.save_settings({**(st.get_settings() or {}), "bill_rounding_summary": True})
+        self.assertNotEqual(before, server._blocks_data_version(st))
+
+    def test_the_epoch_moves_token(self):
+        import server
+        st = self._real_store()
+        before = server._blocks_data_version(st)
+        st.bump_data_epoch()
+        self.assertNotEqual(before, server._blocks_data_version(st))
+
+    def test_the_token_is_stable_across_processes(self):
+        """GUARD: no process-randomised hash in it (str hash() is seeded per process),
+        so a restart does not make every open page reload."""
+        import inspect, server
+        self.assertNotIn(" hash(", inspect.getsource(server._blocks_data_version))
 
 
 class TestUsageSubMeterGridShare(unittest.TestCase):
@@ -6759,37 +6754,6 @@ class TestConfigHistoryConsistency(unittest.TestCase):
         r = self.client.post("/api/config/history",
                              json={"effective_from": "2026-08-13T00:00:00", "billing_day": 4})
         self.assertEqual(r.status_code, 400)
-
-
-class TestVatToggleRegen(unittest.TestCase):
-    """Selecting the ex-VAT / bill-rounding option must rebuild the pre-built charts
-    so the billing summary switches immediately, not after the next finalise."""
-
-    def setUp(self):
-        self.store = BlockStore(_memory_uri())
-        self.store.insert_config_period({
-            "meters": {"electricity_main": {"meta": {
-                "timezone": "UTC", "billing_day": 1, "block_minutes": 30,
-                "currency_symbol": "£", "currency_code": "GBP", "site_name": "Home"}}}})
-        server.DATA_DIR = "/tmp/emt_test_vat"
-        _use_store(self.store)
-        self.client = server.app.test_client()
-        self._orig = server._schedule_offloaded_regen
-        self.calls = {"n": 0}
-        server._schedule_offloaded_regen = lambda: self.calls.__setitem__("n", self.calls["n"] + 1)
-
-    def tearDown(self):
-        server._schedule_offloaded_regen = self._orig
-
-    def test_vat_toggle_regenerates(self):
-        r = self.client.post("/api/settings", json={"bill_rounding_summary": True})
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(self.calls["n"], 1)          # regen scheduled
-
-    def test_non_display_setting_does_not_regen(self):
-        r = self.client.post("/api/settings", json={"co2_tree_kg_per_year": 22.0})
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(self.calls["n"], 0)          # no needless rebuild
 
 
 if __name__ == "__main__":

@@ -5,16 +5,16 @@ What the card shows is decided in bill_card.py and only printed by the browser
 (billing_module.html). #21 had put that arithmetic in a JavaScript port, where the
 suite cannot run it; this pins it where it now lives.
 
-THE ROWS ARE EXACT. energy_charts.render_billing_summary and the day side panel now
-format these rows with the pre-rendered page's templates, and on a real database the
-whole 36 MB page came out byte-identical to the one generated before #20 (md5,
-30 Sep 2026) — every card and every panel. The browser prints the same rows:
+THE ROWS ARE EXACT. Before C deleted the pre-rendered page (30 Sep 2026), its bill
+card and day side panel were formatted from these rows with its own templates, and on
+a real database the whole 36 MB page came out byte-identical to the one generated
+before #20 (md5) — every card and every panel. The browser prints the same rows:
 .build/billing_client_parity.js, 98 cards / 98 labels / 98 compare pairs / 1,212
 panels identical. So these tests pin behaviour that was measured, not assumed.
 
-They are new-module tests and fail on the parent tree, where bill_card does not exist.
-The older card tests (test_billing_split_rows, test_billing_rate_collapse, …) still run
-through energy_charts' wrappers; step 3 moves them here as it deletes the markup.
+They are new-module tests and fail on the tree before #22, where bill_card did not
+exist. The older card tests (test_billing_split_rows, test_billing_rate_collapse, …)
+assert on these rows too.
 """
 import json
 import os
@@ -180,16 +180,9 @@ class TheCard(unittest.TestCase):
         self.assertEqual(json.loads(json.dumps(c)), c)
 
 
-class ThePageFormatsTheseRows(unittest.TestCase):
-    """GUARD: energy_charts renders from bill_card, not a second copy of the rules."""
-
-    def test_render_billing_summary_is_the_rows(self):
-        import energy_charts as ec
-        html = ec.render_billing_summary(_summary())
-        for r in bc.card(_summary())["rows"]:
-            for k in ("text", "rate", "kwh", "cost", "value"):
-                if isinstance(r.get(k), str):
-                    self.assertIn(r[k], html, "%s %s" % (r["type"], k))
+class TheThresholdsAreBillCards(unittest.TestCase):
+    """GUARD: energy_charts' names for the thresholds (the day panel's collapse, Usage
+    Insights) are bill_card's, not a second copy."""
 
     def test_the_helpers_are_bill_cards(self):
         import energy_charts as ec

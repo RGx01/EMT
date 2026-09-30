@@ -26,6 +26,30 @@ sys.modules["energy_engine_io"] = eio
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import energy_charts as ec
+import bill_card as _bc
+import json as _json
+
+
+# C, 30 Sep 2026: these read the pre-rendered page's markup (render_billing_summary,
+# build_day_chart_html), deleted with the page. The same content is what the Billing
+# tab is served: the card's rows, the day's chart JSON and its side panel's lines.
+def _card_text(summary):
+    c = _bc.card(summary)
+    return " ".join(str(v) for r in c["rows"] for v in r.values() if isinstance(v, str))
+
+
+def _day(day, day_blocks, colors, **kw):
+    return ec.day_chart_data(day, day_blocks, colors, cap_from=None, import_schedule=None,
+                             timezone_name="UTC", **kw)
+
+
+def _day_json(day, day_blocks, colors, **kw):
+    return _json.dumps(_day(day, day_blocks, colors, **kw)["chart"], separators=(",", ":"))
+
+
+def _panel_text(day, day_blocks, colors, **kw):
+    ln = _bc.panel_lines(_day(day, day_blocks, colors, **kw)["panel"], kw.get("currency", "£"))
+    return " ".join(x["text"] for x in ln["totals"] + [x for c in ln["cols"] for x in c])
 
 
 def _summary():
@@ -255,7 +279,7 @@ class TestBillMethodBreakdown(unittest.TestCase):
     def test_render_section_only_when_present(self):
         s = _summary()
         # Default off: inc-VAT import display, no ex-VAT bill method.
-        default_html = ec.render_billing_summary(s)
+        default_html = _card_text(s)
         self.assertNotIn("Total incl. VAT", default_html)
         self.assertIn("Total incl. standing charge", default_html)
         s["bill_method"] = {
@@ -263,7 +287,7 @@ class TestBillMethodBreakdown(unittest.TestCase):
             "energy_exc": 0.40, "standing_days": 1, "standing_rate_exc": 0.40,
             "standing_exc": 0.40, "subtotal_exc": 0.80, "vat_rate": 0.05,
             "vat_amount": 0.04, "inc_total": 0.84, "coverage": 1.0}
-        html = ec.render_billing_summary(s)
+        html = _card_text(s)
         # ex-VAT bill method REPLACES the inc-VAT import display.
         self.assertIn("Standing charge (exc)", html)
         self.assertIn("VAT @ 5%", html)
@@ -275,7 +299,7 @@ class TestBillMethodBreakdown(unittest.TestCase):
 
 
 class TestDayChartPlungePrice(unittest.TestCase):
-    """Regression (reported after 4.1.3): build_day_chart_html must keep an Agile
+    """Regression (reported after 4.1.3): the day chart (day_chart_data) must keep an Agile
     plunge-price CREDIT (negative import cost) in the per-day chart + sidebar, not clamp
     it to 0 — the bug where a −£1.09 day's sidebar read +£0.22 (positive slots only). The
     4.1.3 negative-cost fix reached the aggregation/billing-summary paths but not this one."""
@@ -286,9 +310,8 @@ class TestDayChartPlungePrice(unittest.TestCase):
 
     def _import_cost(self, day_blocks):
         import re
-        html = ec.build_day_chart_html("2026-07-26", day_blocks,
-                                       {"electricity_main": "#1f77b4"},
-                                       block_minutes=30, currency="£")
+        html = _panel_text("2026-07-26", day_blocks, {"electricity_main": "#1f77b4"},
+                           block_minutes=30, currency="£")
         m = re.search(r"Import cost: £([-0-9.]+)", html)
         return float(m.group(1)) if m else None
 
@@ -317,10 +340,8 @@ class TestDayChartExcTable(unittest.TestCase):
                 "channels": {"import": ch}}}}
 
     def _html(self, day_blocks, bill_rounding):
-        return ec.build_day_chart_html("2026-07-26", day_blocks,
-                                       {"electricity_main": "#1f77b4"},
-                                       block_minutes=30, currency="£",
-                                       bill_rounding=bill_rounding)
+        return _day_json("2026-07-26", day_blocks, {"electricity_main": "#1f77b4"},
+                         block_minutes=30, currency="£", bill_rounding=bill_rounding)
 
     def test_default_off_no_exc_payload(self):
         db = [(0, self._blk(2.0, 0.42, 0.21, rate_exc=0.19))]
@@ -345,15 +366,13 @@ class TestDayChartExcTable(unittest.TestCase):
     def test_fallback_uses_period_vat_not_hardcoded(self):
         # A 0% VAT period: the fallback must be inc ÷ 1.0 (exc == inc), NOT inc ÷ 1.05.
         db = [(0, self._blk(2.0, 0.42, 0.21))]                  # uncaptured → fallback
-        html0 = ec.build_day_chart_html("2026-11-15", db, {"electricity_main": "#1f77b4"},
-                                        block_minutes=30, currency="£",
-                                        bill_rounding=True, fallback_vat=0.0)
+        html0 = _day_json("2026-11-15", db, {"electricity_main": "#1f77b4"},
+                          block_minutes=30, currency="£", bill_rounding=True, fallback_vat=0.0)
         self.assertIn('"exc_ratio":[1.0', html0)
         self.assertIn('"fallback_invat":1.0', html0)
         # a 20% period scales by 1/1.2
-        html20 = ec.build_day_chart_html("2026-11-15", db, {"electricity_main": "#1f77b4"},
-                                         block_minutes=30, currency="£",
-                                         bill_rounding=True, fallback_vat=0.20)
+        html20 = _day_json("2026-11-15", db, {"electricity_main": "#1f77b4"},
+                           block_minutes=30, currency="£", bill_rounding=True, fallback_vat=0.20)
         self.assertIn('"fallback_invat":0.83333333', html20)
 
 

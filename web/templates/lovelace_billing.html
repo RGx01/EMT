@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<!--
+  /lovelace/billing — the Billing tab on its own, for a Home Assistant dashboard card
+  (an iframe/webpage card pointing at this URL). Same URL as before 30 Sep 2026; it
+  served the pre-rendered daily_usage.html until C deleted it. Now it is
+  billing_module.html on a bare page, refreshing every {{ refresh_s }} s (the bill and
+  today's month re-fetched; the totals in the picker too).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EMT billing</title>
+  <script>
+    // Ingress-aware base path, exactly as base.html sets it.
+    var BASE_PATH = "{{ request.environ.get('SCRIPT_NAME', '') }}";
+    function apiUrl(path) { return BASE_PATH + path; }
+    // A dashboard card has no EMT theme toggle: follow the viewer's system setting,
+    // or ?theme=light|dark when the card wants to force one.
+    (function () {
+      var q = new URLSearchParams(location.search).get('theme');
+      var t = q || (window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+  <style>
+    /* base.html's palette — the module draws with these. */
+    :root { --bg:#0f1117; --surface:#1a1d27; --border:#2a2d3a; --accent:#00d4aa;
+            --text:#e8eaf0; --muted:#6b7080; --radius:6px; }
+    :root[data-theme="light"] { --bg:#f0f2f5; --surface:#ffffff; --border:#d0d5dd; --accent:#0a8c6a;
+                                --text:#1a1d27; --muted:#555970; }
+    html, body { margin:0; height:100%; background:var(--bg); color:var(--text);
+                 font-family:system-ui, -apple-system, "Segoe UI", sans-serif; }
+    #chart-daily-content { height:100%; overflow:auto; }
+  </style>
+</head>
+<body>
+  <div id="chart-daily-content"></div>
+  {% include "_period_spinner.html" %}
+  {% include "billing_module.html" %}
+  <script>
+    EMTBilling.init(document.getElementById('chart-daily-content'));
+    setInterval(function () { EMTBilling.refresh(); }, {{ refresh_s|int }} * 1000);
+  </script>
+</body>
+</html>

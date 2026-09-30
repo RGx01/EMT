@@ -49,7 +49,8 @@ def _has_exc(store):
 def rate_context():
     """The engine's cap date and import schedule — what the rate lines are gated on.
 
-    The pre-render gets both from the engine (engine.generate_charts); so does this.
+    The pre-render took both from the engine (engine.generate_charts, deleted with it
+    by C); so does this.
     Neither is defaulted when the engine is not running: None is what the pre-render
     passes too, and it means uncapped TOU days and stored house rates."""
     try:

@@ -1,24 +1,23 @@
 """
 /api/energy?include=billing — the Billing tab's data (billing_view.py), C 30 Sep 2026.
 
-The pre-rendered Billing page computes, per period, a bill summary and, per day, a
+The pre-rendered Billing page computed, per period, a bill summary and, per day, a
 chart's series and side panel, for all of history at once. The API computes the same
 for one range, by calling the same functions (energy_charts.period_summary under
-billing_context, and day_chart_data — split out of generate_daily_import_export_charts
-and build_day_chart_html for this). So what can differ is only the INPUTS, and each is
-pinned here against the page itself:
+billing_context, and day_chart_data — split out of the page generator for this). So
+what can differ is only the INPUTS, and each is pinned here against the ALL-HISTORY
+path the page took (`_whole`), which is still the reference now the page is gone:
 
   * a range's blocks instead of all of history — day charts and bill cards equal the
-    page's;
+    all-history ones;
   * BL-24's ex-VAT capability gate — asked of the WHOLE store, not the range: a period
     with no captured exc figure still gets the bill method when another period has one,
     as it does on the page;
   * JSON — the summary's float rate keys and date keys, made lists, lose nothing.
 
-On a real database `.build/billing_payload_parity.py` checks every day and every
-period (30 Sep 2026: 1,212 days, 98 periods, all identical). The markup half of the
-split is held byte-identical by that same run (md5 of the whole 36 MB page unchanged)
-and by the seven existing build_day_chart_html test files.
+On a real database, before the page was deleted, `.build/billing_payload_parity.py`
+checked every day and every period against the page itself (30 Sep 2026: 1,212 days,
+98 periods, all identical; the page's own output byte-identical across the split).
 
 These are new-facet tests: they fail on the parent tree because the facet and
 billing_view do not exist there.
@@ -31,6 +30,7 @@ import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
@@ -79,10 +79,31 @@ def _store(bill_rounding=True):
     return st
 
 
-def _page(st, cfg):
-    return ec.generate_daily_import_export_charts(
-        st.get_blocks_lightweight(), timezone_name=TZ, block_minutes=30, currency="£",
-        cfg=cfg, store=st)
+def _whole(st, cfg):
+    """What the pre-rendered page computed, from ALL of history at once: the context
+    and every day's chart, keyed by day."""
+    blocks = st.get_blocks_lightweight()
+    ctx = ec.billing_context(cfg, st, blocks)
+    days = ec.group_blocks_by_day(blocks, ZoneInfo(TZ), 30)
+    charts = {d: ec.day_chart_data(d, days[d], ctx["meter_colors"], cap_from=None, import_schedule=None,
+                                   timezone_name=TZ, block_minutes=30, currency="£",
+                                   ev_slot_map=ctx["ev_day_map"], bill_rounding=ctx["bill_rounding"],
+                                   fallback_vat=ec.vat_at(ctx, d), ev_fold_meter=ctx["ev_phys_id"],
+                                   ev_label=("EV" if ctx["ev_phys_id"] else None), store=st)
+              for d in days}
+    return {"blocks": blocks, "ctx": ctx, "charts": charts}
+
+
+def _whole_card(whole, st, lo, hi):
+    """The page's card for a period: its summary from ALL of history's blocks and context."""
+    import bill_card
+    from datetime import timezone as _tz
+    tz = ZoneInfo(TZ)
+    loc = lambda u: datetime.fromisoformat(u).replace(tzinfo=_tz.utc).astimezone(tz).replace(tzinfo=None)
+    ps, pe = loc(lo), loc(hi)
+    period_blocks = [b for b in whole["blocks"] if lo <= b["start"] < hi]
+    raw = ec.period_summary(whole["ctx"], whole["blocks"], period_blocks, ps, pe, store=st, tz_name=TZ)
+    return bill_card.card(raw, currency="£")
 
 
 # The two billing periods the fixture spans, as UTC bounds (BST until 25 Oct).
@@ -95,38 +116,30 @@ class _Base(unittest.TestCase):
     def setUpClass(cls):
         cls.st = _store()
         cls.cfg = cls.st.config_from_db(1)
-        cls.page = _page(cls.st, cls.cfg)
+        cls.whole = _whole(cls.st, cls.cfg)
 
     @classmethod
     def tearDownClass(cls):
         cls.st.close()
 
 
-class DaysEqualThePage(_Base):
+class DaysEqualTheWholeHistoryPath(_Base):
 
-    def test_every_days_chart_is_the_one_the_page_embeds(self):
-        embedded = {m.group(1).replace("_", "-"): json.loads(m.group(2)) for m in re.finditer(
-            r'<script type="application/json" id="data_chart_(\d{4}_\d\d_\d\d)">(.*?)</script>',
-            self.page)}
+    def test_every_days_chart_is_the_all_history_one(self):
+        expected = {d: json.loads(json.dumps(c["chart"])) for d, c in self.whole["charts"].items()}
         served = {}
         for rng in (SEP, OCT):
             for row in bv.day_billing(self.st, self.cfg, TZ, *rng)["days"]:
                 served[row["day"]] = json.loads(json.dumps(row["chart"]))
-        self.assertEqual(len(embedded), 20)
-        self.assertEqual(served, embedded)
+        self.assertEqual(len(expected), 20)
+        self.assertEqual(served, expected)
 
-    def test_the_side_panel_formats_to_the_pages_markup(self):
+    def test_every_days_panel_is_the_all_history_one(self):
+        for row in bv.day_billing(self.st, self.cfg, TZ, *SEP)["days"]:
+            self.assertEqual(row["panel"], self.whole["charts"][row["day"]]["panel"], row["day"])
         row = bv.day_billing(self.st, self.cfg, TZ, *SEP)["days"][0]
-        orig = ec.day_chart_data
-        try:
-            ec.day_chart_data = lambda *a, **k: {"chart": row["chart"], "panel": row["panel"]}
-            html = ec.build_day_chart_html(row["day"], [], {}, currency="£")
-        finally:
-            ec.day_chart_data = orig
-        panel = html[html.index('<div class="chart-summary">'):html.index('<div id="chart_')]
-        self.assertIn(panel.strip(), self.page)
         # the breakdown is there: one EV line, labelled "EV" (H6), not the device name
-        self.assertIn("\u21b3 EV</span>", panel)
+        self.assertIn("↳ EV", [c[0]["text"] for c in row["panel_lines"]["cols"]])
 
     def test_each_day_carries_its_panel_lines(self):
         import bill_card
@@ -139,15 +152,12 @@ class DaysEqualThePage(_Base):
         self.assertTrue(all("2026-10-03" <= d < "2026-11-03" for d in days))
 
 
-class PeriodsEqualThePage(_Base):
+class PeriodsEqualTheWholeHistoryPath(_Base):
 
-    def _card(self, rng):
-        raw, _, _ = bv.period_summary_raw(self.st, self.cfg, TZ, *rng)
-        return ec.render_billing_summary(raw, currency="£")
-
-    def test_both_billing_periods_render_the_pages_bill_card(self):
+    def test_both_billing_periods_card_as_from_all_history(self):
         for rng in (SEP, OCT):
-            self.assertIn(self._card(rng), self.page)
+            out = bv.period_billing(self.st, self.cfg, TZ, *rng, {"kind": "billing"})
+            self.assertEqual(out["card"]["rows"], _whole_card(self.whole, self.st, *rng)["rows"])
 
     def test_the_served_summary_is_that_summary(self):
         raw, _, _ = bv.period_summary_raw(self.st, self.cfg, TZ, *OCT)

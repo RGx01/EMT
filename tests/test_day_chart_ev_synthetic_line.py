@@ -41,7 +41,7 @@ def _blk(hh, segs, ev_dev):
 
 
 class _CapStub:
-    """Supplies build_day_chart_html's over_cap read; only cap_day_boundary is called."""
+    """Supplies day_chart_data's over_cap read; only cap_day_boundary is called."""
     def __init__(self, by_capday): self._b = by_capday or {}
     def cap_day_boundary(self, ts, tz_name):
         import iog_cap
@@ -61,13 +61,13 @@ def _day():
 
 def _render(day_blocks, *, cap_from=None, cap_boundary=None):
     store = _CapStub(cap_boundary) if cap_boundary is not None else None
-    html = ec.build_day_chart_html(
+    # (C, 30 Sep 2026: this read build_day_chart_html's markup; the page it made is gone, and day_chart_data is what the Billing tab is served.)
+    return ec.day_chart_data(
         "2026-08-15", day_blocks,
         {MAIN: "#1f77b4", "ev_charger": "#e377c2"},
         block_minutes=30, currency="£", bill_rounding=True,
-        ev_fold_meter="ev_charger", ev_label="EV", cap_from=cap_from, store=store)
-    m = re.search(r'<script type="application/json" id="data_[^"]+">(.*?)</script>', html, re.S)
-    return json.loads(m.group(1))["meters"]
+        ev_fold_meter="ev_charger", ev_label="EV", cap_from=cap_from, store=store,
+        import_schedule=None, timezone_name="UTC")["chart"]["meters"]
 
 
 class TestEvSyntheticLine(unittest.TestCase):

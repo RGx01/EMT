@@ -48,7 +48,7 @@ def _block(hh, segs, ev_kwh=0.0, batt_kwh=0.0):
 
 
 class _CapStub:
-    """Minimal store for build_day_chart_html's over_cap read: maps a cap-day key to
+    """Minimal store for day_chart_data's over_cap read: maps a cap-day key to
     its (boundary_slot, boundary_frac). build_day only calls cap_day_boundary()."""
     def __init__(self, boundary_by_capday):
         self._b = boundary_by_capday or {}
@@ -62,13 +62,13 @@ def _render(day_blocks, *, cap_from=None, cap_boundary=None):
     # model runs). cap_boundary (a {cap_day: (slot, frac)} map) supplies the authoritative
     # over_cap signal via a stub store; omit it for a within-cap day (no break → no hold).
     store = _CapStub(cap_boundary) if cap_boundary is not None else None
-    html = ec.build_day_chart_html(
+    # (C, 30 Sep 2026: this read build_day_chart_html's markup; the page it made is gone, and day_chart_data is what the Billing tab is served.)
+    return ec.day_chart_data(
         "2026-08-15", day_blocks,
         {MAIN: "#1f77b4", "ev_charger": "#e377c2", "house_battery": "#ff7f0e"},
         block_minutes=30, currency="£", bill_rounding=True,
-        cap_from=cap_from, store=store)
-    m = re.search(r'<script type="application/json" id="data_[^"]+">(.*?)</script>', html, re.S)
-    return json.loads(m.group(1))["meters"]
+        cap_from=cap_from, store=store, import_schedule=None,
+        timezone_name="UTC")["chart"]["meters"]
 
 
 class TestDayChartRateCurves(unittest.TestCase):

@@ -1025,7 +1025,7 @@ var STATUS_LABEL = {
 var PHASE_LABEL = {
   importing: 'Fetching half-hours…', finalising: 'Finishing up…',
   recovering_prices: 'Recovering prices on a calm retry…',
-  rebuilding_charts: 'Rebuilding charts…', done: ''
+  done: ''
 };
 
 function _apiButtons(status){
@@ -1794,7 +1794,7 @@ function repriceFromCsv(){
       out.innerHTML = '<strong>'+d.changed+'</strong> block(s) re-priced from the bill · '
         + d.checked+' rows read'
         + (d.from?(' · '+_esc((d.from||'').substr(0,10))+' → '+_esc((d.to||'').substr(0,10))):'')
-        + '<div style="color:var(--muted);margin-top:4px;">These now carry Octopus\'s exact billed cost — regenerate charts to see it.</div>';
+        + '<div style="color:var(--muted);margin-top:4px;">These now carry Octopus\'s exact billed cost; open charts will refresh shortly.</div>';
     }).catch(function(e){ btn.disabled = false; st.textContent = 'Request failed: '+e; });
   };
   r.readAsText(f);
@@ -2006,7 +2006,7 @@ function doApply(){
         + 'To replace them, Delete Blocks for that span first, then re-import.</div>';
     }
     html += '<div style="color:var(--muted);margin-top:6px;">Backup: '+_esc(d.backup||'(none)')
-      + '. '+(d.charts_regenerated?'Charts are rebuilding to include the imported history':'Charts will refresh shortly')
+      + '. Charts will refresh shortly'
       + '. To undo: Delete Blocks → reconstructed history.</div>';
     document.getElementById('done-out').innerHTML = html;
     goStep('done');

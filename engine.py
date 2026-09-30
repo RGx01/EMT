@@ -30,9 +30,7 @@ from energy_engine_io import (
     ensure_dir,
     load_json,
     save_json_atomic,
-    save_file,
 )
-import energy_charts
 from ha_client import HAClient
 from block_store import BlockStore, open_block_store
 
@@ -111,7 +109,6 @@ def get_and_clear_meter_reset() -> bool:
     _meter_reset_detected = False
     return val
 
-CHART_DIR          = "/data/energy_meter_tracker"   # accessible from HA /local/
 BLOCK_MINUTES      = 30  # default — overridden at runtime from config
 GAP_FILL_LIMIT_HOURS = 12  # gaps longer than this are not gap-filled
 
@@ -1108,7 +1105,25 @@ def setup():
     global _engine_loop_lock
     _engine_loop_lock = asyncio.Lock()
     ensure_dir(DATA_DIR)
-    ensure_dir(CHART_DIR)
+    _remove_stale_chart_files()
+
+
+# The pre-rendered chart files v4 and the first v5 builds wrote next to the database.
+# Nothing writes or serves them now (C, 30 Sep 2026: the Billing tab and the heatmap
+# are drawn in the browser from /api/energy); on an install that had them they would
+# only take space — the Billing page for three years of history was 36 MB.
+_STALE_CHART_FILES = ("daily_usage.html", "net_heatmap.html")
+
+
+def _remove_stale_chart_files():
+    for name in _STALE_CHART_FILES:
+        path = os.path.join(DATA_DIR, name)
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+                logger.info("setup: removed the stale pre-rendered chart %s", name)
+        except OSError as e:
+            logger.warning("setup: could not remove %s: %s", name, e)
 
 
 _engine_pause_reason: "str | None" = None
@@ -1396,10 +1411,6 @@ def append_block(block: dict):
 
 def append_block_replace(block: dict):
     get_store().append_block_replace(block)
-
-
-def io_save_file(path: str, content: str):
-    save_file(path, content)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2420,159 +2431,6 @@ def build_gap_blocks(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Chart generation helper
-# ─────────────────────────────────────────────────────────────────────────────
-
-def generate_charts(store: "BlockStore", config: dict = None):
-    """
-    Generate all charts from the BlockStore.
-    Queries only the data each chart needs rather than loading all blocks.
-
-    `config` may be passed in so this can run on a WORKER THREAD with a dedicated
-    read-only `store` (see _generate_charts_offloaded): callers on a background
-    thread MUST pass config, because load_config() reads the engine's primary
-    connection and must never be touched cross-thread (the 3.1.3 segfault). When
-    omitted (on-loop callers) it's loaded here as before.
-    """
-    if store.count_blocks() == 0:
-        logger.info("generate_charts: no blocks, skipping")
-        return
-    if config is None:
-        config = load_config()
-    main_meta     = {}
-    for meter_data in config.get("meters", {}).values():
-        if not (meter_data.get("meta") or {}).get("sub_meter"):
-            main_meta = meter_data.get("meta") or {}
-            break
-    timezone_name   = main_meta.get("timezone", "UTC")
-    block_minutes   = int(main_meta.get("block_minutes") or 30)
-    currency_symbol = main_meta.get("currency_symbol", "£")
-
-    # Use lightweight block fetch — significantly faster than get_all_blocks()
-    # for large datasets as it skips full _rows_to_blocks reconstruction.
-    blocks = store.get_blocks_lightweight()
-
-    # The net heatmap is drawn in the browser from /api/energy (heatmap_module.html,
-    # 30 Sep 2026); net_heatmap.html is no longer written.
-    # Per-day cap gating for the rate lines: the capped IOG-SMB (6-h cap) era begins at the
-    # current SMB agreement's valid_from. Pre-cap days render on the uncapped TOU rules.
-    _cap_from = _chart_cap_from()
-    try:
-        html = energy_charts.generate_daily_import_export_charts(blocks, timezone_name=timezone_name, block_minutes=block_minutes, currency=currency_symbol, cfg=config, store=store, cap_from=_cap_from, import_schedule=_kraken_rate_schedules.get("import"))
-        io_save_file(f"{CHART_DIR}/daily_usage.html", html)
-        logger.info("generate_charts: daily usage chart written (tz=%s, bm=%s, currency=%s)", timezone_name, block_minutes, currency_symbol)
-    except Exception as e:
-        logger.error("generate_charts: daily chart error: %s", e)
-
-
-_charts_rendering = False        # guard: at most one off-loop render at a time
-_charts_dirty = False            # a regen was requested while one was in progress → re-run
-_last_render_complete_ts = 0.0   # monotonic time the last chart render finished
-
-
-def render_recently_active(quiet_s: float = 180.0) -> bool:
-    """True if a chart render is in progress OR finished within the last `quiet_s`
-    seconds. The HA-reconnect handler uses this to skip a startup re-run: a heavy
-    render (CPU/GIL-bound, so the thread offload can't stop it stalling the WS
-    heartbeat) is what causes the flap, and it can run for MINUTES — longer than the
-    startup-completion cooldown — so keying off render activity closes that gap."""
-    if _charts_rendering:
-        return True
-    if not _last_render_complete_ts:
-        return False
-    return (time.monotonic() - _last_render_complete_ts) < quiet_s
-_charts_task = None              # held reference so a fire-and-forget task isn't GC'd
-
-
-async def _generate_charts_offloaded():
-    """Render charts OFF the event loop, in a thread executor, using a DEDICATED
-    read-only DB connection.
-
-    Chart generation over a large history can take tens of seconds. Run
-    synchronously on the engine loop it stalls the HA WebSocket heartbeat →
-    HA drops the connection → reconnect re-runs engine_startup → renders again →
-    a self-perpetuating reconnect storm. Running it in a worker thread keeps the
-    loop responsive.
-
-    Thread-safety: the worker uses its OWN read-only BlockStore (never the
-    engine's writer connection — the 3.1.3 cross-thread SQLite segfault), and we
-    resolve `config` HERE on the loop and pass it in, since load_config() reads
-    the primary connection. Falls back to an inline render on any error.
-    """
-    import asyncio as _asyncio
-    from block_store import BlockStore
-    global _charts_rendering, _charts_dirty, _last_render_complete_ts
-    if _store is None:
-        return
-    if _charts_rendering:
-        # Don't drop this request: mark dirty so the in-flight render re-runs once it
-        # finishes. Without this, a config/VAT change that lands during a finalise
-        # render (which read the OLD config) is skipped and the charts stay stale
-        # until the next natural regen — the very gap #361 is about.
-        _charts_dirty = True
-        logger.info("generate_charts: a render is already in progress — will re-run after it")
-        return
-    _charts_rendering = True
-    try:
-        while True:
-            _charts_dirty = False        # claim the current request; re-set if a change lands mid-render
-            try:
-                cfg = load_config()      # reload each pass (on the loop) so config/settings changes land
-            except Exception:
-                cfg = None
-
-            def _work():
-                ro = None
-                try:
-                    ro = BlockStore(BLOCKS_DB_PATH, read_only=True)
-                    generate_charts(ro, config=cfg)
-                finally:
-                    if ro is not None:
-                        try:
-                            ro.close()
-                        except Exception:
-                            pass
-
-            loop = _asyncio.get_event_loop()
-            try:
-                await loop.run_in_executor(None, _work)
-            except Exception as e:
-                logger.warning("generate_charts: offload failed (%s) — rendering inline", e)
-                try:
-                    generate_charts(_store, config=cfg)
-                except Exception as _e2:
-                    logger.error("generate_charts: inline fallback failed: %s", _e2)
-            if not _charts_dirty:
-                break
-            logger.info("generate_charts: a change arrived mid-render — re-rendering with fresh config")
-    finally:
-        _charts_rendering = False
-        _last_render_complete_ts = time.monotonic()
-
-
-def _schedule_chart_regen() -> None:
-    """Regenerate charts OFF the event loop when possible — via
-    _generate_charts_offloaded (its own read-only connection + in-progress guard).
-    A synchronous render over 2+ years of blocks takes long enough to stall the HA
-    WebSocket heartbeat, which drops the connection and re-runs startup: a
-    reconnect→re-finalise→re-render storm. Firing it as a loop task keeps the tick
-    responsive. Falls back to an inline render only when there is no running loop
-    (e.g. a non-async caller)."""
-    import asyncio as _aio
-    try:
-        loop = _aio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop is not None:
-        loop.create_task(_generate_charts_offloaded())
-        return
-    try:
-        generate_charts(get_store())
-    except Exception as e:
-        logger.warning("_schedule_chart_regen: inline fallback failed: %s", e)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # Block finalise
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -3042,12 +2900,6 @@ def _recover_missing_carbon(limit: int = 200) -> int:
                                "%s: %s", start, e)
         # If not attributed, the CI slot isn't available (aged out) — skip.
     if recovered:
-        # OFF the loop (see _schedule_chart_regen): a synchronous full-history
-        # render here stalls the HA WebSocket heartbeat, and after a big import
-        # (2+ years of blocks, ~90s/render) that kicks off a
-        # reconnect → re-startup → re-render storm. The in-progress guard coalesces
-        # overlapping renders across successive carbon ticks.
-        _schedule_chart_regen()
         logger.info("_recover_missing_carbon: recovered %d block(s)", recovered)
     return recovered
 
@@ -3211,12 +3063,6 @@ def recompute_remainders_for_window(parent_meter_id: str, utc_start: str,
             logger.error(
                 "recompute_remainders_for_window: block %s failed: %s", bs, e)
     _pass2_quiet = _prev_quiet
-    if done:
-        try:
-            generate_charts(store)
-        except Exception as _ce:
-            logger.warning(
-                "recompute_remainders_for_window: chart regen failed: %s", _ce)
     logger.info(
         "recompute_remainders_for_window: recomputed %d block(s) for parent %s",
         done, parent_meter_id)
@@ -3757,15 +3603,6 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
             j["status"] = "done"
             _coord.mark("attribution", device_meter_id, status="done")
         j["run_id"] = run_id
-        if written:
-            # Attribution rewrote historical blocks (new device rows + re-derived
-            # remainders); regenerate the charts off-loop so the visuals reflect
-            # the newly attributed device. Read-only render, guarded internally.
-            try:
-                j["phase"] = "charts"
-                await _generate_charts_offloaded()
-            except Exception as e:      # never let a chart failure fail the run
-                logger.warning("run_attribution_job: chart regen failed: %s", e)
         logger.info("run_attribution_job: device=%s wrote %d, skipped %d, gaps %d "
                     "(status=%s)", device_meter_id, written, skipped, gaps, j["status"])
         return {"ok": True, "written": written, "skipped": skipped, "gaps": gaps,
@@ -4025,21 +3862,6 @@ def _drain_pass2_queue(ha: HAClient, limit: int = 50, rate_resolver=None) -> int
             logger.error(
                 "_drain_pass2_queue: re-run failed for %s (flag left set "
                 "for retry): %s", block_start, e)
-
-    if done:
-        # Re-priced blocks change the billing/daily charts — regenerate them so the
-        # UI reflects the reconciled figures. Do it OFF the loop: this drain runs on
-        # the engine loop (via _engine_tick), and an inline render over a large
-        # history (tens of seconds — more since the 4.2 ex-VAT billing path) stalls
-        # the HA WebSocket heartbeat → disconnect → startup re-run → reconnect storm.
-        # This bites harder now that the settlement poll window anchors back to the
-        # oldest unsettled block, so the drain has re-settled blocks (done>0) far more
-        # often. _schedule_chart_regen fires the offloaded, read-only, in-progress-
-        # guarded render as a loop task and only renders inline when there's no loop.
-        try:
-            _schedule_chart_regen()
-        except Exception as _ce:
-            logger.warning("_drain_pass2_queue: chart regen failed: %s", _ce)
 
     return done
 
@@ -4591,16 +4413,6 @@ def finalise_block(ha: HAClient, block_data: dict | None = None, interpolated: b
     _store.save_current_block(pruned_block)
     logger.info("finalise_block: rolling buffer pruned, new block starts %s", iso(block_end_dt))
 
-    # ── Generate charts ────────────────────────────────────────────────────
-    # Skip chart regeneration for interpolated (gap-fill) blocks — during a
-    # long offline gap this would regenerate charts once per missing block,
-    # causing minutes of CPU load. Charts are regenerated once at startup
-    # (generate_charts in engine_startup) and again on the first live block.
-    # Render OFF the loop (offloaded, read-only connection) so a large-history
-    # render can't stall the tick / HA heartbeat (→ reconnect storm).
-    if not interpolated:
-        _schedule_chart_regen()
-
     # ── Backup to /share ───────────────────────────────────────────────────
     _backup_to_share()
 
@@ -5068,12 +4880,6 @@ async def _run_historical_carbon_backfill(window_days: int = 13,
     if remaining is None:
         _store.set_meta(_CARBON_BACKFILL_MARKER,
                         {"done": True, "completed_at": _now()})
-        if backfilled:
-            # OFF the loop: a synchronous render over 2+ years of freshly-carbonned
-            # blocks takes ~90s and stalls the HA heartbeat → reconnect →
-            # re-startup → re-render storm (the exact failure a large historical
-            # backfill produced). This runs once, only when the span is fully swept.
-            await _generate_charts_offloaded()
         logger.info("_run_historical_carbon_backfill: complete — %d block(s) "
                     "backfilled", backfilled)
     elif backfilled > 0:
@@ -7522,7 +7328,6 @@ async def run_iog_split_carve(max_blocks: int = 2000) -> dict:
         except Exception as e:
             logger.warning("run_iog_split_carve: persist failed (%s): %s", bs, e)
     if carved:
-        _schedule_chart_regen()
         logger.info("run_iog_split_carve: carved predicted EV/Home split on %d unsettled "
                     "dispatched block(s)", carved)
     return {"ok": True, "carved": carved}
@@ -9245,8 +9050,6 @@ async def repair_import_pricing(from_date=None, to_date=None, *,
             if confirmed_ss and not (from_date or to_date):
                 _store.clear_reprice_queue_slots(channel, confirmed_ss)
 
-    if recovered:
-        await _regen_charts_after_import_async({"written": {"import": recovered}})
     remaining = _store.reprice_queue_count()
     # Self-diagnostic: how much imported data exists at all + how many targets we
     # resolved — so a "0 checked" result says WHY (no imports vs none in range vs
@@ -9319,47 +9122,6 @@ def api_import_control(action: str) -> dict:
     else:
         return {"ok": False, "error": f"unknown action: {action}"}
     return {"ok": True, "status": j.get("status"), "control": j["control"]}
-
-
-def _regen_charts_after_import(j) -> None:
-    """Rebuild the pre-built billing/heatmap charts after an import so the views
-    reflect the imported blocks immediately — not only after the next live block
-    finalises. Only runs if the import actually wrote something. Non-fatal."""
-    try:
-        written = j.get("written") or {}
-        if not any((written.get(ch) or 0) for ch in written):
-            return
-        if _store is not None and _store.count_blocks():
-            # Off the loop (read-only connection) — a synchronous render over the
-            # full imported history stalls the tick / HA heartbeat (→ restart).
-            _schedule_chart_regen()
-            logger.info("api_import: charts regenerated after import "
-                        "(import=%d export=%d)",
-                        written.get("import", 0), written.get("export", 0))
-    except Exception as e:
-        logger.warning("api_import: chart regen after import failed: %s", e)
-
-
-async def _regen_charts_after_import_async(j) -> None:
-    """Terminal-step chart regen for the background import job — AWAITS the render.
-
-    _regen_charts_after_import fires the render as a fire-and-forget loop task
-    (right for the live tick, which must not stall the HA heartbeat). At the END
-    of the import job, though, we want the job to only report 'done' once the
-    charts actually reflect the imported history — and awaiting here is safe
-    because the import job IS the background work (it is not the live tick, so
-    the heartbeat is unaffected). Same write-gate + non-fatal contract."""
-    try:
-        written = j.get("written") or {}
-        if not any((written.get(ch) or 0) for ch in written):
-            return
-        if _store is not None and _store.count_blocks():
-            await _generate_charts_offloaded()
-            logger.info("api_import: charts regenerated after import "
-                        "(import=%d export=%d)",
-                        written.get("import", 0), written.get("export", 0))
-    except Exception as e:
-        logger.warning("api_import: chart regen after import failed: %s", e)
 
 
 def _import_extend_floor(earliest_import, plan) -> "str | None":
@@ -10100,7 +9862,6 @@ async def run_gap_fill_job(from_ts, to_ts, *, channels=("import", "export"),
             ctl = j.get("control")
             if ctl == "cancel":
                 j["status"] = "cancelled"
-                await _regen_charts_after_import_async(j)
                 return
             if ctl == "pause":
                 j["status"] = "paused"
@@ -10163,8 +9924,6 @@ async def run_gap_fill_job(from_ts, to_ts, *, channels=("import", "export"),
             await repair_import_pricing()
         except Exception as _ve:
             logger.warning("run_gap_fill_job: verify pass failed: %s", _ve)
-        j["phase"] = "rebuilding_charts"
-        await _regen_charts_after_import_async(j)
         # Same finish as the full import: persist the pricing-health summary and
         # launch the DETACHED deferred verification pass, so a gap fill shows the
         # off-peak/peak verification in the panel exactly as a whole/date import does.
@@ -10221,7 +9980,6 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
             if ctl == "cancel":
                 j["status"] = "cancelled"
                 _coord.mark("import", status="done")
-                await _regen_charts_after_import_async(j)   # show what did import
                 return
             if ctl == "pause":
                 j["status"] = "paused"
@@ -10288,8 +10046,6 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
                     j["auto_recovered"] = j.get("auto_recovered", 0) + (_fin.get("recovered") or 0)
                 except Exception as _e:
                     logger.warning("run_api_import_job: final recovery pass failed: %s", _e)
-                j["phase"] = "rebuilding_charts"
-                await _regen_charts_after_import_async(j)
                 try:
                     _persist_import_health(j)
                     _persist_run_status(j)     # durable status for reload (poll-on-load)
@@ -11704,8 +11460,8 @@ def _import_is_smb_capped() -> bool:
 def _chart_cap_from():
     """Per-day cap-gating date for the rate lines: the SMB agreement's valid_from when
     on the capped IOG-SMB tariff, else None (pre-cap / non-IOG days render uncapped TOU).
-    Single source for BOTH the scheduled render (generate_charts) and the on-demand
-    /api/charts/regenerate path, so they can never diverge."""
+    Read by billing_view.rate_context for the Billing tab's rate lines (it was the
+    pre-rendered page's, before C deleted that, 30 Sep 2026)."""
     return str(_measured_floor())[:10] if _import_is_smb_capped() else None
 
 
@@ -11944,7 +11700,6 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
                 logger.warning("measured history drain: apply failed: %s", e)
         await asyncio.sleep(_MEASURED_HISTORY_DRAIN_PACE)
     if settled:
-        _schedule_chart_regen()
         logger.info("measured history drain: settled %d imported capped slot(s) from the bill", settled)
     return {"ok": True, "settled": settled}
 
@@ -12006,7 +11761,6 @@ def run_settled_ev_split_heal(limit: int = 2000) -> dict:
         except Exception as e:
             logger.warning("settled EV split heal: %s failed: %s", r["block_start"], e)
     if healed:
-        _schedule_chart_regen()
         logger.info("settled EV split heal: restored the bill's EV/Home split on %d "
                     "settled block(s) that had been stored house-only", healed)
     return {"ok": True, "healed": healed}
@@ -12339,7 +12093,6 @@ def run_device_rate_drift_repair() -> dict:
     if n:
         logger.info("device rate drift repair: re-costed %d sub-meter block(s) to the "
                     "parent rate (device == main == bill)", n)
-        _schedule_chart_regen()
     return {"ok": True, "re_costed": n}
 
 
@@ -12810,15 +12563,6 @@ async def reconcile_dispatch_overlay() -> dict:
             n_revert += 1
         logger.info("reconcile: %s %s %.5f→%.5f (%s)",
                     target, bs, cur_rate, new_rate, reason)
-    if changed:
-        # OFF the loop — reconcile_dispatch_overlay is async and runs on the engine
-        # loop, so an inline render over a large history stalls the HA heartbeat
-        # (reconnect storm). _schedule_chart_regen fires the offloaded read-only
-        # render as a loop task; the reconcile's writes are committed before it runs.
-        try:
-            _schedule_chart_regen()
-        except Exception as e:
-            logger.warning("reconcile_dispatch_overlay: chart regen failed: %s", e)
     # Heartbeat every run (even with no changes) so the pass is observable in the
     # log — "0 candidates" vs "N candidates, 0 changed" tells very different
     # stories when a block isn't being corrected.
@@ -12885,17 +12629,6 @@ async def resolve_history_gaps(now=None, meter_id: str = "electricity_main",
         logger.info("resolve_history_gaps: %s..%s (%d slots) -> backfilled %d",
                     g["start"], g["end"], g["slots"], made)
 
-    if total_backfilled:
-        # We are on the engine loop (called via _run_on_engine_loop). Render OFF the
-        # loop: a large-history render here stalls the HA heartbeat (reconnect storm),
-        # and it must never run on the Flask thread with the engine's writer
-        # connection (the 3.1.3 cross-thread segfault). _schedule_chart_regen fires
-        # the offloaded render (its own read-only connection) as a loop task, which
-        # satisfies both — the backfill writes are committed before it runs.
-        try:
-            _schedule_chart_regen()
-        except Exception as e:
-            logger.warning("resolve_history_gaps: chart regen failed: %s", e)
     logger.info("resolve_history_gaps: %d gap run(s), %d block(s) backfilled",
                 len(gaps), total_backfilled)
     return {"ok": True, "gaps": len(gaps), "backfilled": total_backfilled,
@@ -14048,19 +13781,6 @@ async def _engine_startup_impl(ha: HAClient):
     if (_engine_ha is not None and _kraken_client is not None
             and _kraken_discovery and mode_uses_api()):
         _ensure_kraken_poll_task_running()
-
-    # ── Startup charts (LAST, OFF the loop, FIRE-AND-FORGET) ──────────────
-    # Rendered in a worker thread (dedicated read-only connection) AND not
-    # awaited, so: (1) engine_startup — and the web server that waits on it —
-    # completes immediately instead of sitting behind a tens-of-seconds render;
-    # (2) the render never stalls the HA WebSocket heartbeat, which was dropping
-    # the connection and triggering a reconnect→re-startup→re-render storm. The
-    # in-flight guard means a reconnect that re-runs startup won't stack renders.
-    global _charts_task
-    try:
-        _charts_task = asyncio.create_task(_generate_charts_offloaded())
-    except Exception as _ct_e:
-        logger.warning("engine_startup: could not schedule chart render: %s", _ct_e)
 
     # Mark cold start done: any later engine_startup in this process (HA
     # reconnect / config-save) is warm and must not run the rogue-total guard.

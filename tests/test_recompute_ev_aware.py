@@ -28,8 +28,7 @@ class TestRecomputeEvAware(unittest.TestCase):
              mock.patch.object(engine, "_apply_pass2", lambda b: None), \
              mock.patch.object(engine, "_recompute_pass3_totals", lambda b: None), \
              mock.patch.object(engine, "_recompute_block_carbon", lambda b: None), \
-             mock.patch.object(engine, "append_block_replace", lambda b: captured.update(b=b)), \
-             mock.patch.object(engine, "generate_charts", lambda *a, **k: None):
+             mock.patch.object(engine, "append_block_replace", lambda b: captured.update(b=b)):
             n = engine.recompute_remainders_for_window(
                 "electricity_main", "2026-08-26T01:30:00", "2026-08-26T02:00:00")
         self.assertEqual(n, 1)

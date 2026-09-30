@@ -293,10 +293,14 @@ class TestNoSubMeterDailyKwh(unittest.TestCase):
         self.assertNotIn("kwh_remainder", imp,
             "lightweight must omit NULL kwh_remainder so charts read the real kwh")
         self.assertAlmostEqual(imp["kwh"], 0.053, places=3)
-        html = ec.generate_daily_import_export_charts(
-            blocks, timezone_name="Europe/London", block_minutes=30,
-            currency="£", store=self.store)
-        import re
+        # The day's chart as the Billing tab is served it (C, 30 Sep 2026: this built
+        # the whole pre-rendered page, deleted since).
+        import json, re
+        from zoneinfo import ZoneInfo
+        days = ec.group_blocks_by_day(blocks, ZoneInfo("Europe/London"), 30)
+        html = json.dumps([ec.day_chart_data(d, days[d], {}, cap_from=None, import_schedule=None,
+                                             timezone_name="Europe/London", block_minutes=30,
+                                             currency="£", store=self.store)["chart"] for d in days])
         self.assertRegex(
             html, r"0\.053\s*,|,\s*0\.053",
             "per-slot import kWh array must contain the real value, not 0")
@@ -750,7 +754,9 @@ class TestBillSummaryMainImportRaw(unittest.TestCase):
         """Rendered HTML must contain the total grid kWh figure."""
         self._insert("2026-03-01T00:00:00", main_imp=10.0, ev_imp=4.0, bat_imp=3.0)
         s = self._summary()
-        html = ec.render_billing_summary(s, currency="£")
+        import bill_card   # the card's rows (C, 30 Sep 2026: this read its markup)
+        html = " ".join(str(v) for r in bill_card.card(s, currency="£")["rows"]
+                        for v in r.values() if isinstance(v, str))
 
         raw_kwh = sum(d["kwh"] for d in s["main_import_raw"].values())
         # The total row should contain the raw kWh formatted to 3dp
@@ -762,7 +768,9 @@ class TestBillSummaryMainImportRaw(unittest.TestCase):
         """Rendered HTML must contain device labels for sub-meters."""
         self._insert("2026-03-01T00:00:00", main_imp=10.0, ev_imp=4.0, bat_imp=3.0)
         s = self._summary()
-        html = ec.render_billing_summary(s, currency="£")
+        import bill_card   # the card's rows (C, 30 Sep 2026: this read its markup)
+        html = " ".join(str(v) for r in bill_card.card(s, currency="£")["rows"]
+                        for v in r.values() if isinstance(v, str))
         self.assertIn("Zappi EV Charger", html,
             msg="Rendered HTML must show EV charger device label")
         self.assertIn("Solax Battery", html,

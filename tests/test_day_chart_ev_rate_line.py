@@ -24,11 +24,14 @@ class TestDayChartEvRateLine(unittest.TestCase):
                                   "channels": {"import": imp}}}}
 
     def _html(self, block, ev_kwh=2.0):
-        return ec.build_day_chart_html(
+        # The day's chart JSON as text (C, 30 Sep 2026: this read build_day_chart_html's markup; the page it made is gone, and day_chart_data is what the Billing tab is served.)
+        import json
+        return json.dumps(ec.day_chart_data(
             "2026-07-26", [(24, block)],
             {MAIN: "#1f77b4", "ev_dispatch": "#8b5cf6"},
+            cap_from=None, import_schedule=None, timezone_name="UTC",
             block_minutes=30, currency="£",
-            ev_slot_map={block["start"]: {"kwh": ev_kwh}})
+            ev_slot_map={block["start"]: {"kwh": ev_kwh}})["chart"])
 
     def test_capped_ev_rate_line_diverges_to_peak(self):
         # house off-peak, EV pushed to peak by the cap → EV rate line carries the peak.
