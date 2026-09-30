@@ -106,6 +106,19 @@ class ProvenanceIsThreeFacts(_Base):
         self.assertTrue(r["bill_cached"])
         self.assertFalse(r["bill_applied"], "the bill is held, not written")
 
+    def test_each_channel_has_its_own_api_kwh_flag(self):
+        """Export settles separately, and later, than import — one flag cannot say
+        both (the Heatmaps tab's API-coverage view is split by channel)."""
+        self.blk(imp_kwh_api=1.9)
+        r = self.blocks()["electricity_main"]
+        self.assertTrue(r["kwh_authoritative"])
+        self.assertFalse(r["exp_kwh_authoritative"])
+
+    def test_imported_history_is_authoritative_on_both_channels(self):
+        self.blk(source="imported_api")
+        r = self.blocks()["electricity_main"]
+        self.assertTrue(r["kwh_authoritative"] and r["exp_kwh_authoritative"])
+
     def test_an_applied_bill_is_all_three(self):
         self.blk(imp_kwh_api=1.9, rate_source="measured")
         self.st.upsert_measured_cost(FROM, mpan="1", cost_incl=0.5)

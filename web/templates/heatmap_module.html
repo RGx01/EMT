@@ -33,6 +33,31 @@ window.EMTHeatmap = (function () {
     intensity: {label: 'gCO₂/kWh', title: 'Grid Carbon Intensity (gCO₂/kWh)',
                 sub: 'How clean the grid was, regardless of your usage', unit: ' gCO₂/kWh', dp: 0, tot: null}
   };
+  // Supplier-API accounts only (added in init when /api/billing-source says uses_api):
+  // which half-hours still have no smart-meter (DCC) kWh from the API. Imported history
+  // is excluded — it was accepted as the record when it came in. A reading normally
+  // lands in 1–2 days, so a gap under API_PENDING_H is "not yet", not "missing".
+  // One view per channel the API supplies (export settles separately, and later).
+  var API_SUB = 'Half-hours without a smart-meter reading from the API: amber under 48 h (normally 1–2 days), ' +
+                'red after · green received · grey imported history, excluded';
+  var API_METRICS = {
+    api:    {label: 'API import', title: 'API usage data — import kWh from the supplier', sub: API_SUB,
+             unit: '', dp: 0, tot: 'Missing', field: 'kwh_authoritative', channel: 'import'},
+    apiexp: {label: 'API export', title: 'API usage data — export kWh from the supplier', sub: API_SUB,
+             unit: '', dp: 0, tot: 'Missing', field: 'exp_kwh_authoritative', channel: 'export'}
+  };
+  function isApi(m) { return m === 'api' || m === 'apiexp'; }
+  var API_PENDING_H = 48;
+  var API_RANK = {imported: 0, ok: 1, pending: 2, missing: 3};      // a clocks-back slot shows the worst
+  var API_TEXT = {ok: 'API kWh received', pending: 'no API kWh yet (under 48 h)', missing: 'no API kWh',
+                  imported: 'imported history (excluded)'};
+  function apiColour(v) {
+    if (v === 'ok') return '#2e9e5b';
+    if (v === 'pending') return '#e0a020';
+    if (v === 'missing') return '#cc0000';
+    if (v === 'imported') return dark() ? '#3a3e4a' : '#d4d7de';
+    return 'rgba(0,0,0,0)';
+  }
   var AXIS_TOP = 46, AXIS_LEFT = 30, CELL_MAX = 22, CELL_MIN = 6;
   var state = {metric: 'kwh', tz: null, bm: 30, months: {}, keys: [], panels: {}, epoch: null,
                root: null, inited: false, loading: {}, scale: null, forceLight: false};
@@ -108,28 +133,49 @@ window.EMTHeatmap = (function () {
 
   // one month's grid: day -> {slots:[{kwh,co2,int}], total:{kwh,co2}}, days in LOCAL time
   function monthGrid(key) {
-    var days = {}, n = slots();
+    var days = {}, n = slots(), now = Date.now();
     (state.months[key].blocks || []).forEach(function (b) {
       if (b.meter_id !== 'electricity_main') return;
       var lp = localParts(b.block_start);
       if (lp.day.slice(0, 7) !== key) return;                  // a UTC edge of the month
-      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0}});
+      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, api: 0, apiexp: 0}});
       var net = (b.imp_kwh || 0) - (b.exp_kwh || 0), cg = b.carbon_g;
       var c = d.slots[lp.slot] || (d.slots[lp.slot] = {kwh: 0, co2: null, int: null});
       c.kwh += net;                                             // clocks-back: summed
       if (cg !== null && cg !== undefined) c.co2 = (c.co2 || 0) + cg;
       // The payload states the grid's intensity per block (carbon.slot_intensity).
       if (b.carbon_intensity_g !== null && b.carbon_intensity_g !== undefined) c.int = b.carbon_intensity_g;
+      // API coverage, per channel: the payload's kwh_authoritative / exp_kwh_authoritative
+      // is "imported, or that channel's DCC kWh held".
+      var imported = /^imported/.test(b.source || ''), young = now - Date.parse(b.block_start + 'Z') < API_PENDING_H * 3600e3;
+      Object.keys(API_METRICS).forEach(function (k) {
+        var st = imported ? 'imported' : b[API_METRICS[k].field] ? 'ok' : young ? 'pending' : 'missing';
+        if (!c[k] || API_RANK[st] > API_RANK[c[k]]) c[k] = st;
+      });
       d.total.kwh += net; if (cg) d.total.co2 += cg;
+    });
+    Object.keys(days).forEach(function (k) {                      // the day's half-hours still owed
+      Object.keys(API_METRICS).forEach(function (m) {
+        days[k].total[m] = days[k].slots.filter(function (c) {
+          return c && (c[m] === 'missing' || c[m] === 'pending'); }).length;
+      });
     });
     return days;
   }
-  function metricOf(c, m) { return c ? (m === 'kwh' ? c.kwh : m === 'co2' ? c.co2 : c.int) : null; }
+  function metricOf(c, m) { return c ? (m === 'kwh' ? c.kwh : m === 'co2' ? c.co2 : isApi(m) ? c[m] : c.int) : null; }
 
   // The range every drawn month shares, so months are comparable: over all LOADED months.
   // It can widen as older months load; drawn months are re-coloured when it does.
   function computeScale() {
     var m = state.metric, lo = Infinity, hi = -Infinity, tlo = Infinity, thi = -Infinity, ints = [];
+    if (isApi(m)) {                     // categorical cells; the bar counts from 0 to the worst day
+      var worst = 1;
+      Object.keys(state.panels).forEach(function (k) {
+        var g = state.panels[k].grid; if (!g) return;
+        Object.keys(g).forEach(function (d) { worst = Math.max(worst, g[d].total[m]); });
+      });
+      return {lo: 0, hi: 1, tlo: 0, thi: worst};
+    }
     Object.keys(state.panels).forEach(function (k) {
       var g = state.panels[k].grid; if (!g) return;
       Object.keys(g).forEach(function (d) {
@@ -151,7 +197,10 @@ window.EMTHeatmap = (function () {
     return {lo: lo, hi: hi, tlo: tlo, thi: thi};
   }
   function cellStops(sc) { return state.metric === 'kwh' ? kwhStops(sc.lo, sc.hi) : state.metric === 'co2' ? co2Stops(sc.lo, sc.hi) : INT_STOPS; }
-  function totStops(sc) { return state.metric === 'kwh' ? kwhStops(sc.tlo, sc.thi) : co2Stops(sc.tlo, sc.thi); }
+  function totStops(sc) {
+    if (isApi(state.metric)) return [[0, bg()], [1, '#cc0000']];
+    return state.metric === 'kwh' ? kwhStops(sc.tlo, sc.thi) : co2Stops(sc.tlo, sc.thi);
+  }
 
   // The daily-total column narrows with the screen: v4's 150 px on a desktop, 56 px on a
   // phone. Cells are square and sized from what is left; below CELL_MIN the row scrolls
@@ -212,7 +261,11 @@ window.EMTHeatmap = (function () {
     p.chart = new Chart(row.querySelector('.hm-grid canvas').getContext('2d'), {
       type: 'matrix', plugins: [weekendRows(days, 'afterDatasetsDraw')],
       data: {datasets: [{data: pts, borderWidth: 0,
-        backgroundColor: function (ctx) { var r = ctx.raw; return r ? paint(stops, sc.lo, sc.hi, metricOf(r.c, state.metric)) : 'rgba(0,0,0,0)'; },
+        backgroundColor: function (ctx) {
+          var r = ctx.raw; if (!r) return 'rgba(0,0,0,0)';
+          var v = metricOf(r.c, state.metric);
+          return isApi(state.metric) ? apiColour(v) : paint(stops, sc.lo, sc.hi, v);
+        },
         width: function (ctx) { var a = ctx.chart.chartArea; return a ? a.width / n - 1 : cs - 1; },
         height: function (ctx) { var a = ctx.chart.chartArea; return a ? a.height / days.length - 1 : cs - 1; }}]},
       options: {
@@ -305,8 +358,10 @@ window.EMTHeatmap = (function () {
       if (hitTot) { v = p.grid[day].total[state.metric]; lab = mm.tot; }
       else { var ci = Math.floor((x - a.left) / (a.width / p.xs.length));
              v = metricOf(p.grid[day].slots[ci], state.metric); lab = p.xs[ci] + '–' + slotLabel(ci + 1); }
-      tip.innerHTML = '<b>' + day + '</b> ' + lab + '<br>' +
-        (v === null || v === undefined ? 'no data' : (+v).toFixed(mm.dp) + mm.unit);
+      var txt = (v === null || v === undefined) ? 'no data'
+              : isApi(state.metric) ? (hitTot ? v + ' half-hour' + (v === 1 ? '' : 's') + ' without API kWh' : API_TEXT[v])
+              : (+v).toFixed(mm.dp) + mm.unit;
+      tip.innerHTML = '<b>' + day + '</b> ' + lab + '<br>' + txt;
       tip.style.display = 'block'; tip.style.left = (pt.clientX + 12) + 'px'; tip.style.top = (pt.clientY + 12) + 'px';
     }
     row.addEventListener('mousemove', show);
@@ -398,7 +453,17 @@ window.EMTHeatmap = (function () {
     if (state.inited) return refresh();
     state.inited = true;
     state.root.innerHTML = '<div class="hm-empty">Loading…</div>';
-    return libs().then(function () { return fetchJSON('/api/periods?kind=month'); }).then(function (p) {
+    // The API-coverage view is for supplier-API accounts only; ask once, and a failed
+    // answer means "not shown", never an error for the heatmap.
+    var apiCheck = fetchJSON('/api/billing-source').then(function (r) {
+      if (!(r && r.uses_api)) return;
+      var chans = r.api_channels || ['import'];
+      Object.keys(API_METRICS).forEach(function (k) {
+        if (chans.indexOf(API_METRICS[k].channel) >= 0) METRICS[k] = API_METRICS[k];
+      });
+    }, function () {});
+    return libs().then(function () { return apiCheck; })
+      .then(function () { return fetchJSON('/api/periods?kind=month'); }).then(function (p) {
       var b = p.bounds || {};
       if (!b.earliest) { state.root.innerHTML = '<div class="hm-empty">No heatmap data yet.</div>'; return; }
       state.tz = p.timezone || state.tz; state.bounds = b; state.keys = [];

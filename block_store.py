@@ -7731,6 +7731,9 @@ class BlockStore:
             "       b.carbon_g, b.carbon_intensity_g, b.standing_charge, "
             "       b.interpolated, b.source, b.rate_source, b.needs_review, "
             "       (b.source LIKE 'imported%' OR b.imp_kwh_api IS NOT NULL) AS kwh_authoritative, "
+            # the export channel's own: export settles separately (and later) — the
+            # Heatmaps tab's API-coverage view splits by channel.
+            "       (b.source LIKE 'imported%' OR b.exp_kwh_api IS NOT NULL) AS exp_kwh_authoritative, "
             "       EXISTS(SELECT 1 FROM measured_cost mc "
             "              WHERE mc.slot_start = b.block_start "
             "                AND mc.direction = 'CONSUMPTION') AS bill_cached, "

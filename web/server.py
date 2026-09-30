@@ -4422,6 +4422,15 @@ def api_billing_source_get():
         _has_creds = _eng.has_kraken_credentials()
         return jsonify({"source": source, "unsettled": unsettled,
                         "api_available": _eng.kraken_available(),
+                        # The supplier API is part of this install's data source — the
+                        # rule is mode_uses_api(), so a page need not re-derive it
+                        # from `mode` (the Heatmaps tab's API-coverage view).
+                        "uses_api": bool(_uses_api),
+                        # the main meter's channels the API supplies readings for —
+                        # the API-coverage view shows one heatmap per channel.
+                        "api_channels": (sorted((next((m for m in (load_config().get("meters") or {}).values()
+                                                       if not (m.get("meta") or {}).get("sub_meter")), {})
+                                                 .get("channels") or {}).keys()) if _uses_api else []),
                         # The DCC/CAD settlement choice only makes sense with BOTH a
                         # local sensor (CAD) AND a supplier API — i.e. mode 'cad+api'.
                         # Pure-API has no CAD to fall back to; pure-CAD has no DCC.
