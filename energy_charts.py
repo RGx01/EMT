@@ -1044,7 +1044,21 @@ def _day_segment_split(main_import, meters):
     return out
 
 
-def build_day_chart_html(day, day_blocks, meter_colors, chart_prefix='', block_minutes=30, currency='£', site_name=None, ev_slot_map=None, bill_rounding=False, fallback_vat=0.05, ev_fold_meter=None, ev_label=None, cap_from=None, import_schedule=None, store=None, timezone_name='UTC'):
+def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, timezone_name, block_minutes=30, currency='£', ev_slot_map=None, bill_rounding=False, fallback_vat=0.05, ev_fold_meter=None, ev_label=None, store=None):
+    """Everything one day's billing chart shows, as DATA — no markup.
+
+    Returns {"chart": ..., "panel": ...}. `chart` is exactly the JSON the pre-rendered
+    page embedded per day (`data_chart_<day>`): per-meter half-hourly kWh, cost and the
+    charged-rate step series, plus the total-import rows the data table uses. `panel` is
+    the side column: day totals, export credit, and the per-meter breakdown with its
+    rate rows (already collapsed by _collapse_rate_kwh).
+
+    Split out of build_day_chart_html (C, 30 Sep 2026) so /api/energy
+    (`resolution=day&include=billing`) and the pre-rendered page are ONE derivation;
+    build_day_chart_html now only formats what this returns. The rate lines' context —
+    cap date, import schedule, timezone — is REQUIRED here (C rule 2): None is a valid
+    answer for the first two, but the caller must give it.
+    """
     slots = 1440 // block_minutes
     meter_kwh    = defaultdict(lambda: [0.0] * slots)
     meter_rate   = defaultdict(lambda: [0.0] * slots)
@@ -1409,16 +1423,8 @@ def build_day_chart_html(day, day_blocks, meter_colors, chart_prefix='', block_m
     main_color   = meter_colors.get("electricity_main", "#1f77b4")
     export_color = meter_colors.get("electricity_main_export", "#ff7f0e")
 
-    def cs(text, color, size="0.9em", bold=False):
-        w = "font-weight:600;" if bold else ""
-        return f'<span style="color:{color};font-size:{size};line-height:1.6;white-space:nowrap;{w}">{text}</span>'
-
-    def rate_rows_colored(meter_key, color):
-        out = ""
-        for kwh, rate, n in _collapse_rate_kwh(summary_rates[meter_key]):
-            suffix = f' (avg of {n})' if n else ''
-            out += cs(f'{kwh:.3f} kWh @ {currency}{rate:.4f}{suffix}', color, size="0.8em")
-        return out
+    def _rates(meter_key):
+        return [[kwh, rate, n] for kwh, rate, n in _collapse_rate_kwh(summary_rates[meter_key])]
 
     # ── Per-meter totals rounded to display precision ──────────────────────
     # Sum per-slot values at display precision (3dp kWh, 4dp cost) so the
@@ -1443,8 +1449,6 @@ def build_day_chart_html(day, day_blocks, meter_colors, chart_prefix='', block_m
         "kwh":  round(sum(meter_totals[m]["kwh"]  for m in meter_totals if not m.endswith("_export")), 3),
         "cost": round(sum(meter_totals[m]["cost"] for m in meter_totals if not m.endswith("_export")), 4),
     }
-    # Use rounded totals for the import summary line too
-    total_import_cost_display = ti_total["cost"]
     # BL-24 (opt-in): the ex-VAT import total for the side panel, from the same per-slot
     # exc ratio the data table uses (so the two agree). Only when the setting is on.
     _import_exc_display = None
@@ -1454,126 +1458,41 @@ def build_day_chart_html(day, day_blocks, meter_colors, chart_prefix='', block_m
             slot_ti_cost[_h] * (slot_exc_ratio[_h] if slot_exc_ratio[_h] is not None else _inv)
             for _h in range(slots)), 2)
 
-    totals_html = ''
-    if total_import > 0:
-        totals_html += cs(f'Total import: {total_import:.3f} kWh', main_color)
-        totals_html += cs(f'Import cost: {currency}{total_import_cost_display:.2f}', main_color)
-        if _import_exc_display is not None:
-            totals_html += cs(f'Import cost (exc VAT): {currency}{_import_exc_display:.2f}',
-                              main_color)
-    if exp_kwh > 0:
-        totals_html += cs(f'Total export: {exp_kwh:.3f} kWh', export_color)
-        totals_html += cs(f'Export credit: {currency}{exp_cost:.2f}', export_color)
-        totals_html += rate_rows_colored("electricity_main_export", export_color)
-
-    breakdown_cols = []
-
+    # ── Side panel, as data ──
+    # The breakdown lists the house remainder then each sub-meter, each only above
+    # 0.0001 kWh, and only when the day has sub-meters at all. Colours travel with it:
+    # rate rows are drawn in the meter colour darkened by adjust_color(…, 0.75).
+    breakdown = []
     if sub_meter_names:
         if house_kwh > 0.0001:
-            label = meter_display_name.get("electricity_main", "Direct import")
-            col   = '<div class="scol">'
-            col  += cs(f'↳ {label}', main_color, size="1em", bold=True)
-            col  += cs(f'{house_kwh:.3f} kWh', main_color, size="1em")
-            col  += cs(f'{currency}{house_cost:.2f}', main_color, size="1em")
-            col  += rate_rows_colored("electricity_main", adjust_color(main_color, 0.75))
-            col  += '</div>'
-            breakdown_cols.append(col)
-
+            breakdown.append({"meter": "electricity_main",
+                              "label": meter_display_name.get("electricity_main", "Direct import"),
+                              "kwh": house_kwh, "cost": house_cost, "color": main_color,
+                              "rate_color": adjust_color(main_color, 0.75),
+                              "rates": _rates("electricity_main")})
         for meter_name in sub_meter_names:
             sub_kwh  = summary_kwh.get(meter_name, 0.0)
             sub_cost = meter_totals.get(meter_name, {}).get("cost", 0.0)
             if sub_kwh > 0.0001:
                 sub_color = meter_colors.get(meter_name, "#e377c2")
-                label     = meter_display_name.get(meter_name, meter_name.replace("_", " ").title())
-                col  = '<div class="scol">'
-                col += cs(f'↳ {label}', sub_color, size="1em", bold=True)
-                col += cs(f'{sub_kwh:.3f} kWh', sub_color, size="1em")
-                col += cs(f'{currency}{sub_cost:.2f}', sub_color, size="1em")
-                col += rate_rows_colored(meter_name, adjust_color(sub_color, 0.75))
-                col += '</div>'
-                breakdown_cols.append(col)
+                breakdown.append({"meter": meter_name,
+                                  "label": meter_display_name.get(meter_name, meter_name.replace("_", " ").title()),
+                                  "kwh": sub_kwh, "cost": sub_cost, "color": sub_color,
+                                  "rate_color": adjust_color(sub_color, 0.75),
+                                  "rates": _rates(meter_name)})
+    panel = {
+        "total_import":    total_import,
+        "import_cost":     ti_total["cost"],
+        "import_cost_exc": _import_exc_display,
+        "export_kwh":      exp_kwh,
+        "export_cost":     exp_cost,
+        "export_rates":    _rates("electricity_main_export") if exp_kwh > 0 else [],
+        "main_color":      main_color,
+        "export_color":    export_color,
+        "breakdown":       breakdown,
+    }
 
-    breakdown_html = f'<div class="scols">{"".join(breakdown_cols)}</div>' if breakdown_cols else ''
-
-    summary_html = (
-        f'<div class="chart-summary">'
-        f'<div class="day-label">{day}</div>'
-        f'<div class="stotals">{totals_html}</div>'
-        + (f'<div class="sdivider"></div>' if breakdown_cols else '')
-        + breakdown_html
-        + '</div>'
-    )
-
-    # ── Plotly traces ──
-    traces = []
-    for meter in sorted(meter_kwh.keys()):
-        bar_color  = meter_colors.get(meter, "#333333")
-        line_color = adjust_color(bar_color, 0.8)
-        dash_style = "dash" if meter.endswith("_export") else "solid"
-        _ys = meter_kwh[meter]
-        customdata = [[x_ranges[i], total_hh_kwh[i], abs(_ys[i])] for i in range(slots)]
-
-        if meter == "electricity_main_export":
-            nice_name = meter_display_name.get(meter, "Grid Export")
-        else:
-            nice_name = meter_display_name.get(
-                            meter,
-                            meter.replace("_", " ")
-                                 .replace("electricity main", "Direct import")
-                                 .replace("export", "Grid Export")
-                                 .title()
-                        )
-        raw_rates = meter_rate[meter]
-        last_nonzero = max((i for i, v in enumerate(raw_rates) if v != 0.0), default=None)
-        if last_nonzero is not None:
-            truncated_rates = raw_rates[:last_nonzero + 1] + [raw_rates[last_nonzero]]
-            trunc_x_line = [i - 0.5 for i in range(last_nonzero + 2)]
-        else:
-            truncated_rates = raw_rates + [raw_rates[-1]]
-            trunc_x_line = [i - 0.5 for i in range(slots + 1)]
-
-        hover_total = "" if meter.endswith("_export") else " (%{customdata[1]:.3f} total)"
-        use_area   = block_minutes < 15
-        chart_type = 'scatter' if use_area else 'bar'
-
-        if use_area:
-            extra_props = (", mode: 'lines', fill: 'tozeroy', line: "
-                           + "{" + f"shape:'hv', color:'{bar_color}'" + "}")
-        else:
-            extra_props = (", width: 0.7, marker: "
-                           + "{" + f"color: '{bar_color}'" + "}")
-
-        has_rate_data = any(v != 0.0 for v in raw_rates)
-        rate_trace = (
-            ",{"
-            + f"\n  x: {json.dumps(trunc_x_line)},"
-            + f"\n  y: {json.dumps(truncated_rates)},"
-            + "\n  type: 'scatter', mode: 'lines',"
-            + "\n  line: " + "{" + f"shape:'hv', width:2, color:'{line_color}', dash:'{dash_style}'" + "},"
-            + f"\n  name: '{nice_name} rate',"
-            + "\n  yaxis: 'y2',"
-            + "\n  customdata: xRanges.concat([xRanges[xRanges.length-1]]),"
-            + f"\n  hovertemplate: '{nice_name} rate<br>%{{customdata}}<br>{currency}%{{y:.4f}}<extra></extra>'"
-            + "\n}"
-        ) if has_rate_data else ""
-
-        traces.append(
-            "{"
-            + f"\n  x: xBar,"
-            + f"\n  y: {json.dumps(meter_kwh[meter])},"
-            + f"\n  type: '{chart_type}'"
-            + extra_props + ","
-            + f"\n  name: '{nice_name}',"
-            + f"\n  customdata: {json.dumps(customdata)},"
-            + f"\n  hovertemplate: '{nice_name}<br>%{{customdata[0]}}<br>%{{customdata[2]:.3f}} kWh{hover_total}<extra></extra>'"
-            + "\n}"
-            + rate_trace
-        )
-
-    chart_id      = f"{chart_prefix}chart_{day.replace('-', '_')}"
-    chart_id_safe = chart_id.replace('-', '_')
-
-    # ── Serialise chart data as JSON — browser won't parse until needed ──
+    # ── Chart series ──
     meters_data = {}
     for meter in sorted(meter_kwh.keys()):
         bar_color  = meter_colors.get(meter, "#333333")
@@ -1628,6 +1547,62 @@ def build_day_chart_html(day, day_blocks, meter_colors, chart_prefix='', block_m
         chart_data["exc_ratio"]      = slot_exc_ratio
         chart_data["exc_approx"]     = slot_exc_approx
         chart_data["fallback_invat"] = round(1.0 / (1.0 + fallback_vat), 8)
+    return {"chart": chart_data, "panel": panel}
+
+
+def build_day_chart_html(day, day_blocks, meter_colors, chart_prefix='', block_minutes=30, currency='£', site_name=None, ev_slot_map=None, bill_rounding=False, fallback_vat=0.05, ev_fold_meter=None, ev_label=None, cap_from=None, import_schedule=None, store=None, timezone_name='UTC'):
+    """The pre-rendered page's markup for one day, formatted from day_chart_data."""
+    d = day_chart_data(day, day_blocks, meter_colors, block_minutes=block_minutes, currency=currency,
+                       ev_slot_map=ev_slot_map, bill_rounding=bill_rounding, fallback_vat=fallback_vat,
+                       ev_fold_meter=ev_fold_meter, ev_label=ev_label, cap_from=cap_from,
+                       import_schedule=import_schedule, store=store, timezone_name=timezone_name)
+    chart_data, panel = d["chart"], d["panel"]
+
+    def cs(text, color, size="0.9em", bold=False):
+        w = "font-weight:600;" if bold else ""
+        return f'<span style="color:{color};font-size:{size};line-height:1.6;white-space:nowrap;{w}">{text}</span>'
+
+    def rate_rows_colored(rates, color):
+        out = ""
+        for kwh, rate, n in rates:
+            suffix = f' (avg of {n})' if n else ''
+            out += cs(f'{kwh:.3f} kWh @ {currency}{rate:.4f}{suffix}', color, size="0.8em")
+        return out
+
+    main_color, export_color = panel["main_color"], panel["export_color"]
+    totals_html = ''
+    if panel["total_import"] > 0:
+        totals_html += cs(f'Total import: {panel["total_import"]:.3f} kWh', main_color)
+        totals_html += cs(f'Import cost: {currency}{panel["import_cost"]:.2f}', main_color)
+        if panel["import_cost_exc"] is not None:
+            totals_html += cs(f'Import cost (exc VAT): {currency}{panel["import_cost_exc"]:.2f}',
+                              main_color)
+    if panel["export_kwh"] > 0:
+        totals_html += cs(f'Total export: {panel["export_kwh"]:.3f} kWh', export_color)
+        totals_html += cs(f'Export credit: {currency}{panel["export_cost"]:.2f}', export_color)
+        totals_html += rate_rows_colored(panel["export_rates"], export_color)
+
+    breakdown_cols = []
+    for row in panel["breakdown"]:
+        col  = '<div class="scol">'
+        col += cs(f'↳ {row["label"]}', row["color"], size="1em", bold=True)
+        col += cs(f'{row["kwh"]:.3f} kWh', row["color"], size="1em")
+        col += cs(f'{currency}{row["cost"]:.2f}', row["color"], size="1em")
+        col += rate_rows_colored(row["rates"], row["rate_color"])
+        col += '</div>'
+        breakdown_cols.append(col)
+
+    breakdown_html = f'<div class="scols">{"".join(breakdown_cols)}</div>' if breakdown_cols else ''
+
+    summary_html = (
+        f'<div class="chart-summary">'
+        f'<div class="day-label">{day}</div>'
+        f'<div class="stotals">{totals_html}</div>'
+        + (f'<div class="sdivider"></div>' if breakdown_cols else '')
+        + breakdown_html
+        + '</div>'
+    )
+
     chart_data_json = json.dumps(chart_data, separators=(',', ':'))
 
     chart_id      = f"{chart_prefix}chart_{day.replace('-', '_')}"
@@ -1653,6 +1628,135 @@ def build_day_chart_html(day, day_blocks, meter_colors, chart_prefix='', block_m
 """
 
 
+
+
+# ─────────────────────────────────────────────────────────────
+# Billing context and period summary — shared by the pre-render and /api/energy
+# ─────────────────────────────────────────────────────────────
+
+def group_blocks_by_day(blocks, tz, block_minutes):
+    """{local day ISO: [(slot index, block), …]} — how the Billing view groups blocks.
+
+    The slot is the local clock position, so the repeated hour of a clocks-back day
+    lands on slots it already used. day_chart_data ASSIGNS per-slot series (the bars and
+    `meter_totals` keep the later block) but ACCUMULATES `summary_kwh` (the side panel
+    counts both) — so on that one day a year the two disagree. Inherited from v4;
+    kept as-is here, where the pre-render and the API must stay identical."""
+    days_map = defaultdict(list)
+    for block in blocks:
+        try:
+            if not block or not block.get("start"):
+                continue
+            start = _parse_block_start(block["start"], tz)
+            day   = start.date().isoformat()
+            hh    = (start.hour * 60 + start.minute) // block_minutes
+            days_map[day].append((hh, block))
+        except Exception:
+            pass
+    return days_map
+
+
+def billing_context(cfg, store, blocks, has_exc=None):
+    """What every period summary and day chart of one Billing view shares.
+
+    Split out of generate_daily_import_export_charts (C, 30 Sep 2026) so
+    /api/energy?include=billing builds the same thing from a period's blocks:
+
+      * the EV identity — a has-EV-meter account gets one continuous 'EV' line
+        (hybrid: synthetic post-seam, recorded physical pre-seam, H6); a no-EV-meter
+        account the display-only dispatch split 'EV (from dispatch)' (BL-22);
+      * the per-slot EV map for that. Every rule in it is per SLOT, so building it from
+        one period's blocks gives the same entries as building it from all of history;
+      * meter colours (EV dispatch purple when the map has entries);
+      * BL-24 bill rounding: the opt-in setting, gated on EMT holding a captured ex-VAT
+        figure ANYWHERE — not merely in these blocks. `has_exc` lets a caller holding
+        one period answer that for the whole store (the API asks SQL); omitted, it is
+        read from `blocks`, which is all of history for the pre-render;
+      * the learned VAT calendar (vat_at).
+    """
+    meter_colors = build_meter_colors_from_config(cfg) if cfg else build_meter_colors(blocks)
+
+    # Derived-EV split (display-only; BL-22): no-op unless this is a no-sub-meter
+    # account with completed dispatches. Gives the Billing tab an "EV (from dispatch)"
+    # breakdown line + per-day trace without moving any bill total.
+    # Hybrid EV for the billing breakdown (H6): a has-EV-meter account gets one continuous
+    # 'EV' line (synthetic post-seam, recorded physical pre-seam) via the fold-back; a no-EV-
+    # meter account keeps the display-only dispatch split labelled 'EV (from dispatch)'.
+    _ev_phys_id = _ev_meter_id(cfg)
+    if _ev_phys_id:
+        _ev_slot_map = _hybrid_ev_slot_map(store, blocks, cfg)
+        _ev_fold_devices = [((cfg.get("meters", {}).get(_ev_phys_id, {}).get("meta") or {}).get("device")
+                             or _ev_phys_id)]
+        _ev_label = "EV"
+    else:
+        _ev_slot_map = _dispatch_ev_slot_map(store, blocks, cfg)
+        _ev_fold_devices = None
+        _ev_label = "EV (from dispatch)"
+    # Day tables: has-EV-meter accounts fold the metered EV line to the SYNTHETIC segment
+    # value in-place (ev_fold_meter) rather than carving a separate dispatch line, so the EV
+    # bar matches Usage Stats. No-EV-meter accounts keep the dispatch carve. Grid totals hold.
+    _ev_day_map = None if _ev_phys_id else _ev_slot_map
+    if _ev_slot_map:
+        meter_colors["ev_dispatch"] = "#8b5cf6"
+    # H6c: the EV line keeps its DEVICE-INDEX palette colour (the colour the physical meter
+    # had before), synthetic or recorded — not the synthetic purple — so it stays distinct
+    # from the blue house line (accessibility — see roadmap BL-29).
+
+    # BL-24 (opt-in): show the bill summary with Octopus's rounding method. Read once;
+    # default off ⇒ nothing injected ⇒ the summary is byte-identical to today.
+    _bill_rounding = False
+    _vat_learned = []
+    try:
+        if store is not None:
+            _bill_rounding = bool((store.get_settings() or {}).get("bill_rounding_summary"))
+            _vat_learned = store.get_vat_calendar()
+    except Exception:
+        _bill_rounding = False
+    # Gate on capability: ex-VAT is only meaningful where EMT can capture a real exc
+    # figure (API/tariff). A CAD/cost-sensor-only user has no exc source at all, so we
+    # never show it — the fallback would only ever be inc ÷ (1+VAT), a bare assumption.
+    # Proxy "has API" by "any captured exc present in the data".
+    if _bill_rounding:
+        if has_exc is None:
+            has_exc = any(
+                ((((b or {}).get("meters") or {}).get("electricity_main") or {})
+                 .get("channels", {}).get("import", {}) or {}).get("cost_exc") is not None
+                for b in (blocks or []))
+        if not has_exc:
+            _bill_rounding = False
+
+    return {"meter_colors": meter_colors, "ev_phys_id": _ev_phys_id,
+            "ev_slot_map": _ev_slot_map, "ev_fold_devices": _ev_fold_devices,
+            "ev_label": _ev_label, "ev_day_map": _ev_day_map,
+            "bill_rounding": _bill_rounding, "vat_learned": _vat_learned}
+
+
+def vat_at(ctx, when):
+    """Statutory VAT rate at a date from the seed + learned calendar — the fallback
+    rate used where no per-slot inc/exc pair exists (replaces the hardcoded 1.05)."""
+    import vat_calendar as _vc
+    return _vc.resolve_vat(when, ctx["vat_learned"])
+
+
+def period_summary(ctx, blocks_for_calc, period_blocks, period_start, period_end, *, store, tz_name):
+    """calculate_billing_summary_for_period + the display-only derived-EV split, and
+    (opt-in) the bill-method figure. Both are additive: the bill anchors / Total Bill
+    stay byte-identical (see _inject_ev_breakdown_into_summary / _bill_method_summary).
+
+    `blocks_for_calc` may be wider than the period (the summary filters by local time);
+    `period_blocks` must be the period's own blocks — the EV split and the bill method
+    sum over them unfiltered."""
+    _sm = calculate_billing_summary_for_period(
+        blocks_for_calc, period_start, period_end, store=store, tz_name=tz_name)
+    if ctx["ev_slot_map"]:
+        _inject_ev_breakdown_into_summary(_sm, period_blocks, ctx["ev_slot_map"],
+                                          label=ctx["ev_label"], fold_devices=ctx["ev_fold_devices"])
+    if ctx["bill_rounding"]:
+        _bm = _bill_method_breakdown(period_blocks, period_vat=vat_at(ctx, period_start),
+                                     standing_inc_by_day=_sm.get("standing"))
+        if _bm:
+            _sm["bill_method"] = _bm
+    return _sm
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1682,46 +1786,15 @@ def generate_daily_import_export_charts(blocks, timezone_name="UTC", block_minut
     slots = 1440 // block_minutes
     today = datetime.now(tz=_tz).date()
 
-    # ── Group blocks by day ──
-    days_map = defaultdict(list)
-    for block in blocks:
-        try:
-            if not block or not block.get("start"):
-                continue
-            start = _parse_block_start(block["start"], _tz)
-            day   = start.date().isoformat()
-            hh    = (start.hour * 60 + start.minute) // block_minutes
-            days_map[day].append((hh, block))
-        except Exception:
-            pass
+    days_map = group_blocks_by_day(blocks, _tz, block_minutes)
 
-    meter_colors = build_meter_colors_from_config(cfg) if cfg else build_meter_colors(blocks)
-
-    # Derived-EV split (display-only; BL-22): no-op unless this is a no-sub-meter
-    # account with completed dispatches. Gives the Billing tab an "EV (from dispatch)"
-    # breakdown line + per-day trace without moving any bill total.
-    # Hybrid EV for the billing breakdown (H6): a has-EV-meter account gets one continuous
-    # 'EV' line (synthetic post-seam, recorded physical pre-seam) via the fold-back; a no-EV-
-    # meter account keeps the display-only dispatch split labelled 'EV (from dispatch)'.
-    _ev_phys_id = _ev_meter_id(cfg)
-    if _ev_phys_id:
-        _ev_slot_map = _hybrid_ev_slot_map(store, blocks, cfg)
-        _ev_fold_devices = [((cfg.get("meters", {}).get(_ev_phys_id, {}).get("meta") or {}).get("device")
-                             or _ev_phys_id)]
-        _ev_label = "EV"
-    else:
-        _ev_slot_map = _dispatch_ev_slot_map(store, blocks, cfg)
-        _ev_fold_devices = None
-        _ev_label = "EV (from dispatch)"
-    # Day tables: has-EV-meter accounts fold the metered EV line to the SYNTHETIC segment
-    # value in-place (ev_fold_meter) rather than carving a separate dispatch line, so the EV
-    # bar matches Usage Stats. No-EV-meter accounts keep the dispatch carve. Grid totals hold.
-    _ev_day_map = None if _ev_phys_id else _ev_slot_map
-    if _ev_slot_map:
-        meter_colors["ev_dispatch"] = "#8b5cf6"
-    # H6c: the EV line keeps its DEVICE-INDEX palette colour (the colour the physical meter
-    # had before), synthetic or recorded — not the synthetic purple — so it stays distinct
-    # from the blue house line (accessibility — see roadmap BL-29).
+    ctx = billing_context(cfg, store, blocks)
+    meter_colors     = ctx["meter_colors"]
+    _ev_phys_id      = ctx["ev_phys_id"]
+    _ev_slot_map     = ctx["ev_slot_map"]
+    _ev_fold_devices = ctx["ev_fold_devices"]
+    _ev_label        = ctx["ev_label"]
+    _ev_day_map      = ctx["ev_day_map"]
 
     # ── Billing periods ──
     # Use historically correct billing_day per block from config_periods join.
@@ -1766,48 +1839,14 @@ def generate_daily_import_export_charts(blocks, timezone_name="UTC", block_minut
             d += _td(days=1)
         return result
 
-    # BL-24 (opt-in): show the bill summary with Octopus's rounding method. Read once;
-    # default off ⇒ nothing injected ⇒ the summary is byte-identical to today.
-    _bill_rounding = False
-    _vat_learned = []
-    try:
-        if store is not None:
-            _bill_rounding = bool((store.get_settings() or {}).get("bill_rounding_summary"))
-            _vat_learned = store.get_vat_calendar()
-    except Exception:
-        _bill_rounding = False
-    # Gate on capability: ex-VAT is only meaningful where EMT can capture a real exc
-    # figure (API/tariff). A CAD/cost-sensor-only user has no exc source at all, so we
-    # never show it — the fallback would only ever be inc ÷ (1+VAT), a bare assumption.
-    # Proxy "has API" by "any captured exc present in the data".
-    if _bill_rounding and not any(
-            ((((b or {}).get("meters") or {}).get("electricity_main") or {})
-             .get("channels", {}).get("import", {}) or {}).get("cost_exc") is not None
-            for b in (blocks or [])):
-        _bill_rounding = False
+    _bill_rounding = ctx["bill_rounding"]
 
-    import vat_calendar as _vc
     def _vat_at(_when):
-        """Statutory VAT rate at a date from the seed + learned calendar — the fallback
-        rate used where no per-slot inc/exc pair exists (replaces the hardcoded 1.05)."""
-        return _vc.resolve_vat(_when, _vat_learned)
+        return vat_at(ctx, _when)
 
     def _summ(_blks_for_calc, _s, _e):
-        """calculate_billing_summary_for_period + the display-only derived-EV split, and
-        (opt-in) the bill-method figure. Both are additive: the bill anchors / Total Bill
-        stay byte-identical (see _inject_ev_breakdown_into_summary / _bill_method_summary)."""
-        _sm = calculate_billing_summary_for_period(
-            _blks_for_calc, _s, _e, store=store, tz_name=timezone_name)
-        _period_blocks = _blocks_for_period(_s, _e)
-        if _ev_slot_map:
-            _inject_ev_breakdown_into_summary(_sm, _period_blocks, _ev_slot_map,
-                                              label=_ev_label, fold_devices=_ev_fold_devices)
-        if _bill_rounding:
-            _bm = _bill_method_breakdown(_period_blocks, period_vat=_vat_at(_s),
-                                         standing_inc_by_day=_sm.get("standing"))
-            if _bm:
-                _sm["bill_method"] = _bm
-        return _sm
+        return period_summary(ctx, _blks_for_calc, _blocks_for_period(_s, _e), _s, _e,
+                              store=store, tz_name=timezone_name)
 
     # ── Build per-period data ──
     period_sections = []   # list of dicts

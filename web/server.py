@@ -6271,7 +6271,7 @@ def api_energy():
     """The consolidated read surface — C §3: `resolution=period|day|block`.
 
         GET /api/energy?resolution=period&kind=billing|month|quarter|year
-                       &include=usage,carbon
+                       &include=usage,carbon,billing
                        [&period_start=YYYY-MM-DD | &year=&month=&quarter=]
 
     Replaces six routes whose only differences are WHICH period and WHAT to
@@ -6290,6 +6290,10 @@ def api_energy():
     first Pi soaks were set up from it and only ever asked for `period`.*
     `tariff_context` is not served yet (C §3: optional, omitted when absent).
 
+    **`include=billing`** is the Billing tab's data (billing_view.py): at `period` the
+    bill summary its card is formatted from, at `day` each local day's chart series
+    (charged-rate lines) and side panel. Not at `block`.
+
     Additive: the six routes it replaces are untouched, because the templates
     still call them and the client is replaced at step 6.
     """
@@ -6306,9 +6310,11 @@ def api_energy():
         # aggregate is an extra scan the caller did not ask for.
         _default_include = "usage" if resolution == "period" else ""
         include = {x.strip() for x in (request.args.get("include") or _default_include).split(",") if x.strip()}
-        unknown = include - {"usage", "carbon"}
+        unknown = include - {"usage", "carbon", "billing"}
         if unknown:
             return jsonify({"error": "include: unknown facet(s) %s" % sorted(unknown)}), 400
+        if "billing" in include and resolution == "block":
+            return jsonify({"error": "include=billing is served at resolution=period|day"}), 400
 
         store = store_access.store()
         cfg = load_config()
@@ -6354,6 +6360,14 @@ def api_energy():
             # its peak-demand window. Their signatures differ by one argument and
             # that difference is real, not an oversight to paper over.
             out["carbon"] = _aggregate_insights(store, cfg, utc_start, utc_end)
+        if "billing" in include:
+            # The Billing tab's data (billing_view): at `period` the bill summary the
+            # card is formatted from; at `day` each day's chart series and side panel.
+            # The same functions the pre-rendered page calls, so the two cannot differ.
+            import billing_view
+            out["billing"] = (billing_view.period_billing(store, cfg, tz_name, utc_start, utc_end, meta)
+                              if resolution == "period"
+                              else billing_view.day_billing(store, cfg, tz_name, utc_start, utc_end))
         return jsonify(out)
     except Exception as e:
         logger.exception("api_energy failed")
