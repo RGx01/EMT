@@ -21,6 +21,12 @@ the Pi (30 Sep 2026):
     background, baked into the canvas, and it stayed behind until another tab;
   * cells are square — one size for both axes, from the width;
   * the colour scales are v4's own stops (energy_charts.make_colorscale, _hmCo2Cs).
+
+And two v4 features it lacked:
+
+  * the metric bar floats — sticky at the top of the scroll container (v4's #hm-nav),
+    with v4's drop shadow;
+  * weekends are shaded across every slot of the grid, not only behind the totals.
 """
 import os
 import re
@@ -74,6 +80,31 @@ class V4Parity(unittest.TestCase):
         for c in ("#003366", "#0066cc", "#00aa66", "#ffcc99", "#ff6600", "#cc0000"):
             self.assertIn("'%s'" % c, _SRC[_SRC.index("function kwhStops("):_SRC.index("function co2Stops(")])
         self.assertIn("[wp, W]", _SRC)
+
+
+class V4Features(unittest.TestCase):
+    """REGRESSION (30 Sep 2026): the bar and weekend tests fail on the tree before this change."""
+
+    def _css(self, sel):
+        m = re.search(re.escape(sel) + r"\s*\{([^}]*)\}", _SRC)
+        self.assertIsNotNone(m, sel)
+        return m.group(1)
+
+    def test_the_metric_bar_floats_with_a_shadow(self):
+        css = self._css(".hm-bar")
+        self.assertIn("position:sticky", css)
+        self.assertIn("top:0", css)
+        self.assertIn("box-shadow:0 2px 8px rgba(0,0,0,0.4)", css)     # v4's #hm-nav
+        self.assertIn("background:", css)                             # opaque over the cells
+
+    def test_the_bar_is_a_direct_child_of_the_scroller(self):
+        """GUARD: sticky pins to the nearest scrolling ancestor; on the Charts page that is
+        #chart-heatmap-content itself (measured), so the bar must not be wrapped."""
+        self.assertIn("root.innerHTML = '<div class=\"hm-bar\">", _SRC)
+
+    def test_weekends_are_shaded_across_the_grid(self):
+        self.assertIn("type: 'matrix', plugins: [weekendRows(days, 'afterDatasetsDraw')],", _SRC)
+        self.assertIn("plugins: [weekendRows(days, 'beforeDatasetsDraw')],", _SRC)
 
 
 class ThePageUsesIt(unittest.TestCase):
