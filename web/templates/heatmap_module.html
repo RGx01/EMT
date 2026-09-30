@@ -2,31 +2,40 @@
   Heatmaps tab, drawn in the browser from /api/energy (workstream C, 30 Sep 2026).
 
   Replaces the pre-rendered net_heatmap.html iframe (energy_charts.generate_net_heatmap,
-  Plotly). Chart.js 4 + chartjs-chart-matrix — the Usage Stats tab already loads
-  Chart.js, and this is the test of whether it is enough for the whole Charts page.
+  Plotly). Chart.js 4 + chartjs-chart-matrix — Usage Stats already loads Chart.js, and
+  this was the test of whether it is enough for the whole Charts page.
 
-  DATA: /api/energy?resolution=block&kind=month&year=Y&month=M, one request per month,
-  newest first. No API shape of its own (C §3a: resolution= must not grow).
-  CACHE: in memory, per month, keyed by the response's per-day fingerprint and epoch
-  (C §2a). Returning to the tab re-fetches only months whose fingerprint moved.
-  LAYOUT: one matrix chart per calendar year, rendered when scrolled into view. A single
-  1,200-row canvas at phone pixel density would cost hundreds of MB.
-  LOCAL TIME: slots are local wall-clock half-hours in the SITE timezone the response
-  carries. On the clocks-back day the repeated hour is SUMMED into its slot (kWh and
-  gCO2); v4 overwrote it. On the clocks-forward day the missing hour is empty.
+  LOOK — v4's, matched deliberately (compared side by side on the Pi, 30 Sep 2026):
+    * square cells (v4: 20 px), times at -45° across the top, day numbers down the side;
+    * v4's colour stops EXACTLY (make_colorscale / _hmCo2Cs / _hmIntensityCs), over the
+      data's own min..max with the background colour at zero — not a symmetric ramp;
+      intensity 0..p95 (floor 50 gCO2/kWh);
+    * the daily total as horizontal bars on their own scale, weekends shaded behind.
+  LAYOUT: one chart per MONTH (square cells make a year ~7,000 px tall — too big for one
+  canvas on a phone). Months are drawn as they near the viewport and released when far
+  away; each keeps its placeholder height, so scrolling does not jump.
+  DATA: /api/energy?resolution=block&kind=month, one request per month; no API shape of
+  its own (C §3a). Cached in memory by per-day fingerprint and epoch (C §2a).
+  THEME: a MutationObserver on data-theme re-draws every drawn month — it does not rely
+  on the page's toggle wiring (a first draft did, and the canvas kept the old colours).
+  LOCAL TIME: slots are local half-hours in the SITE timezone; the repeated clocks-back
+  hour is SUMMED into its slot (v4 overwrote it); the clocks-forward hour is empty.
 -->
 <script>
 window.EMTHeatmap = (function () {
   var PLUGIN = 'https://cdn.jsdelivr.net/npm/chartjs-chart-matrix@2.0.1/dist/chartjs-chart-matrix.min.js';
   var CHARTJS = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js';
   var METRICS = {
-    kwh:       {label: 'kWh',       title: 'Net grid import (kWh)',            unit: ' kWh',     dp: 3},
-    co2:       {label: 'gCO₂',      title: 'Carbon (gCO₂)',                    unit: ' gCO₂',    dp: 1},
-    intensity: {label: 'gCO₂/kWh',  title: 'Grid carbon intensity (gCO₂/kWh)', unit: ' gCO₂/kWh', dp: 0}
+    kwh:       {label: 'kWh',      title: 'Net Energy (kWh)',  sub: 'Energy imported minus exported, each half-hour',
+                unit: ' kWh', dp: 3, tot: 'Daily Total'},
+    co2:       {label: 'gCO₂',     title: 'Carbon (gCO₂)',     sub: 'Emissions from what you drew, net of what you exported',
+                unit: ' gCO₂', dp: 1, tot: 'Daily CO₂'},
+    intensity: {label: 'gCO₂/kWh', title: 'Grid Carbon Intensity (gCO₂/kWh)',
+                sub: 'How clean the grid was, regardless of your usage', unit: ' gCO₂/kWh', dp: 0, tot: null}
   };
-  var ROW_PX = 6, TOTAL = 'Σ';
-  var state = {metric: 'kwh', tz: null, bm: 30, months: {}, years: [], charts: {}, epoch: null,
-               root: null, inited: false, loading: {}, scale: {}};
+  var AXIS_TOP = 46, AXIS_LEFT = 30, CELL_MAX = 22, CELL_MIN = 6;
+  var state = {metric: 'kwh', tz: null, bm: 30, months: {}, keys: [], panels: {}, epoch: null,
+               root: null, inited: false, loading: {}, scale: null, forceLight: false};
   var fetchJSON = function (url) { return fetch(apiUrl(url)).then(function (r) { return r.json(); }); };
 
   function loadScript(src) {
@@ -43,8 +52,42 @@ window.EMTHeatmap = (function () {
     });
   }
   function dark() {
-    if (state.forceLight) return false;                // PDF snapshot prints on white
+    if (state.forceLight) return false;                  // PDF snapshot prints on white
     return document.documentElement.getAttribute('data-theme') !== 'light';
+  }
+  function bg() { return dark() ? '#1a1d27' : '#ffffff'; }         // v4's zero colour, per theme
+  function axisC() { return dark() ? '#6b7080' : '#555566'; }
+
+  // ── v4's colour scales, exactly ───────────────────────────────────────────
+  function hex(c) { c = c.replace('#', ''); return [parseInt(c.slice(0, 2), 16), parseInt(c.slice(2, 4), 16), parseInt(c.slice(4, 6), 16)]; }
+  function kwhStops(mn, mx) {                           // energy_charts.make_colorscale
+    var W = bg();
+    if (mx === mn) mx = mn + 1;
+    var wp = Math.max(0, Math.min(1, (0 - mn) / (mx - mn)));
+    if (wp <= 0.01) return [[0, W], [0.33, '#ffcc99'], [0.66, '#ff6600'], [1, '#cc0000']];
+    if (wp >= 0.99) return [[0, '#003366'], [0.33, '#0066cc'], [0.66, '#00aa66'], [1, W]];
+    return [[0, '#003366'], [wp * 0.33, '#0066cc'], [wp * 0.66, '#00aa66'], [wp, W],
+            [wp + (1 - wp) * 0.33, '#ffcc99'], [wp + (1 - wp) * 0.66, '#ff6600'], [1, '#cc0000']];
+  }
+  function co2Stops(mn, mx) {                           // _hmCo2Cs
+    var W = bg();
+    if (mn >= 0) return [[0, W], [0.5, '#ff9966'], [1, '#cc0000']];
+    if (mx <= 0) return [[0, '#1a6632'], [0.5, '#66bb88'], [1, W]];
+    var wp = Math.max(0.01, Math.min(0.99, (0 - mn) / (mx - mn)));
+    return [[0, '#1a6632'], [wp * 0.5, '#66bb88'], [wp, W], [wp + (1 - wp) * 0.5, '#ff9966'], [1, '#cc0000']];
+  }
+  var INT_STOPS = [[0, '#1a6632'], [0.25, '#52b788'], [0.5, '#f9c74f'], [0.75, '#f3722c'], [1, '#cc0000']];
+  function paint(stops, mn, mx, v) {
+    if (v === null || v === undefined) return 'rgba(0,0,0,0)';
+    var t = mx > mn ? (v - mn) / (mx - mn) : 0.5; t = Math.max(0, Math.min(1, t));
+    for (var i = 1; i < stops.length; i++) {
+      if (t <= stops[i][0] || i === stops.length - 1) {
+        var a = stops[i - 1], b = stops[i], span = b[0] - a[0], u = span > 0 ? Math.min(1, (t - a[0]) / span) : 0;
+        var A = hex(a[1]), B = hex(b[1]);
+        return 'rgb(' + [0, 1, 2].map(function (k) { return Math.round(A[k] + (B[k] - A[k]) * u); }).join(',') + ')';
+      }
+    }
+    return stops[stops.length - 1][1];
   }
 
   // ── local wall-clock parts in the site timezone, memoised per UTC half-hour ──
@@ -58,262 +101,338 @@ window.EMTHeatmap = (function () {
     _memo[utcIso] = out; return out;
   }
   function slotLabel(i) {
-    var m = i * state.bm, h = Math.floor(m / 60), mm = m % 60;
+    var m = i * state.bm, h = Math.floor(m / 60) % 24, mm = m % 60;
     return (h < 10 ? '0' : '') + h + ':' + (mm < 10 ? '0' : '') + mm;
   }
+  function slots() { return Math.round(1440 / state.bm); }
 
-  // ── one year's grid: day -> {slots:[{kwh,co2,int}], total:{kwh,co2}} ──
-  function yearGrid(year) {
-    var days = {}, slots = Math.round(1440 / state.bm);
-    Object.keys(state.months).forEach(function (k) {
-      if (k.slice(0, 4) !== String(year)) return;
-      (state.months[k].blocks || []).forEach(function (b) {
-        if (b.meter_id !== 'electricity_main') return;
-        var lp = localParts(b.block_start);
-        if (lp.day.slice(0, 4) !== String(year)) return;       // a UTC month edge
-        var d = days[lp.day] || (days[lp.day] = {slots: new Array(slots).fill(null), total: {kwh: 0, co2: 0}});
-        var net = (b.imp_kwh || 0) - (b.exp_kwh || 0), cg = b.carbon_g;
-        var c = d.slots[lp.slot] || (d.slots[lp.slot] = {kwh: 0, co2: null, int: null});
-        c.kwh += net;                                         // clocks-back: summed, not overwritten
-        if (cg !== null && cg !== undefined) c.co2 = (c.co2 || 0) + cg;
-        // The payload states the grid's intensity per block — stored, or carbon_g/net
-        // for pre-3.0.0 blocks (BlockStore.get_energy_blocks). A zero-net half-hour
-        // still has a grid intensity; only a block with neither is empty.
-        if (b.carbon_intensity_g !== null && b.carbon_intensity_g !== undefined) c.int = b.carbon_intensity_g;
-        d.total.kwh += net; if (cg) d.total.co2 += cg;
-      });
+  // one month's grid: day -> {slots:[{kwh,co2,int}], total:{kwh,co2}}, days in LOCAL time
+  function monthGrid(key) {
+    var days = {}, n = slots();
+    (state.months[key].blocks || []).forEach(function (b) {
+      if (b.meter_id !== 'electricity_main') return;
+      var lp = localParts(b.block_start);
+      if (lp.day.slice(0, 7) !== key) return;                  // a UTC edge of the month
+      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0}});
+      var net = (b.imp_kwh || 0) - (b.exp_kwh || 0), cg = b.carbon_g;
+      var c = d.slots[lp.slot] || (d.slots[lp.slot] = {kwh: 0, co2: null, int: null});
+      c.kwh += net;                                             // clocks-back: summed
+      if (cg !== null && cg !== undefined) c.co2 = (c.co2 || 0) + cg;
+      // The payload states the grid's intensity per block (carbon.slot_intensity).
+      if (b.carbon_intensity_g !== null && b.carbon_intensity_g !== undefined) c.int = b.carbon_intensity_g;
+      d.total.kwh += net; if (cg) d.total.co2 += cg;
     });
     return days;
   }
-
-  // ── colour: diverging through the background at zero; intensity sequential ──
-  function colour(v, max, metric) {
-    if (v === null || v === undefined) return 'rgba(0,0,0,0)';
-    var bg = dark() ? [26, 29, 39] : [255, 255, 255];
-    var t = max > 0 ? Math.max(-1, Math.min(1, v / max)) : 0, hi;
-    if (metric === 'intensity') { t = Math.max(0, t); hi = t < 0.5 ? [46, 160, 67] : [220, 60, 50];
-      var u = t < 0.5 ? 1 - t * 2 : (t - 0.5) * 2;
-      var mid = [245, 190, 60]; var a = t < 0.5 ? hi : mid, z = t < 0.5 ? mid : hi;
-      return 'rgb(' + [0, 1, 2].map(function (i) { return Math.round(z[i] + (a[i] - z[i]) * u); }).join(',') + ')'; }
-    hi = t >= 0 ? [214, 96, 42] : [44, 123, 182];
-    var k = Math.abs(t);
-    return 'rgb(' + [0, 1, 2].map(function (i) { return Math.round(bg[i] + (hi[i] - bg[i]) * k); }).join(',') + ')';
-  }
   function metricOf(c, m) { return c ? (m === 'kwh' ? c.kwh : m === 'co2' ? c.co2 : c.int) : null; }
 
-  // shared scale across every year shown, so years are comparable
-  function recomputeScale() {
-    var m = state.metric, cell = 0, tot = 0;
-    state.years.forEach(function (y) {
-      var g = state.charts[y] && state.charts[y].grid; if (!g) return;
+  // The range every drawn month shares, so months are comparable: over all LOADED months.
+  // It can widen as older months load; drawn months are re-coloured when it does.
+  function computeScale() {
+    var m = state.metric, lo = Infinity, hi = -Infinity, tlo = Infinity, thi = -Infinity, ints = [];
+    Object.keys(state.panels).forEach(function (k) {
+      var g = state.panels[k].grid; if (!g) return;
       Object.keys(g).forEach(function (d) {
-        g[d].slots.forEach(function (c) { var v = metricOf(c, m); if (v !== null) cell = Math.max(cell, Math.abs(v)); });
-        if (m !== 'intensity') tot = Math.max(tot, Math.abs(g[d].total[m]));
+        g[d].slots.forEach(function (c) {
+          var v = metricOf(c, m); if (v === null || v === undefined) return;
+          if (m === 'intensity') ints.push(v); else { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+        });
+        if (m !== 'intensity') { var t = g[d].total[m]; tlo = Math.min(tlo, t); thi = Math.max(thi, t); }
       });
     });
-    state.scale = {cell: cell, total: tot};
+    if (m === 'intensity') {                                    // v4: p95, floor 50, else 300
+      ints.sort(function (a, b) { return a - b; });
+      var mx = ints.length ? Math.max(ints[Math.floor(0.95 * (ints.length - 1))], 50) : 300;
+      return {lo: 0, hi: mx, tlo: 0, thi: 1};
+    }
+    if (!isFinite(lo)) { lo = 0; hi = 1; }
+    if (!isFinite(tlo)) { tlo = 0; thi = 1; }
+    if (thi === tlo) thi = tlo + 1;
+    return {lo: lo, hi: hi, tlo: tlo, thi: thi};
   }
+  function cellStops(sc) { return state.metric === 'kwh' ? kwhStops(sc.lo, sc.hi) : state.metric === 'co2' ? co2Stops(sc.lo, sc.hi) : INT_STOPS; }
+  function totStops(sc) { return state.metric === 'kwh' ? kwhStops(sc.tlo, sc.thi) : co2Stops(sc.tlo, sc.thi); }
 
-  function renderYear(year) {
-    var holder = state.charts[year];
-    var grid = holder.grid = yearGrid(year);
-    var days = Object.keys(grid).sort().reverse();
-    if (!days.length) { holder.el.innerHTML = '<div class="hm-empty">No data for ' + year + '.</div>'; return; }
-    recomputeScale();
-    var m = state.metric, slots = Math.round(1440 / state.bm), xs = [];
-    for (var i = 0; i < slots; i++) xs.push(slotLabel(i));
-    xs.push(TOTAL);
+  // The daily-total column narrows with the screen: v4's 150 px on a desktop, 56 px on a
+  // phone. Cells are square and sized from what is left; below CELL_MIN the row scrolls
+  // sideways rather than squash them.
+  function totW(panel) {
+    if (state.metric === 'intensity') return 0;
+    var w = panel.el.querySelector('.hm-row').clientWidth;
+    return Math.round(Math.max(56, Math.min(150, w * 0.16)));
+  }
+  function cellSize(panel) {
+    var w = panel.el.querySelector('.hm-row').clientWidth - AXIS_LEFT - totW(panel) - 16;
+    return Math.max(CELL_MIN, Math.min(CELL_MAX, Math.floor(w / slots())));
+  }
+  function monthLabel(key) {
+    return new Date(+key.slice(0, 4), +key.slice(5, 7) - 1, 1).toLocaleString('en-GB', {month: 'short', year: 'numeric'});
+  }
+  function daysIn(key) { return new Date(+key.slice(0, 4), +key.slice(5, 7), 0).getDate(); }
+
+  // ── draw one month ─────────────────────────────────────────────────────────
+  function drawMonth(key) {
+    var p = state.panels[key]; if (!p || !state.months[key]) return;
+    p.grid = p.grid || monthGrid(key);
+    var days = Object.keys(p.grid).sort().reverse();             // newest at the top
+    release(key, true);
+    var row = p.el.querySelector('.hm-row');
+    if (!days.length) { row.innerHTML = '<div class="hm-empty">No data.</div>'; return; }
+    var m = state.metric, sc = state.scale || (state.scale = computeScale()), n = slots();
+    var cs = cellSize(p), TOT_W = totW(p), top = p.first ? AXIS_TOP : 0, h = days.length * cs + top + 2;
+    var xs = []; for (var i = 0; i < n; i++) xs.push(slotLabel(i));
     var pts = [];
-    days.forEach(function (d) {
-      grid[d].slots.forEach(function (c, i) { pts.push({x: xs[i], y: d, v: metricOf(c, m), c: c}); });
-      if (m !== 'intensity') pts.push({x: TOTAL, y: d, v: grid[d].total[m], total: true});
-    });
-    var canvasWrap = holder.el.querySelector('.hm-canvas');
-    canvasWrap.style.height = (days.length * ROW_PX + 48) + 'px';
-    var th = dark() ? '#6b7080' : '#555566';
-    var cfg = {
+    days.forEach(function (d) { p.grid[d].slots.forEach(function (c, i) { pts.push({x: xs[i], y: d, c: c}); }); });
+    // Fixed-size containers and `responsive: true`: Chart.js sizes the canvas to its
+    // parent. (With responsive:false it keeps the canvas's default 300x150 and ignores the
+    // container — cells came out 5x3 px instead of square.)
+    row.innerHTML = '<div class="hm-grid" style="position:relative;height:' + h + 'px;width:' + (n * cs + AXIS_LEFT + 4) +
+      'px"><canvas></canvas></div>' + (m === 'intensity' ? '' :
+      '<div class="hm-tot" style="position:relative;height:' + h + 'px;width:' + TOT_W + 'px"><canvas></canvas></div>');
+    var every = cs >= 18 ? 1 : cs >= 10 ? 2 : 4;           // v4 labelled every slot at 20 px
+    var stops = cellStops(sc), fixTop = function (s) { s.height = top; };
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    p.chart = new Chart(row.querySelector('.hm-grid canvas').getContext('2d'), {
       type: 'matrix',
       data: {datasets: [{data: pts, borderWidth: 0,
-        backgroundColor: function (ctx) {
-          var p = ctx.raw; if (!p) return 'rgba(0,0,0,0)';
-          return colour(p.v, p.total ? state.scale.total : state.scale.cell, state.metric);
-        },
-        width: function (ctx) { var a = ctx.chart.chartArea; return a ? Math.max(1, a.width / xs.length - 1) : 4; },
-        height: function (ctx) { var a = ctx.chart.chartArea; return a ? Math.max(1, a.height / days.length - 0.5) : ROW_PX; }
-      }]},
+        backgroundColor: function (ctx) { var r = ctx.raw; return r ? paint(stops, sc.lo, sc.hi, metricOf(r.c, state.metric)) : 'rgba(0,0,0,0)'; },
+        width: function (ctx) { var a = ctx.chart.chartArea; return a ? a.width / n - 1 : cs - 1; },
+        height: function (ctx) { var a = ctx.chart.chartArea; return a ? a.height / days.length - 1 : cs - 1; }}]},
       options: {
-        animation: false, maintainAspectRatio: false, responsive: true,
-        // Capped at 2x: a year is a tall canvas, and at a phone's 3x it costs more than
-        // twice the memory for no visible gain at 6-pixel rows.
-        devicePixelRatio: Math.min(2, window.devicePixelRatio || 1),
-        // Chart.js's own tooltip repaints the whole year per pointer move (measured:
-        // 22 ms for 17,934 cells on a Mac, ~5x that on a phone). The grid is regular,
-        // so the cell under the pointer is arithmetic — `attachHover` draws an HTML
-        // tooltip and the canvas is never repainted on hover.
-        events: [],
-        plugins: {legend: {display: false}, tooltip: {enabled: false}},
+        animation: false, maintainAspectRatio: false, responsive: true, devicePixelRatio: dpr,
+        // Hover is arithmetic on the grid (attachHover), not Chart.js's tooltip, which
+        // repaints the whole chart on every pointer move.
+        events: [], plugins: {legend: {display: false}, tooltip: {enabled: false}},
+        layout: {padding: {right: 2}},
         scales: {
           x: {type: 'category', labels: xs, position: 'top', offset: true, grid: {display: false},
-              ticks: {color: th, autoSkip: false, maxRotation: 0,
-                      callback: function (v, i) { var l = xs[i]; return l === TOTAL ? 'Σ' : (i % 4 === 0 ? l : ''); }}},
-          // EXPLICIT, not the default: chartjs-chart-matrix's defaults reverse the y
-          // axis, which drew category 0 (the newest day) at the BOTTOM while the hover
-          // arithmetic counts rows from the top — naming the wrong day. Checked against
-          // scale.getPixelForValue in the harness, not assumed.
+              display: p.first, afterFit: fixTop,
+              ticks: {color: axisC(), autoSkip: false, maxRotation: 45, minRotation: 45, font: {size: 10},
+                      callback: function (v, i) { return i % every === 0 ? xs[i] : ''; }}},
+          // EXPLICIT, not the default: chartjs-chart-matrix's defaults reverse the y axis,
+          // which drew the newest day at the BOTTOM while the hover arithmetic counts rows
+          // from the top — naming the wrong day. Checked against scale.getPixelForValue.
           y: {type: 'category', labels: days, offset: true, reverse: false, grid: {display: false},
-              ticks: {color: th, autoSkip: false,
-                      callback: function (v, i) { var d = days[i]; return d.slice(8) === '01' ? d.slice(0, 7) : ''; }}}
+              afterFit: function (s) { s.width = AXIS_LEFT; },
+              ticks: {color: axisC(), autoSkip: false, font: {size: 10}, padding: 2,
+                      // every day at v4's size; the 1st and every 5th when cells are small
+                      callback: function (v, i) { var dn = +days[i].slice(8);
+                        return (cs >= 12 || dn === 1 || dn % 5 === 0) ? String(dn) : ''; }}}
         }
       }
-    };
-    if (holder.chart) { holder.chart.destroy(); }
-    holder.chart = new Chart(canvasWrap.querySelector('canvas').getContext('2d'), cfg);
-    holder.days = days; holder.xs = xs;
-    attachHover(holder);
+    });
+    if (m !== 'intensity') {
+      var ts = totStops(sc), tvals = days.map(function (d) { return p.grid[d].total[m]; });
+      var weekend = {id: 'hmWeekend', beforeDatasetsDraw: function (ch) {     // v4: shaded rows
+        var a = ch.chartArea, rh = a.height / days.length, c = ch.ctx;
+        c.save(); c.fillStyle = dark() ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.10)';
+        days.forEach(function (d, i) {
+          var dow = new Date(d + 'T12:00:00').getDay();
+          if (dow === 0 || dow === 6) c.fillRect(a.left, a.top + i * rh, a.width, rh);
+        });
+        c.restore();
+      }};
+      p.tot = new Chart(row.querySelector('.hm-tot canvas').getContext('2d'), {
+        type: 'bar', plugins: [weekend],
+        data: {labels: days, datasets: [{data: tvals, barPercentage: 0.8, categoryPercentage: 1,
+          backgroundColor: tvals.map(function (v) { return paint(ts, sc.tlo, sc.thi, v); })}]},
+        options: {
+          indexAxis: 'y', animation: false, maintainAspectRatio: false, responsive: true, devicePixelRatio: dpr,
+          events: [], plugins: {legend: {display: false}, tooltip: {enabled: false}},
+          scales: {
+            x: {position: 'top', display: p.first, afterFit: fixTop, grid: {display: false},
+                ticks: {color: axisC(), maxTicksLimit: TOT_W < 100 ? 2 : 4, font: {size: 10}},
+                title: {display: p.first, text: METRICS[m].tot, color: axisC(), font: {size: 11}}},
+            y: {type: 'category', labels: days, offset: true, reverse: false, display: false}
+          }
+        }
+      });
+    }
+    if (p.tot) {
+      // Align the totals' rows with the grid's, measured rather than assumed: the grid's
+      // day labels make Chart.js pad its chart area (8 px at the bottom, measured) and the
+      // totals chart has no labels to do the same.
+      var ga = p.chart.chartArea, ta = p.tot.chartArea;
+      var pb = Math.max(0, ta.bottom - ga.bottom), pt = Math.max(0, ga.top - ta.top);
+      if (pb || pt) { p.tot.options.layout = {padding: {top: pt, bottom: pb}}; p.tot.update('none'); }
+    }
+    p.days = days; p.xs = xs; p.drawn = true;
+    attachHover(p);
+  }
+  function release(key, keepSize) {
+    var p = state.panels[key]; if (!p) return;
+    if (p.chart) { p.chart.destroy(); p.chart = null; }
+    if (p.tot) { p.tot.destroy(); p.tot = null; }
+    p.drawn = false;
+    var row = p.el.querySelector('.hm-row');
+    if (!keepSize) {                                            // far off screen: free the canvas
+      var hgt = row.offsetHeight; row.innerHTML = ''; row.style.height = hgt + 'px';
+    } else { row.style.height = ''; }
+  }
+  function redrawAll(rescale) {
+    if (rescale) state.scale = computeScale();
+    state.keys.forEach(function (k) { if (state.panels[k] && state.panels[k].drawn) drawMonth(k); });
+    var t = state.root && state.root.querySelector('.hm-title');
+    if (t) { t.textContent = METRICS[state.metric].title; state.root.querySelector('.hm-sub').textContent = METRICS[state.metric].sub; }
   }
 
+  // ── hover: arithmetic on the grid, an HTML tooltip — the canvas is never repainted ──
   function tipEl() {
     var t = document.getElementById('hm-tip');
     if (!t) { t = document.createElement('div'); t.id = 'hm-tip'; t.className = 'hm-tip'; document.body.appendChild(t); }
     return t;
   }
-  function attachHover(holder) {
-    var canvas = holder.chart.canvas;
-    if (canvas._hmHover) return;                    // one listener per canvas, across re-renders
-    canvas._hmHover = true;
+  function attachHover(p) {
+    var row = p.el.querySelector('.hm-row');
+    if (row._hmHover) return; row._hmHover = true;
     function show(ev) {
-      var ch = holder.chart, a = ch.chartArea, r = canvas.getBoundingClientRect();
-      var pt = ev.touches ? ev.touches[0] : ev, x = pt.clientX - r.left, y = pt.clientY - r.top;
-      var tip = tipEl();
+      var tip = tipEl(); if (!p.drawn || !p.chart) { tip.style.display = 'none'; return; }
+      var pt = ev.touches ? ev.touches[0] : ev, mm = METRICS[state.metric], v, lab, day;
+      var hitTot = !!(p.tot && p.tot.canvas === ev.target);
+      var ch = hitTot ? p.tot : p.chart, a = ch.chartArea, r = ch.canvas.getBoundingClientRect();
+      var x = pt.clientX - r.left, y = pt.clientY - r.top;
       if (!a || x < a.left || x > a.right || y < a.top || y > a.bottom) { tip.style.display = 'none'; return; }
-      var col = Math.floor((x - a.left) / (a.width / holder.xs.length));
-      var row = Math.floor((y - a.top) / (a.height / holder.days.length));
-      var day = holder.days[row], lab = holder.xs[col], g = holder.grid[day], mm = METRICS[state.metric], v;
-      if (!g) { tip.style.display = 'none'; return; }
-      if (lab === TOTAL) v = state.metric === 'intensity' ? null : g.total[state.metric];
-      else v = metricOf(g.slots[col], state.metric);
-      var t0 = lab === TOTAL ? 'daily total' : lab + '–' + slotLabel((col + 1) % holder.xs.length || 0);
-      tip.innerHTML = '<b>' + day + '</b> ' + t0 + '<br>' +
+      day = p.days[Math.floor((y - a.top) / (a.height / p.days.length))];
+      if (!day) { tip.style.display = 'none'; return; }
+      if (hitTot) { v = p.grid[day].total[state.metric]; lab = mm.tot; }
+      else { var ci = Math.floor((x - a.left) / (a.width / p.xs.length));
+             v = metricOf(p.grid[day].slots[ci], state.metric); lab = p.xs[ci] + '–' + slotLabel(ci + 1); }
+      tip.innerHTML = '<b>' + day + '</b> ' + lab + '<br>' +
         (v === null || v === undefined ? 'no data' : (+v).toFixed(mm.dp) + mm.unit);
-      tip.style.display = 'block';
-      tip.style.left = (pt.clientX + 12) + 'px'; tip.style.top = (pt.clientY + 12) + 'px';
+      tip.style.display = 'block'; tip.style.left = (pt.clientX + 12) + 'px'; tip.style.top = (pt.clientY + 12) + 'px';
     }
-    canvas.addEventListener('mousemove', show);
-    canvas.addEventListener('touchstart', show, {passive: true});
-    canvas.addEventListener('mouseleave', function () { tipEl().style.display = 'none'; });
+    row.addEventListener('mousemove', show);
+    row.addEventListener('touchstart', show, {passive: true});
+    row.addEventListener('mouseleave', function () { tipEl().style.display = 'none'; });
   }
 
-  function monthsOf(year, bounds) {
-    var out = [], lo = bounds.earliest, hi = bounds.latest;
-    for (var mo = 12; mo >= 1; mo--) {
-      var k = year + '-' + (mo < 10 ? '0' : '') + mo;
-      if (k >= lo.slice(0, 7) && k <= hi.slice(0, 7)) out.push(k);
-    }
-    return out;
-  }
+  // ── data ───────────────────────────────────────────────────────────────────
   function fetchMonth(key) {
     var y = key.slice(0, 4), mo = +key.slice(5, 7);
     return fetchJSON('/api/energy?resolution=block&kind=month&year=' + y + '&month=' + mo).then(function (r) {
       if (r.error) throw new Error(r.error);
       state.tz = state.tz || r.timezone;
-      state.months[key] = {blocks: r.blocks || [], fp: JSON.stringify(r.fingerprint.days), epoch: r.fingerprint.epoch};
       if (state.epoch !== null && r.fingerprint.epoch !== state.epoch) {   // bulk change: drop the cache
-        Object.keys(state.months).forEach(function (k) { if (k !== key) delete state.months[k]; });
+        state.months = {}; Object.keys(state.panels).forEach(function (k) { state.panels[k].grid = null; });
       }
       state.epoch = r.fingerprint.epoch;
+      state.months[key] = {blocks: r.blocks || [], fp: JSON.stringify(r.fingerprint.days)};
+      if (state.panels[key]) state.panels[key].grid = null;
     });
   }
-  function loadYear(year) {
-    if (state.loading[year]) return state.loading[year];
-    var keys = monthsOf(year, state.bounds).filter(function (k) { return !state.months[k]; });
-    var t0 = performance.now();
-    return (state.loading[year] = Promise.all(keys.map(fetchMonth)).then(function () {
-      var t1 = performance.now(); renderYear(year);
-      state.charts[year].timing = {fetch_ms: Math.round(t1 - t0), render_ms: Math.round(performance.now() - t1)};
-      delete state.loading[year];
+  function loadMonth(key) {
+    if (state.loading[key]) return state.loading[key];
+    var p = state.panels[key], t0 = performance.now();
+    var need = state.months[key] ? Promise.resolve() : fetchMonth(key);
+    return (state.loading[key] = need.then(function () {
+      var t1 = performance.now();
+      p.grid = p.grid || monthGrid(key);
+      var before = state.scale ? JSON.stringify(state.scale) : null, after = computeScale();
+      state.scale = after;
+      if (before && before !== JSON.stringify(after)) redrawAll(false);    // the range widened
+      drawMonth(key);
+      p.timing = {fetch_ms: Math.round(t1 - t0), draw_ms: Math.round(performance.now() - t1)};
+      delete state.loading[key];
     }).catch(function (e) {
-      state.charts[year].el.innerHTML = '<div class="hm-empty">Could not load ' + year + ': ' + e.message + '</div>';
-      delete state.loading[year];
+      p.el.querySelector('.hm-row').innerHTML = '<div class="hm-empty">Could not load ' + monthLabel(key) + ': ' + e.message + '</div>';
+      delete state.loading[key];
     }));
   }
 
   function buildUI() {
     var root = state.root;
     root.innerHTML = '<div class="hm-bar"><div class="hm-metrics"></div>' +
-      '<span class="hm-note">Local time · newest first · Σ = daily total</span></div><div class="hm-years"></div>';
+      '<span class="hm-note">Local time · newest first</span></div>' +
+      '<div class="hm-head"><div class="hm-title"></div><div class="hm-sub"></div></div><div class="hm-months"></div>';
     var mb = root.querySelector('.hm-metrics');
     Object.keys(METRICS).forEach(function (k) {
       var b = document.createElement('button'); b.className = 'hm-metric-btn' + (k === state.metric ? ' active' : '');
       b.textContent = METRICS[k].label; b.title = METRICS[k].title;
       b.onclick = function () { state.metric = k;
         mb.querySelectorAll('button').forEach(function (x) { x.classList.toggle('active', x === b); });
-        state.years.forEach(function (y) { if (state.charts[y].grid) renderYear(y); }); };
+        redrawAll(true); };
       mb.appendChild(b);
     });
-    var wrap = root.querySelector('.hm-years');
-    var io = new IntersectionObserver(function (ents) {
-      ents.forEach(function (e) { if (e.isIntersecting) { io.unobserve(e.target); loadYear(+e.target.dataset.year); } });
-    }, {rootMargin: '400px'});
-    state.years.forEach(function (y) {
-      var el = document.createElement('section'); el.className = 'hm-year'; el.dataset.year = y;
-      el.innerHTML = '<h3>' + y + '</h3><div class="hm-canvas" style="position:relative;height:' +
-        (366 * ROW_PX) + 'px"><canvas></canvas></div>';
-      wrap.appendChild(el); state.charts[y] = {el: el};
-      // The newest year loads now; older years when they scroll into view. Never
-      // make the first year wait on an intersection event — a page that is not
+    var wrap = root.querySelector('.hm-months');
+    // Draw near the viewport; release far from it (a month's canvases at 2x are ~10 MB).
+    var near = new IntersectionObserver(function (ents) {
+      ents.forEach(function (e) { var k = e.target.dataset.key;
+        if (e.isIntersecting && !state.panels[k].drawn) loadMonth(k); });
+    }, {rootMargin: '800px'});
+    var far = new IntersectionObserver(function (ents) {
+      ents.forEach(function (e) { var k = e.target.dataset.key;
+        if (!e.isIntersecting && state.panels[k].drawn) release(k, false); });
+    }, {rootMargin: '4000px'});
+    state.keys.forEach(function (k, i) {
+      var el = document.createElement('section'); el.className = 'hm-month'; el.dataset.key = k;
+      var guess = daysIn(k) * 18 + (i === 0 ? AXIS_TOP : 0);
+      el.innerHTML = '<div class="hm-mlabel">' + monthLabel(k) + '</div><div class="hm-row" style="height:' + guess + 'px"></div>';
+      wrap.appendChild(el); state.panels[k] = {el: el, first: i === 0};
+      // Never make the first month wait on an intersection event — a page that is not
       // visible yet (a background tab, a hidden pane) reports none.
-      if (y === state.years[0]) loadYear(y); else io.observe(el);
+      if (i === 0) loadMonth(k);
+      near.observe(el); far.observe(el);
     });
+    redrawAll(false);
+    // Theme: watch the attribute itself, so any toggle from any code path re-draws.
+    new MutationObserver(function () { redrawAll(true); })
+      .observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
+    // Width: square cells are sized from it.
+    var lastW = root.clientWidth, rt = null;
+    new ResizeObserver(function () {
+      if (Math.abs(root.clientWidth - lastW) < 8) return; lastW = root.clientWidth;
+      clearTimeout(rt); rt = setTimeout(function () { redrawAll(false); }, 150);
+    }).observe(root);
   }
 
   function init(root) {
     state.root = root || document.getElementById('chart-heatmap-content');
-    if (state.inited) {                           // returning: refresh only what moved
-      return refresh();
-    }
+    if (state.inited) return refresh();
     state.inited = true;
     state.root.innerHTML = '<div class="hm-empty">Loading…</div>';
-    return libs().then(function () { return fetchJSON('/api/periods?kind=year'); }).then(function (p) {
-      state.bounds = p.bounds || {};
-      if (!state.bounds.earliest) { state.root.innerHTML = '<div class="hm-empty">No heatmap data yet.</div>'; return; }
-      var y0 = +state.bounds.earliest.slice(0, 4), y1 = +state.bounds.latest.slice(0, 4);
-      state.tz = p.timezone || state.tz; state.years = [];
-      for (var y = y1; y >= y0; y--) state.years.push(y);
+    return libs().then(function () { return fetchJSON('/api/periods?kind=month'); }).then(function (p) {
+      var b = p.bounds || {};
+      if (!b.earliest) { state.root.innerHTML = '<div class="hm-empty">No heatmap data yet.</div>'; return; }
+      state.tz = p.timezone || state.tz; state.bounds = b; state.keys = [];
+      var y = +b.latest.slice(0, 4), mo = +b.latest.slice(5, 7), stop = b.earliest.slice(0, 7);
+      for (;;) {
+        var k = y + '-' + (mo < 10 ? '0' : '') + mo; state.keys.push(k);
+        if (k <= stop) break; mo--; if (mo < 1) { mo = 12; y--; }
+      }
       buildUI();
     }).catch(function (e) { state.root.innerHTML = '<div class="hm-empty">Heatmap unavailable: ' + e.message + '</div>'; });
   }
 
-  // re-fetch the current month (where change happens, C §2a); a moved fingerprint or
-  // epoch re-renders its year, and an epoch change drops every other month too
+  // re-fetch the current month (where change happens, C §2a); redraw only if it moved
   function refresh() {
-    var now = state.bounds && state.bounds.latest; if (!now) return Promise.resolve();
-    var key = now.slice(0, 7), before = state.months[key] && state.months[key].fp, ep = state.epoch;
-    return fetchMonth(key).then(function () {
-      var moved = state.months[key].fp !== before || state.epoch !== ep;
-      if (!moved) return;
-      if (state.epoch !== ep) { state.years.forEach(function (y) { state.charts[y].grid = null; }); }
-      return loadYear(+key.slice(0, 4));
+    var k = state.keys[0]; if (!k) return Promise.resolve();
+    var before = state.months[k] && state.months[k].fp, ep = state.epoch;
+    return fetchMonth(k).then(function () {
+      if (state.months[k].fp === before && state.epoch === ep) return;
+      if (state.epoch !== ep) { redrawAll(true); return; }
+      state.panels[k].grid = null; return loadMonth(k);
     });
   }
+  function rerender() { redrawAll(true); return Promise.resolve(); }
 
-  // re-draw every loaded year from the cached grid: a theme change or a new layout
-  function rerender() {
-    state.years.forEach(function (y) { if (state.charts[y] && state.charts[y].grid) renderYear(y); });
-    return Promise.resolve();
-  }
-
-  // PNG of every rendered year, drawn in the light palette for print, then restored
+  // PNG of every drawn month (cells + daily totals side by side), in the light palette
+  // for print, then the view is restored
   function snapshot() {
-    state.forceLight = true; rerender();
-    var out = state.years.filter(function (y) { return state.charts[y] && state.charts[y].chart; })
-      .map(function (y) { return {year: y, url: state.charts[y].chart.toBase64Image('image/png', 1)}; });
-    state.forceLight = false; rerender();
+    state.forceLight = true; redrawAll(true);
+    var out = state.keys.filter(function (k) { return state.panels[k].drawn; }).map(function (k) {
+      var p = state.panels[k], a = p.chart.canvas, b = p.tot ? p.tot.canvas : null;
+      var c = document.createElement('canvas'); c.width = a.width + (b ? b.width : 0); c.height = a.height;
+      var x = c.getContext('2d'); x.fillStyle = '#ffffff'; x.fillRect(0, 0, c.width, c.height);
+      x.drawImage(a, 0, 0); if (b) x.drawImage(b, a.width, 0);
+      return {month: monthLabel(k), url: c.toDataURL('image/png')};
+    });
+    state.forceLight = false; redrawAll(true);
     return out;
   }
 
-  return {init: init, refresh: refresh, loadYear: loadYear, rerender: rerender, snapshot: snapshot,
+  return {init: init, refresh: refresh, loadMonth: loadMonth, rerender: rerender, snapshot: snapshot,
           metricLabel: function () { return METRICS[state.metric].title; },
-          _state: state, _yearGrid: yearGrid, _colour: colour};
+          _state: state, _monthGrid: monthGrid, _paint: paint, _kwhStops: kwhStops, _release: release};
 })();
 </script>
 <style>
@@ -323,7 +442,14 @@ window.EMTHeatmap = (function () {
                    background:transparent; color:inherit; cursor:pointer; font-size:12px; }
   .hm-metric-btn.active { background:var(--accent, #3b82f6); color:#fff; border-color:transparent; }
   .hm-note { font-size:12px; color:var(--muted, #6b7080); }
-  .hm-year h3 { margin:14px 4px 4px; font-size:14px; }
+  .hm-head { text-align:center; margin:4px 0 6px; }
+  .hm-title { font-size:15px; font-weight:600; }
+  .hm-sub { font-size:12px; color:var(--muted, #6b7080); margin-top:2px; }
+  .hm-month { display:flex; align-items:stretch; }
+  .hm-mlabel { writing-mode:vertical-rl; transform:rotate(180deg); font-size:11px; color:var(--muted, #6b7080);
+               padding:0 4px; text-align:center; white-space:nowrap; }
+  .hm-row { display:flex; gap:12px; flex:1; min-width:0; overflow-x:auto; }
+  .hm-grid, .hm-tot { flex:none; }         /* never shrink: cells are sized to stay square */
   .hm-empty { padding:40px; text-align:center; color:var(--muted, #6b7080); }
   .hm-tip { position:fixed; z-index:50; pointer-events:none; display:none; padding:6px 8px;
             border-radius:6px; font-size:12px; line-height:1.4; background:var(--surface, #1a1d27);
