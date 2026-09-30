@@ -5838,6 +5838,14 @@ class TestCredentialsMissingSurfacing(unittest.TestCase):
                 setattr(self._eng, k, v)
 
     # ── /api/billing-source ──────────────────────────────────────────────────
+    def test_billing_source_says_whether_the_api_is_used(self):
+        """The Heatmaps tab's API-coverage view is offered on this flag, which is
+        engine.mode_uses_api() — not re-derived from `mode` by the page."""
+        self._eng.has_kraken_credentials = lambda: True
+        for uses in (True, False):
+            self._eng.mode_uses_api = lambda m=None, _u=uses: _u
+            self.assertIs(self.client.get("/api/billing-source").get_json()["uses_api"], uses)
+
     def test_billing_source_flags_missing(self):
         self._eng.mode_uses_api = lambda m=None: True
         self._eng.has_kraken_credentials = lambda: False

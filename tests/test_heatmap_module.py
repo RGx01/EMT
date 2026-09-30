@@ -107,6 +107,29 @@ class V4Features(unittest.TestCase):
         self.assertIn("plugins: [weekendRows(days, 'beforeDatasetsDraw')],", _SRC)
 
 
+class ApiCoverage(unittest.TestCase):
+    """The API-coverage view (30 Sep 2026): which half-hours still have no smart-meter
+    kWh from the supplier API. New-view tests: they fail on the tree before it."""
+
+    def test_it_is_offered_to_api_accounts_only(self):
+        self.assertNotIn("api:", _SRC[_SRC.index("var METRICS = {"):_SRC.index("var API_METRIC")])
+        self.assertIn("if (r && r.uses_api) METRICS.api = API_METRIC;", _SRC)
+
+    def test_imported_history_is_excluded_not_counted(self):
+        self.assertIn("/^imported/.test(b.source || '') ? 'imported'", _SRC)
+        self.assertIn("return c && (c.api === 'missing' || c.api === 'pending'); }).length;", _SRC)
+
+    def test_it_reads_the_payloads_own_flag(self):
+        """kwh_authoritative is the store's rule (imported, or imp_kwh_api held) — the
+        view does not re-derive it from imp_kwh_api."""
+        self.assertIn(": b.kwh_authoritative ? 'ok'", _SRC)
+        self.assertNotIn("imp_kwh_api", _SRC)
+
+    def test_a_recent_gap_is_not_yet_missing(self):
+        self.assertIn("var API_PENDING_H = 48;", _SRC)
+        self.assertIn("< API_PENDING_H * 3600e3 ? 'pending' : 'missing'", _SRC)
+
+
 class ThePageUsesIt(unittest.TestCase):
 
     def test_it_is_included_and_the_iframe_path_is_gone(self):

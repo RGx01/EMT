@@ -4403,6 +4403,10 @@ def api_billing_source_get():
         _has_creds = _eng.has_kraken_credentials()
         return jsonify({"source": source, "unsettled": unsettled,
                         "api_available": _eng.kraken_available(),
+                        # The supplier API is part of this install's data source — the
+                        # rule is mode_uses_api(), so a page need not re-derive it
+                        # from `mode` (the Heatmaps tab's API-coverage view).
+                        "uses_api": bool(_uses_api),
                         # The DCC/CAD settlement choice only makes sense with BOTH a
                         # local sensor (CAD) AND a supplier API — i.e. mode 'cad+api'.
                         # Pure-API has no CAD to fall back to; pure-CAD has no DCC.
