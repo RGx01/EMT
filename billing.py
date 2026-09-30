@@ -554,6 +554,27 @@ def get_all_year_periods(blocks, tz=None):
     return calendar_periods("year", *b) if b else []
 
 
+
+def bill_net_from_day_rollups(rows) -> float:
+    """The bill's total over local-day rollups (`BlockStore.get_day_rollups`): per
+    day, on the MAIN meter, round(round(imp,4) + round(standing,4) - round(exp,4), 2),
+    summed. The same rule as `BlockStore.compute_period_net` — the Billing card —
+    whose per-day penny rounding is what makes a bill's total; sub-meters attribute
+    the main meter's supply and never add to it.
+
+    ONE derivation for every surface (C §7.1, 30 Sep 2026). `_aggregate_usage`
+    rounds once over the whole period instead, and against v4's Billing card on a
+    real database it was up to 3p out in 49 of 80 periods; this was 0p in all 80
+    (`.build/reconcile_v4.py`)."""
+    total = 0.0
+    for r in rows:
+        if r.get("meter_id") != "electricity_main":
+            continue
+        total += round(round(r.get("imp_cost") or 0.0, 4)
+                       + round(r.get("standing_charge") or 0.0, 4)
+                       - round(r.get("exp_cost") or 0.0, 4), 2)
+    return round(total, 2)
+
 def calculate_billing_summary_for_period(blocks, period_start, period_end, store=None, tz_name=None):
     meter_summary  = defaultdict(lambda: defaultdict(lambda: {"kwh": 0.0, "cost": 0.0, "read_start": None, "read_end": None}))
     meter_totals   = defaultdict(lambda: {"kwh": 0.0, "cost": 0.0, "read_start": None, "read_end": None})

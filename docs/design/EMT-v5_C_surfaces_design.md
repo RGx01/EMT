@@ -19,10 +19,12 @@ the design.*
 | 4 | a write does no rendering | **not met** | 25 render triggers (10 engine incl. `finalise_block`, 15 server); go with #1 |
 | 5 | every surface on the one endpoint | **not met, by design so far** | `/api/energy` serves period, day and block, and **no page calls it**: Insights/Usage use the six period routes, Charts `blocks-summary`/`blocks-day` + the iframe, Live Power `/api/billing` |
 | 6 | no tariff context with a default, AST-enforced | **not met** | ~20 real defaults, incl. `cap_from=None`, `import_schedule=None` on the chart builders and `timezone='UTC'` in ~10 places; no test |
-| 7 | billing reconciles with v4 to the penny | **no test** | `bill_conformance.py` referees against Octopus, `test_adapter_differential` pricing wrappers — neither compares surface totals |
+| 7 | billing reconciles with v4 to the penny | **met, 30 Sep 2026** | `.build/reconcile_v4.py`: v4.5.16's own `compute_period_net` against v5 on a real database — **80 of 80** periods (40 billing, 40 months, three years) to the penny for the Billing card, the local-day client path and `/api/energy`'s period total. It first found the day rollups' standing charge summed 48× and the period total rounded once (≤3p in 49 of 80); both fixed. Property pinned in `tests/test_bill_reconciliation.py` |
 | 8 | TTFB budgets on the Pi | **baseline only** | §5 "Measured on the Pi" |
 
-**Found by the review, fixed 30 Sep 2026:** `resolution=day` grouped by **UTC** date, and a UTC
+**Found by the review, fixed 30 Sep 2026:** the day rollups' standing charge was a SUM over
+blocks that each carry the full daily charge — 48× — and the period payload rounded its bill
+total once over the period instead of per day. `resolution=day` grouped by **UTC** date, and a UTC
 day's total cannot be split back into local days — every BST day was wrong; it now groups by local
 day with `tz_name` required. Restore and zip import did not bump the epoch, which lives in the
 swapped file. `api_energy`'s docstring said day/block returned 501; they did not.
