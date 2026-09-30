@@ -1,0 +1,999 @@
+<!--
+  The Billing tab, drawn in the browser — C, 30 Sep 2026. Replaces the iframe of the
+  pre-rendered daily_usage.html (energy_charts.generate_daily_import_export_charts,
+  36 MB and ~9,700 inline scripts for three years of history).
+
+  DATA: /api/periods?kind=…&include=net_cost for the picker (every period and its
+  total), /api/energy?resolution=period&include=billing for a bill (the summary the
+  card is formatted from), /api/energy?resolution=day&kind=month&include=billing for
+  day charts, a calendar month at a time as they scroll into view. The server computes
+  every figure with the functions the pre-render used (billing_view.py); this file
+  only formats and draws.
+
+  THE BILL CARD is energy_charts.render_billing_summary ported line for line, down to
+  Python's number formatting (pyFixed: round-half-even on the exact binary value, and
+  "-0.00"), so a card can be compared string-for-string with the pre-rendered page's.
+  The side panel is build_day_chart_html's markup half, the data table the page's own
+  _buildTableContent, unchanged.
+
+  DAY CHARTS: Chart.js on a LINEAR x axis (bars at slot i, width 0.7) so the charged-
+  rate lines keep Plotly's `shape: 'hv'` exactly — each rate point sits at i − 0.5 and
+  `stepped: 'before'` draws horizontal-then-vertical, covering its slot. The rate axis
+  shares the energy axis's zero (the page's _alignY2). Charts are built as they near
+  the viewport and destroyed when far from it: a year is 365 canvases.
+
+  STRUCTURE keeps the page's class names (.period-section, .bill-toggle, .bill-view,
+  .day-chart-wrap, .chart-summary, .day-data-tables) so charts.html's PDF export reads
+  it as it read the iframe.
+-->
+<script>
+window.EMTBilling = (function () {
+  var CHARTJS = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js';
+  var MODES = {                       // the page's mode names → /api kinds
+    month:    {kind: 'billing', label: 'Bill'},
+    calmonth: {kind: 'month',   label: 'Month'},
+    quarter:  {kind: 'quarter', label: 'Quarter'},
+    year:     {kind: 'year',    label: 'Year'}
+  };
+  var MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  var MAX_RATE_ROWS = 5, SPLIT_BAND_EPS = 0.0015;
+
+  var state = {root: null, inited: false, mode: 'month', view: 'vanilla', censor: false,
+               asc: false, showData: false, lists: {}, sel: {}, bills: {}, months: {},
+               monthLoading: {}, charts: {}, forceLight: false, section: null, cur: null};
+
+  // ── storage (per-viewer conveniences; never required) ─────────────────────
+  function sget(k, d) { try { var v = sessionStorage.getItem('emtBill.' + k); return v === null ? d : v; } catch (e) { return d; } }
+  function sset(k, v) { try { sessionStorage.setItem('emtBill.' + k, v); } catch (e) {} }
+  function lget(k, d) { try { var v = localStorage.getItem(k); return v === null ? d : v; } catch (e) { return d; } }
+  function lset(k, v) { try { localStorage.setItem(k, v); } catch (e) {} }
+
+  var fetchJSON = function (url) {
+    return fetch(apiUrl(url)).then(function (r) {
+      return r.json().then(function (j) { if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status)); return j; });
+    });
+  };
+  function loadScript(src) {
+    return new Promise(function (ok, bad) {
+      if (window.Chart) { ok(); return; }
+      var ex = document.querySelector('script[src="' + src + '"]');
+      if (ex) { ex.addEventListener('load', ok); ex.addEventListener('error', bad); if (window.Chart) ok(); return; }
+      var s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = bad;
+      document.head.appendChild(s);
+    });
+  }
+  function esc(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
+
+  // ── Python's number formatting ────────────────────────────────────────────
+  // f"{x:.nf}": the exact binary value, rounded half-to-even, sign kept on a
+  // negative that rounds to zero ("-0.00"). toFixed rounds a tie AWAY from zero
+  // (0.125 → "0.13" where Python gives "0.12"), so the digits are taken from a
+  // long expansion — exact for a double at these magnitudes — and rounded here.
+  function pyFixed(x, n) {
+    if (x === null || x === undefined || isNaN(x)) return 'nan';
+    var neg = x < 0 || (x === 0 && 1 / x < 0);
+    var s = Math.abs(x).toFixed(Math.min(100, n + 25));
+    var dot = s.indexOf('.');
+    var ip = s.slice(0, dot), fr = s.slice(dot + 1);
+    var keep = fr.slice(0, n), rest = fr.slice(n);
+    var digits = ip + keep, up;
+    if (rest.charAt(0) > '5') up = true;
+    else if (rest.charAt(0) < '5') up = false;
+    else up = /[1-9]/.test(rest.slice(1)) || /[13579]$/.test(digits);
+    if (up) {
+      var a = digits.split(''), i = a.length - 1;
+      while (i >= 0) { if (a[i] === '9') { a[i] = '0'; i--; } else { a[i] = String(+a[i] + 1); break; } }
+      if (i < 0) a.unshift('1');
+      digits = a.join('');
+    }
+    var intLen = digits.length - n;
+    var out = digits.slice(0, intLen) + (n ? '.' + digits.slice(intLen) : '');
+    return (neg ? '-' : '') + out;
+  }
+  function pyRound(x, n) { return parseFloat(pyFixed(x, n)); }
+  function paren(v, n) { return v < 0 ? '(' + pyFixed(-v, n) + ')' : pyFixed(v, n); }
+
+  // ── the bill card: energy_charts.render_billing_summary ───────────────────
+  function rateRows(channels) {                        // _bill_rate_rows
+    var tk = 0.0, tc = 0.0, rows = '';
+    if (channels.length > MAX_RATE_ROWS) {
+      channels.forEach(function (c) { tk += pyRound(c.kwh, 3); tc += pyRound(c.cost, 2); });
+      var avg = tk ? tc / tk : 0.0;
+      rows = '\n            <tr>\n              <td></td><td>' + pyFixed(avg, 4) +
+             ' <span style="opacity:0.6;">(avg of ' + channels.length + ' rates)</span></td>\n              <td>' +
+             pyFixed(tk, 3) + '</td><td>' + paren(tc, 2) + '</td>\n            </tr>';
+      return [rows, pyRound(tk, 3), pyRound(tc, 2)];
+    }
+    channels.forEach(function (c) {
+      var k = pyRound(c.kwh, 3), cv = pyRound(c.cost, 2);
+      tk += k; tc += cv;
+      rows += '\n            <tr>\n              <td></td><td>' + pyFixed(c.rate, 4) + '</td>\n              <td>' +
+              pyFixed(k, 3) + '</td><td>' + paren(cv, 2) + '</td>\n            </tr>';
+    });
+    return [rows, pyRound(tk, 3), pyRound(tc, 2)];
+  }
+  function totalRow(kwh, cost) {                       // _bill_total_row
+    return '\n        <tr class="channel-total">\n          <td>Total</td><td></td><td>' + pyFixed(kwh, 3) +
+           '</td><td>' + paren(cost, 2) + '</td>\n        </tr>';
+  }
+  function g(o, k, d) { return (o && Object.prototype.hasOwnProperty.call(o, k)) ? o[k] : d; }
+  function splitRows(sm, exc) {                        // _bill_split_rows
+    var ev = {}, home = {};
+    (sm.ev_by_rate || []).forEach(function (r) { ev[r.rate] = r; });
+    (sm.home_by_rate || []).forEach(function (r) { home[r.rate] = r; });
+    var evTr = sm.ev_transition || {}, hoTr = sm.home_transition || {};
+    var ck = exc ? 'cost_exc' : 'cost', ckr = ck + '_raw';
+    var evk = 0; (sm.ev_by_rate || []).forEach(function (r) { evk += r.kwh; });
+    if (evk + (evTr.kwh || 0.0) <= 1e-9) return null;
+    function row(label, kwh, cost, note, rate) {
+      if (rate === null || rate === undefined) rate = kwh ? cost / kwh : 0.0;
+      return '\n        <tr><td>' + label + '</td><td>' + pyFixed(rate, 4) + (note || '') + '</td><td>' +
+             pyFixed(kwh, 3) + '</td><td>' + paren(cost, 3) + '</td></tr>';
+    }
+    var rates = Object.keys(ev).concat(Object.keys(home)).map(Number)
+      .filter(function (r, i, a) { return a.indexOf(r) === i; }).sort(function (a, b) { return a - b; });
+    var bands = [];
+    rates.forEach(function (r) {
+      var last = bands.length ? bands[bands.length - 1] : null;
+      if (last && (r - last[last.length - 1]) <= SPLIT_BAND_EPS) last.push(r); else bands.push([r]);
+    });
+    var html = '';
+    bands.forEach(function (band) {
+      var ek = 0, ec = 0, hk = 0, hc = 0, ecr = 0, hcr = 0;
+      band.forEach(function (r) {
+        var e = ev[r];
+        if (e) { ek += e.kwh; ec += g(e, ck, 0.0); ecr += g(e, ckr, g(e, ck, 0.0)); }
+        var h = home[r];
+        if (h) { hk += h.kwh; hc += g(h, ck, 0.0); hcr += g(h, ckr, g(h, ck, 0.0)); }
+      });
+      var br = (ek + hk) > 1e-9 ? (ecr + hcr) / (ek + hk) : 0.0;
+      if (ek > 1e-9) html += row('EV', ek, ec, '', br);
+      if (hk > 1e-9) html += row('Home', hk, hc, '', br);
+    });
+    var note = ' <span style="opacity:0.6;">(transition)</span>';
+    if ((evTr.kwh || 0.0) > 1e-9) {
+      var r1 = evTr.kwh > 1e-9 ? g(evTr, ckr, g(evTr, ck, 0.0)) / evTr.kwh : null;
+      html += row('EV', evTr.kwh, g(evTr, ck, 0.0), note, r1);
+    }
+    if ((hoTr.kwh || 0.0) > 1e-9) {
+      var r2 = hoTr.kwh > 1e-9 ? g(hoTr, ckr, g(hoTr, ck, 0.0)) / hoTr.kwh : null;
+      html += row('Home', hoTr.kwh, g(hoTr, ck, 0.0), note, r2);
+    }
+    return html;
+  }
+  function readsHtml(rs, re) {
+    if (rs === null || rs === undefined) return '';
+    var total = (re || 0.0) - (rs || 0.0);
+    return '<br><span class="reads">Start: <span class="censored">' + pyFixed(rs, 3) + '</span>&nbsp;&nbsp;End: ' +
+           '<span class="censored">' + pyFixed(re, 3) + '</span>&nbsp;&nbsp;Total: ' + pyFixed(total, 3) + ' kWh</span>';
+  }
+  function mpanHtml(meta) {
+    return (meta && meta.mpan) ? '&nbsp;&nbsp;|&nbsp;&nbsp;MPAN: <span class="censored">' + esc(meta.mpan) + '</span>' : '';
+  }
+  function standingGroups(standing) {                  // {round(amount,4): days}, ascending
+    var groups = {};
+    standing.forEach(function (s) { var r = pyRound(s.amount, 4); groups[r] = (groups[r] || 0) + 1; });
+    return Object.keys(groups).map(Number).sort(function (a, b) { return a - b; })
+      .map(function (r) { return [r, groups[r]]; });
+  }
+  function renderCard(sm, cur, site) {
+    if (!sm) return '';
+    var meta = sm.meter_meta || {}, raw = sm.main_import_raw || [], reads = sm.main_import_reads || {};
+    var meters = sm.meters || {}, totals = sm.totals || {};
+    if (!site) {
+      site = null;
+      Object.keys(meta).some(function (k) { var m = meta[k]; if (m.site && !m.is_submeter) { site = m.site; return true; } return false; });
+    }
+    var html = '\n    <div class="billing-summary">\n      <table class="billing-table">\n        ' +
+      (site ? '\n        <tr class="bill-site-header">\n          <td colspan="4"><span class="censored">' + esc(site) +
+              '</span></td>\n        </tr>' : '') + '\n    ';
+    var keys = Object.keys(meters).sort();
+    var exportKeys = keys.filter(function (k) { return /\/ Export$/.test(k); });
+    var remKeys = keys.filter(function (k) { return /\/ Import$/.test(k) && !((totals[k] || {}).is_submeter); });
+    var subKeys = keys.filter(function (k) { return /\/ Import$/.test(k) && ((totals[k] || {}).is_submeter); });
+    exportKeys.forEach(function (k) {
+      var t = totals[k] || {};
+      html += '\n        <tr class="channel-title">\n          <td colspan="4">Export' + mpanHtml(meta[k]) +
+              readsHtml(t.read_start, t.read_end) + '</td>\n        </tr>\n        <tr class="channel-header">\n' +
+              '          <td></td><td>Rate (' + cur + '/kWh)</td><td>kWh</td><td>Cost (' + cur + ')</td>\n        </tr>';
+      html += rateRows(meters[k])[0];
+      html += totalRow(t.kwh, t.cost);
+    });
+    var bm = sm.bill_method, excLbl = bm ? ', exc' : '';
+    var standing = sm.standing || [];
+    if (remKeys.length || subKeys.length) {
+      html += '\n        <tr class="channel-title">\n          <td colspan="4">Import — total grid' +
+              (remKeys.length ? mpanHtml(meta[remKeys[0]]) : '') + readsHtml(reads.read_start, reads.read_end) +
+              '</td>\n        </tr>\n        <tr class="channel-header">\n          <td></td><td>Rate (' + cur + '/kWh' +
+              excLbl + ')</td><td>kWh</td><td>Cost (' + cur + excLbl + ')</td>\n        </tr>';
+      if (bm) {
+        var sp = splitRows(sm, true);
+        if (sp !== null) html += sp;
+        else bm.rows.forEach(function (r) {
+          var cell = r.collapsed ? pyFixed(r.rate_exc, 4) + ' <span style="opacity:0.6;">(avg of ' + r.n_rates + ' rates)</span>'
+                                 : pyFixed(r.rate_exc, 4);
+          html += '\n        <tr><td></td><td>' + cell + '</td><td>' + pyFixed(r.kwh, 3) + '</td><td>' + pyFixed(r.cost_exc, 3) + '</td></tr>';
+        });
+        html += '\n        <tr class="channel-total"><td>Total (exc)</td><td></td><td></td><td>' + pyFixed(bm.energy_exc, 2) + '</td></tr>';
+        if (bm.standing_days) {
+          var srows = bm.standing_rows || [];
+          if (srows.length > 1) srows.forEach(function (s) {
+            html += '\n        <tr class="standing"><td colspan="3">Standing charge (exc): ' + s.days + ' days @ ' + cur +
+                    pyFixed(s.rate_exc, 4) + '/day</td><td>' + pyFixed(s.cost_exc, 2) + '</td></tr>';
+          });
+          else html += '\n        <tr class="standing"><td colspan="3">Standing charge (exc): ' + bm.standing_days + ' days @ ' + cur +
+                       pyFixed(bm.standing_rate_exc, 4) + '/day</td><td>' + pyFixed(bm.standing_exc, 2) + '</td></tr>';
+        }
+        html += '\n        <tr class="bill-method"><td colspan="3">VAT @ ' + pyFixed(bm.vat_rate * 100, 0) + '%</td><td>' + cur +
+                pyFixed(bm.vat_amount, 2) + '</td></tr>\n        <tr class="channel-total"><td colspan="3">Total incl. VAT</td><td>' +
+                cur + pyFixed(bm.inc_total, 2) + '</td></tr>';
+      } else {
+        var rr = rateRows(raw), sp2 = splitRows(sm, false);
+        html += sp2 !== null ? sp2 : rr[0];
+        html += totalRow(rr[1], rr[2]);
+        if (standing.length) {
+          standingGroups(standing).forEach(function (gr) {
+            html += '\n        <tr class="standing">\n          <td colspan="3">Standing charge: ' + gr[1] + ' days @ ' + cur +
+                    pyFixed(gr[0], 4) + '/day</td>\n          <td>' + pyFixed(gr[0] * gr[1], 2) + '</td>\n        </tr>';
+          });
+          var ssum = 0.0; standing.forEach(function (s) { ssum += s.amount; });
+          var incl = rr[2] + pyRound(ssum, 2);
+          html += '\n        <tr class="channel-total">\n          <td colspan="3">Total incl. standing charge</td><td>' +
+                  paren(incl, 2) + '</td>\n        </tr>';
+        }
+      }
+      html += '\n        <tr class="submeter-breakdown-header">\n          <td colspan="4">Breakdown by meter</td>\n        </tr>';
+      function block(title, k) {
+        var r = rateRows(meters[k]);
+        return '\n        <tr class="channel-title submeter-indent">\n          <td colspan="4">' + title + '</td>\n        </tr>\n' +
+               '        <tr class="channel-header submeter-indent">\n          <td></td><td>Rate (' + cur + '/kWh)</td><td>kWh</td><td>Cost (' +
+               cur + ')</td>\n        </tr>' + r[0] + totalRow(r[1], r[2]);
+      }
+      remKeys.forEach(function (k) { html += block('Direct import', k); });
+      subKeys.forEach(function (k) {
+        var m = meta[k] || {};
+        var label = m.device || k.split(' / ')[0].replace('(Sub-meter)', '').replace('(sub-meter)', '').trim();
+        html += block(esc(label), k);
+      });
+    }
+    if (standing.length && !(remKeys.length || subKeys.length)) {
+      standingGroups(standing).forEach(function (gr) {
+        html += '\n        <tr class="standing">\n          <td colspan="3">Standing Charge: ' + gr[1] + ' days @ ' + cur +
+                pyFixed(gr[0], 4) + '/day</td>\n          <td>' + pyFixed(gr[0] * gr[1], 2) + '</td>\n        </tr>';
+      });
+    }
+    html += '\n        <tr class="grand-total">\n          <td colspan="3">Total Bill</td>\n          <td>' + cur +
+            pyFixed(sm.total_cost, 2) + '</td>\n        </tr>';
+    return html + '\n      </table>\n    </div>';
+  }
+
+  // ── the day side panel: build_day_chart_html's markup half ────────────────
+  function cs(text, color, size, bold) {
+    return '<span style="color:' + color + ';font-size:' + (size || '0.9em') + ';line-height:1.6;white-space:nowrap;' +
+           (bold ? 'font-weight:600;' : '') + '">' + text + '</span>';
+  }
+  function panelRates(rates, color, cur) {
+    return rates.map(function (r) {
+      return cs(pyFixed(r[0], 3) + ' kWh @ ' + cur + pyFixed(r[1], 4) + (r[2] ? ' (avg of ' + r[2] + ')' : ''), color, '0.8em');
+    }).join('');
+  }
+  function renderPanel(day, p, cur) {
+    var t = '';
+    if (p.total_import > 0) {
+      t += cs('Total import: ' + pyFixed(p.total_import, 3) + ' kWh', p.main_color);
+      t += cs('Import cost: ' + cur + pyFixed(p.import_cost, 2), p.main_color);
+      if (p.import_cost_exc !== null && p.import_cost_exc !== undefined)
+        t += cs('Import cost (exc VAT): ' + cur + pyFixed(p.import_cost_exc, 2), p.main_color);
+    }
+    if (p.export_kwh > 0) {
+      t += cs('Total export: ' + pyFixed(p.export_kwh, 3) + ' kWh', p.export_color);
+      t += cs('Export credit: ' + cur + pyFixed(p.export_cost, 2), p.export_color);
+      t += panelRates(p.export_rates, p.export_color, cur);
+    }
+    var cols = p.breakdown.map(function (r) {
+      return '<div class="scol">' + cs('↳ ' + esc(r.label), r.color, '1em', true) + cs(pyFixed(r.kwh, 3) + ' kWh', r.color, '1em') +
+             cs(cur + pyFixed(r.cost, 2), r.color, '1em') + panelRates(r.rates, r.rate_color, cur) + '</div>';
+    });
+    return '<div class="chart-summary"><div class="day-label">' + day + '</div><div class="stotals">' + t + '</div>' +
+           (cols.length ? '<div class="sdivider"></div><div class="scols">' + cols.join('') + '</div>' : '') + '</div>';
+  }
+
+  // ── the day data table: the page's _buildTableContent, unchanged ──────────
+  function buildTable(wrap, d) {
+    var cur = d.currency || '\xa3';
+    var exportKey = 'electricity_main_export', directKey = 'electricity_main';
+    var deviceKeys = Object.keys(d.meters).filter(function (k) { return k !== exportKey && k !== directKey; }).sort();
+    var orderedKeys = [exportKey, directKey].concat(deviceKeys).filter(function (k) { return d.meters[k]; });
+    var colNames = ['Total Import'].concat(orderedKeys.map(function (k) { return d.meters[k].nice_name; }));
+    var numMeters = colNames.length;
+    var br = !!d.bill_rounding, ratio = d.exc_ratio || [], approx = d.exc_approx || [];
+    var invat = d.fallback_invat || (1.0 / 1.05);
+    function isImp(idx) { return idx === 0 ? true : !d.meters[orderedKeys[idx - 1]].is_export; }
+    function money(v) { return (Math.abs(v) >= 0.000005) ? (cur + v.toFixed(5)) : '—'; }
+    var html = '<div class="day-meter-table"><table><thead><tr><th rowspan="2">Period</th>';
+    colNames.forEach(function (n, idx) { html += '<th colspan="' + ((br && isImp(idx)) ? 4 : 3) + '">' + esc(n) + '</th>'; });
+    html += '</tr><tr>';
+    for (var c = 0; c < numMeters; c++) {
+      html += (br && isImp(c)) ? '<th>Rate (exc)</th><th>kWh</th><th>' + cur + ' exc</th><th>' + cur + ' inc</th>'
+                               : '<th>Rate</th><th>kWh</th><th>' + cur + '</th>';
+    }
+    html += '</tr></thead><tbody>';
+    var excTot = []; for (var e = 0; e < numMeters; e++) excTot[e] = 0;
+    for (var i = 0; i < d.slots; i++) {
+      var rt = (ratio[i] == null) ? invat : ratio[i], ap = !!approx[i];
+      html += '<tr><td>' + d.x_ranges[i].split(' - ')[0] + '</td>';
+      var ti_kwh = parseFloat(Math.abs(d.ti_kwh ? (d.ti_kwh[i] || 0) : 0).toFixed(3));
+      var ti_cost = parseFloat(Math.abs(d.ti_cost ? (d.ti_cost[i] || 0) : 0).toFixed(5));
+      var ti_rate = d.ti_rate ? (d.ti_rate[i] || 0) : 0;
+      if (br) {
+        var tiExc = ti_cost * rt; excTot[0] += tiExc;
+        html += '<td>' + (ti_rate ? (cur + (ti_rate * rt).toFixed(4)) : '—') + '</td><td>' + ti_kwh.toFixed(3) + '</td>' +
+                '<td>' + (ti_cost >= 0.000005 ? ((ap ? '≈' : '') + money(tiExc)) : '—') + '</td>' +
+                '<td>' + (ti_cost >= 0.000005 ? (cur + ti_cost.toFixed(5)) : '—') + '</td>';
+      } else {
+        html += '<td>' + (ti_rate ? (cur + ti_rate.toFixed(4)) : '—') + '</td><td>' + ti_kwh.toFixed(3) + '</td>' +
+                '<td>' + (ti_cost >= 0.000005 ? (cur + ti_cost.toFixed(5)) : '—') + '</td>';
+      }
+      orderedKeys.forEach(function (k, ki) {
+        var m = d.meters[k], imp = !m.is_export;
+        var kwh = parseFloat(Math.abs(m.y[i] || 0).toFixed(3));
+        var cost = parseFloat(Math.abs((m.cost && m.cost[i]) || 0).toFixed(5));
+        var rr = m.rate, rate = rr[i] !== undefined ? rr[i] : (rr[rr.length - 1] || 0);
+        if (br && imp) {
+          var ex = cost * rt; excTot[ki + 1] += ex;
+          html += '<td>' + (rate ? (cur + (rate * rt).toFixed(4)) : '—') + '</td><td>' + kwh.toFixed(3) + '</td>' +
+                  '<td>' + (cost >= 0.000005 ? ((ap ? '≈' : '') + money(ex)) : '—') + '</td>' +
+                  '<td>' + (cost >= 0.000005 ? (cur + cost.toFixed(5)) : '—') + '</td>';
+        } else {
+          html += '<td>' + (rate ? (cur + rate.toFixed(4)) : '—') + '</td><td>' + kwh.toFixed(3) + '</td>' +
+                  '<td>' + (cost >= 0.000005 ? (cur + cost.toFixed(5)) : '—') + '</td>';
+        }
+      });
+      html += '</tr>';
+    }
+    html += '</tbody><tfoot><tr><td>Total</td>';
+    var ttk = 0, ttc = 0;
+    orderedKeys.forEach(function (k) {
+      var t = (d.meter_totals && d.meter_totals[k]) || {kwh: 0, cost: 0};
+      if (!d.meters[k].is_export) { ttk += t.kwh; ttc += t.cost; }
+    });
+    html += br ? '<td></td><td>' + ttk.toFixed(3) + '</td><td>' + cur + excTot[0].toFixed(2) + '</td><td>' + cur + ttc.toFixed(2) + '</td>'
+               : '<td></td><td>' + ttk.toFixed(3) + '</td><td>' + cur + ttc.toFixed(2) + '</td>';
+    orderedKeys.forEach(function (k, ki) {
+      var t = (d.meter_totals && d.meter_totals[k]) || {kwh: 0, cost: 0};
+      html += (br && !d.meters[k].is_export)
+        ? '<td></td><td>' + t.kwh.toFixed(3) + '</td><td>' + cur + excTot[ki + 1].toFixed(2) + '</td><td>' + cur + t.cost.toFixed(2) + '</td>'
+        : '<td></td><td>' + t.kwh.toFixed(3) + '</td><td>' + cur + t.cost.toFixed(2) + '</td>';
+    });
+    wrap.innerHTML = html + '</tr></tfoot></table></div>';
+    wrap._built = true;
+  }
+
+  // ── day charts ────────────────────────────────────────────────────────────
+  function dark() { return !state.forceLight && document.documentElement.getAttribute('data-theme') !== 'light'; }
+  function theme() {                                   // the page's _getThemeColours
+    var d = dark();
+    return {plotBg: d ? '#1a1d27' : '#f8f9fa', paperBg: d ? '#1a1d27' : '#ffffff',
+            axisC: d ? '#6b7080' : '#555566', gridC: d ? '#2a2d3a' : '#e5e5e5'};
+  }
+  // Axis ranges: the energy axis spans its stacked bars (Plotly's autorange pads ~5%);
+  // the rate axis's zero is then aligned with it — the page's _alignY2, unchanged.
+  function ranges(d) {
+    var n = d.slots, pos = new Array(n).fill(0), neg = new Array(n).fill(0), rmax = 0, rmin = 0;
+    var hasImport = false, hasExport = false;
+    Object.keys(d.meters).forEach(function (k) {
+      var m = d.meters[k];
+      m.y.forEach(function (v, i) { if (v > 0) pos[i] += v; else neg[i] += v;
+        if (v > 0.001) hasImport = true; if (v < -0.001) hasExport = true; });
+      if (m.has_rate) m.rate.forEach(function (v) { if (v > rmax) rmax = v; if (v < rmin) rmin = v; });
+    });
+    var y1max = Math.max.apply(null, pos) * 1.05, y1min = Math.min.apply(null, neg) * 1.05;
+    if (!(y1max > 0)) y1max = hasExport ? 0 : 1;
+    var out = {y1: [y1min, y1max], y2: null, ticks: null};
+    var y2max = (rmax > 0 ? rmax : 0) * 1.05;
+    if (!(y2max > 0)) return out;
+    var rawStep = y2max / 4, mag = Math.pow(10, Math.floor(Math.log10(rawStep)));
+    var step = [1, 2, 2.5, 5, 10].map(function (f) { return f * mag; }).find(function (s) { return s >= rawStep; }) || mag;
+    var ticks = [];
+    for (var t = 0; t <= y2max + step * 0.01; t += step) ticks.push(parseFloat(t.toFixed(10)));
+    var y1top, y2min;
+    if (hasExport && !hasImport) {
+      var depth = -y1min; y1top = depth * 0.5;
+      var frac = depth / (depth + y1top); y2min = -frac * (y2max / (1 - frac));
+    } else if (hasImport && hasExport) {
+      y1top = y1max;
+      var nf = -y1min / (y1max - y1min); y2min = -nf * (y2max / (1 - nf));
+    } else {
+      y1top = y1max;
+      if (rmin < 0) {
+        y2min = rmin - (-rmin) * 0.08;
+        var f = -y2min / (y2max - y2min); y1min = -(f / (1 - f)) * y1top;
+      } else y2min = 0;
+    }
+    if (y2min < 0) for (var tn = -step; tn >= y2min - step * 0.01; tn -= step) ticks.unshift(parseFloat(tn.toFixed(10)));
+    out.y1 = [y1min, y1top]; out.y2 = [y2min, y2max]; out.ticks = ticks;
+    return out;
+  }
+  var plotBg = {id: 'emtPlotBg', beforeDraw: function (ch) {
+    var a = ch.chartArea; if (!a) return;
+    ch.ctx.save(); ch.ctx.fillStyle = ch.options.plugins.emtPlotBg.color;
+    ch.ctx.fillRect(a.left, a.top, a.width, a.height); ch.ctx.restore();
+  }};
+  function buildChart(day) {
+    var row = state.cur && state.cur.dayRows[day], el = state.section && state.section.querySelector('[data-day="' + day + '"] .chart-container');
+    if (!row || !el || state.charts[day]) return;
+    var d = row.chart, n = d.slots, cur = d.currency, tc = theme(), rg = ranges(d);
+    var total = new Array(n).fill(0);
+    Object.keys(d.meters).forEach(function (k) { var m = d.meters[k]; if (!m.is_export) m.y.forEach(function (v, i) { total[i] += v; }); });
+    var area = d.block_minutes < 15, ds = [];
+    Object.keys(d.meters).forEach(function (k) {
+      var m = d.meters[k];
+      ds.push(area
+        ? {type: 'line', label: m.nice_name, data: m.y.map(function (v, i) { return {x: i, y: v}; }), stepped: 'middle',
+           fill: 'origin', borderColor: m.bar_color, backgroundColor: m.bar_color, pointRadius: 0, borderWidth: 1,
+           yAxisID: 'y', stack: 'kwh', _meter: m, order: 2}
+        : {type: 'bar', label: m.nice_name, data: m.y.map(function (v, i) { return {x: i, y: v}; }),
+           backgroundColor: m.bar_color, barPercentage: 0.7, categoryPercentage: 1, yAxisID: 'y', stack: 'kwh', _meter: m, order: 2});
+      if (m.has_rate) ds.push({type: 'line', label: m.nice_name + ' rate', yAxisID: 'y2', stepped: 'before',
+        data: m.rate_x.map(function (x, j) { return {x: x, y: m.rate[j]}; }), borderColor: m.line_color, borderWidth: 2,
+        borderDash: m.is_export ? [6, 4] : [], pointRadius: 0, pointHitRadius: 0, fill: false, _meter: m, _rate: true, order: 1});
+    });
+    // A label every half-hour at full width (the page's tickStep); thinned so rotated
+    // labels never overlap on a narrow chart (the page's mobile skip, by width here).
+    var every = Math.max(1, Math.round(30 / d.block_minutes));
+    var room = Math.max(1, (el.clientWidth || 600) - 110);
+    while (n / every * 13 > room) every *= 2;
+    var canvas = document.createElement('canvas');
+    el.innerHTML = ''; el.appendChild(canvas);
+    el.style.background = tc.paperBg;
+    state.charts[day] = new Chart(canvas.getContext('2d'), {
+      data: {datasets: ds},
+      plugins: [plotBg],
+      options: {
+        animation: false, responsive: true, maintainAspectRatio: false,
+        devicePixelRatio: Math.min(2, window.devicePixelRatio || 1),
+        interaction: {mode: 'index', intersect: false},
+        layout: {padding: {top: 8}},
+        plugins: {
+          emtPlotBg: {color: tc.plotBg},
+          legend: {position: 'bottom', labels: {color: tc.axisC, font: {size: 11}, boxWidth: 12,
+                   sort: function (a, b) { return a.datasetIndex - b.datasetIndex; }}},
+          tooltip: {callbacks: {
+            title: function (items) {
+              if (!items.length) return '';
+              var x = items[0].raw.x, i = items[0].dataset._rate ? Math.round(x + 0.5) : x;
+              return d.x_ranges[Math.min(n - 1, Math.max(0, i))];
+            },
+            label: function (it) {
+              var m = it.dataset._meter, v = it.raw.y;
+              if (it.dataset._rate) return m.nice_name + ' rate: ' + cur + v.toFixed(4);
+              var i = it.raw.x;
+              return m.nice_name + ': ' + Math.abs(v).toFixed(3) + ' kWh' + (m.is_export ? '' : ' (' + total[i].toFixed(3) + ' total)');
+            }}}
+        },
+        scales: {
+          x: {type: 'linear', min: -0.5, max: n - 0.5, stacked: true, grid: {display: false},
+              afterBuildTicks: function (s) { var t = []; for (var i = 0; i < n; i += every) t.push({value: i}); s.ticks = t; },
+              ticks: {color: tc.axisC, autoSkip: false, maxRotation: 45, minRotation: 45, font: {size: 10},
+                      callback: function (v) { return d.x_labels[v] || ''; }}},
+          // includeBounds:false — the explicit range is padding, not a value to label.
+          y: {stacked: true, min: rg.y1[0], max: rg.y1[1], grid: {color: tc.gridC},
+              title: {display: true, text: 'kWh', color: tc.axisC, font: {size: 11}},
+              ticks: {color: tc.axisC, includeBounds: false}},
+          y2: rg.y2 ? {position: 'right', min: rg.y2[0], max: rg.y2[1], grid: {display: false},
+                       afterBuildTicks: function (s) { s.ticks = rg.ticks.map(function (v) { return {value: v}; }); },
+                       title: {display: true, text: cur + '/kWh', color: tc.axisC, font: {size: 11}},
+                       ticks: {color: tc.axisC, callback: function (v) { return v.toFixed(2); }}}
+                    : {display: false}
+        }
+      }
+    });
+  }
+  function releaseChart(day) {
+    var c = state.charts[day]; if (!c) return;
+    c.destroy(); delete state.charts[day];
+    var el = state.section && state.section.querySelector('[data-day="' + day + '"] .chart-container');
+    if (el) el.innerHTML = '';
+  }
+  function releaseAll() { Object.keys(state.charts).forEach(releaseChart); }
+
+  // ── day data, a calendar month at a time ──────────────────────────────────
+  function monthKey(day) { return day.slice(0, 7); }
+  function loadMonth(key) {
+    if (state.months[key]) return Promise.resolve(state.months[key]);
+    if (state.monthLoading[key]) return state.monthLoading[key];
+    var p = fetchJSON('/api/energy?resolution=day&kind=month&year=' + (+key.slice(0, 4)) + '&month=' + (+key.slice(5, 7)) +
+                      '&include=billing').then(function (j) {
+      var byDay = {};
+      (j.billing.days || []).forEach(function (r) { byDay[r.day] = r; });
+      state.months[key] = byDay; delete state.monthLoading[key];
+      return byDay;
+    }, function (e) { delete state.monthLoading[key]; throw e; });
+    state.monthLoading[key] = p;
+    return p;
+  }
+  function fillDay(wrap) {
+    var day = wrap.dataset.day, sec = state.cur;
+    if (!sec || wrap._filled) return Promise.resolve();
+    return loadMonth(monthKey(day)).then(function (byDay) {
+      if (state.cur !== sec || !byDay[day]) return;
+      var row = byDay[day]; sec.dayRows[day] = row; wrap._filled = true;
+      wrap.querySelector('.chart-summary').outerHTML = renderPanel(day, row.panel, row.chart.currency);
+      var tbl = wrap.querySelector('.day-data-tables');
+      if (state.showData) { buildTable(tbl, row.chart); tbl.style.display = 'flex';
+                            wrap.querySelector('.day-tbl-toggle').classList.add('active'); }
+      if (wrap._near) buildChart(day);
+    }).catch(function (e) {
+      var el = wrap.querySelector('.chart-container');
+      if (el) el.innerHTML = '<div class="bill-empty">Day chart unavailable: ' + esc(e.message) + '</div>';
+    });
+  }
+
+  // ── periods and labels ────────────────────────────────────────────────────
+  function parseD(s) { return new Date(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10)); }
+  function dmy(dt) { return ('0' + dt.getDate()).slice(-2) + ' ' + MON[dt.getMonth()] + ' ' + dt.getFullYear(); }
+  function lastDay(p) { var e = parseD(p.end); e.setDate(e.getDate() - 1); return e; }
+  function heading(mode, p) {
+    var s = parseD(p.start);
+    if (mode === 'month') return dmy(s) + ' &rarr; ' + dmy(lastDay(p));
+    if (mode === 'calmonth') return MON[s.getMonth()] + ' ' + s.getFullYear();
+    if (mode === 'quarter') return 'Q' + (Math.floor(s.getMonth() / 3) + 1) + ' ' + s.getFullYear();
+    return String(s.getFullYear());
+  }
+  function optionLabel(mode, p, cur) {                 // the page's dropdown text
+    var h = mode === 'month' ? dmy(parseD(p.start)) + ' → ' + dmy(lastDay(p)) : heading(mode, p);
+    return h + '  |  ' + cur + pyFixed(p.net_cost, 2);
+  }
+  function loadList(mode) {
+    if (state.lists[mode]) return Promise.resolve(state.lists[mode]);
+    return fetchJSON('/api/periods?kind=' + MODES[mode].kind + '&include=net_cost').then(function (j) {
+      var all = j.periods.map(function (p, i) { p.index = i; return p; });
+      // The page drops a billing period with no days unless it is the current one
+      // (a configuration change can leave a sliver); calendar periods it keeps.
+      var shown = (mode === 'month' ? all.filter(function (p) { return p.has_data || p.is_current; }) : all).slice().reverse();
+      state.lists[mode] = {all: all, shown: shown};
+      return state.lists[mode];
+    });
+  }
+  function query(mode, p) {
+    var s = parseD(p.start), k = MODES[mode].kind;
+    if (k === 'billing') return 'kind=billing&period_start=' + p.start;
+    if (k === 'month') return 'kind=month&year=' + s.getFullYear() + '&month=' + (s.getMonth() + 1);
+    if (k === 'quarter') return 'kind=quarter&year=' + s.getFullYear() + '&quarter=' + (Math.floor(s.getMonth() / 3) + 1);
+    return 'kind=year&year=' + s.getFullYear();
+  }
+  function loadBill(mode, p) {
+    var key = mode + ':' + p.start;
+    if (state.bills[key]) return Promise.resolve(state.bills[key]);
+    return fetchJSON('/api/energy?resolution=period&' + query(mode, p) + '&include=billing').then(function (j) {
+      state.bills[key] = j.billing; return j.billing;
+    });
+  }
+  // vs Prev / vs Last Year: the page's rules. Billing: the period just before in the
+  // FULL list, when it holds data; the start closest to a year earlier within 36 days.
+  // Month/quarter: the one before; the same month a year earlier. Year: the one before.
+  function prevOf(mode, lst, p) {
+    var q = lst.all[p.index - 1];
+    if (!q) return null;
+    return (mode === 'month' && !(q.has_data || q.is_current)) ? null : q;
+  }
+  function yearOf(mode, lst, p) {
+    if (mode === 'year') return null;
+    var s = parseD(p.start);
+    if (mode === 'month') {
+      var target = new Date(s.getFullYear() - 1, s.getMonth(), s.getDate()), best = null, bd = 36 * 864e5;
+      lst.shown.forEach(function (o) {
+        if (o.index === p.index) return;
+        var dd = Math.abs(parseD(o.start) - target);
+        if (dd < bd) { bd = dd; best = o; }
+      });
+      return best;
+    }
+    return lst.all.filter(function (o) { var t = parseD(o.start);
+      return t.getMonth() === s.getMonth() && t.getFullYear() === s.getFullYear() - 1; })[0] || null;
+  }
+
+  // ── the nav bar ───────────────────────────────────────────────────────────
+  function buildNav() {
+    var nav = document.createElement('div');
+    nav.className = 'period-nav';
+    nav.innerHTML =
+      '<div class="nav-left"><div class="period-mode-toggle"><span class="period-mode-label">Period:</span>' +
+      Object.keys(MODES).map(function (m) { return '<button class="pmode-btn" data-mode="' + m + '">' + MODES[m].label + '</button>'; }).join('') +
+      '</div><span class="period-stepper"><button class="pstep-btn" data-step="1" title="Older period">&#8249;</button>' +
+      '<span id="period-rolodex-label" class="bill-rolodex" title="Scroll or drag to spin, or click to pick a period"></span>' +
+      '<button class="pstep-btn" data-step="-1" title="Newer period">&#8250;</button></span></div>' +
+      '<div id="sticky-bill-strip"><span id="sticky-bill-label"></span><button id="sticky-bill-btn">&#8593; Show Bill</button></div>' +
+      '<div class="nav-right view-toggle">' +
+      '<button class="view-btn" data-view="vanilla">Bill</button><button class="view-btn" data-view="vs-prev">vs Prev</button>' +
+      '<button class="view-btn vs-year-btn" data-view="vs-year">vs Last Year</button>' +
+      '<button class="view-btn censor-btn" data-act="censor" title="Blur sensitive info">&#128065; Censor</button>' +
+      '<button class="view-btn" data-act="sort" title="Toggle period order">↓ Latest first</button>' +
+      '<button class="view-btn" data-act="data" title="Show or hide all data tables">Show Data</button></div>';
+    nav.addEventListener('click', function (e) {
+      var b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.mode) setMode(b.dataset.mode);
+      else if (b.dataset.step) step(+b.dataset.step);
+      else if (b.dataset.view) setView(b.dataset.view);
+      else if (b.dataset.act === 'censor') setCensor(!state.censor);
+      else if (b.dataset.act === 'sort') setSort(!state.asc);
+      else if (b.dataset.act === 'data') toggleAllData();
+      else if (b.id === 'sticky-bill-btn') stickyExpand();
+    });
+    return nav;
+  }
+  function syncNav() {
+    var nav = state.root.querySelector('.period-nav'), lst = state.lists[state.mode];
+    nav.querySelectorAll('.pmode-btn').forEach(function (b) { b.classList.toggle('active', b.dataset.mode === state.mode); });
+    nav.querySelectorAll('.view-btn[data-view]').forEach(function (b) { b.classList.toggle('active', b.dataset.view === state.view); });
+    nav.querySelector('.vs-year-btn').style.display = state.mode === 'year' ? 'none' : '';
+    nav.querySelector('[data-act="censor"]').classList.toggle('active', state.censor);
+    var sb = nav.querySelector('[data-act="sort"]');
+    sb.classList.toggle('active', state.asc); sb.textContent = state.asc ? '↑ Oldest first' : '↓ Latest first';
+    var db = nav.querySelector('[data-act="data"]');
+    db.classList.toggle('active', state.showData); db.textContent = state.showData ? 'Hide Data' : 'Show Data';
+    var lbl = nav.querySelector('#period-rolodex-label'), p = selected();
+    lbl.textContent = p ? heading(state.mode, p).replace('&rarr;', '→') : '';
+  }
+  function selected() {
+    var lst = state.lists[state.mode]; if (!lst) return null;
+    var k = state.sel[state.mode];
+    return lst.shown.filter(function (p) { return p.start === k; })[0] || null;
+  }
+  function spinnerPeriods() {
+    var lst = state.lists[state.mode], cur = state.currency || '£';
+    if (!lst) return {list: [], curIdx: -1};
+    var k = state.sel[state.mode];
+    return {list: lst.shown.map(function (p) { return {label: optionLabel(state.mode, p, cur), value: p.start}; }),
+            curIdx: lst.shown.map(function (p) { return p.start; }).indexOf(k)};
+  }
+
+  // ── actions ───────────────────────────────────────────────────────────────
+  function setMode(mode) {
+    state.mode = mode; sset('mode', mode);
+    if (mode === 'year' && state.view === 'vs-year') state.view = 'vanilla';
+    return show();
+  }
+  function step(delta) {
+    var lst = state.lists[state.mode]; if (!lst) return;
+    var keys = lst.shown.map(function (p) { return p.start; }), i = keys.indexOf(state.sel[state.mode]);
+    var ni = Math.min(keys.length - 1, Math.max(0, i + delta));
+    if (ni !== i) selectPeriod(keys[ni]);
+  }
+  function selectPeriod(start) {
+    state.sel[state.mode] = start; sset('period.' + state.mode, start);
+    state.root.scrollTop = 0;
+    return show();
+  }
+  function setView(v) {
+    state.view = v; sset('view', v);
+    if (state.section) state.section.querySelectorAll('.bill-view').forEach(function (el) {
+      el.style.display = el.dataset.view === v ? 'block' : 'none'; });
+    syncNav();
+  }
+  function setCensor(on) { state.censor = on; sset('censor', on ? '1' : '0'); state.root.classList.toggle('censor-on', on); syncNav(); }
+  function setSort(asc) {
+    state.asc = asc; lset('emt_bill_sort_asc', asc ? '1' : '0');
+    var body = state.section && state.section.querySelector('.day-charts-body');
+    if (body) Array.from(body.children).reverse().forEach(function (c) { body.appendChild(c); });
+    syncNav();
+  }
+  function toggleDay(wrap, force) {
+    var tbl = wrap.querySelector('.day-data-tables'), btn = wrap.querySelector('.day-tbl-toggle');
+    var row = state.cur && state.cur.dayRows[wrap.dataset.day];
+    var open = force !== undefined ? force : !(tbl.style.display === 'flex');
+    if (open && row && !tbl._built) buildTable(tbl, row.chart);
+    tbl.style.display = open && tbl._built ? 'flex' : 'none';
+    btn.classList.toggle('active', open);
+  }
+  function toggleAllData() {
+    state.showData = !state.showData;
+    if (state.section) state.section.querySelectorAll('.day-chart-wrap').forEach(function (w) { toggleDay(w, state.showData); });
+    syncNav();
+  }
+
+  // ── sticky bill strip ─────────────────────────────────────────────────────
+  var stickyIO = null;
+  function attachSticky() {
+    if (stickyIO) { stickyIO.disconnect(); stickyIO = null; }
+    var strip = state.root.querySelector('#sticky-bill-strip'), toggle = state.section && state.section.querySelector('.bill-toggle');
+    strip.style.visibility = 'hidden';
+    if (!toggle) return;
+    state.root.querySelector('#sticky-bill-label').textContent = toggle.querySelector('.bill-toggle-summary').textContent.trim();
+    stickyIO = new IntersectionObserver(function (es) {
+      var e = es[0], top = e.rootBounds ? e.rootBounds.top : 0;
+      strip.style.visibility = (!e.isIntersecting && e.boundingClientRect.top < top) ? 'visible' : 'hidden';
+    }, {root: state.root, threshold: 0});
+    stickyIO.observe(toggle);
+  }
+  function stickyExpand() {
+    var t = state.section && state.section.querySelector('.bill-toggle'); if (!t) return;
+    t.open = true;
+    state.root.scrollTo({top: 0, behavior: 'smooth'});
+  }
+
+  // ── the section for one period ────────────────────────────────────────────
+  var nearIO = null, farIO = null;
+  function observeDays(section) {
+    if (nearIO) nearIO.disconnect(); if (farIO) farIO.disconnect();
+    nearIO = new IntersectionObserver(function (es) {
+      es.forEach(function (e) {
+        var w = e.target; w._near = e.isIntersecting;
+        if (!e.isIntersecting) return;
+        if (!w._filled) fillDay(w); else buildChart(w.dataset.day);
+      });
+    }, {root: state.root, rootMargin: '600px 0px'});
+    farIO = new IntersectionObserver(function (es) {
+      es.forEach(function (e) { if (!e.isIntersecting) releaseChart(e.target.dataset.day); });
+    }, {root: state.root, rootMargin: '4000px 0px'});
+    var det = section.querySelector('.day-charts-toggle');
+    if (!det.open) return;
+    section.querySelectorAll('.day-chart-wrap').forEach(function (w) { nearIO.observe(w); farIO.observe(w); });
+  }
+  function col(heading, html, compare) {
+    return '<div class="bill-compare-col"><div class="bill-view-heading' + (compare ? ' compare' : '') + '"><h2>' + heading +
+           '</h2></div>' + html + '</div>';
+  }
+  function emptyCol(msg) { return '<div class="bill-compare-col bill-compare-empty"><p>' + msg + '</p></div>'; }
+  function renderSection(mode, p, bill, prev, year, lst) {
+    var cur = bill.currency, ph = heading(mode, p), total = bill.summary.total_cost;
+    var card = renderCard(bill.summary, cur, bill.site);
+    if (p.is_current) card = card.replace('<div class="billing-summary">', '<div class="billing-summary current-period">');
+    var cmp = function (q, qb) { return col(heading(mode, q), renderCard(qb.summary, cur, bill.site), true); };
+    var vPrev = prev ? cmp(prev.p, prev.b) : emptyCol('No previous period available.');
+    var vYear = mode === 'year' ? emptyCol('Not available in year view.')
+              : year ? cmp(year.p, year.b) : emptyCol('No data for same period last year.');
+    var views = {'vanilla': col(ph, card), 'vs-prev': col(ph, card) + vPrev, 'vs-year': col(ph, card) + vYear};
+    // Billing: the current and the previous period open their day charts (as the page
+    // did); the longer calendar views start collapsed, summary first.
+    var nonCur = lst.shown.filter(function (q) { return !q.is_current; });
+    var isPrev = nonCur.length && nonCur[0].start === p.start;
+    var open = mode === 'month' ? (p.is_current || isPrev) : false;
+    var saved = sget('open.' + mode, null);
+    if (saved !== null) open = saved === '1';
+    var days = bill.days.slice(); if (state.asc) days.reverse();
+    var banner = (mode === 'month' && bill.is_config_change)
+      ? '<div class="bill-config-banner">⚙️ <strong>Configuration changed</strong> &mdash; new billing period started ' +
+        parseD(p.start).getDate() + ' ' + MON[parseD(p.start).getMonth()] + ' ' + parseD(p.start).getFullYear() + '</div>' : '';
+    var el = document.createElement('div');
+    el.className = 'period-section ' + mode + '-section';
+    el.innerHTML = banner +
+      '<details class="bill-toggle" open><summary class="bill-toggle-summary">Bill Summary &mdash; ' + ph + ' &nbsp;|&nbsp; ' +
+      cur + pyFixed(total, 2) + '</summary><div class="bill-toggle-body">' +
+      Object.keys(views).map(function (v) {
+        return '<div class="bill-view" data-view="' + v + '" style="display:' + (v === state.view ? 'block' : 'none') + ';">' +
+               '<div class="bill-compare-wrap">' + views[v] + '</div></div>'; }).join('') +
+      '</div></details>' +
+      '<details class="day-charts-toggle"' + (open ? ' open' : '') + '><summary class="day-charts-summary">Daily Charts &mdash; ' +
+      ph + ' &nbsp;|&nbsp; ' + cur + pyFixed(total, 2) + '</summary><div class="day-charts-body">' +
+      days.map(function (day) {
+        return '<div class="day-chart-wrap" data-day="' + day + '"><div class="chart-summary"><div class="day-label">' + day +
+               '</div></div><div class="chart-container"></div><div class="day-data-tables" style="display:none;"></div>' +
+               '<div class="day-tbl-toolbar"><button class="day-tbl-toggle">&#9776; Data</button></div></div>';
+      }).join('') + (days.length ? '' : '<div class="bill-empty">No data in this period.</div>') + '</div></details>';
+    el.addEventListener('click', function (e) {
+      var b = e.target.closest('.day-tbl-toggle'); if (b) toggleDay(b.closest('.day-chart-wrap'));
+    });
+    el.querySelector('.day-charts-toggle').addEventListener('toggle', function (e) {
+      sset('open.' + mode, e.target.open ? '1' : '0');
+      if (e.target.open) observeDays(el); else { releaseAll(); if (nearIO) nearIO.disconnect(); if (farIO) farIO.disconnect(); }
+    });
+    return el;
+  }
+  function show() {
+    var mode = state.mode, root = state.root, token = {};
+    state.showToken = token;
+    return loadList(mode).then(function (lst) {
+      if (!lst.shown.length) { mount(null, '<div class="bill-empty">No billing data yet.</div>'); return; }
+      var k = state.sel[mode] || sget('period.' + mode, null);
+      var p = lst.shown.filter(function (q) { return q.start === k; })[0] ||
+              lst.shown.filter(function (q) { return q.is_current; })[0] || lst.shown[0];
+      state.sel[mode] = p.start;
+      syncNav();
+      var prev = prevOf(mode, lst, p), year = yearOf(mode, lst, p);
+      return Promise.all([loadBill(mode, p), prev ? loadBill(mode, prev) : null, year ? loadBill(mode, year) : null])
+        .then(function (r) {
+          if (state.showToken !== token) return;
+          state.currency = r[0].currency;
+          releaseAll();
+          var sec = renderSection(mode, p, r[0], prev && {p: prev, b: r[1]}, year && {p: year, b: r[2]}, lst);
+          state.cur = {mode: mode, start: p.start, dayRows: {}};
+          mount(sec);
+          observeDays(sec);
+          attachSticky();
+          syncNav();
+        });
+    }).catch(function (e) { mount(null, '<div class="bill-empty">Billing unavailable: ' + esc(e.message) + '</div>'); });
+  }
+  function mount(sec, html) {
+    var wrap = state.root.querySelector('.bill-sections');
+    wrap.innerHTML = html || '';
+    state.section = sec;
+    if (sec) wrap.appendChild(sec);
+  }
+
+  // ── public ────────────────────────────────────────────────────────────────
+  function init(root) {
+    state.root = root; state.inited = true;
+    root.classList.add('emt-bill');
+    state.mode = sget('mode', 'month'); if (!MODES[state.mode]) state.mode = 'month';
+    state.view = sget('view', 'vanilla');
+    if (state.mode === 'year' && state.view === 'vs-year') state.view = 'vanilla';
+    state.asc = lget('emt_bill_sort_asc', '0') === '1';
+    state.censor = sget('censor', '0') === '1';
+    root.classList.toggle('censor-on', state.censor);
+    root.innerHTML = '';
+    root.appendChild(buildNav());
+    var secs = document.createElement('div'); secs.className = 'bill-sections'; root.appendChild(secs);
+    var lbl = root.querySelector('#period-rolodex-label');
+    if (window.PeriodSpinner) PeriodSpinner.attach(lbl, {getPeriods: spinnerPeriods, onSelect: selectPeriod});
+    // Theme: the charts' colours are baked into their canvases — watch the attribute.
+    new MutationObserver(function () { rerender(); })
+      .observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
+    return loadScript(CHARTJS).then(show);
+  }
+  function rerender() {                                  // new theme or size: redraw what is drawn
+    var days = Object.keys(state.charts);
+    days.forEach(releaseChart);
+    days.forEach(buildChart);
+  }
+  function refresh() {                                   // periodic: totals, the bill, and today's month
+    if (!state.inited) return;
+    var mode = state.mode, lst = state.lists[mode], p = selected();
+    delete state.lists[mode];
+    if (p) delete state.bills[mode + ':' + p.start];
+    var now = new Date(), mk = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2);
+    delete state.months[mk];
+    var y = state.root.scrollTop;
+    return show().then(function () { state.root.scrollTop = y; });
+  }
+  // PDF: each built chart drawn on white, as a PNG.
+  function snapshotCharts() {
+    var out = {};
+    state.forceLight = true;
+    var days = Object.keys(state.charts);
+    days.forEach(function (d) { releaseChart(d); buildChart(d); });
+    days.forEach(function (d) { var c = state.charts[d]; if (c) out['bchart_' + d] = c.toBase64Image('image/png', 1); });
+    state.forceLight = false;
+    days.forEach(function (d) { releaseChart(d); buildChart(d); });
+    return out;
+  }
+  // PDF: every day's panel (and open table) filled, not only those scrolled to.
+  function fillAll() {
+    if (!state.section) return Promise.resolve();
+    return Promise.all(Array.from(state.section.querySelectorAll('.day-chart-wrap')).map(fillDay));
+  }
+  function styles() {
+    var s = document.getElementById('emt-billing-styles');
+    return s ? s.textContent : '';
+  }
+
+  return {init: init, refresh: refresh, rerender: rerender, snapshotCharts: snapshotCharts, fillAll: fillAll, styles: styles,
+          _state: state, _renderCard: renderCard, _renderPanel: renderPanel, _pyFixed: pyFixed,
+          _optionLabel: optionLabel, _loadList: loadList, _loadBill: loadBill, _loadMonth: loadMonth,
+          _prevOf: prevOf, _yearOf: yearOf, _buildChart: buildChart, _releaseChart: releaseChart, _fillDay: fillDay};
+})();
+</script>
+<style id="emt-billing-styles">
+  .emt-bill { --radius-b: 8px; font-size: 14px; color: var(--text); }
+  .emt-bill *, .emt-bill *::before, .emt-bill *::after { box-sizing: border-box; }
+  .emt-bill .censored { filter: none; transition: filter 0.2s; }
+  .emt-bill.censor-on .censored { filter: blur(6px); user-select: none; }
+  .emt-bill .censor-btn.active { background: #c0392b !important; color: #fff !important; border-color: #a93226 !important; }
+  .emt-bill .bill-sections { padding: 0 12px 16px; }
+  .emt-bill .bill-empty { padding: 40px; text-align: center; color: var(--muted); }
+
+  /* nav: floating, as on the page and the heatmap */
+  .emt-bill .period-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    background: var(--surface); padding: 8px 12px; border-radius: 0 0 8px 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+    margin-bottom: 12px; flex-wrap: wrap; position: sticky; top: 0; z-index: 9; }
+  .emt-bill .nav-left, .emt-bill .nav-right { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .emt-bill .period-mode-toggle { display: flex; align-items: center; gap: 4px; }
+  .emt-bill .period-mode-label { font-size: 12px; color: var(--muted); margin-right: 4px; }
+  .emt-bill .pmode-btn { padding: 2px 7px; font-size: 11px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--surface); cursor: pointer; color: var(--muted); }
+  .emt-bill .pmode-btn.active, .emt-bill .view-btn.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  .emt-bill .period-stepper { display: inline-flex; align-items: center; gap: 2px; }
+  .emt-bill #period-rolodex-label { font-size: 13px; font-weight: 600; color: var(--text); width: 210px; display: inline-block;
+    text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; position: relative; }
+  .emt-bill .pstep-btn { border: 1px solid var(--border); background: var(--surface); color: var(--text); border-radius: 8px;
+    cursor: pointer; font-size: 15px; line-height: 1; padding: 3px 9px; }
+  .emt-bill .pstep-btn:hover, .emt-bill .view-btn:hover { background: var(--border); }
+  .emt-bill .view-btn { font-size: 11px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 5px;
+    background: var(--surface); color: var(--muted); cursor: pointer; }
+  .emt-bill #sticky-bill-strip { width: 100%; display: flex; align-items: center; justify-content: space-between;
+    padding: 7px 4px 2px; border-top: 1px solid var(--border); font-size: 13px; order: 3; visibility: hidden; }
+  .emt-bill #sticky-bill-label { font-weight: 600; color: var(--accent); }
+  .emt-bill #sticky-bill-btn { font-size: 12px; padding: 4px 12px; border: 1px solid var(--accent); border-radius: 4px;
+    background: rgba(0,212,170,0.08); color: var(--accent); cursor: pointer; white-space: nowrap; }
+  .emt-bill #sticky-bill-btn:hover { background: var(--accent); color: var(--bg); }
+
+  .emt-bill .bill-config-banner { display: flex; align-items: center; gap: 10px; padding: 8px 14px; margin-bottom: 12px;
+    background: rgba(124,106,247,0.08); border: 1px solid rgba(124,106,247,0.3); border-radius: 6px; font-size: 12px; color: #7c6af7; }
+
+  /* bill card */
+  .emt-bill .bill-compare-wrap { display: flex; gap: 20px; margin-bottom: 16px; flex-wrap: wrap; }
+  .emt-bill .bill-compare-col { flex: 1; min-width: 300px; }
+  .emt-bill .bill-compare-empty { display: flex; align-items: center; justify-content: center; background: var(--surface);
+    border: 1px dashed var(--border); border-radius: 8px; color: var(--muted); font-style: italic; padding: 20px; }
+  .emt-bill .bill-view-heading h2 { font-size: 15px; font-weight: 600; margin: 0 0 8px; color: var(--text); }
+  .emt-bill .bill-view-heading.compare h2 { color: var(--muted); }
+  .emt-bill .billing-summary { background: var(--surface); padding: 16px 20px; margin-bottom: 12px; border-radius: 8px;
+    border: 1px solid var(--border); position: relative; overflow: hidden; }
+  .emt-bill .billing-summary::after, .emt-bill .day-chart-wrap::after { content: "Informational — not authoritative";
+    position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-30deg); font-size: 22px; font-weight: 700;
+    color: rgba(127,127,127,0.08); pointer-events: none; user-select: none; letter-spacing: 0.05em; }
+  .emt-bill .billing-summary.current-period { border: 2px solid var(--accent); background: rgba(0,212,170,0.05); }
+  .emt-bill .bill-site-header td { text-align: left; font-size: 15px; font-weight: 700; color: var(--text);
+    padding: 0 0 12px; border-bottom: 2px solid var(--border); }
+  .emt-bill .reads { font-size: 11px; font-weight: 400; color: var(--muted); }
+  .emt-bill .billing-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+  .emt-bill .billing-table td { padding: 3px 0; text-align: right; }
+  .emt-bill .channel-title td { text-align: left; padding-top: 10px; padding-bottom: 2px; font-weight: 600; font-size: 13px;
+    color: var(--text); border-top: 1px solid var(--border); }
+  .emt-bill .channel-header td { font-size: 11px; color: var(--muted); padding-bottom: 2px; }
+  .emt-bill .channel-total td { padding-top: 2px; font-weight: 600; }
+  .emt-bill .standing td { padding-top: 8px; }
+  .emt-bill .submeter-breakdown-header td { text-align: left; padding-top: 10px; padding-bottom: 3px; font-size: 11px;
+    font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; border-top: 1px solid var(--border); }
+  .emt-bill .submeter-indent td:first-child { padding-left: 12px; }
+  .emt-bill .channel-title.submeter-indent td { border-top: none; padding-top: 6px; font-size: 12px; }
+  .emt-bill .channel-header.submeter-indent td { padding-left: 12px; }
+  .emt-bill .grand-total td { padding-top: 8px; font-size: 14px; font-weight: 700; color: var(--accent); border-top: 2px solid var(--accent); }
+
+  /* toggles */
+  .emt-bill .bill-toggle, .emt-bill .day-charts-toggle { background: var(--surface); border-radius: 8px;
+    border: 1px solid var(--border); margin-bottom: 12px; overflow: hidden; }
+  .emt-bill .day-charts-toggle { margin-bottom: 24px; }
+  .emt-bill .bill-toggle-summary, .emt-bill .day-charts-summary { display: flex; align-items: center; gap: 8px;
+    padding: 12px 20px; font-size: 14px; font-weight: 600; color: var(--accent); cursor: pointer; user-select: none; list-style: none; }
+  .emt-bill .day-charts-summary { background: rgba(0,212,170,0.08); }
+  .emt-bill .bill-toggle-summary::-webkit-details-marker, .emt-bill .day-charts-summary::-webkit-details-marker { display: none; }
+  .emt-bill .bill-toggle-summary::before, .emt-bill .day-charts-summary::before { content: "▶"; font-size: 10px;
+    transition: transform 0.2s; display: inline-block; width: 14px; }
+  .emt-bill .bill-toggle[open] .bill-toggle-summary::before, .emt-bill .day-charts-toggle[open] .day-charts-summary::before { transform: rotate(90deg); }
+  .emt-bill .bill-toggle-body { padding: 0 12px 4px; }
+  .emt-bill .day-charts-body { padding: 12px 0 0; }
+
+  /* day row */
+  .emt-bill .day-chart-wrap { display: flex; flex-wrap: wrap; background: var(--surface); border-bottom: 1px solid var(--border);
+    position: relative; overflow: hidden; }
+  .emt-bill .day-chart-wrap:last-child { border-bottom: none; }
+  .emt-bill .chart-summary { flex: 0 0 auto; min-width: 120px; max-width: 220px; padding: 12px 10px;
+    border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; font-size: clamp(10px, 1vw, 13px); }
+  .emt-bill .day-label { font-weight: 700; font-size: 1em; color: var(--accent); margin-bottom: 8px; }
+  .emt-bill .scol { display: flex; flex-direction: column; margin-bottom: 7px; }
+  .emt-bill .stotals { display: flex; flex-direction: column; gap: 1px; margin-bottom: 4px; }
+  .emt-bill .sdivider { border-top: 1px solid var(--border); margin: 6px 0; }
+  .emt-bill .chart-container { flex: 1 1 0; min-width: 0; height: 320px; position: relative; }
+  .emt-bill .day-data-tables { flex: 0 0 100%; overflow-x: auto; border-top: 1px solid var(--border); }
+  .emt-bill .day-meter-table { width: 100%; }
+  .emt-bill .day-meter-table table { border-collapse: collapse; width: 100%; font-size: 11px; white-space: nowrap; }
+  .emt-bill .day-meter-table th { padding: 3px 8px; text-align: right; font-weight: 600; font-size: 10px; text-transform: uppercase;
+    color: var(--muted); border-bottom: 1px solid var(--border); border-right: 1px solid var(--border); background: var(--bg); }
+  .emt-bill .day-meter-table th:first-child { text-align: left; position: sticky; left: 0; z-index: 2; }
+  .emt-bill .day-meter-table th[colspan] { text-align: center; }
+  .emt-bill .day-meter-table td { padding: 2px 8px; text-align: right; border-bottom: 1px solid var(--border);
+    border-right: 1px solid var(--border); color: var(--text); }
+  .emt-bill .day-meter-table td:first-child { text-align: left; color: var(--muted); font-variant-numeric: tabular-nums;
+    position: sticky; left: 0; background: var(--surface); z-index: 1; }
+  .emt-bill .day-meter-table tr:hover td { background: rgba(0,212,170,0.06); }
+  .emt-bill .day-meter-table tfoot td { font-weight: 700; color: var(--accent); border-top: 1px solid var(--border); background: var(--surface); }
+  .emt-bill .day-tbl-toolbar { flex: 0 0 100%; padding: 3px 8px; border-top: 1px solid var(--border); background: var(--surface); }
+  .emt-bill .day-tbl-toggle { font-size: 11px; padding: 2px 8px; border: 1px solid var(--border); border-radius: 4px;
+    background: var(--surface); color: var(--muted); cursor: pointer; }
+  .emt-bill .day-tbl-toggle:hover, .emt-bill .day-tbl-toggle.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+
+  @media (max-width: 600px) {
+    .emt-bill .period-nav { padding: 6px 10px; gap: 4px; }
+    .emt-bill .bill-sections { padding: 0 6px 12px; }
+    .emt-bill .day-chart-wrap { flex-direction: column; }
+    .emt-bill .chart-summary { width: 100%; max-width: none; border-right: none; border-bottom: 1px solid var(--border);
+      padding: 8px 12px; flex-direction: row; flex-wrap: wrap; gap: 6px 16px; }
+    .emt-bill .chart-container { flex: none; width: 100%; }
+    .emt-bill .day-label { width: 100%; margin-bottom: 2px; }
+    .emt-bill .bill-compare-wrap { flex-direction: column; }
+    .emt-bill .bill-compare-col { min-width: 0; }
+    .emt-bill #period-rolodex-label { width: 170px; }
+  }
+</style>

@@ -91,9 +91,13 @@ def run(db, limit_days=None):
         # ── days ──
         embedded = {m.group(1).replace("_", "-"): json.loads(m.group(2)) for m in re.finditer(
             r'<script type="application/json" id="data_chart_(\d{4}_\d\d_\d\d)">(.*?)</script>', page)}
-        panels = {m.group(1): m.group(0) for m in re.finditer(
-            r'<div class="chart-summary"><div class="day-label">(\d{4}-\d\d-\d\d)</div>.*?</div>(?=\s*<div id="chart_)',
-            page, re.S)}
+        # Bounded by ANY chart container — grouped sections prefix their ids, and
+        # looking only for the unprefixed one made each later panel scan the page.
+        panels = {}
+        for m in re.finditer(
+            r'<div class="chart-summary"><div class="day-label">(\d{4}-\d\d-\d\d)</div>.*?</div>(?=\s*<div id="[a-z0-9_]*chart_)',
+            page, re.S):
+            panels.setdefault(m.group(1), m.group(0))
         days = sorted(embedded)
         if limit_days:
             days = days[-limit_days:]

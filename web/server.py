@@ -6438,6 +6438,28 @@ def api_periods():
                 "is_current": ps <= now_local < pe}
                for ps, pe in periods]
 
+        # `include=net_cost`: each period's bill total and whether it holds any data,
+        # for a picker that labels every period with its total (the Billing tab's).
+        # ONE rollup query over the whole span, folded per period by local day with
+        # the bill's own per-day rule — the rule the Billing card's Total Bill is
+        # reconciled against (80 of 80 periods to the penny, .build/reconcile_v4.py).
+        include = {x.strip() for x in (request.args.get("include") or "").split(",") if x.strip()}
+        if include - {"net_cost"}:
+            return jsonify({"error": "include: unknown facet(s) %s" % sorted(include - {"net_cost"})}), 400
+        if "net_cost" in include and out:
+            rows = store.get_day_rollups(out[0]["start_utc"], out[-1]["end_utc"], tz_name)
+            by_day = {}
+            for r in rows:
+                by_day.setdefault(r["day"], []).append(r)
+            days = sorted(by_day)
+            import bisect as _bisect
+            for p in out:
+                lo = _bisect.bisect_left(days, p["start"])
+                hi = _bisect.bisect_left(days, p["end"])
+                rs = [r for d in days[lo:hi] for r in by_day[d]]
+                p["net_cost"] = _billing.bill_net_from_day_rollups(rs)
+                p["has_data"] = bool(rs)
+
         return jsonify({
             "kind": kind,
             "timezone": tz_name,
