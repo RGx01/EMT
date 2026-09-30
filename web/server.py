@@ -3922,6 +3922,12 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
         # ── Step 2: pre-restore backup (stores still open — backup needs them) ─
         _step("taking a safety backup")
         _create_backup_zip(label="pre_restore")
+        # C §2a: the epoch lives in the file about to be replaced; remember it so
+        # the restored database's epoch can be set above anything a client saw.
+        try:
+            _epoch_before = store_access.store().get_data_epoch()
+        except Exception:
+            _epoch_before = 0
 
         # ── Step 3: checkpoint WAL then close ALL store connections ───────────
         # Must happen after backup but before writing restored file.
@@ -4089,6 +4095,11 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
                         "api_backup_restore: ran migrate_full_config_json — "
                         "%d periods migrated from full_config_json", n
                     )
+                # C §2a: a restore replaces all history — bump the epoch, above the
+                # pre-restore value so a client holding it cannot mistake the
+                # restored database for the one it cached.
+                _ep = store_mig.bump_data_epoch(floor=_epoch_before)
+                logger.info("api_backup_restore: data epoch -> %d", _ep)
             except Exception as _mig_e:
                 logger.warning("api_backup_restore: schema migration failed: %s", _mig_e)
             finally:
@@ -6276,7 +6287,7 @@ def _resolve_period(kind, store, cfg, tz, args):
 
 @app.route("/api/energy")
 def api_energy():
-    """The consolidated read surface — C §3, `resolution=period` only for now.
+    """The consolidated read surface — C §3: `resolution=period|day|block`.
 
         GET /api/energy?resolution=period&kind=billing|month|quarter|year
                        &include=usage,carbon
@@ -6291,11 +6302,12 @@ def api_energy():
     one request and the store reads the range once; today it makes two and the
     range is read twice.
 
-    **`resolution=block|day` is NOT implemented here yet** and returns 501. Those
-    return per-block points and segments, which is a larger payload decision
-    (C §3's `tariff_context`, `provenance`, the fingerprint). Refusing explicitly
-    beats accepting the parameter and quietly returning a period rollup — a
-    caller that asks for series and receives totals has no way to tell.
+    **`resolution=day|block`** return per-day rollups (one row per LOCAL day per
+    meter, `store.get_day_rollups`) and blocks-with-segments (`get_energy_blocks`,
+    sub-meter rows first-class, provenance as three facts). *This docstring said
+    they returned 501 until 30 Sep 2026, after they had been implemented; the
+    first Pi soaks were set up from it and only ever asked for `period`.*
+    `tariff_context` is not served yet (C §3: optional, omitted when absent).
 
     Additive: the six routes it replaces are untouched, because the templates
     still call them and the client is replaced at step 6.
@@ -6338,7 +6350,7 @@ def api_energy():
                "fingerprint": {"epoch": store.get_data_epoch(),
                                "days": store.day_fingerprints(utc_start, utc_end)}}
         if resolution == "day":
-            out["days"] = store.get_day_rollups(utc_start, utc_end)
+            out["days"] = store.get_day_rollups(utc_start, utc_end, tz_name)
         elif resolution == "block":
             # Blocks and segments, not chart geometry (C §3). Sub-meter rows are
             # first-class: they carry device energy and have no segments, so a
@@ -8093,6 +8105,10 @@ def api_import_from_zip():
         engine = sys.modules.get("engine")
         if engine and hasattr(engine, "pause_engine"):
             engine.pause_engine("zip import")
+        try:                                   # C §2a — see the bump below
+            _epoch_before = store_access.store().get_data_epoch()
+        except Exception:
+            _epoch_before = 0
 
         known    = {"blocks.db", "blocks.json"}
         imported = []
@@ -8171,6 +8187,14 @@ def api_import_from_zip():
                 logger.info("api_import_from_zip: engine store reset OK")
             except Exception as _re:
                 logger.warning("api_import_from_zip: engine reset_store failed: %s", _re)
+        if "blocks.db" in imported:
+            # C §2a: all history replaced, and the new file carries its own epoch —
+            # set it above the pre-import value so no client keeps its cache.
+            try:
+                _ep = _engine_write(lambda st: st.bump_data_epoch(floor=_epoch_before))
+                logger.info("api_import_from_zip: data epoch -> %s", _ep)
+            except Exception as _be:
+                logger.warning("api_import_from_zip: epoch bump failed: %s", _be)
 
         # Regenerate the pre-built charts against the restored DB now, rather than
         # waiting for the next block to finalise (issue #257).

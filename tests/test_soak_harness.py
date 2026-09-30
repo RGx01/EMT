@@ -107,12 +107,16 @@ class RouteSelection(unittest.TestCase):
                "sub_meters": []}
         self.assertEqual(soak.query_variants("/api/sub-meter/history", ctx), [])
 
-    def test_energy_is_only_asked_for_what_exists(self):
-        """resolution=day|block return 501 until C builds them."""
+    def test_energy_is_asked_for_all_three_resolutions(self):
+        """The route's docstring claimed day|block returned 501; they did not, and
+        the first soaks exercised only period."""
         import datetime as dt
         ctx = {"today": dt.date(2026, 9, 29), "periods": [], "months": [], "years": []}
-        for u in soak.query_variants("/api/energy", ctx):
-            self.assertIn("resolution=period", u)
+        us = soak.query_variants("/api/energy", ctx)
+        for res in ("period", "day", "block"):
+            self.assertTrue(any("resolution=%s" % res in u for u in us), res)
+        self.assertFalse(any("resolution=block" in u and "kind=year" in u for u in us),
+                         "a year of blocks is not a viewport")
 
 
 def _write_rows(rows):

@@ -121,9 +121,13 @@ def query_variants(path, ctx):
         "/api/corrections/nearby-rates": [{"channel": "import", "from_date": f, "to_date": t}
                                           for f, t in week],
         "/api/unsettled-blocks": [{"limit": 50}],
-        # resolution=day|block return 501 until C builds them — period only.
-        "/api/energy": [{"resolution": "period", "kind": k, "include": "usage,carbon"}
-                        for k in ("billing", "month", "year")],
+        # all three resolutions (the route's docstring said day|block were 501 — they
+        # were not, and the first soaks only ever asked for period). Series over a
+        # month: a year at block resolution is ~15 MB raw and not a viewport.
+        "/api/energy": ([{"resolution": "period", "kind": k, "include": "usage,carbon"}
+                         for k in ("billing", "month", "year")]
+                        + [{"resolution": "day", "kind": k} for k in ("month", "year")]
+                        + [{"resolution": "block", "kind": "month"}]),
         "/api/periods": [{"kind": k} for k in ("billing", "month", "year")],
         "/api/insights/billing-period": [{"period_start": p} for p in periods],
         "/api/usage/billing-period": [{"period_start": p} for p in periods],
