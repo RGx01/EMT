@@ -232,6 +232,11 @@
     flex: 1;
     min-height: 0;
   }
+  /* The heatmap is drawn on a transparent canvas in the page (not an iframe with its
+     own background), so its container takes the page's theme — `.chart-frame-wrap`'s
+     white showed through the gaps between cells in the dark theme. */
+  #chart-heatmap { background: var(--surface, transparent); }
+  #chart-heatmap .chart-content-wrap { padding: 0 12px 16px; }
   /* Content area flex column so iframe charts can fill remaining height */
   .content {
     display: flex;
@@ -321,16 +326,9 @@
 
 <!-- Heatmap chart -->
 <div id="chart-heatmap" class="chart-frame-wrap" style="display:none;">
-  {% if heatmap_exists %}
-    <div id="chart-heatmap-content" class="chart-content-wrap" style="width:100%;overflow:auto;">
-      <div style="padding:40px;text-align:center;color:var(--muted);">Loading chart...</div>
-    </div>
-  {% else %}
-    <div class="chart-placeholder">
-      <span class="icon">🔥</span>
-      <span>No heatmap data yet.</span>
-    </div>
-  {% endif %}
+  <!-- Drawn in the browser from /api/energy by heatmap_module.html (C, 30 Sep 2026) —
+       no longer an iframe of the pre-rendered net_heatmap.html. -->
+  <div id="chart-heatmap-content" class="chart-content-wrap" style="width:100%;overflow:auto;"></div>
 </div>
 
 <!-- Cumulative spiral chart -->
@@ -923,8 +921,17 @@ function _injectChartHtml(name, html) {
 }
 
 async function loadChartContent(name, force) {
+  // The heatmap is drawn in the page (heatmap_module.html), not an iframe. Every caller —
+  // tab switch, resize, orientation, theme message, auto-refresh, data-version poll —
+  // comes through here: `force` re-draws the loaded years (new theme or dimensions);
+  // otherwise it is a first load or a fingerprint-checked refresh.
+  if (name === 'heatmap') {
+    if (!window.EMTHeatmap) return;
+    if (!EMTHeatmap._state.inited) return EMTHeatmap.init(document.getElementById('chart-heatmap-content'));
+    return force ? EMTHeatmap.rerender() : EMTHeatmap.refresh();
+  }
   if (chartsLoaded[name] && !force) return;
-  var endpoint = name === 'daily' ? '/api/charts/daily' : '/api/charts/heatmap';
+  var endpoint = '/api/charts/daily';
   var containerId = name === 'daily' ? 'chart-daily-content' : 'chart-heatmap-content';
   var el = document.getElementById(containerId);
   if (!el) return;
@@ -1341,71 +1348,20 @@ function _doPdfExport(win, iconSrc) {
 
   // ── Heatmaps ───────────────────────────────────────────────────────────────
   } else if (_activeChart === 'heatmap') {
-    var ifrm = _getIframe('heatmap');
-    if (!ifrm || !ifrm.contentDocument) {
-      win.close(); alert('Heatmap not loaded yet.'); return;
-    }
-    var iDoc  = ifrm.contentDocument;
-    var iWin  = ifrm.contentWindow;
-
-    // Capture heatmap as image via Plotly toImage if available, else canvas
-    var hmDiv = iDoc.getElementById('heatmap');
-    var hmImg = null;
-    if (hmDiv && iWin.Plotly && typeof iWin.Plotly.toImage === 'function') {
-      // Async path — use Plotly.toImage
-      var _hmFl = hmDiv._fullLayout || {};
-      var _hmSavedBg = _hmFl.paper_bgcolor; var _hmSavedPl = _hmFl.plot_bgcolor;
-      var _hmSavedFont = (_hmFl.font || {}).color;
-      var _hmIframeEl = document.getElementById('chart-heatmap-content') && document.getElementById('chart-heatmap-content').querySelector('iframe');
-      if (_hmIframeEl) _hmIframeEl.style.visibility = 'hidden';
-      iWin.Plotly.relayout(hmDiv, {
-        paper_bgcolor: '#ffffff',
-        plot_bgcolor:  '#f8f9fa',
-        'font.color':  '#111111'
-      }).then(function() {
-        return iWin.Plotly.toImage(hmDiv, {format:'png', width: hmDiv.offsetWidth || 1100, height: hmDiv.offsetHeight || 700});
-      }).then(function(imgUrl) {
-        iWin.Plotly.relayout(hmDiv, {
-          paper_bgcolor: _hmSavedBg,
-          plot_bgcolor:  _hmSavedPl,
-          'font.color':  _hmSavedFont || ''
-        }).then(function(){ if (_hmIframeEl) _hmIframeEl.style.visibility = ''; })
-          .catch(function(){ if (_hmIframeEl) _hmIframeEl.style.visibility = ''; });
-        // Capture toolbar state from iframe
-        var activeMetrics = [];
-        iDoc.querySelectorAll('.hm-metric-btn.active').forEach(function(b) { activeMetrics.push(b.textContent.trim()); });
-        var toolbarHtml = activeMetrics.length
-          ? '<div style="font-size:12px;color:#555;margin-bottom:12px;padding:6px 10px;background:#f5f5f5;border-radius:4px;border:1px solid #ddd;">Metric: <strong>' + activeMetrics.join(' · ') + '</strong></div>'
-          : '';
-        win.document.open();
-      win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8">' +
-          '<title>EMT — ' + tabLabel + '</title>' +
-          '<style>' + commonStyles + '</style>' +
-          '</head><body>' + header + toolbarHtml +
-          '<img src="' + imgUrl + '" style="max-width:100%;border:1px solid #eee;border-radius:6px;">' +
-          '</body></html>');
-        win.document.close();
-      }).catch(function() {
-        // Fallback: just show the iframe body
-        win.document.open();
-      win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8">' +
-          '<title>EMT — ' + tabLabel + '</title>' +
-          '<style>' + commonStyles + 'body{overflow:visible;}.period-nav{position:static;}</style>' +
-          Array.from(iDoc.querySelectorAll('style')).map(function(s){return s.outerHTML;}).join('') +
-          '</head><body>' + header + iDoc.body.innerHTML + '</body></html>');
-        win.document.close();
-      });
-      return; // async — return early
-    } else {
-      // No Plotly.toImage — extract raw body
-      win.document.open();
-      win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8">' +
-        '<title>EMT — ' + tabLabel + '</title>' +
-        '<style>' + commonStyles + 'body{overflow:visible;}.period-nav{position:static;}</style>' +
-        Array.from(iDoc.querySelectorAll('style')).map(function(s){return s.outerHTML;}).join('') +
-        '</head><body>' + header + iDoc.body.innerHTML + '</body></html>');
-      win.document.close();
-    }
+    // Canvases from heatmap_module.html, drawn in the light palette for print.
+    var shots = window.EMTHeatmap ? EMTHeatmap.snapshot() : [];
+    if (!shots.length) { win.close(); alert('Heatmap not loaded yet.'); return; }
+    var imgs = shots.map(function (x) {
+      return '<h3 style="margin:16px 0 6px;font-size:14px;">' + x.year + '</h3>' +
+             '<img src="' + x.url + '" style="width:100%;height:auto;display:block;">';
+    }).join('');
+    win.document.open();
+    win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8">' +
+      '<title>EMT — ' + tabLabel + '</title><style>' + commonStyles + '</style></head><body>' +
+      header + '<div style="font-size:12px;color:#555;margin-bottom:12px;">Metric: <strong>' +
+      EMTHeatmap.metricLabel() + '</strong> · local time · newest first · Σ = daily total</div>' +
+      imgs + '</body></html>');
+    win.document.close();
 
   // ── Usage Stats ────────────────────────────────────────────────────────────
   } else if (_activeChart === 'bar') {
@@ -3084,4 +3040,5 @@ function showError(msg) {
   el.classList.add('show');
 }
 </script>
+{% include "heatmap_module.html" %}
 {% endblock %}

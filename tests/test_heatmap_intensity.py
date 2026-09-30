@@ -1,121 +1,88 @@
 """
-Heatmap carbon-intensity view: the gCO2/kWh cell is the grid's intensity (a
-property of the grid at that time), not a usage-derived ratio. A zero-net block
-must therefore still render its stored grid intensity instead of an empty cell.
+Carbon intensity per half-hour: the GRID's gCO2/kWh at that time — a property of the
+grid, not a usage-derived ratio. A zero-net block therefore still has one.
 
-These tests pin:
-  * stored carbon_intensity_g is used directly when present (net != 0) — same
-    number the old carbon_g/net path produced, so populated cells don't move;
-  * a ZERO-NET block with stored intensity now renders a value (the fix);
-  * pre-3.0.0 blocks without the stored column fall back to carbon_g/net;
-  * a zero-net block with no intensity data at all stays empty (genuinely
-    unknown — can't invent a grid intensity we never captured).
+The rule was v4's, inside the pre-rendered heatmap (`energy_charts.generate_net_heatmap`,
+deleted 30 Sep 2026 when the Heatmaps tab moved into the browser). It now lives in the
+payload — `BlockStore.get_energy_blocks`, what /api/energy?resolution=block serves — so
+every surface gets the same number and it can be tested without a browser. The four
+cases are v4's, unchanged:
+
+  * stored carbon_intensity_g is used directly when present (net != 0) — the same
+    number the old carbon_g/net path produced, so populated cells do not move;
+  * a ZERO-NET block with a stored intensity renders it;
+  * a pre-3.0.0 block without the stored column falls back to carbon_g / net;
+  * a zero-net block with no intensity data stays empty — a grid intensity that was
+    never captured cannot be invented.
 """
-
-import json
 import os
-import re
 import sys
+import tempfile
 import unittest
 
-# Add tests/ to the path so the in-test `from test_block_store import make_block`
-# resolves (pytest runs with the repo root on the path, not tests/).
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from energy_charts import generate_net_heatmap
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, _ROOT)
 
-MID = "electricity_main"
+from block_store import BlockStore          # noqa: E402
 
-
-def _block(start, import_kwh, export_kwh, carbon_g, carbon_intensity_g):
-    meta = {"sub_meter": False, "block_minutes": 30}
-    md = {"meta": meta, "carbon_g": carbon_g, "carbon_intensity_g": carbon_intensity_g}
-    return {
-        "start":  start,
-        "totals": {"import_kwh": import_kwh, "export_kwh": export_kwh},
-        "meters": {MID: md},
-    }
+FROM, TO = "2025-05-17T00:00:00", "2025-05-18T00:00:00"
 
 
-def _intensity_z(html):
-    m = re.search(r"var INTENSITY_Z\s*=\s*(\[.*?\]);", html, re.S)
-    assert m, "INTENSITY_Z not found in heatmap output"
-    return json.loads(m.group(1))
-
-
-class TestHeatmapIntensity(unittest.TestCase):
+class IntensityInThePayload(unittest.TestCase):
 
     def setUp(self):
-        # One day, 30-min slots → hh_index = (hour*60+min)//30
-        self.blocks = [
-            # A: net != 0, stored intensity present → use stored (==150); also
-            #    equals carbon_g/net (750/5) so this proves "no visual change".
-            _block("2025-05-17T02:00:00", 5.0, 0.0, 750.0, 150.0),   # hh 4
-            # B: ZERO net, stored intensity present → THE FIX: renders 120, not None
-            _block("2025-05-17T03:00:00", 2.0, 2.0,   0.0, 120.0),   # hh 6
-            # C: pre-3.0.0 — no stored intensity, net != 0 → fall back to carbon_g/net (400/4=100)
-            _block("2025-05-17T04:00:00", 4.0, 0.0, 400.0, None),    # hh 8
-            # D: zero net AND no stored intensity → genuinely unknown → stays None
-            _block("2025-05-17T05:00:00", 3.0, 3.0,   0.0, None),    # hh 10
-        ]
-        html = generate_net_heatmap(self.blocks, timezone_name="UTC", block_minutes=30)
-        self.z = _intensity_z(html)
-        self.assertEqual(len(self.z), 1, "expected exactly one day row")
-        self.row = self.z[0]
+        self.st = BlockStore(tempfile.mktemp(suffix=".db"))
+        self.st._conn.execute("PRAGMA foreign_keys=OFF")
+        self.addCleanup(self.st.close)
+
+    def blk(self, start, imp, exp, carbon_g, intensity):
+        self.st._conn.execute(
+            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
+            "exp_kwh, carbon_g, carbon_intensity_g) VALUES (?, ?, 'electricity_main', 1, ?, ?, ?, ?)",
+            (start, start, imp, exp, carbon_g, intensity))
+        self.st._conn.commit()
+
+    def intensity(self, start):
+        return next(b["carbon_intensity_g"] for b in self.st.get_energy_blocks(FROM, TO)
+                    if b["block_start"] == start)
 
     def test_stored_intensity_used_when_net_nonzero(self):
-        self.assertEqual(self.row[4], 150.0)
-
-    def test_zero_net_block_renders_stored_intensity(self):
-        # The fix: previously None (0/0), now the grid intensity.
-        self.assertEqual(self.row[6], 120.0)
-
-    def test_pre_v3_block_falls_back_to_derived(self):
-        self.assertEqual(self.row[8], 100.0)
-
-    def test_zero_net_without_intensity_stays_empty(self):
-        self.assertIsNone(self.row[10])
+        self.blk("2025-05-17T02:00:00", 5.0, 0.0, 750.0, 150.0)
+        self.assertEqual(self.intensity("2025-05-17T02:00:00"), 150.0)
 
     def test_populated_cell_value_unchanged_vs_derived(self):
-        # Block A: stored intensity (150) must equal the old carbon_g/net (750/5).
-        self.assertEqual(self.row[4], round(750.0 / 5.0, 1))
+        """GUARD: the stored value equals what carbon_g/net gives, so nothing moves."""
+        self.blk("2025-05-17T02:00:00", 5.0, 0.0, 750.0, 150.0)
+        self.assertEqual(self.intensity("2025-05-17T02:00:00"), round(750.0 / 5.0, 1))
 
+    def test_zero_net_block_renders_stored_intensity(self):
+        self.blk("2025-05-17T03:00:00", 1.0, 1.0, 0.0, 120.0)
+        self.assertEqual(self.intensity("2025-05-17T03:00:00"), 120.0)
 
-class TestHeatmapIntensityIntegration(unittest.TestCase):
-    """End-to-end: a net==0 block with a stored grid intensity must surface
-    through the REAL fetch (get_blocks_lightweight) and fill its heatmap cell.
-    The earlier unit test hand-built blocks and so missed that the lightweight
-    fetch wasn't carrying carbon_intensity_g at all."""
+    def test_pre_v3_block_falls_back_to_derived(self):
+        """REGRESSION (30 Sep 2026): the payload served the raw column, so a
+        pre-3.0.0 block had no intensity at all once the heatmap stopped deriving it."""
+        self.blk("2025-05-17T04:00:00", 4.0, 0.0, 400.0, None)
+        self.assertEqual(self.intensity("2025-05-17T04:00:00"), 100.0)
 
-    def setUp(self):
-        from block_store import BlockStore
-        self.store = BlockStore(":memory:")
-        self.store.insert_config_period({"meters": {"electricity_main": {"meta": {
-            "timezone": "UTC", "billing_day": 1, "block_minutes": 30,
-            "currency_symbol": "£", "currency_code": "GBP"}}}})
+    def test_an_export_slot_is_never_a_negative_intensity(self):
+        """carbon.slot_intensity takes abs(): an export slot stores a negative value,
+        and the grid's intensity is not negative. (A first draft of this payload
+        re-derived the rule in SQL and missed it — it is ONE function now.)"""
+        self.blk("2025-05-17T06:00:00", 0.0, 2.0, -280.08, -140.04)
+        self.assertEqual(self.intensity("2025-05-17T06:00:00"), 140.0)
 
-    def tearDown(self):
-        self.store.close()
+    def test_zero_net_without_intensity_stays_empty(self):
+        self.blk("2025-05-17T05:00:00", 1.0, 1.0, 0.0, None)
+        self.assertIsNone(self.intensity("2025-05-17T05:00:00"))
 
-    def test_zero_net_block_fills_via_real_fetch(self):
-        from test_block_store import make_block
-        blk = make_block("2025-05-17T12:00:00", imp_kwh=1.0, exp_kwh=1.0)  # net 0
-        m = blk["meters"]["electricity_main"]
-        m["carbon_g"] = 0.0
-        m["carbon_intensity_g"] = 150.0
-        self.store.append_block(blk)
-
-        blocks = self.store.get_blocks_lightweight()
-        self.assertEqual(len(blocks), 1)
-        # 1) the fetch must carry the stored intensity (the part that was missing)
-        self.assertEqual(
-            blocks[0]["meters"]["electricity_main"]["carbon_intensity_g"], 150.0)
-
-        # 2) and the heatmap cell for that net==0 block must be filled, not empty
-        html = generate_net_heatmap(blocks, timezone_name="UTC", block_minutes=30)
-        z = _intensity_z(html)
-        self.assertEqual(len(z), 1)
-        hh = (12 * 60) // 30  # 12:00 → slot 24
-        self.assertEqual(z[0][hh], 150.0)
+    def test_the_browser_draws_what_the_payload_says(self):
+        """GUARD: the Heatmaps module does not re-derive intensity or blank a zero-net
+        cell (it did, briefly, in its first draft)."""
+        src = open(os.path.join(_ROOT, "web", "templates", "heatmap_module.html"),
+                   encoding="utf-8").read()
+        self.assertIn("c.int = b.carbon_intensity_g", src)
+        self.assertNotIn("Math.abs(net) > 1e-9)\n          c.int", src)
 
 
 if __name__ == "__main__":

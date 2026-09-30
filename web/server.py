@@ -934,7 +934,6 @@ def api_logs():
 
 @app.route("/charts")
 def charts_page():
-    heatmap_exists = os.path.exists(os.path.join(CHART_DIR, "net_heatmap.html"))
     daily_exists   = os.path.exists(os.path.join(CHART_DIR, "daily_usage.html"))
     try:
         block_count = store_access.store().count_blocks()
@@ -942,7 +941,6 @@ def charts_page():
         block_count = 0
     return render_template(
         "charts.html",
-        heatmap_exists=heatmap_exists,
         daily_exists=daily_exists,
         block_count=block_count,
         active="charts",
@@ -2058,7 +2056,7 @@ def api_meter_main_reset():
         # Billing/Charts pages show stale data from the wiped setup.
         _chart_dir = CHART_DIR or DATA_DIR
         if _chart_dir:
-            for _cf in ("net_heatmap.html", "daily_usage.html"):
+            for _cf in ("daily_usage.html",):
                 _cp = os.path.join(_chart_dir, _cf)
                 try:
                     if os.path.exists(_cp):
@@ -2410,17 +2408,6 @@ def fill_history_page():
 
 # ── Chart file serving ────────────────────────────────────────────────────────
 
-@app.route("/charts/net_heatmap.html")
-def serve_heatmap():
-    p = os.path.join(CHART_DIR, "net_heatmap.html")
-    if not os.path.exists(p):
-        return "Chart not yet generated", 404
-    resp = send_file(p)
-    resp.headers["Cache-Control"] = "no-cache, must-revalidate"
-    resp.headers["Pragma"] = "no-cache"
-    return resp
-
-
 @app.route("/charts/daily_usage.html")
 def serve_daily():
     p = os.path.join(CHART_DIR, "daily_usage.html")
@@ -2476,8 +2463,16 @@ def lovelace_billing():
 
 @app.route("/lovelace/heatmap")
 def lovelace_heatmap():
-    """Net energy heatmap — Lovelace-friendly URL with auto-refresh."""
-    return _serve_lovelace_chart("net_heatmap.html")
+    """Net energy heatmap — Lovelace-friendly URL, for a Home Assistant dashboard card.
+
+    Same URL as ever, so existing cards keep working; it now serves the in-browser
+    heatmap (heatmap_module.html, drawing from /api/energy) instead of the
+    pre-rendered net_heatmap.html, which no longer exists. The module refreshes the
+    current month on a timer, so the page needs no meta refresh."""
+    resp = make_response(render_template("lovelace_heatmap.html",
+                                         refresh_s=_LOVELACE_REFRESH))
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
 
 
 def _aggregate_block_rows(raw_rows, bucket_of, standing_scope="bucket",
@@ -2709,7 +2704,7 @@ def _blocks_data_version(store) -> str:
     # content — and this also covers a config change (billing-day / add / remove), since
     # every config mutation schedules a regen that rewrites these files.
     _mt = []
-    for _cf in ("daily_usage.html", "net_heatmap.html"):
+    for _cf in ("daily_usage.html",):   # the heatmap is drawn in the browser now
         try:
             _mt.append(f"{os.path.getmtime(os.path.join(CHART_DIR, _cf)):.3f}")
         except (OSError, TypeError):   # missing file, or CHART_DIR unset (tests)
@@ -3141,20 +3136,6 @@ def api_blocks_day():
     except Exception as e:
         logger.error("api_blocks_day: %s", e)
         return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/charts/heatmap")
-def api_chart_heatmap():
-    """Return heatmap chart HTML as JSON for inline embedding."""
-    p = os.path.join(CHART_DIR, "net_heatmap.html")
-    if not os.path.exists(p):
-        return jsonify({"html": None})
-    with open(p) as f:
-        resp = jsonify({"html": f.read()})
-    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    resp.headers["Pragma"] = "no-cache"
-    resp.headers["Expires"] = "0"
-    return resp
 
 
 @app.route("/api/charts/daily")
@@ -8073,9 +8054,6 @@ def api_regenerate_charts():
         currency = main_meta.get("currency_symbol", "£")
         os.makedirs(CHART_DIR, exist_ok=True)
         blocks = store.get_blocks_lightweight()
-        html = energy_charts.generate_net_heatmap(blocks, timezone_name=tz_name, block_minutes=bm, currency=currency)
-        with open(os.path.join(CHART_DIR, "net_heatmap.html"), "w") as f:
-            f.write(html)
         # Cap-aware rate lines: mirror engine.generate_charts so a MANUAL regenerate matches
         # the scheduled render (6-h-cap gating + authoritative TOU house line). Without these two
         # args the rate lines fall back to the pre-BL-27 behaviour on this path only.

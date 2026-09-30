@@ -381,8 +381,8 @@ class TestRouteRegistration(unittest.TestCase):
             server.CHART_DIR = orig
             import shutil; shutil.rmtree(d, ignore_errors=True)
 
-    def test_api_chart_heatmap_registered(self):
-        self.assertTrue(self._registered("api_chart_heatmap"))
+    def test_api_chart_heatmap_is_not_registered(self):
+        self.assertFalse(self._registered("api_chart_heatmap"))
 
     def test_api_chart_daily_registered(self):
         self.assertTrue(self._registered("api_chart_daily"))
@@ -634,18 +634,25 @@ class TestApiChartEndpoints(unittest.TestCase):
     def setUp(self):
         self.client = make_client()
 
-    def test_heatmap_returns_null_html_when_file_missing(self):
-        with patch("os.path.exists", return_value=False):
-            r = self.client.get("/api/charts/heatmap")
-        self.assertEqual(r.status_code, 200)
-        self.assertIsNone(r.get_json()["html"])
+    def test_the_pre_rendered_heatmap_routes_are_gone(self):
+        """The heatmap is drawn in the browser from /api/energy (30 Sep 2026)."""
+        for url in ("/api/charts/heatmap", "/charts/net_heatmap.html"):
+            self.assertEqual(self.client.get(url).status_code, 404, url)
 
-    def test_heatmap_returns_html_when_file_exists(self):
-        with patch("os.path.exists", return_value=True), \
-             patch("builtins.open", unittest.mock.mock_open(read_data="<html>test</html>")):
-            r = self.client.get("/api/charts/heatmap")
+    def test_lovelace_heatmap_serves_the_in_browser_module(self):
+        """Same URL as ever, so a dashboard card keeps working — no file needed."""
+        with patch("os.path.exists", return_value=False):
+            r = self.client.get("/lovelace/heatmap")
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.get_json()["html"], "<html>test</html>")
+        body = r.get_data(as_text=True)
+        self.assertIn("window.EMTHeatmap", body)
+        self.assertIn("EMTHeatmap.init(", body)
+        self.assertIn("setInterval(", body)
+
+    def test_the_charts_page_draws_the_heatmap_in_the_page(self):
+        body = self.client.get("/charts").get_data(as_text=True)
+        self.assertIn("window.EMTHeatmap", body)
+        self.assertNotIn("/api/charts/heatmap", body)
 
     def test_daily_returns_null_html_when_file_missing(self):
         with patch("os.path.exists", return_value=False):
