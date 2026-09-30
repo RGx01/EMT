@@ -396,6 +396,9 @@ _TRACEBACK = re.compile(r"^Traceback|\bTraceback \(most recent")
 _LAG = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d).*engine loop lag: ([0-9.]+) s")
 _LAG_MONITOR = re.compile(r"engine loop lag monitor started")
 _STALL = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d).*engine loop stalled: ([0-9.]+) s")
+_COMMIT = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d).*slow commit: ([0-9.]+) s in (\S+) "
+                     r"\(WAL (\S+ MB|\?) -> (\S+ MB|\?)(.*checkpoint ran)?")
+_TS = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)")
 _STACK_THREAD = re.compile(r"^\s+--- (ENGINE LOOP|thread) (\S+)")
 _STACK_FRAME = re.compile(r"^\s{4}(\S+\.py):(\d+) in (\S+):")
 # Frames from these files are the application; anything else is the stdlib or a
@@ -421,7 +424,7 @@ def _summarise_stall(stall):
 _DISCONNECT = re.compile(r"waitress\s+Socket error")
 
 
-def scan_log(path, starve_min=60.0, lag_budget=2.0):
+def scan_log(path, starve_min=60.0, lag_budget=2.0, since=None):
     sys.path.insert(0, ROOT)
     import job_coordinator as C
     manifest = C._MANIFEST
@@ -430,8 +433,22 @@ def scan_log(path, starve_min=60.0, lag_budget=2.0):
     waiting = {}                                   # job -> (since, blocker)
     violations, seen_jobs, last_t = [], set(), None
     disconnects, prev = 0, ""
-    monitor, lags, stalls, cur_thread = False, [], [], None
+    monitor, lags, stalls, cur_thread, commits = False, [], [], None, []
+    # A saved log can reach back days, into older builds (the fourth soak's went to
+    # 24 Sep and counted a 29 Sep fault the fixed build did not have). --since skips
+    # every line stamped before it; unstamped lines follow the last stamp seen.
+    skipping = since is not None
     for ln, line in enumerate(open(path, errors="replace"), 1):
+        if since is not None:
+            tm_ = _TS.search(line[:40])
+            if tm_:
+                skipping = tm_.group(1) < since
+            if skipping:
+                continue
+        cm_ = _COMMIT.search(line)
+        if cm_:
+            commits.append((float(cm_.group(2)), cm_.group(1), cm_.group(3), cm_.group(4),
+                            cm_.group(5), bool(cm_.group(6)), ln))
         if _LAG_MONITOR.search(line):
             monitor = True
         sm = _STALL.search(line)
@@ -537,6 +554,17 @@ def scan_log(path, starve_min=60.0, lag_budget=2.0):
             for st in sorted(stalls, key=lambda x: -x["s"])[:8]:
                 out.append("  stalled %.1f s at %s (line %d)" % (st["s"], st["at"], st["line"]))
                 out += _summarise_stall(st)
+    if commits:
+        ck = [c for c in commits if c[5]]
+        out.append("\nslow commits (over 1 s): %d, of which %d had a WAL checkpoint run inside "
+                   "them; worst %.2f s" % (len(commits), len(ck), max(commits)[0]))
+        by = collections.Counter(c[2] for c in commits)
+        out.append("  by caller: " + ", ".join("%s %d" % kv for kv in by.most_common(8)))
+        for c in sorted(commits, reverse=True)[:8]:
+            out.append("  %.2f s at %s in %s (WAL %s -> %s)%s  line %d"
+                       % (c[0], c[1], c[2], c[3], c[4], "  CHECKPOINT" if c[5] else "", c[6]))
+    if since:
+        out.insert(1, "  (lines before %s skipped)" % since)
     ok = not violations and not starving and db_errors == 0 and lag_verdict != "FAIL"
     out.append("\nverdict A (database faults): %s   A (loop blocking): %s   "
                "B (coordinator): %s"
@@ -550,7 +578,7 @@ def scan_log(path, starve_min=60.0, lag_budget=2.0):
 
 
 def cmd_scan_log(a):
-    report, ok = scan_log(a.log, a.starve_min, a.lag_budget)
+    report, ok = scan_log(a.log, a.starve_min, a.lag_budget, a.since)
     print(report)
     return 0 if ok else 1
 
@@ -617,6 +645,7 @@ def main(argv=None):
     s = sub.add_parser("scan-log")
     s.add_argument("log")
     s.add_argument("--starve-min", type=float, default=60.0)
+    s.add_argument("--since", help="ignore lines stamped before this, e.g. 2026-09-30T09:00:00")
     s.add_argument("--lag-budget", type=float, default=2.0,
                    help="seconds the engine loop may be held before it counts as blocking")
     s.set_defaults(fn=cmd_scan_log)

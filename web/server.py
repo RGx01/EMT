@@ -356,33 +356,22 @@ def _cluster_nearby_rates(rows, eps: float = _RATE_CLUSTER_EPS):
 
 
 def _regen_charts_safely():
-    """Regenerate the pre-built charts on the engine's event-loop thread — never
-    the Flask request thread.
+    """Rebuild the pre-built charts after a request changed the data — OFF the loop.
 
-    The engine's BlockStore (engine.get_store()) is opened check_same_thread=False
-    and is driven by the engine on the asyncio loop thread. Calling
-    generate_charts against it from a request thread is concurrent cross-thread
-    use of one SQLite connection → segfault (observed on delete-device, where
-    engine_startup is running on the loop at the same instant). Scheduling the
-    regen onto the loop serialises it with all other engine store access, exactly
-    as the engine's own finalise-time regen already runs. Fire-and-forget: the
-    chart is ready by the user's next page load. Falls back to inline only when no
-    loop is running (tests / pre-init), where there is no concurrent engine."""
-    try:
-        import asyncio as _a
-        import engine as _eng_r
-        if _event_loop is not None and _event_loop.is_running():
-            async def _run():
-                try:
-                    _eng_r.generate_charts(_eng_r.get_store())
-                except Exception as _e:
-                    logger.warning("_regen_charts_safely: loop regen failed: %s", _e)
-            _a.run_coroutine_threadsafe(_run(), _event_loop)
-        else:
-            _eng_r.generate_charts(_eng_r.get_store())
-    except Exception as e:
-        logger.warning("_regen_charts_safely: %s", e)
+    This used to run `generate_charts` ON the engine loop, on purpose: v4's engine
+    store was one connection shared across threads, so rendering from a request
+    thread segfaulted, and the loop was the only safe place. Workstream A removed
+    that reason (per-thread read connections; the offloaded renderer opens its own),
+    and left the cost: fourth Pi soak (30 Sep 2026), a restore's regen held the loop
+    **492 s** — 17 watchdog dumps with the engine thread inside `generate_charts`,
+    `get_blocks_lightweight` and `calculate_billing_summary_for_period`, the live
+    tick and every loop hop frozen behind it.
 
+    Now the same path the settings toggles use: `_schedule_offloaded_regen()` asks
+    the engine to schedule `_generate_charts_offloaded()`, which renders in the
+    executor with its own read-only store, coalesced. Kept under this name for its
+    ten callers."""
+    _schedule_offloaded_regen()
 
 def init(data_dir: str, chart_dir: str, ha_client):
     global DATA_DIR, CHART_DIR, _ha_client, _event_loop
