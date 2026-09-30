@@ -8,11 +8,19 @@ a browser against a real 4.5.16 database (30 Sep 2026), not assumed:
   * the y axis is set `reverse: false` EXPLICITLY — chartjs-chart-matrix's defaults
     reverse it, which drew the newest day at the bottom while the hover arithmetic
     counted rows from the top, so every tooltip named the wrong day;
-  * hover is arithmetic on the grid, not Chart.js's tooltip — which repaints a whole
-    year (17,934 cells) on every pointer move;
-  * canvas density is capped at 2x — a year is a tall canvas, ~32 MB at 2x;
-  * one chart per year, the newest loaded at once, older ones on scroll;
+  * hover is arithmetic on the grid, not Chart.js's tooltip — which repaints every
+    cell on every pointer move;
+  * canvas density is capped at 2x;
+  * one chart per MONTH (v4's layout), the newest loaded at once, older ones on scroll;
   * data comes from /api/energy, month by month, never a pre-rendered file.
+
+And three that the first in-browser version got wrong, found comparing it with v4 on
+the Pi (30 Sep 2026):
+
+  * a theme switch re-draws every drawn month — the zero colour is the page
+    background, baked into the canvas, and it stayed behind until another tab;
+  * cells are square — one size for both axes, from the width;
+  * the colour scales are v4's own stops (energy_charts.make_colorscale, _hmCo2Cs).
 """
 import os
 import re
@@ -36,14 +44,36 @@ class ModuleDecisions(unittest.TestCase):
         self.assertIn("function attachHover(", _SRC)
 
     def test_canvas_density_is_capped(self):
-        self.assertIn("devicePixelRatio: Math.min(2,", _SRC)
+        self.assertIn("var dpr = Math.min(2, window.devicePixelRatio || 1);", _SRC)
+        self.assertEqual(_SRC.count("devicePixelRatio: dpr"), 2)      # grid and totals
 
     def test_it_reads_the_api_month_by_month(self):
         self.assertIn("/api/energy?resolution=block&kind=month&year=", _SRC)
         self.assertNotIn("net_heatmap", re.sub(r"<!--.*?-->", "", _SRC, flags=re.S))
 
-    def test_the_newest_year_does_not_wait_for_a_scroll(self):
-        self.assertIn("if (y === state.years[0]) loadYear(y); else io.observe(el);", _SRC)
+    def test_the_newest_month_does_not_wait_for_a_scroll(self):
+        self.assertIn("if (i === 0) loadMonth(k);", _SRC)
+
+
+class V4Parity(unittest.TestCase):
+    """REGRESSION (30 Sep 2026): each fails on the tree #17 merged."""
+
+    def test_a_theme_switch_redraws(self):
+        self.assertRegex(_SRC, r"new MutationObserver\(function \(\) \{ redrawAll\(true\); \}\)\s*"
+                               r"\.observe\(document\.documentElement, \{attributes: true, "
+                               r"attributeFilter: \['data-theme'\]\}\)")
+        self.assertIn("function bg() { return dark() ? '#1a1d27' : '#ffffff'; }", _SRC)
+
+    def test_cells_are_square(self):
+        """One cell size, used for both the width and the height of the grid."""
+        self.assertIn("function cellSize(panel) {", _SRC)
+        self.assertIn("h = days.length * cs + top + 2", _SRC)
+
+    def test_the_kwh_scale_is_v4s(self):
+        """make_colorscale's stops: blue for export, the background at zero, red for import."""
+        for c in ("#003366", "#0066cc", "#00aa66", "#ffcc99", "#ff6600", "#cc0000"):
+            self.assertIn("'%s'" % c, _SRC[_SRC.index("function kwhStops("):_SRC.index("function co2Stops(")])
+        self.assertIn("[wp, W]", _SRC)
 
 
 class ThePageUsesIt(unittest.TestCase):
