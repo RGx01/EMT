@@ -172,14 +172,14 @@ class DayRollups(_Base):
         self.blk(start="2026-09-01T00:00:00")
         self.blk(start="2026-09-01T00:30:00")
         self.blk("ev_charger", start="2026-09-01T00:00:00")
-        rows = self.st.get_day_rollups(FROM, TO)
+        rows = self.st.get_day_rollups(FROM, TO, "UTC")
         self.assertEqual(len(rows), 2)
         self.assertEqual({r["meter_id"] for r in rows}, {"electricity_main", "ev_charger"})
 
     def test_it_sums_and_counts(self):
         self.blk(start="2026-09-01T00:00:00", imp_kwh=2.0, imp_cost=0.5)
         self.blk(start="2026-09-01T00:30:00", imp_kwh=3.0, imp_cost=0.75)
-        main = [r for r in self.st.get_day_rollups(FROM, TO)
+        main = [r for r in self.st.get_day_rollups(FROM, TO, "UTC")
                 if r["meter_id"] == "electricity_main"][0]
         self.assertEqual(main["blocks"], 2)
         self.assertAlmostEqual(main["imp_kwh"], 5.0)
@@ -188,9 +188,50 @@ class DayRollups(_Base):
     def test_interpolated_blocks_are_counted_not_hidden(self):
         self.blk(start="2026-09-01T00:00:00", interpolated=1)
         self.blk(start="2026-09-01T00:30:00", interpolated=0)
-        main = [r for r in self.st.get_day_rollups(FROM, TO)
+        main = [r for r in self.st.get_day_rollups(FROM, TO, "UTC")
                 if r["meter_id"] == "electricity_main"][0]
         self.assertEqual(main["interpolated_blocks"], 1)
+
+
+class LocalDays(_Base):
+    """REGRESSION (30 Sep 2026): rollups grouped by UTC date, and a UTC day's
+    total cannot be split back into local ones — every BST day was wrong."""
+
+    def test_a_bst_evening_block_lands_on_the_next_local_day(self):
+        self.blk(start="2026-09-01T22:30:00", imp_kwh=1.0)   # 23:30 BST, 1 Sep
+        self.blk(start="2026-09-01T23:00:00", imp_kwh=2.0)   # 00:00 BST, 2 Sep
+        rows = {r["day"]: r for r in self.st.get_day_rollups(FROM, TO, "Europe/London")
+                if r["meter_id"] == "electricity_main"}
+        self.assertAlmostEqual(rows["2026-09-01"]["imp_kwh"], 1.0)
+        self.assertAlmostEqual(rows["2026-09-02"]["imp_kwh"], 2.0)
+
+    def test_the_same_blocks_in_utc_share_a_day(self):
+        """GUARD: the UTC answer is unchanged for a UTC site. (It fails on the
+        pre-fix tree only because that signature took no tz_name.)"""
+        self.blk(start="2026-09-01T22:30:00", imp_kwh=1.0)
+        self.blk(start="2026-09-01T23:00:00", imp_kwh=2.0)
+        rows = [r for r in self.st.get_day_rollups(FROM, TO, "UTC")
+                if r["meter_id"] == "electricity_main"]
+        self.assertEqual([r["day"] for r in rows], ["2026-09-01"])
+
+    def test_the_clocks_back_day_has_fifty_half_hours(self):
+        """25 Oct 2026: BST ends; the local day is 25 hours long."""
+        from datetime import datetime, timedelta
+        t = datetime(2026, 10, 24, 23, 0)                    # 00:00 BST, 25 Oct
+        for i in range(52):
+            self.blk(start=(t + timedelta(minutes=30 * i)).isoformat())
+        rows = {r["day"]: r for r in self.st.get_day_rollups(
+                    "2026-10-24T00:00:00", "2026-10-27T00:00:00", "Europe/London")
+                if r["meter_id"] == "electricity_main"}
+        self.assertEqual(rows["2026-10-25"]["blocks"], 50)
+        self.assertEqual((rows["2026-10-25"]["start_utc"], rows["2026-10-25"]["end_utc"]),
+                         ("2026-10-24T23:00:00", "2026-10-26T00:00:00"))
+
+    def test_the_range_clamps_a_partial_first_day(self):
+        self.blk(start="2026-09-01T12:00:00")
+        rows = self.st.get_day_rollups("2026-09-01T12:00:00", "2026-09-02T00:00:00",
+                                       "Europe/London")
+        self.assertEqual(rows[0]["start_utc"], "2026-09-01T12:00:00")
 
 
 class Surfaces(unittest.TestCase):

@@ -7677,9 +7677,15 @@ class BlockStore:
         except (TypeError, ValueError):
             return 0
 
-    def bump_data_epoch(self) -> int:
-        """Invalidate every client's cached state. Returns the new epoch."""
-        n = self.get_data_epoch() + 1
+    def bump_data_epoch(self, floor: int = 0) -> int:
+        """Invalidate every client's cached state. Returns the new epoch.
+
+        `floor` is for a restore or upload, where the epoch lives IN the file being
+        swapped in: a restored database brings back whatever epoch it had, which a
+        client may already hold — equal, or lower than what it saw since. Passing
+        the epoch read BEFORE the swap makes the result max(restored, previous) + 1,
+        so it can never repeat or go backwards."""
+        n = max(self.get_data_epoch(), int(floor or 0)) + 1
         self.set_meta(self._EPOCH_KEY, str(n))
         return n
 
@@ -7702,10 +7708,13 @@ class BlockStore:
 
         AND A DEVICE INHERITS ITS PARENT'S. A sub-meter's own `rate_source` says
         how its ROW was written (PASS 2, at the parent's rate), not where its
-        NUMBER came from. Measured: 1,206 device blocks under a settled parent
-        carry `rate_source='schedule'` while their rate matches the settled
-        parent exactly — 1,206 of 1,206, £42.14 of billed cost labelled
-        schedule-derived. `bill_applied` therefore comes from the parent row.
+        NUMBER came from: 1,206 device blocks under a settled parent carry
+        `rate_source='schedule'`, because `recost_sub_meters` copies the parent's
+        rate without touching the child's provenance. `bill_applied` therefore
+        comes from the parent row. (An earlier version cited the rate matching
+        the parent "1,206 of 1,206, £42.14" as evidence; C §3 withdrew that —
+        devices track the parent's rate whatever its state, so the match
+        distinguishes nothing. The lifecycle argument is what holds.)
         """
         rows = self._conn.execute(
             "SELECT b.block_start, b.block_end, b.meter_id, "
@@ -7746,26 +7755,57 @@ class BlockStore:
             (utc_start, utc_end)).fetchall()
         return [dict(r) for r in rows]
 
-    def get_day_rollups(self, utc_start: str, utc_end: str) -> list:
-        """Per-day, per-meter totals over [utc_start, utc_end).
+    def get_day_rollups(self, utc_start: str, utc_end: str, tz_name: str) -> list:
+        """One row per LOCAL day per meter over [utc_start, utc_end): the cheap
+        resolution (93 rows and 1.7 KB gzipped for a month, against 55 KB at block
+        resolution).
 
-        The cheap resolution: 93 rows and 1.7 KB gzipped for a month, against
-        55 KB for the same month at block resolution. Grouped by UTC date — the
-        caller owns the local-day question, because a local day is a wall-clock
-        span that does not align to a UTC one.
-        """
+        LOCAL, not UTC — corrected 30 Sep 2026. This grouped by UTC date and left
+        "the local-day question" to the caller, but a UTC day's total cannot be
+        split back into local days: from late March to late October a UK local
+        day runs 23:00–23:00 UTC, so no client could recover correct daily totals
+        for the half of the year that is BST. `tz_name` is required, with no
+        default (C §2 rule 2): a day is a tariff-context question.
+
+        Each row carries its day's UTC bounds, and meters stay separate so a client
+        can apply the bill's per-day `max(0, main − Σsubs) + Σsubs`. Still one
+        query over `blocks` — never a block fetch reduced in Python (C §3a)."""
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+        lo = datetime.fromisoformat(utc_start).replace(tzinfo=timezone.utc)
+        hi = datetime.fromisoformat(utc_end).replace(tzinfo=timezone.utc)
+        if hi <= lo:
+            return []
+        fmt = "%Y-%m-%dT%H:%M:%S"
+        days, d = [], lo.astimezone(tz).date()
+        while True:
+            start = datetime(d.year, d.month, d.day, tzinfo=tz).astimezone(timezone.utc)
+            if start >= hi:
+                break
+            nd = d + timedelta(days=1)
+            end = datetime(nd.year, nd.month, nd.day, tzinfo=tz).astimezone(timezone.utc)
+            s0, e0 = max(start, lo), min(end, hi)
+            if e0 > s0:
+                days.append((d.isoformat(), s0.strftime(fmt), e0.strftime(fmt)))
+            d = nd
+        if not days:
+            return []
+        values = ",".join("(?,?,?)" for _ in days)
+        params = [x for day in days for x in day]
         rows = self._conn.execute(
-            "SELECT substr(block_start, 1, 10) AS day, meter_id, COUNT(*) AS blocks, "
-            "       ROUND(COALESCE(SUM(imp_kwh), 0), 4) AS imp_kwh, "
-            "       ROUND(COALESCE(SUM(imp_cost), 0), 4) AS imp_cost, "
-            "       ROUND(COALESCE(SUM(exp_kwh), 0), 4) AS exp_kwh, "
-            "       ROUND(COALESCE(SUM(exp_cost), 0), 4) AS exp_cost, "
-            "       ROUND(COALESCE(SUM(carbon_g), 0), 1) AS carbon_g, "
-            "       ROUND(COALESCE(SUM(standing_charge), 0), 4) AS standing_charge, "
-            "       SUM(interpolated) AS interpolated_blocks "
-            "FROM blocks WHERE block_start >= ? AND block_start < ? "
-            "GROUP BY day, meter_id ORDER BY day, meter_id",
-            (utc_start, utc_end)).fetchall()
+            "WITH d(day, s, e) AS (VALUES " + values + ") "
+            "SELECT d.day AS day, d.s AS start_utc, d.e AS end_utc, b.meter_id, "
+            "       COUNT(*) AS blocks, "
+            "       ROUND(COALESCE(SUM(b.imp_kwh), 0), 4) AS imp_kwh, "
+            "       ROUND(COALESCE(SUM(b.imp_cost), 0), 4) AS imp_cost, "
+            "       ROUND(COALESCE(SUM(b.exp_kwh), 0), 4) AS exp_kwh, "
+            "       ROUND(COALESCE(SUM(b.exp_cost), 0), 4) AS exp_cost, "
+            "       ROUND(COALESCE(SUM(b.carbon_g), 0), 1) AS carbon_g, "
+            "       ROUND(COALESCE(SUM(b.standing_charge), 0), 4) AS standing_charge, "
+            "       SUM(b.interpolated) AS interpolated_blocks "
+            "FROM d JOIN blocks b ON b.block_start >= d.s AND b.block_start < d.e "
+            "GROUP BY d.day, b.meter_id ORDER BY d.day, b.meter_id",
+            params).fetchall()
         return [dict(r) for r in rows]
 
     def day_fingerprints(self, utc_start: str, utc_end: str) -> dict:

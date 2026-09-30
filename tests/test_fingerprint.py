@@ -181,6 +181,31 @@ class TheEpoch(_Base):
         self.assertFalse(hasattr(ReadStore, "bump_data_epoch"))
 
 
+class TheEpochAcrossAFileSwap(_Base):
+    """REGRESSION (30 Sep 2026): a restore or zip import replaces the database, and
+    the epoch lives IN it — so the restored file brought back its own epoch, which
+    a client may already hold. Neither path bumped it."""
+
+    def test_the_floor_puts_it_above_the_previous_database(self):
+        # the restored file says 2; the database it replaced had reached 5
+        self.st.set_meta(self.st._EPOCH_KEY, "2")
+        self.assertEqual(self.st.bump_data_epoch(floor=5), 6)
+
+    def test_a_restored_file_ahead_of_the_old_one_still_moves(self):
+        self.st.set_meta(self.st._EPOCH_KEY, "9")
+        self.assertEqual(self.st.bump_data_epoch(floor=5), 10)
+
+    def test_both_swap_paths_bump_with_the_pre_swap_epoch(self):
+        import ast
+        tree = ast.parse(open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read())
+        for name in ("_restore_worker", "api_import_from_zip"):
+            fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
+            src = ast.unparse(fn)
+            self.assertIn("bump_data_epoch(floor=_epoch_before)", src, name)
+            self.assertLess(src.index("_epoch_before = store_access.store().get_data_epoch()"),
+                            src.index("bump_data_epoch(floor=_epoch_before)"), name)
+
+
 class TheEndpointCarriesIt(unittest.TestCase):
 
     def test_api_energy_returns_epoch_and_days(self):

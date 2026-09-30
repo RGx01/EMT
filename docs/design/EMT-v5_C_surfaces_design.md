@@ -4,7 +4,37 @@
 ([EMT-v5_programme.md](EMT-v5_programme.md)) frames why this sits where it does; this document is
 the design.*
 
-**Status:** draft, 17 Sep 2026. Depends on workstream A (storage and access model).
+**Status:** draft, 17 Sep 2026. Depends on workstream A (storage and access model) — closed
+30 Sep 2026. **Review against the code, 30 Sep 2026: §0 below.**
+
+## 0. Where the code stands — reviewed 30 Sep 2026
+
+*Each §6 acceptance item measured against `dev` after workstream A closed.*
+
+| # | acceptance (§6) | state | evidence |
+|---|---|---|---|
+| 1 | no pre-generated chart artefacts; `CHART_DIR` gone | **not started** | 32 `CHART_DIR` refs (main, engine, server); writes `daily_usage.html` + `net_heatmap.html` via `energy_charts.py` (4,544 lines) and `chart_emit.py` (190); the Charts page iframes them |
+| 2 | a cost-neutral re-price invalidates | **met** | `test_fingerprint::test_a_cost_neutral_reprice_still_moves_it` |
+| 3 | a change to today leaves history alone | **met** | per-day fingerprints (`PerDayNotGlobal`); the epoch now also moves across a restore / zip import (30 Sep) |
+| 4 | a write does no rendering | **not met** | 25 render triggers (10 engine incl. `finalise_block`, 15 server); go with #1 |
+| 5 | every surface on the one endpoint | **not met, by design so far** | `/api/energy` serves period, day and block, and **no page calls it**: Insights/Usage use the six period routes, Charts `blocks-summary`/`blocks-day` + the iframe, Live Power `/api/billing` |
+| 6 | no tariff context with a default, AST-enforced | **not met** | ~20 real defaults, incl. `cap_from=None`, `import_schedule=None` on the chart builders and `timezone='UTC'` in ~10 places; no test |
+| 7 | billing reconciles with v4 to the penny | **no test** | `bill_conformance.py` referees against Octopus, `test_adapter_differential` pricing wrappers — neither compares surface totals |
+| 8 | TTFB budgets on the Pi | **baseline only** | §5 "Measured on the Pi" |
+
+**Found by the review, fixed 30 Sep 2026:** `resolution=day` grouped by **UTC** date, and a UTC
+day's total cannot be split back into local days — every BST day was wrong; it now groups by local
+day with `tz_name` required. Restore and zip import did not bump the epoch, which lives in the
+swapped file. `api_energy`'s docstring said day/block returned 501; they did not.
+
+**§7.1, answered by the evidence:** the API serves rollups at exactly two levels — the **period**
+(its own query) and the **local day** (one row per day per meter; a year is ~900 rows) — and the
+client does everything between from days, applying the bill's per-day formula. Blocks are fetched
+for a viewport, never summed for totals: a year of them is ~650 KB gzipped, ~15 MB raw.
+
+**Order agreed 30 Sep 2026:** (1) the fixes above and a rule-2 ratchet; (2) a penny-reconciliation
+test, v4 against `/api/energy`, on a real database; then (3) a minimal Charts page drawn in the
+browser from `/api/energy`, and the pre-rendered pipeline deleted behind it — the start of step 6.
 
 ---
 
