@@ -358,6 +358,11 @@ same way.
    see what members report:** until `verify_pricing` and `import` consult `admission()` and
    every member claims/marks, a clean scan says less than it appears to.
 
+   *Run 29–30 Sep 2026 (five Pi soaks, A design §5e): **NOT EXERCISED.** No member claimed, marked
+   or was refused in any of them — the only job running was the re-price sweep, admitted every
+   time with nothing in its way. Testing this needs members started deliberately so they
+   overlap, and most writing members call Octopus or HA, which the soak must not. Still open.*
+
 ---
 
 ## 6. Open questions

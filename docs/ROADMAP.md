@@ -37,6 +37,30 @@ rather than to the chart renderer alone.
 **Done when:** a soak hammering every read surface while the engine writes shows no torn rows and
 no read blocked behind a write.
 
+**Done 30 Sep 2026.** Five Pi soaks (A design §5e): no torn rows, 0 SQLite faults, no read
+blocked in SQLite, no GET waiting on the engine loop for a database read. What they left is §A.1.
+
+### A.1 Engine writes stall on the SD card
+
+*Not a read-path problem, so not A's — but found by A's soak, and it has a user-visible cost.*
+
+On the Pi's SD card, the engine loop still stalls 10–53 s when several things write at once, and
+every stall has the engine thread inside a **commit** (fifth soak: 80 over 1 s, worst 52.7 s, 69 in
+`set_block_segments` during the re-price sweep). One stall dropped the HA WebSocket. Candidates,
+largest first:
+
+- **The pre-rendered chart files** — C step 4 deletes them.
+- **The pre-restore safety zip**, written while the restored engine starts — it overlapped the
+  worst commit.
+- **`_backup_to_share` after every block finalise** — a whole-database copy each time; harmless
+  at one finalise per half-hour, heavy during a catch-up burst.
+- **Commits on the engine thread at all.** If the above are not enough, route engine writes
+  through a writer thread so the loop never waits on the device. An architecture change, and
+  deliberately last.
+
+**Done when:** a soak on the SD card shows no engine-loop stall over 2 s (`scan-log`
+`A (loop blocking): PASS`).
+
 ## B. Job coordinator
 
 *One coordinator for user-mutating jobs; deny-if-busy with idempotent retry.*
