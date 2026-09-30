@@ -108,26 +108,31 @@ class V4Features(unittest.TestCase):
 
 
 class ApiCoverage(unittest.TestCase):
-    """The API-coverage view (30 Sep 2026): which half-hours still have no smart-meter
-    kWh from the supplier API. New-view tests: they fail on the tree before it."""
+    """The API-coverage views (30 Sep 2026): which half-hours still have no smart-meter
+    kWh from the supplier API, one view per channel. New-view tests: they fail on the
+    tree before them."""
 
-    def test_it_is_offered_to_api_accounts_only(self):
-        self.assertNotIn("api:", _SRC[_SRC.index("var METRICS = {"):_SRC.index("var API_METRIC")])
-        self.assertIn("if (r && r.uses_api) METRICS.api = API_METRIC;", _SRC)
+    def test_they_are_offered_to_api_accounts_only_and_per_channel(self):
+        base = _SRC[_SRC.index("var METRICS = {"):_SRC.index("// Supplier-API accounts only")]
+        self.assertNotIn("api", base)                  # not in the table everyone gets
+        self.assertIn("if (!(r && r.uses_api)) return;", _SRC)
+        self.assertIn("if (chans.indexOf(API_METRICS[k].channel) >= 0) METRICS[k] = API_METRICS[k];", _SRC)
+
+    def test_each_channel_reads_its_own_flag(self):
+        """kwh_authoritative / exp_kwh_authoritative are the store's rule (imported, or
+        that channel's DCC kWh held) — the view does not re-derive them."""
+        self.assertIn("field: 'kwh_authoritative', channel: 'import'", _SRC)
+        self.assertIn("field: 'exp_kwh_authoritative', channel: 'export'", _SRC)
+        self.assertIn(": b[API_METRICS[k].field] ? 'ok'", _SRC)
+        self.assertNotIn("kwh_api", _SRC)
 
     def test_imported_history_is_excluded_not_counted(self):
-        self.assertIn("/^imported/.test(b.source || '') ? 'imported'", _SRC)
-        self.assertIn("return c && (c.api === 'missing' || c.api === 'pending'); }).length;", _SRC)
-
-    def test_it_reads_the_payloads_own_flag(self):
-        """kwh_authoritative is the store's rule (imported, or imp_kwh_api held) — the
-        view does not re-derive it from imp_kwh_api."""
-        self.assertIn(": b.kwh_authoritative ? 'ok'", _SRC)
-        self.assertNotIn("imp_kwh_api", _SRC)
+        self.assertIn("var imported = /^imported/.test(b.source || '')", _SRC)
+        self.assertIn("return c && (c[m] === 'missing' || c[m] === 'pending'); }).length;", _SRC)
 
     def test_a_recent_gap_is_not_yet_missing(self):
         self.assertIn("var API_PENDING_H = 48;", _SRC)
-        self.assertIn("< API_PENDING_H * 3600e3 ? 'pending' : 'missing'", _SRC)
+        self.assertIn("? 'ok' : young ? 'pending' : 'missing'", _SRC)
 
 
 class ThePageUsesIt(unittest.TestCase):
