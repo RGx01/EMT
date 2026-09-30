@@ -3,7 +3,8 @@ The Billing tab drawn in the browser (web/templates/billing_module.html) — C,
 30 Sep 2026 — and the one server addition it needed, `/api/periods?include=net_cost`.
 
 THE PORT IS CHECKED IN THE BROWSER, NOT HERE. The suite cannot run JavaScript (no
-Node on the Mac or the Pi). `.build/billing_client_parity.js` checks the JS bill card,
+Node on the Mac or the Pi). `.build/billing_client_parity.js` (deleted with the page it
+compared against, C step 3) checked the JS bill card,
 picker labels, vs Prev / vs Last Year picks and day side panels against the
 pre-rendered page on a real database: 30 Sep 2026, 98 cards across the four modes,
 98 labels, 98 compare pairs and 1,212 day panels, all identical; with a 1p nudge to

@@ -490,7 +490,7 @@ function saveEdit() {
   var _saveBtn   = document.getElementById('edit-save-btn');
   var _cancelBtn = document.getElementById('edit-cancel-btn');
   var _saveLabel = _saveBtn ? _saveBtn.textContent : '';
-  if (_saveBtn)   { _saveBtn.disabled = true; _saveBtn.textContent = 'Saving… regenerating charts'; }
+  if (_saveBtn)   { _saveBtn.disabled = true; _saveBtn.textContent = 'Saving…'; }
   if (_cancelBtn) { _cancelBtn.disabled = true; }
   function _restoreSaveBtn() {
     if (_saveBtn)   { _saveBtn.disabled = false; _saveBtn.textContent = _saveLabel || 'Save Changes'; }
@@ -518,8 +518,8 @@ function saveEdit() {
     _restoreSaveBtn();
     if (data.ok) {
       closeModal();
-      showSuccess(isCreate ? 'New billing period created. Billing charts regenerated.'
-                           : 'Config period updated. Billing charts regenerated.');
+      showSuccess(isCreate ? 'New billing period created. Open charts will refresh shortly.'
+                           : 'Config period updated. Open charts will refresh shortly.');
       load();
     } else {
       showError(data.error || (isCreate ? 'Create failed' : 'Update failed'));
@@ -598,7 +598,7 @@ function doDelete(id, isActive) {
     var badge = document.createElement('div');
     badge.className = 'period-deleting-badge';
     badge.style.cssText = 'margin-top:10px;font-size:13px;color:var(--accent);font-weight:600;';
-    badge.textContent = '⏳ Deleting… regenerating charts';
+    badge.textContent = '⏳ Deleting…';
     card.appendChild(badge);
   }
   document.querySelectorAll('#history-container button, .btn')
@@ -613,7 +613,7 @@ function doDelete(id, isActive) {
           parts.push(data.blocks_reassigned.toLocaleString() + ' blocks reassigned — no data lost.');
         if (data.config_restored)
           parts.push('Meter Config restored to the previous period\'s settings. The engine will pick up the restored config on its next tick.');
-        parts.push('Charts regenerated — open charts will refresh shortly.');
+        parts.push('Open charts will refresh shortly.');
         showSuccess(parts.join(' '));
         // Re-enable the persistent buttons (New Period / Meter Config) that load()
         // doesn't re-render; the card buttons are rebuilt fresh by load().

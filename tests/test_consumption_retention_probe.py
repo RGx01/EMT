@@ -16,8 +16,6 @@ eio.save_file = lambda *a, **kw: None
 sys.modules["energy_engine_io"] = eio
 
 ec = types.ModuleType("energy_charts")
-ec.generate_net_heatmap = lambda *a, **kw: ""
-ec.generate_daily_import_export_charts = lambda *a, **kw: ""
 sys.modules["energy_charts"] = ec
 
 hc = types.ModuleType("ha_client")
@@ -750,42 +748,6 @@ class TestApiImportJob(unittest.TestCase):
         engine._kraken_client = _Cancelling(self._contig())
         asyncio.run(engine.run_api_import_job(max_chunks=1, pace_s=0))
         self.assertEqual(engine._api_import_job["status"], "cancelled")
-
-    def test_worker_regenerates_charts_on_completion(self):
-        # Charts must refresh when the import finishes, not only on the next
-        # live block finalise.
-        calls = []
-        orig = engine.generate_charts
-        # Match the real signature generate_charts(store, config=None): the import
-        # job now AWAITS the off-loop render, which resolves + passes config.
-        engine.generate_charts = lambda store, config=None: calls.append(store)
-        try:
-            engine._kraken_client = _FakeMeasClient(self._contig())
-            asyncio.run(engine.run_api_import_job(max_chunks=6, pace_s=0))
-        finally:
-            engine.generate_charts = orig
-        self.assertEqual(engine._api_import_job["status"], "done")
-        self.assertTrue(calls, "charts should regenerate after a completed import")
-
-    def test_regen_helper_runs_when_written(self):
-        calls = []
-        orig = engine.generate_charts
-        engine.generate_charts = lambda store: calls.append(store)
-        try:
-            engine._regen_charts_after_import({"written": {"import": 3, "export": 0}})
-        finally:
-            engine.generate_charts = orig
-        self.assertTrue(calls)
-
-    def test_regen_helper_skips_when_nothing_written(self):
-        calls = []
-        orig = engine.generate_charts
-        engine.generate_charts = lambda store: calls.append(store)
-        try:
-            engine._regen_charts_after_import({"written": {"import": 0, "export": 0}})
-        finally:
-            engine.generate_charts = orig
-        self.assertFalse(calls)
 
 
 class TestDataFloor(unittest.TestCase):

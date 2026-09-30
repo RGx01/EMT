@@ -16,7 +16,7 @@ import os
 import sys
 
 from ha_client import HAClient
-from engine import engine_startup, engine_loop_task, kraken_poll_task, setup, DATA_DIR, CHART_DIR
+from engine import engine_startup, engine_loop_task, kraken_poll_task, setup, DATA_DIR
 import web.server as server
 
 # ── Logging setup ─────────────────────────────────────────────────────────────
@@ -93,19 +93,16 @@ async def main():
     # needs no startup. Only re-run after a genuine outage (a while since the last
     # startup completed).
     import engine as _eng
-    # Long enough to cover an offloaded chart render (which can run a few minutes
-    # after startup completes over a large history and is the usual flap trigger).
+    # The chart render that was the usual flap trigger is gone (C, 30 Sep 2026: the
+    # charts are drawn in the browser); the cooldown still covers a heavy startup.
     RECONNECT_STARTUP_COOLDOWN_S = 300
     async def on_reconnect():
         since = _eng.seconds_since_startup()
-        # Skip the heavy startup re-run on a self-inflicted flap: either a startup
-        # completed recently, OR a chart render is in progress / just finished (the
-        # render is CPU/GIL-bound, so it stalls the WS heartbeat for MINUTES —
-        # longer than the startup cooldown — and IS the usual flap trigger).
-        if since < RECONNECT_STARTUP_COOLDOWN_S or _eng.render_recently_active():
-            logger.info("main: HA reconnected (%.0fs since startup, render_active=%s) "
-                        "— skipping startup re-run (WS re-subscribed; avoids reconnect "
-                        "storm)", since, _eng.render_recently_active())
+        # Skip the heavy startup re-run on a self-inflicted flap: a startup completed
+        # recently.
+        if since < RECONNECT_STARTUP_COOLDOWN_S:
+            logger.info("main: HA reconnected (%.0fs since startup) — skipping startup "
+                        "re-run (WS re-subscribed; avoids reconnect storm)", since)
             return
         logger.info("main: HA reconnected — re-running engine startup")
         await engine_startup(ha)
@@ -114,7 +111,7 @@ async def main():
     # 4 — Start Flask config UI + chart server in background thread
     try:
         logger.info("main: initialising web server")
-        server.init(DATA_DIR, CHART_DIR, ha)
+        server.init(DATA_DIR, ha)
         logger.info("main: starting web server")
         server.start()
         logger.info("main: web server started OK")

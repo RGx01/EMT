@@ -246,13 +246,6 @@ def generate_db(scenario_args, db_path):
     print(f"  Generated {len(blocks)} blocks ({count} meter-rows) → {db_path}")
 
 
-def regenerate_charts(base_url):
-    url = f"{base_url}/api/charts/regenerate"
-    resp = requests.post(url, timeout=60)
-    resp.raise_for_status()
-    return resp.json()
-
-
 def open_browser(url):
     """Open URL in default browser if possible, otherwise just print it."""
     try:
@@ -358,17 +351,7 @@ NEVER run against a production installation.
             if os.path.exists(tmp_path):
                 os.unlink(tmp_path)
 
-        # Regenerate charts
-        log("  Regenerating charts...")
-        try:
-            regenerate_charts(base_url)
-            log("  ✅ Charts regenerated")
-        except Exception as e:
-            log(f"  ❌ Regeneration failed: {e}")
-            log(traceback.format_exc())
-            results.append({"name": scenario["name"], "result": "ERROR", "note": str(e)})
-            continue
-
+        # Nothing to regenerate: the charts are drawn in the browser from the API.
         # Open browser — CO₂ scenarios go to Usage Stats tab
         if scenario.get("co2"):
             url = f"{base_url}/charts?tab=usage_stats"
@@ -376,9 +359,9 @@ NEVER run against a production installation.
             log("     Verify: net view (single bar), totals view (import above / export below)")
             log("     Verify: data table columns match chart, gCO₂ / kgCO₂ auto-scaling")
         elif heatmap_only:
-            url = f"{base_url}/charts/net_heatmap.html"
+            url = f"{base_url}/lovelace/heatmap"
         elif daily_only:
-            url = f"{base_url}/charts/daily_usage.html"
+            url = f"{base_url}/lovelace/billing"
         else:
             url = f"{base_url}/charts"
 

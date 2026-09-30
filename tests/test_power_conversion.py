@@ -24,8 +24,6 @@ eio.save_file = lambda *a, **kw: None
 sys.modules["energy_engine_io"] = eio
 
 ec = types.ModuleType("energy_charts")
-ec.generate_net_heatmap = lambda *a, **kw: ""
-ec.generate_daily_import_export_charts = lambda *a, **kw: ""
 sys.modules["energy_charts"] = ec
 
 hc = types.ModuleType("ha_client")

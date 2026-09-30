@@ -653,13 +653,14 @@ window.EMTBilling = (function () {
     days.forEach(releaseChart);
     days.forEach(buildChart);
   }
-  function refresh() {                                   // periodic: totals, the bill, and today's month
+  // Called when the data has moved (charts.html's data-version poll) and on a
+  // dashboard card's timer. Everything cached is dropped, not only the current
+  // period: a billing-day change re-cuts every period, the bill-rounding option
+  // changes every card and day, and a re-price can touch any month. Each is one
+  // small request again when next shown; the scroll position is kept.
+  function refresh() {
     if (!state.inited) return;
-    var mode = state.mode, lst = state.lists[mode], p = selected();
-    delete state.lists[mode];
-    if (p) delete state.bills[mode + ':' + p.start];
-    var now = new Date(), mk = now.getFullYear() + '-' + ('0' + (now.getMonth() + 1)).slice(-2);
-    delete state.months[mk];
+    state.lists = {}; state.bills = {}; state.months = {};
     var y = state.root.scrollTop;
     return show().then(function () { state.root.scrollTop = y; });
   }

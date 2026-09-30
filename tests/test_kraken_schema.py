@@ -35,8 +35,7 @@ for _name, _attrs in (
                            "load_json": lambda *a, **k: (a[1] if len(a) > 1 else {}),
                            "save_json_atomic": lambda *a, **k: None,
                            "save_file": lambda *a, **k: None}),
-    ("energy_charts", {"generate_net_heatmap": lambda *a, **k: "",
-                       "generate_daily_import_export_charts": lambda *a, **k: ""}),
+    ("energy_charts", {}),
     ("ha_client", {"HAClient": type("HAClient", (), {})}),
 ):
     if _name not in _sys.modules:

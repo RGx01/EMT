@@ -90,11 +90,15 @@ class TestDayChartCappedDevices(unittest.TestCase):
     def test_rendered_direct_import_has_no_peak(self):
         # end-to-end: the rendered day chart's 'Direct import' shows off-peak, not peak.
         imp = _main_import(ev_off=0, ev_peak=3.5, house_off=2.5, house_day=0)
-        html = ec.build_day_chart_html(
+        # The side panel's printed lines (C, 30 Sep 2026: this read build_day_chart_html's markup; the page it made is gone, and day_chart_data is what the Billing tab is served.)
+        import bill_card
+        d = ec.day_chart_data(
             "2026-08-15", [(4, {"start": "2026-08-15T02:00:00",
                                 "meters": _meters(imp, zappi_grid=3.4)})],
-            {MAIN: "#1f77b4", "zappi": "#e377c2"}, block_minutes=30, currency="£")
-        t = re.sub("<[^>]+>", " ", html).split('{"x_labels"')[0]
+            {MAIN: "#1f77b4", "zappi": "#e377c2"}, block_minutes=30, currency="£",
+            cap_from=None, import_schedule=None, timezone_name="UTC")
+        ln = bill_card.panel_lines(d["panel"], "£")
+        t = " ".join(x["text"] for x in ln["totals"] + [x for c in ln["cols"] for x in c])
         _d0 = t.find("Direct import")
         direct = t[_d0:t.find(chr(8627), _d0 + 1)]   # up to the next ↳ (device boundary)
         self.assertIn("0.0549", direct)          # house off-peak

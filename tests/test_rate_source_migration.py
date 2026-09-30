@@ -447,7 +447,6 @@ class TestDeviceOverlayFinaliseWiring(unittest.TestCase):
             "append": engine.append_block,
             "load_config": engine.load_config,
             "load_json": engine.load_json,
-            "charts": engine.generate_charts,
             "backup": engine._backup_to_share,
             "resolver": engine._kraken_rate_resolver,
         }
@@ -455,7 +454,6 @@ class TestDeviceOverlayFinaliseWiring(unittest.TestCase):
         engine.append_block = lambda blk: (captured.append(blk), s.append_block(blk))
         engine.load_config = lambda: cfg
         engine.load_json = lambda path, default=None: cfg if "config" in str(path) else (default or {})
-        engine.generate_charts = lambda *a, **kw: None
         engine._backup_to_share = lambda: None
         # schedule resolver: peak by day, off-peak overnight
         engine._kraken_rate_resolver = lambda ch, ts: (
@@ -468,7 +466,6 @@ class TestDeviceOverlayFinaliseWiring(unittest.TestCase):
             engine.append_block = orig["append"]
             engine.load_config = orig["load_config"]
             engine.load_json = orig["load_json"]
-            engine.generate_charts = orig["charts"]
             engine._backup_to_share = orig["backup"]
             engine._kraken_rate_resolver = orig["resolver"]
             try:

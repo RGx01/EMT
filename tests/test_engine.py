@@ -28,8 +28,6 @@ sys.modules["energy_engine_io"] = eio
 
 # Stub energy_charts
 ec = types.ModuleType("energy_charts")
-ec.generate_net_heatmap              = lambda *a, **kw: ""
-ec.generate_daily_import_export_charts = lambda *a, **kw: ""
 sys.modules["energy_charts"] = ec
 
 # Stub ha_client
@@ -1624,43 +1622,6 @@ class TestSecondsSinceStartup(unittest.TestCase):
         self.assertGreater(engine.seconds_since_startup(), 300)
 
 
-class TestRenderRecentlyActive(unittest.TestCase):
-    """render_recently_active backs the reconnect debounce's render-activity gate:
-    a render in progress OR just finished means a WS blip is a self-inflicted flap."""
-
-    def setUp(self):
-        self._r, self._t = engine._charts_rendering, engine._last_render_complete_ts
-
-    def tearDown(self):
-        engine._charts_rendering = self._r
-        engine._last_render_complete_ts = self._t
-
-    def test_true_while_rendering(self):
-        engine._charts_rendering = True
-        self.assertTrue(engine.render_recently_active())
-
-    def test_true_just_after_render(self):
-        import time as _t
-        engine._charts_rendering = False
-        engine._last_render_complete_ts = _t.monotonic()
-        self.assertTrue(engine.render_recently_active(quiet_s=180))
-
-    def test_false_when_idle_and_stale(self):
-        import time as _t
-        engine._charts_rendering = False
-        engine._last_render_complete_ts = _t.monotonic() - 3600
-        self.assertFalse(engine.render_recently_active(quiet_s=180))
-
-    def test_false_before_any_render(self):
-        engine._charts_rendering = False
-        engine._last_render_complete_ts = 0.0
-        self.assertFalse(engine.render_recently_active())
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 2.10.0 — Sub-meter boundary interpolation (provisional flag + amendment)
-# ─────────────────────────────────────────────────────────────────────────────
-
 class TestProvisionalFlagInFinaliseBlock(unittest.TestCase):
     """
     Tests that finalise_block sets meter_block["provisional"] = True on a
@@ -1750,8 +1711,6 @@ class TestProvisionalFlagInFinaliseBlock(unittest.TestCase):
         orig_load_json = engine.load_json
         engine.load_json = lambda path, default=None: cfg if "config" in str(path) else (default or {})
 
-        orig_generate_charts = engine.generate_charts
-        engine.generate_charts = lambda *a, **kw: None
 
         orig_backup = engine._backup_to_share
         engine._backup_to_share = lambda: None
@@ -1763,7 +1722,6 @@ class TestProvisionalFlagInFinaliseBlock(unittest.TestCase):
             engine.append_block = orig_append
             engine.load_config = orig_load_config
             engine.load_json = orig_load_json
-            engine.generate_charts = orig_generate_charts
             engine._backup_to_share = orig_backup
 
         return written_blocks
@@ -1868,8 +1826,6 @@ class TestProvisionalFlagInFinaliseBlock(unittest.TestCase):
         engine.load_config = lambda: cfg
         orig_load_json2 = engine.load_json
         engine.load_json = lambda path, default=None: cfg if "config" in str(path) else (default or {})
-        orig_gc = engine.generate_charts
-        engine.generate_charts = lambda *a, **kw: None
         orig_bk = engine._backup_to_share
         engine._backup_to_share = lambda: None
         try:
@@ -1879,7 +1835,6 @@ class TestProvisionalFlagInFinaliseBlock(unittest.TestCase):
             engine.append_block = orig_append
             engine.load_config = orig_load_config
             engine.load_json = orig_load_json2
-            engine.generate_charts = orig_gc
             engine._backup_to_share = orig_bk
 
         ev = written_blocks[0]["meters"].get("ev_charger")
@@ -2925,107 +2880,6 @@ class TestPlannedDispatchSlotPreview(unittest.TestCase):
             set())
 
 
-class TestDrainRegeneratesCharts(unittest.TestCase):
-    """After the PASS 2 drain re-prices blocks, it must regenerate the charts so
-    the billing/daily charts reflect the reconciled figures immediately, rather
-    than waiting for the next block rollover to incidentally write them.
-    """
-
-    def setUp(self):
-        self.store = BlockStore(":memory:")
-        self.store.insert_config_period({"meters": {"electricity_main": {
-            "meta": {"timezone": "Europe/London", "billing_day": 1,
-                     "block_minutes": 30, "currency_symbol": "£",
-                     "sub_meter": False}}}})
-        self.cp = self.store._conn.execute(
-            "SELECT id FROM config_periods LIMIT 1").fetchone()["id"]
-        self._orig_store = engine._store
-        engine._store = self.store
-
-    def tearDown(self):
-        engine._store = self._orig_store
-
-    def test_charts_regenerated_when_blocks_repriced(self):
-        # A settled block flagged for rerun (imp_kwh_api set, needs_pass2_rerun=1).
-        self.store._conn.execute(
-            "INSERT INTO blocks (block_start, block_end, meter_id, "
-            "config_period_id, interpolated, imp_kwh, imp_kwh_api, imp_rate, "
-            "imp_cost, standing_charge, is_provisional, needs_pass2_rerun) "
-            "VALUES (?,?,?,?,0,?,?,?,?,?,1,1)",
-            ("2026-06-04T12:00:00", "2026-06-04T12:30:00", "electricity_main",
-             self.cp, 1.0, 1.2, 0.32309, 0.32309, 0.50))
-        self.store._conn.commit()
-
-        calls = {"charts": 0}
-        orig_gc = engine.generate_charts
-        engine.generate_charts = lambda *a, **kw: calls.__setitem__(
-            "charts", calls["charts"] + 1)
-        try:
-            done = engine._drain_pass2_queue(MagicMock(), limit=50)
-        finally:
-            engine.generate_charts = orig_gc
-
-        self.assertEqual(done, 1, "drain should have re-priced the one block")
-        self.assertEqual(calls["charts"], 1,
-            "drain must regenerate charts exactly once after re-pricing")
-
-    def test_no_chart_regen_when_nothing_repriced(self):
-        # No flagged blocks → drain does nothing → no chart regen.
-        calls = {"charts": 0}
-        orig_gc = engine.generate_charts
-        engine.generate_charts = lambda *a, **kw: calls.__setitem__(
-            "charts", calls["charts"] + 1)
-        try:
-            done = engine._drain_pass2_queue(MagicMock(), limit=50)
-        finally:
-            engine.generate_charts = orig_gc
-        self.assertEqual(done, 0)
-        self.assertEqual(calls["charts"], 0,
-            "no re-pricing → no chart regen")
-
-    def test_drain_schedules_offloaded_render_on_loop(self):
-        # Regression: the drain runs on the engine loop (via _engine_tick). It must
-        # NOT render charts inline there — a large-history render (heavier since the
-        # 4.2 ex-VAT billing path) stalls the HA WebSocket heartbeat → disconnect →
-        # startup re-run (reconnect storm, seen in prod on the 4.2.0 upgrade). It must
-        # instead schedule the offloaded read-only render as a loop task.
-        import asyncio
-        self.store._conn.execute(
-            "INSERT INTO blocks (block_start, block_end, meter_id, "
-            "config_period_id, interpolated, imp_kwh, imp_kwh_api, imp_rate, "
-            "imp_cost, standing_charge, is_provisional, needs_pass2_rerun) "
-            "VALUES (?,?,?,?,0,?,?,?,?,?,1,1)",
-            ("2026-06-05T12:00:00", "2026-06-05T12:30:00", "electricity_main",
-             self.cp, 1.0, 1.2, 0.32309, 0.32309, 0.50))
-        self.store._conn.commit()
-
-        seen = {"inline": 0, "offloaded": 0}
-        orig_gc = engine.generate_charts
-        orig_off = engine._generate_charts_offloaded
-        engine.generate_charts = lambda *a, **kw: seen.__setitem__(
-            "inline", seen["inline"] + 1)
-
-        async def _fake_off():
-            seen["offloaded"] += 1
-        engine._generate_charts_offloaded = _fake_off
-
-        async def _run():
-            done = engine._drain_pass2_queue(MagicMock(), limit=50)
-            await asyncio.sleep(0)   # let the scheduled loop task run
-            return done
-        try:
-            done = asyncio.run(_run())
-        finally:
-            engine.generate_charts = orig_gc
-            engine._generate_charts_offloaded = orig_off
-
-        self.assertEqual(done, 1, "drain should have re-priced the one block")
-        self.assertEqual(seen["offloaded"], 1,
-            "on the loop, the drain must schedule the offloaded render")
-        self.assertEqual(seen["inline"], 0,
-            "on the loop, the drain must NOT render charts inline")
-
-
 class TestCarbonGapRecovery(unittest.TestCase):
     """Carbon attribution for outage gap-fill blocks: prevention (attribute at
     fill time when CI present) and recovery (backfill NULL-carbon blocks once CI
@@ -3045,12 +2899,9 @@ class TestCarbonGapRecovery(unittest.TestCase):
         # CI slot available for the outage time.
         self.store.upsert_carbon_intensity(
             "2026-06-05T20:00:00", "DE1", 239.0, "very high", None)
-        self._orig_gc = engine.generate_charts
-        engine.generate_charts = lambda *a, **kw: None
 
     def tearDown(self):
         engine._store = self._orig_store
-        engine.generate_charts = self._orig_gc
 
     def test_recovery_backfills_null_carbon_block(self):
         # A gap-filled block with energy but NULL carbon.
@@ -3069,32 +2920,6 @@ class TestCarbonGapRecovery(unittest.TestCase):
             "WHERE block_start=?", ("2026-06-05T20:00:00",)).fetchone()
         self.assertAlmostEqual(r["carbon_intensity_g"], 239.0, places=1)
         self.assertAlmostEqual(r["carbon_g"], round(2.948 * 239.0, 4), places=2)
-
-    def test_recovery_render_is_offloaded_not_synchronous(self):
-        # Regression: recovery ran generate_charts() synchronously on the loop; over
-        # a large imported history that ~90s render stalled the HA heartbeat and fed
-        # the reconnect→re-startup→re-render storm. It must offload via
-        # _schedule_chart_regen, never render synchronously on the loop.
-        self.store._conn.execute(
-            "INSERT INTO blocks (block_start, block_end, meter_id, "
-            "config_period_id, interpolated, imp_kwh, imp_rate, imp_cost, "
-            "standing_charge, carbon_intensity_g) "
-            "VALUES (?,?,?,?,1,?,?,?,?,NULL)",
-            ("2026-06-05T20:00:00", "2026-06-05T20:30:00", "electricity_main",
-             self.cp, 2.948, 0.32309, 0.9527, 0.50))
-        self.store._conn.commit()
-        sync_calls = {"n": 0}
-        engine.generate_charts = lambda *a, **kw: sync_calls.__setitem__("n", sync_calls["n"] + 1)
-        sched = {"n": 0}
-        orig_sched = engine._schedule_chart_regen
-        engine._schedule_chart_regen = lambda: sched.__setitem__("n", sched["n"] + 1)
-        try:
-            rec = engine._recover_missing_carbon()
-        finally:
-            engine._schedule_chart_regen = orig_sched
-        self.assertEqual(rec, 1)
-        self.assertEqual(sched["n"], 1, "recovery render must be offloaded")
-        self.assertEqual(sync_calls["n"], 0, "must not render synchronously on the loop")
 
     def test_recovery_skips_when_no_ci_slot(self):
         # NULL-carbon block whose time has no CI slot (aged out) → not recovered.
@@ -3128,14 +2953,12 @@ class TestRepairImportPricing(unittest.TestCase):
     def setUp(self):
         self._saved = (engine._store, engine._kraken_client,
                        getattr(engine, "_kraken_discovery", None),
-                       engine._tariff_rate_for, engine.kraken_available,
-                       engine._generate_charts_offloaded)
+                       engine._tariff_rate_for, engine.kraken_available)
         self._cache = dict(engine._hist_rate_segs_cache)
 
     def tearDown(self):
         (engine._store, engine._kraken_client, engine._kraken_discovery,
-         engine._tariff_rate_for, engine.kraken_available,
-         engine._generate_charts_offloaded) = self._saved
+         engine._tariff_rate_for, engine.kraken_available) = self._saved
         engine._hist_rate_segs_cache.clear()
         engine._hist_rate_segs_cache.update(self._cache)
 
@@ -3167,9 +2990,6 @@ class TestRepairImportPricing(unittest.TestCase):
         engine._hist_rate_segs_cache["import"] = [("2000-01-01T00:00:00", None, None)]
         engine._tariff_rate_for = lambda segs, st, ofp: (0.07 if ofp else 0.28124)
 
-        async def _noop_charts():
-            return None
-        engine._generate_charts_offloaded = _noop_charts
 
         client = MagicMock()
 
@@ -3215,9 +3035,6 @@ class TestRepairImportPricing(unittest.TestCase):
         engine._hist_rate_segs_cache["import"] = [("2000-01-01T00:00:00", None, None)]
         engine._tariff_rate_for = lambda segs, st, ofp: (0.07 if ofp else 0.28124)
 
-        async def _noop_charts():
-            return None
-        engine._generate_charts_offloaded = _noop_charts
 
         cap = {}
         client = MagicMock()
@@ -3270,9 +3087,6 @@ class TestRepairImportPricing(unittest.TestCase):
         engine._hist_rate_segs_cache["import"] = [("2000-01-01T00:00:00", None, _Seg())]
         engine._tariff_rate_for = lambda segs, st, ofp: (0.07 if ofp else 0.28)
 
-        async def _noop():
-            return None
-        engine._generate_charts_offloaded = _noop
 
         client = MagicMock()
 
@@ -3330,9 +3144,6 @@ class TestRepairImportPricing(unittest.TestCase):
         engine._hist_rate_segs_cache["import"] = [("2000-01-01T00:00:00", None, None)]
         engine._tariff_rate_for = lambda segs, st, ofp: 0.07
 
-        async def _noop_charts():
-            return None
-        engine._generate_charts_offloaded = _noop_charts
 
         client = MagicMock()
 
@@ -3366,9 +3177,6 @@ class TestRepairImportPricing(unittest.TestCase):
         engine._hist_rate_segs_cache.clear()
         engine._hist_rate_segs_cache["import"] = [("2000-01-01T00:00:00", None, None)]
 
-        async def _noop_charts():
-            return None
-        engine._generate_charts_offloaded = _noop_charts
 
         # Force the computed rate to equal the stored rate so the reprice is a
         # genuine no-op (value unchanged → reprice_imported_block returns False).
@@ -3859,14 +3667,12 @@ class TestRunAttributionJob(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
         self._saved = (engine._engine_ha, engine.get_store, engine._attribute_hour,
-                       engine.get_block_minutes, engine.delete_in_progress,
-                       engine._generate_charts_offloaded)
+                       engine.get_block_minutes, engine.delete_in_progress)
         self._j = dict(engine._attribution_jobs)
 
     def tearDown(self):
         (engine._engine_ha, engine.get_store, engine._attribute_hour,
-         engine.get_block_minutes, engine.delete_in_progress,
-         engine._generate_charts_offloaded) = self._saved
+         engine.get_block_minutes, engine.delete_in_progress) = self._saved
         engine._attribution_jobs.clear(); engine._attribution_jobs.update(self._j)
 
     async def test_stitches_walks_and_records_run(self):
@@ -3881,9 +3687,6 @@ class TestRunAttributionJob(unittest.IsolatedAsyncioTestCase):
         store = MagicMock(); store.get_parent_meter_id.return_value = "electricity_main"
         store.get_device_live_coverage_start.return_value = None   # no live history → fill fully
         engine.get_store = lambda: store
-        chart_calls = []
-        async def _charts(): chart_calls.append(True)
-        engine._generate_charts_offloaded = _charts
         calls = []
         engine._attribute_hour = lambda hour, dev, parent, kwh, block_minutes=30: (
             calls.append((hour, kwh)) or (2, 0, 0))
@@ -3892,7 +3695,6 @@ class TestRunAttributionJob(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(res["ok"])
         self.assertEqual(res["written"], 4)                     # 2 hours × 2 blocks
         self.assertEqual(engine._attribution_jobs["ev_charger"]["status"], "done")
-        self.assertEqual(len(chart_calls), 1)                   # charts regenerated after a real run
         store.record_attribution_run.assert_called_once()
         self.assertEqual([c[0] for c in calls],
                          ["2025-03-01T00:00:00", "2025-03-01T01:00:00"])   # oldest first
@@ -3915,8 +3717,6 @@ class TestRunAttributionJob(unittest.IsolatedAsyncioTestCase):
         store = MagicMock(); store.get_parent_meter_id.return_value = "electricity_main"
         store.get_device_live_coverage_start.return_value = "2025-03-01T01:00:00"
         engine.get_store = lambda: store
-        async def _charts(): pass
-        engine._generate_charts_offloaded = _charts
         calls = []
         engine._attribute_hour = lambda hour, dev, parent, kwh, block_minutes=30: (
             calls.append(hour) or (2, 0, 0))
@@ -5794,30 +5594,6 @@ class TestVatCalendarLearning(unittest.TestCase):
         engine._learn_vat_from_import_schedule()
         self.assertEqual(len(store.get_vat_calendar()), 3)
         store.close()
-
-
-class TestChartRegenCoalesce(unittest.TestCase):
-    """A regen requested while one is in progress must NOT be dropped — it's marked
-    dirty so the in-flight render re-runs afterwards (the stale-charts window #361
-    would otherwise leave: a config/VAT change landing during a finalise render)."""
-
-    def setUp(self):
-        self._store = engine._store
-        self._rendering = engine._charts_rendering
-        self._dirty = engine._charts_dirty
-
-    def tearDown(self):
-        engine._store = self._store
-        engine._charts_rendering = self._rendering
-        engine._charts_dirty = self._dirty
-
-    def test_request_during_render_is_coalesced_not_dropped(self):
-        import asyncio
-        engine._store = object()          # not None
-        engine._charts_rendering = True   # a render is already in progress
-        engine._charts_dirty = False
-        asyncio.run(engine._generate_charts_offloaded())
-        self.assertTrue(engine._charts_dirty)   # re-run queued, not silently skipped
 
 
 class TestEngineStartupReentrancy(unittest.TestCase):

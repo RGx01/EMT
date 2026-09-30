@@ -21,8 +21,6 @@ eio.save_file = lambda *a, **kw: None
 sys.modules["energy_engine_io"] = eio
 
 ec = types.ModuleType("energy_charts")
-ec.generate_net_heatmap = lambda *a, **kw: ""
-ec.generate_daily_import_export_charts = lambda *a, **kw: ""
 sys.modules["energy_charts"] = ec
 
 hc = types.ModuleType("ha_client")
@@ -121,15 +119,12 @@ class TestHistoricalCarbonBackfill(unittest.TestCase):
         self.cp = _cp_id(self.st)
         self._orig_store = engine._store
         self._orig_fetch = engine._fetch_carbon_intensity_range
-        self._orig_gc = engine.generate_charts
         engine._store = self.st
-        engine.generate_charts = lambda *a, **kw: None
         engine._carbon_backfill_running = False
 
     def tearDown(self):
         engine._store = self._orig_store
         engine._fetch_carbon_intensity_range = self._orig_fetch
-        engine.generate_charts = self._orig_gc
         engine.set_delete_active(False)
 
     def test_attributes_historical_blocks(self):
@@ -150,30 +145,6 @@ class TestHistoricalCarbonBackfill(unittest.TestCase):
         self.assertEqual(_carbon_of(self.st, "2026-05-02T09:00:00"),
                          (150.0, round(3.0 * 150.0, 4)))
         self.assertTrue(self.st.get_meta(self.MARKER)["done"])
-
-    def test_completion_render_is_offloaded_not_synchronous(self):
-        # Regression: rendering charts synchronously on the loop after a large
-        # backfill stalled the HA heartbeat → reconnect → re-startup → re-render
-        # storm. The completion render must go through the OFF-loop path, never a
-        # direct on-loop generate_charts().
-        _insert_null_block(self.st, "2026-05-01T10:00:00", 2.0, self.cp)
-        engine._fetch_carbon_intensity_range = lambda pc, f, t: {
-            "2026-05-01T10:00": 200.0}
-        sync_calls = {"n": 0}
-        engine.generate_charts = lambda *a, **kw: sync_calls.__setitem__("n", sync_calls["n"] + 1)
-        offloaded = {"n": 0}
-        orig_off = engine._generate_charts_offloaded
-
-        async def _fake_offload():
-            offloaded["n"] += 1
-        engine._generate_charts_offloaded = _fake_offload
-        try:
-            n = asyncio.run(engine._run_historical_carbon_backfill())
-        finally:
-            engine._generate_charts_offloaded = orig_off
-        self.assertEqual(n, 1)
-        self.assertEqual(offloaded["n"], 1, "completion render must be offloaded")
-        self.assertEqual(sync_calls["n"], 0, "must not render synchronously on the loop")
 
     def test_backfill_preserves_imported_source_tag(self):
         # THE root-cause regression: the carbon backfill used to round-trip the

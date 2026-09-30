@@ -28,11 +28,11 @@ sys.path.insert(0, _ROOT)
 import billing                                   # noqa: E402
 import energy_charts                              # noqa: E402
 
+# The block-taking period helpers (get_all_*_periods, get_billing_periods_from_config_
+# history) are gone, not moved: only the pre-rendered page called them, deleted by C
+# on 30 Sep 2026; /api/periods uses calendar_periods and the config-period chain.
 _MOVED = ("calculate_billing_summary_for_period",
           "get_billing_periods_from_config_periods",
-          "get_billing_periods_from_config_history",
-          "get_all_billing_periods", "get_all_calmonth_periods",
-          "get_all_quarter_periods", "get_all_year_periods",
           "bill_slots_from_blocks", "octopus_bill_total", "bankers_round",
           "_parse_block_start", "_utc_to_local")
 
@@ -53,8 +53,7 @@ class ItIsAMove(unittest.TestCase):
         """The measurement that corrected §3: these return values, not HTML."""
         import inspect
         for name in ("calculate_billing_summary_for_period",
-                     "get_billing_periods_from_config_periods",
-                     "get_billing_periods_from_config_history"):
+                     "get_billing_periods_from_config_periods"):
             src = inspect.getsource(getattr(billing, name))
             for tag in ("<div", "<table", "<tr", "<td", "<span", "<script"):
                 self.assertNotIn(tag, src, "%s emits markup" % name)
@@ -113,15 +112,12 @@ class BillingIsALeaf(unittest.TestCase):
 
 class NothingWasLostInTheMove(unittest.TestCase):
 
-    def test_energy_charts_kept_its_presentation(self):
-        """The move took the domain and left the drawing. If a chart generator
-        went with it, the split was made in the wrong place."""
-        # generate_net_heatmap is gone, not moved: the heatmap is drawn in the browser
-        # from /api/energy since 30 Sep 2026 (web/templates/heatmap_module.html).
-        for name in ("generate_daily_import_export_charts",
-                     "build_day_chart_html", "render_billing_summary"):
-            self.assertTrue(hasattr(energy_charts, name),
-                            "energy_charts lost %s" % name)
+    def test_billing_picked_up_no_presentation(self):
+        """The move took the domain and left the drawing. The drawing is gone since
+        (C, 30 Sep 2026: every chart is drawn in the browser from /api/energy); what
+        must still hold is that none of it moved into billing."""
+        for name in ("generate_daily_import_export_charts", "generate_net_heatmap",
+                     "build_day_chart_html", "render_billing_summary", "day_chart_data"):
             self.assertFalse(hasattr(billing, name),
                              "billing picked up presentation: %s" % name)
 

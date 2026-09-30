@@ -17,14 +17,6 @@ def load_json(path, default):
         return default
 
 
-def save_file(path, content):
-    directory = os.path.dirname(path)
-    if directory:
-        os.makedirs(directory, exist_ok=True)
-    with open(path, "w") as f:
-        f.write(content)
-
-
 def save_json_atomic(path, data):
     directory = os.path.dirname(path)
     if directory:

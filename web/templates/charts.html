@@ -239,7 +239,7 @@
   /* The Billing tab too (billing_module.html): the page's background behind its cards. */
   #chart-daily { background: var(--bg, transparent); }
   #chart-heatmap .chart-content-wrap { padding: 0 12px 16px; }
-  /* Content area flex column so iframe charts can fill remaining height */
+  /* Content area flex column so the chart tabs can fill the remaining height */
   .content {
     display: flex;
     flex-direction: column;
@@ -250,12 +250,6 @@
     border-radius: var(--radius);
     border: 1px solid var(--border);
     overflow: visible; /* override chart-frame-wrap overflow:hidden — allows content to scroll in .content */
-  }
-  .chart-frame-wrap iframe {
-    width: 100%;
-    height: 100%;  /* fill the content-wrap which is sized by getChartHeight() */
-    border: none;
-    display: block;
   }
   .chart-content-wrap {
     height: 100%;
@@ -751,19 +745,15 @@ var _resizeTimer = null;
 var _suppressResize = false;
 var _resizeObserverW = 0;
 
-function resizeChartIframes() {
+function resizeChartContent() {
   if (_suppressResize) return;
   var h = getChartHeight();
-  document.querySelectorAll('.chart-content-wrap').forEach(function(el) {
-    el.style.height = h;
-    var iframe = el.querySelector('iframe');
-    if (iframe) iframe.style.height = h;
-  });
+  document.querySelectorAll('.chart-content-wrap').forEach(function(el) { el.style.height = h; });
 }
 
-// Use ResizeObserver on the chart container — catches HA sidebar open/close.
-// Posts the new width into the iframe via postMessage so the iframe can
-// relayout its Plotly charts without a full reload.
+// Use ResizeObserver on the chart container — catches HA sidebar open/close. The
+// Billing and Heatmap tabs are drawn in the page (C, 30 Sep 2026) and their charts
+// follow their containers, so only the container heights need setting here.
 (function() {
   if (typeof ResizeObserver === 'undefined') return;
   var target = document.querySelector('.main-content') || document.body;
@@ -772,23 +762,12 @@ function resizeChartIframes() {
     if (Math.abs(w - _resizeObserverW) < 20) return;
     _resizeObserverW = w;
     if (_suppressResize) return;
-    resizeChartIframes();
-    // Notify the active chart iframe of its new available width
-    clearTimeout(_resizeTimer);
-    _resizeTimer = setTimeout(function() {
-      var activeId = document.querySelector('.chart-tab.active[data-chart="daily"]')
-                     ? 'chart-daily-content' : 'chart-heatmap-content';
-      var iframe = document.getElementById(activeId) &&
-                   document.getElementById(activeId).querySelector('iframe');
-      if (iframe && iframe.contentWindow) {
-        iframe.contentWindow.postMessage({ type: 'emt-resize', width: w }, '*');
-      }
-    }, 400);
+    resizeChartContent();
   });
   ro.observe(target);
 })();
 
-window.addEventListener('resize', resizeChartIframes, { passive: true });
+window.addEventListener('resize', resizeChartContent, { passive: true });
 
 // On orientation change, force a full bar chart redraw after layout settles
 var _orientTimer = null;
@@ -800,9 +779,8 @@ function _handleOrientationChange() {
       if (barChartInstance) { barChartInstance.destroy(); barChartInstance = null; }
       barRender();
     }
-    resizeChartIframes();
-    // Force reload of active iframe chart — orientation change requires fresh render
-    // since Plotly/billing chart bakes dimensions at load time
+    resizeChartContent();
+    // Redraw the active in-page chart at the new dimensions
     var activeName = _activeChart;
     if (activeName === 'daily' || activeName === 'heatmap') {
       chartsLoaded[activeName] = false;  // mark stale
@@ -823,14 +801,8 @@ window.addEventListener('resize', function() {
   }
 }, { passive: true });
 
-// Suppress resize reload when iframe content triggers layout changes
 window.addEventListener('message', function(e) {
-  if (e.data && e.data.type === 'suppressResize') {
-    _suppressResize = true;
-    clearTimeout(_resizeTimer);
-    setTimeout(function() { _suppressResize = false; }, 1000);
-  }
-  // Theme toggle from parent shell — reload active iframe chart with new theme
+  // Theme toggle from the parent shell — redraw the active chart in the new theme
   if (e.data && e.data.type === 'emt-theme') {
     var activeTab = document.querySelector('.chart-tab.active');
     var activeName = activeTab && activeTab.textContent.indexOf('Billing') !== -1 ? 'daily'
@@ -847,74 +819,6 @@ window.addEventListener('message', function(e) {
   }
 });
 
-// Pending html waiting to be injected once chart container becomes visible
-var _pendingHtml = {};
-
-function _injectChartHtml(name, html) {
-  var containerId = name === 'daily' ? 'chart-daily-content' : 'chart-heatmap-content';
-  var outerEl = document.getElementById(name === 'daily' ? 'chart-daily' : 'chart-heatmap');
-  var el = document.getElementById(containerId);
-  if (!el) return;
-
-  // If the outer container is hidden, defer injection until it is shown.
-  // Setting srcdoc while display:none means window.innerWidth inside the
-  // iframe is 0, causing Plotly to render at the wrong width.
-  if (outerEl && outerEl.style.display === 'none') {
-    _pendingHtml[name] = html;
-    return;
-  }
-
-  var h = getChartHeight();
-  var iframe = document.createElement('iframe');
-  iframe.className = 'chart-iframe';
-  iframe.style.cssText = 'width:100%;height:' + h + ';border:none;display:block;';
-  el.style.height = h;
-
-  // Capture open table IDs from the existing iframe before replacing it
-  var _openTables = [];
-  var existing = el.querySelector('iframe');
-  if (existing && existing.contentDocument) {
-    existing.contentDocument.querySelectorAll('.day-data-tables').forEach(function(t) {
-      if (t.style.display !== 'none' && t.style.display !== '') {
-        _openTables.push(t.id);
-      }
-    });
-  }
-
-  function _nudgeIframe(ifrm) {
-    // Send the actual container width to the iframe after it loads so
-    // scaleChart inside uses the correct value rather than window.innerWidth
-    // which may still be settling at load time.
-    var _w = (document.querySelector('.main-content') || document.body).getBoundingClientRect().width;
-    ifrm._lastSentWidth = _w;
-    if (ifrm.contentWindow) {
-      ifrm.contentWindow.postMessage({ type: 'emt-resize', width: _w }, '*');
-      if (_openTables.length) {
-        ifrm.contentWindow.postMessage({ type: 'emt-restore-tables', open: _openTables }, '*');
-      }
-    }
-  }
-  if (existing) {
-    iframe.style.opacity = '0';
-    el.appendChild(iframe);
-    iframe.onload = function() {
-      if (existing.parentNode) existing.parentNode.removeChild(existing);
-      iframe.style.opacity = '1';
-      _nudgeIframe(iframe);
-    };
-  } else {
-    el.appendChild(iframe);
-    iframe.onload = function() { _nudgeIframe(iframe); };
-  }
-  // Use a Blob URL instead of srcdoc to avoid WebKit's srcdoc size limit
-  var blob = new Blob([html], {type: 'text/html'});
-  var blobUrl = URL.createObjectURL(blob);
-  iframe.src = blobUrl;
-  iframe.addEventListener('load', function() { URL.revokeObjectURL(blobUrl); }, {once: true});
-  chartsLoaded[name] = true;
-  delete _pendingHtml[name];
-}
-
 async function loadChartContent(name, force) {
   // The heatmap is drawn in the page (heatmap_module.html), not an iframe. Every caller —
   // tab switch, resize, orientation, theme message, auto-refresh, data-version poll —
@@ -930,30 +834,6 @@ async function loadChartContent(name, force) {
     if (!window.EMTBilling) return;
     if (!EMTBilling._state.inited) return EMTBilling.init(document.getElementById('chart-daily-content'));
     return force ? EMTBilling.rerender() : EMTBilling.refresh();
-  }
-  if (chartsLoaded[name] && !force) return;
-  var endpoint = '/api/charts/daily';
-  var containerId = name === 'daily' ? 'chart-daily-content' : 'chart-heatmap-content';
-  var el = document.getElementById(containerId);
-  if (!el) return;
-  // Remove any non-iframe placeholder content (e.g. "Loading chart..." div)
-  Array.from(el.children).forEach(function(child) {
-    if (child.tagName !== 'IFRAME') el.removeChild(child);
-  });
-  try {
-    var r = await fetch(apiUrl(endpoint) + '?t=' + Date.now());
-    if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + r.statusText);
-    var text = await r.text();
-    var data;
-    try { data = JSON.parse(text); }
-    catch(parseErr) { throw new Error('JSON parse failed: ' + parseErr.message); }
-    if (data.html) {
-      _injectChartHtml(name, data.html);
-    } else {
-      throw new Error('No html in response — keys: ' + Object.keys(data).join(', '));
-    }
-  } catch(e) {
-    el.innerHTML = '<div style="padding:40px;text-align:center;color:var(--danger);">Failed to load chart: ' + e.message + '</div>';
   }
 }
 
@@ -1012,7 +892,6 @@ function updateToggleLabel(name) {
 
 function showChart(name, btn) {
   _suppressResize = true;
-  var _prevChart = _activeChart;  // capture before overwrite
   document.querySelectorAll('.chart-tab').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
   document.getElementById('chart-daily').style.display   = name === 'daily'   ? 'block' : 'none';
@@ -1020,35 +899,13 @@ function showChart(name, btn) {
   document.getElementById('chart-bar').style.display     = name === 'bar'     ? 'flex' : 'none';
   var _spEl = document.getElementById('chart-spiral'); if (_spEl) _spEl.style.display = name === 'spiral' ? 'block' : 'none';
   _activeChart = name;
-  // Hide regenerate button on Usage Stats — it auto-refreshes via setInterval
 
   if (name === 'bar') {
     barInit();
   } else if (name === 'spiral') {
     if (window.EMTSpiral) EMTSpiral.init();
   } else {
-    // Flush any pending html that was deferred because container was hidden
-    if (_pendingHtml[name]) {
-      _injectChartHtml(name, _pendingHtml[name]);
-    } else {
-      loadChartContent(name);
-    }
-    // Mark the previously active tab stale so switching back forces a fresh
-    // load with the correct current viewport dimensions. This ensures resize
-    // at any browser zoom level — the fresh iframe measures the correct
-    // window.innerWidth on load rather than relying on a resize nudge.
-    // If the container width has changed since the previous tab's iframe was
-    // created, mark it stale so switching back forces a fresh load at the
-    // correct dimensions. This handles browser zoom changes between tab switches
-    // without forcing a reload on every switch.
-    if (_prevChart && _prevChart !== name && (_prevChart === 'daily' || _prevChart === 'heatmap')) {
-      var _prevCId = _prevChart === 'daily' ? 'chart-daily-content' : 'chart-heatmap-content';
-      var _prevIfrm = document.getElementById(_prevCId) && document.getElementById(_prevCId).querySelector('iframe');
-      var _curW = (document.querySelector('.main-content') || document.body).getBoundingClientRect().width;
-      if (!_prevIfrm || Math.abs(_curW - (_prevIfrm._lastSentWidth || 0)) > 10) {
-        chartsLoaded[_prevChart] = false;
-      }
-    }
+    loadChartContent(name);
   }
   try { localStorage.setItem(EMT.lsKey('emt_chart_tab'), name); } catch(e) {}
   updateToggleLabel(name);
@@ -1135,7 +992,7 @@ function _doPdfExport(win, iconSrc) {
     var currentView = EMTBilling._state.view || 'vanilla';
 
     // Module styles, patching out position:sticky/overflow which break print layout
-    var iframeStyles = EMTBilling.styles()
+    var moduleStyles = EMTBilling.styles()
       .replace(/position\s*:\s*fixed/g, 'position:static')
       .replace(/position\s*:\s*sticky/g, 'position:static')
       .replace(/overflow\s*:\s*hidden/g, 'overflow:visible')
@@ -1144,7 +1001,7 @@ function _doPdfExport(win, iconSrc) {
       ':root{color-scheme:light;background:#fff;color:#111;' +
       '--bg:#fff;--surface:#f9f9f9;--text:#111;--muted:#555;--border:#ddd;--accent:#00a080;}' +
       'html,body{background:#fff!important;color:#111!important;}';
-    iframeStyles = lightThemeOverride + '\n' + iframeStyles;
+    moduleStyles = lightThemeOverride + '\n' + moduleStyles;
     var pdfOverrides =
       '.day-tbl-toolbar,.day-tbl-toggle,button{display:none!important;}' +
       '.day-chart-wrap{break-inside:avoid;}' +
@@ -1253,7 +1110,7 @@ function _doPdfExport(win, iconSrc) {
       win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8">' +
         '<title>EMT — ' + tabLabel + '</title>' +
         '<style>' + commonStyles + '</style>' +
-        '<style>' + iframeStyles + '</style>' +
+        '<style>' + moduleStyles + '</style>' +
         '<style>' + pdfOverrides + '</style>' +
         '</head><body>' + header + '<div class="emt-bill">' + reportHtml + '</div></body></html>');
       win.document.close();

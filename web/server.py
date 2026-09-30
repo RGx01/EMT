@@ -178,7 +178,6 @@ app.secret_key = os.urandom(24)
 
 # ── Paths (injected from main.py before server starts) ────────────────────────
 DATA_DIR         = None
-CHART_DIR        = None
 import os as _os
 
 
@@ -355,30 +354,11 @@ def _cluster_nearby_rates(rows, eps: float = _RATE_CLUSTER_EPS):
     return [{"rate": rr, "count": cc} for rr, cc in reps]
 
 
-def _regen_charts_safely():
-    """Rebuild the pre-built charts after a request changed the data — OFF the loop.
-
-    This used to run `generate_charts` ON the engine loop, on purpose: v4's engine
-    store was one connection shared across threads, so rendering from a request
-    thread segfaulted, and the loop was the only safe place. Workstream A removed
-    that reason (per-thread read connections; the offloaded renderer opens its own),
-    and left the cost: fourth Pi soak (30 Sep 2026), a restore's regen held the loop
-    **492 s** — 17 watchdog dumps with the engine thread inside `generate_charts`,
-    `get_blocks_lightweight` and `calculate_billing_summary_for_period`, the live
-    tick and every loop hop frozen behind it.
-
-    Now the same path the settings toggles use: `_schedule_offloaded_regen()` asks
-    the engine to schedule `_generate_charts_offloaded()`, which renders in the
-    executor with its own read-only store, coalesced. Kept under this name for its
-    ten callers."""
-    _schedule_offloaded_regen()
-
-def init(data_dir: str, chart_dir: str, ha_client):
-    global DATA_DIR, CHART_DIR, _ha_client, _event_loop
+def init(data_dir: str, ha_client):
+    global DATA_DIR, _ha_client, _event_loop
     import asyncio as _asyncio
     _event_loop = _asyncio.get_event_loop()
     DATA_DIR   = data_dir
-    CHART_DIR  = chart_dir
     _ha_client = ha_client
     # Workstream A §5b: store_access.bind() is NOT called here. It moved to
     # main.py, ahead of BOTH engine_startup() and this init(), because the read
@@ -483,35 +463,18 @@ def _config_mutation_on_loop(mutate, timeout: float = 30.0):
     "database is locked" / "another row available", and (when a write half-applied)
     a Total Bill that no longer summed until the next finalise regenerated the
     charts. Running the mutation on the engine loop serialises it with every other
-    engine write (one connection, one thread); `_schedule_chart_regen()` — fired on
-    the loop — offloads the chart rebuild to a read-only worker so the change shows
-    immediately without blocking the loop. `mutate(store)` receives the engine's
+    engine write (one connection, one thread). `mutate(store)` receives the engine's
     store and returns the JSON-able result. No engine loop (tests / pre-init) →
     there is no concurrent writer, so run inline on the web store."""
     if not (_event_loop and _event_loop.is_running()):
-        store = _get_store()
-        res = mutate(store)
-        _regen_charts_safely()
-        return res
-    import engine as _eng
+        return mutate(_get_store())
 
     # ONE mechanism (A §3.4). `_engine_write` is the primitive — run this
-    # mutation on the engine thread — and this function is that plus a chart
-    # regen. They were briefly two implementations of the same idea, which is
-    # precisely the pattern this codebase keeps producing: #361 discovered the
-    # shared-web-connection race here and solved it, and the surfaces port
-    # solved it again under a different name without noticing.
-    def _op(store):
-        res = mutate(store)
-        try:
-            _eng._schedule_chart_regen()      # on-loop → offloaded read-only render
-        except Exception as _ce:
-            logger.warning("_config_mutation_on_loop: chart regen schedule failed: %s", _ce)
-        return res
-
+    # mutation on the engine thread. (It was that plus a chart regen until C
+    # deleted the pre-rendered charts, 30 Sep 2026.)
     import concurrent.futures as _cf
     try:
-        return _engine_write(_op, timeout=timeout)
+        return _engine_write(mutate, timeout=timeout)
     except _cf.TimeoutError:
         # The loop was busy (e.g. a slow post-restore engine_startup). The mutation is
         # still queued and will apply — signal 'queued' so the endpoint doesn't report
@@ -519,29 +482,6 @@ def _config_mutation_on_loop(mutate, timeout: float = 30.0):
         logger.warning("_config_mutation_on_loop: engine loop busy after %.0fs — "
                        "mutation left queued (will apply once the loop frees)", timeout)
         raise _ConfigBusy()
-
-
-def _schedule_offloaded_regen():
-    """Rebuild the pre-built charts OFF the loop, from a Flask request thread.
-
-    Schedules engine._schedule_chart_regen() ON the loop, which offloads the render
-    to a read-only worker (never the request thread, never blocking the loop) and is
-    coalesced so a change is never dropped. Used by settings toggles that change the
-    displayed billing view (e.g. the ex-VAT / bill-rounding option) so the change
-    shows immediately instead of waiting for the next block finalise. Inline fallback
-    when no engine loop is running (tests / pre-init)."""
-    try:
-        import engine as _eng
-        if _event_loop and _event_loop.is_running():
-            import asyncio as _a
-            async def _c():
-                _eng._schedule_chart_regen()
-            _a.run_coroutine_threadsafe(_c(), _event_loop)
-        else:
-            _eng.generate_charts(_eng.get_store())
-    except Exception as e:
-        logger.warning("_schedule_offloaded_regen: %s", e)
-
 
 
 def start():
@@ -934,14 +874,12 @@ def api_logs():
 
 @app.route("/charts")
 def charts_page():
-    daily_exists   = os.path.exists(os.path.join(CHART_DIR, "daily_usage.html"))
     try:
         block_count = store_access.store().count_blocks()
     except Exception:
         block_count = 0
     return render_template(
         "charts.html",
-        daily_exists=daily_exists,
         block_count=block_count,
         active="charts",
     )
@@ -2052,19 +1990,6 @@ def api_meter_main_reset():
             with open(cfg_p, "w") as f:
                 _j.dump({"meters": {}}, f, indent=2)
 
-        # Remove generated chart HTML — otherwise the old charts linger and the
-        # Billing/Charts pages show stale data from the wiped setup.
-        _chart_dir = CHART_DIR or DATA_DIR
-        if _chart_dir:
-            for _cf in ("daily_usage.html",):
-                _cp = os.path.join(_chart_dir, _cf)
-                try:
-                    if os.path.exists(_cp):
-                        os.remove(_cp)
-                        logger.info("api_meter_main_reset: removed stale chart %s", _cf)
-                except OSError as _ce:
-                    logger.warning("api_meter_main_reset: could not remove %s: %s",
-                                   _cf, _ce)
 
         # Clear stored API credentials — they live outside the DB (so they're
         # not in backups), which means a DB wipe alone leaves them orphaned and
@@ -2279,10 +2204,6 @@ def api_meter_delete_data(meter_id: str):
         except Exception:
             pass
 
-        # Regenerate the pre-built charts so the removed meter's data disappears
-        # immediately, rather than after the next block finalises.
-        _regen_charts_safely()
-
         return jsonify({"ok": True, "deleted": deleted, "meter_id": meter_id})
     except Exception as e:
         logger.error("api_meter_delete_data: %s", e)
@@ -2406,59 +2327,23 @@ def fill_history_page():
     return render_template("fill_history.html", active="data_management")
 
 
-# ── Chart file serving ────────────────────────────────────────────────────────
+# ── Lovelace (Home Assistant dashboard) pages ─────────────────────────────────
+# A bare page per chart, for an iframe/webpage card. The URLs predate C and are
+# kept so existing cards keep working; both now draw in the browser from the API.
 
-@app.route("/charts/daily_usage.html")
-def serve_daily():
-    p = os.path.join(CHART_DIR, "daily_usage.html")
-    if not os.path.exists(p):
-        return "Chart not yet generated", 404
-    resp = send_file(p)
-    resp.headers["Cache-Control"] = "no-cache, must-revalidate"
-    resp.headers["Pragma"] = "no-cache"
-    return resp
-
-
-# ── Lovelace-friendly chart endpoints ─────────────────────────────────────────
-# These endpoints serve the chart HTML with:
-#   - Aggressive no-cache headers so HA never fixes the URL in time
-#   - A meta refresh so the Lovelace web card auto-updates (the card's own
-#     refresh setting is unreliable in HA)
-# Use these URLs in Lovelace panel_iframe or webpage cards instead of the
-# plain /charts/*.html URLs.
-
-_LOVELACE_REFRESH = 130  # seconds
-
-def _serve_lovelace_chart(filename):
-    """Read chart HTML from disk, inject meta refresh + no-cache, return response."""
-    p = os.path.join(CHART_DIR, filename)
-    if not os.path.exists(p):
-        return "Chart not yet generated — visit the EMT Charts page first.", 404
-    with open(p, "r", encoding="utf-8") as f:
-        html = f.read()
-    # Inject meta refresh immediately after <head> (or <html> if no <head>)
-    refresh_tag = (
-        f'<meta http-equiv="refresh" content="{_LOVELACE_REFRESH}">\n'
-        f'<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">\n'
-        f'<meta http-equiv="Pragma" content="no-cache">\n'
-        f'<meta http-equiv="Expires" content="0">\n'
-    )
-    if "<head>" in html:
-        html = html.replace("<head>", "<head>\n" + refresh_tag, 1)
-    else:
-        html = refresh_tag + html
-    resp = make_response(html)
-    resp.headers["Content-Type"]  = "text/html; charset=utf-8"
-    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    resp.headers["Pragma"]        = "no-cache"
-    resp.headers["Expires"]       = "0"
-    return resp
+_LOVELACE_REFRESH = 130  # seconds between fingerprint-checked refreshes
 
 
 @app.route("/lovelace/billing")
 def lovelace_billing():
-    """Billing chart — Lovelace-friendly URL with auto-refresh."""
-    return _serve_lovelace_chart("daily_usage.html")
+    """The Billing tab on its own, for a Home Assistant dashboard card.
+
+    Same URL as ever; it served the pre-rendered daily_usage.html until C deleted
+    it (30 Sep 2026) and now serves billing_module.html on a bare page, which
+    refreshes itself every _LOVELACE_REFRESH seconds from /api/energy."""
+    resp = make_response(render_template("lovelace_billing.html", refresh_s=_LOVELACE_REFRESH))
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return resp
 
 
 @app.route("/lovelace/heatmap")
@@ -2694,21 +2579,30 @@ def _blocks_data_version(store) -> str:
         "ROUND(COALESCE(SUM(exp_cost), 0), 2) AS ec, "
         "ROUND(COALESCE(SUM(carbon_g), 0), 0) AS cg "
         "FROM blocks").fetchone()
-    # Rendered-chart freshness: the Billing (daily) and Heatmap tabs serve the
-    # PRE-RENDERED files, and a config-period change (or settlement) regenerates them
-    # OFF the loop a moment AFTER the DB write. Keying the token on the DB alone moved
-    # it at write time — before the file was rewritten — so the Charts page reloaded
-    # the STALE file, latched the new token, and then didn't refresh again until the
-    # next finalise moved the token. Fingerprinting the rendered files' mtimes advances
-    # the token exactly when the new HTML actually lands, so the reload picks up fresh
-    # content — and this also covers a config change (billing-day / add / remove), since
-    # every config mutation schedules a regen that rewrites these files.
-    _mt = []
-    for _cf in ("daily_usage.html",):   # the heatmap is drawn in the browser now
-        try:
-            _mt.append(f"{os.path.getmtime(os.path.join(CHART_DIR, _cf)):.3f}")
-        except (OSError, TypeError):   # missing file, or CHART_DIR unset (tests)
-            _mt.append("0")
+    # What the Billing tab shows beyond the blocks: the billing periods (a billing-day
+    # change or an added/removed meter re-cuts them), the bulk epoch (an import, delete
+    # or restore — C §2a), and the bill-rounding option (bill method vs inc-VAT).
+    # This was the pre-rendered files' mtimes until C deleted them (30 Sep 2026): every
+    # such change scheduled a regen that rewrote the file, and its mtime moved the
+    # token. Those changes are now asked about directly.
+    try:
+        _cp = store._conn.execute(
+            "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS mx, "
+            "COALESCE(GROUP_CONCAT(billing_day || '@' || effective_from, ','), '') AS bd "
+            "FROM config_periods").fetchone()
+        _mc = store._conn.execute("SELECT COUNT(*) AS n FROM meters").fetchone()
+        import zlib as _zlib
+        _cfgf = "%s/%s/%d/%d" % (_cp["n"], _cp["mx"], _zlib.crc32(_cp["bd"].encode()), _mc["n"])
+    except Exception:
+        _cfgf = "0"
+    try:
+        _epoch = store.get_data_epoch()
+    except Exception:
+        _epoch = 0
+    try:
+        _br = "1" if (store.get_settings() or {}).get("bill_rounding_summary") else "0"
+    except Exception:
+        _br = "0"
     # BL-32: a cost-neutral RE-PRICE (the first-upgrade migration, or a settlement rate
     # correction) changes segment/displayed RATES but leaves imp_kwh/imp_cost byte-identical
     # (the reconciliation invariant), so the cost fingerprint above does NOT move — and the
@@ -2726,7 +2620,7 @@ def _blocks_data_version(store) -> str:
         _sf = "0"
     return (f"{row['c']}:{row['m'] or ''}:"
             f"{row['ik']}:{row['ic']}:{row['ek']}:{row['ec']}:{row['cg']}:"
-            f"{':'.join(_mt)}:{_sf}")
+            f"{_cfgf}:{_epoch}:{_br}:{_sf}")
 
 
 @app.route("/api/charts/data-version")
@@ -3138,17 +3032,7 @@ def api_blocks_day():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/charts/daily")
-def api_chart_daily():
-    """Return daily chart HTML as JSON for inline embedding."""
-    p = os.path.join(CHART_DIR, "daily_usage.html")
-    if not os.path.exists(p):
-        return jsonify({"html": None})
-    with open(p) as f:
-        return jsonify({"html": f.read()})
 
-
-# ── API ───────────────────────────────────────────────────────────────────────
 
 @app.route("/api/entities")
 def api_entities():
@@ -4100,12 +3984,6 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
             _asyncio_r.run_coroutine_threadsafe(_engine_startup_r(_ha_client), _event_loop)
             logger.info("api_backup_restore: engine_startup scheduled for gap detection")
 
-        # Regenerate the pre-built charts against the restored DB now (issue #257),
-        # before engine_startup's async gap detection — so the UI reflects the
-        # restore immediately rather than after the next block finalises.
-        if "blocks.db" in restored or "blocks.json" in restored:
-            _regen_charts_safely()
-
         _j["restored"] = restored
         _j["status"] = "done"
         _step("done")
@@ -4192,11 +4070,6 @@ def api_settings_post():
                     return jsonify({"error": f"{key} must be a number"}), 400
             saved[key] = val
     _engine_write(lambda st: st.save_settings(saved))
-    # The ex-VAT / bill-rounding option changes how the billing summary is rendered
-    # (bill-method vs inc-VAT), so rebuild the pre-built charts now — otherwise the
-    # toggle wouldn't show until the next block finalise (same regen gap as #361).
-    if "bill_rounding_summary" in data:
-        _schedule_offloaded_regen()
     return jsonify({"ok": True})
 
 
@@ -4728,11 +4601,6 @@ def api_backfill_run():
                                            "(rate/period confirmation happens there)."}), 200
             res = _engine_write(lambda st: st.apply_csv_import(channel_csvs),
                                 timeout=1800.0)
-            if isinstance(res, dict) and res.get("blocks_written"):
-                try:
-                    _regen_charts_safely()   # imported span shows in billing/usage now
-                except Exception as _ce:
-                    logger.warning("apply_csv_import dispatch: chart regen failed: %s", _ce)
             return jsonify({"ok": True, "action": action, "result": res}), 200
 
         if action == "run_api_import_job":
@@ -5073,13 +4941,6 @@ def api_retry_settlement():
                                      timeout=120.0)
         # Settlement rewrote block figures (e.g. late export finally landing) — the
         # pre-built charts still show the pre-settlement values until regenerated.
-        # Rebuild off the loop, but only when something actually changed.
-        if result.get("ok") and (result.get("settled_import")
-                                 or result.get("settled_export")):
-            try:
-                _run_on_engine_loop(_eng._generate_charts_offloaded(), timeout=300.0)
-            except Exception as _e:
-                logger.warning("retry-settlement: chart regen failed: %s", _e)
         status = 200 if result.get("ok") else 400
         return jsonify(result), status
     except Exception as e:
@@ -5717,11 +5578,6 @@ def api_blocks_sweep_implausible():
         # thread rather than through this one.
         res = _engine_write(
             lambda st: st.sweep_implausible_sub_blocks(dry_run=not apply))
-        if apply and res.get("applied"):
-            try:
-                _regen_charts_safely()
-            except Exception as _e:
-                logger.warning("api_blocks_sweep_implausible: chart regen failed: %s", _e)
         logger.info("api_blocks_sweep_implausible: %s (applied=%s)",
                     {k: res[k] for k in ("count", "ceiling_kwh", "applied")}, apply)
         return jsonify({"ok": True, **res})
@@ -5783,12 +5639,6 @@ def api_historical_reprice_from_csv():
                 _run_on_engine_loop(_eng_csv.run_reprice_history_sweep_to_done(), timeout=1800.0)
         except Exception as _e:
             logger.warning("reprice-from-csv: post-fill re-segment sweep failed: %s", _e)
-        if res.get("changed"):
-            try:
-                import engine as _eng
-                _run_on_engine_loop(_eng._generate_charts_offloaded(), timeout=300.0)
-            except Exception as _e:
-                logger.warning("reprice-from-csv: chart regen failed: %s", _e)
         return jsonify({"ok": True, **res})
     except Exception as e:
         logger.error("api_historical_reprice_from_csv: %s", e)
@@ -5986,12 +5836,6 @@ def api_historical_csv_apply():
         # Rebuild the pre-rendered billing/usage charts so the imported span shows
         # up immediately — the API import path already does this; the CSV/bill path
         # previously left the charts stale until the next startup/live-block regen.
-        if result.get("blocks_written"):
-            try:
-                _regen_charts_safely()
-                result["charts_regenerated"] = True
-            except Exception as _ce:
-                logger.warning("csv apply: chart regen failed: %s", _ce)
         return jsonify(result)
     except Exception as e:
         logger.error("api_historical_csv_apply: %s", e)
@@ -8074,42 +7918,6 @@ def _create_backup_zip(label="backup"):
     return zip_path
 
 
-@app.route("/api/charts/regenerate", methods=["POST"])
-def api_regenerate_charts():
-    """Trigger chart regeneration from current blocks data."""
-    try:
-        import energy_charts
-        from energy_engine_io import load_json as _lj_regen
-        store = _get_store()
-        if store.count_blocks() == 0:
-            return jsonify({"error": "No blocks data available"}), 400
-        cfg       = load_config()
-        main_meta = {}
-        for md in cfg.get("meters", {}).values():
-            if not (md.get("meta") or {}).get("sub_meter"):
-                main_meta = md.get("meta") or {}
-                break
-        tz_name  = main_meta.get("timezone", "UTC")
-        bm       = int(main_meta.get("block_minutes") or 30)
-        currency = main_meta.get("currency_symbol", "£")
-        os.makedirs(CHART_DIR, exist_ok=True)
-        blocks = store.get_blocks_lightweight()
-        # Cap-aware rate lines: mirror engine.generate_charts so a MANUAL regenerate matches
-        # the scheduled render (6-h-cap gating + authoritative TOU house line). Without these two
-        # args the rate lines fall back to the pre-BL-27 behaviour on this path only.
-        import engine as _eng_rc
-        _cap_from = _eng_rc._chart_cap_from()   # robust SMB cap gate (shared with generate_charts)
-        html = energy_charts.generate_daily_import_export_charts(
-            blocks, timezone_name=tz_name, block_minutes=bm, currency=currency, cfg=cfg, store=store,
-            cap_from=_cap_from, import_schedule=_eng_rc._kraken_rate_schedules.get("import"))
-        with open(os.path.join(CHART_DIR, "daily_usage.html"), "w") as f:
-            f.write(html)
-        logger.info("server: charts regenerated on demand")
-        return jsonify({"ok": True})
-    except Exception as e:
-        logger.error("api_regenerate_charts: %s", e)
-        return jsonify({"error": str(e)}), 500
-
 
 
 @app.route("/api/import/from-zip", methods=["POST"])
@@ -8220,10 +8028,6 @@ def api_import_from_zip():
                 logger.info("api_import_from_zip: data epoch -> %s", _ep)
             except Exception as _be:
                 logger.warning("api_import_from_zip: epoch bump failed: %s", _be)
-
-        # Regenerate the pre-built charts against the restored DB now, rather than
-        # waiting for the next block to finalise (issue #257).
-        _regen_charts_safely()
 
         return jsonify({"ok": True, "imported": imported})
 
@@ -8466,8 +8270,6 @@ def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
             except Exception as _re:
                 logger.error("_delete_worker: remainder recompute failed: %s", _re)
                 result["remainders_recomputed"] = 0
-        _delete_step("rebuilding charts")
-        _regen_charts_safely()
         logger.info("_delete_worker: deleted %d blocks across %d dates "
                     "(meter=%s)", result.get("deleted"), result.get("dates"),
                     meter_id or "all")
@@ -8501,8 +8303,6 @@ def _purge_worker():
         result = store.purge_imported_history()
         store.bump_data_epoch()          # C §2a — removes all imported history
         result["backup"] = backup
-        _delete_step("rebuilding charts")
-        _regen_charts_safely()
         logger.info("_purge_worker: removed %d imported block(s) (backup=%s)",
                     result.get("blocks"), backup)
         _j.update({"status": "done", "kind": "purge",
@@ -9700,12 +9500,6 @@ def api_corrections_apply():
             return updated
 
         updated = _engine_write(_apply_correction, timeout=600.0)
-
-        # Regenerate the pre-built billing/heatmap charts so the correction is
-        # visible immediately, rather than only after the next block finalises
-        # (issue #254a). Client-rendered charts (usage stats, spiral) re-fetch.
-        if updated:
-            _regen_charts_safely()
 
         return jsonify({"ok": True, "updated_blocks": updated,
                         "skipped_unreconciled": skipped, "api_gated": gate})

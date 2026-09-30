@@ -72,37 +72,6 @@ class CalendarPeriodArithmetic(unittest.TestCase):
         self.assertEqual(billing.calendar_periods("month", None, None), [])
 
 
-class TheWrappersStillWork(unittest.TestCase):
-    """The three block-taking functions keep their signature — their callers pass
-    blocks and nothing was asked to change. Only the work moved."""
-
-    _BLOCKS = [{"start": "2026-01-15T00:00:00"}, {"start": "2026-03-02T00:00:00"}]
-
-    def test_calmonth(self):
-        out = billing.get_all_calmonth_periods(self._BLOCKS)
-        self.assertEqual([(a.month, b.month) for a, b in out], [(1, 2), (2, 3), (3, 4)])
-
-    def test_quarter_and_year(self):
-        self.assertTrue(billing.get_all_quarter_periods(self._BLOCKS))
-        self.assertTrue(billing.get_all_year_periods(self._BLOCKS))
-
-    def test_empty_input_is_empty(self):
-        for fn in (billing.get_all_calmonth_periods, billing.get_all_quarter_periods,
-                   billing.get_all_year_periods):
-            self.assertEqual(fn([]), [])
-            self.assertEqual(fn(None), [])
-
-    def test_blocks_without_a_start_are_ignored(self):
-        self.assertEqual(billing.get_all_calmonth_periods([{}, {"start": None}]), [])
-
-    def test_order_does_not_matter(self):
-        """It used to sort the whole list; it now takes min and max. Same answer
-        either way, and that equivalence is why the change is safe."""
-        fwd = billing.get_all_calmonth_periods(self._BLOCKS)
-        rev = billing.get_all_calmonth_periods(list(reversed(self._BLOCKS)))
-        self.assertEqual(fwd, rev)
-
-
 class BlockBounds(unittest.TestCase):
 
     def _store(self):
