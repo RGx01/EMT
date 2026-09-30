@@ -37,6 +37,20 @@ def _local_naive(utc_iso, tz):
             .astimezone(tz).replace(tzinfo=None))
 
 
+def _local_days(blocks, tz):
+    """The local dates the blocks fall on — group_blocks_by_day's keys (the same
+    UTC → local conversion), without building its per-day lists."""
+    utc, out = timezone.utc, set()
+    for b in blocks:
+        s = (b or {}).get("start")
+        if s:
+            try:
+                out.add(datetime.fromisoformat(s).replace(tzinfo=utc).astimezone(tz).date().isoformat())
+            except Exception:
+                pass
+    return out
+
+
 def _has_exc(store):
     """BL-24's capability gate for the WHOLE store: is any ex-VAT import cost held?
     The pre-render answers it over all of history; a single period cannot."""
@@ -124,8 +138,7 @@ def period_billing(store, cfg, tz_name, utc_start, utc_end, meta):
     summary, ctx, blocks = period_summary_raw(store, cfg, tz_name, utc_start, utc_end)
     ps = _local_naive(utc_start, tz)
     mm = _main_meta(cfg)
-    days = sorted(_ec.group_blocks_by_day(blocks, tz, int(mm.get("block_minutes") or 30)),
-                  reverse=True)
+    days = sorted(_local_days(blocks, tz), reverse=True)
     site, currency = mm.get("site") or None, mm.get("currency_symbol", "£")
     out = {"summary": summary_json(summary),
            # What the card shows, row by row, every figure already formatted

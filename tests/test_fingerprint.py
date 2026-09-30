@@ -118,6 +118,41 @@ class ItCoversEverythingDisplayed(_Base):
         self.st._conn.commit()
         self.assertNotEqual(before, self.fp()["2026-09-07"])
 
+    def test_an_ev_split_only_change_moves_it(self):
+        """REGRESSION (C, 30 Sep 2026): the Billing tab shows the IOG EV/Home split,
+        and the carve / settled-split heal move it without touching a total."""
+        self.blk("2026-09-09T00:00:00", imp_kwh=2.0, imp_cost=0.14)
+        before = self.fp()["2026-09-09"]
+        self.st._conn.execute("UPDATE blocks SET imp_kwh_ev=1.2, imp_cost_ev=0.084 "
+                              "WHERE block_start='2026-09-09T00:00:00'")
+        self.st._conn.commit()
+        self.assertNotEqual(before, self.fp()["2026-09-09"])
+
+    def test_an_attribution_move_moves_it(self):
+        """REGRESSION (C, 30 Sep 2026): house <-> EV at an unchanged rate."""
+        import pricing_segments as ps
+        self.blk("2026-09-02T00:00:00", imp_kwh=2.0, imp_cost=0.14)
+        self.st.set_block_segments("2026-09-02T00:00:00", "electricity_main",
+                                   [ps.Segment(1.0, 0.07, None, "off_peak", "house"),
+                                    ps.Segment(1.0, 0.07, None, "off_peak", "house")])
+        before = self.fp()["2026-09-02"]
+        self.st.set_block_segments("2026-09-02T00:00:00", "electricity_main",
+                                   [ps.Segment(1.0, 0.07, None, "off_peak", "house"),
+                                    ps.Segment(1.0, 0.07, None, "off_peak", "ev")])
+        self.assertNotEqual(before, self.fp()["2026-09-02"])
+
+    def test_a_band_relabel_moves_it(self):
+        """REGRESSION (C, 30 Sep 2026): standard -> off_peak at an unchanged rate
+        (two labels of the same length)."""
+        import pricing_segments as ps
+        self.blk("2026-09-05T00:00:00", imp_kwh=1.0, imp_cost=0.07)
+        self.st.set_block_segments("2026-09-05T00:00:00", "electricity_main",
+                                   [ps.Segment(1.0, 0.07, None, "standard", "house")])
+        before = self.fp()["2026-09-05"]
+        self.st.set_block_segments("2026-09-05T00:00:00", "electricity_main",
+                                   [ps.Segment(1.0, 0.07, None, "off_peak", "house")])
+        self.assertNotEqual(before, self.fp()["2026-09-05"])
+
     def test_it_is_stable_when_nothing_changes(self):
         """A fingerprint that moves on its own is a poll that never settles."""
         self.blk("2026-09-08T00:00:00")

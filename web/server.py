@@ -2577,7 +2577,18 @@ def _blocks_data_version(store) -> str:
         "ROUND(COALESCE(SUM(imp_cost), 0), 2) AS ic, "
         "ROUND(COALESCE(SUM(exp_kwh),  0), 3) AS ek, "
         "ROUND(COALESCE(SUM(exp_cost), 0), 2) AS ec, "
-        "ROUND(COALESCE(SUM(carbon_g), 0), 0) AS cg "
+        "ROUND(COALESCE(SUM(carbon_g), 0), 0) AS cg, "
+        # What the Billing tab shows that a cost-neutral write can move (C, 30 Sep
+        # 2026): the IOG EV/Home split (carve, settled-split heal), the ex-VAT cost,
+        # the device/house division and the standing charge. Until #23 these moved
+        # the token through the chart regen every such write triggered. Outside the
+        # covering index, so this is a table scan: measured 15 ms against 9 ms.
+        "ROUND(COALESCE(SUM(imp_kwh_ev), 0), 4) AS xe, "
+        "ROUND(COALESCE(SUM(imp_cost_ev), 0), 4) AS xc, "
+        "ROUND(COALESCE(SUM(imp_cost_exc), 0), 4) AS xx, "
+        "ROUND(COALESCE(SUM(imp_kwh_grid), 0), 4) AS xg, "
+        "ROUND(COALESCE(SUM(imp_kwh_remainder), 0), 4) AS xr, "
+        "ROUND(COALESCE(SUM(standing_charge), 0), 4) AS xs "
         "FROM blocks").fetchone()
     # What the Billing tab shows beyond the blocks: the billing periods (a billing-day
     # change or an added/removed meter re-cuts them), the bulk epoch (an import, delete
@@ -2613,13 +2624,21 @@ def _blocks_data_version(store) -> str:
         _seg = store._conn.execute(
             "SELECT COUNT(*) AS n, "
             "ROUND(COALESCE(SUM(inc_rate), 0), 4) AS ir, "
-            "ROUND(COALESCE(SUM(exc_rate), 0), 4) AS er "
+            "ROUND(COALESCE(SUM(exc_rate), 0), 4) AS er, "
+            # attribution and band: a carve or a band relabel moves kWh between
+            # house/EV or off-peak/peak segments at unchanged rates.
+            "ROUND(COALESCE(SUM(CASE WHEN attribution = 'ev' THEN kwh END), 0), 4) AS ea, "
+            # A weight distinct for every label in use (off_peak 359, standard 363,
+            # peak 236, day 193, night 265, mixed 264): length alone ties off_peak and
+            # standard, and unknown -> off_peak is a real relabel.
+            "ROUND(COALESCE(SUM(kwh * (unicode(band) + 31 * length(band))), 0), 3) AS pk "
             "FROM block_segments").fetchone()
-        _sf = f"{_seg['n']}:{_seg['ir']}:{_seg['er']}"
+        _sf = f"{_seg['n']}:{_seg['ir']}:{_seg['er']}:{_seg['ea']}:{_seg['pk']}"
     except Exception:
         _sf = "0"
     return (f"{row['c']}:{row['m'] or ''}:"
             f"{row['ik']}:{row['ic']}:{row['ek']}:{row['ec']}:{row['cg']}:"
+            f"{row['xe']}:{row['xc']}:{row['xx']}:{row['xg']}:{row['xr']}:{row['xs']}:"
             f"{_cfgf}:{_epoch}:{_br}:{_sf}")
 
 

@@ -4214,8 +4214,10 @@ class BlockStore:
         _sc_earliest: dict = {}
 
         for r in rows:
+            # .date().isoformat() is strftime("%Y-%m-%d") for any 4-digit year, at a
+            # fraction of the cost — once per block over the period.
             d = datetime.fromisoformat(r["block_start"]).replace(
-                tzinfo=timezone.utc).astimezone(tz_obj).strftime("%Y-%m-%d")
+                tzinfo=timezone.utc).astimezone(tz_obj).date().isoformat()
             cost = float(r["imp_cost"] or 0)
             if not bool(r["is_sub_meter"]):
                 by_d[d]["main_imp"] += cost
@@ -7103,7 +7105,12 @@ class BlockStore:
         block_map: dict = {}
         block_order: list = []
 
+        # Read each row once into a plain dict: an sqlite3.Row looks every column up
+        # by NAME, ~40 times a row here, and on a year's bill that lookup was a large
+        # share of this fetch (C, 30 Sep 2026). Same values, same output.
+        _keys = rows[0].keys() if rows else []
         for row in rows:
+            row = dict(zip(_keys, row))
             bs = row["block_start"]
             if bs not in block_map:
                 block_map[bs] = {
@@ -7862,20 +7869,32 @@ class BlockStore:
             "       ROUND(COALESCE(SUM(b.imp_cost), 0), 2) AS ic, "
             "       ROUND(COALESCE(SUM(b.exp_kwh), 0), 3) AS ek, "
             "       ROUND(COALESCE(SUM(b.exp_cost), 0), 2) AS ec, "
-            "       ROUND(COALESCE(SUM(b.carbon_g), 0), 0) AS cg "
+            "       ROUND(COALESCE(SUM(b.carbon_g), 0), 0) AS cg, "
+            # The Billing tab's cost-neutral inputs (C, 30 Sep 2026): EV/Home split,
+            # ex-VAT, device/house division, standing charge. Same set as
+            # server._blocks_data_version.
+            "       ROUND(COALESCE(SUM(b.imp_kwh_ev), 0), 4) AS xe, "
+            "       ROUND(COALESCE(SUM(b.imp_cost_ev), 0), 4) AS xc, "
+            "       ROUND(COALESCE(SUM(b.imp_cost_exc), 0), 4) AS xx, "
+            "       ROUND(COALESCE(SUM(b.imp_kwh_grid), 0), 4) AS xg, "
+            "       ROUND(COALESCE(SUM(b.imp_kwh_remainder), 0), 4) AS xr, "
+            "       ROUND(COALESCE(SUM(b.standing_charge), 0), 4) AS xs "
             "FROM blocks b WHERE b.block_start >= ? AND b.block_start < ? "
             "GROUP BY day", (utc_start, utc_end)).fetchall()
         segs = self._conn.execute(
             "SELECT substr(block_start, 1, 10) AS day, "
             "       COUNT(*) AS n, "
             "       ROUND(COALESCE(SUM(inc_rate), 0), 4) AS ir, "
-            "       ROUND(COALESCE(SUM(exc_rate), 0), 4) AS er "
+            "       ROUND(COALESCE(SUM(exc_rate), 0), 4) AS er, "
+            "       ROUND(COALESCE(SUM(CASE WHEN attribution = 'ev' THEN kwh END), 0), 4) AS ea, "
+            "       ROUND(COALESCE(SUM(kwh * (unicode(band) + 31 * length(band))), 0), 3) AS pk "
             "FROM block_segments WHERE block_start >= ? AND block_start < ? "
             "GROUP BY day", (utc_start, utc_end)).fetchall()
-        seg = {r["day"]: "%s:%s:%s" % (r["n"], r["ir"], r["er"]) for r in segs}
-        return {r["day"]: "%s:%s:%s:%s:%s:%s:%s:%s" % (
+        seg = {r["day"]: "%s:%s:%s:%s:%s" % (r["n"], r["ir"], r["er"], r["ea"], r["pk"]) for r in segs}
+        return {r["day"]: "%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s" % (
                     r["n"], r["newest"] or "", r["ik"], r["ic"],
-                    r["ek"], r["ec"], r["cg"], seg.get(r["day"], "0"))
+                    r["ek"], r["ec"], r["cg"], r["xe"], r["xc"], r["xx"], r["xg"],
+                    r["xr"], r["xs"], seg.get(r["day"], "0"))
                 for r in rows}
 
     def get_block_bounds(self, meter_id: str = "electricity_main") -> dict:
