@@ -22,7 +22,10 @@ all required PRAGMAs and ensures the schema exists before returning.
 
 import json
 import logging
+import os
 import sqlite3
+import sys
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -981,6 +984,57 @@ def config_meta_significant(old_config: dict, new_config: dict) -> bool:
             return True
     return False
 
+
+SLOW_COMMIT_S = 1.0
+
+
+class _TimedConnection(sqlite3.Connection):
+    """A connection that reports any COMMIT slower than SLOW_COMMIT_S.
+
+    Fourth Pi soak (30 Sep 2026): outside the chart render, the engine loop's 5-95 s
+    stalls were commits — `with self._conn:` in set_block_segments,
+    save_current_block, record_dispatch_history, _insert_block_rows — plus an
+    os.fsync. A one-row commit taking seconds is not the work; it is the storage.
+    The prime suspect is SQLite's automatic checkpoint, which runs INSIDE whichever
+    commit pushes the WAL past 1,000 pages, on the committing thread — the engine's.
+
+    This makes the question answerable: each slow commit logs the WAL size before
+    and after. A WAL that SHRANK across it had a checkpoint run inside it.
+    Costs two os.stat calls per commit; logs only when slow. `with self._conn:`
+    commits through __exit__, not commit(), so both are covered."""
+    _emt_wal = None
+
+    def _wal_bytes(self):
+        try:
+            return os.path.getsize(self._emt_wal) if self._emt_wal else None
+        except OSError:
+            return 0
+
+    def _report(self, t0, w0, caller):
+        dt = time.monotonic() - t0
+        if dt < SLOW_COMMIT_S:
+            return
+        w1 = self._wal_bytes()
+        mb = (lambda b: "?" if b is None else "%.1f MB" % (b / 1048576.0))
+        ckpt = w0 is not None and w1 is not None and w1 < w0
+        logger.warning("slow commit: %.2f s in %s (WAL %s -> %s%s)", dt, caller, mb(w0),
+                       mb(w1), " — a checkpoint ran in this commit" if ckpt else "")
+
+    def commit(self):
+        t0, w0 = time.monotonic(), self._wal_bytes()
+        try:
+            return super().commit()
+        finally:
+            self._report(t0, w0, sys._getframe(1).f_code.co_name)
+
+    def __exit__(self, et, ev, tb):
+        t0, w0 = time.monotonic(), self._wal_bytes()
+        try:
+            return super().__exit__(et, ev, tb)
+        finally:
+            if et is None:
+                self._report(t0, w0, sys._getframe(1).f_code.co_name)
+
 class BlockStore:
     """
     SQLite-backed block store.
@@ -1014,7 +1068,11 @@ class BlockStore:
         #
         # Guarded by tests/test_thread_affinity.py. Do not pass it again.
         self._conn = sqlite3.connect(db_path,
-                                     uri=str(db_path).startswith("file:"))
+                                     uri=str(db_path).startswith("file:"),
+                                     factory=_TimedConnection)
+        _p = str(db_path)
+        self._conn._emt_wal = (_p + "-wal") if (_p != ":memory:"
+                                                 and not _p.startswith("file:")) else None
         self._conn.row_factory = sqlite3.Row
         if read_only:
             # Lightweight read-only companion (e.g. off-loop chart rendering):

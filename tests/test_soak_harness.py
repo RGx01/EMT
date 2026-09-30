@@ -305,6 +305,27 @@ class LogScan(unittest.TestCase):
         self.assertIn("selectors.py:468 select", report)
         self.assertIn("(app: energy_charts.py:812 generate_daily_import_export_charts)", report)
 
+    def test_since_skips_older_builds_in_a_saved_log(self):
+        """Fourth soak: the saved log reached back to 24 Sep and counted a 29 Sep
+        thread-affinity error that the build under test did not have."""
+        p = _log("2026-09-29T19:57:06  ERROR  engine  load_config: DB read failed: SQLite objects "
+                 "created in a thread can only be used in that same thread",
+                 self._MON.replace("2026-09-29T21", "2026-09-30T09"))
+        self.assertIn("database faults): FAIL", soak.scan_log(p)[0])
+        self.assertIn("database faults): PASS",
+                      soak.scan_log(p, since="2026-09-30T00:00:00")[0])
+
+    def test_slow_commits_are_summarised_with_checkpoints_marked(self):
+        p = _log(self._MON,
+                 "2026-09-29T21:10:00  WARNING  block_store  slow commit: 24.51 s in "
+                 "save_current_block (WAL 38.2 MB -> 4.0 MB — a checkpoint ran in this commit)",
+                 "2026-09-29T21:11:00  WARNING  block_store  slow commit: 1.20 s in "
+                 "set_block_segments (WAL 5.1 MB -> 5.3 MB)")
+        report, _ = soak.scan_log(p)
+        self.assertIn("slow commits (over 1 s): 2, of which 1 had a WAL checkpoint", report)
+        self.assertIn("CHECKPOINT", report)
+        self.assertIn("save_current_block 1", report)
+
     def test_the_budget_is_configurable(self):
         report, ok = soak.scan_log(_log(self._MON, self._lag("21:10:00", 3.0)), lag_budget=5)
         self.assertTrue(ok)
