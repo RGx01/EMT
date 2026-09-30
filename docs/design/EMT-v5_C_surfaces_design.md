@@ -545,6 +545,42 @@ and the WAL are all writing to (ROADMAP §A.1), and one of them dropped the HA W
 the pre-rendered files (step 4) removes the largest of those writers. That makes it the first
 thing C does, not the last.
 
+### Measured on the Pi after C, 30 Sep 2026 — the sixth soak (4.5.16-a20)
+
+*Same Pi, SD card and database; the same restore and re-price sweep; `.build/soak.py` at 2 workers /
+4 req/s, now asking for the Billing tab's own requests (#24). 5,377 requests, all 200.*
+
+**No chart is rendered anywhere.** `scan-log` from the restore: 0 database faults, 0 render frames,
+and the worst engine-loop stall **22.3 s** (fifth run 52.7 s; third and fourth 445 s and 497 s).
+All 13 watchdog dumps have the engine thread in a **commit** — 74 of the 83 slow commits are
+`set_block_segments` during the whole-history re-price sweep, none with a WAL checkpoint inside —
+so what remains is the storage stall of ROADMAP §A.1, not C. One of them (22:23:51) was followed by
+an HA WebSocket reconnect.
+
+**The Billing tab's requests, built per request now:**
+
+| request | p50 | worst | n |
+|---|---|---|---|
+| a billing period's bill (`resolution=period&kind=billing&include=billing`) | 0.90 s | 3.19 s | 32 |
+| the previous billing period (vs Prev) | 0.94 s | 4.70 s | 42 |
+| a month's bill | 0.82 s | 4.84 s | 58 |
+| a month of day charts (`resolution=day&kind=month&include=billing`) | 0.63–0.92 s | 7.50 s | 97 |
+| a quarter's bill | 2.33 s | 6.72 s | 57 |
+| **a year's bill** | **7.07 s** | **16.23 s** | 40 |
+| the picker's totals (`/api/periods?include=net_cost`) | 0.79–0.91 s | 15.82 s | 194 |
+| `/lovelace/billing` | 0.03 s | 0.20 s | 46 |
+
+The year's bill is CPU, not contention — 6.90 s p50 outside the sweep as well. The work is
+per block (a year is 13,044 of them) in Python: the fetch and `calculate_billing_summary_for_period`.
+Exact savings followed (same payload, byte for byte; `.build/reconcile_v4.py` still 80 of 80 to
+the penny): the VAT calendar read once per summary instead of per block, timezone objects built
+once, the day list without regrouping every block, `sqlite3.Row` columns read once per row in
+`get_blocks_lightweight` (identical output over all 58,166 blocks), and `date().isoformat()` for
+`strftime` in `compute_period_net` — **a year 0.443 s → 0.282 s on the Mac (−36%)**, which puts the
+Pi near 4.5 s. A server-side cache was measured and not built: an exact key (hashing the range's
+blocks, segments, dispatch and bill-split rows) costs a third of the computation, the Billing tab
+already keeps each bill for the session, and a key that misses one input serves a stale bill.
+
 ---
 
 ## 6. Acceptance

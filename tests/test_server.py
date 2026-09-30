@@ -6576,9 +6576,11 @@ class TestBlocksDataVersion(unittest.TestCase):
         conn.row_factory = sqlite3.Row
         conn.execute(
             "CREATE TABLE blocks (block_start TEXT, imp_kwh REAL, imp_cost REAL, "
-            "exp_kwh REAL, exp_cost REAL, carbon_g REAL)")
+            "exp_kwh REAL, exp_cost REAL, carbon_g REAL, imp_kwh_ev REAL, imp_cost_ev REAL, "
+            "imp_cost_exc REAL, imp_kwh_grid REAL, imp_kwh_remainder REAL, standing_charge REAL)")
         conn.executemany(
-            "INSERT INTO blocks VALUES (?,?,?,?,?,?)",
+            "INSERT INTO blocks (block_start, imp_kwh, imp_cost, exp_kwh, exp_cost, carbon_g) "
+            "VALUES (?,?,?,?,?,?)",
             [("2026-02-12T00:00:00", 0.0, 0.0, 0.0, 0.0, 0.0),
              ("2026-02-12T00:30:00", 1.0, 20.0, 2.0, 0.0, 150.0)])
         conn.commit()
@@ -6612,6 +6614,59 @@ class TestBlocksDataVersion(unittest.TestCase):
         after = server._blocks_data_version(st)
         self.assertNotEqual(before, after)
         self.assertEqual(before.split(":")[:2], after.split(":")[:2])  # count:max unchanged
+
+    def test_an_ev_split_only_change_moves_token(self):
+        """REGRESSION (C, 30 Sep 2026): the IOG split carve and the settled-split heal
+        move kWh between house and EV and leave every total alone. They moved the token
+        through the chart regen they triggered; with the regen gone (#23) an open
+        Billing tab kept the old EV/Home rows until the next half-hour."""
+        import server
+        st = self._store()
+        before = server._blocks_data_version(st)
+        st._conn.execute("UPDATE blocks SET imp_kwh_ev = 0.6, imp_cost_ev = 0.04 "
+                         "WHERE block_start = '2026-02-12T00:30:00'")
+        st._conn.commit()
+        self.assertNotEqual(before, server._blocks_data_version(st))
+
+    def test_an_ex_vat_stamp_moves_token(self):
+        import server
+        st = self._store()
+        before = server._blocks_data_version(st)
+        st._conn.execute("UPDATE blocks SET imp_cost_exc = 19.05 WHERE block_start = '2026-02-12T00:30:00'")
+        st._conn.commit()
+        self.assertNotEqual(before, server._blocks_data_version(st))
+
+    def _seg_store(self):
+        st = self._real_store()
+        import pricing_segments as ps
+        st._conn.execute("INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
+                         "imp_cost) VALUES ('2026-02-12T01:00:00', '2026-02-12T01:30:00', 'electricity_main', 1, 2.0, 0.14)")
+        st._conn.commit()
+        st.set_block_segments("2026-02-12T01:00:00", "electricity_main",
+                              [ps.Segment(1.0, 0.07, None, "off_peak", "house"),
+                               ps.Segment(1.0, 0.07, None, "off_peak", "ev")])
+        return st
+
+    def test_an_attribution_move_at_the_same_rate_moves_token(self):
+        """REGRESSION (C, 30 Sep 2026): a carve re-attributes segments house <-> EV at
+        unchanged rates — count and rate sums stay put."""
+        import server
+        st = self._seg_store()
+        before = server._blocks_data_version(st)
+        st._conn.execute("UPDATE block_segments SET attribution = 'house'")
+        st._conn.commit()
+        self.assertNotEqual(before, server._blocks_data_version(st))
+
+    def test_a_band_relabel_at_the_same_rate_moves_token(self):
+        """REGRESSION (C, 30 Sep 2026): unknown -> off_peak (and off_peak -> night) are
+        real relabels at an unchanged rate. `standard` and `off_peak` are the same
+        length, so the band weight is not length alone."""
+        import server
+        st = self._seg_store()
+        before = server._blocks_data_version(st)
+        st._conn.execute("UPDATE block_segments SET band = 'standard'")
+        st._conn.commit()
+        self.assertNotEqual(before, server._blocks_data_version(st))
 
     def test_no_change_keeps_token_stable(self):
         import server

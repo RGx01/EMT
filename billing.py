@@ -321,6 +321,22 @@ def calculate_billing_summary_for_period(blocks, period_start, period_end, store
 
     _period_utc_starts = []  # UTC starts of blocks that fall IN this period (for total_cost)
 
+    # Once per summary, not once per block (C, 30 Sep 2026: on a year's bill these were
+    # ~15% of the time). `vat_rate_at` reads and parses the VAT calendar on every call,
+    # and resolves on the DATE alone (vat_calendar.resolve_vat uses date_iso[:10]), so
+    # memoising by date is exact. Timezone objects are built once per name.
+    _vat_memo = {}
+
+    def _vat_for(start):
+        day = str(start)[:10]
+        if day not in _vat_memo:
+            _vat_memo[day] = store.vat_rate_at(start)
+        return _vat_memo[day]
+
+    from zoneinfo import ZoneInfo as _ZI
+    _UTC_ZI = _ZI("UTC")
+    _tz_objs = {}
+
     for block in sorted_blocks:
         # block["start"] is a UTC ISO string; parse it and convert to local naive
         # so BST blocks at 23:xx UTC compare correctly against local period boundaries.
@@ -329,9 +345,10 @@ def calculate_billing_summary_for_period(blocks, period_start, period_end, store
                     .get("electricity_main", {}) or {})
         _tz_name = (_tz_name.get("meta") or {}).get("timezone") or block.get("_timezone")
         try:
-            from zoneinfo import ZoneInfo as _ZI
-            block_start = _block_utc.replace(tzinfo=_ZI("UTC")).astimezone(
-                _ZI(_tz_name or "UTC")).replace(tzinfo=None)
+            _tzo = _tz_objs.get(_tz_name)
+            if _tzo is None:
+                _tzo = _tz_objs[_tz_name] = _ZI(_tz_name or "UTC")
+            block_start = _block_utc.replace(tzinfo=_UTC_ZI).astimezone(_tzo).replace(tzinfo=None)
         except Exception:
             block_start = _block_utc
         if not (period_start <= block_start < period_end):
@@ -421,7 +438,7 @@ def calculate_billing_summary_for_period(blocks, period_start, period_end, store
                             # the rest of the bill uses for uncovered slots, so the rate
                             # is correct immediately and self-corrects to the exact
                             # figure when the block settles and stamps cost_exc.
-                            _vat = store.vat_rate_at(block.get("start")) if store is not None else 0.05
+                            _vat = _vat_for(block.get("start")) if store is not None else 0.05
                             _ratio = 1.0 / (1.0 + _vat)
                         # BL-27: price the split from the block's priced SEGMENTS when they
                         # travel with it (block_store attaches them to the import channel).

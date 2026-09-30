@@ -49,7 +49,10 @@ every stall has the engine thread inside a **commit** (fifth soak: 80 over 1 s, 
 `set_block_segments` during the re-price sweep). One stall dropped the HA WebSocket. Candidates,
 largest first:
 
-- **The pre-rendered chart files** — C step 4 deletes them.
+- ~~**The pre-rendered chart files**~~ — deleted by C (30 Sep 2026, #23). The sixth soak
+  (4.5.16-a20, same restore and sweep) had no render at all and a worst stall of **22.3 s**, down
+  from 52.7 s: 83 slow commits, 74 in `set_block_segments` during the sweep, none with a WAL
+  checkpoint inside; one was followed by an HA WebSocket reconnect (C design §5).
 - **The pre-restore safety zip**, written while the restored engine starts — it overlapped the
   worst commit.
 - **`_backup_to_share` after every block finalise** — a whole-database copy each time; harmless
