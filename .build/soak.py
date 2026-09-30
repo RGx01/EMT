@@ -395,6 +395,29 @@ _ACTIVE = ("claimed", "running", "paused")          # job_coordinator._ACTIVE
 _TRACEBACK = re.compile(r"^Traceback|\bTraceback \(most recent")
 _LAG = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d).*engine loop lag: ([0-9.]+) s")
 _LAG_MONITOR = re.compile(r"engine loop lag monitor started")
+_STALL = re.compile(r"(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d).*engine loop stalled: ([0-9.]+) s")
+_STACK_THREAD = re.compile(r"^\s+--- (ENGINE LOOP|thread) (\S+)")
+_STACK_FRAME = re.compile(r"^\s{4}(\S+\.py):(\d+) in (\S+):")
+# Frames from these files are the application; anything else is the stdlib or a
+# library, and the innermost APPLICATION frame is what names the culprit.
+_APP_FILES = {"engine.py", "server.py", "block_store.py", "energy_charts.py", "billing.py",
+              "chart_emit.py", "reprice.py", "pricing_segments.py", "kraken_api_client.py",
+              "kraken_ingester.py", "ha_client.py", "main.py", "store_types.py", "carbon.py"}
+
+
+def _summarise_stall(stall):
+    """One line per thread: its innermost frame, and its innermost application frame."""
+    out = []
+    for kind, name, frames in stall["threads"]:
+        if not frames:
+            continue
+        inner = frames[-1]
+        app = next((f for f in reversed(frames) if f[0] in _APP_FILES), None)
+        where = "%s:%s %s" % inner
+        if app and app != inner:
+            where += "   (app: %s:%s %s)" % app
+        out.append("      %-11s %-22s %s" % (kind, name[:22], where))
+    return out
 _DISCONNECT = re.compile(r"waitress\s+Socket error")
 
 
@@ -407,10 +430,28 @@ def scan_log(path, starve_min=60.0, lag_budget=2.0):
     waiting = {}                                   # job -> (since, blocker)
     violations, seen_jobs, last_t = [], set(), None
     disconnects, prev = 0, ""
-    monitor, lags = False, []
+    monitor, lags, stalls, cur_thread = False, [], [], None
     for ln, line in enumerate(open(path, errors="replace"), 1):
         if _LAG_MONITOR.search(line):
             monitor = True
+        sm = _STALL.search(line)
+        if sm:
+            stalls.append({"s": float(sm.group(2)), "at": sm.group(1), "line": ln,
+                           "threads": []})
+            cur_thread = None
+            continue
+        if stalls and (line.startswith("    ") or line.startswith("  ---")):
+            tm = _STACK_THREAD.match(line)
+            if tm:
+                cur_thread = [tm.group(1), tm.group(2), []]
+                stalls[-1]["threads"].append(cur_thread)
+                continue
+            fm = _STACK_FRAME.match(line)
+            if fm and cur_thread is not None:
+                cur_thread[2].append((fm.group(1), fm.group(2), fm.group(3)))
+                continue
+        else:
+            cur_thread = None
         lm = _LAG.search(line)
         if lm:
             lags.append((float(lm.group(2)), lm.group(1), ln))
@@ -477,17 +518,25 @@ def scan_log(path, starve_min=60.0, lag_budget=2.0):
     out += ["  STARVATION " + s for s in starving]
     db_errors = sum(len(hits.get(l, [])) for l, _ in ERROR_PATTERNS if l != "Traceback")
     over = [x for x in lags if x[0] > lag_budget]
-    if not monitor:
+    if not monitor and not lags and not stalls:
         lag_verdict = "NOT MEASURED"
-        out.append("\nengine loop lag: NOT MEASURED — no 'loop lag monitor started' line; "
+        out.append("\nengine loop lag: NOT MEASURED — no monitor start line and no lag lines; "
                    "this build predates the monitor, or the log does not reach its start.")
     else:
+        if not monitor:
+            out.append("\n(the monitor's start line is not in this log — it was truncated — "
+                       "but lag lines are, so lag is measured from them)")
         lag_verdict = "PASS" if not over else "FAIL"
         worst = max(lags) if lags else None
         out.append("\nengine loop lag (budget %.1f s): %d warning(s) over 1 s, %d over budget; "
                    "worst %s" % (lag_budget, len(lags), len(over),
                                  "%.2f s at %s (line %d)" % worst if worst else "under 1 s"))
         out += ["  %.2f s at %s (line %d)" % x for x in sorted(over, reverse=True)[:10]]
+        if stalls:
+            out.append("\nwatchdog stack dumps: %d (engine loop not ticking for 5 s+)" % len(stalls))
+            for st in sorted(stalls, key=lambda x: -x["s"])[:8]:
+                out.append("  stalled %.1f s at %s (line %d)" % (st["s"], st["at"], st["line"]))
+                out += _summarise_stall(st)
     ok = not violations and not starving and db_errors == 0 and lag_verdict != "FAIL"
     out.append("\nverdict A (database faults): %s   A (loop blocking): %s   "
                "B (coordinator): %s"

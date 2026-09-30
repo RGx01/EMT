@@ -1195,6 +1195,14 @@ _LOOP_LAG_INTERVAL_S = 0.5
 _LOOP_LAG_WARN_S = 1.0
 _loop_lag = {"max_s": 0.0, "max_at": None, "last_s": 0.0, "warnings": 0,
              "since": None}
+# Watchdog: a THREAD that notices the monitor has stopped ticking and logs every
+# thread's stack, so a stall names the code that caused it. Third Pi soak (30 Sep
+# 2026): the loop froze 445 s after a restore while charts rendered — in a worker
+# thread, with its own connection, not on the loop — so the log alone could not
+# say what held it. The dumps settle that.
+_WATCHDOG_STALL_S = 5.0          # dump once the loop has not ticked for this long
+_WATCHDOG_REDUMP_S = 30.0        # and again while it stays stalled
+_loop_heartbeat = {"t": None, "thread": None}
 
 
 async def engine_loop_lag_monitor() -> None:
@@ -1203,14 +1211,71 @@ async def engine_loop_lag_monitor() -> None:
     Started once from main.py, beside the Kraken poll task — never from
     engine_startup, which re-runs on every restore and config save."""
     import asyncio as _a
+    import threading as _th
     _loop_lag["since"] = datetime.now(timezone.utc).isoformat()
-    logger.info("engine loop lag monitor started (interval %.1f s, warn above %.1f s)",
-                _LOOP_LAG_INTERVAL_S, _LOOP_LAG_WARN_S)
+    _loop_heartbeat.update(t=time.monotonic(), thread=_th.get_ident())
+    _th.Thread(target=_loop_watchdog, name="loop-watchdog", daemon=True).start()
+    logger.info("engine loop lag monitor started (interval %.1f s, warn above %.1f s, "
+                "watchdog stack dump after %.0f s)",
+                _LOOP_LAG_INTERVAL_S, _LOOP_LAG_WARN_S, _WATCHDOG_STALL_S)
     while True:
         t0 = time.monotonic()
         await _a.sleep(_LOOP_LAG_INTERVAL_S)
+        _loop_heartbeat["t"] = time.monotonic()
         lag = max(0.0, time.monotonic() - t0 - _LOOP_LAG_INTERVAL_S)
         _record_loop_lag(lag)
+
+
+def _loop_watchdog() -> None:
+    """Runs forever in its own daemon thread; see `_watchdog_check`.
+
+    CAVEAT, recorded because it is the hypothesis being tested: if a C call holds
+    the GIL for the whole stall, this thread cannot run either, and the dump lands
+    when the GIL is released — at the END of the stall, not during it. It still names
+    what every thread was doing then."""
+    last_dump = [None]
+    while True:
+        time.sleep(1.0)
+        try:
+            _watchdog_check(last_dump)
+        except Exception as e:                       # never let the watchdog die
+            logger.debug("loop watchdog: %s", e)
+
+
+def _watchdog_check(last_dump: list, now: float = None) -> bool:
+    """Dump every thread's stack if the engine loop has not ticked for
+    _WATCHDOG_STALL_S; again every _WATCHDOG_REDUMP_S while it stays stalled.
+    Returns True when it dumped."""
+    import sys as _sys
+    import threading as _th
+    import traceback as _tb
+    hb = _loop_heartbeat["t"]
+    if hb is None:
+        return False
+    now = time.monotonic() if now is None else now
+    stalled = now - hb
+    if stalled < _WATCHDOG_STALL_S:
+        last_dump[0] = None
+        return False
+    if last_dump[0] is not None and now - last_dump[0] < _WATCHDOG_REDUMP_S:
+        return False
+    last_dump[0] = now
+    names = {t.ident: t.name for t in _th.enumerate()}
+    frames = _sys._current_frames()
+    engine_tid = _loop_heartbeat["thread"]
+    out = ["engine loop stalled: %.1f s — thread stacks follow (engine loop = %s)"
+           % (stalled, names.get(engine_tid, engine_tid))]
+    order = sorted(frames, key=lambda tid: (tid != engine_tid, names.get(tid, "")))
+    for tid in order:
+        if names.get(tid) == "loop-watchdog":
+            continue
+        tag = "ENGINE LOOP" if tid == engine_tid else "thread"
+        out.append("  --- %s %s (%s)" % (tag, names.get(tid, "?"), tid))
+        for fs in _tb.extract_stack(frames[tid])[-12:]:
+            out.append("    %s:%d in %s: %s" % (os.path.basename(fs.filename), fs.lineno,
+                                                fs.name, (fs.line or "").strip()[:100]))
+    logger.warning("\n".join(out))
+    return True
 
 
 def _record_loop_lag(lag: float) -> None:

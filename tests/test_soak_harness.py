@@ -275,9 +275,35 @@ class LogScan(unittest.TestCase):
         self.assertIn("A (loop blocking): FAIL", report)
         self.assertIn("14.20 s", report)
 
-    def test_no_monitor_line_is_not_measured_not_pass(self):
-        report, ok = soak.scan_log(_log(self._lag("21:10:00", 14.2)))
+    def test_no_monitor_and_no_lag_lines_is_not_measured_not_pass(self):
+        """A build without the monitor: nothing to measure, so no verdict either way."""
+        report, ok = soak.scan_log(_log("2026-09-29T21:10:00  INFO  engine  finalise_block: done"))
         self.assertIn("A (loop blocking): NOT MEASURED", report)
+
+    def test_lag_lines_without_the_start_line_are_still_measured(self):
+        """Third soak: the HA download was capped at 1,000 lines and began six
+        seconds after the monitor started — 130 lag warnings, reported NOT MEASURED."""
+        report, ok = soak.scan_log(_log(self._lag("21:10:00", 445.54)))
+        self.assertIn("A (loop blocking): FAIL", report)
+        self.assertIn("truncated", report)
+
+    def test_a_watchdog_dump_is_summarised_with_its_application_frame(self):
+        dump = [
+            "2026-09-30T07:45:44  WARNING   engine  engine loop stalled: 12.0 s — thread stacks "
+            "follow (engine loop = MainThread)",
+            "  --- ENGINE LOOP MainThread (1)",
+            "    base_events.py:1910 in _run_once: event_list = self._selector.select(timeout)",
+            "    selectors.py:468 in select: fd_event_list = self._selector.poll(timeout, max_ev)",
+            "  --- thread asyncio_0 (2)",
+            "    engine.py:2467 in _work: generate_charts(ro, config=cfg)",
+            "    energy_charts.py:812 in generate_daily_import_export_charts: fig = _build(rows)",
+            "    encoder.py:258 in iterencode: return _iterencode(o, 0)",
+        ]
+        report, _ = soak.scan_log(_log(self._MON, *dump))
+        self.assertIn("watchdog stack dumps: 1", report)
+        self.assertIn("ENGINE LOOP", report)
+        self.assertIn("selectors.py:468 select", report)
+        self.assertIn("(app: energy_charts.py:812 generate_daily_import_export_charts)", report)
 
     def test_the_budget_is_configurable(self):
         report, ok = soak.scan_log(_log(self._MON, self._lag("21:10:00", 3.0)), lag_budget=5)

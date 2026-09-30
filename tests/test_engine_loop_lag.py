@@ -77,6 +77,70 @@ class OnARealLoop(_Reset):
         self.assertGreater(engine.engine_loop_lag()["max_s"], 1.0)
 
 
+class Watchdog(unittest.TestCase):
+    """Third Pi soak: the loop froze 445 s while charts rendered in a WORKER thread,
+    so the log could not say what held it. The watchdog names it."""
+
+    def setUp(self):
+        self._saved = dict(engine._loop_heartbeat)
+
+    def tearDown(self):
+        # a stale heartbeat left behind would have any running watchdog thread dump
+        engine._loop_heartbeat.update(t=None, thread=None)
+
+    def test_a_stale_heartbeat_dumps_every_thread(self):
+        import threading
+        engine._loop_heartbeat.update(t=100.0, thread=threading.get_ident())
+        with self.assertLogs("engine", level="WARNING") as cm:
+            self.assertTrue(engine._watchdog_check([None], now=107.0))
+        msg = cm.output[0]
+        self.assertIn("engine loop stalled: 7.0 s", msg)
+        self.assertIn("--- ENGINE LOOP", msg)
+        self.assertIn("test_a_stale_heartbeat_dumps_every_thread", msg,
+                      "the engine thread's own frame is in the dump")
+
+    def test_a_fresh_heartbeat_is_quiet(self):
+        import threading
+        engine._loop_heartbeat.update(t=100.0, thread=threading.get_ident())
+        self.assertFalse(engine._watchdog_check([None], now=101.0))
+
+    def test_one_stall_is_dumped_once_then_every_redump_interval(self):
+        import threading
+        engine._loop_heartbeat.update(t=100.0, thread=threading.get_ident())
+        last = [None]
+        with self.assertLogs("engine", level="WARNING"):
+            self.assertTrue(engine._watchdog_check(last, now=106.0))
+        self.assertFalse(engine._watchdog_check(last, now=110.0))
+        with self.assertLogs("engine", level="WARNING"):
+            self.assertTrue(engine._watchdog_check(last, now=106.0 + engine._WATCHDOG_REDUMP_S))
+
+    def test_on_a_real_loop_it_names_the_code_holding_it(self):
+        saved = (engine._LOOP_LAG_INTERVAL_S, engine._WATCHDOG_STALL_S)
+        engine._LOOP_LAG_INTERVAL_S, engine._WATCHDOG_STALL_S = 0.05, 0.5
+
+        def _hold_the_loop():
+            time.sleep(2.5)                  # synchronous work on the loop thread
+
+        async def main():
+            mon = asyncio.ensure_future(engine.engine_loop_lag_monitor())
+            await asyncio.sleep(0.2)
+            _hold_the_loop()
+            await asyncio.sleep(0.1)
+            mon.cancel()
+            try:
+                await mon
+            except asyncio.CancelledError:
+                pass
+        try:
+            with self.assertLogs("engine", level="WARNING") as cm:
+                asyncio.run(main())
+        finally:
+            engine._LOOP_LAG_INTERVAL_S, engine._WATCHDOG_STALL_S = saved
+        dumps = [m for m in cm.output if "engine loop stalled" in m]
+        self.assertTrue(dumps, "the watchdog dumped")
+        self.assertIn("_hold_the_loop", dumps[0])
+
+
 class Wiring(unittest.TestCase):
 
     def test_started_once_from_main_not_from_engine_startup(self):
