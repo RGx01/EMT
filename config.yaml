@@ -1,6 +1,6 @@
 name: "Energy Meter Tracker SOAK"
 description: "Electricity metering engine with configurable reconciliation periods, sub-meter support, gap filling, and billing charts"
-version: "4.5.16-a19"
+version: "4.5.16-a20"
 slug: "emt_soak"
 init: false
 startup: application
