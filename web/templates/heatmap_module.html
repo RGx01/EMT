@@ -170,6 +170,23 @@ window.EMTHeatmap = (function () {
   }
   function daysIn(key) { return new Date(+key.slice(0, 4), +key.slice(5, 7), 0).getDate(); }
 
+  // v4's weekend rows: a translucent band over Saturday and Sunday — across all the
+  // slots of the grid (drawn OVER the cells, as v4's overlay trace was; v4 kept that
+  // trace for every metric) and behind the daily-total bars.
+  function weekendRows(days, hook) {
+    var plugin = {id: 'hmWeekend'};
+    plugin[hook] = function (ch) {
+      var a = ch.chartArea, rh = a.height / days.length, c = ch.ctx;
+      c.save(); c.fillStyle = dark() ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.10)';
+      days.forEach(function (d, i) {
+        var dow = new Date(d + 'T12:00:00').getDay();
+        if (dow === 0 || dow === 6) c.fillRect(a.left, a.top + i * rh, a.width, rh);
+      });
+      c.restore();
+    };
+    return plugin;
+  }
+
   // ── draw one month ─────────────────────────────────────────────────────────
   function drawMonth(key) {
     var p = state.panels[key]; if (!p || !state.months[key]) return;
@@ -193,7 +210,7 @@ window.EMTHeatmap = (function () {
     var stops = cellStops(sc), fixTop = function (s) { s.height = top; };
     var dpr = Math.min(2, window.devicePixelRatio || 1);
     p.chart = new Chart(row.querySelector('.hm-grid canvas').getContext('2d'), {
-      type: 'matrix',
+      type: 'matrix', plugins: [weekendRows(days, 'afterDatasetsDraw')],
       data: {datasets: [{data: pts, borderWidth: 0,
         backgroundColor: function (ctx) { var r = ctx.raw; return r ? paint(stops, sc.lo, sc.hi, metricOf(r.c, state.metric)) : 'rgba(0,0,0,0)'; },
         width: function (ctx) { var a = ctx.chart.chartArea; return a ? a.width / n - 1 : cs - 1; },
@@ -223,17 +240,8 @@ window.EMTHeatmap = (function () {
     });
     if (m !== 'intensity') {
       var ts = totStops(sc), tvals = days.map(function (d) { return p.grid[d].total[m]; });
-      var weekend = {id: 'hmWeekend', beforeDatasetsDraw: function (ch) {     // v4: shaded rows
-        var a = ch.chartArea, rh = a.height / days.length, c = ch.ctx;
-        c.save(); c.fillStyle = dark() ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.10)';
-        days.forEach(function (d, i) {
-          var dow = new Date(d + 'T12:00:00').getDay();
-          if (dow === 0 || dow === 6) c.fillRect(a.left, a.top + i * rh, a.width, rh);
-        });
-        c.restore();
-      }};
       p.tot = new Chart(row.querySelector('.hm-tot canvas').getContext('2d'), {
-        type: 'bar', plugins: [weekend],
+        type: 'bar', plugins: [weekendRows(days, 'beforeDatasetsDraw')],
         data: {labels: days, datasets: [{data: tvals, barPercentage: 0.8, categoryPercentage: 1,
           backgroundColor: tvals.map(function (v) { return paint(ts, sc.tlo, sc.thi, v); })}]},
         options: {
@@ -436,12 +444,18 @@ window.EMTHeatmap = (function () {
 })();
 </script>
 <style>
-  .hm-bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:8px 4px; }
+  /* v4's floating metric bar (#hm-nav): stays at the top of the scroll container
+     whatever the scroll position, with its drop shadow. */
+  .hm-bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:8px 12px;
+            position:sticky; top:0; z-index:9; margin-bottom:8px; box-sizing:border-box;
+            background:var(--surface, var(--card, #1a1d27)); border-radius:0 0 8px 8px;
+            box-shadow:0 2px 8px rgba(0,0,0,0.4); }
   .hm-metrics { display:flex; gap:6px; }
   .hm-metric-btn { padding:4px 10px; border-radius:6px; border:1px solid var(--border, #2a2d3a);
                    background:transparent; color:inherit; cursor:pointer; font-size:12px; }
   .hm-metric-btn.active { background:var(--accent, #3b82f6); color:#fff; border-color:transparent; }
   .hm-note { font-size:12px; color:var(--muted, #6b7080); }
+  @media (max-width: 600px) { .hm-note { display:none; } }   /* keep the floating bar one row */
   .hm-head { text-align:center; margin:4px 0 6px; }
   .hm-title { font-size:15px; font-weight:600; }
   .hm-sub { font-size:12px; color:var(--muted, #6b7080); margin-top:2px; }
