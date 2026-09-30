@@ -118,6 +118,23 @@ class RouteSelection(unittest.TestCase):
         self.assertFalse(any("resolution=block" in u and "kind=year" in u for u in us),
                          "a year of blocks is not a viewport")
 
+    def test_the_billing_tabs_requests_are_exercised(self):
+        """REGRESSION (C, 30 Sep 2026): the Billing tab builds a bill and a month of
+        day charts per request since the pre-render was deleted; a soak that never
+        asks for include=billing cannot say what that costs on the Pi."""
+        import datetime as dt
+        ctx = {"today": dt.date(2026, 9, 29), "periods": ["2026-08-03", "2026-09-03"],
+               "months": [(2026, 9), (2026, 8)], "years": []}
+        us = soak.query_variants("/api/energy", ctx)
+        for k in ("billing", "month", "quarter", "year"):
+            self.assertTrue(any("resolution=period" in u and "kind=%s" % k in u
+                                and "include=billing" in u for u in us), k)
+        self.assertTrue(any("period_start=2026-08-03" in u and "include=billing" in u for u in us))
+        self.assertTrue(any("resolution=day" in u and "month=9" in u and "include=billing" in u
+                            for u in us))
+        ps = soak.query_variants("/api/periods", ctx)
+        self.assertEqual(sum("include=net_cost" in u for u in ps), 4)
+
 
 def _write_rows(rows):
     fd, path = tempfile.mkstemp(suffix=".jsonl")

@@ -127,8 +127,21 @@ def query_variants(path, ctx):
         "/api/energy": ([{"resolution": "period", "kind": k, "include": "usage,carbon"}
                          for k in ("billing", "month", "year")]
                         + [{"resolution": "day", "kind": k} for k in ("month", "year")]
-                        + [{"resolution": "block", "kind": "month"}]),
-        "/api/periods": [{"kind": k} for k in ("billing", "month", "year")],
+                        + [{"resolution": "block", "kind": "month"}]
+                        # The Billing tab's own requests (C, 30 Sep 2026): a bill for
+                        # each kind, the previous billing period (vs Prev), and a
+                        # month of day charts — the heaviest, built per request now
+                        # that nothing is pre-rendered.
+                        + [{"resolution": "period", "kind": k, "include": "billing"}
+                           for k in ("billing", "month", "quarter", "year")]
+                        + [{"resolution": "period", "kind": "billing", "period_start": p,
+                            "include": "billing"} for p in periods[-2:-1]]
+                        + [{"resolution": "day", "kind": "month", "year": y, "month": m,
+                            "include": "billing"} for y, m in months[:2]]),
+        # The picker's totals: one rollup over the whole span per kind.
+        "/api/periods": ([{"kind": k} for k in ("billing", "month", "year")]
+                         + [{"kind": k, "include": "net_cost"}
+                            for k in ("billing", "month", "quarter", "year")]),
         "/api/insights/billing-period": [{"period_start": p} for p in periods],
         "/api/usage/billing-period": [{"period_start": p} for p in periods],
         "/api/insights/calendar-month": [{"year": y, "month": m} for y, m in months],
