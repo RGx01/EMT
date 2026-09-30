@@ -7801,7 +7801,16 @@ class BlockStore:
             "       ROUND(COALESCE(SUM(b.exp_kwh), 0), 4) AS exp_kwh, "
             "       ROUND(COALESCE(SUM(b.exp_cost), 0), 4) AS exp_cost, "
             "       ROUND(COALESCE(SUM(b.carbon_g), 0), 1) AS carbon_g, "
-            "       ROUND(COALESCE(SUM(b.standing_charge), 0), 4) AS standing_charge, "
+            # The day's standing charge is ONE value, not a sum: every block carries
+            # the full daily charge (measured: 48 of 48 blocks on every day of a
+            # real 4.5.16 database), so SUM reported it 48x. The rule is v4's
+            # compute_period_net: the EARLIEST block with a non-zero charge — the
+            # start-of-day value (not MAX, which over-bills on a decrease).
+            "       ROUND(COALESCE((SELECT b2.standing_charge FROM blocks b2 "
+            "                       WHERE b2.meter_id = b.meter_id "
+            "                         AND b2.block_start >= d.s AND b2.block_start < d.e "
+            "                         AND b2.standing_charge > 0 "
+            "                       ORDER BY b2.block_start LIMIT 1), 0), 4) AS standing_charge, "
             "       SUM(b.interpolated) AS interpolated_blocks "
             "FROM d JOIN blocks b ON b.block_start >= d.s AND b.block_start < d.e "
             "GROUP BY d.day, b.meter_id ORDER BY d.day, b.meter_id",

@@ -227,6 +227,25 @@ class LocalDays(_Base):
         self.assertEqual((rows["2026-10-25"]["start_utc"], rows["2026-10-25"]["end_utc"]),
                          ("2026-10-24T23:00:00", "2026-10-26T00:00:00"))
 
+    def test_the_standing_charge_is_the_days_value_not_a_sum(self):
+        """REGRESSION: every block carries the full daily charge (48 of 48 on a real
+        database), so SUM reported it 48x. v4's rule: the earliest non-zero block."""
+        for i in range(48):
+            self.blk(start="2026-09-01T%02d:%02d:00" % (i // 2, 30 * (i % 2)),
+                     standing_charge=0.6)
+        main = [r for r in self.st.get_day_rollups(FROM, TO, "UTC")
+                if r["meter_id"] == "electricity_main"][0]
+        self.assertAlmostEqual(main["standing_charge"], 0.6)
+
+    def test_a_leading_zero_does_not_shadow_the_charge(self):
+        """v4: an early gap-filled block with 0 must not become the day's value."""
+        self.blk(start="2026-09-01T00:00:00", standing_charge=0.0)
+        self.blk(start="2026-09-01T00:30:00", standing_charge=0.6)
+        self.blk(start="2026-09-01T01:00:00", standing_charge=0.55)
+        main = [r for r in self.st.get_day_rollups(FROM, TO, "UTC")
+                if r["meter_id"] == "electricity_main"][0]
+        self.assertAlmostEqual(main["standing_charge"], 0.6)
+
     def test_the_range_clamps_a_partial_first_day(self):
         self.blk(start="2026-09-01T12:00:00")
         rows = self.st.get_day_rollups("2026-09-01T12:00:00", "2026-09-02T00:00:00",
