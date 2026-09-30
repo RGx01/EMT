@@ -4,9 +4,8 @@
  * install that still has /charts/daily_usage.html (removed in step 3), with the
  * Billing tab loaded; or run it from an automated browser. Resolves to a report.
  *
- * The suite cannot run JavaScript (no Node on the Mac or the Pi), so the JS port of
- * render_billing_summary and the side panel is checked here, against the page
- * Python rendered, on a real database:
+ * The card and panel ROWS are bill_card.py's and tested in the suite; what this checks
+ * is that the browser PRINTS them as the page Python rendered did, on a real database:
  *
  *   cards    every period of every mode (Bill, Month, Quarter, Year): the module's
  *            card for the period is one of the page's cards;
@@ -29,21 +28,20 @@
   const cards = new Set((page.match(/\n    <div class="billing-summary(?: current-period)?">[\s\S]*?\n      <\/table>\n    <\/div>/g) || []).map(norm));
   const out = [], bad = [];
   const MODES = {month: 'period-select-month', calmonth: 'period-select-calmonth', quarter: 'period-select-quarter', year: 'period-select-year'};
-  const cur = B._state.currency || '£';
   const clean = (t) => t.replace(/^★ Current\s+/, '').replace(/&rarr;/g, '→').trim();
 
   for (const mode of Object.keys(MODES)) {
     const lst = await B._loadList(mode);
     // labels
     const opts = Array.from(doc.getElementById(MODES[mode]).options).map((o) => clean(o.textContent));
-    const mine = lst.shown.map((p) => B._optionLabel(mode, p, cur));
+    const mine = lst.shown.map((p) => B._optionLabel(mode, p));
     if (opts.length !== mine.length) bad.push(`${mode}: ${mine.length} periods, page has ${opts.length}`);
     mine.forEach((l, i) => { if (opts[i] !== undefined && l !== opts[i]) bad.push(`${mode} label #${i} differs`); });
     // cards + compare picks
     let n = 0;
     for (const p of lst.shown) {
       const bill = await B._loadBill(mode, p);
-      if (!cards.has(norm(B._renderCard(bill.summary, bill.currency, null)))) bad.push(`${mode} ${p.start}: bill card not on the page`);
+      if (!cards.has(norm(B._renderCard(bill.card, null)))) bad.push(`${mode} ${p.start}: bill card not on the page`);
       n++;
     }
     // compare picks: the page's section for each period names its vs-prev / vs-year columns
@@ -54,7 +52,7 @@
                            return h ? h.textContent.trim() : null; };
       const want = {prev: head('vs-prev'), year: head('vs-year')};
       // The page's compare heading is the period's label without its total.
-      const hd = (q) => q ? B._optionLabel(mode, q, cur).split('  |  ')[0] : null;
+      const hd = (q) => q ? B._optionLabel(mode, q).split('  |  ')[0] : null;
       const got = {prev: hd(B._prevOf(mode, lst, p)), year: hd(B._yearOf(mode, lst, p))};
       if (want.prev !== got.prev) bad.push(`${mode} ${p.start}: vs Prev picks ${got.prev}, page ${want.prev}`);
       if (want.year !== got.year) bad.push(`${mode} ${p.start}: vs Last Year picks ${got.year}, page ${want.year}`);
@@ -75,7 +73,7 @@
     for (const day of Object.keys(byDay)) {
       if (!panels[day]) continue;
       nd++;
-      if (norm(B._renderPanel(day, byDay[day].panel, byDay[day].chart.currency)) !== panels[day]) bad.push(`${day}: side panel differs`);
+      if (norm(B._renderPanel(day, byDay[day].panel_lines)) !== panels[day]) bad.push(`${day}: side panel differs`);
     }
   }
   out.push(`panels: ${nd} of ${Object.keys(panels).length} days`);

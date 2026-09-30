@@ -2,8 +2,12 @@
 which makes the billing summary's per-rate breakdown unreadable. When a channel has
 more than _MAX_RATE_ROWS distinct rates, the rows collapse to a single kWh-weighted
 average row. The Total row (kWh + cost) must be unchanged either way.
+
+The rows are bill_card's (C, 30 Sep 2026: moved out of energy_charts' markup helpers,
+which rendered them to HTML; these assertions read the rows instead of the markup).
 """
 import unittest
+import bill_card as bc
 import energy_charts as ec
 
 
@@ -16,9 +20,9 @@ class TestBillRateRowsCollapse(unittest.TestCase):
 
     def test_collapses_above_threshold(self):
         chans = self._chans(6)                       # > 5 → collapse
-        html, tk, tc = ec._bill_rate_rows(chans, "£")
-        self.assertIn("avg of 6 rates", html)
-        self.assertEqual(html.count("<tr>"), 1)      # one row, not six
+        rows, tk, tc = bc.rate_rows(chans)
+        self.assertEqual(rows[0]["note"], {"avg": 6})
+        self.assertEqual(len(rows), 1)               # one row, not six
         # totals identical to summing the same rounded per-rate values
         exp_tk = round(sum(round(chans[r]["kwh"], 3) for r in chans), 3)
         exp_tc = round(sum(round(chans[r]["cost"], 2) for r in chans), 2)
@@ -26,9 +30,9 @@ class TestBillRateRowsCollapse(unittest.TestCase):
 
     def test_no_collapse_at_threshold(self):
         chans = self._chans(5)                       # == 5 → keep detail
-        html, tk, tc = ec._bill_rate_rows(chans, "£")
-        self.assertNotIn("avg of", html)
-        self.assertEqual(html.count("<tr>"), 5)
+        rows, tk, tc = bc.rate_rows(chans)
+        self.assertTrue(all(r["note"] is None for r in rows))
+        self.assertEqual(len(rows), 5)
 
     def test_collapsed_average_is_kwh_weighted(self):
         # 5 kWh @ 0.10 + 1 kWh @ 0.40 over 6 rates → avg = 0.90 / 6 = 0.15
@@ -36,9 +40,9 @@ class TestBillRateRowsCollapse(unittest.TestCase):
         for i in range(1, 6):
             chans[round(0.40 + 0.001 * i, 4)] = {"kwh": 0.0, "cost": 0.0}
         chans[round(0.40, 4)] = {"kwh": 1.0, "cost": 0.40}
-        html, tk, tc = ec._bill_rate_rows(chans, "£")
-        self.assertIn("avg of", html)
-        self.assertIn("0.1500", html)                # 0.90 / 6.0
+        rows, tk, tc = bc.rate_rows(chans)
+        self.assertEqual(rows[0]["note"], {"avg": 7})
+        self.assertEqual(rows[0]["rate"], "0.1500")  # 0.90 / 6.0
 
 
 class TestBillMethodCollapse(unittest.TestCase):

@@ -9,7 +9,7 @@ Two defects, both fixed here:
      intact, so a plunge period reads as a negative-rate tier / credit.
   2. Agile's ~48 rates/day produced a wall of bars. Above _MAX_RATE_ROWS the tiers
      must collapse to ONE cost-weighted-average row — the same fold the Billing
-     summary applies (energy_charts._bill_rate_rows) — flagged for the renderer.
+     summary applies (bill_card.rate_rows) — flagged for the renderer.
 
 `_collapse_rate_tiers` is unit-tested directly; the gate fix is exercised end-to-end
 through `_aggregate_usage` on an in-memory store.

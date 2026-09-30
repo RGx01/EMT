@@ -128,6 +128,11 @@ class DaysEqualThePage(_Base):
         # the breakdown is there: one EV line, labelled "EV" (H6), not the device name
         self.assertIn("\u21b3 EV</span>", panel)
 
+    def test_each_day_carries_its_panel_lines(self):
+        import bill_card
+        row = bv.day_billing(self.st, self.cfg, TZ, *SEP)["days"][0]
+        self.assertEqual(row["panel_lines"], bill_card.panel_lines(row["panel"], "£"))
+
     def test_days_come_newest_first_and_only_those_in_range(self):
         days = [r["day"] for r in bv.day_billing(self.st, self.cfg, TZ, *OCT)["days"]]
         self.assertEqual(days, sorted(days, reverse=True))
@@ -148,6 +153,8 @@ class PeriodsEqualThePage(_Base):
         raw, _, _ = bv.period_summary_raw(self.st, self.cfg, TZ, *OCT)
         out = bv.period_billing(self.st, self.cfg, TZ, *OCT, {"kind": "billing"})
         self.assertEqual(out["summary"], bv.summary_json(raw))
+        import bill_card
+        self.assertEqual(out["card"], bill_card.card(raw, currency="£", site_name=None))
         self.assertIs(out["is_config_change"], False)
         self.assertEqual(out["days"][0], "2026-10-10")
 
