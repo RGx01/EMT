@@ -6,10 +6,11 @@ computes, per period, a bill summary and, per day, a chart's series and side pan
 bakes both into one HTML file for all of history. This module computes the same two
 things for ONE requested range, from the same functions:
 
-  * period — energy_charts.period_summary, under billing_context: the summary
-    render_billing_summary formats, with the EV split and (opt-in) the bill method;
+  * period — energy_charts.period_summary, under billing_context: the summary, with
+    the EV split and (opt-in) the bill method, and bill_card.card — its rows as the
+    card prints them;
   * day    — energy_charts.day_chart_data, for each local day in the range: the JSON
-    the page embedded per day, plus the side panel as data.
+    the page embedded per day, the side panel as data, and bill_card.panel_lines.
 
 Nothing here derives a figure. It chooses the inputs (the range's blocks, the
 store-wide ex-VAT gate, the engine's cap date and import schedule) and makes the
@@ -19,6 +20,7 @@ tests/test_billing_view.py holds it.
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
+import bill_card as _card
 import energy_charts as _ec
 
 
@@ -123,10 +125,14 @@ def period_billing(store, cfg, tz_name, utc_start, utc_end, meta):
     mm = _main_meta(cfg)
     days = sorted(_ec.group_blocks_by_day(blocks, tz, int(mm.get("block_minutes") or 30)),
                   reverse=True)
+    site, currency = mm.get("site") or None, mm.get("currency_symbol", "£")
     out = {"summary": summary_json(summary),
+           # What the card shows, row by row, every figure already formatted
+           # (bill_card) — the browser prints it and decides nothing.
+           "card": _card.card(summary, currency=currency, site_name=site),
            "days": days,
-           "site": mm.get("site") or None,
-           "currency": mm.get("currency_symbol", "£"),
+           "site": site,
+           "currency": currency,
            "bill_rounding": ctx["bill_rounding"]}
     if (meta or {}).get("kind") == "billing":
         out["is_config_change"] = _is_config_change(store, tz, ps, mm)
@@ -167,6 +173,7 @@ def day_billing(store, cfg, tz_name, utc_start, utc_end):
             ev_fold_meter=ev_phys, ev_label=("EV" if ev_phys else None),
             cap_from=cap_from, import_schedule=import_schedule, store=store,
             timezone_name=tz_name)
-        out.append({"day": day, "chart": d["chart"], "panel": d["panel"]})
+        out.append({"day": day, "chart": d["chart"], "panel": d["panel"],
+                    "panel_lines": _card.panel_lines(d["panel"], currency)})
     return {"days": out,
             "rate_context": {"cap_from": cap_from, "house_tou": import_schedule is not None}}

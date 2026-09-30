@@ -10,9 +10,9 @@ pre-rendered page on a real database: 30 Sep 2026, 98 cards across the four mode
 every card's total rejected (the check discriminates). What must not be lost is
 pinned from the source here — each line learned by measuring it in a browser:
 
-  * cards are formatted with Python's rules (pyFixed), never Number.toFixed — toFixed
-    rounds a tie away from zero (0.125 → "0.13"; Python "0.12") and drops the sign of
-    -0.0 ("0.00"; Python "-0.00"), 3 of 8 test cases;
+  * the card and side panel are PRINTED from bill_card's rows and decide nothing — no
+    number is formatted in the browser (it was, for a day, in #21's JS port: its
+    toFixed rounds a tie away from zero, 0.125 → "0.13" where Python gives "0.12");
   * the charged-rate line is Plotly's `hv`: a LINEAR x axis from -0.5 and
     `stepped: 'before'`, so each rate point at i − 0.5 covers its slot's bar;
   * day charts are released when far from view — a year is 365 canvases;
@@ -46,12 +46,16 @@ def _fn(src, name):
 
 class ModuleDecisions(unittest.TestCase):
 
-    def test_the_card_is_formatted_with_pythons_rules(self):
-        for f in ("renderCard", "rateRows", "totalRow", "splitRows", "readsHtml", "renderPanel", "panelRates"):
+    def test_the_card_and_panel_are_printed_not_computed(self):
+        for f in ("rowHtml", "renderCard", "spans", "renderPanel", "optionLabel"):
             body = _fn(_SRC, f)
-            self.assertNotIn(".toFixed(", body, "%s formats with toFixed, not pyFixed" % f)
-        self.assertIn("function pyFixed(x, n)", _SRC)
-        self.assertIn("/[13579]$/.test(digits)", _SRC)          # half-to-even on a tie
+            self.assertNotIn(".toFixed(", body, "%s formats a number" % f)
+            self.assertNotIn("Math.", body, "%s computes" % f)
+        for gone in ("pyFixed", "pyRound", "function rateRows(", "function splitRows(", "SPLIT_BAND_EPS"):
+            self.assertNotIn(gone, _SRC)
+        self.assertIn("renderCard(bill.card)", _SRC)
+        self.assertIn("renderPanel(day, row.panel_lines)", _SRC)
+        self.assertIn("p.net_cost_text", _SRC)
 
     def test_the_rate_line_is_hv_on_a_linear_axis(self):
         self.assertIn("stepped: 'before'", _SRC)
@@ -141,6 +145,11 @@ class PeriodTotals(unittest.TestCase):
         self.assertFalse(by["2026-11-01"]["has_data"])
         self.assertEqual(by["2026-11-01"]["net_cost"], 0.0)
         self.assertTrue(by["2026-12-01"]["has_data"])
+
+    def test_each_total_arrives_as_the_picker_prints_it(self):
+        code, d = self._get("?kind=billing&include=net_cost")
+        for p in d["periods"]:
+            self.assertEqual(p["net_cost_text"], "£%.2f" % p["net_cost"])
 
     def test_the_default_still_carries_no_totals(self):
         code, d = self._get("?kind=billing")

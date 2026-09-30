@@ -160,138 +160,58 @@ def build_meter_colors_from_config(cfg: dict) -> dict:
 # Billing summary renderer
 # ─────────────────────────────────────────────────────────────
 
-# Above this many distinct rates in one channel's period breakdown, collapse the
-# per-rate rows into a single kWh-weighted average row. Agile has ~48 rates a day →
-# hundreds across a bill period, which makes the billing summary unreadable; the
-# Total row is unchanged, so only the (unusably long) per-rate detail is folded.
-_MAX_RATE_ROWS = 5
+# The card's rows — what it shows, rounded and formatted — are bill_card's (C,
+# 30 Sep 2026); this file only turns them into the pre-rendered page's markup.
+import bill_card as _bc
+_MAX_RATE_ROWS = _bc.MAX_RATE_ROWS
+_SPLIT_BAND_EPS = _bc.SPLIT_BAND_EPS
 
 
-def _bill_rate_rows(channels, currency):
-    """Render rate breakdown rows for a channel dict {rate: {kwh, cost}}.
-    Returns (html, total_kwh, total_cost) where totals are sum of rounded per-rate
-    values. When a channel has more than _MAX_RATE_ROWS distinct rates (Agile), the
-    rows collapse to ONE weighted-average row — the totals are computed identically
-    (sum of the same rounded per-rate values), so the Total row never moves."""
-    rates = sorted(channels)
-    total_kwh = 0.0
-    total_cost = 0.0
-    if len(rates) > _MAX_RATE_ROWS:
-        for rate in rates:
-            total_kwh  += round(channels[rate]["kwh"],  3)
-            total_cost += round(channels[rate]["cost"], 2)
-        avg = (total_cost / total_kwh) if total_kwh else 0.0   # kWh-weighted £/kWh
-        cost_str = f"({-total_cost:.2f})" if total_cost < 0 else f"{total_cost:.2f}"
-        rows = f"""
-            <tr>
-              <td></td><td>{avg:.4f} <span style="opacity:0.6;">(avg of {len(rates)} rates)</span></td>
-              <td>{total_kwh:.3f}</td><td>{cost_str}</td>
-            </tr>"""
-        return rows, round(total_kwh, 3), round(total_cost, 2)
-    rows = ""
-    for rate in rates:
-        d = channels[rate]
-        kwh      = round(d["kwh"],  3)
-        cost_val = round(d["cost"], 2)
-        total_kwh  += kwh
-        total_cost += cost_val
-        cost_str = f"({-cost_val:.2f})" if cost_val < 0 else f"{cost_val:.2f}"
-        rows += f"""
-            <tr>
-              <td></td><td>{rate:.4f}</td>
-              <td>{kwh:.3f}</td><td>{cost_str}</td>
-            </tr>"""
-    return rows, round(total_kwh, 3), round(total_cost, 2)
+def _note_html(note):
+    if not note:
+        return ""
+    if note == "transition":
+        return ' <span style="opacity:0.6;">(transition)</span>'
+    return f' <span style="opacity:0.6;">(avg of {note["avg"]} rates)</span>'
 
 
-def _bill_total_row(kwh, cost):
-    cost_str = f"({-cost:.2f})" if cost < 0 else f"{cost:.2f}"
-    return f"""
-        <tr class="channel-total">
-          <td>Total</td><td></td><td>{kwh:.3f}</td><td>{cost_str}</td>
-        </tr>"""
-
-
-# Rate keys within this gap (£/kWh) are the SAME tariff band jittered by Octopus's
-# per-half-hour settlement rounding (e.g. 0.323091/0.323092/0.323097 → 0.3230/0.3231/
-# 0.3232). Fold them into one displayed band. Sub-penny, so it never merges two real
-# IOG bands (off-peak ≈5p vs peak ≈32p vs any day rate are pence apart) — and the
-# cap-transition block is a separate 'mixed' bucket, never grouped by rate at all.
-_SPLIT_BAND_EPS = 0.0015
-
-
-def _bill_split_rows(summary, currency, exc=False):
-    """BL-9: EV/Home breakdown rows for the IOG 'Import — total grid' section — the
-    house-vs-car split Octopus itemises on the statement. EV and Home are interleaved
-    per rate band (matching the bill); near-identical rates are collapsed into one band
-    (see _SPLIT_BAND_EPS) so per-half-hour settlement jitter doesn't shatter a band into
-    look-alike rows, exactly as the bill-method view already does. The boundary
-    (cap-transition) blocks are a separate 'mixed' bucket → one EV and one Home row at
-    their blended average, untouched by the collapse. The rate shown is cost ÷ kWh, so
-    it's correct in both inc and (derived) ex-VAT bases.
-
-    Returns an HTML string, or None when there's no EV in the period (the caller
-    then shows the plain per-rate rows)."""
-    ev_by_rate   = summary.get("ev_by_rate") or {}
-    home_by_rate = summary.get("home_by_rate") or {}
-    ev_tr        = summary.get("ev_transition") or {}
-    home_tr      = summary.get("home_transition") or {}
-    _ck  = "cost_exc" if exc else "cost"
-    _ckr = _ck + "_raw"                       # B6: unrounded cost for the canonical rate
-    if (sum(v["kwh"] for v in ev_by_rate.values()) + (ev_tr.get("kwh") or 0.0)) <= 1e-9:
-        return None
-
-    def _row(label, kwh, cost, note="", rate=None):
-        # B1: EV and Home in the SAME collapsed band are the same tariff rate. Show one
-        # shared per-band rate (passed in) rather than each row re-deriving cost/kWh, which
-        # diverges on small-kWh bands from independent per-block cost rounding. Per-band, so
-        # a genuine in-period rate change (> _SPLIT_BAND_EPS) is a separate band → separate
-        # rows at their own rates. kWh + cost printed here are unchanged (still exact).
-        if rate is None:
-            rate = (cost / kwh) if kwh else 0.0
-        cs = f"({-cost:.3f})" if cost < 0 else f"{cost:.3f}"   # 3dp, as the bill
-        return (f'\n        <tr><td>{label}</td><td>{rate:.4f}{note}</td>'
-                f'<td>{kwh:.3f}</td><td>{cs}</td></tr>')
-
-    # Cluster the rate keys of BOTH series together into bands (adjacent rates within
-    # _SPLIT_BAND_EPS merge), so EV and Home stay aligned on the same displayed band.
-    _rates = sorted(set(ev_by_rate) | set(home_by_rate))
-    _bands: list[list[float]] = []
-    for r in _rates:
-        if _bands and (r - _bands[-1][-1]) <= _SPLIT_BAND_EPS:
-            _bands[-1].append(r)
-        else:
-            _bands.append([r])
-
-    html = ""
-    for band in _bands:
-        ek = ec = hk = hc = 0.0        # kWh + displayed (3dp) cost
-        ecr = hcr = 0.0                # B6: unrounded cost, for the canonical band rate
-        for r in band:
-            e = ev_by_rate.get(r)
-            if e:
-                ek += e["kwh"]; ec += e.get(_ck, 0.0); ecr += e.get(_ckr, e.get(_ck, 0.0))
-            h = home_by_rate.get(r)
-            if h:
-                hk += h["kwh"]; hc += h.get(_ck, 0.0); hcr += h.get(_ckr, h.get(_ck, 0.0))
-        # Shared band rate — kWh-weighted over BOTH series for THIS band only, so EV and
-        # Home always read identically within a band and a real in-period rate change (its
-        # own band) keeps its own rate. B6: derive it from the UNROUNDED cost so a small-kWh
-        # band reads the canonical tariff rate (not the 3dp-rounded-cost ÷ kWh drift); the
-        # displayed cost columns (ec/hc) stay 3dp.
-        _band_rate = ((ecr + hcr) / (ek + hk)) if (ek + hk) > 1e-9 else 0.0
-        if ek > 1e-9:
-            html += _row("EV", ek, ec, rate=_band_rate)
-        if hk > 1e-9:
-            html += _row("Home", hk, hc, rate=_band_rate)
-    _note = ' <span style="opacity:0.6;">(transition)</span>'
-    if (ev_tr.get("kwh") or 0.0) > 1e-9:
-        _r = (ev_tr.get(_ckr, ev_tr.get(_ck, 0.0)) / ev_tr["kwh"]) if ev_tr["kwh"] > 1e-9 else None
-        html += _row("EV", ev_tr["kwh"], ev_tr.get(_ck, 0.0), _note, rate=_r)
-    if (home_tr.get("kwh") or 0.0) > 1e-9:
-        _r = (home_tr.get(_ckr, home_tr.get(_ck, 0.0)) / home_tr["kwh"]) if home_tr["kwh"] > 1e-9 else None
-        html += _row("Home", home_tr["kwh"], home_tr.get(_ck, 0.0), _note, rate=_r)
-    return html
+def _card_row_html(r):
+    """One bill_card row in the pre-rendered page's markup (its exact whitespace)."""
+    t = r["type"]
+    if t == "rate":
+        return (f"\n            <tr>\n              <td></td><td>{r['rate']}{_note_html(r['note'])}</td>"
+                f"\n              <td>{r['kwh']}</td><td>{r['cost']}</td>\n            </tr>")
+    if t == "split":
+        return (f"\n        <tr><td>{r['label']}</td><td>{r['rate']}{_note_html(r['note'])}</td>"
+                f"<td>{r['kwh']}</td><td>{r['cost']}</td></tr>")
+    if t == "total":
+        return (f'\n        <tr class="channel-total">\n          <td>Total</td><td></td>'
+                f"<td>{r['kwh']}</td><td>{r['cost']}</td>\n        </tr>")
+    if t == "total_exc":
+        return f'\n        <tr class="channel-total"><td>Total (exc)</td><td></td><td></td><td>{r["value"]}</td></tr>'
+    if t == "line":
+        return f'\n        <tr class="{r["cls"]}"><td colspan="3">{r["text"]}</td><td>{r["value"]}</td></tr>'
+    if t == "line_block":
+        return (f'\n        <tr class="{r["cls"]}">\n          <td colspan="3">{r["text"]}</td>'
+                f'\n          <td>{r["value"]}</td>\n        </tr>')
+    if t == "line_inline":
+        return (f'\n        <tr class="{r["cls"]}">\n          <td colspan="3">{r["text"]}</td>'
+                f'<td>{r["value"]}</td>\n        </tr>')
+    if t == "breakdown":
+        return '\n        <tr class="submeter-breakdown-header">\n          <td colspan="4">Breakdown by meter</td>\n        </tr>'
+    ind = " submeter-indent" if r.get("indent") else ""
+    if t == "title":
+        mpan = (f'&nbsp;&nbsp;|&nbsp;&nbsp;MPAN: <span class="censored">{r["mpan"]}</span>' if r.get("mpan") else "")
+        rd = r.get("reads")
+        reads = (f'<br><span class="reads">Start: <span class="censored">{rd["start"]}</span>'
+                 f'&nbsp;&nbsp;End: <span class="censored">{rd["end"]}</span>'
+                 f'&nbsp;&nbsp;Total: {rd["total"]} kWh</span>') if rd else ""
+        return (f'\n        <tr class="channel-title{ind}">\n          <td colspan="4">{r["text"]}{mpan}{reads}</td>'
+                f'\n        </tr>')
+    if t == "header":
+        return (f'\n        <tr class="channel-header{ind}">\n          <td></td><td>{r["rate"]}</td><td>kWh</td>'
+                f'<td>{r["cost"]}</td>\n        </tr>')
+    raise ValueError("unknown card row type %r" % t)
 
 
 def _collapse_rate_kwh(rate_kwh):
@@ -299,7 +219,7 @@ def _collapse_rate_kwh(rate_kwh):
     day chart's `summary_rates[meter]`). Returns a list of (kwh, rate, n) tuples to
     render: one per rate normally, or a SINGLE kWh-weighted-average tuple (with n =
     the rate count) when there are more than _MAX_RATE_ROWS non-trivial rates — the
-    same threshold as the billing summary's _bill_rate_rows, so the side panel's
+    same threshold as the billing summary's bill_card.rate_rows, so the side panel's
     Direct-import and per-device lines fold the same way on Agile. Weighting is by
     kWh (Σ rate·kwh ÷ Σ kwh) since only kWh is available here; that equals cost ÷ kWh
     when cost = rate·kwh, so it agrees with the summary's cost-weighted average. Only
@@ -762,224 +682,21 @@ def _inject_ev_breakdown_into_summary(summary, period_blocks, ev_slot_map,
 
 
 def render_billing_summary(summary, currency='£', site_name=None):
-    if not summary:
+    """The pre-rendered page's bill card: bill_card.card, formatted."""
+    c = _bc.card(summary, currency=currency, site_name=site_name)
+    if not c:
         return ""
-
-    meter_meta       = summary.get("meter_meta", {})
-    main_import_raw  = summary.get("main_import_raw", {})
-    main_reads       = summary.get("main_import_reads", {})
-
-    # ── Site header ──
-    if not site_name:
-        site_name = next(
-            (m.get("site") for m in meter_meta.values() if m.get("site") and not m.get("is_submeter")),
-            None
-        )
     site_header = f'''
         <tr class="bill-site-header">
-          <td colspan="4"><span class="censored">{site_name}</span></td>
-        </tr>''' if site_name else ""
-
-    html = f'''
+          <td colspan="4"><span class="censored">{c["site"]}</span></td>
+        </tr>''' if c["site"] else ""
+    return (f'''
     <div class="billing-summary">
       <table class="billing-table">
         {site_header}
-    '''
-
-    # ── Separate export, main import remainder, and sub-meter imports ──
-    export_keys    = sorted(k for k in summary["meters"] if k.endswith("/ Export"))
-    remainder_keys = sorted(k for k in summary["meters"]
-                            if k.endswith("/ Import")
-                            and not (summary["totals"].get(k) or {}).get("is_submeter"))
-    submeter_keys  = sorted(k for k in summary["meters"]
-                            if k.endswith("/ Import")
-                            and (summary["totals"].get(k) or {}).get("is_submeter"))
-
-    # ── Export section(s) ──
-    for meter_name in export_keys:
-        channels   = summary["meters"][meter_name]
-        totals     = summary["totals"].get(meter_name, {})
-        meta       = meter_meta.get(meter_name, {})
-        read_start = totals.get("read_start")
-        read_end   = totals.get("read_end")
-        mpan_html  = (f'&nbsp;&nbsp;|&nbsp;&nbsp;MPAN: <span class="censored">{meta["mpan"]}</span>'
-                      if meta.get("mpan") else "")
-        reads_html = ""
-        if read_start is not None:
-            read_total = (read_end or 0.0) - (read_start or 0.0)
-            reads_html = (f'<br><span class="reads">'
-                          f'Start: <span class="censored">{read_start:.3f}</span>'
-                          f'&nbsp;&nbsp;End: <span class="censored">{read_end:.3f}</span>'
-                          f'&nbsp;&nbsp;Total: {read_total:.3f} kWh</span>')
-        html += f"""
-        <tr class="channel-title">
-          <td colspan="4">Export{mpan_html}{reads_html}</td>
-        </tr>
-        <tr class="channel-header">
-          <td></td><td>Rate ({currency}/kWh)</td><td>kWh</td><td>Cost ({currency})</td>
-        </tr>"""
-        html += _bill_rate_rows(channels, currency)[0]
-        html += _bill_total_row(totals["kwh"], totals["cost"])
-    # BL-24: when "Bill Rounding" is on, the import charge is rendered EX-VAT (the bill
-    # method) IN PLACE OF the inc-VAT display; otherwise the usual inc-VAT rows.
-    _bm = summary.get("bill_method")
-    _exc_lbl = ", exc" if _bm else ""
-    if remainder_keys or submeter_keys:
-        # Build raw totals from main_import_raw
-        raw_kwh  = sum(d["kwh"]  for d in main_import_raw.values())
-        raw_cost = sum(d["cost"] for d in main_import_raw.values())
-
-        # Reads from main meter
-        read_start = main_reads.get("read_start")
-        read_end   = main_reads.get("read_end")
-        reads_html = ""
-        if read_start is not None:
-            read_total = (read_end or 0.0) - (read_start or 0.0)
-            reads_html = (f'<br><span class="reads">'
-                          f'Start: <span class="censored">{read_start:.3f}</span>'
-                          f'&nbsp;&nbsp;End: <span class="censored">{read_end:.3f}</span>'
-                          f'&nbsp;&nbsp;Total: {read_total:.3f} kWh</span>')
-
-        # MPAN from first remainder key meta
-        mpan_html = ""
-        if remainder_keys:
-            _meta = meter_meta.get(remainder_keys[0], {})
-            if _meta.get("mpan"):
-                mpan_html = f'&nbsp;&nbsp;|&nbsp;&nbsp;MPAN: <span class="censored">{_meta["mpan"]}</span>'
-
-        html += f"""
-        <tr class="channel-title">
-          <td colspan="4">Import — total grid{mpan_html}{reads_html}</td>
-        </tr>
-        <tr class="channel-header">
-          <td></td><td>Rate ({currency}/kWh{_exc_lbl})</td><td>kWh</td><td>Cost ({currency}{_exc_lbl})</td>
-        </tr>"""
-        if _bm:
-            # BL-24: the ex-VAT bill method REPLACES the inc-VAT import display when Bill
-            # Rounding is on — per-rate ex-VAT (3dp, as the bill), Total (exc), the ex-VAT
-            # standing charge, a VAT row, then the inc-VAT total. Octopus builds a bill this
-            # way: sum the raw ex-VAT half-hours, round at the subtotal, then add VAT. The
-            # Total Bill below is UNCHANGED — this only changes how the import is presented.
-            # BL-9: on an IOG tariff show the EV/Home split (ex-VAT, derived from each
-            # block's own exc/inc ratio) in place of the plain per-rate rows; the
-            # Total (exc) below is the authoritative bill-method figure, unchanged.
-            _split_html = _bill_split_rows(summary, currency, exc=True)
-            if _split_html is not None:
-                html += _split_html
-            else:
-                for _r in _bm["rows"]:
-                    _rate_cell = (f"{_r['rate_exc']:.4f} <span style=\"opacity:0.6;\">(avg of {_r['n_rates']} rates)</span>"
-                                  if _r.get("collapsed") else f"{_r['rate_exc']:.4f}")
-                    html += f"""
-        <tr><td></td><td>{_rate_cell}</td><td>{_r['kwh']:.3f}</td><td>{_r['cost_exc']:.3f}</td></tr>"""
-            html += f"""
-        <tr class="channel-total"><td>Total (exc)</td><td></td><td></td><td>{_bm['energy_exc']:.2f}</td></tr>"""
-            if _bm["standing_days"]:
-                _srows = _bm.get("standing_rows") or []
-                if len(_srows) > 1:
-                    # Standing-charge rate changed mid-period (price cap / tariff
-                    # switch) — one line per rate, not a single averaged rate.
-                    for _s in _srows:
-                        html += f"""
-        <tr class="standing"><td colspan="3">Standing charge (exc): {_s['days']} days @ {currency}{_s['rate_exc']:.4f}/day</td><td>{_s['cost_exc']:.2f}</td></tr>"""
-                else:
-                    html += f"""
-        <tr class="standing"><td colspan="3">Standing charge (exc): {_bm['standing_days']} days @ {currency}{_bm['standing_rate_exc']:.4f}/day</td><td>{_bm['standing_exc']:.2f}</td></tr>"""
-            html += f"""
-        <tr class="bill-method"><td colspan="3">VAT @ {_bm['vat_rate'] * 100:.0f}%</td><td>{currency}{_bm['vat_amount']:.2f}</td></tr>
-        <tr class="channel-total"><td colspan="3">Total incl. VAT</td><td>{currency}{_bm['inc_total']:.2f}</td></tr>"""
-        else:
-            _rate_html, raw_kwh_r, raw_cost_r = _bill_rate_rows(main_import_raw, currency)
-            # BL-9: on an IOG tariff show the EV/Home split (as Octopus does) in place
-            # of the plain per-rate rows; the Total is unchanged (the split sums to it).
-            _split_html = _bill_split_rows(summary, currency)
-            html += _split_html if _split_html is not None else _rate_html
-            html += _bill_total_row(raw_kwh_r, raw_cost_r)
-
-            # ── Standing charge folded into the import charge (display only) —
-            # mirrors a real bill, where energy + standing make up the import total.
-            # The kWh Total above is unchanged, and summary['total_cost'] (the Total
-            # Bill) plus Usage Stats are computed elsewhere, so nothing here moves a
-            # number — this only adds a cost-inclusive subtotal to the display.
-            if summary["standing"]:
-                _sc_groups = {}
-                for _d, _amt in sorted(summary["standing"].items()):
-                    _r = round(_amt, 4)
-                    _sc_groups[_r] = _sc_groups.get(_r, 0) + 1
-                for _r, _cnt in sorted(_sc_groups.items()):
-                    html += f"""
-        <tr class="standing">
-          <td colspan="3">Standing charge: {_cnt} days @ {currency}{_r:.4f}/day</td>
-          <td>{_r * _cnt:.2f}</td>
-        </tr>"""
-                _incl = raw_cost_r + round(sum(summary["standing"].values()), 2)
-                _incl_str = f"({-_incl:.2f})" if _incl < 0 else f"{_incl:.2f}"
-                html += f"""
-        <tr class="channel-total">
-          <td colspan="3">Total incl. standing charge</td><td>{_incl_str}</td>
-        </tr>"""
-
-        # ── Sub-meter breakdown (indented) ──
-        if submeter_keys or remainder_keys:
-            html += '''
-        <tr class="submeter-breakdown-header">
-          <td colspan="4">Breakdown by meter</td>
-        </tr>'''
-
-            # House remainder first
-            for meter_name in remainder_keys:
-                channels = summary["meters"][meter_name]
-                totals   = summary["totals"].get(meter_name, {})
-                html += f"""
-        <tr class="channel-title submeter-indent">
-          <td colspan="4">Direct import</td>
-        </tr>
-        <tr class="channel-header submeter-indent">
-          <td></td><td>Rate ({currency}/kWh)</td><td>kWh</td><td>Cost ({currency})</td>
-        </tr>"""
-                _rate_html, tot_kwh_r, tot_cost_r = _bill_rate_rows(channels, currency)
-                html += _rate_html
-                html += _bill_total_row(tot_kwh_r, tot_cost_r)
-            for meter_name in submeter_keys:
-                channels = summary["meters"][meter_name]
-                totals   = summary["totals"].get(meter_name, {})
-                meta     = meter_meta.get(meter_name, {})
-                label    = meta.get("device") or meter_name.split(" / ")[0].replace("(Sub-meter)", "").replace("(sub-meter)", "").strip()
-                html += f"""
-        <tr class="channel-title submeter-indent">
-          <td colspan="4">{label}</td>
-        </tr>
-        <tr class="channel-header submeter-indent">
-          <td></td><td>Rate ({currency}/kWh)</td><td>kWh</td><td>Cost ({currency})</td>
-        </tr>"""
-                _rate_html, tot_kwh_r, tot_cost_r = _bill_rate_rows(channels, currency)
-                html += _rate_html
-                html += _bill_total_row(tot_kwh_r, tot_cost_r)
-    # Standing charge for export-only accounts (no import section above, so it
-    # would otherwise not appear); the import case renders it in-section.
-    if summary["standing"] and not (remainder_keys or submeter_keys):
-        rate_groups = {}
-        for day_date, amount in sorted(summary["standing"].items()):
-            rate = round(amount, 4)
-            rate_groups[rate] = rate_groups.get(rate, 0) + 1
-        for rate, count in sorted(rate_groups.items()):
-            html += f"""
-        <tr class="standing">
-          <td colspan="3">Standing Charge: {count} days @ {currency}{rate:.4f}/day</td>
-          <td>{rate * count:.2f}</td>
-        </tr>"""
-
-    html += f"""
-        <tr class="grand-total">
-          <td colspan="3">Total Bill</td>
-          <td>{currency}{summary['total_cost']:.2f}</td>
-        </tr>"""
-
-    html += """
+    ''' + "".join(_card_row_html(r) for r in c["rows"]) + """
       </table>
-    </div>"""
-
-    return html
+    </div>""")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -1562,35 +1279,13 @@ def build_day_chart_html(day, day_blocks, meter_colors, chart_prefix='', block_m
         w = "font-weight:600;" if bold else ""
         return f'<span style="color:{color};font-size:{size};line-height:1.6;white-space:nowrap;{w}">{text}</span>'
 
-    def rate_rows_colored(rates, color):
-        out = ""
-        for kwh, rate, n in rates:
-            suffix = f' (avg of {n})' if n else ''
-            out += cs(f'{kwh:.3f} kWh @ {currency}{rate:.4f}{suffix}', color, size="0.8em")
-        return out
+    lines = _bc.panel_lines(panel, currency)
 
-    main_color, export_color = panel["main_color"], panel["export_color"]
-    totals_html = ''
-    if panel["total_import"] > 0:
-        totals_html += cs(f'Total import: {panel["total_import"]:.3f} kWh', main_color)
-        totals_html += cs(f'Import cost: {currency}{panel["import_cost"]:.2f}', main_color)
-        if panel["import_cost_exc"] is not None:
-            totals_html += cs(f'Import cost (exc VAT): {currency}{panel["import_cost_exc"]:.2f}',
-                              main_color)
-    if panel["export_kwh"] > 0:
-        totals_html += cs(f'Total export: {panel["export_kwh"]:.3f} kWh', export_color)
-        totals_html += cs(f'Export credit: {currency}{panel["export_cost"]:.2f}', export_color)
-        totals_html += rate_rows_colored(panel["export_rates"], export_color)
+    def _spans(ls):
+        return "".join(cs(x["text"], x["color"], size=x["size"], bold=x["bold"]) for x in ls)
 
-    breakdown_cols = []
-    for row in panel["breakdown"]:
-        col  = '<div class="scol">'
-        col += cs(f'↳ {row["label"]}', row["color"], size="1em", bold=True)
-        col += cs(f'{row["kwh"]:.3f} kWh', row["color"], size="1em")
-        col += cs(f'{currency}{row["cost"]:.2f}', row["color"], size="1em")
-        col += rate_rows_colored(row["rates"], row["rate_color"])
-        col += '</div>'
-        breakdown_cols.append(col)
+    totals_html = _spans(lines["totals"])
+    breakdown_cols = ['<div class="scol">' + _spans(col) + '</div>' for col in lines["cols"]]
 
     breakdown_html = f'<div class="scols">{"".join(breakdown_cols)}</div>' if breakdown_cols else ''
 

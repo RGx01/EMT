@@ -6447,6 +6447,9 @@ def api_periods():
         if include - {"net_cost"}:
             return jsonify({"error": "include: unknown facet(s) %s" % sorted(include - {"net_cost"})}), 400
         if "net_cost" in include and out:
+            _mm = next(((m.get("meta") or {}) for m in (load_config().get("meters") or {}).values()
+                        if not (m.get("meta") or {}).get("sub_meter")), {})
+            currency = _mm.get("currency_symbol", "£")
             rows = store.get_day_rollups(out[0]["start_utc"], out[-1]["end_utc"], tz_name)
             by_day = {}
             for r in rows:
@@ -6458,6 +6461,7 @@ def api_periods():
                 hi = _bisect.bisect_left(days, p["end"])
                 rs = [r for d in days[lo:hi] for r in by_day[d]]
                 p["net_cost"] = _billing.bill_net_from_day_rollups(rs)
+                p["net_cost_text"] = "%s%.2f" % (currency, p["net_cost"])   # as the picker prints it
                 p["has_data"] = bool(rs)
 
         return jsonify({
@@ -6528,7 +6532,7 @@ def api_insights_periods():
 def _collapse_rate_tiers(tiers_list):
     """Fold a serialised rate_tiers list to ONE cost-weighted-average entry when it
     exceeds the Billing view's _MAX_RATE_ROWS threshold — the same collapse
-    energy_charts._bill_rate_rows / _collapse_rate_kwh apply to Agile's ~48 rates a
+    bill_card.rate_rows / energy_charts._collapse_rate_kwh apply to Agile's ~48 rates a
     day, so Usage Insights and Billing fold identically (#371). The average rate is
     Σcost / Σkwh, so a net plunge-credit period reads NEGATIVE (sign preserved).
     `collapsed` + `n_rates` let the renderer label it 'avg of N rates'."""
@@ -7496,7 +7500,7 @@ def _aggregate_usage(store, cfg, utc_start: str, utc_end: str,
         # boundary blends → one 0.0752 row). From segments each boundary block splits into its two
         # REAL bands (off-peak + peak), matching the bill. Byte-identical uncapped (1 band/block).
         # Cluster adjacent segment rates within _SPLIT_BAND_EPS into display bands (as the bill's
-        # _bill_rate_rows does) so per-slot jitter (0.0549 vs 0.055) doesn't shatter one band into
+        # bill_card.rate_rows does) so per-slot jitter (0.0549 vs 0.055) doesn't shatter one band into
         # look-alike rows — otherwise the distinct-rate count still trips _collapse_rate_tiers.
         _acc: dict = defaultdict(lambda: {"kwh": 0.0, "cost": 0.0, "blk": set()})
         for _r in _seg_rows:

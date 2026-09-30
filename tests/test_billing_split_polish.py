@@ -12,7 +12,8 @@ import unittest
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from energy_charts import calculate_billing_summary_for_period, _bill_split_rows
+from energy_charts import calculate_billing_summary_for_period
+from bill_card import split_rows   # C, 30 Sep 2026: the rows, not their markup
 
 P_START = datetime(2026, 1, 1)
 P_END = datetime(2026, 1, 2)
@@ -49,8 +50,7 @@ class TestExcFallback(unittest.TestCase):
 class TestBandCollapse(unittest.TestCase):
 
     def _rows(self, summary, exc=False):
-        html = _bill_split_rows(summary, "£", exc=exc)
-        return [l for l in (html or "").splitlines() if "<tr>" in l]
+        return split_rows(summary, exc=exc) or []
 
     def test_jittered_rates_fold_to_one_band(self):
         # Peak jittered across 0.3230/0.3231/0.3232 (settlement rounding) → ONE EV row.
@@ -61,7 +61,7 @@ class TestBandCollapse(unittest.TestCase):
             "home_by_rate": {}}
         rows = self._rows(summary)
         self.assertEqual(len(rows), 1)
-        self.assertIn("3.000", rows[0])           # 3 kWh folded
+        self.assertEqual(rows[0]["kwh"], "3.000")  # 3 kWh folded
 
     def test_genuine_bands_stay_separate(self):
         summary = {"ev_by_rate": {
@@ -78,8 +78,7 @@ class TestBandCollapse(unittest.TestCase):
                    "home_by_rate": {},
                    "ev_transition": {"kwh": 2.0, "cost": 0.30, "cost_exc": 0.29},
                    "home_transition": {"kwh": 2.0, "cost": 0.37, "cost_exc": 0.35}}
-        html = _bill_split_rows(summary, "£")
-        self.assertEqual(html.count("(transition)"), 2)
+        self.assertEqual(sum(r["note"] == "transition" for r in split_rows(summary)), 2)
 
 
 if __name__ == "__main__":

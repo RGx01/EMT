@@ -10,11 +10,11 @@
   every figure with the functions the pre-render used (billing_view.py); this file
   only formats and draws.
 
-  THE BILL CARD is energy_charts.render_billing_summary ported line for line, down to
-  Python's number formatting (pyFixed: round-half-even on the exact binary value, and
-  "-0.00"), so a card can be compared string-for-string with the pre-rendered page's.
-  The side panel is build_day_chart_html's markup half, the data table the page's own
-  _buildTableContent, unchanged.
+  THE BILL CARD AND SIDE PANEL arrive as rows (bill_card.py): which rows, every figure
+  rounded, banded, collapsed and formatted. This file prints them and decides nothing —
+  so the arithmetic stays where the suite can test it. (For a day, #21 carried a JS
+  port of render_billing_summary, arithmetic and Python's number formatting included.)
+  The data table is the page's own _buildTableContent, unchanged.
 
   DAY CHARTS: Chart.js on a LINEAR x axis (bars at slot i, width 0.7) so the charged-
   rate lines keep Plotly's `shape: 'hv'` exactly — each rate point sits at i − 0.5 and
@@ -36,7 +36,6 @@ window.EMTBilling = (function () {
     year:     {kind: 'year',    label: 'Year'}
   };
   var MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  var MAX_RATE_ROWS = 5, SPLIT_BAND_EPS = 0.0015;
 
   var state = {root: null, inited: false, mode: 'month', view: 'vanilla', censor: false,
                asc: false, showData: false, lists: {}, sel: {}, bills: {}, months: {},
@@ -64,237 +63,54 @@ window.EMTBilling = (function () {
   }
   function esc(t) { return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); }
 
-  // ── Python's number formatting ────────────────────────────────────────────
-  // f"{x:.nf}": the exact binary value, rounded half-to-even, sign kept on a
-  // negative that rounds to zero ("-0.00"). toFixed rounds a tie AWAY from zero
-  // (0.125 → "0.13" where Python gives "0.12"), so the digits are taken from a
-  // long expansion — exact for a double at these magnitudes — and rounded here.
-  function pyFixed(x, n) {
-    if (x === null || x === undefined || isNaN(x)) return 'nan';
-    var neg = x < 0 || (x === 0 && 1 / x < 0);
-    var s = Math.abs(x).toFixed(Math.min(100, n + 25));
-    var dot = s.indexOf('.');
-    var ip = s.slice(0, dot), fr = s.slice(dot + 1);
-    var keep = fr.slice(0, n), rest = fr.slice(n);
-    var digits = ip + keep, up;
-    if (rest.charAt(0) > '5') up = true;
-    else if (rest.charAt(0) < '5') up = false;
-    else up = /[1-9]/.test(rest.slice(1)) || /[13579]$/.test(digits);
-    if (up) {
-      var a = digits.split(''), i = a.length - 1;
-      while (i >= 0) { if (a[i] === '9') { a[i] = '0'; i--; } else { a[i] = String(+a[i] + 1); break; } }
-      if (i < 0) a.unshift('1');
-      digits = a.join('');
-    }
-    var intLen = digits.length - n;
-    var out = digits.slice(0, intLen) + (n ? '.' + digits.slice(intLen) : '');
-    return (neg ? '-' : '') + out;
+  // ── the bill card: bill_card.card's rows, printed ─────────────────────────
+  // Every figure arrives formatted; which rows appear, their rounding, the EV/Home
+  // bands and the Agile collapse are bill_card.py's, tested in the suite. This only
+  // turns a row into its table row.
+  function noteHtml(n) {
+    if (!n) return '';
+    return ' <span style="opacity:0.6;">' + (n === 'transition' ? '(transition)' : '(avg of ' + n.avg + ' rates)') + '</span>';
   }
-  function pyRound(x, n) { return parseFloat(pyFixed(x, n)); }
-  function paren(v, n) { return v < 0 ? '(' + pyFixed(-v, n) + ')' : pyFixed(v, n); }
-
-  // ── the bill card: energy_charts.render_billing_summary ───────────────────
-  function rateRows(channels) {                        // _bill_rate_rows
-    var tk = 0.0, tc = 0.0, rows = '';
-    if (channels.length > MAX_RATE_ROWS) {
-      channels.forEach(function (c) { tk += pyRound(c.kwh, 3); tc += pyRound(c.cost, 2); });
-      var avg = tk ? tc / tk : 0.0;
-      rows = '\n            <tr>\n              <td></td><td>' + pyFixed(avg, 4) +
-             ' <span style="opacity:0.6;">(avg of ' + channels.length + ' rates)</span></td>\n              <td>' +
-             pyFixed(tk, 3) + '</td><td>' + paren(tc, 2) + '</td>\n            </tr>';
-      return [rows, pyRound(tk, 3), pyRound(tc, 2)];
+  function td(x, span) { return '<td' + (span ? ' colspan="' + span + '"' : '') + '>' + x + '</td>'; }
+  function rowHtml(r) {
+    var ind = r.indent ? ' submeter-indent' : '';
+    switch (r.type) {
+      case 'rate':  return '<tr>' + td('') + td(r.rate + noteHtml(r.note)) + td(r.kwh) + td(r.cost) + '</tr>';
+      case 'split': return '<tr>' + td(esc(r.label)) + td(r.rate + noteHtml(r.note)) + td(r.kwh) + td(r.cost) + '</tr>';
+      case 'total': return '<tr class="channel-total">' + td('Total') + td('') + td(r.kwh) + td(r.cost) + '</tr>';
+      case 'total_exc': return '<tr class="channel-total">' + td('Total (exc)') + td('') + td('') + td(r.value) + '</tr>';
+      case 'line': case 'line_block': case 'line_inline':
+        return '<tr class="' + r.cls + '">' + td(esc(r.text), 3) + td(r.value) + '</tr>';
+      case 'breakdown': return '<tr class="submeter-breakdown-header">' + td('Breakdown by meter', 4) + '</tr>';
+      case 'title':
+        var mpan = r.mpan ? '&nbsp;&nbsp;|&nbsp;&nbsp;MPAN: <span class="censored">' + esc(r.mpan) + '</span>' : '';
+        var rd = r.reads ? '<br><span class="reads">Start: <span class="censored">' + r.reads.start + '</span>&nbsp;&nbsp;End: ' +
+          '<span class="censored">' + r.reads.end + '</span>&nbsp;&nbsp;Total: ' + r.reads.total + ' kWh</span>' : '';
+        return '<tr class="channel-title' + ind + '">' + td(esc(r.text) + mpan + rd, 4) + '</tr>';
+      case 'header': return '<tr class="channel-header' + ind + '">' + td('') + td(esc(r.rate)) + td('kWh') + td(esc(r.cost)) + '</tr>';
     }
-    channels.forEach(function (c) {
-      var k = pyRound(c.kwh, 3), cv = pyRound(c.cost, 2);
-      tk += k; tc += cv;
-      rows += '\n            <tr>\n              <td></td><td>' + pyFixed(c.rate, 4) + '</td>\n              <td>' +
-              pyFixed(k, 3) + '</td><td>' + paren(cv, 2) + '</td>\n            </tr>';
-    });
-    return [rows, pyRound(tk, 3), pyRound(tc, 2)];
+    return '';
   }
-  function totalRow(kwh, cost) {                       // _bill_total_row
-    return '\n        <tr class="channel-total">\n          <td>Total</td><td></td><td>' + pyFixed(kwh, 3) +
-           '</td><td>' + paren(cost, 2) + '</td>\n        </tr>';
-  }
-  function g(o, k, d) { return (o && Object.prototype.hasOwnProperty.call(o, k)) ? o[k] : d; }
-  function splitRows(sm, exc) {                        // _bill_split_rows
-    var ev = {}, home = {};
-    (sm.ev_by_rate || []).forEach(function (r) { ev[r.rate] = r; });
-    (sm.home_by_rate || []).forEach(function (r) { home[r.rate] = r; });
-    var evTr = sm.ev_transition || {}, hoTr = sm.home_transition || {};
-    var ck = exc ? 'cost_exc' : 'cost', ckr = ck + '_raw';
-    var evk = 0; (sm.ev_by_rate || []).forEach(function (r) { evk += r.kwh; });
-    if (evk + (evTr.kwh || 0.0) <= 1e-9) return null;
-    function row(label, kwh, cost, note, rate) {
-      if (rate === null || rate === undefined) rate = kwh ? cost / kwh : 0.0;
-      return '\n        <tr><td>' + label + '</td><td>' + pyFixed(rate, 4) + (note || '') + '</td><td>' +
-             pyFixed(kwh, 3) + '</td><td>' + paren(cost, 3) + '</td></tr>';
-    }
-    var rates = Object.keys(ev).concat(Object.keys(home)).map(Number)
-      .filter(function (r, i, a) { return a.indexOf(r) === i; }).sort(function (a, b) { return a - b; });
-    var bands = [];
-    rates.forEach(function (r) {
-      var last = bands.length ? bands[bands.length - 1] : null;
-      if (last && (r - last[last.length - 1]) <= SPLIT_BAND_EPS) last.push(r); else bands.push([r]);
-    });
-    var html = '';
-    bands.forEach(function (band) {
-      var ek = 0, ec = 0, hk = 0, hc = 0, ecr = 0, hcr = 0;
-      band.forEach(function (r) {
-        var e = ev[r];
-        if (e) { ek += e.kwh; ec += g(e, ck, 0.0); ecr += g(e, ckr, g(e, ck, 0.0)); }
-        var h = home[r];
-        if (h) { hk += h.kwh; hc += g(h, ck, 0.0); hcr += g(h, ckr, g(h, ck, 0.0)); }
-      });
-      var br = (ek + hk) > 1e-9 ? (ecr + hcr) / (ek + hk) : 0.0;
-      if (ek > 1e-9) html += row('EV', ek, ec, '', br);
-      if (hk > 1e-9) html += row('Home', hk, hc, '', br);
-    });
-    var note = ' <span style="opacity:0.6;">(transition)</span>';
-    if ((evTr.kwh || 0.0) > 1e-9) {
-      var r1 = evTr.kwh > 1e-9 ? g(evTr, ckr, g(evTr, ck, 0.0)) / evTr.kwh : null;
-      html += row('EV', evTr.kwh, g(evTr, ck, 0.0), note, r1);
-    }
-    if ((hoTr.kwh || 0.0) > 1e-9) {
-      var r2 = hoTr.kwh > 1e-9 ? g(hoTr, ckr, g(hoTr, ck, 0.0)) / hoTr.kwh : null;
-      html += row('Home', hoTr.kwh, g(hoTr, ck, 0.0), note, r2);
-    }
-    return html;
-  }
-  function readsHtml(rs, re) {
-    if (rs === null || rs === undefined) return '';
-    var total = (re || 0.0) - (rs || 0.0);
-    return '<br><span class="reads">Start: <span class="censored">' + pyFixed(rs, 3) + '</span>&nbsp;&nbsp;End: ' +
-           '<span class="censored">' + pyFixed(re, 3) + '</span>&nbsp;&nbsp;Total: ' + pyFixed(total, 3) + ' kWh</span>';
-  }
-  function mpanHtml(meta) {
-    return (meta && meta.mpan) ? '&nbsp;&nbsp;|&nbsp;&nbsp;MPAN: <span class="censored">' + esc(meta.mpan) + '</span>' : '';
-  }
-  function standingGroups(standing) {                  // {round(amount,4): days}, ascending
-    var groups = {};
-    standing.forEach(function (s) { var r = pyRound(s.amount, 4); groups[r] = (groups[r] || 0) + 1; });
-    return Object.keys(groups).map(Number).sort(function (a, b) { return a - b; })
-      .map(function (r) { return [r, groups[r]]; });
-  }
-  function renderCard(sm, cur, site) {
-    if (!sm) return '';
-    var meta = sm.meter_meta || {}, raw = sm.main_import_raw || [], reads = sm.main_import_reads || {};
-    var meters = sm.meters || {}, totals = sm.totals || {};
-    if (!site) {
-      site = null;
-      Object.keys(meta).some(function (k) { var m = meta[k]; if (m.site && !m.is_submeter) { site = m.site; return true; } return false; });
-    }
-    var html = '\n    <div class="billing-summary">\n      <table class="billing-table">\n        ' +
-      (site ? '\n        <tr class="bill-site-header">\n          <td colspan="4"><span class="censored">' + esc(site) +
-              '</span></td>\n        </tr>' : '') + '\n    ';
-    var keys = Object.keys(meters).sort();
-    var exportKeys = keys.filter(function (k) { return /\/ Export$/.test(k); });
-    var remKeys = keys.filter(function (k) { return /\/ Import$/.test(k) && !((totals[k] || {}).is_submeter); });
-    var subKeys = keys.filter(function (k) { return /\/ Import$/.test(k) && ((totals[k] || {}).is_submeter); });
-    exportKeys.forEach(function (k) {
-      var t = totals[k] || {};
-      html += '\n        <tr class="channel-title">\n          <td colspan="4">Export' + mpanHtml(meta[k]) +
-              readsHtml(t.read_start, t.read_end) + '</td>\n        </tr>\n        <tr class="channel-header">\n' +
-              '          <td></td><td>Rate (' + cur + '/kWh)</td><td>kWh</td><td>Cost (' + cur + ')</td>\n        </tr>';
-      html += rateRows(meters[k])[0];
-      html += totalRow(t.kwh, t.cost);
-    });
-    var bm = sm.bill_method, excLbl = bm ? ', exc' : '';
-    var standing = sm.standing || [];
-    if (remKeys.length || subKeys.length) {
-      html += '\n        <tr class="channel-title">\n          <td colspan="4">Import — total grid' +
-              (remKeys.length ? mpanHtml(meta[remKeys[0]]) : '') + readsHtml(reads.read_start, reads.read_end) +
-              '</td>\n        </tr>\n        <tr class="channel-header">\n          <td></td><td>Rate (' + cur + '/kWh' +
-              excLbl + ')</td><td>kWh</td><td>Cost (' + cur + excLbl + ')</td>\n        </tr>';
-      if (bm) {
-        var sp = splitRows(sm, true);
-        if (sp !== null) html += sp;
-        else bm.rows.forEach(function (r) {
-          var cell = r.collapsed ? pyFixed(r.rate_exc, 4) + ' <span style="opacity:0.6;">(avg of ' + r.n_rates + ' rates)</span>'
-                                 : pyFixed(r.rate_exc, 4);
-          html += '\n        <tr><td></td><td>' + cell + '</td><td>' + pyFixed(r.kwh, 3) + '</td><td>' + pyFixed(r.cost_exc, 3) + '</td></tr>';
-        });
-        html += '\n        <tr class="channel-total"><td>Total (exc)</td><td></td><td></td><td>' + pyFixed(bm.energy_exc, 2) + '</td></tr>';
-        if (bm.standing_days) {
-          var srows = bm.standing_rows || [];
-          if (srows.length > 1) srows.forEach(function (s) {
-            html += '\n        <tr class="standing"><td colspan="3">Standing charge (exc): ' + s.days + ' days @ ' + cur +
-                    pyFixed(s.rate_exc, 4) + '/day</td><td>' + pyFixed(s.cost_exc, 2) + '</td></tr>';
-          });
-          else html += '\n        <tr class="standing"><td colspan="3">Standing charge (exc): ' + bm.standing_days + ' days @ ' + cur +
-                       pyFixed(bm.standing_rate_exc, 4) + '/day</td><td>' + pyFixed(bm.standing_exc, 2) + '</td></tr>';
-        }
-        html += '\n        <tr class="bill-method"><td colspan="3">VAT @ ' + pyFixed(bm.vat_rate * 100, 0) + '%</td><td>' + cur +
-                pyFixed(bm.vat_amount, 2) + '</td></tr>\n        <tr class="channel-total"><td colspan="3">Total incl. VAT</td><td>' +
-                cur + pyFixed(bm.inc_total, 2) + '</td></tr>';
-      } else {
-        var rr = rateRows(raw), sp2 = splitRows(sm, false);
-        html += sp2 !== null ? sp2 : rr[0];
-        html += totalRow(rr[1], rr[2]);
-        if (standing.length) {
-          standingGroups(standing).forEach(function (gr) {
-            html += '\n        <tr class="standing">\n          <td colspan="3">Standing charge: ' + gr[1] + ' days @ ' + cur +
-                    pyFixed(gr[0], 4) + '/day</td>\n          <td>' + pyFixed(gr[0] * gr[1], 2) + '</td>\n        </tr>';
-          });
-          var ssum = 0.0; standing.forEach(function (s) { ssum += s.amount; });
-          var incl = rr[2] + pyRound(ssum, 2);
-          html += '\n        <tr class="channel-total">\n          <td colspan="3">Total incl. standing charge</td><td>' +
-                  paren(incl, 2) + '</td>\n        </tr>';
-        }
-      }
-      html += '\n        <tr class="submeter-breakdown-header">\n          <td colspan="4">Breakdown by meter</td>\n        </tr>';
-      function block(title, k) {
-        var r = rateRows(meters[k]);
-        return '\n        <tr class="channel-title submeter-indent">\n          <td colspan="4">' + title + '</td>\n        </tr>\n' +
-               '        <tr class="channel-header submeter-indent">\n          <td></td><td>Rate (' + cur + '/kWh)</td><td>kWh</td><td>Cost (' +
-               cur + ')</td>\n        </tr>' + r[0] + totalRow(r[1], r[2]);
-      }
-      remKeys.forEach(function (k) { html += block('Direct import', k); });
-      subKeys.forEach(function (k) {
-        var m = meta[k] || {};
-        var label = m.device || k.split(' / ')[0].replace('(Sub-meter)', '').replace('(sub-meter)', '').trim();
-        html += block(esc(label), k);
-      });
-    }
-    if (standing.length && !(remKeys.length || subKeys.length)) {
-      standingGroups(standing).forEach(function (gr) {
-        html += '\n        <tr class="standing">\n          <td colspan="3">Standing Charge: ' + gr[1] + ' days @ ' + cur +
-                pyFixed(gr[0], 4) + '/day</td>\n          <td>' + pyFixed(gr[0] * gr[1], 2) + '</td>\n        </tr>';
-      });
-    }
-    html += '\n        <tr class="grand-total">\n          <td colspan="3">Total Bill</td>\n          <td>' + cur +
-            pyFixed(sm.total_cost, 2) + '</td>\n        </tr>';
-    return html + '\n      </table>\n    </div>';
+  // `site`: omitted → the card's own; null → none (the parity check, which compares
+  // with a page that read its site from elsewhere).
+  function renderCard(card, site) {
+    if (!card) return '';
+    if (site === undefined) site = card.site;
+    return '<div class="billing-summary"><table class="billing-table">' +
+      (site ? '<tr class="bill-site-header">' + td('<span class="censored">' + esc(site) + '</span>', 4) + '</tr>' : '') +
+      card.rows.map(rowHtml).join('') + '</table></div>';
   }
 
-  // ── the day side panel: build_day_chart_html's markup half ────────────────
-  function cs(text, color, size, bold) {
-    return '<span style="color:' + color + ';font-size:' + (size || '0.9em') + ';line-height:1.6;white-space:nowrap;' +
-           (bold ? 'font-weight:600;' : '') + '">' + text + '</span>';
-  }
-  function panelRates(rates, color, cur) {
-    return rates.map(function (r) {
-      return cs(pyFixed(r[0], 3) + ' kWh @ ' + cur + pyFixed(r[1], 4) + (r[2] ? ' (avg of ' + r[2] + ')' : ''), color, '0.8em');
+  // ── the day side panel: bill_card.panel_lines, printed ────────────────────
+  function spans(lines) {
+    return lines.map(function (x) {
+      return '<span style="color:' + x.color + ';font-size:' + x.size + ';line-height:1.6;white-space:nowrap;' +
+             (x.bold ? 'font-weight:600;' : '') + '">' + esc(x.text) + '</span>';
     }).join('');
   }
-  function renderPanel(day, p, cur) {
-    var t = '';
-    if (p.total_import > 0) {
-      t += cs('Total import: ' + pyFixed(p.total_import, 3) + ' kWh', p.main_color);
-      t += cs('Import cost: ' + cur + pyFixed(p.import_cost, 2), p.main_color);
-      if (p.import_cost_exc !== null && p.import_cost_exc !== undefined)
-        t += cs('Import cost (exc VAT): ' + cur + pyFixed(p.import_cost_exc, 2), p.main_color);
-    }
-    if (p.export_kwh > 0) {
-      t += cs('Total export: ' + pyFixed(p.export_kwh, 3) + ' kWh', p.export_color);
-      t += cs('Export credit: ' + cur + pyFixed(p.export_cost, 2), p.export_color);
-      t += panelRates(p.export_rates, p.export_color, cur);
-    }
-    var cols = p.breakdown.map(function (r) {
-      return '<div class="scol">' + cs('↳ ' + esc(r.label), r.color, '1em', true) + cs(pyFixed(r.kwh, 3) + ' kWh', r.color, '1em') +
-             cs(cur + pyFixed(r.cost, 2), r.color, '1em') + panelRates(r.rates, r.rate_color, cur) + '</div>';
-    });
-    return '<div class="chart-summary"><div class="day-label">' + day + '</div><div class="stotals">' + t + '</div>' +
+  function renderPanel(day, lines) {
+    var cols = lines.cols.map(function (c) { return '<div class="scol">' + spans(c) + '</div>'; });
+    return '<div class="chart-summary"><div class="day-label">' + day + '</div><div class="stotals">' + spans(lines.totals) + '</div>' +
            (cols.length ? '<div class="sdivider"></div><div class="scols">' + cols.join('') + '</div>' : '') + '</div>';
   }
 
@@ -518,7 +334,7 @@ window.EMTBilling = (function () {
     return loadMonth(monthKey(day)).then(function (byDay) {
       if (state.cur !== sec || !byDay[day]) return;
       var row = byDay[day]; sec.dayRows[day] = row; wrap._filled = true;
-      wrap.querySelector('.chart-summary').outerHTML = renderPanel(day, row.panel, row.chart.currency);
+      wrap.querySelector('.chart-summary').outerHTML = renderPanel(day, row.panel_lines);
       var tbl = wrap.querySelector('.day-data-tables');
       if (state.showData) { buildTable(tbl, row.chart); tbl.style.display = 'flex';
                             wrap.querySelector('.day-tbl-toggle').classList.add('active'); }
@@ -540,9 +356,9 @@ window.EMTBilling = (function () {
     if (mode === 'quarter') return 'Q' + (Math.floor(s.getMonth() / 3) + 1) + ' ' + s.getFullYear();
     return String(s.getFullYear());
   }
-  function optionLabel(mode, p, cur) {                 // the page's dropdown text
+  function optionLabel(mode, p) {                      // the page's dropdown text
     var h = mode === 'month' ? dmy(parseD(p.start)) + ' → ' + dmy(lastDay(p)) : heading(mode, p);
-    return h + '  |  ' + cur + pyFixed(p.net_cost, 2);
+    return h + '  |  ' + p.net_cost_text;
   }
   function loadList(mode) {
     if (state.lists[mode]) return Promise.resolve(state.lists[mode]);
@@ -641,10 +457,10 @@ window.EMTBilling = (function () {
     return lst.shown.filter(function (p) { return p.start === k; })[0] || null;
   }
   function spinnerPeriods() {
-    var lst = state.lists[state.mode], cur = state.currency || '£';
+    var lst = state.lists[state.mode];
     if (!lst) return {list: [], curIdx: -1};
     var k = state.sel[state.mode];
-    return {list: lst.shown.map(function (p) { return {label: optionLabel(state.mode, p, cur), value: p.start}; }),
+    return {list: lst.shown.map(function (p) { return {label: optionLabel(state.mode, p), value: p.start}; }),
             curIdx: lst.shown.map(function (p) { return p.start; }).indexOf(k)};
   }
 
@@ -736,10 +552,10 @@ window.EMTBilling = (function () {
   }
   function emptyCol(msg) { return '<div class="bill-compare-col bill-compare-empty"><p>' + msg + '</p></div>'; }
   function renderSection(mode, p, bill, prev, year, lst) {
-    var cur = bill.currency, ph = heading(mode, p), total = bill.summary.total_cost;
-    var card = renderCard(bill.summary, cur, bill.site);
+    var ph = heading(mode, p), total = bill.card.total;
+    var card = renderCard(bill.card);
     if (p.is_current) card = card.replace('<div class="billing-summary">', '<div class="billing-summary current-period">');
-    var cmp = function (q, qb) { return col(heading(mode, q), renderCard(qb.summary, cur, bill.site), true); };
+    var cmp = function (q, qb) { return col(heading(mode, q), renderCard(qb.card), true); };
     var vPrev = prev ? cmp(prev.p, prev.b) : emptyCol('No previous period available.');
     var vYear = mode === 'year' ? emptyCol('Not available in year view.')
               : year ? cmp(year.p, year.b) : emptyCol('No data for same period last year.');
@@ -759,13 +575,13 @@ window.EMTBilling = (function () {
     el.className = 'period-section ' + mode + '-section';
     el.innerHTML = banner +
       '<details class="bill-toggle" open><summary class="bill-toggle-summary">Bill Summary &mdash; ' + ph + ' &nbsp;|&nbsp; ' +
-      cur + pyFixed(total, 2) + '</summary><div class="bill-toggle-body">' +
+      total + '</summary><div class="bill-toggle-body">' +
       Object.keys(views).map(function (v) {
         return '<div class="bill-view" data-view="' + v + '" style="display:' + (v === state.view ? 'block' : 'none') + ';">' +
                '<div class="bill-compare-wrap">' + views[v] + '</div></div>'; }).join('') +
       '</div></details>' +
       '<details class="day-charts-toggle"' + (open ? ' open' : '') + '><summary class="day-charts-summary">Daily Charts &mdash; ' +
-      ph + ' &nbsp;|&nbsp; ' + cur + pyFixed(total, 2) + '</summary><div class="day-charts-body">' +
+      ph + ' &nbsp;|&nbsp; ' + total + '</summary><div class="day-charts-body">' +
       days.map(function (day) {
         return '<div class="day-chart-wrap" data-day="' + day + '"><div class="chart-summary"><div class="day-label">' + day +
                '</div></div><div class="chart-container"></div><div class="day-data-tables" style="display:none;"></div>' +
@@ -869,7 +685,7 @@ window.EMTBilling = (function () {
   }
 
   return {init: init, refresh: refresh, rerender: rerender, snapshotCharts: snapshotCharts, fillAll: fillAll, styles: styles,
-          _state: state, _renderCard: renderCard, _renderPanel: renderPanel, _pyFixed: pyFixed,
+          _state: state, _renderCard: renderCard, _renderPanel: renderPanel,
           _optionLabel: optionLabel, _loadList: loadList, _loadBill: loadBill, _loadMonth: loadMonth,
           _prevOf: prevOf, _yearOf: yearOf, _buildChart: buildChart, _releaseChart: releaseChart, _fillDay: fillDay};
 })();
