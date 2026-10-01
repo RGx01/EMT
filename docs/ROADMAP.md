@@ -99,7 +99,7 @@ surface that CI can assert.
 
 ## E. Importer
 
-*Ingest a backup at or above the floor version, currently **4.5.18**. Spec at
+*Ingest a backup at or above the floor version, currently **4.5.19**. Spec at
 [design/EMT-v5_import_spec.md](design/EMT-v5_import_spec.md).*
 
 Three things the importer needs from a source. **Two are new in 4.5.14; one already exists** — an
@@ -121,8 +121,8 @@ standard" keeps holding on the far side of the migration.
 only the *earliest* a source can be, because it is the first release that stamps its version. v4 is
 frozen to critical fixes after .14, and a fix that repairs already-written data adds a heal, so the
 floor may end at .15, .17, wherever v4 actually stops. It is pinned when v5 is written.
-**Currently 4.5.18** (spec v11, 1 Oct 2026): 4.5.15 carried #473's heal, 4.5.16 #481's, 4.5.17 the
-VAT backdate heal (1 Oct 2026's 0% VAT), 4.5.18 that heal re-armed after 4.5.17's learner undid it.
+**Currently 4.5.19** (spec v12, 1 Oct 2026): 4.5.15 carried #473's heal, 4.5.16 #481's, 4.5.17 the
+VAT backdate heal (1 Oct 2026's 0% VAT), 4.5.18 that heal re-armed after 4.5.17's learner undid it, 4.5.19 re-armed again for sub-meter rows.
 
 Why a version suffices: every heal is marker-gated and an ungated marker runs at startup, so
 upgrading any older database runs every heal that release carries. **"Last opened by X" means

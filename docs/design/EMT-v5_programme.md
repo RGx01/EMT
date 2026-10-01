@@ -240,7 +240,7 @@ queries per surface. A surface issuing 200 small queries is the likely shape of 
 
 ### E. Importer (see [EMT-v5_import_spec.md](EMT-v5_import_spec.md))
 
-Ingests a backup zip at or above the floor version (currently **4.5.18**), or a `blocks.db`
+Ingests a backup zip at or above the floor version (currently **4.5.19**), or a `blocks.db`
 taken from one. No cooperating exporter — the source is validated by the importer itself. Contract,
 gates and table-by-table disposition are in that document.
 
