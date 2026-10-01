@@ -2298,6 +2298,12 @@ def historical_probe_page():
     return render_template("historical_probe.html", active="data_management")
 
 
+from usage_view import (  # noqa: E402 — moved there (C step 1); the routes and tests use these names
+    _aggregate_block_rows, _bucket_to_row_values, _configured_ev_meter_id,
+    _dispatch_derived_ev_kwh, _dispatch_ev_split_by_bucket, _hybrid_ev_by_block,
+    _apply_ev_split_to_summary_rows, _apply_hybrid_ev_to_summary_rows)
+
+
 @app.route("/billing-history")
 def billing_history_page():
     return render_template("billing_history.html", active="settings")
@@ -2360,198 +2366,26 @@ def lovelace_heatmap():
     return resp
 
 
-def _aggregate_block_rows(raw_rows, bucket_of, standing_scope="bucket",
-                          billing_day_fallback=1):
-    """Billing-accurate per-block aggregation shared by the Usage Stats endpoints
-    (/blocks-summary buckets by local day; /blocks-day by half-hour slot). Buckets
-    by ``bucket_of(block_start)`` and applies the SAME rate-keyed direct-cost
-    subtraction, sub-meter split and carbon apportioning as before — this is a pure
-    extraction, so the day path is byte-identical (guarded by a golden-output check
-    + test_usage_stats_vs_billing).
-
-    ``standing_scope='bucket'`` books the standing charge as the first non-zero
-    within EACH bucket (the daily rule). ``'global'`` books it once across ALL rows
-    (used by the HH view, whose buckets are slots of one day, so the day's single
-    standing charge lands on one slot and the slots still sum to it).
-
-    Returns ``{bucket_key: agg}`` with main ``imp_cost`` already resolved. Row rows
-    must carry: block_start, meter_id, is_sub_meter, imp_kwh, imp_kwh_grid,
-    imp_kwh_remainder, imp_rate, imp_cost, exp_kwh, exp_cost, standing_charge,
-    carbon_g (and optionally billing_day)."""
-    _day_data = {}
-    _global_sc_done = False
-    for _r in raw_rows:
-        _bk = bucket_of(_r["block_start"])
-        if _bk not in _day_data:
-            try:
-                _bd_val = _r["billing_day"] if "billing_day" in _r.keys() else None
-            except Exception:
-                _bd_val = None
-            _day_data[_bk] = {
-                "main":        {"imp_kwh": 0.0, "imp_cost": 0.0, "exp_kwh": 0.0, "exp_cost": 0.0,
-                                "carbon_g": None, "cg_imp": None, "cg_exp": None,
-                                "ci_abs_carbon": 0.0, "ci_abs_net_kwh": 0.0,
-                                "_main_by_rate": {}, "_sub_by_rate": {}},
-                "subs":        {},
-                "standing":    0.0,
-                "billing_day": int(_bd_val or billing_day_fallback),
-            }
-        _dd = _day_data[_bk]
-        _is_sub = bool(_r["is_sub_meter"])
-        _imp = float(_r["imp_kwh"] or 0)
-        _exp = float(_r["exp_kwh"] or 0)
-        _cost_imp = float(_r["imp_cost"] or 0)
-        _cost_exp = float(_r["exp_cost"] or 0)
-        _sc = float(_r["standing_charge"] or 0)
-        _cg = float(_r["carbon_g"]) if _r["carbon_g"] is not None else None
-        if not _is_sub:
-            _m = _dd["main"]
-            _rate = round(float(_r["imp_rate"] or 0), 6)
-            if _r["imp_kwh_remainder"] is not None:
-                _m_imp = float(_r["imp_kwh_remainder"])
-            elif _r["imp_kwh_grid"] is not None:
-                _m_imp = float(_r["imp_kwh_grid"])
-            else:
-                _m_imp = _imp
-            if _rate not in _dd["main"]["_main_by_rate"]:
-                _dd["main"]["_main_by_rate"][_rate] = {"kwh": 0.0, "cost": 0.0}
-            _dd["main"]["_main_by_rate"][_rate]["kwh"]  += _m_imp
-            _dd["main"]["_main_by_rate"][_rate]["cost"] += _cost_imp
-            _m["imp_kwh"] += _m_imp
-            _m["exp_kwh"]  += _exp
-            _m["exp_cost"] += _cost_exp
-            if _sc > 0:
-                if standing_scope == "global":
-                    if not _global_sc_done:
-                        _dd["standing"] = _sc
-                        _global_sc_done = True
-                elif not _dd["standing"]:
-                    _dd["standing"] = _sc
-            if _cg is not None:
-                _m["carbon_g"] = (_m["carbon_g"] or 0.0) + _cg
-                _b_net = _imp - _exp
-                if _b_net != 0:
-                    _b_int = abs(_cg / _b_net)
-                    _m["cg_imp"] = (_m["cg_imp"] or 0.0) + _imp * _b_int
-                    _m["cg_exp"] = (_m["cg_exp"] or 0.0) + _exp * _b_int
-                    _m["ci_abs_carbon"]  += abs(_cg)
-                    _m["ci_abs_net_kwh"] += abs(_b_net)
-                elif _exp == 0:
-                    _m["cg_imp"] = (_m["cg_imp"] or 0.0) + abs(_cg)
-                    _m["ci_abs_carbon"]  += abs(_cg)
-                    _m["ci_abs_net_kwh"] += _imp
-                else:
-                    _m["cg_exp"] = (_m["cg_exp"] or 0.0) + abs(_cg)
-                    _m["ci_abs_carbon"]  += abs(_cg)
-                    _m["ci_abs_net_kwh"] += _exp
-        else:
-            _mid = _r["meter_id"]
-            if _mid not in _dd["subs"]:
-                _dd["subs"][_mid] = {"imp_kwh": 0.0, "imp_cost": 0.0, "exp_kwh": 0.0, "exp_cost": 0.0, "carbon_g": None}
-            _s = _dd["subs"][_mid]
-            # Grid portion only; a real 0 (fully solar/battery-charged block) must
-            # stay 0, not fall back to total consumption (see _aggregate_usage).
-            _grid = _r["imp_kwh_grid"]
-            _sub_imp = float(_grid) if _grid is not None else _imp
-            _s["imp_kwh"]  += _sub_imp
-            _s["imp_cost"] += _cost_imp
-            _s["exp_kwh"]  += _exp
-            _s["exp_cost"] += _cost_exp
-            if _cg is not None:
-                _s["carbon_g"] = (_s["carbon_g"] or 0.0) + _cg
-            _rate = round(float(_r["imp_rate"] or 0), 6)
-            if _rate not in _dd["main"]["_sub_by_rate"]:
-                _dd["main"]["_sub_by_rate"][_rate] = {"kwh": 0.0, "cost": 0.0}
-            _dd["main"]["_sub_by_rate"][_rate]["kwh"]  += _sub_imp
-            _dd["main"]["_sub_by_rate"][_rate]["cost"] += _cost_imp
-
-    for _ld, _dd in _day_data.items():
-        _m = _dd["main"]
-        # Derive the bucket's Direct/House cost the SAME way compute_period_net does — subtract
-        # the sub-meter TOTAL from the main TOTAL once per bucket, clamping the remainder at zero
-        # at the DAY level, NOT per rate band. A per-rate clamp floored each band's remainder
-        # independently, so on a multi-band SMB day a battery-heavy off-peak band could clamp to 0
-        # and drop a negative the other bands would have absorbed — leaving Usage Stats a few pence
-        # above Billing. Per-day clamp matches compute_period_net exactly; single-rate days are
-        # unchanged (one band → per-rate == per-day), so flat/Economy-7 stay byte-identical. A
-        # genuinely negative main total (Agile plunge-price CREDIT) still survives.
-        _tot_main = sum(_mv["cost"] for _mv in (_m.get("_main_by_rate") or {}).values())
-        _tot_sub  = sum(_sv["cost"] for _sv in (_m.get("_sub_by_rate") or {}).values())
-        _d = _tot_main - _tot_sub
-        # `imp_cost` is the DISPLAYED Direct/House line and stays clamped -- a
-        # negative remainder is nonsense to render as a bar.
-        _m["imp_cost"] = _d if _tot_main < 0 else max(0.0, _d)
-        # `imp_cost_metered` is the MAIN METER's cost, unclamped, and is what the
-        # row totals must use. Keeping only the clamped value meant the row total
-        # (`Direct + SUM(subs)`) became SUM(subs) on any day the sub-meters
-        # out-read the main -- which is every sunny day on a site with a battery,
-        # because the battery charges off solar and registers kWh the grid never
-        # supplied. That inflated one 4.5.14 report by £22.42 over 29 days.
-        _m["imp_cost_metered"] = _tot_main
-    return _day_data
-
-
-def _bucket_to_row_values(_dd):
-    """The value fields of one aggregated bucket (from _aggregate_block_rows), in the
-    shape barAggRows consumes. Pure extraction of the /blocks-summary row build, so
-    it's byte-identical; each endpoint merges these with its own identity fields
-    (year/month/day for the day view, slot/label for HH)."""
-    _m = _dd["main"]
-    _avg_intensity = (round(_m["ci_abs_carbon"] / _m["ci_abs_net_kwh"], 1)
-                      if _m["ci_abs_net_kwh"] > 0 else None)
-    _sub_carbon_for_remainder = sum(
-        float(st["carbon_g"]) for st in _dd["subs"].values()
-        if st["carbon_g"] is not None and st["carbon_g"] != 0.0)
-    _cg_imp = _m["cg_imp"]
-    _main_carbon_remainder = (round(_cg_imp - _sub_carbon_for_remainder, 4)
-                              if _cg_imp is not None else None)
-    meters_out = {"electricity_main": {
-        "imp_kwh":      round(_m["imp_kwh"],  4),
-        "imp_cost":     round(_m["imp_cost"], 4),
-        "exp_kwh":      round(_m["exp_kwh"],  4),
-        "exp_cost":     round(_m["exp_cost"], 4),
-        "carbon_g":     _main_carbon_remainder,
-        "carbon_g_imp":  round(_cg_imp, 4) if _cg_imp is not None else None,
-        "carbon_g_exp":  round(_m["cg_exp"], 4) if _m["cg_exp"] is not None else None,
-    }}
-    for _mid, _st in _dd["subs"].items():
-        meters_out[_mid] = {
-            "imp_kwh":  round(_st["imp_kwh"],  3),
-            "imp_cost": round(_st["imp_cost"], 4),
-            "exp_kwh":  round(_st["exp_kwh"],  3),
-            "exp_cost": round(_st["exp_cost"], 4),
-            "carbon_g": round(_st["carbon_g"], 4) if _st["carbon_g"] is not None and _st["carbon_g"] != 0.0 else None,
-        }
-    _main_imp_kwh  = round(_m["imp_kwh"],  4)
-    _main_imp_cost = round(_m["imp_cost"], 4)
-    _main_exp_kwh  = round(_m["exp_kwh"],  4)
-    _main_exp_cost = round(_m["exp_cost"], 4)
-    meters_out["electricity_main"]["imp_kwh"]  = _main_imp_kwh
-    meters_out["electricity_main"]["imp_cost"] = _main_imp_cost
-    meters_out["electricity_main"]["exp_kwh"]  = _main_exp_kwh
-    meters_out["electricity_main"]["exp_cost"] = _main_exp_cost
-    # Row totals price from the METERED main cost, not from the clamped Direct
-    # line plus the sub-meters. `meters_out[...]["imp_cost"]` keeps the clamped
-    # value because that is what the chart draws; only the totals differ, and only
-    # on days where the clamp would have fired.
-    _metered_imp_cost = round(_m.get("imp_cost_metered", _main_imp_cost + sum(
-        m["imp_cost"] for mid, m in meters_out.items() if mid != "electricity_main")), 4)
-    return {
-        "standing":  round(_dd["standing"], 4),
-        "meters":    meters_out,
-        "imp_kwh":  round(_main_imp_kwh  + sum(m["imp_kwh"]  for mid, m in meters_out.items() if mid != "electricity_main"), 4),
-        "exp_kwh":  round(_main_exp_kwh,  4),
-        "imp_cost": _metered_imp_cost,
-        "exp_cost": round(_main_exp_cost, 4),
-        "net_cost": round(
-            _metered_imp_cost
-            + round(_dd["standing"], 4)
-            - round(_main_exp_cost, 4),
-            2),
-        "carbon_g_net":   round(_m["carbon_g"], 4) if _m["carbon_g"] is not None else None,
-        "carbon_g_total": round(_m["carbon_g"], 4) if _m["carbon_g"] is not None else None,
-        "avg_intensity":  _avg_intensity,
-    }
+def _config_token(store) -> str:
+    """What a page shows beyond the blocks that a write can change: the billing periods
+    (a billing-day change or an added/removed meter re-cuts them) and the bill-rounding
+    option (bill method vs inc-VAT). Part of `_blocks_data_version`, and `/api/energy`'s
+    `fingerprint.config` — the per-day fingerprint cannot see either."""
+    try:
+        _cp = store._conn.execute(
+            "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS mx, "
+            "COALESCE(GROUP_CONCAT(billing_day || '@' || effective_from, ','), '') AS bd "
+            "FROM config_periods").fetchone()
+        _mc = store._conn.execute("SELECT COUNT(*) AS n FROM meters").fetchone()
+        import zlib as _zlib
+        _cfgf = "%s/%s/%d/%d" % (_cp["n"], _cp["mx"], _zlib.crc32(_cp["bd"].encode()), _mc["n"])
+    except Exception:
+        _cfgf = "0"
+    try:
+        _br = "1" if (store.get_settings() or {}).get("bill_rounding_summary") else "0"
+    except Exception:
+        _br = "0"
+    return _cfgf + "|" + _br
 
 
 def _blocks_data_version(store) -> str:
@@ -2596,24 +2430,11 @@ def _blocks_data_version(store) -> str:
     # This was the pre-rendered files' mtimes until C deleted them (30 Sep 2026): every
     # such change scheduled a regen that rewrote the file, and its mtime moved the
     # token. Those changes are now asked about directly.
-    try:
-        _cp = store._conn.execute(
-            "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS mx, "
-            "COALESCE(GROUP_CONCAT(billing_day || '@' || effective_from, ','), '') AS bd "
-            "FROM config_periods").fetchone()
-        _mc = store._conn.execute("SELECT COUNT(*) AS n FROM meters").fetchone()
-        import zlib as _zlib
-        _cfgf = "%s/%s/%d/%d" % (_cp["n"], _cp["mx"], _zlib.crc32(_cp["bd"].encode()), _mc["n"])
-    except Exception:
-        _cfgf = "0"
+    _cfgf, _br = _config_token(store).split("|")
     try:
         _epoch = store.get_data_epoch()
     except Exception:
         _epoch = 0
-    try:
-        _br = "1" if (store.get_settings() or {}).get("bill_rounding_summary") else "0"
-    except Exception:
-        _br = "0"
     # BL-32: a cost-neutral RE-PRICE (the first-upgrade migration, or a settlement rate
     # correction) changes segment/displayed RATES but leaves imp_kwh/imp_cost byte-identical
     # (the reconciliation invariant), so the cost fingerprint above does NOT move — and the
@@ -2653,238 +2474,46 @@ def api_charts_data_version():
 
 @app.route("/api/charts/blocks-summary")
 def api_blocks_summary():
-    """Return billing-accurate per-period data for the Usage Stats bar chart.
+    """The Usage Stats / Spiral rows for the whole history, one per local day —
+    `usage_view.day_stats`, which `/api/energy?resolution=day&kind=all&include=stats`
+    serves too. Kept until the Charts page reads that (C step 1, part 4).
 
-    Strategy:
-    - Main meter grid remainder: from calculate_billing_summary_for_period
-      (billing-accurate, handles sub-meter subtraction correctly)
-    - Sub-meters: aggregated directly from blocks by meter_id (avoids fragile
-      display-key reverse-mapping)
-    - Standing charge: from billing summary (once per day, correct)
-    - Export: from blocks directly by meter_id
-    """
+    (Its docstring said the main remainder and standing charge came from
+    `calculate_billing_summary_for_period`; it never called it — the rows have always
+    been `_aggregate_block_rows` over the blocks.)"""
     try:
-        from energy_engine_io import load_json as _lj
-        from zoneinfo import ZoneInfo
-        from datetime import datetime
-        import energy_charts as _ec
-        from collections import defaultdict
-
+        import usage_view
         cfg   = load_config()
         store = store_access.store()
-
-        main_meta = {}
-        for md in cfg.get("meters", {}).values():
-            if not (md.get("meta") or {}).get("sub_meter"):
-                main_meta = md.get("meta") or {}
-                break
-
-        tz_name  = main_meta.get("timezone", "UTC")
-        currency = main_meta.get("currency_symbol", "£")
-        _tz      = ZoneInfo(tz_name)
-
-        billing_day = int(main_meta.get("billing_day") or 1)
-
-        # Get all distinct local dates using UTC bounds — no local_date column needed
-        from block_store import local_date_range_to_utc_bounds as _utc_bounds
-        _all_utc_s = store._conn.execute("SELECT MIN(block_start) FROM blocks").fetchone()[0]
-        _all_utc_e = store._conn.execute("SELECT MAX(block_start) FROM blocks").fetchone()[0]
-        if not _all_utc_s:
-            meter_colors = _ec.build_meter_colors_from_config(cfg)
-            return jsonify({"currency": currency, "rows": [], "meters": [], "export_color": "#ff7f0e"})
-        # Extend end by one block period to make it exclusive
-        from datetime import timedelta as _td0
-        _all_utc_e_excl = (datetime.fromisoformat(_all_utc_e) + _td0(minutes=int(main_meta.get("block_minutes") or 30))).isoformat()
-        all_date_strs = store.get_dates_in_utc_range(_all_utc_s, _all_utc_e_excl, tz_name)
-        if not all_date_strs:
-            meter_colors = _ec.build_meter_colors_from_config(cfg)
-            return jsonify({"currency": currency, "rows": [], "meters": [], "export_color": "#ff7f0e"})
-
-        # Build meter colors from config — not from a block sample, which would
-        # miss sub-meters that were added after the first block date.
-        meter_colors = _ec.build_meter_colors_from_config(cfg)
-
-        meter_labels = {}
-        for meter_id, meter_cfg in cfg.get("meters", {}).items():
-            meta  = (meter_cfg.get("meta") or {})
-            is_sub = bool(meta.get("sub_meter"))
-            if is_sub:
-                label = meta.get("device") or meta.get("site") or meter_id
-            else:
-                label = "Direct"
-            meter_labels[meter_id] = label
-
-        all_dates = [datetime.strptime(d, "%Y-%m-%d").date() for d in all_date_strs]
-
-        from block_store import local_date_to_utc_bounds as _ldtub
-        from zoneinfo import ZoneInfo as _ZI
-
-        # ── SQL aggregation per local day — no block dict reconstruction ──────
-        # Fetch per-block data in a single SQL query, group into local days in Python.
-        # This avoids loading full block dicts and is ~10x faster for large datasets.
-        _all_utc_s2, _ = _ldtub(all_date_strs[0],  tz_name)
-        _, _all_utc_e2 = _ldtub(all_date_strs[-1], tz_name)
-        active_pid_sq = ("SELECT id FROM config_periods "
-                         "WHERE effective_to IS NULL ORDER BY effective_from DESC LIMIT 1")
-
-        _raw_rows = store._conn.execute(f"""
-            SELECT b.block_start, b.meter_id, m.is_sub_meter, m.parent_meter_id,
-                   b.imp_kwh, b.imp_kwh_grid, b.imp_kwh_remainder,
-                   b.imp_rate, b.imp_cost, b.imp_cost_remainder, b.exp_kwh, b.exp_cost,
-                   b.imp_kwh_ev, b.imp_cost_ev, b.rate_source, b.source,
-                   b.standing_charge, b.carbon_g,
-                   b.interpolated, cp.billing_day
-            FROM blocks b
-            JOIN config_periods cp ON b.config_period_id = cp.id
-            LEFT JOIN meters m ON m.meter_id = b.meter_id
-              AND m.config_period_id = ({active_pid_sq})
-            WHERE b.block_start >= ? AND b.block_start < ?
-            ORDER BY b.block_start
-        """, (_all_utc_s2, _all_utc_e2)).fetchall()
-
-        # Group rows by local date and aggregate (shared billing-accurate helper —
-        # bucket = local day, standing = first non-zero within each day).
-        _tz_obj = _ZI(tz_name)
-        _utc_zi = _ZI("UTC")
-
-        def _bucket_local_day(_bs):
-            return (datetime.fromisoformat(_bs)
-                    .replace(tzinfo=_utc_zi)
-                    .astimezone(_tz_obj)
-                    .strftime("%Y-%m-%d"))
-
-        _day_data = _aggregate_block_rows(
-            _raw_rows, _bucket_local_day,
-            standing_scope="bucket", billing_day_fallback=billing_day)
-
-        # Pre-compute billing periods
-        _bp_start_by_date = {}
-        try:
-            _bp_periods = _ec.get_billing_periods_from_config_periods(
-                store.get_config_periods(), tz=_ZI(tz_name)
-            )
-            from datetime import timedelta as _td2
-            for (_bps, _bpe) in _bp_periods:
-                _d = _bps.date()
-                while _d < _bpe.date():
-                    _bp_start_by_date[_d.isoformat()] = (
-                        _bps.date().isoformat(),
-                        _bpe.date().isoformat(),
-                    )
-                    _d += _td2(days=1)
-        except Exception as _bpe_err:
-            logger.warning("api_blocks_summary: billing period pre-compute failed: %s", _bpe_err)
-
-        # Build rows from aggregated day data
-        rows = []
-        for d in all_dates:
-            _ds = d.isoformat()
-            if _ds not in _day_data:
-                continue
-            _dd = _day_data[_ds]
-
-            _bp_entry = _bp_start_by_date.get(_ds)
-            # Keep all values at 4dp so the JS can sum across days without
-            # accumulating per-day rounding error. Display rounding (2dp)
-            # happens in the JS via .toFixed(2) at render time.
-            _row = {
-                "year":                  d.year,
-                "month":                 d.month,
-                "day":                   d.day,
-                "billing_day":           _dd["billing_day"],
-                "billing_period_start":  _bp_entry[0] if _bp_entry else _ds,
-                "billing_period_end":    _bp_entry[1] if _bp_entry else None,
-            }
-            _row.update(_bucket_to_row_values(_dd))
-            rows.append(_row)
-
-        all_meter_ids = [m for m in meter_colors if m != "electricity_main_export"]
-        meters_list = [{
-            "id":    mid,
-            "label": meter_labels.get(mid, mid),
-            "color": meter_colors[mid],
-            "is_sub": mid != "electricity_main",
-        } for mid in all_meter_ids]
-
-        export_color = meter_colors.get("electricity_main_export", "#ff7f0e")
-
-        _postcode = ""
-        for _md in cfg.get("meters", {}).values():
-            _postcode = (_md.get("meta") or {}).get("postcode_prefix", "").strip()
-            if _postcode:
-                break
-
-        # ── Synthetic dispatch-derived EV segment (display-only; BL-22) ──────────
-        # For a no-sub-meter, no-EV account, split the "Direct" import segment into a
-        # derived EV slice + reduced house slice, using completed dispatches (same
-        # logic as the Usage-Insights card). Purely a DISPLAY split: every per-row
-        # total (imp_kwh/imp_cost/net_cost) is left untouched, so the chart totals,
-        # the data-table Totals, and the bill stay byte-identical. Guaranteed no-op
-        # when an EV meter — or any sub-meter — exists.
-        if (_configured_ev_meter_id(cfg) is None
-                and len(meters_list) == 1
-                and meters_list[0]["id"] == "electricity_main"):
-            try:
-                _drows = store._conn.execute(
-                    "SELECT slot_start, kind, energy_kwh FROM dispatch_history "
-                    "WHERE kind='completed' AND slot_start >= ? AND slot_start < ?",
-                    (_all_utc_s2, _all_utc_e2)).fetchall()
-                _ev_slot = _dispatch_derived_ev_kwh(
-                    [{"slot_start": r["slot_start"], "kind": r["kind"],
-                      "energy_kwh": r["energy_kwh"]} for r in _drows])
-                _main_slot = {}
-                _stored_slot = {}
-                for _rr in _raw_rows:
-                    if _rr["is_sub_meter"]:
-                        continue
-                    _main_slot[_rr["block_start"]] = (
-                        float(_rr["imp_kwh"] or 0), float(_rr["imp_cost"] or 0))
-                    if _rr["imp_kwh_ev"] is not None:      # BL-9: stored, bill-authoritative
-                        _stored_slot[_rr["block_start"]] = (
-                            float(_rr["imp_kwh_ev"]), float(_rr["imp_cost_ev"] or 0))
-                # Slots the BILL has actually described — not merely cost-settled ones.
-                _bill_slot = store.slots_with_bill_split(_all_utc_s2, _all_utc_e2)
-                _ev_day = _dispatch_ev_split_by_bucket(
-                    _main_slot, _ev_slot, _bucket_local_day, stored_by_slot=_stored_slot,
-                    bill_split_slots=_bill_slot)
-            except Exception:
-                _ev_day = {}
-            _apply_ev_split_to_summary_rows(rows, meters_list, _ev_day)
-        elif _configured_ev_meter_id(cfg) is not None:
-            # ── Hybrid EV (H2): physical sub-meter pre-seam, synthetic dispatch post-seam,
-            # one continuous 'EV' series; per-bucket totals held invariant. ──────────────
-            _ev_mid = _configured_ev_meter_id(cfg)
-            try:
-                _main_ev = {}; _phys_ev = {}
-                for _rr in _raw_rows:
-                    if _rr["meter_id"] == _ev_mid:
-                        _gk = _rr["imp_kwh_grid"]
-                        _phys_ev[_rr["block_start"]] = (
-                            float(_gk if _gk is not None else (_rr["imp_kwh"] or 0.0)),
-                            float(_rr["imp_cost"] or 0.0))
-                    elif not _rr["is_sub_meter"]:
-                        _main_ev[_rr["block_start"]] = (_rr["imp_kwh_ev"], _rr["imp_cost_ev"])
-                _hyb_bucket = {}
-                for _bs, _v in _hybrid_ev_by_block(_main_ev, _phys_ev).items():
-                    _acc = _hyb_bucket.setdefault(_bucket_local_day(_bs), {"kwh": 0.0, "cost": 0.0})
-                    _acc["kwh"] += _v["kwh"]; _acc["cost"] += _v["cost"]
-            except Exception:
-                _hyb_bucket = {}
-            _apply_hybrid_ev_to_summary_rows(rows, meters_list, _ev_mid, _hyb_bucket)
-
-        return jsonify({
-            "currency":      currency,
-            "billing_day":   billing_day,
-            "block_minutes": int(main_meta.get("block_minutes") or 30),
-            "rows":          rows,
-            "meters":        meters_list,
-            "export_color":  export_color,
-            "has_postcode":  bool(_postcode),
-            "data_version":  _blocks_data_version(store),
-        })
+        meta  = usage_view.page_meta(cfg)
+        tz_name = usage_view._main_meta(cfg).get("timezone", "UTC")
+        span = _all_history_utc(store, tz_name, meta["block_minutes"])
+        if span is None:
+            return jsonify({"currency": meta["currency"], "rows": [], "meters": [],
+                            "export_color": "#ff7f0e"})
+        out = usage_view.day_stats(store, cfg, tz_name, *span)
+        out["data_version"] = _blocks_data_version(store)
+        return jsonify(out)
     except Exception as e:
         logger.error("api_blocks_summary: %s", e)
         return jsonify({"error": str(e)}), 500
+
+
+def _all_history_utc(store, tz_name, block_minutes):
+    """[utc_start, utc_end) covering every LOCAL day that holds a block: local midnight
+    of the first block's day to local midnight after the last's. None when there are
+    no blocks (or no local day can be made of them)."""
+    from datetime import datetime as _dt, timedelta as _td
+    from block_store import local_date_to_utc_bounds as _ldtub
+    first = store._conn.execute("SELECT MIN(block_start) FROM blocks").fetchone()[0]
+    last = store._conn.execute("SELECT MAX(block_start) FROM blocks").fetchone()[0]
+    if not first:
+        return None
+    end_excl = (_dt.fromisoformat(last) + _td(minutes=int(block_minutes or 30))).isoformat()
+    days = store.get_dates_in_utc_range(first, end_excl, tz_name)
+    if not days:
+        return None
+    return _ldtub(days[0], tz_name)[0], _ldtub(days[-1], tz_name)[1]
 
 
 @app.route("/api/charts/blocks-day")
@@ -6135,7 +5764,33 @@ def _resolve_period(kind, store, cfg, tz, args):
             "is_current": ps <= now_local < pe,
         }
 
-    return None, None, {"error": "kind must be billing|month|quarter|year"}
+    if kind == "day":
+        # One LOCAL day, `date=YYYY-MM-DD` (default today): local midnight to local
+        # midnight, so a clock-change day spans 23 or 25 hours.
+        from block_store import local_date_to_utc_bounds as _ldtub
+        ds = (args.get("date") or now_local.date().isoformat()).strip()
+        try:
+            d = _dt.strptime(ds, "%Y-%m-%d").date()
+        except ValueError:
+            return None, None, {"error": "date must be YYYY-MM-DD"}
+        us, ue = _ldtub(d.isoformat(), tz.key)
+        return us, ue, {"kind": "day", "period_start": d.isoformat(),
+                        "period_end": d.isoformat(), "period_label": d.isoformat(),
+                        "is_current": d == now_local.date()}
+
+    if kind == "all":
+        # Every local day that holds a block — the Spiral's and Usage Stats' history.
+        import usage_view
+        span = _all_history_utc(store, tz.key, usage_view.page_meta(cfg)["block_minutes"])
+        if span is None:
+            return None, None, {"error": "No blocks found"}
+        us, ue = span
+        _loc = lambda u: (_dt.fromisoformat(u).replace(tzinfo=_tzu.utc).astimezone(tz)).date()
+        return us, ue, {"kind": "all", "period_start": _loc(us).isoformat(),
+                        "period_end": (_loc(ue) - _td(days=1)).isoformat(),
+                        "period_label": "All", "is_current": True}
+
+    return None, None, {"error": "kind must be billing|month|quarter|year|day|all"}
 
 
 @app.route("/api/energy")
@@ -6182,11 +5837,16 @@ def api_energy():
         # aggregate is an extra scan the caller did not ask for.
         _default_include = "usage" if resolution == "period" else ""
         include = {x.strip() for x in (request.args.get("include") or _default_include).split(",") if x.strip()}
-        unknown = include - {"usage", "carbon", "billing"}
+        unknown = include - {"usage", "carbon", "billing", "stats"}
         if unknown:
             return jsonify({"error": "include: unknown facet(s) %s" % sorted(unknown)}), 400
         if "billing" in include and resolution == "block":
             return jsonify({"error": "include=billing is served at resolution=period|day"}), 400
+        if "stats" in include and resolution == "period":
+            return jsonify({"error": "include=stats is served at resolution=day|block"}), 400
+        if resolution == "block" and kind == "all":
+            # A year of blocks is ~15 MB raw (C §7.1): blocks are fetched for a viewport.
+            return jsonify({"error": "resolution=block takes a viewport: kind=day|month"}), 400
 
         store = store_access.store()
         cfg = load_config()
@@ -6207,7 +5867,10 @@ def api_energy():
                # global token: `_blocks_data_version` is global, so a new
                # half-hour tells a client looking at 2023 to re-fetch four years.
                "fingerprint": {"epoch": store.get_data_epoch(),
-                               "days": store.day_fingerprints(utc_start, utc_end)}}
+                               "days": store.day_fingerprints(utc_start, utc_end),
+                               # Billing periods, meters, bill rounding: what the
+                               # per-day fingerprint cannot see (C step 1).
+                               "config": _config_token(store)}}
         if resolution == "day":
             out["days"] = store.get_day_rollups(utc_start, utc_end, tz_name)
         elif resolution == "block":
@@ -6232,6 +5895,13 @@ def api_energy():
             # its peak-demand window. Their signatures differ by one argument and
             # that difference is real, not an oversight to paper over.
             out["carbon"] = _aggregate_insights(store, cfg, utc_start, utc_end)
+        if "stats" in include:
+            # The Usage Stats / Spiral rows (usage_view): one per local day at `day`,
+            # one per half-hour slot at `block`, with the meters to draw them with.
+            import usage_view
+            out["stats"] = (usage_view.day_stats(store, cfg, tz_name, utc_start, utc_end)
+                            if resolution == "day"
+                            else usage_view.slot_stats(store, cfg, tz_name, utc_start, utc_end))
         if "billing" in include:
             # The Billing tab's data (billing_view): at `period` the bill summary the
             # card is formatted from; at `day` each day's chart series and side panel.
@@ -6864,244 +6534,6 @@ def api_insights_calendar_year():
 # ─────────────────────────────────────────────────────────────────────────────
 # Usage Insights — aggregation + endpoints
 # ─────────────────────────────────────────────────────────────────────────────
-
-def _configured_ev_meter_id(cfg):
-    """The configured EV sub-meter id, or None. The dispatch-derived EV device only
-    applies when there's no real EV meter measuring it — so this gates the whole
-    feature: any account WITH an EV sub-meter is unaffected (byte-identical)."""
-    for mid, md in (cfg.get("meters") or {}).items():
-        meta = md.get("meta") or {}
-        if not meta.get("sub_meter"):
-            continue
-        if (meta.get("meter_type") in ("ev", "ev_charger")   # BL-40: config UI writes 'ev'
-                or any(kw in mid.lower() for kw in ("ev", "charger"))):
-            return mid
-    return None
-
-
-def _dispatch_derived_ev_kwh(dispatch_rows) -> dict:
-    """EV kWh per half-hour slot reconstructed from COMPLETED dispatch deltas —
-    Octopus's own per-slot EV energy. Excludes planned/started phantoms (a scheduled
-    charge the car never took) and slots with no delivery. Validated ~99% against a
-    real CT-clamp EV meter over 19 days (residual is clamp scatter, not missed
-    energy). Returns {slot_start: kwh}. Pure — takes dispatch_history-shaped rows."""
-    out: dict = {}
-    for r in dispatch_rows:
-        if r.get("kind") != "completed":
-            continue
-        e = r.get("energy_kwh")
-        if e is None:
-            continue
-        v = abs(float(e))
-        if v > 1e-9:
-            out[r["slot_start"]] = out.get(r["slot_start"], 0.0) + v
-    return out
-
-
-def _dispatch_ev_split_by_bucket(main_by_slot, ev_by_slot, bucket_fn,
-                                 stored_by_slot=None, bill_split_slots=None) -> dict:
-    """Grid-clip the per-slot dispatch EV to that slot's main import and apportion its
-    cost, then bucket to {bucket: {"kwh","cost"}}. Pure — `main_by_slot` is
-    {slot: (imp_kwh, imp_cost)}, `ev_by_slot` is {slot: kwh}.
-
-    BL-9: when `stored_by_slot` supplies a slot's STORED split ({slot: (ev_kwh,
-    ev_cost)} — the bill-authoritative 4-rate figures), that is used in preference to
-    the pro-rata carve, so this matches the billing summary on a capped account. Slots
-    without a stored split (un-backfilled / older history) fall back to the pro-rata
-    carve (EV at the block's own rate). On an uncapped account the two are identical, so
-    the bucketed result is byte-identical there. The clip keeps house + EV == the slot's
-    grid import, so a caller can split a chart segment without moving any total."""
-    stored_by_slot = stored_by_slot or {}
-    out: dict = {}
-    # WHETHER THE BILL HAS SPOKEN picks the authority for a slot; the dispatch map is not
-    # the index, and neither is settlement.
-    #
-    #   BILL HAS STATED THE SPLIT (a device breakdown is held for this half-hour) -> the
-    #     BILL decides. Octopus has priced it into four buckets, so the stored split IS the
-    #     answer and its ABSENCE is also an answer: the bill billed no EV here, and a
-    #     dispatch row must not manufacture one. Such slots need no dispatch record at all,
-    #     which is what makes imported history work — Octopus serves a short rolling
-    #     dispatch window and keeps no history, so no historic slot has one.
-    #   BILL SILENT -> DISPATCH decides: no completed dispatch, no EV. The stored column,
-    #     where the live split already wrote one, is that same dispatch answer priced
-    #     cap-aware across the bands, so it is preferred over re-deriving a pro-rata carve
-    #     at the block's blended rate (BL-9 — unchanged behaviour).
-    #
-    # Keyed on the breakdown, NOT on `rate_source`: that records a settled COST, which is
-    # equally true of a slot whose four buckets were never fetched. Reading the missing
-    # split as a denial hid EV on half-hours with a completed dispatch proving otherwise.
-    #
-    # bill_split_slots=None means the caller cannot say; a stored split is then taken at
-    # face value, which is the pre-existing behaviour. Sorted walk keeps sums order-stable.
-    for _slot in sorted(set(ev_by_slot) | set(stored_by_slot)):
-        _e = ev_by_slot.get(_slot, 0.0)
-        _mk, _mc = main_by_slot.get(_slot, (0.0, 0.0))
-        _sv = stored_by_slot.get(_slot)
-        _bill_spoke = ((_sv is not None) if bill_split_slots is None
-                       else (_slot in bill_split_slots))
-        if _bill_spoke:
-            if _sv is None or _sv[0] <= 1e-9:
-                continue                                  # the bill billed no EV this slot
-            _ek = min(_sv[0], _mk) if _mk > 0 else 0.0
-            _ec = _sv[1] * (_ek / _sv[0]) if _sv[0] > 0 else 0.0
-        else:
-            if _slot not in ev_by_slot:
-                continue                                  # no dispatch -> no predicted EV
-            if _sv is not None and _sv[0] > 1e-9:
-                _ek = min(_sv[0], _mk) if _mk > 0 else 0.0
-                _ec = _sv[1] * (_ek / _sv[0]) if _sv[0] > 0 else 0.0
-            else:
-                _ek = min(_e, _mk) if _mk > 0 else 0.0    # can't exceed the grid that slot
-                _ec = _mc * (_ek / _mk) if _mk > 0 else 0.0
-        if _ek <= 1e-9:
-            continue
-        _b = bucket_fn(_slot)
-        _acc = out.setdefault(_b, {"kwh": 0.0, "cost": 0.0})
-        _acc["kwh"]  += _ek
-        _acc["cost"] += _ec
-    return out
-
-
-def _hybrid_ev_by_block(main_ev_by_block, phys_ev_by_block=None):
-    """Single source of truth for the EV of a block, HYBRID across the dispatch seam —
-    shared by every surface (charts/spiral, Usage Stats, usage + carbon insights) so they
-    can never disagree. Per block:
-
-      * SYNTHETIC (dispatch) is authority WHENEVER it exists — the seam signal is
-        `imp_kwh_ev IS NOT NULL` (the BL-9 bill-authoritative column, written only on
-        dispatched IOG slots, so it is exactly the seam, per block, no date hard-coded).
-        Yields (imp_kwh_ev, imp_cost_ev, 'synthetic'); the physical EV meter is SUPERSEDED
-        for that block — its metered draw is the same car, so it is never added.
-      * else RECORDED — the physical EV sub-meter (HA-recorder / live Zappi) is authority:
-        its metered grid kWh + cost at the block's own rate. Yields (kwh, cost, 'recorded').
-      * neither → the block has no EV; omitted.
-
-    Pure/testable. `main_ev_by_block` is {block_start: (imp_kwh_ev|None, imp_cost_ev|None)};
-    `phys_ev_by_block` is {block_start: (kwh, cost)} or None (no physical EV meter). A
-    non-IOG / no-dispatch account has imp_kwh_ev NULL throughout, so with no physical EV
-    meter this returns {} and every caller stays byte-identical (the standing guard)."""
-    phys = phys_ev_by_block or {}
-    out: dict = {}
-    for _bs in (set(main_ev_by_block) | set(phys)):
-        _syn = main_ev_by_block.get(_bs)
-        if _syn is not None and _syn[0] is not None:      # imp_kwh_ev IS NOT NULL → synthetic wins
-            _k = float(_syn[0]); _c = float(_syn[1] or 0.0)
-            if _k > 1e-9 or abs(_c) > 1e-12:
-                out[_bs] = {"kwh": _k, "cost": _c, "source": "synthetic"}
-            continue                                       # synthetic is authority even at 0 — no fallback
-        _p = phys.get(_bs)                                 # else the recorded physical device
-        if _p is not None and float(_p[0] or 0.0) > 1e-9:
-            out[_bs] = {"kwh": float(_p[0]), "cost": float(_p[1] or 0.0), "source": "recorded"}
-    return out
-
-
-def _apply_ev_split_to_summary_rows(rows, meters_list, ev_by_bucket,
-                                    color="#8b5cf6", label="EV (from dispatch)",
-                                    key_fn=None) -> bool:
-    """Split each row's electricity_main import segment into a derived EV slice + a
-    reduced house slice, per {bucket: {"kwh","cost"}} from _dispatch_ev_split_by_bucket.
-    DISPLAY-ONLY: the row's top-level imp_kwh/imp_cost/net_cost are never touched, so the
-    chart totals, the data-table Totals row, and the bill stay byte-identical — only the
-    'Direct' stack segment is subdivided. Appends an 'ev_dispatch' meter to meters_list
-    when any row splits. Mutates in place; returns True if applied. Pure/testable.
-
-    `key_fn(row)` maps a row to its bucket key — defaults to the local date (the daily /
-    monthly / yearly views); the HH view passes `lambda r: r["slot"]` so the same carve
-    lands on the half-hour bars."""
-    def _date_key(_row):
-        return "%04d-%02d-%02d" % (_row["year"], _row["month"], _row["day"])
-    _key = key_fn or _date_key
-    applied = False
-    for _row in rows:
-        _ev = ev_by_bucket.get(_key(_row))
-        _mm = (_row.get("meters") or {}).get("electricity_main")
-        if not _ev or not _mm:
-            continue
-        _evk, _evc = _ev["kwh"], _ev["cost"]
-        if _mm["imp_kwh"] >= 0:            # don't over-split a normal day
-            _evk = min(_evk, _mm["imp_kwh"])
-        if _mm["imp_cost"] >= 0:           # a plunge-price CREDIT keeps its sign
-            _evc = min(_evc, _mm["imp_cost"])
-        if _evk <= 1e-9:
-            continue
-        _mm["imp_kwh"]  = round(_mm["imp_kwh"]  - _evk, 4)
-        _mm["imp_cost"] = round(_mm["imp_cost"] - _evc, 4)
-        _row["meters"]["ev_dispatch"] = {
-            "imp_kwh": round(_evk, 4), "imp_cost": round(_evc, 4),
-            "exp_kwh": 0.0, "exp_cost": 0.0, "carbon_g": None,
-        }
-        applied = True
-    if applied:
-        meters_list.append({"id": "ev_dispatch", "label": label,
-                            "color": color, "is_sub": True})
-    return applied
-
-
-def _apply_hybrid_ev_to_summary_rows(rows, meters_list, ev_meter_id, hybrid_by_bucket,
-                                     key_fn=None, color="#8b5cf6", label="EV"):
-    """Fold a PHYSICAL EV sub-meter's chart series into the HYBRID EV series so every
-    surface tells one story. Per bucket the EV value becomes the resolver's hybrid figure
-    (synthetic post-seam, recorded physical pre-seam, via _hybrid_ev_by_block); the
-    DIFFERENCE against the physical value already in the row is moved to/from the 'Direct'
-    (electricity_main) segment, so the bucket TOTAL — and the bill — never move. The series
-    is relabelled to one continuous 'EV' identity (colour + label). Import kWh/cost only;
-    carbon is unified separately (its axis is grid-intensity derived, not a stored sub-meter
-    column). Mutates in place; returns True if any bucket's split changed. Pure/testable.
-
-    `hybrid_by_bucket` is {bucket: {'kwh','cost'}}. `key_fn(row)` -> bucket key; defaults to
-    the local date (daily/monthly/yearly); the HH view passes the slot key."""
-    def _date_key(_row):
-        return "%04d-%02d-%02d" % (_row["year"], _row["month"], _row["day"])
-    _key = key_fn or _date_key
-    changed = False
-    for _row in rows:
-        _meters = _row.get("meters")
-        if not _meters:
-            continue
-        _hv = hybrid_by_bucket.get(_key(_row))
-        _new_k = float(_hv["kwh"])  if _hv else 0.0
-        _new_c = float(_hv["cost"]) if _hv else 0.0
-        _mm = _meters.get(ev_meter_id)
-        _old_k = float(_mm["imp_kwh"])  if _mm else 0.0
-        _old_c = float(_mm["imp_cost"]) if _mm else 0.0
-        _dk = round(_new_k - _old_k, 6)
-        _dc = round(_new_c - _old_c, 6)
-        if _mm is not None and abs(_dk) <= 1e-9 and abs(_dc) <= 1e-9:
-            continue                                    # pre-seam / recorded: identical, no move
-        _main = _meters.get("electricity_main")
-        # H2-fix: never push the house remainder (Direct import) below zero. On a slot where
-        # the BATTERY also drew from the grid, the dispatch-derived synthetic EV can exceed the
-        # grid actually available to the car (the rest of its charge came from the battery, which
-        # dispatch can't see); moving that excess out of Direct would render a spurious NEGATIVE
-        # bar. Cap the move to what Direct holds (kWh + its proportional cost); the EV then shows
-        # the grid-available amount and the bucket total is still preserved.
-        if _main is not None and _dk > 0:
-            _avail = max(float(_main["imp_kwh"]), 0.0)
-            if _dk > _avail:
-                # B5 (H2-cost-fix): the kWh cap floors Direct to 0 — its COST must floor with
-                # it. Move ALL of Direct's held cost, not the kWh-proportional slice (which
-                # prices the excess at the car's rate and leaves a spurious ± residual — a
-                # negative Direct £ bar — when the car's rate differs from the displaced house
-                # rate). EV absorbs the whole grid slot; the bucket total is still preserved.
-                _dc = round(float(_main["imp_cost"]), 6)
-                _dk = round(_avail, 6)
-        if _main is not None:                           # hold the bucket total invariant
-            _main["imp_kwh"]  = round(float(_main["imp_kwh"])  - _dk, 4)
-            _main["imp_cost"] = round(float(_main["imp_cost"]) - _dc, 4)
-        _meters[ev_meter_id] = {
-            "imp_kwh": round(_old_k + _dk, 4), "imp_cost": round(_old_c + _dc, 4),
-            "exp_kwh": 0.0, "exp_cost": 0.0, "carbon_g": (_mm or {}).get("carbon_g"),
-        }
-        changed = True
-    for _m in meters_list:                              # one continuous 'EV' identity
-        if _m.get("id") == ev_meter_id:
-            _m["label"] = label
-            # H6c: keep the device's own legend colour (its palette index) — do NOT force the
-            # synthetic purple, so 'EV' sits at the device colour that came before and stays
-            # distinguishable from the blue house line (accessibility — see roadmap BL-29).
-            break
-    return changed
-
 
 def _aggregate_usage(store, cfg, utc_start: str, utc_end: str,
                      tz_name: str = "UTC") -> dict:
