@@ -6,7 +6,6 @@
     "billing.py:octopus_bill_total(vat_rate=0.05)",
     "block_store.py:count_blocks_for_date_range(tz_name='UTC')",
     "block_store.py:delete_blocks_for_date_range(tz_name='UTC')",
-    "block_store.py:get_billing_totals_for_utc_range(tz_name='UTC')",
     "block_store.py:zero_fill_imported_export_blanks(tz_name=None)",
     "chart_emit.py:day_rate_series(capped=True)",
     "chart_emit.py:day_rate_series(over_cap=None)",

@@ -16,6 +16,9 @@ sys.modules.setdefault("energy_engine_io", eio)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from block_store import BlockStore, local_date_range_to_utc_bounds, local_date_to_utc_bounds
+import os as _os, sys as _sys  # noqa: E402
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))  # tests/live_totals.py
+from live_totals import live_totals  # noqa: E402  (C, 1 Oct 2026)
 
 # Always import the real energy_charts — not a stub that another test suite
 # may have injected into sys.modules when running combined test discovery.
@@ -166,7 +169,7 @@ def sim_usage_stats_day(store, local_date_str, tz_name="Europe/London"):
 def sql_totals(store, first_date, last_date, tz_name="Europe/London"):
     """Ground truth: SQL aggregation via UTC range."""
     utc_s, utc_e = local_date_range_to_utc_bounds(first_date, last_date, tz_name)
-    return store.get_billing_totals_for_utc_range(utc_s, utc_e, tz_name)
+    return live_totals(store, utc_s, utc_e, tz_name)
 
 
 def sum_daily_rows(rows):
@@ -1101,7 +1104,7 @@ class TestLivePowerBillingCard(unittest.TestCase):
         self.store._conn.commit()
 
     def _get_billing_totals(self):
-        return self.store.get_billing_totals_for_utc_range(*local_date_range_to_utc_bounds("2026-04-27", "2026-04-27", "UTC"))
+        return live_totals(self.store, *local_date_range_to_utc_bounds("2026-04-27", "2026-04-27", "UTC"))
 
     def _get_sub_kwh(self):
         """Simulate what _fmt_total's sub-meter SQL returns."""
@@ -1549,7 +1552,7 @@ class TestMixedSourceBillingAgreement(unittest.TestCase):
         self._set_source("2026-01-16T00:30:00", "kraken_mini")
 
         utc_s, utc_e = local_date_range_to_utc_bounds("2026-01-15", "2026-01-16", "UTC")
-        sql    = self.store.get_billing_totals_for_utc_range(utc_s, utc_e, "Europe/London")
+        sql    = live_totals(self.store, utc_s, utc_e, "Europe/London")
         blocks = self.store.get_blocks_for_utc_range(utc_s, utc_e)
         render = self._render_totals(blocks, datetime(2026, 1, 15), datetime(2026, 1, 17))
         usage  = sum_daily_rows([sim_usage_stats_day(self.store, d)
