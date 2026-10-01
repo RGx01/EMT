@@ -94,6 +94,21 @@ def split_rows(summary, exc=False):
         return {"type": "split", "label": label, "rate": f"{rate:.4f}", "note": note,
                 "kwh": f"{kwh:.3f}", "cost": paren(cost, 3)}      # cost 3dp, as the bill
 
+    if exc:
+        # The ex-VAT table bands on the EX-VAT rate. Keyed by inc rate, the same tariff
+        # band either side of a VAT change — 5.493 inc at 5% to 30 Sep 2026, 5.2314 inc
+        # at 0% from 1 Oct — showed as two identical-looking 0.0523 rows (v4 4.5.19).
+        def _by_exc(series):
+            out = {}
+            for _r, _v in series.items():
+                _k = _v["kwh"]
+                _x = (_v.get(_ckr, _v.get(_ck, 0.0)) / _k) if _k > 1e-9 else _r
+                g = out.setdefault(round(_x, 6), {"kwh": 0.0, _ck: 0.0, _ckr: 0.0})
+                g["kwh"] += _k
+                g[_ck] += _v.get(_ck, 0.0)
+                g[_ckr] += _v.get(_ckr, _v.get(_ck, 0.0))
+            return out
+        ev_by_rate, home_by_rate = _by_exc(ev_by_rate), _by_exc(home_by_rate)
     _rates = sorted(set(ev_by_rate) | set(home_by_rate))
     _bands = []
     for r in _rates:
@@ -209,7 +224,7 @@ def card(summary, currency="£", site_name=None):
                     rows.append({"type": "line", "cls": "standing",
                                  "text": f"Standing charge (exc): {bm['standing_days']} days @ {currency}{bm['standing_rate_exc']:.4f}/day",
                                  "value": f"{bm['standing_exc']:.2f}"})
-            rows.append({"type": "line", "cls": "bill-method", "text": f"VAT @ {bm['vat_rate'] * 100:.0f}%",
+            rows.append({"type": "line", "cls": "bill-method", "text": bm.get("vat_label") or f"VAT @ {bm['vat_rate'] * 100:.0f}%",
                          "value": f"{currency}{bm['vat_amount']:.2f}"})
             rows.append({"type": "line", "cls": "channel-total", "text": "Total incl. VAT",
                          "value": f"{currency}{bm['inc_total']:.2f}"})

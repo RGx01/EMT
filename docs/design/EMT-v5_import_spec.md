@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v11 — revised 1 Oct 2026, floor raised to 4.5.18. §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v12 — revised 1 Oct 2026, floor raised to 4.5.19. §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -74,6 +74,11 @@ re-learned the backdated 0% from IOG's own closed day/night windows, so its heal
 undone on the next refresh. 4.5.18 re-arms the heal (`vat_backdate_heal_done_v2`), and by §1.1
 the floor follows it. v5 ports the learner fix (`learn_from_records` learns about today and
 later only). 4.5.17 joins the below-floor negatives; the positive fixture is a 4.5.18 database.*
+
+*Changes in v12 (1 Oct 2026, same day): **the floor rises to `4.5.19`.** Its heal (re-armed as
+`vat_backdate_heal_done_v4`) also re-prices sub-meter rows left at 5% beside a 0% main on
+1 Oct 2026. v5 ports the forward fix (the Bill Summary's per-date VAT) and carries no heal.
+4.5.18 joins the below-floor negatives; the positive fixture is a 4.5.19 database.*
 
 ---
 
@@ -191,7 +196,8 @@ inference, and it is why nothing more elaborate is needed.
 >
 > **Pinned 28 Sep 2026 at `4.5.15` (#473's heal); raised 29 Sep 2026 to `4.5.16`** (#481's heal);
 > **raised 1 Oct 2026 to `4.5.17`** (the VAT backdate heal), and the same day to **`4.5.18`** (the
-> heal re-armed after 4.5.17's learner undid it). A 4.5.14–4.5.17 database is refused.
+> heal re-armed after 4.5.17's learner undid it), and again to **`4.5.19`** (the heal re-armed
+> for sub-meter rows). A 4.5.14–4.5.18 database is refused.
 
 *Rejected: a computed `heal_level` integer.* An earlier design proposed one, with each heal
 verifying its own invariant at startup so the level could fall when unhealed history arrived. It was
@@ -984,7 +990,8 @@ on hand:
 | 4.5.15 | **refused** | below the 4.5.16 floor since v9 — has not run #481's heal |
 | **4.5.16 dev** (on hand) | **refused** | below the 4.5.17 floor since v10 — has not run the VAT backdate heal |
 | 4.5.17 | **refused** | below the 4.5.18 floor since v11 — its heal's work was undone by its own learner |
-| **4.5.18** | **admitted** | the positive fixture at `FLOOR_VERSION` — capture one from a 4.5.18 install. |
+| 4.5.18 | **refused** | below the 4.5.19 floor since v12 — its heal left 1 Oct's sub-meter rows at 5% |
+| **4.5.19** | **admitted** | the positive fixture at `FLOOR_VERSION` — capture one from a 4.5.19 install. |
 | **below** `FLOOR_VERSION` | **refused** | stamped, but from a release older than the floor |
 
 Two of these carry most of the value.
@@ -999,7 +1006,7 @@ stays honest whatever `FLOOR_VERSION` is pinned to. A test that hard-codes "4.5.
 silently stops testing anything the day v4 reaches .15.
 
 > **The positive fixture is a release-day artefact** *if the floor moves*. It has moved twice
-> (4.5.15 in v8, 4.5.16 in v9, 4.5.17 in v10, 4.5.18 in v11), so the positive is now a 4.5.18 database. It moves
+> (4.5.15 in v8, 4.5.16 in v9, 4.5.17 in v10, 4.5.18 in v11, 4.5.19 in v12), so the positive is now a 4.5.19 database. It moves
 > again if a later v4 release carries a heal.
 
 ---
@@ -1092,8 +1099,8 @@ silently stops testing anything the day v4 reaches .15.
 
    *Action, not an answer:* `FLOOR_VERSION` is pinned as the last step before v5's first release,
    from whatever v4 has actually reached by then, and §9's positive fixture is regenerated at that
-   version. On the release checklist, not in this paragraph. **Currently `4.5.18`** (v11; was
-   `4.5.17` in v10, `4.5.16` in v9, `4.5.15` in v8). The release-checklist step stays: confirm the final v4 release, and capture
+   version. On the release checklist, not in this paragraph. **Currently `4.5.19`** (v12; was
+   `4.5.18` in v11, `4.5.17` in v10, `4.5.16` in v9, `4.5.15` in v8). The release-checklist step stays: confirm the final v4 release, and capture
    the positive fixture at it.
 
    *(This question originally read "does the required `heal_level` ever rise?" and the answer is
