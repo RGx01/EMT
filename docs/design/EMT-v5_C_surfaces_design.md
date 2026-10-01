@@ -5,22 +5,23 @@
 the design.*
 
 **Status:** draft, 17 Sep 2026. Depends on workstream A (storage and access model) — closed
-30 Sep 2026. **Review against the code, 30 Sep 2026: §0 below.**
+30 Sep 2026. **Review against the code, 30 Sep 2026, re-measured 1 Oct 2026: §0 below.**
 
-## 0. Where the code stands — reviewed 30 Sep 2026
+## 0. Where the code stands — reviewed 30 Sep 2026, re-measured 1 Oct 2026
 
-*Each §6 acceptance item measured against `dev` after workstream A closed.*
+*Each §6 acceptance item measured against `dev` after workstream A closed; rows 4, 5, 6 and 8
+re-measured 1 Oct 2026, after the pre-rendered pipeline was deleted.*
 
 | # | acceptance (§6) | state | evidence |
 |---|---|---|---|
 | 1 | no pre-generated chart artefacts; `CHART_DIR` gone | **met, 30 Sep 2026** — both chart tabs are drawn in the browser from `/api/energy`: the heatmap (`heatmap_module.html`) and the Billing tab (`billing_module.html`, served by `billing_view.py` with the card and side panel as rows from `bill_card.py`). Before the page was deleted, `.build/billing_payload_parity.py` and `.build/billing_client_parity.js` held the data and its formatting identical to it on a real database (1,212 days, 98 periods), and the page itself was byte-identical across the split. Then `generate_daily_import_export_charts`, `build_day_chart_html`, `render_billing_summary`, the engine's regeneration path, `CHART_DIR`, `/api/charts/daily`, `/api/charts/regenerate` and `/charts/daily_usage.html` were deleted; `/lovelace/billing` serves the module; stale files are removed at setup | `energy_charts.py` 3,430 → 1,290 lines (the data half — `day_chart_data`, `billing_context`, `period_summary` — and the EV helpers remain); `tests/test_no_prerender.py` pins that nothing renders, serves or writes a chart file |
 | 2 | a cost-neutral re-price invalidates | **met** | `test_fingerprint::test_a_cost_neutral_reprice_still_moves_it` |
 | 3 | a change to today leaves history alone | **met** | per-day fingerprints (`PerDayNotGlobal`); the epoch now also moves across a restore / zip import (30 Sep) |
-| 4 | a write does no rendering | **not met** | 25 render triggers (10 engine incl. `finalise_block`, 15 server); go with #1 |
-| 5 | every surface on the one endpoint | **not met, by design so far** | `/api/energy` serves period, day and block, and **no page calls it**: Insights/Usage use the six period routes, Charts `blocks-summary`/`blocks-day` + the iframe, Live Power `/api/billing` |
-| 6 | no tariff context with a default, AST-enforced | **not met** | ~20 real defaults, incl. `cap_from=None`, `import_schedule=None` on the chart builders and `timezone='UTC'` in ~10 places; no test |
+| 4 | a write does no rendering | **met, 30 Sep 2026** — went with #1: the 25 render triggers (10 engine incl. `finalise_block`, 15 server) were deleted with the renderer, and nothing outside the tests names a render path | `tests/test_no_prerender.py` (`_GONE`: `generate_charts`, `_schedule_chart_regen`, `_regen_charts_safely`, `render_recently_active`, … none defined, none called) |
+| 5 | every surface on the one endpoint | **partly met** — the Billing tab (`billing_module.html`) and the heatmap (`heatmap_module.html`) read only `/api/energy`. Still on their own paths: **Spiral and Usage Stats** (Charts page) on `/api/charts/blocks-summary`, `/api/charts/blocks-day`, `/api/charts/data-version`; **Insights** on `/api/insights/periods` + `/api/insights/data-bounds`; **Live Power, Corrections, Meter config** on `/api/billing`, which computes Today / This Bill / This Year in its own SQL — a private aggregation path. Six routes have **no page caller** (tests and `.build` only): `/api/usage/{billing-period,calendar-month,calendar-year}`, `/api/insights/{billing-period,calendar-month,calendar-year}`; an external caller (an HA REST sensor) is not ruled out by the code | `grep apiUrl` over `web/templates/` (1 Oct 2026); routes in `web/server.py` |
+| 6 | no tariff context with a default, AST-enforced | **ratchet in place, not yet met** — **23** defaulted tariff-context parameters, down from 35 when the ratchet was written (30 Sep); the chart builders' `cap_from=None` / `import_schedule=None` went with the renderer. Remaining include `calculate_billing_summary_for_period(tz_name=None)`, `bill_slots_from_blocks(vat_rate=0.05)`, `reprice_block(vat=0.05)`, `_aggregate_usage(tz_name='UTC')`. New code follows the rule: 1 Oct's rate-schedule builders take a required `vat` (`kraken_rates.NO_VAT` for export) | `.build/check_tariff_defaults.py`, `tests/test_tariff_defaults.py` (the set may shrink, never grow) |
 | 7 | billing reconciles with v4 to the penny | **met, 30 Sep 2026** | `.build/reconcile_v4.py`: v4.5.16's own `compute_period_net` against v5 on a real database — **80 of 80** periods (40 billing, 40 months, three years) to the penny for the Billing card, the local-day client path and `/api/energy`'s period total. It first found the day rollups' standing charge summed 48× and the period total rounded once (≤3p in 49 of 80); both fixed. Property pinned in `tests/test_bill_reconciliation.py` |
-| 8 | TTFB budgets on the Pi | **baseline only** | §5 "Measured on the Pi" |
+| 8 | TTFB budgets on the Pi | **measured, not budgeted** — the sixth soak (30 Sep) gives per-request p50/worst for every Billing-tab request (a year's bill 7.07 s p50 on the Pi before the year-bill savings, ~4.5 s estimated after; not yet re-measured); no budget is asserted | §5 "Measured on the Pi" and "after C — the sixth soak" |
 
 **Found by the review, fixed 30 Sep 2026:** the day rollups' standing charge was a SUM over
 blocks that each carry the full daily charge — 48× — and the period payload rounded its bill
@@ -37,6 +38,22 @@ for a viewport, never summed for totals: a year of them is ~650 KB gzipped, ~15 
 **Order agreed 30 Sep 2026:** (1) the fixes above and a rule-2 ratchet; (2) a penny-reconciliation
 test, v4 against `/api/energy`, on a real database; then (3) a minimal Charts page drawn in the
 browser from `/api/energy`, and the pre-rendered pipeline deleted behind it — the start of step 6.
+
+**Done by 1 Oct 2026:** all three — the fixes and the ratchet; 80 of 80 periods to the penny; the
+Billing tab and the heatmap drawn from `/api/energy`, the renderer deleted (rows 1 and 4).
+
+**Next, in order (1 Oct 2026):**
+
+1. **Spiral and Usage Stats onto `/api/energy`** (`resolution=day` for the spiral's cumulative
+   days, `resolution=block` for a viewport), then delete `/api/charts/blocks-summary`,
+   `/api/charts/blocks-day` and `/api/charts/data-version` — the Charts page's last private paths.
+2. **Insights onto `/api/energy`** (`resolution=period` with `include=usage,carbon,billing`), then
+   `/api/insights/periods` and `/api/insights/data-bounds`.
+3. **`/api/billing`'s Today / This Bill / This Year from `/api/energy`'s period payload**, not its
+   own SQL — Live Power, Corrections and Meter config read it.
+4. **The six routes with no page caller:** decide on evidence (an HA REST-sensor caller would show
+   in the add-on access log), then delete or document them as an external contract.
+5. **Row 6 to zero**, ratchet by ratchet; **row 8's budgets** set from a re-measured soak.
 
 ---
 
