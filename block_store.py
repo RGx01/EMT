@@ -7911,7 +7911,7 @@ class BlockStore:
         from v2.3.0 onward, so an account with imported history has energy going
         back years and carbon going back months. A surface that gates a
         "vs last year" comparison on the carbon range wrongly disables it over
-        backfilled months — which is what `api_insights_data_bounds` returns two
+        backfilled months — which is what `api_insights_data_bounds` returned (until C step 2) as two
         pairs to avoid.
 
         Replaces that route's raw SELECT, and gives the calendar-period functions

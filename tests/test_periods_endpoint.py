@@ -155,11 +155,11 @@ class TheEndpoint(unittest.TestCase):
             self.assertEqual(r.status_code, 200, kind)
 
 
-class TheOldRoutesStillExist(unittest.TestCase):
-    """Additive, deliberately. The current templates call these and the client is
-    replaced at step 6; removing them now would break a running install."""
+class TheOldRoutesAreGone(unittest.TestCase):
+    """Additive while Insights called them; C step 2 (1 Oct 2026) moved it onto
+    /api/periods (bounds, and the trend strip via include=carbon) and deleted both."""
 
-    def test_both_remain_alongside_the_new_one(self):
+    def test_only_the_new_one_remains(self):
         import ast
         tree = ast.parse(open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read())
         paths = set()
@@ -169,8 +169,9 @@ class TheOldRoutesStillExist(unittest.TestCase):
                     paths.add(ast.literal_eval(n.args[0]))
                 except Exception:
                     pass
-        for p in ("/api/insights/periods", "/api/insights/data-bounds", "/api/periods"):
-            self.assertIn(p, paths)
+        for p in ("/api/insights/periods", "/api/insights/data-bounds"):
+            self.assertNotIn(p, paths)
+        self.assertIn("/api/periods", paths)
 
 
 if __name__ == "__main__":

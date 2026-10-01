@@ -416,11 +416,14 @@ class TestRouteRegistration(unittest.TestCase):
     def test_live_power_page_registered(self):
         self.assertTrue(self._registered("live_power_page"))
 
-    def test_api_insights_periods_registered(self):
-        self.assertTrue(self._registered("api_insights_periods"))
-
-    def test_api_insights_billing_period_registered(self):
-        self.assertTrue(self._registered("api_insights_billing_period"))
+    def test_the_insights_and_usage_period_routes_are_gone(self):
+        """C step 2 (1 Oct 2026): Insights reads /api/periods and /api/energy. Nothing
+        outside the add-on called these (confirmed by the user)."""
+        for name in ("api_insights_periods", "api_insights_billing_period",
+                     "api_insights_data_bounds", "api_insights_calendar_month",
+                     "api_insights_calendar_year", "api_usage_billing_period",
+                     "api_usage_calendar_month", "api_usage_calendar_year"):
+            self.assertFalse(self._registered(name), name)
 
     def test_api_settings_get_registered(self):
         self.assertTrue(self._registered("api_settings_get"))
@@ -2514,118 +2517,8 @@ class TestApiSettings(unittest.TestCase):
         self.assertEqual(d["gas_boiler_efficiency"], 0.90)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# /api/insights/periods
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestApiInsightsPeriods(unittest.TestCase):
-
-    def setUp(self):
-        self.client = make_client()
-
-    def test_returns_200_with_periods_key(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/periods")
-        self.assertEqual(r.status_code, 200)
-        d = json.loads(r.data)
-        self.assertIn("periods", d)
-        self.assertIsInstance(d["periods"], list)
-
-    def test_periods_have_required_fields(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/periods")
-        d = json.loads(r.data)
-        for p in d["periods"]:
-            self.assertIn("period_start", p)
-            self.assertIn("period_end", p)
-            self.assertIn("is_current", p)
-            self.assertIn("has_carbon", p)
-
-    def test_no_config_periods_returns_empty(self):
-        """If store has no config periods, endpoint returns empty list gracefully."""
-        with patch.object(server, "load_config", return_value={"meters": {}}):
-            r = self.client.get("/api/insights/periods")
-        self.assertIn(r.status_code, (200, 500))
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# /api/insights/billing-period
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestApiInsightsBillingPeriod(unittest.TestCase):
-
-    def setUp(self):
-        self.client = make_client()
-
-    def test_returns_200_or_404(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/billing-period")
-        self.assertIn(r.status_code, (200, 404, 500))
-
-    def test_unknown_period_returns_404_or_error(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/billing-period?period_start=1900-01-01")
-        d = json.loads(r.data)
-        # Either 404 with error key, or 200 with error key
-        self.assertTrue(r.status_code in (200, 404) and "error" in d
-                        or r.status_code == 500)
-
-    def test_response_has_required_fields_when_found(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/billing-period")
-        if r.status_code == 200:
-            d = json.loads(r.data)
-            if "error" not in d:
-                for field in ["period_start", "period_end", "is_current",
-                              "has_carbon", "imp_kwh", "exp_kwh",
-                              "ci_imp_kwh", "ci_exp_kwh",
-                              "house_imp_kwh", "house_ci_imp_kwh",
-                              "sub_meters", "assumptions"]:
-                    self.assertIn(field, d)
-
-    def test_assumptions_contain_all_defaults(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/billing-period")
-        if r.status_code == 200:
-            d = json.loads(r.data)
-            if "assumptions" in d:
-                a = d["assumptions"]
-                self.assertIn("ev_efficiency", a)
-                self.assertIn("ev_charge_efficiency", a)
-                self.assertIn("battery_round_trip_efficiency", a)
-                self.assertIn("hp_cop", a)
-                self.assertIn("distance_unit", a)
-                self.assertIn("gas_co2_g_per_kwh", a)
-                self.assertIn("gas_boiler_efficiency", a)
-
-    def test_sub_meter_has_inverter_possible_field(self):
-        """Sub-meter entries should include inverter_possible flag."""
-        config_with_sub = {
-            "schema_version": "1.0",
-            "meters": {
-                "electricity_main": MINIMAL_CONFIG["meters"]["electricity_main"],
-                "ev_charger": {
-                    "meta": {
-                        "sub_meter": True,
-                        "meter_type": "ev_charger",
-                        "inverter_possible": False,
-                        "parent_meter": "electricity_main",
-                    },
-                    "channels": {
-                        "import": {"read": "sensor.ev", "rate": "sensor.rate"}
-                    }
-                }
-            }
-        }
-        with patch.object(server, "load_config", return_value=config_with_sub):
-            r = self.client.get("/api/insights/billing-period")
-        if r.status_code == 200:
-            d = json.loads(r.data)
-            if "sub_meters" in d:
-                for mid, sm in d["sub_meters"].items():
-                    self.assertIn("inverter_possible", sm)
-                    self.assertIn("ci_imp_kwh", sm)
-                    self.assertIn("avg_charge_intensity", sm)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3372,42 +3265,17 @@ class TestApiSaveConfigFreshInstall(unittest.TestCase):
             "Fresh install wizard save should update existing period, not create a new one")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# /api/insights/data-bounds
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestApiInsightsDataBounds(unittest.TestCase):
-
-    def setUp(self):
-        self.client = make_client()
-
-    def test_returns_200(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/data-bounds")
-        self.assertEqual(r.status_code, 200)
-
-    def test_response_has_earliest_and_latest(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/data-bounds")
-        d = json.loads(r.data)
-        self.assertIn("earliest", d)
-        self.assertIn("latest", d)
-
-    def test_empty_store_returns_none(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/data-bounds")
-        d = json.loads(r.data)
-        self.assertIsNone(d["earliest"])
-        self.assertIsNone(d["latest"])
 
 
-class TestApiInsightsDataBoundsCarbonVsUsage(unittest.TestCase):
+class TestPeriodsBoundsCarbonVsUsage(unittest.TestCase):
     """Carbon-gated bounds must not shrink the Usage-tab range.
 
-    Imported history (kWh/cost, no carbon) predates carbon recording, so the
-    endpoint returns a carbon range (earliest/latest) AND a full energy range
-    (usage_earliest/usage_latest). The Usage tab gates its comparison buttons on
-    the latter, so "vs last year" into a backfilled month isn't wrongly disabled.
+    Imported history (kWh/cost, no carbon) predates carbon recording, so /api/periods
+    returns a full energy range (`bounds.earliest/latest` — the Usage tab's) AND a carbon
+    range (`bounds.carbon_earliest/carbon_latest` — the Carbon tab's). The Usage tab gates
+    its comparison buttons on the former, so "vs last year" into a backfilled month isn't
+    wrongly disabled. (Was /api/insights/data-bounds, whose names were the reverse:
+    `earliest` = carbon, `usage_earliest` = all — deleted with C step 2, 1 Oct 2026.)
     """
 
     def _store_with_split_history(self):
@@ -3440,77 +3308,61 @@ class TestApiInsightsDataBoundsCarbonVsUsage(unittest.TestCase):
         _use_store(store)          # patching _get_store no longer reaches reads
         with patch.object(server, "_get_store", return_value=store), \
              patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = server.app.test_client().get("/api/insights/data-bounds")
-        d = json.loads(r.data)
+            r = server.app.test_client().get("/api/periods?kind=month")
+        d = json.loads(r.data)["bounds"]
         # Carbon range starts only where carbon exists
-        self.assertEqual(d["earliest"], "2026-04-01")
-        self.assertEqual(d["latest"],   "2026-04-01")
+        self.assertEqual(d["carbon_earliest"], "2026-04-01")
+        self.assertEqual(d["carbon_latest"],   "2026-04-01")
         # Usage range reaches back to the imported (carbon-less) history
-        self.assertEqual(d["usage_earliest"], "2024-07-01")
-        self.assertEqual(d["usage_latest"],   "2026-04-01")
+        self.assertEqual(d["earliest"], "2024-07-01")
+        self.assertEqual(d["latest"],   "2026-04-01")
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# /api/insights/calendar-month and /api/insights/calendar-year
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestApiInsightsCalendar(unittest.TestCase):
+class TestInsightsPayloads(unittest.TestCase):
+    """What the Insights page reads from /api/energy (C step 2) — ported from the
+    /api/{insights,usage}/calendar-* route tests deleted with them: the facet's keys,
+    the assumptions, and the period label the page shows."""
 
     def setUp(self):
         self.client = make_client()
 
-    def test_calendar_month_returns_200(self):
+    def _get(self, q):
         with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/calendar-month?year=2026&month=4")
-        self.assertEqual(r.status_code, 200)
+            r = self.client.get("/api/energy?resolution=period&" + q)
+        self.assertEqual(r.status_code, 200, r.data[:200])
+        return json.loads(r.data)
 
-    def test_calendar_month_has_required_fields(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/calendar-month?year=2026&month=4")
-        d = json.loads(r.data)
-        for field in ["has_carbon", "imp_kwh", "exp_kwh", "carbon_g_net",
-                      "period_start", "period_end", "period_label",
-                      "sub_meters", "assumptions"]:
-            self.assertIn(field, d)
+    def test_the_carbon_facet_has_what_the_carbon_tab_reads(self):
+        d = self._get("kind=month&year=2026&month=4&include=carbon")
+        for field in ("has_carbon", "imp_kwh", "exp_kwh", "carbon_g_net", "sub_meters",
+                      "assumptions", "generation_mix", "effective_intensity"):
+            self.assertIn(field, d["carbon"])
+        for k in ("ev_efficiency", "ev_charge_efficiency", "battery_round_trip_efficiency",
+                  "hp_cop", "distance_unit", "gas_co2_g_per_kwh", "gas_boiler_efficiency"):
+            self.assertIn(k, d["carbon"]["assumptions"])
 
-    def test_calendar_month_period_label(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/calendar-month?year=2026&month=4")
-        d = json.loads(r.data)
-        self.assertIn("2026", d["period_label"])
+    def test_the_usage_facet_has_what_the_usage_tab_reads(self):
+        d = self._get("kind=month&year=2026&month=4&include=usage")["usage"]
+        for key in ("imp_kwh", "exp_kwh", "imp_cost", "exp_cost", "standing_charge",
+                    "net_cost", "net_grid_kwh", "rate_tiers", "sub_meters",
+                    "peak_window_start", "net_exporter_days", "house_imp_kwh", "total_days"):
+            self.assertIn(key, d, key)
 
-    def test_calendar_year_returns_200(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/calendar-year?year=2026")
-        self.assertEqual(r.status_code, 200)
+    def test_the_period_labels_the_page_shows(self):
+        self.assertEqual(self._get("kind=month&year=2026&month=4&include=carbon")["period"]["period_label"],
+                         "April 2026")
+        y = self._get("kind=year&year=2026&include=carbon")["period"]
+        self.assertEqual((y["period_label"], y["period_start"], y["period_end"]),
+                         ("2026", "2026-01-01", "2026-12-31"))       # inclusive end, as before
 
-    def test_calendar_year_has_required_fields(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/calendar-year?year=2026")
-        d = json.loads(r.data)
-        for field in ["has_carbon", "imp_kwh", "exp_kwh", "carbon_g_net",
-                      "period_start", "period_end", "period_label",
-                      "sub_meters", "assumptions"]:
-            self.assertIn(field, d)
+    def test_a_month_defaults_to_the_current_one(self):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        now = datetime.now(ZoneInfo("Europe/London"))
+        d = self._get("kind=month&include=carbon")["period"]
+        self.assertEqual(d["period_start"], "%04d-%02d-01" % (now.year, now.month))
 
-    def test_calendar_year_period_label_is_year_string(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/calendar-year?year=2026")
-        d = json.loads(r.data)
-        self.assertEqual(d["period_label"], "2026")
 
-    def test_calendar_month_defaults_to_current(self):
-        """Omitting year/month should still return a valid response."""
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/calendar-month")
-        self.assertEqual(r.status_code, 200)
-
-    def test_calendar_year_response_has_carbon_field(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/insights/calendar-year?year=2026")
-        d = json.loads(r.data)
-        self.assertIn("has_carbon", d)
-        self.assertIsInstance(d["has_carbon"], bool)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3832,54 +3684,6 @@ class TestAggregateUsage(unittest.TestCase):
         self.assertIsNone(d["weighted_rate"])
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# /api/usage/* endpoints
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestApiUsageEndpoints(unittest.TestCase):
-
-    def setUp(self):
-        self.client = make_client()
-
-    def test_billing_period_returns_200_or_404(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/usage/billing-period")
-        self.assertIn(r.status_code, (200, 404, 500))
-
-    def test_calendar_month_returns_200(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/usage/calendar-month?year=2026&month=4")
-        self.assertIn(r.status_code, (200, 500))
-        if r.status_code == 200:
-            d = json.loads(r.data)
-            self.assertIn("imp_kwh", d)
-            self.assertIn("rate_tiers", d)
-            self.assertIn("net_grid_kwh", d)
-
-    def test_calendar_year_returns_200(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/usage/calendar-year?year=2026")
-        self.assertIn(r.status_code, (200, 500))
-
-    def test_calendar_month_has_period_label(self):
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/usage/calendar-month?year=2026&month=1")
-        if r.status_code == 200:
-            d = json.loads(r.data)
-            self.assertIn("period_label", d)
-
-    def test_response_shape_keys(self):
-        """All required keys present in a successful response."""
-        with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
-            r = self.client.get("/api/usage/calendar-month?year=2026&month=4")
-        if r.status_code != 200:
-            return
-        d = json.loads(r.data)
-        for key in ("imp_kwh", "exp_kwh", "imp_cost", "exp_cost",
-                    "standing_charge", "net_cost", "net_grid_kwh",
-                    "rate_tiers", "sub_meters", "peak_window_start",
-                    "net_exporter_days", "house_imp_kwh"):
-            self.assertIn(key, d, msg=f"Missing key: {key}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
