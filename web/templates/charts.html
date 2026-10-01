@@ -406,12 +406,36 @@
 </div>
 <script>
 window.EMTSpiral=(function(){
-  var ENDPOINT="api/charts/blocks-summary";
+  // Every local day's row, from the one endpoint (C step 1, part 3) — the rows Usage
+  // Stats reads too (usage_view.day_stats).
+  var ENDPOINT="/api/energy?resolution=day&kind=all&include=stats";
   var ROWS=[],YEARS=[],DEVICE_IDS=[],LABELS={},inited=false;
   var HAS_CARBON=false,HAS_EXPORT=false;
   // One shared grouping (Net / Import / Export / device) + winding + years drives
   // all spirals at once, so Cost / Usage / Carbon are read side by side.
   var state={grouping:"net",mode:"lifetime",hidden:new Set(),incStanding:false};
+  // The page remembers its view between visits (grouping, winding, hidden years, the
+  // standing toggle) — per instance, as Usage Stats does. It forgot all four until
+  // 1 Oct 2026: they lived only in `state`, so every visit opened on the defaults.
+  function stateKey(){try{return EMT.lsKey("emt_spiral_state");}catch(e){return "emt_spiral_state";}}
+  function saveState(){try{localStorage.setItem(stateKey(),JSON.stringify({grouping:state.grouping,
+    mode:state.mode,hidden:Array.from(state.hidden),incStanding:state.incStanding}));}catch(e){}}
+  // Restore, validated against the data now loaded: a grouping that no longer exists
+  // (a removed device) falls back to Net; hidden years keep only years still present.
+  function loadState(){try{var st=JSON.parse(localStorage.getItem(stateKey())||"null");if(!st)return;
+    if(groupingOptions().some(function(o){return o.key===st.grouping;}))state.grouping=st.grouping;
+    if(st.mode==="lifetime"||st.mode==="year")state.mode=st.mode;
+    if(Array.isArray(st.hidden))state.hidden=new Set(st.hidden.filter(function(y){return YEARS.indexOf(y)>=0;}));
+    if(typeof st.incStanding==="boolean")state.incStanding=st.incStanding;}catch(e){}}
+  var HINT={lifetime:"Radius = running total. One continuous coil; a fatter gap between loops = a heavier year.",
+    year:"Every year starts from the centre on the same scale, so loops overlay \u2014 an outer loop at any angle used more by that date. Where loops cross, one year overtook another."};
+  // Put the controls the module does not rebuild (winding buttons, standing checkbox)
+  // in line with `state`.
+  function syncControls(){
+    Array.prototype.forEach.call(document.querySelectorAll("#sp-mode button"),function(b){b.classList.toggle("on",b.dataset.mode===state.mode);});
+    var h=document.getElementById("sp-hint");if(h)h.textContent=HINT[state.mode];
+    var cb=document.getElementById("sp-inc-standing");if(cb)cb.checked=state.incStanding;
+  }
   var YC=["#00d4aa","#7c6af7","#f9a825","#38bdf8","#ef4444","#fb7185"];
   var NS="http://www.w3.org/2000/svg",VBW=440,VBH=448,CX=220,CY=212,R_IN=34,R_OUT=184,A0=-Math.PI/2;
   var CARDS={};   // kind -> {svg, tip}
@@ -612,46 +636,60 @@ window.EMTSpiral=(function(){
   function buildItems(){var h=document.getElementById("sp-items");h.textContent="";
     groupingOptions().forEach(function(it,i){var row=document.createElement("div");row.className="sp-metric"+(it.key===state.grouping?" on":"")+(i===0?" hd":"");
       row.innerHTML='<span class="sp-nm"></span><span class="sp-kd"></span>';row.children[0].textContent=it.name;row.children[1].textContent=it.kind||"";
-      row.onclick=function(){state.grouping=it.key;buildItems();syncStandingToggle();renderAll();};h.appendChild(row);});}
+      row.onclick=function(){state.grouping=it.key;saveState();buildItems();syncStandingToggle();renderAll();};h.appendChild(row);});}
   // The "include standing charge in net cost" toggle only bites on grouping=net.
   function syncStandingToggle(){var w=document.getElementById("sp-standing-toggle");if(w)w.style.display=(state.grouping==="net")?"flex":"none";}
   function buildYears(){var h=document.getElementById("sp-years");h.textContent="";
     YEARS.forEach(function(y,i){var row=document.createElement("div");row.className="sp-yr"+(state.hidden.has(y)?" off":"");var partial=(y===YEARS[YEARS.length-1]);
       row.innerHTML='<span class="sp-sw"></span><span class="sp-yl"></span>';
       row.children[0].style.background=YC[i%YC.length];row.children[1].textContent=y+(partial?" \u00b7":"");
-      row.onclick=function(){state.hidden.has(y)?state.hidden.delete(y):state.hidden.add(y);buildYears();renderAll();};h.appendChild(row);});}
+      row.onclick=function(){state.hidden.has(y)?state.hidden.delete(y):state.hidden.add(y);saveState();buildYears();renderAll();};h.appendChild(row);});}
   function wireMode(){
     Array.prototype.forEach.call(document.querySelectorAll("#sp-mode button"),function(b){b.onclick=function(){
-      Array.prototype.forEach.call(document.querySelectorAll("#sp-mode button"),function(x){x.classList.remove("on");});b.classList.add("on");state.mode=b.dataset.mode;
-      document.getElementById("sp-hint").textContent=state.mode==="lifetime"?"Radius = running total. One continuous coil; a fatter gap between loops = a heavier year.":"Every year starts from the centre on the same scale, so loops overlay \u2014 an outer loop at any angle used more by that date. Where loops cross, one year overtook another.";
+      state.mode=b.dataset.mode;saveState();syncControls();
       renderAll();
     };});
   }
-  function wireStanding(){var cb=document.getElementById("sp-inc-standing");if(cb)cb.onchange=function(){state.incStanding=cb.checked;renderAll();};}
+  function wireStanding(){var cb=document.getElementById("sp-inc-standing");if(cb)cb.onchange=function(){state.incStanding=cb.checked;saveState();renderAll();};}
   function fail(msg){var s=document.getElementById("sp-status");if(s){s.style.display="block";s.textContent=msg;}}
 
-  async function init(){
-    if(inited)return; inited=true;
+  // Fetch and draw. `quiet` (a refresh of an already-drawn page) keeps what is on
+  // screen if the fetch fails, rather than replacing it with an error.
+  async function load(quiet){
     try{
-      var res=await fetch(ENDPOINT,{headers:{Accept:"application/json"}});
+      var res=await fetch(apiUrl(ENDPOINT),{headers:{Accept:"application/json"}});
+      if(res.status===404){fail("No data yet \u2014 the spirals fill in once blocks are recorded.");return false;}
       if(!res.ok)throw new Error("HTTP "+res.status);
-      var j=await res.json();
-      if(!j.rows||!j.rows.length){fail("No data yet \u2014 the spirals fill in once blocks are recorded.");inited=false;return;}
+      var j=(await res.json()).stats||{};
+      if(!j.rows||!j.rows.length){fail("No data yet \u2014 the spirals fill in once blocks are recorded.");return false;}
       ROWS=j.rows.slice().sort(function(a,b){return (a.year-b.year)||(a.month-b.month)||(a.day-b.day);});
       YEARS=Array.from(new Set(ROWS.map(function(r){return r.year;}))).sort();
       buildMetaFrom(j.meters||[],ROWS);
       HAS_CARBON=!!j.has_postcode||ROWS.some(function(r){return r.carbon_g_net!=null;});
+      loadState();
       // Build equal-size spiral cards: Cost / Usage / (Carbon) / Standing charges.
-      var mainEl=document.getElementById("sp-main");mainEl.textContent="";
+      var mainEl=document.getElementById("sp-main");mainEl.textContent="";CARDS={};
       mainSpirals().forEach(function(spec){makeCard(mainEl,spec);});
       makeCard(mainEl,{kind:"standing",unit:"\u00a3",title:"Standing charges"});
       if(!MODAL)buildModal();
       document.getElementById("sp-status").style.display="none";
-      document.getElementById("sp-hint").textContent="Radius = running total. One continuous coil; a fatter gap between loops = a heavier year.";
-      buildItems();syncStandingToggle();buildYears();wireMode();wireStanding();renderAll();
-    }catch(e){inited=false;fail("Couldn't load chart data \u2014 "+(e&&e.message?e.message:e));}
+      syncControls();buildItems();syncStandingToggle();buildYears();wireMode();wireStanding();renderAll();
+      return true;
+    }catch(e){if(!quiet)fail("Couldn't load chart data \u2014 "+(e&&e.message?e.message:e));return false;}
   }
-  return { init: init };
+  // First visit to the tab: load once. A tab switch back does not re-fetch — the data
+  // poll (refresh) does that when the data has actually changed.
+  async function init(){
+    if(inited)return; inited=true;
+    if(!(await load(false)))inited=false;
+  }
+  // Re-fetch and redraw, keeping the view. Until 1 Oct 2026 the poll called init(),
+  // which returned at once, so the spirals never moved until the page was reloaded.
+  async function refresh(){
+    if(!inited)return init();
+    await load(true);
+  }
+  return { init: init, refresh: refresh };
 })();
 </script>
 
@@ -2782,7 +2820,7 @@ async function _refreshIfChanged(force) {
     barLastFetch  = 0;      // force barInit past its TTL
     barHHDataDate = null;   // force today's HH to refetch on next render
     if (_activeChart === 'bar') { await barInit(); }
-    else if (_activeChart === 'spiral') { if (window.EMTSpiral) EMTSpiral.init(); }
+    else if (_activeChart === 'spiral') { if (window.EMTSpiral) EMTSpiral.refresh(); }
     else { chartsLoaded = {}; await loadChartContent(_activeChart || 'daily'); }
     if (v) _lastDataVersion = v;
     return true;
