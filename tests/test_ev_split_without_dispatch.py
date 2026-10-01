@@ -32,10 +32,11 @@ CFG = {"meters": {"electricity_main": {"meta": {}}}}
 
 
 def _server_ns():
-    """Pull the pure functions out of web/server.py without importing Flask."""
+    """Pull the pure functions out of usage_view.py (moved there from web/server.py,
+    C step 1) without importing Flask."""
     import ast
     _here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    src = open(os.path.join(_here, "web", "server.py")).read()
+    src = open(os.path.join(_here, "usage_view.py")).read()
     ns = {}
     for n in ast.parse(src).body:
         if isinstance(n, ast.FunctionDef) and n.name in (
@@ -157,7 +158,7 @@ class TestSlotMapAuthority(unittest.TestCase):
 
 
 class TestBucketSplitAuthority(unittest.TestCase):
-    """web/server.py._dispatch_ev_split_by_bucket — Usage Stats / charts source."""
+    """usage_view._dispatch_ev_split_by_bucket — Usage Stats / charts source."""
 
     def setUp(self):
         ns = _server_ns()

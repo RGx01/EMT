@@ -137,7 +137,11 @@ def query_variants(path, ctx):
                         + [{"resolution": "period", "kind": "billing", "period_start": p,
                             "include": "billing"} for p in periods[-2:-1]]
                         + [{"resolution": "day", "kind": "month", "year": y, "month": m,
-                            "include": "billing"} for y, m in months[:2]]),
+                            "include": "billing"} for y, m in months[:2]]
+                        # Usage Stats / Spiral (C step 1, 1 Oct 2026): every day of
+                        # history, and one day's half-hours.
+                        + [{"resolution": "day", "kind": "all", "include": "stats"},
+                           {"resolution": "block", "kind": "day", "include": "stats"}]),
         # The picker's totals: one rollup over the whole span per kind.
         "/api/periods": ([{"kind": k} for k in ("billing", "month", "year")]
                          + [{"kind": k, "include": "net_cost"}
