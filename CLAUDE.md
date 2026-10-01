@@ -11,17 +11,17 @@ devices, and reconciles against the supplier's settled figures.
 release; since then it accepts **critical fixes only** — data loss, crash-on-start, or a pricing
 error. 4.5.15 shipped #473 (device cost from raw `imp_kwh` instead of the grid-clipped
 `imp_kwh_grid`, with a heal) and #475 (a settled kWh re-banding an unpriced block). 4.5.16 shipped
-#481 (Octopus relabelled the device-breakdown buckets; with a heal). A 4.5.17 is expected
-(EV_BOOST band).
+#481 (Octopus relabelled the device-breakdown buckets; with a heal). 4.5.17 is in progress: the
+1 Oct 2026 0% VAT backdating fix (with a heal); the EV_BOOST band is also expected.
 
-**4.5.16 is the v5 import floor.** It carries a heal, and the rule is that a fix adding a heal
+**4.5.17 is the v5 import floor** (raised 1 Oct 2026; unreleased). It carries a heal, and the rule is that a fix adding a heal
 raises the floor EMT will import from. A below-floor database must be **refused** with "open
 this in the last v4 release first", not imported with a warning. v5 carries **no v4 heals** —
 the floor is what makes that safe — so a v4 fix is ported as its forward fix only.
 
 **The work now is v5**, in this repo (`RGx01/EMT`). It was seeded from v4 4.5.14 and is being
 deconstructed in the open; the forward fixes from 4.5.15 (#473, #475) and 4.5.16 (#481) were
-ported afterwards. **Each new v4 release:** port its forward fixes, not its heal, and raise the
+ported afterwards, and 4.5.17's VAT forward fix with it. **Each new v4 release:** port its forward fixes, not its heal, and raise the
 floor if it carries a heal (import spec, ROADMAP §E, programme §E, this file).
 Steps: 1 dead code, 2 extract `billing.py`, 3 ReadStore/WriteStore, 4 API consolidated + HTML
 pipeline deleted, 5 schema (15 columns dropped, band moves to `block_segments`), 6 client +
