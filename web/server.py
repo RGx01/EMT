@@ -5628,8 +5628,8 @@ def api_energy():
     bill summary its card is formatted from, at `day` each local day's chart series
     (charged-rate lines) and side panel. Not at `block`.
 
-    Additive: the six routes it replaces are untouched, because the templates
-    still call them and the client is replaced at step 6.
+    It replaced six routes: `/api/{usage,insights}/{billing-period,calendar-month,
+    calendar-year}`, deleted with C step 2 (1 Oct 2026) once Insights read this.
     """
     try:
         from zoneinfo import ZoneInfo as _ZI
@@ -5746,14 +5746,14 @@ def api_periods():
     Returns the boundaries and the data bounds, and NO aggregates unless asked
     (`include=`), and then never a query per period: one day-rollup pass over the
     whole span, folded per period by local day.
-    `api_insights_periods`, which this replaces, runs one SQL query PER PERIOD to
+    `api_insights_periods`, which this replaced, ran one SQL query PER PERIOD to
     attach a carbon summary — thirty-six queries on a three-year account, to
     populate a picker. Totals are `/api/energy` with `resolution=period`, asked
     for the one period the user actually selects.
 
-    Consolidates `insights/periods` and `insights/data-bounds`. `include=carbon` is
-    the Insights trend strip's per-period net carbon — what `insights/periods` gave,
-    from the main meter's rollups, cut at LOCAL boundaries (`insights/periods` called
+    Replaced `insights/periods` and `insights/data-bounds` (deleted with C step 2, 1 Oct
+    2026). `include=carbon` is the Insights trend strip's per-period net carbon — what
+    `insights/periods` gave, from the main meter's rollups, cut at LOCAL boundaries (it called
     `.astimezone()` on naive local datetimes, so on a host whose clock is UTC a BST
     period boundary landed an hour late).
     """
@@ -5856,54 +5856,6 @@ def api_periods():
         logger.exception("api_periods failed")
         return jsonify({"error": str(e)}), 500
 
-
-@app.route("/api/insights/periods")
-def api_insights_periods():
-    """Return list of all billing periods with basic carbon summary for each."""
-    try:
-        import energy_charts as _ec
-        from zoneinfo import ZoneInfo as _ZI
-        from datetime import datetime, timezone
-        store   = store_access.store()
-        cfg     = load_config()
-        tz_name = "Europe/London"
-        for mid, md in (cfg.get("meters") or {}).items():
-            tz_name = (md.get("meta") or {}).get("timezone", "Europe/London")
-            break
-        periods = _ec.get_billing_periods_from_config_periods(
-            store.get_config_periods(), tz=_ZI(tz_name)
-        )
-        now_local = datetime.now(_ZI(tz_name)).replace(tzinfo=None)  # periods are naive local datetimes
-        result = []
-        for (ps, pe) in periods:
-            is_current = ps <= now_local < pe
-            ps_iso = ps.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-            pe_iso = pe.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-            rows = store._conn.execute("""
-                SELECT
-                    SUM(CASE WHEN carbon_g IS NOT NULL THEN imp_kwh ELSE 0 END) AS imp_kwh_ci,
-                    SUM(CASE WHEN carbon_g IS NOT NULL THEN exp_kwh ELSE 0 END) AS exp_kwh_ci,
-                    SUM(CASE WHEN carbon_g IS NOT NULL THEN carbon_g ELSE 0 END) AS carbon_g_net,
-                    COUNT(CASE WHEN carbon_g IS NOT NULL THEN 1 END) AS ci_blocks,
-                    COUNT(*) AS total_blocks
-                FROM blocks
-                WHERE meter_id NOT IN (
-                    SELECT meter_id FROM meters WHERE is_sub_meter = 1
-                )
-                AND block_start >= ? AND block_start < ?
-            """, (ps_iso, pe_iso)).fetchone()
-            r = dict(rows) if rows else {}
-            result.append({
-                "period_start":  ps.date().isoformat(),
-                "period_end":    pe.date().isoformat(),
-                "is_current":    is_current,
-                "has_carbon":    (r.get("ci_blocks") or 0) > 0,
-                "carbon_g_net":  r.get("carbon_g_net"),
-            })
-        return jsonify({"periods": result})
-    except Exception as e:
-        logger.exception("api_insights_periods failed")
-        return jsonify({"error": str(e)}), 500
 
 
 def _collapse_rate_tiers(tiers_list):
@@ -6197,173 +6149,6 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
         "assumptions":          merged,
     }
 
-
-@app.route("/api/insights/billing-period")
-def api_insights_billing_period():
-    """
-    Full carbon insights for a billing period.
-    Query params: period_start=YYYY-MM-DD (local date of period start).
-    If omitted, returns the most recent period.
-    """
-    try:
-        import energy_charts as _ec
-        from zoneinfo import ZoneInfo as _ZI
-        from datetime import datetime, timezone
-        store   = store_access.store()
-        cfg     = load_config()
-        tz_name = "Europe/London"
-        for mid, md in (cfg.get("meters") or {}).items():
-            tz_name = (md.get("meta") or {}).get("timezone", "Europe/London")
-            break
-        tz = _ZI(tz_name)
-
-        periods = _ec.get_billing_periods_from_config_periods(
-            store.get_config_periods(), tz=tz
-        )
-        if not periods:
-            return jsonify({"error": "No billing periods found"}), 404
-
-        requested = request.args.get("period_start")
-        now_local = datetime.now(tz).replace(tzinfo=None)
-        target_ps = target_pe = None
-        for (ps, pe) in periods:
-            if requested:
-                if ps.date().isoformat() == requested:
-                    target_ps, target_pe = ps, pe
-                    break
-            else:
-                target_ps, target_pe = ps, pe
-
-        if not target_ps:
-            return jsonify({"error": "Billing period not found"}), 404
-
-        is_current = target_ps <= now_local < target_pe
-        ps_iso = target_ps.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-        pe_iso = target_pe.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-
-        d = _aggregate_insights(store, cfg, ps_iso, pe_iso)
-        d["period_start"] = target_ps.date().isoformat()
-        d["period_end"]   = target_pe.date().isoformat()
-        d["is_current"]   = is_current
-        return jsonify(d)
-    except Exception as e:
-        logger.exception("api_insights_billing_period failed")
-        return jsonify({"error": str(e)}), 500
-
-@app.route("/api/insights/data-bounds")
-def api_insights_data_bounds():
-    """Date bounds for the Insights page nav/compare gating.
-
-    Returns TWO ranges, because the Carbon and Usage tabs have different data:
-      - earliest/latest             → blocks that carry CARBON data (carbon_g),
-                                       which only exists from v2.3.0 onward. The
-                                       Carbon tab gates on this.
-      - usage_earliest/usage_latest → ALL blocks for the meter, including
-                                       historical imports that have kWh/cost but
-                                       no carbon. The Usage tab gates on this, so
-                                       "vs last year"/"vs last month" comparisons
-                                       into backfilled months aren't wrongly
-                                       disabled.
-    """
-    try:
-        store = store_access.store()
-        row = store._conn.execute(
-            """SELECT
-                 MIN(block_start) AS usage_earliest,
-                 MAX(block_start) AS usage_latest,
-                 MIN(CASE WHEN carbon_g IS NOT NULL THEN block_start END) AS c_earliest,
-                 MAX(CASE WHEN carbon_g IS NOT NULL THEN block_start END) AS c_latest
-               FROM blocks
-               WHERE meter_id = 'electricity_main'"""
-        ).fetchone()
-        return jsonify({
-            # Carbon range (unchanged meaning — Carbon tab uses these)
-            "earliest": row["c_earliest"][:10] if row and row["c_earliest"] else None,
-            "latest":   row["c_latest"][:10]   if row and row["c_latest"]   else None,
-            # Full energy range (Usage tab uses these)
-            "usage_earliest": row["usage_earliest"][:10] if row and row["usage_earliest"] else None,
-            "usage_latest":   row["usage_latest"][:10]   if row and row["usage_latest"]   else None,
-        })
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/insights/calendar-month")
-def api_insights_calendar_month():
-    """
-    Carbon insights for a calendar month.
-    Query params: year=YYYY, month=MM (1-12)
-    Returns same shape as /api/insights/billing-period.
-    """
-    try:
-        from zoneinfo import ZoneInfo as _ZI
-        from datetime import datetime, timezone, timedelta
-        store   = store_access.store()
-        cfg     = load_config()
-        tz_name = "Europe/London"
-        for mid, md in (cfg.get("meters") or {}).items():
-            tz_name = (md.get("meta") or {}).get("timezone", "Europe/London")
-            break
-        tz = _ZI(tz_name)
-
-        year  = int(request.args.get("year",  datetime.now(tz).year))
-        month = int(request.args.get("month", datetime.now(tz).month))
-
-        # Calendar month boundaries in local time → UTC
-        local_start = datetime(year, month, 1, tzinfo=tz)
-        if month == 12:
-            local_end = datetime(year + 1, 1, 1, tzinfo=tz)
-        else:
-            local_end = datetime(year, month + 1, 1, tzinfo=tz)
-
-        utc_start = local_start.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-        utc_end   = local_end.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-
-        # Reuse same data aggregation as billing-period endpoint
-        d = _aggregate_insights(store, cfg, utc_start, utc_end)
-        d["period_start"] = local_start.date().isoformat()
-        d["period_end"]   = (local_end - timedelta(days=1)).date().isoformat()
-        d["period_label"] = local_start.strftime("%B %Y")
-        return jsonify(d)
-    except Exception as e:
-        logger.exception("api_insights_calendar_month failed")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/insights/calendar-year")
-def api_insights_calendar_year():
-    """
-    Carbon insights for a calendar year.
-    Query params: year=YYYY
-    Returns same shape as /api/insights/billing-period.
-    """
-    try:
-        from zoneinfo import ZoneInfo as _ZI
-        from datetime import datetime, timezone, timedelta
-        store   = store_access.store()
-        cfg     = load_config()
-        tz_name = "Europe/London"
-        for mid, md in (cfg.get("meters") or {}).items():
-            tz_name = (md.get("meta") or {}).get("timezone", "Europe/London")
-            break
-        tz = _ZI(tz_name)
-
-        year = int(request.args.get("year", datetime.now(tz).year))
-
-        local_start = datetime(year, 1, 1, tzinfo=tz)
-        local_end   = datetime(year + 1, 1, 1, tzinfo=tz)
-
-        utc_start = local_start.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-        utc_end   = local_end.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-
-        d = _aggregate_insights(store, cfg, utc_start, utc_end)
-        d["period_start"] = local_start.date().isoformat()
-        d["period_end"]   = (local_end - timedelta(days=1)).date().isoformat()
-        d["period_label"] = str(year)
-        return jsonify(d)
-    except Exception as e:
-        logger.exception("api_insights_calendar_year failed")
-        return jsonify({"error": str(e)}), 500
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -6834,131 +6619,6 @@ def _aggregate_usage(store, cfg, utc_start: str, utc_end: str,
         "sub_meters":        sub_totals,
     }
 
-
-@app.route("/api/usage/billing-period")
-def api_usage_billing_period():
-    """
-    Usage insights for a billing period.
-    Query params: period_start=YYYY-MM-DD (local date). Omit for current period.
-    """
-    try:
-        import energy_charts as _ec
-        from zoneinfo import ZoneInfo as _ZI
-        from datetime import datetime, timezone
-        store   = store_access.store()
-        cfg     = load_config()
-        tz_name = "UTC"
-        for md in (cfg.get("meters") or {}).values():
-            tz_name = (md.get("meta") or {}).get("timezone", "UTC")
-            break
-        tz = _ZI(tz_name)
-
-        periods = _ec.get_billing_periods_from_config_periods(
-            store.get_config_periods(), tz=tz
-        )
-        if not periods:
-            return jsonify({"error": "No billing periods found"}), 404
-
-        requested = request.args.get("period_start")
-        now_local = datetime.now(tz).replace(tzinfo=None)
-        target_ps = target_pe = None
-        for (ps, pe) in periods:
-            if requested:
-                if ps.date().isoformat() == requested:
-                    target_ps, target_pe = ps, pe
-                    break
-            else:
-                target_ps, target_pe = ps, pe
-
-        if not target_ps:
-            return jsonify({"error": "Billing period not found"}), 404
-
-        is_current = target_ps <= now_local < target_pe
-        ps_iso = target_ps.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-        pe_iso = target_pe.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-
-        d = _aggregate_usage(store, cfg, ps_iso, pe_iso, tz_name)
-        d["period_start"] = target_ps.date().isoformat()
-        d["period_end"]   = target_pe.date().isoformat()
-        d["is_current"]   = is_current
-        return jsonify(d)
-    except Exception as e:
-        logger.exception("api_usage_billing_period failed")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/usage/calendar-month")
-def api_usage_calendar_month():
-    """
-    Usage insights for a calendar month.
-    Query params: year=YYYY, month=MM (1-12)
-    """
-    try:
-        from zoneinfo import ZoneInfo as _ZI
-        from datetime import datetime, timezone, timedelta
-        store   = store_access.store()
-        cfg     = load_config()
-        tz_name = "UTC"
-        for md in (cfg.get("meters") or {}).values():
-            tz_name = (md.get("meta") or {}).get("timezone", "UTC")
-            break
-        tz = _ZI(tz_name)
-
-        year  = int(request.args.get("year",  datetime.now(tz).year))
-        month = int(request.args.get("month", datetime.now(tz).month))
-
-        local_start = datetime(year, month, 1, tzinfo=tz)
-        if month == 12:
-            local_end = datetime(year + 1, 1, 1, tzinfo=tz)
-        else:
-            local_end = datetime(year, month + 1, 1, tzinfo=tz)
-
-        utc_start = local_start.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-        utc_end   = local_end.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-
-        d = _aggregate_usage(store, cfg, utc_start, utc_end, tz_name)
-        d["period_start"] = local_start.date().isoformat()
-        d["period_end"]   = (local_end - timedelta(days=1)).date().isoformat()
-        d["period_label"] = local_start.strftime("%B %Y")
-        return jsonify(d)
-    except Exception as e:
-        logger.exception("api_usage_calendar_month failed")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/usage/calendar-year")
-def api_usage_calendar_year():
-    """
-    Usage insights for a calendar year.
-    Query params: year=YYYY
-    """
-    try:
-        from zoneinfo import ZoneInfo as _ZI
-        from datetime import datetime, timezone, timedelta
-        store   = store_access.store()
-        cfg     = load_config()
-        tz_name = "UTC"
-        for md in (cfg.get("meters") or {}).values():
-            tz_name = (md.get("meta") or {}).get("timezone", "UTC")
-            break
-        tz = _ZI(tz_name)
-
-        year = int(request.args.get("year", datetime.now(tz).year))
-
-        local_start = datetime(year, 1, 1, tzinfo=tz)
-        local_end   = datetime(year + 1, 1, 1, tzinfo=tz)
-
-        utc_start = local_start.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-        utc_end   = local_end.astimezone(timezone.utc).replace(tzinfo=None).isoformat()
-
-        d = _aggregate_usage(store, cfg, utc_start, utc_end, tz_name)
-        d["period_start"] = local_start.date().isoformat()
-        d["period_end"]   = (local_end - timedelta(days=1)).date().isoformat()
-        d["period_label"] = str(year)
-        return jsonify(d)
-    except Exception as e:
-        logger.exception("api_usage_calendar_year failed")
-        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/storage-info")

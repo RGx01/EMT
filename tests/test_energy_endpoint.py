@@ -164,11 +164,12 @@ class PeriodResolution(unittest.TestCase):
         self.assertEqual(code, 404)
 
 
-class ItIsAdditive(unittest.TestCase):
-    """The six routes stay until the client is replaced at step 6 — removing
-    them now would break a running install."""
+class TheSixAreGone(unittest.TestCase):
+    """It WAS additive: the six routes stayed while the Insights page called four of them.
+    C step 2 (1 Oct 2026) moved the page onto /api/energy and deleted all six — nothing
+    outside the add-on called them (confirmed by the user)."""
 
-    def test_the_six_still_exist(self):
+    def test_only_the_one_endpoint_remains(self):
         import ast
         tree = ast.parse(open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read())
         paths = set()
@@ -180,9 +181,9 @@ class ItIsAdditive(unittest.TestCase):
                     pass
         for p in ("/api/usage/billing-period", "/api/usage/calendar-month",
                   "/api/usage/calendar-year", "/api/insights/billing-period",
-                  "/api/insights/calendar-month", "/api/insights/calendar-year",
-                  "/api/energy"):
-            self.assertIn(p, paths)
+                  "/api/insights/calendar-month", "/api/insights/calendar-year"):
+            self.assertNotIn(p, paths)
+        self.assertIn("/api/energy", paths)
 
 
 class OneImplementationOfPeriodResolution(unittest.TestCase):

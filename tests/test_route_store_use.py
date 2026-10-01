@@ -63,7 +63,8 @@ class TestRouteStoreUse(unittest.TestCase):
         self.assertEqual(self.d["get_on_writer"], [])
         # +2: /api/periods, /api/energy (C §3); −3: /api/charts/blocks-summary, blocks-day,
         # data-version, deleted by C step 1 (1 Oct 2026).
-        self.assertEqual(len(self.d["get_on_companion"]), 43)
+        # −8: the Insights/Usage period routes, deleted by C step 2 (1 Oct 2026).
+        self.assertEqual(len(self.d["get_on_companion"]), 35)
 
     def test_adoption_is_total(self):
         """Measured at 0% before the port: v4 credited one route with the read

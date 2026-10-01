@@ -140,17 +140,18 @@ def query_variants(path, ctx):
                         # Usage Stats / Spiral (C step 1, 1 Oct 2026): every day of
                         # history, and one day's half-hours.
                         + [{"resolution": "day", "kind": "all", "include": "stats"},
-                           {"resolution": "block", "kind": "day", "include": "stats"}]),
+                           {"resolution": "block", "kind": "day", "include": "stats"}]
+                        # Insights (C step 2, 1 Oct 2026): a month and a year on each tab
+                        # — the calendar routes these replaced were soaked per period.
+                        + [{"resolution": "period", "kind": "month", "year": y, "month": m,
+                            "include": f} for y, m in months[:2] for f in ("carbon", "usage")]
+                        + [{"resolution": "period", "kind": "year", "year": y, "include": f}
+                           for y in years[:2] for f in ("carbon", "usage")]),
         # The picker's totals: one rollup over the whole span per kind.
         "/api/periods": ([{"kind": k} for k in ("billing", "month", "year")]
                          + [{"kind": k, "include": "net_cost"}
-                            for k in ("billing", "month", "quarter", "year")]),
-        "/api/insights/billing-period": [{"period_start": p} for p in periods],
-        "/api/usage/billing-period": [{"period_start": p} for p in periods],
-        "/api/insights/calendar-month": [{"year": y, "month": m} for y, m in months],
-        "/api/usage/calendar-month": [{"year": y, "month": m} for y, m in months],
-        "/api/insights/calendar-year": [{"year": y} for y in years],
-        "/api/usage/calendar-year": [{"year": y} for y in years],
+                            for k in ("billing", "month", "quarter", "year")]
+                         + [{"kind": "billing", "include": "carbon"}]),     # Insights' strip
         "/api/charge-sessions": [{"days": 30}],
     }
     return [path + ("?" + urllib.parse.urlencode(q) if q else "")
