@@ -157,7 +157,9 @@ class PeriodTotals(unittest.TestCase):
         self.assertTrue(all("net_cost" not in p for p in d["periods"]))
 
     def test_an_unknown_facet_is_refused(self):
-        self.assertEqual(self._get("?kind=billing&include=carbon")[0], 400)
+        # `carbon` was the unknown facet here until it became one (C step 2, 1 Oct 2026:
+        # the Insights trend strip — tests/test_periods_carbon.py).
+        self.assertEqual(self._get("?kind=billing&include=fish")[0], 400)
 
 
 if __name__ == "__main__":

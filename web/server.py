@@ -5741,16 +5741,21 @@ def api_periods():
     folding it in would mean an endpoint that sometimes takes a range and
     sometimes returns the ranges available.
 
-        GET /api/periods?kind=billing|month|quarter|year
+        GET /api/periods?kind=billing|month|quarter|year[&include=net_cost,carbon]
 
-    Returns the boundaries and the data bounds, and deliberately NO aggregates.
+    Returns the boundaries and the data bounds, and NO aggregates unless asked
+    (`include=`), and then never a query per period: one day-rollup pass over the
+    whole span, folded per period by local day.
     `api_insights_periods`, which this replaces, runs one SQL query PER PERIOD to
     attach a carbon summary — thirty-six queries on a three-year account, to
     populate a picker. Totals are `/api/energy` with `resolution=period`, asked
     for the one period the user actually selects.
 
-    Consolidates `insights/periods` and `insights/data-bounds`. Both stay for
-    now: the current templates call them, and the client is replaced at step 6.
+    Consolidates `insights/periods` and `insights/data-bounds`. `include=carbon` is
+    the Insights trend strip's per-period net carbon — what `insights/periods` gave,
+    from the main meter's rollups, cut at LOCAL boundaries (`insights/periods` called
+    `.astimezone()` on naive local datetimes, so on a host whose clock is UTC a BST
+    period boundary landed an hour late).
     """
     try:
         from zoneinfo import ZoneInfo as _ZI
@@ -5801,13 +5806,14 @@ def api_periods():
         # the bill's own per-day rule — the rule the Billing card's Total Bill is
         # reconciled against (80 of 80 periods to the penny, .build/reconcile_v4.py).
         include = {x.strip() for x in (request.args.get("include") or "").split(",") if x.strip()}
-        if include - {"net_cost"}:
-            return jsonify({"error": "include: unknown facet(s) %s" % sorted(include - {"net_cost"})}), 400
+        if include - {"net_cost", "carbon"}:
+            return jsonify({"error": "include: unknown facet(s) %s" % sorted(include - {"net_cost", "carbon"})}), 400
+        rows = (store.get_day_rollups(out[0]["start_utc"], out[-1]["end_utc"], tz_name)
+                if include and out else [])
         if "net_cost" in include and out:
             _mm = next(((m.get("meta") or {}) for m in (load_config().get("meters") or {}).values()
                         if not (m.get("meta") or {}).get("sub_meter")), {})
             currency = _mm.get("currency_symbol", "£")
-            rows = store.get_day_rollups(out[0]["start_utc"], out[-1]["end_utc"], tz_name)
             by_day = {}
             for r in rows:
                 by_day.setdefault(r["day"], []).append(r)
@@ -5820,6 +5826,20 @@ def api_periods():
                 p["net_cost"] = _billing.bill_net_from_day_rollups(rs)
                 p["net_cost_text"] = "%s%.2f" % (currency, p["net_cost"])   # as the picker prints it
                 p["has_data"] = bool(rs)
+        if "carbon" in include and out:
+            # Net carbon (g) per period, the main meter's: `has_carbon` from the count of
+            # blocks carrying any — a period of real net zero is not "no data".
+            import bisect as _bisect
+            main = {}
+            for r in rows:
+                if r["meter_id"] == "electricity_main":
+                    main[r["day"]] = r
+            days = sorted(main)
+            for p in out:
+                rs = [main[d] for d in days[_bisect.bisect_left(days, p["start"]):
+                                            _bisect.bisect_left(days, p["end"])]]
+                p["has_carbon"] = any((r.get("carbon_blocks") or 0) > 0 for r in rs)
+                p["carbon_g_net"] = round(sum(r["carbon_g"] or 0 for r in rs), 1) if rs else None
 
         return jsonify({
             "kind": kind,

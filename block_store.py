@@ -7824,6 +7824,9 @@ class BlockStore:
             "       ROUND(COALESCE(SUM(b.exp_kwh), 0), 4) AS exp_kwh, "
             "       ROUND(COALESCE(SUM(b.exp_cost), 0), 4) AS exp_cost, "
             "       ROUND(COALESCE(SUM(b.carbon_g), 0), 1) AS carbon_g, "
+            # How many of the day's blocks carry carbon at all: SUM(carbon_g) is 0
+            # both for "net zero" and for "no intensity data" (C step 2, 1 Oct 2026).
+            "       COUNT(b.carbon_g) AS carbon_blocks, "
             # The day's standing charge is ONE value, not a sum: every block carries
             # the full daily charge (measured: 48 of 48 blocks on every day of a
             # real 4.5.16 database), so SUM reported it 48x. The rule is v4's
