@@ -111,7 +111,6 @@ def query_variants(path, ctx):
     week = [((today - dt.timedelta(days=d + 7)).isoformat(),
              (today - dt.timedelta(days=d)).isoformat()) for d in (1, 60)]
     table = {
-        "/api/charts/blocks-day": [{"date": d} for d in recent],
         "/api/power/history": [{"hours": h} for h in (6, 24)],
         # meter_id is required; with no sub-meter there is nothing to ask for
         "/api/sub-meter/history": [{"meter_id": m, "hours": 24}

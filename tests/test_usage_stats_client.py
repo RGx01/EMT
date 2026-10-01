@@ -4,9 +4,10 @@ Usage Stats (charts.html) reads /api/energy — C step 1, part 2, 1 Oct 2026.
 The daily/monthly/yearly views take every local day's row from
 `/api/energy?resolution=day&kind=all&include=stats`, the half-hour view one day's slots from
 `resolution=block&kind=day&include=stats` (usage_view; the same rows /api/charts/blocks-summary
-and blocks-day built, tests/test_energy_stats.py). The refresh poll still compares
-/api/charts/data-version until part 4, so the payload is stamped with that token, read BEFORE
-the data: a change between the two requests leaves the older token, and the next poll refreshes.
+and blocks-day built, tests/test_energy_stats.py). The refresh poll compares a change token —
+/api/charts/data-version until part 4, /api/energy?fields=fingerprint since — and the payload is
+stamped with it, read BEFORE the data: a change between the two requests leaves the older token,
+and the next poll refreshes.
 
 Checked in a browser on a production-like database: the billing period's daily chart, and the
 26 Oct 2025 clock change as 50 half-hours (01:00 twice) summing to that day's row.
@@ -42,6 +43,12 @@ class UsageStatsReadsTheOneEndpoint(unittest.TestCase):
     def test_the_token_is_read_before_the_data(self):
         body = _fn("_barFetchFresh")
         self.assertLess(body.index("_fetchDataVersion()"), body.index("/api/energy"))
+
+    def test_the_poll_token_is_api_energys_fingerprint(self):
+        body = _fn("_fetchDataVersion")
+        self.assertIn("/api/energy?fields=fingerprint", body)
+        self.assertIn("j.fingerprint.token", body)
+        self.assertNotIn("/api/charts/", _SRC)
 
     def test_no_blocks_is_an_empty_chart_not_an_error(self):
         self.assertIn("r.status === 404", _fn("_barFetchFresh"))

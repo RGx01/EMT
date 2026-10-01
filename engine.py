@@ -2685,10 +2685,10 @@ def _apply_pass2(block: dict) -> None:
         #
         # The resulting ~0.01p/block discrepancy between cost_remainder + sub_costs and
         # main_cost is an inherent measurement artefact of combining two sensor systems.
-        # Presentation layers (api_blocks_summary, billing charts) use rate-based
+        # Presentation layers (usage_view's Usage Stats rows, billing charts) use rate-based
         # subtraction (main_cost[rate] − sub_cost[rate]) for display, which avoids
         # accumulating this artefact across periods. See block_store._aggregate_usage
-        # and web/server.py api_blocks_summary for the display-layer approach.
+        # and usage_view._aggregate_block_rows for the display-layer approach.
         remainder_cost = round(remainder_kwh * parent_rate, 6)
 
         parent_import["kwh_total"]      = grid_kwh
@@ -12564,8 +12564,9 @@ async def reconcile_dispatch_overlay() -> dict:
                                       _ev_band_col, _home_band_col)
         # BL-27 / BL-58: the bill split / Usage Stats / chart price from block_segments
         # (source of truth), so the reconcile REWRITES THE SEGMENTS too. (The legacy EV columns
-        # above are re-stamped in lock-step because /blocks-summary + /blocks-day still read
-        # them.) A revert/restore puts the whole block on the new rate, so EV and house share it
+        # above are re-stamped in lock-step because the Usage Stats rows still read them —
+        # usage_view's EV split, /api/energy include=stats; /blocks-summary and /blocks-day
+        # until C step 1 deleted them.) A revert/restore puts the whole block on the new rate, so EV and house share it
         # — on capped tariffs as well (band labels carry EV peak / house day). Build those bands
         # directly at new_rate. Runs AFTER the column txn commits (set_block_segments opens its own).
         try:
