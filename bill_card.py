@@ -299,3 +299,69 @@ def panel_lines(panel, currency="£"):
                      ln(f'{currency}{row["cost"]:.2f}', row["color"], "1em")]
                     + rates(row["rates"], row["rate_color"]))
     return {"totals": totals, "cols": cols}
+
+
+def live_rows(live, days, cfg, ev_meter_id):
+    """Live Power's card rows for a window — `days` (local ISO dates) of
+    `BlockStore.get_day_live_rollups(...)`'s figures summed. The same rows, in the same
+    order and wording, /api/billing built from window SQL (C, 1 Oct 2026):
+
+      Total Import (raw grid, bold) · Direct import (raw − devices) · a row per device,
+      the EV as the hybrid figure in place of the physical EV meter's own (#468) ·
+      Grid Export · Standing Charge.
+
+    Costs to 2 dp, each row on its own — so, as before, the rows can sum a penny away
+    from the window's total (which is the bill's per-day rule, not their sum)."""
+    meters_cfg = cfg.get("meters") or {}
+    main = {"grid_kwh": 0.0, "imp_cost": 0.0, "exp_kwh": 0.0, "exp_cost": 0.0, "standing": 0.0}
+    subs, ev = {}, {"kwh": 0.0, "cost": 0.0}
+    for d in days:
+        sc = 0.0
+        for mid, m in (live["meters"].get(d) or {}).items():
+            if m["is_sub"]:
+                acc = subs.setdefault(mid, {"kwh": 0.0, "cost": 0.0})
+                acc["kwh"] += m["grid_kwh"]; acc["cost"] += m["imp_cost"]
+            else:
+                for k in ("grid_kwh", "imp_cost", "exp_kwh", "exp_cost"):
+                    main[k] += m[k]
+                if m["standing"] > 0 and not sc:
+                    sc = m["standing"]           # the day's charge, once (first main meter's)
+        main["standing"] += sc
+        e = live["ev"].get(d)
+        if e:
+            ev["kwh"] += e["kwh"]; ev["cost"] += e["cost"]
+
+    def _device(mid):
+        return ((meters_cfg.get(mid) or {}).get("meta") or {}).get("device") or mid
+
+    sub_rows, sub_kwh, sub_cost = [], 0.0, 0.0
+    for mid, v in sorted(subs.items()):          # GROUP BY meter_id's order, as the card had
+        if not (v["kwh"] > 0.001 or v["cost"] > 0.001) or mid == ev_meter_id:
+            continue                             # the hybrid EV replaces the EV meter's own row
+        cost = round(v["cost"], 2)
+        sub_rows.append({"label": "↳ %s (%.3f kWh)" % (_device(mid), v["kwh"]), "cost": cost, "bold": False})
+        sub_kwh += v["kwh"]; sub_cost += cost
+    ev_cost = round(ev["cost"], 2)
+    if ev["kwh"] > 0.001 or abs(ev_cost) > 0.001:
+        label = ((((meters_cfg.get(ev_meter_id) or {}).get("meta") or {}).get("device") or "EV")
+                 if ev_meter_id else "EV (from dispatch)")
+        sub_rows.append({"label": "↳ %s (%.3f kWh)" % (label, ev["kwh"]), "cost": ev_cost, "bold": False})
+        sub_kwh += ev["kwh"]; sub_cost += ev_cost
+
+    rows = []
+    total_cost = round(main["imp_cost"], 2)
+    direct_kwh = max(0.0, main["grid_kwh"] - sub_kwh)
+    _gc = main["imp_cost"] - sub_cost
+    direct_cost = round(_gc if main["imp_cost"] < 0 else max(0.0, _gc), 2)   # keep a real credit
+    if main["grid_kwh"] > 0.001 or total_cost > 0.001:
+        rows.append({"label": "Total Import (%.3f kWh)" % main["grid_kwh"], "cost": total_cost, "bold": True})
+    if direct_kwh > 0.001 or direct_cost > 0.001:
+        rows.append({"label": "Direct import (%.3f kWh)" % direct_kwh, "cost": direct_cost, "bold": False})
+    rows.extend(sub_rows)
+    if round(main["exp_kwh"], 4) > 0.001:
+        rows.append({"label": "Grid Export (%.3f kWh)" % round(main["exp_kwh"], 4),
+                     "cost": -round(round(main["exp_cost"], 4), 2), "bold": False})
+    standing = round(round(main["standing"], 4), 2)
+    if standing > 0.001:
+        rows.append({"label": "Standing Charge", "cost": standing, "bold": False})
+    return rows

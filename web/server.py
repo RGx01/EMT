@@ -5763,8 +5763,8 @@ def api_periods():
         import billing as _billing
 
         kind = (request.args.get("kind") or "billing").lower()
-        if kind not in ("billing", "month", "quarter", "year"):
-            return jsonify({"error": "kind must be billing|month|quarter|year"}), 400
+        if kind not in ("billing", "month", "quarter", "year", "live"):
+            return jsonify({"error": "kind must be billing|month|quarter|year|live"}), 400
 
         store = store_access.store()
         # Was an inline first-meter loop, which returns a SUB-METER's timezone on
@@ -5773,7 +5773,24 @@ def api_periods():
         tz = _ZI(tz_name)
         bounds = store.get_block_bounds()
 
-        if kind == "billing":
+        keys = labels = None
+        if kind == "live":
+            # Live Power's three cards (C, 1 Oct 2026; were /api/billing): today, the
+            # billing period holding today (#221's fallback when none does), the calendar
+            # year — each to its own end; no block lies past now, so that is "to date".
+            from datetime import timedelta as _td
+            import usage_view as _uv
+            _now = _dt.now(tz).replace(tzinfo=None)
+            _today = _now.replace(hour=0, minute=0, second=0, microsecond=0)
+            _bs, _be = _billing.current_billing_period(
+                store.get_config_periods(), tz, _now, _uv._main_meta(load_config()).get("billing_day"))
+            _ys = _today.replace(month=1, day=1)
+            periods = [(_today, _today + _td(days=1)), (_bs, _be), (_ys, _ys.replace(year=_ys.year + 1))]
+            keys = ["today", "bill", "year"]
+            labels = [_today.strftime("%d %b %Y"),
+                      "%s → %s" % (_bs.strftime("%d %b"), (_be - _td(days=1)).strftime("%d %b %Y")),
+                      "1 Jan → %s" % _today.strftime("%d %b %Y")]
+        elif kind == "billing":
             periods = _billing.get_billing_periods_from_config_periods(
                 store.get_config_periods(), tz=tz)
         else:
@@ -5799,6 +5816,9 @@ def api_periods():
                 "end_utc": _utc(pe),
                 "is_current": ps <= now_local < pe}
                for ps, pe in periods]
+        if keys:
+            for p, k, lb in zip(out, keys, labels):
+                p["key"], p["label"] = k, lb
 
         # `include=net_cost`: each period's bill total and whether it holds any data,
         # for a picker that labels every period with its total (the Billing tab's).
@@ -5806,10 +5826,17 @@ def api_periods():
         # the bill's own per-day rule — the rule the Billing card's Total Bill is
         # reconciled against (80 of 80 periods to the penny, .build/reconcile_v4.py).
         include = {x.strip() for x in (request.args.get("include") or "").split(",") if x.strip()}
-        if include - {"net_cost", "carbon"}:
-            return jsonify({"error": "include: unknown facet(s) %s" % sorted(include - {"net_cost", "carbon"})}), 400
-        rows = (store.get_day_rollups(out[0]["start_utc"], out[-1]["end_utc"], tz_name)
-                if include and out else [])
+        if include - {"net_cost", "carbon", "rows"}:
+            return jsonify({"error": "include: unknown facet(s) %s"
+                            % sorted(include - {"net_cost", "carbon", "rows"})}), 400
+        if "rows" in include and kind != "live":
+            return jsonify({"error": "include=rows is served at kind=live"}), 400
+        # The span every period lies in — min/max, not first/last: kind=live's periods
+        # (today, this bill, this year) are not in time order.
+        span = ((min(p["start_utc"] for p in out), max(p["end_utc"] for p in out))
+                if out else (None, None))
+        rows = (store.get_day_rollups(span[0], span[1], tz_name)
+                if (include - {"rows"}) and out else [])
         if "net_cost" in include and out:
             _mm = next(((m.get("meta") or {}) for m in (load_config().get("meters") or {}).values()
                         if not (m.get("meta") or {}).get("sub_meter")), {})
@@ -5826,6 +5853,21 @@ def api_periods():
                 p["net_cost"] = _billing.bill_net_from_day_rollups(rs)
                 p["net_cost_text"] = "%s%.2f" % (currency, p["net_cost"])   # as the picker prints it
                 p["has_data"] = bool(rs)
+        if "rows" in include and out:
+            # Live Power's card rows per window, folded from ONE per-day pass
+            # (get_day_live_rollups) — the rows /api/billing built with six queries per
+            # window. The window's total is `net_cost` (include it): the bill's per-day
+            # rule, which the rows, each rounded on its own, can miss by a penny.
+            import bill_card as _bc
+            import usage_view as _uv
+            _cfg = load_config()
+            _ev = _uv._configured_ev_meter_id(_cfg)
+            live = store.get_day_live_rollups(span[0], span[1], tz_name, _ev)
+            from datetime import date as _date, timedelta as _td2
+            for p in out:
+                d0, d1 = _date.fromisoformat(p["start"]), _date.fromisoformat(p["end"])
+                ds = [(d0 + _td2(days=i)).isoformat() for i in range((d1 - d0).days)]
+                p["rows"] = _bc.live_rows(live, ds, _cfg, _ev)
         if "carbon" in include and out:
             # Net carbon (g) per period, the main meter's: `has_carbon` from the count of
             # blocks carrying any — a period of real net zero is not "no data".

@@ -50,6 +50,32 @@ def _parse_block_start(iso_str: str, tz: "ZoneInfo") -> datetime:
     return _utc_to_local(datetime.fromisoformat(iso_str), tz)
 
 
+def current_billing_period(config_periods, tz, now_local, billing_day):
+    """The billing period containing `now_local`'s date: `(start, end_exclusive)`, naive
+    LOCAL midnights — Live Power's "This Bill" (moved here from `/api/billing`, C 1 Oct 2026).
+
+    From the config periods' own billing days where a generated period holds today. The
+    generator stops at the last block, so when the newest data predates the current period
+    (or there are no periods) none does, and the current one is built from `billing_day`
+    (the config file's, as /api/billing used) — issue #221: "This Bill" must show the
+    CURRENT period even with no data yet, not the last historical one."""
+    import calendar as _cal
+    today = now_local.date()
+    for ps, pe in get_billing_periods_from_config_periods(config_periods, tz=tz):
+        if ps.date() <= today < pe.date():
+            return ps.replace(tzinfo=None), pe.replace(tzinfo=None)
+    bd = int(billing_day or 1)
+    dim = _cal.monthrange(now_local.year, now_local.month)[1]
+    if now_local.day >= min(bd, dim):
+        sy, sm = now_local.year, now_local.month
+    else:
+        sm = now_local.month - 1 or 12
+        sy = now_local.year if now_local.month > 1 else now_local.year - 1
+    start = datetime(sy, sm, min(bd, _cal.monthrange(sy, sm)[1]))
+    ey, em = (sy + 1, 1) if sm == 12 else (sy, sm + 1)
+    return start, datetime(ey, em, min(bd, _cal.monthrange(ey, em)[1]))
+
+
 def calendar_periods(kind, first, last):
     """Calendar period boundaries of `kind` spanning [first, last].
 

@@ -7843,6 +7843,79 @@ class BlockStore:
             params).fetchall()
         return [dict(r) for r in rows]
 
+    def get_day_live_rollups(self, utc_start: str, utc_end: str, tz_name: str,
+                             ev_meter_id) -> dict:
+        """Live Power's card rows, per LOCAL day over [utc_start, utc_end) — summed over
+        the days of a window, they are `/api/billing`'s window figures (C, 1 Oct 2026).
+
+        `meters`: {day: {meter_id: {is_sub, grid_kwh, imp_cost, exp_kwh, exp_cost,
+        standing}}} — the device flag from the ACTIVE config period, kWh grid-attributed
+        (`COALESCE(imp_kwh_grid, imp_kwh)`), the standing charge the day's earliest
+        non-zero one; meters with no row in the active period are left out, as the card
+        always left them. `ev`: {day: {kwh, cost}} — the hybrid EV (#468): the main
+        meter's bill-authoritative `imp_kwh_ev` wherever it is set, else the physical EV
+        meter's grid kWh (`ev_meter_id`, None for an account without one). Unrounded, so
+        a window's sum is the card's to the last digit. Two queries over the span —
+        the card ran six per window, three windows, with per-block Python."""
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+        lo = datetime.fromisoformat(utc_start).replace(tzinfo=timezone.utc)
+        hi = datetime.fromisoformat(utc_end).replace(tzinfo=timezone.utc)
+        if hi <= lo:
+            return {"meters": {}, "ev": {}}
+        fmt = "%Y-%m-%dT%H:%M:%S"
+        days, d = [], lo.astimezone(tz).date()
+        while True:
+            start = datetime(d.year, d.month, d.day, tzinfo=tz).astimezone(timezone.utc)
+            if start >= hi:
+                break
+            nd = d + timedelta(days=1)
+            end = datetime(nd.year, nd.month, nd.day, tzinfo=tz).astimezone(timezone.utc)
+            s0, e0 = max(start, lo), min(end, hi)
+            if e0 > s0:
+                days.append((d.isoformat(), s0.strftime(fmt), e0.strftime(fmt)))
+            d = nd
+        if not days:
+            return {"meters": {}, "ev": {}}
+        cte = "WITH d(day, s, e) AS (VALUES " + ",".join("(?,?,?)" for _ in days) + ") "
+        params = [x for day in days for x in day]
+        active = ("SELECT id FROM config_periods "
+                  "WHERE effective_to IS NULL ORDER BY effective_from DESC LIMIT 1")
+        meters = {}
+        for r in self._conn.execute(
+                cte +
+                "SELECT d.day AS day, b.meter_id, m.is_sub_meter AS is_sub, "
+                "       COALESCE(SUM(COALESCE(b.imp_kwh_grid, b.imp_kwh)), 0) AS grid_kwh, "
+                "       COALESCE(SUM(b.imp_cost), 0) AS imp_cost, "
+                "       COALESCE(SUM(b.exp_kwh), 0) AS exp_kwh, "
+                "       COALESCE(SUM(b.exp_cost), 0) AS exp_cost, "
+                "       COALESCE((SELECT b2.standing_charge FROM blocks b2 "
+                "                 WHERE b2.meter_id = b.meter_id "
+                "                   AND b2.block_start >= d.s AND b2.block_start < d.e "
+                "                   AND b2.standing_charge > 0 "
+                "                 ORDER BY b2.block_start LIMIT 1), 0) AS standing "
+                "FROM d JOIN blocks b ON b.block_start >= d.s AND b.block_start < d.e "
+                "JOIN meters m ON m.meter_id = b.meter_id AND m.config_period_id = (" + active + ") "
+                "GROUP BY d.day, b.meter_id", params).fetchall():
+            meters.setdefault(r["day"], {})[r["meter_id"]] = {
+                "is_sub": bool(r["is_sub"]), "grid_kwh": float(r["grid_kwh"]),
+                "imp_cost": float(r["imp_cost"]), "exp_kwh": float(r["exp_kwh"]),
+                "exp_cost": float(r["exp_cost"]), "standing": float(r["standing"])}
+        ev = {}
+        for r in self._conn.execute(
+                cte +
+                "SELECT d.day AS day, "
+                "       COALESCE(SUM(CASE WHEN m.imp_kwh_ev IS NOT NULL THEN m.imp_kwh_ev "
+                "                         ELSE COALESCE(s.imp_kwh_grid, s.imp_kwh, 0) END), 0) AS kwh, "
+                "       COALESCE(SUM(CASE WHEN m.imp_kwh_ev IS NOT NULL THEN COALESCE(m.imp_cost_ev, 0) "
+                "                         ELSE COALESCE(s.imp_cost, 0) END), 0) AS cost "
+                "FROM d JOIN blocks m ON m.block_start >= d.s AND m.block_start < d.e "
+                "                    AND m.meter_id = 'electricity_main' "
+                "LEFT JOIN blocks s ON s.block_start = m.block_start AND s.meter_id = ? "
+                "GROUP BY d.day", params + [ev_meter_id]).fetchall():
+            ev[r["day"]] = {"kwh": float(r["kwh"]), "cost": float(r["cost"])}
+        return {"meters": meters, "ev": ev}
+
     def day_fingerprints(self, utc_start: str, utc_end: str) -> dict:
         """`{local-ish day: token}` over [utc_start, utc_end), one row per day.
 
