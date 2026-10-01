@@ -684,7 +684,7 @@ var _insMode    = 'month';   // 'month' | 'year'
 var _insCompare = null;      // null | 'prev' | 'year' | 'lastyear'
 var _calYear    = new Date().getFullYear();
 var _calMonth   = new Date().getMonth() + 1;  // 1-12
-var _dataBounds  = { earliest: null, latest: null };  // CARBON range — from /api/insights/data-bounds
+var _dataBounds  = { earliest: null, latest: null };  // CARBON range — /api/periods bounds.carbon_*
 var _usageBounds = { earliest: null, latest: null };  // full energy range (incl. imported history)
 // The Usage tab has kWh/cost back through imported history that predates carbon,
 // so its nav/compare gating must use the full energy range, not the carbon one.
@@ -1692,6 +1692,16 @@ function renderComparison(d, c) {
 }
 
 // ── Period nav ───────────────────────────────────────────────────────────────
+// Put the Month/Year buttons and the compare row in line with _insMode. Restoring a saved
+// Year view left Month highlighted and the month compare buttons showing.
+function _insSyncModeUI() {
+  document.querySelectorAll('#ins-mode-seg .bar-seg-btn').forEach(function(b) {
+    b.classList.toggle('active', (b.getAttribute('onclick') || '').indexOf("'" + _insMode + "'") !== -1);
+  });
+  document.getElementById('ins-compare-seg').style.display      = _insMode === 'month' ? '' : 'none';
+  document.getElementById('ins-compare-year-seg').style.display = _insMode === 'year'  ? '' : 'none';
+}
+
 function insSetMode(mode, el) {
   _insMode    = mode;
   _insCompare = null;
@@ -1873,7 +1883,28 @@ function updatePeriodNav() {
   document.getElementById('btn-prev').disabled = atPast;
 }
 
+// One period's figures from /api/energy (C step 2, 1 Oct 2026): `facet` is `carbon` for the
+// Carbon tab, `usage` for Usage — the same aggregators the /api/insights|usage/calendar-*
+// routes called. The renderers read the aggregator's keys flat, beside the period's
+// start / end (inclusive) / label, which is what those routes returned; so flatten.
+function _insEnergyUrl(facet, kind, year, month) {
+  return apiUrl('/api/energy?resolution=period&include=' + facet + '&kind=' + kind +
+                '&year=' + year + (kind === 'month' ? '&month=' + month : ''));
+}
+async function _insFetchPeriod(url, facet) {
+  var r = await fetch(url);
+  var j = await r.json();
+  if (j.error) throw new Error(j.error);
+  var p = j.period || {};
+  return Object.assign({}, j[facet] || {}, {period_start: p.period_start,
+                       period_end: p.period_end, period_label: p.period_label});
+}
+// A newer navigation supersedes an older one: only the latest load may render. Without it a
+// slow response for a period the user has already moved past overwrote the current one.
+var _insLoadSeq = 0;
+
 async function loadPeriod() {
+  var seq = ++_insLoadSeq;
   document.getElementById('insights-body').style.display = 'none';
   document.getElementById('no-carbon').style.display     = 'none';
   document.getElementById('tab-usage').style.display     = 'none';
@@ -1887,34 +1918,32 @@ async function loadPeriod() {
   try {
     var url, cmpUrl;
     var isUsage = (_activeInsightTab === 'usage');
-    var apiBase = isUsage ? '/api/usage' : '/api/insights';
+    var facet = isUsage ? 'usage' : 'carbon';
 
     if (_insMode === 'month') {
-      url = apiUrl(apiBase + '/calendar-month?year=' + _calYear + '&month=' + _calMonth);
+      url = _insEnergyUrl(facet, 'month', _calYear, _calMonth);
       if (compareMode === 'prev') {
         var pm = _calMonth - 1, py = _calYear;
         if (pm < 1) { pm = 12; py--; }
-        cmpUrl = apiUrl(apiBase + '/calendar-month?year=' + py + '&month=' + pm);
+        cmpUrl = _insEnergyUrl(facet, 'month', py, pm);
       } else if (compareMode === 'year') {
-        cmpUrl = apiUrl(apiBase + '/calendar-month?year=' + (_calYear - 1) + '&month=' + _calMonth);
+        cmpUrl = _insEnergyUrl(facet, 'month', _calYear - 1, _calMonth);
       }
     } else {
-      url = apiUrl(apiBase + '/calendar-year?year=' + _calYear);
+      url = _insEnergyUrl(facet, 'year', _calYear);
       if (compareMode === 'lastyear') {
-        cmpUrl = apiUrl(apiBase + '/calendar-year?year=' + (_calYear - 1));
+        cmpUrl = _insEnergyUrl(facet, 'year', _calYear - 1);
       }
     }
 
-    var r = await fetch(url);
-    var d = await r.json();
-    if (d.error) throw new Error(d.error);
-
-    var cmpData = null;
-    if (cmpUrl) {
-      var cr = await fetch(cmpUrl);
-      cmpData = await cr.json();
-      if (cmpData.error) cmpData = null;
-    }
+    // The period and its comparison together — they were fetched one after the other.
+    // A comparison that fails is just not shown, as before.
+    var both = await Promise.all([
+      _insFetchPeriod(url, facet),
+      cmpUrl ? _insFetchPeriod(cmpUrl, facet).catch(function() { return null; }) : Promise.resolve(null)
+    ]);
+    if (seq !== _insLoadSeq) return;            // superseded by a newer navigation
+    var d = both[0], cmpData = both[1];
 
     document.getElementById('insights-loading').style.display = 'none';
     if (isUsage) {
@@ -1923,6 +1952,7 @@ async function loadPeriod() {
       renderInsights(d, cmpData);
     }
   } catch(e) {
+    if (seq !== _insLoadSeq) return;
     document.getElementById('insights-loading').textContent = 'Failed to load insights: ' + e.message;
   }
 }
@@ -1984,25 +2014,29 @@ async function initInsights() {
     document.getElementById('ins-compare-seg').style.display = '';
     document.getElementById('ins-cmp-sep').style.display     = '';
 
-    // Fetch data bounds to gate navigation and compare buttons
-    var br = await fetch(apiUrl('/api/insights/data-bounds'));
-    var bd = await br.json();
-    if (!bd.error) {
-      if (bd.earliest)       _dataBounds  = { earliest: bd.earliest,       latest: bd.latest };
-      if (bd.usage_earliest) _usageBounds = { earliest: bd.usage_earliest, latest: bd.usage_latest };
-    }
-
-    // Fetch billing periods for trend chart
-    var pr = await fetch(apiUrl('/api/insights/periods'));
+    // The data bounds (to gate navigation and the compare buttons) and the billing periods
+    // with their net carbon (the trend strip), in ONE request — /api/periods (C step 2;
+    // were /api/insights/data-bounds and /api/insights/periods). Mind the names:
+    // /api/periods' `earliest`/`latest` are ALL blocks (the Usage tab's range) and
+    // `carbon_earliest`/`carbon_latest` the carbon range (the Carbon tab's).
+    var pr = await fetch(apiUrl('/api/periods?kind=billing&include=carbon'));
     var pd = await pr.json();
     if (!pd.error) {
-      _periods = (pd.periods || []).filter(function(p) { return p.has_carbon; });
+      var bd = pd.bounds || {};
+      if (bd.carbon_earliest) _dataBounds  = { earliest: bd.carbon_earliest, latest: bd.carbon_latest };
+      if (bd.earliest)        _usageBounds = { earliest: bd.earliest,        latest: bd.latest };
+      _periods = (pd.periods || []).filter(function(p) { return p.has_carbon; }).map(function(p) {
+        return { period_start: p.start, period_end: p.end, is_current: p.is_current,
+                 has_carbon: p.has_carbon, carbon_g_net: p.carbon_g_net };
+      });
     }
 
     // Restore last position
     try {
       var _saved = JSON.parse(localStorage.getItem('emt_insights_state') || '{}');
-      if (_saved.mode   && ['bill','month','year'].indexOf(_saved.mode) !== -1) _insMode = _saved.mode;
+      // 'month' | 'year' — the page has no third mode ('bill' was accepted here and then
+      // loaded as a year). The mode buttons and the compare row follow (_insSyncModeUI).
+      if (_saved.mode   && ['month','year'].indexOf(_saved.mode) !== -1) _insMode = _saved.mode;
       if (_saved.year   && _saved.year > 2000)  _calYear  = _saved.year;
       if (_saved.month  && _saved.month >= 1 && _saved.month <= 12) _calMonth = _saved.month;
       if (_saved.compare) {
@@ -2021,6 +2055,7 @@ async function initInsights() {
         document.getElementById('tab-carbon').style.display = _saved.tab === 'carbon' ? 'block' : 'none';
         document.getElementById('tab-usage').style.display  = _saved.tab === 'usage'  ? 'block' : 'none';
       }
+      _insSyncModeUI();
       // Restore compare button state
       if (_saved.compare) {
         document.querySelectorAll('.bar-seg-btn').forEach(function(b) {
