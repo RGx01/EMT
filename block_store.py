@@ -1092,7 +1092,7 @@ class BlockStore:
         # so carbon_g and other late-added columns are guaranteed to exist
         # Covering index for all insights/summary queries — avoids row fetches.
         # Includes all columns used by _aggregate_insights, _aggregate_usage,
-        # and api_blocks_summary. Rebuilt if schema changes (DROP + CREATE).
+        # and the Usage Stats rows (usage_view). Rebuilt if schema changes (DROP + CREATE).
         _insights_idx_sql = (
             "CREATE INDEX IF NOT EXISTS idx_blocks_insights "
             "ON blocks (block_start, meter_id, config_period_id, "

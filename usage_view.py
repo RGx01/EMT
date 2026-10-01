@@ -1,10 +1,12 @@
 """
 usage_view.py — the Usage Stats and Spiral data: per-day and per-half-hour rows.
 
-C step 1 (1 Oct 2026). The rows `/api/charts/blocks-summary` and `/api/charts/blocks-day`
-built in web/server.py, moved here unchanged so `/api/energy` (`include=stats`) serves them
-from the same code: day_stats for a range of local days, slot_stats for the half-hours of a
-range. Until the two routes are deleted they call these too, so the two cannot differ.
+Served by `/api/energy` (`include=stats`): day_stats for a range of local days, slot_stats for
+the half-hours of a range. C step 1 (1 Oct 2026) moved this here, unchanged, from the two
+routes that built it in web/server.py — `/api/charts/blocks-summary` (a day per row, all
+history) and `/api/charts/blocks-day` (a half-hour per row, one day) — and then deleted them
+once the Charts page read `/api/energy`. Before deletion both routes were byte-identical to
+this code on real databases, and the day rows equal on every day.
 
 The aggregation is `_aggregate_block_rows`: the house remainder (`imp_kwh_remainder`), devices
 at their grid-attributed kWh (`imp_kwh_grid`), the Direct cost as main − Σ devices (clamped per
@@ -563,7 +565,7 @@ def _apply_ev(store, cfg, raw, rows, meters, utc_start, utc_end, bucket_of, key_
 
 def day_stats(store, cfg, tz_name, utc_start, utc_end) -> dict:
     """One row per LOCAL day with blocks in [utc_start, utc_end) — what /blocks-summary
-    returned for the whole history: `year`, `month`, `day`, the billing period the day
+    returned for the whole history before it was deleted: `year`, `month`, `day`, the billing period the day
     falls in, and `_bucket_to_row_values`' figures, EV split applied. Plus page_meta."""
     import energy_charts as _ec
     meta = page_meta(cfg)

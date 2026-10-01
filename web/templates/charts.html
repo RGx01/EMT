@@ -1305,9 +1305,9 @@ var barChartInstance = null;
 var barInited = false;
 var barLastFetch = 0;        // timestamp of last successful fetch
 var BAR_TTL_MS = 5 * 60 * 1000;  // re-fetch if data older than 5 minutes
-var _lastDataVersion = null; // /api/charts/data-version token at last render (gate refreshes)
+var _lastDataVersion = null; // /api/energy?fields=fingerprint token at last render (gate refreshes)
 var _refreshInFlight = false;
-var barBlockMinutes = 30;    // populated from api/blocks_summary response
+var barBlockMinutes = 30;    // populated from the /api/energy include=stats response
 var barMeters = [];       // [{id, label, color, is_sub}]
 var barExportColor = '#ff7f0e';
 
@@ -1365,8 +1365,8 @@ function barLoadState(availableYears) {
   } catch(e) {}
 }
 
-// Per-instance cache of the last Usage Stats payload (/api/energy include=stats, the
-// shape /api/charts/blocks-summary returned), so returning to the Charts
+// Per-instance cache of the last Usage Stats payload (/api/energy include=stats), so
+// returning to the Charts
 // page (a full navigation from Overview etc.) can paint instantly from the last
 // result instead of showing a blank chart while the fresh fetch runs.
 function _barCacheKey() { try { return EMT.lsKey('emt_bar_summary'); } catch(e) { return 'emt_bar_summary'; } }
@@ -1416,7 +1416,7 @@ async function _barFetchFresh() {
   // no cached paint) — a background refresh of an already-drawn chart shouldn't flash it.
   if (!barInited || !barData || !barData.length) _setBarLoading(true);
   try {
-    // Every local day's row, from the one endpoint (C step 1, part 2). The change
+    // Every local day's row, from the one endpoint (C step 1). The change
     // token is read FIRST: if the data moves between the two requests the token is the
     // older one, so the next poll refreshes — never a stale chart under a fresh token.
     var ver = await _fetchDataVersion();
@@ -1446,7 +1446,7 @@ async function barInit() {
   var now = Date.now();
   if (barInited && barData && (now - barLastFetch) < BAR_TTL_MS) { barRender(); return; }
   // Fresh page load: paint from the cached payload immediately (no blank chart),
-  // then confirm freshness against the tiny data-version token — only re-fetching
+  // then confirm freshness against the tiny fingerprint token — only re-fetching
   // the full summary if the data actually changed.
   if (!barInited) {
     var cached = _loadBarCache();
@@ -2793,12 +2793,13 @@ function _restoreChartScroll(s) {
   var bw = document.getElementById('bar-table-wrap');
   if (bw && s.bar) bw.scrollTop = s.bar;
 }
-// Lightweight change token; null on failure.
+// Lightweight change token — /api/energy's global fingerprint (blocks, segments,
+// billing periods, meters, bill rounding, bulk epoch); null on failure.
 async function _fetchDataVersion() {
   try {
-    var r = await fetch(apiUrl('/api/charts/data-version'));
+    var r = await fetch(apiUrl('/api/energy?fields=fingerprint'));
     var j = await r.json();
-    return (j && j.version) || null;
+    return (j && j.fingerprint && j.fingerprint.token) || null;
   } catch (e) { return null; }
 }
 

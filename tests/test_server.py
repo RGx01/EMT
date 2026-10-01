@@ -312,11 +312,11 @@ class TestRouteRegistration(unittest.TestCase):
     def test_api_last_page_registered(self):
         self.assertTrue(self._registered("api_set_last_page"))
 
-    def test_api_blocks_summary_registered(self):
-        self.assertTrue(self._registered("api_blocks_summary"))
-
-    def test_api_charts_data_version_registered(self):
-        self.assertTrue(self._registered("api_charts_data_version"))
+    def test_the_charts_routes_are_gone(self):
+        """C step 1, part 4 (1 Oct 2026): the Charts page reads /api/energy — its rows
+        (`include=stats`) and its change token (`fields=fingerprint`)."""
+        for name in ("api_blocks_summary", "api_blocks_day", "api_charts_data_version"):
+            self.assertFalse(self._registered(name), name)
 
     def test_api_backup_zip_entries_registered(self):
         self.assertTrue(self._registered("api_backup_zip_entries"))
@@ -657,7 +657,22 @@ class TestApiChartEndpoints(unittest.TestCase):
 # /api/charts/blocks-summary
 # ─────────────────────────────────────────────────────────────────────────────
 
+_STATS_URL = "/api/energy?resolution=day&kind=all&include=stats"
+
+
+class _Stats:
+    """/api/energy's `stats` facet in the shape the deleted /api/charts/blocks-summary
+    returned, so these tests keep asserting the same rows (usage_view.day_stats)."""
+
+    def __init__(self, r):
+        self.status_code, self.data, self._j = r.status_code, r.data, r.get_json()
+
+    def get_json(self):
+        return (self._j or {}).get("stats", self._j)
+
+
 class TestApiBlocksSummary(unittest.TestCase):
+    """The Usage Stats day rows — /api/energy?include=stats (was /api/charts/blocks-summary)."""
 
     def setUp(self):
         self.client = make_client()
@@ -667,7 +682,7 @@ class TestApiBlocksSummary(unittest.TestCase):
         blk = blocks if blocks is not None else MINIMAL_BLOCKS
         eio.load_json = lambda path, default=None: cfg if "meters_config" in path else default
         server._store = _make_test_store(blk)
-        return self.client.get("/api/charts/blocks-summary")
+        return _Stats(self.client.get(_STATS_URL))
 
     def test_returns_200(self):
         r = self._get()
@@ -695,12 +710,14 @@ class TestApiBlocksSummary(unittest.TestCase):
             for field in ("year", "month", "day"):
                 self.assertIn(field, row)
 
-    def test_empty_blocks_returns_empty_rows(self):
+    def test_no_blocks_is_a_404_the_page_draws_as_empty(self):
+        """kind=all has no range without blocks; Usage Stats and Spiral draw an empty
+        chart on the 404 (tests/test_usage_stats_client.py) — blocks-summary returned
+        200 with empty rows."""
         eio.load_json = lambda path, default=None: MINIMAL_CONFIG if "meters_config" in path else default
         server._store = _make_test_store([])
-        r = self.client.get("/api/charts/blocks-summary")
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.get_json()["rows"], [])
+        r = self.client.get(_STATS_URL)
+        self.assertEqual(r.status_code, 404)
 
     def test_meters_list_excludes_export_entry(self):
         r = self._get()
@@ -764,7 +781,7 @@ class TestApiBlocksSummaryCarbonG(unittest.TestCase):
         eio.load_json = lambda path, default=None: cfg if "meters_config" in path else default
         _use_store(store)
         client = make_client(store=store)
-        r = client.get("/api/charts/blocks-summary")
+        r = _Stats(client.get(_STATS_URL))
         self.assertEqual(r.status_code, 200)
         return r.get_json()
 
@@ -4092,7 +4109,7 @@ class TestApiBlocksSummaryDirectImportCost(unittest.TestCase):
                      "ev_charger": {"meta": {"sub_meter": True}},
                  }
              }):
-            r = self.client.get("/api/charts/blocks-summary")
+            r = _Stats(self.client.get(_STATS_URL))
         # NO skipTest BELOW. The three skips this replaces ("returned {status}",
         # "No day data returned", "Apr 7 not in response") meant the test had never
         # executed its assertion: the endpoint returns "rows", not "days", so the
@@ -4100,9 +4117,9 @@ class TestApiBlocksSummaryDirectImportCost(unittest.TestCase):
         # indistinguishable from a skip on a broken endpoint, which is how a test
         # asserting nothing sat in the suite reporting success.
         self.assertEqual(r.status_code, 200, r.data[:200])
-        d = json.loads(r.data)
+        d = r.get_json()
         rows = d.get("rows", [])
-        self.assertTrue(rows, "blocks-summary returned no rows")
+        self.assertTrue(rows, "the stats facet returned no rows")
         apr7 = next((row for row in rows
                      if row.get("billing_period_start") == "2026-04-07"), None)
         self.assertIsNotNone(apr7, [r.get("billing_period_start") for r in rows])

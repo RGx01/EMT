@@ -592,7 +592,7 @@ def calculate_billing_summary_for_period(blocks, period_start, period_end, store
         _t["cost"]     = round(_t["cost"], 3)
         _t["cost_exc"] = round(_t["cost_exc"], 3)
     # total_cost = sum of daily net_cost values.
-    # Same method as api_blocks_summary: round each day's imp/sc/exp to 4dp,
+    # Same method as the Usage Stats rows (usage_view): round each day's imp/sc/exp to 4dp,
     # compute net = round(imp + sc - exp, 2) per day, sum across days.
     # This ensures billing chart total agrees with Usage Stats at every level.
     # Populate main-meter-only daily accumulators from blocks.

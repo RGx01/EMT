@@ -2389,7 +2389,14 @@ def _config_token(store) -> str:
 
 
 def _blocks_data_version(store) -> str:
-    """A cheap token that changes whenever the block data changes — row COUNT +
+    """`/api/energy?fields=fingerprint`'s `token` — the Charts page's change poll (it was
+    /api/charts/data-version until C step 1, part 4, 1 Oct 2026). Global by design: the
+    poll only asks "has anything changed?" and refreshes the open tab; a client caching
+    per day compares `fingerprint.days` instead. The same columns as day_fingerprints,
+    over all history in one aggregate — 52 ms against 163 ms for every day's fingerprint
+    on a 138k-block database, every minute per open tab.
+
+    A cheap token that changes whenever the block data changes — row COUNT +
     newest block_start + a value fingerprint (summed kWh / cost / carbon). Lets the
     Charts and Usage-Stats UIs skip a rebuild on tab-focus/poll when nothing has
     changed (no needless blank) and refresh promptly when it has (e.g. a new live
@@ -2463,42 +2470,6 @@ def _blocks_data_version(store) -> str:
             f"{_cfgf}:{_epoch}:{_br}:{_sf}")
 
 
-@app.route("/api/charts/data-version")
-def api_charts_data_version():
-    """Lightweight change token for the Charts UI (see _blocks_data_version)."""
-    try:
-        return jsonify({"version": _blocks_data_version(store_access.store())})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/charts/blocks-summary")
-def api_blocks_summary():
-    """The Usage Stats / Spiral rows for the whole history, one per local day —
-    `usage_view.day_stats`, which `/api/energy?resolution=day&kind=all&include=stats`
-    serves too. Kept until the Charts page reads that (C step 1, part 4).
-
-    (Its docstring said the main remainder and standing charge came from
-    `calculate_billing_summary_for_period`; it never called it — the rows have always
-    been `_aggregate_block_rows` over the blocks.)"""
-    try:
-        import usage_view
-        cfg   = load_config()
-        store = store_access.store()
-        meta  = usage_view.page_meta(cfg)
-        tz_name = usage_view._main_meta(cfg).get("timezone", "UTC")
-        span = _all_history_utc(store, tz_name, meta["block_minutes"])
-        if span is None:
-            return jsonify({"currency": meta["currency"], "rows": [], "meters": [],
-                            "export_color": "#ff7f0e"})
-        out = usage_view.day_stats(store, cfg, tz_name, *span)
-        out["data_version"] = _blocks_data_version(store)
-        return jsonify(out)
-    except Exception as e:
-        logger.error("api_blocks_summary: %s", e)
-        return jsonify({"error": str(e)}), 500
-
-
 def _all_history_utc(store, tz_name, block_minutes):
     """[utc_start, utc_end) covering every LOCAL day that holds a block: local midnight
     of the first block's day to local midnight after the last's. None when there are
@@ -2514,172 +2485,6 @@ def _all_history_utc(store, tz_name, block_minutes):
     if not days:
         return None
     return _ldtub(days[0], tz_name)[0], _ldtub(days[-1], tz_name)[1]
-
-
-@app.route("/api/charts/blocks-day")
-def api_blocks_day():
-    """Per-half-hour breakdown for ONE local day — the Usage Stats 'HH' granularity.
-
-    Same billing-accurate aggregation as /blocks-summary (rate-keyed direct-cost
-    subtraction, sub-meters, carbon split, export), but bucketed by half-hour SLOT
-    instead of by day, and ALWAYS returning a full day of slots (zero-filled), so
-    the chart shows 48 bars even for slots that aren't populated yet.
-    Query: date=YYYY-MM-DD (local; default today). Rows match barAggRows' shape."""
-    try:
-        from zoneinfo import ZoneInfo as _ZI
-        from datetime import datetime as _dt, timedelta as _td
-        import energy_charts as _ec
-        from block_store import local_date_to_utc_bounds as _ldtub
-
-        cfg = load_config()
-        store = store_access.store()
-        main_meta = {}
-        for md in cfg.get("meters", {}).values():
-            if not (md.get("meta") or {}).get("sub_meter"):
-                main_meta = md.get("meta") or {}
-                break
-        tz_name = main_meta.get("timezone", "UTC")
-        currency = main_meta.get("currency_symbol", "£")
-        bm = int(main_meta.get("block_minutes") or 30)
-        billing_day = int(main_meta.get("billing_day") or 1)
-        _tz = _ZI(tz_name)
-        _utc = _ZI("UTC")
-
-        date_str = (request.args.get("date") or "").strip()
-        if not date_str:
-            date_str = _dt.now(_tz).strftime("%Y-%m-%d")
-        try:
-            _day = _dt.strptime(date_str, "%Y-%m-%d").date()
-        except ValueError:
-            return jsonify({"error": "bad date (want YYYY-MM-DD)"}), 400
-
-        _u_s, _u_e = _ldtub(date_str, tz_name)          # UTC bounds for the local day
-        active_pid_sq = ("SELECT id FROM config_periods "
-                         "WHERE effective_to IS NULL ORDER BY effective_from DESC LIMIT 1")
-        _raw = store._conn.execute(f"""
-            SELECT b.block_start, b.meter_id, m.is_sub_meter,
-                   b.imp_kwh, b.imp_kwh_grid, b.imp_kwh_remainder,
-                   b.imp_rate, b.imp_cost, b.imp_kwh_ev, b.imp_cost_ev,
-                   b.rate_source, b.source,
-                   b.exp_kwh, b.exp_cost,
-                   b.standing_charge, b.carbon_g
-            FROM blocks b
-            JOIN config_periods cp ON b.config_period_id = cp.id
-            LEFT JOIN meters m ON m.meter_id = b.meter_id
-              AND m.config_period_id = ({active_pid_sq})
-            WHERE b.block_start >= ? AND b.block_start < ?
-            ORDER BY b.block_start
-        """, (_u_s, _u_e)).fetchall()
-
-        def _slot_of(bs):
-            return (_dt.fromisoformat(bs).replace(tzinfo=_utc)
-                    .astimezone(_tz).strftime("%H:%M"))
-
-        # Same billing-accurate aggregation as /blocks-summary, bucketed by slot.
-        # standing_scope='global' books the day's single standing charge on the
-        # first slot that carries one, so the 48 bars sum to exactly one day.
-        slots = _aggregate_block_rows(
-            _raw, _slot_of, standing_scope="global", billing_day_fallback=billing_day)
-
-        n_slots = int(round(24 * 60 / max(1, bm)))
-        _base = _dt(_day.year, _day.month, _day.day)
-        rows = []
-        for i in range(n_slots):
-            sk = (_base + _td(minutes=bm * i)).strftime("%H:%M")
-            _s = slots.get(sk)
-            if not _s:
-                rows.append({"slot": sk, "label": sk, "standing": 0,
-                             "imp_kwh": 0, "exp_kwh": 0, "imp_cost": 0, "exp_cost": 0,
-                             "net_cost": 0, "carbon_g_net": None, "carbon_g_total": None,
-                             "avg_intensity": None,
-                             "meters": {"electricity_main": {"imp_kwh": 0, "imp_cost": 0,
-                                        "exp_kwh": 0, "exp_cost": 0, "carbon_g": None,
-                                        "carbon_g_imp": None, "carbon_g_exp": None}}})
-                continue
-            _row = {"slot": sk, "label": sk}
-            _row.update(_bucket_to_row_values(_s))
-            rows.append(_row)
-
-        meter_colors = _ec.build_meter_colors_from_config(cfg)
-        meter_labels = {}
-        for mid, mc in cfg.get("meters", {}).items():
-            meta = (mc.get("meta") or {})
-            meter_labels[mid] = ((meta.get("device") or meta.get("site") or mid)
-                                 if meta.get("sub_meter") else "Direct")
-        all_meter_ids = [m for m in meter_colors if m != "electricity_main_export"]
-        meters_list = [{"id": mid, "label": meter_labels.get(mid, mid),
-                        "color": meter_colors[mid], "is_sub": mid != "electricity_main"}
-                       for mid in all_meter_ids]
-        # BL-9: synthetic dispatch-derived EV slice for a sensor-less account — the SAME
-        # carve the daily view applies (_apply_ev_split_to_summary_rows), but bucketed by
-        # SLOT so the half-hour bars split into EV + reduced house too. Guaranteed no-op
-        # when an EV meter — or any sub-meter — exists. Display-only: slot totals unchanged.
-        if (_configured_ev_meter_id(cfg) is None
-                and len(meters_list) == 1
-                and meters_list[0]["id"] == "electricity_main"):
-            try:
-                _drows = store._conn.execute(
-                    "SELECT slot_start, kind, energy_kwh FROM dispatch_history "
-                    "WHERE kind='completed' AND slot_start >= ? AND slot_start < ?",
-                    (_u_s, _u_e)).fetchall()
-                _ev_slot = _dispatch_derived_ev_kwh(
-                    [{"slot_start": r["slot_start"], "kind": r["kind"],
-                      "energy_kwh": r["energy_kwh"]} for r in _drows])
-                _main_slot = {}
-                _stored_slot = {}
-                for _rr in _raw:
-                    if _rr["is_sub_meter"]:
-                        continue
-                    _main_slot[_rr["block_start"]] = (
-                        float(_rr["imp_kwh"] or 0), float(_rr["imp_cost"] or 0))
-                    if _rr["imp_kwh_ev"] is not None:
-                        _stored_slot[_rr["block_start"]] = (
-                            float(_rr["imp_kwh_ev"]), float(_rr["imp_cost_ev"] or 0))
-                _bill_slot = store.slots_with_bill_split(_u_s, _u_e)
-                _ev_by_slot = _dispatch_ev_split_by_bucket(
-                    _main_slot, _ev_slot, _slot_of, stored_by_slot=_stored_slot,
-                    bill_split_slots=_bill_slot)
-            except Exception:
-                _ev_by_slot = {}
-            _apply_ev_split_to_summary_rows(
-                rows, meters_list, _ev_by_slot, key_fn=lambda _r: _r.get("slot"))
-        elif _configured_ev_meter_id(cfg) is not None:
-            # ── Hybrid EV (H2), half-hour view: same rule, bucketed by slot. ────────────
-            _ev_mid = _configured_ev_meter_id(cfg)
-            try:
-                _main_ev = {}; _phys_ev = {}
-                for _rr in _raw:
-                    if _rr["meter_id"] == _ev_mid:
-                        _gk = _rr["imp_kwh_grid"]
-                        _phys_ev[_rr["block_start"]] = (
-                            float(_gk if _gk is not None else (_rr["imp_kwh"] or 0.0)),
-                            float(_rr["imp_cost"] or 0.0))
-                    elif not _rr["is_sub_meter"]:
-                        _main_ev[_rr["block_start"]] = (_rr["imp_kwh_ev"], _rr["imp_cost_ev"])
-                _hyb_bucket = {}
-                for _bs, _v in _hybrid_ev_by_block(_main_ev, _phys_ev).items():
-                    _acc = _hyb_bucket.setdefault(_slot_of(_bs), {"kwh": 0.0, "cost": 0.0})
-                    _acc["kwh"] += _v["kwh"]; _acc["cost"] += _v["cost"]
-            except Exception:
-                _hyb_bucket = {}
-            _apply_hybrid_ev_to_summary_rows(
-                rows, meters_list, _ev_mid, _hyb_bucket, key_fn=lambda _r: _r.get("slot"))
-
-        _postcode = ""
-        for _md in cfg.get("meters", {}).values():
-            _postcode = (_md.get("meta") or {}).get("postcode_prefix", "").strip()
-            if _postcode:
-                break
-        return jsonify({"currency": currency, "billing_day": billing_day,
-                        "block_minutes": bm, "date": date_str, "rows": rows,
-                        "meters": meters_list,
-                        "export_color": meter_colors.get("electricity_main_export", "#ff7f0e"),
-                        "has_postcode": bool(_postcode)})
-    except Exception as e:
-        logger.error("api_blocks_day: %s", e)
-        return jsonify({"error": str(e)}), 500
-
-
 
 
 @app.route("/api/entities")
@@ -5783,7 +5588,9 @@ def _resolve_period(kind, store, cfg, tz, args):
         import usage_view
         span = _all_history_utc(store, tz.key, usage_view.page_meta(cfg)["block_minutes"])
         if span is None:
-            return None, None, {"error": "No blocks found"}
+            # 404, not 400: nothing is wrong with the request, there is just no data yet.
+            # Usage Stats and Spiral draw an empty chart on a 404 and an error on a 400.
+            return None, None, {"error": "No blocks found", "status": 404}
         us, ue = span
         _loc = lambda u: (_dt.fromisoformat(u).replace(tzinfo=_tzu.utc).astimezone(tz)).date()
         return us, ue, {"kind": "all", "period_start": _loc(us).isoformat(),
@@ -5849,6 +5656,12 @@ def api_energy():
             return jsonify({"error": "resolution=block takes a viewport: kind=day|month"}), 400
 
         store = store_access.store()
+        if (request.args.get("fields") or "") == "fingerprint":
+            # The change poll's answer and nothing else — no period, no rows: one global
+            # token over the blocks, segments, config and epoch (_blocks_data_version).
+            return jsonify({"fingerprint": {"token": _blocks_data_version(store),
+                                            "epoch": store.get_data_epoch(),
+                                            "config": _config_token(store)}})
         cfg = load_config()
         # `_config_timezone()` already exists (server.py:292) and takes NO
         # arguments — it re-reads the config and, unlike a naive first-meter
@@ -5859,7 +5672,9 @@ def api_energy():
 
         utc_start, utc_end, meta = _resolve_period(kind, store, cfg, tz, request.args)
         if utc_start is None:
-            return jsonify(meta), 404 if "not found" in str(meta.get("error", "")).lower() else 400
+            status = meta.pop("status", None) or (
+                404 if "not found" in str(meta.get("error", "")).lower() else 400)
+            return jsonify(meta), status
 
         out = {"resolution": resolution, "timezone": tz_name, "period": meta,
                "range": {"start_utc": utc_start, "end_utc": utc_end},
