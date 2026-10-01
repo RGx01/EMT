@@ -58,7 +58,7 @@ class RouteSelection(unittest.TestCase):
 
     def test_it_finds_the_read_surface(self):
         self.assertGreater(len(self.routes), 60)
-        for r in ("/api/billing", "/api/periods", "/api/energy"):
+        for r in ("/api/billing-source", "/api/periods", "/api/energy"):
             self.assertIn(r, self.routes)
 
     def test_nothing_denied_is_requested(self):

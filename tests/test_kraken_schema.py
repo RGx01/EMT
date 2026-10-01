@@ -20,6 +20,9 @@ prove existing behaviour is unchanged.
 
 import sqlite3
 import unittest
+import os as _os, sys as _sys  # noqa: E402
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))  # tests/live_totals.py
+from live_totals import live_totals  # noqa: E402  (C, 1 Oct 2026)
 import os
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -455,21 +458,9 @@ class TestFinalisedOnly(_StoreBase):
         self.assertAlmostEqual(full, round(3.0 + 0.5, 2))   # both blocks
         self.assertAlmostEqual(fin, round(1.0 + 0.5, 2))    # finalised only
 
-    def test_billing_totals_excludes_provisional(self):
-        self._main_block("2026-05-01T10:00:00", imp_cost=1.0, imp_kwh=4.0,
-                         is_provisional=0)
-        self._main_block("2026-05-01T10:30:00", imp_cost=2.0, imp_kwh=8.0,
-                         is_provisional=1)
-        s, e = "2026-05-01T00:00:00", "2026-05-02T00:00:00"
-        full = self.store.get_billing_totals_for_utc_range(s, e, "Europe/London",
-                                                           finalised_only=False)
-        fin = self.store.get_billing_totals_for_utc_range(s, e, "Europe/London",
-                                                          finalised_only=True)
-        self.assertAlmostEqual(full["imp_cost"], 3.0)
-        self.assertAlmostEqual(full["imp_kwh"], 12.0)
-        self.assertAlmostEqual(fin["imp_cost"], 1.0)
-        self.assertAlmostEqual(fin["imp_kwh"], 4.0)
-
+    # (test_billing_totals_excludes_provisional went with get_billing_totals_for_utc_range,
+    # deleted with /api/billing, C 1 Oct 2026: nothing outside this test passed it
+    # finalised_only=True. compute_period_net keeps the flag and its test above.)
     def test_selectors_exclude_provisional(self):
         self._main_block("2026-05-01T10:00:00", is_provisional=0)
         self._main_block("2026-05-01T10:30:00", is_provisional=1)
@@ -509,10 +500,6 @@ class TestFinalisedOnly(_StoreBase):
         self.assertEqual(
             self.store.compute_period_net(s, e, "Europe/London", finalised_only=False),
             self.store.compute_period_net(s, e, "Europe/London", finalised_only=True))
-        a = self.store.get_billing_totals_for_utc_range(s, e, "Europe/London", finalised_only=False)
-        b = self.store.get_billing_totals_for_utc_range(s, e, "Europe/London", finalised_only=True)
-        self.assertEqual(a["imp_cost"], b["imp_cost"])
-        self.assertEqual(a["imp_kwh"], b["imp_kwh"])
         self.assertEqual(len(self.store.get_blocks_for_utc_range(s, e)),
                          len(self.store.get_blocks_for_utc_range(s, e, finalised_only=True)))
 
@@ -816,10 +803,10 @@ class TestDrainPass2Queue(_StoreBase):
         self._settled_block("2026-05-01T10:00:00", kwh=4.0, rate=0.25, api=3.0)
         # Before drain: billing sees the provisional CAD figure (4.0).
         s, e = "2026-05-01T00:00:00", "2026-05-02T00:00:00"
-        before = self.store.get_billing_totals_for_utc_range(s, e, "Europe/London")
+        before = live_totals(self.store, s, e, "Europe/London")
         self.assertAlmostEqual(before["imp_kwh"], 4.0)
         self.engine._drain_pass2_queue(self._ha)
-        after = self.store.get_billing_totals_for_utc_range(s, e, "Europe/London")
+        after = live_totals(self.store, s, e, "Europe/London")
         self.assertAlmostEqual(after["imp_kwh"], 3.0)   # now DCC-settled
         self.assertAlmostEqual(after["imp_cost"], round(3.0 * 0.25, 6))
 

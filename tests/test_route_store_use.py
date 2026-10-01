@@ -64,7 +64,8 @@ class TestRouteStoreUse(unittest.TestCase):
         # +2: /api/periods, /api/energy (C §3); −3: /api/charts/blocks-summary, blocks-day,
         # data-version, deleted by C step 1 (1 Oct 2026).
         # −8: the Insights/Usage period routes, deleted by C step 2 (1 Oct 2026).
-        self.assertEqual(len(self.d["get_on_companion"]), 35)
+        # −1: /api/billing, deleted (Live Power reads /api/periods?kind=live), 1 Oct 2026.
+        self.assertEqual(len(self.d["get_on_companion"]), 34)
 
     def test_adoption_is_total(self):
         """Measured at 0% before the port: v4 credited one route with the read

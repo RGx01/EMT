@@ -15,6 +15,9 @@ import json
 import sys
 import os
 import unittest
+import os as _os, sys as _sys  # noqa: E402
+_sys.path.insert(0, _os.path.dirname(_os.path.abspath(__file__)))  # tests/live_totals.py
+from live_totals import live_totals  # noqa: E402  (C, 1 Oct 2026)
 from datetime import datetime, timedelta
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -1968,7 +1971,7 @@ class TestBillingTotalsVsBlockMethod(unittest.TestCase):
 
         # SQL method — UTC range covering Mar 1-3 GMT
         utc_s, utc_e = local_date_range_to_utc_bounds("2026-03-01", "2026-03-03", "Europe/London")
-        sql_t = self.store.get_billing_totals_for_utc_range(utc_s, utc_e, "Europe/London")
+        sql_t = live_totals(self.store, utc_s, utc_e, "Europe/London")
 
         # Expected from manual calculation
         self.assertAlmostEqual(sql_t["imp_kwh"],  1.0+1.2+0.8+0.9+1.1+0.7, places=3)
@@ -1986,7 +1989,7 @@ class TestBillingTotalsVsBlockMethod(unittest.TestCase):
         self._insert_block("2026-03-01T00:00:00", 1.0, 0.245, 0.0, 0.0, 0.60)
         self._insert_block("2026-03-01T12:00:00", 1.0, 0.245, 0.0, 0.0, 0.40)
         utc_s, utc_e = local_date_range_to_utc_bounds("2026-03-01", "2026-03-01", "Europe/London")
-        t = self.store.get_billing_totals_for_utc_range(utc_s, utc_e, "Europe/London")
+        t = live_totals(self.store, utc_s, utc_e, "Europe/London")
         # Start-of-day = 0.60 (the earliest block). MAX would also give 0.60 here,
         # so make the discriminating case explicit below.
         self.assertAlmostEqual(t["standing"], 0.60, places=3)
@@ -1997,7 +2000,7 @@ class TestBillingTotalsVsBlockMethod(unittest.TestCase):
         self._insert_block("2026-03-01T00:00:00", 1.0, 0.245, 0.0, 0.0, 0.40)
         self._insert_block("2026-03-01T12:00:00", 1.0, 0.245, 0.0, 0.0, 0.60)
         utc_s, utc_e = local_date_range_to_utc_bounds("2026-03-01", "2026-03-01", "Europe/London")
-        t = self.store.get_billing_totals_for_utc_range(utc_s, utc_e, "Europe/London")
+        t = live_totals(self.store, utc_s, utc_e, "Europe/London")
         # Start-of-day = 0.40 (earliest). Old MAX logic would have given 0.60.
         self.assertAlmostEqual(t["standing"], 0.40, places=3,
                                msg="Must use start-of-day (0.40), not MAX (0.60)")
@@ -2008,7 +2011,7 @@ class TestBillingTotalsVsBlockMethod(unittest.TestCase):
         self._insert_block("2026-03-01T00:00:00", 0.0, 0.0, 0.0, 0.0, 0.0)   # gap-fill
         self._insert_block("2026-03-01T01:00:00", 1.0, 0.245, 0.0, 0.0, 0.50)
         utc_s, utc_e = local_date_range_to_utc_bounds("2026-03-01", "2026-03-01", "Europe/London")
-        t = self.store.get_billing_totals_for_utc_range(utc_s, utc_e, "Europe/London")
+        t = live_totals(self.store, utc_s, utc_e, "Europe/London")
         self.assertAlmostEqual(t["standing"], 0.50, places=3,
                                msg="Leading zero must not shadow the real charge")
 
@@ -2024,7 +2027,7 @@ class TestBillingTotalsVsBlockMethod(unittest.TestCase):
 
         # Use UTC bounds for BST Apr 2 — correctly includes 23:00 UTC Apr 1 block
         utc_s, utc_e = local_date_range_to_utc_bounds("2026-04-02", "2026-04-02", "Europe/London")
-        sql_t = self.store.get_billing_totals_for_utc_range(utc_s, utc_e, "Europe/London")
+        sql_t = live_totals(self.store, utc_s, utc_e, "Europe/London")
         self.assertAlmostEqual(sql_t["standing"], 0.60, places=3,
                                msg="Blocks crossing UTC midnight but same BST day should count once")
         self.assertAlmostEqual(sql_t["imp_kwh"], 1.5, places=3,
@@ -2113,7 +2116,7 @@ class TestMixedSourceBilling(unittest.TestCase):
 
         utc_s, utc_e = local_date_range_to_utc_bounds(
             "2026-03-04", "2026-03-05", "Europe/London")
-        t = self.store.get_billing_totals_for_utc_range(utc_s, utc_e, "Europe/London")
+        t = live_totals(self.store, utc_s, utc_e, "Europe/London")
 
         self.assertAlmostEqual(t["imp_kwh"], 1.0+1.5+2.0+2.0+0.5, places=4,
             msg="Mixed-origin period must sum every block's imp_kwh (7.0) — "
@@ -2140,24 +2143,10 @@ class TestMixedSourceBilling(unittest.TestCase):
             st._conn.commit()
             utc_s, utc_e = local_date_range_to_utc_bounds(
                 "2026-03-04", "2026-03-04", "Europe/London")
-            t = st.get_billing_totals_for_utc_range(utc_s, utc_e, "Europe/London")
+            t = live_totals(st, utc_s, utc_e, "Europe/London")
             self.assertAlmostEqual(t["imp_kwh"], 2.0, places=4,
                 msg=f"source={src} must bill identically (mode-invisible)")
             self.assertAlmostEqual(t["imp_cost"], 0.60, places=4)
-
-    def test_billing_kwh_coalesce_priority(self):
-        # Contract of the aggregation's kWh selection: remainder > grid > raw.
-        # (On the main meter PASS 2 sets remainder+grid together for sub-meter
-        # periods; this pins the priority so a future change can't silently flip
-        # which column bills.)
-        self._insert("2026-03-04T00:00:00", imp_kwh=3.0, imp_kwh_grid=2.5,
-                     imp_kwh_remainder=2.0, imp_cost=0.55, source="kraken_api")
-        utc_s, utc_e = local_date_range_to_utc_bounds(
-            "2026-03-04", "2026-03-04", "Europe/London")
-        t = self.store.get_billing_totals_for_utc_range(utc_s, utc_e, "Europe/London")
-        self.assertAlmostEqual(t["imp_kwh"], 2.0, places=4,
-            msg="remainder (2.0) must win over grid (2.5) and raw (3.0)")
-
 
 if __name__ == "__main__":
     unittest.main()
@@ -2433,9 +2422,9 @@ class TestCurrentBlock(unittest.TestCase):
         """, (cp_id,))
         self.store._conn.commit()
 
-        t = self.store.get_billing_totals_for_utc_range(*local_date_range_to_utc_bounds('2026-01-01', '2026-01-01', 'UTC'))
+        t = live_totals(self.store, *local_date_range_to_utc_bounds('2026-01-01', '2026-01-01', 'UTC'), 'UTC')
 
-        # imp_kwh: remainder(1.0) + ev_grid(2.0) = 3.0, NOT 3.0+2.0=5.0
+        # Total Import is the main meter's 3.0 kWh — the EV's 2.0 is a split of it, not added.
         self.assertAlmostEqual(t["imp_kwh"], 3.0, places=3,
             msg="Billing totals must not double-count sub-meter imp_kwh")
         self.assertNotAlmostEqual(t["imp_kwh"], 5.0, places=1,
@@ -3057,7 +3046,13 @@ class TestMigration(unittest.TestCase):
 
 
 class TestBillingTotalsSubMeterNullGrid(unittest.TestCase):
-    """Regression test: sub-meter with NULL imp_kwh_grid must not double-count."""
+    """Sub-meters never add to the bill: Total Import and its cost are the MAIN meter's.
+
+    Ported (C, 1 Oct 2026) from get_billing_totals_for_utc_range, deleted with /api/billing,
+    onto Live Power's path (tests/live_totals.py). Two of its tests went with it — they pinned
+    that method's own total kWh (main remainder + Σ device grid kWh, a NULL grid counting as
+    0, remainder before grid): a figure /api/billing computed and never showed. The card's
+    Total Import is the main meter's grid kWh, its device rows COALESCE(grid, imp_kwh)."""
 
     def setUp(self):
         self.store = BlockStore(":memory:")
@@ -3079,34 +3074,6 @@ class TestBillingTotalsSubMeterNullGrid(unittest.TestCase):
             "SELECT id FROM config_periods LIMIT 1"
         ).fetchone()["id"]
 
-    def test_null_grid_no_fallback_to_raw_kwh(self):
-        """
-        Sub-meter with imp_kwh populated but imp_kwh_grid=NULL must NOT fall back
-        to imp_kwh — that would double-count since main meter imp_kwh already
-        includes sub-meter consumption. Only COALESCE(imp_kwh_grid, 0) is used.
-        """
-        # main: 13.0 kWh raw, 2.5 remainder
-        self.store._conn.execute("""
-            INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_kwh_remainder, imp_cost, standing_charge)
-            VALUES ('2026-03-01T00:00:00','2026-03-01T00:30:00','electricity_main',?,0, 13.0,2.5,1.17,0.5)
-        """, (self.cp,))
-        # battery: 10.5 kWh raw but imp_kwh_grid=NULL (older block)
-        self.store._conn.execute("""
-            INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_kwh_grid, imp_cost, standing_charge)
-            VALUES ('2026-03-01T00:00:00','2026-03-01T00:30:00','house_battery',?,0, 10.5,NULL,0.0,0.0)
-        """, (self.cp,))
-        self.store._conn.commit()
-
-        t = self.store.get_billing_totals_for_utc_range(*local_date_range_to_utc_bounds('2026-03-01', '2026-03-01', 'UTC'))
-
-        # 2.5 (main remainder) + 0 (battery NULL grid → 0) = 2.5, not 2.5+10.5=13.0
-        self.assertAlmostEqual(t["imp_kwh"], 2.5, places=3,
-            msg="Sub-meter NULL imp_kwh_grid must not fall back to imp_kwh")
-        self.assertNotAlmostEqual(t["imp_kwh"], 13.0, places=1,
-            msg="13.0 indicates double-counting bug")
-
     def test_set_grid_is_included(self):
         """Sub-meter with imp_kwh_grid set should be included in total."""
         self.store._conn.execute("""
@@ -3121,11 +3088,13 @@ class TestBillingTotalsSubMeterNullGrid(unittest.TestCase):
         """, (self.cp,))
         self.store._conn.commit()
 
-        t = self.store.get_billing_totals_for_utc_range(*local_date_range_to_utc_bounds('2026-03-01', '2026-03-01', 'UTC'))
+        t = live_totals(self.store, *local_date_range_to_utc_bounds('2026-03-01', '2026-03-01', 'UTC'), 'UTC')
 
-        # 2.5 remainder + 10.5 grid = 13.0 total grid draw
-        self.assertAlmostEqual(t["imp_kwh"], 13.0, places=3,
-            msg="Sub-meter with imp_kwh_grid set must be included in total")
+        # Total Import is the main meter's grid draw (13.0); the battery's 10.5 grid kWh is
+        # a split of it — its own row, not added to the total.
+        self.assertAlmostEqual(t["imp_kwh"], 13.0, places=3)
+        self.assertAlmostEqual(t["sub_kwh"], 10.5, places=3,
+            msg="Sub-meter with imp_kwh_grid set is the device's figure")
 
     def test_cost_from_main_meter_only(self):
         """imp_cost comes from main meter only — it already includes sub-meter costs."""
@@ -3142,7 +3111,7 @@ class TestBillingTotalsSubMeterNullGrid(unittest.TestCase):
         """, (self.cp,))
         self.store._conn.commit()
 
-        t = self.store.get_billing_totals_for_utc_range(*local_date_range_to_utc_bounds('2026-03-01', '2026-03-01', 'UTC'))
+        t = live_totals(self.store, *local_date_range_to_utc_bounds('2026-03-01', '2026-03-01', 'UTC'), 'UTC')
 
         # Total cost = main only (1.90) — sub-meter costs already included in main
         self.assertAlmostEqual(t["imp_cost"], 1.90, places=3,

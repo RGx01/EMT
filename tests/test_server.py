@@ -364,9 +364,9 @@ class TestRouteRegistration(unittest.TestCase):
     def test_api_power_registered(self):
         self.assertTrue(self._registered("api_power"))
 
-    def test_api_billing_registered(self):
-        self.assertTrue(self._registered("api_billing"))
-
+    def test_api_billing_is_gone(self):
+        """C (1 Oct 2026): Live Power's cards read /api/periods?kind=live."""
+        self.assertFalse(self._registered("api_billing"))
     def test_api_carbon_registered(self):
         self.assertTrue(self._registered("api_carbon"))
 
@@ -995,33 +995,32 @@ class TestApiPower(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# /api/billing
+# Live Power's cards — /api/periods?kind=live (was /api/billing, C 1 Oct 2026)
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestApiBilling(unittest.TestCase):
+_LIVE_URL = "/api/periods?kind=live&include=net_cost,rows"
+
+
+class TestLivePeriods(unittest.TestCase):
 
     def setUp(self):
         self.client = make_client()
         eio.load_json = lambda path, default=None: MINIMAL_CONFIG if "meters_config" in path else (MINIMAL_BLOCKS if "blocks" in path else default)
 
     def test_returns_200(self):
-        r = self.client.get("/api/billing")
-        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.client.get(_LIVE_URL).status_code, 200)
 
-    def test_response_has_required_keys(self):
-        r = self.client.get("/api/billing")
-        data = r.get_json()
-        for key in ("currency", "today_total", "month_total", "year_total",
-                    "today_rows", "month_rows", "year_rows"):
-            self.assertIn(key, data)
-
-    def test_currency_is_string(self):
-        r = self.client.get("/api/billing")
-        self.assertIsInstance(r.get_json()["currency"], str)
+    def test_the_three_windows_with_what_the_cards_read(self):
+        ps = self.client.get(_LIVE_URL).get_json()["periods"]
+        self.assertEqual([p["key"] for p in ps], ["today", "bill", "year"])
+        for p in ps:
+            for key in ("net_cost", "rows", "label"):
+                self.assertIn(key, p)
+            self.assertIsInstance(p["rows"], list)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# /api/billing — "This Bill" current-period selection (issue #221)
+# "This Bill" current-period selection (issue #221) — kind=live's bill window
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestApiBillingCurrentPeriod(unittest.TestCase):
@@ -1050,12 +1049,13 @@ class TestApiBillingCurrentPeriod(unittest.TestCase):
         h_end = (datetime(now.year, 1, 1) if hist_month == 12
                  else datetime(now.year - 1, hist_month + 1, 1))
 
-        with patch.object(ec, "get_billing_periods_from_config_periods",
+        import billing as _billing
+        with patch.object(_billing, "get_billing_periods_from_config_periods",
                           lambda *a, **kw: [(h_start, h_end)]):
-            r = self.client.get("/api/billing")
+            r = self.client.get(_LIVE_URL)
 
         self.assertEqual(r.status_code, 200)
-        mp = r.get_json()["month_period"]                    # "DD Mon → DD Mon YYYY"
+        mp = {p["key"]: p for p in r.get_json()["periods"]}["bill"]["label"]   # "DD Mon → DD Mon YYYY"
         current_label = now.replace(day=1).strftime("%d %b")  # billing_day = 1
         historical_label = h_start.strftime("%d %b")
 
