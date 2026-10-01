@@ -323,15 +323,16 @@ def calculate_billing_summary_for_period(blocks, period_start, period_end, store
 
     # Once per summary, not once per block (C, 30 Sep 2026: on a year's bill these were
     # ~15% of the time). `vat_rate_at` reads and parses the VAT calendar on every call,
-    # and resolves on the DATE alone (vat_calendar.resolve_vat uses date_iso[:10]), so
-    # memoising by date is exact. Timezone objects are built once per name.
+    # and resolves on the UK-local date of the naive-UTC start; a change starts at a
+    # local midnight, which is always a whole UTC hour, so memoising by the start's
+    # UTC date+hour is exact. Timezone objects are built once per name.
     _vat_memo = {}
 
     def _vat_for(start):
-        day = str(start)[:10]
-        if day not in _vat_memo:
-            _vat_memo[day] = store.vat_rate_at(start)
-        return _vat_memo[day]
+        hour = str(start)[:13]
+        if hour not in _vat_memo:
+            _vat_memo[hour] = store.vat_rate_at(start)
+        return _vat_memo[hour]
 
     from zoneinfo import ZoneInfo as _ZI
     _UTC_ZI = _ZI("UTC")
