@@ -1817,75 +1817,86 @@ function msUntilNextBillingRefresh() {
   return msToNextBoundary + 60 * 1000;  // 1 minute after boundary
 }
 
+// The three cards — Today / This Bill / This Year — in ONE request (C, 1 Oct 2026; was
+// /api/billing): each window's total (the bill's per-day rule, the Billing tab's), its label
+// and the card's rows, from one per-day pass on the server.
+var BILL_CURRENCY = {{ currency|tojson }};
+var BILL_CARDS = [['today', 'today'], ['month', 'bill'], ['year', 'year']];   // card id, window key
+var _billTimer = null, _billDue = false;
+
+// Row labels carry device names from the config, so they are text, not HTML.
+function _billEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g, function(c) {
+    return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c];
+  });
+}
+
 function refreshBilling() {
-  // Reload just the billing section by fetching a new page and extracting the cards
-  fetch(apiUrl('/api/billing') + '?t=' + Date.now())
-    .then(function(r) { return r.json(); })
+  // A hidden tab does not poll: the refresh waits until the tab is shown again.
+  if (document.hidden) { _billDue = true; return; }
+  _billDue = false;
+  fetch(apiUrl('/api/periods?kind=live&include=net_cost,rows'), {cache: 'no-store'})
+    .then(function(r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
     .then(function(d) {
-      updateBillingCard('today',  d.today_total,  d.today_rows,  d.today_date,  d.currency);
-      updateBillingCard('month',  d.month_total,  d.month_rows,  d.month_period, d.currency);
-      updateBillingCard('year',   d.year_total,   d.year_rows,   d.year_period,  d.currency);
-      scheduleBillingRefresh();
+      if (d.error) throw new Error(d.error);
+      var P = {};
+      (d.periods || []).forEach(function(p) { P[p.key] = p; });
+      BILL_CARDS.forEach(function(c) {
+        var p = P[c[1]];
+        if (p) updateBillingCard(c[0], p.net_cost, p.rows, p.label, BILL_CURRENCY);
+      });
     })
-    .catch(function() { scheduleBillingRefresh(); });
+    // A failed refresh keeps the cards as they are — it showed "undefinedNaN" on a
+    // card already drawn, from an error body read as data.
+    .catch(function() {})
+    .then(scheduleBillingRefresh);
+}
+
+function _billRowsHtml(rows, currency) {
+  return (rows || []).map(function(r) {
+    var absC = Math.abs(r.cost); var signC = r.cost < 0 ? '-' : '';
+    var col = r.cost < 0 ? 'var(--accent)' : 'var(--text)';
+    var boldRow = r.bold ? 'style="background:rgba(255,255,255,0.04);border-color:var(--muted);"' : '';
+    var boldLbl = r.bold ? 'style="color:var(--text);font-weight:600;"' : '';
+    var boldVal = r.bold ? ';font-weight:600;' : '';
+    return '<div class="billing-row" ' + boldRow + '>'
+      + '<div class="billing-row-label" ' + boldLbl + '>' + _billEsc(r.label) + '</div>'
+      + '<div class="billing-row-value" style="color:' + col + boldVal + '">'
+      + signC + _billEsc(currency) + absC.toFixed(2) + '</div></div>';
+  }).join('');
 }
 
 function updateBillingCard(id, total, rows, period, currency) {
+  if (typeof total !== 'number') return;          // no figure: leave the card as it is
   var totalEl   = document.getElementById('billing-total-' + id);
   var periodEl  = document.getElementById('billing-period-' + id);
   var rowsEl    = document.getElementById('billing-rows-' + id);
   var loadingEl = document.getElementById('billing-loading-' + id);
+  var text = (total < 0 ? '-' : '') + currency + Math.abs(total).toFixed(2);
   // If card is still in loading state, rebuild it
   if (!totalEl && loadingEl) {
-    var card = loadingEl.closest('.billing-card');
-    if (card && total !== null && total !== undefined) {
-      var sign = total < 0 ? '-' : '';
-      var absT = Math.abs(total).toFixed(2);
-      var rowsHtml = (rows || []).map(function(r) {
-        var absC = Math.abs(r.cost); var signC = r.cost < 0 ? '-' : '';
-        var col = r.cost < 0 ? 'var(--accent)' : 'var(--text)';
-        var boldRow = r.bold ? 'style="background:rgba(255,255,255,0.04);border-color:var(--muted);"' : '';
-        var boldLbl = r.bold ? 'style="color:var(--text);font-weight:600;"' : '';
-        var boldVal = r.bold ? ';font-weight:600;' : '';
-        return '<div class="billing-row" ' + boldRow + '>'
-          + '<div class="billing-row-label" ' + boldLbl + '>' + r.label + '</div>'
-          + '<div class="billing-row-value" style="color:' + col + boldVal + '">'
-          + signC + currency + absC.toFixed(2) + '</div></div>';
-      }).join('');
-      loadingEl.outerHTML =
-        '<div class="billing-total" id="billing-total-' + id + '" style="color:var(--accent);">'
-        + sign + currency + absT + '</div>'
-        + '<div class="billing-period" id="billing-period-' + id + '">' + (period || '') + '</div>'
-        + '<div class="billing-rows" id="billing-rows-' + id + '">' + rowsHtml + '</div>';
-    }
+    loadingEl.outerHTML =
+      '<div class="billing-total" id="billing-total-' + id + '" style="color:var(--accent);">'
+      + _billEsc(text) + '</div>'
+      + '<div class="billing-period" id="billing-period-' + id + '">' + _billEsc(period || '') + '</div>'
+      + '<div class="billing-rows" id="billing-rows-' + id + '">' + _billRowsHtml(rows, currency) + '</div>';
     return;
   }
   if (!totalEl) return;
-  var absTotal = Math.abs(total);
-  var sign     = total < 0 ? '-' : '';
-  totalEl.textContent  = sign + currency + absTotal.toFixed(2);
-  totalEl.style.color  = total < 0 ? 'var(--accent)' : 'var(--accent)';
-  if (periodEl) periodEl.textContent = period;
-  if (rowsEl && rows) {
-    rowsEl.innerHTML = rows.map(function(r) {
-      var absC    = Math.abs(r.cost);
-      var signC   = r.cost < 0 ? '-' : '';
-      var col     = r.cost < 0 ? 'var(--accent)' : 'var(--text)';
-      var boldRow = r.bold ? 'style="background:rgba(255,255,255,0.04);border-color:var(--muted);"' : '';
-      var boldLbl = r.bold ? 'style="color:var(--text);font-weight:600;"' : '';
-      var boldVal = r.bold ? ';font-weight:600;' : '';
-      return '<div class="billing-row" ' + boldRow + '>'
-        + '<div class="billing-row-label" ' + boldLbl + '>' + r.label + '</div>'
-        + '<div class="billing-row-value" style="color:' + col + boldVal + '">'
-        + signC + currency + absC.toFixed(2)
-        + '</div></div>';
-    }).join('');
-  }
+  totalEl.textContent = text;
+  if (periodEl) periodEl.textContent = period || '';
+  if (rowsEl && rows) rowsEl.innerHTML = _billRowsHtml(rows, currency);
 }
 
 function scheduleBillingRefresh() {
-  setTimeout(refreshBilling, msUntilNextBillingRefresh());
+  if (_billTimer) clearTimeout(_billTimer);
+  _billTimer = setTimeout(refreshBilling, msUntilNextBillingRefresh());
 }
+
+// A refresh that fell due while the tab was hidden runs as soon as it is shown.
+document.addEventListener('visibilitychange', function() {
+  if (!document.hidden && _billDue) refreshBilling();
+});
 
 // Load billing immediately on page load, then schedule future refreshes
 // Billing — defer 300ms so power gauge renders first

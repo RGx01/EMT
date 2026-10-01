@@ -2796,7 +2796,13 @@ class TestMiniPowerSource(unittest.TestCase):
              patch.object(server, "_mini_device_id", return_value="dev-1"):
             r = client.get("/live-power")
         self.assertIn(b"POWER_POLL_MS = 60000", r.data)   # Mini → 60s (reads engine cache)
-        self.assertNotIn(b"visibilitychange", r.data)     # no page-active gating
+        # No page-active gating of the POWER poll. (The billing cards' refresh does pause
+        # while the tab is hidden — C, 1 Oct 2026 — so this looks at the power poll alone,
+        # not for the word anywhere on the page.)
+        page = r.data.decode()
+        power = page[page.index("var POWER_POLL_MS"):page.index("// The three cards")]
+        self.assertNotIn("visibilitychange", power)
+        self.assertNotIn("document.hidden", power)
 
     def test_render_sensor_poll_cadence(self):
         ha = MagicMock(); ha.get_state.return_value = None
