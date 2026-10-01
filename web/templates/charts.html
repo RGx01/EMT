@@ -1327,7 +1327,8 @@ function barLoadState(availableYears) {
   } catch(e) {}
 }
 
-// Per-instance cache of the last blocks-summary payload, so returning to the Charts
+// Per-instance cache of the last Usage Stats payload (/api/energy include=stats, the
+// shape /api/charts/blocks-summary returned), so returning to the Charts
 // page (a full navigation from Overview etc.) can paint instantly from the last
 // result instead of showing a blank chart while the fresh fetch runs.
 function _barCacheKey() { try { return EMT.lsKey('emt_bar_summary'); } catch(e) { return 'emt_bar_summary'; } }
@@ -1339,7 +1340,7 @@ function _saveBarCache(json) {
   try { localStorage.setItem(_barCacheKey(), JSON.stringify(json)); } catch(e) { /* quota — non-fatal */ }
 }
 
-// Apply a blocks-summary JSON (fresh or cached) into the bar-chart state.
+// Apply a Usage Stats payload (fresh or cached) into the bar-chart state.
 function _applyBarJson(json) {
   barData        = json.rows || [];
   barCurrency    = json.currency || '£';
@@ -1377,9 +1378,17 @@ async function _barFetchFresh() {
   // no cached paint) — a background refresh of an already-drawn chart shouldn't flash it.
   if (!barInited || !barData || !barData.length) _setBarLoading(true);
   try {
-    var r = await fetch(apiUrl('/api/charts/blocks-summary'));
-    var json = await r.json();
-    if (json.error) throw new Error(json.error);
+    // Every local day's row, from the one endpoint (C step 1, part 2). The change
+    // token is read FIRST: if the data moves between the two requests the token is the
+    // older one, so the next poll refreshes — never a stale chart under a fresh token.
+    var ver = await _fetchDataVersion();
+    var r = await fetch(apiUrl('/api/energy?resolution=day&kind=all&include=stats'));
+    var j = await r.json();
+    var json;
+    if (r.status === 404) json = {rows: [], meters: [], export_color: '#ff7f0e'};   // no blocks yet
+    else if (j.error) throw new Error(j.error);
+    else json = j.stats;
+    json.data_version = ver;
     _applyBarJson(json);
     barLastFetch = Date.now();
     _saveBarCache(json);
@@ -1629,7 +1638,7 @@ function barBillingKey(r) {
 function barGetDataForPeriod() {
   if (barPeriod === 'hh') {
     // 48 (or n) half-hour slots for one local day. Rows come pre-aggregated from
-    // /api/charts/blocks-day in exactly the barAggRows shape, so no re-aggregation.
+    // /api/energy (resolution=block, include=stats) in exactly the barAggRows shape, so no re-aggregation.
     var rows = barHHRows || [];
     return {
       labels:  rows.map(function(r){ return r.label; }),
@@ -2057,13 +2066,16 @@ function barStepHH(delta) {
   if (ns === barHHDate) return;
   barHHDate = ns; barSaveState(); barLoadHH();
 }
-// Fetch the 48-slot breakdown for barHHDate, then render. Uses the same
-// billing-accurate endpoint the daily/monthly/yearly views roll up from.
+// Fetch barHHDate's half-hours, then render: /api/energy's slot rows, the same
+// aggregation the daily/monthly/yearly views roll up from. A slot is its UTC instant,
+// so a clock-change day has 46 or 50 bars (the autumn change shows 01:00 twice).
 async function barLoadHH() {
   try {
-    var r = await fetch(apiUrl('/api/charts/blocks-day?date=' + encodeURIComponent(barHHDate)));
+    var r = await fetch(apiUrl('/api/energy?resolution=block&kind=day&include=stats&date='
+                               + encodeURIComponent(barHHDate)));
     var j = await r.json();
     if (j.error) throw new Error(j.error);
+    j = j.stats || {};
     barHHRows     = j.rows || [];
     barHHDataDate = barHHDate;
     if (j.currency) barCurrency = j.currency;
