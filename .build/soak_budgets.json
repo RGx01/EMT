@@ -1,0 +1,73 @@
+{
+  "_about": "C §6 row 8 — per-surface budgets for .build/soak.py, judged on the quiet phase (seconds, whole response). null = measured and reported, not asserted. Set from a Pi soak, never from a workstation.",
+  "budgets": {
+    "Charts: change poll": {
+      "p50": null,
+      "p95": null
+    },
+    "Charts: recent-day check": {
+      "p50": null,
+      "p95": null
+    },
+    "Spiral / Usage Stats: all days": {
+      "p50": null,
+      "p95": null
+    },
+    "Spiral / Usage Stats: moved days": {
+      "p50": null,
+      "p95": null
+    },
+    "Usage Stats: one day": {
+      "p50": null,
+      "p95": null
+    },
+    "Heatmap: a month of blocks": {
+      "p50": null,
+      "p95": null
+    },
+    "Billing: a year's bill": {
+      "p50": null,
+      "p95": null
+    },
+    "Billing: a quarter's bill": {
+      "p50": null,
+      "p95": null
+    },
+    "Billing: a month's bill": {
+      "p50": null,
+      "p95": null
+    },
+    "Billing: a billing period's bill": {
+      "p50": null,
+      "p95": null
+    },
+    "Billing: a month of day charts": {
+      "p50": null,
+      "p95": null
+    },
+    "Insights: carbon view": {
+      "p50": null,
+      "p95": null
+    },
+    "Insights: usage view": {
+      "p50": null,
+      "p95": null
+    },
+    "Live Power: cards": {
+      "p50": null,
+      "p95": null
+    },
+    "Billing: picker totals": {
+      "p50": null,
+      "p95": null
+    },
+    "Insights: trend strip": {
+      "p50": null,
+      "p95": null
+    },
+    "Period picker": {
+      "p50": null,
+      "p95": null
+    }
+  }
+}
