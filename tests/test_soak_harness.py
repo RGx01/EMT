@@ -145,7 +145,7 @@ class RouteSelection(unittest.TestCase):
         us = soak.query_variants("/api/energy", ctx)
         self.assertIn("/api/energy?fields=fingerprint", us)
         self.assertIn("/api/energy?resolution=day&kind=all&fields=days&since=2026-08-28", us)
-        self.assertTrue(any("kind=range" in u and "include=stats" in u for u in us))
+        self.assertTrue(any("kind=range" in u and "fields=stats" in u for u in us))
         self.assertIn("/api/energy?resolution=block&kind=month&year=2026&month=9", us)
         self.assertIn("/api/periods?kind=live&include=net_cost%2Crows",
                       soak.query_variants("/api/periods", ctx))

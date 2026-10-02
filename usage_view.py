@@ -42,16 +42,35 @@ def _aggregate_block_rows(raw_rows, bucket_of, standing_scope="bucket",
     must carry: block_start, meter_id, is_sub_meter, imp_kwh, imp_kwh_grid,
     imp_kwh_remainder, imp_rate, imp_cost, exp_kwh, exp_cost, standing_charge,
     carbon_g (and optionally billing_day)."""
+    rows = []
+    for _r in raw_rows:
+        _k = _r.keys()
+        _g = lambda c: _r[c] if c in _k else None     # a row may omit what its kind never reads
+        rows.append((_r["block_start"], _g("meter_id"), _r["is_sub_meter"], _g("billing_day"),
+                     _r["imp_kwh"], _g("imp_kwh_grid"), _g("imp_kwh_remainder"), _r["imp_rate"],
+                     _r["imp_cost"], _r["exp_kwh"], _r["exp_cost"], _r["standing_charge"],
+                     _r["carbon_g"]))
+    return _aggregate_tuples(rows, bucket_of, standing_scope, billing_day_fallback)
+
+
+def _aggregate_tuples(rows, bucket_of, standing_scope="bucket", billing_day_fallback=1):
+    """`_aggregate_block_rows` over plain tuples — the one implementation of its rules.
+
+    Each row is `(block_start, meter_id, is_sub_meter, billing_day, imp_kwh, imp_kwh_grid,
+    imp_kwh_remainder, imp_rate, imp_cost, exp_kwh, exp_cost, standing_charge, carbon_g)`.
+    Split out for the all-days load (#47, 2 Oct 2026), which reads these columns as tuples
+    (`_day_tuples`): over `sqlite3.Row`s, looked up by name a dozen times a block, the
+    aggregation took 0.143 s on the dev database's 58k blocks; over tuples, about 0.07 s. Every addition is made in the same order as before, so the result
+    is the same to the last bit. SQLite's SUM was tried and rejected: it adds with error
+    compensation, and moved 31 of 1,214 days by 0.0001 on the production-like database."""
     _day_data = {}
     _global_sc_done = False
-    for _r in raw_rows:
-        _bk = bucket_of(_r["block_start"])
-        if _bk not in _day_data:
-            try:
-                _bd_val = _r["billing_day"] if "billing_day" in _r.keys() else None
-            except Exception:
-                _bd_val = None
-            _day_data[_bk] = {
+    for (_bs, _mid, _is_sub, _bd_val, _ik, _ig, _ir, _irate, _ic, _ek, _ec, _sc,
+         _cg) in rows:
+        _bk = bucket_of(_bs)
+        _dd = _day_data.get(_bk)
+        if _dd is None:
+            _dd = _day_data[_bk] = {
                 "main":        {"imp_kwh": 0.0, "imp_cost": 0.0, "exp_kwh": 0.0, "exp_cost": 0.0,
                                 "carbon_g": None, "cg_imp": None, "cg_exp": None,
                                 "ci_abs_carbon": 0.0, "ci_abs_net_kwh": 0.0,
@@ -60,27 +79,26 @@ def _aggregate_block_rows(raw_rows, bucket_of, standing_scope="bucket",
                 "standing":    0.0,
                 "billing_day": int(_bd_val or billing_day_fallback),
             }
-        _dd = _day_data[_bk]
-        _is_sub = bool(_r["is_sub_meter"])
-        _imp = float(_r["imp_kwh"] or 0)
-        _exp = float(_r["exp_kwh"] or 0)
-        _cost_imp = float(_r["imp_cost"] or 0)
-        _cost_exp = float(_r["exp_cost"] or 0)
-        _sc = float(_r["standing_charge"] or 0)
-        _cg = float(_r["carbon_g"]) if _r["carbon_g"] is not None else None
+        _imp = float(_ik or 0)
+        _exp = float(_ek or 0)
+        _cost_imp = float(_ic or 0)
+        _cost_exp = float(_ec or 0)
+        _sc = float(_sc or 0)
+        _cg = float(_cg) if _cg is not None else None
+        _rate = round(float(_irate or 0), 6)
         if not _is_sub:
             _m = _dd["main"]
-            _rate = round(float(_r["imp_rate"] or 0), 6)
-            if _r["imp_kwh_remainder"] is not None:
-                _m_imp = float(_r["imp_kwh_remainder"])
-            elif _r["imp_kwh_grid"] is not None:
-                _m_imp = float(_r["imp_kwh_grid"])
+            if _ir is not None:
+                _m_imp = float(_ir)
+            elif _ig is not None:
+                _m_imp = float(_ig)
             else:
                 _m_imp = _imp
-            if _rate not in _dd["main"]["_main_by_rate"]:
-                _dd["main"]["_main_by_rate"][_rate] = {"kwh": 0.0, "cost": 0.0}
-            _dd["main"]["_main_by_rate"][_rate]["kwh"]  += _m_imp
-            _dd["main"]["_main_by_rate"][_rate]["cost"] += _cost_imp
+            _br = _m["_main_by_rate"].get(_rate)
+            if _br is None:
+                _br = _m["_main_by_rate"][_rate] = {"kwh": 0.0, "cost": 0.0}
+            _br["kwh"]  += _m_imp
+            _br["cost"] += _cost_imp
             _m["imp_kwh"] += _m_imp
             _m["exp_kwh"]  += _exp
             _m["exp_cost"] += _cost_exp
@@ -109,25 +127,24 @@ def _aggregate_block_rows(raw_rows, bucket_of, standing_scope="bucket",
                     _m["ci_abs_carbon"]  += abs(_cg)
                     _m["ci_abs_net_kwh"] += _exp
         else:
-            _mid = _r["meter_id"]
-            if _mid not in _dd["subs"]:
-                _dd["subs"][_mid] = {"imp_kwh": 0.0, "imp_cost": 0.0, "exp_kwh": 0.0, "exp_cost": 0.0, "carbon_g": None}
-            _s = _dd["subs"][_mid]
+            _s = _dd["subs"].get(_mid)
+            if _s is None:
+                _s = _dd["subs"][_mid] = {"imp_kwh": 0.0, "imp_cost": 0.0, "exp_kwh": 0.0,
+                                          "exp_cost": 0.0, "carbon_g": None}
             # Grid portion only; a real 0 (fully solar/battery-charged block) must
             # stay 0, not fall back to total consumption (see _aggregate_usage).
-            _grid = _r["imp_kwh_grid"]
-            _sub_imp = float(_grid) if _grid is not None else _imp
+            _sub_imp = float(_ig) if _ig is not None else _imp
             _s["imp_kwh"]  += _sub_imp
             _s["imp_cost"] += _cost_imp
             _s["exp_kwh"]  += _exp
             _s["exp_cost"] += _cost_exp
             if _cg is not None:
                 _s["carbon_g"] = (_s["carbon_g"] or 0.0) + _cg
-            _rate = round(float(_r["imp_rate"] or 0), 6)
-            if _rate not in _dd["main"]["_sub_by_rate"]:
-                _dd["main"]["_sub_by_rate"][_rate] = {"kwh": 0.0, "cost": 0.0}
-            _dd["main"]["_sub_by_rate"][_rate]["kwh"]  += _sub_imp
-            _dd["main"]["_sub_by_rate"][_rate]["cost"] += _cost_imp
+            _sr = _dd["main"]["_sub_by_rate"].get(_rate)
+            if _sr is None:
+                _sr = _dd["main"]["_sub_by_rate"][_rate] = {"kwh": 0.0, "cost": 0.0}
+            _sr["kwh"]  += _sub_imp
+            _sr["cost"] += _cost_imp
 
     for _ld, _dd in _day_data.items():
         _m = _dd["main"]
@@ -514,6 +531,88 @@ def _raw_rows(store, utc_start, utc_end):
     """, (utc_start, utc_end)).fetchall()
 
 
+_ACTIVE_PERIOD = ("SELECT id FROM config_periods "
+                  "WHERE effective_to IS NULL ORDER BY effective_from DESC LIMIT 1")
+
+
+def _day_tuples(store, utc_start, utc_end):
+    """`_raw_rows`' blocks as `_aggregate_tuples` rows: the columns the aggregation reads,
+    as plain tuples, with no joins (#47, 2 Oct 2026).
+
+    The two joins `_raw_rows` makes are resolved first and written into the query as
+    CASEs: a meter's device flag in the ACTIVE config period (absent → not a device), and
+    a config period's billing day. A block whose config period does not exist is left
+    out, as the inner join left it out.
+
+    Order: `_raw_rows`' order exactly — by block, then insertion (`id`; its walk of
+    `idx_blocks_start` broke ties by rowid). It decides how two devices' costs in one
+    half-hour interleave in a float sum: ordered by `meter_id` instead, 134 of 1,214 days
+    on the production-like database moved in the last bits. The unary `+` keeps the
+    planner on `idx_blocks_start`, which yields that order with no sort; with the period
+    term indexable it chose `idx_blocks_period` and sorted. The covering index
+    `idx_blocks_insights` was measured too, and was slower on the Mac (0.109 s against
+    0.097 s, dev database): it needs a sort within each half-hour for the `id` tie-break."""
+    c = store._conn
+    act = c.execute(_ACTIVE_PERIOD).fetchone()
+    subs = [r[0] for r in c.execute(
+        "SELECT meter_id FROM meters WHERE config_period_id = ? AND is_sub_meter",
+        (act[0] if act else None,))]
+    periods = c.execute("SELECT id, billing_day FROM config_periods").fetchall()
+    if not periods:
+        return []
+    sub_case = ("CASE WHEN b.meter_id IN (%s) THEN 1 ELSE 0 END" % ",".join("?" * len(subs))
+                if subs else "0")
+    bd_case = "CASE b.config_period_id %s END" % " ".join("WHEN ? THEN ?" for _ in periods)
+    params = list(subs) + [x for p in periods for x in p] + [p[0] for p in periods] \
+        + [utc_start, utc_end]
+    cur = c.cursor()
+    cur.row_factory = None
+    return cur.execute(f"""
+        SELECT b.block_start, b.meter_id, {sub_case}, {bd_case},
+               b.imp_kwh, b.imp_kwh_grid, b.imp_kwh_remainder, b.imp_rate, b.imp_cost,
+               b.exp_kwh, b.exp_cost, b.standing_charge, b.carbon_g
+        FROM blocks b
+        WHERE +b.config_period_id IN ({",".join("?" * len(periods))})
+          AND b.block_start >= ? AND b.block_start < ?
+        ORDER BY b.block_start, b.id
+    """, params).fetchall()
+
+
+def _ev_rows(store, cfg, meters, utc_start, utc_end):
+    """The blocks `_apply_ev` reads, and only those — never all history (#47).
+
+    `_apply_ev` keys its maps by `block_start` and lets a later non-device row at the same
+    instant overwrite an earlier one, so for each instant it reads, EVERY non-device row is
+    returned, in block order. The instants are the ones that can carry EV: a stored split
+    (`imp_kwh_ev`), a completed dispatch, or, with an EV sub-meter, that meter's blocks."""
+    ev_mid = _configured_ev_meter_id(cfg)
+    dispatch = ev_mid is None and len(meters) == 1 and meters[0]["id"] == "electricity_main"
+    if ev_mid is None and not dispatch:
+        return []
+    instants = ("SELECT block_start FROM blocks WHERE imp_kwh_ev IS NOT NULL "
+                "AND block_start >= ? AND block_start < ?")
+    params = [utc_start, utc_end]
+    if dispatch:
+        instants += (" UNION SELECT slot_start FROM dispatch_history WHERE kind = 'completed' "
+                     "AND slot_start >= ? AND slot_start < ?")
+        params += [utc_start, utc_end]
+    own = ""
+    if ev_mid is not None:
+        own = "OR b.meter_id = ?"
+        params.append(ev_mid)
+    return store._conn.execute(f"""
+        SELECT b.block_start, b.meter_id, m.is_sub_meter, b.imp_kwh, b.imp_kwh_grid,
+               b.imp_cost, b.imp_kwh_ev, b.imp_cost_ev
+        FROM blocks b
+        JOIN config_periods cp ON b.config_period_id = cp.id
+        LEFT JOIN meters m ON m.meter_id = b.meter_id
+          AND m.config_period_id = ({_ACTIVE_PERIOD})
+        WHERE b.block_start >= ? AND b.block_start < ?
+          AND ((COALESCE(m.is_sub_meter, 0) = 0 AND b.block_start IN ({instants})) {own})
+        ORDER BY b.block_start, b.id
+    """, [utc_start, utc_end] + params).fetchall()
+
+
 def _apply_ev(store, cfg, raw, rows, meters, utc_start, utc_end, bucket_of, key_fn):
     """The display-only EV split onto `rows` (in place), bucketed by `bucket_of`."""
     if (_configured_ev_meter_id(cfg) is None
@@ -605,9 +704,8 @@ def day_stats(store, cfg, tz_name, utc_start, utc_end) -> dict:
 
     _day = _local_day_of(utc_start, utc_end, tz)
 
-    raw = _raw_rows(store, utc_start, utc_end)
-    data = _aggregate_block_rows(raw, _day, standing_scope="bucket",
-                                 billing_day_fallback=meta["billing_day"])
+    data = _aggregate_tuples(_day_tuples(store, utc_start, utc_end), _day,
+                             standing_scope="bucket", billing_day_fallback=meta["billing_day"])
     bp = {}
     try:
         for ps, pe in _ec.get_billing_periods_from_config_periods(store.get_config_periods(), tz=tz):
@@ -628,7 +726,8 @@ def day_stats(store, cfg, tz_name, utc_start, utc_end) -> dict:
                "billing_period_end": e[1] if e else None}
         row.update(_bucket_to_row_values(dd))
         rows.append(row)
-    _apply_ev(store, cfg, raw, rows, meta["meters"], utc_start, utc_end, _day,
+    _apply_ev(store, cfg, _ev_rows(store, cfg, meta["meters"], utc_start, utc_end), rows,
+              meta["meters"], utc_start, utc_end, _day,
               key_fn=lambda r: "%04d-%02d-%02d" % (r["year"], r["month"], r["day"]))
     return dict(meta, rows=rows)
 

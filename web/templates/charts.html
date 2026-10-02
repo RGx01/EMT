@@ -407,7 +407,7 @@
 <script>
 // ── Every local day's Usage Stats row, kept by day (C, 2 Oct 2026) ──────────────────
 // Spiral and Usage Stats draw the same rows — /api/energy?resolution=day&kind=all
-// &include=stats, all of history: 1.7 s and 1.7 MB on a 138k-block database, and it was
+// &fields=stats, all of history: 1.7 s and 1.7 MB on a 138k-block database, and it was
 // fetched whole every time the data token moved (a new half-hour). Now it is fetched whole
 // once, kept (localStorage, per instance), and after that only the days that moved are
 // re-fetched: `fields=days&since=` answers "which recent days changed, and did anything
@@ -448,7 +448,7 @@ window.EMTDayRows = (function () {
     return res.j.fingerprint;
   }
   async function whole(token) {
-    var res = await getJSON('/api/energy?resolution=day&kind=all&include=stats');
+    var res = await getJSON('/api/energy?resolution=day&kind=all&fields=stats');
     if (res.status === 404) { write(null); return EMPTY; }
     if (res.j.error) throw new Error(res.j.error);
     var payload = res.j.stats, rows = payload.rows || [];
@@ -473,7 +473,7 @@ window.EMTDayRows = (function () {
     if (moved.length) {
       moved.sort();
       var lo = addDays(moved[0], -1), hi = addDays(moved[moved.length - 1], 1);
-      var res = await getJSON('/api/energy?resolution=day&kind=range&include=stats&start=' + lo + '&end=' + hi);
+      var res = await getJSON('/api/energy?resolution=day&kind=range&fields=stats&start=' + lo + '&end=' + hi);
       if (res.j.error) throw new Error(res.j.error);
       var fresh = res.j.stats || {};
       var kept = rows.filter(function (r) { var d = rowDay(r); return d < lo || d > hi; });
@@ -502,7 +502,7 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
 window.EMTSpiral=(function(){
   // Every local day's row, from the one endpoint (C step 1, part 3) — the rows Usage
   // Stats reads too (usage_view.day_stats).
-  // (The rows: /api/energy?resolution=day&kind=all&include=stats, via EMTDayRows.)
+  // (The rows: /api/energy?resolution=day&kind=all&fields=stats, via EMTDayRows.)
   var ROWS=[],YEARS=[],DEVICE_IDS=[],LABELS={},inited=false;
   var HAS_CARBON=false,HAS_EXPORT=false;
   // One shared grouping (Net / Import / Export / device) + winding + years drives
@@ -1400,7 +1400,7 @@ var barLastFetch = 0;        // timestamp of last successful fetch
 var BAR_TTL_MS = 5 * 60 * 1000;  // re-fetch if data older than 5 minutes
 var _lastDataVersion = null; // /api/energy?fields=fingerprint token at last render (gate refreshes)
 var _refreshInFlight = false;
-var barBlockMinutes = 30;    // populated from the /api/energy include=stats response
+var barBlockMinutes = 30;    // populated from the /api/energy fields=stats response
 var barMeters = [];       // [{id, label, color, is_sub}]
 var barExportColor = '#ff7f0e';
 
@@ -1750,7 +1750,7 @@ function barBillingKey(r) {
 function barGetDataForPeriod() {
   if (barPeriod === 'hh') {
     // 48 (or n) half-hour slots for one local day. Rows come pre-aggregated from
-    // /api/energy (resolution=block, include=stats) in exactly the barAggRows shape, so no re-aggregation.
+    // /api/energy (resolution=block, fields=stats) in exactly the barAggRows shape, so no re-aggregation.
     var rows = barHHRows || [];
     return {
       labels:  rows.map(function(r){ return r.label; }),
@@ -2183,7 +2183,7 @@ function barStepHH(delta) {
 // so a clock-change day has 46 or 50 bars (the autumn change shows 01:00 twice).
 async function barLoadHH() {
   try {
-    var r = await fetch(apiUrl('/api/energy?resolution=block&kind=day&include=stats&date='
+    var r = await fetch(apiUrl('/api/energy?resolution=block&kind=day&fields=stats&date='
                                + encodeURIComponent(barHHDate)));
     var j = await r.json();
     if (j.error) throw new Error(j.error);

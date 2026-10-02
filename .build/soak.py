@@ -161,9 +161,11 @@ def query_variants(path, ctx):
                         + [{"resolution": "day", "kind": "month", "year": y, "month": m,
                             "include": "billing"} for y, m in full_months]
                         # Usage Stats / Spiral (C step 1, 1 Oct 2026): every day of
-                        # history, and one day's half-hours.
-                        + [{"resolution": "day", "kind": "all", "include": "stats"},
-                           {"resolution": "block", "kind": "day", "include": "stats"}]
+                        # history, and one day's half-hours. `fields=stats` since #47
+                        # (2 Oct), as the page asks; the seventh soak's bounds for these
+                        # three were measured on the heavier `include=stats` form.
+                        + [{"resolution": "day", "kind": "all", "fields": "stats"},
+                           {"resolution": "block", "kind": "day", "fields": "stats"}]
                         # Insights (C step 2, 1 Oct 2026): a month and a year on each tab
                         # — the calendar routes these replaced were soaked per period.
                         + [{"resolution": "period", "kind": "month", "year": y, "month": m,
@@ -177,7 +179,7 @@ def query_variants(path, ctx):
                         + [{"fields": "fingerprint"},
                            {"resolution": "day", "kind": "all", "fields": "days",
                             "since": (today - dt.timedelta(days=35)).isoformat()},
-                           {"resolution": "day", "kind": "range", "include": "stats",
+                           {"resolution": "day", "kind": "range", "fields": "stats",
                             "start": (today - dt.timedelta(days=2)).isoformat(),
                             "end": today.isoformat()}]
                         + [{"resolution": "block", "kind": "month", "year": y, "month": m}
@@ -200,9 +202,9 @@ def query_variants(path, ctx):
 SURFACES = [
     ("Charts: change poll",             "/api/energy",  {"fields": "fingerprint"}),
     ("Charts: recent-day check",        "/api/energy",  {"fields": "days"}),
-    ("Spiral / Usage Stats: all days",  "/api/energy",  {"resolution": "day", "kind": "all", "include": "stats"}),
-    ("Spiral / Usage Stats: moved days", "/api/energy", {"resolution": "day", "kind": "range", "include": "stats"}),
-    ("Usage Stats: one day",            "/api/energy",  {"resolution": "block", "kind": "day", "include": "stats"}),
+    ("Spiral / Usage Stats: all days",  "/api/energy",  {"resolution": "day", "kind": "all", "fields": "stats"}),
+    ("Spiral / Usage Stats: moved days", "/api/energy", {"resolution": "day", "kind": "range", "fields": "stats"}),
+    ("Usage Stats: one day",            "/api/energy",  {"resolution": "block", "kind": "day", "fields": "stats"}),
     ("Heatmap: a month of blocks",      "/api/energy",  {"resolution": "block", "kind": "month", "year": "*"}),
     ("Billing: a year's bill",          "/api/energy",  {"resolution": "period", "kind": "year", "include": "billing"}),
     ("Billing: a quarter's bill",       "/api/energy",  {"resolution": "period", "kind": "quarter", "include": "billing"}),
