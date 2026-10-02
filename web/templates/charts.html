@@ -405,10 +405,104 @@
   </div>
 </div>
 <script>
+// ── Every local day's Usage Stats row, kept by day (C, 2 Oct 2026) ──────────────────
+// Spiral and Usage Stats draw the same rows — /api/energy?resolution=day&kind=all
+// &include=stats, all of history: 1.7 s and 1.7 MB on a 138k-block database, and it was
+// fetched whole every time the data token moved (a new half-hour). Now it is fetched whole
+// once, kept (localStorage, per instance), and after that only the days that moved are
+// re-fetched: `fields=days&since=` answers "which recent days changed, and did anything
+// before them?" in one cheap request (~0.08 s, 5 KB), and `kind=range` brings those days.
+//   * The fingerprint's days are UTC dates; the rows are local days — a moved UTC date D
+//     re-fetches local D−1..D+1, whatever the offset.
+//   * Anything before `since` changing (a re-price sweep), the bulk epoch (an import,
+//     delete or restore) or the config token (billing periods, meters, bill rounding) means
+//     a whole re-fetch, as does a recent window grown past RECENT_MAX days (which moves
+//     `since` on).
+//   * One request at a time: Spiral and Usage Stats asking together share it.
+window.EMTDayRows = (function () {
+  var RECENT = 35, RECENT_MAX = 60;
+  var mem = null, inflight = null;
+  function key() { try { return EMT.lsKey('emt_day_rows'); } catch (e) { return 'emt_day_rows'; } }
+  function read() {
+    if (mem) return mem;
+    try { mem = JSON.parse(localStorage.getItem(key()) || 'null'); } catch (e) { mem = null; }
+    return mem;
+  }
+  function write(c) {
+    mem = c;
+    try { if (c) localStorage.setItem(key(), JSON.stringify(c)); else localStorage.removeItem(key()); }
+    catch (e) { /* quota — kept in memory for this page */ }
+  }
+  function addDays(d, n) {
+    var t = new Date(d + 'T00:00:00Z'); t.setUTCDate(t.getUTCDate() + n); return t.toISOString().slice(0, 10);
+  }
+  function daysBetween(a, b) { return Math.round((Date.parse(b + 'T00:00:00Z') - Date.parse(a + 'T00:00:00Z')) / 864e5); }
+  function rowDay(r) { return r.year + '-' + String(r.month).padStart(2, '0') + '-' + String(r.day).padStart(2, '0'); }
+  async function getJSON(u) { var r = await fetch(apiUrl(u)); return {status: r.status, j: await r.json()}; }
+  var EMPTY = {rows: [], meters: [], export_color: '#ff7f0e'};
+
+  async function check(since) {
+    var res = await getJSON('/api/energy?resolution=day&kind=all&fields=days&since=' + since);
+    if (res.status === 404) return null;
+    if (res.j.error) throw new Error(res.j.error);
+    return res.j.fingerprint;
+  }
+  async function whole(token) {
+    var res = await getJSON('/api/energy?resolution=day&kind=all&include=stats');
+    if (res.status === 404) { write(null); return EMPTY; }
+    if (res.j.error) throw new Error(res.j.error);
+    var payload = res.j.stats, rows = payload.rows || [];
+    var since = addDays(rows.length ? rowDay(rows[rows.length - 1]) : new Date().toISOString().slice(0, 10), -RECENT);
+    var f = await check(since);
+    write(f ? {payload: payload, since: since, history: f.history, epoch: f.epoch,
+               config: f.config, days: f.days, token: token || null} : null);
+    return payload;
+  }
+  async function update(token) {
+    var c = read();
+    if (!c || !c.payload) return whole(token);
+    var f = await check(c.since);
+    if (!f) { write(null); return EMPTY; }
+    var rows = c.payload.rows || [], last = rows.length ? rowDay(rows[rows.length - 1]) : c.since;
+    if (f.history !== c.history || f.epoch !== c.epoch || f.config !== c.config
+        || daysBetween(c.since, last) > RECENT_MAX) return whole(token);
+    var moved = [];
+    Object.keys(Object.assign({}, c.days, f.days)).forEach(function (d) {
+      if ((c.days || {})[d] !== f.days[d]) moved.push(d);
+    });
+    if (moved.length) {
+      moved.sort();
+      var lo = addDays(moved[0], -1), hi = addDays(moved[moved.length - 1], 1);
+      var res = await getJSON('/api/energy?resolution=day&kind=range&include=stats&start=' + lo + '&end=' + hi);
+      if (res.j.error) throw new Error(res.j.error);
+      var fresh = res.j.stats || {};
+      var kept = rows.filter(function (r) { var d = rowDay(r); return d < lo || d > hi; });
+      c.payload = Object.assign({}, fresh, {rows: kept.concat(fresh.rows || []).sort(function (a, b) {
+        return rowDay(a) < rowDay(b) ? -1 : 1; })});
+    }
+    c.days = f.days;
+    if (token) c.token = token;
+    write(c);
+    return c.payload;
+  }
+  // The rows, brought up to date. `token`: the data token the caller read FIRST (it is
+  // stored with them, so a page reload can paint from the cache and check one token).
+  function get(token) {
+    if (!inflight) inflight = update(token).finally(function () { inflight = null; });
+    return inflight;
+  }
+  // What is kept, without asking the server — for an instant first paint.
+  function peek() { var c = read(); return c && c.payload ? {payload: c.payload, token: c.token} : null; }
+  return {get: get, peek: peek};
+})();
+// The whole payload was also kept as 'emt_bar_summary' until 2 Oct 2026: drop that copy.
+try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
+</script>
+<script>
 window.EMTSpiral=(function(){
   // Every local day's row, from the one endpoint (C step 1, part 3) — the rows Usage
   // Stats reads too (usage_view.day_stats).
-  var ENDPOINT="/api/energy?resolution=day&kind=all&include=stats";
+  // (The rows: /api/energy?resolution=day&kind=all&include=stats, via EMTDayRows.)
   var ROWS=[],YEARS=[],DEVICE_IDS=[],LABELS={},inited=false;
   var HAS_CARBON=false,HAS_EXPORT=false;
   // One shared grouping (Net / Import / Export / device) + winding + years drives
@@ -657,10 +751,9 @@ window.EMTSpiral=(function(){
   // screen if the fetch fails, rather than replacing it with an error.
   async function load(quiet){
     try{
-      var res=await fetch(apiUrl(ENDPOINT),{headers:{Accept:"application/json"}});
-      if(res.status===404){fail("No data yet \u2014 the spirals fill in once blocks are recorded.");return false;}
-      if(!res.ok)throw new Error("HTTP "+res.status);
-      var j=(await res.json()).stats||{};
+      // The day rows, kept by day and brought up to date (EMTDayRows) — shared with Usage
+      // Stats, re-fetching only the days that moved.
+      var j=await EMTDayRows.get();
       if(!j.rows||!j.rows.length){fail("No data yet \u2014 the spirals fill in once blocks are recorded.");return false;}
       ROWS=j.rows.slice().sort(function(a,b){return (a.year-b.year)||(a.month-b.month)||(a.day-b.day);});
       YEARS=Array.from(new Set(ROWS.map(function(r){return r.year;}))).sort();
@@ -1365,19 +1458,6 @@ function barLoadState(availableYears) {
   } catch(e) {}
 }
 
-// Per-instance cache of the last Usage Stats payload (/api/energy include=stats), so
-// returning to the Charts
-// page (a full navigation from Overview etc.) can paint instantly from the last
-// result instead of showing a blank chart while the fresh fetch runs.
-function _barCacheKey() { try { return EMT.lsKey('emt_bar_summary'); } catch(e) { return 'emt_bar_summary'; } }
-function _loadBarCache() {
-  try { var raw = localStorage.getItem(_barCacheKey()); return raw ? JSON.parse(raw) : null; }
-  catch(e) { return null; }
-}
-function _saveBarCache(json) {
-  try { localStorage.setItem(_barCacheKey(), JSON.stringify(json)); } catch(e) { /* quota — non-fatal */ }
-}
-
 // Apply a Usage Stats payload (fresh or cached) into the bar-chart state.
 function _applyBarJson(json) {
   barData        = json.rows || [];
@@ -1419,17 +1499,11 @@ async function _barFetchFresh() {
     // Every local day's row, from the one endpoint (C step 1). The change
     // token is read FIRST: if the data moves between the two requests the token is the
     // older one, so the next poll refreshes — never a stale chart under a fresh token.
+    // The rows come from EMTDayRows (kept by day; only moved days re-fetched).
     var ver = await _fetchDataVersion();
-    var r = await fetch(apiUrl('/api/energy?resolution=day&kind=all&include=stats'));
-    var j = await r.json();
-    var json;
-    if (r.status === 404) json = {rows: [], meters: [], export_color: '#ff7f0e'};   // no blocks yet
-    else if (j.error) throw new Error(j.error);
-    else json = j.stats;
-    json.data_version = ver;
+    var json = Object.assign({}, await EMTDayRows.get(ver), {data_version: ver});
     _applyBarJson(json);
     barLastFetch = Date.now();
-    _saveBarCache(json);
     barRender();
   } catch(e) {
     _setBarLoading(false);
@@ -1449,12 +1523,12 @@ async function barInit() {
   // then confirm freshness against the tiny fingerprint token — only re-fetching
   // the full summary if the data actually changed.
   if (!barInited) {
-    var cached = _loadBarCache();
-    if (cached && cached.rows) {
-      _applyBarJson(cached);
+    var kept = EMTDayRows.peek();
+    if (kept && kept.payload.rows) {
+      _applyBarJson(Object.assign({}, kept.payload, {data_version: kept.token}));
       barLastFetch = Date.now();   // treat cache as fresh for TTL; version check corrects it
       barRender();                 // instant
-      var cv = cached.data_version;
+      var cv = kept.token;
       _fetchDataVersion().then(function(v) {
         if (v && cv && v === cv) { _lastDataVersion = v; return; }   // unchanged → keep cache
         _barFetchFresh();          // changed / unknown → refresh in the background
