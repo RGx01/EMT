@@ -563,6 +563,37 @@ def _apply_ev(store, cfg, raw, rows, meters, utc_start, utc_end, bucket_of, key_
         _apply_hybrid_ev_to_summary_rows(rows, meters, ev_mid, hyb, key_fn=key_fn)
 
 
+def _local_day_of(utc_start, utc_end, tz):
+    """`bucket_of(block_start) -> local ISO date` for blocks in [utc_start, utc_end).
+
+    Each local day's UTC start is worked out ONCE for the span; a block's day is then a
+    binary search on its naive-UTC `block_start` string (same format, so string order is
+    time order). Exact for any timezone — a 30- or 45-minute UTC offset included, which
+    memoising by UTC hour would not be. It was a datetime parse + astimezone + strftime
+    per block: 145,300 calls, 0.58 s of an all-history day_stats' 1.44 s on 138k blocks."""
+    import bisect
+    from datetime import timezone as _utc
+    lo = datetime.fromisoformat(utc_start).replace(tzinfo=_utc.utc)
+    hi = datetime.fromisoformat(utc_end).replace(tzinfo=_utc.utc)
+    starts, names = [], []
+    d = lo.astimezone(tz).date()
+    while True:
+        s0 = datetime(d.year, d.month, d.day, tzinfo=tz).astimezone(_utc.utc)
+        if s0 >= hi:
+            break
+        starts.append(s0.replace(tzinfo=None).isoformat())
+        names.append(d.isoformat())
+        d += timedelta(days=1)
+    utc = ZoneInfo("UTC")
+
+    def _day(bs):
+        i = bisect.bisect_right(starts, bs) - 1
+        if i < 0:   # before the first day's start (outside the span) — compute it exactly
+            return datetime.fromisoformat(bs).replace(tzinfo=utc).astimezone(tz).strftime("%Y-%m-%d")
+        return names[i]
+    return _day
+
+
 def day_stats(store, cfg, tz_name, utc_start, utc_end) -> dict:
     """One row per LOCAL day with blocks in [utc_start, utc_end) — what /blocks-summary
     returned for the whole history before it was deleted: `year`, `month`, `day`, the billing period the day
@@ -572,8 +603,7 @@ def day_stats(store, cfg, tz_name, utc_start, utc_end) -> dict:
     tz = ZoneInfo(tz_name)
     utc = ZoneInfo("UTC")
 
-    def _day(bs):
-        return datetime.fromisoformat(bs).replace(tzinfo=utc).astimezone(tz).strftime("%Y-%m-%d")
+    _day = _local_day_of(utc_start, utc_end, tz)
 
     raw = _raw_rows(store, utc_start, utc_end)
     data = _aggregate_block_rows(raw, _day, standing_scope="bucket",
