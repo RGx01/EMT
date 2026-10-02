@@ -43,7 +43,7 @@ class TestRepriceBlock(unittest.TestCase):
 
     def test_uncapped_single_rate_reconciles(self):
         b = reprice.reprice_block(block_start=BS, block_end=BE, grid_kwh=3.0,
-                                  ev=self._ev(2.0), rates=FLAT(OFF), in_off_peak_window=True)
+                                  ev=self._ev(2.0), rates=FLAT(OFF), in_off_peak_window=True, vat=0.05)
         self.assertAlmostEqual(b["rate"], OFF, places=6)
         self.assertAlmostEqual(_sum_kwh(b), 3.0, places=6)
         self.assertAlmostEqual(_sum_cost(b), round(3.0 * OFF, 6), places=6)
@@ -53,7 +53,7 @@ class TestRepriceBlock(unittest.TestCase):
         # out of window, over cap (boundary before this slot → ev_frac 0)
         b = reprice.reprice_block(block_start="2026-08-15T18:00:00", block_end="2026-08-15T18:30:00",
                                   grid_kwh=3.0, ev=self._ev(2.0), rates=CAPPED_RATES,
-                                  in_off_peak_window=False, boundary=("2026-08-15T06:00:00", 1.0))
+                                  in_off_peak_window=False, boundary=("2026-08-15T06:00:00", 1.0), vat=0.05)
         self.assertEqual(b["bands"]["ev"], "peak")
         self.assertEqual(b["bands"]["house"], "day")
         self.assertAlmostEqual(b["devices"]["ev"]["rate"], PEAK, places=6)
@@ -65,7 +65,7 @@ class TestRepriceBlock(unittest.TestCase):
         b = reprice.reprice_block(block_start="2026-08-15T18:00:00", block_end="2026-08-15T18:30:00",
                                   grid_kwh=3.0, ev=self._ev(2.0), rates=CAPPED_RATES,
                                   in_off_peak_window=False, ev_eligibility=reprice.BUMP,
-                                  boundary=("2026-08-15T20:00:00", 1.0))   # boundary AFTER → ignored
+                                  boundary=("2026-08-15T20:00:00", 1.0), vat=0.05)   # boundary AFTER → ignored
         self.assertEqual(b["bands"]["ev"], "peak")
         self.assertEqual(b["bands"]["house"], "day")
         self.assertAlmostEqual(b["devices"]["ev"]["rate"], PEAK, places=6)
@@ -75,14 +75,14 @@ class TestRepriceBlock(unittest.TestCase):
         b = reprice.reprice_block(block_start="2026-08-15T18:00:00", block_end="2026-08-15T18:30:00",
                                   grid_kwh=3.0, ev=self._ev(2.0), rates=CAPPED_RATES,
                                   in_off_peak_window=False, ev_eligibility=reprice.SMART,
-                                  boundary=None)                            # no cap breach → within
+                                  boundary=None, vat=0.05)                            # no cap breach → within
         self.assertEqual(b["bands"]["ev"], "off_peak")
         self.assertEqual(b["bands"]["house"], "off_peak")                  # freebie
 
     def test_boundary_block_blends(self):
         b = reprice.reprice_block(block_start="2026-08-15T04:30:00", block_end="2026-08-15T05:00:00",
                                   grid_kwh=3.0, ev=self._ev(2.0), rates=CAPPED_RATES,
-                                  in_off_peak_window=False, boundary=("2026-08-15T04:30:00", 0.5))
+                                  in_off_peak_window=False, boundary=("2026-08-15T04:30:00", 0.5), vat=0.05)
         self.assertEqual(b["bands"]["ev"], "mixed")                 # off + peak in one block
         evrate = b["devices"]["ev"]["rate"]
         self.assertTrue(OFF < evrate < PEAK)                        # blended EV rate
@@ -95,7 +95,7 @@ class TestRepriceBlock(unittest.TestCase):
         b = reprice.reprice_block(block_start="2026-08-15T18:00:00", block_end="2026-08-15T18:30:00",
                                   grid_kwh=3.0, ev=self._ev(2.0), rates=CAPPED_RATES,
                                   in_off_peak_window=False, boundary=("2026-08-15T06:00:00", 1.0),
-                                  settled_cost=settled)
+                                  settled_cost=settled, vat=0.05)
         self.assertAlmostEqual(b["cost"], settled, places=6)
         self.assertAlmostEqual(_sum_cost(b), settled, places=6)     # invariant: Σ cost == settled
         self.assertAlmostEqual(b["devices"]["ev"]["cost"] + b["devices"]["house"]["cost"], settled, places=6)
@@ -104,14 +104,14 @@ class TestRepriceBlock(unittest.TestCase):
     def test_all_ev_block_ev_absorbs(self):
         b = reprice.reprice_block(block_start=BS, block_end=BE, grid_kwh=2.0,
                                   ev=self._ev(2.0), rates=FLAT(OFF), in_off_peak_window=True,
-                                  settled_cost=0.20)
+                                  settled_cost=0.20, vat=0.05)
         self.assertAlmostEqual(_sum_cost(b), 0.20, places=6)
         self.assertAlmostEqual(b["devices"]["house"]["kwh"], 0.0, places=6)
 
     def test_carbon_keeps_unclipped(self):
         b = reprice.reprice_block(block_start=BS, block_end=BE, grid_kwh=3.0,
                                   ev=self._ev(3.0, unclip=6.0), rates=FLAT(OFF),
-                                  in_off_peak_window=True, generation_kwh=2.5)
+                                  in_off_peak_window=True, generation_kwh=2.5, vat=0.05)
         self.assertAlmostEqual(b["carbon"]["ev_unclipped_kwh"], 6.0, places=6)   # unclipped for carbon
         self.assertAlmostEqual(b["devices"]["ev"]["kwh"], 3.0, places=6)         # clipped for billing
         self.assertAlmostEqual(b["carbon"]["generation_kwh"], 2.5, places=6)
@@ -121,7 +121,7 @@ class TestRepriceBlock(unittest.TestCase):
                          (False, ("2026-08-15T04:30:00", 0.4))]:
             b = reprice.reprice_block(block_start="2026-08-15T04:30:00", block_end="2026-08-15T05:00:00",
                                       grid_kwh=3.0, ev=self._ev(2.0), rates=CAPPED_RATES,
-                                      in_off_peak_window=iow, boundary=bnd, settled_cost=0.6)
+                                      in_off_peak_window=iow, boundary=bnd, settled_cost=0.6, vat=0.05)
             self.assertAlmostEqual(_sum_kwh(b), 3.0, places=6)
             # segment Σcost reconciles to sub-penny (rate stored at 6dp → ≤~1e-6 jitter);
             # the bundle 'cost' and the device costs are exact by construction.

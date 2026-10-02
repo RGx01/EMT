@@ -1894,7 +1894,7 @@ class BlockStore:
             return None
         feed = [(r["raw_start"], r["raw_end"], r["energy_kwh"])
                 for r in rows if r["slot_start"] not in boost]
-        return iog_cap.cap_day_boundaries(feed, tz_name).get(key)
+        return iog_cap.cap_day_boundaries(feed, tz_name, iog_cap.CAP_HOURS).get(key)
 
     def prune_dispatch_slots(self, days: int = 90) -> int:
         """Delete dispatch_slots older than `days` days. Generous retention (90d)
@@ -2568,7 +2568,7 @@ class BlockStore:
 
     def delete_blocks_for_date_range(
         self, from_date: str, to_date: str, meter_id: str | None = None,
-        from_time: str = "00:00", to_time: str = "23:59", tz_name: str = "UTC",
+        from_time: str = "00:00", to_time: str = "23:59", *, tz_name: str,
         reconstructed_only: bool = False
     ) -> dict:
         """
@@ -2714,7 +2714,7 @@ class BlockStore:
 
     def count_blocks_for_date_range(
         self, from_date: str, to_date: str, meter_id: str | None = None,
-        from_time: str = "00:00", to_time: str = "23:59", tz_name: str = "UTC",
+        from_time: str = "00:00", to_time: str = "23:59", *, tz_name: str,
         reconstructed_only: bool = False
     ) -> dict:
         """
@@ -4074,7 +4074,7 @@ class BlockStore:
             # permanent, un-fillable export gap. Day-scoped + imported-only.
             if "export" in (channel_csvs or {}):
                 try:
-                    self.zero_fill_imported_export_blanks()
+                    self.zero_fill_imported_export_blanks(self.site_timezone())
                 except Exception:
                     pass
         return out
@@ -4629,7 +4629,7 @@ class BlockStore:
             (meter_id, from_iso, to_iso)).fetchone()
         return int(row[0]) if row else 0
 
-    def zero_fill_imported_export_blanks(self, tz_name: Optional[str] = None) -> int:
+    def zero_fill_imported_export_blanks(self, tz_name: Optional[str]) -> int:
         """Historical-export hygiene: on any LOCAL day that carries some imported
         export data, set that day's BLANK (NULL) export slots to 0.
 

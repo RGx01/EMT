@@ -501,7 +501,7 @@ _IOG_SYNTH_HORIZON_DAYS = 2
 
 
 def _synthesize_iog_tou_windowed(day_records, night_records,
-                                 *, tz_name: str = _IOG_TZ_NAME,
+                                 *, tz_name: str,
                                  horizon_days: int = _IOG_SYNTH_HORIZON_DAYS,
                                  now: "datetime | None" = None) -> list:
     """Rebuild time-windowed day/night unit-rate records from IOG's flat 4-rate
@@ -646,7 +646,7 @@ async def build_rate_schedule(
             _is_iog = "IOG" in (tariff_code or "").upper()
             if (day or night) and _is_iog:
                 # BL-52: rebuild the windowed periods the new 4-rate feed omits.
-                records = _synthesize_iog_tou_windowed(day, night)
+                records = _synthesize_iog_tou_windowed(day, night, tz_name=_IOG_TZ_NAME)
                 logger.info("build_rate_schedule: %s — no standard rates; "
                             "reconstructed %d windowed period(s) from day(%d)+"
                             "night(%d) TOU buckets (IOG 23:30-05:30 local)",

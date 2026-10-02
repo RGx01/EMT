@@ -186,7 +186,7 @@ class TestBankersRoundingLadder(unittest.TestCase):
     def test_sums_raw_no_per_slot_rounding(self):
         # Corrected method (verified vs a real bill): tiny slots are summed RAW, not
         # rounded per half-hour. 0.005 kWh @ £1/kWh × 2 = 1.0p — NOT 0p.
-        out = ec.octopus_bill_total([(0.005, 1.0), (0.005, 1.0)])
+        out = ec.octopus_bill_total([(0.005, 1.0), (0.005, 1.0)], vat_rate=0.05)
         self.assertEqual(out["exc_pence"], 1.0)
 
     def test_bill_slots_prefers_stored_exc_else_falls_back(self):
@@ -245,7 +245,7 @@ class TestBillMethodBreakdown(unittest.TestCase):
         self.assertAlmostEqual(kwhs[1], 4.136, places=3)              # peak 4.0+0.032+0.104
 
     def test_bill_slots_prefers_stored_rate_exc(self):
-        slots = ec.bill_slots_from_blocks([self._blk(2.0, 0.42, rate_exc=0.20)])
+        slots = ec.bill_slots_from_blocks([self._blk(2.0, 0.42, rate_exc=0.20)], vat_rate=0.05)
         self.assertAlmostEqual(slots[0][1], 0.20, places=6)        # stored ex rate wins
 
     def test_breakdown_bands_standing_vat_and_total(self):

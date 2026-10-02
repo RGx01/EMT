@@ -24,7 +24,7 @@ A RATCHET, not an assertion of the finished state (C §0, 30 Sep 2026: ~20 exist
 The committed baseline is today's set; the set may shrink and must never grow. A
 new function that takes `tz_name=None` fails the build on the commit that adds it.
 When the set is empty the baseline is deleted and the test becomes a plain
-assertion.
+assertion — done 2 Oct 2026, at 0 (tests/test_tariff_defaults.py).
 
 USAGE
     python3 .build/check_tariff_defaults.py [--json]

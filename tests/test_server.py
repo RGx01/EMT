@@ -3584,7 +3584,7 @@ class TestAggregateUsage(unittest.TestCase):
         return server._aggregate_usage(
             self.store, self.cfg,
             "2026-04-01T00:00:00", "2026-04-02T00:00:00"
-        )
+        , tz_name="UTC")
 
     def test_imp_kwh_total(self):
         """Total grid import = sum of main meter imp_kwh."""
@@ -3683,7 +3683,7 @@ class TestAggregateUsage(unittest.TestCase):
         d = server._aggregate_usage(
             self.store, self.cfg,
             "2025-01-01T00:00:00", "2025-01-02T00:00:00"
-        )
+        , tz_name="UTC")
         self.assertEqual(d["imp_kwh"], 0.0)
         self.assertEqual(d["imp_cost"], 0.0)
         self.assertEqual(d["rate_tiers"], [])
@@ -4853,7 +4853,7 @@ class TestDispatchDerivedEVWiring(unittest.TestCase):
                      "VALUES (1,'electricity_main',0,NULL)"); conn.commit()
         cfg = {"meters": {"electricity_main": {"meta": {"timezone": "UTC"}}}}
         d = server._aggregate_usage(store, cfg,
-                                    "2026-08-04T00:00:00", "2026-08-05T00:00:00")
+                                    "2026-08-04T00:00:00", "2026-08-05T00:00:00", tz_name="UTC")
         self.assertIn("ev_dispatch", d["sub_meters"])
         ev = d["sub_meters"]["ev_dispatch"]
         # EV = 4.0 (slot A) + 4.0 (slot B clipped from 6.0) = 8.0 kWh
@@ -4878,7 +4878,7 @@ class TestDispatchDerivedEVWiring(unittest.TestCase):
                           "ev_charger": {"meta": {"sub_meter": True,
                                                   "meter_type": "ev_charger"}}}}
         d = server._aggregate_usage(store, cfg,
-                                    "2026-08-04T00:00:00", "2026-08-05T00:00:00")
+                                    "2026-08-04T00:00:00", "2026-08-05T00:00:00", tz_name="UTC")
         self.assertNotIn("ev_dispatch", d["sub_meters"])
         # House untouched: with no EV block, house == full grid import.
         self.assertAlmostEqual(d["house_imp_kwh"], d["imp_kwh"], places=3)
@@ -4894,7 +4894,7 @@ class TestDispatchDerivedEVWiring(unittest.TestCase):
                      "WHERE block_start='2026-08-04T00:00:00'"); conn.commit()
         cfg = {"meters": {"electricity_main": {"meta": {"timezone": "UTC"}}}}
         d = server._aggregate_usage(store, cfg,
-                                    "2026-08-04T00:00:00", "2026-08-05T00:00:00")
+                                    "2026-08-04T00:00:00", "2026-08-05T00:00:00", tz_name="UTC")
         ev = d["sub_meters"]["ev_dispatch"]
         # slot A stored 0.30 (NOT pro-rata 0.28) + slot B pro-rata 0.28 = 0.58
         self.assertAlmostEqual(ev["imp_cost"], 0.58, places=4)

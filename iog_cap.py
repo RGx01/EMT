@@ -69,7 +69,7 @@ def merge_intervals(intervals: Iterable[tuple]) -> list:
 
 
 def cap_usage(completed_slots: Iterable[tuple], tz_name: str,
-              cap_hours: "float | None" = None) -> dict:
+              cap_hours: "float | None") -> dict:
     """Cap usage per noon→noon cap-day, measured in ACTUAL CHARGING TIME.
 
     The IOG cap is `cap_hours` of *charging*, NOT of dispatch wall-clock — a half-hour
@@ -119,7 +119,7 @@ def cap_usage(completed_slots: Iterable[tuple], tz_name: str,
 
 
 def cap_day_boundaries(completed_slots: Iterable[tuple], tz_name: str,
-                       cap_hours: "float | None" = None) -> dict:
+                       cap_hours: "float | None") -> dict:
     """`{cap_day: (boundary_slot, boundary_frac)}` — the per-cap-day charge-time boundary
     (the slot the cap is reached in, and the within-cap energy fraction of that slot), or
     absent where the day never reaches the cap. Projection of `cap_usage` for the pricing

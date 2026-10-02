@@ -47,7 +47,7 @@ def import_segments(*, ev_kwh: float, house_kwh: float,
                     ev_peak_rate: Optional[float] = None,
                     ev_offpeak_frac: float = 1.0,
                     house_offpeak_frac: float = 1.0,
-                    vat: float = 0.05) -> List[Segment]:
+                    vat: float) -> List[Segment]:
     """Decompose a block's grid import into priced segments.
 
     `*_offpeak_frac` (0..1) is the off-peak share of that portion — 1.0 = wholly off-peak,

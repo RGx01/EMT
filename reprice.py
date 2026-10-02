@@ -84,7 +84,7 @@ def _reconcile_house(house_segs, house_kwh, house_cost):
 
 def reprice_block(*, block_start: str, block_end: str, grid_kwh: float,
                   ev: dict, rates: dict, settled_cost: Optional[float] = None,
-                  vat: float = 0.05, in_off_peak_window: bool = True,
+                  vat: float, in_off_peak_window: bool = True,
                   ev_eligibility: Optional[str] = None, boundary=None,
                   generation_kwh: float = 0.0) -> dict:
     """The one function. Emits the per-block bundle every surface reads.

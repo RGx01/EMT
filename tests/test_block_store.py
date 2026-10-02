@@ -3152,7 +3152,7 @@ class TestBlockDeletion(unittest.TestCase):
 
     def test_count_preview_all_meters(self):
         store = self._make_store()
-        r = store.count_blocks_for_date_range("2026-03-01", "2026-03-02")
+        r = store.count_blocks_for_date_range("2026-03-01", "2026-03-02", tz_name="UTC")
         self.assertEqual(r["blocks"], 5)
         self.assertEqual(r["dates"], 2)
 
@@ -3160,22 +3160,22 @@ class TestBlockDeletion(unittest.TestCase):
         # Counting (or deleting) a MAIN meter now includes its sub-meters, so the
         # two 2026-03-01 main blocks plus its ev_charger block = 3.
         store = self._make_store()
-        r = store.count_blocks_for_date_range("2026-03-01", "2026-03-01", "electricity_main")
+        r = store.count_blocks_for_date_range("2026-03-01", "2026-03-01", "electricity_main", tz_name="UTC")
         self.assertEqual(r["blocks"], 3)
         self.assertEqual(r["dates"], 1)
         # A device on its own counts only itself.
-        rd = store.count_blocks_for_date_range("2026-03-01", "2026-03-01", "ev_charger")
+        rd = store.count_blocks_for_date_range("2026-03-01", "2026-03-01", "ev_charger", tz_name="UTC")
         self.assertEqual(rd["blocks"], 1)
 
     def test_count_preview_no_match(self):
         store = self._make_store()
-        r = store.count_blocks_for_date_range("2026-04-01", "2026-04-30")
+        r = store.count_blocks_for_date_range("2026-04-01", "2026-04-30", tz_name="UTC")
         self.assertEqual(r["blocks"], 0)
         self.assertEqual(r["dates"], 0)
 
     def test_delete_all_meters(self):
         store = self._make_store()
-        r = store.delete_blocks_for_date_range("2026-03-01", "2026-03-02")
+        r = store.delete_blocks_for_date_range("2026-03-01", "2026-03-02", tz_name="UTC")
         self.assertEqual(r["deleted"], 5)
         self.assertEqual(r["dates"], 2)
         remaining = store._conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]
@@ -3183,7 +3183,7 @@ class TestBlockDeletion(unittest.TestCase):
 
     def test_delete_single_meter(self):
         store = self._make_store()
-        r = store.delete_blocks_for_date_range("2026-03-01", "2026-03-01", "ev_charger")
+        r = store.delete_blocks_for_date_range("2026-03-01", "2026-03-01", "ev_charger", tz_name="UTC")
         self.assertEqual(r["deleted"], 1)
         remaining = store._conn.execute(
             "SELECT COUNT(*) FROM blocks WHERE meter_id='ev_charger'"
@@ -3197,7 +3197,7 @@ class TestBlockDeletion(unittest.TestCase):
 
     def test_delete_no_match_is_safe(self):
         store = self._make_store()
-        r = store.delete_blocks_for_date_range("2026-05-01", "2026-05-31")
+        r = store.delete_blocks_for_date_range("2026-05-01", "2026-05-31", tz_name="UTC")
         self.assertEqual(r["deleted"], 0)
         total = store._conn.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]
         self.assertEqual(total, 6, "No blocks should have been removed")
@@ -3205,12 +3205,12 @@ class TestBlockDeletion(unittest.TestCase):
     def test_invalid_date_range_raises(self):
         store = self._make_store()
         with self.assertRaises(ValueError):
-            store.delete_blocks_for_date_range("2026-03-10", "2026-03-01")
+            store.delete_blocks_for_date_range("2026-03-10", "2026-03-01", tz_name="UTC")
 
     def test_missing_dates_raises(self):
         store = self._make_store()
         with self.assertRaises(ValueError):
-            store.delete_blocks_for_date_range("", "2026-03-01")
+            store.delete_blocks_for_date_range("", "2026-03-01", tz_name="UTC")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -27,7 +27,7 @@ class TestBlockSegments(unittest.TestCase):
             ev_kwh=4.0, house_kwh=2.0,
             house_offpeak_rate=0.05, house_day_rate=0.30,
             ev_offpeak_rate=0.05, ev_peak_rate=0.32,
-            ev_offpeak_frac=0.0, house_offpeak_frac=0.0)
+            ev_offpeak_frac=0.0, house_offpeak_frac=0.0, vat=0.05)
 
     def test_round_trip_and_order(self):
         segs = self._segs()

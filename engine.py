@@ -674,7 +674,7 @@ def _iog_site_tz(store=None) -> str:
 
 def _apply_iog_split(imp_ch: dict, block_start: str, block_end: str,
                      chosen_kwh: float, overlay_rate: float,
-                     tz_name: "str | None" = None, hold_rate: bool = False) -> None:
+                     tz_name: "str | None", hold_rate: bool = False) -> None:
     """Compute + apply the IOG house/EV billing split onto `imp_ch` IN PLACE.
 
     Sets `kwh_ev`/`cost_ev`/`rate_ev` for any dispatched IOG slot (all IOG tariffs
@@ -884,7 +884,7 @@ def _reprice_main_import_block(result: dict, start: str, meter_name: str,
         # IOG house/EV split — carve the dispatched EV portion (all IOG) and, on the capped
         # tariff, re-price live; settlement re-applies it when the DCC kWh re-materialises.
         _apply_iog_split(result, start, "", result.get("kwh"), result.get("rate") or _base,
-                         hold_rate=hold_rate)
+                         _iog_site_tz(), hold_rate=hold_rate)
         # ex-VAT from the POST-split rate — one place, in the same breath as inc. Only when the
         # rate was (re)resolved here; the inherit path keeps the finalised rate AND its exc.
         if apply_overlay and _apply_import_exc(result, start) and meter is not None:
@@ -6901,7 +6901,7 @@ def _net_alarm(name: str, filled: int) -> None:
 
 def reprice_history_conformance(from_iso: str, to_iso: str,
                                 meter_id: str = "electricity_main",
-                                limit: int = 200000, rate_segs=None) -> dict:
+                                limit: int = 200000, *, rate_segs) -> dict:
     """Non-destructive P3.3c soak check. Recompute split + exc for every block in the UTC range
     [from_iso, to_iso) via the unified sweep core (`_reprice_history_block`) IN MEMORY — persists
     NOTHING — and diff against the STORED values. Applies the corrected gate (design §10a):
@@ -7341,7 +7341,7 @@ _SEGMENT_BACKFILL_PASS_PACE = 1.0
 _segment_backfill_running = False
 
 
-def _reprice_history_block(row, tz_name: "str | None" = None, rate_segs=None):
+def _reprice_history_block(row, tz_name: "str | None", rate_segs):
     """P3.3a (Phase 3 / Option A) — the UNIFIED historical re-price for one import block.
 
     Derives the EV/house split, ex-VAT, and priced segments in ONE pass via the forward seam
@@ -7408,7 +7408,7 @@ def _reprice_history_block(row, tz_name: "str | None" = None, rate_segs=None):
     return imp_ch
 
 
-def _reprice_history_blocks(rows, tz_name: "str | None" = None, rate_segs=None) -> dict:
+def _reprice_history_blocks(rows, tz_name: "str | None", rate_segs) -> dict:
     """Persist the unified derivation for a batch of import blocks (P3.3a driver). Reuses the
     forward path's own persistence: split columns (`set_blocks_iog_split`), exc columns
     (`set_blocks_exc`), and `_persist_block_segments` (seam segments, else the legacy fallback —
@@ -9915,7 +9915,7 @@ async def run_gap_fill_job(from_ts, to_ts, *, channels=("import", "export"),
         # get export with 0 (day-scoped, imported-only, billing-neutral).
         if _store is not None and "export" in tuple(channels):
             try:
-                _zn = _store.zero_fill_imported_export_blanks()
+                _zn = _store.zero_fill_imported_export_blanks(_store.site_timezone())
                 if _zn:
                     logger.info("run_gap_fill_job: zero-filled %d blank export slot(s) "
                                 "on imported export days", _zn)

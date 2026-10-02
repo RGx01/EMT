@@ -117,7 +117,7 @@ def calendar_periods(kind, first, last):
     return periods
 
 
-def get_billing_periods_from_config_periods(config_periods, tz=None):
+def get_billing_periods_from_config_periods(config_periods, tz):
     """
     Fast alternative to get_billing_periods_from_config_history that takes
     config_periods rows (from store.get_config_periods()) instead of all blocks.
@@ -316,7 +316,7 @@ def bill_net_from_day_rollups(rows) -> float:
                        - round(r.get("exp_cost") or 0.0, 4), 2)
     return round(total, 2)
 
-def calculate_billing_summary_for_period(blocks, period_start, period_end, store=None, tz_name=None):
+def calculate_billing_summary_for_period(blocks, period_start, period_end, store=None, *, tz_name):
     meter_summary  = defaultdict(lambda: defaultdict(lambda: {"kwh": 0.0, "cost": 0.0, "read_start": None, "read_end": None}))
     meter_totals   = defaultdict(lambda: {"kwh": 0.0, "cost": 0.0, "read_start": None, "read_end": None})
     main_import_raw = defaultdict(lambda: {"kwh": 0.0, "cost": 0.0})
@@ -721,7 +721,7 @@ def bankers_round(x, ndigits=0):
     return float(_Decimal(str(x)).quantize(q, rounding=_ROUND_HALF_EVEN))
 
 
-def octopus_bill_total(slots, vat_rate=0.05):
+def octopus_bill_total(slots, vat_rate):
     """Ex-VAT energy total for a set of (kwh, exc_rate) slots (exc_rate £/kWh), rounding
     only at the TOTAL (whole penny); VAT on top. Empirically — verified against a real
     Octopus bill — the per-half-hour figures are summed RAW; Octopus does NOT round each
@@ -734,7 +734,7 @@ def octopus_bill_total(slots, vat_rate=0.05):
             "inc_gbp": round(inc_pence / 100.0, 2)}
 
 
-def bill_slots_from_blocks(blocks, vat_rate=0.05):
+def bill_slots_from_blocks(blocks, vat_rate):
     """Extract (kwh, exc_rate) main-import slots from block dicts for octopus_bill_total.
     Uses the stored exc-VAT cost (BL-23 imp_cost_exc → channel 'cost_exc') to derive the
     exc rate when present; otherwise falls back to the inc rate ÷ (1+VAT) — an

@@ -13,7 +13,7 @@ trips.
 import unittest
 from datetime import datetime
 
-from kraken_rates import _synthesize_iog_tou_windowed, RateSchedule, build_rate_schedule
+from kraken_rates import _synthesize_iog_tou_windowed, _IOG_TZ_NAME, RateSchedule, build_rate_schedule
 import asyncio
 
 DAY_INC, NIGHT_INC = 32.309235, 5.49297
@@ -27,7 +27,7 @@ NIGHT = [{"value_inc_vat": NIGHT_INC, "value_exc_vat": NIGHT_EXC,
 
 def _sched(now):
     return RateSchedule.from_api_records(
-        _synthesize_iog_tou_windowed(DAY, NIGHT, now=now))
+        _synthesize_iog_tou_windowed(DAY, NIGHT, now=now, tz_name=_IOG_TZ_NAME))
 
 
 def _band(r):

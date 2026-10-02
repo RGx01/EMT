@@ -5950,7 +5950,7 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _aggregate_usage(store, cfg, utc_start: str, utc_end: str,
-                     tz_name: str = "UTC") -> dict:
+                     tz_name: str) -> dict:
     """
     Core aggregation for Usage Insights — works for any UTC time range.
     Returns cost, earnings, rate-tier distribution, self-sufficiency,
@@ -6963,7 +6963,8 @@ def api_blocks_delete_preview():
         store = _get_store()
         # Pass LOCAL times: the store treats from/to as the ends of ONE contiguous
         # span (from_date+from_time .. to_date+to_time), not a per-day window.
-        result = store.count_blocks_for_date_range(from_date, to_date, meter_id, from_time, to_time, _tz_name, reconstructed_only)
+        result = store.count_blocks_for_date_range(from_date, to_date, meter_id, from_time, to_time,
+                                                   tz_name=_tz_name, reconstructed_only=reconstructed_only)
         return jsonify(result)
     except Exception as e:
         logger.error("api_blocks_delete_preview: %s", e)
@@ -7002,7 +7003,7 @@ def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
         store = _own_store()          # own thread, own connection
         result = store.delete_blocks_for_date_range(
             from_date, to_date, meter_id, from_time_utc, to_time_utc,
-            tz_name, reconstructed_only)
+            tz_name=tz_name, reconstructed_only=reconstructed_only)
         # C §2a: a bulk operation bumps the EPOCH rather than moving thousands of
         # day fingerprints. A range delete can span years, and a client holding
         # per-day state needs telling once, not per day.
@@ -7186,7 +7187,7 @@ def _corrections_time_to_utc(time_str: str, tz_name: str,
 
 
 def _corrections_build_where(corr_type, from_date, to_date, channel,
-                              from_time_utc, to_time_utc, meter_id, tz_name="UTC",
+                              from_time_utc, to_time_utc, meter_id, tz_name,
                               api_settled_only=False):
     """
     Build WHERE clause and params for corrections queries.

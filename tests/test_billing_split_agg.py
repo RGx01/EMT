@@ -26,7 +26,7 @@ def _block(start, imp):
 class TestBillingSplitAgg(unittest.TestCase):
 
     def _summary(self, blocks):
-        return calculate_billing_summary_for_period(blocks, P_START, P_END)
+        return calculate_billing_summary_for_period(blocks, P_START, P_END, tz_name=None)
 
     def test_ev_home_split_and_exc(self):
         # 30 kWh import @ £1.70 inc (£1.619048 exc). EV 20 kWh @ 0.05 = £1.00;

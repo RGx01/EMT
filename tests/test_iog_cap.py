@@ -27,11 +27,11 @@ class TestCapHoursConfigurable(unittest.TestCase):
     def test_runtime_cap_hours_changes_boundary(self):
         slots = self._slots()
         cap.CAP_HOURS = 6.0                      # 5h < 6h → never reaches the cap
-        self.assertFalse(any(v["over"] for v in cap.cap_usage(slots, "Europe/London").values()))
+        self.assertFalse(any(v["over"] for v in cap.cap_usage(slots, "Europe/London", cap_hours=None).values()))
         cap.CAP_HOURS = 3.0                      # 5h > 3h → cap reached, boundary set
-        u = cap.cap_usage(slots, "Europe/London")
+        u = cap.cap_usage(slots, "Europe/London", cap_hours=None)
         self.assertTrue(any(v["over"] for v in u.values()))
-        b = cap.cap_day_boundaries(slots, "Europe/London")   # no cap_hours arg → live value
+        b = cap.cap_day_boundaries(slots, "Europe/London", cap_hours=None)   # no cap_hours arg → live value
         self.assertTrue(any(bs is not None for (bs, bf) in b.values()))
 
     def test_explicit_cap_hours_still_overrides(self):
@@ -119,12 +119,12 @@ class TestCapUsage(unittest.TestCase):
     def test_splits_into_two_cap_days_at_noon(self):
         u = cap.cap_usage([("2026-01-02T02:00:00", "2026-01-02T02:30:00", -3.5),   # -> 01-01
                            ("2026-01-02T14:00:00", "2026-01-02T14:30:00", -3.5)],  # -> 01-02
-                          "UTC")
+                          "UTC", cap_hours=None)
         self.assertIn("2026-01-01", u)
         self.assertIn("2026-01-02", u)
 
     def test_ignores_missing_energy(self):
-        u = cap.cap_usage([("2026-01-01T13:00:00", "2026-01-01T13:30:00", None)], "UTC")
+        u = cap.cap_usage([("2026-01-01T13:00:00", "2026-01-01T13:30:00", None)], "UTC", cap_hours=None)
         self.assertEqual(u, {})
 
 
@@ -264,7 +264,7 @@ class TestCapDayBoundaries(unittest.TestCase):
 
     def test_absent_when_under_cap(self):
         b = cap.cap_day_boundaries(
-            [("2026-01-01T13:00:00", "2026-01-01T13:30:00", -3.5)], "UTC")   # 0.5 h << 6 h
+            [("2026-01-01T13:00:00", "2026-01-01T13:30:00", -3.5)], "UTC", cap_hours=None)   # 0.5 h << 6 h
         self.assertEqual(b["2026-01-01"], (None, None))
 
 

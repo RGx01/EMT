@@ -78,7 +78,7 @@ class TestZeroFillImportedExportBlanks(unittest.TestCase):
         self._blk(st, "2025-01-01T03:00:00", None)
         self._blk(st, "2025-01-01T12:00:00", 1.5)
         st._conn.commit()
-        self.assertEqual(st.zero_fill_imported_export_blanks(), 1)
+        self.assertEqual(st.zero_fill_imported_export_blanks(tz_name=None), 1)
 
 
 if __name__ == "__main__":

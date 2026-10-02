@@ -502,7 +502,7 @@ class TestBillingChartVsUsageStats(unittest.TestCase):
         """Call calculate_billing_summary_for_period and extract grid import totals."""
         s = ec.calculate_billing_summary_for_period(
             blocks, period_start_local, period_end_local
-        )
+        , tz_name=None)
         imp_kwh = imp_cost = 0.0
         for key, t in (s.get("totals") or {}).items():
             if not t.get("is_submeter") and "export" not in key.lower():
@@ -624,7 +624,7 @@ class TestBillSummaryMainImportRaw(unittest.TestCase):
     def _summary(self):
         blocks = self.store.get_blocks_for_utc_range(*local_date_range_to_utc_bounds("2026-03-01", "2026-03-31", "UTC"))
         return ec.calculate_billing_summary_for_period(
-            blocks, datetime(2026, 3, 1), datetime(2026, 4, 1))
+            blocks, datetime(2026, 3, 1), datetime(2026, 4, 1), tz_name=None)
 
     def test_raw_equals_sub_plus_remainder(self):
         """main_import_raw total must equal sub-meter sum + remainder."""
@@ -745,7 +745,7 @@ class TestBillSummaryMainImportRaw(unittest.TestCase):
 
         blocks = store2.get_blocks_for_utc_range(*local_date_range_to_utc_bounds("2026-03-01", "2026-03-31", "UTC"))
         s = ec.calculate_billing_summary_for_period(
-            blocks, datetime(2026, 3, 1), datetime(2026, 4, 1))
+            blocks, datetime(2026, 3, 1), datetime(2026, 4, 1), tz_name=None)
 
         raw_kwh  = sum(d["kwh"]  for d in s["main_import_raw"].values())
         rem_kwh  = sum(t["kwh"]  for k, t in s["totals"].items()
@@ -1469,7 +1469,7 @@ class TestNetCostConsistency(unittest.TestCase):
         blocks = self.store.get_blocks_for_utc_range(utc_s, utc_e)
         p_start = datetime(2026, 5, 4, 0, 0, 0)
         p_end   = datetime(2026, 5, 20, 0, 0, 0)
-        summary = ec.calculate_billing_summary_for_period(blocks, p_start, p_end)
+        summary = ec.calculate_billing_summary_for_period(blocks, p_start, p_end, tz_name=None)
 
         rows = []
         d = datetime.fromisoformat("2026-05-04")
@@ -1531,7 +1531,7 @@ class TestMixedSourceBillingAgreement(unittest.TestCase):
         self.store._conn.commit()
 
     def _render_totals(self, blocks, p_start, p_end):
-        s = ec.calculate_billing_summary_for_period(blocks, p_start, p_end)
+        s = ec.calculate_billing_summary_for_period(blocks, p_start, p_end, tz_name=None)
         imp_kwh = imp_cost = 0.0
         for key, t in (s.get("totals") or {}).items():
             if not t.get("is_submeter") and "export" not in key.lower():
@@ -1589,7 +1589,7 @@ class TestBillingReadsIgnoreZeros(unittest.TestCase):
         self._ins(store, cp, "2026-06-01T01:00:00", 1002.0, 1005.0)
         _s = datetime(2026, 6, 1, 0, 0); _e = datetime(2026, 6, 2, 0, 0)
         blocks = store.get_blocks_for_range(_s, _e)
-        summary = ec.calculate_billing_summary_for_period(blocks, _s, _e, store=store)
+        summary = ec.calculate_billing_summary_for_period(blocks, _s, _e, store=store, tz_name=None)
         imp = next((t for k, t in summary["totals"].items()
                     if k.lower().endswith("import")
                     and not (summary["meter_meta"].get(k) or {}).get("is_submeter")), None)
@@ -1605,7 +1605,7 @@ class TestBillingReadsIgnoreZeros(unittest.TestCase):
         self._ins(store, cp, "2026-06-01T00:30:00", 0.0, 0.0)
         _s = datetime(2026, 6, 1, 0, 0); _e = datetime(2026, 6, 2, 0, 0)
         blocks = store.get_blocks_for_range(_s, _e)
-        summary = ec.calculate_billing_summary_for_period(blocks, _s, _e, store=store)
+        summary = ec.calculate_billing_summary_for_period(blocks, _s, _e, store=store, tz_name=None)
         imp = next((t for k, t in summary["totals"].items()
                     if k.lower().endswith("import")
                     and not (summary["meter_meta"].get(k) or {}).get("is_submeter")), None)
