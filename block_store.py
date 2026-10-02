@@ -7278,35 +7278,6 @@ class BlockStore:
             (utc_start, utc_end)
         )
 
-    def get_dates_in_utc_range(self, utc_start: str, utc_end: str,
-                                tz_name: str) -> list[str]:
-        """
-        Return distinct local dates (YYYY-MM-DD) present within a UTC range,
-        computed at query time from block_start using the given timezone.
-        Replaces get_local_dates() — does not use the local_date column.
-        """
-        try:
-            tz = ZoneInfo(tz_name)
-        except Exception:
-            tz = ZoneInfo("UTC")
-        rows = self._conn.execute(
-            """SELECT DISTINCT block_start FROM blocks
-               WHERE block_start >= ? AND block_start < ?
-               ORDER BY block_start""",
-            (utc_start, utc_end)
-        ).fetchall()
-        seen = set()
-        dates = []
-        for row in rows:
-            dt = datetime.fromisoformat(row[0]).replace(
-                tzinfo=ZoneInfo("UTC")
-            ).astimezone(tz)
-            d = dt.strftime("%Y-%m-%d")
-            if d not in seen:
-                seen.add(d)
-                dates.append(d)
-        return dates
-
     def last_block_end(self, meter_id: str) -> Optional[str]:
         """The latest `block_end` recorded for `meter_id`, or None.
 

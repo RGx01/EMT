@@ -168,7 +168,6 @@
     "get_cumulative_totals",
     "get_current_config_period_id",
     "get_data_epoch",
-    "get_dates_in_utc_range",
     "get_day_live_rollups",
     "get_day_rollups",
     "get_deleted_ranges",
