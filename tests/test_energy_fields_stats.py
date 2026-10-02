@@ -14,8 +14,13 @@ built to hit every edge, and compares the two.
 
 `TheField` tests fail on the parent tree, where `fields=stats` was ignored. `TheSameRows`
 fails there too, as `_day_tuples` did not exist, but what it checks is that nothing moved.
-It is a guard in spirit, and the real-database check was run by hand: the all-days payload
-is byte-identical on the dev and production-like databases.
+It is a guard in spirit, and the real-database check was run by hand on the Mac: the
+all-days payload is byte-identical on the dev and production-like databases.
+
+The tie order is part of the answer. `_raw_rows` said `ORDER BY block_start` alone until
+this change, which left the order of meters within a half-hour to the SQLite build. On CI's
+Linux runners it was not rowid order, so `test_to_the_last_bit` failed there and passed on
+the Mac. Both paths now order by `(block_start, id)`.
 """
 import importlib.util
 import os

@@ -512,7 +512,13 @@ def page_meta(cfg) -> dict:
 
 def _raw_rows(store, utc_start, utc_end):
     """Every block in [utc_start, utc_end), with the meter's device flag from the ACTIVE
-    config period (as the two routes always read it)."""
+    config period (as the two routes always read it).
+
+    Ordered by block, then insertion (`id`). Until #47 (2 Oct 2026) it said `ORDER BY
+    block_start` alone, and the order of meters within a half-hour was the plan's. That
+    order decides how two devices' costs in one half-hour interleave in a float sum, so
+    the last bits of a day's total depended on the SQLite build: rowid order on the Mac,
+    another on CI's Linux runners."""
     active = ("SELECT id FROM config_periods "
               "WHERE effective_to IS NULL ORDER BY effective_from DESC LIMIT 1")
     return store._conn.execute(f"""
@@ -527,7 +533,7 @@ def _raw_rows(store, utc_start, utc_end):
         LEFT JOIN meters m ON m.meter_id = b.meter_id
           AND m.config_period_id = ({active})
         WHERE b.block_start >= ? AND b.block_start < ?
-        ORDER BY b.block_start
+        ORDER BY b.block_start, b.id
     """, (utc_start, utc_end)).fetchall()
 
 
@@ -544,10 +550,9 @@ def _day_tuples(store, utc_start, utc_end):
     a config period's billing day. A block whose config period does not exist is left
     out, as the inner join left it out.
 
-    Order: `_raw_rows`' order exactly — by block, then insertion (`id`; its walk of
-    `idx_blocks_start` broke ties by rowid). It decides how two devices' costs in one
-    half-hour interleave in a float sum: ordered by `meter_id` instead, 134 of 1,214 days
-    on the production-like database moved in the last bits. The unary `+` keeps the
+    Order: `_raw_rows`' order — by block, then insertion (`id`). It decides how two
+    devices' costs in one half-hour interleave in a float sum: ordered by `meter_id`
+    instead, 134 of 1,214 days on the production-like database moved in the last bits. The unary `+` keeps the
     planner on `idx_blocks_start`, which yields that order with no sort; with the period
     term indexable it chose `idx_blocks_period` and sorted. The covering index
     `idx_blocks_insights` was measured too, and was slower on the Mac (0.109 s against
