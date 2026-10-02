@@ -992,6 +992,7 @@ on hand:
 | 4.5.17 | **refused** | below the 4.5.18 floor since v11 — its heal's work was undone by its own learner |
 | 4.5.18 | **refused** | below the 4.5.19 floor since v12 — its heal left 1 Oct's sub-meter rows at 5% |
 | **4.5.19** | **admitted** | the positive fixture at `FLOOR_VERSION` — capture one from a 4.5.19 install. |
+| 4.5.20 | **admitted** | above the floor. Its gap-fill fix (v4 #493) carries no heal, so the floor stays at 4.5.19 (2 Oct 2026). |
 | **below** `FLOOR_VERSION` | **refused** | stamped, but from a release older than the floor |
 
 Two of these carry most of the value.

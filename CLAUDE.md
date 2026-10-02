@@ -7,14 +7,15 @@ devices, and reconciles against the supplier's settled figures.
 
 ## Where we are
 
-**v4 is at 4.5.16** (repo `RGx01/energy-meter-tracker-addon`). 4.5.14 was the last feature
+**v4 is at 4.5.20** (repo `RGx01/energy-meter-tracker-addon`). 4.5.14 was the last feature
 release; since then it accepts **critical fixes only** — data loss, crash-on-start, or a pricing
 error. 4.5.15 shipped #473 (device cost from raw `imp_kwh` instead of the grid-clipped
 `imp_kwh_grid`, with a heal) and #475 (a settled kWh re-banding an unpriced block). 4.5.16 shipped
 #481 (Octopus relabelled the device-breakdown buckets; with a heal). 4.5.17 (1 Oct 2026) shipped the
 0% VAT backdating fix with a heal; its learner undid the heal, so 4.5.18 (same day) fixes the
 learner and re-arms the heal; 4.5.19 fixes the Bill Summary's VAT across the change and
-re-arms the heal for sub-meter rows. The EV_BOOST band is still expected.
+re-arms the heal for sub-meter rows. 4.5.20 (2 Oct 2026) stops a gap-fill opening from a 0.0
+register after a power cut (v4 #493) — no heal, so the floor does not move. The EV_BOOST band is still expected.
 
 **4.5.19 is the v5 import floor** (raised 1 Oct 2026). It carries a heal, and the rule is that a fix adding a heal
 raises the floor EMT will import from. A below-floor database must be **refused** with "open
@@ -23,7 +24,7 @@ the floor is what makes that safe — so a v4 fix is ported as its forward fix o
 
 **The work now is v5**, in this repo (`RGx01/EMT`). It was seeded from v4 4.5.14 and is being
 deconstructed in the open; the forward fixes from 4.5.15 (#473, #475) and 4.5.16 (#481) were
-ported afterwards, and 4.5.17–4.5.19's VAT forward fixes with them. **Each new v4 release:** port its forward fixes, not its heal, and raise the
+ported afterwards, and 4.5.17–4.5.19's VAT forward fixes with them, and 4.5.20's gap-fill fix. **Each new v4 release:** port its forward fixes, not its heal, and raise the
 floor if it carries a heal (import spec, ROADMAP §E, programme §E, this file).
 Steps: 1 dead code, 2 extract `billing.py`, 3 ReadStore/WriteStore, 4 API consolidated + HTML
 pipeline deleted, 5 schema (15 columns dropped, band moves to `block_segments`), 6 client +
