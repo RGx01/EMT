@@ -133,7 +133,91 @@ class RouteSelection(unittest.TestCase):
         self.assertTrue(any("resolution=day" in u and "month=9" in u and "include=billing" in u
                             for u in us))
         ps = soak.query_variants("/api/periods", ctx)
-        self.assertEqual(sum("include=net_cost" in u for u in ps), 4)
+        self.assertEqual(sum("include=net_cost" in u and "kind=live" not in u for u in ps), 4)
+
+    def test_the_pages_most_frequent_requests_are_exercised(self):
+        """REGRESSION (C row 8, 2 Oct 2026): the six soaks before this never sent the
+        Charts change poll, the recent-day check, the moved-day re-fetch or Live
+        Power's cards — the requests a browser makes most often."""
+        import datetime as dt
+        ctx = {"today": dt.date(2026, 10, 2), "periods": [], "months": [(2026, 10)], "years": []}
+        us = soak.query_variants("/api/energy", ctx)
+        self.assertIn("/api/energy?fields=fingerprint", us)
+        self.assertIn("/api/energy?resolution=day&kind=all&fields=days&since=2026-08-28", us)
+        self.assertTrue(any("kind=range" in u and "include=stats" in u for u in us))
+        self.assertIn("/api/energy?resolution=block&kind=month&year=2026&month=10", us)
+        self.assertIn("/api/periods?kind=live&include=net_cost%2Crows",
+                      soak.query_variants("/api/periods", ctx))
+
+
+class Surfaces(unittest.TestCase):
+    """C §6 row 8: the page requests by name, and a budget for each. New-surface tests:
+    they fail on the parent tree, where SURFACES and `report` do not exist."""
+
+    def _urls(self):
+        import datetime as dt
+        ctx = {"today": dt.date(2026, 10, 2), "periods": ["2026-08-03", "2026-09-03"],
+               "months": [(2026, 10), (2026, 9)], "years": [2026, 2025]}
+        return [u for p in ("/api/energy", "/api/periods") for u in soak.query_variants(p, ctx)]
+
+    def test_every_surface_is_soaked(self):
+        hit = {soak.surface_of(u) for u in self._urls()}
+        self.assertEqual([n for n, _, _ in soak.SURFACES if n not in hit], [])
+
+    def test_the_budget_file_names_exactly_the_surfaces(self):
+        """No ghost and no missing budget: a renamed surface must be renamed there."""
+        self.assertEqual(sorted(soak.load_budgets()), sorted(n for n, _, _ in soak.SURFACES))
+
+    def test_the_most_specific_surface_wins(self):
+        self.assertEqual(soak.surface_of("/api/periods?kind=billing&include=carbon"),
+                         "Insights: trend strip")
+        self.assertEqual(soak.surface_of("/api/periods?kind=billing"), "Period picker")
+        self.assertEqual(soak.surface_of("/api/periods?kind=live&include=net_cost%2Crows"),
+                         "Live Power: cards")
+        self.assertEqual(soak.surface_of("/api/energy?resolution=block&kind=month&year=2026&month=9"),
+                         "Heatmap: a month of blocks")
+        self.assertIsNone(soak.surface_of("/api/energy?resolution=block&kind=month"))
+        self.assertIsNone(soak.surface_of("/api/config"))
+
+    def _report(self, rows, budgets):
+        return soak.summarise(_write_rows(rows), budgets=budgets)
+
+    def test_a_surface_over_its_budget_fails(self):
+        poll = "/api/energy?fields=fingerprint"
+        r = self._report(_rows("quiet", poll, 0.40, 20),
+                         {"Charts: change poll": {"p50": 0.25, "p95": None}})
+        self.assertIn("verdict: FAIL", r)
+        self.assertIn("OVER BUDGET Charts: change poll: p50 0.400s > 0.25s", r)
+
+    def test_within_budget_passes(self):
+        r = self._report(_rows("quiet", "/api/energy?fields=fingerprint", 0.10, 20),
+                         {"Charts: change poll": {"p50": 0.25, "p95": 0.5}})
+        self.assertIn("verdict: PASS", r)
+        self.assertRegex(r, r"Charts: change poll +n=20 +p50 0\.100s")
+
+    def test_a_null_budget_is_measured_not_asserted(self):
+        r = self._report(_rows("quiet", "/api/energy?fields=fingerprint", 9.0, 20),
+                         {"Charts: change poll": {"p50": None, "p95": None}})
+        self.assertIn("verdict: PASS", r)
+        self.assertIn("budget - / -", r)
+
+    def test_only_the_quiet_phase_is_judged(self):
+        """The sweep is a deliberate whole-history write, not what a user meets."""
+        poll = "/api/energy?fields=fingerprint"
+        r = self._report(_rows("sweep", poll, 5.0, 20) + _rows("quiet", poll, 0.1, 20),
+                         {"Charts: change poll": {"p50": 0.25, "p95": 0.5}})
+        self.assertIn("verdict: PASS", r)
+
+    def test_an_unmeasured_surface_says_so(self):
+        self.assertRegex(self._report(_rows("quiet", "/api/config", 0.1, 5), {}),
+                         r"Live Power: cards +NOT MEASURED")
+
+    def test_report_re_judges_a_saved_run(self):
+        path = _write_rows(_rows("quiet", "/api/energy?fields=fingerprint", 0.4, 20))
+        fd, bud = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            json.dump({"budgets": {"Charts: change poll": {"p50": 0.25, "p95": None}}}, f)
+        self.assertEqual(soak.main(["report", path, "--budgets", bud]), 1)
 
 
 def _write_rows(rows):

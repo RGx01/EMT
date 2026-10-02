@@ -6,6 +6,7 @@ Three modes, all run from a workstation against the soak add-on. Standard librar
 only, so it needs nothing installed.
 
   run             python3 .build/soak.py run --base http://192.168.20.16:8098
+  re-report       python3 .build/soak.py report soak-…/requests.jsonl
   scan a log      python3 .build/soak.py scan-log addon.log
   compare         python3 .build/soak.py compare-segments segments_before.db blocks.db
 
@@ -25,6 +26,16 @@ WHAT `run` DOES
   INFORMATION, not a verdict: on a saturated Pi a heavy pure read slows as much as
   a read that waited behind the writer (second soak: /api/config/history +12.4 s,
   a loop hop +14.9 s, a static PNG +5.2 s), so no latency threshold separates them.
+
+  SURFACES AND BUDGETS (C §6 row 8, 2 Oct 2026). The requests a page actually
+  makes are named in SURFACES — the Charts poll, Live Power's cards, a year's bill —
+  and the report gives each one's quiet-phase p50 / p95 / max. A surface with a
+  budget in .build/soak_budgets.json that its quiet p50 or p95 exceeds FAILS the run.
+  Only the quiet phase is judged: the sweep phase is a deliberate whole-history
+  write, not what a user meets. A null budget is measured and reported, not
+  asserted. The time is the whole response (request to last byte), which bounds
+  time-to-first-byte from above. `report` re-judges a saved requests.jsonl, so
+  budgets can be set from a run without running it again.
 
   Blocking is judged by `scan-log` instead, at the source: since workstream A a read
   cannot wait in SQLite, only behind the engine loop, and the add-on's loop-lag
@@ -146,16 +157,76 @@ def query_variants(path, ctx):
                         + [{"resolution": "period", "kind": "month", "year": y, "month": m,
                             "include": f} for y, m in months[:2] for f in ("carbon", "usage")]
                         + [{"resolution": "period", "kind": "year", "year": y, "include": f}
-                           for y in years[:2] for f in ("carbon", "usage")]),
+                           for y in years[:2] for f in ("carbon", "usage")]
+                        # What the browser asks for most often (2 Oct 2026): the Charts
+                        # change poll, the day-row check behind Spiral / Usage Stats
+                        # (charts.html's RECENT = 35 days), the re-fetch of the days
+                        # that moved, and the heatmap's month of blocks.
+                        + [{"fields": "fingerprint"},
+                           {"resolution": "day", "kind": "all", "fields": "days",
+                            "since": (today - dt.timedelta(days=35)).isoformat()},
+                           {"resolution": "day", "kind": "range", "include": "stats",
+                            "start": (today - dt.timedelta(days=2)).isoformat(),
+                            "end": today.isoformat()}]
+                        + [{"resolution": "block", "kind": "month", "year": y, "month": m}
+                           for y, m in months[:1]]),
         # The picker's totals: one rollup over the whole span per kind.
         "/api/periods": ([{"kind": k} for k in ("billing", "month", "year")]
                          + [{"kind": k, "include": "net_cost"}
                             for k in ("billing", "month", "quarter", "year")]
-                         + [{"kind": "billing", "include": "carbon"}]),     # Insights' strip
+                         + [{"kind": "billing", "include": "carbon"},       # Insights' strip
+                            {"kind": "live", "include": "net_cost,rows"}]),  # Live Power's cards
         "/api/charge-sessions": [{"days": 30}],
     }
     return [path + ("?" + urllib.parse.urlencode(q) if q else "")
             for q in (table.get(path) or [None]) if q != "SKIP"]
+
+
+# The requests a page makes, by name — C §6 row 8's surfaces. A URL is the first
+# surface whose path matches and whose every listed parameter it carries with that
+# value ("*": any value; None: must be absent); order runs most specific first. Budgets live in soak_budgets.json, by name.
+SURFACES = [
+    ("Charts: change poll",             "/api/energy",  {"fields": "fingerprint"}),
+    ("Charts: recent-day check",        "/api/energy",  {"fields": "days"}),
+    ("Spiral / Usage Stats: all days",  "/api/energy",  {"resolution": "day", "kind": "all", "include": "stats"}),
+    ("Spiral / Usage Stats: moved days", "/api/energy", {"resolution": "day", "kind": "range", "include": "stats"}),
+    ("Usage Stats: one day",            "/api/energy",  {"resolution": "block", "kind": "day", "include": "stats"}),
+    ("Heatmap: a month of blocks",      "/api/energy",  {"resolution": "block", "kind": "month", "year": "*"}),
+    ("Billing: a year's bill",          "/api/energy",  {"resolution": "period", "kind": "year", "include": "billing"}),
+    ("Billing: a quarter's bill",       "/api/energy",  {"resolution": "period", "kind": "quarter", "include": "billing"}),
+    ("Billing: a month's bill",         "/api/energy",  {"resolution": "period", "kind": "month", "include": "billing"}),
+    ("Billing: a billing period's bill", "/api/energy", {"resolution": "period", "kind": "billing", "include": "billing"}),
+    ("Billing: a month of day charts",  "/api/energy",  {"resolution": "day", "kind": "month", "include": "billing"}),
+    ("Insights: carbon view",           "/api/energy",  {"resolution": "period", "include": "carbon"}),
+    ("Insights: usage view",            "/api/energy",  {"resolution": "period", "include": "usage"}),
+    ("Live Power: cards",               "/api/periods", {"kind": "live", "include": "net_cost,rows"}),
+    ("Billing: picker totals",          "/api/periods", {"include": "net_cost"}),
+    ("Insights: trend strip",           "/api/periods", {"include": "carbon"}),
+    ("Period picker",                   "/api/periods", {"include": None}),
+]
+_BUDGETS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "soak_budgets.json")
+
+
+def surface_of(url):
+    """The SURFACES name a requested URL belongs to, or None."""
+    path, _, qs = url.partition("?")
+    q = dict(urllib.parse.parse_qsl(qs))
+    for name, p, want in SURFACES:
+        if p != path:
+            continue
+        ok = True
+        for k, v in want.items():
+            ok = (k not in q) if v is None else (k in q) if v == "*" else q.get(k) == v
+            if not ok:
+                break
+        if ok:
+            return name
+    return None
+
+
+def load_budgets(path=None):
+    """{surface: {"p50": s|None, "p95": s|None}} from soak_budgets.json."""
+    return json.load(open(path or _BUDGETS))["budgets"]
 
 
 def build_context(base, timeout):
@@ -327,9 +398,15 @@ def cmd_run(a):
         t.join(timeout=a.timeout + 1)
     with lock:
         out.close()
-    report = summarise(rec_path, a.block_ratio)
+    report = summarise(rec_path, a.block_ratio, budgets=load_budgets(a.budgets))
     open(os.path.join(a.out, "report.txt"), "w").write(report)
     print(report)
+
+
+def cmd_report(a):
+    report = summarise(a.requests, a.block_ratio, budgets=load_budgets(a.budgets))
+    print(report)
+    return 0 if "verdict: PASS" in report else 1
 
 
 def _pct(xs, p):
@@ -337,7 +414,7 @@ def _pct(xs, p):
     return xs[min(len(xs) - 1, int(round(p / 100.0 * (len(xs) - 1))))] if xs else None
 
 
-def summarise(rec_path, block_ratio=5.0, min_abs_secs=1.0):
+def summarise(rec_path, block_ratio=5.0, min_abs_secs=1.0, budgets=None):
     rows = [json.loads(l) for l in open(rec_path) if l.strip()]
     rows = [r for r in rows if "url" in r]
     fails, lines = [], []
@@ -345,6 +422,7 @@ def summarise(rec_path, block_ratio=5.0, min_abs_secs=1.0):
     by_route = collections.defaultdict(lambda: collections.defaultdict(list))
     codes = collections.Counter()
     slow = collections.Counter()
+    by_surface = collections.defaultdict(list)
     for r in rows:
         codes[(r["phase"], "timeout" if r.get("timeout") else r.get("status"))] += 1
         if r.get("timeout"):
@@ -360,6 +438,10 @@ def summarise(rec_path, block_ratio=5.0, min_abs_secs=1.0):
         if r.get("secs") is not None and (r.get("timeout") or (r.get("status") and r["status"] < 500)):
             by_phase[r["phase"]].append(r["secs"])
             by_route[r["url"].split("?")[0]][r["phase"]].append(r["secs"])
+            if r["phase"] == "quiet":
+                sf = surface_of(r["url"])
+                if sf:
+                    by_surface[sf].append(r["secs"])
 
     lines.append("requests: %d" % len(rows))
     for (ph, c), n in sorted(codes.items(), key=lambda x: (x[0][0], str(x[0][1]))):
@@ -387,6 +469,8 @@ def summarise(rec_path, block_ratio=5.0, min_abs_secs=1.0):
                      "verdict (blocking is judged by scan-log's loop lag):")
         lines += ["  " + b for b in blocked]
 
+    lines += _surface_lines(by_surface, budgets or {}, fails)
+
     if slow:
         lines.append("\nSLOW — timed out, not counted as failures (a surface-performance finding):")
         lines += ["  %-48s %d" % (u, n) for u, n in slow.most_common()]
@@ -396,6 +480,26 @@ def summarise(rec_path, block_ratio=5.0, min_abs_secs=1.0):
     if len(fails) > 50:
         lines.append("  … and %d more" % (len(fails) - 50))
     return "\n".join(lines) + "\n"
+
+
+def _surface_lines(by_surface, budgets, fails):
+    """The per-surface table, quiet phase only; an exceeded budget is appended to
+    `fails`. A null budget is measured, not asserted."""
+    out = ["\nSURFACES — quiet phase, whole response; budget p50 / p95 (- = not set):"]
+    for name, _, _ in SURFACES:
+        xs, b = by_surface.get(name), budgets.get(name) or {}
+        bud = "%s / %s" % tuple("%.2fs" % b[k] if b.get(k) is not None else "-"
+                                for k in ("p50", "p95"))
+        if not xs:
+            out.append("  %-34s %s  budget %s" % (name, "NOT MEASURED".ljust(44), bud))
+            continue
+        p50, p95 = _pct(xs, 50), _pct(xs, 95)
+        out.append("  %-34s n=%-4d p50 %.3fs  p95 %.3fs  max %.3fs  budget %s"
+                   % (name, len(xs), p50, p95, max(xs), bud))
+        for k, v in (("p50", p50), ("p95", p95)):
+            if b.get(k) is not None and v > b[k]:
+                fails.append("OVER BUDGET %s: %s %.3fs > %.2fs" % (name, k, v, b[k]))
+    return out
 
 
 # ── scan-log ─────────────────────────────────────────────────────────────────
@@ -662,7 +766,13 @@ def main(argv=None):
                    help="minutes to wait for the sweep to start before running anyway")
     r.add_argument("--block-ratio", type=float, default=5.0)
     r.add_argument("--out", default="soak-" + dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
+    r.add_argument("--budgets", default=_BUDGETS)
     r.set_defaults(fn=cmd_run)
+    rp = sub.add_parser("report", help="re-judge a saved requests.jsonl")
+    rp.add_argument("requests")
+    rp.add_argument("--budgets", default=_BUDGETS)
+    rp.add_argument("--block-ratio", type=float, default=5.0)
+    rp.set_defaults(fn=cmd_report)
     s = sub.add_parser("scan-log")
     s.add_argument("log")
     s.add_argument("--starve-min", type=float, default=60.0)

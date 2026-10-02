@@ -18,10 +18,10 @@ re-measured 1 Oct 2026, after the pre-rendered pipeline was deleted.*
 | 2 | a cost-neutral re-price invalidates | **met** | `test_fingerprint::test_a_cost_neutral_reprice_still_moves_it` |
 | 3 | a change to today leaves history alone | **met** | per-day fingerprints (`PerDayNotGlobal`); the epoch now also moves across a restore / zip import (30 Sep) |
 | 4 | a write does no rendering | **met, 30 Sep 2026** — went with #1: the 25 render triggers (10 engine incl. `finalise_block`, 15 server) were deleted with the renderer, and nothing outside the tests names a render path | `tests/test_no_prerender.py` (`_GONE`: `generate_charts`, `_schedule_chart_regen`, `_regen_charts_safely`, `render_recently_active`, … none defined, none called) |
-| 5 | every surface on the one endpoint | **partly met** — **the whole Charts page reads only `/api/energy`** (1 Oct 2026, C step 1): Billing and the heatmap, and now Spiral and Usage Stats (`include=stats`, from `usage_view.py`), with the change poll on `fields=fingerprint`; `/api/charts/blocks-summary`, `blocks-day` and `data-version` are deleted. **Insights reads only `/api/periods` and `/api/energy`** (1 Oct 2026, C step 2: bounds and the trend strip from `/api/periods?include=carbon`, each view from `include=carbon` or `include=usage`); the eight routes it and nothing else called — `/api/insights/{periods,data-bounds}`, `/api/{insights,usage}/{calendar-month,calendar-year,billing-period}` — are deleted (nothing outside the add-on called them, confirmed by the user). **Live Power's cards read `/api/periods?kind=live&include=net_cost,rows`** (1 Oct 2026: one per-day pass; identical to `/api/billing` on real databases) and **`/api/billing` is deleted** (*its only caller; Corrections and Meter config call `/api/billing-source`, a different route — a grep for `/api/billing` had matched its prefix*). **No page now has a private aggregation path** for its figures | templates' requests in a browser and `grep` (incl. URLs built by concatenation), 1 Oct 2026; routes in `web/server.py` |
+| 5 | every surface on the one endpoint | **met, 2 Oct 2026** — **the whole Charts page reads only `/api/energy`** (1 Oct 2026, C step 1): Billing and the heatmap, and now Spiral and Usage Stats (`include=stats`, from `usage_view.py`), with the change poll on `fields=fingerprint`; `/api/charts/blocks-summary`, `blocks-day` and `data-version` are deleted. **Insights reads only `/api/periods` and `/api/energy`** (1 Oct 2026, C step 2: bounds and the trend strip from `/api/periods?include=carbon`, each view from `include=carbon` or `include=usage`); the eight routes it and nothing else called — `/api/insights/{periods,data-bounds}`, `/api/{insights,usage}/{calendar-month,calendar-year,billing-period}` — are deleted (nothing outside the add-on called them, confirmed by the user). **Live Power's cards read `/api/periods?kind=live&include=net_cost,rows`** (1 Oct 2026: one per-day pass; identical to `/api/billing` on real databases) and **`/api/billing` is deleted** (*its only caller; Corrections and Meter config call `/api/billing-source`, a different route — a grep for `/api/billing` had matched its prefix*). **No page now has a private aggregation path** for its figures. The GET routes left are live state, tools and configuration — none serves a settled energy, cost or carbon figure — listed with what each reads in §3b | templates' requests in a browser and `grep` (incl. URLs built by concatenation), 1 Oct 2026; routes in `web/server.py` |
 | 6 | no tariff context with a default, AST-enforced | **met (2 Oct 2026)** — **0** defaulted tariff-context parameters, from 35 when the ratchet was written (30 Sep). The chart builders' `cap_from` / `import_schedule` went with the renderer; the last 22 lost their defaults on 2 Oct and every caller now names the value. Five production calls had relied on one, each given the value its default resolved to (the site timezone, `iog_cap.CAP_HOURS`, `_IOG_TZ_NAME`), so no figure moves. Where a default sat after a still-defaulted parameter it became keyword-only (`count_`/`delete_blocks_for_date_range(*, tz_name)`, `calculate_billing_summary_for_period(*, tz_name)`, `reprice_history_conformance(*, rate_segs)`). The baseline is deleted; the ratchet is now a plain assertion | `.build/check_tariff_defaults.py`, `tests/test_tariff_defaults.py` |
 | 7 | billing reconciles with v4 to the penny | **met, 30 Sep 2026** | `.build/reconcile_v4.py`: v4.5.16's own `compute_period_net` against v5 on a real database — **80 of 80** periods (40 billing, 40 months, three years) to the penny for the Billing card, the local-day client path and `/api/energy`'s period total. It first found the day rollups' standing charge summed 48× and the period total rounded once (≤3p in 49 of 80); both fixed. Property pinned in `tests/test_bill_reconciliation.py` |
-| 8 | TTFB budgets on the Pi | **measured, not budgeted** — the sixth soak (30 Sep) gives per-request p50/worst for every Billing-tab request (a year's bill 7.07 s p50 on the Pi before the year-bill savings, ~4.5 s estimated after; not yet re-measured); no budget is asserted | §5 "Measured on the Pi" and "after C — the sixth soak" |
+| 8 | TTFB budgets on the Pi | **harness ready, not budgeted (2 Oct 2026)** — `.build/soak.py` names 17 surfaces, the requests the pages actually send. Before this, the soak never sent four of them: the Charts change poll, the recent-day check, the moved-day re-fetch and Live Power's cards. Each surface's quiet-phase p50 / p95 / max is reported, and a surface over its budget in `.build/soak_budgets.json` fails the run. Every budget is null until a Pi soak on current `dev` sets it. `soak.py report` re-judges a saved run, so setting the budgets needs no second soak. Re-reported by surface, the sixth soak (30 Sep, before the year-bill savings) gives a year's bill a 6.90 s quiet p50; ten surfaces were not measured then | §5 "Measured on the Pi" and "after C — the sixth soak"; `tests/test_soak_harness.py::Surfaces` |
 
 **Found by the review, fixed 30 Sep 2026:** the day rollups' standing charge was a SUM over
 blocks that each carry the full daily charge — 48× — and the period payload rounded its bill
@@ -448,6 +448,52 @@ points it already has, and offering it server-side re-creates the pre-rendering
 problem one parameter at a time: each new bucket is another thing to compute, to
 cache, to invalidate, and to disagree with the others about.
 
+### 3b. What stays outside the one endpoint — 2 Oct 2026
+
+*Row 5 of §0. Every settled energy, cost or carbon figure a page shows now comes from
+`/api/energy` or `/api/periods`. The GET routes that remain do not, and they stay. Each was
+checked by what it reads, not by its name.*
+
+**Live state.** These routes report the present, or the last day or two, from tables written for
+that purpose. They do not read the settled blocks that bills are made of.
+
+| route | reads |
+|---|---|
+| `/api/power` | Home Assistant state (instantaneous kW), the current rate, the generation mix |
+| `/api/power/history`, `/api/sub-meter/history` | `power_history`, `sub_meter_history` |
+| `/api/power/mix-history` | `mix_history` (48 h at CI-tick resolution) |
+| `/api/carbon`, `/api/carbon/current` | carbonintensity.org.uk / the stored current intensity |
+| `/api/charge-sessions` | `dispatch_history` (the supplier's charge figures) |
+
+`/api/charge-sessions` is the closest case. It prices each dispatch slot against the blocks'
+`imp_rate`, and its "saving" (`max(0, day_peak − rate) × kWh`) is a figure no bill carries.
+Rates are its only input from the blocks, and the result is an estimate of the off-peak benefit,
+not a bill total. Two things to know about it:
+- It queries `blocks` through `store._conn`, not through a ReadStore method.
+- It keys `day_peak` by the **UTC** date of `block_start`. In BST the 23:00–00:00 UTC hour
+  therefore takes the previous UTC day's peak. That matters only on a day whose peak rate
+  changes, such as the 0% VAT change on 1 Oct 2026.
+
+**Tools.** These serve an operator task over individual blocks, not a figure:
+- **corrections and review:** `/api/corrections/{meters,nearby-rates}`, `/api/review-blocks`,
+  `/api/unsettled-blocks`;
+- **gaps, backfill and import:** `/api/history-gaps`, `/api/backfill/{gaps,reach}`,
+  `/api/blocks/deleted-ranges`, `/api/historical/*` (status, plans, templates, diagnostics);
+- **re-pricing:** `/api/reprice-history-{status,conformance}`;
+- **deletion and repair:** `/api/blocks/delete/status`, `/api/historical/purge-preview`,
+  `/api/blocks/sweep-implausible`.
+
+**Configuration and system:**
+- **configuration:** `/api/config`, `/api/config/history`, `/api/settings`, `/api/kraken-config`,
+  `/api/data-source-mode`, `/api/billing-source`, `/api/region/reconcile`;
+- **devices and integrations:** `/api/entities`, `/api/detect-bcd`;
+- **backup and storage:** `/api/backup/*`, `/api/storage-info`;
+- **system status:** `/api/logs`, `/api/update-check`, `/api/instance/notice`, `/api/engine/*`,
+  `/api/carbon/pause`.
+
+**The Lovelace pages** (`/lovelace/billing`, `/lovelace/heatmap`) serve the Billing and heatmap
+modules on a bare page. They read `/api/energy` exactly as the Charts page does.
+
 ---
 
 ## 4. Billing charts specifically
@@ -635,10 +681,12 @@ already keeps each bill for the session, and a key that misses one input serves 
 
 ## 7. Open questions
 
-1. **Does the client re-aggregate, or does the API serve day/period rollups?** Serving rollups risks
-   a second derivation path — the thing this workstream exists to remove. Re-aggregating in the
-   client keeps one source but moves cost to the browser, which on a phone may be worse than on the
-   Pi.
+1. ~~**Does the client re-aggregate, or does the API serve day/period rollups?**~~ **Closed by
+   §0 (§7.1, answered by the evidence):** the API serves exactly two rollups, the period (its own
+   query) and the local day (one row per day per meter). The client builds everything in between
+   from days, applying the bill's per-day formula. Blocks are fetched for a viewport and never
+   summed for totals. There is one derivation path per level, so the second-path risk did not
+   arise.
 2. ~~**Push or poll for the watermark?**~~ **Closed by §2a: poll.** With no live tempo to serve,
    both real tempos are slow enough that a 30–60 s poll over a viewport range is negligible. This is
    a browser↔EMT decision and has no bearing on the HA WebSocket, which is a separate, inbound
