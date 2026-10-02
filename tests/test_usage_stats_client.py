@@ -35,12 +35,12 @@ class UsageStatsReadsTheOneEndpoint(unittest.TestCase):
         /api/energy — whole once, then only the days that moved."""
         body = _fn("_barFetchFresh")
         self.assertIn("await EMTDayRows.get(ver)", body)
-        self.assertIn("/api/energy?resolution=day&kind=all&include=stats", _SRC)
+        self.assertIn("/api/energy?resolution=day&kind=all&fields=stats", _SRC)
         self.assertNotIn("/api/charts/blocks-summary", body)
 
     def test_the_half_hours_come_from_api_energy(self):
         body = _fn("barLoadHH")
-        self.assertIn("/api/energy?resolution=block&kind=day&include=stats&date=", body)
+        self.assertIn("/api/energy?resolution=block&kind=day&fields=stats&date=", body)
         self.assertNotIn("/api/charts/blocks-day", body)
 
     def test_the_token_is_read_before_the_data(self):

@@ -32,7 +32,7 @@ class SpiralReadsTheOneEndpoint(unittest.TestCase):
     def test_endpoint(self):
         """Through the shared day-row cache (2 Oct 2026), which reads /api/energy."""
         self.assertIn("var j=await EMTDayRows.get();", _MOD)
-        self.assertIn("/api/energy?resolution=day&kind=all&include=stats", _SRC)
+        self.assertIn("/api/energy?resolution=day&kind=all&fields=stats", _SRC)
         self.assertNotIn("blocks-summary\"", _MOD)
 
 

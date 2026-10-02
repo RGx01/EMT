@@ -104,7 +104,7 @@ _MOD = _MOD[:_MOD.index("})();") + 5]
 class TheClientCache(unittest.TestCase):
 
     def test_whole_once_then_the_check(self):
-        self.assertIn("'/api/energy?resolution=day&kind=all&include=stats'", _MOD)
+        self.assertIn("'/api/energy?resolution=day&kind=all&fields=stats'", _MOD)
         self.assertIn("'/api/energy?resolution=day&kind=all&fields=days&since=' + since", _MOD)
 
     def test_anything_older_or_bulk_or_config_is_a_whole_refetch(self):
@@ -112,7 +112,7 @@ class TheClientCache(unittest.TestCase):
 
     def test_a_moved_utc_date_refetches_the_local_days_either_side(self):
         self.assertIn("var lo = addDays(moved[0], -1), hi = addDays(moved[moved.length - 1], 1);", _MOD)
-        self.assertIn("kind=range&include=stats&start=' + lo + '&end=' + hi", _MOD)
+        self.assertIn("kind=range&fields=stats&start=' + lo + '&end=' + hi", _MOD)
 
     def test_one_request_at_a_time(self):
         self.assertIn("if (!inflight) inflight = update(token)", _MOD)

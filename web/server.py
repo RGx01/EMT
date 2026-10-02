@@ -5361,6 +5361,11 @@ def api_energy():
     bill summary its card is formatted from, at `day` each local day's chart series
     (charged-rate lines) and side panel. Not at `block`.
 
+    **`fields=`** asks for one part and nothing else: `fingerprint` (the change poll's
+    global token), `days` (per-day fingerprints, with `since=` a `history` token for
+    everything before), `stats` (the Usage Stats / Spiral rows, at `day` or `block`;
+    #47, 2 Oct 2026).
+
     It replaced six routes: `/api/{usage,insights}/{billing-period,calendar-month,
     calendar-year}`, deleted with C step 2 (1 Oct 2026) once Insights read this.
     """
@@ -5382,14 +5387,15 @@ def api_energy():
             return jsonify({"error": "include: unknown facet(s) %s" % sorted(unknown)}), 400
         if "billing" in include and resolution == "block":
             return jsonify({"error": "include=billing is served at resolution=period|day"}), 400
-        if "stats" in include and resolution == "period":
-            return jsonify({"error": "include=stats is served at resolution=day|block"}), 400
+        fields = request.args.get("fields") or ""
+        if ("stats" in include or fields == "stats") and resolution == "period":
+            return jsonify({"error": "stats are served at resolution=day|block"}), 400
         if resolution == "block" and kind == "all":
             # A year of blocks is ~15 MB raw (C §7.1): blocks are fetched for a viewport.
             return jsonify({"error": "resolution=block takes a viewport: kind=day|month"}), 400
 
         store = store_access.store()
-        if (request.args.get("fields") or "") == "fingerprint":
+        if fields == "fingerprint":
             # The change poll's answer and nothing else — no period, no rows: one global
             # token over the blocks, segments, config and epoch (_blocks_data_version).
             return jsonify({"fingerprint": {"token": _blocks_data_version(store),
@@ -5409,7 +5415,20 @@ def api_energy():
                 404 if "not found" in str(meta.get("error", "")).lower() else 400)
             return jsonify(meta), status
 
-        if (request.args.get("fields") or "") == "days":
+        if fields == "stats":
+            # The Usage Stats / Spiral rows and nothing else (#47, 2 Oct 2026). With
+            # `include=stats` the response also carried the day rollups and a fingerprint
+            # per day over the whole range — for all history, 0.17 s of a 0.40 s load on
+            # the dev database — and the Charts page read neither: it keeps its rows by
+            # day and asks `fields=days` what moved.
+            import usage_view
+            return jsonify({"resolution": resolution, "timezone": tz_name, "period": meta,
+                            "range": {"start_utc": utc_start, "end_utc": utc_end},
+                            "stats": (usage_view.day_stats(store, cfg, tz_name, utc_start, utc_end)
+                                      if resolution == "day"
+                                      else usage_view.slot_stats(store, cfg, tz_name,
+                                                                 utc_start, utc_end))})
+        if fields == "days":
             # Which days moved, and nothing else — for a client that keeps rows by day and
             # re-fetches only those (C, 2 Oct 2026). With `since=YYYY-MM-DD` (a local day):
             # per-day fingerprints from that day's UTC start on, and ONE `history` token over
