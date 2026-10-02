@@ -117,10 +117,18 @@ def discover_get_routes(server_py=os.path.join(ROOT, "web", "server.py")):
 def query_variants(path, ctx):
     """Realistic query strings for the routes that read arguments. Anything not
     listed is requested bare."""
-    today, periods, months, years = ctx["today"], ctx["periods"], ctx["months"], ctx["years"]
+    today, periods, months = ctx["today"], ctx["periods"], ctx["months"]
     recent = [(today - dt.timedelta(days=d)).isoformat() for d in (1, 2, 7, 30, 180)]
     week = [((today - dt.timedelta(days=d + 7)).isoformat(),
              (today - dt.timedelta(days=d)).isoformat()) for d in (1, 60)]
+    # A budgeted surface is asked for a FULL period, never the current one: "this
+    # month" on the 2nd is two days of data (seventh soak, 2 Oct 2026: a month's bill
+    # 0.05 s, against 0.105 s on the Mac for September), and "this year" grows until
+    # December — either would move a regression bound with the calendar.
+    full_months = months[1:3]
+    pq = (today.month - 1) // 3                       # the previous quarter, 0 = last year's Q4
+    last_q = (today.year, pq) if pq else (today.year - 1, 4)
+    last_year = today.year - 1
     table = {
         "/api/power/history": [{"hours": h} for h in (6, 24)],
         # meter_id is required; with no sub-meter there is nothing to ask for
@@ -142,12 +150,16 @@ def query_variants(path, ctx):
                         # each kind, the previous billing period (vs Prev), and a
                         # month of day charts — the heaviest, built per request now
                         # that nothing is pre-rendered.
-                        + [{"resolution": "period", "kind": k, "include": "billing"}
-                           for k in ("billing", "month", "quarter", "year")]
+                        + [{"resolution": "period", "kind": "month", "year": y, "month": m,
+                            "include": "billing"} for y, m in full_months[:1]]
+                        + [{"resolution": "period", "kind": "quarter", "year": last_q[0],
+                            "quarter": last_q[1], "include": "billing"},
+                           {"resolution": "period", "kind": "year", "year": last_year,
+                            "include": "billing"}]
                         + [{"resolution": "period", "kind": "billing", "period_start": p,
                             "include": "billing"} for p in periods[-2:-1]]
                         + [{"resolution": "day", "kind": "month", "year": y, "month": m,
-                            "include": "billing"} for y, m in months[:2]]
+                            "include": "billing"} for y, m in full_months]
                         # Usage Stats / Spiral (C step 1, 1 Oct 2026): every day of
                         # history, and one day's half-hours.
                         + [{"resolution": "day", "kind": "all", "include": "stats"},
@@ -155,9 +167,9 @@ def query_variants(path, ctx):
                         # Insights (C step 2, 1 Oct 2026): a month and a year on each tab
                         # — the calendar routes these replaced were soaked per period.
                         + [{"resolution": "period", "kind": "month", "year": y, "month": m,
-                            "include": f} for y, m in months[:2] for f in ("carbon", "usage")]
-                        + [{"resolution": "period", "kind": "year", "year": y, "include": f}
-                           for y in years[:2] for f in ("carbon", "usage")]
+                            "include": f} for y, m in full_months for f in ("carbon", "usage")]
+                        + [{"resolution": "period", "kind": "year", "year": last_year, "include": f}
+                           for f in ("carbon", "usage")]
                         # What the browser asks for most often (2 Oct 2026): the Charts
                         # change poll, the day-row check behind Spiral / Usage Stats
                         # (charts.html's RECENT = 35 days), the re-fetch of the days
@@ -169,7 +181,7 @@ def query_variants(path, ctx):
                             "start": (today - dt.timedelta(days=2)).isoformat(),
                             "end": today.isoformat()}]
                         + [{"resolution": "block", "kind": "month", "year": y, "month": m}
-                           for y, m in months[:1]]),
+                           for y, m in full_months[:1]]),
         # The picker's totals: one rollup over the whole span per kind.
         "/api/periods": ([{"kind": k} for k in ("billing", "month", "year")]
                          + [{"kind": k, "include": "net_cost"}

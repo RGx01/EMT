@@ -124,13 +124,13 @@ class RouteSelection(unittest.TestCase):
         asks for include=billing cannot say what that costs on the Pi."""
         import datetime as dt
         ctx = {"today": dt.date(2026, 9, 29), "periods": ["2026-08-03", "2026-09-03"],
-               "months": [(2026, 9), (2026, 8)], "years": []}
+               "months": [(2026, 9), (2026, 8), (2026, 7), (2026, 6)], "years": []}   # build_context's four
         us = soak.query_variants("/api/energy", ctx)
         for k in ("billing", "month", "quarter", "year"):
             self.assertTrue(any("resolution=period" in u and "kind=%s" % k in u
                                 and "include=billing" in u for u in us), k)
         self.assertTrue(any("period_start=2026-08-03" in u and "include=billing" in u for u in us))
-        self.assertTrue(any("resolution=day" in u and "month=9" in u and "include=billing" in u
+        self.assertTrue(any("resolution=day" in u and "month=8" in u and "include=billing" in u
                             for u in us))
         ps = soak.query_variants("/api/periods", ctx)
         self.assertEqual(sum("include=net_cost" in u and "kind=live" not in u for u in ps), 4)
@@ -140,14 +140,42 @@ class RouteSelection(unittest.TestCase):
         Charts change poll, the recent-day check, the moved-day re-fetch or Live
         Power's cards — the requests a browser makes most often."""
         import datetime as dt
-        ctx = {"today": dt.date(2026, 10, 2), "periods": [], "months": [(2026, 10)], "years": []}
+        ctx = {"today": dt.date(2026, 10, 2), "periods": [],
+               "months": [(2026, 10), (2026, 9), (2026, 8), (2026, 7)], "years": []}
         us = soak.query_variants("/api/energy", ctx)
         self.assertIn("/api/energy?fields=fingerprint", us)
         self.assertIn("/api/energy?resolution=day&kind=all&fields=days&since=2026-08-28", us)
         self.assertTrue(any("kind=range" in u and "include=stats" in u for u in us))
-        self.assertIn("/api/energy?resolution=block&kind=month&year=2026&month=10", us)
+        self.assertIn("/api/energy?resolution=block&kind=month&year=2026&month=9", us)
         self.assertIn("/api/periods?kind=live&include=net_cost%2Crows",
                       soak.query_variants("/api/periods", ctx))
+
+    def test_budgeted_bills_ask_for_a_full_period(self):
+        """REGRESSION (seventh soak, 2 Oct 2026): "this month" on the 2nd is two days of
+        data, so a month's bill measured 0.05 s; "this year" grows until December. A
+        bound judged on either moves with the calendar."""
+        import datetime as dt
+        ctx = {"today": dt.date(2026, 10, 2), "periods": ["2026-08-03", "2026-09-03", "2026-10-03"],
+               "months": [(2026, 10), (2026, 9), (2026, 8), (2026, 7)], "years": []}
+        us = [u for u in soak.query_variants("/api/energy", ctx) if soak.surface_of(u)]
+        for u in us:
+            self.assertNotIn("month=10", u, u)
+            self.assertNotIn("year=2026&include", u, u)
+        self.assertIn("/api/energy?resolution=period&kind=quarter&year=2026&quarter=3&include=billing", us)
+        self.assertIn("/api/energy?resolution=period&kind=year&year=2025&include=billing", us)
+        self.assertIn("/api/energy?resolution=period&kind=month&year=2026&month=9&include=billing", us)
+        self.assertIn("/api/energy?resolution=block&kind=month&year=2026&month=9", us)
+        self.assertFalse([u for u in us if "kind=billing" in u and "period_start" not in u
+                          and "include=billing" in u], "the current billing period is part-full")
+        jan = dict(ctx, today=dt.date(2027, 1, 5))
+        self.assertIn("/api/energy?resolution=period&kind=quarter&year=2026&quarter=4&include=billing",
+                      soak.query_variants("/api/energy", jan))
+
+    def test_the_budgets_are_set(self):
+        """C row 8: 13 surfaces bounded from the seventh soak; no p95 beyond the timeout."""
+        b = soak.load_budgets()
+        self.assertEqual(sum(v["p50"] is not None for v in b.values()), 13)
+        self.assertTrue(all(v["p95"] is None or v["p95"] <= 30 for v in b.values()))
 
 
 class Surfaces(unittest.TestCase):
