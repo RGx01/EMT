@@ -2184,21 +2184,24 @@ def _blocks_data_version(store) -> str:
             f"{_cfgf}:{_epoch}:{_br}:{_sf}")
 
 
-def _all_history_utc(store, tz_name, block_minutes):
+def _all_history_utc(store, tz_name):
     """[utc_start, utc_end) covering every LOCAL day that holds a block: local midnight
     of the first block's day to local midnight after the last's. None when there are
-    no blocks (or no local day can be made of them)."""
-    from datetime import datetime as _dt, timedelta as _td
+    no blocks.
+
+    Two conversions, not one per block. A local date never falls as the UTC instant
+    rises, so the first and last blocks' local days bound every other's. It listed
+    every local day in history to keep the two ends, about 78% of the Charts
+    recent-day check (#46, 2 Oct 2026)."""
+    from datetime import datetime as _dt, timezone as _tz
+    from zoneinfo import ZoneInfo
     from block_store import local_date_to_utc_bounds as _ldtub
-    first = store._conn.execute("SELECT MIN(block_start) FROM blocks").fetchone()[0]
-    last = store._conn.execute("SELECT MAX(block_start) FROM blocks").fetchone()[0]
+    first, last = store._conn.execute("SELECT MIN(block_start), MAX(block_start) FROM blocks").fetchone()
     if not first:
         return None
-    end_excl = (_dt.fromisoformat(last) + _td(minutes=int(block_minutes or 30))).isoformat()
-    days = store.get_dates_in_utc_range(first, end_excl, tz_name)
-    if not days:
-        return None
-    return _ldtub(days[0], tz_name)[0], _ldtub(days[-1], tz_name)[1]
+    zone = ZoneInfo(tz_name)
+    day = lambda iso: _dt.fromisoformat(iso).replace(tzinfo=_tz.utc).astimezone(zone).date().isoformat()
+    return _ldtub(day(first), tz_name)[0], _ldtub(day(last), tz_name)[1]
 
 
 @app.route("/api/entities")
@@ -5316,8 +5319,7 @@ def _resolve_period(kind, store, cfg, tz, args):
 
     if kind == "all":
         # Every local day that holds a block — the Spiral's and Usage Stats' history.
-        import usage_view
-        span = _all_history_utc(store, tz.key, usage_view.page_meta(cfg)["block_minutes"])
+        span = _all_history_utc(store, tz.key)
         if span is None:
             # 404, not 400: nothing is wrong with the request, there is just no data yet.
             # Usage Stats and Spiral draw an empty chart on a 404 and an error on a 400.

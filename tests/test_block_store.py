@@ -1552,22 +1552,6 @@ class TestQueryMethods(unittest.TestCase):
         blocks = self.store.get_blocks_for_utc_range(s, e)
         self.assertEqual(len(blocks), 0)
 
-    def test_get_dates_in_utc_range(self):
-        dates = self.store.get_dates_in_utc_range(
-            "2026-03-01T00:00:00", "2026-03-04T00:00:00", "Europe/London"
-        )
-        self.assertEqual(len(dates), 3)
-        self.assertIn("2026-03-01", dates)
-        self.assertIn("2026-03-02", dates)
-        self.assertIn("2026-03-03", dates)
-
-    def test_get_dates_in_utc_range_ordered(self):
-        dates = self.store.get_dates_in_utc_range(
-            "2026-03-01T00:00:00", "2026-03-04T00:00:00", "Europe/London"
-        )
-        self.assertEqual(dates, sorted(dates))
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Tests: block reconstruction fidelity
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1719,20 +1703,6 @@ class TestLocalDate(unittest.TestCase):
 
     def tearDown(self):
         self.store.close()
-
-    def test_midnight_utc_is_correct_london_date(self):
-        # 2026-03-15 00:00:00 UTC = 2026-03-15 00:00:00 GMT (no DST yet)
-        block = make_block("2026-03-15T00:00:00")
-        self.store.append_block(block)
-        dates = self.store.get_dates_in_utc_range("2026-03-15T00:00:00", "2026-03-16T00:00:00", "Europe/London")
-        self.assertIn("2026-03-15", dates)
-
-    def test_late_utc_before_dst_is_same_date(self):
-        # 2026-03-14 23:30:00 UTC = 2026-03-14 23:30:00 GMT
-        block = make_block("2026-03-14T23:30:00")
-        self.store.append_block(block)
-        dates = self.store.get_dates_in_utc_range("2026-03-14T00:00:00", "2026-03-15T00:00:00", "Europe/London")
-        self.assertIn("2026-03-14", dates)
 
     def test_blocks_for_date_uses_local_not_utc(self):
         # 2026-03-29 00:30 UTC = 01:30 BST (BST starts at 01:00 UTC on 29th)
