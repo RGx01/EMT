@@ -7749,6 +7749,31 @@ class BlockStore:
             params).fetchall()
         return [dict(r) for r in rows]
 
+    def history_token(self, before_utc: str) -> str:
+        """One token over every block (and segment) starting before `before_utc` — the same
+        columns as `day_fingerprints`, as a single aggregate, so a client keeping rows by day
+        can ask "has anything older than my recent window changed?" in one cheap answer
+        instead of fetching a fingerprint per day for all of history (C, 2 Oct 2026)."""
+        r = self._conn.execute(
+            "SELECT COUNT(*) AS n, MAX(block_start) AS newest, "
+            "       ROUND(COALESCE(SUM(imp_kwh), 0), 3) AS ik, ROUND(COALESCE(SUM(imp_cost), 0), 2) AS ic, "
+            "       ROUND(COALESCE(SUM(exp_kwh), 0), 3) AS ek, ROUND(COALESCE(SUM(exp_cost), 0), 2) AS ec, "
+            "       ROUND(COALESCE(SUM(carbon_g), 0), 0) AS cg, "
+            "       ROUND(COALESCE(SUM(imp_kwh_ev), 0), 4) AS xe, ROUND(COALESCE(SUM(imp_cost_ev), 0), 4) AS xc, "
+            "       ROUND(COALESCE(SUM(imp_cost_exc), 0), 4) AS xx, ROUND(COALESCE(SUM(imp_kwh_grid), 0), 4) AS xg, "
+            "       ROUND(COALESCE(SUM(imp_kwh_remainder), 0), 4) AS xr, "
+            "       ROUND(COALESCE(SUM(standing_charge), 0), 4) AS xs "
+            # NOT INDEXED: the window is nearly every row, and walking the block_start index
+            # with a row lookup each is far slower than one scan (0.28 s vs ~0.05 s, 138k).
+            "FROM blocks NOT INDEXED WHERE block_start < ?", (before_utc,)).fetchone()
+        g = self._conn.execute(
+            "SELECT COUNT(*) AS n, ROUND(COALESCE(SUM(inc_rate), 0), 4) AS ir, "
+            "       ROUND(COALESCE(SUM(exc_rate), 0), 4) AS er, "
+            "       ROUND(COALESCE(SUM(CASE WHEN attribution = 'ev' THEN kwh END), 0), 4) AS ea, "
+            "       ROUND(COALESCE(SUM(kwh * (unicode(band) + 31 * length(band))), 0), 3) AS pk "
+            "FROM block_segments NOT INDEXED WHERE block_start < ?", (before_utc,)).fetchone()
+        return ":".join(str(r[k] or "") for k in r.keys()) + "|" + ":".join(str(g[k]) for k in g.keys())
+
     def get_day_live_rollups(self, utc_start: str, utc_end: str, tz_name: str,
                              ev_meter_id) -> dict:
         """Live Power's card rows, per LOCAL day over [utc_start, utc_end) — summed over

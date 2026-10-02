@@ -31,8 +31,11 @@ def _fn(name):
 class UsageStatsReadsTheOneEndpoint(unittest.TestCase):
 
     def test_the_days_come_from_api_energy(self):
+        """Through the shared day-row cache (EMTDayRows, 2 Oct 2026), which reads
+        /api/energy — whole once, then only the days that moved."""
         body = _fn("_barFetchFresh")
-        self.assertIn("/api/energy?resolution=day&kind=all&include=stats", body)
+        self.assertIn("await EMTDayRows.get(ver)", body)
+        self.assertIn("/api/energy?resolution=day&kind=all&include=stats", _SRC)
         self.assertNotIn("/api/charts/blocks-summary", body)
 
     def test_the_half_hours_come_from_api_energy(self):
@@ -42,7 +45,7 @@ class UsageStatsReadsTheOneEndpoint(unittest.TestCase):
 
     def test_the_token_is_read_before_the_data(self):
         body = _fn("_barFetchFresh")
-        self.assertLess(body.index("_fetchDataVersion()"), body.index("/api/energy"))
+        self.assertLess(body.index("_fetchDataVersion()"), body.index("EMTDayRows.get(ver)"))
 
     def test_the_poll_token_is_api_energys_fingerprint(self):
         body = _fn("_fetchDataVersion")
@@ -51,7 +54,7 @@ class UsageStatsReadsTheOneEndpoint(unittest.TestCase):
         self.assertNotIn("/api/charts/", _SRC)
 
     def test_no_blocks_is_an_empty_chart_not_an_error(self):
-        self.assertIn("r.status === 404", _fn("_barFetchFresh"))
+        self.assertIn("if (res.status === 404) { write(null); return EMPTY; }", _SRC)
 
 
 if __name__ == "__main__":

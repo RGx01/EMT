@@ -158,3 +158,29 @@ class TheRoute(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheLocalDayLookupIsExact(unittest.TestCase):
+    """usage_view._local_day_of — a binary search on each local day's UTC start, in place
+    of a datetime conversion per block (perf, 2 Oct 2026: −25-28% on all-history day_stats,
+    byte-identical rows on two real databases). Exact for any offset, which memoising by UTC
+    hour would not be."""
+
+    def _check(self, tz_name, start, end):
+        from datetime import datetime as _d, timedelta as _t, timezone as _u
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(tz_name)
+        day = uv._local_day_of(start, end, tz)
+        t, hi = _d.fromisoformat(start), _d.fromisoformat(end)
+        while t < hi:
+            want = t.replace(tzinfo=_u.utc).astimezone(tz).strftime("%Y-%m-%d")
+            self.assertEqual(day(t.isoformat()), want, (tz_name, t))
+            t += _t(minutes=15)
+
+    def test_london_across_both_clock_changes(self):
+        self._check("Europe/London", "2025-10-24T23:00:00", "2025-10-28T00:00:00")
+        self._check("Europe/London", "2026-03-27T00:00:00", "2026-03-31T23:00:00")
+
+    def test_a_45_minute_offset(self):
+        """Nepal is UTC+5:45 — a UTC hour holds two local dates."""
+        self._check("Asia/Kathmandu", "2026-05-01T18:15:00", "2026-05-04T18:15:00")

@@ -5297,6 +5297,23 @@ def _resolve_period(kind, store, cfg, tz, args):
                         "period_end": d.isoformat(), "period_label": d.isoformat(),
                         "is_current": d == now_local.date()}
 
+    if kind == "range":
+        # Local days `start`..`end` inclusive (YYYY-MM-DD) — a client re-fetching the days
+        # whose fingerprint moved, not all of history (C, 2 Oct 2026).
+        from block_store import local_date_range_to_utc_bounds as _lrb
+        try:
+            d0 = _dt.strptime((args.get("start") or "").strip(), "%Y-%m-%d").date()
+            d1 = _dt.strptime((args.get("end") or "").strip(), "%Y-%m-%d").date()
+        except ValueError:
+            return None, None, {"error": "kind=range takes start and end, YYYY-MM-DD"}
+        if d1 < d0:
+            return None, None, {"error": "kind=range: end is before start"}
+        us, ue = _lrb(d0.isoformat(), d1.isoformat(), tz.key)
+        return us, ue, {"kind": "range", "period_start": d0.isoformat(),
+                        "period_end": d1.isoformat(),
+                        "period_label": "%s → %s" % (d0.isoformat(), d1.isoformat()),
+                        "is_current": d0 <= now_local.date() <= d1}
+
     if kind == "all":
         # Every local day that holds a block — the Spiral's and Usage Stats' history.
         import usage_view
@@ -5311,7 +5328,7 @@ def _resolve_period(kind, store, cfg, tz, args):
                         "period_end": (_loc(ue) - _td(days=1)).isoformat(),
                         "period_label": "All", "is_current": True}
 
-    return None, None, {"error": "kind must be billing|month|quarter|year|day|all"}
+    return None, None, {"error": "kind must be billing|month|quarter|year|day|all|range"}
 
 
 @app.route("/api/energy")
@@ -5390,6 +5407,27 @@ def api_energy():
                 404 if "not found" in str(meta.get("error", "")).lower() else 400)
             return jsonify(meta), status
 
+        if (request.args.get("fields") or "") == "days":
+            # Which days moved, and nothing else — for a client that keeps rows by day and
+            # re-fetches only those (C, 2 Oct 2026). With `since=YYYY-MM-DD` (a local day):
+            # per-day fingerprints from that day's UTC start on, and ONE `history` token over
+            # everything before it — all history per day was 0.42 s / 161 KB on 138k blocks.
+            # Day keys are UTC dates (day_fingerprints).
+            fs, hist = utc_start, None
+            since = (request.args.get("since") or "").strip()
+            if since:
+                from block_store import local_date_to_utc_bounds as _ldtub2
+                try:
+                    _dt_since = __import__("datetime").date.fromisoformat(since)
+                except ValueError:
+                    return jsonify({"error": "since must be YYYY-MM-DD"}), 400
+                fs = max(utc_start, _ldtub2(_dt_since.isoformat(), tz_name)[0])
+                hist = store.history_token(fs)
+            return jsonify({"period": meta, "range": {"start_utc": utc_start, "end_utc": utc_end},
+                            "fingerprint": {"epoch": store.get_data_epoch(),
+                                            "days": store.day_fingerprints(fs, utc_end),
+                                            "history": hist,
+                                            "config": _config_token(store)}})
         out = {"resolution": resolution, "timezone": tz_name, "period": meta,
                "range": {"start_utc": utc_start, "end_utc": utc_end},
                # C §2a. Per-day over the range plus the bulk epoch — NOT one

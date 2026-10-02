@@ -220,6 +220,7 @@
     "get_unsettled_blocks",
     "get_vat_calendar",
     "has_interpolated_block",
+    "history_token",
     "imported_block_replaceable",
     "is_meter_retired",
     "is_slot_tombstoned",
