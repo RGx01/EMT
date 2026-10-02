@@ -34,8 +34,8 @@ def _f(v):
 
 
 def day_rate_series(day_blocks, *, slots: int, block_minutes: int,
-                    main_meter: str = "electricity_main", capped: bool = True,
-                    house_tou=None, ev_slot_rate=None, over_cap=None) -> dict:
+                    main_meter: str = "electricity_main", capped: bool,
+                    house_tou=None, ev_slot_rate=None, over_cap) -> dict:
     """`day_blocks`: iterable of (hh, block). Returns
     {'house': [rate|None]*slots, 'ev': [rate|None]*slots, 'ev_fallback': [bool]*slots};
     None = leave the base rate (non-IOG / no data → byte-identical to pre-emit rendering).

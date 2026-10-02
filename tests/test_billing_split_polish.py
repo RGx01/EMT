@@ -32,7 +32,7 @@ class TestExcFallback(unittest.TestCase):
         s = calculate_billing_summary_for_period([_block("2026-01-01T02:00:00",
             {"kwh": 30.0, "rate": 0.0567, "cost": 1.70,
              "kwh_ev": 20.0, "cost_ev": 1.00, "rate_ev": 0.05})],
-            P_START, P_END)                       # store=None → 5% default
+            P_START, P_END, tz_name=None)                       # store=None → 5% default
         ev = s["ev_by_rate"][0.05]
         self.assertAlmostEqual(ev["cost_exc"], 1.00 / 1.05, places=2)
         # NOT zero (the dilution bug) and NOT the inc figure.
@@ -41,7 +41,7 @@ class TestExcFallback(unittest.TestCase):
     def test_present_cost_exc_still_exact(self):
         s = calculate_billing_summary_for_period([_block("2026-01-01T02:00:00",
             {"kwh": 30.0, "rate": 0.0567, "cost": 1.70, "cost_exc": 1.619048,
-             "kwh_ev": 20.0, "cost_ev": 1.00, "rate_ev": 0.05})], P_START, P_END)
+             "kwh_ev": 20.0, "cost_ev": 1.00, "rate_ev": 0.05})], P_START, P_END, tz_name=None)
         # exact per-block ratio (1.619048/1.70), not the flat fallback
         self.assertAlmostEqual(s["ev_by_rate"][0.05]["cost_exc"],
                                1.00 * (1.619048 / 1.70), places=2)

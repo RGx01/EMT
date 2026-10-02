@@ -32,7 +32,7 @@ class TestImportSegments(unittest.TestCase):
         segs = ps.import_segments(
             ev_kwh=2.0, house_kwh=1.0,
             house_offpeak_rate=OFF, house_day_rate=OFF,
-            ev_offpeak_rate=OFF, ev_peak_rate=OFF)     # all == block rate
+            ev_offpeak_rate=OFF, ev_peak_rate=OFF, vat=0.05)     # all == block rate
         self.assertEqual(len(segs), 2)
         self._reconciles(segs, 3.0, 3.0 * OFF)
         self.assertAlmostEqual(ps.attribution_rate(segs, "ev"), OFF)
@@ -44,7 +44,7 @@ class TestImportSegments(unittest.TestCase):
             ev_kwh=2.0, house_kwh=1.0,
             house_offpeak_rate=OFF, house_day_rate=DAY,
             ev_offpeak_rate=EV_OFF, ev_peak_rate=PEAK,
-            ev_offpeak_frac=1.0, house_offpeak_frac=1.0)
+            ev_offpeak_frac=1.0, house_offpeak_frac=1.0, vat=0.05)
         self._reconciles(segs, 3.0, 2 * EV_OFF + 1 * OFF)
         self.assertEqual({s.band for s in segs}, {"off_peak"})
 
@@ -54,7 +54,7 @@ class TestImportSegments(unittest.TestCase):
             ev_kwh=2.0, house_kwh=1.0,
             house_offpeak_rate=OFF, house_day_rate=DAY,
             ev_offpeak_rate=EV_OFF, ev_peak_rate=PEAK,
-            ev_offpeak_frac=0.0, house_offpeak_frac=0.0)
+            ev_offpeak_frac=0.0, house_offpeak_frac=0.0, vat=0.05)
         self._reconciles(segs, 3.0, 2 * PEAK + 1 * DAY)
         self.assertAlmostEqual(ps.attribution_rate(segs, "ev"), PEAK)
         self.assertAlmostEqual(ps.attribution_rate(segs, "house"), DAY)
@@ -65,14 +65,14 @@ class TestImportSegments(unittest.TestCase):
             ev_kwh=2.0, house_kwh=2.0,
             house_offpeak_rate=OFF, house_day_rate=DAY,
             ev_offpeak_rate=EV_OFF, ev_peak_rate=PEAK,
-            ev_offpeak_frac=0.5, house_offpeak_frac=0.5)
+            ev_offpeak_frac=0.5, house_offpeak_frac=0.5, vat=0.05)
         self.assertEqual(len(segs), 4)      # EV-off, EV-peak, house-off, house-day
         self._reconciles(segs, 4.0,
                          1 * EV_OFF + 1 * PEAK + 1 * OFF + 1 * DAY)
 
     def test_house_only_block(self):
         segs = ps.import_segments(ev_kwh=0.0, house_kwh=1.5,
-                                  house_offpeak_rate=DAY, house_day_rate=DAY)
+                                  house_offpeak_rate=DAY, house_day_rate=DAY, vat=0.05)
         self.assertEqual(len(segs), 1)
         self.assertEqual(segs[0].attribution, "house")
         self._reconciles(segs, 1.5, 1.5 * DAY)
@@ -139,7 +139,7 @@ class TestDeviceAttribution(unittest.TestCase):
             ev_kwh=4.0, house_kwh=2.0,
             house_offpeak_rate=OFF, house_day_rate=DAY,
             ev_offpeak_rate=EV_OFF, ev_peak_rate=PEAK,
-            ev_offpeak_frac=0.0, house_offpeak_frac=0.0)
+            ev_offpeak_frac=0.0, house_offpeak_frac=0.0, vat=0.05)
 
     def _assert_reconciles(self, segs, result):
         tot_k = sum(v["kwh"] for v in result["devices"].values()) + result["remainder"]["kwh"]
@@ -184,7 +184,7 @@ class TestDeviceAttribution(unittest.TestCase):
 
     def test_uncapped_no_devices_is_pure_remainder(self):
         segs = ps.import_segments(ev_kwh=0.0, house_kwh=3.0,
-                                  house_offpeak_rate=OFF, house_day_rate=OFF)
+                                  house_offpeak_rate=OFF, house_day_rate=OFF, vat=0.05)
         res = ps.attribute_devices(segs, [])
         self._assert_reconciles(segs, res)
         self.assertEqual(res["devices"], {})
@@ -209,7 +209,7 @@ class TestPriceDevicesHybrid(unittest.TestCase):
         # what its own imp_cost column holds, so the reader is byte-identical uncapped.
         segs = ps.import_segments(ev_kwh=2.0, house_kwh=1.0,
                                   house_offpeak_rate=OFF, house_day_rate=OFF,
-                                  ev_offpeak_rate=OFF, ev_peak_rate=OFF)
+                                  ev_offpeak_rate=OFF, ev_peak_rate=OFF, vat=0.05)
         res = ps.price_devices_hybrid(segs, [
             {"meter_id": "zappi", "attribution": "ev", "grid_kwh": 2.05},
             {"meter_id": "battery", "attribution": "house", "grid_kwh": 0.5}])
@@ -223,7 +223,7 @@ class TestPriceDevicesHybrid(unittest.TestCase):
         segs = ps.import_segments(
             ev_kwh=4.0, house_kwh=2.0, house_offpeak_rate=OFF, house_day_rate=DAY,
             ev_offpeak_rate=EV_OFF, ev_peak_rate=PEAK,
-            ev_offpeak_frac=0.0, house_offpeak_frac=0.0)
+            ev_offpeak_frac=0.0, house_offpeak_frac=0.0, vat=0.05)
         res = ps.price_devices_hybrid(segs, [
             {"meter_id": "zappi", "attribution": "ev", "grid_kwh": 4.05},   # metered ≠ dispatch
             {"meter_id": "battery", "attribution": "house", "grid_kwh": 1.0}])
@@ -237,7 +237,7 @@ class TestPriceDevicesHybrid(unittest.TestCase):
         # house/day rate — so it is valued there, never leaking into house.
         segs = ps.import_segments(ev_kwh=0.0, house_kwh=2.0,
                                   house_offpeak_rate=OFF, house_day_rate=DAY,
-                                  house_offpeak_frac=0.0)
+                                  house_offpeak_frac=0.0, vat=0.05)
         res = ps.price_devices_hybrid(segs, [
             {"meter_id": "zappi", "attribution": "ev", "grid_kwh": 1.0}])
         self._reconciles(segs, res)

@@ -32,7 +32,7 @@ def get_billing_summary_block_method(store, start, end, cfg=None):
     This is what the Billing chart uses — treat as ground truth.
     """
     blocks = store.get_blocks_for_range(start, end)
-    summary = ec.calculate_billing_summary_for_period(blocks, start, end)
+    summary = ec.calculate_billing_summary_for_period(blocks, start, end, tz_name=None)
     imp_kwh  = sum(v.get("kwh", 0) for v in summary.get("totals", {}).values()
                    if not summary.get("meter_meta", {}).get(
                        next(iter(summary.get("totals", {})), ""), {}).get("is_submeter"))
