@@ -238,7 +238,8 @@
     "stale_deleted_range_ids",
     "sum_meter_import_kwh",
     "tombstoned_slots_in",
-    "vat_rate_at"
+    "vat_rate_at",
+    "vat_rate_lookup"
   ],
   "no_sql": [
     "_block_range_where",
