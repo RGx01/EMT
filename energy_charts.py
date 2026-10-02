@@ -171,6 +171,7 @@ def _bill_method_breakdown(blocks, period_vat=None, standing_inc_by_day=None, va
     their ex-VAT rate (the table's own basis); the VAT line names each rate in force."""
     from collections import defaultdict as _dd
     import vat_calendar as _vc
+    _local_day = _vc.local_day_fn()     # 17,520 half-hours a year (#48, 2 Oct 2026)
     blocks = list(blocks or [])
 
     def _snap(x):
@@ -200,7 +201,7 @@ def _bill_method_breakdown(blocks, period_vat=None, standing_inc_by_day=None, va
         m = ((b or {}).get("meters") or {}).get("electricity_main") or {}
         imp = (m.get("channels") or {}).get("import") or {}
         start = b.get("start") or ""
-        d = _vc.local_day(start) if start else ""
+        d = _local_day(start) if start else ""
         if d and d not in stand_exc_day:
             se = m.get("standing_charge_exc")
             sc = m.get("standing_charge") or 0
@@ -1310,9 +1311,11 @@ def period_summary(ctx, blocks_for_calc, period_blocks, period_start, period_end
         _inject_ev_breakdown_into_summary(_sm, period_blocks, ctx["ev_slot_map"],
                                           label=ctx["ev_label"], fold_devices=ctx["ev_fold_devices"])
     if ctx["bill_rounding"]:
+        import vat_calendar as _vcal
+        # `vat_at(ctx, w)` per slot, with the calendar merged once (#48, 2 Oct 2026).
         _bm = _bill_method_breakdown(period_blocks, period_vat=vat_at(ctx, period_start),
                                      standing_inc_by_day=_sm.get("standing"),
-                                     vat_at=lambda w: vat_at(ctx, w))
+                                     vat_at=_vcal.rate_lookup(ctx["vat_learned"]))
         if _bm:
             _sm["bill_method"] = _bm
     return _sm

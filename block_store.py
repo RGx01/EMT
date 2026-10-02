@@ -3635,6 +3635,13 @@ class BlockStore:
         self.set_meta("vat_calendar",
                       [[str(d)[:10], float(r)] for d, r in (entries or [])])
 
+    def vat_rate_lookup(self):
+        """`vat_rate_at` as a function of the date, with the calendar read once — for a
+        caller asking about every half-hour of a period (#48, 2 Oct 2026: a year's bill
+        called `vat_rate_at` 5,440 times, each a read of the calendar)."""
+        import vat_calendar as _vc
+        return _vc.rate_lookup(self.get_vat_calendar())
+
     def vat_rate_at(self, date_iso) -> float:
         """The VAT rate effective at `date_iso` from the seed + learned calendar —
         the fallback rate used where no per-slot inc/exc pair is available."""

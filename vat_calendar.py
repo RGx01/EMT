@@ -91,6 +91,47 @@ def change_points_utc(learned=None):
     return out
 
 
+def local_day_fn():
+    """`local_day`, remembering each naive-UTC hour's answer — for a caller asking about
+    every half-hour of a period (#48, 2 Oct 2026: 17,520 conversions for a year's bill).
+
+    Exact: Europe/London's offset from UTC is always a whole number of hours, so every
+    instant in one UTC hour falls on the same local day. A bare date, or a timestamp that
+    carries its own offset, is passed straight to `local_day`."""
+    memo = {}
+
+    def _day(when):
+        s = str(when)
+        if len(s) <= 10 or s.endswith("Z") or "+" in s[10:] or "-" in s[10:]:
+            return local_day(s)
+        h = s[:13]
+        d = memo.get(h)
+        if d is None:
+            d = memo[h] = local_day(s)
+        return d
+    return _day
+
+
+def rate_lookup(learned=None):
+    """`resolve_vat(when, learned)` as a function of `when`, with the calendar merged
+    ONCE (#48, 2 Oct 2026). A year's bill called `vat_rate_at` 5,440 times, and each one
+    read the learned calendar from the database, parsed it, merged it with the seed and
+    walked it. Same rule: the rate of the last boundary on or before `when`'s UK-local
+    day (a bisect over the same sorted dates); DEFAULT_RATE before the first."""
+    import bisect
+    merged = _merged(learned)
+    days = [d for d, _r in merged]
+    rates = [r for _d, r in merged]
+    day_of = local_day_fn()
+
+    def _rate(when):
+        if not when:
+            return DEFAULT_RATE
+        i = bisect.bisect_right(days, day_of(when))
+        return rates[i - 1] if i else DEFAULT_RATE
+    return _rate
+
+
 def resolve_vat(date_iso, learned=None):
     """The VAT rate effective at `date_iso`, from the seed + learned boundaries.
     A bare date is taken as UK-local; a timestamp as naive UTC, resolved on its
