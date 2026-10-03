@@ -1,5 +1,8 @@
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
+import logging
+
+logger = logging.getLogger("energy_charts")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -597,14 +600,32 @@ def _inject_ev_breakdown_into_summary(summary, period_blocks, ev_slot_map,
         ec = round(v["cost"], 2)
         if ek <= 0:
             continue
+        rem = rem_channels.get(rate)
+        if rem is not None and 0.0 <= rem["kwh"] < ek:
+            # #31 (3 Oct 2026): the carve would take more kWh than this rate's remainder
+            # holds. Floored separately, kWh clamped to 0 and the cost survived — a
+            # "0.000 kWh" row with a cost, and a breakdown summing past the bill. kWh and
+            # cost move TOGETHER instead: the EV takes the whole remainder at this rate,
+            # so the remainder row is 0/0 and the two still sum to the original. A small
+            # excess is CT-clamp noise (device sensors and the meter disagree a little);
+            # a large one is worth a line in the log — it is how a device priced at a
+            # different rate from its main shows up (the 1 Oct 2026 VAT case).
+            short = ek - rem["kwh"]
+            if short > max(0.05, 0.05 * ek):
+                logger.info("EV carve at rate %s exceeds the Direct remainder by %.3f kWh "
+                            "(remainder %.3f, dispatch %.3f) — capped at the remainder",
+                            rate, short, rem["kwh"], ek)
+            ek, ec = round(rem["kwh"], 3), round(rem["cost"], 2)
+            if ek <= 0 and abs(ec) < 0.005:
+                continue
         ev_channels[rate] = {"kwh": ek, "cost": ec, "read_start": None, "read_end": None}
         ev_tot_k += ek
         ev_tot_c += ec
-        if rate in rem_channels:
-            _rk = rem_channels[rate]["kwh"] - ek
-            _rc = rem_channels[rate]["cost"] - ec
-            rem_channels[rate]["kwh"]  = round(_rk if rem_channels[rate]["kwh"] < 0 else max(0.0, _rk), 3)
-            rem_channels[rate]["cost"] = round(_rc if rem_channels[rate]["cost"] < 0 else max(0.0, _rc), 2)
+        if rem is not None:
+            _rk = rem["kwh"] - ek
+            _rc = rem["cost"] - ec
+            rem["kwh"]  = round(_rk if rem["kwh"] < 0 else max(0.0, _rk), 3)
+            rem["cost"] = round(_rc if rem["cost"] < 0 else max(0.0, _rc), 2)
     if not ev_channels:
         return False
     ev_key = f"{label} / Import"
