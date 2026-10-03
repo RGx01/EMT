@@ -172,9 +172,9 @@ class RouteSelection(unittest.TestCase):
                       soak.query_variants("/api/energy", jan))
 
     def test_the_budgets_are_set(self):
-        """C row 8: 13 surfaces bounded from the seventh soak; no p95 beyond the timeout."""
+        """C row 8: every surface bounded, from the tenth soak; no p95 beyond the timeout."""
         b = soak.load_budgets()
-        self.assertEqual(sum(v["p50"] is not None for v in b.values()), 13)
+        self.assertEqual(sum(v["p50"] is not None for v in b.values()), len(soak.SURFACES))
         self.assertTrue(all(v["p95"] is None or v["p95"] <= 30 for v in b.values()))
 
 
