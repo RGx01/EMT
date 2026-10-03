@@ -2869,14 +2869,20 @@ def _persist_block_carbon(block: dict, start: str) -> int:
     if _store is None:
         return 0
     n = 0
-    for meter_name, mb in (block.get("meters") or {}).items():
-        if _store.set_block_carbon(start, meter_name,
-                                   mb.get("carbon_intensity_g"), mb.get("carbon_g")):
+    for _bs, meter_name, ig, cg in _block_carbon_rows(block, start):
+        if _store.set_block_carbon(start, meter_name, ig, cg):
             n += 1
     return n
 
 
-def _attribute_block_carbon(block: dict, start: str) -> bool:
+def _block_carbon_rows(block: dict, start: str) -> list:
+    """(block_start, meter_id, carbon_intensity_g, carbon_g) for each meter of
+    *block* — what _persist_block_carbon writes."""
+    return [(start, meter_name, mb.get("carbon_intensity_g"), mb.get("carbon_g"))
+            for meter_name, mb in (block.get("meters") or {}).items()]
+
+
+def _attribute_block_carbon(block: dict, start: str, postcode: str | None = None) -> bool:
     """Look up the nearest carbon-intensity slot for *start* and attribute
     carbon_g (+ persist carbon_intensity_g) to every meter in *block*.
 
@@ -2884,10 +2890,12 @@ def _attribute_block_carbon(block: dict, start: str) -> bool:
     the gap-fill path (build_gap_blocks — prevention), and the NULL-carbon
     recovery sweep. Returns True if a CI slot was found and carbon attributed,
     False otherwise (no postcode, or no CI slot available for that time —
-    e.g. the slot has aged out of the 4-day CI table).
+    e.g. the slot has aged out of the 4-day CI table). A caller attributing many
+    blocks passes *postcode*: _get_postcode() rebuilds the whole configuration.
     """
     try:
-        postcode = _get_postcode()
+        if postcode is None:
+            postcode = _get_postcode()
         if not postcode:
             return False
         ci_row = _store.get_nearest_carbon_intensity(start, postcode)
@@ -2936,21 +2944,34 @@ def _recover_missing_carbon(limit: int = 200) -> int:
         return 0
     if not starts:
         return 0
-    recovered = 0
+    # The postcode once per pass, and every write in ONE transaction (#65, 3 Oct
+    # 2026). This runs on the engine loop after a CI fetch; it committed once per
+    # block and meter, ~37 ms each on the Pi's SD card, and held the loop 7.6 s for
+    # 95 blocks after a restore. The writes are set_block_carbon's own (in place,
+    # carbon columns only — keeps the source tag).
+    postcode = _get_postcode()
+    if not postcode:
+        return 0
+    rows, done = [], []
     for start in starts:
         block = _store.get_block_dict_by_start(start)
         if not block:
             continue
-        if _attribute_block_carbon(block, start):
-            try:
-                _persist_block_carbon(block, start)   # in place — keeps source tag
-                recovered += 1
-                logger.info("_recover_missing_carbon: backfilled carbon for %s",
-                            start)
-            except Exception as e:
-                logger.warning("_recover_missing_carbon: persist failed for "
-                               "%s: %s", start, e)
+        if _attribute_block_carbon(block, start, postcode=postcode):
+            rows.extend(_block_carbon_rows(block, start))
+            done.append(start)
         # If not attributed, the CI slot isn't available (aged out) — skip.
+    if not rows:
+        return 0
+    try:
+        _store.set_block_carbon_many(rows)
+    except Exception as e:
+        logger.warning("_recover_missing_carbon: persist failed for %d block(s) "
+                       "(%s…%s): %s", len(done), done[0], done[-1], e)
+        return 0
+    recovered = len(done)
+    for start in done:
+        logger.info("_recover_missing_carbon: backfilled carbon for %s", start)
     if recovered:
         logger.info("_recover_missing_carbon: recovered %d block(s)", recovered)
     return recovered
@@ -5152,7 +5173,13 @@ async def _tick_carbon_intensity() -> float | None:
         return row["intensity"] if row else None
 
     try:
-        slots = _fetch_carbon_intensity(postcode)
+        # The fetch runs OFF the loop (#65, 3 Oct 2026): a blocking urlopen (8 s
+        # timeout) on the loop held it every 15 minutes. It touches no database, so
+        # engine_startup's rule (DB work on the loop thread) is kept: everything
+        # below runs on the loop.
+        slots = await asyncio.get_running_loop().run_in_executor(
+            None, _fetch_carbon_intensity, postcode)
+        good = []
         for slot in slots:
             # BL-38: drop an implausible regional-model glitch slot (one fuel ~100% /
             # 0 gCO2/kWh) so it never reaches the donut, the 48h chart or block carbon —
@@ -5166,16 +5193,13 @@ async def _tick_carbon_intensity() -> float | None:
                                "(intensity=%s, top_fuel=%s%%) — regional-model glitch (BL-38)",
                                slot.get("captured_at"), slot.get("intensity_forecast"), _tf)
                 continue
-            _store.upsert_carbon_intensity(
-                slot["captured_at"], postcode,
-                slot["intensity_forecast"], slot["ci_index"],
-                slot["intensity_actual"]
-            )
+            good.append(slot)
+        # Every slot and its generation mix (mix_history, at CI-tick resolution,
+        # independent of block size) in one transaction: ~190 commits before (#65).
+        _store.upsert_carbon_slots(postcode, good)
+        for slot in good:
             if slot.get("generationmix"):
-                mix = slot["generationmix"]
-                _current_slot_mix[slot["captured_at"]] = mix
-                # Write to mix_history at CI-tick resolution (independent of block size)
-                _store.upsert_mix_history(slot["captured_at"], mix)
+                _current_slot_mix[slot["captured_at"]] = slot["generationmix"]
         _store.prune_carbon_intensity(days=4)
         _store.prune_mix_history(hours=48)
         _last_ci_fetch = now

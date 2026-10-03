@@ -1539,27 +1539,51 @@ class BlockStore:
         later when NESO publishes actuals — only updates if provided (not None).
         """
         with self._conn:
-            if intensity_actual is not None:
-                self._conn.execute(
-                    """INSERT INTO carbon_intensity
-                           (captured_at, postcode, intensity_forecast, intensity_actual, ci_index)
-                       VALUES (?, ?, ?, ?, ?)
-                       ON CONFLICT(captured_at, postcode) DO UPDATE SET
-                           intensity_forecast = COALESCE(excluded.intensity_forecast, intensity_forecast),
-                           intensity_actual   = excluded.intensity_actual,
-                           ci_index           = excluded.ci_index""",
-                    (captured_at, postcode, intensity_forecast, intensity_actual, ci_index)
-                )
-            else:
-                self._conn.execute(
-                    """INSERT INTO carbon_intensity
-                           (captured_at, postcode, intensity_forecast, ci_index)
-                       VALUES (?, ?, ?, ?)
-                       ON CONFLICT(captured_at, postcode) DO UPDATE SET
-                           intensity_forecast = excluded.intensity_forecast,
-                           ci_index           = excluded.ci_index""",
-                    (captured_at, postcode, intensity_forecast, ci_index)
-                )
+            self._upsert_carbon_intensity_row(captured_at, postcode, intensity_forecast,
+                                              ci_index, intensity_actual)
+
+    def upsert_carbon_slots(self, postcode: str, slots) -> int:
+        """A carbon-intensity fetch's slots, and their generation mixes, in ONE
+        transaction (#65, 3 Oct 2026). The same statements as upsert_carbon_intensity
+        and upsert_mix_history: the tick wrote ~96 slots and ~96 mixes with a commit
+        each, ~190 fsyncs on the Pi's SD card, on the engine loop. Each slot is a dict
+        with captured_at, intensity_forecast, ci_index, intensity_actual and an
+        optional generationmix. Returns the slots written."""
+        n = 0
+        with self._conn:
+            for slot in slots:
+                self._upsert_carbon_intensity_row(
+                    slot["captured_at"], postcode, slot["intensity_forecast"],
+                    slot["ci_index"], slot["intensity_actual"])
+                if slot.get("generationmix"):
+                    self._upsert_mix_rows(slot["captured_at"], slot["generationmix"])
+                n += 1
+        return n
+
+    def _upsert_carbon_intensity_row(self, captured_at, postcode, intensity_forecast,
+                                     ci_index, intensity_actual) -> None:
+        """upsert_carbon_intensity's statement, inside the caller's transaction."""
+        if intensity_actual is not None:
+            self._conn.execute(
+                """INSERT INTO carbon_intensity
+                       (captured_at, postcode, intensity_forecast, intensity_actual, ci_index)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(captured_at, postcode) DO UPDATE SET
+                       intensity_forecast = COALESCE(excluded.intensity_forecast, intensity_forecast),
+                       intensity_actual   = excluded.intensity_actual,
+                       ci_index           = excluded.ci_index""",
+                (captured_at, postcode, intensity_forecast, intensity_actual, ci_index)
+            )
+        else:
+            self._conn.execute(
+                """INSERT INTO carbon_intensity
+                       (captured_at, postcode, intensity_forecast, ci_index)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(captured_at, postcode) DO UPDATE SET
+                       intensity_forecast = excluded.intensity_forecast,
+                       ci_index           = excluded.ci_index""",
+                (captured_at, postcode, intensity_forecast, ci_index)
+            )
 
     def get_nearest_carbon_intensity(self, block_start: str, postcode: str) -> dict | None:
         """
@@ -2096,13 +2120,17 @@ class BlockStore:
     def upsert_mix_history(self, captured_at: str, mix: list[dict]) -> None:
         """Write CI-tick generation mix to mix_history (48hr rolling store)."""
         with self._conn:
-            for entry in mix:
-                self._conn.execute(
-                    """INSERT INTO mix_history (captured_at, fuel, perc)
-                       VALUES (?, ?, ?)
-                       ON CONFLICT(captured_at, fuel) DO UPDATE SET perc=excluded.perc""",
-                    (captured_at, entry.get("fuel", ""), entry.get("perc", 0.0))
-                )
+            self._upsert_mix_rows(captured_at, mix)
+
+    def _upsert_mix_rows(self, captured_at: str, mix: list[dict]) -> None:
+        """upsert_mix_history's statements, inside the caller's transaction."""
+        for entry in mix:
+            self._conn.execute(
+                """INSERT INTO mix_history (captured_at, fuel, perc)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(captured_at, fuel) DO UPDATE SET perc=excluded.perc""",
+                (captured_at, entry.get("fuel", ""), entry.get("perc", 0.0))
+            )
 
     def prune_mix_history(self, hours: int = 48) -> None:
         """Delete mix_history rows older than `hours` hours."""
@@ -3306,6 +3334,19 @@ class BlockStore:
                 "WHERE block_start = ? AND meter_id = ?",
                 (intensity_g, carbon_g, block_start, meter_id))
         return cur.rowcount > 0
+
+    def set_block_carbon_many(self, rows) -> int:
+        """set_block_carbon for many (block_start, meter_id, intensity_g, carbon_g)
+        rows in ONE transaction (#65, 3 Oct 2026): carbon recovery committed once per
+        block and meter, ~37 ms each on the Pi's SD card, on the engine loop. Returns
+        the rows changed."""
+        n = 0
+        with self._conn:
+            for bs, mid, ig, cg in rows:
+                n += self._conn.execute(
+                    "UPDATE blocks SET carbon_intensity_g = ?, carbon_g = ? "
+                    "WHERE block_start = ? AND meter_id = ?", (ig, cg, bs, mid)).rowcount > 0
+        return n
 
     def get_import_blocks_missing_exc(self, limit: int = 2000,
                                       after_start: str | None = None) -> list:
