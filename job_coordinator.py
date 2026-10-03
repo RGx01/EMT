@@ -92,10 +92,12 @@ _MANIFEST: dict = {
     # and write_scope.py, whose figures B's doc asserts.
     "prune_tombstones":    ((),                               ("delete",),     DEFER),
     "verify_pricing":      (("import",),                      (),              DEFER),
-    "reprice_sweep":       (("import",),                      ("delete",),     DEFER),
+    # `restore` (#56, 3 Oct 2026): each of these commits through a restore otherwise —
+    # measured for the sweep on the Pi, where it restarted the safety backup for minutes.
+    "reprice_sweep":       (("import",),                      ("delete", "restore"), DEFER),
     "reprice_sweep_to_done": ((),                             (),              DEFER),
-    "carbon_backfill":     (("import",),                      ("delete",),     DEFER),
-    "measured_drain":      (("import",),                      ("delete",),     DEFER),
+    "carbon_backfill":     (("import",),                      ("delete", "restore"), DEFER),
+    "measured_drain":      (("import",),                      ("delete", "restore"), DEFER),
     "attribution":         (("import", "verify_pricing"),     ("delete",),     WAIT),
     "gap_fill":            ((),                               (),              DEFER),
     "iog_split_carve":     ((),                               (),              DEFER),

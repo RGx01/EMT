@@ -2921,6 +2921,14 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
         known = {"blocks.db", "blocks.json"}
 
         # ── Step 1: pause engine ─────────────────────────────────────────────
+        # #56: and REGISTER the restore with the coordinator, so the long-running
+        # writers that declare `exclusive_with=("restore",)` stand aside — the re-price
+        # sweep kept committing through the whole restore before (it never read the
+        # pause), and every commit restarted the safety backup's copy. force=True: the
+        # restore pre-empts by hand (below), it does not wait on admission.
+        import job_coordinator as _jc_r
+        _jc_r.claim("restore", force=True)
+        _jc_r.mark("restore", status="running")
         _eng_r = _sys_r.modules.get("engine")
         if _eng_r and hasattr(_eng_r, "pause_engine"):
             _eng_r.pause_engine("backup restore")
@@ -3172,6 +3180,21 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
         if _eng_fin and hasattr(_eng_fin, "resume_engine"):
             try: _eng_fin.resume_engine()
             except Exception: pass
+        try:
+            import job_coordinator as _jc_fin
+            _jc_fin.mark("restore", status=_j.get("status") or "done")
+        except Exception:
+            pass
+
+
+@app.teardown_request
+def _close_retired_stores(_exc=None):
+    """#57: a request is over, so a connection a file swap retired on this thread can no
+    longer be in use — close it (store_access.store() no longer closes it mid-request)."""
+    try:
+        store_access.close_retired()
+    except Exception:
+        pass
 
 
 @app.route("/insights")
@@ -6663,7 +6686,13 @@ def _create_backup_zip(label="backup"):
                     try:
                         _dst_conn = _sq3_bk.connect(_bak)
                         try:
-                            _src_conn.backup(_dst_conn, pages=100, sleep=0.05)
+                            # ONE step (#56). A stepped backup (pages=100) RESTARTS from
+                            # the first page whenever another connection writes the
+                            # source; under a re-price sweep on the Pi's SD card it
+                            # restarted for 3 min 50 s, the WAL grew to 262 MB and one
+                            # commit took 118 s. One step holds a read snapshot for the
+                            # copy instead — WAL mode, so writers are not blocked.
+                            _src_conn.backup(_dst_conn, pages=-1)
                         finally:
                             _dst_conn.close()
                     finally:

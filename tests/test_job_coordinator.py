@@ -300,9 +300,12 @@ class TestTheManifestIsMeasuredNotInvented(unittest.TestCase):
         list so a future addition has to say where it came from."""
         expected = {
             "attribution": {"import", "verify_pricing", "delete"},
-            "carbon_backfill": {"import", "delete"},
-            "measured_drain": {"import", "delete"},
-            "reprice_sweep": {"import", "delete"},
+            # + restore (#56, 3 Oct 2026): the Pi soak measured the sweep committing
+            # through a restore and restarting its safety backup for 3 min 50 s; the
+            # carbon backfill and measured drain are the other long-running writers
+            "carbon_backfill": {"import", "delete", "restore"},
+            "measured_drain": {"import", "delete", "restore"},
+            "reprice_sweep": {"import", "delete", "restore"},
             "verify_pricing": {"import"},
             "restore": {"import"},
             "delete": {"import"},
