@@ -93,16 +93,36 @@ def store() -> ReadStore:
         raise RuntimeError("store_access.bind() has not been called")
     st = getattr(_local, "read", None)
     if st is not None and getattr(_local, "generation", None) != _generation:
-        try:
-            st.close()
-        except Exception:
-            pass
+        # RETIRE, don't close (#57, 3 Oct 2026). The caller that opened this connection
+        # may still be using it: a route takes `store()` at its top and calls helpers
+        # that call `store()` again (`load_config()` does). Closing here, mid-request,
+        # failed that route with "Cannot operate on a closed database" — a 500 on the
+        # Pi soak, a request in flight as a restore swapped the file. The retired one
+        # is closed at the end of the request (`close_retired()`, Flask's
+        # teardown_request), or at the next swap at the latest.
+        for old in getattr(_local, "retired", ()):
+            try:
+                old.close()
+            except Exception:
+                pass
+        _local.retired = [st]
         st = None
     if st is None:
         st = ReadStore(_db_path)
         _local.read = st
         _local.generation = _generation
     return st
+
+
+def close_retired() -> None:
+    """Close this thread's connections retired by a file swap. Call where nothing on
+    this thread can still hold one — the end of a request."""
+    for old in getattr(_local, "retired", ()):
+        try:
+            old.close()
+        except Exception:
+            pass
+    _local.retired = []
 
 
 def writer() -> WriteStore:

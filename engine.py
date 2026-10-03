@@ -7643,6 +7643,14 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
     # synchronous chunk between yields: admission never happens per block (B §3.4).
     limit = min(batch, _SWEEP_FIRST_CHUNK)
     while scanned < max_blocks:
+        # #56: re-check between chunks, not only at schedule time. A restore (or a delete)
+        # that starts mid-sweep now stops it at the next chunk boundary — before, the sweep
+        # committed through the whole restore, and every commit restarted the safety
+        # backup. The cursor is persisted, so the next pass resumes here.
+        if _store is None or _coord.admission("reprice_sweep")[0] != ADMIT:
+            logger.info("reprice-history sweep: standing aside at cursor %s (resumes next pass)",
+                        cursor)
+            break
         _t0 = time.monotonic()
         rows = _store.get_blocks_needing_reprice(limit=limit, after_start=cursor)
         if not rows:
@@ -7783,6 +7791,10 @@ def _maybe_reprice_history() -> None:
             try:
                 for _ in range(500):
                     await _run_historical_reprice_sweep()
+                    # #57: a restore closes the engine store (`_store = None`) and the
+                    # restore's own startup reschedules the sweep — stop, don't raise.
+                    if _store is None:
+                        break
                     if (_store.get_meta(_REPRICE_HISTORY_MARKER, {}) or {}).get("done"):
                         break
                     await _aio2.sleep(_REPRICE_HISTORY_PASS_PACE)
