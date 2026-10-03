@@ -316,7 +316,172 @@ def bill_net_from_day_rollups(rows) -> float:
                        - round(r.get("exp_cost") or 0.0, 4), 2)
     return round(total, 2)
 
+_BAD = object()   # a remainder the dict API could not convert: the summary raised there
+
+
+def _channel_from_dict(channel_name, channel, is_sub, is_export, display_name):
+    """One channel of a dict block, every `.get` fallback the summary reads resolved
+    once (#48). The record's fields are listed in `_summarise`. None when a value
+    cannot be converted: the old loop's try/except skipped the channel there too."""
+    nonempty = bool(channel)
+    channel = channel or {}
+    channel_m = (channel.get("meta", {}) or {})
+    key = f"{display_name} / {channel_name.replace('_', ' ').title()}"
+    try:
+        rate = round(float(channel.get("rate_used", channel.get("rate")) or 0.0), 4)
+        cost = float(channel.get("cost") or 0.0)
+        if is_sub:
+            # Pass 1 nets the device's grid share (kwh_grid, else kwh); pass 2 shows
+            # it (kwh_grid, else kwh_total, else kwh). See _summarise.
+            sub_kwh = float(channel.get("kwh_grid", channel.get("kwh")) or 0.0)
+            kwh = float(channel.get("kwh_grid",
+                        channel.get("kwh_total", channel.get("kwh"))) or 0.0)
+        else:
+            sub_kwh = 0.0
+            kwh = float(channel.get("kwh_total", channel.get("kwh")) or 0.0)
+        raw_kwh = float(channel.get("kwh") or 0.0) if is_export else 0.0
+        _cx = channel.get("cost_exc")
+        cost_exc = float(_cx) if _cx is not None else None
+        _segs = channel.get("segments")
+        segs = None
+        if _segs:
+            segs = []
+            for _s in _segs:
+                _sxr = _s.get("exc_rate")
+                segs.append((float(_s.get("kwh") or 0.0), float(_s.get("inc_rate") or 0.0),
+                             float(_sxr) if _sxr is not None else None,
+                             _s.get("attribution") == "ev"))
+        evk = float(channel.get("kwh_ev") or 0.0)
+        evc = float(channel.get("cost_ev") or 0.0)
+        evr = round(float(channel.get("rate_ev") or 0.0), 4)
+    except Exception:
+        return None
+    has_rem = "kwh_remainder" in channel
+    kwh_rem = None
+    if has_rem:
+        try:
+            kwh_rem = float(channel["kwh_remainder"])
+        except Exception:
+            kwh_rem = _BAD
+    return (key, is_export, rate, sub_kwh, kwh, cost, raw_kwh, cost_exc, segs,
+            evk, evc, evr, channel.get("ev_band"), channel.get("home_band"),
+            has_rem, kwh_rem, channel.get("read_start"), channel.get("read_end"),
+            channel_m.get("mpan"), channel_m.get("tariff"), nonempty)
+
+
+def _display_name(meter_name, is_sub, site, site_name, device):
+    if is_sub:
+        name = device or meter_name.replace("_", " ").title()
+    else:
+        name = site or site_name or meter_name.replace("_", " ").title()
+    return name or meter_name.replace("_", " ").title()
+
+
+def _records_from_blocks(blocks):
+    """Block dicts (get_blocks_lightweight's, the engine's, a test's) as _summarise's
+    records, in start order."""
+    for block in sorted([b for b in blocks if b and b.get("start")], key=lambda b: b["start"]):
+        _tzm = ((block.get("meters") or {}).get("electricity_main", {}) or {})
+        tz_name = (_tzm.get("meta") or {}).get("timezone") or block.get("_timezone")
+        meters = []
+        for meter_name, meter in (block.get("meters", {}) or {}).items():
+            meter_m = (meter or {}).get("meta", {}) or {}
+            is_sub = meter_m.get("sub_meter", False)
+            display_name = _display_name(meter_name, is_sub, meter_m.get("site"),
+                                         meter_m.get("site_name"), meter_m.get("device"))
+            channels = []
+            for channel_name, channel in (meter.get("channels", {}) or {}).items():
+                is_export = channel_name.lower().endswith("export")
+                if is_sub and is_export:
+                    continue    # neither pass reads a sub-meter's export
+                channels.append(_channel_from_dict(channel_name, channel, is_sub,
+                                                   is_export, display_name))
+            sc = 0.0 if is_sub else float((meter or {}).get("standing_charge") or 0.0)
+            meters.append((meter_name, is_sub, meter_m.get("site"), meter_m.get("device"),
+                           sc, channels))
+        yield block["start"], tz_name, meters
+
+
+# The columns summarise_bill_rows unpacks, in order: BlockStore.BILL_ROW_COLUMNS
+# (this module imports no storage; tests/test_bill_rows.py holds the two equal).
+BILL_ROW_COLUMNS = (
+    "block_start", "meter_id", "is_sub_meter", "device_label", "timezone",
+    "imp_kwh", "imp_kwh_grid", "imp_kwh_remainder", "imp_rate", "imp_cost",
+    "imp_read_start", "imp_read_end", "imp_cost_exc", "imp_rate_exc",
+    "imp_kwh_ev", "imp_cost_ev", "imp_rate_ev", "imp_ev_band", "imp_home_band",
+    "exp_kwh", "exp_rate", "exp_cost", "exp_read_start", "exp_read_end",
+    "standing_charge", "standing_charge_exc")
+
+
+def _records_from_rows(rows, segments):
+    """BlockStore.get_bill_rows' rows as _summarise's records — the values
+    get_blocks_lightweight would have put in its dicts, read the way
+    _channel_from_dict reads them (no kwh_total or rate_used: the store has none)."""
+    names = {}
+    rec = None
+    for (bs, mid, is_sub_meter, device, tz, imp_kwh, kwh_grid, kwh_rem, imp_rate, imp_cost,
+         imp_rs, imp_re, cost_exc, _rate_exc, kwh_ev, cost_ev, rate_ev, ev_band, home_band,
+         exp_kwh, exp_rate, exp_cost, exp_rs, exp_re, sc, _sc_exc) in rows:
+        if rec is None or rec[0] != bs:
+            if rec is not None:
+                yield rec[0], rec[1], rec[2]
+            rec = [bs, tz, []]                       # the block's _timezone: its first row's
+        if mid == "electricity_main" and tz:
+            rec[1] = tz                              # the main meter's own timezone wins
+        is_sub = bool(is_sub_meter)
+        nk = (mid, is_sub, device)
+        keys = names.get(nk)
+        if keys is None:
+            dn = _display_name(mid, is_sub, None, None, device)
+            keys = names[nk] = (f"{dn} / Import", f"{dn} / Export")
+        # Every number here is a REAL column, which SQLite returns as a float or None,
+        # so `x or 0.0` is get_blocks_lightweight's `float(x or 0)` followed by the
+        # summary's `float(... or 0.0)`, without either call (-0.0 becomes 0.0 too).
+        imp = imp_kwh or 0.0
+        icost = imp_cost or 0.0
+        if is_sub:
+            sub_kwh = kwh = (kwh_grid if kwh_grid is not None else imp) or 0.0
+        else:
+            sub_kwh, kwh = 0.0, imp
+        segs = None
+        if mid == "electricity_main":
+            _sg = segments.get((bs, mid))
+            if _sg:
+                segs = [(k or 0.0, i or 0.0, x, a == "ev") for k, i, x, _band, a in _sg]
+        channels = [(keys[0], False, round(imp_rate or 0.0, 4), sub_kwh, kwh, icost, 0.0,
+                     cost_exc, segs, kwh_ev or 0.0, cost_ev or 0.0, round(rate_ev or 0.0, 4),
+                     ev_band, home_band, kwh_rem is not None, kwh_rem,
+                     imp_rs, imp_re, None, None, True)]
+        if not is_sub:
+            exp = exp_kwh or 0.0
+            channels.append((keys[1], True, round(exp_rate or 0.0, 4), 0.0, exp,
+                             exp_cost or 0.0, exp, None, None, 0.0, 0.0, 0.0,
+                             None, None, False, None, exp_rs, exp_re, None, None, True))
+        rec[2].append((mid, is_sub, None, device, 0.0 if is_sub else (sc or 0.0), channels))
+    if rec is not None:
+        yield rec[0], rec[1], rec[2]
+
+
 def calculate_billing_summary_for_period(blocks, period_start, period_end, store=None, *, tz_name):
+    return _summarise(_records_from_blocks(blocks), period_start, period_end, store,
+                      tz_name=tz_name)
+
+
+def summarise_bill_rows(rows, segments, period_start, period_end, store=None, *, tz_name):
+    """calculate_billing_summary_for_period over BlockStore.get_bill_rows (#48): the
+    same summary, from flat rows instead of block dicts."""
+    return _summarise(_records_from_rows(rows, segments), period_start, period_end, store,
+                      tz_name=tz_name)
+
+
+def _summarise(records, period_start, period_end, store=None, *, tz_name):
+    """The period's bill summary over records `(start_utc, timezone, meters)`, in start
+    order. A meter is `(name, is_sub, site, device, standing_charge, channels)`; a
+    channel is the tuple _channel_from_dict documents by building it, or None (skipped).
+
+    One loop for both sources (#48, 3 Oct 2026). It was a loop over block dicts that
+    re-read every field through `.get` chains, 2M calls on a year's bill. The
+    arithmetic and its order are unchanged, so the summary is the same to the bit."""
     meter_summary  = defaultdict(lambda: defaultdict(lambda: {"kwh": 0.0, "cost": 0.0, "read_start": None, "read_end": None}))
     meter_totals   = defaultdict(lambda: {"kwh": 0.0, "cost": 0.0, "read_start": None, "read_end": None})
     main_import_raw = defaultdict(lambda: {"kwh": 0.0, "cost": 0.0})
@@ -331,7 +496,7 @@ def calculate_billing_summary_for_period(blocks, period_start, period_end, store
     ev_transition   = {"kwh": 0.0, "cost": 0.0, "cost_exc": 0.0}
     home_transition = {"kwh": 0.0, "cost": 0.0, "cost_exc": 0.0}
     main_export_raw = {"kwh": 0.0, "cost": 0.0}  # raw main meter export totals
-    # Main-meter-only daily accumulators for total_cost.
+    # Main-meter-only daily accumulators for total_cost, when no store is given.
     # Matches _fmt_total in server.py: raw main meter imp/exp/sc per day,
     # rounded to 4dp, net_cost = round(imp + sc - exp, 2) per day, summed.
     # Sub-meter per-block subtraction is used for the detailed rate breakdown
@@ -343,7 +508,11 @@ def calculate_billing_summary_for_period(blocks, period_start, period_end, store
     charged_days   = set()
     meter_meta     = {}
 
-    sorted_blocks = sorted([b for b in blocks if b and b.get("start")], key=lambda b: b["start"])
+    # Without a store (or a timezone) the total comes from the records themselves,
+    # in a second pass below; only then are they kept.
+    _fallback = store is None or not tz_name
+    if _fallback:
+        records = list(records)
 
     _period_utc_starts = []  # UTC starts of blocks that fall IN this period (for total_cost)
 
@@ -358,13 +527,10 @@ def calculate_billing_summary_for_period(blocks, period_start, period_end, store
     _UTC_ZI = _ZI("UTC")
     _tz_objs = {}
 
-    for block in sorted_blocks:
-        # block["start"] is a UTC ISO string; parse it and convert to local naive
+    for start, _tz_name, meters in records:
+        # start is a UTC ISO string; parse it and convert to local naive
         # so BST blocks at 23:xx UTC compare correctly against local period boundaries.
-        _block_utc = datetime.fromisoformat(block["start"])
-        _tz_name = ((block.get("meters") or {})
-                    .get("electricity_main", {}) or {})
-        _tz_name = (_tz_name.get("meta") or {}).get("timezone") or block.get("_timezone")
+        _block_utc = datetime.fromisoformat(start)
         try:
             _tzo = _tz_objs.get(_tz_name)
             if _tzo is None:
@@ -374,200 +540,169 @@ def calculate_billing_summary_for_period(blocks, period_start, period_end, store
             block_start = _block_utc
         if not (period_start <= block_start < period_end):
             continue
-        _period_utc_starts.append(block["start"])
+        _period_utc_starts.append(start)
 
         day_key = block_start.date()
-        meters = block.get("meters", {}) or {}
 
         # ── Pass 1: accumulate sub-meter grid-attributed kwh/cost per rate ──
-        sub_by_rate = defaultdict(lambda: {"kwh": 0.0, "cost": 0.0})
-        for meter_name, meter in meters.items():
-            if not (meter or {}).get("meta", {}).get("sub_meter"):
+        # [kwh, cost] per rate. Use kwh_grid (grid-attributed portion) not kwh
+        # (total device consumption).
+        sub_by_rate = {}
+        for _mn, is_sub, _site, _dev, _sc, channels in meters:
+            if not is_sub:
                 continue
-            for channel_name, channel in (meter.get("channels", {}) or {}).items():
-                if channel_name.lower().endswith("export"):
+            for ch in channels:
+                if ch is None:
                     continue
-                try:
-                    channel = channel or {}
-                    rate = round(float(channel.get("rate_used", channel.get("rate")) or 0.0), 4)
-                    # Use kwh_grid (grid-attributed portion) not kwh (total device consumption)
-                    sub_by_rate[rate]["kwh"]  += float(channel.get("kwh_grid", channel.get("kwh")) or 0.0)
-                    sub_by_rate[rate]["cost"] += float(channel.get("cost") or 0.0)
-                except Exception:
-                    pass
+                _e = sub_by_rate.get(ch[2])
+                if _e is None:
+                    _e = sub_by_rate[ch[2]] = [0.0, 0.0]
+                _e[0] += ch[3]
+                _e[1] += ch[5]
 
         # ── Pass 2: accumulate all meters, subtracting sub-meter totals from main import ──
-        for meter_name, meter in meters.items():
-            meter_m = (meter or {}).get("meta", {}) or {}
-            is_sub  = meter_m.get("sub_meter", False)
-            if is_sub:
-                display_name = meter_m.get("device") or meter_name.replace("_", " ").title()
-            else:
-                display_name = meter_m.get("site") or meter_m.get("site_name") or meter_name.replace("_", " ").title()
-            if not display_name:
-                display_name = meter_name.replace("_", " ").title()
+        for meter_name, is_sub, site, device, _sc, channels in meters:
             is_main_import = (meter_name == "electricity_main")
-
-            for channel_name, channel in (meter.get("channels", {}) or {}).items():
-                # Sub-meter export channels are already captured in the main meter's
-                # export total — skip them to prevent phantom export sections in the bill.
-                if is_sub and channel_name.lower().endswith("export"):
+            for ch in channels:
+                if ch is None:
                     continue
-                try:
-                    channel = channel or {}
-                    channel_m = (channel.get("meta", {}) or {})
-
-                    # Sub-meter rows show the device's GRID-attributed share
-                    # (kwh_grid), NOT its total consumption (kwh_total). Total would
-                    # include energy the device drew from battery/solar, which never
-                    # touched the grid — so the breakdown would overshoot the grid
-                    # import total and the kWh would no longer correspond to the
-                    # grid-based cost. This mirrors the sub_by_rate reconciliation
-                    # above and the Usage-Stats aggregation. The main meter keeps its
-                    # total (grid) figure. (Total_cost is unaffected — see note at top.)
-                    if is_sub:
-                        kwh = float(channel.get("kwh_grid",
-                                    channel.get("kwh_total", channel.get("kwh"))) or 0.0)
+                (key, is_export, rate, _subk, kwh, cost, raw_kwh, _cx, _segs,
+                 _evk, _evc, _evr, ev_band, home_band, has_rem, kwh_rem,
+                 rs, re, mpan, tariff, _nonempty) = ch
+                # Sub-meter rows show the device's GRID-attributed share
+                # (kwh_grid), NOT its total consumption (kwh_total). Total would
+                # include energy the device drew from battery/solar, which never
+                # touched the grid — so the breakdown would overshoot the grid
+                # import total and the kWh would no longer correspond to the
+                # grid-based cost. This mirrors the sub_by_rate reconciliation
+                # above and the Usage-Stats aggregation. The main meter keeps its
+                # total (grid) figure. (Total_cost is unaffected — see note at top.)
+                if is_export:
+                    if is_main_import:
+                        main_export_raw["kwh"]  += raw_kwh
+                        main_export_raw["cost"] += cost
+                    cost = -abs(cost)
+                elif is_main_import:
+                    # Store raw total before sub-meter subtraction
+                    _mr = main_import_raw[rate]
+                    _mr["kwh"]  += kwh
+                    _mr["cost"] += cost
+                    # BL-9: split this block's import into EV (dispatch-derived,
+                    # stored) and Home (remainder), grouped by each portion's own
+                    # rate. exc derived from the block's exc/inc ratio (flat VAT →
+                    # exact). ev_by_rate only on dispatched IOG blocks; home_by_rate
+                    # carries every main block's remainder → they sum to the total.
+                    if _cx is not None and cost:
+                        _ratio = _cx / cost
                     else:
-                        kwh = float(channel.get("kwh_total", channel.get("kwh")) or 0.0)
-                    cost = float(channel.get("cost") or 0.0)
-                    rate = round(float(channel.get("rate_used", channel.get("rate")) or 0.0), 4)
-                    is_export = channel_name.lower().endswith("export")
+                        # Not-yet-settled block has no stored ex-VAT cost. Counting
+                        # its kWh at £0 exc would DILUTE the displayed ex-VAT rate
+                        # (EV/Home read below the true off-peak rate until every
+                        # block settles). Fall back to the same inc ÷ (1+VAT) basis
+                        # the rest of the bill uses for uncovered slots, so the rate
+                        # is correct immediately and self-corrects to the exact
+                        # figure when the block settles and stamps cost_exc.
+                        _vat = _vat_for(start) if store is not None else 0.05
+                        _ratio = 1.0 / (1.0 + _vat)
+                    # BL-27: price the split from the block's priced SEGMENTS when they
+                    # travel with it (block_store attaches them to the import channel).
+                    # Each segment already carries its own inc/exc rate + attribution, so
+                    # a boundary block simply presents its constituent rate rows — the
+                    # mixed-band "transition" special-case is retired for segment blocks.
+                    # Legacy blocks (pre-backfill / no segments) keep the column path.
+                    if _segs:
+                        for _sk, _si, _sxr, _s_ev in _segs:
+                            if _sk <= 1e-9:
+                                continue
+                            _sr = round(_si, 4)
+                            _sc = _sk * _si
+                            _sx = (_sk * _sxr) if _sxr is not None else _sc * _ratio
+                            _grp = (ev_by_rate if _s_ev else home_by_rate)[_sr]
+                            _grp["kwh"]      += _sk
+                            _grp["cost"]     += _sc
+                            _grp["cost_exc"] += _sx
+                    else:
+                        if _evk > 1e-9:
+                            _evx = _evc * _ratio
+                            if ev_band == "mixed":
+                                ev_transition["kwh"]      += _evk
+                                ev_transition["cost"]     += _evc
+                                ev_transition["cost_exc"] += _evx
+                            else:                          # clean band → exact rate row
+                                _g = ev_by_rate[_evr]
+                                _g["kwh"]      += _evk
+                                _g["cost"]     += _evc
+                                _g["cost_exc"] += _evx
+                        _hk = kwh - _evk
+                        _hc = cost - _evc
+                        if _hk > 1e-9:
+                            _hx = _hc * _ratio
+                            if home_band == "mixed":
+                                home_transition["kwh"]      += _hk
+                                home_transition["cost"]     += _hc
+                                home_transition["cost_exc"] += _hx
+                            else:
+                                _g = home_by_rate[round(_hc / _hk, 4)]
+                                _g["kwh"]      += _hk
+                                _g["cost"]     += _hc
+                                _g["cost_exc"] += _hx
+                    # Use kwh_remainder directly when available. With no
+                    # sub-meters this key is absent (NULL in DB, omitted by
+                    # reconstruction), so the raw kwh is kept unchanged —
+                    # api+mini blocks are identical to CAD here.
+                    # Floor the sub-meter subtraction only when the main cost is
+                    # >= 0 (kills a power-integration over-subtraction artifact);
+                    # a genuinely negative main cost (Agile plunge-price credit)
+                    # must pass through, not clamp to 0.
+                    _sub = sub_by_rate.get(rate)
+                    if has_rem:
+                        if kwh_rem is _BAD:
+                            continue           # the old loop raised here and skipped the rest
+                        kwh  = kwh_rem
+                        _c = cost - (_sub[1] if _sub else 0.0)
+                        cost = _c if cost < 0 else max(0.0, _c)
+                    else:
+                        kwh  = max(0.0, kwh  - (_sub[0] if _sub else 0.0))
+                        _c = cost - (_sub[1] if _sub else 0.0)
+                        cost = _c if cost < 0 else max(0.0, _c)
 
-                    if is_export:
-                        if is_main_import:
-                            main_export_raw["kwh"]  += float(channel.get("kwh") or 0.0)
-                            main_export_raw["cost"] += float(channel.get("cost") or 0.0)
-                        cost = -abs(cost)
-                    elif is_main_import:
-                        # Store raw total before sub-meter subtraction
-                        main_import_raw[rate]["kwh"]  += kwh
-                        main_import_raw[rate]["cost"] += cost
-                        # BL-9: split this block's import into EV (dispatch-derived,
-                        # stored) and Home (remainder), grouped by each portion's own
-                        # rate. exc derived from the block's exc/inc ratio (flat VAT →
-                        # exact). ev_by_rate only on dispatched IOG blocks; home_by_rate
-                        # carries every main block's remainder → they sum to the total.
-                        _cx = channel.get("cost_exc")
-                        if _cx is not None and cost:
-                            _ratio = float(_cx) / cost
-                        else:
-                            # Not-yet-settled block has no stored ex-VAT cost. Counting
-                            # its kWh at £0 exc would DILUTE the displayed ex-VAT rate
-                            # (EV/Home read below the true off-peak rate until every
-                            # block settles). Fall back to the same inc ÷ (1+VAT) basis
-                            # the rest of the bill uses for uncovered slots, so the rate
-                            # is correct immediately and self-corrects to the exact
-                            # figure when the block settles and stamps cost_exc.
-                            _vat = _vat_for(block.get("start")) if store is not None else 0.05
-                            _ratio = 1.0 / (1.0 + _vat)
-                        # BL-27: price the split from the block's priced SEGMENTS when they
-                        # travel with it (block_store attaches them to the import channel).
-                        # Each segment already carries its own inc/exc rate + attribution, so
-                        # a boundary block simply presents its constituent rate rows — the
-                        # mixed-band "transition" special-case is retired for segment blocks.
-                        # Legacy blocks (pre-backfill / no segments) keep the column path.
-                        _segs = channel.get("segments")
-                        if _segs:
-                            for _s in _segs:
-                                _sk = float(_s.get("kwh") or 0.0)
-                                if _sk <= 1e-9:
-                                    continue
-                                _sr = round(float(_s.get("inc_rate") or 0.0), 4)
-                                _sc = _sk * float(_s.get("inc_rate") or 0.0)
-                                _sxr = _s.get("exc_rate")
-                                _sx = (_sk * float(_sxr)) if _sxr is not None \
-                                    else _sc * _ratio
-                                _grp = ev_by_rate if _s.get("attribution") == "ev" \
-                                    else home_by_rate
-                                _grp[_sr]["kwh"]      += _sk
-                                _grp[_sr]["cost"]     += _sc
-                                _grp[_sr]["cost_exc"] += _sx
-                        else:
-                            _evk = float(channel.get("kwh_ev") or 0.0)
-                            _evc = float(channel.get("cost_ev") or 0.0)
-                            if _evk > 1e-9:
-                                _evx = _evc * _ratio
-                                if channel.get("ev_band") == "mixed":
-                                    ev_transition["kwh"]      += _evk
-                                    ev_transition["cost"]     += _evc
-                                    ev_transition["cost_exc"] += _evx
-                                else:                          # clean band → exact rate row
-                                    _evr = round(float(channel.get("rate_ev") or 0.0), 4)
-                                    ev_by_rate[_evr]["kwh"]      += _evk
-                                    ev_by_rate[_evr]["cost"]     += _evc
-                                    ev_by_rate[_evr]["cost_exc"] += _evx
-                            _hk = kwh - _evk
-                            _hc = cost - _evc
-                            if _hk > 1e-9:
-                                _hx = _hc * _ratio
-                                if channel.get("home_band") == "mixed":
-                                    home_transition["kwh"]      += _hk
-                                    home_transition["cost"]     += _hc
-                                    home_transition["cost_exc"] += _hx
-                                else:
-                                    _hr = round(_hc / _hk, 4)
-                                    home_by_rate[_hr]["kwh"]      += _hk
-                                    home_by_rate[_hr]["cost"]     += _hc
-                                    home_by_rate[_hr]["cost_exc"] += _hx
-                        # Use kwh_remainder directly when available. With no
-                        # sub-meters this key is absent (NULL in DB, omitted by
-                        # reconstruction), so the raw kwh is kept unchanged —
-                        # api+mini blocks are identical to CAD here.
-                        # Floor the sub-meter subtraction only when the main cost is
-                        # >= 0 (kills a power-integration over-subtraction artifact);
-                        # a genuinely negative main cost (Agile plunge-price credit)
-                        # must pass through, not clamp to 0.
-                        if "kwh_remainder" in channel:
-                            kwh  = float(channel["kwh_remainder"])
-                            _c = cost - sub_by_rate[rate]["cost"]
-                            cost = _c if cost < 0 else max(0.0, _c)
-                        else:
-                            kwh  = max(0.0, kwh  - sub_by_rate[rate]["kwh"])
-                            _c = cost - sub_by_rate[rate]["cost"]
-                            cost = _c if cost < 0 else max(0.0, _c)
+                if key not in meter_meta:
+                    meter_meta[key] = {
+                        "site":        site,
+                        "device":      device,
+                        "mpan":        mpan,
+                        "tariff":      tariff,
+                        "is_submeter": bool(is_sub),
+                    }
+                _ms = meter_summary[key][rate]
+                _mt = meter_totals[key]
+                _ms["kwh"]  += kwh
+                _ms["cost"] += cost
+                _mt["kwh"]  += kwh
+                _mt["cost"] += cost
+                _mt["is_submeter"] = bool(is_sub)
 
-                    key = f"{display_name} / {channel_name.replace('_', ' ').title()}"
-                    if key not in meter_meta:
-                        meter_meta[key] = {
-                            "site":        meter_m.get("site"),
-                            "device":      meter_m.get("device"),
-                            "mpan":        channel_m.get("mpan"),
-                            "tariff":      channel_m.get("tariff"),
-                            "is_submeter": bool(meter_m.get("sub_meter")),
-                        }
-                    meter_summary[key][rate]["kwh"]  += kwh
-                    meter_summary[key][rate]["cost"] += cost
-                    meter_totals[key]["kwh"]         += kwh
-                    meter_totals[key]["cost"]        += cost
-                    meter_totals[key]["is_submeter"]  = bool(meter_m.get("sub_meter"))
-
-                    if not meter_m.get("sub_meter"):
-                        rs = channel.get("read_start")
-                        re = channel.get("read_end")
-                        # A cumulative meter register only increases, so the
-                        # period's opening read is the SMALLEST real read and the
-                        # closing is the LARGEST. Ignore 0/None reads: gap /
-                        # interpolated / reset blocks and register-less sources
-                        # (CAD power sensors, API Measurements) carry 0, and the old
-                        # MIN-start / last-wins-end aggregation let a single such
-                        # block drag the displayed Start/End to 0.000 even when real
-                        # reads exist for the period.
-                        for _tgt in (meter_summary[key][rate], meter_totals[key]):
-                            if rs is not None and rs > 0 and (
-                                    _tgt["read_start"] is None or rs < _tgt["read_start"]):
-                                _tgt["read_start"] = rs
-                            if re is not None and re > 0 and (
-                                    _tgt["read_end"] is None or re > _tgt["read_end"]):
-                                _tgt["read_end"] = re
-                except Exception:
-                    pass
+                if not is_sub:
+                    # A cumulative meter register only increases, so the
+                    # period's opening read is the SMALLEST real read and the
+                    # closing is the LARGEST. Ignore 0/None reads: gap /
+                    # interpolated / reset blocks and register-less sources
+                    # (CAD power sensors, API Measurements) carry 0, and the old
+                    # MIN-start / last-wins-end aggregation let a single such
+                    # block drag the displayed Start/End to 0.000 even when real
+                    # reads exist for the period.
+                    for _tgt in (_ms, _mt):
+                        if rs is not None and rs > 0 and (
+                                _tgt["read_start"] is None or rs < _tgt["read_start"]):
+                            _tgt["read_start"] = rs
+                        if re is not None and re > 0 and (
+                                _tgt["read_end"] is None or re > _tgt["read_end"]):
+                            _tgt["read_end"] = re
 
         # Standing charge
-        for meter in (meters or {}).values():
-            if (meter or {}).get("meta", {}).get("sub_meter"):
+        for _mn, is_sub, _site, _dev, sc, _chs in meters:
+            if is_sub:
                 continue
-            sc = float((meter or {}).get("standing_charge") or 0.0)
             if sc > 0:
                 # Start-of-day: keep the first non-zero charge seen (blocks are
                 # processed in ascending order). Not MAX (over-bills on a drop).
@@ -615,45 +750,6 @@ def calculate_billing_summary_for_period(blocks, period_start, period_end, store
     # Same method as the Usage Stats rows (usage_view): round each day's imp/sc/exp to 4dp,
     # compute net = round(imp + sc - exp, 2) per day, sum across days.
     # This ensures billing chart total agrees with Usage Stats at every level.
-    # Populate main-meter-only daily accumulators from blocks.
-    # Raw main meter imp/exp/sc per day — no sub-meter adjustment.
-    # Derive timezone from first block metadata (same as main loop does per-block).
-    _first_tz_name = None
-    for _fb in sorted_blocks:
-        _fmeta = ((_fb.get("meters") or {}).get("electricity_main") or {})
-        _first_tz_name = (_fmeta.get("meta") or {}).get("timezone") or _fb.get("_timezone")
-        if _first_tz_name:
-            break
-    try:
-        from zoneinfo import ZoneInfo as _ZI2
-        _main_tz = _ZI2(_first_tz_name or "UTC")
-    except Exception:
-        from zoneinfo import ZoneInfo as _ZI2
-        _main_tz = _ZI2("UTC")
-    for _blk in sorted_blocks:
-        _blk_dt = datetime.fromisoformat(_blk["start"])
-        _blk_local = _blk_dt.replace(tzinfo=timezone.utc).astimezone(_main_tz).replace(tzinfo=None)
-        if not (period_start <= _blk_local < period_end):
-            continue
-        _blk_day = _blk_local.date()
-        _blk_meters = _blk.get("meters", {}) or {}
-        for _blk_mid, _blk_meter in _blk_meters.items():
-            _blk_meta = (_blk_meter or {}).get("meta", {}) or {}
-            if _blk_meta.get("sub_meter"):
-                continue  # main meter only
-            _blk_sc = float((_blk_meter or {}).get("standing_charge") or 0.0)
-            if _blk_sc > 0 and not _main_day_sc.get(_blk_day):
-                # Start-of-day (first non-zero, ascending order); not MAX.
-                _main_day_sc[_blk_day] = _blk_sc
-            for _blk_ch_name, _blk_ch in ((_blk_meter or {}).get("channels", {}) or {}).items():
-                if not _blk_ch:
-                    continue
-                _blk_cost = float((_blk_ch or {}).get("cost") or 0.0)
-                if _blk_ch_name.lower().endswith("export"):
-                    _main_day_exp[_blk_day] += abs(_blk_cost)
-                else:
-                    _main_day_imp[_blk_day] += _blk_cost
-
     # Compute total_cost via BlockStore.compute_period_net — the single shared
     # implementation used by Live Power, Usage Stats and billing chart.
     # Fall back to local accumulation if store not provided.
@@ -670,6 +766,36 @@ def calculate_billing_summary_for_period(blocks, period_start, period_end, store
     elif store is not None and tz_name:
         total_cost = 0.0   # no blocks fall in this period
     else:
+        # No store: the day nets come from the blocks themselves. This pass is the
+        # fallback's alone; with a store, compute_period_net is the total (#48).
+        # Raw main meter imp/exp/sc per day — no sub-meter adjustment.
+        # The first block's timezone, for every block (the main loop's is per block).
+        _first_tz_name = next((_tzn for _st, _tzn, _ms in records if _tzn), None)
+        try:
+            from zoneinfo import ZoneInfo as _ZI2
+            _main_tz = _ZI2(_first_tz_name or "UTC")
+        except Exception:
+            from zoneinfo import ZoneInfo as _ZI2
+            _main_tz = _ZI2("UTC")
+        for _st, _tzn, _blk_meters in records:
+            _blk_dt = datetime.fromisoformat(_st)
+            _blk_local = _blk_dt.replace(tzinfo=timezone.utc).astimezone(_main_tz).replace(tzinfo=None)
+            if not (period_start <= _blk_local < period_end):
+                continue
+            _blk_day = _blk_local.date()
+            for _mn, _is_sub, _site, _dev, _blk_sc, _blk_chs in _blk_meters:
+                if _is_sub:
+                    continue  # main meter only
+                if _blk_sc > 0 and not _main_day_sc.get(_blk_day):
+                    # Start-of-day (first non-zero, ascending order); not MAX.
+                    _main_day_sc[_blk_day] = _blk_sc
+                for ch in _blk_chs:
+                    if ch is None or not ch[20]:     # an empty channel
+                        continue
+                    if ch[1]:                        # export
+                        _main_day_exp[_blk_day] += abs(ch[5])
+                    else:
+                        _main_day_imp[_blk_day] += ch[5]
         _daily_nets = [
             round(
                 round(_main_day_imp[_d], 4)

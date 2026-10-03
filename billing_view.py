@@ -118,14 +118,65 @@ def _context(store, cfg, blocks):
     return _ec.billing_context(cfg, store, blocks, has_exc=_has_exc(store))
 
 
+def _bill_blocks(rows, segments, ev_meter):
+    """The period's blocks as the bill's other readers see them, from get_bill_rows (#48).
+
+    Those readers are the EV slot maps, the EV carve, the bill method and the day list.
+    Between them they read a block's start, the main meter's import channel (kWh,
+    cost, rates, ex-VAT figures, EV split and segments) and standing charges, and the
+    EV meter's import kWh, cost and rate. Each value is the one get_blocks_lightweight
+    puts there, and a key is present exactly when it puts it there. Nothing else is
+    built: the other meters and the export channels cost a year's bill half its time
+    on the Pi."""
+    out, cur, last = [], None, None
+    for r in rows:
+        bs, mid = r[0], r[1]
+        if bs != last:
+            cur = {"start": bs, "meters": {}}
+            out.append(cur)
+            last = bs
+        if mid != "electricity_main" and mid != ev_meter:
+            continue
+        imp = {"kwh": float(r[5] or 0), "cost": float(r[9] or 0)}
+        if r[8] is not None:
+            imp["rate"] = float(r[8])
+        if mid != "electricity_main":
+            cur["meters"][mid] = {"channels": {"import": imp}}
+            continue
+        for k, i in (("cost_exc", 12), ("rate_exc", 13), ("kwh_ev", 14),
+                     ("cost_ev", 15), ("rate_ev", 16)):
+            if r[i] is not None:
+                imp[k] = float(r[i])
+        segs = segments.get((bs, mid))
+        if segs:
+            imp["segments"] = [{"kwh": k, "inc_rate": i, "exc_rate": x, "band": b,
+                                "attribution": a} for k, i, x, b, a in segs]
+        m = cur["meters"][mid] = {"standing_charge": float(r[24] or 0),
+                                  "channels": {"import": imp}}
+        if r[25] is not None:
+            m["standing_charge_exc"] = float(r[25])
+    return out
+
+
 def period_summary_raw(store, cfg, tz_name, utc_start, utc_end):
     """(summary, ctx, blocks) for the range — the summary as Python objects, before
-    summary_json. What render_billing_summary takes, so a check can format it."""
+    summary_json. What render_billing_summary takes, so a check can format it.
+
+    The summary reads flat rows (#48, 3 Oct 2026); `blocks` are _bill_blocks. With no
+    configuration, billing_context colours meters from the blocks themselves, so
+    that case keeps the full fetch."""
     tz = ZoneInfo(tz_name)
-    blocks = store.get_blocks_lightweight(utc_start, utc_end)
+    ps, pe = _local_naive(utc_start, tz), _local_naive(utc_end, tz)
+    if not cfg:
+        blocks = store.get_blocks_lightweight(utc_start, utc_end)
+        ctx = _context(store, cfg, blocks)
+        summary = _ec.period_summary(ctx, blocks, blocks, ps, pe, store=store, tz_name=tz_name)
+        return summary, ctx, blocks
+    rows, segments = store.get_bill_rows(utc_start, utc_end)
+    blocks = _bill_blocks(rows, segments, _ec._ev_meter_id(cfg))
     ctx = _context(store, cfg, blocks)
-    summary = _ec.period_summary(ctx, blocks, blocks, _local_naive(utc_start, tz),
-                                 _local_naive(utc_end, tz), store=store, tz_name=tz_name)
+    summary = _ec.period_summary(ctx, None, blocks, ps, pe, store=store, tz_name=tz_name,
+                                 bill_rows=(rows, segments))
     return summary, ctx, blocks
 
 
