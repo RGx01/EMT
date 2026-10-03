@@ -4214,31 +4214,33 @@ class BlockStore:
         ).fetchall()
 
         by_d     = defaultdict(lambda: {"main_imp": 0.0, "exp": 0.0, "sc": 0.0})
-        sub_by_d = defaultdict(lambda: defaultdict(float))
         # Track the earliest block_start seen per day so the standing charge is
         # the start-of-day value (supplier convention), not MAX (which
         # over-bills on a decrease).
         _sc_earliest: dict = {}
+        _day_of: dict = {}                  # block_start → local day, once per start
 
-        for r in rows:
-            # .date().isoformat() is strftime("%Y-%m-%d") for any 4-digit year, at a
-            # fraction of the cost — once per block over the period.
-            d = datetime.fromisoformat(r["block_start"]).replace(
-                tzinfo=timezone.utc).astimezone(tz_obj).date().isoformat()
-            cost = float(r["imp_cost"] or 0)
-            if not bool(r["is_sub_meter"]):
-                by_d[d]["main_imp"] += cost
-                by_d[d]["exp"] += float(r["exp_cost"] or 0)
-                bs = r["block_start"]
-                _sc = float(r["standing_charge"] or 0)
-                # Start-of-day standing charge: take the earliest block that has
-                # a non-zero charge, so a leading zero (early gap-fill) doesn't
-                # shadow the real value. Not MAX (over-bills on a decrease).
-                if _sc > 0 and (d not in _sc_earliest or bs < _sc_earliest[d]):
-                    _sc_earliest[d] = bs
-                    by_d[d]["sc"] = _sc
-            else:
-                sub_by_d[d][r["meter_id"]] += cost
+        for bs, imp_cost, exp_cost, standing, is_sub, _mid in rows:
+            # Sub-meter rows add nothing (see below). They were summed per day into a
+            # map no line read (#48, 3 Oct 2026).
+            if is_sub:
+                continue
+            d = _day_of.get(bs)
+            if d is None:
+                # .date().isoformat() is strftime("%Y-%m-%d") for any 4-digit year, at a
+                # fraction of the cost.
+                d = _day_of[bs] = datetime.fromisoformat(bs).replace(
+                    tzinfo=timezone.utc).astimezone(tz_obj).date().isoformat()
+            _d = by_d[d]
+            _d["main_imp"] += float(imp_cost or 0)
+            _d["exp"] += float(exp_cost or 0)
+            _sc = float(standing or 0)
+            # Start-of-day standing charge: take the earliest block that has
+            # a non-zero charge, so a leading zero (early gap-fill) doesn't
+            # shadow the real value. Not MAX (over-bills on a decrease).
+            if _sc > 0 and (d not in _sc_earliest or bs < _sc_earliest[d]):
+                _sc_earliest[d] = bs
+                _d["sc"] = _sc
 
         daily_nets = []
         for d in sorted(by_d):
@@ -6961,6 +6963,48 @@ class BlockStore:
         """Full export — used by chart generation during transition phase."""
         return self._select_blocks("", ())
 
+    # The column order of get_bill_rows' rows; billing.summarise_bill_rows and
+    # billing_view unpack by position.
+    BILL_ROW_COLUMNS = (
+        "block_start", "meter_id", "is_sub_meter", "device_label", "timezone",
+        "imp_kwh", "imp_kwh_grid", "imp_kwh_remainder", "imp_rate", "imp_cost",
+        "imp_read_start", "imp_read_end", "imp_cost_exc", "imp_rate_exc",
+        "imp_kwh_ev", "imp_cost_ev", "imp_rate_ev", "imp_ev_band", "imp_home_band",
+        "exp_kwh", "exp_rate", "exp_cost", "exp_read_start", "exp_read_end",
+        "standing_charge", "standing_charge_exc")
+
+    def get_bill_rows(self, utc_start: str, utc_end: str):
+        """A period bill's blocks as flat rows (#48, 3 Oct 2026): `(rows, segments)`.
+
+        `rows` are tuples in BILL_ROW_COLUMNS order, one per block and meter, ordered by
+        block_start then meter_id: get_blocks_lightweight's join and order, with only
+        the columns the bill reads. `segments` maps (block_start, meter_id) to that
+        meter's import segments, (kwh, inc_rate, exc_rate, band, attribution) in seq
+        order. It is the same data as get_blocks_lightweight without the nested dicts.
+        Decoding 38 columns into them took half a year's bill on the Pi."""
+        rows = self._conn.execute(
+            """SELECT b.block_start, b.meter_id, m.is_sub_meter, m.device_label, cp.timezone,
+                      b.imp_kwh, b.imp_kwh_grid, b.imp_kwh_remainder, b.imp_rate, b.imp_cost,
+                      b.imp_read_start, b.imp_read_end, b.imp_cost_exc, b.imp_rate_exc,
+                      b.imp_kwh_ev, b.imp_cost_ev, b.imp_rate_ev, b.imp_ev_band, b.imp_home_band,
+                      b.exp_kwh, b.exp_rate, b.exp_cost, b.exp_read_start, b.exp_read_end,
+                      b.standing_charge, b.standing_charge_exc
+               FROM blocks b
+               JOIN config_periods cp ON b.config_period_id = cp.id
+               LEFT JOIN meters m ON m.meter_id = b.meter_id
+                 AND m.config_period_id = b.config_period_id
+               WHERE b.block_start >= ? AND b.block_start < ?
+               ORDER BY b.block_start, b.meter_id""", (utc_start, utc_end)).fetchall()
+        segments: dict = {}
+        if rows:
+            for bs, mid, k, inc, exc, band, attr in self._conn.execute(
+                    "SELECT block_start, meter_id, kwh, inc_rate, exc_rate, band, attribution "
+                    "FROM block_segments WHERE channel = 'import' "
+                    "AND block_start >= ? AND block_start < ? "
+                    "ORDER BY block_start, meter_id, seq", (utc_start, utc_end)):
+                segments.setdefault((bs, mid), []).append((k, inc, exc, band, attr))
+        return rows, segments
+
     def get_blocks_lightweight(self, utc_start: str | None = None,
                                 utc_end: str | None = None,
                                 finalised_only: bool = False) -> list[dict]:
@@ -7018,13 +7062,23 @@ class BlockStore:
         block_map: dict = {}
         block_order: list = []
 
-        # Read each row once into a plain dict: an sqlite3.Row looks every column up
-        # by NAME, ~40 times a row here, and on a year's bill that lookup was a large
-        # share of this fetch (C, 30 Sep 2026). Same values, same output.
-        _keys = rows[0].keys() if rows else []
+        # Each row is unpacked by position (#48, 3 Oct 2026). An sqlite3.Row looks a
+        # column up by NAME, and the plain dict that replaced it (C, 30 Sep) was still
+        # built per row: 38 keys, ~52k rows on a year's bill. The column order is the
+        # SELECT above. Same values, same output.
         for row in rows:
-            row = dict(zip(_keys, row))
-            bs = row["block_start"]
+            (bs, mid, r_imp_kwh, r_imp_kwh_grid, r_imp_kwh_remainder,
+             r_imp_rate, r_imp_cost, r_imp_read_start, r_imp_read_end,
+             r_imp_cost_exc, r_imp_rate_exc, r_standing_charge_exc, r_exc_source,
+             r_imp_kwh_ev, r_imp_cost_ev, r_imp_rate_ev,
+             r_imp_ev_band, r_imp_home_band,
+             r_exp_kwh, r_exp_rate, r_exp_cost,
+             r_exp_read_start, r_exp_read_end,
+             r_standing_charge, r_carbon_g, r_carbon_intensity_g, r_interpolated,
+             r_is_sub_meter, r_parent_meter_id, r_device_label,
+             r_inverter_possible, r_meter_type,
+             r_billing_day, r_block_minutes, r_timezone,
+             r_currency_symbol, r_currency_code, r_effective_from) = row
             if bs not in block_map:
                 block_map[bs] = {
                     "start":   bs,
@@ -7032,26 +7086,27 @@ class BlockStore:
                     "meters":  {},
                     "totals":  {"import_kwh": 0.0, "export_kwh": 0.0,
                                 "import_cost": 0.0, "export_cost": 0.0},
-                    "_billing_day":    row["billing_day"],
-                    "_block_minutes":  row["block_minutes"],
-                    "_timezone":       row["timezone"],
-                    "_currency_symbol": row["currency_symbol"],
-                    "_currency_code":  row["currency_code"],
-                    "_effective_from": row["effective_from"],
+                    "_billing_day":    r_billing_day,
+                    "_block_minutes":  r_block_minutes,
+                    "_timezone":       r_timezone,
+                    "_currency_symbol": r_currency_symbol,
+                    "_currency_code":  r_currency_code,
+                    "_effective_from": r_effective_from,
                 }
                 block_order.append(bs)
 
             b = block_map[bs]
-            mid = row["meter_id"]
-            is_sub = bool(row["is_sub_meter"])
-            imp = float(row["imp_kwh"] or 0)
-            exp = float(row["exp_kwh"] or 0)
+            is_sub = bool(r_is_sub_meter)
+            imp = float(r_imp_kwh or 0)
+            exp = float(r_exp_kwh or 0)
+            imp_cost = float(r_imp_cost or 0)
+            exp_cost = float(r_exp_cost or 0)
 
             imp_channel = {
                 "kwh":           imp,
-                "cost":          float(row["imp_cost"] or 0),
-                "read_start":    row["imp_read_start"],
-                "read_end":      row["imp_read_end"],
+                "cost":          imp_cost,
+                "read_start":    r_imp_read_start,
+                "read_end":      r_imp_read_end,
             }
             # Only include kwh_grid / kwh_remainder / rate when actually set in
             # the DB. _row_to_block omits these when NULL; get_blocks_lightweight
@@ -7060,78 +7115,79 @@ class BlockStore:
             # zeroing a real import on no-sub-meter setups (the "cost but no kWh"
             # billing bug). kwh_grid/kwh_remainder are only set by PASS 2 when
             # sub-meters exist; on a sub-less main meter they are legitimately NULL.
-            if row["imp_kwh_grid"] is not None:
-                imp_channel["kwh_grid"] = float(row["imp_kwh_grid"])
-            if row["imp_kwh_remainder"] is not None:
-                imp_channel["kwh_remainder"] = float(row["imp_kwh_remainder"])
-            if row["imp_rate"] is not None:
-                imp_channel["rate"] = float(row["imp_rate"])
+            if r_imp_kwh_grid is not None:
+                imp_channel["kwh_grid"] = float(r_imp_kwh_grid)
+            if r_imp_kwh_remainder is not None:
+                imp_channel["kwh_remainder"] = float(r_imp_kwh_remainder)
+            if r_imp_rate is not None:
+                imp_channel["rate"] = float(r_imp_rate)
             # BL-23/BL-24: surface captured ex-VAT so the billing summary's bill method
             # and the data table's ex-VAT columns use the REAL figure (not inc÷1.05).
             # _row_to_block does this too; the lightweight chart fetch must match or the
             # whole ex-VAT view silently falls back to the approximation.
-            if row["imp_cost_exc"] is not None:
-                imp_channel["cost_exc"] = float(row["imp_cost_exc"])
-            if row["imp_rate_exc"] is not None:
-                imp_channel["rate_exc"] = float(row["imp_rate_exc"])
+            if r_imp_cost_exc is not None:
+                imp_channel["cost_exc"] = float(r_imp_cost_exc)
+            if r_imp_rate_exc is not None:
+                imp_channel["rate_exc"] = float(r_imp_rate_exc)
             # BL-9: surface the IOG house/EV split so the billing summary's
             # 'Import — total grid' section shows the EV/Home rows. _row_to_block does
             # this too; the lightweight chart fetch MUST match or the split silently
             # falls back to the plain per-rate rows (kwh_ev never reaches the aggregator).
-            if row["imp_kwh_ev"] is not None:
-                imp_channel["kwh_ev"] = float(row["imp_kwh_ev"])
-            if row["imp_cost_ev"] is not None:
-                imp_channel["cost_ev"] = float(row["imp_cost_ev"])
-            if row["imp_rate_ev"] is not None:
-                imp_channel["rate_ev"] = float(row["imp_rate_ev"])
-            if row["imp_ev_band"] is not None:
-                imp_channel["ev_band"] = row["imp_ev_band"]
-            if row["imp_home_band"] is not None:
-                imp_channel["home_band"] = row["imp_home_band"]
+            if r_imp_kwh_ev is not None:
+                imp_channel["kwh_ev"] = float(r_imp_kwh_ev)
+            if r_imp_cost_ev is not None:
+                imp_channel["cost_ev"] = float(r_imp_cost_ev)
+            if r_imp_rate_ev is not None:
+                imp_channel["rate_ev"] = float(r_imp_rate_ev)
+            if r_imp_ev_band is not None:
+                imp_channel["ev_band"] = r_imp_ev_band
+            if r_imp_home_band is not None:
+                imp_channel["home_band"] = r_imp_home_band
 
             exp_channel = {
                 "kwh":        exp,
-                "cost":       float(row["exp_cost"] or 0),
-                "read_start": row["exp_read_start"],
-                "read_end":   row["exp_read_end"],
+                "cost":       exp_cost,
+                "read_start": r_exp_read_start,
+                "read_end":   r_exp_read_end,
             }
-            if row["exp_rate"] is not None:
-                exp_channel["rate"] = float(row["exp_rate"])
+            if r_exp_rate is not None:
+                exp_channel["rate"] = float(r_exp_rate)
 
-            b["meters"][mid] = {
+            m = b["meters"][mid] = {
                 "meta": {
                     "sub_meter":        is_sub,
-                    "parent_meter":     row["parent_meter_id"],
-                    "device":           row["device_label"],
-                    "inverter_possible": bool(row["inverter_possible"]),
-                    "meter_type":       row["meter_type"],
-                    "block_minutes":    row["block_minutes"],
-                    "timezone":         row["timezone"],
-                    "currency_symbol":  row["currency_symbol"],
+                    "parent_meter":     r_parent_meter_id,
+                    "device":           r_device_label,
+                    "inverter_possible": bool(r_inverter_possible),
+                    "meter_type":       r_meter_type,
+                    "block_minutes":    r_block_minutes,
+                    "timezone":         r_timezone,
+                    "currency_symbol":  r_currency_symbol,
                 },
-                "carbon_g":      row["carbon_g"],
-                "carbon_intensity_g": row["carbon_intensity_g"],
+                "carbon_g":      r_carbon_g,
+                "carbon_intensity_g": r_carbon_intensity_g,
                 "imp_kwh":       imp,
                 "exp_kwh":       exp,
-                "imp_cost":      float(row["imp_cost"] or 0),
-                "exp_cost":      float(row["exp_cost"] or 0),
-                "standing_charge": float(row["standing_charge"] or 0),
-                "interpolated":  bool(row["interpolated"]),
+                "imp_cost":      imp_cost,
+                "exp_cost":      exp_cost,
+                "standing_charge": float(r_standing_charge or 0),
+                "interpolated":  bool(r_interpolated),
                 "channels": {
                     "import": imp_channel,
                     "export": exp_channel,
                 },
             }
-            if row["standing_charge_exc"] is not None:
-                b["meters"][mid]["standing_charge_exc"] = float(row["standing_charge_exc"])
-            if row["exc_source"] is not None:
-                b["meters"][mid]["exc_source"] = row["exc_source"]
+            if r_standing_charge_exc is not None:
+                m["standing_charge_exc"] = float(r_standing_charge_exc)
+            if r_exc_source is not None:
+                m["exc_source"] = r_exc_source
 
             if not is_sub:
-                b["totals"]["import_kwh"]  += imp
-                b["totals"]["export_kwh"]  += exp
-                b["totals"]["import_cost"] += float(row["imp_cost"] or 0)
-                b["totals"]["export_cost"] += float(row["exp_cost"] or 0)
+                t = b["totals"]
+                t["import_kwh"]  += imp
+                t["export_kwh"]  += exp
+                t["import_cost"] += imp_cost
+                t["export_cost"] += exp_cost
 
         # BL-27: attach the priced segments (ONE query for the range) to each block's import
         # channel, so readers can price from segments with a legacy-column fallback.
@@ -7141,17 +7197,16 @@ class BlockStore:
                 _sw += " AND block_start >= ? AND block_start < ?"; _sp = [utc_start, utc_end]
             elif utc_start:
                 _sw += " AND block_start >= ?"; _sp = [utc_start]
-            for sr in self._conn.execute(
+            for _sbs, _smid, _sk, _si, _sx, _sband, _sattr in self._conn.execute(
                 "SELECT block_start, meter_id, kwh, inc_rate, exc_rate, band, attribution "
                 "FROM block_segments " + _sw + " ORDER BY block_start, meter_id, seq", _sp):
-                _b = block_map.get(sr["block_start"])
-                _m = _b["meters"].get(sr["meter_id"]) if _b else None
+                _b = block_map.get(_sbs)
+                _m = _b["meters"].get(_smid) if _b else None
                 _ch = (_m.get("channels") or {}).get("import") if _m else None
                 if _ch is not None:
                     _ch.setdefault("segments", []).append(
-                        {"kwh": sr["kwh"], "inc_rate": sr["inc_rate"],
-                         "exc_rate": sr["exc_rate"], "band": sr["band"],
-                         "attribution": sr["attribution"]})
+                        {"kwh": _sk, "inc_rate": _si, "exc_rate": _sx, "band": _sband,
+                         "attribution": _sattr})
 
         return [block_map[bs] for bs in block_order]
 

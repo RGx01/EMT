@@ -23,6 +23,7 @@ from billing import (                                     # noqa: F401
     octopus_bill_total,
     get_billing_periods_from_config_periods,
     calculate_billing_summary_for_period,
+    summarise_bill_rows,
 )
 
 
@@ -1326,16 +1327,22 @@ def vat_at(ctx, when):
     return _vc.resolve_vat(when, ctx["vat_learned"])
 
 
-def period_summary(ctx, blocks_for_calc, period_blocks, period_start, period_end, *, store, tz_name):
+def period_summary(ctx, blocks_for_calc, period_blocks, period_start, period_end, *, store, tz_name,
+                   bill_rows=None):
     """calculate_billing_summary_for_period + the display-only derived-EV split, and
     (opt-in) the bill-method figure. Both are additive: the bill anchors / Total Bill
     stay byte-identical (see _inject_ev_breakdown_into_summary / _bill_method_summary).
 
     `blocks_for_calc` may be wider than the period (the summary filters by local time);
     `period_blocks` must be the period's own blocks — the EV split and the bill method
-    sum over them unfiltered."""
-    _sm = calculate_billing_summary_for_period(
-        blocks_for_calc, period_start, period_end, store=store, tz_name=tz_name)
+    sum over them unfiltered. `bill_rows`, BlockStore.get_bill_rows' `(rows, segments)`,
+    is the summary's input in place of `blocks_for_calc` when given (#48)."""
+    if bill_rows is not None:
+        _sm = summarise_bill_rows(*bill_rows, period_start, period_end,
+                                  store=store, tz_name=tz_name)
+    else:
+        _sm = calculate_billing_summary_for_period(
+            blocks_for_calc, period_start, period_end, store=store, tz_name=tz_name)
     if ctx["ev_slot_map"]:
         _inject_ev_breakdown_into_summary(_sm, period_blocks, ctx["ev_slot_map"],
                                           label=ctx["ev_label"], fold_devices=ctx["ev_fold_devices"])
