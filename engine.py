@@ -12417,7 +12417,15 @@ async def reconcile_dispatch_overlay() -> dict:
                 store.clear_block_review(bs)
             continue
         cur_rate = r["imp_rate"] or 0.0
-        currently_off_peak = abs(cur_rate - off_peak) < 1e-6
+        # The block's BAND, from its stored rate: whichever of this date's off-peak and
+        # base prices it is nearer — the BL-58b rule below. Not price EQUALITY (#28,
+        # 3 Oct 2026): `abs(cur_rate - off_peak) < 1e-6` read any change in the tariff's
+        # off-peak PRICE as a band disagreement, so a correctly stored off-peak slot was
+        # "restored" to the new figure — on the Pi soak, five 24 Sep dispatch slots at
+        # 5.493p were re-priced to 5.2314p when Octopus edited its records for 1 Oct's
+        # 0% VAT. An unpriced block (no rate) is never "already off-peak".
+        currently_off_peak = (cur_rate > 0.0
+                              and abs(cur_rate - off_peak) <= abs(cur_rate - base))
         target, reason = _reconcile_decision(
             has_started, "completed" in kinds, completed_energy, currently_off_peak,
             has_planned=("planned" in kinds),
