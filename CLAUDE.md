@@ -35,7 +35,7 @@ baseline). The Pi runs from an **SD card**: storage-bound commit stalls are ROAD
 
 **Soaking on the Pi:** `.build/soak_prepare_db.py` → restore via `http://<pi>:8098/data-management`
 (not ingress — it rejects the upload) → `.build/soak.py run` → save the log with
-`ha addons logs local_emt_soak --lines 50000` → `.build/soak.py scan-log <log> --since <restore time>`.
+`ha apps logs local_emt_soak --lines 50000` (`ha addons` is deprecated) → `.build/soak.py scan-log <log> --since <restore time>`.
 
 ## Read these before v5 work
 

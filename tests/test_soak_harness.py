@@ -178,6 +178,30 @@ class RouteSelection(unittest.TestCase):
         self.assertTrue(all(v["p95"] is None or v["p95"] <= 30 for v in b.values()))
 
 
+
+class TheWal(unittest.TestCase):
+    """The 8th soak (3 Oct 2026): a starved WAL (346 MB through the whole quiet phase)
+    slowed every read, and nothing in the report said so. New-facet tests: they fail on
+    the parent tree, where the report has no WAL lines."""
+
+    def test_a_starved_quiet_phase_is_said_out_loud(self):
+        p = _write_rows(_rows("quiet", "/api/config", 0.1, 5)
+                        + [{"t": 1.0, "wal_mb": 4.0}, {"t": 2.0, "wal_mb": 346.1}])
+        r = soak.summarise(p)
+        self.assertIn("quiet-phase WAL: first 4.0 MB, max 346.1 MB", r)
+        self.assertIn("WAL STARVED", r)
+
+    def test_a_drained_wal_is_not(self):
+        """GUARD: passes on the parent tree too (it never warned at all)."""
+        p = _write_rows(_rows("quiet", "/api/config", 0.1, 5)
+                        + [{"t": 1.0, "wal_mb": 4.0}, {"t": 2.0, "wal_mb": 6.5}])
+        self.assertNotIn("WAL STARVED", soak.summarise(p))
+
+    def test_a_settle_that_timed_out_is_reported(self):
+        p = _write_rows(_rows("quiet", "/api/config", 0.1, 5)
+                        + [{"t": 1.0, "settle": {"wal_mb": 120.0, "secs": 300.0, "settled": False}}])
+        self.assertIn("settle: WAL did NOT settle at 120.0 MB after 300.0 s", soak.summarise(p))
+
 class Surfaces(unittest.TestCase):
     """C §6 row 8: the page requests by name, and a budget for each. New-surface tests:
     they fail on the parent tree, where SURFACES and `report` do not exist."""
@@ -581,6 +605,8 @@ class _Stub(http.server.BaseHTTPRequestHandler):
     polls = 0
     methods = []
     starts_at = 0          # polls before the sweep is reported running
+    wal_polls = 0
+    wal_mb = (50.0, 50.0, 4.0)   # /api/storage-info: high just after the sweep, then drained
 
     def log_message(self, *a):
         pass
@@ -593,6 +619,9 @@ class _Stub(http.server.BaseHTTPRequestHandler):
             running = _Stub.starts_at < _Stub.polls < _Stub.starts_at + 4
             body = {"in_progress": running, "swept": _Stub.polls,
                     "done": _Stub.polls >= _Stub.starts_at + 4}
+        elif path == soak.STORAGE:
+            _Stub.wal_polls += 1
+            body = {"wal_mb": _Stub.wal_mb[min(_Stub.wal_polls, len(_Stub.wal_mb)) - 1]}
         elif path == "/api/periods":
             body = {"periods": [{"start": "2026-08-01", "end": "2026-09-01"}]}
         elif path == "/api/historical/csv-template":
@@ -624,6 +653,7 @@ class EndToEnd(unittest.TestCase):
 
     def setUp(self):
         _Stub.polls, _Stub.methods, _Stub.starts_at = 0, [], 0
+        _Stub.wal_polls, _Stub.wal_mb = 0, (50.0, 50.0, 4.0)
 
     def test_it_waits_for_a_sweep_that_starts_after_it_does(self):
         """The Data Management restore case: the sweep starts only after
@@ -641,14 +671,22 @@ class EndToEnd(unittest.TestCase):
                 out = os.path.join(d, "soak")
                 soak.main(["run", "--base", "http://127.0.0.1:%d" % srv.server_port,
                            "--rate", "200", "--workers", "3", "--timeout", "2",
-                           "--quiet-min", "0.02", "--out", out])
+                           "--quiet-min", "0.02", "--settle-max-s", "5", "--out", out])
                 report = open(os.path.join(out, "report.txt")).read()
                 rows = [json.loads(l) for l in open(os.path.join(out, "requests.jsonl"))]
         finally:
             soak.POLL_S = old_poll
             srv.shutdown()
         phases = {r["phase"] for r in rows if "url" in r}
-        self.assertEqual(phases, {"sweep", "quiet"})
+        self.assertEqual(phases, {"sweep", "quiet"})        # nothing is sent while settling
+        settle = [r["settle"] for r in rows if "settle" in r]
+        self.assertEqual(len(settle), 1)
+        self.assertTrue(settle[0]["settled"])
+        self.assertEqual(settle[0]["wal_mb"], 4.0)
+        self.assertIn("settle: WAL settled at 4.0 MB", report)
+        settled_at = next(r["t"] for r in rows if "settle" in r)
+        self.assertFalse([r for r in rows if "url" in r and r["phase"] == "quiet"
+                          and r["t"] < settled_at], "quiet requests began before the WAL settled")
         self.assertIn("verdict: FAIL", report)        # the stub's /api/config 500
         self.assertIn("500 /api/config", report)
         self.assertEqual(set(_Stub.methods), {"GET"})
