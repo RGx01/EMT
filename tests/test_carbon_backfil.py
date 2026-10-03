@@ -378,7 +378,7 @@ class TestEngineModuleSurface(unittest.TestCase):
         maybe_src = inspect.getsource(engine._maybe_backfill_historical_carbon)
         # The tick owns the CI-store logic and the backfill trigger; the
         # scheduler must not have absorbed the tick body.
-        self.assertIn("upsert_carbon_intensity", tick_src)
+        self.assertIn("upsert_carbon_slots", tick_src)       # #65: one transaction
         self.assertIn("_maybe_backfill_historical_carbon()", tick_src)
         self.assertNotIn("upsert_carbon_intensity", maybe_src)
         self.assertNotIn("_last_ci_fetch", maybe_src)
