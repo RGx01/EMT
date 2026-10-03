@@ -119,6 +119,52 @@ class TestInjectEvBreakdown(unittest.TestCase):
         self.assertEqual(s, before)
 
 
+
+class TestTheCarveKeepsKwhAndCostTogether(unittest.TestCase):
+    """#31: the dispatch EV at a rate exceeds that rate's Direct remainder. Floored
+    separately, kWh clamped to 0 while the cost survived — a 0.000 kWh row with a cost.
+    Illustrative figures of the 1 Oct 2026 shape. All but the GUARD fail on the
+    parent tree."""
+
+    def _carve(self, ev_kwh, ev_cost, rate=0.30):
+        s = _summary()
+        ec._inject_ev_breakdown_into_summary(
+            s, [{"start": "2026-10-01T12:00:00"}],
+            {"2026-10-01T12:00:00": {"kwh": ev_kwh, "cost": ev_cost, "rate": rate}})
+        return s
+
+    def test_no_row_has_cost_without_kwh(self):
+        s = self._carve(8.0, 0.42)                    # 8 kWh at 0.30, where the remainder holds 2
+        row = s["meters"]["Home / Import"][0.30]
+        self.assertEqual((row["kwh"], row["cost"]), (0.0, 0.0))
+        ev = s["meters"]["EV (from dispatch) / Import"][0.30]
+        self.assertEqual((ev["kwh"], ev["cost"]), (2.0, 0.60))   # the EV takes the remainder
+
+    def test_each_meter_adds_up_and_the_two_sum_to_the_original(self):
+        """On the parent tree the totals still summed (they were computed apart from the
+        rows), but the remainder's rows added up to 8.0 kWh against a 2.0 kWh total."""
+        s = self._carve(8.0, 0.42)
+        for key in ("Home / Import", "EV (from dispatch) / Import"):
+            rows, tot = s["meters"][key].values(), s["totals"][key]
+            self.assertAlmostEqual(sum(r["kwh"] for r in rows), tot["kwh"], places=3, msg=key)
+            self.assertAlmostEqual(sum(r["cost"] for r in rows), tot["cost"], places=2, msg=key)
+        rem, ev = s["totals"]["Home / Import"], s["totals"]["EV (from dispatch) / Import"]
+        self.assertAlmostEqual(rem["kwh"] + ev["kwh"], 10.0, places=3)
+        self.assertAlmostEqual(rem["cost"] + ev["cost"], 1.04, places=2)
+
+    def test_a_large_excess_is_logged(self):
+        with self.assertLogs("energy_charts", level="INFO") as cm:
+            self._carve(8.0, 0.42)
+        self.assertTrue(any("exceeds the Direct remainder by 6.000 kWh" in m for m in cm.output))
+
+    def test_a_carve_inside_the_remainder_is_unchanged(self):
+        """GUARD: passes on the parent tree too — the ordinary case moves nothing."""
+        s = self._carve(1.5, 0.45)
+        row = s["meters"]["Home / Import"][0.30]
+        self.assertEqual((row["kwh"], row["cost"]), (0.5, 0.15))
+        ev = s["meters"]["EV (from dispatch) / Import"][0.30]
+        self.assertEqual((ev["kwh"], ev["cost"]), (1.5, 0.45))
+
 class TestDispatchEvSlotMap(unittest.TestCase):
 
     def _store(self, dispatches):
