@@ -26,6 +26,14 @@ WHAT IS CHECKED against it, per billing period and per calendar month:
 
 A period PASSES when all three equal v4 to the penny.
 
+A period that differs is EXPLAINED when all three equal v4's own code run on a copy
+with the sub-meter rows removed. v4 bills a day's import as round(direct, 4) +
+Σ round(sub, 4), with direct clamped at zero; v5 bills round(main, 4), the main meter's
+cost (the clamp overstated a 4.5.14 bill by 90%, so v5 dropped it). With no sub-meters
+the two are the same rule, in v4's code. On a production-like database (3 Oct 2026)
+that rounding moved 3 days of 1,214 across a half-penny, 1p each, in 6 of 81 periods.
+An explained difference is by design and does not fail the verdict; any other does.
+
 It never writes to --db: each implementation opens its own temporary copy (v4's
 store may run schema DDL when it opens). It prints no money unless --show-figures
 is given, so its output can be pasted into an issue (CLAUDE.md: no real customer
@@ -52,6 +60,16 @@ def _copy(db, d, name):
             sqlite3.connect(dst) as t:
         s.backup(t)
     return dst
+
+
+def _without_sub_meters(path):
+    """Delete every sub-meter's blocks from a private copy: v4's import rule then
+    reduces to the main meter's cost, v5's rule (see the module docstring)."""
+    with sqlite3.connect(path) as c:
+        c.execute("DELETE FROM blocks WHERE EXISTS (SELECT 1 FROM meters m "
+                  "WHERE m.meter_id = blocks.meter_id "
+                  "AND m.config_period_id = blocks.config_period_id AND m.is_sub_meter = 1)")
+    return path
 
 
 def _load(path, name):
@@ -109,11 +127,13 @@ def run(v4_root, db, show=False, limit=None, legacy=False):
     sys.path.insert(0, ROOT)
     with tempfile.TemporaryDirectory() as d:
         v4db, v5db = _copy(db, d, "v4.db"), _copy(db, d, "v5.db")
+        v4mdb = _without_sub_meters(_copy(db, d, "v4main.db"))
         v4bs = _load(os.path.join(v4_root, "block_store.py"), "v4_block_store")
         import block_store as v5bs
         import billing
         server = _load(os.path.join(ROOT, "web", "server.py"), "emt_server_reconcile")
         v4 = v4bs.BlockStore(v4db)
+        v4m = v4bs.BlockStore(v4mdb)       # v4's code, v5's import rule
         v5 = v5bs.BlockStore(v5db)
         cp = v5.get_current_config_period_id()
         cfg = v5.config_from_db(cp) if cp is not None else {"meters": {}}
@@ -124,7 +144,7 @@ def run(v4_root, db, show=False, limit=None, legacy=False):
         todo = periods(v5, billing, tz)
         if limit:
             todo = todo[-limit:]
-        lines, fails = ["timezone %s; %d periods" % (tz_name, len(todo))], 0
+        lines, fails, explained = ["timezone %s; %d periods" % (tz_name, len(todo))], 0, 0
         worst = {"card": 0, "client": 0, "period": 0}
         for label, s, e in todo:
             ref = round(v4.compute_period_net(s, e, tz_name), 2)
@@ -138,16 +158,23 @@ def run(v4_root, db, show=False, limit=None, legacy=False):
             for k, p in pence.items():
                 worst[k] = max(worst[k], abs(p))
             bad = {k: p for k, p in pence.items() if p}
+            why = ""
             if bad:
-                fails += 1
-            tag = "PASS" if not bad else "FAIL " + ", ".join("%s %+dp" % kv for kv in bad.items())
+                ref_m = round(v4m.compute_period_net(s, e, tz_name), 2)
+                if all(round((v - ref_m) * 100) == 0 for v in got.values()):
+                    explained += 1
+                    why = "  (explained: v4 rebuilds the import from sub-meters)"
+                else:
+                    fails += 1
+            tag = ("PASS" if not bad else
+                   ("DIFF " if why else "FAIL ") + ", ".join("%s %+dp" % kv for kv in bad.items()))
             fig = ("  v4 %.2f  " % ref + "  ".join("%s %.2f" % kv for kv in got.items())) if show else ""
-            lines.append("  %-20s %s%s" % (label, tag, fig))
+            lines.append("  %-20s %s%s%s" % (label, tag, why, fig))
         lines.append("\nworst difference from v4, in pence: " +
                      ", ".join("%s %d" % kv for kv in worst.items()))
-        lines.append("verdict: %s (%d of %d periods differ)"
-                     % ("PASS" if not fails else "FAIL", fails, len(todo)))
-        for st in (v4, v5):
+        lines.append("verdict: %s (%d of %d periods differ unexplained; %d by v4's sub-meter rebuild)"
+                     % ("PASS" if not fails else "FAIL", fails, len(todo), explained))
+        for st in (v4, v4m, v5):
             try:
                 st.close()
             except Exception:
