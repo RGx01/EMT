@@ -121,5 +121,105 @@ class TheTool(unittest.TestCase):
         self.assertNotRegex(report, r"v4 \d+\.\d\d")
 
 
+# A stand-in for a v4 checkout: v5's store with v4.5.16's import rule, which rebuilds a
+# day's import as round(direct, 4) + Σ round(sub, 4), direct clamped at zero. BREAK adds
+# a penny a day, a difference that rule does not explain.
+_V4_STANDIN = """
+import sys
+from collections import defaultdict
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+import block_store as _v5
+BREAK = %r
+
+
+class BlockStore(_v5.BlockStore):
+    def compute_period_net(self, utc_s, utc_e, tz_name, finalised_only=False):
+        tz = ZoneInfo(tz_name)
+        main = defaultdict(float); exp = defaultdict(float); sc = {}; first = {}
+        subs = defaultdict(lambda: defaultdict(float))
+        for bs, ic, ec, s, sub, mid in self._conn.execute(
+                "SELECT b.block_start, b.imp_cost, b.exp_cost, b.standing_charge, "
+                "m.is_sub_meter, m.meter_id FROM blocks b JOIN meters m "
+                "ON m.meter_id = b.meter_id AND m.config_period_id = b.config_period_id "
+                "WHERE b.block_start >= ? AND b.block_start < ?", (utc_s, utc_e)):
+            d = datetime.fromisoformat(bs).replace(tzinfo=timezone.utc).astimezone(tz).date()
+            if sub:
+                subs[d][mid] += float(ic or 0)
+                continue
+            main[d] += float(ic or 0)
+            exp[d] += float(ec or 0)
+            s = float(s or 0)
+            if s > 0 and (d not in first or bs < first[d]):
+                first[d], sc[d] = bs, s
+        nets = []
+        for d in sorted(main):
+            raw = list(subs[d].values())
+            dm = main[d] - sum(raw)
+            direct = round(dm if main[d] < 0 else max(0.0, dm), 4)
+            imp = round(direct + sum(round(v, 4) for v in raw), 4)
+            nets.append(round(imp + round(sc.get(d, 0.0), 4) - round(exp[d], 4), 2) + BREAK)
+        return round(sum(nets), 2)
+"""
+
+# 12 Oct 2026 (local): costs at which rounding each sub-meter on its own tips the day's
+# total across a half-penny — v5 rounds 1.2048..., v4 rebuilds 1.2049..., 1.20 vs 1.21.
+_FLIP = {"electricity_main": 1.204875, "ev_charger": 0.1000655, "house_battery": 0.2000565}
+
+
+def _flip_store():
+    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st._conn.execute("PRAGMA foreign_keys=OFF")
+    st._conn.execute("INSERT INTO config_periods (id, effective_from, billing_day, "
+                     "block_minutes, timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, ?)", (TZ,))
+    st._conn.execute("INSERT INTO meters (meter_id, config_period_id, is_sub_meter) VALUES "
+                     "('electricity_main', 1, 0), ('ev_charger', 1, 1), ('house_battery', 1, 1)")
+    for mid, cost in _FLIP.items():
+        st._conn.execute("INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
+                         "imp_kwh, imp_cost) VALUES ('2026-10-12T09:00:00', '2026-10-12T09:00:00', "
+                         "?, 1, 1.0, ?)", (mid, cost))
+    st._conn.commit()
+    path = st._path
+    st._conn.close()
+    return path
+
+
+class TheToolExplainsSubMeterRounding(unittest.TestCase):
+    """3 Oct 2026: on a production-like database the tool failed 6 of 81 periods by 1p.
+    Each was one day where v4's sub-meter rebuild rounded across a half-penny and v5's
+    main-meter rule did not; the tool now explains such a period instead of failing it."""
+
+    def _v4(self, brk=0.0):
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "block_store.py"), "w") as f:
+            f.write(_V4_STANDIN % brk)
+        return d
+
+    def test_the_fixture_flips_a_penny(self):
+        """GUARD on the fixture: v4's rule and v5's really are a penny apart here."""
+        import reconcile_v4
+        v4 = reconcile_v4._load(os.path.join(self._v4(), "block_store.py"), "v4_standin_a")
+        s, e = "2026-10-11T23:00:00", "2026-10-12T23:00:00"
+        a = round(v4.BlockStore(_flip_store()).compute_period_net(s, e, TZ) * 100)
+        b = round(BlockStore(_flip_store()).compute_period_net(s, e, TZ) * 100)
+        self.assertEqual(a - b, 1)
+
+    def test_a_sub_meter_rounding_difference_passes_as_explained(self):
+        """Fails on the parent tree, which reported FAIL here."""
+        import reconcile_v4
+        report, ok = reconcile_v4.run(self._v4(), _flip_store())
+        self.assertTrue(ok, report)
+        self.assertIn("explained: v4 rebuilds the import from sub-meters", report)
+        self.assertIn("0 of ", report)
+        self.assertRegex(report, r"; [1-9]\d* by v4's sub-meter rebuild")
+
+    def test_any_other_difference_still_fails(self):
+        """GUARD: a penny the rebuild does not explain fails, as it always did."""
+        import reconcile_v4
+        report, ok = reconcile_v4.run(self._v4(brk=0.01), _flip_store())
+        self.assertFalse(ok, report)
+        self.assertIn("verdict: FAIL", report)
+
+
 if __name__ == "__main__":
     unittest.main()
