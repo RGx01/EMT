@@ -17,7 +17,17 @@ WHAT `run` DOES
   all history on startup. Phases follow /api/reprice-history-status:
 
       sweep   the sweep is in progress — reads racing a whole-history write
-      quiet   after it finishes — the baseline the sweep phase is compared against
+      settle  the sweep has finished; NO requests until the WAL is back under
+              --settle-wal-mb (from /api/storage-info), or --settle-max-s passes
+      quiet   after that — the baseline the sweep phase is compared against, and
+              what the budgets judge. Its WAL size is sampled throughout.
+
+  WHY SETTLE (8th soak, 3 Oct 2026). SQLite can only reset the WAL when no reader holds
+  it, and two workers sending 13-29 s requests always did: the WAL grew to 346 MB by the
+  quiet phase and stayed there until the soak stopped (then 4 MB). Every quiet-phase read
+  went through it, and unchanged requests ran 1.3-1.9x slower than the 7th soak. The
+  settle gap lets the checkpoint finish, so the quiet phase measures normal use; the
+  report says how big the WAL got during it, and warns when it starved again.
 
   `run` FAILS on: a 5xx, a connection failure, or a 200 that declares JSON and does
   not parse. A request that hits --timeout is reported as SLOW, not as a failure.
@@ -88,6 +98,8 @@ DENY = {
     "/api/reprice-history-status": "polled by the phase tracker instead",
 }
 STATUS = "/api/reprice-history-status"
+STORAGE = "/api/storage-info"            # wal_mb: a file-size read, cheap
+WAL_STARVED_MB = 64.0                    # a quiet-phase WAL above this is reported as starved
 POLL_S = 15.0            # sweep-status poll interval
 
 
@@ -338,7 +350,7 @@ def cmd_run(a):
 
     state = {"phase": "sweep" if st.get("in_progress") else "quiet",
              "quiet_since": None if st.get("in_progress") else time.monotonic(),
-             "stop": False}
+             "settle_since": None, "stop": False}
     lock = threading.Lock()
     out = open(rec_path, "w")
     limiter = RateLimiter(a.rate)
@@ -353,10 +365,32 @@ def cmd_run(a):
                 continue
             with lock:
                 if state["phase"] == "sweep" and not s.get("in_progress"):
-                    state["phase"], state["quiet_since"] = "quiet", time.monotonic()
-                    print("\nsweep finished (swept=%s) — quiet phase for %d min"
-                          % (s.get("swept"), a.quiet_min))
+                    state["phase"], state["settle_since"] = "settle", time.monotonic()
+                    print("\nsweep finished (swept=%s) — settling: no requests until the "
+                          "WAL is under %.0f MB (at most %d s)"
+                          % (s.get("swept"), a.settle_wal_mb, a.settle_max_s))
                 out.write(json.dumps({"t": time.time(), "status_poll": s}) + "\n")
+                phase = state["phase"]
+            if phase in ("settle", "quiet"):
+                try:
+                    wal = json.loads(_get(a.base, STORAGE, a.timeout)[2]).get("wal_mb")
+                except Exception:
+                    wal = None
+                with lock:
+                    if state["phase"] == "settle":
+                        waited = time.monotonic() - state["settle_since"]
+                        settled = wal is not None and wal <= a.settle_wal_mb
+                        if settled or waited >= a.settle_max_s:
+                            state["phase"], state["quiet_since"] = "quiet", time.monotonic()
+                            out.write(json.dumps({"t": time.time(), "settle": {
+                                "wal_mb": wal, "secs": round(waited, 1),
+                                "settled": settled}}) + "\n")
+                            print(("WAL settled at %s MB after %.0f s" if settled else
+                                   "WAL did NOT settle (%s MB after %.0f s) — the quiet phase "
+                                   "will read through it") % (wal, waited)
+                                  + " — quiet phase for %d min" % a.quiet_min)
+                    elif wal is not None:
+                        out.write(json.dumps({"t": time.time(), "wal_mb": wal}) + "\n")
 
     def worker():
         timeouts = 0
@@ -365,6 +399,9 @@ def cmd_run(a):
             url = random.choice(urls)
             with lock:
                 phase = state["phase"]
+            if phase == "settle":                 # let the WAL checkpoint: send nothing
+                time.sleep(1.0)
+                continue
             r = {"t": time.time(), "phase": phase, "url": url}
             try:
                 code, secs, body, ctype = _get(a.base, url, a.timeout)
@@ -430,6 +467,8 @@ def _pct(xs, p):
 
 def summarise(rec_path, block_ratio=5.0, min_abs_secs=1.0, budgets=None):
     rows = [json.loads(l) for l in open(rec_path) if l.strip()]
+    settles = [r["settle"] for r in rows if "settle" in r]
+    wals = [r["wal_mb"] for r in rows if "wal_mb" in r and "url" not in r]
     rows = [r for r in rows if "url" in r]
     fails, lines = [], []
     by_phase = collections.defaultdict(list)
@@ -483,6 +522,19 @@ def summarise(rec_path, block_ratio=5.0, min_abs_secs=1.0, budgets=None):
                      "verdict (blocking is judged by scan-log's loop lag):")
         lines += ["  " + b for b in blocked]
 
+    if settles:
+        st = settles[-1]
+        lines.append("\nsettle: WAL %s at %s MB after %s s"
+                     % ("settled" if st.get("settled") else "did NOT settle",
+                        st.get("wal_mb"), st.get("secs")))
+    if wals:
+        lines.append("quiet-phase WAL: first %.1f MB, max %.1f MB, last %.1f MB (%d samples)"
+                     % (wals[0], max(wals), wals[-1], len(wals)))
+        if max(wals) > WAL_STARVED_MB:
+            lines.append("  WAL STARVED — it grew past %.0f MB during the quiet phase, so every "
+                         "read went through it: the surface times below are slower than normal "
+                         "use, and budgets set or judged from this run are unreliable."
+                         % WAL_STARVED_MB)
     lines += _surface_lines(by_surface, budgets or {}, fails)
 
     if slow:
@@ -779,6 +831,10 @@ def main(argv=None):
     r.add_argument("--wait-for-sweep", type=float, default=15.0,
                    help="minutes to wait for the sweep to start before running anyway")
     r.add_argument("--block-ratio", type=float, default=5.0)
+    r.add_argument("--settle-wal-mb", type=float, default=8.0,
+                   help="after the sweep, wait (sending nothing) until the WAL is under this")
+    r.add_argument("--settle-max-s", type=float, default=300.0,
+                   help="…or this many seconds, whichever comes first")
     r.add_argument("--out", default="soak-" + dt.datetime.now().strftime("%Y%m%d-%H%M%S"))
     r.add_argument("--budgets", default=_BUDGETS)
     r.set_defaults(fn=cmd_run)

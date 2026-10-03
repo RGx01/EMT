@@ -61,6 +61,27 @@ largest first:
   through a writer thread so the loop never waits on the device. An architecture change, and
   deliberately last.
 
+**WAL checkpoint starvation — measured in the eighth soak (4.5.20-a21, 3 Oct 2026).** SQLite can
+only reset the WAL when no reader is using it. The soak's two workers kept a read open almost
+continuously, and its slowest requests ran 13–29 s (the all-days load, a full year's bill), so the
+checkpoint never got its gap:
+
+- the WAL grew from ~25 MB at 14:08 to **343 MB** by the start of the quiet phase (14:13). A
+  checkpoint at 14:11 copied 51,369 of 57,961 pages and could not truncate ("a reader holds an
+  open transaction");
+- it stayed at **~346 MB** for the whole 30-minute quiet phase, and dropped to **4 MB** at 14:50,
+  once the soak stopped;
+- every quiet-phase read went through it. Requests whose code had not changed since the seventh
+  soak ran **1.3–1.9× slower** (Live Power cards 0.56 → 1.08 s p50, picker totals 0.84 → 1.56 s);
+- commits under it were slow too: `save_current_block` 20.5 s at 14:32, WAL 346 MB.
+
+The seventh soak's WAL peaked at 115 MB and kept draining: its slowest surface then took ~6 s at the median (a partial year's bill).
+A household is unlikely to cause this, but overlapping long reads would, for example a dashboard
+card refreshing while someone opens year views. Candidates: make the long reads short (#47, #48),
+and/or have the engine force a checkpoint (`wal_checkpoint(RESTART)`) after a sweep, before readers
+pile on. **The soak now waits for the WAL to drain** after the sweep (a settle phase), samples it
+through the quiet phase, and warns when it starves, so its budgets measure normal use.
+
 **Done when:** a soak on the SD card shows no engine-loop stall over 2 s (`scan-log`
 `A (loop blocking): PASS`).
 
