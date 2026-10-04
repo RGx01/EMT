@@ -5249,5 +5249,73 @@ class TestMaterialiseCompletedOnlySlots(unittest.TestCase):
         self.assertEqual(st.materialise_completed_only_slots(0.4), 0)
 
 
+class TestReplaceKeepsReviewHistory(unittest.TestCase):
+    """A round-trip rewrite keeps a block's review columns (4 Oct 2026).
+
+    `get_block_dict_by_start` → mutate → `append_block_replace` is INSERT OR REPLACE,
+    which resets every column it does not carry. `review_reason` and
+    `review_dismissed` were not carried, and `needs_review` came from the dict, which
+    the loader never fills — so any rewrite wiped them. Since BL-74 nothing sets
+    them; they are history, and a rewrite must leave them as they were. Likewise
+    finalised_from_cad and derivation_id. The carry tests fail on the parent tree;
+    the new-row test is a guard."""
+
+    BS = "2026-07-10T16:30:00"
+
+    def setUp(self):
+        self.store = new_store()
+        self.store.insert_config_period(EXAMPLE_CONFIG)
+        self.store.append_block(make_block(self.BS, imp_kwh=1.0))
+
+    def _review(self, bs=None):
+        r = self.store._conn.execute(
+            "SELECT needs_review, review_reason, review_dismissed FROM blocks "
+            "WHERE block_start = ? AND meter_id = 'electricity_main'",
+            (bs or self.BS,)).fetchone()
+        return tuple(r)
+
+    def _round_trip(self):
+        blk = self.store.get_block_dict_by_start(self.BS)
+        blk["meters"]["electricity_main"]["channels"]["import"]["kwh"] = 1.25   # mutate
+        self.store.append_block_replace(blk)
+
+    def test_a_flag_and_its_reason_survive(self):
+        with self.store._conn:
+            self.store._conn.execute(
+                "UPDATE blocks SET needs_review = 1, review_reason = 'kept' "
+                "WHERE block_start = ?", (self.BS,))
+        self._round_trip()
+        self.assertEqual(self._review(), (1, "kept", 0))
+        kwh = self.store._conn.execute("SELECT imp_kwh FROM blocks WHERE block_start = ?",
+                                       (self.BS,)).fetchone()[0]
+        self.assertAlmostEqual(kwh, 1.25, msg="the rewrite itself did not land")
+
+    def test_a_dismissal_survives(self):
+        with self.store._conn:
+            self.store._conn.execute(
+                "UPDATE blocks SET review_dismissed = 1 WHERE block_start = ?", (self.BS,))
+        self._round_trip()
+        self.assertEqual(self._review(), (0, None, 1))
+
+    def test_settlement_and_provenance_markers_survive(self):
+        """finalised_from_cad and derivation_id record what a rewrite does not
+        change: that the block will never DCC-settle, and which CSV reconstruction
+        it came from."""
+        with self.store._conn:
+            self.store._conn.execute(
+                "UPDATE blocks SET finalised_from_cad = 1, derivation_id = 7 "
+                "WHERE block_start = ?", (self.BS,))
+        self._round_trip()
+        r = self.store._conn.execute(
+            "SELECT finalised_from_cad, derivation_id FROM blocks WHERE block_start = ?",
+            (self.BS,)).fetchone()
+        self.assertEqual(tuple(r), (1, 7))
+
+    def test_a_new_block_takes_the_defaults(self):
+        """GUARD: no stored row to carry from."""
+        self.store.append_block_replace(make_block("2026-07-10T17:00:00"))
+        self.assertEqual(self._review("2026-07-10T17:00:00"), (0, None, 0))
+
+
 if __name__ == "__main__":
     unittest.main()
