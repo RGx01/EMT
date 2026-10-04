@@ -6641,13 +6641,17 @@ def api_storage_info():
 def api_import_extract_zip():
     """Extract JSON files from an uploaded zip and return them as base64."""
     import zipfile, base64
+    _upload_zip = os.path.join(DATA_DIR, "upload_extract.zip")
     try:
         zf_file = request.files.get("zipfile")
         if not zf_file:
             return jsonify({"error": "No zip file provided"}), 400
         known = {"blocks.db", "blocks.json"}
         files = {}
-        with zipfile.ZipFile(zf_file.stream, "r") as zf:
+        # From a file, not the upload stream — see api_import_from_zip (3.10 has no
+        # SpooledTemporaryFile.seekable(), which zipfile needs).
+        zf_file.save(_upload_zip)
+        with zipfile.ZipFile(_upload_zip, "r") as zf:
             for name in zf.namelist():
                 basename = os.path.basename(name)
                 if basename in known:
@@ -6659,6 +6663,10 @@ def api_import_extract_zip():
     except Exception as e:
         logger.error("api_import_extract_zip: %s", e)
         return jsonify({"error": str(e)}), 500
+    finally:
+        if os.path.exists(_upload_zip):
+            try: os.remove(_upload_zip)
+            except Exception: pass
 
 
 @app.route("/api/backup/flat-info", methods=["GET"])
