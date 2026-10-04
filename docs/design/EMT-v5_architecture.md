@@ -47,7 +47,7 @@ same number.
 | `web/server.py` | 9,109 | **Consolidated, not rewritten.** 126 `/api/*` routes triaged into one surface; 22 page routes and the `CHART_DIR` pipeline go. |
 | `web/templates/` | 19,233 | **Replaced** by a client that fetches from the API. |
 | `reprice.py` | 169 | **Deleted.** Zero reachable functions. |
-| `carbon.py` | 146 | **Carried** minus `carbon_from_reprice`, `ev_carbon` and `house_carbon` (§4 — the last two reachable only via the first). |
+| `carbon.py` | 146 | **Carried** minus `carbon_from_reprice` and `house_carbon` (deleted 4 Oct 2026, BL-63). **`ev_carbon` is live** — `web/server.py` → `period_ev_saving` → `ev_carbon`. This row used to list it for deletion too (§4, corrected). |
 | `pricing_segments.py` | — | **Carried** minus 3 unreachable functions. |
 | `kraken_*`, `ha_client`, `iog_cap`, `bill_parser`, `instance`, `vat_calendar`, … | — | **Carried.** Untouched by this restructuring. |
 
@@ -178,7 +178,7 @@ unreachable.
 checking it against cases established by hand. §4a required a trace before any deletion; until the
 tool existed that was a rule with nothing enforcing it.
 
-**Whole codebase: 67 of 1,155 definitions unreachable** (4 Oct 2026 — 84 of 1,162 at the 4.5.14
+**Whole codebase: 65 of 1,153 definitions unreachable** (4 Oct 2026 — 84 of 1,162 at the 4.5.14
 seed, 79 of 1,157 after the five deletions below, and the total has since grown with workstreams A,
 B and C). **This figure is asserted against the tool by `tests/test_b_design_figures.py`** — it had
 drifted five times before that check existed, each time right when written and wrong a week later.
@@ -198,9 +198,10 @@ of them.
 
 > **Read a clean report as "no evidence of death", never as "proof of life".** The trace treats any
 > identifier-shaped string literal as a possible `getattr`, so a name that appears as a JSON key is
-> reported live. `carbon.ev_carbon` is the worked example: reachable only through the dead
-> `carbon_from_reprice`, but `"ev_carbon"` is a payload key in `server.py`, so the trace cannot
-> settle it. Its sibling `house_carbon` has no such string and traces dead. Narrowing that rule
+> reported live. *(The worked example given here until 4 Oct 2026 — `carbon.ev_carbon`, said to be
+> reachable only through the dead `carbon_from_reprice` — was wrong: `period_ev_saving`, which is
+> live, has called `ev_carbon` since `carbon.py` was first added. The trace reported it live
+> because it is.)* Narrowing that rule
 > would lose genuine dispatch-by-name and could report a live function as dead — the direction that
 > deletes working code.
 
@@ -269,8 +270,11 @@ deleted a release later". The house/EV split for a late completed dispatch was n
   and it carries that same bug: it builds its breakdown from `totals` alone, so it would show no EV
   on a no-device account. A second formatter for one surface, silently behind by a bug fix — exactly
   the two-implementations-of-one-idea pattern A §3.4 names.
-- **`carbon.py` — three functions, not one.** `carbon_from_reprice` has no caller anywhere, and
-  `ev_carbon` / `house_carbon` are called **only from inside it**, so all three fall together.
+- **`carbon.py` — two functions, not three** *(corrected 4 Oct 2026)*. `carbon_from_reprice` has no
+  caller anywhere, and `house_carbon` is called only from inside it. **`ev_carbon` is live**: the live
+  `period_ev_saving` calls it (`carbon.py`, since the file's first version), so it does not fall with
+  them. Following the three-function version of this line would have deleted working code. Both
+  went on 4 Oct 2026 (BL-63).
   *(An earlier version of this list said "`carbon_from_reprice` only" — it under-reported by two,
   because the apparent callers of `ev_carbon` and `house_carbon` in `web/server.py` are local
   variable names, `ev_carbon_block` and `house_carbon_g`, not calls.)* `period_ev_saving` and
@@ -288,8 +292,9 @@ the shelved layer as including `carbon.ev_carbon` / `house_carbon` and *"9 of 11
   headline correction for the v4 roadmap.
 - **Carbon: BL-63 is right and this document was wrong.** An earlier version of this paragraph
   claimed *"the Δ5 wiring made the carbon functions live"*. Δ5 made `period_ev_saving` and
-  `slot_intensity` live; it did not touch `ev_carbon`/`house_carbon`, which remain reachable only
-  through the dead `carbon_from_reprice`.
+  `slot_intensity` live; it did not touch `ev_carbon`/`house_carbon`. *(Corrected 4 Oct 2026:
+  `ev_carbon` was reachable all along, through `period_ev_saving`. Only `house_carbon` was reachable
+  solely through the dead `carbon_from_reprice`.)*
 
 The two errors point opposite ways, which is the useful part. **Under-reporting dead code is safe
 — you delete less than you could. Over-reporting it is not.** BL-63 over-reported, and its

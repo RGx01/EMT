@@ -178,14 +178,12 @@ class TestAgreesWithHandEstablishedCases(unittest.TestCase):
     def test_the_414_markers_are_live(self):
         self._live("stamp_version", "stamp_supplier", "_reconcile_decision")
 
-    def test_carbon_functions_the_trace_cannot_settle(self):
-        """A documented limitation, pinned so it is not mistaken for a finding.
-        `ev_carbon` is reachable only via the dead `carbon_from_reprice`, but a
-        JSON payload key "ev_carbon" in server.py is indistinguishable from a
-        getattr, so the trace reports it live. Its sibling has no such string."""
-        self._dead("carbon_from_reprice", "house_carbon")
-        self._live("ev_carbon")           # over-approximated — see the tool's docstring
-        self._live("period_ev_saving", "slot_intensity")
+    def test_the_live_carbon_functions(self):
+        """`carbon_from_reprice` and `house_carbon` went with the shelved pricing model
+        (BL-63, 4 Oct 2026). `ev_carbon` stays: it is genuinely live — `period_ev_saving`
+        calls it — not merely over-approximated by the "ev_carbon" payload key in
+        server.py, as an earlier version of this test said."""
+        self._live("ev_carbon", "period_ev_saving", "slot_intensity")
 
 
 class TestBaselineGuard(unittest.TestCase):
