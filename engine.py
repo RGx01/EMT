@@ -9757,8 +9757,10 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
                 j["phase"] = "done"
                 return
             if rate_limited:
+                # NOT an end: the loop resumes after the cooldown, so "import" stays
+                # claimed (v4's api_import_running() counts rate_limited as running).
+                # Releasing here admitted every dependant beside the rest of the run.
                 j["status"] = "rate_limited"
-                _coord.mark("import", status="done")
                 for _ in range(60):     # ~60s cooldown, but stay responsive
                     if j.get("control") in ("cancel", "pause"):
                         break

@@ -115,5 +115,43 @@ class TheGapFill(_Run):
         self.assertFalse(C.running("import"))
 
 
+class TheRateLimitCooldown(_Run):
+
+    def test_the_dependants_defer_through_the_cooldown_and_after(self):
+        """The fetch is rate-limited once, then completes. Sampled during the
+        cooldown and inside the fetch that follows it."""
+        seen = {}
+        calls = []
+
+        async def _fetch(*a, **k):
+            calls.append(1)
+            if len(calls) == 1:
+                return {"ok": True, "channels": {"import": {"reason": "rate_limit"}}}
+            seen["after"] = self.admissions()
+            return {"ok": True, "done": True, "channels": {}}
+
+        real_sleep = asyncio.sleep
+
+        async def _sleep(s):
+            if engine._api_import_job.get("status") == "rate_limited" and "during" not in seen:
+                seen["during"] = self.admissions()
+            await real_sleep(0)
+
+        async def _go():
+            with mock.patch.object(engine, "import_api_history", _fetch), \
+                 mock.patch.object(engine.asyncio, "sleep", _sleep), \
+                 mock.patch.object(engine, "_probe_and_apply_region_periods",
+                                   mock.AsyncMock(return_value=None)), \
+                 mock.patch.object(engine, "_finalise_after_import", lambda: None), \
+                 mock.patch.object(engine, "_drain_reprice_queue_after_import",
+                                   mock.AsyncMock(return_value={})):
+                await engine.run_api_import_job()
+        asyncio.run(_go())
+        self.assertEqual(len(calls), 2, "the import did not resume after the cooldown")
+        self.assert_all_deferred(seen["during"])
+        self.assert_all_deferred(seen["after"])
+        self.assertFalse(C.running("import"), "not released at the real end")
+
+
 if __name__ == "__main__":
     unittest.main()

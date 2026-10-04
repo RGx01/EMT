@@ -617,8 +617,10 @@ class TestImportIsTheSecondMember(unittest.TestCase):
 
     def test_the_import_marks_every_terminal_status(self):
         """A member that claims and never marks holds its key until restart, and
-        the import has five ways to end: done, error, cancelled, rate_limited and
-        the outer handler."""
+        the import has four ways to end: done, error, cancelled and the outer
+        handler. NOT rate_limited, which an earlier version of this test counted:
+        that is a cooldown the loop resumes from, and releasing there admitted the
+        dependants beside the rest of the import (tests/test_import_claim_held.py)."""
         import ast
         import os as _os
         root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
@@ -627,7 +629,7 @@ class TestImportIsTheSecondMember(unittest.TestCase):
         fn = next(n for n in ast.walk(ast.parse(src))
                   if isinstance(n, ast.AsyncFunctionDef) and n.name == "run_api_import_job")
         body = "\n".join(src.split("\n")[fn.lineno - 1:fn.end_lineno])
-        self.assertEqual(body.count('_coord.mark("import", status="done")'), 5)
+        self.assertEqual(body.count('_coord.mark("import", status="done")'), 4)
         self.assertEqual(body.count('_coord.claim("import"'), 1)
 
 
