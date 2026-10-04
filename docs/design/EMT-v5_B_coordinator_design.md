@@ -351,6 +351,13 @@ range-delete and purge entries of `delete` honoured nothing until 4 Oct 2026 —
 2. **No unregistered write from a request thread.** `.build/write_inventory.py` already measures
    this. The count was 8 and must reach **1** — `api_db_vacuum`, which cannot move without stalling
    member 23 (see §4). Anything else in that list is outstanding work.
+
+   **Met, 4 Oct 2026** — the only request handler that writes is `api_db_vacuum`.
+   `tests/test_b_acceptance_2.py` pins that SET (the existing figure test asserts only the count,
+   against the doc), and accounts for every other writer in `web/server.py`: nested bodies handed
+   to an engine hop, registered background workers, and `_rebuild_config_period_chain`, called
+   only from `_mutate` bodies on the engine thread. A guard — checked by mutation: a route that
+   writes on the request thread, or a module-level writer with no registered home, fails it.
 3. **Declared dependencies are honoured.** For each `depends_on` edge, a test that starting the
    dependant while the dependency runs defers or waits — never proceeds.
 
