@@ -9520,6 +9520,14 @@ async def run_gap_fill_job(from_ts, to_ts, *, channels=("import", "export"),
                             "(targeted re-import)", _lifted, from_ts, to_ts)
     except Exception as _te:
         logger.warning("run_gap_fill_job: tombstone clear failed (non-fatal): %s", _te)
+    # Claim "import" for the whole run, as run_api_import_job does. A gap fill writes
+    # the same imported blocks through the same import_api_history, and shares the
+    # import's job state; every member that depends on "import" (the sweep, carbon
+    # backfill, measured drain, verify, attribution) must stand aside for it. In v4
+    # they did, through api_import_running(), which this job's status sets; B moved
+    # them to admission(), which sees only the coordinator, and only the full import
+    # claimed it (4 Oct 2026).
+    _coord.claim("import", force=True)
     hi = to_ts
     try:
         while True:
@@ -9610,6 +9618,8 @@ async def run_gap_fill_job(from_ts, to_ts, *, channels=("import", "export"),
     except Exception as e:
         logger.warning("run_gap_fill_job: %s", e)
         j["status"] = "error"; j["error"] = str(e)
+    finally:
+        _coord.mark("import", status="done")      # every way out: done, cancel, error
 
 
 @job("import", exclusive_with=("delete",))
