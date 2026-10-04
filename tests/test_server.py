@@ -5304,17 +5304,6 @@ class TestHistoricalCsvEndpoints(unittest.TestCase):
         finally:
             del engine.kraken_available
 
-    def test_api_apply_registered_and_requires_confirmation(self):
-        self.assertIn("api_historical_api_apply", server.app.view_functions)
-        import engine
-        engine.kraken_available = lambda: True
-        try:
-            r = make_client().post("/api/historical/api-import/apply", json={})
-            self.assertEqual(r.status_code, 400)                  # no confirmed, not dry_run
-            self.assertIn("confirm", r.get_json()["error"].lower())
-        finally:
-            del engine.kraken_available
-
     def test_bg_job_endpoints_registered(self):
         for name in ("api_historical_api_start", "api_historical_api_control",
                      "api_historical_api_status"):

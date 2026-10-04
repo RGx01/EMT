@@ -4618,52 +4618,6 @@ def api_historical_api_plan():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-@app.route("/api/historical/api-import/apply", methods=["POST"])
-def api_historical_api_apply():
-    """API import route apply: fetch consumption newest→oldest, price via
-    per-agreement historical schedules, write imported_api blocks (backup first).
-    `dry_run` previews counts without writing; a real write requires confirmed=true.
-    Reversible via the reconstructed-history delete filter."""
-    try:
-        import engine as _eng
-        if not _eng.kraken_available():
-            return jsonify({"ok": False, "error": "no API connected"}), 400
-        body = request.get_json(force=True, silent=True) or {}
-        dry_run = bool(body.get("dry_run"))
-        if not dry_run and not body.get("confirmed"):
-            return jsonify({"ok": False, "error": "confirmation required"}), 400
-        restart = bool(body.get("restart"))
-        try:
-            chunk_days = max(1, min(int(body.get("chunk_days", 60)), 120))
-        except (TypeError, ValueError):
-            chunk_days = 60
-        try:
-            max_chunks = max(1, min(int(body.get("max_chunks", 6)), 60))
-        except (TypeError, ValueError):
-            max_chunks = 6
-        try:
-            pace_s = min(max(float(body.get("pace_s", 1.5)), 0.0), 10.0)
-        except (TypeError, ValueError):
-            pace_s = 1.5
-        # Backup once, at the start of a run (the first / restart call), not on
-        # every incremental continuation.
-        backup = None
-        if not dry_run and restart:
-            try:
-                backup = os.path.basename(_create_backup_zip(label="pre-api-import"))
-            except Exception as be:
-                logger.warning("api import: backup failed (continuing): %s", be)
-        result = _run_on_engine_loop(
-            _eng.import_api_history(body.get("from"), chunk_days=chunk_days,
-                                    max_chunks=max_chunks, pace_s=pace_s,
-                                    dry_run=dry_run, restart=restart), timeout=300.0)
-        result["backup"] = backup
-        return jsonify(result), (200 if result.get("ok") else 400)
-    except Exception as e:
-        logger.error("api_historical_api_apply: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
 @app.route("/api/historical/api-import/start", methods=["POST"])
 def api_historical_api_start():
     """Start the API import as a BACKGROUND job (survives navigating away; can be
