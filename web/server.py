@@ -2921,6 +2921,23 @@ def api_backup_delete():
         return jsonify({"error": str(e)}), 500
 
 
+class _RestoreRefused(Exception):
+    """A backup the import gate refuses; its message is the user-facing reason."""
+
+
+def _import_gate():
+    import import_gate
+    return import_gate
+
+
+def _zip_has_hot_wal(zf):
+    """Import spec §3 gate 1, for a zip: a non-empty blocks.db-wal inside it is
+    committed history its blocks.db does not contain — a copy of a running
+    database, not a backup. (A backup zip holds blocks.db alone.)"""
+    return any(os.path.basename(i.filename) == "blocks.db-wal" and i.file_size > 0
+               for i in zf.infolist())
+
+
 def _extract_restore_candidate(zipname, selected):
     """Extract a backup zip's blocks.db beside the live one, for the import gate to
     read before the swap; the swap then renames it into place. None when the zip has no
@@ -2932,6 +2949,8 @@ def _extract_restore_candidate(zipname, selected):
     if not os.path.exists(zip_path):
         return None
     with zipfile.ZipFile(zip_path, "r") as zf:
+        if _zip_has_hot_wal(zf):
+            raise _RestoreRefused(_import_gate().HOT_WAL)
         for name in zf.namelist():
             if os.path.basename(name) == "blocks.db":
                 out = os.path.join(DATA_DIR, "restore_candidate.db")
@@ -2986,16 +3005,23 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
             _candidate = (f"{_share_backup_dir()}/blocks.db"
                           if "blocks.db" in (selected or known) else None)
         else:
-            _candidate = _extract_restore_candidate(zipname, selected)
+            try:
+                _candidate = _extract_restore_candidate(zipname, selected)
+            except _RestoreRefused as _rr:
+                logger.warning("restore refused: %s", _rr)
+                _j["status"] = "error"
+                _j["error"] = str(_rr)
+                return
             _zip_candidate = _candidate
         if _candidate and os.path.exists(_candidate):
-            import import_gate as _gate
-            _refusal = _gate.check(_candidate)
+            _refusal = _import_gate().check(_candidate)
             if _refusal:
                 logger.warning("restore refused: %s", _refusal)
                 _j["status"] = "error"
                 _j["error"] = _refusal
                 return
+            logger.info("restore: backup admitted; supplier %s",
+                        _import_gate().describe_supplier(_candidate))
 
         # ── Step 1b: STOP any running API import before touching the DB ───────
         # The background import writes via the SQLite store on the engine loop.
@@ -6839,6 +6865,9 @@ def api_import_from_zip():
         _upload_zip = os.path.join(DATA_DIR, "upload_import.zip")
         zf_file.save(_upload_zip)
         with zipfile.ZipFile(_upload_zip, "r") as zf:
+            if _zip_has_hot_wal(zf):
+                logger.warning("api_import_from_zip: refused: a live copy, not a backup")
+                return jsonify({"error": _import_gate().HOT_WAL}), 400
             names = {os.path.basename(n): n for n in zf.namelist() if os.path.basename(n) in known}
             logger.info("api_import_from_zip: zip contains %s", list(names.keys()))
 
@@ -6859,12 +6888,13 @@ def api_import_from_zip():
                     count = _tc.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]
                     _tc.close()
                     logger.info("api_import_from_zip: validated %d blocks in tmp file", count)
-                    import import_gate as _gate
-                    _refusal = _gate.check(tmp)
+                    _refusal = _import_gate().check(tmp)
                     if _refusal:
                         os.remove(tmp)
                         logger.warning("api_import_from_zip: refused: %s", _refusal)
                         return jsonify({"error": _refusal}), 400
+                    logger.info("api_import_from_zip: backup admitted; supplier %s",
+                                _import_gate().describe_supplier(tmp))
                     # Close web server store
                     if _store:
                         try: _store.close()

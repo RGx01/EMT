@@ -306,8 +306,11 @@ necessary.
 
 **Phase 1 — admissible from the file alone iff all hold, checked in this order:**
 
-*(4 Oct 2026: gates 2 and 4 are enforced at restore by `import_gate.py`, which holds the one
-`FLOOR_VERSION`. Gates 1 and 3 are not yet.)*
+*(4 Oct 2026: all four are enforced at restore by `import_gate.py`, which holds the one
+`FLOOR_VERSION`. Gate 1's `-wal` test applies where there is something to look at — a file
+beside the candidate, or a `blocks.db-wal` inside a zip; an uploaded `blocks.db` arrives
+alone, so a live copy uploaded without its `-wal` is not detectable from the file.
+`source_supplier` reads gate 3's answer the way the wizard must, including the amendment below.)*
 
 1. **The source is a backup, not a live database, and it is intact.** The accepted inputs are a
    backup **zip** as written by `_backup_to_share`, or a `blocks.db` **taken from one**. A file
