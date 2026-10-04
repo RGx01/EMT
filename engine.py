@@ -12232,7 +12232,8 @@ async def reconcile_dispatch_overlay() -> dict:
         # summary's EV/Home split and understates Total (exc). Derive the fresh exc rate
         # the same way pass-2 does (new_rate × published exc/inc at the slot); when no
         # exc schedule covers the slot, NULL the exc columns so the view falls back to
-        # inc ÷ (1+VAT) and the exc backfill re-derives later — never leave it stale.
+        # inc ÷ (1+VAT) — never leave it stale. Nothing fills them in later (the exc
+        # backfill went with BL-33), so that fallback is the figure the block keeps.
         _exc_rate = None
         _isched = _kraken_rate_schedules.get("import")
         _iexc = getattr(_isched, "exc", None) if _isched is not None else None
