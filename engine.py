@@ -2139,8 +2139,8 @@ def compute_channel(channel: dict, parent_rates=None, is_sub_meter: bool = False
         # holds the true cumulative register, so the block books the ENTIRE
         # lifetime register as one interval's delta. Clamp to zero and collapse
         # read_start onto read_end so (a) the total is not inflated and (b) the
-        # next block still opens at the correct register. Logged (not silent) and
-        # flagged for review. (Incident 2026-07: 30961 kWh booked in one 30-min
+        # next block still opens at the correct register. Logged (not silent).
+        # (Incident 2026-07: 30961 kWh booked in one 30-min
         # block from a zeroed opener during device config churn — a £10k bill.)
         if total_kwh > _ROGUE_BLOCK_KWH_CEILING:
             logger.warning(
@@ -2155,7 +2155,6 @@ def compute_channel(channel: dict, parent_rates=None, is_sub_meter: bool = False
                 "cost":         0.0,
                 "read_start":   reads[-1]["value"],
                 "read_end":     reads[-1]["value"],
-                "needs_review": True,
             }
         # Runtime backstop: a block that consumed/exported energy but has no
         # rate is being costed at ZERO silently — i.e. real usage billed as
@@ -2232,7 +2231,6 @@ def compute_channel(channel: dict, parent_rates=None, is_sub_meter: bool = False
             "cost":         0.0,
             "read_start":   reads[-1]["value"],
             "read_end":     reads[-1]["value"],
-            "needs_review": True,
         }
 
     return {
@@ -2539,7 +2537,7 @@ def _apply_pass2(block: dict) -> None:
     # register was 0.0 booked the meter's whole lifetime register as an hour's
     # export after a power cut (v4 #493) — an export credit in the thousands. Same rule
     # and the same ceiling as compute_channel: clamp to zero, collapse read_start onto
-    # read_end so the next block opens on the real register, and flag for review.
+    # read_end so the next block opens on the real register. Logged.
     # Settlement still fills the true figure where DCC data exists.
     for meter_name, meter_block in block["meters"].items():
         if (meter_block.get("meta") or {}).get("sub_meter"):
@@ -2550,7 +2548,7 @@ def _apply_pass2(block: dict) -> None:
                 logger.warning(
                     "PASS 2: %s/%s implausible %.1f kWh in one block (> %.1f kWh "
                     "ceiling) — lost opener (read_start %s → read_end %s); clamping "
-                    "to 0, baselining register, flagged for review (v4 #493).",
+                    "to 0, baselining register (v4 #493).",
                     meter_name, channel_name, _k, _ROGUE_BLOCK_KWH_CEILING,
                     ch.get("read_start"), ch.get("read_end"))
                 _c = ch.get("cost") or 0.0
@@ -2558,8 +2556,6 @@ def _apply_pass2(block: dict) -> None:
                     ch["read_start"] = ch["read_end"]
                 ch["kwh"] = 0.0
                 ch["cost"] = 0.0
-                ch["needs_review"] = True
-                meter_block["needs_review"] = True
                 _t = block.get("totals")
                 if channel_name in ("import", "export") and isinstance(_t, dict):
                     _t[channel_name + "_kwh"] = (_t.get(channel_name + "_kwh") or 0.0) - _k
@@ -2622,13 +2618,13 @@ def _apply_pass2(block: dict) -> None:
             # impossibility). Sensor-agnostic: a session-energy sensor's real charge
             # never reaches this ceiling, so this can't mis-fire on a Zappi/session
             # reset. Baseline read_start onto read_end so the register stays
-            # continuous, zero the block, and flag for review.
+            # continuous, and zero the block. Logged.
             _ceiling = _max_plausible_block_kwh((meta or {}).get("block_minutes"))
             if delta > _ceiling:
                 logger.warning(
                     "PASS 2: %s implausible %.1f kWh in one block (> %.1f kWh "
                     "ceiling) — lost-opener/glitch; clamping to 0 and baselining "
-                    "register (#307), flagged for review.",
+                    "register (#307).",
                     meter_name, delta, _ceiling)
                 _re = sub_import.get("read_end")
                 if _re is not None:
@@ -2637,8 +2633,6 @@ def _apply_pass2(block: dict) -> None:
                 sub_import["kwh_grid"] = 0.0
                 sub_import["kwh_battery"] = 0.0
                 sub_import["cost"] = 0.0
-                sub_import["needs_review"] = True
-                meter_block["needs_review"] = True
                 continue
             if delta < 0:
                 # Reset detected mid-block — read_end is the kWh accumulated since

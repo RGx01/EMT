@@ -47,7 +47,7 @@ class TestRogueBlockGuard(unittest.TestCase):
         self.assertEqual(r["cost"], 0.0)
         self.assertEqual(r["read_start"], r["read_end"])  # collapsed — can't re-inflate
         self.assertEqual(r["read_end"], 30961.065)        # continuity preserved
-        self.assertTrue(r.get("needs_review"))
+        self.assertFalse(r.get("needs_review"))   # BL-74: a clamp no longer flags
 
     def test_normal_block_unaffected(self):
         """A real ~6 kWh half-hour is booked exactly as before."""
@@ -72,7 +72,7 @@ class TestRogueBlockGuard(unittest.TestCase):
             self._channel(0.0, 501.0),
             is_sub_meter=False, meter_id="m", channel_id="import")
         self.assertEqual(r["kwh"], 0.0)
-        self.assertTrue(r.get("needs_review"))
+        self.assertFalse(r.get("needs_review"))   # BL-74: a clamp no longer flags
 
     def test_negative_delta_still_zero(self):
         """A register that reads lower than the opener (reset) stays 0 as before —
@@ -125,7 +125,7 @@ class TestGuardIsMainMeterOnly(unittest.TestCase):
             is_sub_meter=True, meter_id="dev", channel_id="import")
         self.assertEqual(r["kwh"], 0.0)          # clamped, not 600
         self.assertEqual(r["read_start"], r["read_end"])
-        self.assertTrue(r.get("needs_review"))
+        self.assertFalse(r.get("needs_review"))   # BL-74: a clamp no longer flags
 
 
 if __name__ == "__main__":
@@ -156,7 +156,7 @@ class TestSubMeterRogueBlockGuard(unittest.TestCase):
         self.assertEqual(r["kwh"], 0.0)
         self.assertEqual(r["read_start"], r["read_end"])
         self.assertEqual(r["read_end"], 9977.4)
-        self.assertTrue(r.get("needs_review"))
+        self.assertFalse(r.get("needs_review"))   # BL-74: a clamp no longer flags
 
     def test_small_lifetime_dump_clamped(self):
         # a lifetime well above any real device block but under the main 500
@@ -219,7 +219,7 @@ class TestPass2PlausibilityGuard(unittest.TestCase):
         self.assertEqual(sub["kwh"], 0.0)                     # clamped despite unsettled
         self.assertEqual(sub["kwh_grid"], 0.0)
         self.assertEqual(sub["read_start"], 6137.592)         # register baselined
-        self.assertTrue(blk["meters"]["house_battery"].get("needs_review"))
+        self.assertFalse(blk["meters"]["house_battery"].get("needs_review"))   # BL-74: a clamp no longer flags
 
     def test_legitimate_device_draw_untouched(self):
         blk = self._block(2.8, 6317.5, grid_kwh=3.0)
