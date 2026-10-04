@@ -346,7 +346,8 @@ necessary.
    |---|---|---|
    | `'octopus'` (any API-capable key) | an API-capable supplier was chosen | prompt for that supplier's credentials → phase 2 |
    | `'not-listed'` | local metering only, chosen deliberately | **import**, no prompt, no phase 2 |
-   | absent | never asked — a config predating the field | **import**, no prompt, no phase 2 |
+   | absent, **account stamped** | an Octopus install whose free-text supplier field was never filled | read as `'octopus'`: prompt → phase 2 |
+   | absent, no account | never asked — a config predating the field | **import**, no prompt, no phase 2 |
    | anything else | a supplier this build has not implemented | **refuse** |
 
    **The two middle rows are the point.** Neither is a refusal, because both describe a database
@@ -368,6 +369,16 @@ necessary.
    > and has since moved to a local-only setup carries `supplier='not-listed'` *and* a leftover
    > account stamp from the Octopus era. The stamp is stale — it describes history, not the current
    > account — so phase 2 must not run on it. Read the supplier first.
+
+   **Absent is not rare, and an account stamp settles it** *(added 4 Oct 2026)*. BL-73 assumed every
+   live database held `config_periods.supplier = 'Octopus Energy'`, so `stamp_supplier()` writes
+   nothing when the column is empty. But in v4 that column is an optional free-text box on Billing
+   History, and real Octopus API installs on hand have it NULL — no `store_meta.supplier`, and
+   `kraken_state.kraken_account_number` set. Octopus is the only API v4 ever had, so a stamped
+   account with no supplier can only be Octopus: v5 reads it as `'octopus'` and shows that prompt.
+   This is a reader rule, not a v4 change — a v4 stamp would reach only databases a new v4 release
+   had opened, so v5 would need the rule for 4.5.19–4.5.20 regardless, unless the floor rose for a
+   change that is not a heal. The audit record (§9) notes the supplier as *inferred*, not stamped.
 
    **Treat the account stamp as the signal, not a marker pair.** `get_db_account()` already answers
    "was this database ever associated with an account?", which is the only question gate 3 needs.
