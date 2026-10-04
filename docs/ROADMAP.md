@@ -22,6 +22,7 @@ the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below decons
 | D | Surfacing performance | A, C | 🟢 17 of 17 surfaces bounded on the Pi (#64) |
 | E | Importer | A–D | 📝 spec v12, floor 4.5.19 |
 | F | Carried from v4's backlog | — | 📋 9 items open, 1 done (BL-50 = B) |
+| G | Local tariff store | A, B | 📝 proposed 4 Oct 2026 |
 
 ---
 
@@ -247,6 +248,15 @@ deletion protocol ([architecture §4a](design/EMT-v5_architecture.md)), and two 
   reconcile now compares bands by nearness, not price equality (#60); other exact-equality
   comparisons against a canonical rate may remain.
 
+**BL-33's pence self-repair — proposed, 4 Oct 2026.** The re-price sweep force-repairs stored inc
+columns in pence (the legacy 4.3.0 cap bug). Across 108 databases on hand: 0 such rows; the sweep is
+complete on every one stamped 4.5.19+. Not a code proof — "stamped 4.5.19" does not guarantee the
+sweep finished — so the proposal pairs deleting it with an **import gate**: refuse a source when any
+main-meter import block's inc ÷ exc exceeds 10 × (1 + VAT on its date). Measured on four real
+databases, healthy blocks sit at 1.000 (worst deviation 4.8%, the 1 Oct VAT change); a pence block
+reads ~100. Every priced main block on five databases carries the exc figure it needs, so the gate runs
+offline, before credentials — no fixed price, each block judged against its own canonical figure.
+
 *To verify alongside:* `run_settled_ev_split_heal` is still in v5, against "v5 carries no v4 heals" —
 it may be an ongoing forward repair rather than a one-off heal; trace before deciding.
 
@@ -277,6 +287,68 @@ on the user's acceptance that the usage is unrecoverable.
 **BL-47, BL-60, BL-64** — as time allows. BL-60's design is in the v4 repository
 (`docs/design/EMT-BL60_block_inspector_pre_post_settlement.md`). BL-64 needs real bills to build the
 redacted fixtures, and a redaction check that fails loudly; v5 already pins pypdf 6.18.0.
+
+---
+
+## G. Local tariff store
+
+*Proposed 4 Oct 2026. Not designed yet — this records the problem, the shape agreed in
+conversation, and what it must handle.*
+
+**The problem.** EMT holds no copy of the tariff. Unit rates and standing charges are fetched from
+the Octopus REST products API and kept **in memory only** (`_kraken_rate_schedules`, refreshed each
+6-hour poll cycle and on connect), and so is the agreement history (`_kraken_discovery`; only the
+account number is persisted). So:
+
+- **an add-on restart while the API is unavailable leaves EMT with no prices** — the resolver returns
+  nothing, and new blocks are written at a zero rate and flagged for repair;
+- **there is no record of what a block was priced against.** When Octopus edited the 1 Oct 2026 rate
+  records in place (0% VAT), nothing could see that a rate EMT had already used had changed — which
+  is why v4 needed heals (4.5.17–4.5.19) rather than a re-price.
+
+**The shape.** Two tables — tariff **agreements** (account, MPAN, direction, tariff and product
+code, valid from/to) and tariff **rates** (tariff code, unit or standing, band, valid from/to, inc
+and ex VAT) — each row carrying when it was fetched and what replaced it.
+
+- **A cache of the supplier's truth, never a second truth.** Each refresh *replaces* the account's
+  agreements and rates wholesale with what the API now says; the previous version is kept as history
+  (fetched-at, superseded-at), not used for pricing.
+- **Re-price when a rate changes.** Each refresh diffs the new version against the old. A changed
+  rate record, a changed agreement window, or an agreement that disappeared gives an exact span; the
+  blocks in it go on the existing re-price queue. This is what "Octopus edited it in place" needed,
+  and nothing does it today.
+- **A customer who backs out of an agreement** (cooling-off, a reversed switch) is the same case: the
+  next refresh no longer contains it, the diff marks its span, and the span re-prices on whatever
+  agreement Octopus now reports. Settled blocks keep the bill's figures (`rate_source`), as now.
+- **Cadence.** Daily is enough — tariffs change rarely, agreements more rarely. The 6-hourly poll
+  already fetches the rates, so persisting them costs no extra API calls. The refresh is a
+  coordinator member (B), so it does not overlap an import or a delete.
+- **Offline first.** Pricing reads the local copy; the API refreshes it. With the API down, EMT keeps
+  pricing from the last good copy instead of writing zero rates.
+
+**The importer (E).** A v4 database has no tariff tables. The importer fills them on the first
+refresh after the user authenticates; until then the in-file checks apply (each block's own ex-VAT
+figure — see BL-33 in §F). With them, a post-authentication gate can check stored rates against the
+canonical published rate per slot.
+
+**Also uses it.** The live write guard (`_sanitise_inc_units`, today a fixed £3/kWh ceiling) can compare
+against the slot's canonical rate from the local copy, with the API down too.
+
+**Watching for Kraken API changes.** GraphQL deprecations are covered: the client introspects the live
+schema and warns (`check_field_deprecations`), with `.build/check_graphql_deprecations.py`, the field
+watch baseline and their tests. **The REST products API — where the rates come from — has no schema to
+introspect, so a REST deprecation would not be caught.** The store gives that a natural check: a
+refresh that suddenly returns nothing, or a different shape, for a tariff that had rates yesterday is a
+signal worth surfacing rather than a reason to clear the copy.
+
+### G.1 Eras — future idea
+
+*Recorded 4 Oct 2026, not planned.* Historical tariff agreements, stored locally, are eras: a span with
+a tariff, a start and an end. Combined with config periods (which already split history) and
+**user-defined periods** (a new heat pump, a house move, a change of habit), they give a set of eras to
+compare — usage, cost and carbon per era, and like-for-like comparisons across them — as new Insights
+and Usage Stats views, with no API call. The tariff store's schema should allow for this from the
+start: agreements addressable as periods, and a user-periods table alongside.
 
 ---
 
