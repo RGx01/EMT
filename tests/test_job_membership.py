@@ -105,12 +105,14 @@ class TestConsumptionNotJustRegistration(unittest.TestCase):
     def test_the_consumers_so_far(self):
         self.assertEqual(sorted(self.d["consuming"]),
                          ["attribution", "carbon_backfill", "measured_drain",
-                          "prune_tombstones", "reprice_sweep"])
+                          "prune_tombstones", "reprice_sweep", "verify_pricing"])
 
     def test_a_declared_dependency_that_is_never_consulted_is_visible(self):
-        """Not a failure — `verify_pricing` declares `import` and does not consult
-        it, and that is the honest current state. What matters is that it is
-        COUNTABLE, so "18 registered" can never be mistaken for "18 coordinating".
+        """Not a failure — `delete` and `restore` declare `import` and do not consult
+        it: they PRE-EMPT it (cancel and wait) instead, which is honoured but not
+        through admission(). (`verify_pricing` was the one that declared and ignored
+        it, until 4 Oct 2026.) What matters is that it is COUNTABLE, so "18
+        registered" can never be mistaken for "18 coordinating".
         """
         import sys as _sys
         _sys.path.insert(0, _ROOT)

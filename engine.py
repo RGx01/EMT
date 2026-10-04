@@ -5308,6 +5308,10 @@ async def _engine_tick(ha: HAClient):
         _maybe_daily_share_backup(now)          # #67: once a day, in the early hours
     except Exception as _sb_e:
         logger.warning("_engine_tick: daily share backup check failed: %s", _sb_e)
+    try:
+        _maybe_resume_deferred_verify()         # B: a verify pass deferred to an import
+    except Exception as _vr_e:
+        logger.warning("_engine_tick: verify resume check failed: %s", _vr_e)
 
     current_block = _store.load_current_block()
 
@@ -9455,6 +9459,30 @@ def _run_wrote_blocks(job: dict) -> int:
         return 0
 
 
+def _defer_verify_pass(hi, *, repriced: int) -> None:
+    """Stand the verify pass aside for a running import (DEFER). Its cursor is
+    already persisted. The claim stays ACTIVE ("paused", as a pass waiting on the API
+    allowance already is) so attribution, which depends on verify_pricing, keeps
+    waiting — the pass has not finished writing the imp_rate it reads."""
+    _coord.claim("verify_pricing", force=True)
+    _coord.mark("verify_pricing", status="paused")
+    _verify_job.update({"status": "deferred", "hi": hi.isoformat(), "repriced": repriced,
+                        "phase": "waiting for the import to finish — it will resume"})
+    logger.info("verify pricing: deferred to a running import; it resumes when the import ends")
+
+
+def _maybe_resume_deferred_verify() -> bool:
+    """From the engine tick: resume a pass deferred to an import once no import runs
+    — DEFER's "the next tick re-checks". Returns True if it scheduled the pass."""
+    if _verify_job.get("status") != "deferred":
+        return False
+    if _coord.admission("verify_pricing")[0] != ADMIT or not kraken_available():
+        return False
+    _verify_job["status"] = "resuming"          # one scheduling per deferral
+    asyncio.create_task(run_deferred_verify_pricing(restart=False))
+    return True
+
+
 @job("verify_pricing", depends_on=("import",))
 async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: float = 0.5,
                                       wait_s: float = 60.0, max_wait_cycles: int = 120,
@@ -9482,6 +9510,17 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
         hi = _dt.fromisoformat(str(sto)[:19])
     except ValueError:
         return {"ran": False}
+    # One pass at a time (B, 4 Oct 2026): two imports finishing close together each
+    # launched one, both writing `_verify_job`.
+    _prev = dict(_verify_job)
+    if _prev.get("status") in ("running", "waiting"):
+        logger.info("verify pricing: a pass is already running — not starting another")
+        return {"ran": False, "already_running": True}
+    # A pass deferred to an import resumes from its cursor — unless the import added
+    # newer history, which a newest-first pass resumed below its cursor would miss.
+    if (not restart and _prev.get("status") in ("deferred", "resuming")
+            and str(_prev.get("hi") or "") < hi.isoformat()):
+        restart = True
     if restart:
         cursor = hi
         try:
@@ -9498,6 +9537,12 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
     done_chunks = max(0, total_chunks - (max(1, int((cursor - lo).days // chunk_days) + 1)))
     _t0 = __import__("time").monotonic()
     corrections: list = []        # per-chunk {from,to,repriced} for days actually changed
+    # B §5 acceptance 3: `depends_on=("import",)`, DEFER. An import running now is
+    # writing the history this pass checks; stand aside, keep the cursor, and let the
+    # tick resume the pass when it ends (_maybe_resume_deferred_verify).
+    if _coord.admission("verify_pricing")[0] != ADMIT:
+        _defer_verify_pass(hi, repriced=0)
+        return {"ran": False, "deferred": "import"}
     _verify_job.clear()
     # Attribution's second blocker. Its own predicate says why: "Device attribution
     # must wait for it — it backfills the legacy imp_rate the attribution reads."
@@ -9506,7 +9551,7 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
     # stricter a view than v4 here — unlike the import, where "finalising" was
     # genuinely uncovered.
     _coord.claim("verify_pricing", force=True)
-    _verify_job.update({"status": "running", "phase": "verifying",
+    _verify_job.update({"status": "running", "phase": "verifying", "hi": hi.isoformat(),
                         "chunks_total": total_chunks, "chunks_done": done_chunks,
                         "repriced": 0, "checked": 0, "skipped": 0, "elapsed_s": 0,
                         "from": None, "to": None, "corrections": [],
@@ -9527,6 +9572,11 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
                 lo.date(), hi.date(), total_chunks)
     try:
         while cursor > lo:
+            # Re-checked between chunks, not only at the start: an import that starts
+            # mid-pass stops it at the next chunk boundary, the cursor already saved.
+            if _coord.admission("verify_pricing")[0] != ADMIT:
+                _defer_verify_pass(hi, repriced=repriced)
+                return {"ran": True, "deferred": "import", "repriced": repriced}
             c_to = cursor
             c_from = max(lo, cursor - _td(days=chunk_days))
             # Gate on the allowance — wait (yielding) until the API is calm enough.

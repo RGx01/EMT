@@ -9,9 +9,9 @@ Membership stands at **16/17** registered (`.build/check_job_membership.py`): ev
 including the live tick, the three background workers, and (4 Oct 2026) `api_meter_delete_data`,
 which joined `delete` and now holds the delete flag while it works, so the members
 `exclusive_with` "delete" see it. The 1 outstanding is `api_db_vacuum` (which never joins — see
-§4). **5 of the 8** members that declare an edge consult `admission()` (§5, acceptance 1).
-`verify_pricing` does not yet. `restore` and `delete` pre-empt the import instead — each cancels a
-running import and waits, and aborts if it will not stop. (The range delete and the purge, entries
+§4). **6 of the 8** members that declare an edge consult `admission()` (§5, acceptance 1);
+`verify_pricing` joined on 4 Oct 2026. The other two, `restore` and `delete`, pre-empt the import
+instead — each cancels a running import and waits, and aborts if it will not stop. (The range delete and the purge, entries
 of `delete`, did neither until 4 Oct 2026; acceptance 3.)
 
 *Registration changes no behaviour: `@job(...)` records a declaration and returns the function
@@ -347,6 +347,7 @@ same way.
 `import` declares none (it was miscounted here). The three that do not consult are `verify_pricing`,
 which should; and `restore` and `delete`, which pre-empt the import (cancel it and wait). The
 range-delete and purge entries of `delete` honoured nothing until 4 Oct 2026 — acceptance 3.
+   `verify_pricing` consults since 4 Oct 2026: **6 of 8**, the other two pre-empting.
 2. **No unregistered write from a request thread.** `.build/write_inventory.py` already measures
    this. The count was 8 and must reach **1** — `api_db_vacuum`, which cannot move without stalling
    member 23 (see §4). Anything else in that list is outstanding work.
@@ -357,8 +358,15 @@ range-delete and purge entries of `delete` honoured nothing until 4 Oct 2026 —
    with the import still running": every entry of `delete` cancels a running import and waits, and
    aborts without deleting if it will not stop (`_stop_running_import`;
    `tests/test_delete_honours_import.py` for the range delete and the purge, which honoured nothing
-   before). `restore` → `import` was already so (#58). Outstanding: `verify_pricing` → `import` (it
-   does not consult `admission()`), and a test per edge for the members that do.
+   before). `restore` → `import` was already so (#58).
+
+   **`verify_pricing` → `import`, 4 Oct 2026.** DEFER: the pass consults `admission()` at its start
+   and at every chunk boundary, and while an import runs it stands aside with its cursor saved and
+   its claim kept active (so attribution, which depends on it, keeps waiting). The engine tick
+   resumes it when the import ends — from the cursor, or from the newest edge if the import added
+   newer history. A launch while a pass runs does not start a second one
+   (`tests/test_verify_defers_to_import.py`). Outstanding: a test per edge for the other
+   consulting members.
 4. **A claim is taken before any slow work.** The attribution window, generalised: a test asserting
    the claim precedes preflight/backup in every member that has them.
 5. **Admission never happens per block.** The call tree of the block write path stays free of
