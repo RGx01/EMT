@@ -120,10 +120,10 @@ pre-empt the import. Acceptances (B §5):
 import and a small range delete mid-sweep; `scan-log` for a dependant active while its dependency
 is, and for a refusal standing past 60 minutes.
 
-**Noted, not fixed:** a verify pass **paused for API allowance** (120 waits, ~2 h) is never
-rescheduled while the process runs, and it keeps its `verify_pricing` claim, so attribution waits
-on it until a restart. *(Fixed 4 Oct 2026: a restart no longer loses a deferred, paused or
-mid-chunk pass — the tick resumes it from its persisted cursor, once per database.)* *(`/api/historical/api-import/apply`, which
+*Fixed 4 Oct 2026:* a restart no longer loses a deferred, paused or mid-chunk verify pass — the
+tick resumes it from its persisted cursor, once per database; and a pass **paused for API
+allowance** (120 waits, ~2 h), which kept its `verify_pricing` claim and so held attribution until
+a restart, is retried from its cursor after `_VERIFY_PAUSE_RETRY_S` (1 h). *(`/api/historical/api-import/apply`, which
 ran the import without claiming it, was deleted 4 Oct 2026: no UI had ever called it.)*
 
 **Done when:** acceptance 6 passes on the Pi.
