@@ -178,7 +178,7 @@ unreachable.
 checking it against cases established by hand. §4a required a trace before any deletion; until the
 tool existed that was a rule with nothing enforcing it.
 
-**Whole codebase: 65 of 1,153 definitions unreachable** (4 Oct 2026 — 84 of 1,162 at the 4.5.14
+**Whole codebase: 62 of 1,150 definitions unreachable** (4 Oct 2026 — 84 of 1,162 at the 4.5.14
 seed, 79 of 1,157 after the five deletions below, and the total has since grown with workstreams A,
 B and C). **This figure is asserted against the tool by `tests/test_b_design_figures.py`** — it had
 drifted five times before that check existed, each time right when written and wrong a week later.
@@ -281,7 +281,9 @@ deleted a release later". The house/EV split for a late completed dispatch was n
   `slot_intensity` are live and stay.
 - `pricing_segments.py` — `attribute_devices`, `import_segments`, `total_cost_exc`. **Three of
   eleven public functions**, and the other eight are live: six of them have no *external* caller
-  but are reached transitively from `segments_from_legacy` and `price_devices_hybrid`.
+  but are reached transitively from `segments_from_legacy` and `price_devices_hybrid`. *Moved to
+  `tests/segment_helpers.py` on 4 Oct 2026 (BL-63), not deleted: the suite used them to build
+  segments for tests of the eight live ones.*
 
 **Correct the v4 roadmap — and this note was itself half wrong until 19 Sep 2026.** BL-63 describes
 the shelved layer as including `carbon.ev_carbon` / `house_carbon` and *"9 of 11 public functions in

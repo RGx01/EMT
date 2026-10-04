@@ -75,8 +75,9 @@ class TestAgreesWithHandEstablishedCases(unittest.TestCase):
             self.assertNotIn(n, self.dead, "%s is LIVE — tracing it dead would "
                                            "licence deleting working code" % n)
 
-    def test_pricing_segments_three_dead_eight_live(self):
-        self._dead("attribute_devices", "import_segments", "total_cost_exc")
+    def test_pricing_segments_eight_live(self):
+        # The three it held dead (attribute_devices, import_segments, total_cost_exc)
+        # moved to tests/segment_helpers.py — BL-63, 4 Oct 2026.
         # These six have no EXTERNAL caller but are reached transitively; an
         # earlier v4 roadmap entry called all nine shelved, and acting on that
         # would have deleted working code.

@@ -10,7 +10,6 @@
     "_review_band_reason",
     "add_deleted_range",
     "append_blocks",
-    "attribute_devices",
     "bankers_round",
     "bill_slots_from_blocks",
     "bind_object_for_tests",
@@ -44,7 +43,6 @@
     "get_retired_meters",
     "get_settled_to",
     "get_timed_out_provisionals",
-    "import_segments",
     "insert_read",
     "is_mode_configured",
     "link_reads_to_block",
@@ -63,7 +61,6 @@
     "supersede_historical_derivation",
     "tag_blocks_with_derivation",
     "tombstoned_slots_in",
-    "total_cost_exc",
     "utc_to_local_label"
   ]
 }
