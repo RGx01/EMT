@@ -6508,7 +6508,16 @@ class BlockStore:
 
     def _insert_block_rows_replace(self, rows: list[dict]) -> None:
         """Like _insert_block_rows but uses INSERT OR REPLACE to overwrite
-        existing blocks. Used by gap fill to correct zero/bad blocks in the DB."""
+        existing blocks. Used by gap fill to correct zero/bad blocks in the DB.
+
+        The review columns are CARRIED from the stored row, not taken from the dict
+        (4 Oct 2026). A REPLACE deletes the row and inserts a new one, so a column it
+        does not list resets to its default — `review_reason` and `review_dismissed`
+        were not listed, and `needs_review` came from the block dict, which the
+        loader never fills — so every round-trip rewrite (`get_block_dict_by_start`
+        → mutate → `append_block_replace`) wiped a block's review history. Since
+        BL-74 nothing in v5 sets them, so they are history only, and are kept as
+        they are. A brand-new row takes the dict's value (0 / NULL / 0)."""
         if not rows:
             return
         sql = """
@@ -6522,6 +6531,7 @@ class BlockStore:
                 exp_read_start, exp_read_end,
                 standing_charge, standing_charge_exc, carbon_g, carbon_intensity_g, imp_provisional,
                 source, exc_source, is_provisional, needs_pass2_rerun, imp_kwh_api, needs_review,
+                review_reason, review_dismissed,
                 exp_kwh_api,
                 imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band,
                 rate_corrected, rate_source, rate_reconciled
@@ -6534,7 +6544,14 @@ class BlockStore:
                 :exp_kwh, :exp_rate, :exp_cost,
                 :exp_read_start, :exp_read_end,
                 :standing_charge, :standing_charge_exc, :carbon_g, :carbon_intensity_g, :imp_provisional,
-                :source, :exc_source, :is_provisional, :needs_pass2_rerun, :imp_kwh_api, :needs_review,
+                :source, :exc_source, :is_provisional, :needs_pass2_rerun, :imp_kwh_api,
+                COALESCE((SELECT o.needs_review FROM blocks o
+                          WHERE o.block_start = :block_start AND o.meter_id = :meter_id),
+                         :needs_review),
+                (SELECT o.review_reason FROM blocks o
+                  WHERE o.block_start = :block_start AND o.meter_id = :meter_id),
+                COALESCE((SELECT o.review_dismissed FROM blocks o
+                          WHERE o.block_start = :block_start AND o.meter_id = :meter_id), 0),
                 :exp_kwh_api,
                 :imp_kwh_ev, :imp_cost_ev, :imp_rate_ev, :imp_ev_band, :imp_home_band,
                 :rate_corrected, :rate_source, :rate_reconciled
