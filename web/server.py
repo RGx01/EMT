@@ -4806,28 +4806,6 @@ def api_historical_retag_imports():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-@app.route("/api/blocks/sweep-implausible", methods=["GET", "POST"])
-def api_blocks_sweep_implausible():
-    """#307 one-off repair for lost-opener device spikes (e.g. house_battery
-    read_start=0 / read_end=6137 → 6137 kWh in a half-hour, wrecking carbon). GET
-    previews the offending blocks (dry-run); POST applies: clamp imp_kwh to the
-    grid-bounded value, baseline the register, recompute carbon, flag needs_review
-    — leaving imp_kwh_grid / imp_cost (billing) untouched. Regenerates charts on
-    apply. Returns {ok, count, ceiling_kwh, applied, blocks:[...]}."""
-    try:
-        store = store_access.store()
-        apply = (request.method == "POST")
-        # Workstream A: the sweep mutates on apply, so it runs on the engine
-        # thread rather than through this one.
-        res = _engine_write(
-            lambda st: st.sweep_implausible_sub_blocks(dry_run=not apply))
-        logger.info("api_blocks_sweep_implausible: %s (applied=%s)",
-                    {k: res[k] for k in ("count", "ceiling_kwh", "applied")}, apply)
-        return jsonify({"ok": True, **res})
-    except Exception as e:
-        logger.error("api_blocks_sweep_implausible: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
 
 @app.route("/api/carbon/pause", methods=["GET", "POST"])
 def api_carbon_pause():

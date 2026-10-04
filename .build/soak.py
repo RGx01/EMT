@@ -62,7 +62,6 @@ WHAT IT WILL NEVER DO
       HA / Super.  /api/logs  /api/power  /api/entities  /api/detect-bcd
       internet     /api/carbon (carbonintensity.org.uk)  /api/update-check (GitHub)
       belt+braces  /api/backfill/reach  /api/historical/site-plan
-                   /api/blocks/sweep-implausible (a repair route that also answers GET)
 
   The only Octopus traffic during a soak is the add-on's own normal polling.
 """
@@ -92,7 +91,6 @@ DENY = {
     "/api/detect-bcd": "Home Assistant state",
     "/api/backfill/reach": "plans an Octopus import",
     "/api/historical/site-plan": "discovers sites from Home Assistant history",
-    "/api/blocks/sweep-implausible": "repair route",
     "/api/carbon": "calls carbonintensity.org.uk on every request, uncached",
     "/api/update-check": "calls GitHub",
     "/api/reprice-history-status": "polled by the phase tracker instead",

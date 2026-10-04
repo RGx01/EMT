@@ -55,10 +55,17 @@ _REMOVED = ("run_smb_rate_repair", "run_smb_device_recost",
 # moved the codebase from 80 unreachable to 81, and the new entry was this. Its
 # own docstring already said "removed v5.0.0"; nothing but the heal ever called
 # it. A deletion that leaves its store methods behind is half a deletion.
-_REMOVED_STORE = ("smb_repair_write_block",)
+_REMOVED_STORE = ("smb_repair_write_block",
+                  # BL-74, 4 Oct 2026: the three startup self-heals' store halves.
+                  "sweep_implausible_sub_blocks", "sweep_register_glitches",
+                  "flag_grid_invariant_violations")
 
 _REMOVED_MARKERS = ("smb_rate_repair_done", "smb_device_recost_done",
-                    "smb_ev_resplit_done", "band_rate_snap_done")
+                    "smb_ev_resplit_done", "band_rate_snap_done",
+                    # BL-74, 4 Oct 2026: the startup self-heals (#307, register
+                    # dip-and-recover, BL-19). Set in every admissible database.
+                    "implausible_sub_block_sweep_done", "register_glitch_sweep_done",
+                    "bl19_grid_invariant_sweep_done")
 
 
 def _engine_tree():

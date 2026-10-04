@@ -186,15 +186,6 @@ _KRAKEN_SNAPSHOT_DONE_KEY = "pre_live_snapshot_done"
 _SETTLEMENT_SWEEP_HORIZON_DAYS = 14
 _SETTLEMENT_SWEEP_MIN_INTERVAL_S = 24 * 3600   # run at most once per day
 _STATE_LAST_SWEEP = "last_settlement_sweep_utc"
-# BL-19: run-once marker for the historical grid-invariant repair sweep.
-_BL19_GRID_SWEEP_DONE_KEY = "bl19_grid_invariant_sweep_done"
-# #307: run-once marker for the lost-opener device-spike self-heal. The write-point
-# guard prevents NEW spikes, so this only needs to clean pre-guard history once.
-_SPIKE_SWEEP_DONE_KEY = "implausible_sub_block_sweep_done"
-# Run-once marker for the register dip-and-recover self-heal (stale-boundary phantom
-# deltas, e.g. house_battery 48.93 kWh on 2026-07-21). The gap-boundary guard stops
-# NEW ones, so this only cleans pre-guard history once.
-_REGISTER_GLITCH_SWEEP_DONE_KEY = "register_glitch_sweep_done"
 # Chunk 5: cached rate schedules for reconcile-time rate repair. Built once per
 # poll cycle by the (async) poll task; read by the (sync) drain via the resolver
 # below. Rates stored as £/kWh (converted from the API's pence at build time).
@@ -13094,59 +13085,14 @@ async def _engine_startup_impl(ha: HAClient):
     except Exception as _me:
         logger.warning("engine_startup: full_config_json migration failed: %s", _me)
 
-    # BL-19 one-time sweep: repair historical sub-meter grid-invariant violations
-    # (sub-meter grid > settled parent grid import), e.g. gap-fill blocks written
-    # during an outage whose main later settled small. Flag them for PASS 2
-    # re-run; the drain re-clamps them via the BL-19-fixed apportionment. Gated
-    # by a marker so it runs at most once per DB.
-    try:
-        if not _store.get_kraken_state(_BL19_GRID_SWEEP_DONE_KEY):
-            _flagged = _store.flag_grid_invariant_violations()
-            _store.set_kraken_state(_BL19_GRID_SWEEP_DONE_KEY,
-                                    datetime.now(timezone.utc).isoformat())
-            if _flagged:
-                logger.info(
-                    "engine_startup: BL-19 grid-invariant sweep flagged %d block(s) "
-                    "for re-clamp (drain will re-materialise)", _flagged)
-    except Exception as _b19e:
-        logger.warning("engine_startup: BL-19 grid-invariant sweep failed: %s", _b19e)
-
-    # #307 one-time self-heal: a lost/zeroed opening register books a device's whole
-    # lifetime register as one interval (prod: house_battery 0→6137 kWh in a
-    # half-hour, wrecking its carbon). Physically impossible, so we detect + repair
-    # it automatically — no user action. The write-point guard stops NEW ones, so
-    # this runs at most once per DB (marker-gated); repaired blocks are flagged
-    # needs_review so they surface in the review list. Cost/billing is untouched.
-    try:
-        if not _store.get_kraken_state(_SPIKE_SWEEP_DONE_KEY):
-            _sw = _store.sweep_implausible_sub_blocks(dry_run=False)
-            _store.set_kraken_state(_SPIKE_SWEEP_DONE_KEY,
-                                    datetime.now(timezone.utc).isoformat())
-            if _sw.get("count"):
-                logger.warning(
-                    "engine_startup: #307 self-heal repaired %d implausible device "
-                    "block(s) (> %.0f kWh in one block) — flagged for review",
-                    _sw["count"], _sw.get("ceiling_kwh", 0))
-    except Exception as _spe:
-        logger.warning("engine_startup: #307 device-spike self-heal failed: %s", _spe)
-
-    # Register dip-and-recover self-heal: a stale/dropout reading (a register briefly
-    # surfacing an old value while a sensor flickered) books the climb back to the
-    # real value as phantom consumption (prod: house_battery 48.93 kWh on 2026-07-21,
-    # under the #307 ceiling so that sweep missed it). The gap-boundary guard stops
-    # NEW ones; this cleans pre-guard history once. Grid/bill untouched; repaired
-    # blocks flagged needs_review.
-    try:
-        if not _store.get_kraken_state(_REGISTER_GLITCH_SWEEP_DONE_KEY):
-            _rg = _store.sweep_register_glitches(dry_run=False)
-            _store.set_kraken_state(_REGISTER_GLITCH_SWEEP_DONE_KEY,
-                                    datetime.now(timezone.utc).isoformat())
-            if _rg.get("count"):
-                logger.warning(
-                    "engine_startup: register dip-and-recover self-heal repaired %d "
-                    "phantom block(s) — flagged for review", _rg["count"])
-    except Exception as _rge:
-        logger.warning("engine_startup: register-glitch self-heal failed: %s", _rge)
+    # BL-19, #307 and the register dip-and-recover self-heals ran here once per
+    # database (marker-gated in kraken_state) to clean pre-guard history. Deleted
+    # 4 Oct 2026 (BL-74): every database v5 admits is stamped >= the import floor,
+    # so all three markers are set, and a fresh v5 database has no history for them
+    # to find. The write-point guards that stop NEW cases stay (_apply_pass2's BL-19
+    # rule and #307 ceiling; the stale-read and dip-without-collapse guards), and
+    # the markers stay in the data. The mechanism — a kraken_state marker read at
+    # startup, run once, then set — is what a future heal would use.
 
     if _store.get_current_config_period_id() is None:
         # Fresh DB (no config period yet). Automatic migration of the pre-SQLite

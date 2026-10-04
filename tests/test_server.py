@@ -5728,67 +5728,6 @@ class TestImportGapsEndpoint(unittest.TestCase):
             del engine.api_import_gaps
 
 
-class TestSweepImplausibleEndpoint(unittest.TestCase):
-    """#307: GET previews lost-opener device spikes (dry-run, no writes); POST
-    applies the clamp and regenerates charts."""
-
-    def setUp(self):
-        import tempfile
-        from block_store import BlockStore
-        self.tmp = tempfile.mktemp(suffix=".db")
-        s = BlockStore(self.tmp)
-        s.insert_config_period({"meters": {
-            "electricity_main": {"meta": {
-                "billing_day": 1, "block_minutes": 30, "timezone": "Europe/London",
-                "currency_symbol": "£", "currency_code": "GBP", "site": "Home"}},
-            "house_battery": {"meta": {
-                "sub_meter": True, "parent_meter": "electricity_main",
-                "device": "Solax Battery", "billing_day": 1, "block_minutes": 30,
-                "timezone": "Europe/London", "currency_symbol": "£",
-                "currency_code": "GBP"}},
-        }})
-        cp = s._conn.execute("SELECT id FROM config_periods LIMIT 1").fetchone()["id"]
-        s._conn.execute(
-            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_kwh_grid, imp_cost, imp_read_start, imp_read_end, carbon_g, "
-            "carbon_intensity_g) VALUES "
-            "('2026-07-21T09:30:00','2026-07-21T10:00:00','house_battery',?,"
-            "6137.592,0.0,0.0,0.0,6137.592,859262.88,140.0)", (cp,))
-        s._conn.commit()
-        self.store = s
-        _use_store(s)
-        self.client = server.app.test_client()
-
-    def tearDown(self):
-        import os
-        self.store._conn.close()
-        if os.path.exists(self.tmp):
-            os.remove(self.tmp)
-
-    def test_get_previews_without_writing(self):
-        with patch.object(server, "_get_store", return_value=self.store):
-            r = self.client.get("/api/blocks/sweep-implausible")
-        d = json.loads(r.data)
-        self.assertTrue(d["ok"])
-        self.assertEqual(d["count"], 1)
-        self.assertFalse(d["applied"])
-        self.assertAlmostEqual(self.store._conn.execute(
-            "SELECT imp_kwh FROM blocks WHERE block_start='2026-07-21T09:30:00'"
-        ).fetchone()[0], 6137.592)                       # dry-run wrote nothing
-
-    def test_post_applies_and_clamps(self):
-        with patch.object(server, "_get_store", return_value=self.store):
-            r = self.client.post("/api/blocks/sweep-implausible")
-        d = json.loads(r.data)
-        self.assertTrue(d["ok"] and d["applied"])
-        row = self.store._conn.execute(
-            "SELECT imp_kwh, carbon_g, needs_review FROM blocks "
-            "WHERE block_start='2026-07-21T09:30:00'").fetchone()
-        self.assertEqual(row["imp_kwh"], 0.0)
-        self.assertEqual(row["carbon_g"], 0.0)
-        self.assertEqual(row["needs_review"], 1)
-
-
 class TestBackfillPlan(unittest.TestCase):
     """Preview endpoint /api/backfill/plan — gate wiring + window classification."""
 
