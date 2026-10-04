@@ -13,6 +13,7 @@ real DB like Staging — "on top of Staging"). `CFG` describes the meters for th
 """
 
 import pricing_segments as ps
+import segment_helpers as sh   # import_segments & co. — test builders (BL-63)
 
 HOFF, HDAY = 0.05493, 0.323092        # house off-peak / day (inc)
 EVOFF, EVPEAK = 0.05493, 0.323092     # EV off-peak / peak (inc). IOG-SMB-TOU has only TWO
@@ -59,7 +60,7 @@ def build_capped_day(store):
 
     starts = []
     for (start, ek, hk, eof, hof, zappi, batt) in _DAY:
-        segs = ps.import_segments(
+        segs = sh.import_segments(
             ev_kwh=ek, house_kwh=hk, house_offpeak_rate=HOFF, house_day_rate=HDAY,
             ev_offpeak_rate=EVOFF, ev_peak_rate=EVPEAK,
             ev_offpeak_frac=eof, house_offpeak_frac=hof, vat=VAT)
@@ -134,7 +135,7 @@ def reprice_under_cap(store, *, cap_hours: float = 3.0, tz: str = "Europe/London
             boundary=boundaries.get(iog_cap.cap_day_key(bs, tz)))
         ek = r["imp_kwh_ev"]
         hk = (r["imp_kwh"] or 0.0) - ek
-        segs = ps.import_segments(
+        segs = sh.import_segments(
             ev_kwh=ek, house_kwh=hk, house_offpeak_rate=house_off, house_day_rate=house_day,
             ev_offpeak_rate=ev_off, ev_peak_rate=ev_peak,
             ev_offpeak_frac=cls["ev_offpeak_frac"], house_offpeak_frac=cls["house_offpeak_frac"],

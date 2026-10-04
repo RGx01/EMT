@@ -41,7 +41,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 MODULES = ["energy_charts.py", "billing.py", "chart_emit.py", "engine.py",
            "web/server.py", "block_store.py", "pricing_segments.py", "iog_cap.py",
-           "reprice.py", "carbon.py", "vat_calendar.py", "kraken_rates.py"]
+           "carbon.py", "vat_calendar.py", "kraken_rates.py"]
 
 # Tariff context, by parameter name. Add to this list deliberately.
 CONTEXT = {

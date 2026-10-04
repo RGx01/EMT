@@ -11,6 +11,8 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from block_store import BlockStore
 import pricing_segments as ps
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # tests/, for segment_helpers
+import segment_helpers as sh   # import_segments & co. — test builders (BL-63)
 
 SLOT = "2026-01-01T18:00:00"
 MID = "electricity_main"
@@ -23,7 +25,7 @@ class TestBlockSegments(unittest.TestCase):
 
     def _segs(self):
         # over-cap block: EV 4 @ peak, house 2 @ day.
-        return ps.import_segments(
+        return sh.import_segments(
             ev_kwh=4.0, house_kwh=2.0,
             house_offpeak_rate=0.05, house_day_rate=0.30,
             ev_offpeak_rate=0.05, ev_peak_rate=0.32,

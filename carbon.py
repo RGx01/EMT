@@ -2,11 +2,11 @@
 carbon.py — the pure carbon axis for 4.4.0 (Δ5).
 See docs/design/4.4.0_iog_pricing_and_reprice_design.md §3a.
 
-Carbon is a SEPARATE derived axis: kWh × grid CO2 intensity, price NEVER enters. This module
-is the adjacent pass that consumes the energy substrate `reprice.reprice_block` already emits
-(`carbon.ev_unclipped_kwh`, `carbon.house_kwh`) plus the grid-clipped billing EV
-(`devices.ev.kwh`) and multiplies by the grid intensity (gCO2/kWh). It computes NOTHING from
-rate or cost — the two models never touch, so carbon stays price-free by construction.
+Carbon is a SEPARATE derived axis: kWh × grid CO2 intensity, price NEVER enters. It takes
+energies — the car's unclipped and grid-clipped kWh — and multiplies by the grid intensity
+(gCO2/kWh). It computes NOTHING from rate or cost, so carbon stays price-free by construction.
+(Its pass over a `reprice.reprice_block` result, `carbon_from_reprice`, went with the shelved
+pricing model — BL-63, 4 Oct 2026.)
 
 The EV carbon credit (the 4.3.2 methodology, re-sourced from synthetic dispatch on IOG):
 a smart-charged car may draw MORE than the grid supplied in a slot — the difference came from
@@ -51,38 +51,6 @@ def ev_carbon(*, unclipped_kwh: float, clipped_kwh: float,
         "clipped_kwh": round(clipped, 6),
         "unclipped_kwh": round(unclipped, 6),
         "behind_meter_kwh": round(behind, 6),
-    }
-
-
-def house_carbon(*, house_kwh: float, intensity_g: float) -> dict:
-    """House-axis carbon: the grid-supplied house energy × intensity. House has no behind-
-    meter credit — the credit axis is the EV's alone (its draw can exceed grid; the house
-    remainder is only ever what the grid supplied)."""
-    kwh = max(0.0, float(house_kwh or 0.0))
-    return {"carbon_g": round(kwh * intensity_g, 4), "kwh": round(kwh, 6)}
-
-
-def carbon_from_reprice(result: dict, intensity_g: float) -> dict:
-    """Adjacent carbon pass over a `reprice.reprice_block` result.
-
-    Consumes ONLY the emitted energy substrate — the clipped billing EV (`devices.ev.kwh`)
-    and the unclipped carbon EV (`carbon.ev_unclipped_kwh`) plus the house grid energy
-    (`carbon.house_kwh`). Returns the per-axis carbon bundle. Never reads rate/cost/segments.
-    """
-    dev = (result.get("devices") or {}).get("ev") or {}
-    sub = result.get("carbon") or {}
-    ev = ev_carbon(
-        unclipped_kwh=sub.get("ev_unclipped_kwh", dev.get("kwh_unclipped", 0.0)),
-        clipped_kwh=dev.get("kwh", 0.0),
-        intensity_g=intensity_g,
-    )
-    house = house_carbon(house_kwh=sub.get("house_kwh", 0.0),
-                         intensity_g=intensity_g)
-    return {
-        "ev": ev,
-        "house": house,
-        "saving_g": ev["saving_g"],
-        "intensity_g": intensity_g,
     }
 
 
