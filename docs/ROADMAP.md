@@ -296,9 +296,8 @@ banner, `/api/review-blocks` and the store's review methods are deleted. The thr
 self-heals (#307 spike, register dip-and-recover, BL-19 grid invariant) are deleted on the floor
 argument — their markers are set in every admissible database — with their write-point guards kept.
 **No stored data changed:** the review columns, their index and every row are left as they were.
-Still open, separate: `append_block_replace` does not carry `review_reason` / `review_dismissed`
-(nor `needs_review` from the stored row), so a round-trip rewrite resets them — the round-trip
-pattern, predating this.
+*Fixed after, 4 Oct 2026:* `append_block_replace` now carries the review columns, and
+`finalised_from_cad` and `derivation_id`, from the stored row — a round-trip rewrite reset all five.
 
 **BL-61 (1)–(4) — re-checked 4 Oct 2026.** (1) went on 28 Sep with the other v4 one-off heals
 (`run_smb_rate_repair`, `run_smb_device_recost`, `run_smb_ev_resplit`, `run_band_rate_snap`), on the

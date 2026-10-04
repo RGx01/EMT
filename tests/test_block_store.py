@@ -5256,8 +5256,9 @@ class TestReplaceKeepsReviewHistory(unittest.TestCase):
     which resets every column it does not carry. `review_reason` and
     `review_dismissed` were not carried, and `needs_review` came from the dict, which
     the loader never fills — so any rewrite wiped them. Since BL-74 nothing sets
-    them; they are history, and a rewrite must leave them as they were.
-    The first two fail on the parent tree; the last is a guard."""
+    them; they are history, and a rewrite must leave them as they were. Likewise
+    finalised_from_cad and derivation_id. The carry tests fail on the parent tree;
+    the new-row test is a guard."""
 
     BS = "2026-07-10T16:30:00"
 
@@ -5295,6 +5296,20 @@ class TestReplaceKeepsReviewHistory(unittest.TestCase):
                 "UPDATE blocks SET review_dismissed = 1 WHERE block_start = ?", (self.BS,))
         self._round_trip()
         self.assertEqual(self._review(), (0, None, 1))
+
+    def test_settlement_and_provenance_markers_survive(self):
+        """finalised_from_cad and derivation_id record what a rewrite does not
+        change: that the block will never DCC-settle, and which CSV reconstruction
+        it came from."""
+        with self.store._conn:
+            self.store._conn.execute(
+                "UPDATE blocks SET finalised_from_cad = 1, derivation_id = 7 "
+                "WHERE block_start = ?", (self.BS,))
+        self._round_trip()
+        r = self.store._conn.execute(
+            "SELECT finalised_from_cad, derivation_id FROM blocks WHERE block_start = ?",
+            (self.BS,)).fetchone()
+        self.assertEqual(tuple(r), (1, 7))
 
     def test_a_new_block_takes_the_defaults(self):
         """GUARD: no stored row to carry from."""
