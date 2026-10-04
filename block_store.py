@@ -3462,29 +3462,6 @@ class BlockStore:
         return int(row["n"]) if row else 0
 
     # DEPRECATED — remove in 5.0.0 (BL-33): one-time pre-4.4.0 legacy migration; retired once 5.0.0 requires a 4.4.0-migrated DB.
-    def repair_pence_inc_blocks(self, block_starts, threshold: float = 3.0) -> int:
-        """Q1 SELF-HEAL: ÷100 the INC columns (rate/cost + EV split) on MAIN + sub-meter rows for
-        blocks whose `imp_rate` is implausibly high (> `threshold` £/kWh = pence-not-pounds — the
-        legacy 4.3.0 capped `compute_iog_split` bug, watch #15). Deliberate force-repair: it
-        OVERWRITES (unlike the fill-null sweep writers), justified because an inc rate above the
-        ceiling is unambiguous corruption, not data worth keeping — the same ÷100 as the §4a guard
-        and the manual data-fix. exc columns are LEFT (already £, the trusted reference). Idempotent
-        (`imp_rate > threshold` self-gates), NULL split columns stay NULL. Returns rows repaired."""
-        if not block_starts:
-            return 0
-        ph = ",".join("?" * len(block_starts))
-        with self._conn:
-            cur = self._conn.execute(
-                f"UPDATE blocks SET "
-                f"  imp_rate           = imp_rate/100.0, "
-                f"  imp_cost           = imp_cost/100.0, "
-                f"  imp_cost_remainder = imp_cost_remainder/100.0, "
-                f"  imp_cost_ev        = imp_cost_ev/100.0, "
-                f"  imp_rate_ev        = imp_rate_ev/100.0 "
-                f"WHERE block_start IN ({ph}) AND imp_rate > ?",
-                list(block_starts) + [float(threshold)])
-        return cur.rowcount
-
     def set_blocks_iog_split(self, updates) -> int:
         """Batch EV/Home split writer: many UPDATEs in ONE transaction (one fsync per
         chunk, not per block — same event-loop-friendliness as set_blocks_exc).
@@ -3503,41 +3480,6 @@ class BlockStore:
                     (kev, cev, rev, evb, hmb, bs, mid))
                 changed += cur.rowcount
         return changed
-
-    def repair_stale_exc(self, ratio_floor: float = 0.80, dry_run: bool = False) -> dict:
-        """One-off repair for STALE ex-VAT left by a pre-fix reconcile. The settlement
-        reconciliation used to rewrite imp_rate WITHOUT re-stamping imp_rate_exc/
-        imp_cost_exc, so a block reverted (e.g.) off-peak→peak kept the OLD band's exc
-        rate — an ex-VAT figure inconsistent with its inc rate, which shows a wrong rate
-        in the billing summary's EV/Home split and understates Total (exc).
-
-        Finds blocks whose stored exc/inc rate ratio is IMPLAUSIBLE (imp_rate_exc ÷
-        imp_rate < ratio_floor). A real VAT rate can never produce that: 5% VAT is a
-        ratio of 0.952, and even a 25% rate is 0.80 — so the floor catches only stale
-        rows, never a genuine VAT band. Re-derives imp_rate_exc/imp_cost_exc from the
-        inc figures ÷ (1+VAT) using the per-slot VAT calendar (exact for a flat charge,
-        correct across a VAT change). Idempotent — a repaired row is no longer
-        implausible, so a re-run is a no-op. Returns {examined, repaired, dry_run}."""
-        rows = self._conn.execute(
-            "SELECT block_start, meter_id, imp_rate, imp_rate_exc, imp_cost "
-            "FROM blocks WHERE imp_rate_exc IS NOT NULL AND imp_rate > 0 "
-            "AND (imp_rate_exc / imp_rate) < ?", (float(ratio_floor),)).fetchall()
-        updates = []
-        for r in rows:
-            vat = self.vat_rate_at(r["block_start"])
-            f = 1.0 / (1.0 + vat)
-            updates.append((round(r["imp_rate"] * f, 6),
-                            round((r["imp_cost"] or 0.0) * f, 6),
-                            r["block_start"], r["meter_id"]))
-        if updates and not dry_run:
-            with self._conn:
-                for nre, nce, bs, mid in updates:
-                    self._conn.execute(
-                        "UPDATE blocks SET imp_rate_exc = ?, imp_cost_exc = ?, "
-                        "exc_source = 'tariff-repair' "
-                        "WHERE block_start = ? AND meter_id = ?", (nre, nce, bs, mid))
-        return {"examined": len(rows),
-                "repaired": (0 if dry_run else len(updates)), "dry_run": dry_run}
 
     # ── BL-27 priced segments — the block's grid import as priced slices ─────────────
 

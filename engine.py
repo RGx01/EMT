@@ -4713,7 +4713,6 @@ def _fetch_carbon_intensity(postcode: str) -> list:
 _CARBON_BACKFILL_MARKER = "carbon_backfill_state"   # store_meta key
 _CARBON_RETRY_HOURS = 24                             # cool-down before re-attempting gaps
 _carbon_backfill_running = False                    # in-process re-entry guard
-_exc_backfill_running = False                       # 4.2 exc backfill re-entry guard
 _delete_active = False                              # a delete/purge job is mutating blocks
 
 
@@ -5116,70 +5115,6 @@ def _maybe_backfill_historical_carbon() -> None:
 
 
 # DEPRECATED — remove in 5.0.0 (BL-33): one-time pre-4.4.0 legacy migration; retired once 5.0.0 requires a 4.4.0-migrated DB.
-def _maybe_backfill_historical_exc() -> None:
-    """Schedule the one-shot 4.2 ex-VAT historical backfill if API tariff data is
-    available and it hasn't completed. Safe to call repeatedly (engine startup +
-    post-import verify) — guarded by an in-process flag and the persistent done
-    marker; a no-op once done or without kraken discovery. Dispatched as a loop TASK
-    so all BlockStore access stays on the event-loop thread (single SQLite
-    connection), exactly like the carbon backfill."""
-    global _exc_backfill_running
-    try:
-        if _store is None or _exc_backfill_running:
-            return
-        if not kraken_available():
-            logger.info("exc backfill: deferred — supplier API not ready yet "
-                        "(no kraken discovery); will retry")
-            return
-        if api_import_running() or delete_in_progress():
-            logger.info("exc backfill: deferred — import/delete job active; will retry")
-            return
-        _m = _store.get_meta(_EXC_BACKFILL_MARKER, {}) or {}
-        # Done ONLY counts if it completed at the current coverage scope. A prior run
-        # done at a narrower scope (e.g. imported-only, before scope 2 added settled
-        # live blocks) must still be scheduled so _run_historical_exc_backfill can
-        # re-arm and fill the newly-covered blocks — otherwise this gate would swallow
-        # the re-arm before it ever runs.
-        if _m.get("done") and int(_m.get("scope") or 1) >= _EXC_BACKFILL_SCOPE:
-            return   # already complete at the current scope — silent
-        import asyncio as _aio
-        try:
-            loop = _aio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is None:
-            return
-
-        async def _task():
-            global _exc_backfill_running
-            import asyncio as _aio2
-            try:
-                # Drain to completion in THIS session. `_run_historical_exc_backfill`
-                # does one bounded pass (max_blocks) then returns; loop the passes,
-                # breathing between them, until the marker is `done`. Previously only
-                # one pass ran per engine startup, so a history larger than the pass
-                # cap stalled mid-way and stayed approximate until the next restart
-                # (prod: cursor stuck at 2024-09-15, everything after ≈). Each pass
-                # yields internally (chunk sleeps); the inter-pass sleep keeps the HA
-                # heartbeat/polls responsive. Hard pass-cap is a safety net only.
-                for _ in range(500):
-                    await _run_historical_exc_backfill()
-                    if (_store.get_meta(_EXC_BACKFILL_MARKER, {}) or {}).get("done"):
-                        break
-                    await _aio2.sleep(_EXC_BACKFILL_PASS_PACE)   # breathe between passes
-            except Exception as e:
-                logger.warning("_maybe_backfill_historical_exc: worker failed: %s", e)
-            finally:
-                _exc_backfill_running = False
-
-        _exc_backfill_running = True
-        logger.info("exc backfill: scheduling historical ex-VAT pass")
-        loop.create_task(_task())
-    except Exception as e:
-        logger.warning("_maybe_backfill_historical_exc: schedule failed: %s", e)
-        _exc_backfill_running = False
-
-
 def _ci_slot_plausible(mix, intensity, ci_index) -> bool:
     """BL-38: reject a physically-impossible regional generation-mix / intensity slot.
 
@@ -7002,37 +6937,6 @@ def _exc_rate_for_block(rate_segs, start, stored_inc_rate):
     return None
 
 
-_EXC_BACKFILL_MARKER = "exc_backfill_state"   # store_meta key
-# Coverage-scope version of the exc backfill. Bump when the set of blocks it fills
-# widens, so an instance that already ran (and marked itself done) at a narrower
-# scope re-arms for the new blocks instead of skipping them forever.
-#   1 = historically-imported blocks only (source LIKE 'imported%')
-#   2 = + settled live blocks (imp_kwh_api IS NOT NULL) captured before ex-VAT
-#       existed and already DCC-settled, so settlement capture won't re-stamp them
-_EXC_BACKFILL_SCOPE = 2
-_EXC_BACKFILL_PASS_PACE = 1.0   # seconds between drain passes (test-overridable)
-
-
-def _reprice_sweep_done() -> bool:
-    """True once the unified reprice-history sweep (P3.3b) has completed a full pass — used by
-    the legacy backfill net-alarm below."""
-    try:
-        return bool((_store.get_meta(_REPRICE_HISTORY_MARKER, {}) or {}).get("done"))
-    except Exception:
-        return False
-
-
-def _net_alarm(name: str, filled: int) -> None:
-    """P3.3c soak alarm: warn when a legacy backfill fills blocks the unified sweep should have
-    already covered. Zero of these across a soak (incl. imports) ⇒ the sweep is complete ⇒ safe
-    to retire the three legacy backfills."""
-    if filled and _reprice_sweep_done():
-        logger.warning("NET-ALARM (P3.3c soak): %s backfill filled %d block(s) AFTER the "
-                       "reprice-history sweep completed — the sweep is INCOMPLETE for these; do "
-                       "NOT retire the legacy backfills yet. Please report the date range.",
-                       name, filled)
-
-
 def reprice_history_conformance(from_iso: str, to_iso: str,
                                 meter_id: str = "electricity_main",
                                 limit: int = 200000, *, rate_segs) -> dict:
@@ -7132,282 +7036,7 @@ def reprice_history_conformance(from_iso: str, to_iso: str,
 
 
 # DEPRECATED — remove in 5.0.0 (BL-33): one-time pre-4.4.0 legacy migration; retired once 5.0.0 requires a 4.4.0-migrated DB.
-async def _run_historical_exc_backfill(max_blocks: int = 20000,
-                                       batch: int = 500,
-                                       pace_s: float = 0.02) -> int:
-    """One-shot EX-VAT historical backfill (4.2). For every imported block that
-    carries energy but no ex-VAT cost yet, compute cost_exc = kWh × the tariff's
-    published ex-VAT rate for that slot and persist it in place. Additive only — the
-    inc columns and the Total Bill are never touched. Idempotent (fills NULL exc
-    only), resumable (persistent cursor), a no-op without API tariff coverage.
-    Returns blocks filled this invocation.
-
-    Uses the tariff agreements (GraphQL) + the stored per-block kWh — NO per-slot
-    Measurements re-fetch, so no re-import. Reconstruction, not reconciliation: it
-    reproduces the bill's ex-VAT to ~0.1p (validated), which is the intended basis;
-    a slot the tariff can't cover is left NULL for the view's inc÷1.05 fallback.
-
-    COOPERATIVE: this runs on the engine loop thread (single SQLite connection), so
-    it must NOT hog it. Each `batch` of blocks is written in ONE transaction (not one
-    commit per block) and the loop is yielded (`await asyncio.sleep(pace_s)`) between
-    batches — otherwise the fsync-per-block loop over tens of thousands of blocks
-    blocked the loop for minutes, starving the HA WebSocket heartbeat (disconnect
-    storm) and timing out in-flight GraphQL polls."""
-    global _store
-    import asyncio as _aio
-    from datetime import datetime as _dt, timezone as _tz
-    if _store is None or not kraken_available():
-        return 0
-    state = _store.get_meta(_EXC_BACKFILL_MARKER, {}) or {}
-    # Re-arm ONLY a PRIOR run that completed at a narrower coverage scope (scope 2
-    # added settled live blocks captured before ex-VAT existed). `state` is truthy
-    # only when a marker already exists, so a fresh install (empty marker) just runs
-    # once at the current scope with no re-arm log. A pre-versioning marker has no
-    # 'scope' key → treated as scope 1 (that's exactly the instance that needs it).
-    # Drop done + cursor (keep the filled tally); the paging query filters
-    # imp_cost_exc IS NULL, so the re-scan only revisits still-missing blocks.
-    if state and int(state.get("scope") or 1) < _EXC_BACKFILL_SCOPE:
-        logger.info("exc backfill: coverage scope widened to %d — re-arming to fill "
-                    "settled live blocks captured before ex-VAT existed",
-                    _EXC_BACKFILL_SCOPE)
-        state = {"filled": int(state.get("filled") or 0)}
-    if state.get("done") or delete_in_progress():
-        return 0
-    try:
-        rate_segs = await _build_channel_rate_segs("import")
-    except Exception as e:
-        logger.warning("_run_historical_exc_backfill: rate schedule build failed: %s", e)
-        return 0
-    if not _exc_segs(rate_segs):
-        logger.info("_run_historical_exc_backfill: no ex-VAT tariff coverage; skipping")
-        return 0
-
-    _remaining0 = _store.count_import_blocks_missing_exc()
-    if _remaining0 == 0:
-        _store.set_meta(_EXC_BACKFILL_MARKER,
-                        {"done": True, "scope": _EXC_BACKFILL_SCOPE,
-                         "filled": int(state.get("filled") or 0),
-                         "uncovered": 0,
-                         "completed_at": _dt.now(_tz.utc).replace(tzinfo=None).isoformat()})
-        logger.info("exc backfill: nothing to do — all import blocks already carry ex-VAT")
-        return 0
-    logger.info("exc backfill: starting — %d import block(s) missing ex-VAT", _remaining0)
-
-    _now_iso = lambda: _dt.now(_tz.utc).replace(tzinfo=None).isoformat()
-    filled = 0
-    scanned = 0
-    cursor = state.get("cursor")
-    total_filled = int(state.get("filled") or 0)
-    reached_end = False
-    while scanned < max_blocks:
-        rows = _store.get_import_blocks_missing_exc(limit=batch, after_start=cursor)
-        if not rows:
-            reached_end = True
-            break
-        updates = []
-        for r in rows:
-            cursor = r["start"]
-            scanned += 1
-            kwh = r.get("kwh") or 0.0
-            exc_rate = _exc_rate_for_block(rate_segs, cursor, r.get("rate"))
-            if exc_rate is None:
-                continue          # uncovered — leave NULL for the inc÷1.05 fallback
-            updates.append((cursor, r["meter_id"], round(kwh * exc_rate, 6),
-                            exc_rate, "tariff"))
-        if updates:
-            try:
-                filled += _store.set_blocks_exc(updates)   # one transaction / chunk
-            except Exception as e:
-                logger.warning("_run_historical_exc_backfill: chunk persist failed "
-                               "(cursor=%s): %s", cursor, e)
-        _store.set_meta(_EXC_BACKFILL_MARKER,
-                        {"cursor": cursor, "scope": _EXC_BACKFILL_SCOPE,
-                         "filled": total_filled + filled})
-        if len(rows) < batch:
-            reached_end = True
-            break
-        await _aio.sleep(pace_s)   # yield to the loop (HA heartbeat, polls, charts)
-    total_filled += filled
-    if reached_end:
-        _store.set_meta(_EXC_BACKFILL_MARKER,
-                        {"done": True, "scope": _EXC_BACKFILL_SCOPE,
-                         "filled": total_filled,
-                         "uncovered": _store.count_import_blocks_missing_exc(),
-                         "completed_at": _now_iso()})
-    logger.info("exc backfill: filled %d block(s) this pass%s",
-                filled, " — complete" if reached_end else " (resuming next pass)")
-    _net_alarm("exc", filled)
-    return filled
-
-
-_IOG_SPLIT_BACKFILL_MARKER = "iog_split_backfill_state"   # store_meta key
-# Coverage-scope version of the IOG house/EV split backfill. Bump when the fill
-# logic widens (e.g. capped re-pricing added) so an instance that already ran at a
-# narrower scope re-arms instead of skipping forever.
-#   1 = additive EV/Home carve only (no inc re-pricing) — the billing-summary primer
-_IOG_SPLIT_BACKFILL_SCOPE = 1
-_IOG_SPLIT_BACKFILL_PASS_PACE = 1.0   # seconds between drain passes (test-overridable)
-_iog_split_backfill_running = False   # BL-9 split backfill re-entry guard
-
-
 # DEPRECATED — remove in 5.0.0 (BL-33): one-time pre-4.4.0 legacy migration; retired once 5.0.0 requires a 4.4.0-migrated DB.
-async def _run_historical_iog_split_backfill(max_blocks: int = 20000,
-                                             batch: int = 500,
-                                             pace_s: float = 0.02) -> int:
-    """One-shot IOG house/EV split historical backfill (BL-9). The split seam
-    (_apply_iog_split) only fires when a block is finalised or repriced at settlement,
-    so every block priced BEFORE the split shipped — the whole existing dispatch
-    history, and anything already DCC-settled — has no EV/Home columns and the billing
-    summary shows no split. This walks those blocks and carves the split in place.
-
-    ADDITIVE ONLY: it writes just imp_kwh_ev/imp_cost_ev/imp_rate_ev and the two band
-    columns; it NEVER re-prices imp_rate/imp_cost, so the settled inc bill stays
-    byte-identical. (On a capped tariff the forward seam re-prices new blocks; whether
-    to retroactively re-price settled capped history is a separate decision — hence
-    scope 1.) Idempotent (fills NULL split only), resumable (persistent cursor),
-    cooperative (one transaction per chunk, yields between batches like the exc
-    backfill). A no-op when the import rate schedule isn't ready yet (deferred, not
-    marked done) or there's no dispatch history (marked done — nothing to carve).
-    Returns blocks filled this invocation."""
-    global _store
-    import asyncio as _aio
-    from datetime import datetime as _dt, timezone as _tz
-    if _store is None:
-        return 0
-    state = _store.get_meta(_IOG_SPLIT_BACKFILL_MARKER, {}) or {}
-    if state and int(state.get("scope") or 1) < _IOG_SPLIT_BACKFILL_SCOPE:
-        logger.info("iog split backfill: coverage scope widened to %d — re-arming",
-                    _IOG_SPLIT_BACKFILL_SCOPE)
-        state = {"filled": int(state.get("filled") or 0)}
-    if state.get("done") or delete_in_progress():
-        return 0
-    # The carve needs the import rate schedule; it populates async at startup. Without
-    # it _apply_iog_split no-ops, so run it too early and we'd fill nothing then wrongly
-    # mark done. Defer (return without a done marker) until the schedule is ready.
-    _isched = _kraken_rate_schedules.get("import")
-    if _isched is None or _isched.is_empty():
-        logger.info("iog split backfill: import schedule not ready — deferring")
-        return 0
-
-    _remaining0 = _store.count_blocks_missing_iog_split()
-    if _remaining0 == 0:
-        _store.set_meta(_IOG_SPLIT_BACKFILL_MARKER,
-                        {"done": True, "scope": _IOG_SPLIT_BACKFILL_SCOPE,
-                         "filled": int(state.get("filled") or 0),
-                         "completed_at": _dt.now(_tz.utc).replace(tzinfo=None).isoformat()})
-        logger.info("iog split backfill: nothing to carve — no dispatched blocks "
-                    "missing the EV/Home split")
-        return 0
-    logger.info("iog split backfill: starting — %d dispatched block(s) missing the "
-                "EV/Home split", _remaining0)
-
-    _now_iso = lambda: _dt.now(_tz.utc).replace(tzinfo=None).isoformat()
-    tz_name = _iog_site_tz()
-    filled = 0
-    scanned = 0
-    cursor = state.get("cursor")
-    total_filled = int(state.get("filled") or 0)
-    reached_end = False
-    while scanned < max_blocks:
-        rows = _store.get_blocks_missing_iog_split(limit=batch, after_start=cursor)
-        if not rows:
-            reached_end = True
-            break
-        updates = []
-        for r in rows:
-            cursor = r["start"]
-            scanned += 1
-            kwh = r.get("kwh") or 0.0
-            rate = r.get("rate") or 0.0
-            tmp: dict = {}
-            try:
-                _apply_iog_split(tmp, cursor, "", kwh, rate, tz_name)
-            except Exception as e:
-                logger.warning("iog split backfill: carve failed (start=%s): %s",
-                               cursor, e)
-                continue
-            if tmp.get("kwh_ev") is None:
-                continue          # no EV this slot — leave NULL, cursor walks past it
-            updates.append((cursor, r["meter_id"], tmp.get("kwh_ev"),
-                            tmp.get("cost_ev"), tmp.get("rate_ev"),
-                            tmp.get("ev_band"), tmp.get("home_band")))
-        if updates:
-            try:
-                filled += _store.set_blocks_iog_split(updates)   # one transaction / chunk
-            except Exception as e:
-                logger.warning("_run_historical_iog_split_backfill: chunk persist failed "
-                               "(cursor=%s): %s", cursor, e)
-        _store.set_meta(_IOG_SPLIT_BACKFILL_MARKER,
-                        {"cursor": cursor, "scope": _IOG_SPLIT_BACKFILL_SCOPE,
-                         "filled": total_filled + filled})
-        if len(rows) < batch:
-            reached_end = True
-            break
-        await _aio.sleep(pace_s)   # yield to the loop (HA heartbeat, polls, charts)
-    total_filled += filled
-    if reached_end:
-        _store.set_meta(_IOG_SPLIT_BACKFILL_MARKER,
-                        {"done": True, "scope": _IOG_SPLIT_BACKFILL_SCOPE,
-                         "filled": total_filled, "completed_at": _now_iso()})
-    logger.info("iog split backfill: carved %d block(s) this pass%s",
-                filled, " — complete" if reached_end else " (resuming next pass)")
-    _net_alarm("iog_split", filled)
-    return filled
-
-
-# DEPRECATED — remove in 5.0.0 (BL-33): one-time pre-4.4.0 legacy migration; retired once 5.0.0 requires a 4.4.0-migrated DB.
-def _maybe_backfill_historical_iog_split() -> None:
-    """Schedule the one-shot BL-9 IOG split backfill as a loop TASK (all BlockStore
-    access stays on the event-loop thread — single SQLite connection — exactly like
-    the exc backfill). Guarded by an in-process flag and the persistent done marker;
-    a no-op once done, without kraken discovery, or while an import/delete is active."""
-    global _iog_split_backfill_running
-    try:
-        if _store is None or _iog_split_backfill_running:
-            return
-        if not kraken_available():
-            logger.info("iog split backfill: deferred — supplier API not ready yet; "
-                        "will retry")
-            return
-        if api_import_running() or delete_in_progress():
-            logger.info("iog split backfill: deferred — import/delete job active; "
-                        "will retry")
-            return
-        _m = _store.get_meta(_IOG_SPLIT_BACKFILL_MARKER, {}) or {}
-        if _m.get("done") and int(_m.get("scope") or 1) >= _IOG_SPLIT_BACKFILL_SCOPE:
-            return   # already complete at the current scope — silent
-        import asyncio as _aio
-        try:
-            loop = _aio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is None:
-            return
-
-        async def _task():
-            global _iog_split_backfill_running
-            import asyncio as _aio2
-            try:
-                # Drain to completion in THIS session: each pass is bounded (max_blocks);
-                # loop the passes (breathing between them) until the marker is `done`.
-                for _ in range(500):
-                    await _run_historical_iog_split_backfill()
-                    if (_store.get_meta(_IOG_SPLIT_BACKFILL_MARKER, {}) or {}).get("done"):
-                        break
-                    await _aio2.sleep(_IOG_SPLIT_BACKFILL_PASS_PACE)
-            except Exception as e:
-                logger.warning("_maybe_backfill_historical_iog_split: worker failed: %s", e)
-            finally:
-                _iog_split_backfill_running = False
-
-        _iog_split_backfill_running = True
-        logger.info("iog split backfill: scheduling historical EV/Home carve pass")
-        loop.create_task(_task())
-    except Exception as e:
-        logger.warning("_maybe_backfill_historical_iog_split: schedule failed: %s", e)
-        _iog_split_backfill_running = False
-
-
 @job("iog_split_carve")
 async def run_iog_split_carve(max_blocks: int = 2000) -> dict:
     """Recurring PREDICTED EV/Home carve for UNSETTLED dispatched blocks whose completed
@@ -7469,12 +7098,6 @@ async def run_iog_split_carve(max_blocks: int = 2000) -> dict:
     return {"ok": True, "carved": carved}
 
 
-_SEGMENT_BACKFILL_MARKER = "segment_backfill_state"   # store_meta key
-_SEGMENT_BACKFILL_SCOPE = 1
-_SEGMENT_BACKFILL_PASS_PACE = 1.0
-_segment_backfill_running = False
-
-
 def _reprice_history_block(row, tz_name: "str | None", rate_segs):
     """P3.3a (Phase 3 / Option A) — the UNIFIED historical re-price for one import block.
 
@@ -7505,13 +7128,12 @@ def _reprice_history_block(row, tz_name: "str | None", rate_segs):
     rate = float(_g(row, "imp_rate", _g(row, "rate", 0.0)) or 0.0)
     cost = float(_g(row, "imp_cost", _g(row, "cost", 0.0)) or 0.0)
     imp_ch = {"kwh": kwh, "rate": rate, "cost": cost}
-    # Q1 SELF-HEAL (watch #15): a legacy PENCE block (the 4.3.0 capped compute_iog_split bug) — its
-    # stored inc is 100x. Normalise to £ HERE, before ANY split/exc/segment derivation, and update
-    # the local vars, so everything downstream (overlay, split, exc, segments) is £ and consistent.
-    # Guard-gated (fires only on an inc rate > £3/kWh = unambiguous corruption) → healthy blocks are
-    # byte-identical. The driver force-repairs the stored COLUMNS for flagged blocks.
-    _healed = _sanitise_inc_units(imp_ch, start)
-    if _healed:
+    # The unit guard (§4a): an inc rate in pence is normalised to £ before any derivation, so
+    # split, exc and segments are built in £. Healthy blocks are byte-identical. The sweep no
+    # longer force-repairs a legacy pence block's stored COLUMNS (the 4.3.0 cap bug): v5 admits no
+    # such database (import spec §9, the units gate), so the guard firing here means one got past
+    # it — its UNIT-GUARD warning is the signal (BL-33, 4 Oct 2026).
+    if _sanitise_inc_units(imp_ch, start):
         rate = imp_ch["rate"]; cost = imp_ch["cost"]
     if rate:
         try:
@@ -7538,7 +7160,6 @@ def _reprice_history_block(row, tz_name: "str | None", rate_segs):
     imp_ch["_start"] = start
     imp_ch["_meter_id"] = meter_id
     imp_ch["_needs_segments"] = _g(row, "needs_segments", 1)
-    imp_ch["_healed_pence"] = _healed
     return imp_ch
 
 
@@ -7548,19 +7169,15 @@ def _reprice_history_blocks(rows, tz_name: "str | None", rate_segs) -> dict:
     (`set_blocks_exc`), and `_persist_block_segments` (seam segments, else the legacy fallback —
     so uncapped blocks stay byte-identical to the segment backfill). Returns per-aspect counts.
 
-    NOT yet scheduled — P3.3a ships this alongside the three live backfills (which stay the
-    active path); P3.3b flips the schedulers to it once conformance is proven on real data, and
-    P3.3c retires the three."""
+    The sole historical derivation since P3.3c; the three legacy backfills it replaced are
+    deleted (BL-33)."""
     if _store is None:
         return {"split": 0, "exc": 0, "segments": 0}
     split_updates, exc_updates = [], []
     seg_n = 0
-    heal_starts = []                       # Q1: blocks whose stored inc was pence → force-repair
     for row in rows:
         ch = _reprice_history_block(row, tz_name, rate_segs)
         start, meter_id = ch.get("_start"), ch.get("_meter_id")
-        if ch.get("_healed_pence") and start:
-            heal_starts.append(start)
         if ch.get("kwh_ev") is not None:
             split_updates.append((start, meter_id, ch.get("kwh_ev"), ch.get("cost_ev"),
                                   ch.get("rate_ev"), ch.get("ev_band"), ch.get("home_band")))
@@ -7578,15 +7195,7 @@ def _reprice_history_blocks(rows, tz_name: "str | None", rate_segs) -> dict:
                 logger.warning("_reprice_history_blocks: segment persist failed (%s): %s", start, e)
     split_n = _store.set_blocks_iog_split(split_updates) if split_updates else 0
     exc_n = _store.set_blocks_exc(exc_updates) if exc_updates else 0
-    # Q1 SELF-HEAL: force-repair the stored INC columns of legacy pence blocks (main + sub-meters)
-    # so the columns match the £ segments just written. Overwrites by design; gated on the §4a
-    # guard having fired (imp_rate > £3). exc columns left (already £). Loud so the completion
-    # report / logs surface it.
-    heal_n = _store.repair_pence_inc_blocks(heal_starts) if heal_starts else 0
-    if heal_n:
-        logger.warning("PENCE-SELF-HEAL: repaired %d row(s) across %d block(s) stored in pence "
-                       "(legacy 4.3.0 cap bug) — inc columns ÷100 to £", heal_n, len(set(heal_starts)))
-    return {"split": split_n, "exc": exc_n, "segments": seg_n, "healed": heal_n}
+    return {"split": split_n, "exc": exc_n, "segments": seg_n}
 
 
 _REPRICE_HISTORY_MARKER = "reprice_history_state"   # store_meta key (P3.3b)
@@ -7608,7 +7217,7 @@ def _next_sweep_chunk(limit: int, elapsed_s: float, ceiling: int) -> int:
 _reprice_history_running = False
 
 
-def _write_reprice_report(*, verdict: str, swept: int, healed: int, skipped: int,
+def _write_reprice_report(*, verdict: str, swept: int, skipped: int,
                           stalled: int, remaining: int, scope: int) -> None:
     """Q3: write a single-file JSON summary of the reprice-history sweep to the share dir at
     completion, so a user who suspects a bad upgrade can send ONE file. Overwrites in place
@@ -7623,7 +7232,6 @@ def _write_reprice_report(*, verdict: str, swept: int, healed: int, skipped: int
             "generated_at": _now,
             "verdict": verdict,                       # "complete" | "stalled"
             "blocks_swept": int(swept),
-            "blocks_self_healed_pence": int(healed),  # legacy 4.3.0 cap pence blocks auto-repaired
             "chunks_skipped": int(skipped),           # transient chunk failures over the run
             "blocks_unpriced_stalled": int(stalled),  # could not be priced (verdict=stalled)
             "blocks_remaining": int(remaining),
@@ -7631,7 +7239,6 @@ def _write_reprice_report(*, verdict: str, swept: int, healed: int, skipped: int
             "summary": (
                 ("Re-pricing complete" if verdict == "complete" else "Re-pricing STALLED")
                 + f": {int(swept)} block(s) processed"
-                + (f"; {int(healed)} auto-repaired from a legacy pence bug" if healed else "")
                 + (f"; {int(skipped)} chunk(s) transiently skipped" if skipped else "")
                 + (f"; {int(stalled)} could NOT be priced — please send this file to support"
                    if stalled else "")
@@ -7655,8 +7262,8 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
     up priced by the SAME model as finalise/settlement — replacing the three separate
     `_run_historical_{exc,iog_split,segment}_backfill` sweeps.
 
-    Runs PRIMARY (before the three legacy backfills, which stay in place as a verification net
-    until P3.3c). Deferred until the import rate schedule is ready (the seam no-ops without it),
+    The sole historical derivation; the three legacy backfills it replaced are deleted (BL-33).
+    Deferred until the import rate schedule is ready (the seam no-ops without it),
     idempotent (only blocks missing segments), resumable (persistent cursor), cooperative (one
     transaction per chunk, yields between batches). Conformance is byte-identical to the legacy
     backfills on uncapped/non-IOG and realigns capped history to the forward model (design §10a).
@@ -7711,11 +7318,9 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
             rate_segs = None
     swept = 0
     skipped = 0
-    healed = 0
     scanned = 0
     cursor = state.get("cursor")
     total = int(state.get("swept") or 0)
-    total_healed = int(state.get("healed") or 0)
     total_skipped = int(state.get("skipped") or 0)
     reached_end = False
     # Chunks are sized by TIME, not count: `batch` is only the ceiling. A fixed 500 held
@@ -7739,9 +7344,8 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
             reached_end = True
             break
         try:
-            _r = _reprice_history_blocks(rows, tz_name, rate_segs)   # split + exc + segments
+            _reprice_history_blocks(rows, tz_name, rate_segs)   # split + exc + segments
             swept += len(rows)
-            healed += int((_r or {}).get("healed") or 0)
         except Exception as e:
             skipped += len(rows)
             logger.warning("REPRICE-SWEEP-CHUNK-FAIL: cursor=%s size=%d (skipped this pass: %d): %s",
@@ -7750,7 +7354,7 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
         scanned += len(rows)
         _store.set_meta(_REPRICE_HISTORY_MARKER,
                         {"cursor": cursor, "scope": _REPRICE_HISTORY_SCOPE,
-                         "swept": total + swept, "healed": total_healed + healed,
+                         "swept": total + swept,
                          "skipped": total_skipped + skipped})
         if len(rows) < limit:
             reached_end = True
@@ -7758,7 +7362,6 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
         limit = _next_sweep_chunk(limit, time.monotonic() - _t0, batch)
         await _aio.sleep(pace_s)
     total += swept
-    total_healed += healed
     total_skipped += skipped
     # HARDENING (watch #10 — ROOT CAUSE): the old code marked 'done' on reaching the end of the
     # page cursor. But a chunk that THREW was skipped PAST the cursor (cursor advances in the loop
@@ -7770,10 +7373,10 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
     if reached_end and _remaining == 0:
         _store.set_meta(_REPRICE_HISTORY_MARKER,
                         {"done": True, "scope": _REPRICE_HISTORY_SCOPE, "swept": total,
-                         "healed": total_healed, "skipped": total_skipped,
+                         "skipped": total_skipped,
                          "completed_at": _now_iso()})
         logger.info("reprice-history sweep: swept %d block(s) this pass — complete", swept)
-        _write_reprice_report(verdict="complete", swept=total, healed=total_healed,
+        _write_reprice_report(verdict="complete", swept=total,
                               skipped=total_skipped, stalled=0, remaining=0,
                               scope=_REPRICE_HISTORY_SCOPE)
     elif reached_end and _remaining < _remaining_before:
@@ -7793,12 +7396,12 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
         # coverage gate). Mark done (so we don't busy-spin re-arming) but LOUDLY.
         _store.set_meta(_REPRICE_HISTORY_MARKER,
                         {"done": True, "scope": _REPRICE_HISTORY_SCOPE, "swept": total,
-                         "healed": total_healed, "skipped": total_skipped,
+                         "skipped": total_skipped,
                          "stalled": _remaining, "completed_at": _now_iso()})
         logger.error("REPRICE-SWEEP-STALLED: %d block(s) could not be repriced after a full sweep "
                      "(persistent errors — see REPRICE-SWEEP-CHUNK-FAIL). Segment pricing is "
                      "degraded for ranges containing them until resolved.", _remaining)
-        _write_reprice_report(verdict="stalled", swept=total, healed=total_healed,
+        _write_reprice_report(verdict="stalled", swept=total,
                               skipped=total_skipped, stalled=_remaining, remaining=_remaining,
                               scope=_REPRICE_HISTORY_SCOPE)
     else:
@@ -7842,10 +7445,9 @@ async def run_reprice_history_sweep_to_done(max_passes: int = 500) -> None:
 
 
 def _maybe_reprice_history() -> None:
-    """Schedule the P3.3b unified reprice-history sweep as a loop task (mirrors the segment
-    backfill scheduler). PRIMARY derivation for history; the three legacy backfills run after
-    as a no-op net until P3.3c retires them. No-op once done, without kraken, or during
-    import/delete."""
+    """Schedule the P3.3b unified reprice-history sweep as a loop task — the sole historical
+    derivation (the three legacy backfills it replaced are deleted, BL-33). No-op once done,
+    without kraken, or during import/delete."""
     global _reprice_history_running
     try:
         if _store is None or _reprice_history_running:
@@ -7893,171 +7495,6 @@ def _maybe_reprice_history() -> None:
         _reprice_history_running = False
 
 
-# DEPRECATED — remove in 5.0.0 (BL-33): one-time pre-4.4.0 legacy migration; retired once 5.0.0 requires a 4.4.0-migrated DB.
-async def _run_historical_segment_backfill(max_blocks: int = 20000,
-                                           batch: int = 500,
-                                           pace_s: float = 0.02) -> int:
-    """One-shot BL-27 backfill: derive the priced `block_segments` for existing history
-    from the legacy imp_* columns, so migrated readers project identical figures. Pure
-    derivation (pricing_segments.segments_from_legacy) — no API/schedule needed; the exc
-    ratio comes from the stored imp_rate_exc or the VAT calendar. Paged, resumable (cursor),
-    idempotent (only fills blocks with no segments yet), cooperative (one transaction per
-    chunk, yields between batches). Returns blocks filled this invocation."""
-    global _store
-    import asyncio as _aio
-    import pricing_segments as _ps
-    from datetime import datetime as _dt, timezone as _tz
-    if _store is None:
-        return 0
-    state = _store.get_meta(_SEGMENT_BACKFILL_MARKER, {}) or {}
-    if state.get("done") or delete_in_progress():
-        return 0
-    _remaining0 = _store.count_blocks_missing_segments()
-    if _remaining0 == 0:
-        _store.set_meta(_SEGMENT_BACKFILL_MARKER,
-                        {"done": True, "scope": _SEGMENT_BACKFILL_SCOPE,
-                         "filled": int(state.get("filled") or 0),
-                         "completed_at": _dt.now(_tz.utc).replace(tzinfo=None).isoformat()})
-        logger.info("segment backfill: nothing to do — all blocks already have segments")
-        return 0
-    logger.info("segment backfill: starting — %d block(s) missing priced segments",
-                _remaining0)
-    _now_iso = lambda: _dt.now(_tz.utc).replace(tzinfo=None).isoformat()
-    filled = 0
-    scanned = 0
-    cursor = state.get("cursor")
-    total_filled = int(state.get("filled") or 0)
-    reached_end = False
-    while scanned < max_blocks:
-        rows = _store.get_blocks_missing_segments(limit=batch, after_start=cursor)
-        if not rows:
-            reached_end = True
-            break
-        for r in rows:
-            cursor = r["block_start"]
-            scanned += 1
-            _rate = r.get("imp_rate") or 0.0
-            _rexc = r.get("imp_rate_exc")
-            if _rexc is not None and _rate:
-                _ratio = float(_rexc) / _rate
-            else:
-                try:
-                    _ratio = 1.0 / (1.0 + _store.vat_rate_at(cursor))
-                except Exception:
-                    _ratio = None
-            try:
-                segs = _ps.segments_from_legacy(
-                    imp_kwh=r.get("imp_kwh") or 0.0, imp_cost=r.get("imp_cost") or 0.0,
-                    imp_rate=_rate, kwh_ev=r.get("imp_kwh_ev"), cost_ev=r.get("imp_cost_ev"),
-                    rate_ev=r.get("imp_rate_ev"), ev_band=r.get("imp_ev_band"),
-                    home_band=r.get("imp_home_band"), exc_ratio=_ratio)
-                if segs:
-                    _store.set_block_segments(cursor, r["meter_id"], segs)
-                    filled += 1
-            except Exception as e:
-                logger.warning("segment backfill: derive failed (start=%s): %s", cursor, e)
-        _store.set_meta(_SEGMENT_BACKFILL_MARKER,
-                        {"cursor": cursor, "scope": _SEGMENT_BACKFILL_SCOPE,
-                         "filled": total_filled + filled})
-        if len(rows) < batch:
-            reached_end = True
-            break
-        await _aio.sleep(pace_s)
-    total_filled += filled
-    if reached_end:
-        _store.set_meta(_SEGMENT_BACKFILL_MARKER,
-                        {"done": True, "scope": _SEGMENT_BACKFILL_SCOPE,
-                         "filled": total_filled, "completed_at": _now_iso()})
-    logger.info("segment backfill: filled %d block(s) this pass%s",
-                filled, " — complete" if reached_end else " (resuming next pass)")
-    _net_alarm("segment", filled)
-    return filled
-
-
-def _maybe_backfill_historical_segments() -> None:
-    """Schedule the one-shot BL-27 segment backfill as a loop TASK (BlockStore access stays
-    on the event-loop thread, like the other backfills). No-op once done or during a
-    delete. Runs for every account — segments are the general model, not IOG-specific."""
-    global _segment_backfill_running
-    try:
-        if _store is None or _segment_backfill_running or delete_in_progress():
-            return
-        _m = _store.get_meta(_SEGMENT_BACKFILL_MARKER, {}) or {}
-        if _m.get("done") and int(_m.get("scope") or 1) >= _SEGMENT_BACKFILL_SCOPE:
-            return
-        # ORDERING: segments derive from the legacy split columns (segments_from_legacy reads
-        # imp_kwh_ev). If they were built before the IOG split backfill fills imp_kwh_ev, a
-        # dispatched block gets a HOUSE-ONLY segment and — being idempotent — never gets the EV
-        # split (columns say split, segments say house-only: a run-order-dependent divergence).
-        # Defer until the split backfill is done (it marks done immediately on a non-IOG /
-        # no-dispatch account, so this only waits where it must).
-        _iog_m = _store.get_meta(_IOG_SPLIT_BACKFILL_MARKER, {}) or {}
-        if not (_iog_m.get("done") and int(_iog_m.get("scope") or 1) >= _IOG_SPLIT_BACKFILL_SCOPE):
-            logger.info("segment backfill: deferred — IOG split backfill not complete yet "
-                        "(segments derive from the split columns); will retry")
-            return
-        import asyncio as _aio
-        try:
-            loop = _aio.get_running_loop()
-        except RuntimeError:
-            loop = None
-        if loop is None:
-            return
-
-        async def _task():
-            global _segment_backfill_running
-            import asyncio as _aio2
-            try:
-                for _ in range(500):
-                    await _run_historical_segment_backfill()
-                    if (_store.get_meta(_SEGMENT_BACKFILL_MARKER, {}) or {}).get("done"):
-                        break
-                    await _aio2.sleep(_SEGMENT_BACKFILL_PASS_PACE)
-            except Exception as e:
-                logger.warning("_maybe_backfill_historical_segments: worker failed: %s", e)
-            finally:
-                _segment_backfill_running = False
-
-        _segment_backfill_running = True
-        logger.info("segment backfill: scheduling historical priced-segment derivation")
-        loop.create_task(_task())
-    except Exception as e:
-        logger.warning("_maybe_backfill_historical_segments: schedule failed: %s", e)
-        _segment_backfill_running = False
-
-
-_STALE_EXC_REPAIR_MARKER = "stale_exc_repair_state"   # store_meta key
-# Bump if the repair's detection widens, so a prior narrower run re-arms.
-_STALE_EXC_REPAIR_SCOPE = 1
-
-
-def _maybe_repair_stale_exc() -> None:
-    """Run the one-off stale-ex-VAT repair (block_store.repair_stale_exc) once per
-    install. A pre-fix reconcile rewrote imp_rate without re-stamping the ex-VAT
-    columns, leaving some blocks with an ex-VAT rate inconsistent with their inc rate;
-    this re-derives them from the VAT calendar. It's a single indexed-free scan plus a
-    handful of UPDATEs (the implausible rows are rare), so it runs inline rather than as
-    a cooperative drain. No-op once the done marker is set, or while a delete is active."""
-    try:
-        if _store is None or delete_in_progress():
-            return
-        _m = _store.get_meta(_STALE_EXC_REPAIR_MARKER, {}) or {}
-        if _m.get("done") and int(_m.get("scope") or 1) >= _STALE_EXC_REPAIR_SCOPE:
-            return   # already complete at the current scope — silent
-        res = _store.repair_stale_exc()
-        from datetime import datetime as _dt, timezone as _tz
-        _store.set_meta(_STALE_EXC_REPAIR_MARKER,
-                        {"done": True, "scope": _STALE_EXC_REPAIR_SCOPE,
-                         "repaired": res["repaired"], "examined": res["examined"],
-                         "completed_at": _dt.now(_tz.utc).replace(tzinfo=None).isoformat()})
-        if res["repaired"]:
-            logger.info("stale exc repair: re-derived ex-VAT on %d block(s) with an "
-                        "implausible exc rate (stale from a pre-fix reconcile)",
-                        res["repaired"])
-        else:
-            logger.info("stale exc repair: none found — all ex-VAT rates consistent")
-    except Exception as e:
-        logger.warning("_maybe_repair_stale_exc: %s", e)
 
 
 def _billed_rate(rate_segs, start, off_peak, meas_cost, kwh,
@@ -9714,8 +9151,8 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
         except Exception as _rh_e:
             logger.warning("verify pricing: reprice-history sweep failed (non-fatal): %s", _rh_e)
 
-        # P3.3c: the forced sweep above now covers exc (superset coverage), so the legacy exc
-        # backfill is no longer run here — it stays defined but dormant.
+        # P3.3c: the forced sweep above covers exc (superset coverage); the legacy exc backfill
+        # it replaced is deleted (BL-33).
 
         # A bulk import finishing is the strongest signal there is that settlement work is
         # waiting, and nothing rang the bell: _maybe_drain_measured_history() is only reached
@@ -11731,7 +11168,6 @@ def _chart_cap_from():
         return dt.astimezone(ZoneInfo(_iog_site_tz())).date().isoformat()
     except Exception:
         return floor[:10]
-
 
 
 async def measure_settled_dispatched_blocks() -> dict:
@@ -14012,9 +13448,9 @@ async def _engine_startup_impl(ha: HAClient):
     # P3.3c (Phase 3 / Option A): the UNIFIED reprice-history sweep is now the SOLE historical
     # derivation for imported/history blocks — split + exc + segments in one pass via the forward
     # seam, over the SUPERSET of the retired backfills' coverage (missing segments OR
-    # imported/settled missing exc). The three legacy backfills
-    # (_run_historical_{exc,iog_split,segment}_backfill + their _maybe_* schedulers) remain DEFINED
-    # but are no longer scheduled (dormant net, to be deleted a release later). Structural safety:
+    # imported/settled missing exc). The three legacy backfills it replaced
+    # (_run_historical_{exc,iog_split,segment}_backfill and their _maybe_* schedulers) were kept as a
+    # dormant net and deleted in v5 (BL-33, 4 Oct 2026). Structural safety:
     # the sweep only ever fills nulls (split/exc writers are fill-null-only) and only (re)writes
     # segments where absent, so it can never regress a value the old backfills set (see design §10a).
     try:
@@ -14022,13 +13458,6 @@ async def _engine_startup_impl(ha: HAClient):
     except Exception as _rh_e:
         logger.warning("engine_startup: reprice-history sweep schedule failed: %s", _rh_e)
 
-    # One-off stale-ex-VAT repair — fixes blocks whose ex-VAT rate was left
-    # inconsistent with their inc rate by a pre-fix reconcile (which rewrote imp_rate
-    # but not imp_rate_exc). Cheap single scan + a handful of UPDATEs; no-op once done.
-    try:
-        _maybe_repair_stale_exc()
-    except Exception as _sr_e:
-        logger.warning("engine_startup: stale exc repair failed: %s", _sr_e)
 
     # ── One-time region-timeline reconciliation (historical-carbon foundation) ──
     # With the API just discovered, stamp the DNO region (OUTWARD CODE ONLY) onto

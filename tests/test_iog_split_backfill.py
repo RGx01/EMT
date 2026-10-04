@@ -3,14 +3,13 @@ test_iog_split_backfill.py — BL-9 one-shot historical EV/Home split backfill.
 
 The split seam only fires on finalise/settlement, so blocks priced before it shipped
 (existing dispatch history + already-settled blocks) carry no EV/Home columns and the
-billing summary shows no split. _run_historical_iog_split_backfill walks those blocks
-and carves the split IN PLACE. Guarantees checked here:
+billing summary shows no split. The re-price sweep now carves it (the one-shot backfill,
+_run_historical_iog_split_backfill, and its runner tests were deleted — BL-33, 4 Oct
+2026). Guarantees checked here, on the store side the sweep shares:
   * the block_store paging finds dispatched MAIN-meter blocks missing the split, and
     excludes sub-meters and non-dispatched slots;
   * the batch writer is additive + idempotent (never touches imp_rate/imp_cost);
-  * the runner carves the split, leaves the inc bill byte-identical, and marks done;
-  * it defers (no done marker) when the import schedule isn't ready, and marks done
-    with nothing to do when there's no dispatch history.
+  * the lightweight fetch surfaces the split, and omits it when null.
 """
 
 import asyncio
@@ -113,32 +112,6 @@ class TestIogSplitBackfill(unittest.TestCase):
         self.assertEqual(self._row()["imp_kwh_ev"], 2.0)
 
     # ── runner ───────────────────────────────────────────────────────────────
-    def test_runner_carves_and_marks_done(self):
-        filled = _run(engine._run_historical_iog_split_backfill())
-        self.assertEqual(filled, 1)
-        r = self._row()
-        self.assertEqual(r["imp_kwh_ev"], 2.0)
-        self.assertAlmostEqual(r["imp_cost_ev"], 0.10)   # 2 * 0.05 overlay
-        self.assertAlmostEqual(r["imp_cost"], 0.15)      # inc byte-identical
-        st = self.st.get_meta(engine._IOG_SPLIT_BACKFILL_MARKER, {})
-        self.assertTrue(st.get("done"))
-        # Idempotent second run: nothing left, still done.
-        self.assertEqual(_run(engine._run_historical_iog_split_backfill()), 0)
-
-    def test_runner_defers_without_import_schedule(self):
-        engine._kraken_rate_schedules = {}               # not ready
-        self.assertEqual(_run(engine._run_historical_iog_split_backfill()), 0)
-        st = self.st.get_meta(engine._IOG_SPLIT_BACKFILL_MARKER, {}) or {}
-        self.assertFalse(st.get("done"))                 # deferred, NOT done
-        self.assertIsNone(self._row()["imp_kwh_ev"])
-
-    def test_runner_no_dispatch_marks_done(self):
-        self.st._conn.execute("DELETE FROM dispatch_history")
-        self.st._conn.commit()
-        self.assertEqual(_run(engine._run_historical_iog_split_backfill()), 0)
-        st = self.st.get_meta(engine._IOG_SPLIT_BACKFILL_MARKER, {})
-        self.assertTrue(st.get("done"))
-
     # ── the render read-path surfaces the split (regression: the lightweight chart
     #    fetch omitted the columns, so 'Import — total grid' fell back to plain rows) ──
     def test_lightweight_fetch_surfaces_split(self):

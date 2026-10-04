@@ -284,10 +284,11 @@ credentials, and it comes last.
 
 ```
 PHASE 1 — file only, no credentials                PHASE 2 — after auth
-  1  no hot -wal sibling                             4  account stamp matches the
+  1  no hot -wal sibling                             6  account stamp matches the
   2  opens read-only; integrity clean                   credentials just supplied (§7)
   3  written_by >= FLOOR_VERSION
   4  supplier present and supported
+  5  inc rates in pounds, not pence
         ↓                                                    ↑
    supplier tells the wizard WHICH credential prompt to show ┘
 ```
@@ -372,12 +373,32 @@ necessary.
    as corruption", then "absence means there is nothing to bring across, refuse". Both destroy
    importable history.)*
 
+4. **Every priced main-meter import block is in pounds, not pence — judged against its own ex-VAT
+   figure.** *(Added 4 Oct 2026, with BL-33.)* The 4.3.0 IOG cap bug wrote some blocks' inc
+   columns in pence. v4's re-price sweep repaired them, and v5 deleted that repair — but gate 2 does
+   not cover it: the sweep needs the API and can be interrupted, so "stamped 4.5.19" does not prove it
+   ever finished. This gate does, from the file alone.
+
+   For each `electricity_main` import block with a rate and kWh: `ratio = imp_rate ÷ imp_rate_exc`
+   (or `imp_cost ÷ imp_cost_exc`), and `expected = 1 + VAT` on the block's date, from the VAT calendar
+   (seed plus the source's learned `vat_calendar`). **Refuse** if any block has `ratio ÷ expected > 10`,
+   naming the first such block and directing the user to open the database in v4 4.5.19 or later and
+   let the re-price sweep finish. No fixed price: each block is judged against its own canonical £
+   figure, so it holds on any tariff, Agile included.
+
+   *Measured, 4 Oct 2026:* on four real databases healthy blocks sit at `ratio ÷ expected` = 1.000 at
+   the median, worst deviation 4.8% (the 1 Oct 2026 VAT change); a pence block reads ~100, so the bound
+   leaves two orders of magnitude either side. Every priced main block on five databases carried the
+   exc figure it needs; a block without one is not judged by this gate (§G of the roadmap: after
+   authentication, a local tariff store can judge it against the published rate). 108 databases on
+   hand held 0 pence rows.
+
 **Phase 2 — only when *both* sides present an account identity** (the source is stamped per
 `get_db_account()`, and the target has credentials configured). Skipped otherwise, including on the
 diagnostic path where the recipient has deliberately disconnected — see "Importing a database you do
 not own" below:
 
-4. **The source's account stamp matches the account those credentials belong to** (§7).
+5. **The source's account stamp matches the account those credentials belong to** (§7).
 
    **A mismatch does not refuse the import.** v4 already faces this exact situation and answers it
    better than an earlier draft of this spec did — `kraken_account_mismatch()`:

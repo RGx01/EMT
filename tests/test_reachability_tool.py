@@ -91,13 +91,6 @@ class TestAgreesWithHandEstablishedCases(unittest.TestCase):
         self._dead("insert_read", "link_reads_to_block", "get_reads_for_block",
                    "get_reads_for_range", "purge_reads_older_than")
 
-    def test_legacy_backfills_are_unreachable(self):
-        """Retired in 4.5.x by unwiring rather than deleting — the pattern §4
-        exists to stop."""
-        self._dead("_maybe_backfill_historical_exc",
-                   "_maybe_backfill_historical_iog_split",
-                   "_maybe_backfill_historical_segments")
-
     def test_superseded_card_formatter_is_unreachable(self):
         self._dead("_format_billing")
 

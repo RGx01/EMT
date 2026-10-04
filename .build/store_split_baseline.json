@@ -67,8 +67,6 @@
     "relabel_segment_bands",
     "remove_attribution_run",
     "repair_device_rate_drift",
-    "repair_pence_inc_blocks",
-    "repair_stale_exc",
     "replace_ev_split",
     "reprice_imported_block",
     "reprice_imported_blocks_from_csv",
