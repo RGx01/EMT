@@ -2838,6 +2838,16 @@ def api_backup_list():
 _restore_job = {"status": "idle"}
 
 
+def _fsync_dir(path):
+    """fsync the directory holding `path`, so a rename into it is durable."""
+    try:
+        _dfd = os.open(os.path.dirname(path) or ".", os.O_RDONLY)
+        try: os.fsync(_dfd)
+        finally: os.close(_dfd)
+    except Exception:
+        pass
+
+
 def _atomic_restore_write(dest, fill):
     """Write `dest` atomically: fill a temp file, fsync it, then os.replace into
     place. An interrupted restore (e.g. the add-on being rebuilt/restarted
@@ -2852,13 +2862,7 @@ def _atomic_restore_write(dest, fill):
             _t.flush()
             os.fsync(_t.fileno())
         os.replace(tmp, dest)          # atomic on POSIX
-        # fsync the directory so the rename itself is durable
-        try:
-            _dfd = os.open(os.path.dirname(dest) or ".", os.O_RDONLY)
-            try: os.fsync(_dfd)
-            finally: os.close(_dfd)
-        except Exception:
-            pass
+        _fsync_dir(dest)
     finally:
         if os.path.exists(tmp):
             try: os.remove(tmp)
@@ -2943,6 +2947,28 @@ def api_backup_delete():
         return jsonify({"error": str(e)}), 500
 
 
+def _extract_restore_candidate(zipname, selected):
+    """Extract a backup zip's blocks.db beside the live one, for the import gate to
+    read before the swap; the swap then renames it into place. None when the zip has no
+    blocks.db, or the restore does not select it."""
+    import zipfile, shutil
+    if selected is not None and "blocks.db" not in selected:
+        return None
+    zip_path = f"{_share_backup_dir()}/backups/{zipname}"
+    if not os.path.exists(zip_path):
+        return None
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        for name in zf.namelist():
+            if os.path.basename(name) == "blocks.db":
+                out = os.path.join(DATA_DIR, "restore_candidate.db")
+                with zf.open(name) as src, open(out, "wb") as dst:
+                    shutil.copyfileobj(src, dst)
+                    dst.flush()
+                    os.fsync(dst.fileno())
+                return out
+    return None
+
+
 @job("restore", depends_on=("import",))
 def _restore_worker(zipname, selected, from_flat, staged=None):
     """Background restore worker (runs in its own thread; survives navigation).
@@ -2958,6 +2984,7 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
     def _step(s):
         _j["step"] = s
         logger.info("restore: %s", s)
+    _zip_candidate = None
     try:
         known = {"blocks.db", "blocks.json"}
 
@@ -2973,6 +3000,28 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
         _eng_r = _sys_r.modules.get("engine")
         if _eng_r and hasattr(_eng_r, "pause_engine"):
             _eng_r.pause_engine("backup restore")
+
+        # ── Step 1a: may this database be restored at all? (import spec §3) ──
+        # Before anything is stopped or backed up: a refusal leaves the live database,
+        # and any running import, exactly as they were. The zip's blocks.db is
+        # extracted once, here, and swapped in from the extracted copy below.
+        _step("checking the backup")
+        if staged:
+            _candidate = staged
+        elif from_flat:
+            _candidate = (f"{_share_backup_dir()}/blocks.db"
+                          if "blocks.db" in (selected or known) else None)
+        else:
+            _candidate = _extract_restore_candidate(zipname, selected)
+            _zip_candidate = _candidate
+        if _candidate and os.path.exists(_candidate):
+            import import_gate as _gate
+            _refusal = _gate.check(_candidate)
+            if _refusal:
+                logger.warning("restore refused: %s", _refusal)
+                _j["status"] = "error"
+                _j["error"] = _refusal
+                return
 
         # ── Step 1b: STOP any running API import before touching the DB ───────
         # The background import writes via the SQLite store on the engine loop.
@@ -3107,9 +3156,16 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
                     if selected is not None and basename not in selected:
                         continue
                     dest = os.path.join(DATA_DIR, basename)
-                    with zf.open(name) as zf_src:
-                        _atomic_write(dest,
-                                      lambda d, _s=zf_src: shutil.copyfileobj(_s, d))
+                    if basename == "blocks.db" and _zip_candidate:
+                        # the copy Step 1a extracted, fsynced and checked: rename it
+                        # into place (same directory, so atomic) rather than write
+                        # the database a second time
+                        os.replace(_zip_candidate, dest)
+                        _fsync_dir(dest)
+                    else:
+                        with zf.open(name) as zf_src:
+                            _atomic_write(dest,
+                                          lambda d, _s=zf_src: shutil.copyfileobj(_s, d))
                     restored.append(basename)
             logger.info("api_backup_restore: restored %s from %s", restored, zipname)
 
@@ -3214,6 +3270,12 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
             try: os.remove(staged)
             except Exception: pass
     finally:
+        if staged and _j.get("status") == "error" and os.path.exists(staged):
+            try: os.remove(staged)          # a refused upload is not kept
+            except Exception: pass
+        if _zip_candidate and os.path.exists(_zip_candidate):
+            try: os.remove(_zip_candidate)
+            except Exception: pass
         # Always resume engine — reset_store already called above on success,
         # but we must resume even if an exception occurred mid-restore
         import sys as _sys_fin
@@ -6858,7 +6920,11 @@ def api_import_from_zip():
         except Exception as _bke:
             logger.warning("api_import_from_zip: pre-import backup failed: %s", _bke)
 
-        with zipfile.ZipFile(zf_file.stream, "r") as zf:
+        # Open the zip from a file, not the upload stream: on Python 3.10 that stream is a
+        # SpooledTemporaryFile with no seekable(), which zipfile needs (added in 3.11).
+        _upload_zip = os.path.join(DATA_DIR, "upload_import.zip")
+        zf_file.save(_upload_zip)
+        with zipfile.ZipFile(_upload_zip, "r") as zf:
             names = {os.path.basename(n): n for n in zf.namelist() if os.path.basename(n) in known}
             logger.info("api_import_from_zip: zip contains %s", list(names.keys()))
 
@@ -6879,6 +6945,12 @@ def api_import_from_zip():
                     count = _tc.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]
                     _tc.close()
                     logger.info("api_import_from_zip: validated %d blocks in tmp file", count)
+                    import import_gate as _gate
+                    _refusal = _gate.check(tmp)
+                    if _refusal:
+                        os.remove(tmp)
+                        logger.warning("api_import_from_zip: refused: %s", _refusal)
+                        return jsonify({"error": _refusal}), 400
                     # Close web server store
                     if _store:
                         try: _store.close()
@@ -6941,6 +7013,10 @@ def api_import_from_zip():
         logger.error("api_import_from_zip: %s", e)
         return jsonify({"error": str(e)}), 500
     finally:
+        _upload_zip = os.path.join(DATA_DIR, "upload_import.zip")
+        if os.path.exists(_upload_zip):
+            try: os.remove(_upload_zip)
+            except Exception: pass
         import sys as _sys
         _eng = _sys.modules.get("engine")
         if _eng and hasattr(_eng, "resume_engine"):

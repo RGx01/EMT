@@ -2116,6 +2116,7 @@ class TestApiImportBlocksDb(unittest.TestCase):
             "currency_symbol": "£", "currency_code": "GBP",
             "postcode_prefix": "DE1",
         }, "channels": {"import": {}, "export": {}}}}})
+        store.set_meta("written_by", "4.5.20")     # above the import floor
         tmp = tempfile.mktemp(suffix=".db")
         try:
             store.backup(tmp)
