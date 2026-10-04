@@ -11350,22 +11350,6 @@ async def measure_settled_dispatched_blocks() -> dict:
             "mixed": n_mixed, "zero": n_zero, "absent": n_absent}
 
 
-def _review_band_reason(prior_band, new_band, prior_cost, new_cost) -> str:
-    """User-facing review text in BAND terms (peak / off-peak) rather than raw \u00a3 —
-    the band comes from the block's cost-derived rate (see apply_measured_to_block),
-    never the OFF_PEAK measurement label (which is reserved for smart-charge credits).
-    Names the transition when the band changed, or flags a same-band material \u00a3 gap."""
-    _n = {"off_peak": "off-peak", "peak": "peak", "mixed": "mixed"}
-    pb = _n.get(prior_band, "an unknown band")
-    nb = _n.get(new_band, "an unknown band")
-    if prior_band and new_band and prior_band != new_band:
-        return ("%s \u2192 %s: Octopus billed this slot at %s (\u00a3%.4f); EMT had it %s "
-                "(\u00a3%.4f). Applied to match the bill \u2014 verify it isn't an Octopus "
-                "billing error." % (pb, nb, nb, new_cost, pb, prior_cost))
-    return ("%s: Octopus billed \u00a3%.4f here vs EMT's \u00a3%.4f (same band, \u0394\u00a3%.4f) "
-            "\u2014 applied to match the bill; verify it isn't a billing error."
-            % (nb, new_cost, prior_cost, new_cost - prior_cost))
-
 
 _MEASURED_HISTORY_DRAIN_PACE = 0.4        # seconds between drain batches (test-overridable)
 # ONE settleability predicate, shared by every settlement pass (drain candidates, drain
@@ -12091,11 +12075,8 @@ async def reconcile_dispatch_overlay() -> dict:
         # so the block's price does not depend on any dispatch — there is nothing
         # to reconcile (a smart charge here, e.g. under the 6-hour cap, is priced
         # off-peak by the schedule regardless of whether it 'started'). Reverting
-        # would be a no-op and flagging it for review is a false positive. Skip,
-        # clearing any stale review flag a prior run may have set.
+        # would be a no-op. Skip.
         if abs(base - off_peak) < 1e-6:
-            if r["needs_review"]:
-                store.clear_block_review(bs)
             continue
         cur_rate = r["imp_rate"] or 0.0
         # The block's BAND, from its stored rate: whichever of this date's off-peak and
@@ -12143,32 +12124,18 @@ async def reconcile_dispatch_overlay() -> dict:
             n_settled_guard += 1
             continue
         if target == "review":
-            # A review flag invites a manual correction, but the correction tool
-            # can only touch DCC-settled blocks. Dispatch `completed` arrives at
-            # T+hours while DCC settlement is T+1/T+2, so a block can be decidable
-            # here yet not correctable. Defer the flag until the block is actually
-            # settled (imp_kwh_api present), so the review list only ever shows
-            # blocks the user can act on. (The automatic revert path needs no user
-            # action, so it is not gated this way.)
+            # Genuinely ambiguous: the price is left unchanged and nothing is flagged
+            # (BL-74, 4 Oct 2026). Cost settlement decides the block when Octopus
+            # bills it — the user sees what Octopus holds — so a review list asking a
+            # person to decide first was a question the bill answers. Counted and
+            # logged only; `deferred` is one not yet DCC-settled.
             if r["imp_kwh_api"] is None:
                 n_deferred += 1
-                # Retract any flag a prior run set before this gate existed — the
-                # block isn't ready for review until it settles.
-                if r["needs_review"]:
-                    store.clear_block_review(bs)
                 continue
             n_review += 1
-            # Genuinely ambiguous — price left unchanged, but flag it so the UI
-            # review list (BL-18) can surface it for a human decision. Idempotent:
-            # re-flagging just refreshes the reason.
-            store.flag_block_for_review(bs, reason)
-            logger.info("reconcile: %s REVIEW — %s (flagged, price unchanged)", bs, reason)
+            logger.info("reconcile: %s REVIEW — %s (price unchanged)", bs, reason)
             continue
         if target == "ok":
-            # Already correct. If it was previously flagged ambiguous and has since
-            # become decidable, clear the stale review flag.
-            if r["needs_review"]:
-                store.clear_block_review(bs)
             # BL-58b: derive the split band from the block's ACTUAL rate (nearer off_peak
             # or base), NOT `currently_off_peak` — a rounding variant of the off-peak rate
             # flips that flag and would stamp a peak label on an off-peak-rated block.

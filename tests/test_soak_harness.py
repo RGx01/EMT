@@ -57,7 +57,7 @@ class RouteSelection(unittest.TestCase):
         cls.routes = soak.discover_get_routes()
 
     def test_it_finds_the_read_surface(self):
-        self.assertGreater(len(self.routes), 60)
+        self.assertGreaterEqual(len(self.routes), 60)
         for r in ("/api/billing-source", "/api/periods", "/api/energy"):
             self.assertIn(r, self.routes)
 

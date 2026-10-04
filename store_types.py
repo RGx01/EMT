@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """137 read-only methods of BlockStore, and nothing else.
+    """135 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -61,7 +61,6 @@ class ReadStore:
             pass
 
     # ── bound read methods ──────────────────────────────────────────────────
-    AUTO_CORRECTION_REASONS = _BS.AUTO_CORRECTION_REASONS
     BACKFILL_INTERPOLATED = _BS.BACKFILL_INTERPOLATED
     BILL_ROW_COLUMNS = _BS.BILL_ROW_COLUMNS
     CHECKPOINT_MODES = _BS.CHECKPOINT_MODES
@@ -157,7 +156,6 @@ class ReadStore:
     get_dispatch_slot = _BS.get_dispatch_slot
     get_dispatch_slots_in_range = _BS.get_dispatch_slots_in_range
     get_dispatched_blocks_awaiting_measure = _BS.get_dispatched_blocks_awaiting_measure
-    get_drift_alerts = _BS.get_drift_alerts
     get_energy_blocks = _BS.get_energy_blocks
     get_energy_segments = _BS.get_energy_segments
     get_generation_mix = _BS.get_generation_mix
@@ -189,7 +187,6 @@ class ReadStore:
     get_reconcile_candidates = _BS.get_reconcile_candidates
     get_reprice_queue = _BS.get_reprice_queue
     get_retired_meters = _BS.get_retired_meters
-    get_review_blocks = _BS.get_review_blocks
     get_settings = _BS.get_settings
     get_settleable_blocks = _BS.get_settleable_blocks
     get_settled_blocks_missing_ev_split = _BS.get_settled_blocks_missing_ev_split
@@ -223,7 +220,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 104 writers.
+    """The full store: every read method, plus the 100 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or

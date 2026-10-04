@@ -10,7 +10,6 @@ Covers:
   - upsert_kraken_block classification (positive / over-threshold / zero / cad)
   - PASS 2 re-run queue: get_blocks_needing_pass2_rerun / clear_pass2_rerun_flag
   - Provisional timeout: get_timed_out_provisionals / finalise_timed_out_provisionals
-  - Drift alerts: get_drift_alerts / dismiss_drift_alerts
   - get_settled_to
 
 These methods touch only 3.0.0 columns/tables; the pre-3.0.0 suites
@@ -384,29 +383,6 @@ class TestProvisionalTimeout(_StoreBase):
         self._insert_block("2026-04-01T00:00:00", is_provisional=1, source="ha_sensor")
         self.assertEqual(
             len(self.store.get_timed_out_provisionals("2026-05-01T00:00:00")), 0)
-
-
-class TestDriftAlerts(_StoreBase):
-
-    def test_get_and_dismiss(self):
-        self._insert_block("2026-05-26T13:00:00", imp_kwh=3.089,
-                           imp_kwh_api=0.0, needs_review=1)
-        self._insert_block("2026-05-26T14:30:00", imp_kwh=2.847,
-                           imp_kwh_api=2.104, needs_review=1)
-        self._insert_block("2026-05-26T15:00:00", imp_kwh=1.0,
-                           imp_kwh_api=1.0, needs_review=0)
-        alerts = self.store.get_drift_alerts()
-        self.assertEqual(len(alerts), 2)
-        self.assertAlmostEqual(alerts[0]["delta_pct"], -100.0, places=1)
-        self.assertAlmostEqual(alerts[1]["delta_pct"], -26.1, places=1)
-        n = self.store.dismiss_drift_alerts([alerts[0]["block_id"]])
-        self.assertEqual(n, 1)
-        self.assertEqual(len(self.store.get_drift_alerts()), 1)
-        self.store.dismiss_drift_alerts()  # dismiss all
-        self.assertEqual(len(self.store.get_drift_alerts()), 0)
-
-    def test_dismiss_empty_list_noop(self):
-        self.assertEqual(self.store.dismiss_drift_alerts([]), 0)
 
 
 class TestSettledTo(_StoreBase):

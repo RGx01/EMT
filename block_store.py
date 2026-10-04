@@ -5162,171 +5162,6 @@ class BlockStore:
         self._conn.commit()
         return cur.rowcount
 
-    def get_drift_alerts(self) -> list:
-        """Blocks flagged needs_review = 1, for the review list (BL-18).
-
-        Returns dicts with the CAD/Mini figure, the DCC figure, the delta % and
-        a stored review_reason so the UI table can render directly. Informational
-        only — billing_source already determines which figure drives the numbers.
-        A flag can come from CAD/DCC settlement drift or from an ambiguous
-        dispatch-reconcile decision; review_reason (when set) names which.
-        """
-        rows = self._conn.execute(
-            """SELECT id, block_start, meter_id, imp_kwh, imp_kwh_api, review_reason
-               FROM blocks
-               WHERE needs_review = 1
-               ORDER BY block_start"""
-        ).fetchall()
-        alerts = []
-        for r in rows:
-            cad = r["imp_kwh"]
-            dcc = r["imp_kwh_api"]
-            if cad is not None and cad != 0 and dcc is not None:
-                delta_pct = (dcc - cad) / cad * 100.0
-            elif dcc == 0.0:
-                delta_pct = -100.0 if (cad or 0) > 0 else 0.0
-            else:
-                delta_pct = None
-            reason = r["review_reason"]
-            if not reason:
-                # Legacy drift flag with no stored reason — synthesise one.
-                if delta_pct is not None:
-                    reason = f"CAD/DCC settlement drift {delta_pct:+.0f}%"
-                else:
-                    reason = "flagged for review"
-            alerts.append({
-                "block_id": r["id"],
-                "block_start": r["block_start"],
-                "meter_id": r["meter_id"],
-                "cad_kwh": cad,
-                "dcc_kwh": dcc,
-                "delta_pct": delta_pct,
-                "reason": reason,
-            })
-        return alerts
-
-    # Auto-CORRECTION review reasons: the integrity sweeps clamp a physically
-    # impossible figure to the trustworthy grid-bounded value deterministically —
-    # there's no second opinion for a user to give and no tool to give it with, so
-    # these are NOT rate-actionable. They stay flagged in the DB as a dormant record
-    # (and in the startup log), but never appear in the IOG pricing correction panel.
-    AUTO_CORRECTION_REASONS = (
-        "implausible sub-meter kWh clamped (#307 lost opener)",
-        "register dip-and-recover phantom clamped",
-    )
-
-    def get_review_blocks(self) -> list:
-        """BL-18: blocks flagged for review with a stored reason — i.e. the
-        rate-actionable dispatch-reconcile ambiguities that the Corrections
-        review list surfaces.
-
-        Deliberately EXCLUDES:
-          • bare needs_review flags with no review_reason (CAD/DCC settlement
-            drift): drift is a kWh disagreement, and the correction tool only edits
-            rates, so there is no action to take on it here;
-          • auto-CORRECTION reasons (the integrity sweeps): deterministic repairs,
-            not rate tasks — they'd only clutter the IOG pricing panel;
-          • rows with a null/empty block_start (legacy/malformed flags), which can't
-            be located or acted on anyway.
-        Excluded flags stay set as a dormant diagnostic, just not shown as a task.
-        """
-        _ph = ",".join("?" * len(self.AUTO_CORRECTION_REASONS))
-        rows = self._conn.execute(
-            f"""SELECT id, block_start, meter_id, review_reason
-               FROM blocks
-               WHERE needs_review = 1 AND review_reason IS NOT NULL
-                 AND block_start IS NOT NULL AND TRIM(block_start) <> ''
-                 AND review_reason NOT IN ({_ph})
-               ORDER BY block_start""",
-            self.AUTO_CORRECTION_REASONS
-        ).fetchall()
-        return [{
-            "block_id": r["id"],
-            "block_start": r["block_start"],
-            "meter_id": r["meter_id"],
-            "reason": r["review_reason"],
-        } for r in rows]
-
-    def dismiss_review_blocks(self, block_ids: Optional[list] = None) -> int:
-        """BL-18: clear review flags shown in the Corrections list. Scoped to
-        dispatch-origin flags (review_reason present) so a 'dismiss all' never
-        silently touches the dormant drift diagnostics. Returns rows affected.
-        """
-        # #322: mark the block DISMISSED (sticky) as well as clearing the live flag,
-        # so the dispatch reconcile can't resurrect it on the next re-scan.
-        if block_ids is None:
-            cur = self._conn.execute(
-                "UPDATE blocks SET needs_review = 0, review_reason = NULL, review_dismissed = 1 "
-                "WHERE needs_review = 1 AND review_reason IS NOT NULL")
-        elif not block_ids:
-            return 0
-        else:
-            placeholders = ",".join("?" for _ in block_ids)
-            cur = self._conn.execute(
-                "UPDATE blocks SET needs_review = 0, review_reason = NULL, review_dismissed = 1 "
-                f"WHERE id IN ({placeholders}) AND review_reason IS NOT NULL",
-                tuple(block_ids))
-        self._conn.commit()
-        return cur.rowcount
-
-    def flag_block_for_review(self, block_start: str, reason: str,
-                              meter_id: str = "electricity_main") -> int:
-        """BL-18: flag a single block (main meter row) for review with a reason.
-
-        Used by the dispatch reconciliation when a block is genuinely ambiguous
-        (substantial completed energy without a `started` signal). Idempotent —
-        re-flagging refreshes the reason. Returns rows affected.
-
-        #322: NEVER re-flags a block the user has already dismissed
-        (`review_dismissed = 1`) — otherwise every reconcile re-scan resurrected the
-        same ambiguous blocks (typically Ohme replan-without-charge slots), asking the
-        user to review them again and again. Repricing is unaffected — only the review
-        prompt is suppressed. To surface it again, the user re-flags via a correction.
-        """
-        cur = self._conn.execute(
-            "UPDATE blocks SET needs_review = 1, review_reason = ? "
-            "WHERE block_start = ? AND meter_id = ? AND review_dismissed = 0",
-            (reason, block_start, meter_id))
-        self._conn.commit()
-        return cur.rowcount
-
-    def clear_block_review(self, block_start: str,
-                           meter_id: str = "electricity_main") -> int:
-        """BL-18: clear the review flag + reason for a single block.
-
-        Called when a previously-ambiguous block is later resolved — either the
-        reconciliation itself reaches a definite verdict, or the user applies a
-        manual correction. Returns rows affected.
-        """
-        cur = self._conn.execute(
-            "UPDATE blocks SET needs_review = 0, review_reason = NULL "
-            "WHERE block_start = ? AND meter_id = ? AND needs_review = 1",
-            (block_start, meter_id))
-        self._conn.commit()
-        return cur.rowcount
-
-    def dismiss_drift_alerts(self, block_ids: Optional[list] = None) -> int:
-        """Clear needs_review. All flagged blocks, or a specific subset.
-
-        Returns rows affected. Dismissing does not change any billing figure —
-        it only removes the investigate flag.
-        """
-        if block_ids is None:
-            cur = self._conn.execute(
-                "UPDATE blocks SET needs_review = 0, review_reason = NULL "
-                "WHERE needs_review = 1"
-            )
-        elif not block_ids:
-            return 0
-        else:
-            placeholders = ",".join("?" for _ in block_ids)
-            cur = self._conn.execute(
-                "UPDATE blocks SET needs_review = 0, review_reason = NULL "
-                f"WHERE id IN ({placeholders})",
-                tuple(block_ids),
-            )
-        self._conn.commit()
-        return cur.rowcount
 
     def get_settled_to(self, main_meter_id: str) -> Optional[str]:
         """Latest block_start that is fully DCC-settled for the main meter.
@@ -7656,7 +7491,7 @@ class BlockStore:
             "       b.imp_kwh, b.imp_kwh_grid, b.imp_cost, b.imp_rate, "
             "       b.exp_kwh, b.exp_cost, b.exp_rate, "
             "       b.carbon_g, b.carbon_intensity_g, b.standing_charge, "
-            "       b.interpolated, b.source, b.rate_source, b.needs_review, "
+            "       b.interpolated, b.source, b.rate_source, "
             "       (b.source LIKE 'imported%' OR b.imp_kwh_api IS NOT NULL) AS kwh_authoritative, "
             # the export channel's own: export settles separately (and later) — the
             # Heatmaps tab's API-coverage view splits by channel.
@@ -8017,9 +7852,6 @@ class BlockStore:
         query already gated on it: once this runs, the drain's backlog can never
         revisit the block.
 
-        The verdict also clears `needs_review` / `review_reason` -- the bill is a
-        definite answer and supersedes an earlier ambiguous one.
-
         `kwh_ev` / `cost_ev` are passed as None when there is no EV split, rather
         than 0.0. NULL means "no split"; 0.0 would mean "a split of nothing", and
         the jobs that back-attribute a late-arriving dispatch select on
@@ -8028,7 +7860,7 @@ class BlockStore:
         with self._conn:
             cur = self._conn.execute(
                 "UPDATE blocks SET imp_rate = ?, imp_cost = ?, rate_source = 'measured', "
-                "rate_reconciled = 1, needs_review = 0, review_reason = NULL, "
+                "rate_reconciled = 1, "
                 "imp_rate_exc = ?, imp_cost_exc = ?, exc_source = 'tariff', "
                 "imp_kwh_ev = ?, imp_rate_ev = ?, imp_cost_ev = ?, imp_ev_band = ?, "
                 "imp_home_band = ?, imp_cost_remainder = ? "
@@ -8208,9 +8040,6 @@ class BlockStore:
         so the block would disagree with itself until something else happened to
         rewrite it.
 
-        The main row's update also clears `needs_review` / `review_reason`: a
-        definite verdict supersedes an earlier ambiguous one.
-
         Sub-meters bill on `COALESCE(imp_kwh_grid, imp_kwh)` -- the GRID portion,
         not the meter's own total, which for a battery or V2X device differ.
         `rate_corrected = 0` keeps a user's manual correction out of it.
@@ -8218,7 +8047,6 @@ class BlockStore:
         with self._conn:
             main = self._conn.execute(
                 "UPDATE blocks SET imp_rate = ?, rate_reconciled = 1, "
-                "needs_review = 0, review_reason = NULL, "
                 "imp_cost = ROUND(COALESCE(imp_kwh, 0) * ?, 6), "
                 "imp_rate_exc = ?, "
                 "imp_cost_exc = ROUND(COALESCE(imp_kwh, 0) * ?, 6), "
@@ -8268,7 +8096,7 @@ class BlockStore:
         Returns dicts.
         """
         rows = self._conn.execute(
-            """SELECT b.block_start, b.imp_kwh, b.imp_rate, b.needs_review,
+            """SELECT b.block_start, b.imp_kwh, b.imp_rate,
                       b.imp_kwh_api, b.interpolated
                FROM blocks b
                WHERE b.meter_id = ? AND b.rate_corrected = 0

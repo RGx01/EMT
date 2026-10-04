@@ -699,11 +699,12 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
                              ("2020-01-01T20:00:00",)).fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.323092, places=5)   # untouched
 
-    async def test_completed_with_planned_not_started_flagged_review(self):
+    async def test_completed_with_planned_not_started_is_review_but_not_flagged(self):
         from block_store import BlockStore
         st = BlockStore(":memory:")
         # §11.1: online (planned seen) but never started, substantial completed →
-        # ambiguous (bump vs paused smart): price left unchanged, flagged for review.
+        # ambiguous (bump vs paused smart): price left unchanged, counted as review.
+        # BL-74: no flag is written — cost settlement decides it.
         self._seed(st, "2020-01-01T20:00:00", 0.05493, ["planned", "completed"],
                    completed_kwh=-3.0)
         res = await self._run(st)
@@ -713,13 +714,13 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
             "SELECT imp_rate, needs_review FROM blocks WHERE block_start=?",
             ("2020-01-01T20:00:00",)).fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.05493, places=5)   # unchanged
-        self.assertEqual(r["needs_review"], 1)                     # flagged
+        self.assertEqual(r["needs_review"], 0)                     # BL-74: not flagged
 
-    async def test_resolved_clears_prior_review_flag(self):
+    async def test_resolved_leaves_a_stored_flag(self):
         from block_store import BlockStore
         st = BlockStore(":memory:")
         # A block once flagged ambiguous that now resolves (started arrives ->
-        # restore off-peak) must have its stale review flag cleared.
+        # restore off-peak) is repriced; BL-74: its stored flag is left as it was.
         self._seed(st, "2020-01-01T13:30:00", 0.323092,
                    ["planned", "started", "completed"])
         st._conn.execute(
@@ -731,8 +732,7 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         r = st._conn.execute(
             "SELECT needs_review, review_reason FROM blocks WHERE block_start=?",
             ("2020-01-01T13:30:00",)).fetchone()
-        self.assertEqual(r["needs_review"], 0)
-        self.assertIsNone(r["review_reason"])
+        self.assertEqual((r["needs_review"], r["review_reason"]), (1, "stale"))
 
     async def test_recent_completed_only_deferred_until_settled(self):
         # A completed-only slot still inside the settle window is DEFERRED — the
@@ -787,7 +787,7 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
                              ("2020-01-01T02:00:00",)).fetchone()
         self.assertEqual(r["needs_review"], 0)
 
-    async def test_offpeak_window_clears_stale_flag(self):
+    async def test_offpeak_window_leaves_a_stored_flag(self):
         from block_store import BlockStore
         st = BlockStore(":memory:")
         self._seed(st, "2020-01-01T02:00:00", 0.05493, ["planned", "completed"],
@@ -799,13 +799,13 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         await self._run_offpeak_sched(st)
         r = st._conn.execute("SELECT needs_review FROM blocks WHERE block_start=?",
                              ("2020-01-01T02:00:00",)).fetchone()
-        self.assertEqual(r["needs_review"], 0)      # stale flag cleared
+        self.assertEqual(r["needs_review"], 1)      # BL-74: history, untouched
 
-    async def test_ok_clears_prior_review_flag(self):
+    async def test_ok_leaves_a_stored_flag(self):
         from block_store import BlockStore
         st = BlockStore(":memory:")
-        # Already correctly off-peak with started -> 'ok'; a stale review flag on
-        # such a decidable block is cleared.
+        # Already correctly off-peak with started -> 'ok'. BL-74: a stored review
+        # flag is history and is left as it was.
         self._seed(st, "2020-01-01T13:30:00", 0.05493,
                    ["planned", "started", "completed"])
         st._conn.execute(
@@ -816,7 +816,7 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         r = st._conn.execute(
             "SELECT needs_review FROM blocks WHERE block_start=?",
             ("2020-01-01T13:30:00",)).fetchone()
-        self.assertEqual(r["needs_review"], 0)
+        self.assertEqual(r["needs_review"], 1)
 
     async def test_negligible_completed_reverts_to_peak_when_unsettled(self):
         from block_store import BlockStore

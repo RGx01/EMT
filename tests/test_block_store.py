@@ -415,115 +415,6 @@ class TestGridInvariantSweepBL19(unittest.TestCase):
         self.assertEqual(self.store.flag_grid_invariant_violations(), 0)
 
 
-class TestReviewFlagsBL18(unittest.TestCase):
-    """BL-18 — per-block review flag with a stored reason, and its clear paths."""
-
-    def setUp(self):
-        self.store = new_store()
-        self.store.insert_config_period(EXAMPLE_CONFIG)
-        self.store.append_block(make_block("2026-07-10T16:30:00", imp_kwh=0.157))
-
-    def test_flag_sets_reason_and_surfaces(self):
-        reason = "dispatch ambiguous: completed 2.10 kWh without started"
-        self.assertEqual(
-            self.store.flag_block_for_review("2026-07-10T16:30:00", reason), 1)
-        alerts = self.store.get_drift_alerts()
-        self.assertEqual(len(alerts), 1)
-        self.assertEqual(alerts[0]["reason"], reason)
-        self.assertEqual(alerts[0]["block_start"], "2026-07-10T16:30:00")
-
-    def test_clear_block_review(self):
-        self.store.flag_block_for_review("2026-07-10T16:30:00", "x")
-        self.assertEqual(self.store.clear_block_review("2026-07-10T16:30:00"), 1)
-        self.assertEqual(self.store.get_drift_alerts(), [])
-
-    def test_dismiss_nulls_reason(self):
-        self.store.flag_block_for_review("2026-07-10T16:30:00", "x")
-        bid = self.store.get_drift_alerts()[0]["block_id"]
-        self.store.dismiss_drift_alerts([bid])
-        row = self.store._conn.execute(
-            "SELECT needs_review, review_reason FROM blocks WHERE id=?", (bid,)).fetchone()
-        self.assertEqual(row["needs_review"], 0)
-        self.assertIsNone(row["review_reason"])
-
-    def test_legacy_drift_reason_synthesised(self):
-        # A flag with no stored reason but a CAD/DCC delta gets a synthesised one.
-        self.store._conn.execute(
-            "UPDATE blocks SET needs_review=1, imp_kwh=1.0, imp_kwh_api=0.5 "
-            "WHERE meter_id='electricity_main'")
-        self.store._conn.commit()
-        self.assertTrue(
-            self.store.get_drift_alerts()[0]["reason"].startswith("CAD/DCC settlement drift"))
-
-    def _add_drift_flag(self, start="2026-07-11T00:00:00"):
-        # A drift-style flag: needs_review set, NO review_reason.
-        self.store.append_block(make_block(start, imp_kwh=1.0))
-        self.store._conn.execute(
-            "UPDATE blocks SET needs_review=1, imp_kwh_api=0.5, review_reason=NULL "
-            "WHERE block_start=? AND meter_id='electricity_main'", (start,))
-        self.store._conn.commit()
-
-    def test_get_review_blocks_excludes_drift(self):
-        self.store.flag_block_for_review("2026-07-10T16:30:00", "dispatch ambiguous")
-        self._add_drift_flag()
-        rows = self.store.get_review_blocks()
-        self.assertEqual(len(rows), 1)                       # only the dispatch flag
-        self.assertEqual(rows[0]["block_start"], "2026-07-10T16:30:00")
-        self.assertEqual(rows[0]["reason"], "dispatch ambiguous")
-
-    def test_get_review_blocks_excludes_auto_corrections_and_null_rows(self):
-        # The IOG pricing panel is for rate tasks only. Auto-CORRECTION reasons (the
-        # integrity sweeps) and malformed/legacy rows (null-ish block_start) must NOT
-        # appear — they're not rate-actionable.
-        self.store.flag_block_for_review("2026-07-10T16:30:00", "dispatch ambiguous")
-        self.store.append_block(make_block("2026-07-12T00:00:00", imp_kwh=1.0))
-        for reason in BlockStore.AUTO_CORRECTION_REASONS:
-            self.store._conn.execute(
-                "UPDATE blocks SET needs_review=1, review_reason=? "
-                "WHERE block_start='2026-07-12T00:00:00' AND meter_id='electricity_main'",
-                (reason,))
-        # a legacy/malformed flag with an empty block_start
-        self.store._conn.execute(
-            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "needs_review, review_reason) VALUES ('', '', 'electricity_main', "
-            "(SELECT id FROM config_periods LIMIT 1), 1, 'flagged')")
-        self.store._conn.commit()
-        rows = self.store.get_review_blocks()
-        self.assertEqual([r["reason"] for r in rows], ["dispatch ambiguous"])  # only the rate task
-
-    def test_dismiss_review_blocks_leaves_drift(self):
-        self.store.flag_block_for_review("2026-07-10T16:30:00", "dispatch ambiguous")
-        self._add_drift_flag("2026-07-11T00:00:00")
-        cleared = self.store.dismiss_review_blocks(None)     # dismiss all (scoped)
-        self.assertEqual(cleared, 1)                         # only the dispatch flag
-        self.assertEqual(self.store.get_review_blocks(), [])
-        drift = self.store._conn.execute(
-            "SELECT needs_review FROM blocks WHERE block_start='2026-07-11T00:00:00' "
-            "AND meter_id='electricity_main'").fetchone()
-        self.assertEqual(drift["needs_review"], 1)           # dormant drift survives
-
-    def test_dismissed_block_is_not_reflagged(self):
-        # #322: once dismissed, the dispatch reconcile must not resurrect the same
-        # ambiguous block on its next re-scan.
-        bs = "2026-07-10T16:30:00"
-        self.store.flag_block_for_review(bs, "dispatch ambiguous")
-        self.store.dismiss_review_blocks(None)               # user dismisses
-        self.assertEqual(self.store.get_review_blocks(), [])
-        # A later reconcile pass tries to flag it again — must be a no-op.
-        n = self.store.flag_block_for_review(bs, "completed (3.23 kWh) but not started")
-        self.assertEqual(n, 0)                               # nothing re-flagged
-        self.assertEqual(self.store.get_review_blocks(), []) # stays gone
-        row = self.store._conn.execute(
-            "SELECT needs_review, review_dismissed FROM blocks "
-            "WHERE block_start=? AND meter_id='electricity_main'", (bs,)).fetchone()
-        self.assertEqual(row["needs_review"], 0)
-        self.assertEqual(row["review_dismissed"], 1)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Tests: schema and setup
-# ─────────────────────────────────────────────────────────────────────────────
-
 class TestSchema(unittest.TestCase):
 
     def test_schema_created(self):
@@ -5327,12 +5218,6 @@ class TestSweepRegisterGlitches(unittest.TestCase):
         self.assertEqual(r["carbon_g"], 0.0)         # recomputed from 0
         self.assertEqual(r["needs_review"], 1)
         self.assertEqual(r["imp_kwh_grid"], 0.0)     # bill side untouched
-        # The reason must stay in the shared constant so the IOG pricing panel
-        # filters it out (an auto-correction is not a rate task).
-        rr = s._conn.execute("SELECT review_reason FROM blocks "
-                             "WHERE block_start='2026-07-21T10:00:00'").fetchone()[0]
-        self.assertIn(rr, BlockStore.AUTO_CORRECTION_REASONS)
-        self.assertEqual(s.get_review_blocks(), [])  # not surfaced as a pricing task
         # recovery + normal blocks untouched
         self.assertAlmostEqual(s._conn.execute(
             "SELECT imp_kwh FROM blocks WHERE block_start='2026-07-21T10:30:00'").fetchone()[0], 0.10)

@@ -55,7 +55,7 @@ class TestClassifier(unittest.TestCase):
     def test_obvious_readers(self):
         self._is("read", "get_meta", "get_blocks_for_range", "get_settings",
                  "get_block_segments", "get_measured_cost", "tombstoned_slots_in",
-                 "count_blocks_needing_reprice", "vat_rate_at", "get_drift_alerts")
+                 "count_blocks_needing_reprice", "vat_rate_at")
 
     def test_transitive_write_through_a_helper(self):
         """`clear_reprice_queue` executes no SQL of its own — it calls `set_meta`.

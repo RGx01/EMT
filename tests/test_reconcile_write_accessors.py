@@ -164,10 +164,11 @@ class ReconcileVerdict(unittest.TestCase):
         self.assertAlmostEqual(sub["imp_cost"], round(1.5 * 0.32, 6),
                                msg="sub-meters bill on the GRID portion")
 
-    def test_a_definite_verdict_clears_an_ambiguous_one(self):
+    def test_a_verdict_leaves_a_stored_review_flag(self):
+        """BL-74: the flag is history; a verdict no longer clears it."""
         _block(self.st, needs_review=1)
         self.st.apply_reconcile_verdict(S, 0.32, 0.305, "schedule", "peak", "day")
-        self.assertEqual(_row(self.st)["needs_review"], 0)
+        self.assertEqual(_row(self.st)["needs_review"], 1)
 
     def test_a_corrected_sub_meter_is_left_alone(self):
         _block(self.st)
