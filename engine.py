@@ -186,15 +186,6 @@ _KRAKEN_SNAPSHOT_DONE_KEY = "pre_live_snapshot_done"
 _SETTLEMENT_SWEEP_HORIZON_DAYS = 14
 _SETTLEMENT_SWEEP_MIN_INTERVAL_S = 24 * 3600   # run at most once per day
 _STATE_LAST_SWEEP = "last_settlement_sweep_utc"
-# BL-19: run-once marker for the historical grid-invariant repair sweep.
-_BL19_GRID_SWEEP_DONE_KEY = "bl19_grid_invariant_sweep_done"
-# #307: run-once marker for the lost-opener device-spike self-heal. The write-point
-# guard prevents NEW spikes, so this only needs to clean pre-guard history once.
-_SPIKE_SWEEP_DONE_KEY = "implausible_sub_block_sweep_done"
-# Run-once marker for the register dip-and-recover self-heal (stale-boundary phantom
-# deltas, e.g. house_battery 48.93 kWh on 2026-07-21). The gap-boundary guard stops
-# NEW ones, so this only cleans pre-guard history once.
-_REGISTER_GLITCH_SWEEP_DONE_KEY = "register_glitch_sweep_done"
 # Chunk 5: cached rate schedules for reconcile-time rate repair. Built once per
 # poll cycle by the (async) poll task; read by the (sync) drain via the resolver
 # below. Rates stored as £/kWh (converted from the API's pence at build time).
@@ -2139,8 +2130,8 @@ def compute_channel(channel: dict, parent_rates=None, is_sub_meter: bool = False
         # holds the true cumulative register, so the block books the ENTIRE
         # lifetime register as one interval's delta. Clamp to zero and collapse
         # read_start onto read_end so (a) the total is not inflated and (b) the
-        # next block still opens at the correct register. Logged (not silent) and
-        # flagged for review. (Incident 2026-07: 30961 kWh booked in one 30-min
+        # next block still opens at the correct register. Logged (not silent).
+        # (Incident 2026-07: 30961 kWh booked in one 30-min
         # block from a zeroed opener during device config churn — a £10k bill.)
         if total_kwh > _ROGUE_BLOCK_KWH_CEILING:
             logger.warning(
@@ -2155,7 +2146,6 @@ def compute_channel(channel: dict, parent_rates=None, is_sub_meter: bool = False
                 "cost":         0.0,
                 "read_start":   reads[-1]["value"],
                 "read_end":     reads[-1]["value"],
-                "needs_review": True,
             }
         # Runtime backstop: a block that consumed/exported energy but has no
         # rate is being costed at ZERO silently — i.e. real usage billed as
@@ -2232,7 +2222,6 @@ def compute_channel(channel: dict, parent_rates=None, is_sub_meter: bool = False
             "cost":         0.0,
             "read_start":   reads[-1]["value"],
             "read_end":     reads[-1]["value"],
-            "needs_review": True,
         }
 
     return {
@@ -2539,7 +2528,7 @@ def _apply_pass2(block: dict) -> None:
     # register was 0.0 booked the meter's whole lifetime register as an hour's
     # export after a power cut (v4 #493) — an export credit in the thousands. Same rule
     # and the same ceiling as compute_channel: clamp to zero, collapse read_start onto
-    # read_end so the next block opens on the real register, and flag for review.
+    # read_end so the next block opens on the real register. Logged.
     # Settlement still fills the true figure where DCC data exists.
     for meter_name, meter_block in block["meters"].items():
         if (meter_block.get("meta") or {}).get("sub_meter"):
@@ -2550,7 +2539,7 @@ def _apply_pass2(block: dict) -> None:
                 logger.warning(
                     "PASS 2: %s/%s implausible %.1f kWh in one block (> %.1f kWh "
                     "ceiling) — lost opener (read_start %s → read_end %s); clamping "
-                    "to 0, baselining register, flagged for review (v4 #493).",
+                    "to 0, baselining register (v4 #493).",
                     meter_name, channel_name, _k, _ROGUE_BLOCK_KWH_CEILING,
                     ch.get("read_start"), ch.get("read_end"))
                 _c = ch.get("cost") or 0.0
@@ -2558,8 +2547,6 @@ def _apply_pass2(block: dict) -> None:
                     ch["read_start"] = ch["read_end"]
                 ch["kwh"] = 0.0
                 ch["cost"] = 0.0
-                ch["needs_review"] = True
-                meter_block["needs_review"] = True
                 _t = block.get("totals")
                 if channel_name in ("import", "export") and isinstance(_t, dict):
                     _t[channel_name + "_kwh"] = (_t.get(channel_name + "_kwh") or 0.0) - _k
@@ -2622,13 +2609,13 @@ def _apply_pass2(block: dict) -> None:
             # impossibility). Sensor-agnostic: a session-energy sensor's real charge
             # never reaches this ceiling, so this can't mis-fire on a Zappi/session
             # reset. Baseline read_start onto read_end so the register stays
-            # continuous, zero the block, and flag for review.
+            # continuous, and zero the block. Logged.
             _ceiling = _max_plausible_block_kwh((meta or {}).get("block_minutes"))
             if delta > _ceiling:
                 logger.warning(
                     "PASS 2: %s implausible %.1f kWh in one block (> %.1f kWh "
                     "ceiling) — lost-opener/glitch; clamping to 0 and baselining "
-                    "register (#307), flagged for review.",
+                    "register (#307).",
                     meter_name, delta, _ceiling)
                 _re = sub_import.get("read_end")
                 if _re is not None:
@@ -2637,8 +2624,6 @@ def _apply_pass2(block: dict) -> None:
                 sub_import["kwh_grid"] = 0.0
                 sub_import["kwh_battery"] = 0.0
                 sub_import["cost"] = 0.0
-                sub_import["needs_review"] = True
-                meter_block["needs_review"] = True
                 continue
             if delta < 0:
                 # Reset detected mid-block — read_end is the kWh accumulated since
@@ -5312,7 +5297,7 @@ async def _engine_tick(ha: HAClient):
     # by block_start; it never reads the current block or the rolling buffer, so
     # gap-seed reads cannot contaminate it. Settling a gap-filled block is in
     # fact desirable — the authoritative DCC figure replaces the interpolated
-    # guess (the ingester already counts these as `flagged_interpolated`).
+    # guess (the ingester already counts these as `drifted_interpolated`).
     try:
         _drain_pass2_queue(ha)
     except Exception as _dpq_e:
@@ -11356,22 +11341,6 @@ async def measure_settled_dispatched_blocks() -> dict:
             "mixed": n_mixed, "zero": n_zero, "absent": n_absent}
 
 
-def _review_band_reason(prior_band, new_band, prior_cost, new_cost) -> str:
-    """User-facing review text in BAND terms (peak / off-peak) rather than raw \u00a3 —
-    the band comes from the block's cost-derived rate (see apply_measured_to_block),
-    never the OFF_PEAK measurement label (which is reserved for smart-charge credits).
-    Names the transition when the band changed, or flags a same-band material \u00a3 gap."""
-    _n = {"off_peak": "off-peak", "peak": "peak", "mixed": "mixed"}
-    pb = _n.get(prior_band, "an unknown band")
-    nb = _n.get(new_band, "an unknown band")
-    if prior_band and new_band and prior_band != new_band:
-        return ("%s \u2192 %s: Octopus billed this slot at %s (\u00a3%.4f); EMT had it %s "
-                "(\u00a3%.4f). Applied to match the bill \u2014 verify it isn't an Octopus "
-                "billing error." % (pb, nb, nb, new_cost, pb, prior_cost))
-    return ("%s: Octopus billed \u00a3%.4f here vs EMT's \u00a3%.4f (same band, \u0394\u00a3%.4f) "
-            "\u2014 applied to match the bill; verify it isn't a billing error."
-            % (nb, new_cost, prior_cost, new_cost - prior_cost))
-
 
 _MEASURED_HISTORY_DRAIN_PACE = 0.4        # seconds between drain batches (test-overridable)
 # ONE settleability predicate, shared by every settlement pass (drain candidates, drain
@@ -12097,11 +12066,8 @@ async def reconcile_dispatch_overlay() -> dict:
         # so the block's price does not depend on any dispatch — there is nothing
         # to reconcile (a smart charge here, e.g. under the 6-hour cap, is priced
         # off-peak by the schedule regardless of whether it 'started'). Reverting
-        # would be a no-op and flagging it for review is a false positive. Skip,
-        # clearing any stale review flag a prior run may have set.
+        # would be a no-op. Skip.
         if abs(base - off_peak) < 1e-6:
-            if r["needs_review"]:
-                store.clear_block_review(bs)
             continue
         cur_rate = r["imp_rate"] or 0.0
         # The block's BAND, from its stored rate: whichever of this date's off-peak and
@@ -12149,32 +12115,18 @@ async def reconcile_dispatch_overlay() -> dict:
             n_settled_guard += 1
             continue
         if target == "review":
-            # A review flag invites a manual correction, but the correction tool
-            # can only touch DCC-settled blocks. Dispatch `completed` arrives at
-            # T+hours while DCC settlement is T+1/T+2, so a block can be decidable
-            # here yet not correctable. Defer the flag until the block is actually
-            # settled (imp_kwh_api present), so the review list only ever shows
-            # blocks the user can act on. (The automatic revert path needs no user
-            # action, so it is not gated this way.)
+            # Genuinely ambiguous: the price is left unchanged and nothing is flagged
+            # (BL-74, 4 Oct 2026). Cost settlement decides the block when Octopus
+            # bills it — the user sees what Octopus holds — so a review list asking a
+            # person to decide first was a question the bill answers. Counted and
+            # logged only; `deferred` is one not yet DCC-settled.
             if r["imp_kwh_api"] is None:
                 n_deferred += 1
-                # Retract any flag a prior run set before this gate existed — the
-                # block isn't ready for review until it settles.
-                if r["needs_review"]:
-                    store.clear_block_review(bs)
                 continue
             n_review += 1
-            # Genuinely ambiguous — price left unchanged, but flag it so the UI
-            # review list (BL-18) can surface it for a human decision. Idempotent:
-            # re-flagging just refreshes the reason.
-            store.flag_block_for_review(bs, reason)
-            logger.info("reconcile: %s REVIEW — %s (flagged, price unchanged)", bs, reason)
+            logger.info("reconcile: %s REVIEW — %s (price unchanged)", bs, reason)
             continue
         if target == "ok":
-            # Already correct. If it was previously flagged ambiguous and has since
-            # become decidable, clear the stale review flag.
-            if r["needs_review"]:
-                store.clear_block_review(bs)
             # BL-58b: derive the split band from the block's ACTUAL rate (nearer off_peak
             # or base), NOT `currently_off_peak` — a rounding variant of the off-peak rate
             # flips that flag and would stamp a peak label on an off-peak-rated block.
@@ -12486,13 +12438,13 @@ async def kraken_poll_task(ha: HAClient):
             logger.info(
                 "kraken_poll_task: %s window=%s..%s import_rows=%d "
                 "store_import=%d export_rows=%d store_export=%d "
-                "skip=%d flag_review=%d (interpolated=%d) errors=%d",
+                "skip=%d drifted=%d (interpolated=%d) errors=%d",
                 "DRY-RUN" if effective_dry_run else "LIVE",
                 summary["window"][0], summary["window"][1],
                 summary["import_rows"], summary["stored"],
                 summary["export_rows"], summary["export_stored"],
-                summary["skipped_no_block"], summary["flagged_review"],
-                summary.get("flagged_interpolated", 0),
+                summary["skipped_no_block"], summary["drifted"],
+                summary.get("drifted_interpolated", 0),
                 len(summary["errors"]))
             for err in summary["errors"][:5]:
                 logger.warning("kraken_poll_task: %s", err)
@@ -12500,9 +12452,9 @@ async def kraken_poll_task(ha: HAClient):
             # supplies it whenever the runtime Mini reader is active (mode=api /
             # api+mini with no local sensor); otherwise it's the local CAD read.
             _prov_label = "Mini" if _kraken_mini_reader is not None else "CAD"
-            for smp in summary.get("review_samples", []):
+            for smp in summary.get("drift_samples", []):
                 logger.info(
-                    "kraken_poll_task:   review-sample [%s]%s %s %s=%s DCC=%s drift=%s%%",
+                    "kraken_poll_task:   drift-sample [%s]%s %s %s=%s DCC=%s drift=%s%%",
                     smp["channel"], " INTERP" if smp.get("interpolated") else "",
                     smp["block_start"], _prov_label, smp["cad_kwh"], smp["dcc_kwh"],
                     ("%.1f" % smp["drift_pct"]) if smp["drift_pct"] is not None
@@ -13133,59 +13085,14 @@ async def _engine_startup_impl(ha: HAClient):
     except Exception as _me:
         logger.warning("engine_startup: full_config_json migration failed: %s", _me)
 
-    # BL-19 one-time sweep: repair historical sub-meter grid-invariant violations
-    # (sub-meter grid > settled parent grid import), e.g. gap-fill blocks written
-    # during an outage whose main later settled small. Flag them for PASS 2
-    # re-run; the drain re-clamps them via the BL-19-fixed apportionment. Gated
-    # by a marker so it runs at most once per DB.
-    try:
-        if not _store.get_kraken_state(_BL19_GRID_SWEEP_DONE_KEY):
-            _flagged = _store.flag_grid_invariant_violations()
-            _store.set_kraken_state(_BL19_GRID_SWEEP_DONE_KEY,
-                                    datetime.now(timezone.utc).isoformat())
-            if _flagged:
-                logger.info(
-                    "engine_startup: BL-19 grid-invariant sweep flagged %d block(s) "
-                    "for re-clamp (drain will re-materialise)", _flagged)
-    except Exception as _b19e:
-        logger.warning("engine_startup: BL-19 grid-invariant sweep failed: %s", _b19e)
-
-    # #307 one-time self-heal: a lost/zeroed opening register books a device's whole
-    # lifetime register as one interval (prod: house_battery 0→6137 kWh in a
-    # half-hour, wrecking its carbon). Physically impossible, so we detect + repair
-    # it automatically — no user action. The write-point guard stops NEW ones, so
-    # this runs at most once per DB (marker-gated); repaired blocks are flagged
-    # needs_review so they surface in the review list. Cost/billing is untouched.
-    try:
-        if not _store.get_kraken_state(_SPIKE_SWEEP_DONE_KEY):
-            _sw = _store.sweep_implausible_sub_blocks(dry_run=False)
-            _store.set_kraken_state(_SPIKE_SWEEP_DONE_KEY,
-                                    datetime.now(timezone.utc).isoformat())
-            if _sw.get("count"):
-                logger.warning(
-                    "engine_startup: #307 self-heal repaired %d implausible device "
-                    "block(s) (> %.0f kWh in one block) — flagged for review",
-                    _sw["count"], _sw.get("ceiling_kwh", 0))
-    except Exception as _spe:
-        logger.warning("engine_startup: #307 device-spike self-heal failed: %s", _spe)
-
-    # Register dip-and-recover self-heal: a stale/dropout reading (a register briefly
-    # surfacing an old value while a sensor flickered) books the climb back to the
-    # real value as phantom consumption (prod: house_battery 48.93 kWh on 2026-07-21,
-    # under the #307 ceiling so that sweep missed it). The gap-boundary guard stops
-    # NEW ones; this cleans pre-guard history once. Grid/bill untouched; repaired
-    # blocks flagged needs_review.
-    try:
-        if not _store.get_kraken_state(_REGISTER_GLITCH_SWEEP_DONE_KEY):
-            _rg = _store.sweep_register_glitches(dry_run=False)
-            _store.set_kraken_state(_REGISTER_GLITCH_SWEEP_DONE_KEY,
-                                    datetime.now(timezone.utc).isoformat())
-            if _rg.get("count"):
-                logger.warning(
-                    "engine_startup: register dip-and-recover self-heal repaired %d "
-                    "phantom block(s) — flagged for review", _rg["count"])
-    except Exception as _rge:
-        logger.warning("engine_startup: register-glitch self-heal failed: %s", _rge)
+    # BL-19, #307 and the register dip-and-recover self-heals ran here once per
+    # database (marker-gated in kraken_state) to clean pre-guard history. Deleted
+    # 4 Oct 2026 (BL-74): every database v5 admits is stamped >= the import floor,
+    # so all three markers are set, and a fresh v5 database has no history for them
+    # to find. The write-point guards that stop NEW cases stay (_apply_pass2's BL-19
+    # rule and #307 ceiling; the stale-read and dip-without-collapse guards), and
+    # the markers stay in the data. The mechanism — a kraken_state marker read at
+    # startup, run once, then set — is what a future heal would use.
 
     if _store.get_current_config_period_id() is None:
         # Fresh DB (no config period yet). Automatic migration of the pre-SQLite

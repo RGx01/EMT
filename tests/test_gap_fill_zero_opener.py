@@ -65,7 +65,7 @@ class TheWritePointCeiling(unittest.TestCase):
         ch = blk["meters"]["electricity_main"]["channels"]["export"]
         self.assertEqual((ch["kwh"], ch["cost"]), (0.0, 0.0))
         self.assertEqual(ch["read_start"], REGISTER)               # opens the next block right
-        self.assertTrue(blk["meters"]["electricity_main"].get("needs_review"))
+        self.assertFalse(blk["meters"]["electricity_main"].get("needs_review"))   # BL-74: a clamp no longer flags
         self.assertAlmostEqual(blk["totals"]["export_kwh"], 0.0)
         self.assertAlmostEqual(blk["totals"]["export_cost"], 0.0)
 

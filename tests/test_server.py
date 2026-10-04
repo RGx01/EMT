@@ -413,11 +413,10 @@ class TestRouteRegistration(unittest.TestCase):
     def test_data_management_page_registered(self):
         self.assertTrue(self._registered("data_management_page"))
 
-    def test_api_review_blocks_registered(self):
-        self.assertTrue(self._registered("api_review_blocks"))
-
-    def test_api_review_blocks_dismiss_registered(self):
-        self.assertTrue(self._registered("api_review_blocks_dismiss"))
+    def test_the_review_list_routes_are_gone(self):
+        """BL-74: cost settlement decides an ambiguous block; there is no list."""
+        self.assertFalse(self._registered("api_review_blocks"))
+        self.assertFalse(self._registered("api_review_blocks_dismiss"))
 
     def test_live_power_page_registered(self):
         self.assertTrue(self._registered("live_power_page"))
@@ -4331,63 +4330,6 @@ class TestInstanceLabel(unittest.TestCase):
         self.assertEqual(server._instance_label(), "Prod")
 
 
-class TestReviewBlocksAPI(unittest.TestCase):
-    """BL-18 — /api/review-blocks GET lists flagged blocks with a local window
-    and reason; dismiss clears them."""
-
-    def setUp(self):
-        self.store = _make_test_store(MINIMAL_BLOCKS)
-        self.store._conn.execute(
-            "UPDATE blocks SET needs_review = 1, "
-            "review_reason = 'dispatch ambiguous: completed 2.10 kWh without started' "
-            "WHERE meter_id = 'electricity_main'")
-        # A CAD/DCC drift-style flag: needs_review set but NO review_reason. It
-        # must NOT appear in the correction review list (nothing rate-fixable).
-        self.store._conn.execute(
-            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_kwh_api, needs_review) VALUES "
-            "('2026-01-16T00:00:00','2026-01-16T00:30:00','electricity_main',1,1.0,0.5,1)")
-        self.store._conn.commit()
-        self.client = make_client(store=self.store)
-
-    def test_lists_flagged_with_local_window(self):
-        r = self.client.get("/api/review-blocks")
-        self.assertEqual(r.status_code, 200)
-        d = r.get_json()
-        self.assertEqual(d["count"], 1)                   # drift block excluded
-        b = d["blocks"][0]
-        self.assertIn("without started", b["reason"])
-        self.assertEqual(b["block_start"], "2026-01-15T00:00:00")
-        self.assertEqual(b["local_date"], "2026-01-15")   # 00:00 UTC → local (GMT)
-        self.assertEqual(b["from_time"], "00:00")
-        self.assertEqual(b["to_time"], "00:30")
-
-    def test_drift_flag_excluded_and_untouched_by_dismiss_all(self):
-        # 'Dismiss all' clears the dispatch flag but leaves the drift flag set.
-        self.client.post("/api/review-blocks/dismiss", json={})
-        self.assertEqual(self.client.get("/api/review-blocks").get_json()["count"], 0)
-        drift = self.store._conn.execute(
-            "SELECT needs_review FROM blocks WHERE block_start='2026-01-16T00:00:00'").fetchone()
-        self.assertEqual(drift["needs_review"], 1)        # dormant drift flag survives
-
-    def test_dismiss_subset_clears_flag(self):
-        bid = self.store._conn.execute(
-            "SELECT id FROM blocks WHERE needs_review = 1").fetchone()[0]
-        r = self.client.post("/api/review-blocks/dismiss", json={"block_ids": [bid]})
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(r.get_json()["cleared"], 1)
-        self.assertEqual(self.client.get("/api/review-blocks").get_json()["count"], 0)
-
-    def test_dismiss_all(self):
-        r = self.client.post("/api/review-blocks/dismiss", json={})
-        self.assertEqual(r.status_code, 200)
-        self.assertEqual(self.client.get("/api/review-blocks").get_json()["count"], 0)
-
-    def test_dismiss_rejects_bad_type(self):
-        r = self.client.post("/api/review-blocks/dismiss", json={"block_ids": "nope"})
-        self.assertEqual(r.status_code, 400)
-
-
 class TestNearbyRatesAPI(unittest.TestCase):
     """#270 — /api/corrections/nearby-rates offers the exact rates in force in
     blocks surrounding a correction window, ranked by frequency, so the user can
@@ -5784,67 +5726,6 @@ class TestImportGapsEndpoint(unittest.TestCase):
             self.assertEqual(j["channels"]["export"]["missing"], 144)
         finally:
             del engine.api_import_gaps
-
-
-class TestSweepImplausibleEndpoint(unittest.TestCase):
-    """#307: GET previews lost-opener device spikes (dry-run, no writes); POST
-    applies the clamp and regenerates charts."""
-
-    def setUp(self):
-        import tempfile
-        from block_store import BlockStore
-        self.tmp = tempfile.mktemp(suffix=".db")
-        s = BlockStore(self.tmp)
-        s.insert_config_period({"meters": {
-            "electricity_main": {"meta": {
-                "billing_day": 1, "block_minutes": 30, "timezone": "Europe/London",
-                "currency_symbol": "£", "currency_code": "GBP", "site": "Home"}},
-            "house_battery": {"meta": {
-                "sub_meter": True, "parent_meter": "electricity_main",
-                "device": "Solax Battery", "billing_day": 1, "block_minutes": 30,
-                "timezone": "Europe/London", "currency_symbol": "£",
-                "currency_code": "GBP"}},
-        }})
-        cp = s._conn.execute("SELECT id FROM config_periods LIMIT 1").fetchone()["id"]
-        s._conn.execute(
-            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_kwh_grid, imp_cost, imp_read_start, imp_read_end, carbon_g, "
-            "carbon_intensity_g) VALUES "
-            "('2026-07-21T09:30:00','2026-07-21T10:00:00','house_battery',?,"
-            "6137.592,0.0,0.0,0.0,6137.592,859262.88,140.0)", (cp,))
-        s._conn.commit()
-        self.store = s
-        _use_store(s)
-        self.client = server.app.test_client()
-
-    def tearDown(self):
-        import os
-        self.store._conn.close()
-        if os.path.exists(self.tmp):
-            os.remove(self.tmp)
-
-    def test_get_previews_without_writing(self):
-        with patch.object(server, "_get_store", return_value=self.store):
-            r = self.client.get("/api/blocks/sweep-implausible")
-        d = json.loads(r.data)
-        self.assertTrue(d["ok"])
-        self.assertEqual(d["count"], 1)
-        self.assertFalse(d["applied"])
-        self.assertAlmostEqual(self.store._conn.execute(
-            "SELECT imp_kwh FROM blocks WHERE block_start='2026-07-21T09:30:00'"
-        ).fetchone()[0], 6137.592)                       # dry-run wrote nothing
-
-    def test_post_applies_and_clamps(self):
-        with patch.object(server, "_get_store", return_value=self.store):
-            r = self.client.post("/api/blocks/sweep-implausible")
-        d = json.loads(r.data)
-        self.assertTrue(d["ok"] and d["applied"])
-        row = self.store._conn.execute(
-            "SELECT imp_kwh, carbon_g, needs_review FROM blocks "
-            "WHERE block_start='2026-07-21T09:30:00'").fetchone()
-        self.assertEqual(row["imp_kwh"], 0.0)
-        self.assertEqual(row["carbon_g"], 0.0)
-        self.assertEqual(row["needs_review"], 1)
 
 
 class TestBackfillPlan(unittest.TestCase):

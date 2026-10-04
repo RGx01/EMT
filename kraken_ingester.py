@@ -88,7 +88,7 @@ class KrakenIngester:
     main_meter_id : EMT meter_id the import figure belongs to
     billing_source : 'api' | 'cad' — passed through to upsert_kraken_block
     backfill_days : how far back the first poll reaches
-    drift_block_percent : per-block drift threshold for needs_review
+    drift_block_percent : per-block drift threshold for the poll log's drift count
     """
 
     def __init__(
@@ -213,7 +213,7 @@ class KrakenIngester:
             {
               "window": (from, to),
               "import_rows": int, "export_rows": int,
-              "stored": int, "skipped_no_block": int, "flagged_review": int,
+              "stored": int, "skipped_no_block": int, "drifted": int,
               "latest_interval": str | None,
               "dry_run": bool,
               "errors": [str, ...],
@@ -226,14 +226,14 @@ class KrakenIngester:
             "window": (period_from, period_to),
             "import_rows": 0, "export_rows": 0,
             "stored": 0, "export_stored": 0,
-            "skipped_no_block": 0, "flagged_review": 0,
-            "flagged_interpolated": 0,
+            "skipped_no_block": 0, "drifted": 0,
+            "drifted_interpolated": 0,
             "backfilled": 0,
             "latest_interval": None, "dry_run": dry_run, "errors": [],
-            # Diagnostic: first few flagged blocks per channel, with both
-            # figures, so a dry-run reveals WHY review fired (units / zeros /
+            # Diagnostic: first few drifted blocks per channel, with both
+            # figures, so a dry-run reveals WHY drift was counted (units / zeros /
             # real drift) without persisting anything. Capped to keep logs sane.
-            "review_samples": [],
+            "drift_samples": [],
         }
         _SAMPLE_CAP = 10
 
@@ -274,7 +274,7 @@ class KrakenIngester:
                     latest_seen = block_start
                 if dry_run:
                     # Read-only preview: classify (block match + drift) without
-                    # writing, so would_store / would_skip / would_review are real.
+                    # writing, so would_store / would_skip / drift counts are real.
                     res = self.store.classify_kraken_block(
                         block_start, self.main_meter_id, kwh,
                         billing_source=self.billing_source,
@@ -290,13 +290,13 @@ class KrakenIngester:
                 status = res.get("status")
                 if status == "stored":
                     summary["stored"] += 1
-                    if res.get("needs_review"):
-                        summary["flagged_review"] += 1
+                    if res.get("drifted"):
+                        summary["drifted"] += 1
                         if res.get("interpolated"):
-                            summary["flagged_interpolated"] += 1
-                        if len([s for s in summary["review_samples"]
+                            summary["drifted_interpolated"] += 1
+                        if len([s for s in summary["drift_samples"]
                                 if s["channel"] == "import"]) < _SAMPLE_CAP:
-                            summary["review_samples"].append({
+                            summary["drift_samples"].append({
                                 "channel": "import",
                                 "block_start": block_start,
                                 "cad_kwh": res.get("cad_kwh"),
@@ -359,13 +359,13 @@ class KrakenIngester:
                         status = res.get("status")
                         if status == "stored":
                             summary["export_stored"] += 1
-                            if res.get("needs_review"):
-                                summary["flagged_review"] += 1
+                            if res.get("drifted"):
+                                summary["drifted"] += 1
                                 if res.get("interpolated"):
-                                    summary["flagged_interpolated"] += 1
-                                if len([s for s in summary["review_samples"]
+                                    summary["drifted_interpolated"] += 1
+                                if len([s for s in summary["drift_samples"]
                                         if s["channel"] == "export"]) < _SAMPLE_CAP:
-                                    summary["review_samples"].append({
+                                    summary["drift_samples"].append({
                                         "channel": "export",
                                         "block_start": block_start,
                                         "cad_kwh": res.get("cad_kwh"),
@@ -403,12 +403,12 @@ class KrakenIngester:
 
         logger.info(
             "poll%s: window=%s..%s import_rows=%d stored=%d export_rows=%d "
-            "export_stored=%d skipped=%d backfilled=%d review=%d errors=%d",
+            "export_stored=%d skipped=%d backfilled=%d drifted=%d errors=%d",
             " (dry-run)" if dry_run else "",
             period_from, period_to, summary["import_rows"], summary["stored"],
             summary["export_rows"], summary["export_stored"],
             summary["skipped_no_block"], summary["backfilled"],
-            summary["flagged_review"], len(summary["errors"]))
+            summary["drifted"], len(summary["errors"]))
         if summary["backfilled"]:
             logger.info(
                 "poll: BL-8 backfill — created %d block(s) from settled data for "

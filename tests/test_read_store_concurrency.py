@@ -56,7 +56,8 @@ class TestReadStoreConcurrency(unittest.TestCase):
             rs = BlockStore(db, read_only=True)   # per-thread read connection (the fix)
             for _ in range(300):
                 try:
-                    self.assertGreaterEqual(len(rs.get_review_blocks()), 1)
+                    self.assertIsNotNone(rs.get_block_by_start("2026-08-14T19:00:00",
+                                                               "electricity_main"))
                 except Exception as e:
                     errors.append(("reader%d" % tid, repr(e)))
 

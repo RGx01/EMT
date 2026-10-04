@@ -135,7 +135,7 @@ class TestAgreesWithHandEstablishedCases(unittest.TestCase):
         """
         self._dead("get_reads_for_block", "get_reads_for_range", "insert_read",
                    "link_reads_to_block", "purge_reads_older_than")
-        self._dead("get_generation_mix", "tombstoned_slots_in", "get_drift_alerts")
+        self._dead("get_generation_mix", "tombstoned_slots_in")
 
     def test_workstream_a_scaffolding_is_now_wired(self):
         """`store_access.bind` was dead when the module landed — scaffolding ahead

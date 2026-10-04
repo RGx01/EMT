@@ -235,7 +235,7 @@ number. Order is the agreed one — deletions first, while they are cheapest.*
 | 1 | **BL-33** — remove the one-time legacy migrations | deletion | ✅ **done 4 Oct 2026** — #78 (below) |
 | 2 | **BL-61 (1)** — remove the SMB rate-repair migration | deletion | ✅ **already done, 28 Sep 2026** (1156508; guarded by `tests/test_v4_heals_removed.py`) — §F's first draft said otherwise without checking |
 | 3 | **BL-63** — two pricing models: adopt the live one | deletion | ✅ **deletion done 4 Oct 2026** — the rounding residue is still open (below) |
-| 4 | **BL-74** — retire the `needs_review` writes nothing displays | deletion + fix | `get_drift_alerts` / `dismiss_drift_alerts` have no caller |
+| 4 | **BL-74** — retire the `needs_review` writes nothing displays | deletion + fix | ✅ **done 4 Oct 2026** — all of it, and the review list with it (below) |
 | 5 | **BL-61 (5)** — rename `rate_source` `'measured'` → `'settled'` | schema | with step 5; the importer maps the value |
 | 6 | **BL-76** — proportional device grid split | correctness | forward rule; history re-derived by the importer |
 | 7 | **BL-75** — settlement visibility | correctness | all six parts apply; split it |
@@ -287,9 +287,18 @@ rates are back-computed from a 6-dp rounded cost rather than carrying the canoni
 exact-equality comparison against a canonical rate can be defeated. #60 fixed the one that caused
 BL-62 (the reconcile's band test); a sweep for the others remains.
 
-BL-74's live half is a forward fix: `classify_kraken_block` re-flags a cost-settled block on every
-poll inside the backfill window (no `rate_source` guard, and a recomputed flag OR-ed onto the
-stored one).
+**BL-74 — done 4 Oct 2026, wider than v4 scoped it.** Nothing in v5 sets or clears `needs_review`
+now: the rogue-block clamps stop flagging (the clamps and warnings stay); settlement reports drift
+for the poll log and no longer flags it (the old defect: a cost-settled block re-flagged on every
+poll); and the dispatch reconcile's **review list goes too** — an ambiguous band is decided by cost
+settlement when Octopus bills the block, so the Corrections page's "Flagged for review" card, its
+banner, `/api/review-blocks` and the store's review methods are deleted. The three startup
+self-heals (#307 spike, register dip-and-recover, BL-19 grid invariant) are deleted on the floor
+argument — their markers are set in every admissible database — with their write-point guards kept.
+**No stored data changed:** the review columns, their index and every row are left as they were.
+Still open, separate: `append_block_replace` does not carry `review_reason` / `review_dismissed`
+(nor `needs_review` from the stored row), so a round-trip rewrite resets them — the round-trip
+pattern, predating this.
 
 **BL-61 (1)–(4) — re-checked 4 Oct 2026.** (1) went on 28 Sep with the other v4 one-off heals
 (`run_smb_rate_repair`, `run_smb_device_recost`, `run_smb_ev_resplit`, `run_band_rate_snap`), on the

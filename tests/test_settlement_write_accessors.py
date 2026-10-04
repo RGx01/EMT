@@ -77,11 +77,11 @@ class ApplyMeasuredToMain(unittest.TestCase):
         self.assertEqual(r["rate_source"], "measured")
         self.assertEqual(r["exc_source"], "tariff")
 
-    def test_a_definite_verdict_clears_an_ambiguous_one(self):
+    def test_the_bill_leaves_a_stored_review_flag(self):
+        """BL-74: the flag is history; settlement no longer clears it."""
         self.st.apply_measured_to_main(S, **_BILL)
         r = _row(self.st)
-        self.assertEqual(r["needs_review"], 0)
-        self.assertIsNone(r["review_reason"])
+        self.assertEqual((r["needs_review"], r["review_reason"]), (1, "ambiguous ceiling"))
 
     def test_the_kwh_is_never_touched(self):
         """The bill sets the PRICE. kWh is the meter's, and imp_cost is stored as

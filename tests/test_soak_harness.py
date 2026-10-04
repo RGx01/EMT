@@ -57,7 +57,7 @@ class RouteSelection(unittest.TestCase):
         cls.routes = soak.discover_get_routes()
 
     def test_it_finds_the_read_surface(self):
-        self.assertGreater(len(self.routes), 60)
+        self.assertGreaterEqual(len(self.routes), 60)
         for r in ("/api/billing-source", "/api/periods", "/api/energy"):
             self.assertIn(r, self.routes)
 
@@ -72,7 +72,7 @@ class RouteSelection(unittest.TestCase):
             self.assertIn(r, soak.DENY)
 
     def test_a_handler_that_also_takes_POST_is_never_selected(self):
-        """A handler taking GET *and* POST (sweep-implausible) may act on a GET. A path
+        """A handler taking GET *and* POST (/api/carbon/pause) may act on a GET. A path
         with SEPARATE GET and POST handlers (/api/settings) is fine: a GET only ever
         reaches the read handler."""
         tree = ast.parse(open(os.path.join(_ROOT, "web", "server.py"),
@@ -85,7 +85,7 @@ class RouteSelection(unittest.TestCase):
                         ms = {e.value for e in kw.value.elts}
                         if "GET" in ms and ms - {"GET"}:
                             mixed.add(n.args[0].value)
-        self.assertIn("/api/blocks/sweep-implausible", mixed)
+        self.assertIn("/api/carbon/pause", mixed)
         self.assertFalse(set(self.routes) & mixed)
 
     def test_routes_that_need_arguments_get_them(self):

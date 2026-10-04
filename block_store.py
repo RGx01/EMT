@@ -3681,136 +3681,6 @@ class BlockStore:
                     cur.rowcount, go_live)
         return {"retagged": cur.rowcount, "go_live": go_live}
 
-    def sweep_implausible_sub_blocks(self, *, max_kw: float = 120.0,
-                                     dry_run: bool = True) -> dict:
-        """One-off repair for the #307 lost-opener spike: a device sub-meter whose
-        OPENING register read was lost/zeroed booked its whole lifetime register as
-        one interval (prod: house_battery read_start=0 / read_end=6137 → 6137 kWh in
-        a half-hour, whose carbon = 6137×intensity dwarfed the real total).
-
-        Physically impossible: no domestic device moves > `max_kw`. Any sub-meter
-        block whose imp_kwh exceeds the block's ceiling (`block_minutes/60 × max_kw`;
-        120 kW → 60 kWh for a half-hour) is a lost-opener glitch. For each:
-          • set imp_kwh = imp_kwh_grid (the PASS-2 grid-clipped, house-bounded value
-            — the only trustworthy part; the glitch lives in the remainder), and
-            BASELINE imp_read_start onto imp_read_end so the register stays continuous
-            (the next block still opens at the true register);
-          • zero imp_kwh_remainder; recompute carbon_g from the corrected kWh;
-          • flag needs_review = 1 with a reason.
-        LEAVES imp_kwh_grid and imp_cost UNTOUCHED — the grid clip already bounded them
-        to the correct house import, so billing/cost is unaffected.
-
-        dry_run=True previews only. Returns {count, ceiling_kwh, applied, blocks:[...]}.
-        """
-        row = self._conn.execute(
-            "SELECT block_minutes FROM config_periods "
-            "ORDER BY effective_from DESC LIMIT 1").fetchone()
-        block_minutes = (row["block_minutes"] if row and row["block_minutes"] else 30)
-        ceiling = round(block_minutes / 60.0 * float(max_kw), 3)
-        subs = [r["meter_id"] for r in self._conn.execute(
-            "SELECT DISTINCT meter_id FROM meters WHERE parent_meter_id IS NOT NULL")]
-        if not subs:
-            return {"count": 0, "ceiling_kwh": ceiling, "applied": False, "blocks": []}
-        ph = ",".join("?" * len(subs))
-        rows = self._conn.execute(
-            f"SELECT block_start, meter_id, imp_kwh, imp_kwh_grid, imp_read_start, "
-            f"       imp_read_end, carbon_g, carbon_intensity_g "
-            f"FROM blocks WHERE meter_id IN ({ph}) AND imp_kwh > ? "
-            f"ORDER BY imp_kwh DESC", (*subs, ceiling)).fetchall()
-        preview = [{"block_start": r["block_start"], "meter_id": r["meter_id"],
-                    "imp_kwh": r["imp_kwh"],
-                    "corrected_kwh": r["imp_kwh_grid"] or 0.0,
-                    "read_start": r["imp_read_start"], "read_end": r["imp_read_end"],
-                    "carbon_g": r["carbon_g"]} for r in rows]
-        if not dry_run and rows:
-            with self._conn:
-                self._conn.execute(
-                    f"UPDATE blocks SET "
-                    f"  imp_kwh = COALESCE(imp_kwh_grid, 0), "
-                    f"  imp_read_start = COALESCE(imp_read_end, imp_read_start), "
-                    f"  imp_kwh_remainder = 0, "
-                    f"  carbon_g = ROUND(COALESCE(imp_kwh_grid, 0) "
-                    f"                   * COALESCE(carbon_intensity_g, 0), 4), "
-                    f"  needs_review = 1, "
-                    f"  review_reason = 'implausible sub-meter kWh clamped "
-                    f"(#307 lost opener)' "
-                    f"WHERE meter_id IN ({ph}) AND imp_kwh > ?", (*subs, ceiling))
-        logger.info("sweep_implausible_sub_blocks: %s %d block(s) over %.1f kWh "
-                    "ceiling (%d kW × %d min)",
-                    "clamped" if (not dry_run and rows) else "previewed",
-                    len(rows), ceiling, int(max_kw), block_minutes)
-        return {"count": len(rows), "ceiling_kwh": ceiling,
-                "applied": bool(not dry_run and rows), "blocks": preview}
-
-    def sweep_register_glitches(self, *, recover_within_blocks: int = 48,
-                                tol: float = 0.02, dry_run: bool = True) -> dict:
-        """Repair phantom sub-meter deltas from a register that DIPPED below its
-        established level and later RECOVERED — a stale/dropout reading (e.g. the
-        2026-07-21 house_battery briefly surfacing a 4-day-old 6259.77 while the true
-        register was ~6309), whose climb back toward the real value was booked as
-        ~49 kWh of consumption.
-
-        A cumulative register can only fall via a genuine reset (to ~0, staying low).
-        A dip that RECOVERS to the prior high-water is therefore a glitch, and any
-        'consumption' recorded while below that high-water is phantom. Conservative:
-        only a dip that provably recovers within `recover_within_blocks` is touched;
-        a drop that never recovers is left alone (it may be a real counter reset).
-
-        For each phantom block: set imp_kwh = imp_kwh_grid (the trustworthy,
-        house-clipped value — usually 0), recompute carbon from it, flag needs_review.
-        LEAVES imp_kwh_grid / imp_cost untouched, so the bill is unaffected. Mirrors
-        the #307 sweep's corrective action; only the detection differs.
-
-        dry_run=True previews only. Returns {count, applied, blocks:[...]}.
-        """
-        subs = [r["meter_id"] for r in self._conn.execute(
-            "SELECT DISTINCT meter_id FROM meters WHERE parent_meter_id IS NOT NULL")]
-        to_fix = []
-        for mid in subs:
-            rows = self._conn.execute(
-                "SELECT block_start, imp_kwh, imp_kwh_grid, imp_read_end, "
-                "carbon_intensity_g FROM blocks WHERE meter_id = ? "
-                "AND imp_read_end IS NOT NULL ORDER BY block_start", (mid,)).fetchall()
-            reads = [r["imp_read_end"] for r in rows]
-            n = len(rows)
-            prior_max = None
-            for i in range(n):
-                re = reads[i]
-                if re is None:
-                    continue
-                if prior_max is None:
-                    prior_max = re
-                    continue
-                if re < prior_max - tol:
-                    # Dip below the established register level. Recovers?
-                    recovered = any(
-                        reads[k] is not None and reads[k] >= prior_max - tol
-                        for k in range(i + 1, min(n, i + 1 + recover_within_blocks)))
-                    if recovered:
-                        r = rows[i]
-                        corr = r["imp_kwh_grid"] or 0.0
-                        if round((r["imp_kwh"] or 0.0) - corr, 6) != 0.0:
-                            to_fix.append({
-                                "meter_id": mid, "block_start": r["block_start"],
-                                "old_kwh": r["imp_kwh"], "corrected_kwh": corr,
-                                "ci": r["carbon_intensity_g"] or 0.0})
-                    # do NOT raise prior_max — re is below it
-                else:
-                    prior_max = max(prior_max, re)
-        if not dry_run and to_fix:
-            with self._conn:
-                for f in to_fix:
-                    self._conn.execute(
-                        "UPDATE blocks SET imp_kwh = ?, imp_kwh_remainder = 0, "
-                        "carbon_g = ROUND(? * ?, 4), needs_review = 1, "
-                        "review_reason = 'register dip-and-recover phantom clamped' "
-                        "WHERE meter_id = ? AND block_start = ?",
-                        (f["corrected_kwh"], f["corrected_kwh"], f["ci"],
-                         f["meter_id"], f["block_start"]))
-        logger.info("sweep_register_glitches: %s %d phantom dip-and-recover block(s)",
-                    "clamped" if (not dry_run and to_fix) else "previewed", len(to_fix))
-        return {"count": len(to_fix), "applied": bool(not dry_run and to_fix),
-                "blocks": to_fix}
 
     def reprice_imported_blocks_from_csv(self, csv_text: str,
                                          meter_id: str = "electricity_main",
@@ -4338,11 +4208,18 @@ class BlockStore:
     ) -> dict:
         """Read-only: determine what upsert_kraken_block WOULD do, without
         writing. Returns the same verdict dict (status / drift_pct /
-        needs_review / needs_pass2_rerun / cad_kwh / settled_kwh / channel /
+        drifted / needs_pass2_rerun / cad_kwh / settled_kwh / channel /
         block_id) so a dry-run preview is identical to a live run minus the
         UPDATE. Performs one SELECT (the block lookup) and no writes.
 
-        Drift flags review only when BOTH thresholds are exceeded: the absolute
+        `drifted` is information for the poll's log, and nothing else: it flags
+        nothing (BL-74, 4 Oct 2026). It used to set needs_review — OR-ed onto the
+        stored flag, with no rate_source guard, so a cost-settled block inside the
+        rolling backfill window was re-flagged on every poll — and no list could
+        display a drift flag. On an API-sourced block the DCC figure is
+        authoritative; the user sees what Octopus holds.
+
+        Drift counts only when BOTH thresholds are exceeded: the absolute
         delta > drift_min_kwh (default 50 Wh) AND |drift| > drift_block_percent.
         The absolute floor stops percentage-on-tiny-numbers noise (e.g. 131% of
         16 Wh) dominating the count on a solar profile, while keeping real
@@ -4418,7 +4295,6 @@ class BlockStore:
                 and abs(float(settled_kwh) - float(cad_kwh)) <= 1e-6):
             _figure_changed = False
         rerun = 1 if (billing_source == "api" and _figure_changed) else 0
-        new_review = 1 if (review or (existing["needs_review"] or 0)) else 0
         new_rerun = 1 if (rerun or (existing["needs_pass2_rerun"] or 0)) else 0
         try:
             interpolated = bool(existing["interpolated"])
@@ -4432,7 +4308,7 @@ class BlockStore:
             "cad_kwh": cad_kwh,
             "drift_pct": drift_pct,
             "interpolated": interpolated,
-            "needs_review": new_review,
+            "drifted": bool(review),
             "needs_pass2_rerun": new_rerun,
         }
 
@@ -4478,8 +4354,8 @@ class BlockStore:
         channel='export' writes exp_kwh_api and compares against exp_kwh. The
         two channels are symmetric and independent: a block may receive both
         (separate ingester calls), and the second call must not clear the
-        first's flags, so needs_review and needs_pass2_rerun are OR-ed with the
-        existing row values rather than overwritten.
+        first's flags, so needs_pass2_rerun is OR-ed with the existing row value
+        rather than overwritten. needs_review is not written (BL-74).
 
         Classification is delegated to classify_kraken_block (shared with the
         dry-run preview); this method adds the UPDATE for a 'stored' verdict.
@@ -4514,11 +4390,10 @@ class BlockStore:
                 SET {api_col} = ?,
                     source = CASE WHEN source LIKE 'imported%' THEN source
                                   ELSE COALESCE(?, source) END,
-                    needs_review = ?,
                     needs_pass2_rerun = ?,
                     finalised_from_cad = 0
                 WHERE id = ?""",
-            (settled_kwh, source, verdict["needs_review"],
+            (settled_kwh, source,
              verdict["needs_pass2_rerun"], verdict["block_id"]),
         )
         self._conn.commit()
@@ -4759,42 +4634,6 @@ class BlockStore:
         self._conn.commit()
         return cur.rowcount
 
-    def flag_grid_invariant_violations(self, tolerance: float = 1e-4) -> int:
-        """BL-19 one-time sweep: flag blocks whose sub-meter grid attribution
-        exceeds the parent's settled grid import for PASS 2 re-run.
-
-        Finds every settled main block (imp_kwh_api present, so its grid import
-        is authoritative) where the sum of its sub-meters' imp_kwh_grid exceeds
-        the main's grid import (imp_kwh) by more than `tolerance`, and sets
-        needs_pass2_rerun = 1 on that main block. The existing drain then
-        re-materialises it through the (BL-19-fixed) PASS 2, which clamps each
-        sub-meter's grid share to the available grid import.
-
-        This repairs historical violations written before the clamp fix — e.g.
-        blocks reconstructed by gap-fill during an instance outage, where the
-        main later settled small (heavy solar) but the sub-meter grid was left
-        at the full interpolated draw. Returns the number of main blocks flagged.
-        """
-        cur = self._conn.execute(
-            """
-            UPDATE blocks SET needs_pass2_rerun = 1
-            WHERE id IN (
-                SELECT b_main.id
-                FROM blocks b_main
-                JOIN meters m
-                  ON m.parent_meter_id = b_main.meter_id AND m.is_sub_meter = 1
-                JOIN blocks b_sub
-                  ON b_sub.meter_id = m.meter_id
-                 AND b_sub.block_start = b_main.block_start
-                WHERE b_main.imp_kwh_api IS NOT NULL
-                  AND b_sub.imp_kwh_grid IS NOT NULL
-                GROUP BY b_main.id, b_main.imp_kwh
-                HAVING SUM(b_sub.imp_kwh_grid) > COALESCE(b_main.imp_kwh, 0) + ?
-            )
-            """,
-            (tolerance,))
-        self._conn.commit()
-        return cur.rowcount
 
     # A main-meter block still awaiting DCC settlement on a channel it should
     # have: import not yet settled, OR export not yet settled on a block that
@@ -5157,171 +4996,6 @@ class BlockStore:
         self._conn.commit()
         return cur.rowcount
 
-    def get_drift_alerts(self) -> list:
-        """Blocks flagged needs_review = 1, for the review list (BL-18).
-
-        Returns dicts with the CAD/Mini figure, the DCC figure, the delta % and
-        a stored review_reason so the UI table can render directly. Informational
-        only — billing_source already determines which figure drives the numbers.
-        A flag can come from CAD/DCC settlement drift or from an ambiguous
-        dispatch-reconcile decision; review_reason (when set) names which.
-        """
-        rows = self._conn.execute(
-            """SELECT id, block_start, meter_id, imp_kwh, imp_kwh_api, review_reason
-               FROM blocks
-               WHERE needs_review = 1
-               ORDER BY block_start"""
-        ).fetchall()
-        alerts = []
-        for r in rows:
-            cad = r["imp_kwh"]
-            dcc = r["imp_kwh_api"]
-            if cad is not None and cad != 0 and dcc is not None:
-                delta_pct = (dcc - cad) / cad * 100.0
-            elif dcc == 0.0:
-                delta_pct = -100.0 if (cad or 0) > 0 else 0.0
-            else:
-                delta_pct = None
-            reason = r["review_reason"]
-            if not reason:
-                # Legacy drift flag with no stored reason — synthesise one.
-                if delta_pct is not None:
-                    reason = f"CAD/DCC settlement drift {delta_pct:+.0f}%"
-                else:
-                    reason = "flagged for review"
-            alerts.append({
-                "block_id": r["id"],
-                "block_start": r["block_start"],
-                "meter_id": r["meter_id"],
-                "cad_kwh": cad,
-                "dcc_kwh": dcc,
-                "delta_pct": delta_pct,
-                "reason": reason,
-            })
-        return alerts
-
-    # Auto-CORRECTION review reasons: the integrity sweeps clamp a physically
-    # impossible figure to the trustworthy grid-bounded value deterministically —
-    # there's no second opinion for a user to give and no tool to give it with, so
-    # these are NOT rate-actionable. They stay flagged in the DB as a dormant record
-    # (and in the startup log), but never appear in the IOG pricing correction panel.
-    AUTO_CORRECTION_REASONS = (
-        "implausible sub-meter kWh clamped (#307 lost opener)",
-        "register dip-and-recover phantom clamped",
-    )
-
-    def get_review_blocks(self) -> list:
-        """BL-18: blocks flagged for review with a stored reason — i.e. the
-        rate-actionable dispatch-reconcile ambiguities that the Corrections
-        review list surfaces.
-
-        Deliberately EXCLUDES:
-          • bare needs_review flags with no review_reason (CAD/DCC settlement
-            drift): drift is a kWh disagreement, and the correction tool only edits
-            rates, so there is no action to take on it here;
-          • auto-CORRECTION reasons (the integrity sweeps): deterministic repairs,
-            not rate tasks — they'd only clutter the IOG pricing panel;
-          • rows with a null/empty block_start (legacy/malformed flags), which can't
-            be located or acted on anyway.
-        Excluded flags stay set as a dormant diagnostic, just not shown as a task.
-        """
-        _ph = ",".join("?" * len(self.AUTO_CORRECTION_REASONS))
-        rows = self._conn.execute(
-            f"""SELECT id, block_start, meter_id, review_reason
-               FROM blocks
-               WHERE needs_review = 1 AND review_reason IS NOT NULL
-                 AND block_start IS NOT NULL AND TRIM(block_start) <> ''
-                 AND review_reason NOT IN ({_ph})
-               ORDER BY block_start""",
-            self.AUTO_CORRECTION_REASONS
-        ).fetchall()
-        return [{
-            "block_id": r["id"],
-            "block_start": r["block_start"],
-            "meter_id": r["meter_id"],
-            "reason": r["review_reason"],
-        } for r in rows]
-
-    def dismiss_review_blocks(self, block_ids: Optional[list] = None) -> int:
-        """BL-18: clear review flags shown in the Corrections list. Scoped to
-        dispatch-origin flags (review_reason present) so a 'dismiss all' never
-        silently touches the dormant drift diagnostics. Returns rows affected.
-        """
-        # #322: mark the block DISMISSED (sticky) as well as clearing the live flag,
-        # so the dispatch reconcile can't resurrect it on the next re-scan.
-        if block_ids is None:
-            cur = self._conn.execute(
-                "UPDATE blocks SET needs_review = 0, review_reason = NULL, review_dismissed = 1 "
-                "WHERE needs_review = 1 AND review_reason IS NOT NULL")
-        elif not block_ids:
-            return 0
-        else:
-            placeholders = ",".join("?" for _ in block_ids)
-            cur = self._conn.execute(
-                "UPDATE blocks SET needs_review = 0, review_reason = NULL, review_dismissed = 1 "
-                f"WHERE id IN ({placeholders}) AND review_reason IS NOT NULL",
-                tuple(block_ids))
-        self._conn.commit()
-        return cur.rowcount
-
-    def flag_block_for_review(self, block_start: str, reason: str,
-                              meter_id: str = "electricity_main") -> int:
-        """BL-18: flag a single block (main meter row) for review with a reason.
-
-        Used by the dispatch reconciliation when a block is genuinely ambiguous
-        (substantial completed energy without a `started` signal). Idempotent —
-        re-flagging refreshes the reason. Returns rows affected.
-
-        #322: NEVER re-flags a block the user has already dismissed
-        (`review_dismissed = 1`) — otherwise every reconcile re-scan resurrected the
-        same ambiguous blocks (typically Ohme replan-without-charge slots), asking the
-        user to review them again and again. Repricing is unaffected — only the review
-        prompt is suppressed. To surface it again, the user re-flags via a correction.
-        """
-        cur = self._conn.execute(
-            "UPDATE blocks SET needs_review = 1, review_reason = ? "
-            "WHERE block_start = ? AND meter_id = ? AND review_dismissed = 0",
-            (reason, block_start, meter_id))
-        self._conn.commit()
-        return cur.rowcount
-
-    def clear_block_review(self, block_start: str,
-                           meter_id: str = "electricity_main") -> int:
-        """BL-18: clear the review flag + reason for a single block.
-
-        Called when a previously-ambiguous block is later resolved — either the
-        reconciliation itself reaches a definite verdict, or the user applies a
-        manual correction. Returns rows affected.
-        """
-        cur = self._conn.execute(
-            "UPDATE blocks SET needs_review = 0, review_reason = NULL "
-            "WHERE block_start = ? AND meter_id = ? AND needs_review = 1",
-            (block_start, meter_id))
-        self._conn.commit()
-        return cur.rowcount
-
-    def dismiss_drift_alerts(self, block_ids: Optional[list] = None) -> int:
-        """Clear needs_review. All flagged blocks, or a specific subset.
-
-        Returns rows affected. Dismissing does not change any billing figure —
-        it only removes the investigate flag.
-        """
-        if block_ids is None:
-            cur = self._conn.execute(
-                "UPDATE blocks SET needs_review = 0, review_reason = NULL "
-                "WHERE needs_review = 1"
-            )
-        elif not block_ids:
-            return 0
-        else:
-            placeholders = ",".join("?" for _ in block_ids)
-            cur = self._conn.execute(
-                "UPDATE blocks SET needs_review = 0, review_reason = NULL "
-                f"WHERE id IN ({placeholders})",
-                tuple(block_ids),
-            )
-        self._conn.commit()
-        return cur.rowcount
 
     def get_settled_to(self, main_meter_id: str) -> Optional[str]:
         """Latest block_start that is fully DCC-settled for the main meter.
@@ -7651,7 +7325,7 @@ class BlockStore:
             "       b.imp_kwh, b.imp_kwh_grid, b.imp_cost, b.imp_rate, "
             "       b.exp_kwh, b.exp_cost, b.exp_rate, "
             "       b.carbon_g, b.carbon_intensity_g, b.standing_charge, "
-            "       b.interpolated, b.source, b.rate_source, b.needs_review, "
+            "       b.interpolated, b.source, b.rate_source, "
             "       (b.source LIKE 'imported%' OR b.imp_kwh_api IS NOT NULL) AS kwh_authoritative, "
             # the export channel's own: export settles separately (and later) — the
             # Heatmaps tab's API-coverage view splits by channel.
@@ -8012,9 +7686,6 @@ class BlockStore:
         query already gated on it: once this runs, the drain's backlog can never
         revisit the block.
 
-        The verdict also clears `needs_review` / `review_reason` -- the bill is a
-        definite answer and supersedes an earlier ambiguous one.
-
         `kwh_ev` / `cost_ev` are passed as None when there is no EV split, rather
         than 0.0. NULL means "no split"; 0.0 would mean "a split of nothing", and
         the jobs that back-attribute a late-arriving dispatch select on
@@ -8023,7 +7694,7 @@ class BlockStore:
         with self._conn:
             cur = self._conn.execute(
                 "UPDATE blocks SET imp_rate = ?, imp_cost = ?, rate_source = 'measured', "
-                "rate_reconciled = 1, needs_review = 0, review_reason = NULL, "
+                "rate_reconciled = 1, "
                 "imp_rate_exc = ?, imp_cost_exc = ?, exc_source = 'tariff', "
                 "imp_kwh_ev = ?, imp_rate_ev = ?, imp_cost_ev = ?, imp_ev_band = ?, "
                 "imp_home_band = ?, imp_cost_remainder = ? "
@@ -8203,9 +7874,6 @@ class BlockStore:
         so the block would disagree with itself until something else happened to
         rewrite it.
 
-        The main row's update also clears `needs_review` / `review_reason`: a
-        definite verdict supersedes an earlier ambiguous one.
-
         Sub-meters bill on `COALESCE(imp_kwh_grid, imp_kwh)` -- the GRID portion,
         not the meter's own total, which for a battery or V2X device differ.
         `rate_corrected = 0` keeps a user's manual correction out of it.
@@ -8213,7 +7881,6 @@ class BlockStore:
         with self._conn:
             main = self._conn.execute(
                 "UPDATE blocks SET imp_rate = ?, rate_reconciled = 1, "
-                "needs_review = 0, review_reason = NULL, "
                 "imp_cost = ROUND(COALESCE(imp_kwh, 0) * ?, 6), "
                 "imp_rate_exc = ?, "
                 "imp_cost_exc = ROUND(COALESCE(imp_kwh, 0) * ?, 6), "
@@ -8263,7 +7930,7 @@ class BlockStore:
         Returns dicts.
         """
         rows = self._conn.execute(
-            """SELECT b.block_start, b.imp_kwh, b.imp_rate, b.needs_review,
+            """SELECT b.block_start, b.imp_kwh, b.imp_rate,
                       b.imp_kwh_api, b.interpolated
                FROM blocks b
                WHERE b.meter_id = ? AND b.rate_corrected = 0

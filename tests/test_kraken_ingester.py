@@ -207,7 +207,7 @@ class TestPoll(_Base):
         s = run(ing.poll(dry_run=True))
         self.assertEqual(s["stored"], 1)             # would store the matching one
         self.assertEqual(s["skipped_no_block"], 1)   # the unmatched one
-        self.assertEqual(s["flagged_review"], 1)     # drift > threshold
+        self.assertEqual(s["drifted"], 1)     # drift > threshold
         # DB still clean
         r = self.store.get_block_by_start("2026-05-01T00:00:00", "electricity_main")
         self.assertIsNone(r["imp_kwh_api"])
@@ -229,7 +229,7 @@ class TestPoll(_Base):
         ing = KrakenIngester(client, self.store, import_mpan="M",
                              import_serial="S", drift_block_percent=2.0)
         s = run(ing.poll())
-        self.assertEqual(s["flagged_review"], 1)
+        self.assertEqual(s["drifted"], 1)
 
     def test_cursor_advances_to_latest_interval(self):
         self._block("2026-05-01T00:00:00")
@@ -295,14 +295,14 @@ class TestPoll(_Base):
         self.assertEqual(r["imp_kwh_api"], 0.9)
 
 
-    def test_dry_run_captures_review_samples(self):
+    def test_dry_run_captures_drift_samples(self):
         self._block("2026-05-01T00:00:00", imp_kwh=2.0)   # will drift -25%
         client = FakeClient(import_rows=self._rows(
             (1.5, "2026-05-01T00:00:00Z", "2026-05-01T00:30:00Z")))
         ing = KrakenIngester(client, self.store, import_mpan="M",
                              import_serial="S", drift_block_percent=2.0)
         s = run(ing.poll(dry_run=True))
-        samples = s["review_samples"]
+        samples = s["drift_samples"]
         self.assertEqual(len(samples), 1)
         self.assertEqual(samples[0]["channel"], "import")
         self.assertEqual(samples[0]["cad_kwh"], 2.0)

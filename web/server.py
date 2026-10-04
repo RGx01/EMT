@@ -301,32 +301,6 @@ def _config_timezone() -> str:
     return "UTC"
 
 
-def _active_period_timezone(retries: int = 3):
-    """The active config period's timezone, read STRAIGHT from config_periods (the
-    column is present whenever any blocks exist). This bypasses the transient
-    empty-meters path in load_config() (WAL-lock retry exhausting / a cold read
-    companion) that silently degraded the review list's UTC->local conversion to UTC,
-    shifting every flagged block by the BST offset and making Load-into-tool target the
-    wrong (empty) half-hour. Returns None ONLY when there is genuinely no active period
-    (fresh install, no blocks -> no review rows either), so callers can disable
-    Load-into-tool rather than offer a shifted block."""
-    import time as _time
-    for _attempt in range(max(1, retries)):
-        try:
-            store = store_access.store()
-            row = store._conn.execute(
-                "SELECT timezone FROM config_periods "
-                "WHERE effective_to IS NULL ORDER BY effective_from DESC LIMIT 1"
-            ).fetchone()
-            if row and row["timezone"]:
-                return row["timezone"]
-            return None
-        except Exception:
-            if _attempt < retries - 1:
-                _time.sleep(0.1)
-                continue
-    return None
-
 
 # Fold near-identical stored rates (float / rounding artifacts -- e.g. 0.054929 vs the
 # canonical 0.054930, ~1e-6 apart) into the dominant value so the nearby-rate picker
@@ -4832,28 +4806,6 @@ def api_historical_retag_imports():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-@app.route("/api/blocks/sweep-implausible", methods=["GET", "POST"])
-def api_blocks_sweep_implausible():
-    """#307 one-off repair for lost-opener device spikes (e.g. house_battery
-    read_start=0 / read_end=6137 → 6137 kWh in a half-hour, wrecking carbon). GET
-    previews the offending blocks (dry-run); POST applies: clamp imp_kwh to the
-    grid-bounded value, baseline the register, recompute carbon, flag needs_review
-    — leaving imp_kwh_grid / imp_cost (billing) untouched. Regenerates charts on
-    apply. Returns {ok, count, ceiling_kwh, applied, blocks:[...]}."""
-    try:
-        store = store_access.store()
-        apply = (request.method == "POST")
-        # Workstream A: the sweep mutates on apply, so it runs on the engine
-        # thread rather than through this one.
-        res = _engine_write(
-            lambda st: st.sweep_implausible_sub_blocks(dry_run=not apply))
-        logger.info("api_blocks_sweep_implausible: %s (applied=%s)",
-                    {k: res[k] for k in ("count", "ceiling_kwh", "applied")}, apply)
-        return jsonify({"ok": True, **res})
-    except Exception as e:
-        logger.error("api_blocks_sweep_implausible: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
 
 @app.route("/api/carbon/pause", methods=["GET", "POST"])
 def api_carbon_pause():
@@ -7978,79 +7930,6 @@ def api_corrections_nearby_rates():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/review-blocks", methods=["GET"])
-def api_review_blocks():
-    """BL-18: blocks flagged needs_review = 1 (ambiguous dispatch reconcile, or
-    CAD/DCC settlement drift), for the 'Flagged for review' list on Corrections.
-    Each entry carries block_start, meter_id, a human reason, and the kWh figures.
-    """
-    try:
-        store = store_access.store()   # BL-18c: per-thread read connection (no SQLITE_MISUSE)
-        alerts = store.get_review_blocks()
-        # Enrich each block with the LOCAL date + 30-min window so the UI can
-        # pre-fill the correction tool exactly (block_start is naive UTC). Doing
-        # the UTC→local conversion server-side with the configured timezone
-        # guarantees it round-trips through the local→UTC apply path.
-        from zoneinfo import ZoneInfo
-        from datetime import datetime as _dt, timedelta as _td
-        cfg = load_config()
-        main_meta = {}
-        for md in cfg.get("meters", {}).values():
-            if not (md.get("meta") or {}).get("sub_meter"):
-                main_meta = md.get("meta") or {}
-                break
-        block_minutes = int(main_meta.get("block_minutes", 30) or 30)
-        # Resolve the display tz from config_periods directly (present whenever blocks
-        # exist), NOT from meters meta: load_config() can transiently return empty
-        # meters and fall back to UTC, which shifted every review row by the BST offset
-        # and made Load-into-tool land on the wrong (empty) block. If the tz genuinely
-        # can't be resolved, leave the local fields None so the UI shows raw block_start
-        # and DISABLES Load-into-tool rather than offering a shifted target.
-        tz_name = _active_period_timezone() or main_meta.get("timezone")
-        _tz = None
-        if tz_name:
-            try:
-                _tz = ZoneInfo(tz_name)
-            except Exception:
-                _tz = None
-        for a in alerts:
-            if _tz is None:
-                a["local_date"] = a["from_time"] = a["to_time"] = None
-                continue
-            try:
-                start_utc = _dt.fromisoformat(a["block_start"]).replace(tzinfo=ZoneInfo("UTC"))
-                start_loc = start_utc.astimezone(_tz)
-                end_loc = start_loc + _td(minutes=block_minutes)
-                a["local_date"] = start_loc.strftime("%Y-%m-%d")
-                a["from_time"] = start_loc.strftime("%H:%M")
-                a["to_time"] = end_loc.strftime("%H:%M")
-            except Exception:
-                a["local_date"] = a["from_time"] = a["to_time"] = None
-        return jsonify({"blocks": alerts, "count": len(alerts)})
-    except Exception as e:
-        logger.error("api_review_blocks: %s", e)
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/review-blocks/dismiss", methods=["POST"])
-def api_review_blocks_dismiss():
-    """BL-18: dismiss review flags. Body {block_ids: [...]} clears those blocks;
-    omit block_ids (or send null) to clear all. Dismissing only removes the flag
-    — it never changes a billing figure.
-    """
-    try:
-        data = request.get_json(force=True) or {}
-        block_ids = data.get("block_ids")
-        if block_ids is not None and not isinstance(block_ids, list):
-            return jsonify({"error": "block_ids must be a list or omitted"}), 400
-        cleared = _engine_write(lambda st: st.dismiss_review_blocks(block_ids))
-        logger.info("api_review_blocks_dismiss: cleared %d review flag(s)", cleared)
-        return jsonify({"cleared": cleared})
-    except Exception as e:
-        logger.error("api_review_blocks_dismiss: %s", e)
-        return jsonify({"error": str(e)}), 500
-
-
 @app.route("/api/corrections/preview", methods=["POST"])
 def api_corrections_preview():
     """
@@ -8340,11 +8219,8 @@ def api_corrections_apply():
             else:  # rate correction
                 kwh_col = "imp_kwh" if channel == "import" else "exp_kwh"
                 # Stamp a durable marker on manual RATE corrections so the dispatch
-                # reconciliation pass never overwrites a user's override. A manual
-                # correction is also a definite human decision, so it clears any
-                # ambiguous-review flag on the block (BL-18).
-                _mark = (", rate_corrected = 1, rate_source = 'corrected', "
-                         "needs_review = 0, review_reason = NULL"
+                # reconciliation pass never overwrites a user's override.
+                _mark = (", rate_corrected = 1, rate_source = 'corrected'"
                          if col in ("imp_rate", "exp_rate") else "")
                 if recalc_cost and channel == "import":
                     # P4.6 (watch #11) — the corrected rate applies to the WHOLE block: imp_cost

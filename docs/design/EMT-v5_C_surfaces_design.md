@@ -475,13 +475,13 @@ not a bill total. Two things to know about it:
   changes, such as the 0% VAT change on 1 Oct 2026.
 
 **Tools.** These serve an operator task over individual blocks, not a figure:
-- **corrections and review:** `/api/corrections/{meters,nearby-rates}`, `/api/review-blocks`,
-  `/api/unsettled-blocks`;
+- **corrections:** `/api/corrections/{meters,nearby-rates}`, `/api/unsettled-blocks`
+  (`/api/review-blocks` deleted with the review list, BL-74, 4 Oct 2026);
 - **gaps, backfill and import:** `/api/history-gaps`, `/api/backfill/{gaps,reach}`,
   `/api/blocks/deleted-ranges`, `/api/historical/*` (status, plans, templates, diagnostics);
 - **re-pricing:** `/api/reprice-history-{status,conformance}`;
-- **deletion and repair:** `/api/blocks/delete/status`, `/api/historical/purge-preview`,
-  `/api/blocks/sweep-implausible`.
+- **deletion:** `/api/blocks/delete/status`, `/api/historical/purge-preview`
+  (`/api/blocks/sweep-implausible` deleted with the #307 self-heal, BL-74).
 
 **Configuration and system:**
 - **configuration:** `/api/config`, `/api/config/history`, `/api/settings`, `/api/kraken-config`,

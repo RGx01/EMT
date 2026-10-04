@@ -10,7 +10,6 @@ Covers:
   - upsert_kraken_block classification (positive / over-threshold / zero / cad)
   - PASS 2 re-run queue: get_blocks_needing_pass2_rerun / clear_pass2_rerun_flag
   - Provisional timeout: get_timed_out_provisionals / finalise_timed_out_provisionals
-  - Drift alerts: get_drift_alerts / dismiss_drift_alerts
   - get_settled_to
 
 These methods touch only 3.0.0 columns/tables; the pre-3.0.0 suites
@@ -246,7 +245,7 @@ class TestUpsertKrakenBlock(_StoreBase):
             "2026-05-01T00:00:00", "main", 1.010,  # +1.0%
             billing_source="api", drift_block_percent=2.0)
         self.assertEqual(res["status"], "stored")
-        self.assertEqual(res["needs_review"], 0)
+        self.assertEqual(res["drifted"], bool(0))
         self.assertEqual(res["needs_pass2_rerun"], 1)
         self.assertAlmostEqual(res["drift_pct"], 1.0, places=3)
         row = self.store.get_block_by_start("2026-05-01T00:00:00", "main")
@@ -259,14 +258,14 @@ class TestUpsertKrakenBlock(_StoreBase):
         res = self.store.upsert_kraken_block(
             "2026-05-01T00:00:00", "main", 1.500,  # -25%
             billing_source="api", drift_block_percent=2.0)
-        self.assertEqual(res["needs_review"], 1)
+        self.assertEqual(res["drifted"], bool(1))
         self.assertAlmostEqual(res["drift_pct"], -25.0, places=3)
 
     def test_zero_record_flags_review(self):
         self._insert_block("2026-05-01T00:00:00", imp_kwh=3.089)
         res = self.store.upsert_kraken_block(
             "2026-05-01T00:00:00", "main", 0.0, billing_source="api")
-        self.assertEqual(res["needs_review"], 1)
+        self.assertEqual(res["drifted"], bool(1))
         row = self.store.get_block_by_start("2026-05-01T00:00:00", "main")
         self.assertEqual(row["imp_kwh_api"], 0.0)
 
@@ -276,7 +275,7 @@ class TestUpsertKrakenBlock(_StoreBase):
             "2026-05-01T00:00:00", "main", 1.5,
             billing_source="cad", drift_block_percent=2.0)
         self.assertEqual(res["needs_pass2_rerun"], 0)  # cad: no re-run scheduled
-        self.assertEqual(res["needs_review"], 1)        # drift still surfaced
+        self.assertEqual(res["drifted"], bool(1))        # drift still surfaced
         row = self.store.get_block_by_start("2026-05-01T00:00:00", "main")
         self.assertEqual(row["imp_kwh_api"], 1.5)       # still stored
 
@@ -288,7 +287,7 @@ class TestUpsertKrakenBlock(_StoreBase):
         res = self.store.upsert_kraken_block(
             "2026-05-01T00:00:00", "main", 1.234, billing_source="api")
         self.assertIsNone(res["drift_pct"])         # no percentage vs zero
-        self.assertEqual(res["needs_review"], 1)    # but discrepancy surfaced
+        self.assertEqual(res["drifted"], bool(1))    # but discrepancy surfaced
         self.assertEqual(res["needs_pass2_rerun"], 1)
 
     def test_zero_vs_zero_is_agreement(self):
@@ -297,7 +296,7 @@ class TestUpsertKrakenBlock(_StoreBase):
         self._insert_block("2026-05-01T12:00:00", imp_kwh=0.0)
         res = self.store.upsert_kraken_block(
             "2026-05-01T12:00:00", "main", 0.0, billing_source="api")
-        self.assertEqual(res["needs_review"], 0)    # zero-vs-zero = agreement
+        self.assertEqual(res["drifted"], bool(0))    # zero-vs-zero = agreement
         self.assertIsNone(res["drift_pct"])
 
     def test_tiny_values_below_epsilon_agree(self):
@@ -305,7 +304,7 @@ class TestUpsertKrakenBlock(_StoreBase):
         self._insert_block("2026-05-01T12:00:00", imp_kwh=0.0)
         res = self.store.upsert_kraken_block(
             "2026-05-01T12:00:00", "main", 0.002, billing_source="api")  # 2 Wh
-        self.assertEqual(res["needs_review"], 0)
+        self.assertEqual(res["drifted"], bool(0))
 
     def test_small_pct_large_delta_below_floor_no_flag(self):
         """131% of 16 Wh: big percentage, tiny absolute delta → NOT flagged
@@ -314,7 +313,7 @@ class TestUpsertKrakenBlock(_StoreBase):
         res = self.store.upsert_kraken_block(
             "2026-05-01T12:00:00", "main", 0.037,  # +131%, but only 21 Wh
             billing_source="api", drift_block_percent=2.0, drift_min_kwh=0.05)
-        self.assertEqual(res["needs_review"], 0)   # below 50 Wh floor
+        self.assertEqual(res["drifted"], bool(0))   # below 50 Wh floor
 
     def test_large_block_real_drift_flags(self):
         """5% of 6 kWh: both thresholds exceeded → flagged (real divergence)."""
@@ -322,7 +321,7 @@ class TestUpsertKrakenBlock(_StoreBase):
         res = self.store.upsert_kraken_block(
             "2026-05-01T03:00:00", "main", 6.365,  # +3.5%, 213 Wh
             billing_source="api", drift_block_percent=2.0, drift_min_kwh=0.05)
-        self.assertEqual(res["needs_review"], 1)
+        self.assertEqual(res["drifted"], bool(1))
         self.assertAlmostEqual(res["drift_pct"], 3.46, places=1)
 
     def test_pct_over_but_delta_under_floor(self):
@@ -331,7 +330,7 @@ class TestUpsertKrakenBlock(_StoreBase):
         res = self.store.upsert_kraken_block(
             "2026-05-01T03:00:00", "main", 1.03,  # +3%, 30 Wh
             billing_source="api", drift_block_percent=2.0, drift_min_kwh=0.05)
-        self.assertEqual(res["needs_review"], 0)
+        self.assertEqual(res["drifted"], bool(0))
 
     def test_interpolated_surfaced_in_verdict(self):
         self._insert_block("2026-05-01T03:00:00", imp_kwh=6.0)
@@ -341,7 +340,7 @@ class TestUpsertKrakenBlock(_StoreBase):
         v = self.store.classify_kraken_block(
             "2026-05-01T03:00:00", "main", 6.4, drift_min_kwh=0.05)
         self.assertTrue(v["interpolated"])
-        self.assertEqual(v["needs_review"], 1)
+        self.assertEqual(v["drifted"], bool(1))
 
 
 class TestPass2RerunQueue(_StoreBase):
@@ -384,29 +383,6 @@ class TestProvisionalTimeout(_StoreBase):
         self._insert_block("2026-04-01T00:00:00", is_provisional=1, source="ha_sensor")
         self.assertEqual(
             len(self.store.get_timed_out_provisionals("2026-05-01T00:00:00")), 0)
-
-
-class TestDriftAlerts(_StoreBase):
-
-    def test_get_and_dismiss(self):
-        self._insert_block("2026-05-26T13:00:00", imp_kwh=3.089,
-                           imp_kwh_api=0.0, needs_review=1)
-        self._insert_block("2026-05-26T14:30:00", imp_kwh=2.847,
-                           imp_kwh_api=2.104, needs_review=1)
-        self._insert_block("2026-05-26T15:00:00", imp_kwh=1.0,
-                           imp_kwh_api=1.0, needs_review=0)
-        alerts = self.store.get_drift_alerts()
-        self.assertEqual(len(alerts), 2)
-        self.assertAlmostEqual(alerts[0]["delta_pct"], -100.0, places=1)
-        self.assertAlmostEqual(alerts[1]["delta_pct"], -26.1, places=1)
-        n = self.store.dismiss_drift_alerts([alerts[0]["block_id"]])
-        self.assertEqual(n, 1)
-        self.assertEqual(len(self.store.get_drift_alerts()), 1)
-        self.store.dismiss_drift_alerts()  # dismiss all
-        self.assertEqual(len(self.store.get_drift_alerts()), 0)
-
-    def test_dismiss_empty_list_noop(self):
-        self.assertEqual(self.store.dismiss_drift_alerts([]), 0)
 
 
 class TestSettledTo(_StoreBase):
@@ -847,10 +823,10 @@ class TestExportSettlement(_StoreBase):
         res = self.store.upsert_kraken_block(
             "2026-05-01T12:00:00", self.MAIN, 1.0, channel="export",  # -50%
             drift_block_percent=2.0)
-        self.assertEqual(res["needs_review"], 1)
+        self.assertEqual(res["drifted"], bool(1))
         self.assertAlmostEqual(res["drift_pct"], -50.0, places=3)
 
-    def test_both_channels_coexist_flags_or(self):
+    def test_both_channels_coexist(self):
         # Import settlement first, then export; neither clobbers the other.
         self._block("2026-05-01T12:00:00", imp_kwh=3.0, exp_kwh=1.0)
         self.store.upsert_kraken_block(
@@ -862,8 +838,27 @@ class TestExportSettlement(_StoreBase):
         row = self.store.get_block_by_start("2026-05-01T12:00:00", self.MAIN)
         self.assertAlmostEqual(row["imp_kwh_api"], 2.99)
         self.assertEqual(row["exp_kwh_api"], 0.0)
-        self.assertEqual(row["needs_review"], 1)        # from export zero
+        self.assertEqual(row["needs_review"], 0)        # BL-74: drift is not written
         self.assertEqual(row["needs_pass2_rerun"], 1)
+
+    def test_settlement_leaves_the_stored_flag_alone(self):
+        """BL-74: settlement neither raises a drift flag nor clears a stored one —
+        the column is history, and the DCC figure is what the user sees. The parent
+        set it on drift (and OR-ed it, so it never cleared)."""
+        self._block("2026-05-01T12:00:00", imp_kwh=2.0)
+        self._block("2026-05-01T12:30:00", imp_kwh=2.0)
+        with self.store._conn:
+            self.store._conn.execute(
+                "UPDATE blocks SET needs_review = 1, review_reason = 'kept' "
+                "WHERE block_start = '2026-05-01T12:30:00'")
+        for bs in ("2026-05-01T12:00:00", "2026-05-01T12:30:00"):
+            v = self.store.upsert_kraken_block(bs, self.MAIN, 1.0, channel="import",
+                                               billing_source="api")   # -50%
+            self.assertTrue(v["drifted"])
+        a = self.store.get_block_by_start("2026-05-01T12:00:00", self.MAIN)
+        b = self.store.get_block_by_start("2026-05-01T12:30:00", self.MAIN)
+        self.assertEqual((a["needs_review"], a["review_reason"]), (0, None))
+        self.assertEqual((b["needs_review"], b["review_reason"]), (1, "kept"))
 
     def test_invalid_channel_raises(self):
         self._block("2026-05-01T12:00:00")
@@ -877,7 +872,7 @@ class TestExportSettlement(_StoreBase):
             "2026-05-01T12:00:00", self.MAIN, 1.5,  # -25%
             billing_source="api", drift_block_percent=2.0)
         self.assertEqual(v["status"], "stored")     # WOULD store
-        self.assertEqual(v["needs_review"], 1)
+        self.assertEqual(v["drifted"], bool(1))
         self.assertEqual(v["needs_pass2_rerun"], 1)
         self.assertAlmostEqual(v["drift_pct"], -25.0, places=3)
         # nothing written
