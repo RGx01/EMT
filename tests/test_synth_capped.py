@@ -12,6 +12,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # tests/ for synth_capped
 from block_store import BlockStore
 import pricing_segments as ps
+import segment_helpers as sh   # import_segments & co. — test builders (BL-63)
 import synth_capped as sc
 
 
@@ -60,7 +61,7 @@ class TestSynthCappedFixture(unittest.TestCase):
                 for r in self.st._conn.execute(
                     "SELECT meter_id, imp_kwh FROM blocks WHERE block_start=? "
                     "AND meter_id IN (?,?)", (start, sc.EV, sc.BATT)).fetchall()]
-        res = ps.attribute_devices(segs, devs)
+        res = sh.attribute_devices(segs, devs)
         tot_k = sum(v["kwh"] for v in res["devices"].values()) + res["remainder"]["kwh"]
         tot_c = sum(v["cost"] for v in res["devices"].values()) + res["remainder"]["cost"]
         self.assertAlmostEqual(tot_k, ps.total_kwh(segs), places=5)

@@ -26,13 +26,12 @@ DELIBERATELY OVER-APPROXIMATING
     `_invoked_by_syntax` for a live WSGI entry point this reported dead. Anything
     invoked other than by writing its name is invisible here.
 
-    A worked example of it lying about alive, from this very codebase:
-    `carbon.ev_carbon` is reachable ONLY through `carbon.carbon_from_reprice`,
-    which nothing calls — so it is dead. But `web/server.py:6338` has a JSON
-    payload key `"ev_carbon"`, and a string literal that happens to be a valid
-    identifier is indistinguishable here from `getattr(mod, "ev_carbon")`. So it
-    is reported live. Its sibling `house_carbon` has no such string and is
-    correctly reported dead.
+    How it can lie about alive: a string literal that happens to be a valid
+    identifier — a JSON payload key, say — is indistinguishable here from
+    `getattr(mod, "name")`, so a dead function whose name is also a key is
+    reported live. (The worked example given here until 4 Oct 2026,
+    `carbon.ev_carbon`, was wrong: the live `period_ev_saving` calls it, so the
+    trace was right to call it live.)
 
     The fix is NOT to stop reading string literals: that would lose genuine
     dispatch-by-name and could report a live function as dead, which is the

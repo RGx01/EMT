@@ -13,6 +13,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pricing_segments as ps
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # tests/, for segment_helpers
+import segment_helpers as sh   # import_segments & co. — test builders (BL-63)
 
 OFF, DAY, PEAK = 0.05, 0.30, 0.32          # house off-peak, house day, EV peak (inc)
 EV_OFF = 0.05                              # EV off-peak (== house off-peak on IOG)
@@ -29,7 +31,7 @@ class TestImportSegments(unittest.TestCase):
 
     def test_uncapped_same_rate_both_attributions(self):
         # Uncapped: EV and house share the block rate → two segments at that rate.
-        segs = ps.import_segments(
+        segs = sh.import_segments(
             ev_kwh=2.0, house_kwh=1.0,
             house_offpeak_rate=OFF, house_day_rate=OFF,
             ev_offpeak_rate=OFF, ev_peak_rate=OFF, vat=0.05)     # all == block rate
@@ -40,7 +42,7 @@ class TestImportSegments(unittest.TestCase):
 
     def test_capped_within_cap_freebie(self):
         # Within cap, out of window: EV off-peak AND house off-peak (rule-3 freebie).
-        segs = ps.import_segments(
+        segs = sh.import_segments(
             ev_kwh=2.0, house_kwh=1.0,
             house_offpeak_rate=OFF, house_day_rate=DAY,
             ev_offpeak_rate=EV_OFF, ev_peak_rate=PEAK,
@@ -50,7 +52,7 @@ class TestImportSegments(unittest.TestCase):
 
     def test_capped_over_cap_ev_peak_house_day(self):
         # Over cap, out of window: EV → peak, house freebie withdrawn → day.
-        segs = ps.import_segments(
+        segs = sh.import_segments(
             ev_kwh=2.0, house_kwh=1.0,
             house_offpeak_rate=OFF, house_day_rate=DAY,
             ev_offpeak_rate=EV_OFF, ev_peak_rate=PEAK,
@@ -61,7 +63,7 @@ class TestImportSegments(unittest.TestCase):
 
     def test_boundary_block_splits_each_portion(self):
         # Cap crosses mid-block: EV and house each split into off + on sub-segments.
-        segs = ps.import_segments(
+        segs = sh.import_segments(
             ev_kwh=2.0, house_kwh=2.0,
             house_offpeak_rate=OFF, house_day_rate=DAY,
             ev_offpeak_rate=EV_OFF, ev_peak_rate=PEAK,
@@ -71,7 +73,7 @@ class TestImportSegments(unittest.TestCase):
                          1 * EV_OFF + 1 * PEAK + 1 * OFF + 1 * DAY)
 
     def test_house_only_block(self):
-        segs = ps.import_segments(ev_kwh=0.0, house_kwh=1.5,
+        segs = sh.import_segments(ev_kwh=0.0, house_kwh=1.5,
                                   house_offpeak_rate=DAY, house_day_rate=DAY, vat=0.05)
         self.assertEqual(len(segs), 1)
         self.assertEqual(segs[0].attribution, "house")
@@ -82,7 +84,7 @@ class TestProjections(unittest.TestCase):
 
     def test_legacy_column_views(self):
         # The imp_* columns become projections: blended rate, EV kWh/cost, exc.
-        segs = ps.import_segments(
+        segs = sh.import_segments(
             ev_kwh=2.0, house_kwh=1.0,
             house_offpeak_rate=DAY, house_day_rate=DAY,
             ev_offpeak_rate=PEAK, ev_peak_rate=PEAK,
@@ -95,8 +97,8 @@ class TestProjections(unittest.TestCase):
         self.assertAlmostEqual(ps.blended_rate(segs),
                                (2 * PEAK + 1 * DAY) / 3.0, places=5)
         # ex-VAT is per-segment and total exc < total inc
-        self.assertLess(ps.total_cost_exc(segs), ps.total_cost(segs))
-        self.assertAlmostEqual(ps.total_cost_exc(segs),
+        self.assertLess(sh.total_cost_exc(segs), ps.total_cost(segs))
+        self.assertAlmostEqual(sh.total_cost_exc(segs),
                                ps.total_cost(segs) / 1.05, places=4)
 
 
@@ -115,7 +117,7 @@ class TestSegmentsFromLegacy(unittest.TestCase):
         self.assertAlmostEqual(ps.attribution_rate(segs, "ev"), 0.32)     # imp_rate_ev
         self.assertAlmostEqual(ps.attribution_rate(segs, "house"), 0.30)  # derived home rate
         self.assertAlmostEqual(ps.total_cost(segs), 1.88)                 # imp_cost
-        self.assertLess(ps.total_cost_exc(segs), ps.total_cost(segs))     # exc applied
+        self.assertLess(sh.total_cost_exc(segs), ps.total_cost(segs))     # exc applied
 
     def test_non_split_block_single_house_segment(self):
         segs = ps.segments_from_legacy(imp_kwh=1.5, imp_cost=0.45, imp_rate=0.30)
@@ -135,7 +137,7 @@ class TestDeviceAttribution(unittest.TestCase):
 
     def _capped_over_cap(self):
         # 6 kWh grid: EV 4 @ peak, house 2 @ day (over-cap, out of window).
-        return ps.import_segments(
+        return sh.import_segments(
             ev_kwh=4.0, house_kwh=2.0,
             house_offpeak_rate=OFF, house_day_rate=DAY,
             ev_offpeak_rate=EV_OFF, ev_peak_rate=PEAK,
@@ -152,7 +154,7 @@ class TestDeviceAttribution(unittest.TestCase):
 
     def test_physical_ev_and_battery_capped(self):
         segs = self._capped_over_cap()          # EV 4@0.32, house 2@0.30 → grid £2.88
-        res = ps.attribute_devices(segs, [
+        res = sh.attribute_devices(segs, [
             {"meter_id": "zappi", "attribution": "ev", "grid_kwh": 4.05},   # metered ≠ dispatch
             {"meter_id": "battery", "attribution": "house", "grid_kwh": 1.0}])
         self._assert_reconciles(segs, res)
@@ -165,7 +167,7 @@ class TestDeviceAttribution(unittest.TestCase):
 
     def test_sensorless_ev_uses_synthetic_row(self):
         segs = self._capped_over_cap()
-        res = ps.attribute_devices(segs, [
+        res = sh.attribute_devices(segs, [
             {"meter_id": "battery", "attribution": "house", "grid_kwh": 1.0}])
         self._assert_reconciles(segs, res)
         self.assertIsNotNone(res["ev_dispatch"])                 # no physical EV → synthetic
@@ -174,7 +176,7 @@ class TestDeviceAttribution(unittest.TestCase):
 
     def test_two_ev_devices_share_cost_prorata(self):
         segs = self._capped_over_cap()
-        res = ps.attribute_devices(segs, [
+        res = sh.attribute_devices(segs, [
             {"meter_id": "ev_a", "attribution": "ev", "grid_kwh": 3.0},
             {"meter_id": "ev_b", "attribution": "ev", "grid_kwh": 1.0}])
         self._assert_reconciles(segs, res)
@@ -183,9 +185,9 @@ class TestDeviceAttribution(unittest.TestCase):
         self.assertAlmostEqual(res["devices"]["ev_b"]["cost"], 1.28 * 0.25, places=5)
 
     def test_uncapped_no_devices_is_pure_remainder(self):
-        segs = ps.import_segments(ev_kwh=0.0, house_kwh=3.0,
+        segs = sh.import_segments(ev_kwh=0.0, house_kwh=3.0,
                                   house_offpeak_rate=OFF, house_day_rate=OFF, vat=0.05)
-        res = ps.attribute_devices(segs, [])
+        res = sh.attribute_devices(segs, [])
         self._assert_reconciles(segs, res)
         self.assertEqual(res["devices"], {})
         self.assertIsNone(res["ev_dispatch"])
@@ -207,7 +209,7 @@ class TestPriceDevicesHybrid(unittest.TestCase):
     def test_single_rate_block_is_metered_times_block_rate(self):
         # Uncapped: EV + house share one rate. A device costs metered × that rate — exactly
         # what its own imp_cost column holds, so the reader is byte-identical uncapped.
-        segs = ps.import_segments(ev_kwh=2.0, house_kwh=1.0,
+        segs = sh.import_segments(ev_kwh=2.0, house_kwh=1.0,
                                   house_offpeak_rate=OFF, house_day_rate=OFF,
                                   ev_offpeak_rate=OFF, ev_peak_rate=OFF, vat=0.05)
         res = ps.price_devices_hybrid(segs, [
@@ -220,7 +222,7 @@ class TestPriceDevicesHybrid(unittest.TestCase):
     def test_capped_block_values_metered_at_band_rate(self):
         # Over-cap: EV metered valued at the EV PEAK rate (not the parent blended), the
         # battery at the house DAY rate — the 4-rate fix, on the device's own metered kWh.
-        segs = ps.import_segments(
+        segs = sh.import_segments(
             ev_kwh=4.0, house_kwh=2.0, house_offpeak_rate=OFF, house_day_rate=DAY,
             ev_offpeak_rate=EV_OFF, ev_peak_rate=PEAK,
             ev_offpeak_frac=0.0, house_offpeak_frac=0.0, vat=0.05)
@@ -235,7 +237,7 @@ class TestPriceDevicesHybrid(unittest.TestCase):
     def test_non_dispatch_ev_on_house_only_block_bills_at_house_rate(self):
         # A house-only (no dispatch) block: an EV device that grid-charged here drew at the
         # house/day rate — so it is valued there, never leaking into house.
-        segs = ps.import_segments(ev_kwh=0.0, house_kwh=2.0,
+        segs = sh.import_segments(ev_kwh=0.0, house_kwh=2.0,
                                   house_offpeak_rate=OFF, house_day_rate=DAY,
                                   house_offpeak_frac=0.0, vat=0.05)
         res = ps.price_devices_hybrid(segs, [

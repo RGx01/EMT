@@ -232,7 +232,7 @@ number. Order is the agreed one — deletions first, while they are cheapest.*
 | — | **BL-50** — unify user-job mutual exclusion | architecture | ✅ **is workstream B** |
 | 1 | **BL-33** — remove the one-time legacy migrations | deletion | ✅ **done 4 Oct 2026** — #78 (below) |
 | 2 | **BL-61 (1)** — remove the SMB rate-repair migration | deletion | ✅ **already done, 28 Sep 2026** (1156508; guarded by `tests/test_v4_heals_removed.py`) — §F's first draft said otherwise without checking |
-| 3 | **BL-63** — two pricing models: adopt the live one | deletion | `reprice.py` has no production import; `carbon_from_reprice` unreachable |
+| 3 | **BL-63** — two pricing models: adopt the live one | deletion | ✅ **deletion done 4 Oct 2026** — the rounding residue is still open (below) |
 | 4 | **BL-74** — retire the `needs_review` writes nothing displays | deletion + fix | `get_drift_alerts` / `dismiss_drift_alerts` have no caller |
 | 5 | **BL-61 (5)** — rename `rate_source` `'measured'` → `'settled'` | schema | with step 5; the importer maps the value |
 | 6 | **BL-76** — proportional device grid split | correctness | forward rule; history re-derived by the importer |
@@ -273,6 +273,17 @@ on the 12th Pi soak it "restored" the same 20–23 blocks every hour, changing n
 dispatch ceiling is a known zero the settle keeps a block house-only (measured is king), and the heal
 re-settled it each pass. Fixed in the same PR as this note: the heal asks the settle's own rule
 (`_measured_ev_kwh`) first, and counts only a split actually written.
+
+**BL-63 — the deletion done, 4 Oct 2026.** Option 2, adopt the live model, in three commits:
+`reprice.py` and its test consumers (876 lines, including the adapter differential that existed to
+judge option 1 and a fixture generated through `reprice_block`); `carbon_from_reprice` and
+`house_carbon`; and `pricing_segments`' three unreachable builders, **moved** to
+`tests/segment_helpers.py` rather than deleted, because tests of the eight live projections build
+their segments with them. **`ev_carbon` is live** (`period_ev_saving` calls it) — the architecture's
+module table had listed it for deletion; corrected. **Still open — the rounding residue:** derived
+rates are back-computed from a 6-dp rounded cost rather than carrying the canonical band rate, so an
+exact-equality comparison against a canonical rate can be defeated. #60 fixed the one that caused
+BL-62 (the reconcile's band test); a sweep for the others remains.
 
 BL-74's live half is a forward fix: `classify_kraken_block` re-flags a cost-settled block on every
 poll inside the backfill window (no `rate_source` guard, and a recomputed flag OR-ed onto the

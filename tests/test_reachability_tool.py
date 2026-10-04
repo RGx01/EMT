@@ -75,11 +75,9 @@ class TestAgreesWithHandEstablishedCases(unittest.TestCase):
             self.assertNotIn(n, self.dead, "%s is LIVE — tracing it dead would "
                                            "licence deleting working code" % n)
 
-    def test_reprice_is_wholly_unreachable(self):
-        self._dead("_band_label", "_reconcile_house", "reprice_block", "resolve_ev_energy")
-
-    def test_pricing_segments_three_dead_eight_live(self):
-        self._dead("attribute_devices", "import_segments", "total_cost_exc")
+    def test_pricing_segments_eight_live(self):
+        # The three it held dead (attribute_devices, import_segments, total_cost_exc)
+        # moved to tests/segment_helpers.py — BL-63, 4 Oct 2026.
         # These six have no EXTERNAL caller but are reached transitively; an
         # earlier v4 roadmap entry called all nine shelved, and acting on that
         # would have deleted working code.
@@ -109,20 +107,6 @@ class TestAgreesWithHandEstablishedCases(unittest.TestCase):
         This is the tool lying about DEAD, the direction that deletes working
         code, so the whole dunder namespace is now excluded."""
         self._live("__call__", "__aenter__", "__aexit__", "__len__")
-
-    def test_unreachable_does_not_mean_unreferenced(self):
-        """The scan skips tests/ by design, so a dead name can still carry
-        fixtures and whole test modules. reprice.py is the case in point: four
-        functions with no application caller, three test consumers, 480 lines in
-        the deletion footprint rather than 169."""
-        self._dead("reprice_block")
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        consumers = [f for f in os.listdir(os.path.join(root, "tests"))
-                     if f.endswith(".py")
-                     and "import reprice" in open(os.path.join(root, "tests", f)).read()]
-        self.assertTrue(consumers,
-                        "if reprice.py's test consumers have gone, this test has "
-                        "outlived the point it was making — delete it")
 
     def test_the_first_five_deletions_are_gone_and_their_siblings_live(self):
         """§4a's first exercise, 22 Sep 2026. Each of these had a LIVE near-twin,
@@ -195,14 +179,12 @@ class TestAgreesWithHandEstablishedCases(unittest.TestCase):
     def test_the_414_markers_are_live(self):
         self._live("stamp_version", "stamp_supplier", "_reconcile_decision")
 
-    def test_carbon_functions_the_trace_cannot_settle(self):
-        """A documented limitation, pinned so it is not mistaken for a finding.
-        `ev_carbon` is reachable only via the dead `carbon_from_reprice`, but a
-        JSON payload key "ev_carbon" in server.py is indistinguishable from a
-        getattr, so the trace reports it live. Its sibling has no such string."""
-        self._dead("carbon_from_reprice", "house_carbon")
-        self._live("ev_carbon")           # over-approximated — see the tool's docstring
-        self._live("period_ev_saving", "slot_intensity")
+    def test_the_live_carbon_functions(self):
+        """`carbon_from_reprice` and `house_carbon` went with the shelved pricing model
+        (BL-63, 4 Oct 2026). `ev_carbon` stays: it is genuinely live — `period_ev_saving`
+        calls it — not merely over-approximated by the "ev_carbon" payload key in
+        server.py, as an earlier version of this test said."""
+        self._live("ev_carbon", "period_ev_saving", "slot_intensity")
 
 
 class TestBaselineGuard(unittest.TestCase):

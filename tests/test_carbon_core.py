@@ -46,36 +46,6 @@ class TestEvCarbon(unittest.TestCase):
         self.assertEqual((r["grid_g"], r["saving_g"], r["gross_g"]), (0.0, 0.0, 0.0))
 
 
-class TestHouseCarbon(unittest.TestCase):
-    def test_house_no_credit(self):
-        r = carbon.house_carbon(house_kwh=4.0, intensity_g=I)
-        self.assertAlmostEqual(r["carbon_g"], round(4.0 * I, 4), places=4)
-
-
-class TestCarbonFromReprice(unittest.TestCase):
-    def _result(self, *, clipped, unclipped, house):
-        # a minimal reprice-shaped result: carbon reads ONLY these energy fields
-        return {
-            "rate": 9.99, "cost": 9.99,  # POISON — if carbon touches price, the test breaks
-            "devices": {"ev": {"kwh": clipped, "kwh_unclipped": unclipped}},
-            "carbon": {"ev_unclipped_kwh": unclipped, "house_kwh": house},
-        }
-
-    def test_reads_only_energies(self):
-        out = carbon.carbon_from_reprice(self._result(clipped=2.18, unclipped=2.31, house=1.0), I)
-        self.assertAlmostEqual(out["saving_g"], round(0.13 * I, 4), places=4)
-        self.assertAlmostEqual(out["ev"]["grid_g"], round(2.18 * I, 4), places=4)
-        self.assertAlmostEqual(out["house"]["carbon_g"], round(1.0 * I, 4), places=4)
-        # price fields present in the result never appear in the carbon output
-        self.assertEqual(out["intensity_g"], I)
-
-    def test_falls_back_to_device_unclipped(self):
-        # if the carbon substrate lacks ev_unclipped_kwh, fall back to devices.ev.kwh_unclipped
-        res = {"devices": {"ev": {"kwh": 1.0, "kwh_unclipped": 1.5}}, "carbon": {"house_kwh": 0.0}}
-        out = carbon.carbon_from_reprice(res, I)
-        self.assertAlmostEqual(out["ev"]["behind_meter_kwh"], 0.5, places=6)
-
-
 class TestSlotIntensity(unittest.TestCase):
     def test_prefers_stored(self):
         # stored value wins, even for a zero-net block; rounded to 1 dp, abs
