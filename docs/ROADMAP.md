@@ -1,24 +1,27 @@
 # Roadmap
 
-*Workstream status. The agreed picture of what v5 is made of is
+*Workstream status and the open backlog. The agreed picture of what v5 is made of is
 [design/EMT-v5_architecture.md](design/EMT-v5_architecture.md); the reasoning behind the ordering is
 in [design/EMT-v5_programme.md](design/EMT-v5_programme.md) — this file tracks state only.*
 
 **Nothing here has shipped.** EMT is pre-release.
 
-**How this gets built** ([architecture §6](design/EMT-v5_architecture.md)): v4 ships **4.5.14**
-(BL-71 + BL-72 + BL-73) and is then **frozen** — users stay on a stable release. This repo is seeded with a
-**verbatim copy** of 4.5.14 so the suite (**2,764 at 4.5.14, 21 Sep 2026**) is green from commit one, and the workstreams
-below are deconstruction steps against it. After 4.5.14 v4 accepts **critical fixes only**, each
-cherry-picked here the same day.
+**How this gets built** ([architecture §6](design/EMT-v5_architecture.md)): v4 shipped **4.5.14** and
+is frozen to **critical fixes only** (data loss, crash-on-start, a pricing error), each ported here as
+its forward fix. This repository was seeded with a verbatim copy of 4.5.14 (suite **2,764** green at
+the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below deconstruct it. v4 is at
+**4.5.20**; the import floor is **4.5.19** (E).
+
+*Refreshed 4 Oct 2026.*
 
 | # | Workstream | Depends on | State |
 |---|---|---|---|
-| A | Storage and access model | — | 📝 design drafted |
-| B | Job coordinator (BL-50) | A | 📋 not started |
-| C | One API for every surface | A | 📝 design drafted |
-| D | Surfacing performance | A, C | 📋 not started |
-| E | Importer | A–D | 📝 spec drafted (v7) |
+| A | Storage and access model | — | ✅ closed 30 Sep 2026 — A.1 (engine commits on the SD card) open |
+| B | Job coordinator (v4 BL-50) | A | 🟢 acceptances 1–5 met 4 Oct 2026 — 6 (Pi soak) open |
+| C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
+| D | Surfacing performance | A, C | 🟢 17 of 17 surfaces bounded on the Pi (#64) |
+| E | Importer | A–D | 📝 spec v12, floor 4.5.19 |
+| F | Carried from v4's backlog | — | 📋 9 items open, 1 done (BL-50 = B) |
 
 ---
 
@@ -54,9 +57,12 @@ largest first:
   from 52.7 s: 83 slow commits, 74 in `set_block_segments` during the sweep, none with a WAL
   checkpoint inside; one was followed by an HA WebSocket reconnect (C design §5).
 - **The pre-restore safety zip**, written while the restored engine starts — it overlapped the
-  worst commit.
-- **`_backup_to_share` after every block finalise** — a whole-database copy each time; harmless
-  at one finalise per half-hour, heavy during a catch-up burst.
+  worst commit. Now one step (#56, #58): 52 s in the twelfth soak, against 3 min 50 s restarting.
+- ~~**`_backup_to_share` after every block finalise**~~ — daily since #68 (#67, 4 Oct 2026). Its
+  ~80 s windows held 18 of a night's 25 loop-lag warnings.
+- ~~**The carbon tick**~~ — #66 (#65): a blocking API fetch on the loop and ~190 single-row
+  commits every 15 minutes; lag followed 100% of idle ticks before, 13% after (those overlapped
+  the share copy above).
 - **Commits on the engine thread at all.** If the above are not enough, route engine writes
   through a writer thread so the loop never waits on the device. An architecture change, and
   deliberately last.
@@ -82,41 +88,65 @@ and/or have the engine force a checkpoint (`wal_checkpoint(RESTART)`) after a sw
 pile on. **The soak now waits for the WAL to drain** after the sweep (a settle phase), samples it
 through the quiet phase, and warns when it starves, so its budgets measure normal use.
 
+**Twelfth soak (4 Oct 2026, after #66 and #68):** the quiet phase **passes** loop blocking for the
+first time (worst lag 1.46 s). The whole run still fails, on the re-price sweep alone: worst lag
+12.9 s and worst commit 12.3 s, in `set_block_segments` (72.6 s and 48.4 s that morning, before the
+share copy went). What is left is the sweep's own commits — candidates: one transaction per chunk,
+as #66 did for carbon; then the writer thread, last.
+
 **Done when:** a soak on the SD card shows no engine-loop stall over 2 s (`scan-log`
-`A (loop blocking): PASS`).
+`A (loop blocking): PASS`) across the whole run, sweep included.
 
 ## B. Job coordinator
 
-*One coordinator for user-mutating jobs; deny-if-busy with idempotent retry.*
+*One coordinator for user-mutating jobs; deny-if-busy with idempotent retry.* Carried from v4's
+BL-50. Design: [design/EMT-v5_B_coordinator_design.md](design/EMT-v5_B_coordinator_design.md).
 
-Carried from v4's BL-50 design. The asymmetry is the bug: import and delete are well guarded
-(17 and 14 references), attribution is not (3) — and attribution is the one that has crashed against
-the engine. With A done this shrinks to coordinating writers only.
+**State, 4 Oct 2026.** Membership **16 of 17** (only `api_db_vacuum`, which never joins); **6 of the 8**
+members that declare an edge consult `admission()`, and the other two (`delete`, `restore`)
+pre-empt the import. Acceptances (B §5):
 
-**Done when:** every mutating job acquires the coordinator, and a concurrency test proves a second
-job is denied rather than interleaved.
+| # | acceptance | state |
+|---|---|---|
+| 1 | every writing job is a member | ✅ ratchet at 1 (`api_db_vacuum`) — #69 |
+| 2 | no unregistered write from a request thread | ✅ pinned to `api_db_vacuum` — #75 |
+| 3 | declared dependencies honoured | ✅ a test per edge — #70, #71, #72 |
+| 4 | a claim before any slow work | ✅ the API import claimed before its backup — #73 |
+| 5 | admission never per block | ✅ nine per-block writers, no await or admission — #74 |
+| 6 | Pi soak, members concurrent | 📋 open |
+
+**Acceptance 6, proposed:** restore the soak database (which starts the sweep), then start an API
+import and a small range delete mid-sweep; `scan-log` for a dependant active while its dependency
+is, and for a refusal standing past 60 minutes.
+
+**Noted, not fixed:** `/api/historical/api-import/apply` runs `import_api_history` on the engine
+loop (up to 300 s) without claiming `import`; a deferred or allowance-paused verify pass is held in
+memory, so a restart loses it (nothing resumes a persisted cursor at startup).
+
+**Done when:** acceptance 6 passes on the Pi.
 
 ## C. One API for every surface
 
 *Break the write → wholesale-recompute coupling. No pre-generated HTML.*
 Design: [design/EMT-v5_C_surfaces_design.md](design/EMT-v5_C_surfaces_design.md).
 
-Not a format change. In v4, 17 call sites schedule a regeneration and regeneration is wholesale, so
-one half-hour finalising re-renders two years. Five layers of compensation have accumulated around
-that; see the programme map.
+**State:** acceptance rows 1–8 met (C design §0) — no pre-generated artefacts and `CHART_DIR` gone,
+every surface on `/api/energy`, no defaulted tariff context, billing reconciled with v4 to the
+penny (with v4's sub-meter rounding explained, #63), and every surface bounded on the Pi.
 
-**Done when:** a write records that data changed and triggers no recompute, and every surface is
-served by one API over a requested range.
+**Open:** #31's hybrid-fold bucketing — a day bucketed per half-hour can move less EV than the same
+day bucketed whole; day totals agree, Direct and EV differ between the two views.
 
 ## D. Surfacing performance
 
-*Measure before optimising.*
+*Measure before optimising.* Target hardware is a Raspberry Pi 4 class box on SD storage.
 
-Most of the win is delivered by A and C. Target hardware is modest — a Raspberry Pi 4 class box on
-SD or USB storage — so ARM CPU and I/O latency, not data volume, set the ceiling.
+**State:** `.build/soak.py` names 17 surfaces and judges each against `.build/soak_budgets.json`,
+all 17 set from the tenth soak (#64). #46, #47 and #48 took the slowest: a year's bill **18.2 →
+4.8 s**, the all-days load **11.6 → 2.8 s** (p50, Pi, under the soak's load).
 
 **Done when:** time-to-first-byte and queries-per-surface are instrumented, with a budget per
-surface that CI can assert.
+surface that CI can assert. *(The bounds are Pi-asserted by the soak today, not by CI.)*
 
 ## E. Importer
 
@@ -144,6 +174,7 @@ frozen to critical fixes after .14, and a fix that repairs already-written data 
 floor may end at .15, .17, wherever v4 actually stops. It is pinned when v5 is written.
 **Currently 4.5.19** (spec v12, 1 Oct 2026): 4.5.15 carried #473's heal, 4.5.16 #481's, 4.5.17 the
 VAT backdate heal (1 Oct 2026's 0% VAT), 4.5.18 that heal re-armed after 4.5.17's learner undid it, 4.5.19 re-armed again for sub-meter rows.
+4.5.20 (2 Oct 2026, the gap-fill zero-opener fix, v4 #494) carries no heal, so the floor does not move.
 
 Why a version suffices: every heal is marker-gated and an ungated marker runs at startup, so
 upgrading any older database runs every heal that release carries. **"Last opened by X" means
@@ -183,54 +214,69 @@ settled what that schema is.
 
 ---
 
-## Picking this up again
+## F. Carried from v4's backlog
 
-*Written 19 Sep 2026, before a pause to ship 4.5.14. Everything below is what a reader needs that
-is **not** already stated in the design documents.*
+*v4's open backlog (its `docs/ROADMAP.md`, 4 Oct 2026), assessed against v5's code. v4 takes
+critical fixes only, so everything below is v5 work; the v4 entries point here. Each keeps its v4
+number. Order is the agreed one — deletions first, while they are cheapest.*
 
-### Where things stand
+| # | Item | Kind | State in v5 (checked 4 Oct 2026) |
+|---|---|---|---|
+| — | **BL-50** — unify user-job mutual exclusion | architecture | ✅ **is workstream B** |
+| 1 | **BL-33** — remove the one-time legacy migrations | deletion | the historical segment, ex-VAT and IOG-split backfills and the 4.3.0 pence self-repair (inside the re-price sweep) are still here |
+| 2 | **BL-61 (1)** — remove the SMB rate-repair migration | deletion | as BL-33 |
+| 3 | **BL-63** — two pricing models: adopt the live one | deletion | `reprice.py` has no production import; `carbon_from_reprice` unreachable |
+| 4 | **BL-74** — retire the `needs_review` writes nothing displays | deletion + fix | `get_drift_alerts` / `dismiss_drift_alerts` have no caller |
+| 5 | **BL-61 (5)** — rename `rate_source` `'measured'` → `'settled'` | schema | with step 5; the importer maps the value |
+| 6 | **BL-76** — proportional device grid split | correctness | forward rule; history re-derived by the importer |
+| 7 | **BL-75** — settlement visibility | correctness | all six parts apply; split it |
+| 8 | **BL-47** — auto-attribution after a gap fill | feature | attribution is a coordinator member now |
+| 9 | **BL-60** — block inspector | feature | a per-block endpoint on C's API |
+| 10 | **BL-64** — bill-parser fixtures + a pypdf bump gate | tooling | ports as is |
 
-The **design is settled enough to resume from these documents alone.** Every decision taken has a
-home, with its reasoning and its rejected alternatives, and the remaining open items are listed
-above with what would answer each. No workstream is blocked on a decision that exists only in
-someone's head.
+**Deletions (1–4).** The floor (E) is what makes them safe: every database v5 admits was opened by
+4.5.19, so every one-time migration and heal in that range has already run. They go under the
+deletion protocol ([architecture §4a](design/EMT-v5_architecture.md)), and two checks come first:
 
-**Not started: any code.** This repository is documentation. Commit one is still a verbatim copy of
-4.5.14 ([architecture §6](design/EMT-v5_architecture.md)), which cannot happen until .14 ships.
+- **Done-markers on real databases.** Confirm each migration's marker reads done on the
+  production-like and dev databases before deleting its path; the segment backfill in particular
+  may share code with the live sweep.
+- **Reachability, re-run.** BL-63's first count ("9 of 11 `pricing_segments` functions dead") was
+  wrong in the direction that deletes working code — 8 are live. Trace from real entry points,
+  over-approximating, not by grep. Part of BL-63's rounding residue is already fixed: the
+  reconcile now compares bands by nearness, not price equality (#60); other exact-equality
+  comparisons against a canonical rate may remain.
 
-### The next three actions, in order
+*To verify alongside:* `run_settled_ev_split_heal` is still in v5, against "v5 carries no v4 heals" —
+it may be an ongoing forward repair rather than a one-off heal; trace before deciding.
 
-1. **Ship 4.5.14 from the v4 repository.** BL-71, BL-72 and BL-73 — all three built and merged.
-   BL-72 is the hard dependency: without a version stamp in users' databases the importer has no
-   gate, and EMT cannot retrofit one. BL-73 is required too — `not-listed` is a real state, so the
-   supplier cannot be inferred from the version.
-2. **Seed this repository:** copy 4.5.14 verbatim as commit one, confirm the suite is green, then
-   begin deconstruction step 1 (remove the unwired paths, [architecture §4](design/EMT-v5_architecture.md))
-   — under the deletion protocol in [§4a](design/EMT-v5_architecture.md), which is what makes a
-   subtractive programme against working code safe to run.
-3. **Benchmark on the Pi** — this needs no v5 code and can run against a 4.5.13 install at any
-   point, including while .14 is in progress. It answers two of the open questions above.
+BL-74's live half is a forward fix: `classify_kraken_block` re-flags a cost-settled block on every
+poll inside the backfill window (no `rate_source` guard, and a recomputed flag OR-ed onto the
+stored one).
 
-### Two dependencies that live in the v4 repository
+**BL-61 (5) — the rename.** Deferred in v4 because it forces a data migration of every `'measured'`
+row. In v5 it belongs to schema step 5, and the importer writes `'settled'` from a v4 `'measured'` —
+nothing in v4 migrates. BL-61's (2)–(4) (the `chart_emit` house-TOU override, the single charting
+API, the import-recovery `lookahead_ladder`) are re-checked against what C left: `chart_emit.py` still
+has the `house_tou` override path — whether anything still reaches it is unchecked.
 
-Everything else needed to resume is in this repository. These two are not, because they are v4
-actions:
+**BL-76 — proportional split.** `_apply_pass2` gives each device after the EV
+`grid_remaining × (its kWh / Σ kWh)` instead of the greedy ranked draw — bounded, order-independent,
+and bill-neutral (Σ device cost is unchanged). The EV pre-allocation stays. What v4 would have needed
+as a heal becomes the importer re-deriving `imp_kwh_grid` from stored `imp_kwh` — no v4 heal, no floor
+change. Delete the dead `unprotected` branch and decide on `kwh_battery` (computed, discarded) in the
+same change.
 
-| | |
-|---|---|
-| **BL-73** | A **v4** backlog item. This repository only records the dependency; the specification and the delta land in v4's roadmap and tree. |
-| **Tag 4.5.14 at release** | Commit one here is a verbatim copy of exactly the tree that shipped, so it needs to be identifiable later. |
+**BL-75 — settlement visibility.** Split into: (b) widen the cost fetch beyond IOG/INTELLI (still
+gated at `measure_settled_dispatched_blocks`) and keep the agreement floor; (c) a per-slot attempt
+count with backoff and a terminal state; (a) the pill reporting both frontiers; (e)/(f) the
+corrections tool as last resort and retry from the pill. **(d) needs a decision:** stop stamping
+`finalised_from_cad` automatically past the horizon (`finalise_past_horizon_blocks`), and stamp it only
+on the user's acceptance that the usage is unrecoverable.
 
-### Two things deliberately absent
-
-- **No design documents for B (job coordinator) or D (performance).** B is carried from v4's BL-50
-  design, which lives in the v4 repository; D is mostly delivered by A and C and its own work starts
-  with measurement, not design. Both get a document when picked up — the same rule
-  [DEVELOPMENT.md](DEVELOPMENT.md) applies to its own architecture sections, and for the same
-  reason: a document written before the work is wrong on the day it lands.
-- **No record of how any decision changed.** These documents state positions, not their history.
-  That is intentional; the reasoning that survived is here, the drafts that did not are kept outside
-  the repository.
+**BL-47, BL-60, BL-64** — as time allows. BL-60's design is in the v4 repository
+(`docs/design/EMT-BL60_block_inspector_pre_post_settlement.md`). BL-64 needs real bills to build the
+redacted fixtures, and a redaction check that fails loudly; v5 already pins pypdf 6.18.0.
 
 ---
 
@@ -270,7 +316,8 @@ workstreams that depend on them start.
 - [ ] **Viewport range vs materialised period summary** — once scoped to what the user can see, is
       per-request computation cheap enough, or does the writer maintain an incremental summary?
       Benchmark on the Pi: TTFB for a month and a year, cold and warm, plus queries-per-surface.
-      *(C/D)*
+      *(C/D)* — *Evidence so far (4 Oct 2026): per-request, a month's bill is 0.42 s and a full
+      year's 4.8 s at p50 on the Pi under the soak's load (#62); no summary built yet.*
 - [ ] **Test-suite portage** — wholesale (keeps the v4-equivalence proof) or rebuilt against the new
       API (suits the new shape)? Probably both, in that order. *(C)*
 - [ ] **What is the first public release's bar?** "Imports my history and shows it correctly" is a
