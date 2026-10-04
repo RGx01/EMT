@@ -60,7 +60,8 @@ class UploadedZips(unittest.TestCase):
             zf.write(os.path.join(self.data, "src.db"), "blocks.db")
         os.remove(os.path.join(self.data, "src.db"))
         self.p = [mock.patch.object(self.srv, "DATA_DIR", self.data),
-                  mock.patch.object(tempfile.SpooledTemporaryFile, "seekable", _NO_SEEKABLE)]
+                  mock.patch.object(tempfile.SpooledTemporaryFile, "seekable", _NO_SEEKABLE,
+                                    create=True)]       # 3.10 has no attribute to replace
         for x in self.p:
             x.start()
 
