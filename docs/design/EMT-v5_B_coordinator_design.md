@@ -376,6 +376,18 @@ range-delete and purge entries of `delete` honoured nothing until 4 Oct 2026 —
    call removed.
 4. **A claim is taken before any slow work.** The attribution window, generalised: a test asserting
    the claim precedes preflight/backup in every member that has them.
+
+   **Met, 4 Oct 2026** — `tests/test_b_claim_before_slow_work.py` checks the order in attribution,
+   the API import, the restore, the range delete, the purge and the device delete. One still had the
+   window and is fixed: the **API import's start route** checked `api_import_running()`, zipped the
+   database (a minute or more on the Pi) and only then scheduled the job, which claimed `import` when
+   it ran — a second start, a delete or a restore inside that minute saw no import. It now claims
+   first (`api_import_claim`, released on failure); `api_import_running()` counts `"claimed"`; and a
+   cancel that arrives during the backup is honoured when the job starts.
+
+   *Not a member, noted:* `/api/historical/api-import/apply` runs `import_api_history` synchronously
+   on the engine loop (up to 300 s) without claiming `import`, so members gated on `import` cannot
+   see it.
 5. **Admission never happens per block.** The call tree of the block write path stays free of
    `await`.
 6. **Soak on the Pi:** every member started concurrently against a real database, asserting no
