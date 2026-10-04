@@ -224,7 +224,7 @@ number. Order is the agreed one — deletions first, while they are cheapest.*
 | # | Item | Kind | State in v5 (checked 4 Oct 2026) |
 |---|---|---|---|
 | — | **BL-50** — unify user-job mutual exclusion | architecture | ✅ **is workstream B** |
-| 1 | **BL-33** — remove the one-time legacy migrations | deletion | the historical segment, ex-VAT and IOG-split backfills and the 4.3.0 pence self-repair (inside the re-price sweep) are still here |
+| 1 | **BL-33** — remove the one-time legacy migrations | deletion | ✅ **done 4 Oct 2026** — #78 (below) |
 | 2 | **BL-61 (1)** — remove the SMB rate-repair migration | deletion | as BL-33 |
 | 3 | **BL-63** — two pricing models: adopt the live one | deletion | `reprice.py` has no production import; `carbon_from_reprice` unreachable |
 | 4 | **BL-74** — retire the `needs_review` writes nothing displays | deletion + fix | `get_drift_alerts` / `dismiss_drift_alerts` have no caller |
@@ -248,17 +248,25 @@ deletion protocol ([architecture §4a](design/EMT-v5_architecture.md)), and two 
   reconcile now compares bands by nearness, not price equality (#60); other exact-equality
   comparisons against a canonical rate may remain.
 
-**BL-33's pence self-repair — proposed, 4 Oct 2026.** The re-price sweep force-repairs stored inc
-columns in pence (the legacy 4.3.0 cap bug). Across 108 databases on hand: 0 such rows; the sweep is
-complete on every one stamped 4.5.19+. Not a code proof — "stamped 4.5.19" does not guarantee the
-sweep finished — so the proposal pairs deleting it with an **import gate**: refuse a source when any
-main-meter import block's inc ÷ exc exceeds 10 × (1 + VAT on its date). Measured on four real
-databases, healthy blocks sit at 1.000 (worst deviation 4.8%, the 1 Oct VAT change); a pence block
-reads ~100. Every priced main block on five databases carries the exc figure it needs, so the gate runs
-offline, before credentials — no fixed price, each block judged against its own canonical figure.
+**BL-33 — done, 4 Oct 2026 (#78).** Three removals, one commit each, each with its evidence:
 
-*To verify alongside:* `run_settled_ev_split_heal` is still in v5, against "v5 carries no v4 heals" —
-it may be an ongoing forward repair rather than a one-off heal; trace before deciding.
+1. **The three legacy historical backfills** (ex-VAT, IOG-split, segment), their schedulers,
+   `_net_alarm` and `_reprice_sweep_done` — unreachable, and `engine_startup` called them a "dormant
+   net, to be deleted a release later". 524 lines of `engine.py`. The house/EV split for a late
+   completed dispatch is unaffected: that is `run_iog_split_carve` and `_attribute_missing_ev_split`.
+2. **The one-off stale ex-VAT repair** — reachable but provably done: v4 4.5.14 runs it at startup at
+   the same scope, and all 108 databases on hand stamped 4.5.14+ read done.
+3. **The sweep's pence repair**, paired with a new **import gate** (import spec §3 phase 1, gate 4):
+   refuse a source when any priced main block's (inc ÷ exc) ÷ (1 + VAT on its date) exceeds 10.
+   Healthy blocks measure 1.000 (worst 4.8%); a pence block ~100. The write-point unit guard
+   (`_sanitise_inc_units`) stays.
+
+**`run_settled_ev_split_heal` — traced, kept.** Not a one-off: no marker, runs every dispatch-capture
+tick, and its candidate set is empty on every real database checked. The trace found a defect instead:
+on the 12th Pi soak it "restored" the same 20–23 blocks every hour, changing nothing — where the
+dispatch ceiling is a known zero the settle keeps a block house-only (measured is king), and the heal
+re-settled it each pass. Fixed in the same PR as this note: the heal asks the settle's own rule
+(`_measured_ev_kwh`) first, and counts only a split actually written.
 
 BL-74's live half is a forward fix: `classify_kraken_block` re-flags a cost-settled block on every
 poll inside the backfill window (no `rate_source` guard, and a recomputed flag OR-ed onto the
