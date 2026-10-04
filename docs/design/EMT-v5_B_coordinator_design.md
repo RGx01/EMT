@@ -365,8 +365,15 @@ range-delete and purge entries of `delete` honoured nothing until 4 Oct 2026 —
    its claim kept active (so attribution, which depends on it, keeps waiting). The engine tick
    resumes it when the import ends — from the cursor, or from the newest edge if the import added
    newer history. A launch while a pass runs does not start a second one
-   (`tests/test_verify_defers_to_import.py`). Outstanding: a test per edge for the other
-   consulting members.
+   (`tests/test_verify_defers_to_import.py`).
+
+   **Every other edge, 4 Oct 2026: met.** `tests/test_b_edges_honoured.py` takes the real coordinator,
+   makes each blocker running, calls the member's own entry point and observes it stop at its gate —
+   13 edges across attribution (WAIT: it pauses in place, "waiting for <blocker>", writing nothing),
+   the re-price sweep, carbon backfill, measured drain and the tombstone prune (DEFER). A table in
+   the test is asserted equal to the manifest, so a new edge without a test fails. They are guards —
+   the edges were already honoured — and each was checked to fail with its member's `admission()`
+   call removed.
 4. **A claim is taken before any slow work.** The attribution window, generalised: a test asserting
    the claim precedes preflight/backup in every member that has them.
 5. **Admission never happens per block.** The call tree of the block write path stays free of
