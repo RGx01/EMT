@@ -1679,12 +1679,14 @@ def api_meter_main_reset():
         import shutil, time
         store = _get_store()
 
-        # Create backup first
-        try:
-            _backup_to_share(store)
-            logger.info("api_meter_main_reset: backup created")
-        except Exception as be:
-            logger.warning("api_meter_main_reset: backup failed: %s", be)
+        # Back up first, and refuse without one (#67). This called
+        # `_backup_to_share(store)`, a name this module never defined: the NameError
+        # was logged as "backup failed" and the database was deleted anyway. Only the
+        # 30-minute share copy, now gone, ever stood behind this.
+        _bk, _refuse = _safety_backup_or_refuse("pre-reset")
+        if _refuse:
+            return _refuse
+        logger.info("api_meter_main_reset: backup %s written", _bk)
 
         # Close store connection
         db_path = store._path
@@ -1757,6 +1759,11 @@ def api_meter_delete_data(meter_id: str):
         store    = _get_store()
         payload  = request.get_json(force=True) or {}
         new_cfg  = payload.get("config")          # read on THIS (web) thread — request is thread-local
+
+        # A device and all its data: back up first, before the engine is paused (#67).
+        _bk, _refuse = _safety_backup_or_refuse("pre-delete-device")
+        if _refuse:
+            return _refuse
 
         import engine as _eng_d
 
@@ -2330,6 +2337,9 @@ def api_region_reconcile_apply():
         sites = data.get("sites") or []
         if not sites:
             return jsonify({"error": "no sites supplied"}), 400
+        _bk, _refuse = _safety_backup_or_refuse("pre-region-reconcile")   # #67
+        if _refuse:
+            return _refuse
         # One hop for all three: they belong together (apply, clear the pending
         # marker, re-arm carbon) and splitting them would put a half-applied
         # reconciliation between two engine turns. Loops over SITES — a handful
@@ -2438,6 +2448,9 @@ def api_config_history_create():
             _rebuild_config_period_chain(store)
             return {"ok": True}
 
+        _bk, _refuse = _safety_backup_or_refuse("pre-config-period")      # #67
+        if _refuse:
+            return _refuse
         result = _config_mutation_on_loop(_mutate)
         logger.info("api_config_history_create: new period from %s", ef_from)
         return jsonify(result)
@@ -2537,6 +2550,9 @@ def api_config_history_update(period_id):
                 logger.warning("api_config_history_update: chain rebuild failed: %s", _snap_e)
             return {"ok": True}
 
+        _bk, _refuse = _safety_backup_or_refuse("pre-config-period")      # #67
+        if _refuse:
+            return _refuse
         result = _config_mutation_on_loop(_mutate)
         logger.info("api_config_history_update: period %d updated %s%s",
                     period_id, list(updates.keys()),
@@ -2594,6 +2610,9 @@ def api_config_history_delete(period_id):
                     "blocks_reassigned": result["blocks_reassigned"],
                     "config_restored": is_active}
 
+        _bk, _refuse = _safety_backup_or_refuse("pre-config-period")      # #67
+        if _refuse:
+            return _refuse
         result = _config_mutation_on_loop(_mutate)
         return jsonify(result)
     except ValueError as e:
@@ -4730,6 +4749,10 @@ def api_historical_reprice_repair():
             channels = ("import", "export") if body.get("include_export") else ("import",)
         else:
             channels = ("import", "export")
+        if not preview:
+            _bk, _refuse = _safety_backup_or_refuse("pre-reprice-repair")  # #67
+            if _refuse:
+                return _refuse
         result = _run_on_engine_loop(
             _eng.repair_import_pricing(from_date, to_date, channels=channels,
                                        count_only=preview),
@@ -4827,6 +4850,9 @@ def api_historical_reprice_from_csv():
                                          "Please wait for it to finish, then fill from CSV."}), 409
         except Exception:
             pass
+        _bk, _refuse = _safety_backup_or_refuse("pre-csv-reprice")        # #67
+        if _refuse:
+            return _refuse
         # On the engine thread. This endpoint already blocks the request for up to
         # 1800s on the sweep below, so the hop adds no new blocking — it just
         # stops the write going through the shared web connection, which four
@@ -6717,6 +6743,30 @@ def _create_backup_zip(label="backup"):
     return zip_path
 
 
+def _safety_backup(label):
+    """A zip backup before an irreversible operation (#67, 4 Oct 2026), CHECKED:
+    _create_backup_zip logs a failed database copy and still writes the zip, so a
+    zip without blocks.db is a failure here. Returns the zip's name; raises if
+    there is no usable backup. The caller then refuses the operation — for a
+    delete or a reset, this backup is the only undo."""
+    import zipfile
+    path = _create_backup_zip(label=label)
+    with zipfile.ZipFile(path) as zf:
+        if "blocks.db" not in zf.namelist():
+            raise RuntimeError("the backup %s holds no database" % os.path.basename(path))
+    return os.path.basename(path)
+
+
+def _safety_backup_or_refuse(label):
+    """(backup name, None), or (None, a 500 response) when the backup failed."""
+    try:
+        return _safety_backup(label), None
+    except Exception as e:
+        logger.error("safety backup %s failed — operation refused: %s", label, e)
+        return None, (jsonify({"ok": False, "error": "A safety backup could not be taken, "
+                               "so nothing was changed: %s" % e}), 500)
+
+
 
 
 @app.route("/api/import/from-zip", methods=["POST"])
@@ -7049,6 +7099,10 @@ def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
     _eng.set_delete_active(True)   # pause the carbon backfill from starting mid-delete
     store = None
     try:
+        # #67: back up first, and stop without one — the 30-minute share copy this
+        # delete used to fall back on is gone.
+        _delete_step("taking a safety backup")
+        _j["backup"] = _safety_backup("pre-delete")
         _delete_step("deleting blocks")
         store = _own_store()          # own thread, own connection
         result = store.delete_blocks_for_date_range(
@@ -8299,6 +8353,9 @@ def api_corrections_apply():
                 )
             return updated
 
+        _bk, _refuse = _safety_backup_or_refuse("pre-correction")         # #67
+        if _refuse:
+            return _refuse
         updated = _engine_write(_apply_correction, timeout=600.0)
 
         return jsonify({"ok": True, "updated_blocks": updated,

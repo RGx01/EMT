@@ -388,9 +388,11 @@
     <li><code>meters_config.json</code> — human-readable config export only. The database is authoritative.</li>
   </ul>
   <p style="margin-top:12px;">
-    Data is stored in <code>/data/energy_meter_tracker/</code>. After every block finalise,
+    Data is stored in <code>/data/energy_meter_tracker/</code>. Once a day, in the early hours,
     <code>blocks.db</code> is copied to <code>/share/energy_meter_tracker_backup/</code>.
-    A zip snapshot is created automatically before every config save and on demand from the
+    A zip snapshot is created automatically before every change that cannot be undone (a config
+    save, deleting data or a device, a reset, a restore, an import, a correction or a re-price)
+    and on demand from the
     <a href="{{ url_for('data_management_page') }}" style="color:var(--accent);">Data Management page</a>.
   </p>
   <div class="warn-box">
