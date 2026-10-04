@@ -6779,6 +6779,35 @@ def _safety_backup(label):
     return os.path.basename(path)
 
 
+def _stop_running_import(wait_s: float = 60.0) -> bool:
+    """Cancel a running API import and wait for it to stop. True when none is
+    running (now or to begin with); False if it would not stop within `wait_s`.
+
+    How `delete` honours its `depends_on=("import",)` (B §5, acceptance 3): the
+    import writes on the engine loop, and a delete under it leaves a half-deleted
+    span the import then writes back into. PREEMPT, as the restore and the device
+    delete already did inline: the delete cancels the import and waits, rather than
+    deferring to it — an import can run for hours, and the user asked to delete."""
+    import time as _t
+    import engine as _eng
+    running = getattr(_eng, "api_import_running", None)
+    if running is None or not running():
+        return True
+    try:
+        _eng.api_import_control("cancel")
+    except Exception:
+        pass
+    deadline = _t.monotonic() + wait_s
+    while _t.monotonic() < deadline:
+        if not running():
+            return True
+        _t.sleep(0.5)
+    return not running()
+
+
+_IMPORT_STILL_FINISHING = "An import was still finishing — {} aborted. Try again in a moment."
+
+
 def _safety_backup_or_refuse(label):
     """(backup name, None), or (None, a 500 response) when the backup failed."""
     try:
@@ -7121,6 +7150,11 @@ def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
     _eng.set_delete_active(True)   # pause the carbon backfill from starting mid-delete
     store = None
     try:
+        # B: the import first (depends_on=("import",)), then the backup.
+        _delete_step("stopping the running import")
+        if not _stop_running_import():
+            _j.update({"status": "error", "error": _IMPORT_STILL_FINISHING.format("delete")})
+            return
         # #67: back up first, and stop without one — the 30-minute share copy this
         # delete used to fall back on is gone.
         _delete_step("taking a safety backup")
@@ -7168,6 +7202,12 @@ def _purge_worker():
     _eng.set_delete_active(True)   # pause the carbon backfill from starting mid-purge
     store = None
     try:
+        # B: the import first (depends_on=("import",)) — a purge under a running
+        # import removes history the import is still writing.
+        _delete_step("stopping the running import")
+        if not _stop_running_import():
+            _j.update({"status": "error", "error": _IMPORT_STILL_FINISHING.format("purge")})
+            return
         store = _own_store()          # own thread, own connection
         backup = None
         try:
