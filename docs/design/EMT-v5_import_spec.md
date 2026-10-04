@@ -306,6 +306,9 @@ necessary.
 
 **Phase 1 — admissible from the file alone iff all hold, checked in this order:**
 
+*(4 Oct 2026: gates 2 and 4 are enforced at restore by `import_gate.py`, which holds the one
+`FLOOR_VERSION`. Gates 1 and 3 are not yet.)*
+
 1. **The source is a backup, not a live database, and it is intact.** The accepted inputs are a
    backup **zip** as written by `_backup_to_share`, or a `blocks.db` **taken from one**. A file
    copied out of a running container is not admissible: v4 holds the database in WAL mode and

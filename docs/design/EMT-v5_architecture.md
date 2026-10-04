@@ -178,7 +178,7 @@ unreachable.
 checking it against cases established by hand. §4a required a trace before any deletion; until the
 tool existed that was a rule with nothing enforcing it.
 
-**Whole codebase: 71 of 1,159 definitions unreachable** (4 Oct 2026 — 84 of 1,162 at the 4.5.14
+**Whole codebase: 71 of 1,167 definitions unreachable** (4 Oct 2026 — 84 of 1,162 at the 4.5.14
 seed, 79 of 1,157 after the five deletions below, and the total has since grown with workstreams A,
 B and C). **This figure is asserted against the tool by `tests/test_b_design_figures.py`** — it had
 drifted five times before that check existed, each time right when written and wrong a week later.
