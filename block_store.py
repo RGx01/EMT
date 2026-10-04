@@ -4338,11 +4338,18 @@ class BlockStore:
     ) -> dict:
         """Read-only: determine what upsert_kraken_block WOULD do, without
         writing. Returns the same verdict dict (status / drift_pct /
-        needs_review / needs_pass2_rerun / cad_kwh / settled_kwh / channel /
+        drifted / needs_pass2_rerun / cad_kwh / settled_kwh / channel /
         block_id) so a dry-run preview is identical to a live run minus the
         UPDATE. Performs one SELECT (the block lookup) and no writes.
 
-        Drift flags review only when BOTH thresholds are exceeded: the absolute
+        `drifted` is information for the poll's log, and nothing else: it flags
+        nothing (BL-74, 4 Oct 2026). It used to set needs_review — OR-ed onto the
+        stored flag, with no rate_source guard, so a cost-settled block inside the
+        rolling backfill window was re-flagged on every poll — and no list could
+        display a drift flag. On an API-sourced block the DCC figure is
+        authoritative; the user sees what Octopus holds.
+
+        Drift counts only when BOTH thresholds are exceeded: the absolute
         delta > drift_min_kwh (default 50 Wh) AND |drift| > drift_block_percent.
         The absolute floor stops percentage-on-tiny-numbers noise (e.g. 131% of
         16 Wh) dominating the count on a solar profile, while keeping real
@@ -4418,7 +4425,6 @@ class BlockStore:
                 and abs(float(settled_kwh) - float(cad_kwh)) <= 1e-6):
             _figure_changed = False
         rerun = 1 if (billing_source == "api" and _figure_changed) else 0
-        new_review = 1 if (review or (existing["needs_review"] or 0)) else 0
         new_rerun = 1 if (rerun or (existing["needs_pass2_rerun"] or 0)) else 0
         try:
             interpolated = bool(existing["interpolated"])
@@ -4432,7 +4438,7 @@ class BlockStore:
             "cad_kwh": cad_kwh,
             "drift_pct": drift_pct,
             "interpolated": interpolated,
-            "needs_review": new_review,
+            "drifted": bool(review),
             "needs_pass2_rerun": new_rerun,
         }
 
@@ -4478,8 +4484,8 @@ class BlockStore:
         channel='export' writes exp_kwh_api and compares against exp_kwh. The
         two channels are symmetric and independent: a block may receive both
         (separate ingester calls), and the second call must not clear the
-        first's flags, so needs_review and needs_pass2_rerun are OR-ed with the
-        existing row values rather than overwritten.
+        first's flags, so needs_pass2_rerun is OR-ed with the existing row value
+        rather than overwritten. needs_review is not written (BL-74).
 
         Classification is delegated to classify_kraken_block (shared with the
         dry-run preview); this method adds the UPDATE for a 'stored' verdict.
@@ -4514,11 +4520,10 @@ class BlockStore:
                 SET {api_col} = ?,
                     source = CASE WHEN source LIKE 'imported%' THEN source
                                   ELSE COALESCE(?, source) END,
-                    needs_review = ?,
                     needs_pass2_rerun = ?,
                     finalised_from_cad = 0
                 WHERE id = ?""",
-            (settled_kwh, source, verdict["needs_review"],
+            (settled_kwh, source,
              verdict["needs_pass2_rerun"], verdict["block_id"]),
         )
         self._conn.commit()

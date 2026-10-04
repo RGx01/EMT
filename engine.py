@@ -5306,7 +5306,7 @@ async def _engine_tick(ha: HAClient):
     # by block_start; it never reads the current block or the rolling buffer, so
     # gap-seed reads cannot contaminate it. Settling a gap-filled block is in
     # fact desirable — the authoritative DCC figure replaces the interpolated
-    # guess (the ingester already counts these as `flagged_interpolated`).
+    # guess (the ingester already counts these as `drifted_interpolated`).
     try:
         _drain_pass2_queue(ha)
     except Exception as _dpq_e:
@@ -12480,13 +12480,13 @@ async def kraken_poll_task(ha: HAClient):
             logger.info(
                 "kraken_poll_task: %s window=%s..%s import_rows=%d "
                 "store_import=%d export_rows=%d store_export=%d "
-                "skip=%d flag_review=%d (interpolated=%d) errors=%d",
+                "skip=%d drifted=%d (interpolated=%d) errors=%d",
                 "DRY-RUN" if effective_dry_run else "LIVE",
                 summary["window"][0], summary["window"][1],
                 summary["import_rows"], summary["stored"],
                 summary["export_rows"], summary["export_stored"],
-                summary["skipped_no_block"], summary["flagged_review"],
-                summary.get("flagged_interpolated", 0),
+                summary["skipped_no_block"], summary["drifted"],
+                summary.get("drifted_interpolated", 0),
                 len(summary["errors"]))
             for err in summary["errors"][:5]:
                 logger.warning("kraken_poll_task: %s", err)
@@ -12494,9 +12494,9 @@ async def kraken_poll_task(ha: HAClient):
             # supplies it whenever the runtime Mini reader is active (mode=api /
             # api+mini with no local sensor); otherwise it's the local CAD read.
             _prov_label = "Mini" if _kraken_mini_reader is not None else "CAD"
-            for smp in summary.get("review_samples", []):
+            for smp in summary.get("drift_samples", []):
                 logger.info(
-                    "kraken_poll_task:   review-sample [%s]%s %s %s=%s DCC=%s drift=%s%%",
+                    "kraken_poll_task:   drift-sample [%s]%s %s %s=%s DCC=%s drift=%s%%",
                     smp["channel"], " INTERP" if smp.get("interpolated") else "",
                     smp["block_start"], _prov_label, smp["cad_kwh"], smp["dcc_kwh"],
                     ("%.1f" % smp["drift_pct"]) if smp["drift_pct"] is not None
