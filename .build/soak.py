@@ -595,7 +595,7 @@ _STACK_FRAME = re.compile(r"^\s{4}(\S+\.py):(\d+) in (\S+):")
 # Frames from these files are the application; anything else is the stdlib or a
 # library, and the innermost APPLICATION frame is what names the culprit.
 _APP_FILES = {"engine.py", "server.py", "block_store.py", "energy_charts.py", "billing.py",
-              "chart_emit.py", "reprice.py", "pricing_segments.py", "kraken_api_client.py",
+              "chart_emit.py", "pricing_segments.py", "kraken_api_client.py",
               "kraken_ingester.py", "ha_client.py", "main.py", "store_types.py", "carbon.py"}
 
 

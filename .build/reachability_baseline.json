@@ -1,14 +1,12 @@
 {
   "unreachable": [
     "_apply_mini_boundary_read",
-    "_band_label",
     "_delete_window_to_utc_times",
     "_format_billing",
     "_has_sub_meters",
     "_mini_boundary_callback",
     "_mini_read_and_apply",
     "_naive_iso",
-    "_reconcile_house",
     "_review_band_reason",
     "add_deleted_range",
     "append_blocks",
@@ -61,8 +59,6 @@
     "purge_reads_older_than",
     "read_at_boundary",
     "register_block_boundary_callback",
-    "reprice_block",
-    "resolve_ev_energy",
     "set_block_exc",
     "set_state",
     "store_mini_import",

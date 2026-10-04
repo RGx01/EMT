@@ -75,9 +75,6 @@ class TestAgreesWithHandEstablishedCases(unittest.TestCase):
             self.assertNotIn(n, self.dead, "%s is LIVE — tracing it dead would "
                                            "licence deleting working code" % n)
 
-    def test_reprice_is_wholly_unreachable(self):
-        self._dead("_band_label", "_reconcile_house", "reprice_block", "resolve_ev_energy")
-
     def test_pricing_segments_three_dead_eight_live(self):
         self._dead("attribute_devices", "import_segments", "total_cost_exc")
         # These six have no EXTERNAL caller but are reached transitively; an
@@ -109,20 +106,6 @@ class TestAgreesWithHandEstablishedCases(unittest.TestCase):
         This is the tool lying about DEAD, the direction that deletes working
         code, so the whole dunder namespace is now excluded."""
         self._live("__call__", "__aenter__", "__aexit__", "__len__")
-
-    def test_unreachable_does_not_mean_unreferenced(self):
-        """The scan skips tests/ by design, so a dead name can still carry
-        fixtures and whole test modules. reprice.py is the case in point: four
-        functions with no application caller, three test consumers, 480 lines in
-        the deletion footprint rather than 169."""
-        self._dead("reprice_block")
-        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        consumers = [f for f in os.listdir(os.path.join(root, "tests"))
-                     if f.endswith(".py")
-                     and "import reprice" in open(os.path.join(root, "tests", f)).read()]
-        self.assertTrue(consumers,
-                        "if reprice.py's test consumers have gone, this test has "
-                        "outlived the point it was making — delete it")
 
     def test_the_first_five_deletions_are_gone_and_their_siblings_live(self):
         """§4a's first exercise, 22 Sep 2026. Each of these had a LIVE near-twin,
