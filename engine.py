@@ -8945,10 +8945,16 @@ def _defer_verify_pass(hi, *, repriced: int) -> None:
 # started on it. engine_startup re-arms it, which a restore re-runs.
 _verify_cursor_checked = False
 
+# How long a pass paused for API allowance waits before the tick tries it again. It
+# has already waited ~2 h (120 × 60 s) inside the pass; an hour more lets the
+# allowance refill, and if it has not, the pass waits and pauses again.
+_VERIFY_PAUSE_RETRY_S = 3600.0
+
 
 def _maybe_resume_deferred_verify() -> bool:
     """From the engine tick: resume a pass deferred to an import once no import runs
-    — DEFER's "the next tick re-checks" — or one a restart interrupted. Returns True
+    — DEFER's "the next tick re-checks" — one paused for API allowance, after
+    _VERIFY_PAUSE_RETRY_S, or one a restart interrupted. Returns True
     if it scheduled the pass.
 
     A restart clears `_verify_job`, so a deferred, allowance-paused or mid-chunk pass
@@ -8959,6 +8965,21 @@ def _maybe_resume_deferred_verify() -> bool:
     Checked once per database, after the API is available and no import runs."""
     global _verify_cursor_checked
     status = _verify_job.get("status")
+    if status == "paused":
+        # "will resume", the phase has said since v4 4.0.0, and nothing did: the pass
+        # returned with its claim held, so attribution waited on it until a restart.
+        # Retry from the cursor once the allowance has had time to recover.
+        paused_at = _verify_job.get("paused_at")
+        if paused_at is None or time.monotonic() - paused_at < _VERIFY_PAUSE_RETRY_S:
+            return False
+        if _coord.admission("verify_pricing")[0] != ADMIT or not kraken_available():
+            return False
+        logger.info("verify pricing: retrying a pass paused for API allowance")
+        # Not "resuming": that status means DEFERRED to an import, and restarts the pass
+        # from the top if the import added history. This one resumes from its cursor.
+        _verify_job["status"] = "resuming_paused"
+        asyncio.create_task(run_deferred_verify_pricing(restart=False))
+        return True
     if status == "deferred":
         if _coord.admission("verify_pricing")[0] != ADMIT or not kraken_available():
             return False
@@ -9087,6 +9108,7 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
             if waited >= max_wait_cycles:
                 _verify_job["status"] = "paused"
                 _verify_job["phase"] = "paused — API allowance still low, will resume"
+                _verify_job["paused_at"] = time.monotonic()   # the tick retries after _VERIFY_PAUSE_RETRY_S
                 logger.info("verify pricing: paused (allowance low); cursor left at %s",
                             cursor.isoformat())
                 return {"ran": True, "paused": True, "repriced": repriced}
