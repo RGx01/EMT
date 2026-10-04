@@ -11458,12 +11458,23 @@ def run_settled_ev_split_heal(limit: int = 2000) -> dict:
         return {"ok": True, "healed": 0}
     healed = 0
     for r in rows:
+        bs = r["block_start"]
         try:
-            if apply_measured_to_block(r["block_start"], cost_incl=float(r["cost_incl"]),
+            # The settle's own EV rule first (4 Oct 2026). Where the dispatch ceiling is a
+            # known zero it keeps the block house-only (measured is king), so re-settling
+            # changes nothing — and did, every pass: the 12th Pi soak "restored" the same
+            # 20–23 blocks hourly. Those are not missing a split; the settle decided it.
+            inputs = store.get_block_measured_inputs(bs)
+            if inputs is None or _measured_ev_kwh(store, bs, inputs,
+                                                  inputs["imp_kwh"] or 0.0) <= 1e-9:
+                continue
+            if apply_measured_to_block(bs, cost_incl=float(r["cost_incl"]),
                                        cost_excl=r["cost_excl"], label=r["label"]):
-                healed += 1
+                after = store.get_block_measured_inputs(bs)
+                if after is not None and after["imp_kwh_ev"] is not None:
+                    healed += 1                  # counted only when the split was written
         except Exception as e:
-            logger.warning("settled EV split heal: %s failed: %s", r["block_start"], e)
+            logger.warning("settled EV split heal: %s failed: %s", bs, e)
     if healed:
         logger.info("settled EV split heal: restored the bill's EV/Home split on %d "
                     "settled block(s) that had been stored house-only", healed)
@@ -11557,6 +11568,57 @@ def apply_measured_settled() -> dict:
     return {"applied": n_apply, "candidates": len(rows)}
 
 
+def _measured_ev_kwh(store, bs: str, row, kwh: float) -> float:
+    """The EV kWh the settle gives a settled block — the settle's own rule, one place.
+
+    Split out of apply_measured_to_block (4 Oct 2026) so run_settled_ev_split_heal can ask
+    it before re-settling: where the dispatch ceiling is a KNOWN zero the settle keeps the
+    block house-only whatever the bill's EV bucket says (measured is king), and a heal
+    that re-ran the settle on such a block rewrote the same house-only split every pass.
+    `row` is get_block_measured_inputs' row; `kwh` the block's imp_kwh."""
+    try:
+        _disp = store.completed_dispatch_kwh(bs)
+    except Exception:
+        _disp = 0.0
+    _disp = min(_disp, kwh)                       # grid-clip the measured dispatch ceiling
+    # C2 (4.5.7, revised 4.5.9): the settled BILL bucket informs the EV RATE/band, but the
+    # dispatch session bounds the QUANTITY (measured is king). The aggregate settled cost
+    # stays authoritative below.
+    try:
+        _bd = store.get_measured_breakdown(bs)
+    except Exception:
+        _bd = None
+    _bill_ev = float(_bd["ev_kwh"]) if (_bd and _bd.get("ev_kwh") is not None) else None
+    _stored_ev = row["imp_kwh_ev"]
+    _stored_ev = float(_stored_ev) if (_stored_ev is not None and float(_stored_ev) > 1e-9) else 0.0
+    # A dispatch ceiling of ZERO is ambiguous. Either the car genuinely did not charge (a LIVE
+    # slot we were watching) or we hold no dispatch data for that time AT ALL — imported
+    # history, or a slot older than the oldest record we have, because Octopus serves a short
+    # rolling dispatch window and no history. Treating both as "no EV" silently discarded the
+    # bill's own EV_DEVICE bucket on every imported IOG-SMB slot: a fresh install settled 438
+    # slots from the bill, 111 of them carrying EV, and stored a house-only split because
+    # dispatch_history held six rows from that morning. Where the ceiling is genuinely UNKNOWN
+    # the settled bucket is the only evidence there is, so trust it (grid-clipped). Where a
+    # dispatch record exists for the slot, the 4.5.9 measured-is-king cap is unchanged.
+    _ceiling_unknown = False
+    if _disp <= 1e-9:
+        try:
+            _row_here, _oldest = store.dispatch_coverage(bs)
+        except Exception:
+            _row_here, _oldest = True, None       # unsure -> keep the strict 4.5.9 behaviour
+        _imported = str(row["source"] or "").startswith("imported")
+        _pre_observation = bool(_oldest) and str(bs) < str(_oldest)
+        _ceiling_unknown = (not _row_here) and (_imported or _pre_observation)
+    if _ceiling_unknown:
+        evk = min(_bill_ev, kwh) if _bill_ev is not None else 0.0
+    elif _disp <= 1e-9:
+        evk = 0.0                                 # no measured EV session -> house
+    else:
+        _pref = _bill_ev if _bill_ev is not None else (_stored_ev if _stored_ev > 1e-9 else _disp)
+        evk = min(_pref, _disp)                   # cap EV to the car's own dispatched session
+    return evk
+
+
 def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
                             label: str = None) -> bool:
     """BL-53 step 3 (used ONLY when _MEASURED_APPLY): for a settled IOG dispatched block,
@@ -11599,46 +11661,7 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
     # grid-clip guards a dispatch over-read. No completed dispatch -> no measured EV session
     # this slot -> the energy stays house (4-rate: not a smart charge). imp_kwh / imp_cost (the
     # settled TOTAL) are untouched — only the EV<->house split moves.
-    try:
-        _disp = store.completed_dispatch_kwh(bs)
-    except Exception:
-        _disp = 0.0
-    _disp = min(_disp, kwh)                       # grid-clip the measured dispatch ceiling
-    # C2 (4.5.7, revised 4.5.9): the settled BILL bucket informs the EV RATE/band, but the
-    # dispatch session bounds the QUANTITY (measured is king). The aggregate settled cost
-    # stays authoritative below.
-    try:
-        _bd = store.get_measured_breakdown(bs)
-    except Exception:
-        _bd = None
-    _bill_ev = float(_bd["ev_kwh"]) if (_bd and _bd.get("ev_kwh") is not None) else None
-    _stored_ev = row["imp_kwh_ev"]
-    _stored_ev = float(_stored_ev) if (_stored_ev is not None and float(_stored_ev) > 1e-9) else 0.0
-    # A dispatch ceiling of ZERO is ambiguous. Either the car genuinely did not charge (a LIVE
-    # slot we were watching) or we hold no dispatch data for that time AT ALL — imported
-    # history, or a slot older than the oldest record we have, because Octopus serves a short
-    # rolling dispatch window and no history. Treating both as "no EV" silently discarded the
-    # bill's own EV_DEVICE bucket on every imported IOG-SMB slot: a fresh install settled 438
-    # slots from the bill, 111 of them carrying EV, and stored a house-only split because
-    # dispatch_history held six rows from that morning. Where the ceiling is genuinely UNKNOWN
-    # the settled bucket is the only evidence there is, so trust it (grid-clipped). Where a
-    # dispatch record exists for the slot, the 4.5.9 measured-is-king cap is unchanged.
-    _ceiling_unknown = False
-    if _disp <= 1e-9:
-        try:
-            _row_here, _oldest = store.dispatch_coverage(bs)
-        except Exception:
-            _row_here, _oldest = True, None       # unsure -> keep the strict 4.5.9 behaviour
-        _imported = str(row["source"] or "").startswith("imported")
-        _pre_observation = bool(_oldest) and str(bs) < str(_oldest)
-        _ceiling_unknown = (not _row_here) and (_imported or _pre_observation)
-    if _ceiling_unknown:
-        evk = min(_bill_ev, kwh) if _bill_ev is not None else 0.0
-    elif _disp <= 1e-9:
-        evk = 0.0                                 # no measured EV session -> house
-    else:
-        _pref = _bill_ev if _bill_ev is not None else (_stored_ev if _stored_ev > 1e-9 else _disp)
-        evk = min(_pref, _disp)                   # cap EV to the car's own dispatched session
+    evk = _measured_ev_kwh(store, bs, row, kwh)
     sched = _kraken_rate_schedules.get("import")
     import pricing_segments as _ps
     try:

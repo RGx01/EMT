@@ -164,5 +164,67 @@ class TestSettledEvSplitHeal(_Base):
         self.assertIsNone(self._ev())
 
 
+class TestTheHealDoesNotLoop(_Base):
+    """4 Oct 2026: on the 12th Pi soak the heal "restored" the same 20–23 blocks every hour,
+    changing nothing. Its query selects "bill has EV, block has none"; but where the dispatch
+    ceiling is a KNOWN zero the settle keeps the block house-only (measured is king), so
+    re-settling rewrote the same split every pass and counted it as healed. The heal now asks
+    the settle's own rule (_measured_ev_kwh) first, and counts only a split actually written."""
+
+    def _settled(self, **kw):
+        self._block(**kw)
+        engine._store._conn.execute(
+            "UPDATE blocks SET rate_source='measured' WHERE block_start=?", (SLOT,))
+        engine._store._conn.commit()
+
+    def test_a_known_zero_ceiling_is_left_alone(self):
+        """Fails on the parent: it re-settled the block and reported it healed."""
+        self._settled(source="kraken_api", api=6.0)
+        self._bill(ev_kwh=4.5)
+        self._dispatch(0.0)
+        calls = []
+        real = engine.apply_measured_to_block
+        engine.apply_measured_to_block = lambda *a, **k: calls.append(a) or real(*a, **k)
+        try:
+            for _ in range(3):                                  # three hourly passes
+                self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 0)
+        finally:
+            engine.apply_measured_to_block = real
+        self.assertEqual(calls, [], "it re-settled a block the settle keeps house-only")
+        self.assertIsNone(self._ev())
+
+    def test_the_heal_and_the_settle_agree(self):
+        """The rule the heal asks is the rule the settle applies — one function, so the two
+        cannot drift. Each case's settled EV equals what _measured_ev_kwh predicted."""
+        cases = [  # (block kwargs, bill ev, dispatch kwh or None, expected ev)
+            (dict(), 4.5, None, 4.5),                                  # unknown ceiling: the bill
+            (dict(kwh=3.0), 4.5, None, 3.0),                           # grid-clipped
+            (dict(source="kraken_api", api=6.0), 4.5, 0.0, 0.0),        # known zero: house
+            (dict(source="kraken_api", api=6.0), 4.5, 2.0, 2.0),        # dispatch caps it
+        ]
+        for blk, bill_ev, disp, want in cases:
+            with self.subTest(blk=blk, disp=disp):
+                engine._store._conn.execute("DELETE FROM blocks")
+                engine._store._conn.execute("DELETE FROM dispatch_history")
+                engine._store._conn.execute("DELETE FROM measured_cost")
+                engine._store._conn.commit()
+                self._block(**blk); self._bill(ev_kwh=bill_ev)
+                if disp is not None:
+                    self._dispatch(disp)
+                row = engine._store.get_block_measured_inputs(SLOT)
+                predicted = engine._measured_ev_kwh(engine._store, SLOT, row, row["imp_kwh"])
+                self._apply()
+                self.assertAlmostEqual(predicted, want, places=6)
+                self.assertAlmostEqual(self._ev() or 0.0, want, places=6)
+
+    def test_a_positive_ceiling_is_still_healed(self):
+        """GUARD: the case the heal exists for still heals."""
+        self._settled(source="kraken_api", api=6.0)
+        self._bill(ev_kwh=4.5)
+        self._dispatch(2.0)
+        self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 1)
+        self.assertAlmostEqual(self._ev() or 0, 2.0, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()
