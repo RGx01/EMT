@@ -3504,41 +3504,6 @@ class BlockStore:
                 changed += cur.rowcount
         return changed
 
-    def repair_stale_exc(self, ratio_floor: float = 0.80, dry_run: bool = False) -> dict:
-        """One-off repair for STALE ex-VAT left by a pre-fix reconcile. The settlement
-        reconciliation used to rewrite imp_rate WITHOUT re-stamping imp_rate_exc/
-        imp_cost_exc, so a block reverted (e.g.) off-peak→peak kept the OLD band's exc
-        rate — an ex-VAT figure inconsistent with its inc rate, which shows a wrong rate
-        in the billing summary's EV/Home split and understates Total (exc).
-
-        Finds blocks whose stored exc/inc rate ratio is IMPLAUSIBLE (imp_rate_exc ÷
-        imp_rate < ratio_floor). A real VAT rate can never produce that: 5% VAT is a
-        ratio of 0.952, and even a 25% rate is 0.80 — so the floor catches only stale
-        rows, never a genuine VAT band. Re-derives imp_rate_exc/imp_cost_exc from the
-        inc figures ÷ (1+VAT) using the per-slot VAT calendar (exact for a flat charge,
-        correct across a VAT change). Idempotent — a repaired row is no longer
-        implausible, so a re-run is a no-op. Returns {examined, repaired, dry_run}."""
-        rows = self._conn.execute(
-            "SELECT block_start, meter_id, imp_rate, imp_rate_exc, imp_cost "
-            "FROM blocks WHERE imp_rate_exc IS NOT NULL AND imp_rate > 0 "
-            "AND (imp_rate_exc / imp_rate) < ?", (float(ratio_floor),)).fetchall()
-        updates = []
-        for r in rows:
-            vat = self.vat_rate_at(r["block_start"])
-            f = 1.0 / (1.0 + vat)
-            updates.append((round(r["imp_rate"] * f, 6),
-                            round((r["imp_cost"] or 0.0) * f, 6),
-                            r["block_start"], r["meter_id"]))
-        if updates and not dry_run:
-            with self._conn:
-                for nre, nce, bs, mid in updates:
-                    self._conn.execute(
-                        "UPDATE blocks SET imp_rate_exc = ?, imp_cost_exc = ?, "
-                        "exc_source = 'tariff-repair' "
-                        "WHERE block_start = ? AND meter_id = ?", (nre, nce, bs, mid))
-        return {"examined": len(rows),
-                "repaired": (0 if dry_run else len(updates)), "dry_run": dry_run}
-
     # ── BL-27 priced segments — the block's grid import as priced slices ─────────────
 
     def set_block_segments(self, block_start: str, meter_id: str, segments,

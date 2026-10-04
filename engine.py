@@ -7514,39 +7514,6 @@ def _maybe_reprice_history() -> None:
         _reprice_history_running = False
 
 
-# DEPRECATED — remove in 5.0.0 (BL-33): one-time pre-4.4.0 legacy migration; retired once 5.0.0 requires a 4.4.0-migrated DB.
-_STALE_EXC_REPAIR_MARKER = "stale_exc_repair_state"   # store_meta key
-# Bump if the repair's detection widens, so a prior narrower run re-arms.
-_STALE_EXC_REPAIR_SCOPE = 1
-
-
-def _maybe_repair_stale_exc() -> None:
-    """Run the one-off stale-ex-VAT repair (block_store.repair_stale_exc) once per
-    install. A pre-fix reconcile rewrote imp_rate without re-stamping the ex-VAT
-    columns, leaving some blocks with an ex-VAT rate inconsistent with their inc rate;
-    this re-derives them from the VAT calendar. It's a single indexed-free scan plus a
-    handful of UPDATEs (the implausible rows are rare), so it runs inline rather than as
-    a cooperative drain. No-op once the done marker is set, or while a delete is active."""
-    try:
-        if _store is None or delete_in_progress():
-            return
-        _m = _store.get_meta(_STALE_EXC_REPAIR_MARKER, {}) or {}
-        if _m.get("done") and int(_m.get("scope") or 1) >= _STALE_EXC_REPAIR_SCOPE:
-            return   # already complete at the current scope — silent
-        res = _store.repair_stale_exc()
-        from datetime import datetime as _dt, timezone as _tz
-        _store.set_meta(_STALE_EXC_REPAIR_MARKER,
-                        {"done": True, "scope": _STALE_EXC_REPAIR_SCOPE,
-                         "repaired": res["repaired"], "examined": res["examined"],
-                         "completed_at": _dt.now(_tz.utc).replace(tzinfo=None).isoformat()})
-        if res["repaired"]:
-            logger.info("stale exc repair: re-derived ex-VAT on %d block(s) with an "
-                        "implausible exc rate (stale from a pre-fix reconcile)",
-                        res["repaired"])
-        else:
-            logger.info("stale exc repair: none found — all ex-VAT rates consistent")
-    except Exception as e:
-        logger.warning("_maybe_repair_stale_exc: %s", e)
 
 
 def _billed_rate(rate_segs, start, off_peak, meas_cost, kwh,
@@ -13510,13 +13477,6 @@ async def _engine_startup_impl(ha: HAClient):
     except Exception as _rh_e:
         logger.warning("engine_startup: reprice-history sweep schedule failed: %s", _rh_e)
 
-    # One-off stale-ex-VAT repair — fixes blocks whose ex-VAT rate was left
-    # inconsistent with their inc rate by a pre-fix reconcile (which rewrote imp_rate
-    # but not imp_rate_exc). Cheap single scan + a handful of UPDATEs; no-op once done.
-    try:
-        _maybe_repair_stale_exc()
-    except Exception as _sr_e:
-        logger.warning("engine_startup: stale exc repair failed: %s", _sr_e)
 
     # ── One-time region-timeline reconciliation (historical-carbon foundation) ──
     # With the API just discovered, stamp the DNO region (OUTWARD CODE ONLY) onto
