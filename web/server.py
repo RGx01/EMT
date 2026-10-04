@@ -4615,9 +4615,6 @@ def api_historical_api_start():
         body = request.get_json(force=True, silent=True) or {}
         if not body.get("confirmed"):
             return jsonify({"ok": False, "error": "confirmation required"}), 400
-        if _eng.api_import_running():
-            return jsonify({"ok": False, "error": "an import is already running",
-                            "status": _eng.api_import_status()}), 409
         if _backfill_verify_active(_eng):
             return jsonify({"ok": False, "reason": "verify_active",
                             "error": "The previous backfill's pricing-verification pass is still "
@@ -4636,15 +4633,24 @@ def api_historical_api_start():
             pace_s = min(max(float(body.get("pace_s", 1.5)), 0.0), 10.0)
         except (TypeError, ValueError):
             pace_s = 1.5
-        backup = None
+        # Claim BEFORE the backup (B §5, acceptance 4): the check-then-backup window
+        # let two starts both pass, and a delete or restore see no import to stop.
+        if not _eng.api_import_claim():
+            return jsonify({"ok": False, "error": "an import is already running",
+                            "status": _eng.api_import_status()}), 409
         try:
-            backup = os.path.basename(_create_backup_zip(label="pre-api-import"))
-        except Exception as be:
-            logger.warning("api import: backup failed (continuing): %s", be)
-        _asyncio.run_coroutine_threadsafe(
-            _eng.run_api_import_job(body.get("from"), chunk_days=chunk_days,
-                                    max_chunks=max_chunks, pace_s=pace_s),
-            _event_loop)      # fire-and-forget; poll /status
+            backup = None
+            try:
+                backup = os.path.basename(_create_backup_zip(label="pre-api-import"))
+            except Exception as be:
+                logger.warning("api import: backup failed (continuing): %s", be)
+            _asyncio.run_coroutine_threadsafe(
+                _eng.run_api_import_job(body.get("from"), chunk_days=chunk_days,
+                                        max_chunks=max_chunks, pace_s=pace_s),
+                _event_loop)      # fire-and-forget; poll /status
+        except Exception:
+            _eng.api_import_release()
+            raise
         return jsonify({"ok": True, "status": "running", "backup": backup})
     except Exception as e:
         logger.error("api_historical_api_start: %s", e)

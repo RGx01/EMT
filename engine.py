@@ -9253,7 +9253,40 @@ def api_import_status() -> dict:
 
 
 def api_import_running() -> bool:
-    return _api_import_job.get("status") in ("running", "paused", "rate_limited")
+    # "claimed": reserved by the start route before its safety backup (B §5,
+    # acceptance 4) — running as far as anyone who must not overlap an import knows.
+    return _api_import_job.get("status") in ("claimed", "running", "paused", "rate_limited")
+
+
+_api_import_lock = threading.Lock()
+
+
+def api_import_claim() -> bool:
+    """Reserve the API import, atomically, BEFORE the start route's slow work. False
+    if one is already running or claimed.
+
+    B §5 acceptance 4, the attribution window again (attribution_claim): the route
+    checked `api_import_running()`, then zipped the whole database — a minute or more
+    on the Pi — and only then scheduled the job, which claimed "import" when it ran.
+    Inside that minute a second start passed the same check, and a delete or restore
+    saw no import to stop. Claiming first closes it. Callers MUST call
+    `api_import_release()` on every path that then fails to schedule the job."""
+    with _api_import_lock:
+        if api_import_running():
+            return False
+        _coord.claim("import", force=True)
+        _api_import_job.clear()
+        _api_import_job.update({"status": "claimed", "phase": "taking a safety backup",
+                                "control": "run", "started_at": _dt_now_iso_safe()})
+        return True
+
+
+def api_import_release() -> None:
+    """Undo api_import_claim when the job will not be scheduled."""
+    with _api_import_lock:
+        if _api_import_job.get("status") == "claimed":
+            _api_import_job.update({"status": "idle", "phase": None})
+            _coord.mark("import", status="done")
 
 
 def api_import_control(action: str) -> dict:
@@ -10150,6 +10183,9 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
     the pause/cancel control flag between slices and during rate-limit cooldown.
     Updates `_api_import_job` for the status endpoint. Never raises."""
     j = _api_import_job
+    # A cancel that arrived while the start route held the claim (a delete or restore
+    # pre-empting it during the backup) must survive the reset below (B §5 acc. 4).
+    _cancelled_while_claimed = (j.get("status") == "claimed" and j.get("control") == "cancel")
     j.clear()
     # The import is the blocker four other members declare, so it is the
     # member that makes admission() mean anything. NOTE the coordinator takes
@@ -10166,6 +10202,8 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
               "written": {"import": 0, "export": 0}, "oldest": {},
               "flags_raised": 0, "auto_recovered": 0,
               "reason": None, "error": None, "done": False, "go_live": None})
+    if _cancelled_while_claimed:
+        j["control"] = "cancel"
     _reset_pricing_health()          # clear the PREVIOUS run's health/verify panel
     first = True
     try:
