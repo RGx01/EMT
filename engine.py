@@ -347,11 +347,10 @@ def mode_uses_mini(mode: str = None) -> bool:
 
 
 # ── Supplier capability (server-side gating seam) ────────────────────────────
-# Mirrors the client WIZ_SUPPLIERS registry. The supplier gate decides whether
-# an API-backed mode is permitted at all. Adding a future Kraken-platform
-# supplier = add its key here (+ eventually a profile). This is the authoritative
-# server-side check: the UI gating is convenience, this is enforcement.
-_API_CAPABLE_SUPPLIERS = frozenset({"octopus"})
+# The supplier gate decides whether an API-backed mode is permitted at all. This
+# is the authoritative server-side check: the UI gating is convenience, this is
+# enforcement. The registry itself is suppliers.py, shared with the import gate.
+from suppliers import API_CAPABLE as _API_CAPABLE_SUPPLIERS
 
 
 def normalize_supplier(supplier: str) -> str:

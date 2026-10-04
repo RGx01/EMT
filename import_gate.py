@@ -8,17 +8,21 @@ release that added one. Until 4 Oct 2026 nothing enforced it — `written_by` wa
 stamped (engine.stamp_version) and never read, so a restore took any v4 backup, and a
 below-floor one arrived without the 4.5.15–4.5.19 heals.
 
-Two of the spec's phase-1 gates live here, checked on the CANDIDATE file before it is
-swapped in (the live database is not touched by a refusal):
+The spec's four phase-1 gates live here, checked in its order on the CANDIDATE file
+before it is swapped in (the live database is not touched by a refusal):
 
+  gate 1  not a live copy (no non-empty `-wal` beside it), and intact
+          (`quick_check` and `foreign_key_check` clean) — a marker read out of a
+          damaged database is not evidence of anything, so this comes first
   gate 2  `store_meta.written_by` present and >= FLOOR_VERSION
+  gate 3  `store_meta.supplier` one this build understands — `octopus`,
+          `not-listed`, or absent (never asked); only an unknown key refuses
   gate 4  every priced main-meter import block in pounds, not pence, judged against
           its own ex-VAT figure (v4's pence repair was deleted from v5 with BL-33, and
           the stamp does not prove v4's sweep ever finished it)
 
-Not here yet: gate 1's integrity check and gate 3's supplier check. A database with
-no supplier key is admissible under gate 3 (never asked), so its absence refuses
-nothing.
+`source_supplier` reads gate 3's answer the way the first-run wizard must (spec §3,
+amended 4 Oct 2026): an absent supplier with a stamped Octopus account is Octopus.
 
 Raising the floor: change FLOOR_VERSION, here only, in the same change as the import
 spec §1.1, ROADMAP §E, programme §E and CLAUDE.md.
@@ -53,6 +57,18 @@ IN_PENCE = (
     "at {block_start}). Open this in the last v4 release first and let it finish "
     "re-pricing, then take a backup and restore that.")
 UNREADABLE = "This file could not be read as an EMT database: {error}"
+HOT_WAL = (
+    "This looks like a copy taken while Energy Meter Tracker was running, and some of "
+    "your most recent half-hours are not in it yet. In the old add-on take a backup, "
+    "then restore the zip it writes.")
+DAMAGED = "This database is damaged and cannot be restored safely."
+UNSUPPORTED_SUPPLIER = (
+    "This backup is from a {supplier} account, which this version of EMT cannot "
+    "import yet.")
+
+# Gate 3's "understands": a supplier with an API this build can authenticate, or the
+# deliberate local-only answer (suppliers.py). Absent is "never asked", admitted too.
+from suppliers import API_CAPABLE, LOCAL_ONLY
 
 
 def parse_version(v):
@@ -135,16 +151,86 @@ def check_units(conn):
     return None
 
 
+def has_hot_wal(path):
+    """Gate 1's filesystem half: a non-empty `-wal` beside the file is committed
+    history the main file does not yet contain. Checked before the file is opened."""
+    wal = path + "-wal"
+    return os.path.exists(wal) and os.path.getsize(wal) > 0
+
+
+def check_intact(conn):
+    """Gate 1's database half. None if clean, else the refusal."""
+    rows = conn.execute("PRAGMA quick_check").fetchall()
+    if [tuple(r) for r in rows] != [("ok",)]:
+        return DAMAGED
+    if conn.execute("PRAGMA foreign_key_check").fetchone() is not None:
+        return DAMAGED
+    return None
+
+
+def check_supplier(conn):
+    """Gate 3. None if admissible, else the refusal. Never refuses `not-listed` or an
+    absent key: both hold real meter history (spec §3)."""
+    supplier = _meta(conn, "supplier")
+    if not supplier or supplier in API_CAPABLE or supplier == LOCAL_ONLY:
+        return None
+    return UNSUPPORTED_SUPPLIER.format(supplier=supplier)
+
+
+def _account_stamped(conn):
+    try:
+        row = conn.execute("SELECT value FROM kraken_state "
+                           "WHERE key = 'kraken_account_number'").fetchone()
+    except sqlite3.Error:
+        return False
+    return bool(row and row["value"])
+
+
+def source_supplier(path):
+    """(supplier, inferred): whose credentials the database at `path` needs — logged
+    at restore now (the start of spec §9's audit record), and what the first-run
+    wizard will prompt for. `inferred` is True when the supplier was not stamped and is read from an
+    Octopus account stamp instead (spec §3, amended 4 Oct 2026): v4's supplier field
+    is optional free text, real Octopus installs have it empty, and Octopus is the
+    only API v4 ever had. (None, False) is "never asked, nothing to prompt for"."""
+    conn = _connect(path)
+    try:
+        supplier = _meta(conn, "supplier")
+        if supplier:
+            return supplier, False
+        if _account_stamped(conn):
+            return "octopus", True
+        return None, False
+    finally:
+        conn.close()
+
+
+def describe_supplier(path):
+    """source_supplier as one log phrase."""
+    try:
+        supplier, inferred = source_supplier(path)
+    except sqlite3.Error:
+        return "unreadable"
+    if not supplier:
+        return "none (never asked)"
+    return supplier + (" (inferred from the Octopus account stamp)" if inferred else "")
+
+
 def check(path):
-    """Phase-1 gates 2 and 4 on the database at `path`, in the spec's order.
+    """Phase-1 gates 1–4 on the database at `path`, in the spec's order.
     Returns None when it may be restored, else the user-facing refusal."""
+    if has_hot_wal(path):
+        return HOT_WAL
     try:
         conn = _connect(path)
     except sqlite3.Error as e:
         return UNREADABLE.format(error=e)
     try:
-        return check_written_by(conn) or check_units(conn)
+        return (check_intact(conn) or check_written_by(conn)
+                or check_supplier(conn) or check_units(conn))
     except sqlite3.Error as e:
-        return UNREADABLE.format(error=e)
+        # "malformed" is a damaged database (gate 1); anything else — "file is not a
+        # database", a missing table — is not one EMT can read.
+        return DAMAGED if "malformed" in str(e) else UNREADABLE.format(error=e)
     finally:
         conn.close()

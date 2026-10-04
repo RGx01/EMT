@@ -32,12 +32,17 @@ import job_coordinator as C                       # noqa: E402
 from block_store import BlockStore                # noqa: E402
 
 
-def make_db(path, written_by=G.FLOOR_VERSION, blocks=(), vat_calendar=None):
+def make_db(path, written_by=G.FLOOR_VERSION, blocks=(), vat_calendar=None,
+            supplier=None, account=None):
     """A real schema, a stamp (None for none), and blocks given as
     (block_start, meter_id, imp_rate, imp_rate_exc, imp_cost, imp_cost_exc)."""
     st = BlockStore(path)
     if written_by is not None:
         st.set_meta("written_by", written_by)
+    if supplier is not None:
+        st.set_meta("supplier", supplier)
+    if account is not None:
+        st.set_kraken_state("kraken_account_number", account)
     if vat_calendar is not None:
         st.set_meta("vat_calendar", vat_calendar)
     st._conn.execute("INSERT INTO config_periods (id, effective_from) VALUES (1, '2020-01-01')")
@@ -182,6 +187,93 @@ def _server():
     return srv
 
 
+class TheLiveCopyAndIntegrityGate(_Dir):
+    """Gate 1, which comes first: a marker read out of a damaged database is not
+    evidence of anything."""
+
+    def test_a_hot_wal_beside_it_is_refused(self):
+        p = self.db()
+        open(p + "-wal", "wb").write(b"\x37\x7f\x06\x82" + b"\0" * 28)
+        self.assertEqual(G.check(p), G.HOT_WAL)
+
+    def test_an_empty_wal_is_not_hot(self):
+        """GUARD: a checkpointed database leaves a zero-length -wal."""
+        p = self.db()
+        open(p + "-wal", "wb").close()
+        self.assertIsNone(G.check(p))
+
+    def test_a_corrupt_page_is_refused_as_damaged(self):
+        p = self.db(blocks=[HEALTHY] * 1 + [("2026-09-%02dT00:00:00" % d, MAIN, 0.2, 0.19,
+                                             0.2, 0.19) for d in range(1, 29)])
+        raw = bytearray(open(p, "rb").read())
+        page = int.from_bytes(raw[16:18], "big") or 65536
+        for i in range(page * 2 + 8, min(len(raw), page * 3)):   # trash the third page
+            raw[i] = 0xA5
+        open(p, "wb").write(raw)
+        self.assertEqual(G.check(p), G.DAMAGED)
+
+    def test_a_broken_foreign_key_is_refused_as_damaged(self):
+        p = self.db()
+        c = sqlite3.connect(p)
+        c.execute("PRAGMA foreign_keys = OFF")
+        c.execute("INSERT INTO blocks (block_start, block_end, meter_id, config_period_id) "
+                  "VALUES ('2026-01-01T00:00:00', '2026-01-01T00:30:00', 'electricity_main', 99)")
+        c.commit(); c.close()
+        self.assertEqual(G.check(p), G.DAMAGED)
+
+    def test_damage_is_reported_before_the_floor(self):
+        p = self.db(written_by=BELOW)
+        open(p + "-wal", "wb").write(b"x" * 32)
+        self.assertEqual(G.check(p), G.HOT_WAL)
+
+
+class TheSupplierGate(_Dir):
+    """Gate 3: refuse only a supplier this build does not know. `not-listed` and
+    absent both hold real meter history and are admitted."""
+
+    def test_known_and_absent_suppliers_are_admitted(self):
+        """GUARD: the parent never refused on supplier."""
+        for sup in ("octopus", "not-listed", None):
+            with self.subTest(supplier=sup):
+                self.assertIsNone(G.check(self.db(name="%s.db" % sup, supplier=sup)))
+
+    def test_an_unknown_supplier_is_refused_and_named(self):
+        r = G.check(self.db(supplier="eon-next"))
+        self.assertEqual(r, G.UNSUPPORTED_SUPPLIER.format(supplier="eon-next"))
+
+    def test_it_comes_after_the_floor(self):
+        """GUARD: the parent refused on the floor alone."""
+        self.assertIn(BELOW, G.check(self.db(written_by=BELOW, supplier="eon-next")))
+
+
+class WhoseCredentials(_Dir):
+    """source_supplier: what the first-run wizard prompts for (spec §3, amended)."""
+
+    def read(self, **kw):
+        return G.source_supplier(self.db(name="%d.db" % len(os.listdir(self.dir)), **kw))
+
+    def test_the_restore_log_phrase(self):
+        p = self.db(name="log.db", account="A-1")
+        self.assertEqual(G.describe_supplier(p),
+                         "octopus (inferred from the Octopus account stamp)")
+
+    def test_a_stamped_supplier_is_read_as_stamped(self):
+        self.assertEqual(self.read(supplier="octopus", account="A-1"), ("octopus", False))
+
+    def test_an_absent_supplier_with_an_account_is_octopus_inferred(self):
+        """The dev and PianSom databases: an Octopus API install whose free-text
+        supplier field was never filled in."""
+        self.assertEqual(self.read(account="A-1"), ("octopus", True))
+
+    def test_absent_with_no_account_is_never_asked(self):
+        self.assertEqual(self.read(), (None, False))
+
+    def test_the_supplier_gates_the_account_not_the_reverse(self):
+        """A user who left Octopus for local metering keeps a stale account stamp."""
+        self.assertEqual(self.read(supplier="not-listed", account="A-1"),
+                         ("not-listed", False))
+
+
 class TheRestorePaths(unittest.TestCase):
     """The gate on the candidate, before anything is stopped, backed up or swapped."""
 
@@ -219,10 +311,10 @@ class TheRestorePaths(unittest.TestCase):
         shutil.rmtree(self.share, ignore_errors=True)
         C.reset_for_tests()
 
-    def _refused_untouched(self):
+    def _refused_untouched(self, says="last v4 release"):
         j = self.srv._restore_job
         self.assertEqual(j["status"], "error", j)
-        self.assertIn("last v4 release", j["error"])
+        self.assertIn(says, j["error"])
         self.assertEqual(open(self.live, "rb").read(), self.live_bytes, "the live database changed")
         self.assertEqual(self.backups, [], "a safety backup was taken for a refused restore")
         self.assertEqual(self.cancels, [], "a refused restore cancelled the running import")
@@ -234,6 +326,31 @@ class TheRestorePaths(unittest.TestCase):
         with zipfile.ZipFile(z, "w") as zf:
             zf.write(db, "blocks.db")
         return name
+
+    def test_a_zip_holding_a_hot_wal_is_refused(self):
+        """Gate 1 for a zip: a copy of a running database, with its -wal, is not a
+        backup. The extracted candidate has no sibling, so the zip is checked."""
+        src = make_db(os.path.join(self.share, "live.db"))
+        z = os.path.join(self.share, "backups", "live.zip")
+        with zipfile.ZipFile(z, "w") as zf:
+            zf.write(src, "blocks.db")
+            zf.writestr("blocks.db-wal", b"x" * 64)
+        self.srv._restore_worker("live.zip", None, False)
+        self._refused_untouched(says="was running")
+
+    def test_from_zip_refuses_a_hot_wal(self):
+        src = make_db(os.path.join(self.share, "live.db"))
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.write(src, "blocks.db")
+            zf.writestr("blocks.db-wal", b"x" * 64)
+        buf.seek(0)
+        r = self.srv.app.test_client().post("/api/import/from-zip",
+                                            data={"zipfile": (buf, "live.zip")},
+                                            content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(r.get_json()["error"], G.HOT_WAL)
+        self.assertEqual(open(self.live, "rb").read(), self.live_bytes)
 
     def test_a_below_floor_upload_is_refused(self):
         staged = make_db(os.path.join(self.data, "uploaded_restore.db"), written_by=BELOW)
