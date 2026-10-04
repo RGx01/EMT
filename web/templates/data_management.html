@@ -424,7 +424,7 @@ async function restoreFromFlat() {
     var r    = await fetch(apiUrl('/api/backup/flat-info'));
     var info = await r.json();
     if (!info || Object.keys(info).length === 0) {
-      showError('No last-finalise backup files found');
+      showError('No daily backup files found');
       return;
     }
     _restoreZip   = null;
@@ -653,7 +653,7 @@ async function loadBackupList() {
 
     var html = '';
 
-    // ── Last finalise flat files ──
+    // ── The daily flat copy (#67) ──
     var flat    = data.flat || [];
     var primary = flat.filter(function(f) { return !f.legacy; });
     var legacyFiles = flat.filter(function(f) { return f.legacy; });
@@ -664,11 +664,11 @@ async function loadBackupList() {
       }, '');
       html += '<div style="margin-bottom:16px;">' +
         '<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;' +
-        'color:var(--muted);margin-bottom:8px;">Last Finalise Backup</div>' +
+        'color:var(--muted);margin-bottom:8px;">Daily Backup</div>' +
         '<div style="display:flex;align-items:center;justify-content:space-between;' +
         'padding:10px 12px;background:var(--bg);border-radius:var(--radius);border:1px solid var(--border);">' +
         '<div>' +
-          '<div style="font-size:13px;font-weight:500;">Block finalise snapshot</div>' +
+          '<div style="font-size:13px;font-weight:500;">Daily snapshot (early hours)</div>' +
           '<div style="font-size:11px;color:var(--muted);margin-top:2px;">Last updated: ' + latestMod + '</div>' +
           '<div style="font-size:11px;color:var(--muted);">Contains: ' + primary.map(function(f){return f.name;}).join(', ') + '</div>' +
         '</div>' +
@@ -687,13 +687,13 @@ async function loadBackupList() {
       // Only legacy files present — show with restore option but warn clearly
       html += '<div style="margin-bottom:16px;">' +
         '<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;' +
-        'color:var(--muted);margin-bottom:8px;">Last Finalise Backup</div>' +
+        'color:var(--muted);margin-bottom:8px;">Daily Backup</div>' +
         '<div style="padding:10px 12px;background:var(--bg);border-radius:var(--radius);border:1px solid var(--border);">' +
           '<div style="font-size:13px;font-weight:500;color:var(--warning);">Legacy backup files only</div>' +
           '<div style="font-size:11px;color:var(--muted);margin-top:4px;">Contains: ' +
           legacyFiles.map(function(f) { return f.name; }).join(', ') + '</div>' +
           '<div style="font-size:11px;color:var(--muted);margin-top:2px;">' +
-          'These are from v1.x or v2.0.x. A new <code>blocks.db</code> snapshot will appear here after the next block finalise.' +
+          'These are from v1.x or v2.0.x. A new <code>blocks.db</code> snapshot will appear here after the next daily backup (early hours).' +
           '</div>' +
           '<div style="margin-top:8px;">' +
           '<button class="btn btn-secondary btn-sm" onclick="restoreFromFlat()">↩ Restore legacy files</button>' +

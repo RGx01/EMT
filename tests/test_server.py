@@ -178,6 +178,12 @@ sys.modules["waitress"] = wt
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "web"))
 import server
 
+# #67: irreversible routes take a checked zip backup into /share first and refuse
+# without one. /share is read-only here, and these tests are about each route's own
+# behaviour, so the backup is stubbed to succeed for the whole module.
+# tests/test_share_backup_daily.py tests the real one, and the refusal.
+server._safety_backup = lambda label: "%s_test.zip" % label
+
 # ── Shared test data ──────────────────────────────────────────────────────────
 
 MINIMAL_CONFIG = {

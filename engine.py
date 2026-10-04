@@ -1438,8 +1438,10 @@ _backup_in_progress = False
 
 
 def _backup_to_share():
-    """Backup data files to SHARE_BACKUP_DIR after each block finalise — OFF the
-    event loop.
+    """Backup data files to SHARE_BACKUP_DIR — OFF the event loop. Once a day, from
+    _maybe_daily_share_backup (#67, 4 Oct 2026). It ran after EVERY finalise: on the
+    Pi it took ~80 s each time, and in those windows (4% of a night) fell 18 of the
+    night's 25 loop-lag warnings, single-row commits taking 5–27 s on the SD card.
 
     Root cause of the ~every-30-min "restart" (diagnosed 2026-07): this ran
     SYNCHRONOUSLY on the finalise path and `store.backup()` copies the whole DB to
@@ -1471,7 +1473,9 @@ def _backup_to_share():
             try:
                 dst = _sqlite.connect(f"{SHARE_BACKUP_DIR}/blocks.db")
                 try:
-                    src.backup(dst, pages=256, sleep=0.02)
+                    # ONE step (#56, #67): a stepped copy restarts whenever the
+                    # engine writes, which it does every tick.
+                    src.backup(dst, pages=-1)
                 finally:
                     dst.close()
             finally:
@@ -1495,6 +1499,54 @@ def _backup_to_share():
         loop.run_in_executor(None, _work)           # off the loop — never stalls the tick
     else:
         _work()                                     # no loop (sync/test) — inline
+
+
+# The daily share copy (#67): local early hours, starting only in the quarter-hour
+# after :15 or :45 — clear of the :00/:30 finalise either side of a ~1–3 min copy.
+_SHARE_BACKUP_HOUR = 3
+_SHARE_BACKUP_STARTS = (15, 45)       # minute of the hour a start window opens
+_SHARE_BACKUP_SPAN = 10               # minutes each start window stays open
+_share_backup_tried_day = None        # one attempt per local day per process
+
+
+def _maybe_daily_share_backup(now_utc=None) -> bool:
+    """Start the daily share copy if it is due. Called from every engine tick; a
+    clock comparison until it is due. Due means: inside a start window at the local
+    _SHARE_BACKUP_HOUR, no copy yet today (the file's own time says so, which
+    survives a restart), not tried already today, and nothing heavy running — the
+    re-price sweep, an import, a delete or a restore, each of which writes enough to
+    make the copy and the job slow each other. Skipped windows try again in the next
+    one; a day whose windows are all busy goes without. Returns True if started."""
+    global _share_backup_tried_day
+    if _backup_in_progress:
+        return False
+    from zoneinfo import ZoneInfo
+    try:
+        tz = ZoneInfo(_iog_site_tz())
+    except Exception:
+        tz = timezone.utc
+    now = (now_utc or datetime.now(timezone.utc).replace(tzinfo=None)) \
+        .replace(tzinfo=timezone.utc).astimezone(tz)
+    if now.hour != _SHARE_BACKUP_HOUR or not any(
+            st <= now.minute < st + _SHARE_BACKUP_SPAN for st in _SHARE_BACKUP_STARTS):
+        return False
+    today = now.date()
+    if _share_backup_tried_day == today:
+        return False
+    try:
+        _p = f"{SHARE_BACKUP_DIR}/blocks.db"
+        if os.path.exists(_p) and datetime.fromtimestamp(os.path.getmtime(_p), tz).date() == today:
+            _share_backup_tried_day = today
+            return False
+    except Exception:
+        pass
+    if reprice_history_in_progress() or delete_in_progress() or any(
+            _coord.running(j) for j in ("import", "delete", "restore")):
+        return False
+    _share_backup_tried_day = today
+    logger.info("_maybe_daily_share_backup: starting the daily share copy")
+    _backup_to_share()
+    return True
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -4485,9 +4537,7 @@ def finalise_block(ha: HAClient, block_data: dict | None = None, interpolated: b
 
     _store.save_current_block(pruned_block)
     logger.info("finalise_block: rolling buffer pruned, new block starts %s", iso(block_end_dt))
-
-    # ── Backup to /share ───────────────────────────────────────────────────
-    _backup_to_share()
+    # No share copy here any more (#67): it is daily — see _maybe_daily_share_backup.
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -5254,6 +5304,10 @@ async def _engine_tick(ha: HAClient):
     if _engine_paused:
         return
     now = datetime.now(timezone.utc).replace(tzinfo=None)
+    try:
+        _maybe_daily_share_backup(now)          # #67: once a day, in the early hours
+    except Exception as _sb_e:
+        logger.warning("_engine_tick: daily share backup check failed: %s", _sb_e)
 
     current_block = _store.load_current_block()
 
