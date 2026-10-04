@@ -390,6 +390,14 @@ range-delete and purge entries of `delete` honoured nothing until 4 Oct 2026 —
    see it.
 5. **Admission never happens per block.** The call tree of the block write path stays free of
    `await`.
+
+   **Met, 4 Oct 2026** — `tests/test_b_per_block_no_admission.py` holds it for the nine per-block
+   writers the jobs use (`_write_device_into_block`, `_apply_pass2`, `apply_measured_to_block`,
+   `_reprice_history_blocks`, `_persist_block_segments`, `_persist_block_carbon`,
+   `_attribute_block_carbon`, `append_block`, `append_block_replace`): no `await` and no coordinator
+   call anywhere in their call trees. `test_write_scope.py` held the `await` half for the first one
+   only. A guard — the property already held — checked by mutation: an `_coord.admission(...)` in
+   `_apply_pass2` or `apply_measured_to_block` fails it.
 6. **Soak on the Pi:** every member started concurrently against a real database, asserting no
    member starves and none runs while a declared dependency runs.
 
