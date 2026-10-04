@@ -41,8 +41,9 @@ class TestEngineInventory(unittest.TestCase):
         long-running READ job in EMT, so B's scope is not reduced by them — it is
         defined by them."""
         for job in ("run_api_import_job", "run_deferred_verify_pricing",
-                    "_run_historical_reprice_sweep", "_run_historical_segment_backfill",
-                    "_run_historical_exc_backfill", "_run_historical_iog_split_backfill",
+                    "_run_historical_reprice_sweep",
+                    # The three legacy backfills (_run_historical_{exc,iog_split,segment}
+                    # _backfill) were deleted — BL-33, 4 Oct 2026.
                     "_run_historical_carbon_backfill", "run_measured_history_drain",
                     "run_gap_fill_job", "run_iog_split_carve", "run_attribution_job",
                     # The four v4 one-off heals that used to sit here

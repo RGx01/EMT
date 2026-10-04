@@ -78,13 +78,11 @@ class TestJobGuards(unittest.TestCase):
                 {"api_import_running", "delete_in_progress"} & guards,
                 "%s coordinates against %s — worth a look" % (j, sorted(guards)))
 
-    def test_the_dead_backfills_are_excluded_from_the_count(self):
-        """Three of the seventeen are unreachable. Counting their guards would
-        flatter the coverage figure with code that never runs."""
-        for j in ("_run_historical_exc_backfill", "_run_historical_segment_backfill",
-                  "_run_historical_iog_split_backfill"):
-            self.assertFalse(self.d["jobs"][j]["live"])
+    def test_the_live_job_count(self):
+        """11 live jobs. The three legacy backfills this once excluded as unreachable
+        were deleted (BL-33, 4 Oct 2026), so every listed job is now live."""
         self.assertEqual(self.d["live_jobs"], 11)
+        self.assertTrue(all(j["live"] for j in self.d["jobs"].values()))
 
     def test_run_exclusive_is_still_only_a_barrier(self):
         """`run_exclusive` is v4's one real mutual-exclusion primitive. Its single

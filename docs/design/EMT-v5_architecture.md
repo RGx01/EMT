@@ -178,7 +178,7 @@ unreachable.
 checking it against cases established by hand. §4a required a trace before any deletion; until the
 tool existed that was a rule with nothing enforcing it.
 
-**Whole codebase: 79 of 1,172 definitions unreachable** (4 Oct 2026 — 84 of 1,162 at the 4.5.14
+**Whole codebase: 71 of 1,161 definitions unreachable** (4 Oct 2026 — 84 of 1,162 at the 4.5.14
 seed, 79 of 1,157 after the five deletions below, and the total has since grown with workstreams A,
 B and C). **This figure is asserted against the tool by `tests/test_b_design_figures.py`** — it had
 drifted five times before that check existed, each time right when written and wrong a week later.
@@ -233,6 +233,13 @@ of them.
 **The three legacy backfills (162 lines) were "retired" in 4.5.x by unwiring rather than deleting.**
 That is the pattern this section exists to stop: the retirement was real, the removal never happened,
 and the code has sat since looking like part of the system.
+
+*Deleted 4 Oct 2026 (BL-33).* The 162 lines above were the three schedulers alone. The real footprint
+was their workers, `_net_alarm`, `_reprice_sweep_done` and twelve marker/flag constants — **524 lines of
+`engine.py`** (12 comment lines added back) — plus two whole test files and tests in six more. The trace reported 8 names
+unreachable and none newly so after; the call site at `engine_startup` said "dormant net, to be
+deleted a release later". The house/EV split for a late completed dispatch was never theirs: that is
+`run_iog_split_carve` (every dispatch-capture tick) and `_attribute_missing_ev_split` (the reconcile).
 
 ### Whole modules and tables
 

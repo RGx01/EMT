@@ -210,32 +210,6 @@ class TestSweepAndConformance(unittest.TestCase):
         self.assertEqual(rep["verdict"], "clean")
 
 
-class TestNetAlarm(unittest.TestCase):
-    def setUp(self):
-        self._saved_store = engine._store
-        self.st, self._cp = _mk_store()
-        engine._store = self.st
-
-    def tearDown(self):
-        engine._store = self._saved_store
-        self.st._conn.close()
-
-    def test_net_alarm_fires_only_after_sweep_done(self):
-        import logging
-        with self.assertLogs("engine", level="WARNING") as h1:
-            logging.getLogger("engine").warning("keepalive")
-            engine._net_alarm("exc", 5)                          # marker not done → no alarm
-        self.assertFalse(any("NET-ALARM" in m for m in h1.output))
-        self.st.set_meta(engine._REPRICE_HISTORY_MARKER, {"done": True})
-        with self.assertLogs("engine", level="WARNING") as h2:
-            engine._net_alarm("exc", 5)                          # done + filled → alarm
-        self.assertTrue(any("NET-ALARM" in m and "exc" in m for m in h2.output))
-        with self.assertLogs("engine", level="WARNING") as h3:
-            logging.getLogger("engine").warning("keepalive")
-            engine._net_alarm("segment", 0)                      # filled 0 → no alarm
-        self.assertFalse(any("NET-ALARM" in m for m in h3.output))
-
-
 if __name__ == "__main__":
     unittest.main()
 
