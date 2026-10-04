@@ -392,9 +392,17 @@ range-delete and purge entries of `delete` honoured nothing until 4 Oct 2026 —
    first (`api_import_claim`, released on failure); `api_import_running()` counts `"claimed"`; and a
    cancel that arrives during the backup is honoured when the job starts.
 
-   *Not a member, noted:* `/api/historical/api-import/apply` runs `import_api_history` synchronously
-   on the engine loop (up to 300 s) without claiming `import`, so members gated on `import` cannot
-   see it.
+   *Not a member, deleted 4 Oct 2026:* `/api/historical/api-import/apply` ran `import_api_history`
+   synchronously on the engine loop (up to 300 s) without claiming `import`, so members gated on
+   `import` could not see it. It was v4's first synchronous wizard step, superseded by `/start` in
+   the commit that added both; no UI in v4 or v5 ever called it.
+
+   *Two more windows where nothing held `import`, closed 4 Oct 2026* (`tests/test_import_claim_held.py`):
+   a **gap fill** never claimed it — it writes the same imported blocks through `import_api_history`
+   and shares `_api_import_job`, so v4's dependants waited for it through `api_import_running()`;
+   it now claims `import` for its whole run. And the full import **released it for a rate-limit
+   cooldown** and resumed without re-claiming: `rate_limited` is not an end, and is no longer
+   treated as one.
 5. **Admission never happens per block.** The call tree of the block write path stays free of
    `await`.
 

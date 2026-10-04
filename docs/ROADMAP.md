@@ -120,9 +120,9 @@ pre-empt the import. Acceptances (B §5):
 import and a small range delete mid-sweep; `scan-log` for a dependant active while its dependency
 is, and for a refusal standing past 60 minutes.
 
-**Noted, not fixed:** `/api/historical/api-import/apply` runs `import_api_history` on the engine
-loop (up to 300 s) without claiming `import`; a deferred or allowance-paused verify pass is held in
-memory, so a restart loses it (nothing resumes a persisted cursor at startup).
+**Noted, not fixed:** a deferred or allowance-paused verify pass is held in memory, so a restart
+loses it (nothing resumes a persisted cursor at startup). *(`/api/historical/api-import/apply`, which
+ran the import without claiming it, was deleted 4 Oct 2026: no UI had ever called it.)*
 
 **Done when:** acceptance 6 passes on the Pi.
 
