@@ -8941,14 +8941,42 @@ def _defer_verify_pass(hi, *, repriced: int) -> None:
     logger.info("verify pricing: deferred to a running import; it resumes when the import ends")
 
 
+# Whether this database's persisted cursor has been looked at since the engine
+# started on it. engine_startup re-arms it, which a restore re-runs.
+_verify_cursor_checked = False
+
+
 def _maybe_resume_deferred_verify() -> bool:
     """From the engine tick: resume a pass deferred to an import once no import runs
-    — DEFER's "the next tick re-checks". Returns True if it scheduled the pass."""
-    if _verify_job.get("status") != "deferred":
+    — DEFER's "the next tick re-checks" — or one a restart interrupted. Returns True
+    if it scheduled the pass.
+
+    A restart clears `_verify_job`, so a deferred, allowance-paused or mid-chunk pass
+    was lost with it (4 Oct 2026). Its cursor is persisted after every chunk and
+    cleared to "" on completion, so a non-empty cursor at startup IS an interrupted
+    pass: resume it from there. v4 built the cursor for exactly this ("omit `restart`
+    to RESUME an interrupted pass") and never called it with restart=False.
+    Checked once per database, after the API is available and no import runs."""
+    global _verify_cursor_checked
+    status = _verify_job.get("status")
+    if status == "deferred":
+        if _coord.admission("verify_pricing")[0] != ADMIT or not kraken_available():
+            return False
+        _verify_job["status"] = "resuming"          # one scheduling per deferral
+        asyncio.create_task(run_deferred_verify_pricing(restart=False))
+        return True
+    if _verify_cursor_checked or status not in (None, "idle") or _store is None:
         return False
     if _coord.admission("verify_pricing")[0] != ADMIT or not kraken_available():
+        return False                                 # look again on a later tick
+    _verify_cursor_checked = True
+    cursor = _store.get_kraken_state(_VERIFY_CURSOR_KEY)
+    if not cursor:
         return False
-    _verify_job["status"] = "resuming"          # one scheduling per deferral
+    logger.info("verify pricing: resuming a pass interrupted by a restart, from %s", cursor)
+    # Not "resuming": that status tells the pass it was DEFERRED and to restart if the
+    # import added newer history. An interrupted pass has no such import.
+    _verify_job["status"] = "resuming_interrupted"
     asyncio.create_task(run_deferred_verify_pricing(restart=False))
     return True
 
@@ -12630,7 +12658,12 @@ async def _engine_startup_impl(ha: HAClient):
     # exists, load_config() deliberately returns {} to avoid stale JSON reads.
     # Opening the store here ensures config is always read from the DB on startup,
     # including after a restore where the DB file has been replaced.
-    global _store, _cold_start_complete
+    global _store, _cold_start_complete, _verify_cursor_checked
+    # A store (re)opened here may hold a verify pass a restart interrupted, or — after
+    # a restore — a different database's; let the tick look at its cursor once. Safe on
+    # a config save too: a live or paused pass is not idle, and a finished one's cursor
+    # is "".
+    _verify_cursor_checked = False
     # Cancel any in-flight DCC poll BEFORE we tear down the store and Kraken
     # client below. A long backfill reading the DB / HTTP session while we close
     # them throws "Cannot operate on a closed database" / "Connector is closed".
