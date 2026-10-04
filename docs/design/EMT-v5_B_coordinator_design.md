@@ -10,9 +10,9 @@ including the live tick, the three background workers, and (4 Oct 2026) `api_met
 which joined `delete` and now holds the delete flag while it works, so the members
 `exclusive_with` "delete" see it. The 1 outstanding is `api_db_vacuum` (which never joins — see
 §4). **5 of the 8** members that declare an edge consult `admission()` (§5, acceptance 1).
-`verify_pricing` does not yet. `restore` and the device delete pre-empt instead — each cancels a
-running import and waits. **The range delete and the purge, the same `delete` member, do neither**:
-their `depends_on=("import",)` is not honoured (acceptance 3, open).
+`verify_pricing` does not yet. `restore` and `delete` pre-empt the import instead — each cancels a
+running import and waits, and aborts if it will not stop. (The range delete and the purge, entries
+of `delete`, did neither until 4 Oct 2026; acceptance 3.)
 
 *Registration changes no behaviour: `@job(...)` records a declaration and returns the function
 unchanged. That is why the whole engine membership could be declared in one commit — the ratchet
@@ -345,13 +345,20 @@ same way.
    prune_tombstones — the stale-tombstone prune moved out of a GET, declared for its one edge,
    `exclusive_with=("delete",)`. **Re-counted 4 Oct 2026: 5 of 8.** #58 gave `restore` its edge, and
 `import` declares none (it was miscounted here). The three that do not consult are `verify_pricing`,
-which should; `restore`, which pre-empts the import (cancels it and waits); and `delete`, whose
-device-delete entry pre-empts it and whose range-delete and purge entries do not honour it at all.
+which should; and `restore` and `delete`, which pre-empt the import (cancel it and wait). The
+range-delete and purge entries of `delete` honoured nothing until 4 Oct 2026 — acceptance 3.
 2. **No unregistered write from a request thread.** `.build/write_inventory.py` already measures
    this. The count was 8 and must reach **1** — `api_db_vacuum`, which cannot move without stalling
    member 23 (see §4). Anything else in that list is outstanding work.
 3. **Declared dependencies are honoured.** For each `depends_on` edge, a test that starting the
    dependant while the dependency runs defers or waits — never proceeds.
+
+   **`delete` → `import`, 4 Oct 2026.** A PREEMPT edge, so "never proceeds" means "never proceeds
+   with the import still running": every entry of `delete` cancels a running import and waits, and
+   aborts without deleting if it will not stop (`_stop_running_import`;
+   `tests/test_delete_honours_import.py` for the range delete and the purge, which honoured nothing
+   before). `restore` → `import` was already so (#58). Outstanding: `verify_pricing` → `import` (it
+   does not consult `admission()`), and a test per edge for the members that do.
 4. **A claim is taken before any slow work.** The attribution window, generalised: a test asserting
    the claim precedes preflight/backup in every member that has them.
 5. **Admission never happens per block.** The call tree of the block write path stays free of

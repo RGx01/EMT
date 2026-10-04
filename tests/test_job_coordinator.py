@@ -448,7 +448,11 @@ class TestPreemptIsTheFourthOutcome(unittest.TestCase):
         root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
         with open(_os.path.join(root, "web", "server.py"), encoding="utf-8") as fh:
             src = fh.read()
-        self.assertEqual(src.count('api_import_control("cancel")'), 2)
+        # The restore and the device delete inline, and _stop_running_import — which
+        # the range delete and the purge call (B acceptance 3, 4 Oct 2026).
+        self.assertEqual(src.count('api_import_control("cancel")'), 3)
+        self.assertIn("if not _stop_running_import():", src[src.index("def _delete_worker"):])
+        self.assertIn("if not _stop_running_import():", src[src.index("def _purge_worker"):])
 
 
 class TestDeclarationsMustAllResolve(unittest.TestCase):
