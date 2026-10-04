@@ -5,7 +5,7 @@
 # sys.modules stubs at import time, so importing them all into one process
 # (plain `pytest tests/`) collides at collection. This script runs each test
 # file in its own process and aggregates the result — the invocation the suite
-# expects. Works on Python 3.10+ (energy_charts.py is dual-compatible).
+# expects. Python 3.12+, the version the add-on runs (Alpine 3.22's python3).
 #
 # It also (idempotently) creates the source symlinks the tests load by path
 # (tests/<module>.py, tests/web, tests/server.py, tests/templates), so a fresh
