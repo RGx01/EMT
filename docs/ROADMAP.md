@@ -225,7 +225,7 @@ number. Order is the agreed one — deletions first, while they are cheapest.*
 |---|---|---|---|
 | — | **BL-50** — unify user-job mutual exclusion | architecture | ✅ **is workstream B** |
 | 1 | **BL-33** — remove the one-time legacy migrations | deletion | ✅ **done 4 Oct 2026** — #78 (below) |
-| 2 | **BL-61 (1)** — remove the SMB rate-repair migration | deletion | as BL-33 |
+| 2 | **BL-61 (1)** — remove the SMB rate-repair migration | deletion | ✅ **already done, 28 Sep 2026** (1156508; guarded by `tests/test_v4_heals_removed.py`) — §F's first draft said otherwise without checking |
 | 3 | **BL-63** — two pricing models: adopt the live one | deletion | `reprice.py` has no production import; `carbon_from_reprice` unreachable |
 | 4 | **BL-74** — retire the `needs_review` writes nothing displays | deletion + fix | `get_drift_alerts` / `dismiss_drift_alerts` have no caller |
 | 5 | **BL-61 (5)** — rename `rate_source` `'measured'` → `'settled'` | schema | with step 5; the importer maps the value |
@@ -271,6 +271,21 @@ re-settled it each pass. Fixed in the same PR as this note: the heal asks the se
 BL-74's live half is a forward fix: `classify_kraken_block` re-flags a cost-settled block on every
 poll inside the backfill window (no `rate_source` guard, and a recomputed flag OR-ed onto the
 stored one).
+
+**BL-61 (1)–(4) — re-checked 4 Oct 2026.** (1) went on 28 Sep with the other v4 one-off heals
+(`run_smb_rate_repair`, `run_smb_device_recost`, `run_smb_ev_resplit`, `run_band_rate_snap`), on the
+import-floor argument `test_v4_heals_removed.py` records. The rest are not floor-safe deletions:
+
+- **(2) the `chart_emit` house-TOU override is live** — the Billing tab's day charts reach
+  `chart_emit.day_rate_series(…, house_tou=…)` through `energy_charts.day_chart_data`. BL-61's case
+  for retiring it is that the stored idle-slot rate is already the clean rate, so the override only
+  re-affirms it. That is a surface change no test covers, so it needs a before/after of day charts on
+  a real database (architecture §4a) before the override goes.
+- **(3) the single charting API** is partly C's: every surface reads `/api/energy`, but day charts
+  still draw their rate lines through `chart_emit`.
+- **(4) the import-recovery ladder** is still there (`lookahead_ladder` in
+  `kraken_api_client.recover_measurement_costs`). Collapsing it to a plain small-window cost fetch
+  changes what is fetched from Octopus, so it can only be proved against the live API.
 
 **BL-61 (5) — the rename.** Deferred in v4 because it forces a data migration of every `'measured'`
 row. In v5 it belongs to schema step 5, and the importer writes `'settled'` from a v4 `'measured'` —
