@@ -96,10 +96,11 @@ class TestConsumptionNotJustRegistration(unittest.TestCase):
     def setUpClass(cls):
         cls.d = json.loads(_run("--json").stdout)
 
-    def test_the_two_outstanding_members_are_the_world_stoppers(self):
-        """Not "the handlers that write" — the handlers that STOP the live tick."""
-        self.assertEqual(sorted(self.d["unregistered"]),
-                         ["api_db_vacuum", "api_meter_delete_data"])
+    def test_the_one_outstanding_member_is_the_vacuum(self):
+        """Not "the handlers that write" — the handlers that STOP the live tick. Of
+        the two, api_meter_delete_data joined `delete` on 4 Oct 2026; api_db_vacuum
+        never joins (B §4)."""
+        self.assertEqual(sorted(self.d["unregistered"]), ["api_db_vacuum"])
 
     def test_the_consumers_so_far(self):
         self.assertEqual(sorted(self.d["consuming"]),

@@ -217,6 +217,13 @@ class EveryIrreversibleRoute(unittest.TestCase):
                     if meth == ["GET"]:
                         continue
                     body = "\n".join(lines[n.lineno - 1:n.end_lineno])
+                    # A member wrapper (B, 4 Oct 2026) holds its claim and calls the
+                    # work; the backup is in the work.
+                    for helper in ("_meter_delete_data",):
+                        if helper + "(" in body:
+                            h = next(x for x in ast.walk(ast.parse(src)) if
+                                     isinstance(x, ast.FunctionDef) and x.name == helper)
+                            body += "\n".join(lines[h.lineno - 1:h.end_lineno])
                     seen.setdefault(d.args[0].value, []).append(
                         '_safety_backup_or_refuse("%s")' % self.ROUTES[d.args[0].value] in body)
         self.assertEqual(sorted(seen), sorted(self.ROUTES))

@@ -1746,6 +1746,7 @@ def api_meter_main_reset():
 
 
 @app.route("/api/meter/<meter_id>/delete-data", methods=["POST"])
+@job("delete")
 def api_meter_delete_data(meter_id: str):
     """
     Atomically remove a meter from config AND delete all its data, then re-derive
@@ -1754,7 +1755,28 @@ def api_meter_delete_data(meter_id: str):
     shared SQLite connection.
     Body: { config: <full config object> }
     Returns: { deleted: {...}, ok: true }
+
+    A coordinator member, "delete" — one member with the range delete and the purge,
+    as `delete_in_progress()` already means (B §4). It paused the engine but never
+    set the delete flag, so the re-price sweep, carbon backfill and measured drain,
+    each `exclusive_with` "delete", could not see it. The claim is taken first,
+    before the safety backup (B §5 acceptance 4: claim before any slow work), and
+    another delete already running is refused: the flag the three share cannot hold
+    two at once.
     """
+    import engine as _eng_m
+    if _eng_m.delete_in_progress():
+        return jsonify({"error": "Another delete is running. Try again once it finishes.",
+                        "retry": True}), 409
+    _eng_m.set_delete_active(True)
+    try:
+        return _meter_delete_data(meter_id)
+    finally:
+        _eng_m.set_delete_active(False)
+
+
+def _meter_delete_data(meter_id: str):
+    """api_meter_delete_data's work, with the "delete" claim held by the caller."""
     try:
         store    = _get_store()
         payload  = request.get_json(force=True) or {}
@@ -7194,6 +7216,10 @@ def api_blocks_delete():
         if _delete_job.get("status") == "running":
             return jsonify({"error": "a delete is already running",
                             "status": _delete_job}), 409
+        import engine as _eng_q
+        if _eng_q.delete_in_progress():            # a device delete holds the flag (B)
+            return jsonify({"error": "Another delete is running. Try again once it finishes.",
+                            "retry": True}), 409
         # Refuse while a kraken poll / BL-8 backfill is mutating blocks — the two
         # share the single SQLite connection and a delete racing an in-flight
         # backfill leaves a half-deleted day (the 'deleted the 12th mid-backfill,
@@ -7252,6 +7278,10 @@ def api_historical_purge():
         if _delete_job.get("status") == "running":
             return jsonify({"error": "a delete is already running",
                             "status": _delete_job}), 409
+        import engine as _eng_q
+        if _eng_q.delete_in_progress():            # a device delete holds the flag (B)
+            return jsonify({"error": "Another delete is running. Try again once it finishes.",
+                            "retry": True}), 409
         _delete_job.clear()
         _delete_job.update({"status": "running", "kind": "purge",
                             "step": "starting", "result": None, "error": None})

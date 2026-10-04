@@ -5,9 +5,14 @@ and the writer thread-affine, what is left to coordinate is writers.*
 
 **Status:** the coordinator exists, 23 Sep 2026. `job_coordinator.py`
 holds the decision logic and the dependency manifest; `tests/test_job_coordinator.py` covers it.
-Membership stands at **15/17** registered, of which **4 consume** `admission()` —
-every engine job including the live tick, plus the three background workers. The 2 outstanding are
-`api_db_vacuum` (which never joins — see §4) and `api_meter_delete_data`.
+Membership stands at **16/17** registered (`.build/check_job_membership.py`): every engine job
+including the live tick, the three background workers, and (4 Oct 2026) `api_meter_delete_data`,
+which joined `delete` and now holds the delete flag while it works, so the members
+`exclusive_with` "delete" see it. The 1 outstanding is `api_db_vacuum` (which never joins — see
+§4). **5 of the 8** members that declare an edge consult `admission()` (§5, acceptance 1).
+`verify_pricing` does not yet. `restore` and the device delete pre-empt instead — each cancels a
+running import and waits. **The range delete and the purge, the same `delete` member, do neither**:
+their `depends_on=("import",)` is not honoured (acceptance 3, open).
 
 *Registration changes no behaviour: `@job(...)` records a declaration and returns the function
 unchanged. That is why the whole engine membership could be declared in one commit — the ratchet
@@ -338,7 +343,10 @@ same way.
    separately, as a second ratchet that may only grow. Standing at **5 of 7** members that declare
    a dependency: attribution, reprice_sweep, carbon_backfill, measured_drain, and (29 Sep 2026)
    prune_tombstones — the stale-tombstone prune moved out of a GET, declared for its one edge,
-   `exclusive_with=("delete",)`. `verify_pricing` and `import` declare and do not yet consult.
+   `exclusive_with=("delete",)`. **Re-counted 4 Oct 2026: 5 of 8.** #58 gave `restore` its edge, and
+`import` declares none (it was miscounted here). The three that do not consult are `verify_pricing`,
+which should; `restore`, which pre-empts the import (cancels it and waits); and `delete`, whose
+device-delete entry pre-empts it and whose range-delete and purge entries do not honour it at all.
 2. **No unregistered write from a request thread.** `.build/write_inventory.py` already measures
    this. The count was 8 and must reach **1** — `api_db_vacuum`, which cannot move without stalling
    member 23 (see §4). Anything else in that list is outstanding work.
