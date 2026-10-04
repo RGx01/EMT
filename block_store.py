@@ -3462,29 +3462,6 @@ class BlockStore:
         return int(row["n"]) if row else 0
 
     # DEPRECATED — remove in 5.0.0 (BL-33): one-time pre-4.4.0 legacy migration; retired once 5.0.0 requires a 4.4.0-migrated DB.
-    def repair_pence_inc_blocks(self, block_starts, threshold: float = 3.0) -> int:
-        """Q1 SELF-HEAL: ÷100 the INC columns (rate/cost + EV split) on MAIN + sub-meter rows for
-        blocks whose `imp_rate` is implausibly high (> `threshold` £/kWh = pence-not-pounds — the
-        legacy 4.3.0 capped `compute_iog_split` bug, watch #15). Deliberate force-repair: it
-        OVERWRITES (unlike the fill-null sweep writers), justified because an inc rate above the
-        ceiling is unambiguous corruption, not data worth keeping — the same ÷100 as the §4a guard
-        and the manual data-fix. exc columns are LEFT (already £, the trusted reference). Idempotent
-        (`imp_rate > threshold` self-gates), NULL split columns stay NULL. Returns rows repaired."""
-        if not block_starts:
-            return 0
-        ph = ",".join("?" * len(block_starts))
-        with self._conn:
-            cur = self._conn.execute(
-                f"UPDATE blocks SET "
-                f"  imp_rate           = imp_rate/100.0, "
-                f"  imp_cost           = imp_cost/100.0, "
-                f"  imp_cost_remainder = imp_cost_remainder/100.0, "
-                f"  imp_cost_ev        = imp_cost_ev/100.0, "
-                f"  imp_rate_ev        = imp_rate_ev/100.0 "
-                f"WHERE block_start IN ({ph}) AND imp_rate > ?",
-                list(block_starts) + [float(threshold)])
-        return cur.rowcount
-
     def set_blocks_iog_split(self, updates) -> int:
         """Batch EV/Home split writer: many UPDATEs in ONE transaction (one fsync per
         chunk, not per block — same event-loop-friendliness as set_blocks_exc).

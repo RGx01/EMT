@@ -7128,13 +7128,12 @@ def _reprice_history_block(row, tz_name: "str | None", rate_segs):
     rate = float(_g(row, "imp_rate", _g(row, "rate", 0.0)) or 0.0)
     cost = float(_g(row, "imp_cost", _g(row, "cost", 0.0)) or 0.0)
     imp_ch = {"kwh": kwh, "rate": rate, "cost": cost}
-    # Q1 SELF-HEAL (watch #15): a legacy PENCE block (the 4.3.0 capped compute_iog_split bug) — its
-    # stored inc is 100x. Normalise to £ HERE, before ANY split/exc/segment derivation, and update
-    # the local vars, so everything downstream (overlay, split, exc, segments) is £ and consistent.
-    # Guard-gated (fires only on an inc rate > £3/kWh = unambiguous corruption) → healthy blocks are
-    # byte-identical. The driver force-repairs the stored COLUMNS for flagged blocks.
-    _healed = _sanitise_inc_units(imp_ch, start)
-    if _healed:
+    # The unit guard (§4a): an inc rate in pence is normalised to £ before any derivation, so
+    # split, exc and segments are built in £. Healthy blocks are byte-identical. The sweep no
+    # longer force-repairs a legacy pence block's stored COLUMNS (the 4.3.0 cap bug): v5 admits no
+    # such database (import spec §9, the units gate), so the guard firing here means one got past
+    # it — its UNIT-GUARD warning is the signal (BL-33, 4 Oct 2026).
+    if _sanitise_inc_units(imp_ch, start):
         rate = imp_ch["rate"]; cost = imp_ch["cost"]
     if rate:
         try:
@@ -7161,7 +7160,6 @@ def _reprice_history_block(row, tz_name: "str | None", rate_segs):
     imp_ch["_start"] = start
     imp_ch["_meter_id"] = meter_id
     imp_ch["_needs_segments"] = _g(row, "needs_segments", 1)
-    imp_ch["_healed_pence"] = _healed
     return imp_ch
 
 
@@ -7177,12 +7175,9 @@ def _reprice_history_blocks(rows, tz_name: "str | None", rate_segs) -> dict:
         return {"split": 0, "exc": 0, "segments": 0}
     split_updates, exc_updates = [], []
     seg_n = 0
-    heal_starts = []                       # Q1: blocks whose stored inc was pence → force-repair
     for row in rows:
         ch = _reprice_history_block(row, tz_name, rate_segs)
         start, meter_id = ch.get("_start"), ch.get("_meter_id")
-        if ch.get("_healed_pence") and start:
-            heal_starts.append(start)
         if ch.get("kwh_ev") is not None:
             split_updates.append((start, meter_id, ch.get("kwh_ev"), ch.get("cost_ev"),
                                   ch.get("rate_ev"), ch.get("ev_band"), ch.get("home_band")))
@@ -7200,15 +7195,7 @@ def _reprice_history_blocks(rows, tz_name: "str | None", rate_segs) -> dict:
                 logger.warning("_reprice_history_blocks: segment persist failed (%s): %s", start, e)
     split_n = _store.set_blocks_iog_split(split_updates) if split_updates else 0
     exc_n = _store.set_blocks_exc(exc_updates) if exc_updates else 0
-    # Q1 SELF-HEAL: force-repair the stored INC columns of legacy pence blocks (main + sub-meters)
-    # so the columns match the £ segments just written. Overwrites by design; gated on the §4a
-    # guard having fired (imp_rate > £3). exc columns left (already £). Loud so the completion
-    # report / logs surface it.
-    heal_n = _store.repair_pence_inc_blocks(heal_starts) if heal_starts else 0
-    if heal_n:
-        logger.warning("PENCE-SELF-HEAL: repaired %d row(s) across %d block(s) stored in pence "
-                       "(legacy 4.3.0 cap bug) — inc columns ÷100 to £", heal_n, len(set(heal_starts)))
-    return {"split": split_n, "exc": exc_n, "segments": seg_n, "healed": heal_n}
+    return {"split": split_n, "exc": exc_n, "segments": seg_n}
 
 
 _REPRICE_HISTORY_MARKER = "reprice_history_state"   # store_meta key (P3.3b)
@@ -7230,7 +7217,7 @@ def _next_sweep_chunk(limit: int, elapsed_s: float, ceiling: int) -> int:
 _reprice_history_running = False
 
 
-def _write_reprice_report(*, verdict: str, swept: int, healed: int, skipped: int,
+def _write_reprice_report(*, verdict: str, swept: int, skipped: int,
                           stalled: int, remaining: int, scope: int) -> None:
     """Q3: write a single-file JSON summary of the reprice-history sweep to the share dir at
     completion, so a user who suspects a bad upgrade can send ONE file. Overwrites in place
@@ -7245,7 +7232,6 @@ def _write_reprice_report(*, verdict: str, swept: int, healed: int, skipped: int
             "generated_at": _now,
             "verdict": verdict,                       # "complete" | "stalled"
             "blocks_swept": int(swept),
-            "blocks_self_healed_pence": int(healed),  # legacy 4.3.0 cap pence blocks auto-repaired
             "chunks_skipped": int(skipped),           # transient chunk failures over the run
             "blocks_unpriced_stalled": int(stalled),  # could not be priced (verdict=stalled)
             "blocks_remaining": int(remaining),
@@ -7253,7 +7239,6 @@ def _write_reprice_report(*, verdict: str, swept: int, healed: int, skipped: int
             "summary": (
                 ("Re-pricing complete" if verdict == "complete" else "Re-pricing STALLED")
                 + f": {int(swept)} block(s) processed"
-                + (f"; {int(healed)} auto-repaired from a legacy pence bug" if healed else "")
                 + (f"; {int(skipped)} chunk(s) transiently skipped" if skipped else "")
                 + (f"; {int(stalled)} could NOT be priced — please send this file to support"
                    if stalled else "")
@@ -7333,11 +7318,9 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
             rate_segs = None
     swept = 0
     skipped = 0
-    healed = 0
     scanned = 0
     cursor = state.get("cursor")
     total = int(state.get("swept") or 0)
-    total_healed = int(state.get("healed") or 0)
     total_skipped = int(state.get("skipped") or 0)
     reached_end = False
     # Chunks are sized by TIME, not count: `batch` is only the ceiling. A fixed 500 held
@@ -7361,9 +7344,8 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
             reached_end = True
             break
         try:
-            _r = _reprice_history_blocks(rows, tz_name, rate_segs)   # split + exc + segments
+            _reprice_history_blocks(rows, tz_name, rate_segs)   # split + exc + segments
             swept += len(rows)
-            healed += int((_r or {}).get("healed") or 0)
         except Exception as e:
             skipped += len(rows)
             logger.warning("REPRICE-SWEEP-CHUNK-FAIL: cursor=%s size=%d (skipped this pass: %d): %s",
@@ -7372,7 +7354,7 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
         scanned += len(rows)
         _store.set_meta(_REPRICE_HISTORY_MARKER,
                         {"cursor": cursor, "scope": _REPRICE_HISTORY_SCOPE,
-                         "swept": total + swept, "healed": total_healed + healed,
+                         "swept": total + swept,
                          "skipped": total_skipped + skipped})
         if len(rows) < limit:
             reached_end = True
@@ -7380,7 +7362,6 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
         limit = _next_sweep_chunk(limit, time.monotonic() - _t0, batch)
         await _aio.sleep(pace_s)
     total += swept
-    total_healed += healed
     total_skipped += skipped
     # HARDENING (watch #10 — ROOT CAUSE): the old code marked 'done' on reaching the end of the
     # page cursor. But a chunk that THREW was skipped PAST the cursor (cursor advances in the loop
@@ -7392,10 +7373,10 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
     if reached_end and _remaining == 0:
         _store.set_meta(_REPRICE_HISTORY_MARKER,
                         {"done": True, "scope": _REPRICE_HISTORY_SCOPE, "swept": total,
-                         "healed": total_healed, "skipped": total_skipped,
+                         "skipped": total_skipped,
                          "completed_at": _now_iso()})
         logger.info("reprice-history sweep: swept %d block(s) this pass — complete", swept)
-        _write_reprice_report(verdict="complete", swept=total, healed=total_healed,
+        _write_reprice_report(verdict="complete", swept=total,
                               skipped=total_skipped, stalled=0, remaining=0,
                               scope=_REPRICE_HISTORY_SCOPE)
     elif reached_end and _remaining < _remaining_before:
@@ -7415,12 +7396,12 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
         # coverage gate). Mark done (so we don't busy-spin re-arming) but LOUDLY.
         _store.set_meta(_REPRICE_HISTORY_MARKER,
                         {"done": True, "scope": _REPRICE_HISTORY_SCOPE, "swept": total,
-                         "healed": total_healed, "skipped": total_skipped,
+                         "skipped": total_skipped,
                          "stalled": _remaining, "completed_at": _now_iso()})
         logger.error("REPRICE-SWEEP-STALLED: %d block(s) could not be repriced after a full sweep "
                      "(persistent errors — see REPRICE-SWEEP-CHUNK-FAIL). Segment pricing is "
                      "degraded for ranges containing them until resolved.", _remaining)
-        _write_reprice_report(verdict="stalled", swept=total, healed=total_healed,
+        _write_reprice_report(verdict="stalled", swept=total,
                               skipped=total_skipped, stalled=_remaining, remaining=_remaining,
                               scope=_REPRICE_HISTORY_SCOPE)
     else:

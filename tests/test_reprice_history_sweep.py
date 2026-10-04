@@ -288,10 +288,11 @@ class TestSweepHardening(unittest.TestCase):
         self.assertGreater(self.st.count_blocks_needing_reprice(), 0)   # the bad block remains, but visibly
 
 
-class TestPenceSelfHeal(unittest.TestCase):
-    """Q1: the sweep self-heals a legacy PENCE block (4.3.0 cap bug) — normalises inc to £ before
-    building segments AND force-repairs the stored columns (main + sub-meters). Healthy blocks are
-    byte-identical (guard fires only on inc > £3/kWh)."""
+class TestUnitGuardInTheSweep(unittest.TestCase):
+    """The unit guard (§4a) still normalises a pence inc rate before the sweep builds segments,
+    and still says so. The sweep's force-repair of a legacy pence block's stored COLUMNS (the
+    4.3.0 cap bug) is deleted: v5 admits no such database (import spec §9, the units gate) —
+    BL-33, 4 Oct 2026. The first test fails on the parent, which repaired the columns."""
     def setUp(self):
         self._saved_sched = engine._kraken_rate_schedules
         self._saved_store = engine._store
@@ -318,41 +319,32 @@ class TestPenceSelfHeal(unittest.TestCase):
             f"imp_rate, imp_cost, source, {col}) VALUES (?,?,?,?,?,?,?, 'kraken_api', ?)",
             (start, start, meter, self._cp, kwh, rate, cost, kwh))
 
-    def test_pence_block_healed_columns_and_segments(self):
+    def test_segments_in_pounds_and_the_columns_left_alone(self):
         B = "2026-08-18T03:30:00"
-        # the real bug shape: main + sub both in pence
-        self._blk(B, "electricity_main", 3.929, 6.89997, 27.109982)
-        self._blk(B, "ev_charger", 3.5, 6.89997, 24.14990, is_grid=True)
-        # a healthy neighbour that must stay byte-identical
+        self._blk(B, "electricity_main", 3.929, 6.89997, 27.109982)     # the 4.3.0 bug shape
         H = "2026-08-18T03:00:00"
-        self._blk(H, "electricity_main", 2.0, 0.069, 0.138)
+        self._blk(H, "electricity_main", 2.0, 0.069, 0.138)             # healthy neighbour
         self.st._conn.commit()
         rows = self.st.get_blocks_needing_reprice()
-        res = engine._reprice_history_blocks(rows, "UTC", _RATE_SEGS)
-        self.assertGreaterEqual(res.get("healed", 0), 2)     # main + sub repaired
-        # main + sub columns ÷100 to £
-        m = self.st._conn.execute("SELECT imp_rate, imp_cost FROM blocks WHERE block_start=? AND "
-                                  "meter_id='electricity_main'", (B,)).fetchone()
-        self.assertAlmostEqual(m["imp_rate"], 0.069, places=4)
-        self.assertAlmostEqual(m["imp_cost"], 0.2711, places=3)
-        sub = self.st._conn.execute("SELECT imp_rate, imp_cost FROM blocks WHERE block_start=? AND "
-                                    "meter_id='ev_charger'", (B,)).fetchone()
-        self.assertAlmostEqual(sub["imp_rate"], 0.069, places=4)
-        # segment built in £ (house segment ~0.069, NOT 6.9)
-        seg = self.st._conn.execute("SELECT kwh, inc_rate FROM block_segments WHERE block_start=? "
+        with self.assertLogs("engine", level="WARNING") as logs:
+            res = engine._reprice_history_blocks(rows, "UTC", _RATE_SEGS)
+        self.assertTrue(any("UNIT-GUARD" in m for m in logs.output), logs.output)
+        self.assertNotIn("healed", res)
+        seg = self.st._conn.execute("SELECT inc_rate FROM block_segments WHERE block_start=? "
                                     "AND meter_id='electricity_main'", (B,)).fetchone()
-        self.assertLess(seg["inc_rate"], 1.0)
         self.assertAlmostEqual(seg["inc_rate"], 0.069, places=3)
-        # healthy neighbour untouched
+        m = self.st._conn.execute("SELECT imp_rate FROM blocks WHERE block_start=? AND "
+                                  "meter_id='electricity_main'", (B,)).fetchone()
+        self.assertAlmostEqual(m["imp_rate"], 6.89997, places=4, msg="the columns were rewritten")
         h = self.st._conn.execute("SELECT imp_rate, imp_cost FROM blocks WHERE block_start=? AND "
                                   "meter_id='electricity_main'", (H,)).fetchone()
-        self.assertEqual(h["imp_rate"], 0.069)
-        self.assertEqual(h["imp_cost"], 0.138)
+        self.assertEqual((h["imp_rate"], h["imp_cost"]), (0.069, 0.138))
 
-    def test_completion_report_written_with_heal_count(self):
+    def test_completion_report_is_still_written(self):
+        """The report the sweep leaves on the share, without the pence field (it always carried
+        it on the parent, as 0)."""
         import tempfile, os, json
-        B = "2026-08-18T03:30:00"
-        self._blk(B, "electricity_main", 3.929, 6.89997, 27.109982)
+        self._blk("2026-08-18T03:00:00", "electricity_main", 2.0, 0.069, 0.138)
         self.st._conn.commit()
         tmp = tempfile.mkdtemp()
         saved = engine.SHARE_BACKUP_DIR
@@ -366,14 +358,9 @@ class TestPenceSelfHeal(unittest.TestCase):
             self.assertTrue(os.path.exists(p), "sweep completion report not written")
             rpt = json.load(open(p))
             self.assertEqual(rpt["verdict"], "complete")
-            self.assertGreaterEqual(rpt["blocks_self_healed_pence"], 1)
-            self.assertIn("pence", rpt["summary"])
+            self.assertNotIn("blocks_self_healed_pence", rpt)
         finally:
             engine.SHARE_BACKUP_DIR = saved
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class TestGapAwareMigration(unittest.TestCase):
