@@ -6920,7 +6920,11 @@ def api_import_from_zip():
         except Exception as _bke:
             logger.warning("api_import_from_zip: pre-import backup failed: %s", _bke)
 
-        with zipfile.ZipFile(zf_file.stream, "r") as zf:
+        # Open the zip from a file, not the upload stream: on Python 3.10 that stream is a
+        # SpooledTemporaryFile with no seekable(), which zipfile needs (added in 3.11).
+        _upload_zip = os.path.join(DATA_DIR, "upload_import.zip")
+        zf_file.save(_upload_zip)
+        with zipfile.ZipFile(_upload_zip, "r") as zf:
             names = {os.path.basename(n): n for n in zf.namelist() if os.path.basename(n) in known}
             logger.info("api_import_from_zip: zip contains %s", list(names.keys()))
 
@@ -7009,6 +7013,10 @@ def api_import_from_zip():
         logger.error("api_import_from_zip: %s", e)
         return jsonify({"error": str(e)}), 500
     finally:
+        _upload_zip = os.path.join(DATA_DIR, "upload_import.zip")
+        if os.path.exists(_upload_zip):
+            try: os.remove(_upload_zip)
+            except Exception: pass
         import sys as _sys
         _eng = _sys.modules.get("engine")
         if _eng and hasattr(_eng, "resume_engine"):

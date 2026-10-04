@@ -280,7 +280,8 @@ class TheRestorePaths(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn(BELOW, r.get_json()["error"])
         self.assertEqual(open(self.live, "rb").read(), self.live_bytes)
-        self.assertFalse(os.path.exists(os.path.join(self.data, "blocks.db.import_tmp")))
+        self.assertEqual(sorted(os.listdir(self.data)), ["blocks.db"],
+                         "the saved upload or its extracted copy was left behind")
 
 
 if __name__ == "__main__":
