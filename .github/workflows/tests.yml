@@ -22,10 +22,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # Lower bound the code supports (run_tests.sh: "Python 3.10+") and a
-        # current version — the 3.10 leg guards against 3.12-only syntax slipping
-        # in (e.g. the energy_charts f-string regression).
-        python-version: ["3.10", "3.12"]
+        # 3.12 is what the add-on runs: build.yaml pins the HA base image to Alpine
+        # 3.22, whose python3 is 3.12. 3.13 is the next one, so an Alpine bump is
+        # not the first time the suite meets it. Nothing runs EMT below 3.12; the
+        # 3.10 leg this replaces (4 Oct 2026) guarded a floor no install uses.
+        python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v4
 
