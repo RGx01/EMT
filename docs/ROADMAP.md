@@ -95,6 +95,13 @@ first time (worst lag 1.46 s). The whole run still fails, on the re-price sweep 
 share copy went). What is left is the sweep's own commits — candidates: one transaction per chunk,
 as #66 did for carbon; then the writer thread, last.
 
+**Fifteenth soak (5 Oct 2026):** the quiet phase passes again — one over-budget lag, a 4.8 s
+log-pipe flush, and no slow commit (the dispatch poll's commits went with #91). The sweep still
+fails: 85 of the run's 97 slow commits are `set_block_segments`, worst 16.8 s. *Then, the same day:*
+the sweep commits **once per chunk** — each block's segment write had been its own transaction,
+and the chunk's split, exc and cursor three more (63 commits for a 60-block chunk; now at most 3).
+The writer thread stays last, pending a soak.
+
 **Done when:** a soak on the SD card shows no engine-loop stall over 2 s (`scan-log`
 `A (loop blocking): PASS`) across the whole run, sweep included.
 

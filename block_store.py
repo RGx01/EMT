@@ -1849,7 +1849,7 @@ class BlockStore:
         # (5 Oct 2026: each one was its own fsync on the SD card, and they stalled the
         # engine loop for seconds). captured_at is therefore when the slot's data last
         # changed. Nothing reads it for billing.
-        with self._dispatch_tx():
+        with self._tx():
             self._conn.execute(
                 """INSERT INTO dispatch_slots
                        (slot_start, off_peak, provider, source, captured_at,
@@ -2083,7 +2083,7 @@ class BlockStore:
                              COALESCE(excluded.raw_start, dispatch_history.raw_start)
                       OR dispatch_history.raw_end IS NOT
                              COALESCE(excluded.raw_end, dispatch_history.raw_end)"""
-        with self._dispatch_tx():
+        with self._tx():
             self._conn.execute(
                 """INSERT INTO dispatch_history
                        (slot_start, kind, provider, source, energy_kwh,
@@ -2101,26 +2101,32 @@ class BlockStore:
                  raw_start, raw_end))
 
     @contextlib.contextmanager
-    def dispatch_batch(self):
-        """One transaction for a dispatch poll's writes: upsert_dispatch_slot and
-        record_dispatch_history inside it commit once, at the end, instead of each
-        committing (5 Oct 2026: about ten commits a poll, each an fsync on the SD
-        card). The caller must not `await` inside it: the batch holds a write
-        transaction, and the loop must not run other work against it."""
-        if getattr(self, "_in_dispatch_batch", False):
+    def batch(self):
+        """One transaction for a run of writes that would otherwise each commit: the
+        writers that use `_tx()` (and set_meta) commit once, at the end, instead of
+        each committing. On the Pi's SD card every commit is an fsync, and a run of
+        them stalled the engine loop for seconds — the dispatch poll (about ten a
+        poll, 5 Oct 2026) and the re-price sweep (one per block, ROADMAP §A.1).
+
+        The caller must not `await` inside it: the batch holds a write transaction,
+        and the loop must not run other work against it. A nested batch joins the
+        outer one. An exception that escapes rolls the whole batch back."""
+        if getattr(self, "_in_batch", False):
             yield
             return
-        self._in_dispatch_batch = True
+        self._in_batch = True
         try:
             with self._conn:
                 yield
         finally:
-            self._in_dispatch_batch = False
+            self._in_batch = False
 
-    def _dispatch_tx(self):
-        """The dispatch writers' transaction: the enclosing dispatch_batch's, or
-        their own."""
-        return contextlib.nullcontext() if getattr(self, "_in_dispatch_batch", False) \
+    # The dispatch poll's name for it (#91).
+    dispatch_batch = batch
+
+    def _tx(self):
+        """A batched writer's transaction: the enclosing batch's, or its own."""
+        return contextlib.nullcontext() if getattr(self, "_in_batch", False) \
             else self._conn
 
     def get_dispatch_history(self, start_iso: str, end_iso: str,
@@ -2408,7 +2414,8 @@ class BlockStore:
             "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             (key, _json.dumps(value))
         )
-        self._conn.commit()
+        if not getattr(self, "_in_batch", False):     # inside batch(): its commit
+            self._conn.commit()
 
     def prune_power_history(self, hours: int = 48) -> int:
         """Delete power_history rows older than `hours` hours. Returns rows deleted."""
@@ -3471,7 +3478,7 @@ class BlockStore:
         guard and coverage (imported OR settled live) as set_block_exc. Returns the
         number of rows changed."""
         changed = 0
-        with self._conn:
+        with self._tx():
             for bs, mid, ce, rx, src in updates:
                 cur = self._conn.execute(
                     "UPDATE blocks SET imp_cost_exc = ?, imp_rate_exc = ?, exc_source = ? "
@@ -3534,7 +3541,7 @@ class BlockStore:
         (idempotent; never re-carves) and NEVER touches imp_rate/imp_cost, so the
         settled inc bill stays byte-identical. Returns the number of rows changed."""
         changed = 0
-        with self._conn:
+        with self._tx():
             for bs, mid, kev, cev, rev, evb, hmb in updates:
                 cur = self._conn.execute(
                     "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ?, imp_rate_ev = ?, "
@@ -3552,7 +3559,7 @@ class BlockStore:
         iterable of (kwh, inc_rate, exc_rate, band, attribution) — e.g. a list of
         pricing_segments.Segment. Written in ONE transaction (delete-then-insert, ordered
         by position), so the set is always consistent. Returns the number of rows written."""
-        with self._conn:
+        with self._tx():
             self._conn.execute(
                 "DELETE FROM block_segments WHERE block_start = ? AND meter_id = ? "
                 "AND channel = ?", (block_start, meter_id, channel))

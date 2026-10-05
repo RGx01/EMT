@@ -74,12 +74,12 @@ class ReadStore:
     _SETTLEABLE_SQL = _BS._SETTLEABLE_SQL
     _UNSETTLED_WHERE = _BS._UNSETTLED_WHERE
     _UNSETTLED_WHERE_IMPORT_ONLY = _BS._UNSETTLED_WHERE_IMPORT_ONLY
+    dispatch_batch = _BS.dispatch_batch
 
     _apply_pragmas = _BS._apply_pragmas
     _block_range_where = _BS._block_range_where
     _count_blocks_and_local_dates = _BS._count_blocks_and_local_dates
     _delete_range_bounds = _BS._delete_range_bounds
-    _dispatch_tx = _BS._dispatch_tx
     _export_settlement_expected = _BS._export_settlement_expected
     _finalised_clause = staticmethod(_BS._finalised_clause)
     _imported_config_period_id = _BS._imported_config_period_id
@@ -90,7 +90,9 @@ class ReadStore:
     _select_blocks = _BS._select_blocks
     _site_for_date = staticmethod(_BS._site_for_date)
     _snap_to_midnight_utc = _BS._snap_to_midnight_utc
+    _tx = _BS._tx
     _unsettled_where = _BS._unsettled_where
+    batch = _BS.batch
     cap_day_boundary = _BS.cap_day_boundary
     channel_slots_present = _BS.channel_slots_present
     classify_kraken_block = _BS.classify_kraken_block
@@ -113,7 +115,6 @@ class ReadStore:
     count_stale_band_segments = _BS.count_stale_band_segments
     count_unsettled_blocks = _BS.count_unsettled_blocks
     day_fingerprints = _BS.day_fingerprints
-    dispatch_batch = _BS.dispatch_batch
     dispatch_coverage = _BS.dispatch_coverage
     distinct_segment_rates = _BS.distinct_segment_rates
     emt_recording_continuously = _BS.emt_recording_continuously
