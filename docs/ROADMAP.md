@@ -17,7 +17,7 @@ the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below decons
 | # | Workstream | Depends on | State |
 |---|---|---|---|
 | A | Storage and access model | — | ✅ closed 30 Sep 2026 — A.1 (engine commits on the SD card) open |
-| B | Job coordinator (v4 BL-50) | A | 🟢 acceptances 1–5 met 4 Oct 2026 — 6 (Pi soak) open |
+| B | Job coordinator (v4 BL-50) | A | ✅ all six acceptances met — 6 on the Pi, 5 Oct 2026 |
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | 🟢 17 of 17 surfaces bounded on the Pi (#64) |
 | E | Importer | A–D | 📝 spec v12, floor 4.5.19 |
@@ -114,11 +114,13 @@ pre-empt the import. Acceptances (B §5):
 | 3 | declared dependencies honoured | ✅ a test per edge — #70, #71, #72 |
 | 4 | a claim before any slow work | ✅ the API import claimed before its backup — #73 |
 | 5 | admission never per block | ✅ nine per-block writers, no await or admission — #74 |
-| 6 | Pi soak, members concurrent | 📋 open |
+| 6 | Pi soak, members concurrent | ✅ soak 15, 5 Oct 2026 — every edge held (B §5) |
 
-**Acceptance 6, proposed:** restore the soak database (which starts the sweep), then start an API
-import and a small range delete mid-sweep; `scan-log` for a dependant active while its dependency
-is, and for a refusal standing past 60 minutes.
+**Acceptance 6, met 5 Oct 2026:** the soak database restored (starting the sweep), then a bounded
+gap fill and a one-day range delete started mid-sweep. The sweep deferred to each in the same
+second and was re-admitted when each finished; `scan-log` coordinator PASS, no refusal left
+standing. Two cosmetic findings: the sweep status labels a restore-armed sweep `upgrade`, and the
+dispatch poll logs "completed energy on N slot(s)" for slots it no longer writes.
 
 *Fixed 4 Oct 2026:* a restart no longer loses a deferred, paused or mid-chunk verify pass — the
 tick resumes it from its persisted cursor, once per database; and a pass **paused for API
@@ -126,7 +128,7 @@ allowance** (120 waits, ~2 h), which kept its `verify_pricing` claim and so held
 a restart, is retried from its cursor after `_VERIFY_PAUSE_RETRY_S` (1 h). *(`/api/historical/api-import/apply`, which
 ran the import without claiming it, was deleted 4 Oct 2026: no UI had ever called it.)*
 
-**Done when:** acceptance 6 passes on the Pi.
+**Done 5 Oct 2026.** What remains of B is the open questions in B §6, none blocking C.
 
 ## C. One API for every surface
 

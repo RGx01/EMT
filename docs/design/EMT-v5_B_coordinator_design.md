@@ -426,7 +426,25 @@ range-delete and purge entries of `delete` honoured nothing until 4 Oct 2026 —
    *Run 29–30 Sep 2026 (five Pi soaks, A design §5e): **NOT EXERCISED.** No member claimed, marked
    or was refused in any of them — the only job running was the re-price sweep, admitted every
    time with nothing in its way. Testing this needs members started deliberately so they
-   overlap, and most writing members call Octopus or HA, which the soak must not. Still open.*
+   overlap, and most writing members call Octopus or HA, which the soak must not.*
+
+   ***Met 5 Oct 2026 (soak 15, a21).*** The soak database restored through the import gate, its
+   sweep rebuilding 37,220 blocks; mid-sweep, a bounded gap fill (which claims `import` since
+   #85) and a one-day range delete were started through the API. From the add-on log:
+
+   | time | |
+   |---|---|
+   | 07:19:07 | `claim import`; `defer reprice_sweep blocker=import edge=depends_on` — the sweep stood aside at its cursor in the same second |
+   | 07:19:11 | `import done`; `claim verify_pricing`; `admit_after reprice_sweep` |
+   | 07:19:51 | `claim delete`; the delete checked for a running import and took its safety backup; `defer reprice_sweep blocker=delete edge=exclusive_with` |
+   | 07:20:17 | 48 blocks deleted; `delete done`; `admit_after reprice_sweep` |
+   | 07:24:45 | `verify_pricing done` (41 slots corrected) |
+
+   `scan-log`: coordinator PASS (members seen: delete, import, reprice_sweep, restore,
+   verify_pricing), database faults PASS, no refusal left standing. The harness change that made
+   it observable is #93 (the wait loop reports every poll). Loop blocking failed inside the sweep
+   only — SD-card commit stalls, ROADMAP §A.1, not a B criterion; the quiet phase had one
+   over-budget lag (a 4.8 s log-pipe flush) and no slow commit.
 
 ---
 
