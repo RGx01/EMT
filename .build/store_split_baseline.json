@@ -238,13 +238,15 @@
   "no_sql": [
     "_block_range_where",
     "_delete_range_bounds",
+    "_dispatch_tx",
     "_finalised_clause",
     "_row_to_derivation",
     "_site_for_date",
     "_snap_to_midnight_utc",
     "_unsettled_where",
     "backup",
-    "close"
+    "close",
+    "dispatch_batch"
   ],
   "undecided": []
 }
