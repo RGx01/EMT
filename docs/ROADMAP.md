@@ -19,7 +19,7 @@ the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below decons
 | A | Storage and access model | — | ✅ closed 30 Sep 2026; A.1 closed with a caveat 5 Oct 2026 — a ~1-min burst after a restore |
 | B | Job coordinator (v4 BL-50) | A | ✅ all six acceptances met — 6 on the Pi, 5 Oct 2026 |
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
-| D | Surfacing performance | A, C | 🟢 17 of 17 surfaces bounded on the Pi (#64) |
+| D | Surfacing performance | A, C | 🟢 17 of 17 surfaces: time bounded on the Pi (#64), queries asserted in CI |
 | E | Importer | A–D | 📝 spec v12, floor 4.5.19 |
 | F | Carried from v4's backlog | — | 📋 9 items open, 1 done (BL-50 = B) |
 | G | Local tariff store | A, B | 📝 proposed 4 Oct 2026 |
@@ -207,8 +207,18 @@ exceed either, and no page does. **Nothing in C is open.**
 all 17 set from the tenth soak (#64). #46, #47 and #48 took the slowest: a year's bill **18.2 →
 4.8 s**, the all-days load **11.6 → 2.8 s** (p50, Pi, under the soak's load).
 
+**Queries per surface, asserted in CI (5 Oct 2026).** `.build/query_budgets.py` requests every soak
+surface against a synthetic database (`tests/surface_fixture.py`: a main meter, an EV charger and a
+battery) at 40 and 200 days of history, and counts the SQL statements each issues;
+`tests/test_surface_query_budgets.py` asserts each stays within `.build/query_budgets.json` (9–31
+statements) and is the **same at both lengths** — no query per day, block or period. Measured on a
+production-like database too: the same shape (a month's, a quarter's and a year's bill all issue 27).
+An N+1 injected into the all-days load is caught. A statement count is deterministic, so CI asserts it
+exactly; time is not, so **time to first byte stays Pi-asserted** by the soak (17 budgets).
+
 **Done when:** time-to-first-byte and queries-per-surface are instrumented, with a budget per
-surface that CI can assert. *(The bounds are Pi-asserted by the soak today, not by CI.)*
+surface that CI can assert. *(Queries: CI-asserted. Time: Pi-asserted by the soak — a CI runner's
+timings say nothing about a Pi on SD storage.)*
 
 ## E. Importer
 
