@@ -92,6 +92,16 @@ Before building anything, establish what a slow commit is waiting on:
 If step 0 shows the stalls vanish without the second instance, the writer thread is still worth
 building — a household Pi also runs HA's recorder on the same card — but its priority drops.
 
+**Step 0, run 5 Oct 2026 (soak 17, v4 stopped).** The quiet phase had no over-budget lag,
+finalise included; soak 16's 18.3 s finalise stall fell on a half-hour boundary, when the other
+instance finalises too, so contention between the two was most of that cost. What remained — 4
+lags, worst 11.2 s — was all within 47 s after the restore: the sweep's chunk commits overlapping
+startup's own writes (the first poll's BL-8 backfill, 7.7 s; its settlement, 3.2 s; the carbon
+backfill). The sweep now holds its first pass until those settle (`_hold_sweep_after_startup`).
+Its own chunk commits still take 1.3–5.1 s on this card with nothing beside them, so **the writer
+thread remains the fix for those**, and for a recorder sharing the card; its priority is lower
+than step 0's question suggested it might be.
+
 ### Step 1 — the writer
 
 - A `WriterThread`: one thread, owning the engine's `WriteStore` (opened on that thread), with

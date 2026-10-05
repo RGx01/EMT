@@ -119,6 +119,19 @@ writes to the same card. Fewer commits cannot fix a single commit that takes 10 
 from waiting on one can. **Next: the writer thread** —
 [design/EMT-v5_A1_writer_thread_design.md](design/EMT-v5_A1_writer_thread_design.md).
 
+**Seventeenth soak (5 Oct 2026) — the design's step 0, with the Pi's second EMT instance (v4
+4.5.20 dev) stopped.** The quiet phase had **no** over-budget lag, finalise included (the 12:00
+finalise made no slow commit); soak 16's worst, 18.3 s at 10:30:37, fell on a half-hour boundary,
+when the other instance finalises too. Over the whole run, 4 over-budget lags (10 in soak 16) and
+8 slow commits (11), worst 7.7 s — **all within 47 s after the restore**, where the sweep's chunk
+commits met startup's own writes: the first Kraken poll's BL-8 outage backfill
+(`create_backfill_block`, 7.7 s), its settlement (`upsert_kraken_block`, 3.2 s) and the carbon
+backfill. *Then:* the sweep holds its first pass until startup has finished, no poll runs and 60 s
+have passed (capped at 5 min). Two of the sweep's own chunk commits (3.0 s, 5.1 s) ran with nothing
+beside them, so the hold is not expected to pass the run on its own; it removes the overlap. **Two
+EMT instances on one SD card** — a v4 and a v5 side by side — is a known cost: their half-hour
+finalises commit together.
+
 **Done when:** a soak on the SD card shows no engine-loop stall over 2 s (`scan-log`
 `A (loop blocking): PASS`) across the whole run, sweep included.
 

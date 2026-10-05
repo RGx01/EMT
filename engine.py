@@ -7434,6 +7434,36 @@ async def run_reprice_history_sweep_to_done(max_passes: int = 500) -> None:
             return
 
 
+# The sweep waits for startup's own writes before its first pass (ROADMAP §A.1, 5 Oct 2026).
+# Startup schedules it from inside itself, so it began while startup was still writing, the
+# first Kraken poll (with its BL-8 outage backfill) and the carbon backfill alongside it —
+# soak 17's worst lag, 11.2 s, was that overlap: a 7.7 s backfill commit and a 3.2 s
+# settlement commit beside the sweep's own. Held until startup has finished, no poll is
+# running, and _SWEEP_STARTUP_HOLD_S has passed since — never longer than the cap.
+_SWEEP_STARTUP_HOLD_S = 60.0
+_SWEEP_STARTUP_HOLD_MAX_S = 300.0
+_SWEEP_STARTUP_HOLD_POLL_S = 1.0
+
+
+async def _hold_sweep_after_startup() -> None:
+    import asyncio as _aio
+    t0 = time.monotonic()
+    held = False
+    while time.monotonic() - t0 < _SWEEP_STARTUP_HOLD_MAX_S:
+        if (not _startup_lock.locked() and not poll_in_progress()
+                and seconds_since_startup() >= _SWEEP_STARTUP_HOLD_S):
+            if held:
+                logger.info("reprice-history sweep: startup's writes have settled — starting "
+                            "after %.0f s", time.monotonic() - t0)
+            return
+        if not held:
+            logger.info("reprice-history sweep: holding until startup's own writes settle")
+            held = True
+        await _aio.sleep(_SWEEP_STARTUP_HOLD_POLL_S)
+    logger.info("reprice-history sweep: held %.0f s — starting anyway",
+                _SWEEP_STARTUP_HOLD_MAX_S)
+
+
 def _maybe_reprice_history() -> None:
     """Schedule the P3.3b unified reprice-history sweep as a loop task — the sole historical
     derivation (the three legacy backfills it replaced are deleted, BL-33). No-op once done,
@@ -7463,6 +7493,7 @@ def _maybe_reprice_history() -> None:
             global _reprice_history_running
             import asyncio as _aio2
             try:
+                await _hold_sweep_after_startup()
                 for _ in range(500):
                     await _run_historical_reprice_sweep()
                     # #57: a restore closes the engine store (`_store = None`) and the
