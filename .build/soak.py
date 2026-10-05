@@ -327,13 +327,21 @@ def cmd_run(a):
     # The sweep starts from engine_startup AFTER a Data Management restore, and only
     # once Octopus has connected — so it may not be running yet when this starts.
     deadline = time.monotonic() + a.wait_for_sweep * 60
+    # Every poll is printed (5 Oct 2026). This loop used to swallow a failed poll and
+    # keep the last answer: soak 14 started before its restore, the sweep then ran for
+    # nine minutes, and the loop never saw in_progress — with nothing to say whether its
+    # polls failed or the route answered its fail-safe (no 'swept' key).
     while not st.get("in_progress") and time.monotonic() < deadline:
-        print("waiting for the sweep to start…", end="\r", flush=True)
         time.sleep(POLL_S)
+        stamp = time.strftime("%H:%M:%S")
         try:
-            st = json.loads(_get(a.base, STATUS, a.timeout)[2])
-        except Exception:
-            pass
+            got = json.loads(_get(a.base, STATUS, a.timeout)[2])
+        except Exception as e:
+            print("%s  waiting for the sweep — poll failed: %r" % (stamp, e), flush=True)
+            continue
+        st = got
+        note = "" if "swept" in got else "  (fail-safe answer: the status route raised)"
+        print("%s  waiting for the sweep — %s%s" % (stamp, got, note), flush=True)
     if st.get("in_progress"):
         print("sweep in progress:", st)
     else:
