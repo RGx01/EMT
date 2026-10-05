@@ -30,8 +30,8 @@ Steps: 1 dead code, 2 extract `billing.py`, 3 ReadStore/WriteStore, 4 API consol
 pipeline deleted, 5 schema (15 columns dropped, band moves to `block_segments`), 6 client +
 first-run fork, 7 importer. Workstreams A (store split) and B (job coordinator) merged in PR #2.
 **A is closed (30 Sep 2026)** after five Pi soaks — A design §5e; **B is closed (5 Oct 2026)**,
-all six acceptances met (B §5); **C is next, starting with deleting the pre-rendered chart pipeline** (C §5, Pi
-baseline). The Pi runs from an **SD card**: storage-bound commit stalls are ROADMAP §A.1.
+all six acceptances met (B §5); **C's eight acceptances are met** (C §0, 3 Oct 2026 — the pre-rendered
+pipeline went on 30 Sep), with #31 and C §7.3 still open. The Pi runs from an **SD card**: storage-bound commit stalls are ROADMAP §A.1.
 
 **Soaking on the Pi:** `.build/soak_prepare_db.py` → restore via `http://<pi>:8098/data-management`
 (not ingress — it rejects the upload) → `.build/soak.py run` → save the log with
