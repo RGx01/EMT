@@ -20,6 +20,7 @@ The :func:`open_block_store` factory is the preferred entry point — it applies
 all required PRAGMAs and ensures the schema exists before returning.
 """
 
+import contextlib
 import json
 import logging
 import os
@@ -1843,7 +1844,12 @@ class BlockStore:
         if captured_at is None:
             captured_at = (datetime.now(timezone.utc)
                            .replace(tzinfo=None).isoformat())
-        with self._conn:
+        # The WHERE skips an update that would change nothing but captured_at, so a
+        # slot re-seen unchanged on every 5-minute poll costs no write and no commit
+        # (5 Oct 2026: each one was its own fsync on the SD card, and they stalled the
+        # engine loop for seconds). captured_at is therefore when the slot's data last
+        # changed. Nothing reads it for billing.
+        with self._dispatch_tx():
             self._conn.execute(
                 """INSERT INTO dispatch_slots
                        (slot_start, off_peak, provider, source, captured_at,
@@ -1860,7 +1866,20 @@ class BlockStore:
                        energy_completed =
                            COALESCE(excluded.energy_completed, dispatch_slots.energy_completed),
                        raw_start   = COALESCE(excluded.raw_start, dispatch_slots.raw_start),
-                       raw_end     = COALESCE(excluded.raw_end,   dispatch_slots.raw_end)""",
+                       raw_end     = COALESCE(excluded.raw_end,   dispatch_slots.raw_end)
+                   WHERE dispatch_slots.off_peak IS NOT excluded.off_peak
+                      OR dispatch_slots.provider IS NOT excluded.provider
+                      OR dispatch_slots.source   IS NOT excluded.source
+                      OR dispatch_slots.state IS NOT
+                             COALESCE(excluded.state, dispatch_slots.state)
+                      OR dispatch_slots.energy_planned IS NOT
+                             COALESCE(excluded.energy_planned, dispatch_slots.energy_planned)
+                      OR dispatch_slots.energy_completed IS NOT
+                             COALESCE(excluded.energy_completed, dispatch_slots.energy_completed)
+                      OR dispatch_slots.raw_start IS NOT
+                             COALESCE(excluded.raw_start, dispatch_slots.raw_start)
+                      OR dispatch_slots.raw_end IS NOT
+                             COALESCE(excluded.raw_end, dispatch_slots.raw_end)""",
                 (slot_start, 1 if off_peak else 0, provider, source, captured_at,
                  state, energy_planned, energy_completed, raw_start, raw_end),
             )
@@ -2037,14 +2056,34 @@ class BlockStore:
                                 energy_kwh: float | None = None,
                                 raw_start: str | None = None,
                                 raw_end: str | None = None,
-                                seen_at: str | None = None) -> None:
+                                seen_at: str | None = None,
+                                refresh_seen: bool = True) -> None:
         """Accumulate one (slot_start, kind) dispatch observation. OBSERVE-ONLY —
-        never read for billing. first_seen is set once and preserved; last_seen
-        and the latest energy/provider/source refresh on every poll that sees it.
-        Keeping a persistent record (vs the per-poll snapshot) is what makes a
-        later 'never seen this slot' judgement trustworthy."""
+        never read for billing. first_seen is set once and preserved; the latest
+        energy/provider/source refresh whenever they change. Keeping a persistent
+        record (vs the per-poll snapshot) is what makes a later 'never seen this
+        slot' judgement trustworthy.
+
+        `refresh_seen` (default True): last_seen advances on every poll that sees
+        the row. The PLANNED rows need that — the smart-charging card tells the
+        current plan from a superseded one by it (server `_UPCOMING_BATCH_SEC`).
+        With False, an unchanged row is not written at all, so last_seen is when
+        its data last changed: for COMPLETED rows, which Octopus re-serves on every
+        5-minute poll and whose last_seen nothing reads (5 Oct 2026 — each re-write
+        was its own SD-card commit, stalling the engine loop)."""
         seen = seen_at or datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-        with self._conn:
+        only_if_changed = "" if refresh_seen else """
+                   WHERE dispatch_history.provider IS NOT
+                             COALESCE(excluded.provider, dispatch_history.provider)
+                      OR dispatch_history.source IS NOT
+                             COALESCE(excluded.source, dispatch_history.source)
+                      OR dispatch_history.energy_kwh IS NOT
+                             COALESCE(excluded.energy_kwh, dispatch_history.energy_kwh)
+                      OR dispatch_history.raw_start IS NOT
+                             COALESCE(excluded.raw_start, dispatch_history.raw_start)
+                      OR dispatch_history.raw_end IS NOT
+                             COALESCE(excluded.raw_end, dispatch_history.raw_end)"""
+        with self._dispatch_tx():
             self._conn.execute(
                 """INSERT INTO dispatch_history
                        (slot_start, kind, provider, source, energy_kwh,
@@ -2056,9 +2095,33 @@ class BlockStore:
                        energy_kwh = COALESCE(excluded.energy_kwh, dispatch_history.energy_kwh),
                        last_seen  = excluded.last_seen,
                        raw_start  = COALESCE(excluded.raw_start, dispatch_history.raw_start),
-                       raw_end    = COALESCE(excluded.raw_end,   dispatch_history.raw_end)""",
+                       raw_end    = COALESCE(excluded.raw_end,   dispatch_history.raw_end)"""
+                + only_if_changed,
                 (slot_start, kind, provider, source, energy_kwh, seen, seen,
                  raw_start, raw_end))
+
+    @contextlib.contextmanager
+    def dispatch_batch(self):
+        """One transaction for a dispatch poll's writes: upsert_dispatch_slot and
+        record_dispatch_history inside it commit once, at the end, instead of each
+        committing (5 Oct 2026: about ten commits a poll, each an fsync on the SD
+        card). The caller must not `await` inside it: the batch holds a write
+        transaction, and the loop must not run other work against it."""
+        if getattr(self, "_in_dispatch_batch", False):
+            yield
+            return
+        self._in_dispatch_batch = True
+        try:
+            with self._conn:
+                yield
+        finally:
+            self._in_dispatch_batch = False
+
+    def _dispatch_tx(self):
+        """The dispatch writers' transaction: the enclosing dispatch_batch's, or
+        their own."""
+        return contextlib.nullcontext() if getattr(self, "_in_dispatch_batch", False) \
+            else self._conn
 
     def get_dispatch_history(self, start_iso: str, end_iso: str,
                              kind: str | None = None) -> list:

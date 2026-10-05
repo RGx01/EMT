@@ -10371,27 +10371,28 @@ def _capture_ohme_slots(provider, planned) -> int:
     else:
         decision = "verified-smart charging (capture current slot)"
 
-    captured = 0
-    for slot_start, source in pairs:
-        try:
-            _store.upsert_dispatch_slot(
-                slot_start, off_peak=True, provider=provider, source=source,
-                state="planned")
-            captured += 1
-            # 4.5.0 (BL-31, UNVALIDATED): a sensor-VERIFIED smart slot is a real
-            # smart-charge-in-progress → record 'started' so the reconcile confirms
-            # off-peak instead of flagging it 'review' (the OHME review-churn). The
-            # optimistic (no-sensor) source is NOT started — it stays review-eligible.
-            if source == "ohme_verified":
-                try:
-                    _store.record_dispatch_history(
-                        slot_start, "started", provider=provider,
-                        source="ohme", energy_kwh=None)
-                except Exception:
-                    pass
-        except Exception as e:
-            logger.warning("_capture_ohme_slots: persist %s failed: %s",
-                           slot_start, e)
+    with _store.dispatch_batch():          # one commit for the poll (see _capture_dispatch_slots)
+        captured = 0
+        for slot_start, source in pairs:
+            try:
+                _store.upsert_dispatch_slot(
+                    slot_start, off_peak=True, provider=provider, source=source,
+                    state="planned")
+                captured += 1
+                # 4.5.0 (BL-31, UNVALIDATED): a sensor-VERIFIED smart slot is a real
+                # smart-charge-in-progress → record 'started' so the reconcile confirms
+                # off-peak instead of flagging it 'review' (the OHME review-churn). The
+                # optimistic (no-sensor) source is NOT started — it stays review-eligible.
+                if source == "ohme_verified":
+                    try:
+                        _store.record_dispatch_history(
+                            slot_start, "started", provider=provider,
+                            source="ohme", energy_kwh=None)
+                    except Exception:
+                        pass
+            except Exception as e:
+                logger.warning("_capture_ohme_slots: persist %s failed: %s",
+                               slot_start, e)
     logger.info(
         "_capture_ohme_slots: provider=%s integration=%s mode=%s raw_mode=%r "
         "status=%r %s — captured %d slot(s) planned=%d source_dist=%s",
@@ -10437,30 +10438,33 @@ def _record_ohme_dispatch_history(provider, planned, completed) -> int:
             own_slots = _parse_ohme_slots(_raw, _now2, _iog_site_tz())
     except Exception as _oe:
         logger.debug("_record_ohme_dispatch_history: own-plan read failed: %s", _oe)
-    if own_slots:
-        for slot_start in own_slots:
+    # One commit for the poll; completed rows written only when they change
+    # (see _capture_dispatch_slots, 5 Oct 2026).
+    with _store.dispatch_batch():
+        if own_slots:
+            for slot_start in own_slots:
+                _store.record_dispatch_history(
+                    slot_start, "planned", provider=provider, source="ohme_plan",
+                    energy_kwh=None)
+                n += 1
+            logger.info("_record_ohme_dispatch_history: using Ohme's OWN plan "
+                        "(%d slot(s), UNVALIDATED) for card + lifecycle", len(own_slots))
+        else:
+            slot_energy = _planned_dispatch_slot_energy(planned, include_all=True)
+            slot_bounds = _planned_dispatch_slot_bounds(planned, include_all=True)
+            for slot_start in sorted(slot_energy):
+                rb = slot_bounds.get(slot_start) or (None, None)
+                _store.record_dispatch_history(
+                    slot_start, "planned", provider=provider, source="ohme",
+                    energy_kwh=slot_energy.get(slot_start), raw_start=rb[0], raw_end=rb[1])
+                n += 1
+        comp_bounds = _completed_dispatch_slot_bounds(completed)  # actual window
+        for slot_start, e_comp in _completed_dispatch_slot_energy(completed).items():
+            rb = comp_bounds.get(slot_start) or (None, None)
             _store.record_dispatch_history(
-                slot_start, "planned", provider=provider, source="ohme_plan",
-                energy_kwh=None)
+                slot_start, "completed", provider=provider, source="unknown",
+                energy_kwh=e_comp, raw_start=rb[0], raw_end=rb[1], refresh_seen=False)
             n += 1
-        logger.info("_record_ohme_dispatch_history: using Ohme's OWN plan "
-                    "(%d slot(s), UNVALIDATED) for card + lifecycle", len(own_slots))
-    else:
-        slot_energy = _planned_dispatch_slot_energy(planned, include_all=True)
-        slot_bounds = _planned_dispatch_slot_bounds(planned, include_all=True)
-        for slot_start in sorted(slot_energy):
-            rb = slot_bounds.get(slot_start) or (None, None)
-            _store.record_dispatch_history(
-                slot_start, "planned", provider=provider, source="ohme",
-                energy_kwh=slot_energy.get(slot_start), raw_start=rb[0], raw_end=rb[1])
-            n += 1
-    comp_bounds = _completed_dispatch_slot_bounds(completed)  # actual window
-    for slot_start, e_comp in _completed_dispatch_slot_energy(completed).items():
-        rb = comp_bounds.get(slot_start) or (None, None)
-        _store.record_dispatch_history(
-            slot_start, "completed", provider=provider, source="unknown",
-            energy_kwh=e_comp, raw_start=rb[0], raw_end=rb[1])
-        n += 1
     return n
 
 
@@ -10510,96 +10514,103 @@ async def _capture_dispatch_slots() -> int:
     # (planned=0) — an early return here skipped the completed capture entirely.
     slot_energy = _planned_dispatch_slot_energy(planned) if slots else {}
     slot_bounds = _planned_dispatch_slot_bounds(planned) if slots else {}  # BL-11
-    captured = 0
-    for slot_start in sorted(slots):
-        _rb = slot_bounds.get(slot_start) or (None, None)
-        try:
-            _store.upsert_dispatch_slot(
-                slot_start, off_peak=True, provider=provider,
-                source="smart-charge", state="planned",
-                energy_planned=slot_energy.get(slot_start),
-                raw_start=_rb[0], raw_end=_rb[1])
-            captured += 1
-        except Exception as e:
-            logger.warning("_capture_dispatch_slots: persist %s failed: %s",
-                           slot_start, e)
-    if captured:
-        logger.info("_capture_dispatch_slots: persisted %d smart-charge slot(s) "
-                    "(provider=%s)", captured, provider)
-
-    # Record COMPLETED dispatch energy per slot (observe-only). Completed
-    # dispatches land hours after the charge, so this is the settlement-time
-    # signal the #253 validation will veto against — NOT used for billing yet.
-    # OHME already returned above (its completed dispatches carry no reliable
-    # smart-vs-boost signal), so this covers only Octopus-controlled providers.
-    # We only ANNOTATE slots that already exist (were captured as planned) — we
-    # never create a new off_peak slot from a completed dispatch, so this can't
-    # change what the overlay prices. off_peak / provider / source are preserved.
-    completed = disp.get("completed") or []
-    if completed:
-        comp = _completed_dispatch_slot_energy(completed)
-        _comp_bounds_bill = _completed_dispatch_slot_bounds(completed)
-        n_comp = 0
-        n_new = 0
-        for slot_start, e_comp in comp.items():
-            if e_comp is None:
-                continue
-            existing = _store.get_dispatch_slot(slot_start)
-            try:
-                if existing:
-                    # Annotate an already-captured (planned) slot with completed
-                    # energy — off_peak/provider/source preserved.
-                    _store.upsert_dispatch_slot(
-                        slot_start,
-                        off_peak=bool(existing.get("off_peak")),
-                        provider=existing.get("provider") or provider,
-                        source=existing.get("source") or "smart-charge",
-                        state="completed", energy_completed=e_comp)
-                    n_comp += 1
-                else:
-                    # No 'planned' slot was ever captured (EMT was offline for it, or
-                    # this is a historical re-import). A COMPLETED Octopus dispatch is
-                    # the supplier's authoritative smart-charge record, so create an
-                    # off-peak slot from it — marked source='smart-charge-completed'
-                    # so the settlement reconcile reprices it off-peak with an audit
-                    # trail (reconciled-from-completed, not live-verified). The overlay
-                    # still gates on real meter draw, so a phantom slot never credits.
-                    _cb = _comp_bounds_bill.get(slot_start) or (None, None)
-                    _store.upsert_dispatch_slot(
-                        slot_start, off_peak=True, provider=provider,
-                        source="smart-charge-completed", state="completed",
-                        energy_completed=e_comp, raw_start=_cb[0], raw_end=_cb[1])
-                    n_new += 1
-            except Exception as e:
-                logger.warning("_capture_dispatch_slots: completed persist %s "
-                               "failed: %s", slot_start, e)
-        if n_comp or n_new:
-            logger.info("_capture_dispatch_slots: completed energy on %d slot(s); "
-                        "created %d off-peak slot(s) from completed-only dispatch(es)",
-                        n_comp, n_new)
-
-    # Accumulate ALL planned + completed dispatches into dispatch_history
-    # (observe-only, design §11) — a persistent record across polls, separate
-    # from the billing dispatch_slots. This retains completed dispatches for
-    # slots we never planned (the tail slots the per-poll snapshot loses) and is
-    # what makes a future "never saw this slot" judgement trustworthy. Never read
-    # for billing.
-    try:
+    # One transaction for this poll's writes, and none at all for a slot re-seen
+    # unchanged (5 Oct 2026). Octopus re-serves recent COMPLETED dispatches on every
+    # 5-minute poll; each re-write was its own commit — about ten fsyncs a poll on the
+    # SD card, stalling the engine loop for seconds at :04/:34. No await inside: the
+    # batch holds a write transaction. The `started` derivation below awaits Octopus,
+    # so it writes on its own.
+    with _store.dispatch_batch():
+        captured = 0
         for slot_start in sorted(slots):
             _rb = slot_bounds.get(slot_start) or (None, None)
-            _store.record_dispatch_history(
-                slot_start, "planned", provider=provider,
-                source="smart-charge", energy_kwh=slot_energy.get(slot_start),
-                raw_start=_rb[0], raw_end=_rb[1])
-        _comp_bounds = _completed_dispatch_slot_bounds(completed)  # actual window
-        for slot_start, e_comp in _completed_dispatch_slot_energy(completed).items():
-            _cb = _comp_bounds.get(slot_start) or (None, None)
-            _store.record_dispatch_history(
-                slot_start, "completed", provider=provider,
-                source="unknown", energy_kwh=e_comp,
-                raw_start=_cb[0], raw_end=_cb[1])
-    except Exception as e:
-        logger.warning("_capture_dispatch_slots: history accumulation failed: %s", e)
+            try:
+                _store.upsert_dispatch_slot(
+                    slot_start, off_peak=True, provider=provider,
+                    source="smart-charge", state="planned",
+                    energy_planned=slot_energy.get(slot_start),
+                    raw_start=_rb[0], raw_end=_rb[1])
+                captured += 1
+            except Exception as e:
+                logger.warning("_capture_dispatch_slots: persist %s failed: %s",
+                               slot_start, e)
+        if captured:
+            logger.info("_capture_dispatch_slots: persisted %d smart-charge slot(s) "
+                        "(provider=%s)", captured, provider)
+
+        # Record COMPLETED dispatch energy per slot (observe-only). Completed
+        # dispatches land hours after the charge, so this is the settlement-time
+        # signal the #253 validation will veto against — NOT used for billing yet.
+        # OHME already returned above (its completed dispatches carry no reliable
+        # smart-vs-boost signal), so this covers only Octopus-controlled providers.
+        # We only ANNOTATE slots that already exist (were captured as planned) — we
+        # never create a new off_peak slot from a completed dispatch, so this can't
+        # change what the overlay prices. off_peak / provider / source are preserved.
+        completed = disp.get("completed") or []
+        if completed:
+            comp = _completed_dispatch_slot_energy(completed)
+            _comp_bounds_bill = _completed_dispatch_slot_bounds(completed)
+            n_comp = 0
+            n_new = 0
+            for slot_start, e_comp in comp.items():
+                if e_comp is None:
+                    continue
+                existing = _store.get_dispatch_slot(slot_start)
+                try:
+                    if existing:
+                        # Annotate an already-captured (planned) slot with completed
+                        # energy — off_peak/provider/source preserved.
+                        _store.upsert_dispatch_slot(
+                            slot_start,
+                            off_peak=bool(existing.get("off_peak")),
+                            provider=existing.get("provider") or provider,
+                            source=existing.get("source") or "smart-charge",
+                            state="completed", energy_completed=e_comp)
+                        n_comp += 1
+                    else:
+                        # No 'planned' slot was ever captured (EMT was offline for it, or
+                        # this is a historical re-import). A COMPLETED Octopus dispatch is
+                        # the supplier's authoritative smart-charge record, so create an
+                        # off-peak slot from it — marked source='smart-charge-completed'
+                        # so the settlement reconcile reprices it off-peak with an audit
+                        # trail (reconciled-from-completed, not live-verified). The overlay
+                        # still gates on real meter draw, so a phantom slot never credits.
+                        _cb = _comp_bounds_bill.get(slot_start) or (None, None)
+                        _store.upsert_dispatch_slot(
+                            slot_start, off_peak=True, provider=provider,
+                            source="smart-charge-completed", state="completed",
+                            energy_completed=e_comp, raw_start=_cb[0], raw_end=_cb[1])
+                        n_new += 1
+                except Exception as e:
+                    logger.warning("_capture_dispatch_slots: completed persist %s "
+                                   "failed: %s", slot_start, e)
+            if n_comp or n_new:
+                logger.info("_capture_dispatch_slots: completed energy on %d slot(s); "
+                            "created %d off-peak slot(s) from completed-only dispatch(es)",
+                            n_comp, n_new)
+
+        # Accumulate ALL planned + completed dispatches into dispatch_history
+        # (observe-only, design §11) — a persistent record across polls, separate
+        # from the billing dispatch_slots. This retains completed dispatches for
+        # slots we never planned (the tail slots the per-poll snapshot loses) and is
+        # what makes a future "never saw this slot" judgement trustworthy. Never read
+        # for billing.
+        try:
+            for slot_start in sorted(slots):
+                _rb = slot_bounds.get(slot_start) or (None, None)
+                _store.record_dispatch_history(
+                    slot_start, "planned", provider=provider,
+                    source="smart-charge", energy_kwh=slot_energy.get(slot_start),
+                    raw_start=_rb[0], raw_end=_rb[1])
+            _comp_bounds = _completed_dispatch_slot_bounds(completed)  # actual window
+            for slot_start, e_comp in _completed_dispatch_slot_energy(completed).items():
+                _cb = _comp_bounds.get(slot_start) or (None, None)
+                _store.record_dispatch_history(
+                    slot_start, "completed", provider=provider,
+                    source="unknown", energy_kwh=e_comp,
+                    raw_start=_cb[0], raw_end=_cb[1], refresh_seen=False)
+        except Exception as e:
+            logger.warning("_capture_dispatch_slots: history accumulation failed: %s", e)
 
     # Derive `started` for the current slot (design §11.2) — the smart-vs-bump
     # discriminator. Only fires when the intelligent state is

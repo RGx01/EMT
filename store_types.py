@@ -79,6 +79,7 @@ class ReadStore:
     _block_range_where = _BS._block_range_where
     _count_blocks_and_local_dates = _BS._count_blocks_and_local_dates
     _delete_range_bounds = _BS._delete_range_bounds
+    _dispatch_tx = _BS._dispatch_tx
     _export_settlement_expected = _BS._export_settlement_expected
     _finalised_clause = staticmethod(_BS._finalised_clause)
     _imported_config_period_id = _BS._imported_config_period_id
@@ -112,6 +113,7 @@ class ReadStore:
     count_stale_band_segments = _BS.count_stale_band_segments
     count_unsettled_blocks = _BS.count_unsettled_blocks
     day_fingerprints = _BS.day_fingerprints
+    dispatch_batch = _BS.dispatch_batch
     dispatch_coverage = _BS.dispatch_coverage
     distinct_segment_rates = _BS.distinct_segment_rates
     emt_recording_continuously = _BS.emt_recording_continuously
