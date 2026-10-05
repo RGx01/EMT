@@ -23,6 +23,7 @@ the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below decons
 | E | Importer | A–D | 📝 spec v12, floor 4.5.19 |
 | F | Carried from v4's backlog | — | 📋 9 items open, 1 done (BL-50 = B) |
 | G | Local tariff store | A, B | 📝 proposed 4 Oct 2026 |
+| H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
 
 ---
 
@@ -458,6 +459,41 @@ a tariff, a start and an end. Combined with config periods (which already split 
 compare — usage, cost and carbon per era, and like-for-like comparisons across them — as new Insights
 and Usage Stats views, with no API call. The tariff store's schema should allow for this from the
 start: agreements addressable as periods, and a user-periods table alongside.
+
+---
+
+## H. Before going public
+
+*Items deliberately held until EMT is pushed to `main` and made public — nothing here is urgent.*
+
+### BL-77 — Kraken schema watch: review the 5 Oct 2026 additions, and make the watch run for v5
+
+**What happened.** v4's weekly GraphQL check failed on 5 Oct 2026 (run 37318049738, schedule on
+`main`). The *deprecation* check passed; the **field watch** (`check_graphql_field_watch.py
+--fail-on-change`) failed, as designed, on three additions — nothing removed:
+
+| change | what it is | relevant? |
+|---|---|---|
+| `ContractedVolumeMeasurementPeriod` — new enum `WHOLE_PERIOD`, `DAILY`, `HOURLY` | cadence of a *contracted volume*; used only by `ContractedVolumePeriodType` and `QuoteContractedVolumePeriodType` | no — quotes/contracts (business supply) |
+| `ApplicableRateType.params` — new `JSONString` | "raw parameters associated with the rate, e.g. step information for stepped rates" | unlikely — stepped tariffs |
+| `TimeOfUseBandUsageType` — new `band`, `value`, `units`, `qualities` | under `TimeOfUseDevice` / `TimeOfUseDeviceRegister.timeOfUseUsage`: usage "organised into calendar periods and split by time-of-use band", with a reading-quality breakdown | **possibly** — Octopus's own per-band consumption would be an independent check on EMT's peak/off-peak split |
+
+Introspection sees that the schema exists, not whether a domestic account may query it or whether
+it is populated (the watch's own stated boundary).
+
+**To do, when going public:**
+
+1. **Refresh the baselines** — `check_graphql_field_watch.py --update-baseline` in v4 (a CI-tooling
+   change: branch, PR, signed commits for `main`; not an app release) and in EMT (whose baseline
+   is identical to v4's), so the check is green and watches from the new surface.
+2. **Make the watch run for v5.** GitHub runs scheduled workflows from the default branch only;
+   EMT's is `main`, and `.github/workflows/graphql-deprecations.yml` is not on it — so v5 has had
+   no weekly deprecation or field watch at all. It runs once the workflow reaches `main`.
+3. **Probe `timeOfUseUsage`** with an authenticated query on a real account: is it open to a
+   domestic IOG account, is it populated, and do its band totals match the bill's? If so, it is a
+   candidate settlement cross-check (or more) — a separate item then.
+
+*Recorded 5 Oct 2026. Nothing in the additions is a removal or a deprecation, so there is time.*
 
 ---
 
