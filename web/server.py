@@ -5404,6 +5404,42 @@ def _resolve_period(kind, store, cfg, tz, args):
     return None, None, {"error": "kind must be billing|month|quarter|year|day|all|range"}
 
 
+# How much history one /api/energy request may cover (C §7.3, 5 Oct 2026). An unbounded
+# range re-creates the wholesale problem at request time instead of write time. Set from what
+# the pages ask for and what the Pi serves (soak 18, quiet phase):
+#   block   31 local days — a month, the heatmap's viewport and the most any page asks; a month
+#           of blocks is p50 0.32 s / p95 1.1 s. A year is ~15 MB raw (C §7.1).
+#   period  366 days — a calendar year, the longest bill any page asks; p50 4.8 s.
+#   day     no cap — one row per local day; all history is what Spiral / Usage Stats load
+#           (p50 2.9 s), and its budget is asserted by the soak.
+# Only kind=range (and kind=all, at period resolution) can exceed these; no page does. A client
+# needing more pages through with kind=range.
+_ENERGY_MAX_DAYS = {"block": 31, "period": 366}
+
+
+def _energy_range_refusal(resolution, utc_start, utc_end, fields=""):
+    """The refusal for a range longer than `resolution` serves, or None.
+
+    Counted from the resolved UTC range, not the period's start/end labels: a billing
+    period's `period_end` is the NEXT period's start (exclusive), a month's and a range's is
+    their last day (inclusive). A clock-change day is 23 or 25 hours; rounding the span to
+    whole days absorbs it."""
+    from datetime import datetime as _dt
+    cap = _ENERGY_MAX_DAYS.get(resolution)
+    if cap is None or fields == "days":          # per-day fingerprints only — cheap
+        return None
+    try:
+        span = _dt.fromisoformat(str(utc_end)) - _dt.fromisoformat(str(utc_start))
+    except (TypeError, ValueError):
+        return None
+    days = round(span.total_seconds() / 86400)
+    if days <= cap:
+        return None
+    return ("resolution=%s covers at most %d days and this request covers %d; ask for a "
+            "shorter period, or page through with kind=range&start=&end=."
+            % (resolution, cap, days))
+
+
 @app.route("/api/energy")
 def api_energy():
     """The consolidated read surface — C §3: `resolution=period|day|block`.
@@ -5485,6 +5521,9 @@ def api_energy():
             status = meta.pop("status", None) or (
                 404 if "not found" in str(meta.get("error", "")).lower() else 400)
             return jsonify(meta), status
+        _too_long = _energy_range_refusal(resolution, utc_start, utc_end, fields)
+        if _too_long:
+            return jsonify({"error": _too_long}), 400
 
         if fields == "stats":
             # The Usage Stats / Spiral rows and nothing else (#47, 2 Oct 2026). With

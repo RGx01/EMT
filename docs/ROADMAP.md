@@ -194,7 +194,9 @@ day let one slot's surplus cover another's shortfall and moved more EV than its 
 (36 of 60 days on a production-like database). Coarser buckets now fold per slot, as the HH view
 does, and sum: over 1,216 days a day equals its slots, and no day total moved.
 
-**Open:** C §7.3 — how much history one request may cover, the number from the Pi.
+**C §7.3 — closed 5 Oct 2026.** `/api/energy` caps a request at 31 days of blocks and 366 days
+for a period total; by-day is uncapped. Only `kind=range` (and `kind=all` for a period) could
+exceed either, and no page does. **Nothing in C is open.**
 
 ## D. Surfacing performance
 

@@ -691,9 +691,15 @@ already keeps each bill for the session, and a key that misses one input serves 
    both real tempos are slow enough that a 30–60 s poll over a viewport range is negligible. This is
    a browser↔EMT decision and has no bearing on the HA WebSocket, which is a separate, inbound
    connection carried unchanged.
-3. **How much history may one request cover?** An unbounded range re-creates the wholesale problem
-   at request time instead of write time. A cap with pagination is probably right, but the number
-   should come from the Pi benchmark, not from taste.
+3. ~~**How much history may one request cover?**~~ **Closed 5 Oct 2026 — a cap per
+   resolution, from what the pages ask and what the Pi serves (soak 18):** `resolution=block` at
+   most **31 days** (a month: the heatmap's viewport, the most any page asks; p50 0.32 s / p95
+   1.1 s on the Pi), `resolution=period` at most **366 days** (a calendar year: the longest bill
+   any page asks; p50 4.8 s), `resolution=day` **uncapped** (one row per day; all history is what
+   Spiral and Usage Stats load, p50 2.9 s, budgeted). Counted from the resolved UTC range, so a
+   billing period and a clock-change month count as the days they are. Over the cap the answer is
+   a 400 naming the limit and `kind=range` to page through; no page needed pagination, so none
+   was built. `_ENERGY_MAX_DAYS`, `tests/test_energy_range_cap.py`.
 4. ~~**Does retiring `_blocks_data_version` lose anything?**~~ **Closed by §2a(3):** the property is
    carried forward explicitly — the fingerprint covers every displayed field, not just money, so a
    cost-neutral re-price still invalidates.
