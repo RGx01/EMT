@@ -11,7 +11,7 @@ rejected — so it is not re-proposed in six months.*
 
 ## 1. The decision
 
-**Keep the wide, one-row-per-block shape. Drop 14 columns. Fix the channel bug at the flag.**
+**Keep the wide, one-row-per-block shape. Drop 12 columns. Fix the channel bug at the flag.**
 
 ---
 
@@ -39,12 +39,12 @@ class of real cost:
 None of those were storage problems. They were two-sources-of-truth problems, and the fix is to keep
 one source.
 
-**The drop list: ~~15~~ 14 columns.** The ~~13~~ **12** in import spec §5.2, plus:
+**The drop list: ~~15~~ ~~14~~ 12 columns.** The ~~13~~ ~~12~~ **11** in import spec §5.2, plus:
 
 | extra | why |
 |---|---|
 | `rate_reconciled` | A second provenance flag beside `rate_source`. Fold into the provenance model. |
-| `imp_provisional` | Duplicate of `is_provisional`; one distinct value (`0`) across 136,202 rows. |
+| ~~`imp_provisional`~~ | ~~Duplicate of `is_provisional`~~ — **wrong, and kept (5 Oct 2026).** `imp_provisional` came OFF the drop list on 5 Oct 2026: it is not a duplicate of `is_provisional`. It marks a SUB-METER block written without its post-boundary read (v4 2.10.0); `is_provisional` marks a MAIN block not yet DCC-settled (3.0.0). `_amend_provisional_sub_meter_blocks` finds and corrects the former. They looked alike because both are 0 on every row measured — data is not proof. |
 
 ---
 
@@ -292,12 +292,34 @@ stays, and the import spec already carries it.
 
 ---
 
+## 5a. Before any column goes — goldens per tariff (5 Oct 2026)
+
+Every real database on hand is IOG, so parity on real data alone proves only that IOG accounts are
+unchanged — and the ex-VAT family touches every bill on every tariff. Two checks come first:
+
+- **`tests/test_tariff_goldens.py`** (CI): synthetic flat, Economy 7, Go and Agile databases
+  (`tests/tariff_fixtures.py`), each with and without an EV charger and a battery, across the 1 Oct
+  2026 VAT change, with segments and ex-VAT built by v5's own sweep. What every data surface answers
+  is recorded (`.build/tariff_goldens.py`) and must not move. A reader mis-reading the stored cost by
+  1% moves six bills on each fixture, so the goldens are not vacuous.
+- **`.build/real_db_parity.py`** (local only): the same surfaces on a real pre-segments database — an
+  Agile backup with 737 negative-price and 312 free half-hours — brought to v5's shape offline, with a
+  schedule rebuilt from its own stored rates. The data stays out of the repo.
+
+A first probe, on the fixtures: blanking the bill reader's ex-VAT columns and its remainder column
+moved **no** answer — the bill already takes those from segments and its own subtraction. On real
+data a column and its replacement can disagree (497 stored cost remainders differ from main − subs
+on one database), so the probe says the readers do not *need* those columns, not that dropping them
+can never move a figure.
+
+---
+
 ## 6. Summary
 
 | | |
 |---|---|
 | **Shape** | Wide, one row per block. Unchanged from v4. |
-| **Dropped** | 14 columns — 12 derivable from segments, plus `rate_reconciled` and `imp_provisional`. `imp_kwh_grid` was removed from the list on 24 Sep 2026: sub-meters carry it and have NO segments (import spec §5.2, C §3). |
+| **Dropped** | 12 columns — 11 derivable from segments, plus `rate_reconciled`. `imp_provisional` was removed from the list on 5 Oct 2026: it is live and distinct (§2). `imp_kwh_grid` was removed from the list on 24 Sep 2026: sub-meters carry it and have NO segments (import spec §5.2, C §3). |
 | **Rejected** | One row per channel: −5.6% space, +28% rows, and a three-way join on every chart. |
 | **Deferred** | ~~7 columns pending a trace~~ — **traced 24 Sep 2026 (§5): six live, `derivation_id` write-only and kept.** |
 | **Justification** | Correctness. One source of truth per fact. The 14.3% is a side effect. |

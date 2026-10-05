@@ -642,7 +642,7 @@ completed dispatch still decides. v5's schema must keep those separable.
 ### 5.2 `blocks` — column rules
 
 **CARRY (canonical facts and provenance):** `block_start`, `block_end`, `meter_id`,
-`config_period_id`, `interpolated`, `imp_kwh`, `imp_kwh_api`, `exp_kwh`, `exp_kwh_api`,
+`config_period_id`, `interpolated`, `imp_provisional`, `imp_kwh`, `imp_kwh_api`, `exp_kwh`, `exp_kwh_api`,
 `imp_read_start/end`, `exp_read_start/end`, `standing_charge`, `carbon_g`, `carbon_intensity_g`,
 `source`, `is_provisional`, `finalised_from_cad`, `needs_review`, `review_reason`,
 `review_dismissed`, `derivation_id`, `rate_corrected`.
@@ -655,11 +655,13 @@ differ by a sub-penny sliver which the remainder absorbs.
 Always present on a .14 source (§4), so there is no absent-column branch — carry each row's own
 word. Fold `rate_reconciled` into the provenance model rather than carrying a second flag.
 
-**DROP — derived, reconstructable from segments** (~~13~~ **12** columns; this is the legacy-column
-removal): ~~`imp_kwh_grid`,~~ `imp_kwh_remainder`, `imp_cost_remainder`, `imp_provisional` (duplicate
-of `is_provisional`), `imp_cost_exc`, `imp_rate_exc`, `standing_charge_exc`, `exc_source`,
+**DROP — derived, reconstructable from segments** (~~13~~ ~~12~~ **11** columns; this is the
+legacy-column removal): ~~`imp_kwh_grid`,~~ `imp_kwh_remainder`, `imp_cost_remainder`,
+~~`imp_provisional`~~, `imp_cost_exc`, `imp_rate_exc`, `standing_charge_exc`, `exc_source`,
 `imp_kwh_ev`, `imp_cost_ev`, `imp_rate_ev`, `imp_ev_band`, `imp_home_band`.
 
+> **`imp_provisional` REMOVED from the drop list, 5 Oct 2026.** `imp_provisional` came OFF the drop list on 5 Oct 2026: it is not a duplicate of `is_provisional`. It marks a SUB-METER block written without its post-boundary read (v4 2.10.0); `is_provisional` marks a MAIN block not yet DCC-settled (3.0.0). `_amend_provisional_sub_meter_blocks` finds and corrects the former. They looked alike because both are 0 on every row measured — data is not proof.
+>
 > **`imp_kwh_grid` REMOVED from the drop list, 24 Sep 2026 — it is not reconstructable, because
 > sub-meters have no segments.** Measured on a 4.5.14 prod database: it is set on **70,497 sub-meter
 > blocks** (35,438 ev_charger, 35,059 house_battery), and those meters have **zero** rows in
