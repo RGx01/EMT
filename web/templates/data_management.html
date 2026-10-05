@@ -228,6 +228,19 @@
 
 {% block scripts %}
 <script>
+// The answer to an UPLOAD, as JSON — or a plain reason when it is not JSON (5 Oct 2026).
+// Through Home Assistant's ingress proxy a large upload can be refused before it reaches
+// EMT, and the reply is the proxy's own page, not JSON; `r.json()` on it failed with the
+// browser's parse error ("The string did not match the expected pattern." in Safari),
+// which named nothing. Say what happened and where it works instead.
+async function uploadReply(r) {
+  var type = (r.headers.get('content-type') || '').toLowerCase();
+  if (type.indexOf('application/json') !== -1) return r.json();
+  throw new Error('the server answered HTTP ' + r.status + ' without a result. ' +
+    'Home Assistant\'s ingress can refuse a large upload before it reaches EMT — ' +
+    'open the add-on\'s Web UI directly (port 8098 by default) and restore from there.');
+}
+
 const KNOWN_FILES = ['blocks.db'];
 let selectedFiles = {};
 let _restoreZip   = null;
@@ -303,7 +316,7 @@ async function doZipRestore() {
     const form = new FormData();
     form.append('zipfile', zipFile);
     const r    = await fetch(apiUrl('/api/import/from-zip'), { method: 'POST', body: form });
-    const data = await r.json();
+    const data = await uploadReply(r);
 
     if (data.ok) {
       statusEl.textContent = '✓ Restored successfully. Reloading…';
@@ -323,7 +336,7 @@ async function extractZipToSelected(zipFile) {
     const form = new FormData();
     form.append('zipfile', zipFile);
     const r    = await fetch(apiUrl('/api/import/extract-zip'), { method: 'POST', body: form });
-    const data = await r.json();
+    const data = await uploadReply(r);
     if (data.files) {
       for (const [name, b64] of Object.entries(data.files)) {
         if (name === 'blocks.db') continue;  // never round-trip binary DB through base64
@@ -401,7 +414,7 @@ async function doImport() {
 
   try {
     const r    = await fetch(apiUrl('/api/import'), { method: 'POST', body: form });
-    const data = await r.json();
+    const data = await uploadReply(r);
     if (data.ok) {
       // The upload now restores through the SAME background job as a backup-zip
       // restore (#356): show progress via the shared banner and reload on done.
@@ -413,7 +426,7 @@ async function doImport() {
       showError(data.error || 'Import failed');
     }
   } catch(e) {
-    showError(e.message);
+    showError('Restore failed: ' + e.message);
   }
 }
 
