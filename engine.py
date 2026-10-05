@@ -7327,19 +7327,25 @@ async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 50
         if not rows:
             reached_end = True
             break
-        try:
-            _reprice_history_blocks(rows, tz_name, rate_segs)   # split + exc + segments
-            swept += len(rows)
-        except Exception as e:
-            skipped += len(rows)
-            logger.warning("REPRICE-SWEEP-CHUNK-FAIL: cursor=%s size=%d (skipped this pass: %d): %s",
-                           cursor, len(rows), skipped, e)
-        cursor = rows[-1]["block_start"]
-        scanned += len(rows)
-        _store.set_meta(_REPRICE_HISTORY_MARKER,
-                        {"cursor": cursor, "scope": _REPRICE_HISTORY_SCOPE,
-                         "swept": total + swept,
-                         "skipped": total_skipped + skipped})
+        # ONE transaction per chunk (ROADMAP §A.1, 5 Oct 2026): the chunk's segments,
+        # split, exc and its cursor commit together. Each block's segment write used to
+        # commit on its own — one fsync per block on the Pi's SD card, and every one held
+        # the engine loop (soak 15: 85 of 97 slow commits were set_block_segments). The
+        # chunk is synchronous, so the batch never spans an await.
+        with _store.batch():
+            try:
+                _reprice_history_blocks(rows, tz_name, rate_segs)   # split + exc + segments
+                swept += len(rows)
+            except Exception as e:
+                skipped += len(rows)
+                logger.warning("REPRICE-SWEEP-CHUNK-FAIL: cursor=%s size=%d (skipped this pass: %d): %s",
+                               cursor, len(rows), skipped, e)
+            cursor = rows[-1]["block_start"]
+            scanned += len(rows)
+            _store.set_meta(_REPRICE_HISTORY_MARKER,
+                            {"cursor": cursor, "scope": _REPRICE_HISTORY_SCOPE,
+                             "swept": total + swept,
+                             "skipped": total_skipped + skipped})
         if len(rows) < limit:
             reached_end = True
             break
@@ -10371,7 +10377,7 @@ def _capture_ohme_slots(provider, planned) -> int:
     else:
         decision = "verified-smart charging (capture current slot)"
 
-    with _store.dispatch_batch():          # one commit for the poll (see _capture_dispatch_slots)
+    with _store.batch():          # one commit for the poll (see _capture_dispatch_slots)
         captured = 0
         for slot_start, source in pairs:
             try:
@@ -10440,7 +10446,7 @@ def _record_ohme_dispatch_history(provider, planned, completed) -> int:
         logger.debug("_record_ohme_dispatch_history: own-plan read failed: %s", _oe)
     # One commit for the poll; completed rows written only when they change
     # (see _capture_dispatch_slots, 5 Oct 2026).
-    with _store.dispatch_batch():
+    with _store.batch():
         if own_slots:
             for slot_start in own_slots:
                 _store.record_dispatch_history(
@@ -10520,7 +10526,7 @@ async def _capture_dispatch_slots() -> int:
     # SD card, stalling the engine loop for seconds at :04/:34. No await inside: the
     # batch holds a write transaction. The `started` derivation below awaits Octopus,
     # so it writes on its own.
-    with _store.dispatch_batch():
+    with _store.batch():
         captured = 0
         for slot_start in sorted(slots):
             _rb = slot_bounds.get(slot_start) or (None, None)
