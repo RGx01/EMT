@@ -102,6 +102,23 @@ the sweep commits **once per chunk** — each block's segment write had been its
 and the chunk's split, exc and cursor three more (63 commits for a 60-block chunk; now at most 3).
 The writer thread stays last, pending a soak.
 
+**Sixteenth soak (5 Oct 2026, after #95) — the cheap half is done, and was not enough.** The
+sweep took **1 min 16 s** (about 7 min in soak 15); over-budget loop lags fell from 59 to **10**,
+slow commits from 97 to **11**, and the quiet phase passed every surface. But the run still fails:
+
+- inside the sweep, each chunk's single `batch` commit took 2–5.5 s, and a lag of the same length
+  followed each (7 of them);
+- the worst lag, 18.3 s at 10:30:37, is not the sweep at all: the half-hour finalise's
+  `save_current_block` commit took 10.4 s and `_insert_block_rows` 8.2 s, both single small
+  commits. Soak 13 had the same (18.8 s at 11:00).
+
+The database runs WAL with `synchronous = NORMAL`, so an ordinary commit does not fsync; only a
+checkpoint does, and 10 of the 11 slow commits had none inside. The time is therefore most likely
+the commit's own `write()` blocking while the card drains dirty pages — Home Assistant's recorder
+writes to the same card. Fewer commits cannot fix a single commit that takes 10 s; keeping the loop
+from waiting on one can. **Next: the writer thread** —
+[design/EMT-v5_A1_writer_thread_design.md](design/EMT-v5_A1_writer_thread_design.md).
+
 **Done when:** a soak on the SD card shows no engine-loop stall over 2 s (`scan-log`
 `A (loop blocking): PASS`) across the whole run, sweep included.
 

@@ -45,6 +45,7 @@ pipeline went on 30 Sep), with #31 and C §7.3 still open. The Pi runs from an *
 | `docs/design/EMT-v5_programme.md` | workstreams A–E in dependency order, and why that order |
 | `docs/design/EMT-v5_import_spec.md` | how v5 reads a v4 database; the floor (§1.1) |
 | `docs/design/EMT-v5_A_storage_design.md`, `…_B_coordinator_design.md`, `…_C_surfaces_design.md` | each workstream's design |
+| `docs/design/EMT-v5_A1_writer_thread_design.md` | ROADMAP §A.1: why commits stall the loop on the SD card, and the writer thread |
 | `docs/ROADMAP.md` | open backlog, priority ordered — nothing in it has shipped |
 | `docs/CONTRIBUTING.md`, `docs/DEVELOPMENT.md` | branch model, PR flow, what a change must carry |
 | `CHANGELOG.md` | user-facing history in the project's voice |
