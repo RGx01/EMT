@@ -1,7 +1,9 @@
 # EMT v5 — A.1: the engine loop must not wait on the SD card
 
-*Design, 5 Oct 2026. ROADMAP §A.1. Not yet built: step 0 is a measurement, and it may change
-the plan.*
+*Design, 5 Oct 2026. ROADMAP §A.1. **Not built — held in reserve.** Step 0 ran (soak 17), the
+sweep's startup hold followed (#97, soak 18), and §A.1 was closed with a caveat: about a minute of
+2–6 s single-commit stalls after a restore or upgrade on SD storage, normal running clean. This is
+the fix for that remainder if it is ever needed.*
 
 ---
 
