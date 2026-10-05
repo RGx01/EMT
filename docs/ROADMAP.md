@@ -189,8 +189,12 @@ Design: [design/EMT-v5_C_surfaces_design.md](design/EMT-v5_C_surfaces_design.md)
 every surface on `/api/energy`, no defaulted tariff context, billing reconciled with v4 to the
 penny (with v4's sub-meter rounding explained, #63), and every surface bounded on the Pi.
 
-**Open:** #31's hybrid-fold bucketing — a day bucketed per half-hour can move less EV than the same
-day bucketed whole; day totals agree, Direct and EV differ between the two views.
+**#31 — fixed 5 Oct 2026.** The hybrid EV fold capped each bucket's move at its own Direct, so a
+day let one slot's surplus cover another's shortfall and moved more EV than its half-hours summed
+(36 of 60 days on a production-like database). Coarser buckets now fold per slot, as the HH view
+does, and sum: over 1,216 days a day equals its slots, and no day total moved.
+
+**Open:** C §7.3 — how much history one request may cover, the number from the Pi.
 
 ## D. Surfacing performance
 

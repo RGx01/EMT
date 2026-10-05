@@ -618,8 +618,10 @@ def _ev_rows(store, cfg, meters, utc_start, utc_end):
     """, [utc_start, utc_end] + params).fetchall()
 
 
-def _apply_ev(store, cfg, raw, rows, meters, utc_start, utc_end, bucket_of, key_fn):
-    """The display-only EV split onto `rows` (in place), bucketed by `bucket_of`."""
+def _apply_ev(store, cfg, raw, rows, meters, utc_start, utc_end, bucket_of, key_fn,
+              per_slot=False):
+    """The display-only EV split onto `rows` (in place), bucketed by `bucket_of`.
+    `per_slot`: the rows ARE half-hour slots (the HH view)."""
     if (_configured_ev_meter_id(cfg) is None
             and len(meters) == 1 and meters[0]["id"] == "electricity_main"):
         try:
@@ -658,13 +660,89 @@ def _apply_ev(store, cfg, raw, rows, meters, utc_start, utc_end, bucket_of, key_
                                                   float(rr["imp_cost"] or 0.0))
                 elif not rr["is_sub_meter"]:
                     main_ev[rr["block_start"]] = (rr["imp_kwh_ev"], rr["imp_cost_ev"])
-            hyb = {}
-            for bs, v in _hybrid_ev_by_block(main_ev, phys_ev).items():
-                acc = hyb.setdefault(bucket_of(bs), {"kwh": 0.0, "cost": 0.0})
-                acc["kwh"] += v["kwh"]; acc["cost"] += v["cost"]
+            hyb_slot = _hybrid_ev_by_block(main_ev, phys_ev)
         except Exception:
-            hyb = {}
-        _apply_hybrid_ev_to_summary_rows(rows, meters, ev_mid, hyb, key_fn=key_fn)
+            hyb_slot = {}
+        if per_slot:
+            _apply_hybrid_ev_to_summary_rows(rows, meters, ev_mid, hyb_slot, key_fn=key_fn)
+        else:
+            _apply_hybrid_ev_by_slot(store, rows, meters, ev_mid, hyb_slot, phys_ev,
+                                     bucket_of, key_fn)
+
+
+def _slot_rows_for(store, slots):
+    """`_raw_rows`' columns for the blocks at `slots` (every meter), in `_raw_rows`' order."""
+    slots = sorted(slots)
+    active = ("SELECT id FROM config_periods "
+              "WHERE effective_to IS NULL ORDER BY effective_from DESC LIMIT 1")
+    out = []
+    for i in range(0, len(slots), 500):
+        part = slots[i:i + 500]
+        out += store._conn.execute(f"""
+            SELECT b.block_start, b.meter_id, m.is_sub_meter, m.parent_meter_id,
+                   b.imp_kwh, b.imp_kwh_grid, b.imp_kwh_remainder,
+                   b.imp_rate, b.imp_cost, b.imp_cost_remainder, b.exp_kwh, b.exp_cost,
+                   b.imp_kwh_ev, b.imp_cost_ev, b.rate_source, b.source,
+                   b.standing_charge, b.carbon_g,
+                   b.interpolated, cp.billing_day
+            FROM blocks b
+            JOIN config_periods cp ON b.config_period_id = cp.id
+            LEFT JOIN meters m ON m.meter_id = b.meter_id
+              AND m.config_period_id = ({active})
+            WHERE b.block_start IN ({",".join("?" * len(part))})
+            ORDER BY b.block_start, b.id
+        """, part).fetchall()
+    return out
+
+
+def _apply_hybrid_ev_by_slot(store, rows, meters, ev_mid, hyb_slot, phys_ev, bucket_of,
+                             key_fn):
+    """The hybrid EV fold for buckets coarser than a half-hour (day, month, year), done PER
+    SLOT and summed into each bucket (#31, 5 Oct 2026).
+
+    The fold caps what it moves out of Direct at what Direct holds. Folded per DAY, one
+    slot's surplus covered another's shortfall, so the day view moved more EV than its own
+    48 half-hours summed — the same day read differently in the two views (36 of 60 days on a
+    production-like database). The half-hour cap is the physical one: a car cannot take more
+    grid in a half-hour than that half-hour had. So each slot the fold can change is folded
+    exactly as the HH view folds it — its Direct from `_aggregate_block_rows` bucketed by
+    slot, the move from `_apply_hybrid_ev_to_summary_rows` itself — and the moves are added to
+    the slot's bucket. Bucket totals still never move; a day now equals its slots."""
+    slots = {bs for bs in set(hyb_slot) | set(phys_ev)
+             if abs(float((hyb_slot.get(bs) or {}).get("kwh", 0.0))
+                    - float((phys_ev.get(bs) or (0.0, 0.0))[0])) > 1e-9
+             or abs(float((hyb_slot.get(bs) or {}).get("cost", 0.0))
+                    - float((phys_ev.get(bs) or (0.0, 0.0))[1])) > 1e-9}
+    moves = {}
+    if slots:
+        data = _aggregate_block_rows(_slot_rows_for(store, slots), lambda bs: bs,
+                                     standing_scope="global")
+        for bs, dd in data.items():
+            row = {"slot": bs}
+            row.update(_bucket_to_row_values(dd))
+            before = dict(row["meters"].get(ev_mid) or {"imp_kwh": 0.0, "imp_cost": 0.0})
+            _apply_hybrid_ev_to_summary_rows([row], [], ev_mid, hyb_slot,
+                                             key_fn=lambda r: r["slot"])
+            after = row["meters"].get(ev_mid) or before
+            acc = moves.setdefault(bucket_of(bs), [0.0, 0.0])
+            acc[0] += float(after["imp_kwh"]) - float(before.get("imp_kwh") or 0.0)
+            acc[1] += float(after["imp_cost"]) - float(before.get("imp_cost") or 0.0)
+    for row in rows:
+        mv = moves.get(key_fn(row))
+        _meters = row.get("meters")
+        if not mv or not _meters or (abs(mv[0]) <= 1e-9 and abs(mv[1]) <= 1e-9):
+            continue
+        _main = _meters.get("electricity_main")
+        if _main is not None:
+            _main["imp_kwh"] = round(float(_main["imp_kwh"]) - mv[0], 4)
+            _main["imp_cost"] = round(float(_main["imp_cost"]) - mv[1], 4)
+        _mm = _meters.get(ev_mid)
+        _meters[ev_mid] = {
+            "imp_kwh": round(float((_mm or {}).get("imp_kwh") or 0.0) + mv[0], 4),
+            "imp_cost": round(float((_mm or {}).get("imp_cost") or 0.0) + mv[1], 4),
+            "exp_kwh": 0.0, "exp_cost": 0.0, "carbon_g": (_mm or {}).get("carbon_g"),
+        }
+    _apply_hybrid_ev_to_summary_rows([], meters, ev_mid, {})     # the one 'EV' identity
 
 
 def _local_day_of(utc_start, utc_end, tz):
@@ -769,5 +847,5 @@ def slot_stats(store, cfg, tz_name, utc_start, utc_end) -> dict:
         rows.append(row)
         t += timedelta(minutes=bm)
     _apply_ev(store, cfg, raw, rows, meta["meters"], utc_start, utc_end, lambda bs: bs,
-              key_fn=lambda r: r.get("slot"))
+              key_fn=lambda r: r.get("slot"), per_slot=True)
     return dict(meta, rows=rows)
