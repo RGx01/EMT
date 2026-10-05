@@ -16,7 +16,7 @@ the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below decons
 
 | # | Workstream | Depends on | State |
 |---|---|---|---|
-| A | Storage and access model | — | ✅ closed 30 Sep 2026 — A.1 (engine commits on the SD card) open |
+| A | Storage and access model | — | ✅ closed 30 Sep 2026; A.1 closed with a caveat 5 Oct 2026 — a ~1-min burst after a restore |
 | B | Job coordinator (v4 BL-50) | A | ✅ all six acceptances met — 6 on the Pi, 5 Oct 2026 |
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | 🟢 17 of 17 surfaces bounded on the Pi (#64) |
@@ -132,8 +132,21 @@ beside them, so the hold is not expected to pass the run on its own; it removes 
 EMT instances on one SD card** — a v4 and a v5 side by side — is a known cost: their half-hour
 finalises commit together.
 
-**Done when:** a soak on the SD card shows no engine-loop stall over 2 s (`scan-log`
-`A (loop blocking): PASS`) across the whole run, sweep included.
+**Eighteenth soak (5 Oct 2026, after #97, v4 stopped) — closed with a caveat.** The sweep held
+61 s for startup's own writes, then ran in 49 s. Over-budget lags 5 (4 in soak 17), worst **5.8 s**
+(11.2 s), slow commits 6; the quiet phase, the 13:30 finalise included, had none. Each that remained
+was **one commit with nothing beside it**: the first poll's outage backfill
+(`_insert_block_rows_replace`, 5.75 s, during the hold) and four of the sweep's chunk commits
+(1.4–4.4 s). There is nothing left to batch or to separate.
+
+**Closed 5 Oct 2026, by decision, with this caveat recorded:** on SD storage, for about a minute
+after a restore or an upgrade, single commits take 2–6 s and the engine loop waits on each; normal
+running is clean. The original criterion — no stall over 2 s across the whole run — is not met.
+The fix for the remainder is the writer thread, designed and not built
+([design/EMT-v5_A1_writer_thread_design.md](design/EMT-v5_A1_writer_thread_design.md)); reopen if
+real use shows the burst matters, or when HA's recorder sharing a card is shown to bring stalls into
+normal running. Known cost, also recorded: **two EMT instances on one SD card** commit their
+half-hour finalises together (soak 16's 18.3 s stall).
 
 ## B. Job coordinator
 
