@@ -1,0 +1,70 @@
+{
+ "Bill: 2026": {
+  "sha256": "ebaea33327c33b386e60b47e476463bda547b76ca517a984d2c950a243afe59d",
+  "status": 200
+ },
+ "Bill: October": {
+  "sha256": "34ec12f02e57482b6c3192acbf1d13a732cd89ce1e770d2fbd0ef1de5ff9591c",
+  "status": 200
+ },
+ "Bill: Q3": {
+  "sha256": "192b68545c18531a9beeb645e492260d6480634a7670ef34cf47fa259c796960",
+  "status": 200
+ },
+ "Bill: Q4": {
+  "sha256": "8437da33c8a65ecda317302da2994740900988ade37a9abf7f5e02124f734e1f",
+  "status": 200
+ },
+ "Bill: September": {
+  "sha256": "8d08985c0b44e6724ad8fc397be841dfe9e502515cf40f46abb38419cf0ca157",
+  "status": 200
+ },
+ "Bill: billing period over 1 Oct": {
+  "sha256": "e3cafb91020cbcf458f66ec16f717b905fa8344504c4b3132d63028d8839bdc5",
+  "status": 200
+ },
+ "Day charts: October": {
+  "sha256": "5309a22fc0af9b551816fe765fed10370e2f7ec9b78d8ea893496d93f45a3a18",
+  "status": 200
+ },
+ "Heatmap: October": {
+  "sha256": "71f2580811b2ba809516fe7c27ae32928ff55f63eccfb511f0a78d8733f4ebea",
+  "status": 200
+ },
+ "Heatmap: September": {
+  "sha256": "c425f79df07bbe88a7d2b3175d05ea008963e0256bf49b24f6aaf4a1beb7f97a",
+  "status": 200
+ },
+ "Insights carbon: September": {
+  "sha256": "35f0b4eccfb42b5c54b037006a735cd0d9ea5f739faaf754713270bda50f7be6",
+  "status": 200
+ },
+ "Insights usage: October": {
+  "sha256": "441570d315f0d7416d8a21a50f82afe68fe946e9b04ad7eed349b4eaed03c354",
+  "status": 200
+ },
+ "Periods: picker totals": {
+  "sha256": "9d398bb5be47095d1480171cfe94309a1b60b289da632aa0e15f4e62a78f387e",
+  "status": 200
+ },
+ "Periods: trend strip": {
+  "sha256": "1c956b04ea987abea3195dfa7394511b303c94a0c518acf13d2e3cf7b1bc4f54",
+  "status": 200
+ },
+ "Usage Stats: 1 Oct": {
+  "sha256": "3497fa84102f6550111ab20e62b0a42a7c7ed1837ac05afd5e5b035c128d5708",
+  "status": 200
+ },
+ "Usage Stats: 30 Sep": {
+  "sha256": "6ab55bb0b92e40c4cb40f77c85a2d37241b0581ef317aa50c926164d1236aeec",
+  "status": 200
+ },
+ "Usage Stats: all days": {
+  "sha256": "f8d8741d48ca61f2aec0cc3f5f342ac2ffb51a4f0fa61d6e7e14e57937a29791",
+  "status": 200
+ },
+ "Usage Stats: days over 1 Oct": {
+  "sha256": "78f784fcbb25862b33322237354462e2cf7d7e83af297bd6f3e97ee65573c8e4",
+  "status": 200
+ }
+}
