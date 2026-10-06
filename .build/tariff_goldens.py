@@ -68,11 +68,11 @@ def _normalise(v):
 
 def fixtures():
     import tariff_fixtures as T
-    return [(t, d) for t in T.TARIFFS for d in (False, True)]
+    return [(t, d) for t in T.TARIFFS for d in (False, True)] + [("e7", "many")]
 
 
 def name(tariff, devices):
-    return "%s%s" % (tariff, "_devices" if devices else "")
+    return "%s%s" % (tariff, "_many" if devices == "many" else "_devices" if devices else "")
 
 
 def capture(tariff, devices):

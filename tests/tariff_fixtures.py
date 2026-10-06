@@ -9,7 +9,8 @@ a regression for anyone else. These are the other shapes:
   go      Octopus Go: a short cheap window (00:30–04:30 local)
   agile   a different rate every half-hour, including zero and negative (plunge) slots
 
-each with or without devices (an EV charger and a battery). 20 Sep – 10 Oct 2026, so the 1 Oct
+each with or without devices (an EV charger and a battery), and Economy 7 with many (five heat
+pumps and three batteries). 20 Sep – 10 Oct 2026, so the 1 Oct
 VAT change (5% → 0%) falls inside. Segments and ex-VAT are built the way production builds them:
 the stored inc rate, then v5's own historical re-price sweep with a rate schedule matching the
 tariff. Deterministic — the same arguments give the same database.
@@ -85,18 +86,37 @@ def _naive(ts):
     return d
 
 
+def _devices(devices):
+    """[(meter_id, meter_type, draw(loc, hm, cheap) -> kWh)] for a fixture variant.
+
+    True:   an EV charger (cheap slots, every other day) and a battery (cheap slots).
+    "many": five heat pumps and three batteries — the many-device case (6 Oct 2026): every
+            surface must keep eight devices apart, and house + devices must still equal the
+            main meter."""
+    if devices == "many":
+        hps = [("heat_pump_%d" % i, "heat_pump",
+                (lambda k: lambda loc, hm, cheap: k)(round(0.1 + 0.05 * i, 2)))
+               for i in range(1, 6)]
+        bats = [("battery_%d" % i, "battery",
+                 (lambda k: lambda loc, hm, cheap: k if cheap else 0.0)(round(0.4 + 0.1 * i, 2)))
+                for i in range(1, 4)]
+        return hps + bats
+    if devices:
+        return [("ev_charger", "ev_charger",
+                 lambda loc, hm, cheap: 3.2 if (cheap and loc.day % 2 == 0) else 0.0),
+                ("house_battery", "battery", lambda loc, hm, cheap: 1.1 if cheap else 0.0)]
+    return []
+
+
 def _config(devices):
     meters = {"electricity_main": {
         "meta": {"billing_day": 3, "block_minutes": 30, "timezone": "Europe/London",
                  "currency_symbol": "£", "currency_code": "GBP"},
         "channels": {"import": {}, "export": {}}}}
-    if devices:
-        meters["ev_charger"] = {"meta": {"sub_meter": True, "meter_type": "ev_charger",
-                                         "parent_meter": "electricity_main"},
-                                "channels": {"import": {}}}
-        meters["house_battery"] = {"meta": {"sub_meter": True, "meter_type": "battery",
-                                            "parent_meter": "electricity_main"},
-                                   "channels": {"import": {}}}
+    for mid, mtype, _ in _devices(devices):
+        meters[mid] = {"meta": {"sub_meter": True, "meter_type": mtype,
+                                "parent_meter": "electricity_main"},
+                       "channels": {"import": {}}}
     return {"meters": meters}
 
 
@@ -114,23 +134,20 @@ def build(path, tariff, devices=False):
         rate = inc_rate(tariff, t)
         cheap = rate < 0.13
         house = 0.18 + 0.25 * (1 if 1020 <= hm < 1320 else 0) + 0.02 * (t.minute // 30)
-        ev = 3.2 if (devices and cheap and loc.day % 2 == 0) else 0.0
-        bat = 1.1 if (devices and cheap) else 0.0
-        main = round(house + ev + bat, 4)
+        draws = [(mid, draw(loc, hm, cheap)) for mid, _, draw in _devices(devices)]
+        dev_total = sum(k for _, k in draws)
+        main = round(house + dev_total, 4)
         bs, be = t.isoformat(), (t + timedelta(minutes=30)).isoformat()
         # What _apply_pass2 writes on a finalised block: each device's grid share
         # (imp_kwh_grid), and the main's remainder after them — house = main − devices.
         # A NULL remainder makes Usage Stats fall back to the whole main reading, which
         # counts every device twice (found 6 Oct 2026; the first goldens had it).
-        rem = round(max(main - ev - bat, 0.0), 4)
+        rem = round(max(main - dev_total, 0.0), 4)
         rows.append((bs, be, "electricity_main", main, None, rem, round(rem * rate, 6),
                      round(main * rate, 6), rate, 0.5 * (1 + vat_on(loc.date())),
                      round(main * 110, 2)))
-        if devices:
-            rows.append((bs, be, "ev_charger", ev, ev, None, None, round(ev * rate, 6), rate,
-                         0.0, None))
-            rows.append((bs, be, "house_battery", bat, bat, None, None, round(bat * rate, 6),
-                         rate, 0.0, None))
+        for mid, k in draws:
+            rows.append((bs, be, mid, k, k, None, None, round(k * rate, 6), rate, 0.0, None))
         t += timedelta(minutes=30)
     with st._conn:
         st._conn.executemany(
