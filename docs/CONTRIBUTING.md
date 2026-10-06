@@ -25,6 +25,14 @@ diff nobody can read, and whose revert is a gamble.
 - **Raw precision in any verification.** Never conclude from a rounded or formatted value. Several
   wrong diagnoses in the v4 codebase came from 4dp log lines and 6dp histograms agreeing with a
   hypothesis that the stored values did not support.
+- **One implementation for a figure shown in two places.** If a second surface shows a figure that
+  one already shows (a bill line, a device's share, a total), it calls the code that computes it.
+  It does not work the figure out again from the same columns. Where one side is SQL, the rule
+  carries a SQL form next to its Python, and a test holds the two equal (see
+  `direct_import.py`). Then add the new surface to the test that asks every surface for the same
+  periods (`tests/test_direct_import.py` is the model). v4 grew this bug class one surface at a
+  time: on 6 Oct 2026 three surfaces gave three answers for one Direct import, and a fourth
+  copy had no caller.
 - **The rationale, where it will be found later.** Non-obvious decisions belong in a comment at the
   code, not only in the PR description — PRs are hard to find from a line of code two years on.
 

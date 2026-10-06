@@ -859,63 +859,6 @@ def charts_page():
     )
 
 
-def _format_billing(summary, cfg, currency):
-    """Convert energy_charts billing summary dict into (total, rows) for the summary template."""
-    if not summary:
-        return None, []
-    totals     = summary.get("totals", {})
-    meter_meta = summary.get("meter_meta", {})
-    total_cost = summary.get("total_cost")
-    if total_cost is None:
-        return None, []
-
-    main_imp_kwh = main_imp_cost = 0.0
-    main_exp_kwh = main_exp_cost = 0.0
-    sub_rows = []
-    sub_imp_kwh_total = 0.0
-
-    for key, t in totals.items():
-        meta      = meter_meta.get(key, {})
-        is_sub    = t.get("is_submeter") or meta.get("is_submeter", False)
-        is_export = "export" in key.lower()
-        cost      = float(t.get("cost") or 0)
-        kwh       = float(t.get("kwh") or 0)
-
-        if is_export:
-            main_exp_kwh  += kwh
-            main_exp_cost += abs(cost)
-        elif is_sub:
-            if abs(cost) > 0.0001 or kwh > 0.0001:
-                device = meta.get("device") or key.split("/")[0].strip()
-                sub_rows.append({"label": f"↳ {device} ({kwh:.3f} kWh)", "cost": cost})
-                sub_imp_kwh_total += kwh
-        else:
-            main_imp_kwh  += kwh
-            main_imp_cost += cost
-
-    rows = []
-    # Total import row (grid remainder + all sub-meters)
-    total_imp_kwh = main_imp_kwh + sub_imp_kwh_total
-    total_imp_cost = main_imp_cost + sum(float(r["cost"]) for r in sub_rows)
-    if total_imp_kwh > 0.0001 or total_imp_cost > 0.0001:
-        rows.append({"label": f"Total Import ({total_imp_kwh:.3f} kWh)", "cost": total_imp_cost, "bold": True})
-    # Direct import (remainder not attributed to sub-meters)
-    if main_imp_kwh > 0.0001 or main_imp_cost > 0.0001:
-        rows.append({"label": f"Direct import ({main_imp_kwh:.3f} kWh)", "cost": main_imp_cost})
-    # Sub-meters
-    for r in sub_rows:
-        rows.append(r)
-    # Export
-    if main_exp_kwh > 0.0001:
-        rows.append({"label": f"Grid Export ({main_exp_kwh:.3f} kWh)", "cost": -main_exp_cost})
-    # Standing charge
-    sc = summary.get("total_standing", 0.0)
-    if sc > 0.0001:
-        rows.append({"label": "Standing Charge", "cost": sc})
-
-    return total_cost, rows
-
-
 @app.route("/live-power")
 def live_power_page():
     from datetime import datetime

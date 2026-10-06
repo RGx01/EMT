@@ -599,6 +599,10 @@ def _inject_ev_breakdown_into_summary(summary, period_blocks, ev_slot_map,
     for rate, v in ev_by_rate.items():
         ek = round(v["kwh"], 3)
         ec = round(v["cost"], 2)
+        # The section totals add the UNROUNDED figures and round once (6 Oct 2026): summed
+        # from per-rate figures each rounded to the penny, they drifted on Agile's hundreds of
+        # rates — an EV month read £24.35 here against £24.33 on the Overview and Usage Stats.
+        raw_k, raw_c = v["kwh"], v["cost"]
         if ek <= 0:
             continue
         rem = rem_channels.get(rate)
@@ -617,11 +621,12 @@ def _inject_ev_breakdown_into_summary(summary, period_blocks, ev_slot_map,
                             "(remainder %.3f, dispatch %.3f) — capped at the remainder",
                             rate, short, rem["kwh"], ek)
             ek, ec = round(rem["kwh"], 3), round(rem["cost"], 2)
+            raw_k, raw_c = rem["kwh"], rem["cost"]
             if ek <= 0 and abs(ec) < 0.005:
                 continue
         ev_channels[rate] = {"kwh": ek, "cost": ec, "read_start": None, "read_end": None}
-        ev_tot_k += ek
-        ev_tot_c += ec
+        ev_tot_k += raw_k
+        ev_tot_c += raw_c
         if rem is not None:
             _rk = rem["kwh"] - ek
             _rc = rem["cost"] - ec

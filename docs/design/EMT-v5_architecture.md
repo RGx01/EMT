@@ -178,9 +178,10 @@ unreachable.
 checking it against cases established by hand. §4a required a trace before any deletion; until the
 tool existed that was a rule with nothing enforcing it.
 
-**Whole codebase: 59 of 1,157 definitions unreachable** (4 Oct 2026 — 84 of 1,162 at the 4.5.14
+**Whole codebase: 58 of 1,161 definitions unreachable** (6 Oct 2026 — 84 of 1,162 at the 4.5.14
 seed, 79 of 1,157 after the five deletions below, and the total has since grown with workstreams A,
-B and C). **This figure is asserted against the tool by `tests/test_b_design_figures.py`** — it had
+B and C; on 6 Oct `_format_billing`, a fourth copy of the Direct-import subtraction with no caller in
+v4 or v5, went with `direct_import.py`). **This figure is asserted against the tool by `tests/test_b_design_figures.py`** — it had
 drifted five times before that check existed, each time right when written and wrong a week later.
 The
 figures below predate the tool and were produced by an ad-hoc run; re-run it before acting on any
@@ -265,7 +266,8 @@ deleted a release later". The house/EV split for a late completed dispatch was n
   three real databases because it cannot be reached. The `# ── Reads (Phase 2+) ──` banner above it
   dates the intent: a raw-read store the block model made unnecessary. Same pattern as the three
   legacy backfills — planned, superseded, never removed.
-- **`web/server.py` — `_format_billing` (server.py:857).** No callers. An older copy of the Overview
+- ~~**`web/server.py` — `_format_billing` (server.py:857).**~~ **Deleted 6 Oct 2026**, with
+  `direct_import.py`: it was a fourth copy of the Direct-import subtraction. No callers. An older copy of the Overview
   card's row formatter, superseded by `_fmt_total` inside `api_billing()`. Found while fixing #468,
   and it carries that same bug: it builds its breakdown from `totals` alone, so it would show no EV
   on a no-device account. A second formatter for one surface, silently behind by a bug fix — exactly
