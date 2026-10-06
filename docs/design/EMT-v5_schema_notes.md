@@ -306,8 +306,12 @@ unchanged — and the ex-VAT family touches every bill on every tariff. Two chec
   Agile backup with 737 negative-price and 312 free half-hours — brought to v5's shape offline, with a
   schedule rebuilt from its own stored rates. The data stays out of the repo.
 
-A first probe, on the fixtures: blanking the bill reader's ex-VAT columns and its remainder column
-moved **no** answer — the bill already takes those from segments and its own subtraction. On real
+A first probe, on the fixtures (with remainders written as `_apply_pass2` writes them — the first
+version of the fixtures left them NULL, which made Usage Stats count every device twice and made
+this probe vacuous; fixed 6 Oct 2026): blanking the **bill** reader's ex-VAT columns and its
+remainder column moved **no** answer — the bill takes those from segments and its own subtraction.
+**Usage Stats, the heatmap and Insights usage do read the stored remainder**: changing it moved them.
+So the remainder family's readers to move first are those, not the bill. On real
 data a column and its replacement can disagree (497 stored cost remainders differ from main − subs
 on one database), so the probe says the readers do not *need* those columns, not that dropping them
 can never move a figure.

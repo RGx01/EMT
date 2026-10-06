@@ -118,17 +118,26 @@ def build(path, tariff, devices=False):
         bat = 1.1 if (devices and cheap) else 0.0
         main = round(house + ev + bat, 4)
         bs, be = t.isoformat(), (t + timedelta(minutes=30)).isoformat()
-        rows.append((bs, be, "electricity_main", main, round(main * rate, 6), rate,
-                     0.5 * (1 + vat_on(loc.date())), round(main * 110, 2)))
+        # What _apply_pass2 writes on a finalised block: each device's grid share
+        # (imp_kwh_grid), and the main's remainder after them — house = main − devices.
+        # A NULL remainder makes Usage Stats fall back to the whole main reading, which
+        # counts every device twice (found 6 Oct 2026; the first goldens had it).
+        rem = round(max(main - ev - bat, 0.0), 4)
+        rows.append((bs, be, "electricity_main", main, None, rem, round(rem * rate, 6),
+                     round(main * rate, 6), rate, 0.5 * (1 + vat_on(loc.date())),
+                     round(main * 110, 2)))
         if devices:
-            rows.append((bs, be, "ev_charger", ev, round(ev * rate, 6), rate, 0.0, None))
-            rows.append((bs, be, "house_battery", bat, round(bat * rate, 6), rate, 0.0, None))
+            rows.append((bs, be, "ev_charger", ev, ev, None, None, round(ev * rate, 6), rate,
+                         0.0, None))
+            rows.append((bs, be, "house_battery", bat, bat, None, None, round(bat * rate, 6),
+                         rate, 0.0, None))
         t += timedelta(minutes=30)
     with st._conn:
         st._conn.executemany(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
-            "imp_cost, imp_rate, standing_charge, carbon_g, exp_kwh, exp_cost, source) "
-            "VALUES (?, ?, ?, %d, ?, ?, ?, ?, ?, 0, 0, 'imported_api')" % cp, rows)
+            "imp_kwh_grid, imp_kwh_remainder, imp_cost_remainder, imp_cost, imp_rate, "
+            "standing_charge, carbon_g, exp_kwh, exp_cost, source) "
+            "VALUES (?, ?, ?, %d, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'imported_api')" % cp, rows)
     _sweep(st, tariff)
     st.close()
     return path

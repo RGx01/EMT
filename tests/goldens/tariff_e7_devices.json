@@ -28,11 +28,11 @@
   "status": 200
  },
  "Heatmap: October": {
-  "sha256": "f11cc07a3c226cf5172713e467d43e72ef185618a4fcb28d6f87af9d2bc8444f",
+  "sha256": "5388a1dcc9ba31586c6fb8cef76b46094e279fc2d07e7af02efec61b794d5da5",
   "status": 200
  },
  "Heatmap: September": {
-  "sha256": "9b91badde2e2cc2037e20a23daf912dba309e4d3a6984849633361ebd2c405b3",
+  "sha256": "036fc5c7957aaf7537a246353d20d72645ada85af2c77d3e8a25b2b2e5224638",
   "status": 200
  },
  "Insights carbon: September": {
@@ -40,7 +40,7 @@
   "status": 200
  },
  "Insights usage: October": {
-  "sha256": "7513d8a3dc548a829879c92c71392dae006dd7ae3dfcc5c5c5f2cbd6eb20a3a5",
+  "sha256": "be0c36589a6fd071bcd1fd2d3e24c182b9f894a96ad4d53347b5e1f9e575a05c",
   "status": 200
  },
  "Periods: picker totals": {
@@ -52,19 +52,19 @@
   "status": 200
  },
  "Usage Stats: 1 Oct": {
-  "sha256": "1ee247057f57ac25d79f5389f105fc0863b0f942f8225768394c38f492557c86",
+  "sha256": "c077f9e934722aefb31de9573940e68f791ca635ca9150614ff531891b8ff9fe",
   "status": 200
  },
  "Usage Stats: 30 Sep": {
-  "sha256": "781f873b96ed60b1938fc6c543ceca1ccf92eeb71264c7507bb174eda203e419",
+  "sha256": "d906e035321632a9e8693232b73c14a22563b956ee933aa4a4ed2dedb3197d1d",
   "status": 200
  },
  "Usage Stats: all days": {
-  "sha256": "4ab52639b9453cfc63bb515de53c5f5ad3d4b4c0f3e098dc57244ec94ea86ce9",
+  "sha256": "a360b44a6395a29cacc21660cc043960736232b248d3a7e066e2a2aa46d1e874",
   "status": 200
  },
  "Usage Stats: days over 1 Oct": {
-  "sha256": "48defce5d573b565bf9e1af9603b37d2e5b2f16af33edaeaafadb28b45952c9f",
+  "sha256": "d3cf9767b0946c2d206cf3f87a649b7c3ee040e9de62556a396cb8c254ca113f",
   "status": 200
  }
 }
