@@ -12,6 +12,10 @@ One day, two slots, a configured EV sub-meter with no recorded draw (all EV synt
   B  Direct 0.5 kWh, dispatch EV 3.0  -> capped at 0.5 (a battery covered the rest)
 The half-hours move 1.5 between them; the parent's day view moved 4.0 (capped only at the
 day's 4.5 of Direct). The equality test fails on the parent; the totals test is a guard.
+
+The battery is a sub-meter row (6 Oct 2026): Direct is now direct_import's rule, main − devices,
+not the stored remainder, so B's 0.5 of Direct needs the battery's 0.5 kWh to be there. It was a
+remainder of 0.5 with no battery row — the shape a deleted device leaves behind.
 """
 import os
 import sys
@@ -30,6 +34,9 @@ CONFIG = {"meters": {
     "ev_charger": {"meta": {"sub_meter": True, "meter_type": "ev_charger",
                             "parent_meter": "electricity_main"},
                    "channels": {"import": {}}},
+    "house_battery": {"meta": {"sub_meter": True, "meter_type": "battery",
+                               "parent_meter": "electricity_main"},
+                      "channels": {"import": {}}},
 }}
 DAY_FROM, DAY_TO = "2026-08-01T00:00:00", "2026-08-02T00:00:00"
 SLOTS = {  # block_start: (main kWh, main cost, Direct kWh, dispatch EV kWh, its cost)
@@ -49,6 +56,12 @@ def _store():
                 "imp_kwh_remainder, imp_rate, imp_cost, exp_kwh, exp_cost, standing_charge, "
                 "imp_kwh_ev, imp_cost_ev) VALUES (?, ?, 'electricity_main', ?, ?, ?, 0.3, ?, 0, 0, "
                 "0, ?, ?)", (bs, bs, cp, k, rem, c, ek, ec))
+            if k - rem > 1e-9:                    # the battery's grid draw: main − Direct
+                st._conn.execute(
+                    "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
+                    "imp_kwh, imp_kwh_grid, imp_rate, imp_cost, exp_kwh, exp_cost, standing_charge) "
+                    "VALUES (?, ?, 'house_battery', ?, ?, ?, 0.3, ?, 0, 0, 0)",
+                    (bs, bs, cp, k - rem, k - rem, round((k - rem) * 0.3, 6)))
     return st
 
 

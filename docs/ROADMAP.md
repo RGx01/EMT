@@ -197,7 +197,23 @@ does, and sum: over 1,216 days a day equals its slots, and no day total moved.
 
 **C §7.3 — closed 5 Oct 2026.** `/api/energy` caps a request at 31 days of blocks and 366 days
 for a period total; by-day is uncapped. Only `kind=range` (and `kind=all` for a period) could
-exceed either, and no page does. **Nothing in C is open.**
+exceed either, and no page does.
+
+**Direct import — one rule, 6 Oct 2026.** Three surfaces showed the house's share of the main
+meter, and each worked it out its own way: the bill floored it each half-hour, the Overview cards
+over the whole window, Usage Stats in kWh per half-hour and in £ per day. Where devices out-read the
+main (fixture `e7_over`) the same period read 87.64 kWh / £22.63, 8.96 kWh / £13.57 and
+87.64 kWh / £17.43. `direct_import.py` is now the rule, in Python and in SQL. All three use it and
+show a "Devices beyond the metered supply" line when it is needed, so the breakdown adds up to the
+meter. `tests/test_direct_import.py` asks every surface for the same periods on every tariff fixture
+and fails if they disagree. On two real databases this also corrected days where a stored remainder
+had outlived its device's rows.
+
+**Open — two Direct readers not yet on the rule.** (1) Insights usage (`_aggregate_usage`) floors
+house = main − devices − EV once per period, through its own segment re-pricing. (2) The IOG hybrid
+EV: the bill carves EV out of Direct per rate while the Overview counts it as a device. They agree on
+every fixture, but no fixture is IOG, so that agreement is unasserted. Both belong in
+`test_direct_import.py` when they move.
 
 ## D. Surfacing performance
 

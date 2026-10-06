@@ -10,7 +10,7 @@ a regression for anyone else. These are the other shapes:
   agile   a different rate every half-hour, including zero and negative (plunge) slots
 
 each with or without devices (an EV charger and a battery), and Economy 7 with many (five heat
-pumps and three batteries). 20 Sep – 10 Oct 2026, so the 1 Oct
+pumps and three batteries) and with devices that exceed the main meter. 20 Sep – 10 Oct 2026, so the 1 Oct
 VAT change (5% → 0%) falls inside. Segments and ex-VAT are built the way production builds them:
 the stored inc rate, then v5's own historical re-price sweep with a rate schedule matching the
 tariff. Deterministic — the same arguments give the same database.
@@ -97,8 +97,10 @@ def _devices(devices):
     True:   an EV charger (cheap slots, every other day) and a battery (cheap slots).
     "many": five heat pumps and three batteries — the many-device case (6 Oct 2026): every
             surface must keep eight devices apart, and house + devices must still equal the
-            main meter."""
-    if devices == "many":
+            main meter.
+    "over": "many", where battery_1 also records energy the main meter never sees (see
+            _unmetered)."""
+    if devices in ("many", "over"):
         hps = [("heat_pump_%d" % i, "heat_pump",
                 (lambda k: lambda loc, hm, cheap: k)(round(0.1 + 0.05 * i, 2)))
                for i in range(1, 6)]
@@ -111,6 +113,18 @@ def _devices(devices):
                  lambda loc, hm, cheap: 3.2 if (cheap and loc.day % 2 == 0) else 0.0),
                 ("house_battery", "battery", lambda loc, hm, cheap: 1.1 if cheap else 0.0)]
     return []
+
+
+def _unmetered(devices, loc, hm, cheap):
+    """kWh a device records in this half-hour that the main meter does not see.
+
+    "over": 3 kWh on battery_1 in the cheap slots of every fifth day — devices exceeding the main
+    meter (6 Oct 2026). It happens on sites with storage and on sub-meters the house/device split
+    leaves unclipped (`_apply_pass2`'s protected meters): v4's bill total once followed the devices
+    there, 90% over. The main meter is the bill; the breakdown must still add up to it."""
+    if devices == "over" and cheap and loc.day % 5 == 0:
+        return {"battery_1": 3.0}
+    return {}
 
 
 def _config(devices):
@@ -139,9 +153,11 @@ def build(path, tariff, devices=False):
         rate = inc_rate(tariff, t)
         cheap = rate < 0.13
         house = 0.18 + 0.25 * (1 if 1020 <= hm < 1320 else 0) + 0.02 * (t.minute // 30)
-        draws = [(mid, draw(loc, hm, cheap)) for mid, _, draw in _devices(devices)]
+        extra = _unmetered(devices, loc, hm, cheap)
+        draws = [(mid, draw(loc, hm, cheap) + extra.get(mid, 0.0))
+                 for mid, _, draw in _devices(devices)]
         dev_total = sum(k for _, k in draws)
-        main = round(house + dev_total, 4)
+        main = round(house + dev_total - sum(extra.values()), 4)
         bs, be = t.isoformat(), (t + timedelta(minutes=30)).isoformat()
         # What _apply_pass2 writes on a finalised block: each device's grid share
         # (imp_kwh_grid), and the main's remainder after them — house = main − devices.

@@ -109,6 +109,8 @@ def summary_json(summary):
     }
     if "bill_method" in summary:
         out["bill_method"] = summary["bill_method"]
+    if summary.get("beyond"):                      # only when the devices exceed the main
+        out["beyond"] = dict(summary["beyond"])
     return out
 
 

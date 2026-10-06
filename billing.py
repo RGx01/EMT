@@ -39,6 +39,8 @@ from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 # stopped carrying their own copy — caught by tests/test_periods_endpoint.py.
 from zoneinfo import ZoneInfo
 
+import direct_import as _direct
+
 
 def _utc_to_local(dt_naive: datetime, tz: "ZoneInfo") -> datetime:
     """Attach UTC, then convert to local timezone."""
@@ -515,6 +517,9 @@ def _summarise(records, period_start, period_end, store=None, *, tz_name):
         records = list(records)
 
     _period_utc_starts = []  # UTC starts of blocks that fall IN this period (for total_cost)
+    # The span's main, devices and Direct (kWh, £ each), for what the devices record beyond
+    # the metered supply (direct_import.beyond).
+    _span = [0.0] * 6
 
     # The VAT calendar is read ONCE per summary (#48, 2 Oct 2026). `store.vat_rate_at`
     # reads it from the database on every call: memoised by UTC hour (C, 30 Sep) that
@@ -547,18 +552,16 @@ def _summarise(records, period_start, period_end, store=None, *, tz_name):
         # ── Pass 1: accumulate sub-meter grid-attributed kwh/cost per rate ──
         # [kwh, cost] per rate. Use kwh_grid (grid-attributed portion) not kwh
         # (total device consumption).
-        sub_by_rate = {}
+        # The block's devices in total, for its Direct import (direct_import).
+        _dev_k = _dev_c = 0.0
         for _mn, is_sub, _site, _dev, _sc, channels in meters:
             if not is_sub:
                 continue
             for ch in channels:
-                if ch is None:
+                if ch is None or ch[1]:            # a device's import only
                     continue
-                _e = sub_by_rate.get(ch[2])
-                if _e is None:
-                    _e = sub_by_rate[ch[2]] = [0.0, 0.0]
-                _e[0] += ch[3]
-                _e[1] += ch[5]
+                _dev_k += ch[3]
+                _dev_c += ch[5]
 
         # ── Pass 2: accumulate all meters, subtracting sub-meter totals from main import ──
         for meter_name, is_sub, site, device, _sc, channels in meters:
@@ -646,26 +649,20 @@ def _summarise(records, period_start, period_end, store=None, *, tz_name):
                                 _g["kwh"]      += _hk
                                 _g["cost"]     += _hc
                                 _g["cost_exc"] += _hx
-                    # Use kwh_remainder directly when available. With no
-                    # sub-meters this key is absent (NULL in DB, omitted by
-                    # reconstruction), so the raw kwh is kept unchanged —
-                    # api+mini blocks are identical to CAD here.
-                    # Floor the sub-meter subtraction only when the main cost is
-                    # >= 0 (kills a power-integration over-subtraction artifact);
-                    # a genuinely negative main cost (Agile plunge-price credit)
-                    # must pass through, not clamp to 0.
-                    _sub = sub_by_rate.get(rate)
-                    if has_rem:
-                        if kwh_rem is _BAD:
-                            continue           # the old loop raised here and skipped the rest
-                        kwh  = kwh_rem
-                        _c = cost - (_sub[1] if _sub else 0.0)
-                        cost = _c if cost < 0 else max(0.0, _c)
-                    else:
-                        kwh  = max(0.0, kwh  - (_sub[0] if _sub else 0.0))
-                        _c = cost - (_sub[1] if _sub else 0.0)
-                        cost = _c if cost < 0 else max(0.0, _c)
+                    if has_rem and kwh_rem is _BAD:
+                        continue               # the old loop raised here and skipped the rest
+                    # The Direct import: direct_import's one rule, per half-hour (6 Oct
+                    # 2026). It was the stored kwh_remainder (equal to the rule on every
+                    # real block measured) and this block's devices AT THE MAIN'S RATE.
+                    _span[0] += kwh
+                    _span[1] += cost
+                    kwh, cost = _direct.direct(kwh, cost, _dev_k, _dev_c)
+                    _span[4] += kwh
+                    _span[5] += cost
 
+                if is_sub and not is_export:
+                    _span[2] += ch[3]
+                    _span[3] += cost
                 if key not in meter_meta:
                     meter_meta[key] = {
                         "site":        site,
@@ -722,6 +719,9 @@ def _summarise(records, period_start, period_end, store=None, *, tz_name):
         meter_totals[key]["kwh"]  = round(meter_totals[key]["kwh"],  3)
         meter_totals[key]["cost"] = round(meter_totals[key]["cost"], 2)
     total_standing = round(sum(standing_by_day.values()), 2)
+    _bk, _bc = _direct.beyond(*_span)
+    _beyond = ({"kwh": round(_bk, 3), "cost": round(_bc, 2)}
+               if _direct.shows_beyond(_bk, _bc) else None)
     # Round main_import_raw for display
     for rate in main_import_raw:
         main_import_raw[rate]["kwh"]  = round(main_import_raw[rate]["kwh"],  3)
@@ -823,6 +823,7 @@ def _summarise(records, period_start, period_end, store=None, *, tz_name):
         "main_import_raw":   dict(main_import_raw),
         "ev_by_rate":        dict(ev_by_rate),
         "home_by_rate":      dict(home_by_rate),
+        "beyond":            _beyond,
         "ev_transition":     ev_transition,
         "home_transition":   home_transition,
         "main_import_reads": main_import_reads,
