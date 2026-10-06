@@ -44,11 +44,14 @@ def exc_rate(tariff, utc):
     if tariff == "go":
         return 0.08 if 30 <= hm < 270 else 0.27
     if tariff == "agile":                             # a day's curve, a peak, plunges
-        k = int(utc.timestamp() // 1800)
-        # A day's curve: a triangle wave on the half-hour, lowest at 04:00, highest at 16:00. Not
-        # math.sin — libm differs between platforms in the last bit, and rounding to 6 dp then
-        # moved every Agile golden on CI's Linux against macOS (6 Oct 2026). +, −, ×, ÷ are
-        # exact under IEEE on every platform.
+        # `utc` is naive: .timestamp() on it reads it as HOST-LOCAL time, so the jitter below
+        # shifted with the machine's timezone and CI (UTC) disagreed with a Mac in London on
+        # every Agile golden (6 Oct 2026). Pinned to UTC.
+        k = int(utc.replace(tzinfo=timezone.utc).timestamp() // 1800)
+        # A day's curve: a triangle wave on the half-hour, lowest at 04:00, highest at 16:00 —
+        # +, −, ×, ÷ only, which IEEE makes identical on every platform. It replaced math.sin on
+        # 6 Oct 2026 on a wrong diagnosis (libm) of the CI failure that was really the host
+        # timezone (`k` below); kept, as it leaves the fixture no platform dependency at all.
         slot = (hm // 30 + 40) % 48                   # 0 at 04:00
         tri = 1 - abs(slot - 24) / 24                 # 0 at 04:00 … 1 at 16:00
         r = 0.08 + 0.16 * tri + 0.01 * ((k * 7919) % 5 - 2)

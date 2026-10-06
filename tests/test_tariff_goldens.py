@@ -47,6 +47,33 @@ class EveryTariff(unittest.TestCase):
                                      "and say why; --dump DIR to diff")
 
 
+class TheHostTimezoneDoesNotMatter(unittest.TestCase):
+
+    def test_the_answers_are_the_same_in_any_host_timezone(self):
+        """CI runs in UTC; a developer's machine may not. The Agile fixture once read a naive UTC
+        time with `.timestamp()` — as HOST-local time — so every Agile golden moved between a Mac
+        in London and CI (6 Oct 2026). Fails if the fixtures, or the surfaces, read the host's
+        clock zone. Agile, as the fixture with the most per-half-hour structure."""
+        import time
+        if not hasattr(time, "tzset"):
+            self.skipTest("time.tzset is POSIX-only")
+        old = os.environ.get("TZ")
+        got = {}
+        try:
+            for tz in ("UTC", "Asia/Tokyo"):
+                os.environ["TZ"] = tz
+                time.tzset()
+                got[tz] = G.digest(G.capture("agile", True))
+        finally:
+            if old is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = old
+            time.tzset()
+        moved = [k for k in got["UTC"] if got["UTC"][k] != got["Asia/Tokyo"][k]]
+        self.assertEqual(moved, [], "these answers depend on the host timezone")
+
+
 class TheGoldensSeeABreak(unittest.TestCase):
 
     def test_a_reader_regression_moves_the_bills(self):
