@@ -16,7 +16,6 @@ the stored inc rate, then v5's own historical re-price sweep with a rate schedul
 tariff. Deterministic — the same arguments give the same database.
 """
 import asyncio
-import math
 from datetime import datetime, timedelta, timezone
 from unittest import mock
 from zoneinfo import ZoneInfo
@@ -46,7 +45,13 @@ def exc_rate(tariff, utc):
         return 0.08 if 30 <= hm < 270 else 0.27
     if tariff == "agile":                             # a day's curve, a peak, plunges
         k = int(utc.timestamp() // 1800)
-        r = 0.16 + 0.08 * math.sin(2 * math.pi * hm / 1440 - 1.2) + 0.01 * ((k * 7919) % 5 - 2)
+        # A day's curve: a triangle wave on the half-hour, lowest at 04:00, highest at 16:00. Not
+        # math.sin — libm differs between platforms in the last bit, and rounding to 6 dp then
+        # moved every Agile golden on CI's Linux against macOS (6 Oct 2026). +, −, ×, ÷ are
+        # exact under IEEE on every platform.
+        slot = (hm // 30 + 40) % 48                   # 0 at 04:00
+        tri = 1 - abs(slot - 24) / 24                 # 0 at 04:00 … 1 at 16:00
+        r = 0.08 + 0.16 * tri + 0.01 * ((k * 7919) % 5 - 2)
         if 960 <= hm < 1140:
             r += 0.14                                 # 16:00–19:00 peak
         if loc.day % 4 == 0 and 720 <= hm < 870:
