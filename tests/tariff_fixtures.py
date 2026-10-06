@@ -101,9 +101,9 @@ def _devices(devices):
     "many": five heat pumps and three batteries — the many-device case (6 Oct 2026): every
             surface must keep eight devices apart, and house + devices must still equal the
             main meter.
-    "over": "many", where battery_1 also records energy the main meter never sees (see
+    "over", "gap": "many", where battery_1 also records energy the main meter never sees (see
             _unmetered)."""
-    if devices in ("many", "over"):
+    if devices in ("many", "over", "gap"):
         hps = [("heat_pump_%d" % i, "heat_pump",
                 (lambda k: lambda loc, hm, cheap: k)(round(0.1 + 0.05 * i, 2)))
                for i in range(1, 6)]
@@ -119,15 +119,40 @@ def _devices(devices):
 
 
 def _unmetered(devices, loc, hm, cheap):
-    """kWh a device records in this half-hour that the main meter does not see.
+    """kWh a device records in this half-hour that the main meter does not see — a battery
+    charging off solar and reporting it, say. 3 kWh on battery_1 in the cheap slots of every fifth
+    day, for the two variants that exercise it (6 Oct 2026):
 
-    "over": 3 kWh on battery_1 in the cheap slots of every fifth day — devices exceeding the main
-    meter (6 Oct 2026). It happens on sites with storage and on sub-meters the house/device split
-    leaves unclipped (`_apply_pass2`'s protected meters): v4's bill total once followed the devices
-    there, 90% over. The main meter is the bill; the breakdown must still add up to it."""
-    if devices == "over" and cheap and loc.day % 5 == 0:
+    "over": an ordinary block. The house/device split (`_apply_pass2`) clips the battery's GRID
+            share to what the main meter supplied; its own reading is kept as recorded.
+    "gap":  the same, on interpolated blocks whose main has not settled — the one case the split
+            records as-is (the main is itself an estimate; settlement re-clips). There the devices'
+            grid shares do exceed the main, until settlement."""
+    if devices in ("over", "gap") and cheap and loc.day % 5 == 0:
         return {"battery_1": 3.0}
     return {}
+
+
+def _split(devices, main, rate, draws, interpolated):
+    """What `engine._apply_pass2` writes for this half-hour: (the main's remainder kWh and £,
+    {device: (grid kWh, £)}). The real function, so the fixtures hold no second copy of the clip."""
+    import engine
+    meta = {mid: mtype for mid, mtype, _ in _devices(devices)}
+    block = {"start": "2026-01-01T00:00:00", "end": "2026-01-01T00:30:00",
+             "interpolated": interpolated,
+             "meters": {"electricity_main": {
+                 "meta": {"sub_meter": False},
+                 "channels": {"import": {"kwh": main, "kwh_total": main, "rate": rate,
+                                         "cost": round(main * rate, 6)}}}}}
+    for mid, k in draws:
+        block["meters"][mid] = {
+            "meta": {"sub_meter": True, "meter_type": meta[mid], "parent_meter": "electricity_main"},
+            "channels": {"import": {"kwh": k, "rate": rate, "cost": round(k * rate, 6)}}}
+    engine._apply_pass2(block)
+    imp = block["meters"]["electricity_main"]["channels"]["import"]
+    subs = {mid: (block["meters"][mid]["channels"]["import"]["kwh_grid"],
+                  block["meters"][mid]["channels"]["import"]["cost"]) for mid, _ in draws}
+    return imp.get("kwh_remainder"), imp.get("cost_remainder"), subs
 
 
 def _config(devices):
@@ -162,23 +187,30 @@ def build(path, tariff, devices=False):
         dev_total = sum(k for _, k in draws)
         main = round(house + dev_total - sum(extra.values()), 4)
         bs, be = t.isoformat(), (t + timedelta(minutes=30)).isoformat()
+        interp = 1 if (devices == "gap" and extra) else 0
         # What _apply_pass2 writes on a finalised block: each device's grid share
-        # (imp_kwh_grid), and the main's remainder after them — house = main − devices.
-        # A NULL remainder makes Usage Stats fall back to the whole main reading, which
-        # counts every device twice (found 6 Oct 2026; the first goldens had it).
-        rem = round(max(main - dev_total, 0.0), 4)
-        rows.append((bs, be, "electricity_main", main, None, rem, round(rem * rate, 6),
+        # (imp_kwh_grid) and its cost, and the main's remainder after them. A NULL
+        # remainder makes Usage Stats fall back to the whole main reading, which counts
+        # every device twice (found 6 Oct 2026; the first goldens had it). The device's
+        # own reading (imp_kwh) is stored as recorded, whatever the split clipped.
+        if draws:
+            rem, rem_c, split = _split(devices, main, rate, draws, bool(interp))
+        else:
+            rem = rem_c = None
+            split = {}
+        rows.append((bs, be, "electricity_main", interp, main, None, rem, rem_c,
                      round(main * rate, 6), rate, 0.5 * (1 + vat_on(loc.date())),
                      round(main * 110, 2)))
         for mid, k in draws:
-            rows.append((bs, be, mid, k, k, None, None, round(k * rate, 6), rate, 0.0, None))
+            g, c = split[mid]
+            rows.append((bs, be, mid, interp, k, g, None, None, c, rate, 0.0, None))
         t += timedelta(minutes=30)
     with st._conn:
         st._conn.executemany(
-            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
-            "imp_kwh_grid, imp_kwh_remainder, imp_cost_remainder, imp_cost, imp_rate, "
+            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated, "
+            "imp_kwh, imp_kwh_grid, imp_kwh_remainder, imp_cost_remainder, imp_cost, imp_rate, "
             "standing_charge, carbon_g, exp_kwh, exp_cost, source) "
-            "VALUES (?, ?, ?, %d, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'imported_api')" % cp, rows)
+            "VALUES (?, ?, ?, %d, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'imported_api')" % cp, rows)
     _sweep(st, tariff)
     st.close()
     return path

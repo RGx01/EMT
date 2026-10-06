@@ -517,9 +517,6 @@ def _summarise(records, period_start, period_end, store=None, *, tz_name):
         records = list(records)
 
     _period_utc_starts = []  # UTC starts of blocks that fall IN this period (for total_cost)
-    # The span's main, devices and Direct (kWh, £ each), for what the devices record beyond
-    # the metered supply (direct_import.beyond).
-    _span = [0.0] * 6
 
     # The VAT calendar is read ONCE per summary (#48, 2 Oct 2026). `store.vat_rate_at`
     # reads it from the database on every call: memoised by UTC hour (C, 30 Sep) that
@@ -654,15 +651,8 @@ def _summarise(records, period_start, period_end, store=None, *, tz_name):
                     # The Direct import: direct_import's one rule, per half-hour (6 Oct
                     # 2026). It was the stored kwh_remainder (equal to the rule on every
                     # real block measured) and this block's devices AT THE MAIN'S RATE.
-                    _span[0] += kwh
-                    _span[1] += cost
                     kwh, cost = _direct.direct(kwh, cost, _dev_k, _dev_c)
-                    _span[4] += kwh
-                    _span[5] += cost
 
-                if is_sub and not is_export:
-                    _span[2] += ch[3]
-                    _span[3] += cost
                 if key not in meter_meta:
                     meter_meta[key] = {
                         "site":        site,
@@ -719,9 +709,6 @@ def _summarise(records, period_start, period_end, store=None, *, tz_name):
         meter_totals[key]["kwh"]  = round(meter_totals[key]["kwh"],  3)
         meter_totals[key]["cost"] = round(meter_totals[key]["cost"], 2)
     total_standing = round(sum(standing_by_day.values()), 2)
-    _bk, _bc = _direct.beyond(*_span)
-    _beyond = ({"kwh": round(_bk, 3), "cost": round(_bc, 2)}
-               if _direct.shows_beyond(_bk, _bc) else None)
     # Round main_import_raw for display
     for rate in main_import_raw:
         main_import_raw[rate]["kwh"]  = round(main_import_raw[rate]["kwh"],  3)
@@ -823,7 +810,6 @@ def _summarise(records, period_start, period_end, store=None, *, tz_name):
         "main_import_raw":   dict(main_import_raw),
         "ev_by_rate":        dict(ev_by_rate),
         "home_by_rate":      dict(home_by_rate),
-        "beyond":            _beyond,
         "ev_transition":     ev_transition,
         "home_transition":   home_transition,
         "main_import_reads": main_import_reads,

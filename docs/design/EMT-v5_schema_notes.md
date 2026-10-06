@@ -318,7 +318,8 @@ can never move a figure.
 
 **6 Oct 2026 — the bill, the Overview cards and Usage Stats no longer read the remainder.** Their
 Direct import is `direct_import.py`'s per-half-hour rule, main − Σ device grid kWh, and they agree
-on every fixture (`tests/test_direct_import.py`). On the five local databases with devices, the
+on every fixture (`tests/test_direct_import.py`). Device grid shares are clipped to the main by the
+split (`_apply_pass2`) at write time; the readers add no second clip. On the five local databases with devices, the
 stored `imp_kwh_remainder` equals the rule on every block. Where they differ it is the stored value
 that is wrong: on two databases a device's rows had gone and its remainder stayed (151 blocks on
 one, one night on the other). Usage Stats then read those days below the main meter, and the rule
