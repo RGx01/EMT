@@ -49,8 +49,8 @@ def rate_rows(channels, totals=None):
 
     Collapsed, the total is the section's own, rounded once (`totals`, the summary's
     {kwh, cost} for it), when given (6 Oct 2026). Summed from hundreds of per-rate figures each
-    rounded to the penny, it drifted: an Agile battery's September read £16.38 on the bill
-    against £16.39 on the Overview and Usage Stats. With the rate rows shown, the Total stays
+    rounded to the penny, it drifted: an Agile battery's September read £16.08 on the bill
+    against £16.10 on the Overview and Usage Stats. With the rate rows shown, the Total stays
     their sum, so the rows on the page add up."""
     rates = sorted(channels)
     total_kwh = 0.0

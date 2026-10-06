@@ -1,26 +1,26 @@
 {
  "Bill: 2026": {
-  "sha256": "d41ac04319a716ed66df3649dd464d38b5041632e37df92c5a0620af284067dd",
+  "sha256": "026f0265900c7a7bd13be1541a62782ec41afa44108d142bfd6532b6d406b8e4",
   "status": 200
  },
  "Bill: October": {
-  "sha256": "a46342e754fc05be6b299c2abaed64aa0c7ae71b8ebfc7c42331a66c04141228",
+  "sha256": "eb35beb703f2a102fef4559901f5978b60537ee2c3b6354df4a7a905770f318f",
   "status": 200
  },
  "Bill: Q3": {
-  "sha256": "6faa68f0db05d4e71329782a2ba64e59e87954327a64115e8caa4ad4294115c9",
+  "sha256": "b48a7ac761fc5840ed92d300c03f062d8102dd5fdea2e12101b35df4d880741b",
   "status": 200
  },
  "Bill: Q4": {
-  "sha256": "759a6f9b53bd4f4c7dba63697d2cad941dcb471a4dac7875b95c4c49f6d1cdb4",
+  "sha256": "1762e0834ca3fc1672876cce64bd6f45d7799a404ec176572f187d1bab348546",
   "status": 200
  },
  "Bill: September": {
-  "sha256": "e9211a854126c2162d1d3e9aed7ba165f8df834aee2aab484d37786795927797",
+  "sha256": "b6d1a87810a4eaf92b6825f068402dccde82bd79dc77a8a7303e3a2f2fe3e470",
   "status": 200
  },
  "Bill: billing period over 1 Oct": {
-  "sha256": "9b97bf9fb9679e0da8279c025ee7db896474463799f89ca8fa254a4de02832cc",
+  "sha256": "44defce552862951136fb49a3edbf83649f60e66552be46d269cc1f69b306b8a",
   "status": 200
  },
  "Day charts: October": {
@@ -28,43 +28,43 @@
   "status": 200
  },
  "Heatmap: October": {
-  "sha256": "e2864a01547a5be6409eec7c783e060227cf19aecdc23d30671369c9f3aa1c3a",
+  "sha256": "71f2580811b2ba809516fe7c27ae32928ff55f63eccfb511f0a78d8733f4ebea",
   "status": 200
  },
  "Heatmap: September": {
-  "sha256": "5b00e5b941d4830368581d37ee0fd5055f46a49a98d65784c1f19003b08e96cc",
+  "sha256": "c425f79df07bbe88a7d2b3175d05ea008963e0256bf49b24f6aaf4a1beb7f97a",
   "status": 200
  },
  "Insights carbon: September": {
-  "sha256": "4dc79618c7ce603bd88eaffe65e23b5844a449c448162188a27ecded1f731bee",
+  "sha256": "35f0b4eccfb42b5c54b037006a735cd0d9ea5f739faaf754713270bda50f7be6",
   "status": 200
  },
  "Insights usage: October": {
-  "sha256": "67a6636e5e1e1eef8be7b75d2e2c9947d399eeb1b8bfcfa5e3aea1f53d3a9f9b",
+  "sha256": "441570d315f0d7416d8a21a50f82afe68fe946e9b04ad7eed349b4eaed03c354",
   "status": 200
  },
  "Periods: picker totals": {
-  "sha256": "dc42f808136bed26a880cda6a3dafbc940e48ebba24698ed5a12f86673632412",
+  "sha256": "9d398bb5be47095d1480171cfe94309a1b60b289da632aa0e15f4e62a78f387e",
   "status": 200
  },
  "Periods: trend strip": {
-  "sha256": "e70b7fc5d799e92c26adb3a944e6963433087d56a1ae09630d4c9bc7bb27148d",
+  "sha256": "1c956b04ea987abea3195dfa7394511b303c94a0c518acf13d2e3cf7b1bc4f54",
   "status": 200
  },
  "Usage Stats: 1 Oct": {
-  "sha256": "09b4f2f298bb555918c82fb5ba4ad036de3e997e64ab23c9f53fcfd4ab34e4e0",
+  "sha256": "3497fa84102f6550111ab20e62b0a42a7c7ed1837ac05afd5e5b035c128d5708",
   "status": 200
  },
  "Usage Stats: 30 Sep": {
-  "sha256": "7378d5d3d60e5e0924dfc28957af42b3941265feeebc533bf3c77cfed4bc4b3e",
+  "sha256": "6ab55bb0b92e40c4cb40f77c85a2d37241b0581ef317aa50c926164d1236aeec",
   "status": 200
  },
  "Usage Stats: all days": {
-  "sha256": "cc7476152a7a2b703269b1c95515363ac3180c076d473864af0a5ac61831c1d6",
+  "sha256": "f8d8741d48ca61f2aec0cc3f5f342ac2ffb51a4f0fa61d6e7e14e57937a29791",
   "status": 200
  },
  "Usage Stats: days over 1 Oct": {
-  "sha256": "24eb72ff86884e1ccd3407e645ba6377fc68fedfca05f8e96cf7adbef8d21ca1",
+  "sha256": "78f784fcbb25862b33322237354462e2cf7d7e83af297bd6f3e97ee65573c8e4",
   "status": 200
  }
 }

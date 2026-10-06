@@ -601,7 +601,7 @@ def _inject_ev_breakdown_into_summary(summary, period_blocks, ev_slot_map,
         ec = round(v["cost"], 2)
         # The section totals add the UNROUNDED figures and round once (6 Oct 2026): summed
         # from per-rate figures each rounded to the penny, they drifted on Agile's hundreds of
-        # rates — an EV month read £25.20 here against £25.18 on the Overview and Usage Stats.
+        # rates — an EV month read £24.35 here against £24.33 on the Overview and Usage Stats.
         raw_k, raw_c = v["kwh"], v["cost"]
         if ek <= 0:
             continue
