@@ -203,11 +203,21 @@ exceed either, and no page does.
 meter, and each worked it out its own way: the bill floored it each half-hour, the Overview cards
 over the whole window, Usage Stats in kWh per half-hour and in £ per day. Where devices out-read the
 main (fixture `e7_over`) the same period read 87.64 kWh / £22.63, 8.96 kWh / £13.57 and
-87.64 kWh / £17.43. `direct_import.py` is now the rule, in Python and in SQL. All three use it and
-show a "Devices beyond the metered supply" line when it is needed, so the breakdown adds up to the
-meter. `tests/test_direct_import.py` asks every surface for the same periods on every tariff fixture
+87.64 kWh / £17.43. `direct_import.py` is now the rule, in Python and in SQL, and all three use it.
+`tests/test_direct_import.py` asks every surface for the same periods on every tariff fixture
 and fails if they disagree. On two real databases this also corrected days where a stored remainder
 had outlived its device's rows.
+
+**The grid boundary is the clip, 6 Oct 2026.** The first version also showed a "Devices beyond the
+metered supply" line, for half-hours where the devices exceeded the main. It came out the same day.
+The house/device split (`_apply_pass2`) clips each device's grid share to the main when the block
+is written, so the devices cannot exceed the main, and the read side holds no second rule. The
+device's own reading from Home Assistant (`imp_kwh` and its register reads) is kept as recorded;
+only `imp_kwh_grid` is cut. The one exception is an unsettled gap-fill block, which the split
+records as-is because the main there is an estimate. On such a day the breakdown reads above the
+meter until settlement re-clips it, which takes a day or two. That was accepted rather than adding
+a display line. The fixtures now take every grid share from `_apply_pass2`: `e7_over` is clipped
+and `e7_gap` is the exception.
 
 **Open — two Direct readers not yet on the rule.** (1) Insights usage (`_aggregate_usage`) floors
 house = main − devices − EV once per period, through its own segment re-pricing. (2) The IOG hybrid

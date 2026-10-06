@@ -10,9 +10,8 @@ this code on real databases, and the day rows equal on every day.
 
 The aggregation is `_aggregate_block_rows`: devices at their grid-attributed kWh (`imp_kwh_grid`),
 the Direct import by direct_import's rule on each half-hour (main − Σ devices, floored, a credit
-kept; it was the stored remainder in kWh and a per-bucket floor in £ until 6 Oct 2026), what the
-devices record beyond the metered supply when they do, the carbon apportioned to import and
-export, and the standing charge once per bucket. The EV split is display-only and leaves every row total untouched: from
+kept; it was the stored remainder in kWh and a per-bucket floor in £ until 6 Oct 2026), the
+carbon apportioned to import and export, and the standing charge once per bucket. The EV split is display-only and leaves every row total untouched: from
 completed dispatches for an account without sub-meters (`_dispatch_ev_split_by_bucket`), or
 the hybrid fold for one with an EV meter (`_hybrid_ev_by_block`).
 """
@@ -108,7 +107,6 @@ def _aggregate_tuples(rows, bucket_of, standing_scope="bucket", billing_day_fall
                 _br = _m["_main_by_rate"][_rate] = {"kwh": 0.0, "cost": 0.0}
             _br["kwh"]  += _m_imp
             _br["cost"] += _cost_imp
-            _m["metered_kwh"] = _m.get("metered_kwh", 0.0) + _m_imp
             _m["exp_kwh"]  += _exp
             _m["exp_cost"] += _cost_exp
             if _sc > 0:
@@ -164,7 +162,7 @@ def _aggregate_tuples(rows, bucket_of, standing_scope="bucket", billing_day_fall
     # credit) still passes through, as it did.
     for _bk, _main, _dk, _dc in _blocks.values():
         if _main is None:
-            continue                               # devices with no main row: beyond only
+            continue                               # devices with no main row
         _x = _day_data[_bk]["main"]
         _k, _c = _direct.direct(_main[0], _main[1], _dk, _dc)
         _x["imp_kwh"] += _k
@@ -175,15 +173,9 @@ def _aggregate_tuples(rows, bucket_of, standing_scope="bucket", billing_day_fall
         # `imp_cost` is the DISPLAYED Direct/House line. `imp_cost_metered` is the MAIN
         # METER's cost, and what the row totals use: Direct + SUM(subs) followed the devices
         # on any day they out-read the main, which inflated one 4.5.14 report by £22.42 over
-        # 29 days. `beyond` is that difference, shown so the row adds up.
+        # 29 days. The split clips each device's grid share to the main, so they cannot —
+        # except on an unsettled gap block, until settlement re-clips it.
         _m["imp_cost_metered"] = _tot_main
-        _bk, _bc = _direct.beyond(
-            _m.get("metered_kwh", 0.0), _tot_main,
-            sum(_st["imp_kwh"] for _st in _dd["subs"].values()),
-            sum(_st["imp_cost"] for _st in _dd["subs"].values()),
-            _m["imp_kwh"], _m["imp_cost"])
-        if _direct.shows_beyond(_bk, _bc):
-            _m["beyond"] = (_bk, _bc)
     return _day_data
 
 
@@ -232,12 +224,10 @@ def _bucket_to_row_values(_dd):
     # on days where the clamp would have fired.
     _metered_imp_cost = round(_m.get("imp_cost_metered", _main_imp_cost + sum(
         m["imp_cost"] for mid, m in meters_out.items() if mid != "electricity_main")), 4)
-    _bey = _m.get("beyond")
     out = {
         "standing":  round(_dd["standing"], 4),
         "meters":    meters_out,
-        "imp_kwh":  round(_main_imp_kwh  + sum(m["imp_kwh"]  for mid, m in meters_out.items() if mid != "electricity_main")
-                          - (_bey[0] if _bey else 0.0), 4),
+        "imp_kwh":  round(_main_imp_kwh  + sum(m["imp_kwh"]  for mid, m in meters_out.items() if mid != "electricity_main"), 4),
         "exp_kwh":  round(_main_exp_kwh,  4),
         "imp_cost": _metered_imp_cost,
         "exp_cost": round(_main_exp_cost, 4),
@@ -250,10 +240,6 @@ def _bucket_to_row_values(_dd):
         "carbon_g_total": round(_m["carbon_g"], 4) if _m["carbon_g"] is not None else None,
         "avg_intensity":  _avg_intensity,
     }
-    if _bey:
-        # What the devices record beyond the metered supply (direct_import) — only when they do,
-        # so Direct + devices − beyond is the row's import.
-        out["beyond"] = {"imp_kwh": round(_bey[0], 4), "imp_cost": round(_bey[1], 4)}
     return out
 
 

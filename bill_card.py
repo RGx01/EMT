@@ -22,7 +22,6 @@ Takes calculate_billing_summary_for_period's dict (rate-keyed maps, `standing` k
 by date) — the Python form, before billing_view.summary_json. Pure: no store.
 """
 
-import direct_import as _direct
 
 # Above this many distinct rates in one channel's breakdown, collapse the per-rate rows
 # into a single kWh-weighted average row. Agile has ~48 rates a day → hundreds across a
@@ -267,13 +266,6 @@ def card(summary, currency="£", site_name=None):
             rr, tk, tc = rate_rows(summary["meters"][meter_name], summary["totals"].get(meter_name))
             rows += rr
             rows.append(total_row(tk, tc))
-        # What the devices record beyond the metered supply, taken off so the breakdown
-        # adds up to the import total (direct_import; none on any real database measured).
-        bey = summary.get("beyond")
-        if bey:
-            rows.append({"type": "line", "cls": "beyond",
-                         "text": f"{_direct.BEYOND_LABEL} ({bey['kwh']:.3f} kWh)",
-                         "value": paren(-bey["cost"], 2)})
 
     # Standing for an export-only account (no import section to carry it).
     if summary["standing"] and not (remainder_keys or submeter_keys):
@@ -326,8 +318,7 @@ def live_rows(live, days, cfg, ev_meter_id):
 
       Total Import (raw grid, bold) · Direct import (direct_import's rule, per half-hour) ·
       a row per device, the EV as the hybrid figure in place of the physical EV meter's own
-      (#468) · what the devices record beyond the metered supply, when they do · Grid Export ·
-      Standing Charge.
+      (#468) · Grid Export · Standing Charge.
 
     Costs to 2 dp, each row on its own — so, as before, the rows can sum a penny away
     from the window's total (which is the bill's per-day rule, not their sum)."""
@@ -357,19 +348,13 @@ def live_rows(live, days, cfg, ev_meter_id):
     def _device(mid):
         return ((meters_cfg.get(mid) or {}).get("meta") or {}).get("device") or mid
 
-    # Every device's figures, unrounded, for what they record beyond the metered supply —
-    # including one too small to get a row (the rollups' Direct netted it all the same).
-    sub_rows, sub_kwh, sub_cost = [], 0.0, 0.0
+    sub_rows = []
     for mid, v in sorted(subs.items()):          # GROUP BY meter_id's order, as the card had
-        if mid == ev_meter_id:
+        if not (v["kwh"] > 0.001 or v["cost"] > 0.001) or mid == ev_meter_id:
             continue                             # the hybrid EV replaces the EV meter's own row
-        sub_kwh += v["kwh"]; sub_cost += v["cost"]
-        if not (v["kwh"] > 0.001 or v["cost"] > 0.001):
-            continue
         sub_rows.append({"label": "↳ %s (%.3f kWh)" % (_device(mid), v["kwh"]),
                          "cost": round(v["cost"], 2), "bold": False})
     ev_cost = round(ev["cost"], 2)
-    sub_kwh += ev["kwh"]; sub_cost += ev["cost"]
     if ev["kwh"] > 0.001 or abs(ev_cost) > 0.001:
         label = ((((meters_cfg.get(ev_meter_id) or {}).get("meta") or {}).get("device") or "EV")
                  if ev_meter_id else "EV (from dispatch)")
@@ -377,17 +362,12 @@ def live_rows(live, days, cfg, ev_meter_id):
 
     rows = []
     total_cost = round(main["imp_cost"], 2)
-    bey_kwh, bey_cost = _direct.beyond(main["grid_kwh"], main["imp_cost"], sub_kwh, sub_cost,
-                                       direct_kwh, direct_cost)
     direct_cost = round(direct_cost, 2)
     if main["grid_kwh"] > 0.001 or total_cost > 0.001:
         rows.append({"label": "Total Import (%.3f kWh)" % main["grid_kwh"], "cost": total_cost, "bold": True})
     if direct_kwh > 0.001 or direct_cost > 0.001:
         rows.append({"label": "Direct import (%.3f kWh)" % direct_kwh, "cost": direct_cost, "bold": False})
     rows.extend(sub_rows)
-    if _direct.shows_beyond(bey_kwh, bey_cost):
-        rows.append({"label": "%s (%.3f kWh)" % (_direct.BEYOND_LABEL, bey_kwh),
-                     "cost": -round(bey_cost, 2), "bold": False})
     if round(main["exp_kwh"], 4) > 0.001:
         rows.append({"label": "Grid Export (%.3f kWh)" % round(main["exp_kwh"], 4),
                      "cost": -round(round(main["exp_cost"], 4), 2), "bold": False})
