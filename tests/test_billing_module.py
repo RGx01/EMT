@@ -78,6 +78,10 @@ class TheDependencyRunsOneWay(unittest.TestCase):
         self.assertIn("billing", froms)
 
 
+# Project modules billing.py may import: pure rules that import nothing of the project's.
+PURE_RULES = {"direct_import"}
+
+
 class BillingIsALeaf(unittest.TestCase):
 
     def test_stdlib_only(self):
@@ -97,10 +101,25 @@ class BillingIsALeaf(unittest.TestCase):
                 imported |= {a.name.split(".")[0] for a in n.names}
             elif isinstance(n, ast.ImportFrom) and n.module:
                 imported.add(n.module.split(".")[0])
-        stray = sorted(imported - set(sys.stdlib_module_names))
+        stray = sorted(imported - set(sys.stdlib_module_names) - PURE_RULES)
         self.assertEqual(stray, [],
                          "billing.py gained a non-stdlib import: %s" % stray)
         self.assertNotIn("block_store", imported)
+
+    def test_its_rule_modules_import_nothing(self):
+        """The one exception: a rule shared with the store (direct_import, 6 Oct 2026 — the
+        store sums Direct in SQL by the same rule). It may be imported only while it imports
+        nothing of the project's, so the leaf stays a leaf."""
+        for mod in PURE_RULES:
+            with self.subTest(module=mod):
+                tree = ast.parse(open(os.path.join(_ROOT, mod + ".py"), encoding="utf-8").read())
+                imported = set()
+                for n in ast.walk(tree):
+                    if isinstance(n, ast.Import):
+                        imported |= {a.name.split(".")[0] for a in n.names}
+                    elif isinstance(n, ast.ImportFrom) and n.module:
+                        imported.add(n.module.split(".")[0])
+                self.assertEqual(sorted(imported - set(sys.stdlib_module_names)), [])
 
     def test_the_store_is_a_parameter(self):
         """Stated as a signature check, because the cheap way to lose the leaf

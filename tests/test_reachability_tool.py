@@ -89,8 +89,8 @@ class TestAgreesWithHandEstablishedCases(unittest.TestCase):
         self._dead("insert_read", "link_reads_to_block", "get_reads_for_block",
                    "get_reads_for_range", "purge_reads_older_than")
 
-    def test_superseded_card_formatter_is_unreachable(self):
-        self._dead("_format_billing")
+    # `_format_billing` was the superseded-card-formatter case; it was deleted on 6 Oct 2026
+    # (a fourth copy of the Direct-import subtraction, architecture §4).
 
     def test_conditionally_live_code_is_not_called_dead(self):
         """`_hybrid_ev_by_block` is the EV rule for accounts WITH a physical
