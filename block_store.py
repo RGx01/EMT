@@ -6808,6 +6808,7 @@ class BlockStore:
                        b.exp_kwh, b.exp_rate, b.exp_cost,
                        b.exp_read_start, b.exp_read_end,
                        b.standing_charge, b.carbon_g, b.carbon_intensity_g, b.interpolated,
+                       b.rate_corrected,
                        m.is_sub_meter, m.parent_meter_id, m.device_label,
                        m.inverter_possible, m.meter_type,
                        cp.billing_day, cp.block_minutes, cp.timezone,
@@ -6839,6 +6840,7 @@ class BlockStore:
              r_exp_kwh, r_exp_rate, r_exp_cost,
              r_exp_read_start, r_exp_read_end,
              r_standing_charge, r_carbon_g, r_carbon_intensity_g, r_interpolated,
+             r_rate_corrected,
              r_is_sub_meter, r_parent_meter_id, r_device_label,
              r_inverter_possible, r_meter_type,
              r_billing_day, r_block_minutes, r_timezone,
@@ -6885,6 +6887,10 @@ class BlockStore:
                 imp_channel["kwh_remainder"] = float(r_imp_kwh_remainder)
             if r_imp_rate is not None:
                 imp_channel["rate"] = float(r_imp_rate)
+            # v4 4.5.21 forward fix: a manually corrected rate is the user's decision, so the day
+            # chart's rate line must draw it (chart_emit.day_rate_series). Only when set, like the rest.
+            if r_rate_corrected:
+                imp_channel["rate_corrected"] = True
             # BL-23/BL-24: surface captured ex-VAT so the billing summary's bill method
             # and the data table's ex-VAT columns use the REAL figure (not inc÷1.05).
             # _row_to_block does this too; the lightweight chart fetch must match or the
