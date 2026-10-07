@@ -773,6 +773,14 @@ def _row_to_block(rows: list[sqlite3.Row]) -> dict:
                 meta["postcode_prefix"] = row["postcode_prefix"]
             if row["v2x_capable"]:
                 meta["v2x_capable"] = True
+            # v4 4.5.21 forward fix: meter_type is read on its own, ahead of the try below. It
+            # sat inside it, after row["power_source"] — a column _select_blocks never selects —
+            # so the IndexError skipped it and EVERY rebuilt block (settlement, device history
+            # written in later, a device delete) lost it. _apply_pass2's EV-first grid priority
+            # keys on it, so each re-split handed the EV's grid share to a bigger concurrent
+            # device (a battery). Only meter_type moves: nothing else about a rebuilt block changes.
+            if "meter_type" in row.keys() and row["meter_type"]:
+                meta["meter_type"] = row["meter_type"]
             try:
                 if row["power_source"]:
                     meta["power_source"] = row["power_source"]
@@ -780,8 +788,6 @@ def _row_to_block(rows: list[sqlite3.Row]) -> dict:
                     meta["rate_source"] = row["rate_source"]
                 if row["soc_sensor"]:
                     meta["soc_sensor"] = row["soc_sensor"]
-                if row["meter_type"]:
-                    meta["meter_type"] = row["meter_type"]
                 if row["inverter_power_sensor"]:
                     meta["inverter_power_sensor"] = row["inverter_power_sensor"]
                 if row["inverter_power_invert"]:
