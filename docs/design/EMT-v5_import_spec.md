@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v12 — revised 1 Oct 2026, floor raised to 4.5.19. §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v13 — revised 7 Oct 2026, floor raised to 4.5.21. §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -79,6 +79,14 @@ later only). 4.5.17 joins the below-floor negatives; the positive fixture is a 4
 `vat_backdate_heal_done_v4`) also re-prices sub-meter rows left at 5% beside a 0% main on
 1 Oct 2026. v5 ports the forward fix (the Bill Summary's per-date VAT) and carries no heal.
 4.5.18 joins the below-floor negatives; the positive fixture is a 4.5.19 database.*
+
+*Changes in v13 (7 Oct 2026): **the floor rises to `4.5.21`.** It carries three heals: the
+EV-priority re-split (`ev_priority_resplit_done` — a rebuilt block lost `meter_type`, so every
+re-split since 3.0.0 could give a concurrently charging battery the EV's grid share), the
+dispatch-only device re-fit (`dispatch_house_refit_done`), and the corrected-device ex-VAT repair
+(`corrected_device_exc_done`). v5 ports the four forward fixes and carries no heal. 4.5.19 and
+4.5.20 join the below-floor negatives, and so does a v5 dev build stamped `4.5.20-a21`; v5's own
+builds now stamp `4.5.21-a22`. The positive fixture is a 4.5.21 database.*
 
 ---
 
@@ -197,7 +205,8 @@ inference, and it is why nothing more elaborate is needed.
 > **Pinned 28 Sep 2026 at `4.5.15` (#473's heal); raised 29 Sep 2026 to `4.5.16`** (#481's heal);
 > **raised 1 Oct 2026 to `4.5.17`** (the VAT backdate heal), and the same day to **`4.5.18`** (the
 > heal re-armed after 4.5.17's learner undid it), and again to **`4.5.19`** (the heal re-armed
-> for sub-meter rows). A 4.5.14–4.5.18 database is refused.
+> for sub-meter rows); **raised 7 Oct 2026 to `4.5.21`** (three heals: EV-priority re-split,
+> dispatch-only device re-fit, corrected-device ex-VAT). A 4.5.14–4.5.20 database is refused.
 
 *Rejected: a computed `heal_level` integer.* An earlier design proposed one, with each heal
 verifying its own invariant at startup so the level could fall when unhealed history arrived. It was
@@ -393,13 +402,13 @@ alone, so a live copy uploaded without its `-wal` is not detectable from the fil
 4. **Every priced main-meter import block is in pounds, not pence — judged against its own ex-VAT
    figure.** *(Added 4 Oct 2026, with BL-33.)* The 4.3.0 IOG cap bug wrote some blocks' inc
    columns in pence. v4's re-price sweep repaired them, and v5 deleted that repair — but gate 2 does
-   not cover it: the sweep needs the API and can be interrupted, so "stamped 4.5.19" does not prove it
+   not cover it: the sweep needs the API and can be interrupted, so "stamped at the floor" does not prove it
    ever finished. This gate does, from the file alone.
 
    For each `electricity_main` import block with a rate and kWh: `ratio = imp_rate ÷ imp_rate_exc`
    (or `imp_cost ÷ imp_cost_exc`), and `expected = 1 + VAT` on the block's date, from the VAT calendar
    (seed plus the source's learned `vat_calendar`). **Refuse** if any block has `ratio ÷ expected > 10`,
-   naming the first such block and directing the user to open the database in v4 4.5.19 or later and
+   naming the first such block and directing the user to open the database in the last v4 release and
    let the re-price sweep finish. No fixed price: each block is judged against its own canonical £
    figure, so it holds on any tariff, Agile included.
 
@@ -1031,8 +1040,10 @@ on hand:
 | **4.5.16 dev** (on hand) | **refused** | below the 4.5.17 floor since v10 — has not run the VAT backdate heal |
 | 4.5.17 | **refused** | below the 4.5.18 floor since v11 — its heal's work was undone by its own learner |
 | 4.5.18 | **refused** | below the 4.5.19 floor since v12 — its heal left 1 Oct's sub-meter rows at 5% |
-| **4.5.19** | **admitted** | the positive fixture at `FLOOR_VERSION` — capture one from a 4.5.19 install. |
-| 4.5.20 | **admitted** | above the floor. Its gap-fill fix (v4 #493) carries no heal, so the floor stays at 4.5.19 (2 Oct 2026). |
+| 4.5.19 | **refused** | below the 4.5.21 floor since v13 — has not run 4.5.21's heals |
+| 4.5.20 | **refused** | below the 4.5.21 floor since v13. Its own fix (v4 #493) carried no heal; 4.5.21's three did |
+| `4.5.20-a21` (a v5 dev build) | **refused** | v5's build stamp before 7 Oct 2026, running 4.5.20's code |
+| **4.5.21** | **admitted** | the positive fixture at `FLOOR_VERSION` — prod-dev and dev ran it on 7 Oct 2026. |
 | **below** `FLOOR_VERSION` | **refused** | stamped, but from a release older than the floor |
 
 Two of these carry most of the value.

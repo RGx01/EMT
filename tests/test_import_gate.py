@@ -3,14 +3,15 @@ The import floor and the units gate, enforced at restore (import spec §3, gates
 
 v5 carries no v4 heals; the floor is what makes that safe. Until 4 Oct 2026 nothing
 read `written_by` — a restore took any v4 backup, so a database last opened by 4.5.14
-arrived without the 4.5.15–4.5.19 heals, and a pence block from the 4.3.0 IOG cap bug
+arrived without the 4.5.15–4.5.21 heals, and a pence block from the 4.3.0 IOG cap bug
 (whose repair v5 deleted with BL-33) arrived unrepaired.
 
 Every test here fails on the parent tree — `import_gate` does not exist there, and the
 restore paths swap in whatever they are given — except where labelled GUARD.
 
-Checked against every database on hand (4 Oct 2026): each one stamped 4.5.19 or later
-is admitted, each older or unstamped one is refused, and none is refused for units.
+Checked against every database on hand (4 Oct 2026, at the 4.5.19 floor): each one stamped
+at or above it was admitted, each older or unstamped one refused, and none refused for units.
+The floor rose to 4.5.21 on 7 Oct 2026.
 """
 import importlib.util
 import io
@@ -110,16 +111,23 @@ class TheFloor(_Dir):
         self.assertIn("last v4 release", r)
 
     def test_the_floor_itself_and_above_are_admitted(self):
-        for v in (G.FLOOR_VERSION, "4.5.20", "4.5.20-a21", "2026.1.0"):
+        for v in (G.FLOOR_VERSION, "4.5.21-a22", "2026.1.0"):
             with self.subTest(v=v):
                 self.assertIsNone(G.check(self.db(name=v + ".db", written_by=v)))
 
+    def test_4_5_20_is_below_the_floor_now(self):
+        """4.5.21 carries heals (7 Oct 2026), so a database last opened by 4.5.20 — or by a v5
+        dev build of its code, 4.5.20-a21 — has not had them and is refused."""
+        for v in ("4.5.20", "4.5.20-a21"):
+            with self.subTest(v=v):
+                self.assertIsNotNone(G.check(self.db(name=v + ".db", written_by=v)))
+
     def test_the_stamp_is_read_as_json(self):
-        """store_meta values are JSON-encoded: the raw cell is '"4.5.20"'."""
-        p = self.db(written_by="4.5.20")
+        """store_meta values are JSON-encoded: the raw cell is '"4.5.21"'."""
+        p = self.db(written_by="4.5.21")
         raw = sqlite3.connect(p).execute(
             "SELECT value FROM store_meta WHERE key='written_by'").fetchone()[0]
-        self.assertEqual(raw, json.dumps("4.5.20"))
+        self.assertEqual(raw, json.dumps("4.5.21"))
         self.assertIsNone(G.check(p))
 
     def test_an_unreadable_stamp_is_refused(self):

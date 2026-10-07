@@ -10,7 +10,7 @@ in [design/EMT-v5_programme.md](design/EMT-v5_programme.md) — this file tracks
 is frozen to **critical fixes only** (data loss, crash-on-start, a pricing error), each ported here as
 its forward fix. This repository was seeded with a verbatim copy of 4.5.14 (suite **2,764** green at
 the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below deconstruct it. v4 is at
-**4.5.20**; the import floor is **4.5.19** (E).
+**4.5.21**; the import floor is **4.5.21** (E).
 
 *Refreshed 4 Oct 2026.*
 
@@ -20,7 +20,7 @@ the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below decons
 | B | Job coordinator (v4 BL-50) | A | ✅ all six acceptances met — 6 on the Pi, 5 Oct 2026 |
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | 🟢 17 of 17 surfaces: time bounded on the Pi (#64), queries asserted in CI |
-| E | Importer | A–D | 📝 spec v12, floor 4.5.19 |
+| E | Importer | A–D | 📝 spec v13, floor 4.5.21 |
 | F | Carried from v4's backlog | — | 📋 9 items open, 1 done (BL-50 = B) |
 | G | Local tariff store | A, B | 📝 proposed 4 Oct 2026 |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
@@ -248,7 +248,7 @@ timings say nothing about a Pi on SD storage.)*
 
 ## E. Importer
 
-*Ingest a backup at or above the floor version, currently **4.5.19**. Spec at
+*Ingest a backup at or above the floor version, currently **4.5.21**. Spec at
 [design/EMT-v5_import_spec.md](design/EMT-v5_import_spec.md).*
 
 Three things the importer needs from a source. **Two are new in 4.5.14; one already exists** — an
@@ -272,7 +272,10 @@ frozen to critical fixes after .14, and a fix that repairs already-written data 
 floor may end at .15, .17, wherever v4 actually stops. It is pinned when v5 is written.
 **Currently 4.5.19** (spec v12, 1 Oct 2026): 4.5.15 carried #473's heal, 4.5.16 #481's, 4.5.17 the
 VAT backdate heal (1 Oct 2026's 0% VAT), 4.5.18 that heal re-armed after 4.5.17's learner undid it, 4.5.19 re-armed again for sub-meter rows.
-4.5.20 (2 Oct 2026, the gap-fill zero-opener fix, v4 #494) carries no heal, so the floor does not move.
+4.5.20 (2 Oct 2026, the gap-fill zero-opener fix, v4 #494) carries no heal, so the floor did not move.
+**Raised to 4.5.21** (spec v13, 7 Oct 2026): three heals — the EV-priority re-split (a rebuilt block lost
+`meter_type`, so a re-split gave a battery the EV's grid), the dispatch-only device re-fit, and the
+corrected-device ex-VAT repair. A 4.5.20 database, or a v5 dev build of it (4.5.20-a21), is now refused.
 
 Why a version suffices: every heal is marker-gated and an ungated marker runs at startup, so
 upgrading any older database runs every heal that release carries. **"Last opened by X" means
