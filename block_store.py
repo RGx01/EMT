@@ -773,6 +773,14 @@ def _row_to_block(rows: list[sqlite3.Row]) -> dict:
                 meta["postcode_prefix"] = row["postcode_prefix"]
             if row["v2x_capable"]:
                 meta["v2x_capable"] = True
+            # v4 4.5.21 forward fix: meter_type is read on its own, ahead of the try below. It
+            # sat inside it, after row["power_source"] — a column _select_blocks never selects —
+            # so the IndexError skipped it and EVERY rebuilt block (settlement, device history
+            # written in later, a device delete) lost it. _apply_pass2's EV-first grid priority
+            # keys on it, so each re-split handed the EV's grid share to a bigger concurrent
+            # device (a battery). Only meter_type moves: nothing else about a rebuilt block changes.
+            if "meter_type" in row.keys() and row["meter_type"]:
+                meta["meter_type"] = row["meter_type"]
             try:
                 if row["power_source"]:
                     meta["power_source"] = row["power_source"]
@@ -780,8 +788,6 @@ def _row_to_block(rows: list[sqlite3.Row]) -> dict:
                     meta["rate_source"] = row["rate_source"]
                 if row["soc_sensor"]:
                     meta["soc_sensor"] = row["soc_sensor"]
-                if row["meter_type"]:
-                    meta["meter_type"] = row["meter_type"]
                 if row["inverter_power_sensor"]:
                     meta["inverter_power_sensor"] = row["inverter_power_sensor"]
                 if row["inverter_power_invert"]:
@@ -6802,6 +6808,7 @@ class BlockStore:
                        b.exp_kwh, b.exp_rate, b.exp_cost,
                        b.exp_read_start, b.exp_read_end,
                        b.standing_charge, b.carbon_g, b.carbon_intensity_g, b.interpolated,
+                       b.rate_corrected,
                        m.is_sub_meter, m.parent_meter_id, m.device_label,
                        m.inverter_possible, m.meter_type,
                        cp.billing_day, cp.block_minutes, cp.timezone,
@@ -6833,6 +6840,7 @@ class BlockStore:
              r_exp_kwh, r_exp_rate, r_exp_cost,
              r_exp_read_start, r_exp_read_end,
              r_standing_charge, r_carbon_g, r_carbon_intensity_g, r_interpolated,
+             r_rate_corrected,
              r_is_sub_meter, r_parent_meter_id, r_device_label,
              r_inverter_possible, r_meter_type,
              r_billing_day, r_block_minutes, r_timezone,
@@ -6879,6 +6887,10 @@ class BlockStore:
                 imp_channel["kwh_remainder"] = float(r_imp_kwh_remainder)
             if r_imp_rate is not None:
                 imp_channel["rate"] = float(r_imp_rate)
+            # v4 4.5.21 forward fix: a manually corrected rate is the user's decision, so the day
+            # chart's rate line must draw it (chart_emit.day_rate_series). Only when set, like the rest.
+            if r_rate_corrected:
+                imp_channel["rate_corrected"] = True
             # BL-23/BL-24: surface captured ex-VAT so the billing summary's bill method
             # and the data table's ex-VAT columns use the REAL figure (not inc÷1.05).
             # _row_to_block does this too; the lightweight chart fetch must match or the
@@ -7063,6 +7075,57 @@ class BlockStore:
         )
 
     # ── UTC-based query methods ───────────────────────────────────────────────
+
+    def dispatch_house_candidates(self, starts=None) -> list:
+        """Block starts on a DISPATCH-ONLY account whose devices must fit inside the house: the
+        main carries a dispatch EV (imp_kwh_ev > 0) and there is at least one device. Empty for an
+        account with an EV meter (the meter is the EV) and for one with no dispatches, so for
+        nearly every account this is one query that finds nothing. `starts` narrows it.
+        v4 4.5.21 forward fix (engine._refit_devices_to_house)."""
+        c = self._conn
+        if c.execute("SELECT 1 FROM meters WHERE is_sub_meter = 1 "
+                     "AND meter_type IN ('ev', 'ev_charger') LIMIT 1").fetchone():
+            return []
+        sql = ("SELECT m.block_start FROM blocks m WHERE m.meter_id = 'electricity_main' "
+               "AND m.imp_kwh_ev > 0 AND EXISTS (SELECT 1 FROM blocks o "
+               "    WHERE o.block_start = m.block_start AND o.meter_id IN "
+               "          (SELECT meter_id FROM meters WHERE is_sub_meter = 1))")
+        if starts is None:
+            return [r[0] for r in c.execute(sql + " ORDER BY m.block_start")]
+        want = sorted(set(starts))
+        out = []
+        for i in range(0, len(want), 500):
+            chunk = want[i:i + 500]
+            out += [r[0] for r in c.execute(
+                sql + " AND m.block_start IN (%s)" % ",".join("?" * len(chunk)), chunk)]
+        return out
+
+    def write_resplit(self, device_updates, main_updates) -> None:
+        """Write a re-split back with targeted UPDATEs (never the round-trip): per device its grid
+        share and the £ priced from it at the row's OWN stored rate; per main its kWh remainder, and
+        its £ remainder at its own rate UNLESS the block is measured — there Octopus's bill set it
+        (bill − EV, apply_measured_to_main) and it stays the authority. v4 4.5.21 forward fix.
+        device_updates: (grid_kwh, grid_kwh, grid_kwh, block_start, meter_id).
+        main_updates:   (remainder_kwh, remainder_kwh, block_start, meter_id)."""
+        if not (device_updates or main_updates):
+            return
+        with self._tx():
+            if device_updates:
+                self._conn.executemany(
+                    "UPDATE blocks SET imp_kwh_grid = ?, "
+                    "  imp_cost = CASE WHEN imp_rate IS NOT NULL "
+                    "       THEN ROUND(? * imp_rate, 6) ELSE imp_cost END, "
+                    "  imp_cost_exc = CASE WHEN imp_rate_exc IS NOT NULL "
+                    "       THEN ROUND(? * imp_rate_exc, 6) ELSE imp_cost_exc END "
+                    "WHERE block_start = ? AND meter_id = ?", device_updates)
+            if main_updates:
+                self._conn.executemany(
+                    "UPDATE blocks SET imp_kwh_remainder = ?, "
+                    "  imp_cost_remainder = CASE "
+                    "       WHEN COALESCE(rate_source, '') = 'measured' THEN imp_cost_remainder "
+                    "       WHEN imp_rate IS NOT NULL THEN ROUND(? * imp_rate, 6) "
+                    "       ELSE imp_cost_remainder END "
+                    "WHERE block_start = ? AND meter_id = ?", main_updates)
 
     def get_block_dict_by_start(self, block_start: str) -> Optional[dict]:
         """Return the fully-reconstructed (joined) block dict for a single

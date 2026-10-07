@@ -53,7 +53,7 @@ class UploadedZips(unittest.TestCase):
     def setUp(self):
         self.data = tempfile.mkdtemp()
         st = BlockStore(os.path.join(self.data, "src.db"))
-        st.set_meta("written_by", "4.5.20")
+        st.set_meta("written_by", "4.5.21")
         st.close()
         self.zip = io.BytesIO()
         with zipfile.ZipFile(self.zip, "w") as zf:
