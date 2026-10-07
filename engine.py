@@ -120,7 +120,7 @@ _read_queue:               list         = []
 _last_known_sensor_values: dict         = {}
 _engine_loop_lock:         asyncio.Lock = None   # initialised in setup()
 _engine_paused:            bool         = False
-_pass2_quiet:              bool         = False   # suppress per-block PASS 2 INFO logs during bulk recompute
+_pass2_quiet:              bool         = False   # suppress per-block PASS 2 logs during bulk recompute (INFO, and the routine clip WARNINGs — v4 4.5.21; a bulk pass logs one summary instead)
 _last_ci_fetch:            datetime | None = None   # UTC — last carbon intensity fetch
 _last_dispatch_capture:    datetime | None = None   # UTC — last dispatch-slot capture (5-min cadence)
 _last_reconcile:           datetime | None = None   # UTC — last dispatch reconciliation (hourly cadence)
@@ -2666,6 +2666,19 @@ def _apply_pass2(block: dict) -> None:
             is_ev = ((e["meter_block"].get("meta", {}) or {}).get("meter_type")
                      == "ev")
             return (0 if is_ev else 1, -e["kwh"])   # EVs first, then desc by kWh
+        # v4 4.5.21 forward fix: on a DISPATCH-ONLY account (the main carries Octopus's dispatch
+        # EV, `kwh_ev`, and no device is an EV meter) the car's grid is reserved before the
+        # devices are fitted, so they fit inside the house = grid − EV. Without it a battery
+        # charging alongside the car kept grid the car used, the EV then had nothing left to sit
+        # in, and the devices were never re-fitted once the completed dispatch arrived. With an
+        # EV meter the meter IS the EV and claims first (above), so this does nothing there. The
+        # remainder keeps its shape: grid − devices, the EV inside it — it simply can no longer
+        # be smaller than the EV.
+        _dispatch_ev = 0.0
+        if not any(((e["meter_block"].get("meta", {}) or {}).get("meter_type") in ("ev", "ev_charger"))
+                   for e in protected + unprotected):
+            _dispatch_ev = min(max(float(parent_import.get("kwh_ev") or 0.0), 0.0), max(grid_kwh, 0.0))
+            grid_remaining = max(grid_kwh - _dispatch_ev, 0.0)
         protected.sort(key=_grid_priority)
         unprotected.sort(key=lambda x: x["kwh"], reverse=True)
 
@@ -2686,7 +2699,7 @@ def _apply_pass2(block: dict) -> None:
                 if not clamp_overflow:
                     # Unsettled gap block — preserve energy attribution even if it
                     # exceeds grid import (the main is also an estimate here).
-                    logger.warning(
+                    if not _pass2_quiet: logger.warning(
                         "PASS 2: %s sub-meter %.4f kWh EXCEEDS parent grid import %.4f kWh — "
                         "unsettled gap block, recording as-is (settlement will re-clamp).",
                         entry["meter_name"], entry["kwh"], grid_kwh,
@@ -2695,7 +2708,7 @@ def _apply_pass2(block: dict) -> None:
                 else:
                     # Authoritative main (live or DCC-settled) — clip to grid
                     # import; the sub-meter cannot exceed what the house imported.
-                    logger.warning(
+                    if not _pass2_quiet: logger.warning(
                         "PASS 2: %s sub-meter %.4f kWh EXCEEDS parent grid import %.4f kWh — "
                         "clipping to grid import (%s).",
                         entry["meter_name"], entry["kwh"], grid_kwh,
@@ -2703,7 +2716,7 @@ def _apply_pass2(block: dict) -> None:
                     )
                     claimed = grid_remaining  # already set to min above
             elif claimed < entry["kwh"]:
-                logger.warning(
+                if not _pass2_quiet: logger.warning(
                     "PASS 2: %s protected load %.4f kWh clipped to %.4f kWh",
                     entry["meter_name"], entry["kwh"], claimed,
                 )
@@ -2729,7 +2742,7 @@ def _apply_pass2(block: dict) -> None:
             battery    = entry["kwh"] - claimed
             if entry["kwh"] > grid_kwh:
                 if not clamp_overflow:
-                    logger.warning(
+                    if not _pass2_quiet: logger.warning(
                         "PASS 2: %s sub-meter %.4f kWh EXCEEDS parent grid import %.4f kWh — "
                         "unsettled gap block, recording as-is (settlement will re-clamp).",
                         entry["meter_name"], entry["kwh"], grid_kwh,
@@ -2737,7 +2750,7 @@ def _apply_pass2(block: dict) -> None:
                     claimed = entry["kwh"]
                     battery = 0.0
                 else:
-                    logger.warning(
+                    if not _pass2_quiet: logger.warning(
                         "PASS 2: %s sub-meter %.4f kWh EXCEEDS parent grid import %.4f kWh — "
                         "clipping to grid import (%s).",
                         entry["meter_name"], entry["kwh"], grid_kwh,
@@ -2755,7 +2768,7 @@ def _apply_pass2(block: dict) -> None:
                 entry["meter_name"], claimed, battery,
             )
 
-        remainder_kwh  = max(grid_remaining, 0.0)
+        remainder_kwh  = max(grid_remaining, 0.0) + _dispatch_ev
 
         # cost_remainder is computed as remainder_kwh × rate, NOT as main_cost − sub_costs.
         #
@@ -3111,6 +3124,57 @@ def _recompute_pass3_totals(block: dict) -> None:
             elif channel_name == "export":
                 block["totals"]["export_kwh"]  += channel.get("kwh") or 0.0
                 block["totals"]["export_cost"] += channel.get("cost") or 0.0
+
+
+def _refit_devices_to_house(store, starts) -> dict:
+    """v4 4.5.21 forward fix: re-fit a dispatch-only account's devices inside the house once its
+    dispatch EV is known or changes. Every writer of `imp_kwh_ev` after a block's close calls
+    this with the blocks it wrote — before, none re-ran the split, so the devices stayed fitted
+    against the whole main for good. A no-op for any block that is not a candidate
+    (`BlockStore.dispatch_house_candidates`). Re-runs the split on the rebuilt block and writes
+    back only what moves (`BlockStore.write_resplit`)."""
+    global _pass2_quiet
+    out = {"checked": 0, "refit_blocks": 0, "kwh_moved": 0.0}
+    if store is None or not starts:
+        return out
+    cands = store.dispatch_house_candidates(starts)
+    if not cands:
+        return out
+    dev_u, main_u = [], []
+    _prev = _pass2_quiet
+    _pass2_quiet = True
+    try:
+        for bs in cands:
+            blk = store.get_block_dict_by_start(bs)
+            if not blk:
+                continue
+            out["checked"] += 1
+            before = {mid: ((mb.get("channels") or {}).get("import") or {}).get("kwh_grid")
+                      for mid, mb in (blk.get("meters") or {}).items()
+                      if (mb.get("meta") or {}).get("sub_meter")}
+            mi = (((blk.get("meters") or {}).get("electricity_main") or {})
+                  .get("channels", {}).get("import") or {})
+            rem_before = mi.get("kwh_remainder")
+            _apply_pass2(blk)
+            moved = False
+            for mid, old in before.items():
+                new = ((blk["meters"][mid].get("channels") or {}).get("import") or {}).get("kwh_grid")
+                if new is None or old is None or abs(new - old) <= 0.0005:
+                    continue
+                dev_u.append((new, new, new, bs, mid))
+                out["kwh_moved"] += abs(new - old)
+                moved = True
+            rem_after = mi.get("kwh_remainder")
+            if rem_after is not None and (rem_before is None or abs(rem_after - rem_before) > 0.0005):
+                main_u.append((rem_after, rem_after, bs, "electricity_main"))
+                moved = True
+            if moved:
+                out["refit_blocks"] += 1
+    finally:
+        _pass2_quiet = _prev
+    store.write_resplit(dev_u, main_u)
+    out["kwh_moved"] = round(out["kwh_moved"], 3)
+    return out
 
 
 def recompute_remainders_for_window(parent_meter_id: str, utc_start: str,
@@ -7042,6 +7106,7 @@ async def run_iog_split_carve(max_blocks: int = 2000) -> dict:
     tz_name = _iog_site_tz()
     rows = _store.get_blocks_awaiting_ev_carve(max_blocks)
     carved = 0
+    _refit_starts: list = []   # v4 4.5.21: blocks whose EV this wrote, for the device re-fit
     for r in rows:
         bs = r["block_start"]; kwh = float(r["imp_kwh"] or 0.0); rate = float(r["imp_rate"] or 0.0)
         if kwh <= 1e-9:
@@ -7074,8 +7139,10 @@ async def run_iog_split_carve(max_blocks: int = 2000) -> dict:
             _store.carve_ev_split(bs, ev, round(ev * rate, 6), rate,
                                   ev_band, home_band)
             carved += 1
+            _refit_starts.append(bs)
         except Exception as e:
             logger.warning("run_iog_split_carve: persist failed (%s): %s", bs, e)
+    _refit_devices_to_house(_store, _refit_starts)   # v4 4.5.21: the devices re-fit inside the house now the EV is known (dispatch-only accounts)
     if carved:
         logger.info("run_iog_split_carve: carved predicted EV/Home split on %d unsettled "
                     "dispatched block(s)", carved)
@@ -7178,6 +7245,8 @@ def _reprice_history_blocks(rows, tz_name: "str | None", rate_segs) -> dict:
             except Exception as e:
                 logger.warning("_reprice_history_blocks: segment persist failed (%s): %s", start, e)
     split_n = _store.set_blocks_iog_split(split_updates) if split_updates else 0
+    if split_updates:
+        _refit_devices_to_house(_store, [u[0] for u in split_updates])   # v4 4.5.21: the devices re-fit inside the house now the EV is known (dispatch-only accounts)
     exc_n = _store.set_blocks_exc(exc_updates) if exc_updates else 0
     return {"split": split_n, "exc": exc_n, "segments": seg_n}
 
@@ -11865,6 +11934,11 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
         store.recost_sub_meters(bs, imp_rate, exc_rate)
     except Exception as e:
         logger.warning("apply_measured: device re-cost failed for %s: %s", bs, e)
+    # v4 4.5.21: the devices re-fit inside the house now the EV is known (dispatch-only accounts). Keeps this block's bill-set £ remainder (BlockStore.write_resplit).
+    try:
+        _refit_devices_to_house(store, [bs])
+    except Exception as e:
+        logger.warning("apply_measured: device re-fit failed for %s: %s", bs, e)
     return {"prior_band": _prior_band, "new_band": band, "new_rate": imp_rate}
 
 
@@ -11966,6 +12040,7 @@ def _attribute_missing_ev_split() -> int:
         logger.warning("_attribute_missing_ev_split: query failed: %s", e)
         return 0
     n = 0
+    _refit_starts: list = []   # v4 4.5.21: blocks whose EV this wrote, for the device re-fit
     for r in rows:
         imp_ch = {"kwh": float(r["imp_kwh"] or 0.0), "cost": float(r["imp_cost"] or 0.0),
                   "rate": float(r["imp_rate"] or 0.0)}
@@ -11986,9 +12061,11 @@ def _attribute_missing_ev_split() -> int:
             # BL-27: rewrite the segments too (the readers' source of truth). Own txn.
             _persist_block_segments(r["block_start"], "electricity_main", imp_ch)
             n += 1
+            _refit_starts.append(r["block_start"])
         except Exception as e:
             logger.warning("_attribute_missing_ev_split: write failed for %s: %s",
                            r["block_start"], e)
+    _refit_devices_to_house(_store, _refit_starts)   # v4 4.5.21: the devices re-fit inside the house now the EV is known (dispatch-only accounts)
     if n:
         logger.info("ev attribution: back-attributed the EV/Home split on %d block(s) whose "
                     "completed dispatch arrived after pricing (was silently all-Home)", n)

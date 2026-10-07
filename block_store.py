@@ -7070,6 +7070,57 @@ class BlockStore:
 
     # ── UTC-based query methods ───────────────────────────────────────────────
 
+    def dispatch_house_candidates(self, starts=None) -> list:
+        """Block starts on a DISPATCH-ONLY account whose devices must fit inside the house: the
+        main carries a dispatch EV (imp_kwh_ev > 0) and there is at least one device. Empty for an
+        account with an EV meter (the meter is the EV) and for one with no dispatches, so for
+        nearly every account this is one query that finds nothing. `starts` narrows it.
+        v4 4.5.21 forward fix (engine._refit_devices_to_house)."""
+        c = self._conn
+        if c.execute("SELECT 1 FROM meters WHERE is_sub_meter = 1 "
+                     "AND meter_type IN ('ev', 'ev_charger') LIMIT 1").fetchone():
+            return []
+        sql = ("SELECT m.block_start FROM blocks m WHERE m.meter_id = 'electricity_main' "
+               "AND m.imp_kwh_ev > 0 AND EXISTS (SELECT 1 FROM blocks o "
+               "    WHERE o.block_start = m.block_start AND o.meter_id IN "
+               "          (SELECT meter_id FROM meters WHERE is_sub_meter = 1))")
+        if starts is None:
+            return [r[0] for r in c.execute(sql + " ORDER BY m.block_start")]
+        want = sorted(set(starts))
+        out = []
+        for i in range(0, len(want), 500):
+            chunk = want[i:i + 500]
+            out += [r[0] for r in c.execute(
+                sql + " AND m.block_start IN (%s)" % ",".join("?" * len(chunk)), chunk)]
+        return out
+
+    def write_resplit(self, device_updates, main_updates) -> None:
+        """Write a re-split back with targeted UPDATEs (never the round-trip): per device its grid
+        share and the £ priced from it at the row's OWN stored rate; per main its kWh remainder, and
+        its £ remainder at its own rate UNLESS the block is measured — there Octopus's bill set it
+        (bill − EV, apply_measured_to_main) and it stays the authority. v4 4.5.21 forward fix.
+        device_updates: (grid_kwh, grid_kwh, grid_kwh, block_start, meter_id).
+        main_updates:   (remainder_kwh, remainder_kwh, block_start, meter_id)."""
+        if not (device_updates or main_updates):
+            return
+        with self._tx():
+            if device_updates:
+                self._conn.executemany(
+                    "UPDATE blocks SET imp_kwh_grid = ?, "
+                    "  imp_cost = CASE WHEN imp_rate IS NOT NULL "
+                    "       THEN ROUND(? * imp_rate, 6) ELSE imp_cost END, "
+                    "  imp_cost_exc = CASE WHEN imp_rate_exc IS NOT NULL "
+                    "       THEN ROUND(? * imp_rate_exc, 6) ELSE imp_cost_exc END "
+                    "WHERE block_start = ? AND meter_id = ?", device_updates)
+            if main_updates:
+                self._conn.executemany(
+                    "UPDATE blocks SET imp_kwh_remainder = ?, "
+                    "  imp_cost_remainder = CASE "
+                    "       WHEN COALESCE(rate_source, '') = 'measured' THEN imp_cost_remainder "
+                    "       WHEN imp_rate IS NOT NULL THEN ROUND(? * imp_rate, 6) "
+                    "       ELSE imp_cost_remainder END "
+                    "WHERE block_start = ? AND meter_id = ?", main_updates)
+
     def get_block_dict_by_start(self, block_start: str) -> Optional[dict]:
         """Return the fully-reconstructed (joined) block dict for a single
         block_start — all meters, with meta/channels and the 3.0.0 columns

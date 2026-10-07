@@ -96,6 +96,7 @@
     "upsert_measured_breakdown",
     "upsert_measured_cost",
     "upsert_mix_history",
+    "write_resplit",
     "zero_fill_imported_export_blanks"
   ],
   "read": [
@@ -130,6 +131,7 @@
     "count_unsettled_blocks",
     "day_fingerprints",
     "dispatch_coverage",
+    "dispatch_house_candidates",
     "distinct_segment_rates",
     "emt_recording_continuously",
     "find_block_gaps",
