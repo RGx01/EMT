@@ -1,0 +1,109 @@
+"""
+Step 5 — `rate_reconciled` folded into `rate_source`, the provenance model (8 Oct 2026).
+
+`rate_reconciled` is on the drop list: "a second provenance flag beside rate_source". It meant
+"an authority set this rate, so a later re-split keeps it". Its writers were the overlay reconcile
+verdict (which set it and left rate_source alone, so a reconciled block could still say
+'schedule') and measured settlement (which also stamps rate_source='measured'). Its one deciding
+reader is the settlement re-run, which keeps a held rate instead of re-resolving it.
+
+Now the verdict writes rate_source='reconciled' (a measured or corrected row keeps its word), no
+writer sets the flag, and the re-run reads rate_source. The flag is read only as a LEGACY fallback
+for rows a reconcile flagged while leaving 'schedule' (11 on a real database; 0–2 on others): the
+importer folds those into 'reconciled' (import spec §5.2), and the fallback goes with the column.
+Drops wait for the importer.
+
+The re-run cases use CAD billing (`billing_source='cad'`), where only a correction, a
+reconciliation or a bill holds the rate — on the DCC path every predicted band is held anyway
+(4.5.15), so the flag never decided anything there.
+
+Discriminating (fail on the parent): the verdict records rate_source='reconciled' and leaves the
+flag 0; measured no longer sets the flag; a CAD re-run holds a block whose rate_source alone says
+reconciled. The legacy fallback is a guard.
+"""
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(__file__))
+import test_rebuild_meter_type as H              # noqa: E402  (stubs, real engine, flat tariff)
+engine = H.engine
+
+OFF = 0.0549297
+
+
+class TheVerdict(H._Harness):
+
+    def _row(self, meter="electricity_main"):
+        return engine._store._conn.execute(
+            "SELECT imp_rate, rate_source, rate_reconciled FROM blocks WHERE block_start=? "
+            "AND meter_id=?", (H.START, meter)).fetchone()
+
+    def test_it_is_recorded_in_rate_source(self):
+        self._finalise()
+        engine._store.apply_reconcile_verdict(H.START, OFF, round(OFF / 1.05, 6), "tariff",
+                                              "off_peak", "off_peak")
+        for meter in ("electricity_main", "house_battery", "ev_charger"):
+            with self.subTest(meter=meter):
+                r = self._row(meter)
+                self.assertEqual(r["rate_source"], "reconciled")
+                self.assertEqual(r["rate_reconciled"], 0)
+
+    def test_a_measured_or_corrected_row_keeps_its_word(self):
+        self._finalise()
+        for word in ("measured", "corrected"):
+            with self.subTest(rate_source=word):
+                with engine._store._conn:
+                    engine._store._conn.execute(
+                        "UPDATE blocks SET rate_source=? WHERE block_start=? "
+                        "AND meter_id='electricity_main'", (word, H.START))
+                engine._store.apply_reconcile_verdict(H.START, OFF, None, "tariff",
+                                                      "off_peak", "off_peak")
+                self.assertEqual(self._row()["rate_source"], word)
+
+    def test_measured_settlement_does_not_set_the_flag(self):
+        self._finalise()
+        engine._store.apply_measured_to_main(
+            H.START, rate=OFF, cost=round(H.MAIN * OFF, 6), rate_exc=None, cost_exc=None,
+            kwh_ev=None, rate_ev=None, cost_ev=None, ev_band=None, home_band=None,
+            cost_remainder=None)
+        r = self._row()
+        self.assertEqual(r["rate_source"], "measured")
+        self.assertEqual(r["rate_reconciled"], 0)
+
+
+class TheReRun(H._Harness):
+    """Whether the settlement re-run HOLDS a block's rate (its "rate preserved" decision, logged)
+    rather than re-deriving it. In CAD billing only a correction, a reconciliation or a bill holds
+    it. (The rate itself can't show it here: a CAD re-run keeps any sane stored rate either way —
+    it only repairs a missing one — so the decision is what is asserted.)"""
+
+    def _holds(self, rate_source, flag):
+        self._finalise()
+        with engine._store._conn:
+            engine._store._conn.execute(
+                "UPDATE blocks SET imp_rate=?, imp_cost=ROUND(imp_kwh*?, 6), rate_source=?, "
+                "rate_reconciled=? WHERE block_start=? AND meter_id='electricity_main'",
+                (OFF, OFF, rate_source, flag, H.START))
+        blk = engine._store.get_block_dict_by_start(H.START)
+        with self.assertLogs("engine", level="INFO") as cm:
+            engine.logger.info("probe")          # assertLogs needs at least one record
+            engine._rerun_pass2_for_settled_block(blk, billing_source="cad",
+                                                  standing_resolver=None)
+        return any("rate preserved" in m for m in cm.output)
+
+    def test_rate_source_alone_holds_a_reconciled_rate(self):
+        self.assertTrue(self._holds("reconciled", 0))
+
+    def test_the_legacy_flag_still_holds_a_schedule_row(self):
+        """GUARD: a v4-reconciled row still saying 'schedule' keeps its rate until the importer
+        folds it into rate_source='reconciled'."""
+        self.assertTrue(self._holds("schedule", 1))
+
+    def test_an_unheld_schedule_row_is_not_held(self):
+        """GUARD: the case is real — a plain schedule row is re-derived, not held, in CAD."""
+        self.assertFalse(self._holds("schedule", 0))
+
+
+if __name__ == "__main__":
+    unittest.main()

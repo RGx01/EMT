@@ -662,7 +662,12 @@ differ by a sub-penny sliver which the remainder absorbs.
 
 **CARRY+REMAP — provenance:** `rate_source` → v5 naming (`'measured'` → `'settled'`, BL-61(5)).
 Always present on a .14 source (§4), so there is no absent-column branch — carry each row's own
-word. Fold `rate_reconciled` into the provenance model rather than carrying a second flag.
+word. Fold `rate_reconciled` into the provenance model rather than carrying a second flag:
+**where `rate_reconciled = 1` and `rate_source` is `'schedule'` or NULL, write `'reconciled'`**; a
+`measured` or `corrected` row keeps its word (either outranks a reconciliation). Then drop the
+column. *(8 Oct 2026: v5 itself already records a reconciliation in `rate_source` and sets no flag;
+it reads the flag only as a fallback for exactly these rows — 11 on prod, 1 on PianSom, 0–2 on the
+others — which this rule retires.)*
 
 **DROP — derived, reconstructable from segments** (~~13~~ ~~12~~ **11** columns; this is the
 legacy-column removal): ~~`imp_kwh_grid`,~~ `imp_kwh_remainder`, `imp_cost_remainder`,

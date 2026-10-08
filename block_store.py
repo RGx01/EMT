@@ -7879,7 +7879,6 @@ class BlockStore:
         with self._conn:
             cur = self._conn.execute(
                 "UPDATE blocks SET imp_rate = ?, imp_cost = ?, rate_source = 'measured', "
-                "rate_reconciled = 1, "
                 "imp_rate_exc = ?, imp_cost_exc = ?, exc_source = 'tariff', "
                 "imp_kwh_ev = ?, imp_rate_ev = ?, imp_cost_ev = ?, imp_ev_band = ?, "
                 "imp_home_band = ?, imp_cost_remainder = ? "
@@ -8046,6 +8045,9 @@ class BlockStore:
                 (ev_band, home_band, block_start, meter_id, ev_band, home_band))
         return cur.rowcount
 
+    _RECONCILED_SOURCE = ("rate_source = CASE WHEN rate_source IN ('measured', 'corrected') "
+                          "THEN rate_source ELSE 'reconciled' END")
+
     def apply_reconcile_verdict(self, block_start: str, rate: float,
                                 rate_exc, exc_source, ev_band: str,
                                 home_band: str,
@@ -8064,8 +8066,11 @@ class BlockStore:
         `rate_corrected = 0` keeps a user's manual correction out of it.
         """
         with self._conn:
+            # Step 5 (8 Oct 2026): the verdict is recorded in rate_source, the provenance
+            # model, not the second flag rate_reconciled (on the drop list). A measured or
+            # corrected row keeps its word: either outranks a reconciliation.
             main = self._conn.execute(
-                "UPDATE blocks SET imp_rate = ?, rate_reconciled = 1, "
+                "UPDATE blocks SET imp_rate = ?, " + self._RECONCILED_SOURCE + ", "
                 "imp_cost = ROUND(COALESCE(imp_kwh, 0) * ?, 6), "
                 "imp_rate_exc = ?, "
                 "imp_cost_exc = ROUND(COALESCE(imp_kwh, 0) * ?, 6), "
@@ -8074,7 +8079,7 @@ class BlockStore:
                 (rate, rate, rate_exc, rate_exc, exc_source,
                  block_start, meter_id)).rowcount
             subs = self._conn.execute(
-                "UPDATE blocks SET imp_rate = ?, rate_reconciled = 1, "
+                "UPDATE blocks SET imp_rate = ?, " + self._RECONCILED_SOURCE + ", "
                 "imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
                 "imp_rate_exc = ?, "
                 "imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "

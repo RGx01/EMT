@@ -329,6 +329,31 @@ and the day fingerprints. Those are the family's next readers to move.
 
 ---
 
+## 5b. `rate_reconciled` — readers and writers moved (8 Oct 2026)
+
+The first family. Drops wait for the importer (decided 8 Oct 2026): the importer is where v4's
+shape is converted (import spec §1.2), so a column leaves v5's schema when the importer drops it,
+in the same change. Until then a moved column is dead weight, not a second source of truth.
+
+* **Writers.** The overlay reconcile verdict (`apply_reconcile_verdict`) set `rate_reconciled = 1`
+  and left `rate_source` alone, so a reconciled block could still say `schedule`. It now writes
+  `rate_source = 'reconciled'` on the main and its devices (a `measured` or `corrected` row keeps
+  its word) and sets no flag. Measured settlement (`apply_measured_to_main`) set the flag beside
+  `rate_source = 'measured'`; it no longer does. Nothing sets it now; the round-trip still carries
+  it (so a legacy value survives a rebuild).
+* **The reader.** The settlement re-run held a rate if `rate_corrected`, `rate_reconciled` or
+  `rate_source = 'measured'`. It now holds on `rate_corrected` or `rate_source` in `reconciled`,
+  `measured`, `corrected`, and reads the flag only as a **legacy fallback** for rows a reconcile
+  flagged while leaving `schedule`: 11 on prod, 0 on prod-dev, 1 on PianSom, 2 on the old dev
+  database. The importer folds them into `'reconciled'` (spec §5.2) and the fallback goes with the
+  column. The decision only matters under CAD billing: on the DCC path every predicted band is
+  held anyway (4.5.15).
+* **Still touching the column:** the schema, the round-trip carry (`_block_rows` /
+  `_row_to_block`), BL-53's one-off `rate_source` backfill (reads it for NULL rows), and the
+  fallback read in `get_block_rate_authority`. All four go when the importer drops it.
+
+`tests/test_rate_reconciled_folded.py` pins it; the tariff goldens did not move.
+
 ## 6. Summary
 
 | | |
