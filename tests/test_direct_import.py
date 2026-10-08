@@ -97,6 +97,7 @@ class _Fixture:
         srv.DATA_DIR = d
         store_access.reset_for_tests()
         store_access.bind(self.path)
+        self.srv = srv
         self.client = srv.app.test_client()
         self.store = store_access.store()
         self.cfg = srv.load_config()
@@ -185,6 +186,10 @@ class _Fixture:
                 a[1] += m.get("imp_cost") or 0.0
         direct = tuple(acc.pop("electricity_main"))
         return direct, {_norm(k): tuple(v) for k, v in acc.items() if v[0] > 0.001 or v[1] > 0.001}
+
+    def insights(self, days):
+        lo, hi = self._utc(days)
+        return self.srv._aggregate_usage(self.store, self.cfg, lo, hi, "Europe/London")
 
     def day_charts(self, days):
         """The Billing tab's day charts over the window: each day's panel breakdown, summed."""
@@ -311,8 +316,9 @@ class TheDeviceReadingsAreKept(unittest.TestCase):
 class AStaleRemainderIsNotRead(unittest.TestCase):
     """The real shape that showed two databases' Usage Stats days below the meter (6 Oct 2026): a
     device's rows gone, its stored remainder left behind. No surface may read it — Direct is the
-    rule on what is there. Discriminating for the day charts (they read the stored remainder before
-    step 5, 8 Oct 2026); the other surfaces had already moved."""
+    rule on what is there. Discriminating for the day charts and Insights' peak demand window (they read
+    the stored remainder before step 5, 8 Oct 2026). Insights' house total is a guard: on a
+    segmented database it is re-priced from the segments either way."""
 
     def test_every_surface_ignores_a_stale_remainder(self):
         import tariff_fixtures as T  # noqa: F401
@@ -320,16 +326,22 @@ class AStaleRemainderIsNotRead(unittest.TestCase):
         try:
             days = ("2026-10-05", "2026-10-05")
             lo, hi = fx._utc(days)
+            peak_before = fx.insights(days)["peak_window_kwh"]
             with sqlite3.connect(fx.path) as c:
                 c.execute("UPDATE blocks SET imp_kwh_remainder = imp_kwh / 2, "
                           "imp_cost_remainder = imp_cost / 2 WHERE meter_id = 'electricity_main' "
                           "AND block_start >= ? AND block_start < ?", (lo, hi))
             main_k, main_c = fx.main(days)
+            u = fx.insights(days)
             for surface, got in (("Usage Stats", fx.usage(days)[0]),
-                                 ("Day charts", fx.day_charts(days)[0])):
+                                 ("Day charts", fx.day_charts(days)[0]),
+                                 ("Insights usage", (u["house_imp_kwh"], u["house_imp_cost"]))):
                 with self.subTest(surface=surface):
                     self.assertAlmostEqual(got[0], main_k, places=3)
                     self.assertLessEqual(abs(got[1] - main_c), PENNY)
+            with self.subTest(surface="Insights peak window"):
+                # Its house kWh is re-priced from the segments; the peak demand window is not.
+                self.assertAlmostEqual(u["peak_window_kwh"], peak_before, places=3)
         finally:
             fx.close()
 
