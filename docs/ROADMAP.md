@@ -20,7 +20,7 @@ the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below decons
 | B | Job coordinator (v4 BL-50) | A | ✅ all six acceptances met — 6 on the Pi, 5 Oct 2026 |
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | ✅ closed 5 Oct 2026 — queries asserted in CI (#102), time on the Pi (#64) |
-| E | Importer | A–D | 📝 spec v13, floor 4.5.21 |
+| E | Importer | A–D | 📝 spec v14, floor 4.5.21 |
 | F | Carried from v4's backlog | — | 📋 9 items open, 1 done (BL-50 = B) |
 | G | Local tariff store | A, B | 📝 proposed 4 Oct 2026 |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
@@ -224,6 +224,39 @@ house = main − devices − EV once per period, through its own segment re-pric
 EV: the bill carves EV out of Direct per rate while the Overview counts it as a device. They agree on
 every fixture, but no fixture is IOG, so that agreement is unasserted. Both belong in
 `test_direct_import.py` when they move.
+
+**The EV split — one reader, 8 Oct 2026 (step 5).** The bill priced a half-hour's EV from its EV
+segments (BL-27). The Overview card, Usage Stats and Insights' EV carbon read the `imp_kwh_ev` /
+`imp_cost_ev` columns instead, and the day charts fell to `imp_rate_ev` whenever the EV segments
+summed to nothing, even on a block whose segments were house-only. `ev_split.py` is now the reader,
+in Python and SQL: the EV segments, or for a block with no segments at all its columns (LEGACY,
+until the importer writes those blocks' segments — spec §5.2, v14). On five real databases the two
+agree wherever both exist, so nothing moved; `tests/test_ev_split_readers.py` holds a stale column
+on each side of the seam and fails on the parent.
+
+**BL-79 — the EV-split writers commit the columns and the segments separately.** Proposed
+8 Oct 2026. Every writer of the split (the close, the settlement re-run, the reprice sweep, the
+carve, the back-attribution, measured settlement, the reconcile restamp and verdict, the corrections
+route) writes `imp_*_ev` and `block_segments` in two transactions, and the segment write is
+best-effort. Traced in the code (the carve's order checked by hand; the rest not yet confirmed by a
+test), some paths write one without the other:
+
+- **columns, no EV segments:** the settlement re-run's override branch (a held corrected,
+  reconciled or measured rate), the round-trip rewrites (`append_block_replace`), the reprice
+  sweep where a block already has segments, and the uncapped reconcile restamp (it rewrites the
+  columns' rate and relabels the segments' bands, but not their rate);
+- **EV segments, no columns:** a carve that loses its race (the segments are replaced, the guarded
+  UPDATE touches nothing);
+- **a value blanked:** a gap-fill rewrite over an existing row NULLs all five columns and leaves the
+  old EV segments. (Measured settlement also writes NULL over an earlier split when the bill shows
+  no EV, but it rewrites the segments house-only from the same figures, so the two agree.)
+
+None has left a mismatch on any database we hold. With the surfaces on `ev_split`, the segments are
+the record. So the fix is in the writers, not the readers: each writes its segments with its
+columns in one transaction, or (once the importer drops the columns) only the segments. Each path
+gets a test that fails on the parent. The engine's own gates (`imp_kwh_ev IS NULL` as "not split
+yet" in the carve, the backfill and the dispatch-only re-fit) move to the segments with this, not
+with the surfaces.
 
 **BL-78 — with Bill Rounding on, the Total Bill should be the bill method's total.** Proposed
 8 Oct 2026. The card prints two different roundings of one bill. Its lines (the ex-VAT bands, the

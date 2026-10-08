@@ -32,6 +32,7 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import direct_import as _direct
+import ev_split as _evsplit
 
 logger = logging.getLogger("block_store")
 
@@ -7621,7 +7622,7 @@ class BlockStore:
         (`COALESCE(imp_kwh_grid, imp_kwh)`), the standing charge the day's earliest
         non-zero one; meters with no row in the active period are left out, as the card
         always left them. `ev`: {day: {kwh, cost}} — the hybrid EV (#468): the main
-        meter's bill-authoritative `imp_kwh_ev` wherever it is set, else the physical EV
+        meter's EV split (ev_split: its EV segments) wherever it has one, else the physical EV
         meter's grid kWh (`ev_meter_id`, None for an account without one). `direct`:
         {day: {kwh, cost}} — the Direct import, direct_import's rule on each half-hour over the
         card's devices (every other sub-meter, and the hybrid EV in the EV meter's place).
@@ -7674,9 +7675,11 @@ class BlockStore:
         # The hybrid EV, and the Direct import by direct_import's per-half-hour rule over the
         # card's devices: every other sub-meter, plus the hybrid EV in the EV meter's place.
         ev, direct = {}, {}
-        ev_k = ("CASE WHEN m.imp_kwh_ev IS NOT NULL THEN m.imp_kwh_ev "
+        # The split is ev_split's: the main's EV segments (step 5, 8 Oct 2026), joined once.
+        _sk, _sc = _evsplit.joined_kwh("m"), _evsplit.joined_cost("m")
+        ev_k = ("CASE WHEN " + _sk + " IS NOT NULL THEN " + _sk + " "
                 "     ELSE COALESCE(s.imp_kwh_grid, s.imp_kwh, 0) END")
-        ev_c = ("CASE WHEN m.imp_kwh_ev IS NOT NULL THEN COALESCE(m.imp_cost_ev, 0) "
+        ev_c = ("CASE WHEN " + _sk + " IS NOT NULL THEN COALESCE(" + _sc + ", 0) "
                 "     ELSE COALESCE(s.imp_cost, 0) END")
         dev_k, dev_c = "COALESCE(o.k, 0) + " + ev_k, "COALESCE(o.c, 0) + " + ev_c
         for r in self._conn.execute(
@@ -7691,6 +7694,7 @@ class BlockStore:
                 "FROM d JOIN blocks m ON m.block_start >= d.s AND m.block_start < d.e "
                 "                    AND m.meter_id = 'electricity_main' "
                 "LEFT JOIN blocks s ON s.block_start = m.block_start AND s.meter_id = ? "
+                + _evsplit.sql_join() + " ON _g.block_start = m.block_start AND _g.meter_id = m.meter_id "
                 "LEFT JOIN (SELECT b.block_start, "
                 "                  SUM(COALESCE(b.imp_kwh_grid, b.imp_kwh, 0)) AS k, "
                 "                  SUM(COALESCE(b.imp_cost, 0)) AS c "
@@ -7700,7 +7704,8 @@ class BlockStore:
                 "             AND (? IS NULL OR b.meter_id != ?) "
                 "           GROUP BY b.block_start) o ON o.block_start = m.block_start "
                 "GROUP BY d.day",
-                params + [ev_meter_id, days[0][1], days[-1][2], ev_meter_id, ev_meter_id]).fetchall():
+                params + [ev_meter_id, days[0][1], days[-1][2],
+                          days[0][1], days[-1][2], ev_meter_id, ev_meter_id]).fetchall():
             ev[r["day"]] = {"kwh": float(r["kwh"]), "cost": float(r["cost"])}
             direct[r["day"]] = {"kwh": float(r["direct_kwh"]), "cost": float(r["direct_cost"])}
         return {"meters": meters, "ev": ev, "direct": direct}

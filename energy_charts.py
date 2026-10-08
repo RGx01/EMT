@@ -128,6 +128,7 @@ def build_meter_colors_from_config(cfg: dict) -> dict:
 # panel's collapse below and for Usage Insights (server._collapse_rate_tiers).
 import bill_card as _bc
 import direct_import as _direct
+import ev_split as _evsplit
 _MAX_RATE_ROWS = _bc.MAX_RATE_ROWS
 _SPLIT_BAND_EPS = _bc.SPLIT_BAND_EPS
 
@@ -381,19 +382,13 @@ def _ev_meter_id(cfg):
 
 
 def _has_stored_split(b):
-    """True when this block carries a bill-authoritative EV split of its own — an
-    EV-attributed segment or a stored kwh_ev column — independent of any dispatch row."""
+    """True when this block carries a bill-authoritative EV split of its own (ev_split: its EV
+    segments; a block with no segments at all, its kwh_ev column) — independent of any
+    dispatch row."""
     imp = (((b.get("meters") or {}).get("electricity_main") or {})
            .get("channels", {}) or {}).get("import", {}) or {}
-    _segs = imp.get("segments") or []
-    if any((x.get("attribution") == "ev") and float(x.get("kwh") or 0.0) > 1e-9
-           for x in _segs):
-        return True
-    _sk = imp.get("kwh_ev")
-    try:
-        return _sk is not None and float(_sk) > 1e-9
-    except (TypeError, ValueError):
-        return False
+    _sp = _evsplit.from_channel(imp)
+    return _sp is not None and _sp[0] > 1e-9
 
 
 def _dispatch_ev_slot_map(store, blocks, cfg, gated=True):
@@ -467,33 +462,17 @@ def _dispatch_ev_slot_map(store, blocks, cfg, gated=True):
             continue
         if mk <= 0:
             continue
-        # BL-9: prefer the STORED, bill-authoritative split (imp_kwh_ev/imp_cost_ev/
-        # imp_rate_ev — the 4-rate figures the billing summary's grid-total section
-        # uses) so every EV/house surface agrees with the bill on a capped account.
-        # Fall back to the dispatch-derived pro-rata carve (EV at the block's own rate)
-        # only where a block has no stored split — un-backfilled / older history. On an
-        # uncapped account the two are identical (EV and house share the rate), so this
-        # is byte-identical there.
-        # BL-27: prefer the EV-attributed SEGMENTS (the single source of truth) — imp_cost_ev
-        # is just their summed cost, so this is byte-identical to the stored split while
-        # letting the reconcile re-stamp of the EV columns retire. Fall back to the stored
-        # columns, then the dispatch pro-rata carve, for any block without segments.
-        _segs = imp.get("segments")
-        _seg_evk = (sum(float(x.get("kwh") or 0.0) for x in _segs
-                        if x.get("attribution") == "ev") if _segs else 0.0)
-        _sk = imp.get("kwh_ev")
-        if _seg_evk > 1e-9:
-            _seg_evc = sum(float(x.get("kwh") or 0.0) * float(x.get("inc_rate") or 0.0)
-                           for x in _segs if x.get("attribution") == "ev")
-            ek = min(_seg_evk, mk)
-            ec = _seg_evc * (ek / _seg_evk) if _seg_evk > 0 else 0.0
-            rate = round(ec / ek, 4) if ek else rate
-        elif _sk is not None and float(_sk) > 1e-9:
-            ek = min(float(_sk), mk)
-            _sc = float(imp.get("cost_ev") or 0.0)
-            ec = _sc * (ek / float(_sk)) if float(_sk) > 0 else 0.0
-            _sr = imp.get("rate_ev")
-            rate = round(float(_sr), 4) if _sr else (round(ec / ek, 4) if ek else rate)
+        # The block's own EV split where it has one — ev_split's: its EV segments, the
+        # bill-authoritative figures (BL-9, BL-27), or for a block with no segments at all its
+        # imp_*_ev columns (LEGACY). Step 5 (8 Oct 2026): a block with house-only segments no
+        # longer falls to its columns. Else the dispatch-derived pro-rata carve (EV at the
+        # block's own rate). On an uncapped account the two agree (EV and house share the rate).
+        _sp = _evsplit.from_channel(imp)
+        if _sp is not None and _sp[0] > 1e-9:
+            _spk, _spc, _spr = _sp
+            ek = min(_spk, mk)
+            ec = _spc * (ek / _spk)
+            rate = round(_spr, 4) if _spr else (round(ec / ek, 4) if ek else rate)
         else:
             if slot not in ev_raw:                 # settled slots never reach here
                 continue
@@ -509,7 +488,7 @@ def _dispatch_ev_slot_map(store, blocks, cfg, gated=True):
 
 def _hybrid_ev_slot_map(store, blocks, cfg):
     """Per-slot HYBRID EV for the billing breakdown on a has-EV-meter account: SYNTHETIC
-    (dispatch / stored imp_kwh_ev / segments — bill-authoritative) wherever it exists,
+    (dispatch / the block's EV split, ev_split — bill-authoritative) wherever it exists,
     else the RECORDED physical EV sub-meter's own metered slot. One continuous EV. The
     synthetic map is taken UNGATED (the coverage gate is what kept it off for an active
     meter); the recorded fallback fills the pre-seam slots. Total-safety is the caller's
@@ -906,25 +885,16 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
                         _ec = (_f(_ev.get("cost")) * (_ek / _evk_map)
                                if _evk_map > 1e-9 else _mc * (_ek / _mk))
                         _r4 = round(main_rate, 4)
-                        # The EV rate LINE follows the stored dispatch EV rate
-                        # (imp_rate_ev) so it DIVERGES from the house line once the 6-h
-                        # cap pushes EV charging to peak (the 4-rate rule). On an uncapped
-                        # IOG account imp_rate_ev == the house rate, so the line sits
-                        # exactly on the house line (no visible change). Energy/cost stay
-                        # on the validated synthetic split (grid total untouched); only
-                        # the rate the EV line is plotted at, and its summary rate bucket,
-                        # change. Absent (non-IOG / no split) → falls back to main_rate.
-                        # BL-27: the EV rate LINE follows the EV-attributed SEGMENT rate
-                        # (full precision, == the old imp_rate_ev); the column is a dead
-                        # fallback for any un-backfilled block, so the re-stamp can retire.
-                        _segsr = main_import.get("segments")
-                        _segr_k = (sum(_f(x.get("kwh")) for x in _segsr
-                                       if x.get("attribution") == "ev") if _segsr else 0.0)
-                        if _segr_k > 1e-9:
-                            _evr = (sum(_f(x.get("kwh")) * _f(x.get("inc_rate")) for x in _segsr
-                                        if x.get("attribution") == "ev") / _segr_k) or main_rate
-                        else:
-                            _evr = _f(main_import.get("rate_ev")) or main_rate
+                        # The EV rate LINE follows the EV split's own rate (ev_split: the
+                        # EV segments; LEGACY imp_rate_ev where a block has no segments), so it
+                        # DIVERGES from the house line once the 6-h cap pushes EV charging to
+                        # peak (the 4-rate rule); uncapped, it sits on the house line. Energy and
+                        # cost stay on the synthetic split above; only the line's rate changes.
+                        # No split → main_rate. Step 5: house-only segments no longer fall to
+                        # the column.
+                        _sp = _evsplit.from_channel(main_import)
+                        _evr = ((_sp[2] if _sp is not None and _sp[0] > 1e-9 else None)
+                                or main_rate)
                         _r4e = round(_evr, 4)
                         meter_kwh["electricity_main"][hh]  = _mk - _ek
                         meter_cost["electricity_main"][hh] = _mc - _ec

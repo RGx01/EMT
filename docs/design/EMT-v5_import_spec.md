@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v13 — revised 7 Oct 2026, floor raised to 4.5.21. §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v14 — revised 8 Oct 2026 (§5.2: EV segments written before the EV columns drop); floor 4.5.21. §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -87,6 +87,12 @@ dispatch-only device re-fit (`dispatch_house_refit_done`), and the corrected-dev
 (`corrected_device_exc_done`). v5 ports the four forward fixes and carries no heal. 4.5.19 and
 4.5.20 join the below-floor negatives, and so does a v5 dev build stamped `4.5.20-a21`; v5's own
 builds now stamp `4.5.21-a22`. The positive fixture is a 4.5.21 database.*
+
+*Changes in v14 (8 Oct 2026): §5.2 — **a block with an EV split and no segments gets its segments
+from the columns before they are dropped.** v5's surfaces now read the EV split from the EV segments
+(`ev_split.py`), falling back to the `imp_*_ev` columns only for a block with no segments at all.
+On one real install 10 such blocks hold 28.43 kWh of EV that the drop would otherwise lose. The
+fallback goes with the columns.*
 
 ---
 
@@ -693,6 +699,27 @@ legacy-column removal): ~~`imp_kwh_grid`,~~ `imp_kwh_remainder`, `imp_cost_remai
 > are dropped *because* `block_segments` is carried verbatim — the information is not lost, only
 > de-duplicated. **Dependency:** every v5 surface must read segments first (BL-27) before this is
 > safe.
+
+**WRITE SEGMENTS FIRST — a block with an EV split and no segments** (v14, 8 Oct 2026). The EV-split
+columns (`imp_kwh_ev`, `imp_cost_ev`, `imp_rate_ev`, `imp_ev_band`, `imp_home_band`) are dropped
+because the segments hold the same split. That holds only where a block HAS segments. For a main
+block with `imp_kwh_ev > 0` and **no `block_segments` rows at all**, the importer writes them from
+the columns before it drops them — `pricing_segments.segments_from_legacy` (an EV segment at the
+split's own rate and band, and the house remainder at its derived rate, Σ cost = `imp_cost`), the
+backfill's own reconstruction. A block that has segments keeps them as they are, whatever its
+columns say: the segments are what the bill priced.
+
+> Measured 8 Oct 2026, read-only, on five 4.x databases: wherever a block has EV segments, their
+> kWh and £ equal `imp_kwh_ev` / `imp_cost_ev` exactly (0 mismatches), and no block has EV segments
+> with the columns NULL, or house-only segments under a non-NULL `imp_kwh_ev`. The one gap: on one
+> install, **10 blocks** (25 and 30 Aug 2026, 28.43 kWh, two of them corrected) carry an EV split and
+> no segments at all; its twin install has segments for the same blocks. Those are what this rule
+> keeps. v5 reads them through `ev_split.py`'s LEGACY fallback until the drop.
+>
+> The band columns are written on about twice as many rows as `imp_kwh_ev` (SMB-era rows where the
+> supplier stated the four buckets with no EV), and on 6 rows of one install `imp_home_band` says
+> `off_peak` where the house segment says `day`. Neither is read once the segments are the record:
+> the band survives as `block_segments.band` (below).
 
 **CARRY+REMAP — band vocabulary.** `imp_ev_band` / `imp_home_band` are dropped as columns, but the
 *words* in them survive in `block_segments.band`. v4 uses four words, and they are **not** four names

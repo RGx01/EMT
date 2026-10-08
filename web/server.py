@@ -5872,7 +5872,8 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
     # 4.4.0 Δ5-wire: the EV carbon axis comes from the SYNTHETIC dispatch device, not the
     # physical charger (mirrors the cost side's single-source rule). The credit is the draw
     # gap — the car's full completed-dispatch draw minus the grid-clipped billing kWh
-    # (imp_kwh_ev) — valued at the block's grid intensity (carbon.py; price never enters).
+    # (ev_split: the EV segments; imp_kwh_ev until step 5) — valued at the block's grid
+    # intensity (carbon.py; price never enters).
     # ADDITIVE: a new `ev_carbon` key only; every existing field above is byte-identical.
     # Non-IOG (no completed dispatch in range) ⇒ zeros ⇒ the template shows nothing.
     ev_carbon_block = None
@@ -5890,13 +5891,15 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
             if _v > 1e-9:
                 _unclipped[_r["slot_start"]] = _unclipped.get(_r["slot_start"], 0.0) + _v
         if _unclipped:
+            import ev_split as _evs
             _ev_rows = store._conn.execute(
-                "SELECT block_start, imp_kwh_ev, carbon_intensity_g FROM blocks "
-                "WHERE meter_id='electricity_main' AND imp_kwh_ev IS NOT NULL "
-                "AND imp_kwh_ev > 0 AND block_start >= ? AND block_start < ?",
+                "SELECT b.block_start, " + _evs.sql_kwh("b") + " AS ev_kwh, "
+                "b.carbon_intensity_g FROM blocks b WHERE b.meter_id='electricity_main' "
+                "AND b.block_start >= ? AND b.block_start < ?",
                 (utc_start, utc_end)).fetchall()
             _agg = _carbon.period_ev_saving(
-                ((r["block_start"], r["imp_kwh_ev"], r["carbon_intensity_g"]) for r in _ev_rows),
+                ((r["block_start"], r["ev_kwh"], r["carbon_intensity_g"]) for r in _ev_rows
+                 if r["ev_kwh"] is not None and r["ev_kwh"] > 0),
                 _unclipped)
             if _agg["clipped_kwh"] > 0:
                 ev_carbon_block = {
@@ -5919,12 +5922,13 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
     _rec_ev_kwh = _rec_ev_carbon = _rec_ev_ci_kwh = 0.0
     if ev_carbon_block:
         # H4 HYBRID: before dropping the physical EV sub-meter, fold in its PRE-SEAM portion
-        # (blocks with no dispatch split — imp_kwh_ev IS NULL) so a window straddling the seam
+        # (blocks with no dispatch split — ev_split's NULL) so a window straddling the seam
         # counts RECORDED EV pre-seam + SYNTHETIC EV post-seam, not synthetic only. Post-seam-only
         # windows and non-IOG accounts return 0 here → byte-identical.
         _ev_mid = _configured_ev_meter_id(cfg)
         if _ev_mid:
             try:
+                import ev_split as _evs
                 _pr = store._conn.execute(
                     "SELECT COALESCE(SUM(sub.imp_kwh),0.0) k, "
                     "       COALESCE(SUM(sub.carbon_g),0.0) g, "
@@ -5932,7 +5936,7 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
                     "FROM blocks sub JOIN blocks main "
                     "  ON main.block_start=sub.block_start AND main.meter_id='electricity_main' "
                     "  AND main.config_period_id=sub.config_period_id "
-                    "WHERE sub.meter_id=? AND main.imp_kwh_ev IS NULL "
+                    "WHERE sub.meter_id=? AND " + _evs.sql_kwh("main") + " IS NULL "
                     "  AND sub.block_start>=? AND sub.block_start<?",
                     (_ev_mid, utc_start, utc_end)).fetchone()
                 _rec_ev_kwh    = float(_pr["k"]  or 0.0)
@@ -6050,7 +6054,6 @@ def _aggregate_usage(store, cfg, utc_start: str, utc_end: str,
         """SELECT b.meter_id, b.block_start,
                   b.imp_kwh, b.imp_kwh_grid,
                   b.imp_rate, b.imp_cost,
-                  b.imp_kwh_ev, b.imp_cost_ev, b.imp_rate_ev,
                   b.exp_kwh, b.exp_rate, b.exp_cost,
                   b.standing_charge,
                   COALESCE(m.is_sub_meter, 0) as is_sub_meter,
@@ -6349,46 +6352,37 @@ def _aggregate_usage(store, cfg, utc_start: str, utc_end: str,
         except Exception:
             _ev_by_slot = {}
         if _ev_by_slot:
+            import ev_split as _evs
             _main_by_slot = {}
             for row in rows:                     # no sub-meters here, so all main
-                # (imp_kwh, imp_cost, imp_rate, stored_ev_kwh|None, stored_ev_cost,
-                #  stored_ev_rate) — the stored split is the bill-authoritative one.
                 _main_by_slot[row["block_start"]] = (
                     float(row["imp_kwh"] or 0), float(row["imp_cost"] or 0),
-                    float(row["imp_rate"] or 0),
-                    (float(row["imp_kwh_ev"]) if row["imp_kwh_ev"] is not None else None),
-                    float(row["imp_cost_ev"] or 0), float(row["imp_rate_ev"] or 0))
-            # BL-27: source the EV split from the EV-attributed SEGMENTS (single source of
-            # truth); the stored imp_*_ev columns are a dead fallback for any un-backfilled
-            # block, so the reconcile re-stamp of those columns can retire. Byte-identical:
-            # imp_cost_ev is just the EV segments' summed cost.
-            _seg_ev = {}
+                    float(row["imp_rate"] or 0))
+            # The split is ev_split's: the EV segments, the ones the bill prices (step 5,
+            # 8 Oct 2026). A block with segments but no EV segment has none, whatever its
+            # imp_*_ev columns say; one with no segments at all keeps its columns (LEGACY).
+            _split = {}
             try:
                 for _sg in store._conn.execute(
-                        "SELECT block_start, SUM(kwh) k, SUM(kwh * inc_rate) c "
-                        "FROM block_segments WHERE channel='import' AND attribution='ev' "
-                        "AND block_start >= ? AND block_start < ? GROUP BY block_start",
-                        (utc_start, utc_end)):
-                    _seg_ev[_sg["block_start"]] = (float(_sg["k"] or 0.0),
-                                                   round(float(_sg["c"] or 0.0), 6))
+                        "SELECT b.block_start, " + _evs.sql_kwh("b") + " AS k, "
+                        + _evs.sql_cost("b") + " AS c FROM blocks b "
+                        "WHERE b.meter_id = 'electricity_main' "
+                        "AND b.block_start >= ? AND b.block_start < ?", (utc_start, utc_end)):
+                    if _sg["k"] is not None:
+                        _split[_sg["block_start"]] = (float(_sg["k"]), float(_sg["c"] or 0.0))
             except Exception:
-                _seg_ev = {}
+                _split = {}
             _ev_kwh = _ev_cost = 0.0
             _ev_tiers = defaultdict(lambda: {"kwh": 0.0, "cost": 0.0, "blocks": 0})
             for _slot, _e in _ev_by_slot.items():
-                _mk, _mc, _mr, _sk, _sc, _sr = _main_by_slot.get(
-                    _slot, (0.0, 0.0, 0.0, None, 0.0, 0.0))
-                _gk, _gc = _seg_ev.get(_slot, (None, None))
-                # Prefer segments; fall back to the stored split columns; then the dispatch
-                # pro-rata carve. EV is tiered at its own (segment/stored) rate.
+                _mk, _mc, _mr = _main_by_slot.get(_slot, (0.0, 0.0, 0.0))
+                _gk, _gc = _split.get(_slot, (None, None))
+                # The split where there is one; else the dispatch pro-rata carve. EV is tiered
+                # at its own rate.
                 if _gk is not None and _gk > 1e-9:
                     _ek = min(_gk, _mk) if _mk > 0 else 0.0
                     _ec = _gc * (_ek / _gk) if _gk > 0 else 0.0
                     _tier_rate = (_gc / _gk if _gk > 0 else 0.0) or _mr
-                elif _sk is not None and _sk > 1e-9:
-                    _ek = min(_sk, _mk) if _mk > 0 else 0.0
-                    _ec = _sc * (_ek / _sk) if _sk > 0 else 0.0
-                    _tier_rate = _sr or _mr
                 else:
                     _ek = min(_e, _mk) if _mk > 0 else 0.0     # grid-clip to the slot
                     _ec = _mc * (_ek / _mk) if _mk > 0 else 0.0   # apportion cost

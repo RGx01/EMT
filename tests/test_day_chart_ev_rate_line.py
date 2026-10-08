@@ -1,6 +1,6 @@
 """
 BL-9 charts: the day chart's EV (dispatch) rate LINE follows the stored dispatch EV
-rate (imp_rate_ev), so it diverges from the house rate line once the 6-hour cap pushes
+rate (ev_split: the EV segments; the imp_*_ev columns on a block with none, as here), so it diverges from the house rate line once the 6-hour cap pushes
 EV charging to peak (the 4-rate rule). On an uncapped IOG account imp_rate_ev equals the
 house rate, so the line sits on the house line (no divergence). A block with no stored
 rate_ev (non-IOG / pre-split) falls back to the main rate — no crash, no divergence.
@@ -18,7 +18,8 @@ class TestDayChartEvRateLine(unittest.TestCase):
     def _blk(self, kwh, cost, rate, rate_ev=None):
         imp = {"kwh": kwh, "cost": cost, "rate": rate}
         if rate_ev is not None:
-            imp["rate_ev"] = rate_ev
+            # A LEGACY block (no segments): its split is the imp_*_ev columns, all three.
+            imp.update(kwh_ev=2.0, cost_ev=round(2.0 * rate_ev, 6), rate_ev=rate_ev)
         return {"start": "2026-07-26T12:00:00",
                 "meters": {MAIN: {"meta": {}, "standing_charge": 0.0,
                                   "channels": {"import": imp}}}}

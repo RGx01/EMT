@@ -22,6 +22,7 @@ from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import direct_import as _direct
+import ev_split as _evsplit
 
 logger = logging.getLogger("usage_view")
 
@@ -347,23 +348,23 @@ def _hybrid_ev_by_block(main_ev_by_block, phys_ev_by_block=None):
     can never disagree. Per block:
 
       * SYNTHETIC (dispatch) is authority WHENEVER it exists — the seam signal is
-        `imp_kwh_ev IS NOT NULL` (the BL-9 bill-authoritative column, written only on
-        dispatched IOG slots, so it is exactly the seam, per block, no date hard-coded).
-        Yields (imp_kwh_ev, imp_cost_ev, 'synthetic'); the physical EV meter is SUPERSEDED
+        the block HAS an EV split (ev_split: its EV segments, the ones the bill prices; it was
+        `imp_kwh_ev IS NOT NULL` until step 5), written only on dispatched IOG slots, so it is
+        exactly the seam, per block, no date hard-coded). Yields (ev kWh, ev £, 'synthetic'); the physical EV meter is SUPERSEDED
         for that block — its metered draw is the same car, so it is never added.
       * else RECORDED — the physical EV sub-meter (HA-recorder / live Zappi) is authority:
         its metered grid kWh + cost at the block's own rate. Yields (kwh, cost, 'recorded').
       * neither → the block has no EV; omitted.
 
-    Pure/testable. `main_ev_by_block` is {block_start: (imp_kwh_ev|None, imp_cost_ev|None)};
+    Pure/testable. `main_ev_by_block` is {block_start: (ev kWh|None, ev £|None)} (ev_split);
     `phys_ev_by_block` is {block_start: (kwh, cost)} or None (no physical EV meter). A
-    non-IOG / no-dispatch account has imp_kwh_ev NULL throughout, so with no physical EV
+    non-IOG / no-dispatch account has no EV split anywhere, so with no physical EV
     meter this returns {} and every caller stays byte-identical (the standing guard)."""
     phys = phys_ev_by_block or {}
     out: dict = {}
     for _bs in (set(main_ev_by_block) | set(phys)):
         _syn = main_ev_by_block.get(_bs)
-        if _syn is not None and _syn[0] is not None:      # imp_kwh_ev IS NOT NULL → synthetic wins
+        if _syn is not None and _syn[0] is not None:      # an EV split → synthetic wins
             _k = float(_syn[0]); _c = float(_syn[1] or 0.0)
             if _k > 1e-9 or abs(_c) > 1e-12:
                 out[_bs] = {"kwh": _k, "cost": _c, "source": "synthetic"}
@@ -534,7 +535,7 @@ def _raw_rows(store, utc_start, utc_end):
         SELECT b.block_start, b.meter_id, m.is_sub_meter, m.parent_meter_id,
                b.imp_kwh, b.imp_kwh_grid,
                b.imp_rate, b.imp_cost, b.exp_kwh, b.exp_cost,
-               b.imp_kwh_ev, b.imp_cost_ev, b.rate_source, b.source,
+               {_evsplit.sql_kwh('b')} AS ev_kwh, {_evsplit.sql_cost('b')} AS ev_cost, b.rate_source, b.source,
                b.standing_charge, b.carbon_g,
                b.interpolated, cp.billing_day
         FROM blocks b
@@ -597,15 +598,14 @@ def _ev_rows(store, cfg, meters, utc_start, utc_end):
 
     `_apply_ev` keys its maps by `block_start` and lets a later non-device row at the same
     instant overwrite an earlier one, so for each instant it reads, EVERY non-device row is
-    returned, in block order. The instants are the ones that can carry EV: a stored split
-    (`imp_kwh_ev`), a completed dispatch, or, with an EV sub-meter, that meter's blocks."""
+    returned, in block order. The instants are the ones that can carry EV: an EV split
+    (ev_split), a completed dispatch, or, with an EV sub-meter, that meter's blocks."""
     ev_mid = _configured_ev_meter_id(cfg)
     dispatch = ev_mid is None and len(meters) == 1 and meters[0]["id"] == "electricity_main"
     if ev_mid is None and not dispatch:
         return []
-    instants = ("SELECT block_start FROM blocks WHERE imp_kwh_ev IS NOT NULL "
-                "AND block_start >= ? AND block_start < ?")
-    params = [utc_start, utc_end]
+    instants = _evsplit.sql_instants()
+    params = [utc_start, utc_end, utc_start, utc_end]
     if dispatch:
         instants += (" UNION SELECT slot_start FROM dispatch_history WHERE kind = 'completed' "
                      "AND slot_start >= ? AND slot_start < ?")
@@ -616,7 +616,9 @@ def _ev_rows(store, cfg, meters, utc_start, utc_end):
         params.append(ev_mid)
     return store._conn.execute(f"""
         SELECT b.block_start, b.meter_id, m.is_sub_meter, b.imp_kwh, b.imp_kwh_grid,
-               b.imp_cost, b.imp_kwh_ev, b.imp_cost_ev
+               b.imp_cost,
+               CASE WHEN COALESCE(m.is_sub_meter, 0) = 0 THEN {_evsplit.sql_kwh('b')} END AS ev_kwh,
+               CASE WHEN COALESCE(m.is_sub_meter, 0) = 0 THEN {_evsplit.sql_cost('b')} END AS ev_cost
         FROM blocks b
         JOIN config_periods cp ON b.config_period_id = cp.id
         LEFT JOIN meters m ON m.meter_id = b.meter_id
@@ -646,9 +648,9 @@ def _apply_ev(store, cfg, raw, rows, meters, utc_start, utc_end, bucket_of, key_
                 if rr["is_sub_meter"]:
                     continue
                 main_slot[rr["block_start"]] = (float(rr["imp_kwh"] or 0), float(rr["imp_cost"] or 0))
-                if rr["imp_kwh_ev"] is not None:      # BL-9: stored, bill-authoritative
-                    stored_slot[rr["block_start"]] = (float(rr["imp_kwh_ev"]),
-                                                      float(rr["imp_cost_ev"] or 0))
+                if rr["ev_kwh"] is not None:          # ev_split: the EV segments
+                    stored_slot[rr["block_start"]] = (float(rr["ev_kwh"]),
+                                                      float(rr["ev_cost"] or 0))
             # Slots the BILL has actually described — not merely cost-settled ones.
             bill_slot = store.slots_with_bill_split(utc_start, utc_end)
             by_bucket = _dispatch_ev_split_by_bucket(
@@ -668,7 +670,7 @@ def _apply_ev(store, cfg, raw, rows, meters, utc_start, utc_end, bucket_of, key_
                     phys_ev[rr["block_start"]] = (float(gk if gk is not None else (rr["imp_kwh"] or 0.0)),
                                                   float(rr["imp_cost"] or 0.0))
                 elif not rr["is_sub_meter"]:
-                    main_ev[rr["block_start"]] = (rr["imp_kwh_ev"], rr["imp_cost_ev"])
+                    main_ev[rr["block_start"]] = (rr["ev_kwh"], rr["ev_cost"])
             hyb_slot = _hybrid_ev_by_block(main_ev, phys_ev)
         except Exception:
             hyb_slot = {}
@@ -691,7 +693,7 @@ def _slot_rows_for(store, slots):
             SELECT b.block_start, b.meter_id, m.is_sub_meter, m.parent_meter_id,
                    b.imp_kwh, b.imp_kwh_grid,
                    b.imp_rate, b.imp_cost, b.exp_kwh, b.exp_cost,
-                   b.imp_kwh_ev, b.imp_cost_ev, b.rate_source, b.source,
+                   {_evsplit.sql_kwh('b')} AS ev_kwh, {_evsplit.sql_cost('b')} AS ev_cost, b.rate_source, b.source,
                    b.standing_charge, b.carbon_g,
                    b.interpolated, cp.billing_day
             FROM blocks b
