@@ -58,7 +58,7 @@ def _block(st, meter_id="electricity_main", **cols):
 def _row(st, meter_id="electricity_main"):
     return st._conn.execute(
         "SELECT imp_rate, imp_cost, imp_rate_ev, imp_cost_ev, imp_ev_band, "
-        "imp_home_band, imp_cost_remainder, rate_reconciled, needs_review "
+        "imp_home_band, imp_cost_remainder, rate_reconciled, rate_source, needs_review "
         "FROM blocks WHERE block_start=? AND meter_id=?", (S, meter_id)).fetchone()
 
 
@@ -157,7 +157,9 @@ class ReconcileVerdict(unittest.TestCase):
         m = _row(self.st)
         self.assertAlmostEqual(m["imp_rate"], 0.32)
         self.assertAlmostEqual(m["imp_cost"], round(5.0 * 0.32, 6))
-        self.assertEqual(m["rate_reconciled"], 1)
+        # Step 5: the verdict is recorded in rate_source, not the second flag (drop list).
+        self.assertEqual(m["rate_source"], "reconciled")
+        self.assertEqual(m["rate_reconciled"], 0)
 
         sub = _row(self.st, "sub_meter_ev")
         self.assertAlmostEqual(sub["imp_rate"], 0.32)

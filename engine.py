@@ -3844,8 +3844,14 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
                     # settlement re-cost can't re-resolve the overlay over the bill.
                     # Read by NAME — this was four positional indexes off a
                     # four-column SELECT.
-                    if (_mrow and (_mrow["rate_corrected"] or _mrow["rate_reconciled"]
-                                   or _mrow["rate_source"] == "measured")
+                    # Step 5 (8 Oct 2026): held by provenance — rate_source says who set
+                    # the rate. rate_reconciled is read only as a LEGACY fallback, for rows a
+                    # v4 reconcile flagged while leaving rate_source 'schedule' (11 on a real
+                    # database); the importer folds those into rate_source='reconciled', and
+                    # this fallback goes with the column.
+                    if (_mrow and (_mrow["rate_corrected"]
+                                   or _mrow["rate_source"] in ("reconciled", "measured", "corrected")
+                                   or _mrow["rate_reconciled"])
                             and _mrow["imp_rate"] is not None):
                         _override_rate = _mrow["imp_rate"]
                     elif use_dcc and _mrow and _mrow["imp_rate"]:

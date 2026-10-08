@@ -635,10 +635,10 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((res["restored"], res["reverted"], res["review"]),
                          (1, 0, 0))
         r = st._conn.execute(
-            "SELECT imp_rate, rate_reconciled, needs_review FROM blocks "
+            "SELECT imp_rate, rate_source, needs_review FROM blocks "
             "WHERE block_start=?", ("2020-01-01T20:00:00",)).fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.05493, places=5)   # peak → off-peak
-        self.assertEqual(r["rate_reconciled"], 1)                  # stamped reconciled
+        self.assertEqual(r["rate_source"], "reconciled")           # recorded as reconciled
         self.assertEqual(r["needs_review"], 0)                     # not flagged
 
     async def test_completed_only_from_history_no_slot_restores_off_peak(self):
@@ -660,10 +660,10 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(slot)                                  # slot materialised
         self.assertEqual(slot["source"], "smart-charge-completed")
         r = st._conn.execute(
-            "SELECT imp_rate, rate_reconciled FROM blocks WHERE block_start=?",
+            "SELECT imp_rate, rate_source FROM blocks WHERE block_start=?",
             ("2020-01-01T20:00:00",)).fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.05493, places=5)    # peak → off-peak
-        self.assertEqual(r["rate_reconciled"], 1)
+        self.assertEqual(r["rate_source"], "reconciled")
 
     async def test_confident_bump_settled_reverts_to_peak(self):
         from block_store import BlockStore
