@@ -318,7 +318,6 @@ def bill_net_from_day_rollups(rows) -> float:
                        - round(r.get("exp_cost") or 0.0, 4), 2)
     return round(total, 2)
 
-_BAD = object()   # a remainder the dict API could not convert: the summary raised there
 
 
 def _channel_from_dict(channel_name, channel, is_sub, is_export, display_name):
@@ -358,16 +357,10 @@ def _channel_from_dict(channel_name, channel, is_sub, is_export, display_name):
         evr = round(float(channel.get("rate_ev") or 0.0), 4)
     except Exception:
         return None
-    has_rem = "kwh_remainder" in channel
-    kwh_rem = None
-    if has_rem:
-        try:
-            kwh_rem = float(channel["kwh_remainder"])
-        except Exception:
-            kwh_rem = _BAD
+    # The stored remainder is not read (step 5, 8 Oct 2026): Direct is direct_import's rule.
     return (key, is_export, rate, sub_kwh, kwh, cost, raw_kwh, cost_exc, segs,
             evk, evc, evr, channel.get("ev_band"), channel.get("home_band"),
-            has_rem, kwh_rem, channel.get("read_start"), channel.get("read_end"),
+            channel.get("read_start"), channel.get("read_end"),
             channel_m.get("mpan"), channel_m.get("tariff"), nonempty)
 
 
@@ -408,7 +401,7 @@ def _records_from_blocks(blocks):
 # (this module imports no storage; tests/test_bill_rows.py holds the two equal).
 BILL_ROW_COLUMNS = (
     "block_start", "meter_id", "is_sub_meter", "device_label", "timezone",
-    "imp_kwh", "imp_kwh_grid", "imp_kwh_remainder", "imp_rate", "imp_cost",
+    "imp_kwh", "imp_kwh_grid", "imp_rate", "imp_cost",
     "imp_read_start", "imp_read_end", "imp_cost_exc", "imp_rate_exc",
     "imp_kwh_ev", "imp_cost_ev", "imp_rate_ev", "imp_ev_band", "imp_home_band",
     "exp_kwh", "exp_rate", "exp_cost", "exp_read_start", "exp_read_end",
@@ -421,7 +414,7 @@ def _records_from_rows(rows, segments):
     _channel_from_dict reads them (no kwh_total or rate_used: the store has none)."""
     names = {}
     rec = None
-    for (bs, mid, is_sub_meter, device, tz, imp_kwh, kwh_grid, kwh_rem, imp_rate, imp_cost,
+    for (bs, mid, is_sub_meter, device, tz, imp_kwh, kwh_grid, imp_rate, imp_cost,
          imp_rs, imp_re, cost_exc, _rate_exc, kwh_ev, cost_ev, rate_ev, ev_band, home_band,
          exp_kwh, exp_rate, exp_cost, exp_rs, exp_re, sc, _sc_exc) in rows:
         if rec is None or rec[0] != bs:
@@ -452,13 +445,13 @@ def _records_from_rows(rows, segments):
                 segs = [(k or 0.0, i or 0.0, x, a == "ev") for k, i, x, _band, a in _sg]
         channels = [(keys[0], False, round(imp_rate or 0.0, 4), sub_kwh, kwh, icost, 0.0,
                      cost_exc, segs, kwh_ev or 0.0, cost_ev or 0.0, round(rate_ev or 0.0, 4),
-                     ev_band, home_band, kwh_rem is not None, kwh_rem,
+                     ev_band, home_band,
                      imp_rs, imp_re, None, None, True)]
         if not is_sub:
             exp = exp_kwh or 0.0
             channels.append((keys[1], True, round(exp_rate or 0.0, 4), 0.0, exp,
                              exp_cost or 0.0, exp, None, None, 0.0, 0.0, 0.0,
-                             None, None, False, None, exp_rs, exp_re, None, None, True))
+                             None, None, exp_rs, exp_re, None, None, True))
         rec[2].append((mid, is_sub, None, device, 0.0 if is_sub else (sc or 0.0), channels))
     if rec is not None:
         yield rec[0], rec[1], rec[2]
@@ -567,7 +560,7 @@ def _summarise(records, period_start, period_end, store=None, *, tz_name):
                 if ch is None:
                     continue
                 (key, is_export, rate, _subk, kwh, cost, raw_kwh, _cx, _segs,
-                 _evk, _evc, _evr, ev_band, home_band, has_rem, kwh_rem,
+                 _evk, _evc, _evr, ev_band, home_band,
                  rs, re, mpan, tariff, _nonempty) = ch
                 # Sub-meter rows show the device's GRID-attributed share
                 # (kwh_grid), NOT its total consumption (kwh_total). Total would
@@ -646,8 +639,6 @@ def _summarise(records, period_start, period_end, store=None, *, tz_name):
                                 _g["kwh"]      += _hk
                                 _g["cost"]     += _hc
                                 _g["cost_exc"] += _hx
-                    if has_rem and kwh_rem is _BAD:
-                        continue               # the old loop raised here and skipped the rest
                     # The Direct import: direct_import's one rule, per half-hour (6 Oct
                     # 2026). It was the stored kwh_remainder (equal to the rule on every
                     # real block measured) and this block's devices AT THE MAIN'S RATE.
@@ -777,7 +768,7 @@ def _summarise(records, period_start, period_end, store=None, *, tz_name):
                     # Start-of-day (first non-zero, ascending order); not MAX.
                     _main_day_sc[_blk_day] = _blk_sc
                 for ch in _blk_chs:
-                    if ch is None or not ch[20]:     # an empty channel
+                    if ch is None or not ch[18]:     # an empty channel (the tuple's last field)
                         continue
                     if ch[1]:                        # export
                         _main_day_exp[_blk_day] += abs(ch[5])

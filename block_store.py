@@ -6731,7 +6731,7 @@ class BlockStore:
     # billing_view unpack by position.
     BILL_ROW_COLUMNS = (
         "block_start", "meter_id", "is_sub_meter", "device_label", "timezone",
-        "imp_kwh", "imp_kwh_grid", "imp_kwh_remainder", "imp_rate", "imp_cost",
+        "imp_kwh", "imp_kwh_grid", "imp_rate", "imp_cost",
         "imp_read_start", "imp_read_end", "imp_cost_exc", "imp_rate_exc",
         "imp_kwh_ev", "imp_cost_ev", "imp_rate_ev", "imp_ev_band", "imp_home_band",
         "exp_kwh", "exp_rate", "exp_cost", "exp_read_start", "exp_read_end",
@@ -6748,7 +6748,7 @@ class BlockStore:
         Decoding 38 columns into them took half a year's bill on the Pi."""
         rows = self._conn.execute(
             """SELECT b.block_start, b.meter_id, m.is_sub_meter, m.device_label, cp.timezone,
-                      b.imp_kwh, b.imp_kwh_grid, b.imp_kwh_remainder, b.imp_rate, b.imp_cost,
+                      b.imp_kwh, b.imp_kwh_grid, b.imp_rate, b.imp_cost,
                       b.imp_read_start, b.imp_read_end, b.imp_cost_exc, b.imp_rate_exc,
                       b.imp_kwh_ev, b.imp_cost_ev, b.imp_rate_ev, b.imp_ev_band, b.imp_home_band,
                       b.exp_kwh, b.exp_rate, b.exp_cost, b.exp_read_start, b.exp_read_end,

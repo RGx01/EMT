@@ -42,14 +42,15 @@ def _aggregate_block_rows(raw_rows, bucket_of, standing_scope="bucket",
 
     Returns ``{bucket_key: agg}`` with main ``imp_cost`` already resolved. Row rows
     must carry: block_start, meter_id, is_sub_meter, imp_kwh, imp_kwh_grid,
-    imp_kwh_remainder, imp_rate, imp_cost, exp_kwh, exp_cost, standing_charge,
-    carbon_g (and optionally billing_day)."""
+    imp_rate, imp_cost, exp_kwh, exp_cost, standing_charge, carbon_g (and optionally
+    billing_day). The stored remainder is not read (step 5, 8 Oct 2026): Direct is
+    direct_import's rule on the grid shares."""
     rows = []
     for _r in raw_rows:
         _k = _r.keys()
         _g = lambda c: _r[c] if c in _k else None     # a row may omit what its kind never reads
         rows.append((_r["block_start"], _g("meter_id"), _r["is_sub_meter"], _g("billing_day"),
-                     _r["imp_kwh"], _g("imp_kwh_grid"), _g("imp_kwh_remainder"), _r["imp_rate"],
+                     _r["imp_kwh"], _g("imp_kwh_grid"), _r["imp_rate"],
                      _r["imp_cost"], _r["exp_kwh"], _r["exp_cost"], _r["standing_charge"],
                      _r["carbon_g"]))
     return _aggregate_tuples(rows, bucket_of, standing_scope, billing_day_fallback)
@@ -59,7 +60,7 @@ def _aggregate_tuples(rows, bucket_of, standing_scope="bucket", billing_day_fall
     """`_aggregate_block_rows` over plain tuples — the one implementation of its rules.
 
     Each row is `(block_start, meter_id, is_sub_meter, billing_day, imp_kwh, imp_kwh_grid,
-    imp_kwh_remainder, imp_rate, imp_cost, exp_kwh, exp_cost, standing_charge, carbon_g)`.
+    imp_rate, imp_cost, exp_kwh, exp_cost, standing_charge, carbon_g)`.
     Split out for the all-days load (#47, 2 Oct 2026), which reads these columns as tuples
     (`_day_tuples`): over `sqlite3.Row`s, looked up by name a dozen times a block, the
     aggregation took 0.143 s on the dev database's 58k blocks; over tuples, about 0.07 s. SQLite's
@@ -71,7 +72,7 @@ def _aggregate_tuples(rows, bucket_of, standing_scope="bucket", billing_day_fall
     # Each block's main and devices (kWh, £), for its Direct import (direct_import's rule,
     # per half-hour) — kept per block because the rows arrive in no order within one.
     _blocks = {}
-    for (_bs, _mid, _is_sub, _bd_val, _ik, _ig, _ir, _irate, _ic, _ek, _ec, _sc,
+    for (_bs, _mid, _is_sub, _bd_val, _ik, _ig, _irate, _ic, _ek, _ec, _sc,
          _cg) in rows:
         _bk = bucket_of(_bs)
         _dd = _day_data.get(_bk)
@@ -531,8 +532,8 @@ def _raw_rows(store, utc_start, utc_end):
               "WHERE effective_to IS NULL ORDER BY effective_from DESC LIMIT 1")
     return store._conn.execute(f"""
         SELECT b.block_start, b.meter_id, m.is_sub_meter, m.parent_meter_id,
-               b.imp_kwh, b.imp_kwh_grid, b.imp_kwh_remainder,
-               b.imp_rate, b.imp_cost, b.imp_cost_remainder, b.exp_kwh, b.exp_cost,
+               b.imp_kwh, b.imp_kwh_grid,
+               b.imp_rate, b.imp_cost, b.exp_kwh, b.exp_cost,
                b.imp_kwh_ev, b.imp_cost_ev, b.rate_source, b.source,
                b.standing_charge, b.carbon_g,
                b.interpolated, cp.billing_day
@@ -582,7 +583,7 @@ def _day_tuples(store, utc_start, utc_end):
     cur.row_factory = None
     return cur.execute(f"""
         SELECT b.block_start, b.meter_id, {sub_case}, {bd_case},
-               b.imp_kwh, b.imp_kwh_grid, b.imp_kwh_remainder, b.imp_rate, b.imp_cost,
+               b.imp_kwh, b.imp_kwh_grid, b.imp_rate, b.imp_cost,
                b.exp_kwh, b.exp_cost, b.standing_charge, b.carbon_g
         FROM blocks b
         WHERE +b.config_period_id IN ({",".join("?" * len(periods))})
@@ -688,8 +689,8 @@ def _slot_rows_for(store, slots):
         part = slots[i:i + 500]
         out += store._conn.execute(f"""
             SELECT b.block_start, b.meter_id, m.is_sub_meter, m.parent_meter_id,
-                   b.imp_kwh, b.imp_kwh_grid, b.imp_kwh_remainder,
-                   b.imp_rate, b.imp_cost, b.imp_cost_remainder, b.exp_kwh, b.exp_cost,
+                   b.imp_kwh, b.imp_kwh_grid,
+                   b.imp_rate, b.imp_cost, b.exp_kwh, b.exp_cost,
                    b.imp_kwh_ev, b.imp_cost_ev, b.rate_source, b.source,
                    b.standing_charge, b.carbon_g,
                    b.interpolated, cp.billing_day
