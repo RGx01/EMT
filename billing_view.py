@@ -143,8 +143,10 @@ def _bill_blocks(rows, segments, ev_meter):
     on the Pi."""
     c = _col()
     i_kwh, i_cost, i_rate = c["imp_kwh"], c["imp_cost"], c["imp_rate"]
-    i_sc, i_sc_exc = c["standing_charge"], c["standing_charge_exc"]
-    opt = tuple((k, c[col]) for k, col in (("cost_exc", "imp_cost_exc"), ("rate_exc", "imp_rate_exc"),
+    i_sc = c["standing_charge"]
+    # Ex-VAT is the stored cost alone (step 5, 8 Oct 2026): the rate and the standing charge's
+    # ex-VAT are derived where they are read (energy_charts), not carried.
+    opt = tuple((k, c[col]) for k, col in (("cost_exc", "imp_cost_exc"),
                                            ("kwh_ev", "imp_kwh_ev"), ("cost_ev", "imp_cost_ev"),
                                            ("rate_ev", "imp_rate_ev")))
     out, cur, last = [], None, None
@@ -169,10 +171,8 @@ def _bill_blocks(rows, segments, ev_meter):
         if segs:
             imp["segments"] = [{"kwh": k, "inc_rate": i, "exc_rate": x, "band": b,
                                 "attribution": a} for k, i, x, b, a in segs]
-        m = cur["meters"][mid] = {"standing_charge": float(r[i_sc] or 0),
-                                  "channels": {"import": imp}}
-        if r[i_sc_exc] is not None:
-            m["standing_charge_exc"] = float(r[i_sc_exc])
+        cur["meters"][mid] = {"standing_charge": float(r[i_sc] or 0),
+                              "channels": {"import": imp}}
     return out
 
 

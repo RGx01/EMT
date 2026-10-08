@@ -257,12 +257,16 @@ class TestBillMethodBreakdown(unittest.TestCase):
         imp = {"kwh": kwh, "cost": cost}
         if rate is not None:
             imp["rate"] = rate
-        if cost_exc is not None:
-            imp["cost_exc"] = cost_exc
         if rate_exc is not None:
             imp["rate_exc"] = rate_exc
+            if cost_exc is None:       # a stored rate always comes with its cost (every real DB)
+                cost_exc = round(kwh * rate_exc, 6)
+        if cost_exc is not None:
+            imp["cost_exc"] = cost_exc
         m = {"channels": {"import": imp}}
         if standing_exc is not None:
+            # The standing charge ex-VAT is derived from the inc one (step 5, 8 Oct 2026).
+            m["standing_charge"] = round(standing_exc * 1.05, 6)
             m["standing_charge_exc"] = standing_exc
         return {"start": start, "meters": {"electricity_main": m}}
 
@@ -380,6 +384,8 @@ class TestDayChartExcTable(unittest.TestCase):
         ch = {"kwh": kwh, "cost": cost, "rate": rate}
         if rate_exc is not None:
             ch["rate_exc"] = rate_exc
+            if cost_exc is None:       # a stored rate always comes with its cost (every real DB)
+                cost_exc = round(kwh * rate_exc, 6)
         if cost_exc is not None:
             ch["cost_exc"] = cost_exc
         return {"meters": {"electricity_main": {"meta": {}, "standing_charge": 0.5,

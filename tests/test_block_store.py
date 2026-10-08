@@ -770,8 +770,9 @@ class TestSchema(unittest.TestCase):
         blk = store.get_blocks_lightweight()[0]
         imp = blk["meters"]["electricity_main"]["channels"]["import"]
         self.assertAlmostEqual(imp["cost_exc"], 0.15668, places=6)     # surfaced
-        self.assertNotIn("rate_exc", imp)                              # NULL → omitted, like _row_to_block
-        self.assertEqual(blk["meters"]["electricity_main"]["exc_source"], "measurement")
+        self.assertNotIn("rate_exc", imp)                              # derived where read, not carried
+        # Step 5 (8 Oct 2026): exc_source is not carried — no surface reads it.
+        self.assertNotIn("exc_source", blk["meters"]["electricity_main"])
         store.close()
 
     def test_import_preserves_live_standing(self):

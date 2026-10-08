@@ -402,10 +402,10 @@ def _records_from_blocks(blocks):
 BILL_ROW_COLUMNS = (
     "block_start", "meter_id", "is_sub_meter", "device_label", "timezone",
     "imp_kwh", "imp_kwh_grid", "imp_rate", "imp_cost",
-    "imp_read_start", "imp_read_end", "imp_cost_exc", "imp_rate_exc",
+    "imp_read_start", "imp_read_end", "imp_cost_exc",
     "imp_kwh_ev", "imp_cost_ev", "imp_rate_ev", "imp_ev_band", "imp_home_band",
     "exp_kwh", "exp_rate", "exp_cost", "exp_read_start", "exp_read_end",
-    "standing_charge", "standing_charge_exc")
+    "standing_charge")
 
 
 def _records_from_rows(rows, segments):
@@ -415,8 +415,8 @@ def _records_from_rows(rows, segments):
     names = {}
     rec = None
     for (bs, mid, is_sub_meter, device, tz, imp_kwh, kwh_grid, imp_rate, imp_cost,
-         imp_rs, imp_re, cost_exc, _rate_exc, kwh_ev, cost_ev, rate_ev, ev_band, home_band,
-         exp_kwh, exp_rate, exp_cost, exp_rs, exp_re, sc, _sc_exc) in rows:
+         imp_rs, imp_re, cost_exc, kwh_ev, cost_ev, rate_ev, ev_band, home_band,
+         exp_kwh, exp_rate, exp_cost, exp_rs, exp_re, sc) in rows:
         if rec is None or rec[0] != bs:
             if rec is not None:
                 yield rec[0], rec[1], rec[2]
