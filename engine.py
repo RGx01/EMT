@@ -782,14 +782,31 @@ def _refit_held_segments(imp_ch: dict, block_start: str, meter_id: str, kwh: flo
         return False
 
 
-def _persist_block_segments(block_start: str, meter_id: str, imp_ch: dict) -> None:
+def _persist_block_segments(block_start: str, meter_id: str, imp_ch: dict, *,
+                            keep_stored: bool = False) -> None:
     """BL-27: write the priced segments for a just-priced MAIN import channel, so new /
     settled blocks carry `block_segments` alongside the imp_* columns (history is filled by
     the segment backfill). Segments mirror the columns during the migration; the readers
     then read segments. Derived from the channel so it stays in sync with whatever pricing
-    just ran (overlay / IOG split / settlement). Best-effort — never blocks pricing."""
+    just ran (overlay / IOG split / settlement). Best-effort — never blocks pricing.
+
+    `keep_stored` (a held rate, BL-79 8 Oct 2026): when the seam emitted no segments, the
+    block's STORED segments are kept, fitted to its kWh — not rebuilt from the channel's
+    imp_*_ev copies. A re-run's channel comes from get_block_dict_by_start, which attaches no
+    segments, so the rebuild collapsed a multi-band block to one or two segments from columns
+    that may be stale. A block with no stored segments still gets the rebuild."""
     if _store is None or not block_start or not imp_ch:
         return
+    if keep_stored and not imp_ch.get("segments"):
+        try:
+            if _store.get_block_segments(block_start, meter_id):
+                _refit_held_segments(imp_ch, block_start, meter_id,
+                                     float(imp_ch.get("kwh") or 0.0),
+                                     float(imp_ch.get("rate") or 0.0))
+                return
+        except Exception as e:
+            logger.warning("_persist_block_segments: stored segments unreadable (%s): %s",
+                           block_start, e)
     try:
         import pricing_segments as _ps
         _rate = float(imp_ch.get("rate") or 0.0)
@@ -911,7 +928,7 @@ def _reprice_main_import_block(result: dict, start: str, meter_name: str,
     # the corrected £ rate. Byte-identical on healthy blocks.
     _sanitise_inc_units(result, start)
     if persist:
-        _persist_block_segments(start, meter_name, result)
+        _persist_block_segments(start, meter_name, result, keep_stored=hold_rate)
 
 
 def _log_config_state(config: dict | None = None) -> None:
