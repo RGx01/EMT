@@ -5299,17 +5299,11 @@ class BlockStore:
         """
         Return lifetime cumulative totals for HA sensor publishing.
 
-        Mirrors engine PASS 3 logic exactly:
-          - Main meter (is_sub_meter=0): use imp_kwh_remainder if available
-            (house-only grid load after sub-meters claimed their share),
-            falling back to imp_kwh (correct when no sub-meters configured).
-          - Sub-meters (is_sub_meter=1): use imp_kwh_grid if available
-            (the portion the sub-meter drew from the grid rather than from
-            solar/battery), falling back to imp_kwh.
-
-        This avoids double-counting: electricity_main.imp_kwh already
-        includes EV charger and battery consumption; adding sub-meter
-        imp_kwh on top inflates the total by the sub-meter kWh.
+        import_kwh is the MAIN METER's import: the grid boundary (step 5, 8 Oct 2026). It was
+        the stored remainder plus every device's grid share — the main, wherever the remainder
+        was right, and short of it wherever a device's rows had gone and its remainder stayed
+        (95.8 kWh on one real database, 21.1 on another; identical on six). Sub-meters are an
+        attribution of the main's import, never an addition to it.
 
         export_kwh/imp_cost/exp_cost: main meter only (sub-meters don't
         have independent costs or export).
@@ -5320,17 +5314,7 @@ class BlockStore:
         )
         cur = self._conn.execute(
             f"""SELECT
-                 COALESCE(SUM(
-                   CASE
-                     WHEN m.is_sub_meter = 0 THEN
-                       CASE
-                         WHEN b.imp_kwh_remainder IS NOT NULL THEN b.imp_kwh_remainder
-                         WHEN b.imp_kwh_grid      IS NOT NULL THEN b.imp_kwh_grid
-                         ELSE b.imp_kwh
-                       END
-                     ELSE COALESCE(b.imp_kwh_grid, 0)  -- sub-meter: grid only, no raw fallback
-                   END
-                 ), 0.0) as import_kwh,
+                 COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.imp_kwh ELSE 0 END), 0.0) as import_kwh,
                  COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.exp_kwh  ELSE 0 END), 0.0) as export_kwh,
                  COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.imp_cost ELSE 0 END), 0.0) as import_cost,
                  COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.exp_cost ELSE 0 END), 0.0) as export_cost

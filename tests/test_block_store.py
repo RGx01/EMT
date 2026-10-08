@@ -2255,11 +2255,9 @@ class TestCurrentBlock(unittest.TestCase):
     def test_get_cumulative_totals_with_sub_meters(self):
         """
         With sub-meters, totals must NOT double-count.
-        electricity_main.imp_kwh already includes sub-meter consumption.
-        get_cumulative_totals should use:
-          - main meter: imp_kwh_remainder (house-only grid load)
-          - sub-meter:  imp_kwh_grid (sub-meter grid portion), or imp_kwh
-          TOTAL = remainder + sub_grid ≈ main.imp_kwh
+        electricity_main.imp_kwh already includes sub-meter consumption, so the total grid
+        import is the main meter's own (step 5, 8 Oct 2026 — it was remainder + sub grid, which
+        is the same figure wherever the remainder is right). GUARD.
         """
         cfg = {"meters": {
             "electricity_main": {"meta": {
@@ -2306,6 +2304,23 @@ class TestCurrentBlock(unittest.TestCase):
         # NOT 5.0 (3.0 + 2.0 double-counted)
         self.assertNotAlmostEqual(totals["import_kwh"], 5.0, places=1,
             msg="5.0 would indicate double-counting bug")
+
+    def test_get_cumulative_totals_ignores_a_stale_remainder(self):
+        """Step 5 (8 Oct 2026): a device's rows gone, its remainder left behind (the real shape on
+        two databases) must not make the published total short of the meter. Fails on the parent,
+        which summed the stale remainder (1.0) and published 1.0 instead of 3.0."""
+        self.store.insert_config_period({"meters": {
+            "electricity_main": {"meta": {"billing_day": 1, "block_minutes": 30, "timezone": "UTC",
+                                          "currency_symbol": "£", "currency_code": "GBP"}},
+            "ev_charger": {"meta": {"sub_meter": True, "parent_meter": "electricity_main"}}}})
+        cp_id = self.store._conn.execute("SELECT id FROM config_periods LIMIT 1").fetchone()["id"]
+        self.store._conn.execute("""
+            INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
+            imp_kwh, imp_kwh_remainder, imp_cost, exp_kwh, exp_cost, standing_charge)
+            VALUES ('2026-01-01T00:00:00','2026-01-01T00:30:00','electricity_main',?,0, 3.0,1.0,0.735, 0.0,0.0, 0.5)
+        """, (cp_id,))
+        self.store._conn.commit()
+        self.assertAlmostEqual(self.store.get_cumulative_totals()["import_kwh"], 3.0, places=4)
 
 
 class TestUpgradePaths(unittest.TestCase):
