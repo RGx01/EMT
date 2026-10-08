@@ -5299,17 +5299,11 @@ class BlockStore:
         """
         Return lifetime cumulative totals for HA sensor publishing.
 
-        Mirrors engine PASS 3 logic exactly:
-          - Main meter (is_sub_meter=0): use imp_kwh_remainder if available
-            (house-only grid load after sub-meters claimed their share),
-            falling back to imp_kwh (correct when no sub-meters configured).
-          - Sub-meters (is_sub_meter=1): use imp_kwh_grid if available
-            (the portion the sub-meter drew from the grid rather than from
-            solar/battery), falling back to imp_kwh.
-
-        This avoids double-counting: electricity_main.imp_kwh already
-        includes EV charger and battery consumption; adding sub-meter
-        imp_kwh on top inflates the total by the sub-meter kWh.
+        import_kwh is the MAIN METER's import: the grid boundary (step 5, 8 Oct 2026). It was
+        the stored remainder plus every device's grid share — the main, wherever the remainder
+        was right, and short of it wherever a device's rows had gone and its remainder stayed
+        (95.8 kWh on one real database, 21.1 on another; identical on six). Sub-meters are an
+        attribution of the main's import, never an addition to it.
 
         export_kwh/imp_cost/exp_cost: main meter only (sub-meters don't
         have independent costs or export).
@@ -5320,17 +5314,7 @@ class BlockStore:
         )
         cur = self._conn.execute(
             f"""SELECT
-                 COALESCE(SUM(
-                   CASE
-                     WHEN m.is_sub_meter = 0 THEN
-                       CASE
-                         WHEN b.imp_kwh_remainder IS NOT NULL THEN b.imp_kwh_remainder
-                         WHEN b.imp_kwh_grid      IS NOT NULL THEN b.imp_kwh_grid
-                         ELSE b.imp_kwh
-                       END
-                     ELSE COALESCE(b.imp_kwh_grid, 0)  -- sub-meter: grid only, no raw fallback
-                   END
-                 ), 0.0) as import_kwh,
+                 COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.imp_kwh ELSE 0 END), 0.0) as import_kwh,
                  COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.exp_kwh  ELSE 0 END), 0.0) as export_kwh,
                  COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.imp_cost ELSE 0 END), 0.0) as import_cost,
                  COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.exp_cost ELSE 0 END), 0.0) as export_cost
@@ -6731,7 +6715,7 @@ class BlockStore:
     # billing_view unpack by position.
     BILL_ROW_COLUMNS = (
         "block_start", "meter_id", "is_sub_meter", "device_label", "timezone",
-        "imp_kwh", "imp_kwh_grid", "imp_kwh_remainder", "imp_rate", "imp_cost",
+        "imp_kwh", "imp_kwh_grid", "imp_rate", "imp_cost",
         "imp_read_start", "imp_read_end", "imp_cost_exc", "imp_rate_exc",
         "imp_kwh_ev", "imp_cost_ev", "imp_rate_ev", "imp_ev_band", "imp_home_band",
         "exp_kwh", "exp_rate", "exp_cost", "exp_read_start", "exp_read_end",
@@ -6748,7 +6732,7 @@ class BlockStore:
         Decoding 38 columns into them took half a year's bill on the Pi."""
         rows = self._conn.execute(
             """SELECT b.block_start, b.meter_id, m.is_sub_meter, m.device_label, cp.timezone,
-                      b.imp_kwh, b.imp_kwh_grid, b.imp_kwh_remainder, b.imp_rate, b.imp_cost,
+                      b.imp_kwh, b.imp_kwh_grid, b.imp_rate, b.imp_cost,
                       b.imp_read_start, b.imp_read_end, b.imp_cost_exc, b.imp_rate_exc,
                       b.imp_kwh_ev, b.imp_cost_ev, b.imp_rate_ev, b.imp_ev_band, b.imp_home_band,
                       b.exp_kwh, b.exp_rate, b.exp_cost, b.exp_read_start, b.exp_read_end,
@@ -7615,7 +7599,6 @@ class BlockStore:
             "       ROUND(COALESCE(SUM(carbon_g), 0), 0) AS cg, "
             "       ROUND(COALESCE(SUM(imp_kwh_ev), 0), 4) AS xe, ROUND(COALESCE(SUM(imp_cost_ev), 0), 4) AS xc, "
             "       ROUND(COALESCE(SUM(imp_cost_exc), 0), 4) AS xx, ROUND(COALESCE(SUM(imp_kwh_grid), 0), 4) AS xg, "
-            "       ROUND(COALESCE(SUM(imp_kwh_remainder), 0), 4) AS xr, "
             "       ROUND(COALESCE(SUM(standing_charge), 0), 4) AS xs "
             # NOT INDEXED: the window is nearly every row, and walking the block_start index
             # with a row lookup each is far slower than one scan (0.28 s vs ~0.05 s, 138k).
@@ -7762,7 +7745,6 @@ class BlockStore:
             "       ROUND(COALESCE(SUM(b.imp_cost_ev), 0), 4) AS xc, "
             "       ROUND(COALESCE(SUM(b.imp_cost_exc), 0), 4) AS xx, "
             "       ROUND(COALESCE(SUM(b.imp_kwh_grid), 0), 4) AS xg, "
-            "       ROUND(COALESCE(SUM(b.imp_kwh_remainder), 0), 4) AS xr, "
             "       ROUND(COALESCE(SUM(b.standing_charge), 0), 4) AS xs "
             "FROM blocks b WHERE b.block_start >= ? AND b.block_start < ? "
             "GROUP BY day", (utc_start, utc_end)).fetchall()
@@ -7776,10 +7758,12 @@ class BlockStore:
             "FROM block_segments WHERE block_start >= ? AND block_start < ? "
             "GROUP BY day", (utc_start, utc_end)).fetchall()
         seg = {r["day"]: "%s:%s:%s:%s:%s" % (r["n"], r["ir"], r["er"], r["ea"], r["pk"]) for r in segs}
-        return {r["day"]: "%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s" % (
+        # Not the stored remainder (step 5, 8 Oct 2026): no surface reads it, and the main's import
+        # and the grid shares it was derived from (ik, xg) are already here.
+        return {r["day"]: "%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s" % (
                     r["n"], r["newest"] or "", r["ik"], r["ic"],
                     r["ek"], r["ec"], r["cg"], r["xe"], r["xc"], r["xx"], r["xg"],
-                    r["xr"], r["xs"], seg.get(r["day"], "0"))
+                    r["xs"], seg.get(r["day"], "0"))
                 for r in rows}
 
     def get_block_bounds(self, meter_id: str = "electricity_main") -> dict:

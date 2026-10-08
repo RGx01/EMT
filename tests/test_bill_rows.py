@@ -288,12 +288,12 @@ class TheDictAdapter(unittest.TestCase):
         s = self._sum([self._blk({"kwh_total": 2.0, "rate_used": 0.25})])
         self.assertEqual(s["main_import_raw"], {0.25: {"kwh": 2.0, "cost": 0.3}})
 
-    def test_a_none_remainder_skips_the_line_but_not_the_raw_total(self):
-        """GUARD: `float(None)` raised inside the old per-channel try, after the raw
-        total and the house/EV split were counted and before the meter line was."""
+    def test_a_stored_remainder_is_not_read(self):
+        """Step 5 (8 Oct 2026): the bill's Direct is direct_import's rule, so a stored remainder —
+        even one that will not convert, which used to skip the meter line — changes nothing."""
         s = self._sum([self._blk({"kwh_remainder": None})])
         self.assertEqual(s["main_import_raw"][0.3]["kwh"], 1.0)
-        self.assertEqual(s["meters"], {})
+        self.assertIn("Electricity Main / Import", s["meters"])
 
     def test_an_empty_channel_still_opens_a_zero_rate_line(self):
         """GUARD: an empty channel dict reads as zeros, as `.get` on {} did."""

@@ -118,6 +118,19 @@ def _context(store, cfg, blocks):
     return _ec.billing_context(cfg, store, blocks, has_exc=_has_exc(store))
 
 
+# get_bill_rows' positions, by name (step 5, 8 Oct 2026): hard-coded indexes broke when the
+# remainder left the row, and would break again with each column that goes.
+_C = None
+
+
+def _col():
+    global _C
+    if _C is None:
+        import billing as _b
+        _C = {name: i for i, name in enumerate(_b.BILL_ROW_COLUMNS)}
+    return _C
+
+
 def _bill_blocks(rows, segments, ev_meter):
     """The period's blocks as the bill's other readers see them, from get_bill_rows (#48).
 
@@ -128,6 +141,12 @@ def _bill_blocks(rows, segments, ev_meter):
     puts there, and a key is present exactly when it puts it there. Nothing else is
     built: the other meters and the export channels cost a year's bill half its time
     on the Pi."""
+    c = _col()
+    i_kwh, i_cost, i_rate = c["imp_kwh"], c["imp_cost"], c["imp_rate"]
+    i_sc, i_sc_exc = c["standing_charge"], c["standing_charge_exc"]
+    opt = tuple((k, c[col]) for k, col in (("cost_exc", "imp_cost_exc"), ("rate_exc", "imp_rate_exc"),
+                                           ("kwh_ev", "imp_kwh_ev"), ("cost_ev", "imp_cost_ev"),
+                                           ("rate_ev", "imp_rate_ev")))
     out, cur, last = [], None, None
     for r in rows:
         bs, mid = r[0], r[1]
@@ -137,24 +156,23 @@ def _bill_blocks(rows, segments, ev_meter):
             last = bs
         if mid != "electricity_main" and mid != ev_meter:
             continue
-        imp = {"kwh": float(r[5] or 0), "cost": float(r[9] or 0)}
-        if r[8] is not None:
-            imp["rate"] = float(r[8])
+        imp = {"kwh": float(r[i_kwh] or 0), "cost": float(r[i_cost] or 0)}
+        if r[i_rate] is not None:
+            imp["rate"] = float(r[i_rate])
         if mid != "electricity_main":
             cur["meters"][mid] = {"channels": {"import": imp}}
             continue
-        for k, i in (("cost_exc", 12), ("rate_exc", 13), ("kwh_ev", 14),
-                     ("cost_ev", 15), ("rate_ev", 16)):
+        for k, i in opt:
             if r[i] is not None:
                 imp[k] = float(r[i])
         segs = segments.get((bs, mid))
         if segs:
             imp["segments"] = [{"kwh": k, "inc_rate": i, "exc_rate": x, "band": b,
                                 "attribution": a} for k, i, x, b, a in segs]
-        m = cur["meters"][mid] = {"standing_charge": float(r[24] or 0),
+        m = cur["meters"][mid] = {"standing_charge": float(r[i_sc] or 0),
                                   "channels": {"import": imp}}
-        if r[25] is not None:
-            m["standing_charge_exc"] = float(r[25])
+        if r[i_sc_exc] is not None:
+            m["standing_charge_exc"] = float(r[i_sc_exc])
     return out
 
 

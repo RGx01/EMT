@@ -143,7 +143,7 @@ def _old_sources():
         out = []
         for r in rows:
             out.append((r["block_start"], r["meter_id"], r["is_sub_meter"], r["billing_day"],
-                        r["imp_kwh"], r["imp_kwh_grid"], r["imp_kwh_remainder"], r["imp_rate"],
+                        r["imp_kwh"], r["imp_kwh_grid"], r["imp_rate"],
                         r["imp_cost"], r["exp_kwh"], r["exp_cost"], r["standing_charge"],
                         r["carbon_g"]))
         return out

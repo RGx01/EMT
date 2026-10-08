@@ -2088,7 +2088,6 @@ def _blocks_data_version(store) -> str:
         "ROUND(COALESCE(SUM(imp_cost_ev), 0), 4) AS xc, "
         "ROUND(COALESCE(SUM(imp_cost_exc), 0), 4) AS xx, "
         "ROUND(COALESCE(SUM(imp_kwh_grid), 0), 4) AS xg, "
-        "ROUND(COALESCE(SUM(imp_kwh_remainder), 0), 4) AS xr, "
         "ROUND(COALESCE(SUM(standing_charge), 0), 4) AS xs "
         "FROM blocks").fetchone()
     # What the Billing tab shows beyond the blocks: the billing periods (a billing-day
@@ -2126,7 +2125,7 @@ def _blocks_data_version(store) -> str:
         _sf = "0"
     return (f"{row['c']}:{row['m'] or ''}:"
             f"{row['ik']}:{row['ic']}:{row['ek']}:{row['ec']}:{row['cg']}:"
-            f"{row['xe']}:{row['xc']}:{row['xx']}:{row['xg']}:{row['xr']}:{row['xs']}:"
+            f"{row['xe']}:{row['xc']}:{row['xx']}:{row['xg']}:{row['xs']}:"
             f"{_cfgf}:{_epoch}:{_br}:{_sf}")
 
 
@@ -6049,7 +6048,7 @@ def _aggregate_usage(store, cfg, utc_start: str, utc_end: str,
     # Fetch all columns needed for usage insights in one query
     rows = store._conn.execute(
         """SELECT b.meter_id, b.block_start,
-                  b.imp_kwh, b.imp_kwh_grid, b.imp_kwh_remainder,
+                  b.imp_kwh, b.imp_kwh_grid,
                   b.imp_rate, b.imp_cost,
                   b.imp_kwh_ev, b.imp_cost_ev, b.imp_rate_ev,
                   b.exp_kwh, b.exp_rate, b.exp_cost,
@@ -6063,6 +6062,18 @@ def _aggregate_usage(store, cfg, utc_start: str, utc_end: str,
            ORDER BY b.block_start""",
         (utc_start, utc_end)
     ).fetchall()
+
+    # Each block's devices (grid kWh, £), for its Direct import by direct_import's rule (step 5,
+    # 8 Oct 2026). The house was the stored remainder in kWh and a pro-rata share of the main's
+    # cost in £ — a sixth way of working Direct out, and one that read a stale remainder as truth.
+    import direct_import as _direct
+    _dev_sum: dict = {}
+    for _r in rows:
+        if bool(_r["is_sub_meter"]) or _r["meter_id"] in sub_meter_ids:
+            _g = _r["imp_kwh_grid"]
+            _d = _dev_sum.setdefault(_r["block_start"], [0.0, 0.0])
+            _d[0] += float(_g) if _g is not None else float(_r["imp_kwh"] or 0)
+            _d[1] += float(_r["imp_cost"] or 0)
 
     # ── Accumulators ──────────────────────────────────────────────────────────
     main_imp_kwh   = 0.0   # total grid import
@@ -6140,10 +6151,9 @@ def _aggregate_usage(store, cfg, utc_start: str, utc_end: str,
         main_imp_cost += imp_cost
         main_exp_cost += exp_cost
 
-        # House-only import (main minus sub-meters, already computed by engine)
-        rem = row["imp_kwh_remainder"]
-        h_imp = float(rem) if rem is not None else imp
-        h_cost = imp_cost * (h_imp / imp) if imp > 0 else 0.0
+        # House-only import: direct_import's rule on this half-hour (main less its devices).
+        _dk, _dc = _dev_sum.get(bs, (0.0, 0.0))
+        h_imp, h_cost = _direct.direct(imp, imp_cost, _dk, _dc)
         house_imp_kwh  += h_imp
         house_imp_cost += h_cost
 

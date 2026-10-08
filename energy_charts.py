@@ -127,6 +127,7 @@ def build_meter_colors_from_config(cfg: dict) -> dict:
 # bill_card owns the card's rows (C, 30 Sep 2026); these names stay for the day
 # panel's collapse below and for Usage Insights (server._collapse_rate_tiers).
 import bill_card as _bc
+import direct_import as _direct
 _MAX_RATE_ROWS = _bc.MAX_RATE_ROWS
 _SPLIT_BAND_EPS = _bc.SPLIT_BAND_EPS
 
@@ -757,36 +758,19 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
             main_import = (main.get("channels", {}) or {}).get("import", {}) or {}
             main_export = (main.get("channels", {}) or {}).get("export", {}) or {}
 
-            # Use kwh_remainder when available (engine PASS 2 remainder — same field
-            # usage stats uses). With no sub-meters this key is absent (NULL in DB,
-            # omitted by both block reconstruction paths), so this falls through to
-            # the main meter's kwh — api+mini blocks are structurally identical to
-            # CAD here, so no mode-specific handling is needed.
-            if "kwh_remainder" in main_import:
-                main_kwh  = _f(main_import["kwh_remainder"])
-                main_cost = _f(main_import.get("cost"))
-                _raw_main_cost = main_cost   # pre-subtraction, to keep an Agile credit's sign
-                # Cost: subtract sub-meter costs (no cost_remainder stored per-block)
-                for meter_name, meter in meters.items():
-                    if (meter or {}).get("meta", {}).get("sub_meter"):
-                        sub = ((meter.get("channels", {}) or {}).get("import", {}) or {})
-                        main_cost -= _f(sub.get("cost"))
-                # Floor only the sub-subtraction artifact (raw >= 0); a genuinely negative
-                # Agile plunge-price cost (a credit) must survive, not clamp to 0.
-                main_cost = main_cost if _raw_main_cost < 0 else max(main_cost, 0.0)
-            else:
-                main_kwh  = _f(main_import.get("kwh_total", main_import.get("kwh")))
-                main_cost = _f(main_import.get("cost"))
-                _raw_main_cost = main_cost   # pre-subtraction, to keep an Agile credit's sign
-                for meter_name, meter in meters.items():
-                    if (meter or {}).get("meta", {}).get("sub_meter"):
-                        sub = ((meter.get("channels", {}) or {}).get("import", {}) or {})
-                        main_kwh  -= _f(sub.get("kwh_grid", sub.get("kwh")))
-                        main_cost -= _f(sub.get("cost"))
-                main_kwh  = max(main_kwh, 0.0)
-                # Floor only the sub-subtraction artifact (raw >= 0); a genuine Agile
-                # plunge-price credit (negative cost) must survive, not clamp to 0.
-                main_cost = main_cost if _raw_main_cost < 0 else max(main_cost, 0.0)
+            # Direct import: direct_import's rule, per half-hour (step 5, 8 Oct 2026) — the
+            # main's kWh and £ less every device's grid share and £, floored, a plunge credit
+            # kept. It was the stored remainder in kWh (its own subtraction in £), or the same
+            # subtraction where no remainder was stored: a fifth copy of the rule.
+            _dev_k = _dev_c = 0.0
+            for meter_name, meter in meters.items():
+                if (meter or {}).get("meta", {}).get("sub_meter"):
+                    sub = ((meter.get("channels", {}) or {}).get("import", {}) or {})
+                    _dev_k += _f(sub.get("kwh_grid", sub.get("kwh")))
+                    _dev_c += _f(sub.get("cost"))
+            main_kwh, main_cost = _direct.direct(
+                _f(main_import.get("kwh_total", main_import.get("kwh"))),
+                _f(main_import.get("cost")), _dev_k, _dev_c)
             main_rate = _f(main_import.get("rate_used", main_import.get("rate")))
             _seg_split = _day_segment_split(main_import, meters)  # BL-27: applied after exc
 
