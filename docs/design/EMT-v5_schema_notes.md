@@ -11,7 +11,7 @@ rejected — so it is not re-proposed in six months.*
 
 ## 1. The decision
 
-**Keep the wide, one-row-per-block shape. Drop 12 columns. Fix the channel bug at the flag.**
+**Keep the wide, one-row-per-block shape. Drop 11 columns. Fix the channel bug at the flag.**
 
 ---
 
@@ -39,7 +39,7 @@ class of real cost:
 None of those were storage problems. They were two-sources-of-truth problems, and the fix is to keep
 one source.
 
-**The drop list: ~~15~~ ~~14~~ 12 columns.** The ~~13~~ ~~12~~ **11** in import spec §5.2, plus:
+**The drop list: ~~15~~ ~~14~~ ~~12~~ 11 columns.** The ~~13~~ ~~12~~ ~~11~~ **10** in import spec §5.2, plus:
 
 | extra | why |
 |---|---|
@@ -359,7 +359,7 @@ in the same change. Until then a moved column is dead weight, not a second sourc
 | | |
 |---|---|
 | **Shape** | Wide, one row per block. Unchanged from v4. |
-| **Dropped** | 12 columns — 11 derivable from segments, plus `rate_reconciled`. `imp_provisional` was removed from the list on 5 Oct 2026: it is live and distinct (§2). `imp_kwh_grid` was removed from the list on 24 Sep 2026: sub-meters carry it and have NO segments (import spec §5.2, C §3). |
+| **Dropped** | 11 columns — 10 derivable from segments, plus `rate_reconciled`. `imp_cost_exc` was removed from the list on 8 Oct 2026: it is the ex-VAT authority, as `imp_cost` is the inc one (import spec §5.2, v15). `imp_provisional` was removed from the list on 5 Oct 2026: it is live and distinct (§2). `imp_kwh_grid` was removed from the list on 24 Sep 2026: sub-meters carry it and have NO segments (import spec §5.2, C §3). |
 | **Rejected** | One row per channel: −5.6% space, +28% rows, and a three-way join on every chart. |
 | **Deferred** | ~~7 columns pending a trace~~ — **traced 24 Sep 2026 (§5): six live, `derivation_id` write-only and kept.** |
 | **Justification** | Correctness. One source of truth per fact. The 14.3% is a side effect. |

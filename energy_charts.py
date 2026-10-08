@@ -209,11 +209,13 @@ def _bill_method_breakdown(blocks, period_vat=None, standing_inc_by_day=None, va
         start = b.get("start") or ""
         d = _local_day(start) if start else ""
         if d and d not in stand_exc_day:
-            se = m.get("standing_charge_exc")
+            # The standing charge ex-VAT is derived: inc ÷ (1 + the day's VAT). The stored
+            # standing_charge_exc was always that to 4e-7 on every real database, and it goes
+            # with the importer (step 5, 8 Oct 2026).
             sc = m.get("standing_charge") or 0
-            if se or sc:
+            if sc:
                 dv = _vat_of(d)
-                stand_exc_day[d] = (float(se) if se else float(sc) / (1.0 + dv), dv)
+                stand_exc_day[d] = (float(sc) / (1.0 + dv), dv)
         kwh = imp.get("kwh") or 0
         if not kwh:
             continue
@@ -223,7 +225,7 @@ def _bill_method_breakdown(blocks, period_vat=None, standing_inc_by_day=None, va
         bvat = _snap(float(c) / float(ce) - 1.0) if (c and ce) else _vat_of(start)
         if d:
             vat_by_day.setdefault(d, bvat)
-        if ce is not None or imp.get("rate_exc") is not None:
+        if ce is not None:
             with_exc += kwh
         # Raw ex-VAT cost for this half-hour: the billed cost, ex-VAT.
         if ce is not None:
@@ -247,8 +249,6 @@ def _bill_method_breakdown(blocks, period_vat=None, standing_inc_by_day=None, va
         # rate is inc ÷ (1 + that half-hour's VAT).
         if inc_rate is not None:
             band_key = round(float(inc_rate), 6)
-        elif imp.get("rate_exc") is not None:
-            band_key = round(float(imp["rate_exc"]) * (1.0 + bvat), 6)
         else:
             band_key = round(xc / float(kwh) * (1.0 + bvat), 6)
         band = bands[(band_key, bvat)]
@@ -755,14 +755,13 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
 
             # Per-slot ex-VAT ratio for the opt-in data-table Cost (exc) column.
             if bill_rounding:
-                _exc_r = main_import.get("rate_exc")
+                # The stored ex-VAT COST is the authority (step 5, 8 Oct 2026); the stored
+                # rate is not read. On every real block that has both they agree but for
+                # 6-dp rounding.
                 _ratio = None
-                if _exc_r is not None and main_rate:
-                    _ratio = _f(_exc_r) / main_rate
-                else:
-                    _ce, _ci = main_import.get("cost_exc"), main_import.get("cost")
-                    if _ce is not None and _ci not in (None, 0):
-                        _ratio = _f(_ce) / _f(_ci)
+                _ce, _ci = main_import.get("cost_exc"), main_import.get("cost")
+                if _ce is not None and _ci not in (None, 0):
+                    _ratio = _f(_ce) / _f(_ci)
                 if _ratio is None:
                     # No captured exc → fall back to the period's statutory VAT rate
                     # (from the calendar), NOT a hardcoded 1.05, so a 0%/20% period is right.

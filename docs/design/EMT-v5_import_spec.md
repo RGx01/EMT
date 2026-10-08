@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v14 — revised 8 Oct 2026 (§5.2: EV segments written before the EV columns drop); floor 4.5.21. §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v15 — revised 8 Oct 2026 (§5.2: `imp_cost_exc` carried, not dropped; v14: EV segments written before the EV columns drop); floor 4.5.21. §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -93,6 +93,13 @@ from the columns before they are dropped.** v5's surfaces now read the EV split 
 (`ev_split.py`), falling back to the `imp_*_ev` columns only for a block with no segments at all.
 On one real install 10 such blocks hold 28.43 kWh of EV that the drop would otherwise lose. The
 fallback goes with the columns.*
+
+*Changes in v15 (8 Oct 2026): §5.2 — **`imp_cost_exc` is CARRIED, not dropped** (the drop list
+falls from 11 columns to 10). It is the per-block ex-VAT authority, as `imp_cost` is the inc one: on
+blocks with segments, Σ kWh × `exc_rate` differs from it by up to ±2.3p a month on real data, and
+checked against two Octopus statements neither source matched every band, so the figure EMT has
+always shown is kept. `imp_rate_exc`, `standing_charge_exc` and `exc_source` still drop: v5's
+surfaces now derive the first two and never read the third.*
 
 ---
 
@@ -662,9 +669,30 @@ completed dispatch still decides. v5's schema must keep those separable.
 `source`, `is_provisional`, `finalised_from_cad`, `needs_review`, `review_reason`,
 `review_dismissed`, `derivation_id`, `rate_corrected`.
 
-**CARRY — authoritative totals:** `imp_rate`, `imp_cost`, `exp_rate`, `exp_cost`. `imp_cost` on a
-settled block **is the bill** and must not be recomputed from segments; segments intentionally
-differ by a sub-penny sliver which the remainder absorbs.
+**CARRY — authoritative totals:** `imp_rate`, `imp_cost`, `imp_cost_exc` *(v15)*, `exp_rate`,
+`exp_cost`. `imp_cost` on a settled block **is the bill** and must not be recomputed from segments;
+segments intentionally differ by a sub-penny sliver which the remainder absorbs.
+
+> **`imp_cost_exc` moved from DROP to CARRY, 8 Oct 2026 (v15).** It is the ex-VAT twin of
+> `imp_cost`, and nothing on the ex-VAT side absorbs the segments' sliver. Measured read-only on
+> three 4.x databases: where a main block has segments, Σ kWh × `exc_rate` equals it to ≤0.28p per
+> block, but over a month the slivers reach ±2.3p, enough to move a rounded monthly figure in 4–5
+> months (all CSV-imported history, 2023–24, plus Sep 2026). Two Octopus statements were checked.
+> Over Jul and Aug 2026 the two sources agree exactly. Over Jun 2024 the segments matched one band
+> and the column another, because there the column is `imp_cost ÷ 1.05` and `imp_cost` and
+> `imp_rate` disagree (ROADMAP BL-80). So the column is kept as what EMT has always shown, and v5's
+> bill method reads it (`tests/test_exvat_readers.py`).
+>
+> The other three ex-VAT columns still drop. `standing_charge_exc` is the standing charge ÷
+> (1 + the day's VAT) to 4×10⁻⁷ on every row measured, and v5 derives it there. A block's ex-VAT
+> rate is `imp_cost_exc ÷ kWh` (no real row has `imp_rate_exc` without `imp_cost_exc`).
+> `exc_source` has no v5 reader. On a device row `imp_cost_exc` carries no information v5 uses
+> (no surface reads a device's ex-VAT), and a v4 defect leaves some of those rows wrong: 4.5.8–4.5.14
+> priced a device's ex-VAT from its raw reading, PASS 2 re-costs a device's inc from its grid share
+> but carries its ex-VAT forward, and 4.5.15's clip heal checked only the inc side (114 rows on one
+> database, 2 on another). The importer may carry device rows' `imp_cost_exc` as it finds them; it
+> must not be read as a device's ex-VAT cost without re-deriving it from `imp_kwh_grid` and the
+> main's ex-VAT rate.
 
 **CARRY+REMAP — provenance:** `rate_source` → v5 naming (`'measured'` → `'settled'`, BL-61(5)).
 Always present on a .14 source (§4), so there is no absent-column branch — carry each row's own
@@ -675,9 +703,9 @@ column. *(8 Oct 2026: v5 itself already records a reconciliation in `rate_source
 it reads the flag only as a fallback for exactly these rows — 11 on prod, 1 on PianSom, 0–2 on the
 others — which this rule retires.)*
 
-**DROP — derived, reconstructable from segments** (~~13~~ ~~12~~ **11** columns; this is the
+**DROP — derived, reconstructable from segments** (~~13~~ ~~12~~ ~~11~~ **10** columns; this is the
 legacy-column removal): ~~`imp_kwh_grid`,~~ `imp_kwh_remainder`, `imp_cost_remainder`,
-~~`imp_provisional`~~, `imp_cost_exc`, `imp_rate_exc`, `standing_charge_exc`, `exc_source`,
+~~`imp_provisional`~~, ~~`imp_cost_exc`~~ *(carried, v15)*, `imp_rate_exc`, `standing_charge_exc`, `exc_source`,
 `imp_kwh_ev`, `imp_cost_ev`, `imp_rate_ev`, `imp_ev_band`, `imp_home_band`.
 
 > **`imp_provisional` REMOVED from the drop list, 5 Oct 2026.** `imp_provisional` came OFF the drop list on 5 Oct 2026: it is not a duplicate of `is_provisional`. It marks a SUB-METER block written without its post-boundary read (v4 2.10.0); `is_provisional` marks a MAIN block not yet DCC-settled (3.0.0). `_amend_provisional_sub_meter_blocks` finds and corrects the former. They looked alike because both are 0 on every row measured — data is not proof.

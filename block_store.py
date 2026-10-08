@@ -6717,10 +6717,10 @@ class BlockStore:
     BILL_ROW_COLUMNS = (
         "block_start", "meter_id", "is_sub_meter", "device_label", "timezone",
         "imp_kwh", "imp_kwh_grid", "imp_rate", "imp_cost",
-        "imp_read_start", "imp_read_end", "imp_cost_exc", "imp_rate_exc",
+        "imp_read_start", "imp_read_end", "imp_cost_exc",
         "imp_kwh_ev", "imp_cost_ev", "imp_rate_ev", "imp_ev_band", "imp_home_band",
         "exp_kwh", "exp_rate", "exp_cost", "exp_read_start", "exp_read_end",
-        "standing_charge", "standing_charge_exc")
+        "standing_charge")
 
     def get_bill_rows(self, utc_start: str, utc_end: str):
         """A period bill's blocks as flat rows (#48, 3 Oct 2026): `(rows, segments)`.
@@ -6734,10 +6734,10 @@ class BlockStore:
         rows = self._conn.execute(
             """SELECT b.block_start, b.meter_id, m.is_sub_meter, m.device_label, cp.timezone,
                       b.imp_kwh, b.imp_kwh_grid, b.imp_rate, b.imp_cost,
-                      b.imp_read_start, b.imp_read_end, b.imp_cost_exc, b.imp_rate_exc,
+                      b.imp_read_start, b.imp_read_end, b.imp_cost_exc,
                       b.imp_kwh_ev, b.imp_cost_ev, b.imp_rate_ev, b.imp_ev_band, b.imp_home_band,
                       b.exp_kwh, b.exp_rate, b.exp_cost, b.exp_read_start, b.exp_read_end,
-                      b.standing_charge, b.standing_charge_exc
+                      b.standing_charge
                FROM blocks b
                JOIN config_periods cp ON b.config_period_id = cp.id
                LEFT JOIN meters m ON m.meter_id = b.meter_id
@@ -6787,7 +6787,7 @@ class BlockStore:
             f"""SELECT b.block_start, b.meter_id,
                        b.imp_kwh, b.imp_kwh_grid, b.imp_kwh_remainder,
                        b.imp_rate, b.imp_cost, b.imp_read_start, b.imp_read_end,
-                       b.imp_cost_exc, b.imp_rate_exc, b.standing_charge_exc, b.exc_source,
+                       b.imp_cost_exc,
                        b.imp_kwh_ev, b.imp_cost_ev, b.imp_rate_ev,
                        b.imp_ev_band, b.imp_home_band,
                        b.exp_kwh, b.exp_rate, b.exp_cost,
@@ -6819,7 +6819,7 @@ class BlockStore:
         for row in rows:
             (bs, mid, r_imp_kwh, r_imp_kwh_grid, r_imp_kwh_remainder,
              r_imp_rate, r_imp_cost, r_imp_read_start, r_imp_read_end,
-             r_imp_cost_exc, r_imp_rate_exc, r_standing_charge_exc, r_exc_source,
+             r_imp_cost_exc,
              r_imp_kwh_ev, r_imp_cost_ev, r_imp_rate_ev,
              r_imp_ev_band, r_imp_home_band,
              r_exp_kwh, r_exp_rate, r_exp_cost,
@@ -6880,10 +6880,10 @@ class BlockStore:
             # and the data table's ex-VAT columns use the REAL figure (not inc÷1.05).
             # _row_to_block does this too; the lightweight chart fetch must match or the
             # whole ex-VAT view silently falls back to the approximation.
+            # Step 5 (8 Oct 2026): the ex-VAT COST is the stored authority; the rate, the
+            # standing charge's ex-VAT and exc_source are derived where read, not carried.
             if r_imp_cost_exc is not None:
                 imp_channel["cost_exc"] = float(r_imp_cost_exc)
-            if r_imp_rate_exc is not None:
-                imp_channel["rate_exc"] = float(r_imp_rate_exc)
             # BL-9: surface the IOG house/EV split so the billing summary's
             # 'Import — total grid' section shows the EV/Home rows. _row_to_block does
             # this too; the lightweight chart fetch MUST match or the split silently
@@ -6932,10 +6932,6 @@ class BlockStore:
                     "export": exp_channel,
                 },
             }
-            if r_standing_charge_exc is not None:
-                m["standing_charge_exc"] = float(r_standing_charge_exc)
-            if r_exc_source is not None:
-                m["exc_source"] = r_exc_source
 
             if not is_sub:
                 t = b["totals"]
