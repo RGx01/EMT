@@ -25,6 +25,8 @@ labelled off_peak); the held-peak latch reads `over_cap`, never an inferred band
 """
 from __future__ import annotations
 
+import ev_split as _evsplit
+
 
 def _f(v):
     try:
@@ -87,12 +89,12 @@ def day_rate_series(day_blocks, *, slots: int, block_minutes: int,
         elif mr:
             house_mr[hh] = mr
             rates.add(round(mr, 6))
-        evsegs = [x for x in segs if x.get("attribution") == "ev"]
-        evk = sum(_f(x.get("kwh")) for x in evsegs)
-        if evk > 1e-9:                                     # EV rate from its priced segments
-            ev_rate[hh] = sum(_f(x.get("kwh")) * _f(x.get("inc_rate")) for x in evsegs) / evk
-        elif imp.get("rate_ev") is not None:              # no segments (live cols) → column
-            ev_rate[hh] = _f(imp.get("rate_ev"))
+        # The EV rate where the car drew: ev_split's (its priced EV segments; a block with no
+        # segments at all keeps its imp_rate_ev column, LEGACY). Until step 5 a block with
+        # house-only segments fell to the column too.
+        _sp = _evsplit.from_channel(imp)
+        if _sp is not None and _sp[0] > 1e-9 and _sp[2] is not None:
+            ev_rate[hh] = _sp[2]
 
     # SYNTHETIC EV: no priced EV segments in the block, but the dispatch overlay supplies the
     # per-slot EV rate. Fold it in so the EV line draws where the car drew AND the baseline

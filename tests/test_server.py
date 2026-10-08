@@ -4776,6 +4776,13 @@ class TestDispatchDerivedEVWiring(unittest.TestCase):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 slot_start TEXT, kind TEXT, provider TEXT, energy_kwh REAL
             );
+            -- Empty: these blocks have no segments, so a stored split is the LEGACY column
+            -- one (ev_split). Every real schema has the table.
+            CREATE TABLE block_segments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, block_start TEXT, meter_id TEXT,
+                channel TEXT, seq INTEGER, kwh REAL, inc_rate REAL, exc_rate REAL,
+                band TEXT, attribution TEXT
+            );
         """)
         # Three main slots (no sub-meters → remainder == imp): 2 cheap + 1 peak.
         for bs, be, kwh, rate, cost in (
