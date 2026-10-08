@@ -20,7 +20,7 @@ the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below decons
 | B | Job coordinator (v4 BL-50) | A | ✅ all six acceptances met — 6 on the Pi, 5 Oct 2026 |
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | ✅ closed 5 Oct 2026 — queries asserted in CI (#102), time on the Pi (#64) |
-| E | Importer | A–D | 📝 spec v14, floor 4.5.21 |
+| E | Importer | A–D | 📝 spec v15, floor 4.5.21 |
 | F | Carried from v4's backlog | — | 📋 9 items open, 1 done (BL-50 = B) |
 | G | Local tariff store | A, B | 📝 proposed 4 Oct 2026 |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
@@ -257,6 +257,25 @@ columns in one transaction, or (once the importer drops the columns) only the se
 gets a test that fails on the parent. The engine's own gates (`imp_kwh_ev IS NULL` as "not split
 yet" in the carve, the backfill and the dispatch-only re-fit) move to the segments with this, not
 with the surfaces.
+
+**Ex-VAT — the stored cost is the authority, 8 Oct 2026 (step 5).** `imp_cost_exc` is carried by the
+importer, not dropped (spec §5.2, v15): it is the ex-VAT twin of `imp_cost`, and the segments'
+Σ kWh × `exc_rate` was no closer to two Octopus statements. The other three ex-VAT columns are now
+derived where read: the bill method takes the standing charge's ex-VAT as inc ÷ (1 + the day's VAT),
+the data table's ex-VAT ratio is `cost_exc ÷ cost`, and `exc_source` had no reader. Over 41 months of
+a production-like database no bill-method figure moved; `tests/test_exvat_readers.py` holds stale
+`imp_rate_exc` and `standing_charge_exc` values and fails on the parent.
+
+**BL-80 — CSV-imported history: `imp_cost` and `imp_rate` disagree.** Found 8 Oct 2026. On blocks
+imported from the Octopus CSV (Jun 2023 – Aug 2024 on a production-like database: up to 252
+half-hours a month), `imp_cost` is not kWh × `imp_rate`, by up to a few hundredths of a penny per
+half-hour and a few pence a month. The CSV carried the cost; the rate was resolved separately. Live
+and API data do not show it, so no v4 fix regressed. It surfaces as a 1–2p disagreement between the
+segments and the stored ex-VAT cost on those months. Checked against the June 2024 statement, the
+stored cost matched Octopus in the peak band and the segments (priced at `imp_rate`) in off-peak.
+Settle which of the two Octopus actually charged, band by band, before deciding whether the rate or
+the cost is corrected, and by whom: v4 takes critical fixes only, and this is history the importer
+carries. The June 2024 statement is the test case.
 
 **BL-78 — with Bill Rounding on, the Total Bill should be the bill method's total.** Proposed
 8 Oct 2026. The card prints two different roundings of one bill. Its lines (the ex-VAT bands, the

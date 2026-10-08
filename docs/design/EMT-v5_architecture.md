@@ -465,7 +465,7 @@ behind them. Far less risk than "build an API", and the work is mostly deciding 
            2. billing.py extracted from energy_charts.py (§3)
            3. A — ReadStore / WriteStore
            4. C — API consolidated, HTML pipeline deleted
-           5. schema — 12 columns dropped; band moves to block_segments alone
+           5. schema — 11 columns dropped; band moves to block_segments alone
            6. client — including the FIRST-RUN FORK: new setup vs restore
                        from a v4 backup (import spec §3a)
            7. importer (E) — its own module, one-directional, with a retirement rule
