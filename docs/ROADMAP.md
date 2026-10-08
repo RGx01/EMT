@@ -225,6 +225,21 @@ EV: the bill carves EV out of Direct per rate while the Overview counts it as a 
 every fixture, but no fixture is IOG, so that agreement is unasserted. Both belong in
 `test_direct_import.py` when they move.
 
+**BL-78 — with Bill Rounding on, the Total Bill should be the bill method's total.** Proposed
+8 Oct 2026. The card prints two different roundings of one bill. Its lines (the ex-VAT bands, the
+standing charge, VAT on the subtotal, export) are summed and rounded once, the way Octopus's own
+bill is built. Its **Total Bill** is `compute_period_net`, which rounds each local day's net to the
+penny and sums the days, chosen so the Billing tab agrees with Usage Stats day by day. Over a
+31-day bill the two came out 3p apart on a real account, both installs identical. The lines were
+the closer of the two to Octopus's statement; the remaining 1–2p was the peak/off-peak kWh split,
+not rounding.
+
+Proposal: with Bill Rounding **on**, Total Bill = the bill method's import incl. VAT − export, so the
+card's lines and its total agree and follow the supplier's method. With it **off**, keep the
+per-day rule, so the total still matches Usage Stats. A display change only: no stored figure
+moves. Not a v4 fix (display, not pricing — v4 takes critical fixes only). Check against the bill
+goldens (`tests/test_tariff_goldens.py`), which would move only with Bill Rounding on, and say so.
+
 ## D. Surfacing performance
 
 *Measure before optimising.* Target hardware is a Raspberry Pi 4 class box on SD storage.
