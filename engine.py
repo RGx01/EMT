@@ -755,6 +755,33 @@ def _apply_iog_split(imp_ch: dict, block_start: str, block_end: str,
 _SEGMENT_WRITE_FAILURES = 0   # HARDENING (watch #10): count silent segment-write misses so a hole is a signal, not a mystery
 
 
+def _refit_held_segments(imp_ch: dict, block_start: str, meter_id: str, kwh: float,
+                         rate: float) -> bool:
+    """Fit a held-rate block's stored segments to its settled kWh (BL-79), and keep the EV
+    columns' kWh and £ equal to the EV segments if the fit shrank the EV. Returns whether the
+    segments were rewritten. Best-effort, like _persist_block_segments: never blocks pricing."""
+    if _store is None or not block_start:
+        return False
+    try:
+        import pricing_segments as _ps
+        segs = _store.get_block_segments(block_start, meter_id)
+        if not segs or abs(sum(float(x["kwh"] or 0.0) for x in segs) - float(kwh or 0.0)) <= 1e-6:
+            return False
+        _hb = imp_ch.get("home_band")
+        new = _ps.refit_to_kwh(segs, kwh, rate=rate, exc_rate=imp_ch.get("rate_exc"),
+                               band=_hb if _hb in ("off_peak", "day") else "standard")
+        _store.set_block_segments(block_start, meter_id, new)
+        if imp_ch.get("kwh_ev") is not None:
+            evk = _ps.attribution_kwh(new, "ev")
+            if abs(evk - float(imp_ch["kwh_ev"])) > 1e-9:
+                imp_ch["kwh_ev"] = round(evk, 6)
+                imp_ch["cost_ev"] = round(_ps.attribution_cost(new, "ev"), 6)
+        return True
+    except Exception as e:
+        logger.warning("_refit_held_segments: %s: %s", block_start, e)
+        return False
+
+
 def _persist_block_segments(block_start: str, meter_id: str, imp_ch: dict) -> None:
     """BL-27: write the priced segments for a just-priced MAIN import channel, so new /
     settled blocks carry `block_segments` alongside the imp_* columns (history is filled by
@@ -3913,6 +3940,16 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
                     _reprice_main_import_block(imp_ch, block.get("start", ""),
                                                main_meter_id, main,
                                                apply_overlay=False, hold_rate=True)
+                else:
+                    # BL-79 (8 Oct 2026): a corrected, reconciled or measured rate is held, so
+                    # nothing here re-derives the segments — and they stayed at the old kWh
+                    # while imp_kwh moved to the settled figure (11–12 measured blocks per real
+                    # install). The bill's EV/Home rows and every EV surface read the segments,
+                    # so they no longer added up to the block. Fit them to the settled kWh at
+                    # the rates they carry: the house takes the change, the EV only if the house
+                    # is gone. A block with no segments keeps none (LEGACY columns).
+                    _refit_held_segments(imp_ch, block.get("start", ""), main_meter_id, chosen,
+                                         rate)
             else:
                 rate, rep = _resolve_block_rate(imp_ch, block.get("start", ""),
                                                 "import", rate_resolver)

@@ -251,8 +251,18 @@ test), some paths write one without the other:
   old EV segments. (Measured settlement also writes NULL over an earlier split when the bill shows
   no EV, but it rewrites the segments house-only from the same figures, so the two agree.)
 
-None has left a mismatch on any database we hold. With the surfaces on `ev_split`, the segments are
-the record. So the fix is in the writers, not the readers: each writes its segments with its
+Checked on four real databases (8 Oct 2026), none of those four has left a mismatch. One path not
+in the list does. **(1) The held-rate re-cost — fixed 8 Oct 2026.** When the settlement re-run holds
+a corrected, reconciled or measured rate, it re-costs the block to the settled kWh and re-derived
+nothing else, so the segments stayed at the kWh the block closed with: 11–12 measured blocks per
+install (4 with EV) and one corrected block no longer summed to `imp_kwh`, and the bill's EV/Home
+rows with them. The re-run now fits the segments to the settled kWh at the rates they carry
+(`pricing_segments.refit_to_kwh`; the house takes the change, the EV only once the house is gone),
+and `tests/test_held_rate_segments.py` fails on the parent. **Open:** blocks already written that
+way are carried by the importer as they are (it carries segments verbatim), unless it refits them
+too — a §5.2 rule to decide; a block re-settled under v5 is refitted.
+
+With the surfaces on `ev_split`, the segments are the record. So the fix is in the writers, not the readers: each writes its segments with its
 columns in one transaction, or (once the importer drops the columns) only the segments. Each path
 gets a test that fails on the parent. The engine's own gates (`imp_kwh_ev IS NULL` as "not split
 yet" in the carve, the backfill and the dispatch-only re-fit) move to the segments with this, not
