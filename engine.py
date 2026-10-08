@@ -7195,11 +7195,12 @@ async def run_iog_split_carve(max_blocks: int = 2000) -> dict:
         if house > 1e-9:
             segs.append((house, rate, rexc, home_band, "house"))
         try:
-            _store.set_block_segments(bs, "electricity_main", segs)
-            _store.carve_ev_split(bs, ev, round(ev * rate, 6), rate,
-                                  ev_band, home_band)
-            carved += 1
-            _refit_starts.append(bs)
+            # BL-79: the segments go in the carve's own transaction, and only if its guard
+            # let it write — a block carved since it was selected keeps both as they are.
+            if _store.carve_ev_split(bs, ev, round(ev * rate, 6), rate,
+                                     ev_band, home_band, segments=segs):
+                carved += 1
+                _refit_starts.append(bs)
         except Exception as e:
             logger.warning("run_iog_split_carve: persist failed (%s): %s", bs, e)
     _refit_devices_to_house(_store, _refit_starts)   # v4 4.5.21: the devices re-fit inside the house now the EV is known (dispatch-only accounts)

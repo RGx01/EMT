@@ -3569,18 +3569,23 @@ class BlockStore:
         pricing_segments.Segment. Written in ONE transaction (delete-then-insert, ordered
         by position), so the set is always consistent. Returns the number of rows written."""
         with self._tx():
+            return self._replace_segments(block_start, meter_id, segments, channel)
+
+    def _replace_segments(self, block_start, meter_id, segments, channel="import") -> int:
+        """set_block_segments' body, inside the CALLER's transaction — for a writer that must
+        commit its segments together with the columns they describe (BL-79)."""
+        self._conn.execute(
+            "DELETE FROM block_segments WHERE block_start = ? AND meter_id = ? "
+            "AND channel = ?", (block_start, meter_id, channel))
+        n = 0
+        for seq, seg in enumerate(segments or []):
+            kwh, inc_rate, exc_rate, band, attribution = seg
             self._conn.execute(
-                "DELETE FROM block_segments WHERE block_start = ? AND meter_id = ? "
-                "AND channel = ?", (block_start, meter_id, channel))
-            n = 0
-            for seq, seg in enumerate(segments or []):
-                kwh, inc_rate, exc_rate, band, attribution = seg
-                self._conn.execute(
-                    "INSERT INTO block_segments (block_start, meter_id, channel, seq, "
-                    "kwh, inc_rate, exc_rate, band, attribution) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (block_start, meter_id, channel, seq, kwh, inc_rate, exc_rate,
-                     band, attribution))
-                n += 1
+                "INSERT INTO block_segments (block_start, meter_id, channel, seq, "
+                "kwh, inc_rate, exc_rate, band, attribution) VALUES (?,?,?,?,?,?,?,?,?)",
+                (block_start, meter_id, channel, seq, kwh, inc_rate, exc_rate,
+                 band, attribution))
+            n += 1
         return n
 
     def get_block_segments(self, block_start: str, meter_id: str,
@@ -8249,7 +8254,7 @@ class BlockStore:
 
     def carve_ev_split(self, block_start: str, kwh_ev: float, cost_ev: float,
                        rate_ev: float, ev_band: str, home_band: str,
-                       meter_id: str = "electricity_main") -> int:
+                       meter_id: str = "electricity_main", segments=None) -> int:
         """Write a PREDICTED EV/house split onto an un-carved block. Returns the
         number of rows changed (0 or 1).
 
@@ -8265,8 +8270,11 @@ class BlockStore:
             user correction). A predicted carve fills a blank; it does not
             overwrite an answer.
 
-        Own transaction, because the caller pairs it with `set_block_segments`
-        and a partial pair is worse than neither.
+        `segments` (BL-79, 8 Oct 2026): the carve's (kwh, inc_rate, exc_rate, band, attribution)
+        rows, written IN THIS TRANSACTION and only when the guarded UPDATE changed the row. The
+        caller used to write them first, unguarded, so a block carved in between kept its old
+        columns under the new segments. Each segment takes the band the columns end with — the
+        stored one where COALESCE kept it — so the two cannot disagree.
         """
         with self._conn:
             cur = self._conn.execute(
@@ -8275,6 +8283,12 @@ class BlockStore:
                 "imp_home_band = COALESCE(imp_home_band, ?) "
                 "WHERE meter_id = ? AND block_start = ? AND imp_kwh_ev IS NULL",
                 (kwh_ev, cost_ev, rate_ev, ev_band, home_band, meter_id, block_start))
+            if cur.rowcount and segments is not None:
+                evb, hmb = self._conn.execute(
+                    "SELECT imp_ev_band, imp_home_band FROM blocks WHERE meter_id = ? "
+                    "AND block_start = ?", (meter_id, block_start)).fetchone()
+                self._replace_segments(block_start, meter_id, [
+                    (k, i, x, (evb if a == "ev" else hmb) or b, a) for k, i, x, b, a in segments])
         return cur.rowcount
 
     def get_blocks_pricing_for_range(self, meter_id: str, from_iso: str,
