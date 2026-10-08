@@ -7615,7 +7615,6 @@ class BlockStore:
             "       ROUND(COALESCE(SUM(carbon_g), 0), 0) AS cg, "
             "       ROUND(COALESCE(SUM(imp_kwh_ev), 0), 4) AS xe, ROUND(COALESCE(SUM(imp_cost_ev), 0), 4) AS xc, "
             "       ROUND(COALESCE(SUM(imp_cost_exc), 0), 4) AS xx, ROUND(COALESCE(SUM(imp_kwh_grid), 0), 4) AS xg, "
-            "       ROUND(COALESCE(SUM(imp_kwh_remainder), 0), 4) AS xr, "
             "       ROUND(COALESCE(SUM(standing_charge), 0), 4) AS xs "
             # NOT INDEXED: the window is nearly every row, and walking the block_start index
             # with a row lookup each is far slower than one scan (0.28 s vs ~0.05 s, 138k).
@@ -7762,7 +7761,6 @@ class BlockStore:
             "       ROUND(COALESCE(SUM(b.imp_cost_ev), 0), 4) AS xc, "
             "       ROUND(COALESCE(SUM(b.imp_cost_exc), 0), 4) AS xx, "
             "       ROUND(COALESCE(SUM(b.imp_kwh_grid), 0), 4) AS xg, "
-            "       ROUND(COALESCE(SUM(b.imp_kwh_remainder), 0), 4) AS xr, "
             "       ROUND(COALESCE(SUM(b.standing_charge), 0), 4) AS xs "
             "FROM blocks b WHERE b.block_start >= ? AND b.block_start < ? "
             "GROUP BY day", (utc_start, utc_end)).fetchall()
@@ -7776,10 +7774,12 @@ class BlockStore:
             "FROM block_segments WHERE block_start >= ? AND block_start < ? "
             "GROUP BY day", (utc_start, utc_end)).fetchall()
         seg = {r["day"]: "%s:%s:%s:%s:%s" % (r["n"], r["ir"], r["er"], r["ea"], r["pk"]) for r in segs}
-        return {r["day"]: "%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s" % (
+        # Not the stored remainder (step 5, 8 Oct 2026): no surface reads it, and the main's import
+        # and the grid shares it was derived from (ik, xg) are already here.
+        return {r["day"]: "%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s" % (
                     r["n"], r["newest"] or "", r["ik"], r["ic"],
                     r["ek"], r["ec"], r["cg"], r["xe"], r["xc"], r["xx"], r["xg"],
-                    r["xr"], r["xs"], seg.get(r["day"], "0"))
+                    r["xs"], seg.get(r["day"], "0"))
                 for r in rows}
 
     def get_block_bounds(self, meter_id: str = "electricity_main") -> dict:

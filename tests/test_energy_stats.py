@@ -105,7 +105,8 @@ class TheDayRowsAreTheSlots(unittest.TestCase):
         self.assertAlmostEqual(sum(r["standing"] for r in slots), 0.5, places=4)
 
     def test_devices_at_grid_kwh_and_the_house_remainder(self):
-        """GUARD (moved code): Direct is the stored remainder, the battery its grid draw."""
+        """GUARD (moved code): Direct is the house's share (direct_import's rule on the grid
+        shares, since #105; it was the stored remainder), the battery its grid draw."""
         st = _store("2026-08-19T23:00:00", 24)
         row = uv.day_stats(st, CFG, TZ, "2026-08-19T23:00:00", "2026-08-20T23:00:00")["rows"][0]
         self.assertAlmostEqual(row["meters"]["electricity_main"]["imp_kwh"], 48 * 0.8, places=3)
