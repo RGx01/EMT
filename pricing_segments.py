@@ -102,6 +102,50 @@ def segments_from_legacy(*, imp_kwh: float, imp_cost: float, imp_rate: float,
 
 # ── Projections — the legacy imp_* columns become views over the segments ────────────
 
+def refit_to_kwh(segs, kwh: float, *, rate: float, exc_rate: Optional[float],
+                 band: str) -> List[Segment]:
+    """A block's segments fitted to a new metered kWh at the rates they already carry — for a
+    settled kWh arriving on a block whose rate is held (a correction, a reconciliation, a bill).
+    The settled figure says how much was drawn, never at what price, so no segment is re-priced.
+
+    The house takes the change: its segments scale together, keeping their rate mix. A block
+    with no house segment gains one at `rate` / `exc_rate` / `band` (the block's held rate).
+    Only when the house is gone does the EV shrink, scaled the same way, so the segments never
+    claim more than the meter. `segs` are Segments or (kwh, inc_rate, exc_rate, band,
+    attribution) dicts/tuples; the result (EV segments, then house) sums to `kwh` to 6 dp."""
+    segs = [s if isinstance(s, Segment) else
+            Segment(*(s[k] for k in Segment._fields)) if isinstance(s, dict) else Segment(*s)
+            for s in (segs or [])]
+    kwh = max(0.0, float(kwh or 0.0))
+    house = [s for s in segs if s.attribution != "ev"]
+    ev = [s for s in segs if s.attribution == "ev"]
+    ev_k = sum(s.kwh for s in ev)
+    house_k = max(0.0, kwh - ev_k)
+
+    def _scaled(group, to):
+        have = sum(s.kwh for s in group)
+        if have <= _EPS:
+            return []
+        return [s._replace(kwh=round(s.kwh * to / have, 6)) for s in group]
+
+    if kwh < ev_k - _EPS:                      # less than the EV alone: the house is gone
+        out = _scaled(ev, kwh)
+    else:
+        if house:
+            new_house = _scaled(house, house_k) if sum(s.kwh for s in house) > _EPS else \
+                [house[0]._replace(kwh=round(house_k, 6))]
+        elif house_k > _EPS:
+            new_house = [Segment(round(house_k, 6), rate, exc_rate, band, "house")]
+        else:
+            new_house = []
+        out = ev + new_house                   # the seam's order: EV segments, then house
+    out = [s for s in out if s.kwh > _EPS]
+    drift = round(kwh - sum(s.kwh for s in out), 6)    # rounding: the last segment takes it
+    if out and abs(drift) > 0:
+        out[-1] = out[-1]._replace(kwh=round(out[-1].kwh + drift, 6))
+    return out
+
+
 def total_kwh(segs: List[Segment]) -> float:
     return round(sum(s.kwh for s in segs), 6)
 

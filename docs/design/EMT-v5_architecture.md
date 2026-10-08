@@ -178,7 +178,7 @@ unreachable.
 checking it against cases established by hand. §4a required a trace before any deletion; until the
 tool existed that was a rule with nothing enforcing it.
 
-**Whole codebase: 58 of 1,172 definitions unreachable** (6 Oct 2026 — 84 of 1,162 at the 4.5.14
+**Whole codebase: 58 of 1,175 definitions unreachable** (6 Oct 2026 — 84 of 1,162 at the 4.5.14
 seed, 79 of 1,157 after the five deletions below, and the total has since grown with workstreams A,
 B and C; on 6 Oct `_format_billing`, a fourth copy of the Direct-import subtraction with no caller in
 v4 or v5, went with `direct_import.py`). **This figure is asserted against the tool by `tests/test_b_design_figures.py`** — it had
