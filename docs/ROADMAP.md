@@ -311,16 +311,34 @@ the data table's ex-VAT ratio is `cost_exc ÷ cost`, and `exc_source` had no rea
 a production-like database no bill-method figure moved; `tests/test_exvat_readers.py` holds stale
 `imp_rate_exc` and `standing_charge_exc` values and fails on the parent.
 
-**BL-80 — CSV-imported history: `imp_cost` and `imp_rate` disagree.** Found 8 Oct 2026. On blocks
-imported from the Octopus CSV (Jun 2023 – Aug 2024 on a production-like database: up to 252
-half-hours a month), `imp_cost` is not kWh × `imp_rate`, by up to a few hundredths of a penny per
-half-hour and a few pence a month. The CSV carried the cost; the rate was resolved separately. Live
-and API data do not show it, so no v4 fix regressed. It surfaces as a 1–2p disagreement between the
-segments and the stored ex-VAT cost on those months. Checked against the June 2024 statement, the
-stored cost matched Octopus in the peak band and the segments (priced at `imp_rate`) in off-peak.
-Settle which of the two Octopus actually charged, band by band, before deciding whether the rate or
-the cost is corrected, and by whom: v4 takes critical fixes only, and this is history the importer
-carries. The June 2024 statement is the test case.
+**BL-80 — CSV-imported history: `imp_cost` is Octopus's estimate, `imp_rate` is what it billed.**
+Found 8 Oct 2026; settled 9 Oct. On blocks imported from the Octopus CSV (Jun 2023 – Aug 2024 on a
+production-like database: up to 252 half-hours a month), `imp_cost` is not kWh × `imp_rate`, by up
+to a few hundredths of a penny per half-hour and a few pence a month. Live and API data do not show
+it, so no v4 fix regressed. It surfaces as a 1–2p disagreement between the segments (priced at
+`imp_rate`) and the stored ex-VAT cost (`imp_cost ÷ 1.05`) on those months.
+
+**Where each figure comes from.** `csv_import` stores the CSV's per-half-hour *Estimated Cost Inc.
+Tax* as `imp_cost`; `imp_rate` is the tariff's published rate. For June 2024 (Intelligent Octopus
+Go, region B — the statement's "postcode area alpha identifier" is not the tariff region) Octopus's
+public API publishes off-peak 7.1428p ex-VAT / 7.49994p inc and peak 25.044p / 26.2962p: exactly
+EMT's `imp_rate`. The CSV's estimate is priced at those rates **rounded to 2 dp** — 7.14p and 25.04p
+ex-VAT, i.e. 7.497p and 26.292p inc — which is what the statement prints.
+
+**Which Octopus billed.** The statement for 12–30 Jun 2024 rules on off-peak: no kWh that rounds to
+its stated figure gives its stated cost at 7.14p, and every one does at 7.1428p. So the bill is
+kWh × the **published** rate, and the CSV cost is an estimate. Peak is consistent with either (its
+kWh is printed to 0.1, which is too coarse to separate them). The API's half-hourly
+`costInclTax.estimatedAmount` is named the same way, and from 1 Oct 2026 it is wrong for another
+reason (v4 #505, VAT): Octopus's estimated amounts are not its bill.
+
+**Open — what to do with it.** History stays as stored until decided. The candidate fix is to
+re-cost CSV-imported blocks to kWh × `imp_rate` (moving those months a few pence each towards the
+statements), in v5 by the importer — v4 takes critical fixes only, and this is not one. It would need
+an explicit exception to the import spec's gate 2 (total cost matches the source exactly), and it
+belongs with the wider question parked on 9 Oct: whether EMT should cost every block as kWh × the
+published ex-VAT rate per band with VAT from its own calendar, rather than trusting Octopus's
+estimated amounts. The June 2024 statement and the region B rates above are the test case.
 
 **BL-78 — with Bill Rounding on, the Total Bill should be the bill method's total.** Proposed
 8 Oct 2026. The card prints two different roundings of one bill. Its lines (the ex-VAT bands, the
