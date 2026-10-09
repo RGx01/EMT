@@ -20,7 +20,7 @@ the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below decons
 | B | Job coordinator (v4 BL-50) | A | ✅ all six acceptances met — 6 on the Pi, 5 Oct 2026 |
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | ✅ closed 5 Oct 2026 — queries asserted in CI (#102), time on the Pi (#64) |
-| E | Importer | A–D | 📝 spec v15, floor 4.5.21 |
+| E | Importer | A–D | 📝 spec v16, floor 4.5.21 |
 | F | Carried from v4's backlog | — | 📋 9 items open, 1 done (BL-50 = B) |
 | G | Local tariff store | A, B | 📝 proposed 4 Oct 2026 |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
@@ -258,9 +258,9 @@ nothing else, so the segments stayed at the kWh the block closed with: 11–12 m
 install (4 with EV) and one corrected block no longer summed to `imp_kwh`, and the bill's EV/Home
 rows with them. The re-run now fits the segments to the settled kWh at the rates they carry
 (`pricing_segments.refit_to_kwh`; the house takes the change, the EV only once the house is gone),
-and `tests/test_held_rate_segments.py` fails on the parent. **Open:** blocks already written that
-way are carried by the importer as they are (it carries segments verbatim), unless it refits them
-too — a §5.2 rule to decide; a block re-settled under v5 is refitted.
+and `tests/test_held_rate_segments.py` fails on the parent. Blocks v4 already wrote that way — and
+v4 keeps writing them, being unfixed — are refitted by the importer (spec §5.2, v16), with any
+non-held block whose segments miss its kWh reported rather than changed.
 
 With the surfaces on `ev_split`, the segments are the record. So the fix is in the writers, not the
 readers: each writes its segments with its columns in one transaction, or (once the importer drops
