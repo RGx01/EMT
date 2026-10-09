@@ -185,5 +185,22 @@ class AnAccountWithAnEvMeter(H._Harness):
         self.assertEqual(engine._store.dispatch_house_candidates(), [])
 
 
+class TheRefitFollowsTheSegments(H._Harness):
+    """BL-79 part 3 (9 Oct 2026): with the EV in the segments and the columns blank (the shape a
+    gap-fill rewrite leaves), the loaded block had no EV, so the battery kept the whole grid. The
+    block dicts the engine loads now carry ev_split's split. Discriminating: fails on the parent."""
+
+    # TheRefit's fixture, without inheriting (and re-running) its tests.
+    _make_cfg, _close_then_arrive = TheRefit._make_cfg, TheRefit._close_then_arrive
+
+    def test_the_battery_fits_inside_the_house_from_the_segments(self):
+        self._close_then_arrive()
+        with engine._store._conn as c:                       # blank the columns, keep the segments
+            c.execute("UPDATE blocks SET imp_kwh_ev = NULL, imp_cost_ev = NULL "
+                      "WHERE block_start = ? AND meter_id = 'electricity_main'", (H.START,))
+        engine._refit_devices_to_house(engine._store, [H.START])
+        self.assertAlmostEqual(self._row("house_battery")["imp_kwh_grid"], MAIN - EV, places=4)
+
+
 if __name__ == "__main__":
     unittest.main()

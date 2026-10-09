@@ -34,6 +34,14 @@ from zoneinfo import ZoneInfo
 import direct_import as _direct
 import ev_split as _evsplit
 
+# BL-79 (3): every block dict the engine loads carries the EV split ev_split reads — the EV
+# segments, the columns only for a block with no segments — under its own names, which
+# _row_to_block prefers to the imp_*_ev columns. Engine logic on a loaded block (PASS 2's EV
+# reservation, the remainder recompute, the re-fit) then follows the record every surface reads,
+# and a round trip writes it back to the columns.
+_SPLIT_COLS = ("(" + _evsplit.sql_kwh("b") + ") AS _split_kwh, ("
+               + _evsplit.sql_cost("b") + ") AS _split_cost, ")
+
 logger = logging.getLogger("block_store")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -920,6 +928,22 @@ def _row_to_block(rows: list[sqlite3.Row]) -> dict:
                         imp_ch[_evk] = row[_evcol]
                 except (IndexError, KeyError):
                     pass
+            # BL-79 (3): where the loader selected ev_split's split (_SPLIT_COLS), it is the
+            # split — the EV segments, or the columns for a block with no segments. A block whose
+            # segments hold no EV has no split, whatever a stale column says.
+            try:
+                _sk, _sc = row["_split_kwh"], row["_split_cost"]
+            except (IndexError, KeyError):
+                pass
+            else:
+                if _sk is None or float(_sk) <= 1e-9:
+                    for _k in ("kwh_ev", "cost_ev", "rate_ev"):
+                        imp_ch.pop(_k, None)
+                else:
+                    _sk, _sc = float(_sk), float(_sc or 0.0)
+                    imp_ch["kwh_ev"] = round(_sk, 6)
+                    imp_ch["cost_ev"] = round(_sc, 6)
+                    imp_ch["rate_ev"] = round(_sc / _sk, 6)
             # Expose provisional flag so the amendment path can identify blocks
             # written without a post-boundary sub-meter read.
             try:
@@ -6679,7 +6703,7 @@ class BlockStore:
         try:
             cur = self._conn.execute(
                 """
-                SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone,
+                SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone, """ + _SPLIT_COLS + """
                        cp.currency_symbol, cp.currency_code, cp.effective_from,
                        m.is_sub_meter, m.parent_meter_id, m.device_label,
                        m.inverter_possible, m.power_sensor, m.postcode_prefix,
@@ -6711,7 +6735,7 @@ class BlockStore:
 
     def _select_blocks(self, where: str, params: tuple) -> list[dict]:
         sql = f"""
-            SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone,
+            SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone, {_SPLIT_COLS}
                    cp.currency_symbol, cp.currency_code, cp.effective_from,
                    m.is_sub_meter, m.parent_meter_id, m.device_label,
                    m.inverter_possible, m.power_sensor, m.postcode_prefix,
@@ -6985,7 +7009,7 @@ class BlockStore:
         by ensure_correct_block before startup completes."""
         cur = self._conn.execute(
             """
-            SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone,
+            SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone, """ + _SPLIT_COLS + """
                    cp.currency_symbol, cp.currency_code, cp.effective_from,
                    m.is_sub_meter, m.parent_meter_id, m.device_label,
                    m.inverter_possible, m.power_sensor, m.postcode_prefix,
@@ -7010,7 +7034,7 @@ class BlockStore:
         """Return the most recently finalised block (by block_start)."""
         cur = self._conn.execute(
             """
-            SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone,
+            SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone, """ + _SPLIT_COLS + """
                    cp.currency_symbol, cp.currency_code, cp.effective_from,
                    m.is_sub_meter, m.parent_meter_id, m.device_label,
                    m.inverter_possible, m.power_sensor, m.postcode_prefix,
@@ -7257,9 +7281,12 @@ class BlockStore:
         """The inputs `apply_measured_to_block` needs about the block itself, or
         None if there is no such block. `source` and `imp_kwh_api` are here for
         the settleable check the applier repeats as defence in depth."""
+        # BL-79 (3): `imp_kwh_ev` here is ev_split's split (the EV segments; the column only for
+        # a block with no segments) — the stored EV the applier prefers, and the heal's "healed".
         row = self._conn.execute(
-            "SELECT imp_kwh, imp_kwh_ev, imp_rate, source, imp_kwh_api FROM blocks "
-            "WHERE block_start = ? AND meter_id = ?",
+            "SELECT b.imp_kwh, " + _evsplit.sql_kwh("b") + " AS imp_kwh_ev, b.imp_rate, "
+            "b.source, b.imp_kwh_api FROM blocks b "
+            "WHERE b.block_start = ? AND b.meter_id = ?",
             (block_start, meter_id)).fetchone()
         return dict(row) if row else None
 
@@ -8171,11 +8198,15 @@ class BlockStore:
         SQL: that is no longer part of the query, so a block with no split comes
         back as a row with `imp_kwh_ev` None rather than as None. Test the
         COLUMN, not the row.
+
+        BL-79 (3): `ev_kwh` is ev_split's split (the EV segments; the column only for a block with
+        no segments) — what a caller rebuilding the segments reads. `imp_kwh_ev` / `imp_rate_ev`
+        stay the COLUMNS, for the restamp that keeps them coherent with each other.
         """
         row = self._conn.execute(
-            "SELECT imp_kwh, imp_kwh_ev, imp_rate, imp_rate_ev, imp_rate_exc, "
-            "imp_ev_band, imp_home_band FROM blocks "
-            "WHERE block_start = ? AND meter_id = ?",
+            "SELECT b.imp_kwh, b.imp_kwh_ev, " + _evsplit.sql_kwh("b") + " AS ev_kwh, "
+            "b.imp_rate, b.imp_rate_ev, b.imp_rate_exc, b.imp_ev_band, b.imp_home_band "
+            "FROM blocks b WHERE b.block_start = ? AND b.meter_id = ?",
             (block_start, meter_id)).fetchone()
         return dict(row) if row else None
 

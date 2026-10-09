@@ -12366,7 +12366,7 @@ async def reconcile_dispatch_overlay() -> dict:
                                 _exc_ok = round(cur_rate / (1.0 + store.vat_rate_at(bs)), 6)
                             except Exception:
                                 _exc_ok = None
-                        _evk = _brow["imp_kwh_ev"]
+                        _evk = _brow["ev_kwh"]          # BL-79 (3): ev_split's split
                         _segs_ok = []
                         if _evk is not None and float(_evk) > 1e-9:
                             _segs_ok.append(_ps_ok.Segment(round(float(_evk), 6), cur_rate,
@@ -12494,7 +12494,7 @@ async def reconcile_dispatch_overlay() -> dict:
             import pricing_segments as _ps_rc
             _mrow = store.get_block_split_columns(bs)
             if _mrow is not None and (_mrow["imp_kwh"] or 0) > 0:
-                _evk = _mrow["imp_kwh_ev"]
+                _evk = _mrow["ev_kwh"]                  # BL-79 (3): ev_split's split
                 _segs_rc = []
                 if _evk is not None and float(_evk) > 1e-9:
                     _segs_rc.append(_ps_rc.Segment(round(float(_evk), 6), new_rate,

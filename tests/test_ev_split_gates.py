@@ -102,5 +102,26 @@ class LegacyBlocksWithNoSegments(unittest.TestCase):
         self.assertEqual(_starts(_store(kwh_ev=2.0, segs=None).get_blocks_awaiting_ev_carve(10)), [])
 
 
+class TheLoadedBlock(unittest.TestCase):
+    """A block dict the engine loads (get_block_dict_by_start, _select_blocks, …) carries
+    ev_split's split, so PASS 2's EV reservation and the re-fit follow the segments."""
+
+    def _main_imp(self, st):
+        return st.get_block_dict_by_start(BS)["meters"]["electricity_main"]["channels"]["import"]
+
+    def test_blank_columns_over_ev_segments_load_the_segments_split(self):
+        imp = self._main_imp(_store(kwh_ev=None, segs=EV_SEGS))
+        self.assertAlmostEqual(imp.get("kwh_ev") or 0.0, 2.0, places=6)
+        self.assertAlmostEqual(imp.get("cost_ev") or 0.0, round(2.0 * RATE, 6), places=6)
+
+    def test_a_stale_column_over_house_only_segments_loads_no_split(self):
+        imp = self._main_imp(_store(kwh_ev=1.0, segs=HOUSE_SEGS))
+        self.assertNotIn("kwh_ev", imp)
+
+    def test_no_segments_loads_the_columns(self):
+        """GUARD (LEGACY)."""
+        self.assertAlmostEqual(self._main_imp(_store(kwh_ev=2.0, segs=None))["kwh_ev"], 2.0, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()
