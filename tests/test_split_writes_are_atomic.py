@@ -231,5 +231,44 @@ class TheStaleRatedSplitHeal(unittest.IsolatedAsyncioTestCase):
                                                 (self.SLOT,)).fetchone()[0], 0.323092, places=5)
 
 
+class TheCorrectionsRoute(unittest.TestCase):
+    """A rate correction committed the main rows, the device rows, the segments' rates and the
+    ex-VAT re-derivation each on its own. A failure part-way left the block corrected in some
+    places and not others. Now it is one transaction. Discriminating: the first case fails on the
+    parent (the main rows were committed before the failing step)."""
+
+    def _correct(self, st):
+        import test_correction_device_exc as CD
+        client = CD.TS.make_client(store=st)
+        with patch.object(CD.TS.server, "_corrections_api_gate_active", return_value=True):
+            return client.post("/api/corrections/apply", json={
+                "type": "rate", "channel": "import", "value": CD.OFF, "recalc_cost": True,
+                "from_date": "2026-07-21", "to_date": "2026-07-21",
+                "from_time": "04:30", "to_time": "05:00", "meter_id": "all",
+                "confirm_multiband": True})
+
+    def _main_rate(self, st):
+        import test_correction_device_exc as CD
+        return st._conn.execute("SELECT imp_rate FROM blocks WHERE block_start=? AND "
+                                "meter_id='electricity_main'", (CD.BS,)).fetchone()[0]
+
+    def test_a_failure_part_way_corrects_nothing(self):
+        import test_correction_device_exc as CD
+        st = CD._store()
+        with patch.object(st, "set_import_exc_from_inc", side_effect=RuntimeError("failed")):
+            try:
+                self._correct(st)
+            except Exception:
+                pass
+        self.assertAlmostEqual(self._main_rate(st), CD.PEAK, places=6)   # not corrected
+
+    def test_it_still_corrects(self):
+        """GUARD: with nothing failing, the correction lands."""
+        import test_correction_device_exc as CD
+        st = CD._store()
+        self.assertEqual(self._correct(st).status_code, 200)
+        self.assertAlmostEqual(self._main_rate(st), CD.OFF, places=6)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -3741,7 +3741,7 @@ class BlockStore:
             "SELECT 1 FROM sqlite_master WHERE type='table' "
             "AND name='block_segments'").fetchone()
         n = 0
-        with self._conn:
+        with self._tx():
             for bs in block_starts:
                 f = 1.0 / (1.0 + self.vat_rate_at(bs))
                 cur = self._conn.execute(

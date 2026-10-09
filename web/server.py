@@ -8233,142 +8233,144 @@ def api_corrections_apply():
                 )
 
             else:  # rate correction
-                kwh_col = "imp_kwh" if channel == "import" else "exp_kwh"
-                # Stamp a durable marker on manual RATE corrections so the dispatch
-                # reconciliation pass never overwrites a user's override.
-                _mark = (", rate_corrected = 1, rate_source = 'corrected'"
-                         if col in ("imp_rate", "exp_rate") else "")
-                if recalc_cost and channel == "import":
-                    # P4.6 (watch #11) — the corrected rate applies to the WHOLE block: imp_cost
-                    # already recomputes over imp_kwh, which INCLUDES the EV kWh. Keep the EV-split
-                    # columns consistent in the same UPDATE so imp_cost_ev + imp_cost_remainder ==
-                    # imp_cost and imp_rate_ev tracks the correction — otherwise the split surfaces
-                    # (EV bar, per-rate breakdown) keep reading the stale pre-correction figure
-                    # (the correction-tool "partial-heal" that left the 2026-08-18 EV columns 100x).
-                    # Non-EV blocks (imp_kwh_ev IS NULL) leave the split columns untouched.
-                    cur = st._conn.execute(
-                        f"""UPDATE blocks
-                            SET imp_rate = ?,
-                                imp_cost = ROUND(imp_kwh * ?, 6),
-                                imp_rate_ev = CASE WHEN imp_kwh_ev IS NOT NULL
-                                                   THEN ? ELSE imp_rate_ev END,
-                                imp_cost_ev = CASE WHEN imp_kwh_ev IS NOT NULL
-                                                   THEN ROUND(imp_kwh_ev * ?, 6)
-                                                   ELSE imp_cost_ev END,
-                                imp_cost_remainder = CASE WHEN imp_kwh_ev IS NOT NULL
-                                                   THEN ROUND(imp_kwh * ? - ROUND(imp_kwh_ev * ?, 6), 6)
-                                                   ELSE imp_cost_remainder END,
-                                -- BL-57: block-level exc must follow the corrected inc (the
-                                -- reconcile already does this; the corrections tool didn't, so a
-                                -- corrected block kept a stale ex-VAT figure). Rescale by
-                                -- new/old inc to preserve the block's VAT ratio; leave NULL exc
-                                -- (view falls back to inc / VAT).
-                                imp_rate_exc = CASE WHEN imp_rate_exc IS NOT NULL AND imp_rate != 0
-                                                   THEN ROUND(imp_rate_exc * ? / imp_rate, 6)
-                                                   ELSE imp_rate_exc END,
-                                imp_cost_exc = CASE WHEN imp_cost_exc IS NOT NULL AND imp_rate != 0
-                                                   THEN ROUND(imp_cost_exc * ? / imp_rate, 6)
-                                                   ELSE imp_cost_exc END{_mark}
-                            WHERE {where}""",
-                        [value, value, value, value, value, value, value, value] + params
+                # BL-79 (8 Oct 2026): ONE transaction for the whole correction — main rows,
+                # the EV columns, device rows, the segments' rates and the ex-VAT
+                # re-derivation. Each used to commit on its own, so a failure part-way left
+                # the columns corrected over segments at the old rate (or the reverse).
+                with st.batch():
+                    kwh_col = "imp_kwh" if channel == "import" else "exp_kwh"
+                    # Stamp a durable marker on manual RATE corrections so the dispatch
+                    # reconciliation pass never overwrites a user's override.
+                    _mark = (", rate_corrected = 1, rate_source = 'corrected'"
+                             if col in ("imp_rate", "exp_rate") else "")
+                    if recalc_cost and channel == "import":
+                        # P4.6 (watch #11) — the corrected rate applies to the WHOLE block: imp_cost
+                        # already recomputes over imp_kwh, which INCLUDES the EV kWh. Keep the EV-split
+                        # columns consistent in the same UPDATE so imp_cost_ev + imp_cost_remainder ==
+                        # imp_cost and imp_rate_ev tracks the correction — otherwise the split surfaces
+                        # (EV bar, per-rate breakdown) keep reading the stale pre-correction figure
+                        # (the correction-tool "partial-heal" that left the 2026-08-18 EV columns 100x).
+                        # Non-EV blocks (imp_kwh_ev IS NULL) leave the split columns untouched.
+                        cur = st._conn.execute(
+                            f"""UPDATE blocks
+                                SET imp_rate = ?,
+                                    imp_cost = ROUND(imp_kwh * ?, 6),
+                                    imp_rate_ev = CASE WHEN imp_kwh_ev IS NOT NULL
+                                                       THEN ? ELSE imp_rate_ev END,
+                                    imp_cost_ev = CASE WHEN imp_kwh_ev IS NOT NULL
+                                                       THEN ROUND(imp_kwh_ev * ?, 6)
+                                                       ELSE imp_cost_ev END,
+                                    imp_cost_remainder = CASE WHEN imp_kwh_ev IS NOT NULL
+                                                       THEN ROUND(imp_kwh * ? - ROUND(imp_kwh_ev * ?, 6), 6)
+                                                       ELSE imp_cost_remainder END,
+                                    -- BL-57: block-level exc must follow the corrected inc (the
+                                    -- reconcile already does this; the corrections tool didn't, so a
+                                    -- corrected block kept a stale ex-VAT figure). Rescale by
+                                    -- new/old inc to preserve the block's VAT ratio; leave NULL exc
+                                    -- (view falls back to inc / VAT).
+                                    imp_rate_exc = CASE WHEN imp_rate_exc IS NOT NULL AND imp_rate != 0
+                                                       THEN ROUND(imp_rate_exc * ? / imp_rate, 6)
+                                                       ELSE imp_rate_exc END,
+                                    imp_cost_exc = CASE WHEN imp_cost_exc IS NOT NULL AND imp_rate != 0
+                                                       THEN ROUND(imp_cost_exc * ? / imp_rate, 6)
+                                                       ELSE imp_cost_exc END{_mark}
+                                WHERE {where}""",
+                            [value, value, value, value, value, value, value, value] + params
+                        )
+                    elif recalc_cost:
+                        cost_col = "imp_cost" if channel == "import" else "exp_cost"
+                        cur = st._conn.execute(
+                            f"""UPDATE blocks
+                                SET {col} = ?,
+                                    {cost_col} = ROUND({kwh_col} * ?, 6){_mark}
+                                WHERE {where}""",
+                            [value, value] + params
+                        )
+                    else:
+                        cur = st._conn.execute(
+                            f"UPDATE blocks SET {col} = ?{_mark} WHERE {where}",
+                            [value] + params
+                        )
+                    updated = cur.rowcount
+
+                    # Devices follow the main meter's rate, so propagate the corrected
+                    # IMPORT rate onto device rows for the same blocks (issue #254b). The
+                    # settled gate above only matches the main meter — device rows never
+                    # carry imp_kwh_api — so without this the correction silently skipped
+                    # them. Device cost = grid-attributed kWh × rate, exactly what PASS 2
+                    # computes at finalise.
+                    if channel == "import" and updated:
+                        bs_list = [r["block_start"] for r in st._conn.execute(
+                            f"SELECT DISTINCT block_start FROM blocks WHERE {where}", params)]
+                        if bs_list:
+                            ph = ",".join("?" * len(bs_list))
+                            dev = (f"block_start IN ({ph}) AND meter_id IN "
+                                   "(SELECT meter_id FROM meters WHERE is_sub_meter = 1)")
+                            # v4 4.5.21 forward fix: the ex-VAT rate follows too — the main's, as the
+                            # UPDATE above has just corrected it (BL-57). It didn't: a corrected device
+                            # kept its pre-correction imp_rate_exc / imp_cost_exc, so every ex-VAT view
+                            # still priced it at the old band. Taken from the MAIN rather than rescaled
+                            # from the device's own, so re-applying a correction also repairs a device
+                            # an earlier one left stale.
+                            main_exc = ("(SELECT m.imp_rate_exc FROM blocks m "
+                                        " WHERE m.block_start = blocks.block_start AND m.meter_id IN "
+                                        "   (SELECT meter_id FROM meters WHERE is_sub_meter = 0) LIMIT 1)")
+                            if recalc_cost:
+                                st._conn.execute(
+                                    f"UPDATE blocks SET imp_rate = ?, "
+                                    f"imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
+                                    f"imp_rate_exc = {main_exc}, "
+                                    f"imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * {main_exc}, 6) "
+                                    f"WHERE {dev}", [value, value] + bs_list)
+                            else:
+                                st._conn.execute(
+                                    f"UPDATE blocks SET imp_rate = ?, imp_rate_exc = {main_exc} "
+                                    f"WHERE {dev}",
+                                    [value] + bs_list)
+
+                            # P4.10 (watch #11) — on a SEGMENTED account (4.4.0+) the block's pricing
+                            # ALSO lives in block_segments, which the segment-based surfaces read
+                            # (Usage-Stats rate-tiers P4.2, the EV/house split). A rate correction that
+                            # only rewrote the columns would leave segments on the stale rate. The
+                            # correction flattens the block to ONE import rate (imp_cost = imp_kwh ×
+                            # value), so every import segment on the affected blocks takes that rate —
+                            # Σ(kwh×inc_rate) == imp_cost still holds (Σ kwh == imp_kwh is unchanged).
+                            # Segment exc_rate is rescaled PROPORTIONALLY (P4.18) — preserving each
+                            # segment's exc/inc ratio — NOT left as-is: leaving it would break the ratio
+                            # even on a normal correction (inc→0.28 but exc still 0.2857 > inc), and it
+                            # is the exact hole that stopped the Cost-Corrections tool from repairing a
+                            # capped block whose segments the upgrade sweep built in PENCE (segment inc
+                            # AND exc both pence). `exc_rate * value / inc_rate` uses the OLD inc_rate
+                            # (SQLite evaluates all RHS against the original row), so pence→£ and normal
+                            # corrections both land on the right exc. Guarded on non-zero inc + non-NULL
+                            # exc (NULL exc → view falls back to inc÷VAT, leave it). Gated on recalc and
+                            # skipped on pre-4.4.0 DBs with no block_segments table.
+                            if recalc_cost and st._conn.execute(
+                                    "SELECT 1 FROM sqlite_master WHERE type = 'table' "
+                                    "AND name = 'block_segments'").fetchone():
+                                st._conn.execute(
+                                    f"UPDATE block_segments SET "
+                                    f"  exc_rate = CASE WHEN exc_rate IS NOT NULL AND inc_rate != 0 "
+                                    f"                  THEN ROUND(exc_rate * ? / inc_rate, 6) "
+                                    f"                  ELSE exc_rate END, "
+                                    f"  inc_rate = ? "
+                                    f"WHERE channel = 'import' AND block_start IN ({ph})",
+                                    [value, value] + bs_list)
+
+                            # BL-57b: SUPERSEDES the proportional exc rescales above with an
+                            # AUTHORITATIVE re-derivation of block + segment ex-VAT from the corrected
+                            # inc via the VAT calendar (per-block vat_rate_at). Sets exc explicitly even
+                            # when it was NULL (no more inc÷1.05 view-approximation) and stays correct
+                            # across a VAT-rate change. Import rate corrections only.
+                            if recalc_cost:
+                                st.set_import_exc_from_inc(bs_list, meter_id)
+
+                    logger.info(
+                        "api_corrections_apply: %s %s_rate=%.6f recalc=%s %d main block(s) "
+                        "(%s→%s %s→%s); devices follow",
+                        meter_id, channel, value, recalc_cost, updated,
+                        from_date, to_date, from_time or "00:00", to_time or "24:00"
                     )
-                elif recalc_cost:
-                    cost_col = "imp_cost" if channel == "import" else "exp_cost"
-                    cur = st._conn.execute(
-                        f"""UPDATE blocks
-                            SET {col} = ?,
-                                {cost_col} = ROUND({kwh_col} * ?, 6){_mark}
-                            WHERE {where}""",
-                        [value, value] + params
-                    )
-                else:
-                    cur = st._conn.execute(
-                        f"UPDATE blocks SET {col} = ?{_mark} WHERE {where}",
-                        [value] + params
-                    )
-                st._conn.commit()
-                updated = cur.rowcount
-
-                # Devices follow the main meter's rate, so propagate the corrected
-                # IMPORT rate onto device rows for the same blocks (issue #254b). The
-                # settled gate above only matches the main meter — device rows never
-                # carry imp_kwh_api — so without this the correction silently skipped
-                # them. Device cost = grid-attributed kWh × rate, exactly what PASS 2
-                # computes at finalise.
-                if channel == "import" and updated:
-                    bs_list = [r["block_start"] for r in st._conn.execute(
-                        f"SELECT DISTINCT block_start FROM blocks WHERE {where}", params)]
-                    if bs_list:
-                        ph = ",".join("?" * len(bs_list))
-                        dev = (f"block_start IN ({ph}) AND meter_id IN "
-                               "(SELECT meter_id FROM meters WHERE is_sub_meter = 1)")
-                        # v4 4.5.21 forward fix: the ex-VAT rate follows too — the main's, as the
-                        # UPDATE above has just corrected it (BL-57). It didn't: a corrected device
-                        # kept its pre-correction imp_rate_exc / imp_cost_exc, so every ex-VAT view
-                        # still priced it at the old band. Taken from the MAIN rather than rescaled
-                        # from the device's own, so re-applying a correction also repairs a device
-                        # an earlier one left stale.
-                        main_exc = ("(SELECT m.imp_rate_exc FROM blocks m "
-                                    " WHERE m.block_start = blocks.block_start AND m.meter_id IN "
-                                    "   (SELECT meter_id FROM meters WHERE is_sub_meter = 0) LIMIT 1)")
-                        if recalc_cost:
-                            st._conn.execute(
-                                f"UPDATE blocks SET imp_rate = ?, "
-                                f"imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
-                                f"imp_rate_exc = {main_exc}, "
-                                f"imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * {main_exc}, 6) "
-                                f"WHERE {dev}", [value, value] + bs_list)
-                        else:
-                            st._conn.execute(
-                                f"UPDATE blocks SET imp_rate = ?, imp_rate_exc = {main_exc} "
-                                f"WHERE {dev}",
-                                [value] + bs_list)
-                        st._conn.commit()
-
-                        # P4.10 (watch #11) — on a SEGMENTED account (4.4.0+) the block's pricing
-                        # ALSO lives in block_segments, which the segment-based surfaces read
-                        # (Usage-Stats rate-tiers P4.2, the EV/house split). A rate correction that
-                        # only rewrote the columns would leave segments on the stale rate. The
-                        # correction flattens the block to ONE import rate (imp_cost = imp_kwh ×
-                        # value), so every import segment on the affected blocks takes that rate —
-                        # Σ(kwh×inc_rate) == imp_cost still holds (Σ kwh == imp_kwh is unchanged).
-                        # Segment exc_rate is rescaled PROPORTIONALLY (P4.18) — preserving each
-                        # segment's exc/inc ratio — NOT left as-is: leaving it would break the ratio
-                        # even on a normal correction (inc→0.28 but exc still 0.2857 > inc), and it
-                        # is the exact hole that stopped the Cost-Corrections tool from repairing a
-                        # capped block whose segments the upgrade sweep built in PENCE (segment inc
-                        # AND exc both pence). `exc_rate * value / inc_rate` uses the OLD inc_rate
-                        # (SQLite evaluates all RHS against the original row), so pence→£ and normal
-                        # corrections both land on the right exc. Guarded on non-zero inc + non-NULL
-                        # exc (NULL exc → view falls back to inc÷VAT, leave it). Gated on recalc and
-                        # skipped on pre-4.4.0 DBs with no block_segments table.
-                        if recalc_cost and st._conn.execute(
-                                "SELECT 1 FROM sqlite_master WHERE type = 'table' "
-                                "AND name = 'block_segments'").fetchone():
-                            st._conn.execute(
-                                f"UPDATE block_segments SET "
-                                f"  exc_rate = CASE WHEN exc_rate IS NOT NULL AND inc_rate != 0 "
-                                f"                  THEN ROUND(exc_rate * ? / inc_rate, 6) "
-                                f"                  ELSE exc_rate END, "
-                                f"  inc_rate = ? "
-                                f"WHERE channel = 'import' AND block_start IN ({ph})",
-                                [value, value] + bs_list)
-                            st._conn.commit()
-
-                        # BL-57b: SUPERSEDES the proportional exc rescales above with an
-                        # AUTHORITATIVE re-derivation of block + segment ex-VAT from the corrected
-                        # inc via the VAT calendar (per-block vat_rate_at). Sets exc explicitly even
-                        # when it was NULL (no more inc÷1.05 view-approximation) and stays correct
-                        # across a VAT-rate change. Import rate corrections only.
-                        if recalc_cost:
-                            st.set_import_exc_from_inc(bs_list, meter_id)
-
-                logger.info(
-                    "api_corrections_apply: %s %s_rate=%.6f recalc=%s %d main block(s) "
-                    "(%s→%s %s→%s); devices follow",
-                    meter_id, channel, value, recalc_cost, updated,
-                    from_date, to_date, from_time or "00:00", to_time or "24:00"
-                )
             return updated
 
         _bk, _refuse = _safety_backup_or_refuse("pre-correction")         # #67
