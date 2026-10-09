@@ -7847,7 +7847,7 @@ class BlockStore:
     def apply_measured_to_main(self, block_start: str, *, rate, cost,
                                rate_exc, cost_exc, kwh_ev, rate_ev, cost_ev,
                                ev_band, home_band, cost_remainder,
-                               meter_id: str = "electricity_main") -> int:
+                               meter_id: str = "electricity_main", segments=None) -> int:
         """Stamp Octopus's billed figure onto a main block. Returns rows changed.
 
         **Keyword-only after `block_start`, deliberately.** Eleven values, of
@@ -7875,6 +7875,11 @@ class BlockStore:
                 "WHERE block_start = ? AND meter_id = ?",
                 (rate, cost, rate_exc, cost_exc, kwh_ev, rate_ev, cost_ev,
                  ev_band, home_band, cost_remainder, block_start, meter_id))
+            # BL-79 (8 Oct 2026): the bill's segments in the same transaction. Written after,
+            # a failed segment write left the block stamped 'measured' — never revisited by
+            # the drain — under its pre-bill segments, which every surface reads.
+            if cur.rowcount and segments is not None:
+                self._replace_segments(block_start, meter_id, segments)
         return cur.rowcount
 
     def recost_sub_meters(self, block_start: str, rate, rate_exc,
@@ -8224,7 +8229,7 @@ class BlockStore:
 
     def replace_ev_split(self, block_start: str, kwh_ev: float, cost_ev: float,
                          rate_ev: float, ev_band: str, home_band: str,
-                         meter_id: str = "electricity_main") -> int:
+                         meter_id: str = "electricity_main", segments=None) -> int:
         """Write an EV/house split OVER whatever is there. Returns rows changed.
 
         The counterpart to `carve_ev_split`, and the difference is the whole
@@ -8243,6 +8248,9 @@ class BlockStore:
         `overwrite=` argument would put that distinction one boolean away from
         being got wrong at a call site, which is how a manual correction gets
         stomped.
+
+        `segments` (BL-79, 8 Oct 2026): written in THIS transaction with the columns, so a failed
+        write leaves neither changed. The caller used to write them in a second transaction.
         """
         with self._conn:
             cur = self._conn.execute(
@@ -8250,6 +8258,8 @@ class BlockStore:
                 "imp_ev_band = ?, imp_home_band = ? "
                 "WHERE block_start = ? AND meter_id = ?",
                 (kwh_ev, cost_ev, rate_ev, ev_band, home_band, block_start, meter_id))
+            if cur.rowcount and segments is not None:
+                self._replace_segments(block_start, meter_id, segments)
         return cur.rowcount
 
     def carve_ev_split(self, block_start: str, kwh_ev: float, cost_ev: float,

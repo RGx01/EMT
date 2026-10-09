@@ -808,32 +808,7 @@ def _persist_block_segments(block_start: str, meter_id: str, imp_ch: dict, *,
             logger.warning("_persist_block_segments: stored segments unreadable (%s): %s",
                            block_start, e)
     try:
-        import pricing_segments as _ps
-        _rate = float(imp_ch.get("rate") or 0.0)
-        _rexc = imp_ch.get("rate_exc")
-        if _rexc is not None and _rate:
-            _ratio = float(_rexc) / _rate
-        else:
-            try:
-                _ratio = 1.0 / (1.0 + _store.vat_rate_at(block_start))
-            except Exception:
-                _ratio = None
-        # BL-27: prefer the FULL-fidelity segments the pricing seam emitted (all four bands
-        # on a boundary block); apply the block's exc ratio here. Fall back to reconstructing
-        # from the columns for non-dispatched / non-seam blocks (single house segment).
-        _seam = imp_ch.get("segments")
-        if _seam:
-            def _exc(inc):
-                return round(inc * _ratio, 6) if (_ratio is not None and inc is not None) else None
-            segs = [_ps.Segment(round(float(k), 6), float(r), _exc(float(r)), band, attr)
-                    for (k, r, band, attr) in _seam]
-        else:
-            segs = _ps.segments_from_legacy(
-                imp_kwh=float(imp_ch.get("kwh") or 0.0), imp_cost=float(imp_ch.get("cost") or 0.0),
-                imp_rate=_rate, kwh_ev=imp_ch.get("kwh_ev"), cost_ev=imp_ch.get("cost_ev"),
-                rate_ev=imp_ch.get("rate_ev"), ev_band=imp_ch.get("ev_band"),
-                home_band=imp_ch.get("home_band"), exc_ratio=_ratio)
-        _store.set_block_segments(block_start, meter_id, segs)
+        _store.set_block_segments(block_start, meter_id, _build_block_segments(block_start, imp_ch))
     except Exception as e:
         # Best-effort by design (never blocks pricing) — but a swallowed miss leaves the block
         # unsegmented, which the presentation gate can amplify. Count + tag it so it is greppable
@@ -842,6 +817,39 @@ def _persist_block_segments(block_start: str, meter_id: str, imp_ch: dict, *,
         _SEGMENT_WRITE_FAILURES += 1
         logger.warning("SEGMENT-WRITE-FAIL: %s meter=%s (total this run: %d): %s",
                        block_start, meter_id, _SEGMENT_WRITE_FAILURES, e)
+
+
+def _build_block_segments(block_start: str, imp_ch: dict) -> list:
+    """The priced segments for a just-priced MAIN import channel, unwritten — the seam's own
+    where it emitted them, else reconstructed from the channel's columns. For a writer that
+    commits them with the columns it writes (BL-79); _persist_block_segments writes them alone.
+    """
+    import pricing_segments as _ps
+    _rate = float(imp_ch.get("rate") or 0.0)
+    _rexc = imp_ch.get("rate_exc")
+    if _rexc is not None and _rate:
+        _ratio = float(_rexc) / _rate
+    else:
+        try:
+            _ratio = 1.0 / (1.0 + _store.vat_rate_at(block_start))
+        except Exception:
+            _ratio = None
+    # BL-27: prefer the FULL-fidelity segments the pricing seam emitted (all four bands
+    # on a boundary block); apply the block's exc ratio here. Fall back to reconstructing
+    # from the columns for non-dispatched / non-seam blocks (single house segment).
+    _seam = imp_ch.get("segments")
+    if _seam:
+        def _exc(inc):
+            return round(inc * _ratio, 6) if (_ratio is not None and inc is not None) else None
+        segs = [_ps.Segment(round(float(k), 6), float(r), _exc(float(r)), band, attr)
+                for (k, r, band, attr) in _seam]
+    else:
+        segs = _ps.segments_from_legacy(
+            imp_kwh=float(imp_ch.get("kwh") or 0.0), imp_cost=float(imp_ch.get("cost") or 0.0),
+            imp_rate=_rate, kwh_ev=imp_ch.get("kwh_ev"), cost_ev=imp_ch.get("cost_ev"),
+            rate_ev=imp_ch.get("rate_ev"), ev_band=imp_ch.get("ev_band"),
+            home_band=imp_ch.get("home_band"), exc_ratio=_ratio)
+    return segs
 
 
 def _apply_import_exc(imp_ch: dict, start: str) -> bool:
@@ -11971,18 +11979,22 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
     remainder = round(cost_incl - ev_cost, 6)
     _cost_exc = (round(cost_excl, 6) if cost_excl is not None
                  else round(cost_incl * _exc_f, 6))
-    store.apply_measured_to_main(
-        bs,
-        rate=imp_rate, cost=round(cost_incl, 6),
-        rate_exc=exc_rate, cost_exc=_cost_exc,
-        kwh_ev=(ev_kwh_sum if ev_kwh_sum > 1e-9 else None),
-        rate_ev=rate_ev,
-        cost_ev=(ev_cost if ev_kwh_sum > 1e-9 else None),
-        ev_band=ev_band, home_band=home_band, cost_remainder=remainder)
     try:
-        store.set_block_segments(bs, "electricity_main", segs)
+        # BL-79: the segments in one transaction with the columns. If it fails, nothing is
+        # stamped, so the block stays a candidate for the next pass instead of being marked
+        # 'measured' under stale segments.
+        store.apply_measured_to_main(
+            bs,
+            rate=imp_rate, cost=round(cost_incl, 6),
+            rate_exc=exc_rate, cost_exc=_cost_exc,
+            kwh_ev=(ev_kwh_sum if ev_kwh_sum > 1e-9 else None),
+            rate_ev=rate_ev,
+            cost_ev=(ev_cost if ev_kwh_sum > 1e-9 else None),
+            ev_band=ev_band, home_band=home_band, cost_remainder=remainder,
+            segments=segs)
     except Exception as e:
-        logger.warning("apply_measured: segment write failed for %s: %s", bs, e)
+        logger.warning("apply_measured: write failed for %s, left for the next pass: %s", bs, e)
+        return False
     # SMB device-cost fix: settlement flips the MAIN rate to the settled band, but a physical
     # sub-meter (ev_charger / battery) was costed by PASS 2 at the EARLIER (pre-settlement,
     # often peak) main rate and is NOT re-costed by this write. PASS 2 costs every sub-meter at
@@ -12116,11 +12128,12 @@ def _attribute_missing_ev_split() -> int:
         if imp_ch.get("kwh_ev") is None:        # completed dispatch clipped to no grid EV
             continue
         try:
+            # BL-27 / BL-79: the segments (the readers' source of truth) go in the SAME
+            # transaction as the columns, so a failed write leaves neither changed.
             _store.replace_ev_split(
                 r["block_start"], imp_ch["kwh_ev"], imp_ch["cost_ev"],
-                imp_ch["rate_ev"], imp_ch.get("ev_band"), imp_ch.get("home_band"))
-            # BL-27: rewrite the segments too (the readers' source of truth). Own txn.
-            _persist_block_segments(r["block_start"], "electricity_main", imp_ch)
+                imp_ch["rate_ev"], imp_ch.get("ev_band"), imp_ch.get("home_band"),
+                segments=_build_block_segments(r["block_start"], imp_ch))
             n += 1
             _refit_starts.append(r["block_start"])
         except Exception as e:
