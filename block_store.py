@@ -7986,7 +7986,7 @@ class BlockStore:
 
     def restamp_ev_columns(self, block_start: str, rate: float, ev_band: str,
                            home_band: str,
-                           meter_id: str = "electricity_main") -> int:
+                           meter_id: str = "electricity_main", segments=None) -> int:
         """Re-derive the EV-split columns at `rate`. Returns rows changed.
 
         Usage Stats reads `imp_rate_ev` / `imp_cost_ev` / the bands /
@@ -8024,11 +8024,17 @@ class BlockStore:
         one rule across five releases is what a rule re-implemented rather than
         shared looks like; `_EV_RESTAMP_SQL` is the fix for that, not just for
         the duplication.
+
+        `segments` (BL-79, 8 Oct 2026): the block's re-priced segments, written in THIS
+        transaction — whether or not the block has a split for the columns to restamp, since a
+        house-only block is re-priced too. The caller used to write them first, on their own.
         """
         with self._conn:
             cur = self._conn.execute(
                 self._EV_RESTAMP_SQL,
                 (rate, rate, ev_band, home_band, rate, block_start, meter_id))
+            if segments is not None:
+                self._replace_segments(block_start, meter_id, segments)
         return cur.rowcount
 
     def relabel_segment_bands(self, block_start: str, ev_band: str,
@@ -8058,7 +8064,7 @@ class BlockStore:
     def apply_reconcile_verdict(self, block_start: str, rate: float,
                                 rate_exc, exc_source, ev_band: str,
                                 home_band: str,
-                                meter_id: str = "electricity_main") -> dict:
+                                meter_id: str = "electricity_main", segments=None) -> dict:
         """Apply a dispatch-overlay verdict to a block: main row, its sub-meters
         and the EV columns, in ONE transaction. Returns rows changed per part.
 
@@ -8099,6 +8105,10 @@ class BlockStore:
                 self._EV_RESTAMP_SQL,
                 (rate, rate, ev_band, home_band, rate,
                  block_start, meter_id)).rowcount
+            # BL-79 (8 Oct 2026): the re-priced segments in the same transaction; they were
+            # written after it, on their own.
+            if main and segments is not None:
+                self._replace_segments(block_start, meter_id, segments)
         return {"main": main, "sub_meters": subs, "ev_columns": ev}
 
     def get_reconcile_candidates(self, before_iso: str,

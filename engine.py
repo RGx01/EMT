@@ -12378,8 +12378,9 @@ async def reconcile_dispatch_overlay() -> dict:
                         else:
                             _segs_ok.append(_ps_ok.Segment(round(float(_brow["imp_kwh"]), 6),
                                             cur_rate, _exc_ok, _want_home, "house"))
-                        store.set_block_segments(bs, "electricity_main", _segs_ok)
-                        store.restamp_ev_columns(bs, cur_rate, _want_ev, _want_home)
+                        # BL-79: segments and columns in one transaction.
+                        store.restamp_ev_columns(bs, cur_rate, _want_ev, _want_home,
+                                                 segments=_segs_ok)
                         n_band += 1
                         changed = True
                         logger.info("reconcile: %s split re-price %.5f->%.5f ev=%s home=%s "
@@ -12479,41 +12480,43 @@ async def reconcile_dispatch_overlay() -> dict:
         # with itself. BlockStore.apply_reconcile_verdict owns that atomicity.
         _ev_band_col = "off_peak" if target == "off_peak" else "peak"
         _home_band_col = "off_peak" if target == "off_peak" else "day"
-        store.apply_reconcile_verdict(bs, new_rate, _exc_rate, _exc_src,
-                                      _ev_band_col, _home_band_col)
         # BL-27 / BL-58: the bill split / Usage Stats / chart price from block_segments
-        # (source of truth), so the reconcile REWRITES THE SEGMENTS too. (The legacy EV columns
-        # above are re-stamped in lock-step because the Usage Stats rows still read them —
-        # usage_view's EV split, /api/energy include=stats; /blocks-summary and /blocks-day
-        # until C step 1 deleted them.) A revert/restore puts the whole block on the new rate, so EV and house share it
-        # — on capped tariffs as well (band labels carry EV peak / house day). Build those bands
-        # directly at new_rate. Runs AFTER the column txn commits (set_block_segments opens its own).
+        # (source of truth), so the reconcile REWRITES THE SEGMENTS too. A revert/restore puts
+        # the whole block on the new rate, so EV and house share it — on capped tariffs as well
+        # (band labels carry EV peak / house day). Build those bands directly at new_rate.
+        # BL-34 (4.5.0): the segment band follows the reconciled RATE, not the stale provisional
+        # label: off-peak restore → off_peak; peak revert → EV 'peak', house 'day'.
+        # BL-79 (8 Oct 2026): built BEFORE the verdict and written in its transaction — they
+        # were written after it commits, on their own, so a failure left the rate moved and the
+        # segments at the old one.
+        _segs_rc = None
         try:
             import pricing_segments as _ps_rc
             _mrow = store.get_block_split_columns(bs)
             if _mrow is not None and (_mrow["imp_kwh"] or 0) > 0:
                 _evk = _mrow["imp_kwh_ev"]
                 _segs_rc = []
-                # BL-34 (4.5.0): the segment band must follow the reconciled RATE, not the
-                # stale provisional label. A revert-to-peak block kept band='off_peak' while
-                # its rate became peak (label ≠ rate on every band-keyed display). Derive it
-                # from the verdict: off-peak restore → off_peak; peak revert → EV 'peak',
-                # house 'day' (the IOG EV=off_peak|peak / house=off_peak|day convention).
-                _ev_band_rc = "off_peak" if target == "off_peak" else "peak"
-                _home_band_rc = "off_peak" if target == "off_peak" else "day"
                 if _evk is not None and float(_evk) > 1e-9:
                     _segs_rc.append(_ps_rc.Segment(round(float(_evk), 6), new_rate,
-                                    _exc_rate, _ev_band_rc, "ev"))
+                                    _exc_rate, _ev_band_col, "ev"))
                     _hk = float(_mrow["imp_kwh"]) - float(_evk)
                     if _hk > 1e-9:
                         _segs_rc.append(_ps_rc.Segment(round(_hk, 6), new_rate, _exc_rate,
-                                        _home_band_rc, "house"))
+                                        _home_band_col, "house"))
                 else:
                     _segs_rc.append(_ps_rc.Segment(round(float(_mrow["imp_kwh"]), 6), new_rate,
-                                    _exc_rate, _home_band_rc, "house"))
-                store.set_block_segments(bs, "electricity_main", _segs_rc)
+                                    _exc_rate, _home_band_col, "house"))
         except Exception as _rc_e:
-            logger.warning("reconcile: segment resync failed for %s: %s", bs, _rc_e)
+            logger.warning("reconcile: segment build failed for %s: %s", bs, _rc_e)
+            _segs_rc = None
+        try:
+            store.apply_reconcile_verdict(bs, new_rate, _exc_rate, _exc_src,
+                                          _ev_band_col, _home_band_col, segments=_segs_rc)
+        except Exception as _vd_e:
+            # Nothing was written (one transaction), so the block stays a candidate.
+            logger.warning("reconcile: verdict failed for %s, left for the next pass: %s",
+                           bs, _vd_e)
+            continue
         changed = True
         if target == "off_peak":
             n_restore += 1

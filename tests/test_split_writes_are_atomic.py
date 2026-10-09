@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_ev_back_attribution as BA            # noqa: E402  (store + schedule harness)
 import test_measured_apply as MA                 # noqa: E402
 import test_reprice_history_sweep as RS          # noqa: E402
+import test_reconcile_exc_restamp as RC          # noqa: E402
 engine = BA.engine
 
 
@@ -131,6 +132,103 @@ class TheRepriceSweep(unittest.TestCase):
             self.st._conn.execute("UPDATE blocks SET imp_kwh_ev = 1.0 WHERE block_start = ?", (self.B,))
         engine._reprice_history_blocks(rows, "UTC", RS._RATE_SEGS)
         self.assertEqual([(s["kwh"], s["attribution"]) for s in self._segs(self.B)], [(3.0, "house")])
+
+
+class TheReconcileVerdict(unittest.IsolatedAsyncioTestCase):
+    """A revert used to commit the main row, devices and EV columns, then write the segments on
+    their own: a failure left the block at the new rate over segments at the old one. Now the
+    verdict and its segments are one transaction, and a failure leaves the block a candidate."""
+    SLOT = RC.TestReconcileRestampsExc.SLOT
+    _seed_stale = RC.TestReconcileRestampsExc._seed_stale
+    _run = RC.TestReconcileRestampsExc._run
+
+    def _rate(self, st):
+        return st._conn.execute("SELECT imp_rate FROM blocks WHERE block_start=?",
+                                (self.SLOT,)).fetchone()[0]
+
+    async def test_a_failed_segment_write_moves_nothing(self):
+        st = BA.BlockStore(":memory:")
+        self._seed_stale(st)
+        ps = _segments_fail(st)
+        for p in ps:
+            p.start()
+        try:
+            await self._run(st)
+        finally:
+            for p in ps:
+                p.stop()
+        self.assertAlmostEqual(self._rate(st), 0.05493, places=6)      # still off-peak
+
+    async def test_it_still_reverts_both(self):
+        """GUARD: with the write working, the rate and the segments move together."""
+        st = BA.BlockStore(":memory:")
+        self._seed_stale(st)
+        await self._run(st)
+        self.assertAlmostEqual(self._rate(st), 0.323092, places=6)
+        self.assertEqual({round(s["inc_rate"], 6) for s in
+                          st.get_block_segments(self.SLOT, "electricity_main")}, {0.323092})
+
+
+class TheStaleRatedSplitHeal(unittest.IsolatedAsyncioTestCase):
+    """The reconcile's stale-rated split heal (a block already at peak whose split is still
+    priced off-peak) wrote the re-priced segments, then restamped the columns on their own: if
+    the restamp failed, the segments had moved and the columns had not. Now restamp_ev_columns
+    writes both. Discriminating: the first case fails on the parent (it writes the segments
+    before the call that fails)."""
+    SLOT = RC.TestReconcileRestampsExc.SLOT
+
+    def _seed(self):
+        import pricing_segments as ps
+        st = BA.BlockStore(":memory:")
+        st._conn.execute(
+            "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
+            "block_minutes, timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, 'UTC')")
+        st._conn.execute(
+            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
+            "imp_kwh, imp_rate, imp_cost, imp_rate_exc, imp_cost_exc, exc_source, "
+            "rate_corrected, rate_source, imp_kwh_api, imp_kwh_ev, imp_cost_ev, "
+            "imp_rate_ev, imp_ev_band, imp_home_band) VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (self.SLOT, self.SLOT, "electricity_main", 1, 3.186, 0.323092,
+             round(3.186 * 0.323092, 6), 0.323092 / 1.05, round(3.186 * 0.323092 / 1.05, 6),
+             "tariff", 0, "reconciled", 3.186, 2.24, round(2.24 * 0.05493, 6), 0.05493,
+             "off_peak", "off_peak"))
+        st.set_block_segments(self.SLOT, "electricity_main", [
+            ps.Segment(2.24, 0.05493, 0.052314, "off_peak", "ev"),
+            ps.Segment(0.946, 0.05493, 0.052314, "off_peak", "house")])
+        st.upsert_dispatch_slot(self.SLOT, off_peak=True, provider="Myenergi",
+                                source="smart-charge-completed", state="completed")
+        st.record_dispatch_history(self.SLOT, "completed", provider="Myenergi")
+        st._conn.commit()
+        return st
+
+    async def _reconcile(self, st):
+        engine._store = st
+        engine._RECONCILE_SETTLE_HOURS = 0.0
+        engine._kraken_rate_schedules = {"import": RC._Sched(True),
+                                         "ev_device_off_peak": RC._Sched(True),
+                                         "ev_device_peak": RC._Sched(True)}
+        try:
+            await engine.reconcile_dispatch_overlay()
+        finally:
+            engine._store = None
+
+    def _seg_rates(self, st):
+        return {round(s["inc_rate"], 6) for s in st.get_block_segments(self.SLOT, "electricity_main")}
+
+    async def test_a_failed_restamp_moves_neither(self):
+        st = self._seed()
+        with patch.object(st, "restamp_ev_columns", side_effect=RuntimeError("restamp failed")):
+            await self._reconcile(st)
+        self.assertEqual(self._seg_rates(st), {0.05493})                # segments not moved
+
+    async def test_it_still_heals_both(self):
+        """GUARD: with the write working, segments and columns move to peak together."""
+        st = self._seed()
+        await self._reconcile(st)
+        self.assertEqual(self._seg_rates(st), {0.323092})
+        self.assertAlmostEqual(st._conn.execute("SELECT imp_rate_ev FROM blocks WHERE block_start=?",
+                                                (self.SLOT,)).fetchone()[0], 0.323092, places=5)
 
 
 if __name__ == "__main__":
