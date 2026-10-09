@@ -3565,7 +3565,8 @@ class BlockStore:
                 cur = self._conn.execute(
                     "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ?, imp_rate_ev = ?, "
                     "imp_ev_band = ?, imp_home_band = ? "
-                    "WHERE block_start = ? AND meter_id = ? AND imp_kwh_ev IS NULL",
+                    "WHERE block_start = ? AND meter_id = ? AND "
+                    + _evsplit.sql_kwh("blocks") + " IS NULL",       # BL-79 (3)
                     (kev, cev, rev, evb, hmb, bs, mid))
                 changed += cur.rowcount
                 if segs is not None and (cur.rowcount or needs):
@@ -7085,7 +7086,8 @@ class BlockStore:
                      "AND meter_type IN ('ev', 'ev_charger') LIMIT 1").fetchone():
             return []
         sql = ("SELECT m.block_start FROM blocks m WHERE m.meter_id = 'electricity_main' "
-               "AND m.imp_kwh_ev > 0 AND EXISTS (SELECT 1 FROM blocks o "
+               "AND " + _evsplit.sql_kwh("m") + " > 0 "      # BL-79 (3): ev_split's split
+               "AND EXISTS (SELECT 1 FROM blocks o "
                "    WHERE o.block_start = m.block_start AND o.meter_id IN "
                "          (SELECT meter_id FROM meters WHERE is_sub_meter = 1))")
         if starts is None:
@@ -7383,7 +7385,9 @@ class BlockStore:
             "SELECT b.block_start, mc.cost_incl, mc.cost_excl, mc.label "
             "FROM blocks b JOIN measured_cost mc ON mc.slot_start = b.block_start "
             "WHERE b.meter_id = ? AND b.rate_source = 'measured' "
-            "  AND b.imp_kwh_ev IS NULL AND COALESCE(b.imp_kwh, 0) > 0 "
+            # BL-79 (3): "no split" is ev_split's — no EV segment (the columns only where
+            # the block has no segments at all), not the column alone.
+            "  AND " + _evsplit.sql_kwh("b") + " IS NULL AND COALESCE(b.imp_kwh, 0) > 0 "
             "  AND COALESCE(b.rate_corrected, 0) = 0 "
             "  AND mc.ev_kwh IS NOT NULL AND mc.ev_kwh > 0 "
             "  AND mc.cost_incl IS NOT NULL "
@@ -8240,12 +8244,14 @@ class BlockStore:
             "AND COALESCE(b.rate_corrected, 0) = 0 "
             "AND EXISTS (SELECT 1 FROM dispatch_history h WHERE h.slot_start = b.block_start "
             "            AND h.kind = 'completed' AND h.energy_kwh IS NOT NULL) "
-            "AND (b.imp_kwh_ev IS NULL "
+            # BL-79 (3): the split is ev_split's (the EV segments; LEGACY columns only
+            # where the block has no segments).
+            "AND (" + _evsplit.sql_kwh("b") + " IS NULL "
             "     OR (b.interpolated = 1 AND EXISTS ("
             "           SELECT 1 FROM dispatch_history h2 WHERE h2.slot_start = b.block_start "
             "           AND h2.kind = 'completed' AND h2.energy_kwh IS NOT NULL "
             "           AND ABS(MIN(ABS(h2.energy_kwh), COALESCE(b.imp_kwh, 0)) "
-            "                   - COALESCE(b.imp_kwh_ev, 0)) > ?)))",
+            "                   - COALESCE(" + _evsplit.sql_kwh("b") + ", 0)) > ?)))",
             (meter_id, tolerance)).fetchall()
         return [dict(r) for r in rows]
 
@@ -8313,7 +8319,8 @@ class BlockStore:
                 "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ?, imp_rate_ev = ?, "
                 "imp_ev_band = COALESCE(imp_ev_band, ?), "
                 "imp_home_band = COALESCE(imp_home_band, ?) "
-                "WHERE meter_id = ? AND block_start = ? AND imp_kwh_ev IS NULL",
+                "WHERE meter_id = ? AND block_start = ? AND "
+                + _evsplit.sql_kwh("blocks") + " IS NULL",
                 (kwh_ev, cost_ev, rate_ev, ev_band, home_band, meter_id, block_start))
             if cur.rowcount and segments is not None:
                 evb, hmb = self._conn.execute(
@@ -8367,7 +8374,7 @@ class BlockStore:
         """
         rows = self._conn.execute(
             "SELECT b.block_start, b.imp_kwh, b.imp_rate, b.imp_rate_exc "
-            "FROM blocks b WHERE b.meter_id = ? AND b.imp_kwh_ev IS NULL "
+            "FROM blocks b WHERE b.meter_id = ? AND " + _evsplit.sql_kwh("b") + " IS NULL "
             "  AND b.imp_kwh > 0 "
             "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('measured','corrected')) "
             "  AND EXISTS (SELECT 1 FROM dispatch_history d WHERE d.kind = 'completed' "

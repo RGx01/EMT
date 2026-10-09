@@ -123,6 +123,12 @@ class TheRefit(H._Harness):
                 "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ROUND(? * imp_rate, 6)"
                 + (", rate_source = 'measured', imp_cost_remainder = 1.2345" if measured else "")
                 + " WHERE block_start = ? AND meter_id = 'electricity_main'", (EV, EV, H.START))
+        # The EV arrives in the SEGMENTS too, as every real writer now records it (BL-79): the
+        # split is the segments', and the refit's candidates are read from them.
+        r = engine._store._conn.execute("SELECT imp_rate FROM blocks WHERE block_start = ? "
+                                        "AND meter_id = 'electricity_main'", (H.START,)).fetchone()[0]
+        engine._store.set_block_segments(H.START, "electricity_main", [
+            (EV, r, None, "off_peak", "ev"), (round(MAIN - EV, 6), r, None, "off_peak", "house")])
 
     def test_at_close_the_battery_takes_the_grid(self):
         """GUARD: before the EV is known there is nothing to reserve."""

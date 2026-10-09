@@ -126,12 +126,15 @@ class TheRepriceSweep(unittest.TestCase):
                                2.0, places=6)
 
     def test_a_block_already_split_keeps_its_segments(self):
-        """GUARD: the fill-only guard still holds — a split block's segments are not rewritten."""
+        """GUARD: the fill-only guard still holds — a split block's segments are not rewritten.
+        "Split" is the segments' (BL-79 part 3): an EV segment, whatever the column says."""
         rows = self._house_only()
-        with self.st._conn:
-            self.st._conn.execute("UPDATE blocks SET imp_kwh_ev = 1.0 WHERE block_start = ?", (self.B,))
+        self.st.set_block_segments(self.B, "electricity_main",
+                                   [(1.0, 0.30, None, "off_peak", "ev"),
+                                    (2.0, 0.30, None, "standard", "house")])
         engine._reprice_history_blocks(rows, "UTC", RS._RATE_SEGS)
-        self.assertEqual([(s["kwh"], s["attribution"]) for s in self._segs(self.B)], [(3.0, "house")])
+        self.assertEqual([(s["kwh"], s["attribution"]) for s in self._segs(self.B)],
+                         [(1.0, "ev"), (2.0, "house")])
 
 
 class TheReconcileVerdict(unittest.IsolatedAsyncioTestCase):
