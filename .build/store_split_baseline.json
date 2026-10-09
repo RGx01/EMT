@@ -5,6 +5,7 @@
     "_ensure_schema",
     "_insert_block_rows",
     "_insert_block_rows_replace",
+    "_replace_segments",
     "_stamp_region_if_free",
     "_upsert_carbon_intensity_row",
     "_upsert_mix_rows",

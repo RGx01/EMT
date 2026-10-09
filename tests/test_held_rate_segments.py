@@ -97,6 +97,46 @@ class AMeasuredBlockWithAnEv(_Held):
         self.assertAlmostEqual(self._row()["imp_cost_ev"], round(2.0 * H.FLAT, 6), places=6)
 
 
+class AHeldPredictionKeepsItsBands(_Held):
+    """BL-79 (part 2, 8 Oct 2026): the held PREDICTION path (a schedule block settling) re-ran the
+    seam, and where the seam emitted nothing (no dispatch here) _persist_block_segments rebuilt the
+    segments from the block dict's imp_*_ev copies — get_block_dict_by_start attaches no segments.
+    A two-band block came back as one house segment at the blended rate. Now the stored segments
+    are kept and fitted to the settled kWh. Discriminating: the first two fail on the parent."""
+    OFF, DAY = 0.07, 0.30
+
+    def _two_bands(self):
+        self._finalise()
+        c = engine._store._conn
+        cost = round(3.0 * self.OFF + (MAIN - 3.0) * self.DAY, 6)
+        with c:
+            c.execute("UPDATE blocks SET imp_rate=?, imp_cost=? WHERE block_start=? "
+                      "AND meter_id='electricity_main'", (round(cost / MAIN, 6), cost, H.START))
+        engine._store.set_block_segments(H.START, "electricity_main", [
+            ps.Segment(3.0, self.OFF, None, "off_peak", "house"),
+            ps.Segment(round(MAIN - 3.0, 6), self.DAY, None, "day", "house")])
+
+    def test_its_bands_survive_the_settlement(self):
+        self._two_bands()
+        self._settle(dcc=MAIN)
+        self.assertEqual([(s["band"], s["inc_rate"]) for s in self._segs()],
+                         [("off_peak", self.OFF), ("day", self.DAY)])
+
+    def test_they_are_fitted_to_a_revised_kwh(self):
+        self._two_bands()
+        self._settle(dcc=7.5)
+        self.assertEqual([s["band"] for s in self._segs()], ["off_peak", "day"])
+        self.assertAlmostEqual(self._total(), 7.5, places=6)
+
+    def test_a_block_with_no_segments_is_still_given_them(self):
+        """GUARD: with nothing stored, the rebuild from the columns still runs."""
+        self._finalise()
+        with engine._store._conn as c:
+            c.execute("DELETE FROM block_segments WHERE block_start=?", (H.START,))
+        self._settle(dcc=7.5)
+        self.assertAlmostEqual(self._total(), 7.5, places=6)
+
+
 class TheGuards(_Held):
 
     def test_a_predicted_band_was_already_refitted(self):

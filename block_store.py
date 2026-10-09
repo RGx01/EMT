@@ -3545,19 +3545,31 @@ class BlockStore:
         """Batch EV/Home split writer: many UPDATEs in ONE transaction (one fsync per
         chunk, not per block — same event-loop-friendliness as set_blocks_exc).
         `updates` = iterable of
-        (block_start, meter_id, kwh_ev, cost_ev, rate_ev, ev_band, home_band).
+        (block_start, meter_id, kwh_ev, cost_ev, rate_ev, ev_band, home_band
+         [, segments, needs_segments]).
         ADDITIVE ONLY — writes just the five split columns behind a NULL-only guard
         (idempotent; never re-carves) and NEVER touches imp_rate/imp_cost, so the
-        settled inc bill stays byte-identical. Returns the number of rows changed."""
+        settled inc bill stays byte-identical. Returns the number of rows changed.
+
+        `segments` (BL-79, 8 Oct 2026): the split's priced segments, written in the SAME
+        transaction when the guarded UPDATE fills the split — or when `needs_segments` says
+        the block had none. The sweep used to write segments only to a block that lacked
+        them, so a block admitted for its ex-VAT alone got the EV columns over house-only
+        segments, and every surface (which reads the segments) still showed no EV."""
         changed = 0
         with self._tx():
-            for bs, mid, kev, cev, rev, evb, hmb in updates:
+            for u in updates:
+                bs, mid, kev, cev, rev, evb, hmb = u[:7]
+                segs = u[7] if len(u) > 7 else None
+                needs = bool(u[8]) if len(u) > 8 else False
                 cur = self._conn.execute(
                     "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ?, imp_rate_ev = ?, "
                     "imp_ev_band = ?, imp_home_band = ? "
                     "WHERE block_start = ? AND meter_id = ? AND imp_kwh_ev IS NULL",
                     (kev, cev, rev, evb, hmb, bs, mid))
                 changed += cur.rowcount
+                if segs is not None and (cur.rowcount or needs):
+                    self._replace_segments(bs, mid, segs)
         return changed
 
     # ── BL-27 priced segments — the block's grid import as priced slices ─────────────
@@ -3569,18 +3581,23 @@ class BlockStore:
         pricing_segments.Segment. Written in ONE transaction (delete-then-insert, ordered
         by position), so the set is always consistent. Returns the number of rows written."""
         with self._tx():
+            return self._replace_segments(block_start, meter_id, segments, channel)
+
+    def _replace_segments(self, block_start, meter_id, segments, channel="import") -> int:
+        """set_block_segments' body, inside the CALLER's transaction — for a writer that must
+        commit its segments together with the columns they describe (BL-79)."""
+        self._conn.execute(
+            "DELETE FROM block_segments WHERE block_start = ? AND meter_id = ? "
+            "AND channel = ?", (block_start, meter_id, channel))
+        n = 0
+        for seq, seg in enumerate(segments or []):
+            kwh, inc_rate, exc_rate, band, attribution = seg
             self._conn.execute(
-                "DELETE FROM block_segments WHERE block_start = ? AND meter_id = ? "
-                "AND channel = ?", (block_start, meter_id, channel))
-            n = 0
-            for seq, seg in enumerate(segments or []):
-                kwh, inc_rate, exc_rate, band, attribution = seg
-                self._conn.execute(
-                    "INSERT INTO block_segments (block_start, meter_id, channel, seq, "
-                    "kwh, inc_rate, exc_rate, band, attribution) VALUES (?,?,?,?,?,?,?,?,?)",
-                    (block_start, meter_id, channel, seq, kwh, inc_rate, exc_rate,
-                     band, attribution))
-                n += 1
+                "INSERT INTO block_segments (block_start, meter_id, channel, seq, "
+                "kwh, inc_rate, exc_rate, band, attribution) VALUES (?,?,?,?,?,?,?,?,?)",
+                (block_start, meter_id, channel, seq, kwh, inc_rate, exc_rate,
+                 band, attribution))
+            n += 1
         return n
 
     def get_block_segments(self, block_start: str, meter_id: str,
@@ -3724,7 +3741,7 @@ class BlockStore:
             "SELECT 1 FROM sqlite_master WHERE type='table' "
             "AND name='block_segments'").fetchone()
         n = 0
-        with self._conn:
+        with self._tx():
             for bs in block_starts:
                 f = 1.0 / (1.0 + self.vat_rate_at(bs))
                 cur = self._conn.execute(
@@ -7842,7 +7859,7 @@ class BlockStore:
     def apply_measured_to_main(self, block_start: str, *, rate, cost,
                                rate_exc, cost_exc, kwh_ev, rate_ev, cost_ev,
                                ev_band, home_band, cost_remainder,
-                               meter_id: str = "electricity_main") -> int:
+                               meter_id: str = "electricity_main", segments=None) -> int:
         """Stamp Octopus's billed figure onto a main block. Returns rows changed.
 
         **Keyword-only after `block_start`, deliberately.** Eleven values, of
@@ -7870,6 +7887,11 @@ class BlockStore:
                 "WHERE block_start = ? AND meter_id = ?",
                 (rate, cost, rate_exc, cost_exc, kwh_ev, rate_ev, cost_ev,
                  ev_band, home_band, cost_remainder, block_start, meter_id))
+            # BL-79 (8 Oct 2026): the bill's segments in the same transaction. Written after,
+            # a failed segment write left the block stamped 'measured' — never revisited by
+            # the drain — under its pre-bill segments, which every surface reads.
+            if cur.rowcount and segments is not None:
+                self._replace_segments(block_start, meter_id, segments)
         return cur.rowcount
 
     def recost_sub_meters(self, block_start: str, rate, rate_exc,
@@ -7964,7 +7986,7 @@ class BlockStore:
 
     def restamp_ev_columns(self, block_start: str, rate: float, ev_band: str,
                            home_band: str,
-                           meter_id: str = "electricity_main") -> int:
+                           meter_id: str = "electricity_main", segments=None) -> int:
         """Re-derive the EV-split columns at `rate`. Returns rows changed.
 
         Usage Stats reads `imp_rate_ev` / `imp_cost_ev` / the bands /
@@ -8002,11 +8024,17 @@ class BlockStore:
         one rule across five releases is what a rule re-implemented rather than
         shared looks like; `_EV_RESTAMP_SQL` is the fix for that, not just for
         the duplication.
+
+        `segments` (BL-79, 8 Oct 2026): the block's re-priced segments, written in THIS
+        transaction — whether or not the block has a split for the columns to restamp, since a
+        house-only block is re-priced too. The caller used to write them first, on their own.
         """
         with self._conn:
             cur = self._conn.execute(
                 self._EV_RESTAMP_SQL,
                 (rate, rate, ev_band, home_band, rate, block_start, meter_id))
+            if segments is not None:
+                self._replace_segments(block_start, meter_id, segments)
         return cur.rowcount
 
     def relabel_segment_bands(self, block_start: str, ev_band: str,
@@ -8036,7 +8064,7 @@ class BlockStore:
     def apply_reconcile_verdict(self, block_start: str, rate: float,
                                 rate_exc, exc_source, ev_band: str,
                                 home_band: str,
-                                meter_id: str = "electricity_main") -> dict:
+                                meter_id: str = "electricity_main", segments=None) -> dict:
         """Apply a dispatch-overlay verdict to a block: main row, its sub-meters
         and the EV columns, in ONE transaction. Returns rows changed per part.
 
@@ -8077,6 +8105,10 @@ class BlockStore:
                 self._EV_RESTAMP_SQL,
                 (rate, rate, ev_band, home_band, rate,
                  block_start, meter_id)).rowcount
+            # BL-79 (8 Oct 2026): the re-priced segments in the same transaction; they were
+            # written after it, on their own.
+            if main and segments is not None:
+                self._replace_segments(block_start, meter_id, segments)
         return {"main": main, "sub_meters": subs, "ev_columns": ev}
 
     def get_reconcile_candidates(self, before_iso: str,
@@ -8219,7 +8251,7 @@ class BlockStore:
 
     def replace_ev_split(self, block_start: str, kwh_ev: float, cost_ev: float,
                          rate_ev: float, ev_band: str, home_band: str,
-                         meter_id: str = "electricity_main") -> int:
+                         meter_id: str = "electricity_main", segments=None) -> int:
         """Write an EV/house split OVER whatever is there. Returns rows changed.
 
         The counterpart to `carve_ev_split`, and the difference is the whole
@@ -8238,6 +8270,9 @@ class BlockStore:
         `overwrite=` argument would put that distinction one boolean away from
         being got wrong at a call site, which is how a manual correction gets
         stomped.
+
+        `segments` (BL-79, 8 Oct 2026): written in THIS transaction with the columns, so a failed
+        write leaves neither changed. The caller used to write them in a second transaction.
         """
         with self._conn:
             cur = self._conn.execute(
@@ -8245,11 +8280,13 @@ class BlockStore:
                 "imp_ev_band = ?, imp_home_band = ? "
                 "WHERE block_start = ? AND meter_id = ?",
                 (kwh_ev, cost_ev, rate_ev, ev_band, home_band, block_start, meter_id))
+            if cur.rowcount and segments is not None:
+                self._replace_segments(block_start, meter_id, segments)
         return cur.rowcount
 
     def carve_ev_split(self, block_start: str, kwh_ev: float, cost_ev: float,
                        rate_ev: float, ev_band: str, home_band: str,
-                       meter_id: str = "electricity_main") -> int:
+                       meter_id: str = "electricity_main", segments=None) -> int:
         """Write a PREDICTED EV/house split onto an un-carved block. Returns the
         number of rows changed (0 or 1).
 
@@ -8265,8 +8302,11 @@ class BlockStore:
             user correction). A predicted carve fills a blank; it does not
             overwrite an answer.
 
-        Own transaction, because the caller pairs it with `set_block_segments`
-        and a partial pair is worse than neither.
+        `segments` (BL-79, 8 Oct 2026): the carve's (kwh, inc_rate, exc_rate, band, attribution)
+        rows, written IN THIS TRANSACTION and only when the guarded UPDATE changed the row. The
+        caller used to write them first, unguarded, so a block carved in between kept its old
+        columns under the new segments. Each segment takes the band the columns end with — the
+        stored one where COALESCE kept it — so the two cannot disagree.
         """
         with self._conn:
             cur = self._conn.execute(
@@ -8275,6 +8315,12 @@ class BlockStore:
                 "imp_home_band = COALESCE(imp_home_band, ?) "
                 "WHERE meter_id = ? AND block_start = ? AND imp_kwh_ev IS NULL",
                 (kwh_ev, cost_ev, rate_ev, ev_band, home_band, meter_id, block_start))
+            if cur.rowcount and segments is not None:
+                evb, hmb = self._conn.execute(
+                    "SELECT imp_ev_band, imp_home_band FROM blocks WHERE meter_id = ? "
+                    "AND block_start = ?", (meter_id, block_start)).fetchone()
+                self._replace_segments(block_start, meter_id, [
+                    (k, i, x, (evb if a == "ev" else hmb) or b, a) for k, i, x, b, a in segments])
         return cur.rowcount
 
     def get_blocks_pricing_for_range(self, meter_id: str, from_iso: str,
