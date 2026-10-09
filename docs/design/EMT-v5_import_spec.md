@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v16 — revised 9 Oct 2026 (§5.2: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop); floor 4.5.21. §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v17 — revised 9 Oct 2026, floor raised to 4.5.22 (v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -106,6 +106,16 @@ refitted on import** (`pricing_segments.refit_to_kwh`). v4 re-costs a corrected,
 measured block to a later settled kWh without touching its segments (ROADMAP BL-79 (1), fixed in v5
 only), so every v4 database carries such blocks, more each month. Any other block whose segments
 miss its kWh is reported, not changed.*
+
+*Changes in v17 (9 Oct 2026): **the floor rises to `4.5.22`.** Its heal is the October VAT resync
+(v4 #505): from 1 Oct 2026 Octopus's half-hourly costs still carried 5% VAT though it bills 0%;
+4.5.22 detects Octopus's restatement per install and re-settles the period once every half-hour
+agrees with the VAT calendar. **It is conditional on Octopus**: a 4.5.22 database has run the
+mechanism, not necessarily the heal — if Octopus has not restated, its October measured blocks
+still carry 5%. So v5 carries the detection and resync as **forward code** (it re-arms on every VAT
+change and on imported data alike), not as a v4 heal; the floor guarantees only that 4.5.21's heals
+ran and that 4.5.22's state marker travels with the data. 4.5.21 and the v5 dev build `4.5.21-a22`
+join the below-floor negatives; v5's own builds now stamp `4.5.22-a23`.*
 
 ---
 
@@ -225,7 +235,9 @@ inference, and it is why nothing more elaborate is needed.
 > **raised 1 Oct 2026 to `4.5.17`** (the VAT backdate heal), and the same day to **`4.5.18`** (the
 > heal re-armed after 4.5.17's learner undid it), and again to **`4.5.19`** (the heal re-armed
 > for sub-meter rows); **raised 7 Oct 2026 to `4.5.21`** (three heals: EV-priority re-split,
-> dispatch-only device re-fit, corrected-device ex-VAT). A 4.5.14–4.5.20 database is refused.
+> dispatch-only device re-fit, corrected-device ex-VAT); **raised 9 Oct 2026 to `4.5.22`** (the
+> October VAT resync — conditional on Octopus restating, so v5 also carries it forward; see v17). A
+> 4.5.14–4.5.21 database is refused.
 
 *Rejected: a computed `heal_level` integer.* An earlier design proposed one, with each heal
 verifying its own invariant at startup so the level could fall when unhealed history arrived. It was
@@ -1144,7 +1156,9 @@ on hand:
 | 4.5.19 | **refused** | below the 4.5.21 floor since v13 — has not run 4.5.21's heals |
 | 4.5.20 | **refused** | below the 4.5.21 floor since v13. Its own fix (v4 #493) carried no heal; 4.5.21's three did |
 | `4.5.20-a21` (a v5 dev build) | **refused** | v5's build stamp before 7 Oct 2026, running 4.5.20's code |
-| **4.5.21** | **admitted** | the positive fixture at `FLOOR_VERSION` — prod-dev and dev ran it on 7 Oct 2026. |
+| 4.5.21 | **refused** | below the 4.5.22 floor since v17 — has not run the October VAT resync |
+| `4.5.21-a22` (a v5 dev build) | **refused** | v5's build stamp before 9 Oct 2026, running 4.5.21's code |
+| **4.5.22** | **admitted** | the positive fixture at `FLOOR_VERSION` — to be taken from prod-dev once it runs 4.5.22. |
 | **below** `FLOOR_VERSION` | **refused** | stamped, but from a release older than the floor |
 
 Two of these carry most of the value.
