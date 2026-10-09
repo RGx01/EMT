@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v15 — revised 8 Oct 2026 (§5.2: `imp_cost_exc` carried, not dropped; v14: EV segments written before the EV columns drop); floor 4.5.21. §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v16 — revised 9 Oct 2026 (§5.2: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop); floor 4.5.21. §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -100,6 +100,12 @@ blocks with segments, Σ kWh × `exc_rate` differs from it by up to ±2.3p a mon
 checked against two Octopus statements neither source matched every band, so the figure EMT has
 always shown is kept. `imp_rate_exc`, `standing_charge_exc` and `exc_source` still drop: v5's
 surfaces now derive the first two and never read the third.*
+
+*Changes in v16 (9 Oct 2026): §5.2 — **a held-rate block whose segments do not sum to its kWh is
+refitted on import** (`pricing_segments.refit_to_kwh`). v4 re-costs a corrected, reconciled or
+measured block to a later settled kWh without touching its segments (ROADMAP BL-79 (1), fixed in v5
+only), so every v4 database carries such blocks, more each month. Any other block whose segments
+miss its kWh is reported, not changed.*
 
 ---
 
@@ -749,6 +755,35 @@ columns say: the segments are what the bill priced.
 > `off_peak` where the house segment says `day`. Neither is read once the segments are the record:
 > the band survives as `block_segments.band` (below).
 
+**REFIT — a held-rate block whose segments miss its kWh** (v16, 9 Oct 2026). When v4's
+settlement re-run holds a block's rate — `rate_source` `'corrected'`, `'reconciled'` or `'measured'` —
+it re-costs the block to the settled kWh and leaves its segments at the kWh the block closed with
+(ROADMAP BL-79 (1)). v5 fits them at the re-run; v4 does not, and is not fixed (a split
+display, not a pricing error, so outside its critical-fix bar). So every v4 database admitted
+carries such blocks, and more each month it keeps running. For each MAIN block with segments where
+
+    rate_source IN ('corrected', 'reconciled', 'measured')
+    AND ABS(Σ block_segments.kwh − imp_kwh) > 1e-6
+
+the importer writes `pricing_segments.refit_to_kwh(segments, imp_kwh, rate=imp_rate,
+exc_rate=imp_rate_exc, band=…)` — the function v5's own re-run uses — so imported history is what
+v5 would have settled. No segment is re-priced: the house segments scale to take the difference,
+keeping their rate mix; only once the house is gone does the EV shrink; a house-less block gains
+one house segment at the held rate (band: `imp_home_band` where it is `off_peak` or `day`, else
+`standard`). `imp_kwh`, `imp_cost` and every other column are carried as they are.
+
+This is a transform, not a heal: no marker, no v4 version gate. The floor does not cover it because
+no v4 release heals it. It runs once, on the importer's copy, like every rule here.
+
+A main block whose segments miss its kWh but whose rate is NOT held is **reported, not refitted**:
+its cause is not this one, and refitting would hide it. The import report counts both — refitted,
+and reported with their block starts.
+
+> Measured 9 Oct 2026, read-only: 12 and 13 held-rate blocks on two production-like installs (4 with
+> EV on each; 0.13 and 0.10 kWh of segments short or over), none on a third account; on a dev
+> database none held and one tariff-priced block (0.009 kWh) — which this rule would report.
+> **Acceptance:** §9 gate 11.
+
 **CARRY+REMAP — band vocabulary.** `imp_ev_band` / `imp_home_band` are dropped as columns, but the
 *words* in them survive in `block_segments.band`. v4 uses four words, and they are **not** four names
 for two bands. They are a **2×2 of attribution × band**:
@@ -1086,6 +1121,12 @@ The import is not "done" when it completes; it is done when it **reconciles**. M
 10. **The user is told the history is being processed** (§8, decided 29 Sep 2026): after a
     successful import, a first-run notice that pages may be slow for a few minutes, shown while
     `/api/reprice-history-status` reports `in_progress` and cleared when it reports `done`.
+11. **Held-rate segments fit their kWh** (v16, §5.2 REFIT). After import, no main block with
+    `rate_source` in (`corrected`, `reconciled`, `measured`) has segments whose kWh differs from its
+    `imp_kwh` by more than 1e-6. The audit record (gate 9) carries the refitted count and the
+    reported (non-held) block starts, and both equal a pre-import query of the source. Gate 5
+    compares against the refitted segments: where a refit shrank the EV (the house was gone), the
+    source's `imp_kwh_ev` is expected to differ, by exactly the shrink.
 
 **Test corpus — and note the floor gives us a much better negative set.** The real databases already
 on hand:
