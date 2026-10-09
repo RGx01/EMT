@@ -34,6 +34,14 @@ from zoneinfo import ZoneInfo
 import direct_import as _direct
 import ev_split as _evsplit
 
+# BL-79 (3): every block dict the engine loads carries the EV split ev_split reads — the EV
+# segments, the columns only for a block with no segments — under its own names, which
+# _row_to_block prefers to the imp_*_ev columns. Engine logic on a loaded block (PASS 2's EV
+# reservation, the remainder recompute, the re-fit) then follows the record every surface reads,
+# and a round trip writes it back to the columns.
+_SPLIT_COLS = ("(" + _evsplit.sql_kwh("b") + ") AS _split_kwh, ("
+               + _evsplit.sql_cost("b") + ") AS _split_cost, ")
+
 logger = logging.getLogger("block_store")
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -920,6 +928,22 @@ def _row_to_block(rows: list[sqlite3.Row]) -> dict:
                         imp_ch[_evk] = row[_evcol]
                 except (IndexError, KeyError):
                     pass
+            # BL-79 (3): where the loader selected ev_split's split (_SPLIT_COLS), it is the
+            # split — the EV segments, or the columns for a block with no segments. A block whose
+            # segments hold no EV has no split, whatever a stale column says.
+            try:
+                _sk, _sc = row["_split_kwh"], row["_split_cost"]
+            except (IndexError, KeyError):
+                pass
+            else:
+                if _sk is None or float(_sk) <= 1e-9:
+                    for _k in ("kwh_ev", "cost_ev", "rate_ev"):
+                        imp_ch.pop(_k, None)
+                else:
+                    _sk, _sc = float(_sk), float(_sc or 0.0)
+                    imp_ch["kwh_ev"] = round(_sk, 6)
+                    imp_ch["cost_ev"] = round(_sc, 6)
+                    imp_ch["rate_ev"] = round(_sc / _sk, 6)
             # Expose provisional flag so the amendment path can identify blocks
             # written without a post-boundary sub-meter read.
             try:
@@ -3565,7 +3589,8 @@ class BlockStore:
                 cur = self._conn.execute(
                     "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ?, imp_rate_ev = ?, "
                     "imp_ev_band = ?, imp_home_band = ? "
-                    "WHERE block_start = ? AND meter_id = ? AND imp_kwh_ev IS NULL",
+                    "WHERE block_start = ? AND meter_id = ? AND "
+                    + _evsplit.sql_kwh("blocks") + " IS NULL",       # BL-79 (3)
                     (kev, cev, rev, evb, hmb, bs, mid))
                 changed += cur.rowcount
                 if segs is not None and (cur.rowcount or needs):
@@ -6678,7 +6703,7 @@ class BlockStore:
         try:
             cur = self._conn.execute(
                 """
-                SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone,
+                SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone, """ + _SPLIT_COLS + """
                        cp.currency_symbol, cp.currency_code, cp.effective_from,
                        m.is_sub_meter, m.parent_meter_id, m.device_label,
                        m.inverter_possible, m.power_sensor, m.postcode_prefix,
@@ -6710,7 +6735,7 @@ class BlockStore:
 
     def _select_blocks(self, where: str, params: tuple) -> list[dict]:
         sql = f"""
-            SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone,
+            SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone, {_SPLIT_COLS}
                    cp.currency_symbol, cp.currency_code, cp.effective_from,
                    m.is_sub_meter, m.parent_meter_id, m.device_label,
                    m.inverter_possible, m.power_sensor, m.postcode_prefix,
@@ -6984,7 +7009,7 @@ class BlockStore:
         by ensure_correct_block before startup completes."""
         cur = self._conn.execute(
             """
-            SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone,
+            SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone, """ + _SPLIT_COLS + """
                    cp.currency_symbol, cp.currency_code, cp.effective_from,
                    m.is_sub_meter, m.parent_meter_id, m.device_label,
                    m.inverter_possible, m.power_sensor, m.postcode_prefix,
@@ -7009,7 +7034,7 @@ class BlockStore:
         """Return the most recently finalised block (by block_start)."""
         cur = self._conn.execute(
             """
-            SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone,
+            SELECT b.*, cp.billing_day, cp.block_minutes, cp.timezone, """ + _SPLIT_COLS + """
                    cp.currency_symbol, cp.currency_code, cp.effective_from,
                    m.is_sub_meter, m.parent_meter_id, m.device_label,
                    m.inverter_possible, m.power_sensor, m.postcode_prefix,
@@ -7085,7 +7110,8 @@ class BlockStore:
                      "AND meter_type IN ('ev', 'ev_charger') LIMIT 1").fetchone():
             return []
         sql = ("SELECT m.block_start FROM blocks m WHERE m.meter_id = 'electricity_main' "
-               "AND m.imp_kwh_ev > 0 AND EXISTS (SELECT 1 FROM blocks o "
+               "AND " + _evsplit.sql_kwh("m") + " > 0 "      # BL-79 (3): ev_split's split
+               "AND EXISTS (SELECT 1 FROM blocks o "
                "    WHERE o.block_start = m.block_start AND o.meter_id IN "
                "          (SELECT meter_id FROM meters WHERE is_sub_meter = 1))")
         if starts is None:
@@ -7255,9 +7281,12 @@ class BlockStore:
         """The inputs `apply_measured_to_block` needs about the block itself, or
         None if there is no such block. `source` and `imp_kwh_api` are here for
         the settleable check the applier repeats as defence in depth."""
+        # BL-79 (3): `imp_kwh_ev` here is ev_split's split (the EV segments; the column only for
+        # a block with no segments) — the stored EV the applier prefers, and the heal's "healed".
         row = self._conn.execute(
-            "SELECT imp_kwh, imp_kwh_ev, imp_rate, source, imp_kwh_api FROM blocks "
-            "WHERE block_start = ? AND meter_id = ?",
+            "SELECT b.imp_kwh, " + _evsplit.sql_kwh("b") + " AS imp_kwh_ev, b.imp_rate, "
+            "b.source, b.imp_kwh_api FROM blocks b "
+            "WHERE b.block_start = ? AND b.meter_id = ?",
             (block_start, meter_id)).fetchone()
         return dict(row) if row else None
 
@@ -7383,7 +7412,9 @@ class BlockStore:
             "SELECT b.block_start, mc.cost_incl, mc.cost_excl, mc.label "
             "FROM blocks b JOIN measured_cost mc ON mc.slot_start = b.block_start "
             "WHERE b.meter_id = ? AND b.rate_source = 'measured' "
-            "  AND b.imp_kwh_ev IS NULL AND COALESCE(b.imp_kwh, 0) > 0 "
+            # BL-79 (3): "no split" is ev_split's — no EV segment (the columns only where
+            # the block has no segments at all), not the column alone.
+            "  AND " + _evsplit.sql_kwh("b") + " IS NULL AND COALESCE(b.imp_kwh, 0) > 0 "
             "  AND COALESCE(b.rate_corrected, 0) = 0 "
             "  AND mc.ev_kwh IS NOT NULL AND mc.ev_kwh > 0 "
             "  AND mc.cost_incl IS NOT NULL "
@@ -8167,11 +8198,15 @@ class BlockStore:
         SQL: that is no longer part of the query, so a block with no split comes
         back as a row with `imp_kwh_ev` None rather than as None. Test the
         COLUMN, not the row.
+
+        BL-79 (3): `ev_kwh` is ev_split's split (the EV segments; the column only for a block with
+        no segments) — what a caller rebuilding the segments reads. `imp_kwh_ev` / `imp_rate_ev`
+        stay the COLUMNS, for the restamp that keeps them coherent with each other.
         """
         row = self._conn.execute(
-            "SELECT imp_kwh, imp_kwh_ev, imp_rate, imp_rate_ev, imp_rate_exc, "
-            "imp_ev_band, imp_home_band FROM blocks "
-            "WHERE block_start = ? AND meter_id = ?",
+            "SELECT b.imp_kwh, b.imp_kwh_ev, " + _evsplit.sql_kwh("b") + " AS ev_kwh, "
+            "b.imp_rate, b.imp_rate_ev, b.imp_rate_exc, b.imp_ev_band, b.imp_home_band "
+            "FROM blocks b WHERE b.block_start = ? AND b.meter_id = ?",
             (block_start, meter_id)).fetchone()
         return dict(row) if row else None
 
@@ -8240,12 +8275,14 @@ class BlockStore:
             "AND COALESCE(b.rate_corrected, 0) = 0 "
             "AND EXISTS (SELECT 1 FROM dispatch_history h WHERE h.slot_start = b.block_start "
             "            AND h.kind = 'completed' AND h.energy_kwh IS NOT NULL) "
-            "AND (b.imp_kwh_ev IS NULL "
+            # BL-79 (3): the split is ev_split's (the EV segments; LEGACY columns only
+            # where the block has no segments).
+            "AND (" + _evsplit.sql_kwh("b") + " IS NULL "
             "     OR (b.interpolated = 1 AND EXISTS ("
             "           SELECT 1 FROM dispatch_history h2 WHERE h2.slot_start = b.block_start "
             "           AND h2.kind = 'completed' AND h2.energy_kwh IS NOT NULL "
             "           AND ABS(MIN(ABS(h2.energy_kwh), COALESCE(b.imp_kwh, 0)) "
-            "                   - COALESCE(b.imp_kwh_ev, 0)) > ?)))",
+            "                   - COALESCE(" + _evsplit.sql_kwh("b") + ", 0)) > ?)))",
             (meter_id, tolerance)).fetchall()
         return [dict(r) for r in rows]
 
@@ -8313,7 +8350,8 @@ class BlockStore:
                 "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ?, imp_rate_ev = ?, "
                 "imp_ev_band = COALESCE(imp_ev_band, ?), "
                 "imp_home_band = COALESCE(imp_home_band, ?) "
-                "WHERE meter_id = ? AND block_start = ? AND imp_kwh_ev IS NULL",
+                "WHERE meter_id = ? AND block_start = ? AND "
+                + _evsplit.sql_kwh("blocks") + " IS NULL",
                 (kwh_ev, cost_ev, rate_ev, ev_band, home_band, meter_id, block_start))
             if cur.rowcount and segments is not None:
                 evb, hmb = self._conn.execute(
@@ -8367,7 +8405,7 @@ class BlockStore:
         """
         rows = self._conn.execute(
             "SELECT b.block_start, b.imp_kwh, b.imp_rate, b.imp_rate_exc "
-            "FROM blocks b WHERE b.meter_id = ? AND b.imp_kwh_ev IS NULL "
+            "FROM blocks b WHERE b.meter_id = ? AND " + _evsplit.sql_kwh("b") + " IS NULL "
             "  AND b.imp_kwh > 0 "
             "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('measured','corrected')) "
             "  AND EXISTS (SELECT 1 FROM dispatch_history d WHERE d.kind = 'completed' "

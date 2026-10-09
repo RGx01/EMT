@@ -123,6 +123,12 @@ class TheRefit(H._Harness):
                 "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ROUND(? * imp_rate, 6)"
                 + (", rate_source = 'measured', imp_cost_remainder = 1.2345" if measured else "")
                 + " WHERE block_start = ? AND meter_id = 'electricity_main'", (EV, EV, H.START))
+        # The EV arrives in the SEGMENTS too, as every real writer now records it (BL-79): the
+        # split is the segments', and the refit's candidates are read from them.
+        r = engine._store._conn.execute("SELECT imp_rate FROM blocks WHERE block_start = ? "
+                                        "AND meter_id = 'electricity_main'", (H.START,)).fetchone()[0]
+        engine._store.set_block_segments(H.START, "electricity_main", [
+            (EV, r, None, "off_peak", "ev"), (round(MAIN - EV, 6), r, None, "off_peak", "house")])
 
     def test_at_close_the_battery_takes_the_grid(self):
         """GUARD: before the EV is known there is nothing to reserve."""
@@ -177,6 +183,23 @@ class AnAccountWithAnEvMeter(H._Harness):
             engine._store._conn.execute("UPDATE blocks SET imp_kwh_ev = 2.0 "
                                         "WHERE meter_id = 'electricity_main'")
         self.assertEqual(engine._store.dispatch_house_candidates(), [])
+
+
+class TheRefitFollowsTheSegments(H._Harness):
+    """BL-79 part 3 (9 Oct 2026): with the EV in the segments and the columns blank (the shape a
+    gap-fill rewrite leaves), the loaded block had no EV, so the battery kept the whole grid. The
+    block dicts the engine loads now carry ev_split's split. Discriminating: fails on the parent."""
+
+    # TheRefit's fixture, without inheriting (and re-running) its tests.
+    _make_cfg, _close_then_arrive = TheRefit._make_cfg, TheRefit._close_then_arrive
+
+    def test_the_battery_fits_inside_the_house_from_the_segments(self):
+        self._close_then_arrive()
+        with engine._store._conn as c:                       # blank the columns, keep the segments
+            c.execute("UPDATE blocks SET imp_kwh_ev = NULL, imp_cost_ev = NULL "
+                      "WHERE block_start = ? AND meter_id = 'electricity_main'", (H.START,))
+        engine._refit_devices_to_house(engine._store, [H.START])
+        self.assertAlmostEqual(self._row("house_battery")["imp_kwh_grid"], MAIN - EV, places=4)
 
 
 if __name__ == "__main__":

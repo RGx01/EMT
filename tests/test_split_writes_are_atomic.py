@@ -126,12 +126,15 @@ class TheRepriceSweep(unittest.TestCase):
                                2.0, places=6)
 
     def test_a_block_already_split_keeps_its_segments(self):
-        """GUARD: the fill-only guard still holds — a split block's segments are not rewritten."""
+        """GUARD: the fill-only guard still holds — a split block's segments are not rewritten.
+        "Split" is the segments' (BL-79 part 3): an EV segment, whatever the column says."""
         rows = self._house_only()
-        with self.st._conn:
-            self.st._conn.execute("UPDATE blocks SET imp_kwh_ev = 1.0 WHERE block_start = ?", (self.B,))
+        self.st.set_block_segments(self.B, "electricity_main",
+                                   [(1.0, 0.30, None, "off_peak", "ev"),
+                                    (2.0, 0.30, None, "standard", "house")])
         engine._reprice_history_blocks(rows, "UTC", RS._RATE_SEGS)
-        self.assertEqual([(s["kwh"], s["attribution"]) for s in self._segs(self.B)], [(3.0, "house")])
+        self.assertEqual([(s["kwh"], s["attribution"]) for s in self._segs(self.B)],
+                         [(1.0, "ev"), (2.0, "house")])
 
 
 class TheReconcileVerdict(unittest.IsolatedAsyncioTestCase):
@@ -268,6 +271,43 @@ class TheCorrectionsRoute(unittest.TestCase):
         st = CD._store()
         self.assertEqual(self._correct(st).status_code, 200)
         self.assertAlmostEqual(self._main_rate(st), CD.OFF, places=6)
+
+
+class TheSplitTheyRebuildFrom(unittest.IsolatedAsyncioTestCase):
+    """BL-79 part 3: the reconcile verdict rebuilds a block's segments from its split, and
+    measured settlement prefers the block's stored EV; both read the imp_kwh_ev COLUMN. With the
+    EV in the segments and the columns blank (the gap-fill shape), the verdict rebuilt the block
+    house-only and settlement took the dispatch instead. Both now read ev_split's split.
+    Discriminating: both fail on the parent."""
+    SLOT = RC.TestReconcileRestampsExc.SLOT
+    _seed_stale = RC.TestReconcileRestampsExc._seed_stale
+    _run = RC.TestReconcileRestampsExc._run
+
+    async def test_a_revert_keeps_the_segments_ev(self):
+        st = BA.BlockStore(":memory:")
+        self._seed_stale(st)                                   # 1.0 kWh, off-peak, reverts to peak
+        st.set_block_segments(self.SLOT, "electricity_main", [
+            (0.6, 0.05493, 0.052314, "off_peak", "ev"), (0.4, 0.05493, 0.052314, "off_peak", "house")])
+        await self._run(st)
+        segs = st.get_block_segments(self.SLOT, "electricity_main")
+        self.assertAlmostEqual(sum(x["kwh"] for x in segs if x["attribution"] == "ev"), 0.6, places=6)
+        self.assertEqual({round(x["inc_rate"], 6) for x in segs}, {0.323092})
+
+    def test_measured_settlement_prefers_the_segments_ev(self):
+        h = MA.TestMeasuredApply("test_no_dispatch_stays_house_only")
+        h.setUp()
+        try:
+            h._blk(3.0, None)
+            h.st.set_block_segments(h.SLOT, "electricity_main", [
+                (1.0, 0.05493, None, "off_peak", "ev"), (2.0, 0.05493, None, "off_peak", "house")])
+            h.st.record_dispatch_history(h.SLOT, "completed", provider="Myenergi",
+                                         source="unknown", energy_kwh=-2.0)
+            engine.apply_measured_to_block(h.SLOT, cost_incl=round(3.0 * 0.05493, 6), label="OFF_PEAK")
+            ev = sum(x["kwh"] for x in h.st.get_block_segments(h.SLOT, "electricity_main")
+                     if x["attribution"] == "ev")
+            self.assertAlmostEqual(ev, 1.0, places=6)          # the stored split, not the dispatch's 2.0
+        finally:
+            h.tearDown()
 
 
 if __name__ == "__main__":
