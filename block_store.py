@@ -3545,19 +3545,31 @@ class BlockStore:
         """Batch EV/Home split writer: many UPDATEs in ONE transaction (one fsync per
         chunk, not per block — same event-loop-friendliness as set_blocks_exc).
         `updates` = iterable of
-        (block_start, meter_id, kwh_ev, cost_ev, rate_ev, ev_band, home_band).
+        (block_start, meter_id, kwh_ev, cost_ev, rate_ev, ev_band, home_band
+         [, segments, needs_segments]).
         ADDITIVE ONLY — writes just the five split columns behind a NULL-only guard
         (idempotent; never re-carves) and NEVER touches imp_rate/imp_cost, so the
-        settled inc bill stays byte-identical. Returns the number of rows changed."""
+        settled inc bill stays byte-identical. Returns the number of rows changed.
+
+        `segments` (BL-79, 8 Oct 2026): the split's priced segments, written in the SAME
+        transaction when the guarded UPDATE fills the split — or when `needs_segments` says
+        the block had none. The sweep used to write segments only to a block that lacked
+        them, so a block admitted for its ex-VAT alone got the EV columns over house-only
+        segments, and every surface (which reads the segments) still showed no EV."""
         changed = 0
         with self._tx():
-            for bs, mid, kev, cev, rev, evb, hmb in updates:
+            for u in updates:
+                bs, mid, kev, cev, rev, evb, hmb = u[:7]
+                segs = u[7] if len(u) > 7 else None
+                needs = bool(u[8]) if len(u) > 8 else False
                 cur = self._conn.execute(
                     "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ?, imp_rate_ev = ?, "
                     "imp_ev_band = ?, imp_home_band = ? "
                     "WHERE block_start = ? AND meter_id = ? AND imp_kwh_ev IS NULL",
                     (kev, cev, rev, evb, hmb, bs, mid))
                 changed += cur.rowcount
+                if segs is not None and (cur.rowcount or needs):
+                    self._replace_segments(bs, mid, segs)
         return changed
 
     # ── BL-27 priced segments — the block's grid import as priced slices ─────────────

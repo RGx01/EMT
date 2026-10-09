@@ -7,8 +7,9 @@ saying one split and the segments — what every surface reads — another. Now 
 its segments to the store method that writes its columns, inside one transaction: if the segment
 write fails, neither changes.
 
-Each case makes the segment write fail (whichever store call does it on either tree) and asserts
-the columns are unchanged. Discriminating: every case fails on the parent.
+The atomicity cases make the segment write fail (whichever store call does it on either tree) and
+assert the columns are unchanged. The reprice sweep's case is a path that wrote the columns and
+no segments at all. Discriminating: each first case fails on the parent; the rest are guards.
 """
 import os
 import sys
@@ -18,6 +19,7 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import test_ev_back_attribution as BA            # noqa: E402  (store + schedule harness)
 import test_measured_apply as MA                 # noqa: E402
+import test_reprice_history_sweep as RS          # noqa: E402
 engine = BA.engine
 
 
@@ -92,6 +94,43 @@ class TheMeasuredApply(unittest.TestCase):
         self.assertTrue(self._apply())
         self.assertEqual(self._row()["rate_source"], "measured")
         self.assertTrue(self.st.get_block_segments(self.SLOT, "electricity_main"))
+
+
+class TheRepriceSweep(unittest.TestCase):
+    """An imported block that already has house-only segments, admitted to the sweep for its
+    missing ex-VAT, with a completed dispatch: the sweep filled its EV columns and left the
+    segments house-only, because it rewrote segments only on a block that had none. Every
+    surface reads the segments, so the EV never appeared. Now the split's segments go with its
+    columns. Discriminating: the first case fails on the parent."""
+    setUp, tearDown = RS.TestRepriceHistoryBlockCore.setUp, RS.TestRepriceHistoryBlockCore.tearDown
+    _blk = RS.TestRepriceHistoryBlockCore._blk
+    _segs = RS.TestRepriceHistoryBlockCore._segs
+    B = "2025-01-04T02:00:00"
+
+    def _house_only(self):
+        self._blk(self.B, 3.0, 0.30, 0.90, source="imported_api", dispatch=2.0)
+        self.st.set_block_segments(self.B, "electricity_main",
+                                   [(3.0, 0.30, None, "standard", "house")])
+        self.st._conn.commit()
+        rows = self.st.get_blocks_needing_reprice()                  # the sweep's own selection
+        self.assertEqual([(r["block_start"], r["needs_segments"]) for r in rows], [(self.B, 0)])
+        return rows
+
+    def test_the_split_reaches_the_segments(self):
+        engine._reprice_history_blocks(self._house_only(), "UTC", RS._RATE_SEGS)
+        ev_col = self.st._conn.execute("SELECT imp_kwh_ev FROM blocks WHERE block_start=?",
+                                       (self.B,)).fetchone()[0]
+        self.assertAlmostEqual(ev_col, 2.0, places=6)
+        self.assertAlmostEqual(sum(s["kwh"] for s in self._segs(self.B) if s["attribution"] == "ev"),
+                               2.0, places=6)
+
+    def test_a_block_already_split_keeps_its_segments(self):
+        """GUARD: the fill-only guard still holds — a split block's segments are not rewritten."""
+        rows = self._house_only()
+        with self.st._conn:
+            self.st._conn.execute("UPDATE blocks SET imp_kwh_ev = 1.0 WHERE block_start = ?", (self.B,))
+        engine._reprice_history_blocks(rows, "UTC", RS._RATE_SEGS)
+        self.assertEqual([(s["kwh"], s["attribution"]) for s in self._segs(self.B)], [(3.0, "house")])
 
 
 if __name__ == "__main__":

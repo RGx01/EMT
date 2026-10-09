@@ -7298,16 +7298,25 @@ def _reprice_history_blocks(rows, tz_name: "str | None", rate_segs) -> dict:
     for row in rows:
         ch = _reprice_history_block(row, tz_name, rate_segs)
         start, meter_id = ch.get("_start"), ch.get("_meter_id")
-        if ch.get("kwh_ev") is not None:
-            split_updates.append((start, meter_id, ch.get("kwh_ev"), ch.get("cost_ev"),
-                                  ch.get("rate_ev"), ch.get("ev_band"), ch.get("home_band")))
         if ch.get("rate_exc") is not None:
             exc_updates.append((start, meter_id, ch.get("cost_exc"), ch.get("rate_exc"), "tariff"))
         # Segments are written by REPLACE (delete+insert), so only (re)build them when the block
-        # LACKS them — never overwrite an existing set. Split/exc use fill-null-only writers below,
-        # so they are always safe to attempt. `needs_segments` defaults to 1 (missing-segments rows).
+        # LACKS them — never overwrite an existing set — or when this pass fills its EV split
+        # (BL-79): then the split's segments go with its columns, in set_blocks_iog_split's
+        # transaction. `needs_segments` defaults to 1 (missing-segments rows).
         _needs_seg = ch.get("_needs_segments", 1)
-        if _needs_seg:
+        if ch.get("kwh_ev") is not None:
+            try:
+                _segs = _build_block_segments(start, ch)
+            except Exception as e:
+                logger.warning("_reprice_history_blocks: segments failed (%s): %s", start, e)
+                continue
+            split_updates.append((start, meter_id, ch.get("kwh_ev"), ch.get("cost_ev"),
+                                  ch.get("rate_ev"), ch.get("ev_band"), ch.get("home_band"),
+                                  _segs, _needs_seg))
+            if _needs_seg:
+                seg_n += 1
+        elif _needs_seg:
             try:
                 _persist_block_segments(start, meter_id, ch)
                 seg_n += 1
