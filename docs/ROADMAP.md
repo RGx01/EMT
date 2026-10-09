@@ -262,11 +262,37 @@ and `tests/test_held_rate_segments.py` fails on the parent. **Open:** blocks alr
 way are carried by the importer as they are (it carries segments verbatim), unless it refits them
 too — a §5.2 rule to decide; a block re-settled under v5 is refitted.
 
-With the surfaces on `ev_split`, the segments are the record. So the fix is in the writers, not the readers: each writes its segments with its
-columns in one transaction, or (once the importer drops the columns) only the segments. Each path
-gets a test that fails on the parent. The engine's own gates (`imp_kwh_ev IS NULL` as "not split
-yet" in the carve, the backfill and the dispatch-only re-fit) move to the segments with this, not
-with the surfaces.
+With the surfaces on `ev_split`, the segments are the record. So the fix is in the writers, not the
+readers: each writes its segments with its columns in one transaction, or (once the importer drops
+the columns) only the segments.
+
+**(2) One write per split — 9 Oct 2026.** Each writer passes its segments to the store method that
+writes its columns, inside that method's transaction; the separate writers stay separate (a carve
+fills a blank, a re-attribution overwrites — one method with a flag is how a correction gets
+stomped). A failed write now changes neither, and the paths that wrote one without the other are
+closed. Each has a test in `tests/test_split_writes_are_atomic.py`, `test_carve_one_write.py` or
+`test_held_rate_segments.py` that fails on the parent:
+
+- **a held prediction** with no seam segments rebuilt its segments from the block dict's column
+  copies (`get_block_dict_by_start` attaches none), collapsing a multi-band block to one
+  `standard` segment; it now keeps and refits the stored ones;
+- **the carve** wrote its segments before its guarded UPDATE: a block carved in between lost its
+  segments and was still counted and re-fitted, and a band COALESCE kept differed from the
+  segment's;
+- **the reprice sweep** filled a split's columns over a block's existing house-only segments;
+- **back-attribution, measured settlement, the reconcile verdict and its stale-rated split heal**
+  wrote columns and segments in two transactions — a failed measured write left the block stamped
+  `measured`, which the drain never revisits, under its pre-bill segments;
+- **the corrections route** committed a rate correction in four steps; it is one batch now.
+
+Left as they are: the uncapped reconcile restamp only brings the columns up to segments that are
+already right, and the round-trip rewrites and gap fill touch the columns alone — with every reader
+on the segments, only the engine's own gates still read those columns.
+
+**(3) Open:** the engine's gates (`imp_kwh_ev IS NULL` as "not split yet" in the carve, the
+back-attribution, the settled-split heal and the reprice sweep's fill guard; `imp_kwh_ev > 0` in the
+dispatch-only re-fit) move to "has an EV segment". Then nothing reads the columns but the LEGACY
+fallback for unsegmented blocks, and they go with the importer.
 
 **Ex-VAT — the stored cost is the authority, 8 Oct 2026 (step 5).** `imp_cost_exc` is carried by the
 importer, not dropped (spec §5.2, v15): it is the ex-VAT twin of `imp_cost`, and the segments'
