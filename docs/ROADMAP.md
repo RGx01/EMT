@@ -10,7 +10,7 @@ in [design/EMT-v5_programme.md](design/EMT-v5_programme.md) — this file tracks
 is frozen to **critical fixes only** (data loss, crash-on-start, a pricing error), each ported here as
 its forward fix. This repository was seeded with a verbatim copy of 4.5.14 (suite **2,764** green at
 the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below deconstruct it. v4 is at
-**4.5.21**; the import floor is **4.5.21** (E).
+**4.5.22**; the import floor is **4.5.22** (E).
 
 *Refreshed 4 Oct 2026.*
 
@@ -20,7 +20,7 @@ the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below decons
 | B | Job coordinator (v4 BL-50) | A | ✅ all six acceptances met — 6 on the Pi, 5 Oct 2026 |
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | ✅ closed 5 Oct 2026 — queries asserted in CI (#102), time on the Pi (#64) |
-| E | Importer | A–D | 📝 spec v16, floor 4.5.21 |
+| E | Importer | A–D | 📝 spec v17, floor 4.5.22 |
 | F | Carried from v4's backlog | — | 📋 9 items open, 1 done (BL-50 = B) |
 | G | Local tariff store | A, B | 📝 proposed 4 Oct 2026 |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
@@ -397,7 +397,7 @@ storage. The original criterion asked for both in CI; the split is the accepted 
 
 ## E. Importer
 
-*Ingest a backup at or above the floor version, currently **4.5.21**. Spec at
+*Ingest a backup at or above the floor version, currently **4.5.22**. Spec at
 [design/EMT-v5_import_spec.md](design/EMT-v5_import_spec.md).*
 
 Three things the importer needs from a source. **Two are new in 4.5.14; one already exists** — an
@@ -425,6 +425,10 @@ VAT backdate heal (1 Oct 2026's 0% VAT), 4.5.18 that heal re-armed after 4.5.17'
 **Raised to 4.5.21** (spec v13, 7 Oct 2026): three heals — the EV-priority re-split (a rebuilt block lost
 `meter_type`, so a re-split gave a battery the EV's grid), the dispatch-only device re-fit, and the
 corrected-device ex-VAT repair. A 4.5.20 database, or a v5 dev build of it (4.5.20-a21), is now refused.
+**Raised to 4.5.22** (spec v17, 9 Oct 2026): the October VAT resync (v4 #505). Octopus's half-hourly
+costs carried 5% VAT after the 1 Oct change; 4.5.22 detects Octopus's restatement and re-settles the
+period. Because that waits on Octopus, a 4.5.22 database may still hold 5% October blocks, so v5
+carries the detection and resync as forward code rather than relying on the floor alone.
 
 Why a version suffices: every heal is marker-gated and an ungated marker runs at startup, so
 upgrading any older database runs every heal that release carries. **"Last opened by X" means
