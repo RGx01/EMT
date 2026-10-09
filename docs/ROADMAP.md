@@ -340,6 +340,25 @@ belongs with the wider question parked on 9 Oct: whether EMT should cost every b
 published ex-VAT rate per band with VAT from its own calendar, rather than trusting Octopus's
 estimated amounts. The June 2024 statement and the region B rates above are the test case.
 
+**Where a rate comes from (9 Oct 2026).** A cost is kWh × a rate, and the rate printed on a
+statement is not precise enough to be it: Octopus prints 2 dp (7.14p for 7.1428p, 25.04p for
+25.044p, 5.23p for 5.2314p), so kWh × the printed rate reproduces the CSV's estimate — this entry's
+error — rather than the bill. In order of preference:
+
+1. **The supplier's published rate** where it has an API. For Octopus that is every account and all
+   of its history (the public tariff endpoint, no key), and it is what `imp_rate` already holds.
+2. **With no API** (a `not-listed` supplier): the rate as precisely as the supplier states it (a
+   tariff sheet or contract), else recovered from the statement's own band totals — band cost ÷ band
+   kWh. On the June 2024 off-peak band that gives 7.1431p against the true 7.1428p (the printed kWh
+   is rounded to 0.1), far nearer than the printed 7.14p and within a fraction of a penny a month.
+   `bill_parser` already reads each band's printed rate, kWh and £ (`_TIER_RE`) and takes the printed
+   rate unless a `rate_resolver` supplies one; the recovered rate belongs in that resolver.
+3. **The printed rate** only as a last resort, flagged approximate, as the inc ÷ VAT fallback is.
+
+The exact rate still leaves a gap to the statement wherever EMT's band split differs from Octopus's
+(0.1–0.3 kWh a month more in peak on the months checked) — a kWh question, BL-78's remainder, not a
+rate one.
+
 **BL-78 — with Bill Rounding on, the Total Bill should be the bill method's total.** Proposed
 8 Oct 2026. The card prints two different roundings of one bill. Its lines (the ex-VAT bands, the
 standing charge, VAT on the subtotal, export) are summed and rounded once, the way Octopus's own
