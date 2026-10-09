@@ -289,10 +289,19 @@ Left as they are: the uncapped reconcile restamp only brings the columns up to s
 already right, and the round-trip rewrites and gap fill touch the columns alone — with every reader
 on the segments, only the engine's own gates still read those columns.
 
-**(3) Open:** the engine's gates (`imp_kwh_ev IS NULL` as "not split yet" in the carve, the
-back-attribution, the settled-split heal and the reprice sweep's fill guard; `imp_kwh_ev > 0` in the
-dispatch-only re-fit) move to "has an EV segment". Then nothing reads the columns but the LEGACY
-fallback for unsegmented blocks, and they go with the importer.
+**(3) The engine reads the segments — 9 Oct 2026.** Its checks (`imp_kwh_ev IS NULL` as "not split
+yet" in the carve, the back-attribution, the settled-split heal and the reprice sweep's fill guard;
+`imp_kwh_ev > 0` in the dispatch-only re-fit) and the blocks and rows it loads (PASS 2's EV
+reservation, the re-fit, the reconcile's segment rebuilds, measured settlement's stored EV) read
+ev_split: the EV segments, the columns only for a block with no segments. Tests in
+`tests/test_ev_split_gates.py` and the two files above fail on the parent on the shapes where the
+two disagree — blank columns over EV segments (what a gap-fill rewrite leaves) and a stale column
+over house-only segments. A round trip now writes the segments' split back to the columns.
+
+**BL-79 is closed.** What still reads the `imp_*_ev` columns is the LEGACY fallback for a block with
+no segments (`ev_split`), the uncapped reconcile restamp and the corrections route's `CASE` (both
+keep the columns coherent with each other), the data-version tokens and two dead selectors
+(`get/count_blocks_missing_iog_split`). All go with the columns when the importer drops them.
 
 **Ex-VAT — the stored cost is the authority, 8 Oct 2026 (step 5).** `imp_cost_exc` is carried by the
 importer, not dropped (spec §5.2, v15): it is the ex-VAT twin of `imp_cost`, and the segments'
