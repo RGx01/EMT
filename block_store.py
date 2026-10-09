@@ -1785,6 +1785,24 @@ class BlockStore:
              fetched_at or _utc_now_iso()))
         self._conn.commit()
 
+    def measured_costs_since(self, mpan: str, since: str,
+                             direction: str = "CONSUMPTION") -> list:
+        """(slot_start, cost_incl, cost_excl) of every cached measured cost at or after `since`,
+        oldest first — the period the VAT resync (v4 #505) checks and re-fetches."""
+        return [tuple(r) for r in self._conn.execute(
+            "SELECT slot_start, cost_incl, cost_excl FROM measured_cost WHERE mpan = ? AND "
+            "direction = ? AND slot_start >= ? ORDER BY slot_start",
+            (mpan or "", direction, since)).fetchall()]
+
+    def measured_main_costs_since(self, since: str) -> list:
+        """(block_start, imp_cost, imp_cost_exc) of every settled main block — rate_source
+        'measured', not hand-corrected — at or after `since`, oldest first."""
+        return [tuple(r) for r in self._conn.execute(
+            "SELECT block_start, imp_cost, imp_cost_exc FROM blocks "
+            "WHERE meter_id = 'electricity_main' AND rate_source = 'measured' "
+            "AND COALESCE(rate_corrected, 0) = 0 AND block_start >= ? ORDER BY block_start",
+            (since,)).fetchall()]
+
     def upsert_measured_breakdown(self, slot_start: str, *, mpan: str = "",
                                  direction: str = "CONSUMPTION", home_kwh=None,
                                  home_rate=None, ev_kwh=None, ev_rate=None) -> None:
