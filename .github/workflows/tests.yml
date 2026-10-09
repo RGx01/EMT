@@ -1,12 +1,19 @@
 name: Tests
 
-# Runs the EMT unit-test suite on every push and pull request, the same way
-# run_tests.sh runs it locally: file-isolated (each test module in its own
-# process, because several install sys.modules stubs at import time). The suite
-# includes tests/test_graphql_deprecation_check.py.
+# Runs the EMT unit-test suite the same way run_tests.sh runs it locally:
+# file-isolated (each test module in its own process, because several install
+# sys.modules stubs at import time). The suite includes
+# tests/test_graphql_deprecation_check.py.
+#
+# Actions minutes (9 Oct 2026): this repo is private, so every run is billed. A
+# feature branch used to run twice per PR — once for its push, once for the PR —
+# and each run was two jobs. Now a branch is tested through its pull request
+# alone, and a push is tested only on dev and main (the merge). Pull requests
+# run 3.12, the Python the add-on ships; 3.13 runs on dev and main.
 
 on:
   push:
+    branches: [dev, main]
   pull_request:
 
 permissions:
@@ -26,7 +33,7 @@ jobs:
         # 3.22, whose python3 is 3.12. 3.13 is the next one, so an Alpine bump is
         # not the first time the suite meets it. Nothing runs EMT below 3.12; the
         # 3.10 leg this replaces (4 Oct 2026) guarded a floor no install uses.
-        python-version: ["3.12", "3.13"]
+        python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.12"]' || '["3.12", "3.13"]') }}
     steps:
       - uses: actions/checkout@v4
 
