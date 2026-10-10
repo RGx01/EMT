@@ -2910,8 +2910,10 @@ def _prepare_restore_db(candidate, step=None):
         report = v4import.import_v4(candidate, target, progress=step)
     except v4import.ImportFailed as e:
         raise _RestoreRefused(str(e))
-    logger.info("restore: imported from v4 %s — %s; keys carried %s",
-                report["source"].get("written_by"),
+    logger.info("restore: imported from v4 %s in %.1f s (%s) — %s; keys carried %s",
+                report["source"].get("written_by"), report["seconds"].get("total", 0.0),
+                ", ".join("%s %.1f" % (k, v) for k, v in report["seconds"].items()
+                          if k != "total"),
                 ", ".join("%s %d" % (t, c["out"]) for t, c in report["tables"].items()
                           if c["out"]),
                 sum(len(k["carried"]) for k in report["keys"].values()))
