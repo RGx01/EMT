@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v18 — revised 10 Oct 2026, the importer as built (v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v19 — revised 10 Oct 2026, the `night` relabel dropped (v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -862,6 +862,11 @@ exists to answer.
 
 ### The one remap: house low, SMB era only
 
+> **Dropped (v19, 10 Oct 2026; ROADMAP BL-81 closed).** Octopus renamed the buckets on 28 Sep 2026
+> to HOME/EV LOW RATE and HOME/EV STANDARD RATE: side × rate, no "night". The segments already carry
+> side (`attribution`) and rate (`band`), so house `off_peak` stays in every era and the importer
+> relabels nothing. The rest of this section is the reasoning as it stood, kept for the record.
+>
 > **Not built (v18, 10 Oct 2026): waits on ROADMAP BL-81.** Everything below still describes the
 > intended rule. What stops it is v5's side: every writer of a house band decides "SMB" from the
 > CURRENT tariff, not the block's date, and the whole-history re-price sweep rewrites segments

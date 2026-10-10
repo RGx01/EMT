@@ -482,6 +482,24 @@ four, and `quick_check` + `foreign_key_check` take under 0.5 s on the largest (7
 Last deliberately: its contract is "write the EMT schema", so it cannot be finished until A–D have
 settled what that schema is.
 
+**BL-81 is closed, 10 Oct 2026: the `night` relabel is not wanted.** Octopus's own vocabulary
+answered it. On 28 Sep 2026 it renamed the IOG-SMB buckets from `ECO7_DAY` / `ECO7_NIGHT` /
+`EV_DEVICE_PEAK` / `EV_DEVICE_OFF_PEAK` to HOME STANDARD RATE / HOME LOW RATE / EV STANDARD RATE / EV
+LOW RATE, and its app shows them that way: side × rate, with no "night". EMT's segments already hold
+exactly that, the side as `attribution` and the rate as `band`, so house `off_peak` stays the word in
+every era, on both sides of the import. No per-block era, no relabel pass, no transform 4. The
+clock-versus-dispatch reading the spec argued for (§5.2) is still true of the tariff, but nothing reads
+it from the label, and Octopus has stopped naming it.
+
+**Where the band vocabulary does have to move: EV_BOOST.** Octopus added it to its rate-type enums on
+the same day; no product carries it yet. `bucket_side` now books any boost spelling to the EV
+(10 Oct 2026; `EV_BOOST` was refused and `EV_BOOST_PEAK` booked to the house before) and logs the
+first one it sees. When boost actually appears in a bill, the EV band word for it (`boost`) and the
+readers that test an EV band by name (`energy_charts` checks `peak` / `mixed`) are the work — an open
+label on one attribution, not an era.
+
+*What follows is the analysis that closed it.*
+
 **BL-81 — the house `night` band needs a per-block tariff era first.** Proposed 10 Oct 2026, split
 out of the importer's PR 3 (E design §5, §10). The importer can relabel an imported SMB-era house
 `off_peak` segment to `night` (import spec §5.2). But the relabel only holds if v5's own writers say

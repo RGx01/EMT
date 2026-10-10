@@ -196,6 +196,8 @@ Seven instances of exactly the drift §2 gives as the reason these columns go.
 
 ### The relabel is the importer's job, once
 
+*(Closed 10 Oct 2026, ROADMAP BL-81: the relabel is not wanted. Octopus's 28 Sep rename made its own buckets side × rate — HOME/EV LOW RATE, HOME/EV STANDARD RATE — with no "night"; house `off_peak` stays in every era and the importer relabels nothing.)*
+
 The correction `house off_peak → night` is **SMB-era only** and happens in the importer as a
 declarative column rule (import spec §5.2), not as a heal and not in domain code. Pre-SMB house low
 means "a dispatch discounted this slot" — the dispatch sense — and `off_peak` is the right word

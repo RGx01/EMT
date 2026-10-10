@@ -64,6 +64,42 @@ class TestBucketSide(unittest.TestCase):
         self.assertIsNone(bucket_side(None))
 
 
+class TestEvBoost(unittest.TestCase):
+    """Octopus added EV_BOOST to its rate-type enums on 2026-09-28; no product carries it yet,
+    and its bucket spelling is unknown. Before 10 Oct 2026 the enum's own spelling matched
+    nothing (refused: that half-hour's EV split lost) and EV_BOOST_PEAK fell to the pre-SMB
+    catch-all (booked to the HOUSE). Discriminating: the first two cases and the node test
+    fail on the parent; the spaced and EV_DEVICE spellings were already EV (guards)."""
+
+    def test_every_boost_spelling_is_ev(self):
+        for lab in ("EV_BOOST", "EV_BOOST_PEAK", "EV BOOST RATE", "EV BOOST",
+                    "CONSUMPTION_CHARGE_EV_DEVICE_BOOST_B"):
+            with self.subTest(label=lab):
+                self.assertEqual(bucket_side(lab), "ev")
+
+    def test_the_first_boost_label_is_logged_once(self):
+        import kraken_api_client as k
+        k._BOOST_BUCKET_LABELS.discard("EV_BOOST")
+        with self.assertLogs("kraken_api_client", level="INFO") as logs:
+            bucket_side("EV_BOOST")
+            bucket_side("EV_BOOST")
+        self.assertEqual(sum("first boost-labelled bucket" in m for m in logs.output), 1)
+
+    def test_a_boost_node_books_the_ev(self):
+        p = KrakenAPIClient._parse_breakdown_node(_node([
+            _stat("HOME STANDARD RATE", 0.5, 32.30924, 16.15),
+            _stat("EV_BOOST", 3.0, 32.30924, 96.93),
+        ]))
+        self.assertIsNotNone(p, "a boost bucket refused the whole node")
+        self.assertAlmostEqual(p["ev_kwh"], 3.0, places=6)
+        self.assertAlmostEqual(p["home_kwh"], 0.5, places=6)
+        self.assertEqual(p["ev_band"], "peak")
+
+    def test_an_unknown_non_ev_label_still_refuses(self):
+        """GUARD: the BOOST rule widens EV, not the catch-all."""
+        self.assertIsNone(bucket_side("BATTERY DISCHARGE CREDIT"))
+
+
 class TestLabelBandV2(unittest.TestCase):
     def test_low_rate_is_off_peak(self):
         self.assertIs(label_band("EV LOW RATE"), True)
