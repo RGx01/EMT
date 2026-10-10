@@ -136,7 +136,7 @@ class BlockRateAuthority(unittest.TestCase):
         """A user correction, a completed reconciliation, or a measured rate each
         outranks the heuristic. BL-53 added the third so a settlement re-cost
         cannot re-resolve the overlay over the bill."""
-        _block(self.st, S, rate_source="measured", imp_rate=0.0549)
+        _block(self.st, S, rate_source="settled", imp_rate=0.0549)
         r = self.st.get_block_rate_authority(S)
         for k in ("rate_corrected", "rate_reconciled", "imp_rate", "rate_source"):
             self.assertIn(k, r)

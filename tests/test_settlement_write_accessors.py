@@ -16,7 +16,7 @@ derived device cost.
 What makes that safe is `repair_device_rate_drift()` (A12), which detects exactly
 this divergence on every pass. Before it was reinstated, a failure here left the
 main meter settled and its devices on the pre-settlement rate with
-`rate_source='measured'` already stamped — so nothing would ever look again.
+`rate_source='settled'` already stamped — so nothing would ever look again.
 """
 import os
 import sqlite3
@@ -74,7 +74,7 @@ class ApplyMeasuredToMain(unittest.TestCase):
         r = _row(self.st)
         self.assertAlmostEqual(r["imp_rate"], 0.0549)
         self.assertAlmostEqual(r["imp_cost"], 0.2745)
-        self.assertEqual(r["rate_source"], "measured")
+        self.assertEqual(r["rate_source"], "settled")
         self.assertEqual(r["exc_source"], "tariff")
 
     def test_the_bill_leaves_a_stored_review_flag(self):
@@ -162,7 +162,7 @@ class TheAsymmetryAndItsNet(unittest.TestCase):
         _block(st, needs_review=1)
         _block(st, "sub_meter_ev", imp_kwh=4.0, imp_rate=0.32)
         st.apply_measured_to_main(S, **_BILL)
-        self.assertEqual(_row(st)["rate_source"], "measured")
+        self.assertEqual(_row(st)["rate_source"], "settled")
         self.assertAlmostEqual(_row(st, "sub_meter_ev")["imp_rate"], 0.32,
                                msg="the main write must not touch devices")
 
@@ -180,13 +180,13 @@ class TheAsymmetryAndItsNet(unittest.TestCase):
                 st.recost_sub_meters(S, 0.0549, 0.0523)
         finally:
             BlockStore.recost_sub_meters = original
-        self.assertEqual(_row(st)["rate_source"], "measured",
+        self.assertEqual(_row(st)["rate_source"], "settled",
                          "the authoritative bill must survive a device failure")
         self.assertAlmostEqual(_row(st, "sub_meter_ev")["imp_rate"], 0.32)
 
     def test_and_the_drift_repair_converges_it(self):
         """The net under the asymmetry. Without A12 this state would persist:
-        rate_source='measured' is already stamped, so the drain never returns."""
+        rate_source='settled' is already stamped, so the drain never returns."""
         st = _mk_store()
         _block(st)
         _block(st, "sub_meter_ev", imp_kwh=4.0, imp_rate=0.32)

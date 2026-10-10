@@ -84,7 +84,7 @@ class TestMeasuredHistoryDrain(unittest.TestCase):
 
         for s, kwh in ((s1, 3.0), (s2, 2.0)):
             r = self._row(s)
-            self.assertEqual(r["rate_source"], "measured")                # settled from the bill
+            self.assertEqual(r["rate_source"], "settled")                # settled from the bill
             self.assertAlmostEqual(r["imp_rate"], OFF, places=5)          # snapped to off-peak
             self.assertAlmostEqual(r["imp_cost"], round(kwh * OFF, 6), places=6)
             mc = self.st.get_measured_breakdown(s)
@@ -107,7 +107,7 @@ class TestMeasuredHistoryDrain(unittest.TestCase):
         res = asyncio.run(engine.run_measured_history_drain())
         self.assertEqual(res["settled"], 1)                              # settled despite NULL imp_kwh_api
         r = self._row(s)
-        self.assertEqual(r["rate_source"], "measured")
+        self.assertEqual(r["rate_source"], "settled")
         self.assertAlmostEqual(r["imp_rate"], OFF, places=5)
         self.assertIsNotNone(self.st.get_measured_breakdown(s))
 
@@ -140,11 +140,11 @@ class TestMeasuredHistoryDrain(unittest.TestCase):
         engine._kraken_client = _FakeClient({s: (1.0, 2.0)})
         res = asyncio.run(engine.run_measured_history_drain())
         self.assertEqual(res["settled"], 1)
-        self.assertEqual(self._row(s)["rate_source"], "measured")
+        self.assertEqual(self._row(s)["rate_source"], "settled")
 
     def test_apply_measured_settled_skips_unsettled_live_with_cache(self):
         # even when a breakdown is ALREADY cached, apply_measured_settled must not stamp an
-        # unsettled LIVE block 'measured' (the exact 07:00 split-brain: measured + in the 86).
+        # unsettled LIVE block 'settled' (the exact 07:00 split-brain: measured + in the 86).
         s = "2026-08-01T03:00:00"
         self._live_block(s, 0.004, api_settled=False)
         self.st.upsert_measured_cost(s, mpan="m", cost_incl=0.000323, cost_excl=0.000308,
@@ -157,13 +157,13 @@ class TestMeasuredHistoryDrain(unittest.TestCase):
         self.st.upsert_measured_cost(s2, mpan="m", cost_incl=0.1, cost_excl=0.095,
                                      label="OFF_PEAK", kwh=3.0)
         engine.apply_measured_settled()
-        self.assertEqual(self._row(s2)["rate_source"], "measured")
+        self.assertEqual(self._row(s2)["rate_source"], "settled")
 
     # ── 4.5.12 hardening: the three guards that stop a "settled-but-unsettled" block recurring ──
 
     def test_apply_measured_to_block_refuses_unsettled_live_directly(self):
         # H1 defence in depth: apply_measured_to_block is the ONLY stamper of rate_source=
-        # 'measured'. It must refuse an unsettled LIVE block on its own, so a future/direct
+        # 'settled'. It must refuse an unsettled LIVE block on its own, so a future/direct
         # caller (bypassing apply_measured_settled's gated query) cannot reintroduce the bug.
         s = "2026-08-01T04:00:00"
         self._live_block(s, 3.0, api_settled=False)
@@ -174,13 +174,13 @@ class TestMeasuredHistoryDrain(unittest.TestCase):
         s2 = "2026-08-01T04:30:00"
         self._live_block(s2, 3.0, api_settled=True)
         self.assertTrue(engine.apply_measured_to_block(s2, cost_incl=round(3.0 * OFF, 6), label="OFF_PEAK"))
-        self.assertEqual(self._row(s2)["rate_source"], "measured")
+        self.assertEqual(self._row(s2)["rate_source"], "settled")
         s3 = "2026-08-01T05:00:00"
         self._imported_block(s3, 3.0)
         self.st._conn.execute("UPDATE blocks SET imp_kwh_api=NULL, source='imported_api' WHERE block_start=?", (s3,))
         self.st._conn.commit()
         self.assertTrue(engine.apply_measured_to_block(s3, cost_incl=round(3.0 * OFF, 6), label="OFF_PEAK"))
-        self.assertEqual(self._row(s3)["rate_source"], "measured")
+        self.assertEqual(self._row(s3)["rate_source"], "settled")
 
     def test_backlog_excludes_unsettled_live_blocks(self):
         # H2: the drain's backlog signal shares the single _SETTLEABLE_SQL predicate, so it
@@ -207,7 +207,7 @@ class TestMeasuredHistoryDrain(unittest.TestCase):
                                      label="STANDARD_RATE", kwh=0.001)     # settled kWh = 0.001
         self.assertTrue(engine.apply_measured_to_block(s, cost_incl=0.000323, label="STANDARD_RATE"))
         r = self._row(s)
-        self.assertEqual(r["rate_source"], "measured")
+        self.assertEqual(r["rate_source"], "settled")
         self.assertAlmostEqual(r["imp_rate"], 0.323092, places=5)   # PEAK, not 0.05493
         # unchanged where CAD and settled agree: an off-peak cost bands off-peak as before
         s2 = "2026-08-01T07:30:00"

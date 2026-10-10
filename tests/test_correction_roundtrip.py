@@ -55,11 +55,11 @@ class TestCorrectionRoundTrip(unittest.TestCase):
 
     def test_reconciled_flag_survives_roundtrip(self):
         slot = "2026-08-30T13:00:00"
-        self._ins(slot, OFF, rate_reconciled=1, rate_source="measured")
+        self._ins(slot, OFF, rate_reconciled=1, rate_source="settled")
         self._roundtrip(slot)
         r = self._flags(slot)
         self.assertEqual(r["rate_reconciled"], 1)
-        self.assertEqual(r["rate_source"], "measured")
+        self.assertEqual(r["rate_source"], "settled")
 
     def test_fresh_block_defaults_unchanged(self):
         slot = "2026-08-30T14:00:00"

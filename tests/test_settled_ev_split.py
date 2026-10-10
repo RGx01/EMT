@@ -139,7 +139,7 @@ class TestSettledEvSplitHeal(_Base):
     def test_heals_a_block_settled_house_only(self):
         self._block(); self._bill(ev_kwh=4.5)
         engine._store._conn.execute(
-            "UPDATE blocks SET rate_source='measured' WHERE block_start=?", (SLOT,))
+            "UPDATE blocks SET rate_source='settled' WHERE block_start=?", (SLOT,))
         engine._store._conn.commit()
         self.assertIsNone(self._ev())
         r = engine.run_settled_ev_split_heal()
@@ -149,7 +149,7 @@ class TestSettledEvSplitHeal(_Base):
     def test_is_idempotent(self):
         self._block(); self._bill(ev_kwh=4.5)
         engine._store._conn.execute(
-            "UPDATE blocks SET rate_source='measured' WHERE block_start=?", (SLOT,))
+            "UPDATE blocks SET rate_source='settled' WHERE block_start=?", (SLOT,))
         engine._store._conn.commit()
         engine.run_settled_ev_split_heal()
         self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 0,
@@ -174,7 +174,7 @@ class TestTheHealDoesNotLoop(_Base):
     def _settled(self, **kw):
         self._block(**kw)
         engine._store._conn.execute(
-            "UPDATE blocks SET rate_source='measured' WHERE block_start=?", (SLOT,))
+            "UPDATE blocks SET rate_source='settled' WHERE block_start=?", (SLOT,))
         engine._store._conn.commit()
 
     def test_a_known_zero_ceiling_is_left_alone(self):

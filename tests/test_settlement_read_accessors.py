@@ -69,7 +69,7 @@ class BlockMeasuredInputs(unittest.TestCase):
     def test_it_carries_the_settleable_evidence_too(self):
         """`source` and `imp_kwh_api` are in the projection because the applier
         repeats the settleable check as defence in depth — it is the single
-        stamper of rate_source='measured', whoever calls it."""
+        stamper of rate_source='settled', whoever calls it."""
         st = _mk_store()
         _block(st, imp_kwh_api=4.9, source="imported_csv", imp_kwh_ev=2.0)
         r = st.get_block_measured_inputs(S)
@@ -191,7 +191,7 @@ class SettleableBlocks(unittest.TestCase):
 
     def test_a_live_cad_block_is_never_settleable(self):
         """No imp_kwh_api and not imported: there is no authoritative kWh, so it
-        must never be stamped 'measured'."""
+        must never be stamped 'settled'."""
         st = _mk_store()
         _block(st, imp_kwh=5.0)
         self.assertEqual(st.get_settleable_blocks("2026-01-01T00:00:00", "",
@@ -227,7 +227,7 @@ class SettleableBlocks(unittest.TestCase):
 
     def test_already_settled_is_excluded(self):
         st = _mk_store()
-        _block(st, imp_kwh=5.0, imp_kwh_api=4.9, rate_source="measured")
+        _block(st, imp_kwh=5.0, imp_kwh_api=4.9, rate_source="settled")
         self.assertEqual(st.get_settleable_blocks("2026-01-01T00:00:00", "",
                                                   "2026-12-01T00:00:00", 10), [])
 
@@ -306,17 +306,17 @@ class SettledBlocksMissingEvSplit(unittest.TestCase):
         self.st = _mk_store()
 
     def test_a_house_only_settlement_with_a_bill_ev_bucket_is_selected(self):
-        _block(self.st, imp_kwh=5.0, rate_source="measured")
+        _block(self.st, imp_kwh=5.0, rate_source="settled")
         _measured(self.st, S, ev_kwh=2.0, cost_incl=1.25)
         self.assertEqual(len(self.st.get_settled_blocks_missing_ev_split(10)), 1)
 
     def test_a_block_that_already_has_a_split_is_left_alone(self):
-        _block(self.st, imp_kwh=5.0, rate_source="measured", imp_kwh_ev=2.0)
+        _block(self.st, imp_kwh=5.0, rate_source="settled", imp_kwh_ev=2.0)
         _measured(self.st, S, ev_kwh=2.0)
         self.assertEqual(self.st.get_settled_blocks_missing_ev_split(10), [])
 
     def test_a_bill_with_no_ev_bucket_is_no_evidence(self):
-        _block(self.st, imp_kwh=5.0, rate_source="measured")
+        _block(self.st, imp_kwh=5.0, rate_source="settled")
         _measured(self.st, S, ev_kwh=0.0)
         self.assertEqual(self.st.get_settled_blocks_missing_ev_split(10), [])
 

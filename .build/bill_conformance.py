@@ -182,7 +182,7 @@ def analyse(db_path, tol_cost=TOL_COST, limit=0):
 
         # Circular: v4 copied the bill into this block, so it cannot referee itself.
         rs = (r["rate_source"] if has_rate_source else None) or ""
-        if rs in ("measured", "corrected") or (r["rate_corrected"] or 0):
+        if rs in ("measured", "settled", "corrected") or (r["rate_corrected"] or 0):
             out["excluded_circular"] += 1
             if has_buckets and (r["ev_kwh"] or 0) > 1e-9:
                 ev_circular += 1

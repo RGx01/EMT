@@ -73,7 +73,7 @@ def _failing(store, fn):
 
 
 class TheMeasuredApply(unittest.TestCase):
-    """A failed write used to leave the block stamped 'measured' — which the drain never
+    """A failed write used to leave the block stamped 'settled' — which the drain never
     revisits — under its pre-bill segments. Now nothing is stamped and the block stays a
     candidate."""
     setUp, tearDown = MA.TestMeasuredApply.setUp, MA.TestMeasuredApply.tearDown
@@ -87,13 +87,13 @@ class TheMeasuredApply(unittest.TestCase):
     def test_a_failed_segment_write_stamps_nothing(self):
         self._blk(3.0, None)
         self.assertFalse(_failing(self.st, self._apply))
-        self.assertEqual(self._row()["rate_source"], "reconciled")      # not 'measured'
+        self.assertEqual(self._row()["rate_source"], "reconciled")      # not 'settled'
 
     def test_it_still_writes_both(self):
         """GUARD: with the write working, the block is measured and segmented."""
         self._blk(3.0, None)
         self.assertTrue(self._apply())
-        self.assertEqual(self._row()["rate_source"], "measured")
+        self.assertEqual(self._row()["rate_source"], "settled")
         self.assertTrue(self.st.get_block_segments(self.SLOT, "electricity_main"))
 
 

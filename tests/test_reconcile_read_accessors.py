@@ -88,7 +88,7 @@ class ReconcileCandidates(unittest.TestCase):
     def test_a_measured_rate_outranks_the_heuristic(self):
         """BL-53. Octopus's billed cost is a higher authority than 'we never saw
         it start'."""
-        self._candidate(rate_source="measured")
+        self._candidate(rate_source="settled")
         self.assertEqual(self.st.get_reconcile_candidates(LATER), [])
 
     def test_imported_history_is_never_reconciled(self):

@@ -92,7 +92,7 @@ class TestIogSplitCarve(unittest.TestCase):
 
     def test_settled_block_is_not_touched(self):
         slot = "2026-09-08T02:00:00"
-        self._blk(slot, 3.0, rate_source="measured")   # SETTLED — settlement's realm
+        self._blk(slot, 3.0, rate_source="settled")   # SETTLED — settlement's realm
         self._dispatch(slot, 2.0)
         self.st._conn.commit()
         res = asyncio.run(engine.run_iog_split_carve())

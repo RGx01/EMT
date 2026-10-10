@@ -121,7 +121,7 @@ class TheRefit(H._Harness):
         with engine._store._conn:
             engine._store._conn.execute(
                 "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ROUND(? * imp_rate, 6)"
-                + (", rate_source = 'measured', imp_cost_remainder = 1.2345" if measured else "")
+                + (", rate_source = 'settled', imp_cost_remainder = 1.2345" if measured else "")
                 + " WHERE block_start = ? AND meter_id = 'electricity_main'", (EV, EV, H.START))
         # The EV arrives in the SEGMENTS too, as every real writer now records it (BL-79): the
         # split is the segments', and the refit's candidates are read from them.

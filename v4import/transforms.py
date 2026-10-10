@@ -13,7 +13,7 @@ importer's copy.
     4  band relabel        house off_peak -> night, SMB era
     5  meta                the allow-listed store_meta / kraken_state keys
 
-Only 5 exists yet; 1 to 4 follow, in this order (E design §10).
+1 and 5 exist; 2 to 4 follow, in this order (E design §10).
 """
 from . import rules
 
@@ -39,5 +39,20 @@ def carry_keys(conn, report):
         report["keys"][table] = {"carried": carried, "dropped": dropped}
 
 
+def provenance(conn, report):
+    """1: v5's provenance words (spec §5.2, BL-61(5)). A bill-settled block says 'settled'
+    where v4 said 'measured'. A block a dispatch reconciliation flagged (rate_reconciled = 1)
+    while leaving 'schedule' or no word says 'reconciled'; a settled or corrected one keeps
+    its word, which outranks a reconciliation. Every meter: v4 flagged sub-meter rows too.
+    The flag column itself stays until the column drop."""
+    renamed = conn.execute(
+        "UPDATE main.blocks SET rate_source = 'settled' WHERE rate_source = 'measured'").rowcount
+    folded = conn.execute(
+        "UPDATE main.blocks SET rate_source = 'reconciled' WHERE rate_reconciled = 1 "
+        "AND (rate_source IS NULL OR rate_source = 'schedule')").rowcount
+    report["transforms"]["provenance"] = {"settled": renamed, "reconciled_folded": folded}
+
+
 def run(conn, report):
+    provenance(conn, report)
     carry_keys(conn, report)

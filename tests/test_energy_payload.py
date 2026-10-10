@@ -120,7 +120,7 @@ class ProvenanceIsThreeFacts(_Base):
         self.assertTrue(r["kwh_authoritative"] and r["exp_kwh_authoritative"])
 
     def test_an_applied_bill_is_all_three(self):
-        self.blk(imp_kwh_api=1.9, rate_source="measured")
+        self.blk(imp_kwh_api=1.9, rate_source="settled")
         self.st.upsert_measured_cost(FROM, mpan="1", cost_incl=0.5)
         r = self.blocks()["electricity_main"]
         self.assertTrue(r["kwh_authoritative"] and r["bill_cached"] and r["bill_applied"])
@@ -131,7 +131,7 @@ class DeviceProvenanceIsInherited(_Base):
     def test_a_device_under_a_settled_parent_reads_as_billed(self):
         """The finding this exists for: the device's own `rate_source` says
         'schedule' because PASS 2 wrote the row, while its RATE is the bill's."""
-        self.blk(rate_source="measured", imp_rate=0.0549)
+        self.blk(rate_source="settled", imp_rate=0.0549)
         self.blk("ev_charger", rate_source="schedule", imp_rate=0.0549)
         b = self.blocks()
         self.assertEqual(b["ev_charger"]["rate_source"], "schedule",
@@ -147,11 +147,11 @@ class DeviceProvenanceIsInherited(_Base):
     def test_the_main_row_uses_its_own(self):
         """COALESCE picks the parent join, which is NULL for the main row itself
         — so the main meter must fall back to its own column, not to False."""
-        self.blk(rate_source="measured")
+        self.blk(rate_source="settled")
         self.assertTrue(self.blocks()["electricity_main"]["bill_applied"])
 
     def test_a_device_with_no_parent_row_falls_back_to_its_own(self):
-        self.blk("ev_charger", rate_source="measured")
+        self.blk("ev_charger", rate_source="settled")
         self.assertTrue(self.blocks()["ev_charger"]["bill_applied"])
 
 

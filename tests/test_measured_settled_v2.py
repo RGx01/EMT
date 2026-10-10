@@ -109,7 +109,7 @@ class TestMeasuredSettledV2(unittest.TestCase):
         self.assertNotIn("flagged", res)
         pr = self._rate(peak)
         self.assertAlmostEqual(pr["imp_rate"], PK, places=5)     # snapped to CLEAN agreement peak
-        self.assertEqual(pr["rate_source"], "measured")
+        self.assertEqual(pr["rate_source"], "settled")
         self.assertEqual(pr["needs_review"] or 0, 0)             # NOT review-flagged
         self.assertAlmostEqual(self._rate(off)["imp_rate"], OFF, places=5)
 
@@ -121,7 +121,7 @@ class TestMeasuredSettledV2(unittest.TestCase):
         self.assertEqual(res["applied"], 0)              # skipped — never a cost/kWh rate
         r = self._rate(slot)
         self.assertAlmostEqual(r["imp_rate"], OFF, places=5)     # unchanged
-        self.assertNotEqual(r["rate_source"], "measured")        # NOT settled
+        self.assertNotEqual(r["rate_source"], "settled")        # NOT settled
 
 
 if __name__ == "__main__":

@@ -32,7 +32,7 @@ _BACKFILL = ("UPDATE blocks SET rate_source = CASE "
              "WHEN rate_corrected = 1 THEN 'corrected' "
              "WHEN rate_reconciled = 1 THEN 'reconciled' "
              "WHEN imp_rate IS NOT NULL THEN 'schedule' END WHERE rate_source IS NULL")
-_GATE = "(rate_source IS NULL OR rate_source NOT IN ('measured','corrected'))"
+_GATE = "(rate_source IS NULL OR rate_source NOT IN ('settled','corrected'))"
 
 
 class TestSchemaAndBackfill(unittest.TestCase):
@@ -58,11 +58,11 @@ class TestSchemaAndBackfill(unittest.TestCase):
         self.assertEqual(got["2026-01-01T01:00:00"], "schedule")
         self.assertIsNone(got["2026-01-01T01:30:00"])
         # a measured row is never downgraded by a re-run
-        c.execute("UPDATE blocks SET rate_source='measured' WHERE block_start='2026-01-01T01:00:00'")
+        c.execute("UPDATE blocks SET rate_source='settled' WHERE block_start='2026-01-01T01:00:00'")
         c.commit(); c.execute(_BACKFILL); c.commit()
         self.assertEqual(c.execute(
             "SELECT rate_source FROM blocks WHERE block_start='2026-01-01T01:00:00'").fetchone()[0],
-            "measured")
+            "settled")
         os.remove(p)
 
 
@@ -86,7 +86,7 @@ class TestMeasuredCostStore(unittest.TestCase):
 class TestAuthorityGate(unittest.TestCase):
     def test_reconcile_query_skips_measured_and_corrected(self):
         st, p = _mk_store(); c = st._conn
-        _ins(c, "2026-08-24T09:00:00", rate=0.05, rs="measured")
+        _ins(c, "2026-08-24T09:00:00", rate=0.05, rs="settled")
         _ins(c, "2026-08-24T09:30:00", rate=0.05, rc=1, rs="corrected")
         _ins(c, "2026-08-24T10:00:00", rate=0.05, rr=1, rs="reconciled")
         _ins(c, "2026-08-24T10:30:00", rate=0.32, rs="schedule")

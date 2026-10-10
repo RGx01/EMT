@@ -144,11 +144,11 @@ class TestSlotMapAuthority(unittest.TestCase):
         self.assertAlmostEqual(out[SLOT_B]["cost"], 0.11, places=9)   # not the 0.40 carve
 
     def test_cost_settled_but_bill_silent_falls_back_to_dispatch(self):
-        """BL-66: rate_source said 'measured' but no breakdown was ever held, so the bill
+        """BL-66: rate_source said 'settled' but no breakdown was ever held, so the bill
         never stated a split. The dispatch proves the car charged and must still show."""
         st = _dispatched(BlockStore(":memory:"), SLOT_A, kwh=1.57)   # no _bill_spoke
         out = _dispatch_ev_slot_map(
-            st, [_block(SLOT_A, 3.194, 0.175, rate_source="measured")], CFG)
+            st, [_block(SLOT_A, 3.194, 0.175, rate_source="settled")], CFG)
         self.assertAlmostEqual(out[SLOT_A]["kwh"], 1.57, places=9)
 
     def test_no_authority_anywhere_is_empty(self):
@@ -235,7 +235,7 @@ class TestBucketSplitAuthority(unittest.TestCase):
 
     # ── BL-66: a settled COST is not a stated SPLIT ─────────────────────────────
     def test_cost_settled_but_bill_silent_falls_back_to_dispatch(self):
-        """The regression this fixes. Octopus settled the cost (rate_source='measured')
+        """The regression this fixes. Octopus settled the cost (rate_source='settled')
         but its four-bucket breakdown was never retrieved, so the bill has said nothing
         about the split. A completed dispatch proves the car charged; keying the guard on
         settlement read the missing split as a denial and hid it."""
