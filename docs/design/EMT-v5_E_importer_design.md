@@ -5,7 +5,7 @@ becomes; this says **where the code lives, how it runs, in what order the rules 
 order the work lands**. Where the two disagree, the spec wins until it is amended, and every
 amendment this design needs is listed in §9.*
 
-**Status:** draft, 10 Oct 2026. Architecture step 7. Decided by the user on 10 Oct: the house
+**Status:** agreed, 10 Oct 2026 (§11). Architecture step 7. Decided by the user on 10 Oct: the house
 `off_peak → night` remap is **kept** (spec §5.2), `rate_source 'measured' → 'settled'` is **done**
 (spec §5.2, BL-61(5)), and this document comes first. Figures are measured read-only on the
 October backups on hand (blocks-20 to blocks-24, the PianSom database, dev v4 011026) unless stated.
@@ -127,7 +127,7 @@ Each choice:
 ### Replace, not merge — the decision this needs
 
 Spec §3a says a user who set up v5 fresh, ran it for a week, and then imports must not be blocked.
-This design **replaces** the live database with the import, as a restore always has, and the
+The import **replaces** the live database, as a restore always has (decided 10 Oct 2026), and the
 `pre_restore` safety backup holds the replaced week. It does not merge.
 
 The recommendation rests on what the week holds. v5 and v4 run side by side and meter the same
@@ -173,8 +173,7 @@ The file-only signal is the **four-bucket settlement**: a `measured_cost` row wi
 start at the earliest such row, which falls on 26 Aug 2026 on blocks-20 and 25 Aug 2026 on PianSom.
 Its limit: an account that later *left* IOG-SMB would be relabelled to the end of its history. No
 account on hand has done that, and the report records the era it used, so the case is visible if it
-arises. *(Confirm with the user before it is built: this is the spec's rule made concrete, and it
-is a choice.)*
+arises.
 
 **(b) v5's own writers still say `off_peak`.** If the importer relabels and v5 does not, the
 problem the spec warns about appears at once: an imported half-hour says `night` and a natively
@@ -287,8 +286,7 @@ Beyond spec §9's gates, which run on every import:
 
 To be written into the import spec as **v18** when the PRs that need them land, not before:
 
-1. **§5.2 the relabel's era:** the earliest four-bucket `measured_cost` row, from the file (§5a),
-   once the user confirms it.
+1. **§5.2 the relabel's era:** the earliest four-bucket `measured_cost` row, from the file (§5a).
 2. **§5.2 the relabel's partner:** v5's native writers emit `night` too (§5b). Without it the
    relabel does what the spec says it prevents.
 3. **§6 the key table:** §7's classification replaces the 21-key paragraph, including the four
@@ -324,9 +322,12 @@ backup rather than migrated in place. v5 is unreleased, and the importer is the 
 
 ---
 
-## 11. Open, for the user
+## 11. Decided
 
-1. **Replace, not merge** (§3). Recommended. A merge is separate work if it is wanted.
-2. **The SMB era from the earliest four-bucket row** (§5a). This is the spec's rule made concrete,
-   with a stated limit.
-3. **The order change** (§10): the importer is wired before the vocabulary changes.
+Decided by the user, 10 Oct 2026:
+
+1. **Replace, not merge** (§3). The import replaces the live database, and the `pre_restore`
+   safety backup holds what it replaced.
+2. **The SMB era runs from the earliest four-bucket `measured_cost` row** (§5a), with the stated
+   limit recorded in the report.
+3. **The importer is wired into the restore before the vocabulary changes** (§10).
