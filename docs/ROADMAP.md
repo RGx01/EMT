@@ -383,6 +383,45 @@ total follows them; the one that doesn't is the energy, 10p high because EMT put
 into peak than Octopus did, which carries into the total. That band split is the open remainder: a
 kWh question, not a rounding one (see BL-80's note).
 
+**BL-82 — the settlement re-run replaces a settled block's bill with kWh × rate.** Found 10 Oct 2026,
+open, not yet decided. When `_rerun_pass2_for_settled_block` reaches a block whose rate is held —
+`rate_source` `settled`, `corrected` or `reconciled` — it keeps the rate and re-costs the block to
+the settled kWh: `imp_cost = chosen × imp_rate`. On a `settled` block `imp_rate` is the clean tariff
+rate the bill was snapped to, and `imp_cost` WAS the bill, so the re-run swaps what Octopus charged
+for kWh × rate. The import spec says the opposite: "`imp_cost` on a settled block **is the bill** and
+must not be recomputed from segments" (§5.2).
+
+*Seen:* after the dev database was imported on 10 Oct, the drain re-ran all of 9 Oct's settled
+blocks (`rate preserved (0.05231) — … re-costed to chosen kWh`). Their bill carried Octopus's 5% VAT
+(#505) and the re-cost at the 0% rate made them read 0% — the right answer, by accident, as it was for
+1–5 Oct on 8 Oct. Elsewhere the same re-cost would discard a real bill: a bill's sub-penny differences
+from kWh × rate, or a bill at a rate the clean snap does not reproduce. v4 behaves the same.
+
+*To decide:* whether a held SETTLED block keeps its bill cost when only its kWh is re-confirmed
+(re-cost only when the settled kWh actually differs from the kWh the bill priced, and then by the
+bill's own £/kWh), and how that meets the VAT resync (v4 #505, below). Measure first: how many settled
+blocks on real databases have `imp_cost` ≠ `imp_kwh × imp_rate`, and by how much.
+
+**BL-83 — the bill's VAT line takes each day's rate from its first half-hour.** Found 10 Oct 2026.
+`energy_charts._bill_method_breakdown` names the VAT in force per local day with
+`vat_by_day.setdefault(day, the half-hour's own VAT)` — the FIRST priced half-hour, which in BST is
+23:00 UTC the day before. With #505's 5% on 9 Oct's settled half-hours (UTC), the line read "0% … to
+9 Oct, 5% from 10 Oct": 9 Oct, almost all 5%, named 0%; 10 Oct, the next day, named 5% from its first
+half-hour, and the last span ran on to the period's end. v4 has had the rule since 4.5.19 (it is the
+"interesting take on the VAT line" of 8 Oct).
+
+*Proposed:* name the rate from the VAT calendar (the authority for what is in force), keep the AMOUNT
+as each half-hour's own inc − exc, and where any half-hour's own pair disagrees with the calendar say
+so on the line ("VAT @ 0% — includes … on half-hours where Octopus still charges 5%, not yet
+restated"). Display only; not a pricing error, so outside v4's critical-fix bar. Less pressing while
+BL-82's re-run happens to re-cost those half-hours to 0%; it is the next settled days that will show it.
+
+**v4 #505 (Octopus's half-hourly costs at 5% after 1 Oct) — still open, 10 Oct 2026.** Octopus has
+not restated: on the dev database every settled October half-hour in `measured_cost`, 1–9 Oct, is
+`cost_incl = cost_excl × 1.05`, including 9 Oct's fetched on 10 Oct at 12:03 — so newly settled
+half-hours still arrive at 5%. No resync hint has fired (`measured_vat_resync` absent). The blocks read
+0% only where BL-82's re-run re-costed them.
+
 ## D. Surfacing performance
 
 *Measure before optimising.* Target hardware is a Raspberry Pi 4 class box on SD storage.
