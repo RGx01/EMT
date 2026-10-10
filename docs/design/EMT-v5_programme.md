@@ -242,7 +242,8 @@ queries per surface. A surface issuing 200 small queries is the likely shape of 
 
 Ingests a backup zip at or above the floor version (currently **4.5.22**), or a `blocks.db`
 taken from one. No cooperating exporter — the source is validated by the importer itself. Contract,
-gates and table-by-table disposition are in that document.
+gates and table-by-table disposition are in that document. How it is built — the package, the restore wiring, the transform order and the PR order — is
+[EMT-v5_E_importer_design.md](EMT-v5_E_importer_design.md).
 
 Two things that were missing from every draft before 19 Sep and are now in the spec: the **first-run
 fork** (§3a — new setup or restore, with the backup driving the credential prompt rather than the
