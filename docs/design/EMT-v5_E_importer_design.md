@@ -78,11 +78,18 @@ candidate (zip's blocks.db, flat file, or upload)
 
 **The schema marker is new.** v4 has no reliable discriminator: spec §3 rules out
 `schema_version` (it reads `1` everywhere), and `written_by` cannot tell a v5 dev build from v4,
-because `4.5.22-a23` is a v5 build running 4.5.22's schema. So v5 writes
-`store_meta.emt_schema = 5` when it creates a database, and the importer writes it on the target.
-A database without it is v4-shaped, whoever wrote it. **v5 dev databases made before the marker
-are v4-shaped and go through the importer**, which is correct: they hold `measured` rows and the
-legacy columns.
+because `4.5.22-a23` is a v5 build running 4.5.22's schema. So v5 writes `store_meta.emt_schema`
+when it **creates** a database (`BlockStore`, only when the file has no tables yet), and the
+importer's target gets it that way. A database without it is v4-shaped, whoever wrote it. **v5
+dev databases made before the marker are v4-shaped and go through the importer**, which is
+correct: they hold `measured` rows and the legacy columns.
+
+*Built (PR 2):* the value is a **revision** (`block_store.EMT_SCHEMA`, 1), not a constant `5`. Each
+change to what v5 stores raises it (the vocabulary in PR 3, the drop in PR 5). Until the first
+release, a v5 backup at any other revision is refused: an older one with "restore a backup from
+the v4 add-on instead", a newer one with "update EMT". A dev database marked at an older revision
+holds what that build stored, and the importer only reads v4 shapes. At the first release the
+revision becomes the baseline its migrations start from.
 
 ---
 
@@ -150,7 +157,7 @@ in this order, on the target:
 | 2 | **EV segments from the columns**, for a main block with `imp_kwh_ev > 0` and no segments (`pricing_segments.segments_from_legacy`). | §5.2 v14 | Before 3: a refit needs segments to fit. Before the columns go. |
 | 3 | **Held-rate refit**, for a main block with `rate_source IN ('corrected','reconciled','settled')` whose segments miss `imp_kwh` by more than 1e-6 (`pricing_segments.refit_to_kwh`). Any other block that misses is **reported**. | §5.2 v16 | After 2, so a block given segments in 2 is checked too. Before 4: a house-less block gains a house segment whose band comes from `imp_home_band`, and that word may need relabelling. |
 | 4 | **Band relabel**: house `off_peak` → `night` inside the SMB era (§5). | §5.2 | Last of the block rewrites, so it sees every house segment 2 and 3 wrote. |
-| 5 | **Meta.** Carry the allow-listed keys (§7). Write v5's `written_by` and a new `db_uuid`. Write `emt_schema = 5` and the audit record (`store_meta.import_audit`). | §6, §9.9 | After verify has passed, so the audit record holds its results. |
+| 5 | **Meta.** Carry the allow-listed keys (§7). Leave `written_by` and `db_uuid` out: the restore re-runs `engine_startup`, which stamps v5's version and mints a native `db_uuid` (spec §6 REGEN by v5's own mechanism). `emt_schema` comes with the target (§2). The audit record (`store_meta.import_audit`) is written after verify. | §6, §9.9 | After verify has passed, so the audit record holds its results. |
 
 Each transform is one function, reads only the target, and adds a count to the report, so the audit
 record says how many rows each rule touched. **None is a heal**: there is no marker, no version
@@ -203,7 +210,8 @@ the restore ends with the gate's message. The live database has not been touched
 | spec §9 | how |
 |---|---|
 | 1 row counts | per CARRY table, `COUNT(*)` main vs src. `measured_cost` includes its `label='ZERO'` rows (spec §5.1). |
-| 2 cost parity | `Σ imp_cost`, `Σ exp_cost` per meter per UK-local day, exact at stored precision. A day is finer than a billing period, so day parity implies period parity, and a failure names the day. |
+| *carried exactly* | the broad gate: for every carried table, the carried columns `EXCEPT` in both directions is empty. Columns a transform rewrites leave it and are checked by their own gate (`verify.REWRITTEN`). The named gates restate the spec's invariants one by one, so each keeps its message once the transforms arrive. |
+| 2 cost parity | every block's `imp_cost`, `exp_cost` and `imp_cost_exc` equal the source's, joined on the carried id, exact at stored precision. Per block is finer than any period, so it implies period parity. *(Drafted as per day; built per block, 10 Oct 2026, because it is stronger and no slower.)* |
 | 3 provenance | counts by word, after mapping the source through transform 1's rule in SQL. |
 | 4 corrections | every `rate_corrected = 1` source block exists with the same `imp_rate`, `imp_cost` and `rate_source`. |
 | 5 segments reproduce the dropped columns | every main block: EV kWh and £ from segments vs `src.imp_kwh_ev` / `imp_cost_ev`; the derived ex-VAT rate vs `src.imp_rate_exc`. Report the worst divergence. Blocks refitted in 3 are compared against the refit (spec gate 11's note). **Lands with the drop (PR 5)**; before it, the columns are still there and the comparison is with themselves. |
@@ -232,6 +240,9 @@ carried user data** is a setup fact in effect, and crosses.
 | `kraken_account_number`, `data_source_mode` | state | spec §6, §7 |
 | `api_import_oldest_import/export`, `api_import_done_import/export` | state | *How far back the history reaches* is a fact about the carried blocks, not a sweep. Dropped, they would make v5 offer the API history import again over history it holds. **To verify in PR 2:** what `api_import` does when they are absent and the blocks are present. |
 | `region_probe_clobber_done` | meta | v5 still runs the one-time region overwrite (`engine.py:9622`). Re-run on an import, it would overwrite the carried `config_periods` regions from the API. |
+| `billing_source` | state | the user's choice of what settles a block (*added in PR 2, from v5's own keys*) |
+| `carbon_paused` | meta | the user's carbon kill switch (*added in PR 2*) |
+| `import_cost_coverage` | meta | what the API import found about this history, per tariff era (*added in PR 2*) |
 
 **REGEN**: `written_by` (v5's own version), `db_uuid` (new; the source's goes in the audit
 record), `emt_schema` (new, §2).
@@ -247,7 +258,9 @@ record), `emt_schema` (new, §2).
 | `export_zero_fill_v1` | fills blank export slots on imported days again; idempotent |
 | `carbon_backfill_state`, `import_reprice_queue`, `region_reconcile_pending`, `reprice_history_state` | spec §6. The whole-history sweep then runs (spec §8). |
 | `measured_vat_resync` (4.5.22, not yet on hand) | v5's forward resync starts from the data. If v4 finished, v5 finds no disagreeing block and marks itself done. If not, it waits for a new hint, as v4 would have. |
-| `schema_version` | spec §3 and §6 |
+| `schema_version` | spec §3 and §6. The target keeps the one v5 wrote. |
+| `data_epoch` | the restore bumps the epoch above the live one anyway (C §2a) (*added in PR 2*) |
+| `preimport_sites_applied` | a marker the API import clears when it finishes (*added in PR 2*) |
 
 **DROP, no v5 reader** (v4 heal and sweep markers, which is what v5 carrying no heals means):
 `band_rate_snap_done_v2`, `bl19_grid_invariant_sweep_done`, `dispatch_house_refit_done`,
@@ -258,7 +271,14 @@ record), `emt_schema` (new, §2).
 `carbon_backfill_done`, `exc_backfill_state`, `iog_split_backfill_state`,
 `stale_exc_repair_state`, `stale_iog_split_repair_state`, `segment_backfill_state`.
 
-**An unknown key aborts the import**, as an unknown column does (§3). A key v4 adds after this
+**A key ending `_done` or `_done_v<n>` is dropped** as a v4 completion marker. That is the
+spec's own test for a key that must not cross, written as a rule, and it covers markers no backup on
+hand still holds (`corrected_device_exc_done`, `vat_backdate_heal_done`, `…_v2`). An explicit
+entry wins, which is how `region_probe_clobber_done` crosses. *Checked 10 Oct 2026* against every
+key v4 has written in its whole git history, every key in the backups, and every key v5 reads:
+each has a rule, and none ending `_done` is a setup fact.
+
+**Any other unknown key aborts the import**, as an unknown column does (§3). A key v4 adds after this
 document is classified by a person, not by default.
 
 ---

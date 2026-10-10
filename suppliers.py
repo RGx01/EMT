@@ -2,7 +2,7 @@
 suppliers.py — the supplier registry, in one place.
 
 Mirrors the client WIZ_SUPPLIERS registry. The engine's supplier gate decides whether
-an API-backed mode is permitted at all; the import gate (import_gate.py) decides
+an API-backed mode is permitted at all; the import gate (v4import/gate.py) decides
 whether a backup's supplier is one this build understands. Adding a future
 Kraken-platform supplier = add its key here (+ eventually a profile).
 
