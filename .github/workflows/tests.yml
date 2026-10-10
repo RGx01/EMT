@@ -5,16 +5,38 @@ name: Tests
 # sys.modules stubs at import time). The suite includes
 # tests/test_graphql_deprecation_check.py.
 #
-# Actions minutes (9 Oct 2026): this repo is private, so every run is billed. A
-# feature branch used to run twice per PR — once for its push, once for the PR —
-# and each run was two jobs. Now a branch is tested through its pull request
-# alone, and a push is tested only on dev and main (the merge). Pull requests
-# run 3.12, the Python the add-on ships; 3.13 runs on dev and main.
+# Actions minutes: this repo is private, so every run is billed.
+#  9 Oct 2026  A feature branch ran twice per PR (its push and the PR), two jobs each. Now a
+#              branch is tested through its pull request alone, on 3.12, the Python the add-on
+#              ships.
+# 10 Oct 2026  The merge to dev re-tested what its PR had just passed, on two Pythons: about
+#              7 of a PR's ~11 billed minutes. A push now runs only on main (both Pythons, so
+#              3.13 is still met before a release). And a change that touches only docs runs
+#              nothing, EXCEPT the two design docs whose figures the suite asserts
+#              (tests/test_b_design_figures.py): editing those still runs the tests. There is
+#              no required check to wait on (a private repo on the free plan has no branch
+#              protection), so a skipped run blocks no merge.
 
 on:
   push:
-    branches: [dev, main]
+    branches: [main]
+    paths:            # the same list as pull_request's: keep the two in step
+      - "**"
+      - "!docs/**"
+      - "!**/*.md"
+      - "!LICENSE"
+      - "!screenshots/**"
+      - "docs/design/EMT-v5_architecture.md"
+      - "docs/design/EMT-v5_B_coordinator_design.md"
   pull_request:
+    paths:
+      - "**"
+      - "!docs/**"
+      - "!**/*.md"
+      - "!LICENSE"
+      - "!screenshots/**"
+      - "docs/design/EMT-v5_architecture.md"
+      - "docs/design/EMT-v5_B_coordinator_design.md"
 
 permissions:
   contents: read
