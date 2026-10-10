@@ -63,6 +63,10 @@ EMT_SCHEMA = 4
 #   3  10 Oct 2026  imp_kwh_remainder, imp_cost_remainder, rate_reconciled dropped
 #   4  10 Oct 2026  imp_rate_exc, standing_charge_exc, exc_source dropped
 
+# A main import channel's priced segments, built by pricing and committed by the block write
+# (append_block / append_block_replace) in the SAME transaction as the block row (step 5c).
+STAGED_SEGMENTS = "_staged_segments"
+
 
 def read_emt_schema(path):
     """The `emt_schema` revision of the database file at `path`, or None when it has none
@@ -665,6 +669,18 @@ def local_date_range_to_utc_bounds(first_local_date: str, last_local_date: str,
 
 def _channel(meter_block: dict, channel_name: str) -> dict:
     return (meter_block.get("channels") or {}).get(channel_name) or {}
+
+
+def _staged(block: dict) -> list:
+    """(block_start, meter_id, segments) for each import channel that pricing left its
+    segments on (STAGED_SEGMENTS), taking them off the dict so a re-used dict cannot write
+    them twice. The block write commits them in its own transaction (step 5c, 10 Oct 2026)."""
+    out = []
+    for mid, mb in (block.get("meters") or {}).items():
+        ch = ((mb or {}).get("channels") or {}).get("import")
+        if isinstance(ch, dict) and STAGED_SEGMENTS in ch:
+            out.append((block.get("start"), mid, ch.pop(STAGED_SEGMENTS) or []))
+    return out
 
 
 def _block_rows(block: dict, config_period_id: int, tz_name: str) -> list[dict]:
@@ -6552,7 +6568,7 @@ class BlockStore:
         cp = self.get_config_period(period_id)
         tz_name = cp["timezone"] if cp else "UTC"
         rows = _block_rows(block, period_id, tz_name)
-        self._insert_block_rows(rows)
+        self._insert_block_rows(rows, _staged(block))
 
     def append_blocks(self, blocks: list[dict],
                       config_period_id: Optional[int] = None) -> int:
@@ -6573,7 +6589,7 @@ class BlockStore:
         self._insert_block_rows(all_rows)
         return len(all_rows)
 
-    def _insert_block_rows(self, rows: list[dict]) -> None:
+    def _insert_block_rows(self, rows: list[dict], staged=()) -> None:
         if not rows:
             return
         sql = """
@@ -6607,8 +6623,10 @@ class BlockStore:
         """
         with self._conn:
             self._conn.executemany(sql, rows)
+            for bs, mid, segs in staged:
+                self._replace_segments(bs, mid, segs)
 
-    def _insert_block_rows_replace(self, rows: list[dict]) -> None:
+    def _insert_block_rows_replace(self, rows: list[dict], staged=()) -> None:
         """Like _insert_block_rows but uses INSERT OR REPLACE to overwrite
         existing blocks. Used by gap fill to correct zero/bad blocks in the DB.
 
@@ -6673,6 +6691,8 @@ class BlockStore:
         """
         with self._conn:
             self._conn.executemany(sql, rows)
+            for bs, mid, segs in staged:
+                self._replace_segments(bs, mid, segs)
 
     def append_block_replace(self, block: dict,
                              config_period_id: Optional[int] = None) -> None:
@@ -6686,7 +6706,7 @@ class BlockStore:
         cp = self.get_config_period(period_id)
         tz_name = cp["timezone"] if cp else "UTC"
         rows = _block_rows(block, period_id, tz_name)
-        self._insert_block_rows_replace(rows)
+        self._insert_block_rows_replace(rows, _staged(block))
 
     def get_provisional_sub_meter_blocks(self) -> list[dict]:
         """Return the most-recent block for each sub-meter that has imp_provisional=1.

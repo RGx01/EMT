@@ -752,11 +752,16 @@ def _apply_iog_split(imp_ch: dict, block_start: str, block_end: str,
         imp_ch["cost"] = res["imp_cost"]
 
 
+# The channel key pricing leaves a main import's segments on for the block write to commit in
+# its own transaction (step 5c). Must equal block_store.STAGED_SEGMENTS, which reads it (a
+# literal here because tests stub block_store before engine imports; test_segments_one_write
+# asserts the two match).
+STAGED_SEGMENTS = "_staged_segments"
 _SEGMENT_WRITE_FAILURES = 0   # HARDENING (watch #10): count silent segment-write misses so a hole is a signal, not a mystery
 
 
 def _refit_held_segments(imp_ch: dict, block_start: str, meter_id: str, kwh: float,
-                         rate: float) -> bool:
+                         rate: float, *, stage: bool = False) -> bool:
     """Fit a held-rate block's stored segments to its settled kWh (BL-79), and keep the EV
     columns' kWh and £ equal to the EV segments if the fit shrank the EV. Returns whether the
     segments were rewritten. Best-effort, like _persist_block_segments: never blocks pricing."""
@@ -772,7 +777,10 @@ def _refit_held_segments(imp_ch: dict, block_start: str, meter_id: str, kwh: flo
         new = _ps.refit_to_kwh(segs, kwh, rate=rate,
                                exc_rate=(round(rate * _r, 6) if _r is not None and rate else None),
                                band=_hb if _hb in ("off_peak", "day") else "standard")
-        _store.set_block_segments(block_start, meter_id, new)
+        if stage:
+            imp_ch[STAGED_SEGMENTS] = new
+        else:
+            _store.set_block_segments(block_start, meter_id, new)
         if imp_ch.get("kwh_ev") is not None:
             evk = _ps.attribution_kwh(new, "ev")
             if abs(evk - float(imp_ch["kwh_ev"])) > 1e-9:
@@ -785,7 +793,7 @@ def _refit_held_segments(imp_ch: dict, block_start: str, meter_id: str, kwh: flo
 
 
 def _persist_block_segments(block_start: str, meter_id: str, imp_ch: dict, *,
-                            keep_stored: bool = False) -> None:
+                            keep_stored: bool = False, stage: bool = False) -> None:
     """BL-27: write the priced segments for a just-priced MAIN import channel, so new /
     settled blocks carry `block_segments` alongside the imp_* columns (history is filled by
     the segment backfill). Segments mirror the columns during the migration; the readers
@@ -796,7 +804,13 @@ def _persist_block_segments(block_start: str, meter_id: str, imp_ch: dict, *,
     block's STORED segments are kept, fitted to its kWh — not rebuilt from the channel's
     imp_*_ev copies. A re-run's channel comes from get_block_dict_by_start, which attaches no
     segments, so the rebuild collapsed a multi-band block to one or two segments from columns
-    that may be stale. A block with no stored segments still gets the rebuild."""
+    that may be stale. A block with no stored segments still gets the rebuild.
+
+    `stage` (step 5c, 10 Oct 2026): build the segments but do not write them — leave them on
+    the channel as STAGED_SEGMENTS for the block write (BlockStore.append_block /
+    append_block_replace) to commit in ITS transaction. Finalise and the settlement re-run
+    stage: once the EV-split columns went, a segment write that failed while the block row
+    landed would have left the split recorded nowhere."""
     if _store is None or not block_start or not imp_ch:
         return
     if keep_stored and not imp_ch.get("segments"):
@@ -804,13 +818,17 @@ def _persist_block_segments(block_start: str, meter_id: str, imp_ch: dict, *,
             if _store.get_block_segments(block_start, meter_id):
                 _refit_held_segments(imp_ch, block_start, meter_id,
                                      float(imp_ch.get("kwh") or 0.0),
-                                     float(imp_ch.get("rate") or 0.0))
+                                     float(imp_ch.get("rate") or 0.0), stage=stage)
                 return
         except Exception as e:
             logger.warning("_persist_block_segments: stored segments unreadable (%s): %s",
                            block_start, e)
     try:
-        _store.set_block_segments(block_start, meter_id, _build_block_segments(block_start, imp_ch))
+        _segs = _build_block_segments(block_start, imp_ch)
+        if stage:
+            imp_ch[STAGED_SEGMENTS] = _segs
+        else:
+            _store.set_block_segments(block_start, meter_id, _segs)
     except Exception as e:
         # Best-effort by design (never blocks pricing) — but a swallowed miss leaves the block
         # unsegmented, which the presentation gate can amplify. Count + tag it so it is greppable
@@ -936,7 +954,7 @@ def _sanitise_inc_units(imp_ch: dict, start: str) -> bool:
 def _reprice_main_import_block(result: dict, start: str, meter_name: str,
                                meter: "dict | None" = None, *,
                                apply_overlay: bool = True, persist: bool = True,
-                               hold_rate: bool = False) -> None:
+                               hold_rate: bool = False, stage: bool = False) -> None:
     """The single per-block re-price for a MAIN import channel (design 4.4.0 §4): (optionally)
     apply the dispatch off-peak overlay (the finalise-time started-gate), carve the IOG
     EV/house split, derive ex-VAT from the post-split rate, and persist the segments — ALL
@@ -967,7 +985,7 @@ def _reprice_main_import_block(result: dict, start: str, meter_name: str,
     # the corrected £ rate. Byte-identical on healthy blocks.
     _sanitise_inc_units(result, start)
     if persist:
-        _persist_block_segments(start, meter_name, result, keep_stored=hold_rate)
+        _persist_block_segments(start, meter_name, result, keep_stored=hold_rate, stage=stage)
 
 
 def _log_config_state(config: dict | None = None) -> None:
@@ -3969,7 +3987,7 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
                     # never re-resolves; hold_rate closes the capped seam's own re-price.
                     _reprice_main_import_block(imp_ch, block.get("start", ""),
                                                main_meter_id, main,
-                                               apply_overlay=False, hold_rate=True)
+                                               apply_overlay=False, hold_rate=True, stage=True)
                 else:
                     # BL-79 (8 Oct 2026): a corrected, reconciled or measured rate is held, so
                     # nothing here re-derives the segments — and they stayed at the old kWh
@@ -3977,9 +3995,9 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
                     # install). The bill's EV/Home rows and every EV surface read the segments,
                     # so they no longer added up to the block. Fit them to the settled kWh at
                     # the rates they carry: the house takes the change, the EV only if the house
-                    # is gone. A block with no segments keeps none (LEGACY columns).
+                    # is gone. A block with no segments keeps none.
                     _refit_held_segments(imp_ch, block.get("start", ""), main_meter_id, chosen,
-                                         rate)
+                                         rate, stage=True)
             else:
                 _own_ratio = _exc_ratio(imp_ch, block.get("start", ""), vat_fallback=False)
                 rate, rep = _resolve_block_rate(imp_ch, block.get("start", ""),
@@ -3995,7 +4013,7 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
                 # overlay/split/exc/persist whose exc came from the pre-split rate (a
                 # latent capped mismatch). Byte-identical on uncapped (rates equal).
                 _reprice_main_import_block(imp_ch, block.get("start", ""),
-                                           main_meter_id, main)
+                                           main_meter_id, main, stage=True)
 
     exp_ch = (main.get("channels") or {}).get("export")
     if exp_ch is None and main.get("exp_kwh_api") is not None:
@@ -4498,7 +4516,7 @@ def finalise_block(ha: HAClient, block_data: dict | None = None, interpolated: b
             # when the DCC kWh re-materialises (so it isn't clobbered).
             if not is_sub and channel_name == "import":
                 # 4.4.0 §4: one per-block re-price entry (overlay + split + exc + persist).
-                _reprice_main_import_block(result, start, meter_name, meter_block)
+                _reprice_main_import_block(result, start, meter_name, meter_block, stage=True)
 
             # NOTE: sub-meter (device) import is NOT priced here. Devices always
             # follow the main meter's effective import rate, applied uniformly in
