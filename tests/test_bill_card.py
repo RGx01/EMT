@@ -163,6 +163,21 @@ class TheCard(unittest.TestCase):
         self.assertIn("Total incl. VAT", texts)
         self.assertNotIn("line_inline", _types(c))             # no inc-VAT standing fold
 
+    def test_with_bill_rounding_the_total_is_the_lines_total(self):
+        """BL-78 (10 Oct 2026): the bill method's inc-VAT total less the export credit as printed,
+        not compute_period_net's per-day total (23.29 here). Discriminating: fails on the parent."""
+        bm = {"rows": [{"rate_exc": 0.0667, "kwh": 100.0, "cost_exc": 6.667}], "energy_exc": 6.67,
+              "standing_days": 7, "standing_rate_exc": 0.5831, "standing_rows": [{"days": 7}],
+              "standing_exc": 4.08, "subtotal_exc": 10.75, "vat_rate": 0.05, "vat_amount": 0.54,
+              "inc_total": 26.31}
+        c = bc.card(_summary(bill_method=bm))
+        self.assertEqual(c["total"], "£23.31")                    # 26.31 − 3.00 export
+        self.assertEqual([r["value"] for r in c["rows"] if r.get("text") == "Total Bill"], ["£23.31"])
+
+    def test_without_bill_rounding_the_total_is_the_per_day_net(self):
+        """GUARD: Bill Rounding off keeps compute_period_net's total, which Usage Stats agrees with."""
+        self.assertEqual(bc.card(_summary())["total"], "£23.29")
+
     def test_a_submeter_is_named_by_its_device(self):
         s = _summary()
         s["meters"]["EV Charger (Sub-meter) / Import"] = {0.07: {"kwh": 5.0, "cost": 0.35}}

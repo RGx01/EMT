@@ -274,7 +274,17 @@ def card(summary, currency="£", site_name=None):
                          "text": f"Standing Charge: {cnt} days @ {currency}{r:.4f}/day",
                          "value": f"{r * cnt:.2f}"})
 
-    total = f"{currency}{summary['total_cost']:.2f}"
+    # BL-78 (10 Oct 2026): with Bill Rounding on, the card is the supplier's bill — its lines are
+    # summed and rounded once, as Octopus builds one — so its total is those lines' total: the
+    # bill method's import incl. VAT less each export credit as printed above. Off, Total Bill is
+    # compute_period_net (each local day's net to the penny, summed), which agrees with Usage
+    # Stats day by day. The two can differ by pennies; each matches its own lines.
+    if bm:
+        total_val = round(bm["inc_total"] + sum(
+            float((summary["totals"].get(k) or {}).get("cost") or 0.0) for k in export_keys), 2)
+    else:
+        total_val = summary["total_cost"]
+    total = f"{currency}{total_val:.2f}"
     rows.append({"type": "line_block", "cls": "grand-total", "text": "Total Bill", "value": total})
     return {"site": site_name, "total": total, "rows": rows}
 

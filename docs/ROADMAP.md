@@ -374,6 +374,15 @@ per-day rule, so the total still matches Usage Stats. A display change only: no 
 moves. Not a v4 fix (display, not pricing — v4 takes critical fixes only). Check against the bill
 goldens (`tests/test_tariff_goldens.py`), which would move only with Bill Rounding on, and say so.
 
+**Done 10 Oct 2026.** `bill_card.card`: with Bill Rounding on, Total Bill = the bill method's
+`inc_total` less each export credit as printed; off, it stays `compute_period_net`. The bill
+goldens run with it off, and 0 answers moved. With it on, across nine 2026 billing periods of a
+production-like database the total moved −1p to +4p a period. Against the 3 Jul – 2 Aug statement,
+every card line but one now matches the statement (standing charge, export, VAT within 1p) and the
+total follows them; the one that doesn't is the energy, 10p high because EMT puts 0.34 kWh more
+into peak than Octopus did, which carries into the total. That band split is the open remainder: a
+kWh question, not a rounding one (see BL-80's note).
+
 ## D. Surfacing performance
 
 *Measure before optimising.* Target hardware is a Raspberry Pi 4 class box on SD storage.
