@@ -83,12 +83,15 @@ def provenance(conn, report):
     where v4 said 'measured'. A block a dispatch reconciliation flagged (rate_reconciled = 1)
     while leaving 'schedule' or no word says 'reconciled'; a settled or corrected one keeps
     its word, which outranks a reconciliation. Every meter: v4 flagged sub-meter rows too.
-    The flag column itself stays until the column drop."""
+    The flag itself is not carried."""
     renamed = conn.execute(
         "UPDATE main.blocks SET rate_source = 'settled' WHERE rate_source = 'measured'").rowcount
+    # rate_reconciled is not carried (rules.DROP_COLUMNS): read from the source, by the
+    # carried id
     folded = conn.execute(
-        "UPDATE main.blocks SET rate_source = 'reconciled' WHERE rate_reconciled = 1 "
-        "AND (rate_source IS NULL OR rate_source = 'schedule')").rowcount
+        "UPDATE main.blocks SET rate_source = 'reconciled' WHERE id IN (SELECT id FROM "
+        "src.blocks WHERE rate_reconciled = 1) AND (rate_source IS NULL OR "
+        "rate_source = 'schedule')").rowcount
     report["transforms"]["provenance"] = {"settled": renamed, "reconciled_folded": folded}
 
 

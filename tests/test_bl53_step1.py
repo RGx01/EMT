@@ -18,20 +18,19 @@ def _mk_store():
     return st, p
 
 
-def _ins(c, bs, *, rate=None, rc=0, rr=0, rs=None, kwh=None,
+def _ins(c, bs, *, rate=None, rc=0, rs=None, kwh=None,
          rate_exc=None, cost_exc=None, cost=None):
     c.execute(
         "INSERT INTO blocks (block_start, block_end, config_period_id, meter_id, "
         "imp_kwh, imp_rate, imp_cost, imp_rate_exc, imp_cost_exc, rate_corrected, "
-        "rate_reconciled, rate_source) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+        "rate_source) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (bs, bs[:-2] + "30", 1, "electricity_main", kwh, rate, cost, rate_exc,
-         cost_exc, rc, rr, rs))
+         cost_exc, rc, rs))
 
 
-_BACKFILL = ("UPDATE blocks SET rate_source = CASE "
-             "WHEN rate_corrected = 1 THEN 'corrected' "
-             "WHEN rate_reconciled = 1 THEN 'reconciled' "
-             "WHEN imp_rate IS NOT NULL THEN 'schedule' END WHERE rate_source IS NULL")
+# The BL-53 backfill (rate_source derived from rate_corrected / rate_reconciled / imp_rate) and
+# its test went with rate_reconciled (dropped, step 5, 10 Oct 2026): v5 has no such column to
+# derive from, and a v4 source's provenance is folded by the importer.
 _GATE = "(rate_source IS NULL OR rate_source NOT IN ('settled','corrected'))"
 
 
@@ -42,27 +41,6 @@ class TestSchemaAndBackfill(unittest.TestCase):
         self.assertIn("rate_source", cols)
         self.assertTrue(st._conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='table' AND name='measured_cost'").fetchone())
-        os.remove(p)
-
-    def test_backfill_derivation_and_idempotent(self):
-        st, p = _mk_store(); c = st._conn
-        _ins(c, "2026-01-01T00:00:00", rate=0.30, rc=1)
-        _ins(c, "2026-01-01T00:30:00", rate=0.05, rr=1)
-        _ins(c, "2026-01-01T01:00:00", rate=0.30)
-        _ins(c, "2026-01-01T01:30:00")               # no rate → NULL
-        c.commit()
-        c.execute(_BACKFILL); c.commit()
-        got = {r[0]: r[1] for r in c.execute("SELECT block_start, rate_source FROM blocks")}
-        self.assertEqual(got["2026-01-01T00:00:00"], "corrected")
-        self.assertEqual(got["2026-01-01T00:30:00"], "reconciled")
-        self.assertEqual(got["2026-01-01T01:00:00"], "schedule")
-        self.assertIsNone(got["2026-01-01T01:30:00"])
-        # a measured row is never downgraded by a re-run
-        c.execute("UPDATE blocks SET rate_source='settled' WHERE block_start='2026-01-01T01:00:00'")
-        c.commit(); c.execute(_BACKFILL); c.commit()
-        self.assertEqual(c.execute(
-            "SELECT rate_source FROM blocks WHERE block_start='2026-01-01T01:00:00'").fetchone()[0],
-            "settled")
         os.remove(p)
 
 
@@ -88,7 +66,7 @@ class TestAuthorityGate(unittest.TestCase):
         st, p = _mk_store(); c = st._conn
         _ins(c, "2026-08-24T09:00:00", rate=0.05, rs="settled")
         _ins(c, "2026-08-24T09:30:00", rate=0.05, rc=1, rs="corrected")
-        _ins(c, "2026-08-24T10:00:00", rate=0.05, rr=1, rs="reconciled")
+        _ins(c, "2026-08-24T10:00:00", rate=0.05, rs="reconciled")
         _ins(c, "2026-08-24T10:30:00", rate=0.32, rs="schedule")
         c.commit()
         sel = [r[0] for r in c.execute(

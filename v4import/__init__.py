@@ -58,8 +58,9 @@ def check_source(conn):
         if t not in tables:
             continue
         have = [r[1] for r in conn.execute('PRAGMA src.table_info("%s")' % t).fetchall()]
+        dropped = rules.DROP_COLUMNS.get(t, frozenset())
         for c in have:
-            if c not in cols:
+            if c not in cols and c not in dropped:
                 problems.append("column %s.%s" % (t, c))
     for t in rules.KEYED_TABLES:
         if t not in tables:

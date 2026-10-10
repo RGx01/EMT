@@ -189,28 +189,26 @@ def build(path, tariff, devices=False):
         bs, be = t.isoformat(), (t + timedelta(minutes=30)).isoformat()
         interp = 1 if (devices == "gap" and extra) else 0
         # What _apply_pass2 writes on a finalised block: each device's grid share
-        # (imp_kwh_grid) and its cost, and the main's remainder after them. A NULL
-        # remainder makes Usage Stats fall back to the whole main reading, which counts
-        # every device twice (found 6 Oct 2026; the first goldens had it). The device's
-        # own reading (imp_kwh) is stored as recorded, whatever the split clipped.
+        # (imp_kwh_grid) and its cost. The house is derived where read (step 5 dropped
+        # the stored remainder, 10 Oct 2026). The device's own reading (imp_kwh) is
+        # stored as recorded, whatever the split clipped.
         if draws:
-            rem, rem_c, split = _split(devices, main, rate, draws, bool(interp))
+            _rem, _rem_c, split = _split(devices, main, rate, draws, bool(interp))
         else:
-            rem = rem_c = None
             split = {}
-        rows.append((bs, be, "electricity_main", interp, main, None, rem, rem_c,
+        rows.append((bs, be, "electricity_main", interp, main, None,
                      round(main * rate, 6), rate, 0.5 * (1 + vat_on(loc.date())),
                      round(main * 110, 2)))
         for mid, k in draws:
             g, c = split[mid]
-            rows.append((bs, be, mid, interp, k, g, None, None, c, rate, 0.0, None))
+            rows.append((bs, be, mid, interp, k, g, c, rate, 0.0, None))
         t += timedelta(minutes=30)
     with st._conn:
         st._conn.executemany(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated, "
-            "imp_kwh, imp_kwh_grid, imp_kwh_remainder, imp_cost_remainder, imp_cost, imp_rate, "
+            "imp_kwh, imp_kwh_grid, imp_cost, imp_rate, "
             "standing_charge, carbon_g, exp_kwh, exp_cost, source) "
-            "VALUES (?, ?, ?, %d, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'imported_api')" % cp, rows)
+            "VALUES (?, ?, ?, %d, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'imported_api')" % cp, rows)
     _sweep(st, tariff)
     st.close()
     return path

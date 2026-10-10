@@ -17,7 +17,8 @@ their own `imp_kwh_remainder` companion, and a further 2,603 sit within 0.01p of
 it for reasons not fully explained. No pricing path reads the column, so nothing
 ever forced the writers to agree.
 
-`imp_cost_remainder` is therefore being retired as a stored value. Deriving it
+`imp_cost_remainder` is therefore retired as a stored value (dropped in step 5,
+10 Oct 2026, which also retired this file's "does not read the column" test). Deriving it
 (`imp_kwh_remainder x imp_rate`) would turn the identity above into
 `cost_ev + (cost - cost_ev) == cost` -- true by algebra, catching nothing. So the
 check is re-anchored here onto `block_segments`: an independent record of the
@@ -141,19 +142,6 @@ class _Base(unittest.TestCase):
 class TestEvSplitReconcilesToSegments(_Base):
 
     def test_clean_block_has_no_discrepancies(self):
-        self.assertEqual(ev_split_discrepancies(self.store, self.bs), [])
-
-    def test_check_does_not_read_imp_cost_remainder(self):
-        """The point of the file: the invariant must survive the column's removal.
-
-        Setting it to a value inconsistent with all four historical definitions
-        must not move the result. If this ever fails, the check has quietly
-        re-acquired the dependency it was written to shed.
-        """
-        with self.store._conn:
-            self.store._conn.execute(
-                "UPDATE blocks SET imp_cost_remainder = 99.99 WHERE block_start = ?",
-                (self.bs,))
         self.assertEqual(ev_split_discrepancies(self.store, self.bs), [])
 
     def test_unsegmented_block_is_silent_not_clean(self):

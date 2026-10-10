@@ -1813,7 +1813,7 @@ def _meter_delete_data(meter_id: str):
             logger.info("api_meter_delete_data: deleted %s for meter %s", deleted, meter_id)
 
             # BL-46: re-derive the parent's house/EV remainder over the deleted window
-            # (EV-aware recompute; keeps imp_kwh_remainder consistent with the segments).
+            # (re-runs PASS 2 over the surviving devices; the house is derived where read).
             try:
                 if _bl46_parent and _bl46_lo and _bl46_hi:
                     from datetime import datetime as _dt46, timedelta as _td46
@@ -8297,7 +8297,7 @@ def api_corrections_apply():
                     if recalc_cost and channel == "import":
                         # P4.6 (watch #11) — the corrected rate applies to the WHOLE block: imp_cost
                         # already recomputes over imp_kwh, which INCLUDES the EV kWh. Keep the EV-split
-                        # columns consistent in the same UPDATE so imp_cost_ev + imp_cost_remainder ==
+                        # columns consistent in the same UPDATE so imp_cost_ev follows the corrected
                         # imp_cost and imp_rate_ev tracks the correction — otherwise the split surfaces
                         # (EV bar, per-rate breakdown) keep reading the stale pre-correction figure
                         # (the correction-tool "partial-heal" that left the 2026-08-18 EV columns 100x).
@@ -8311,9 +8311,6 @@ def api_corrections_apply():
                                     imp_cost_ev = CASE WHEN imp_kwh_ev IS NOT NULL
                                                        THEN ROUND(imp_kwh_ev * ?, 6)
                                                        ELSE imp_cost_ev END,
-                                    imp_cost_remainder = CASE WHEN imp_kwh_ev IS NOT NULL
-                                                       THEN ROUND(imp_kwh * ? - ROUND(imp_kwh_ev * ?, 6), 6)
-                                                       ELSE imp_cost_remainder END,
                                     -- BL-57: block-level exc must follow the corrected inc (the
                                     -- reconcile already does this; the corrections tool didn't, so a
                                     -- corrected block kept a stale ex-VAT figure). Rescale by
@@ -8326,7 +8323,7 @@ def api_corrections_apply():
                                                        THEN ROUND(imp_cost_exc * ? / imp_rate, 6)
                                                        ELSE imp_cost_exc END{_mark}
                                 WHERE {where}""",
-                            [value, value, value, value, value, value, value, value] + params
+                            [value, value, value, value, value, value] + params
                         )
                     elif recalc_cost:
                         cost_col = "imp_cost" if channel == "import" else "exp_cost"

@@ -1,9 +1,11 @@
 """4.5.11: a user Cost-Correction (rate_corrected=1 / rate_source='corrected') — and the
-rate_reconciled flag — must SURVIVE a read -> modify -> append_block_replace round-trip.
+reconciled provenance — must SURVIVE a read -> modify -> append_block_replace round-trip.
 They weren't carried onto the block dict nor written by the append path, so any round-trip
 (gap-fill, carbon/remainder recompute, PASS 2 re-run) silently reset them to the column
 defaults — un-protecting the correction, which the dispatch reconcile then reverted (the
-negative-Home strand on SMB). Exposed when 4.5.7 removed the IOG import gate."""
+negative-Home strand on SMB). Exposed when 4.5.7 removed the IOG import gate.
+The rate_reconciled flag was dropped in step 5 (10 Oct 2026); a reconciliation is
+rate_source='reconciled' alone, so that is what the second test carries."""
 import os, sys, unittest
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from block_store import BlockStore
@@ -19,21 +21,21 @@ class TestCorrectionRoundTrip(unittest.TestCase):
             "currency_symbol": "£", "currency_code": "GBP", "site": "Home"}}}})
         self.cp = self.st._conn.execute("SELECT id FROM config_periods LIMIT 1").fetchone()[0]
 
-    def _ins(self, slot, rate, *, rate_corrected=0, rate_source=None, rate_reconciled=0,
+    def _ins(self, slot, rate, *, rate_corrected=0, rate_source=None,
              kwh=3.0, ev_kwh=None, ev_rate=None):
         self.st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
             "imp_rate, imp_cost, imp_kwh_ev, imp_rate_ev, imp_cost_ev, "
-            "rate_corrected, rate_source, rate_reconciled) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "rate_corrected, rate_source) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (slot, slot, "electricity_main", self.cp, kwh, rate, round(kwh*rate, 6),
              ev_kwh, ev_rate, (round(ev_kwh*ev_rate, 6) if ev_kwh and ev_rate else None),
-             rate_corrected, rate_source, rate_reconciled))
+             rate_corrected, rate_source))
         self.st._conn.commit()
 
     def _flags(self, slot):
         return self.st._conn.execute(
-            "SELECT rate_corrected, rate_source, rate_reconciled, imp_rate, imp_rate_ev "
+            "SELECT rate_corrected, rate_source, imp_rate, imp_rate_ev "
             "FROM blocks WHERE block_start=? AND meter_id='electricity_main'", (slot,)).fetchone()
 
     def _roundtrip(self, slot):
@@ -53,13 +55,12 @@ class TestCorrectionRoundTrip(unittest.TestCase):
         self.assertAlmostEqual(r["imp_rate"], PK, places=5)
         self.assertAlmostEqual(r["imp_rate_ev"], PK, places=5)
 
-    def test_reconciled_flag_survives_roundtrip(self):
+    def test_reconciled_source_survives_roundtrip(self):
         slot = "2026-08-30T13:00:00"
-        self._ins(slot, OFF, rate_reconciled=1, rate_source="settled")
+        self._ins(slot, OFF, rate_source="reconciled")
         self._roundtrip(slot)
         r = self._flags(slot)
-        self.assertEqual(r["rate_reconciled"], 1)
-        self.assertEqual(r["rate_source"], "settled")
+        self.assertEqual(r["rate_source"], "reconciled")
 
     def test_fresh_block_defaults_unchanged(self):
         slot = "2026-08-30T14:00:00"
@@ -68,7 +69,6 @@ class TestCorrectionRoundTrip(unittest.TestCase):
         r = self._flags(slot)
         self.assertEqual(r["rate_corrected"], 0)
         self.assertIsNone(r["rate_source"])
-        self.assertEqual(r["rate_reconciled"], 0)
 
 
 if __name__ == "__main__":

@@ -313,37 +313,8 @@ class TheDeviceReadingsAreKept(unittest.TestCase):
                         "the split clipped nothing")
 
 
-class AStaleRemainderIsNotRead(unittest.TestCase):
-    """The real shape that showed two databases' Usage Stats days below the meter (6 Oct 2026): a
-    device's rows gone, its stored remainder left behind. No surface may read it — Direct is the
-    rule on what is there. Discriminating for the day charts and Insights' peak demand window (they read
-    the stored remainder before step 5, 8 Oct 2026). Insights' house total is a guard: on a
-    segmented database it is re-priced from the segments either way."""
-
-    def test_every_surface_ignores_a_stale_remainder(self):
-        import tariff_fixtures as T  # noqa: F401
-        fx = _Fixture("e7", False)
-        try:
-            days = ("2026-10-05", "2026-10-05")
-            lo, hi = fx._utc(days)
-            peak_before = fx.insights(days)["peak_window_kwh"]
-            with sqlite3.connect(fx.path) as c:
-                c.execute("UPDATE blocks SET imp_kwh_remainder = imp_kwh / 2, "
-                          "imp_cost_remainder = imp_cost / 2 WHERE meter_id = 'electricity_main' "
-                          "AND block_start >= ? AND block_start < ?", (lo, hi))
-            main_k, main_c = fx.main(days)
-            u = fx.insights(days)
-            for surface, got in (("Usage Stats", fx.usage(days)[0]),
-                                 ("Day charts", fx.day_charts(days)[0]),
-                                 ("Insights usage", (u["house_imp_kwh"], u["house_imp_cost"]))):
-                with self.subTest(surface=surface):
-                    self.assertAlmostEqual(got[0], main_k, places=3)
-                    self.assertLessEqual(abs(got[1] - main_c), PENNY)
-            with self.subTest(surface="Insights peak window"):
-                # Its house kWh is re-priced from the segments; the peak demand window is not.
-                self.assertAlmostEqual(u["peak_window_kwh"], peak_before, places=3)
-        finally:
-            fx.close()
+# AStaleRemainderIsNotRead went with imp_kwh_remainder / imp_cost_remainder (dropped, step 5,
+# 10 Oct 2026): there is no stored remainder left for a surface to read.
 
 
 if __name__ == "__main__":

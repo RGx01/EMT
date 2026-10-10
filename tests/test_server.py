@@ -775,12 +775,12 @@ class TestApiBlocksSummaryCarbonG(unittest.TestCase):
             INSERT INTO blocks (
                 block_start, block_end,
                 meter_id, config_period_id, interpolated,
-                imp_kwh, imp_kwh_grid, imp_kwh_remainder,
-                imp_rate, imp_cost, imp_cost_remainder,
+                imp_kwh, imp_kwh_grid,
+                imp_rate, imp_cost,
                 imp_read_start, imp_read_end,
                 exp_kwh, exp_rate, exp_cost,
                 exp_read_start, exp_read_end, standing_charge, carbon_g)
-            VALUES (?,?,?,?,0,?,NULL,NULL,?,NULL,NULL,NULL,NULL,?,NULL,?,NULL,NULL,?,?)
+            VALUES (?,?,?,?,0,?,NULL,?,NULL,NULL,NULL,?,NULL,?,NULL,NULL,?,?)
         """, (bs, be,
               "electricity_main", cp_id,
               imp_kwh, 0.49, exp_kwh, 0.0, 0.5, carbon_g))
@@ -3510,9 +3510,9 @@ class TestAggregateUsage(unittest.TestCase):
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 block_start TEXT, block_end TEXT,
                 meter_id TEXT, config_period_id INTEGER,
-                imp_kwh REAL, imp_kwh_grid REAL, imp_kwh_remainder REAL,
+                imp_kwh REAL, imp_kwh_grid REAL,
                 imp_rate REAL, imp_cost REAL,
-                imp_cost_remainder REAL, imp_read_start REAL, imp_read_end REAL,
+                imp_read_start REAL, imp_read_end REAL,
                 exp_kwh REAL, exp_rate REAL, exp_cost REAL,
                 exp_read_start REAL, exp_read_end REAL,
                 imp_kwh_ev REAL, imp_cost_ev REAL, imp_rate_ev REAL,
@@ -3536,31 +3536,31 @@ class TestAggregateUsage(unittest.TestCase):
         # Main meter - cheap rate block 1
         self.conn.execute("""INSERT INTO blocks
             (block_start, block_end, meter_id, config_period_id,
-             imp_kwh, imp_kwh_remainder, imp_rate, imp_cost,
+             imp_kwh, imp_rate, imp_cost,
              exp_kwh, exp_rate, exp_cost, standing_charge)
             VALUES ('2026-04-01T00:00:00','2026-04-01T00:30:00','electricity_main',1,
-                    5.0, 3.0, 0.07, 0.35,  0.0, 0.12, 0.0, 0.50)""")
+                    5.0, 0.07, 0.35,  0.0, 0.12, 0.0, 0.50)""")
         # Main meter - cheap rate block 2
         self.conn.execute("""INSERT INTO blocks
             (block_start, block_end, meter_id, config_period_id,
-             imp_kwh, imp_kwh_remainder, imp_rate, imp_cost,
+             imp_kwh, imp_rate, imp_cost,
              exp_kwh, exp_rate, exp_cost, standing_charge)
             VALUES ('2026-04-01T01:00:00','2026-04-01T01:30:00','electricity_main',1,
-                    4.0, 2.0, 0.07, 0.28,  0.0, 0.12, 0.0, 0.50)""")
+                    4.0, 0.07, 0.28,  0.0, 0.12, 0.0, 0.50)""")
         # Main meter - peak rate block
         self.conn.execute("""INSERT INTO blocks
             (block_start, block_end, meter_id, config_period_id,
-             imp_kwh, imp_kwh_remainder, imp_rate, imp_cost,
+             imp_kwh, imp_rate, imp_cost,
              exp_kwh, exp_rate, exp_cost, standing_charge)
             VALUES ('2026-04-01T08:00:00','2026-04-01T08:30:00','electricity_main',1,
-                    2.0, 2.0, 0.30, 0.60,  0.0, 0.12, 0.0, 0.50)""")
+                    2.0, 0.30, 0.60,  0.0, 0.12, 0.0, 0.50)""")
         # Main meter - export block
         self.conn.execute("""INSERT INTO blocks
             (block_start, block_end, meter_id, config_period_id,
-             imp_kwh, imp_kwh_remainder, imp_rate, imp_cost,
+             imp_kwh, imp_rate, imp_cost,
              exp_kwh, exp_rate, exp_cost, standing_charge)
             VALUES ('2026-04-01T12:00:00','2026-04-01T12:30:00','electricity_main',1,
-                    0.0, 0.0, 0.12, 0.0,  3.0, 0.12, 0.36, 0.50)""")
+                    0.0, 0.12, 0.0,  3.0, 0.12, 0.36, 0.50)""")
         # EV charger sub-meter - cheap rate
         self.conn.execute("""INSERT INTO blocks
             (block_start, block_end, meter_id, config_period_id,
@@ -3652,7 +3652,7 @@ class TestAggregateUsage(unittest.TestCase):
         self.assertAlmostEqual(d["weighted_rate"], 1.23 / 11.0, places=5)
 
     def test_house_imp_kwh(self):
-        """House remainder = 3.0 + 2.0 + 2.0 = 7.0 (from imp_kwh_remainder cols)."""
+        """House remainder = (5−2) + (4−2) + 2.0 = 7.0 (derived: main − EV grid share)."""
         d = self._run()
         self.assertAlmostEqual(d["house_imp_kwh"], 7.0, places=3)
 
@@ -3841,19 +3841,16 @@ class TestAggregateInsightsGenerationMix(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# api_blocks_summary Direct import: rate-based subtraction, NOT imp_cost_remainder
+# api_blocks_summary Direct import: rate-based subtraction
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestApiBlocksSummaryDirectImportCost(unittest.TestCase):
     """Direct import cost in api_blocks_summary is main_cost - sub_cost by rate.
 
-    The fixture deliberately makes `imp_cost_remainder` DISAGREE with that
-    subtraction. Until 2026-09 both came to £0.30 here, so the assertion below
-    passed under either implementation and distinguished nothing -- the original
-    comment even said so: *"imp_cost_remainder would also be £0.30 in this test
-    case"*. `imp_cost_remainder` is being retired (four writers, two meanings,
-    169 self-contradictory rows on prod), so this test has to be able to tell
-    the difference before the column can go.
+    The fixture used to make `imp_cost_remainder` DISAGREE with that
+    subtraction, so the test could tell the two apart before the column went.
+    It went in step 5 (10 Oct 2026); what is left is that Direct is the
+    subtraction, not the full main cost.
     """
 
     def setUp(self):
@@ -3871,22 +3868,20 @@ class TestApiBlocksSummaryDirectImportCost(unittest.TestCase):
                 "SELECT id FROM config_periods LIMIT 1"
             ).fetchone()[0]
             # Main meter: imp_cost=£1.00/day, sub=£0.70/day -> subtraction gives £0.30.
-            # imp_cost_remainder is set to £0.50/day instead, so the two implementations
-            # now yield different answers and the assertion can discriminate.
             self.store._conn.execute(
                 "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-                "imp_kwh, imp_kwh_remainder, imp_rate, imp_cost, imp_cost_remainder, "
+                "imp_kwh, imp_rate, imp_cost, "
                 "exp_kwh, exp_cost, standing_charge) "
                 "VALUES ('2026-04-07T00:00:00', '2026-04-07T00:30:00', "
-                "'electricity_main', ?, 10.0, 3.0, 0.05, 0.50, 0.25, 0.0, 0.0, 0.50)",
+                "'electricity_main', ?, 10.0, 0.05, 0.50, 0.0, 0.0, 0.50)",
                 (cp_id,)
             )
             self.store._conn.execute(
                 "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-                "imp_kwh, imp_kwh_remainder, imp_rate, imp_cost, imp_cost_remainder, "
+                "imp_kwh, imp_rate, imp_cost, "
                 "exp_kwh, exp_cost, standing_charge) "
                 "VALUES ('2026-04-07T00:30:00', '2026-04-07T01:00:00', "
-                "'electricity_main', ?, 10.0, 3.0, 0.05, 0.50, 0.25, 0.0, 0.0, 0.0)",
+                "'electricity_main', ?, 10.0, 0.05, 0.50, 0.0, 0.0, 0.0)",
                 (cp_id,)
             )
             # Sub-meter (EV): accounts for the difference between imp_cost and remainder
@@ -3919,7 +3914,7 @@ class TestApiBlocksSummaryDirectImportCost(unittest.TestCase):
             os.remove(self.tmp)
 
     def test_direct_import_uses_rate_based_subtraction(self):
-        """Direct import cost = main_cost - sub_cost by rate, not imp_cost_remainder."""
+        """Direct import cost = main_cost - sub_cost by rate."""
         with patch.object(server, "_get_store", return_value=self.store), \
              patch.object(server, "load_config", return_value={
                  "meters": {
@@ -3944,14 +3939,10 @@ class TestApiBlocksSummaryDirectImportCost(unittest.TestCase):
         main = (apr7.get("meters") or {}).get("electricity_main", {})
         self.assertTrue(main, "no electricity_main entry in the row")
         # Rate-based:            main_cost(£1.00) - sub_cost(£0.70) = £0.30
-        # imp_cost_remainder:     £0.25 x 2 blocks                   = £0.50
         # full imp_cost:                                               £1.00
-        # Three distinct values, so this assertion now identifies which one is used.
         _direct = main.get("imp_cost", 0)
         self.assertAlmostEqual(_direct, 0.30, places=2,
                                msg="Direct import should be main_cost - sub_cost by rate")
-        self.assertNotAlmostEqual(_direct, 0.50, places=2,
-                                  msg="Direct import must not come from imp_cost_remainder")
         self.assertNotAlmostEqual(_direct, 1.00, places=2,
                                   msg="Direct import must not be the full imp_cost")
 
@@ -4768,8 +4759,8 @@ class TestDispatchDerivedEVWiring(unittest.TestCase):
             CREATE TABLE blocks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 block_start TEXT, block_end TEXT, meter_id TEXT, config_period_id INTEGER,
-                imp_kwh REAL, imp_kwh_grid REAL, imp_kwh_remainder REAL,
-                imp_rate REAL, imp_cost REAL, imp_cost_remainder REAL,
+                imp_kwh REAL, imp_kwh_grid REAL,
+                imp_rate REAL, imp_cost REAL,
                 exp_kwh REAL, exp_rate REAL, exp_cost REAL, standing_charge REAL,
                 imp_kwh_ev REAL, imp_cost_ev REAL, imp_rate_ev REAL,
                 carbon_g REAL, interpolated INTEGER DEFAULT 0
@@ -4793,8 +4784,8 @@ class TestDispatchDerivedEVWiring(unittest.TestCase):
             ("2026-08-04T08:00:00", "2026-08-04T08:30:00", 2.0, 0.30, 0.60)):
             conn.execute(
                 "INSERT INTO blocks (block_start,block_end,meter_id,config_period_id,"
-                "imp_kwh,imp_kwh_remainder,imp_rate,imp_cost,exp_kwh,standing_charge) "
-                "VALUES (?,?,?,1,?,?,?,?,0.0,0.0)", (bs, be, "electricity_main", kwh, kwh, rate, cost))
+                "imp_kwh,imp_rate,imp_cost,exp_kwh,standing_charge) "
+                "VALUES (?,?,?,1,?,?,?,0.0,0.0)", (bs, be, "electricity_main", kwh, rate, cost))
         # Completed dispatches: slot A −4.0 (< 5.0 import); slot B −6.0 (> 4.0 → grid-clipped to 4.0).
         for slot, e in (("2026-08-04T00:00:00", -4.0), ("2026-08-04T00:30:00", -6.0)):
             conn.execute("INSERT INTO dispatch_history (slot_start,kind,provider,energy_kwh) "
@@ -4970,7 +4961,7 @@ class TestNegativeCostAggregation(unittest.TestCase):
 
     def _row(self, slot, kwh, rate, cost, sub=False, mid="electricity_main"):
         return {"block_start": slot, "meter_id": mid, "is_sub_meter": sub,
-                "imp_kwh": kwh, "imp_kwh_grid": kwh, "imp_kwh_remainder": kwh,
+                "imp_kwh": kwh, "imp_kwh_grid": kwh,
                 "imp_rate": rate, "imp_cost": cost, "exp_kwh": 0.0, "exp_cost": 0.0,
                 "standing_charge": 0.0, "carbon_g": None}
 
@@ -6308,7 +6299,7 @@ class TestBlocksDataVersion(unittest.TestCase):
         conn.execute(
             "CREATE TABLE blocks (block_start TEXT, imp_kwh REAL, imp_cost REAL, "
             "exp_kwh REAL, exp_cost REAL, carbon_g REAL, imp_kwh_ev REAL, imp_cost_ev REAL, "
-            "imp_cost_exc REAL, imp_kwh_grid REAL, imp_kwh_remainder REAL, standing_charge REAL)")
+            "imp_cost_exc REAL, imp_kwh_grid REAL, standing_charge REAL)")
         conn.executemany(
             "INSERT INTO blocks (block_start, imp_kwh, imp_cost, exp_kwh, exp_cost, carbon_g) "
             "VALUES (?,?,?,?,?,?)",
@@ -6467,9 +6458,9 @@ class TestUsageSubMeterGridShare(unittest.TestCase):
         # Main import 2 kWh; battery charged 3 kWh but ALL from solar → grid share 0.
         store._conn.execute(
             "INSERT INTO blocks (block_start,block_end,meter_id,config_period_id,"
-            "interpolated,imp_kwh,imp_kwh_grid,imp_kwh_remainder,imp_rate,imp_cost,"
+            "interpolated,imp_kwh,imp_kwh_grid,imp_rate,imp_cost,"
             "standing_charge) VALUES ('2026-06-01T12:00:00','2026-06-01T12:30:00',"
-            "'electricity_main',?,0,2.0,NULL,2.0,0.10,0.20,0.50)", (cp,))
+            "'electricity_main',?,0,2.0,NULL,0.10,0.20,0.50)", (cp,))
         store._conn.execute(
             "INSERT INTO blocks (block_start,block_end,meter_id,config_period_id,"
             "interpolated,imp_kwh,imp_kwh_grid,imp_rate,imp_cost,standing_charge) "

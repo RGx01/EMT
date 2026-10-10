@@ -83,7 +83,6 @@ def _edge_store(ev_meter):
         cg = [120.5, -30.25, 10.0, 7.0, None][i % 5]
         sc = [0.0, 0.0, 0.52, 0.52, 0.61][i % 5] if i % 7 else 0.48
         _ins(st, bs, "electricity_main", cp, imp_kwh=imp, exp_kwh=exp,
-             imp_kwh_remainder=(imp * 0.6 if i % 3 == 0 else None),
              imp_kwh_grid=(imp * 0.9 if i % 3 == 1 else None),
              imp_rate=[0.07, 0.3, 0.07][i % 3], imp_cost=round(imp * [0.07, 0.3, 0.07][i % 3], 4),
              exp_cost=round(exp * 0.15, 4), standing_charge=sc, carbon_g=cg,

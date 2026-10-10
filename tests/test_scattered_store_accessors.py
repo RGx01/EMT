@@ -125,7 +125,7 @@ class BlockRateAuthority(unittest.TestCase):
         self.assertIsNone(self.st.get_block_rate_authority(S))
 
     def test_it_is_read_by_name(self):
-        _block(self.st, S, rate_corrected=1, rate_reconciled=0,
+        _block(self.st, S, rate_corrected=1,
                imp_rate=0.25, rate_source="corrected")
         r = self.st.get_block_rate_authority(S)
         self.assertEqual(r["rate_corrected"], 1)
@@ -135,11 +135,14 @@ class BlockRateAuthority(unittest.TestCase):
     def test_all_three_authorities_are_present(self):
         """A user correction, a completed reconciliation, or a measured rate each
         outranks the heuristic. BL-53 added the third so a settlement re-cost
-        cannot re-resolve the overlay over the bill."""
+        cannot re-resolve the overlay over the bill. (Step 5, 10 Oct 2026: a
+        reconciliation is rate_source='reconciled'; the rate_reconciled key went
+        with its column.)"""
         _block(self.st, S, rate_source="settled", imp_rate=0.0549)
         r = self.st.get_block_rate_authority(S)
-        for k in ("rate_corrected", "rate_reconciled", "imp_rate", "rate_source"):
+        for k in ("rate_corrected", "imp_rate", "rate_source"):
             self.assertIn(k, r)
+        self.assertNotIn("rate_reconciled", r)
 
 
 class BlockId(unittest.TestCase):

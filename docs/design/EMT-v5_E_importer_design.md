@@ -340,7 +340,11 @@ step usable on the Pi.
 | 2 | **skeleton, wired into the restore**: `v4import/` with the gate moved in, the classification and `emt_schema`, the fresh-target carry with every column and table classified (identity rules, since the schema has not moved yet), the §7 key allow-lists, REGEN, the audit record and the boundary test | 1, 2, 3 (pre-rename), 4, 6, 9 |
 | 3 | **vocabulary**: `'measured'` → `'settled'` (28 sites in `engine.py` and `block_store.py`, `.build/bill_conformance.py`, 24 lines in tests) with transform 1 and the reconciled fold; `EMT_SCHEMA` 2. *House `night` and transform 4 split out to ROADMAP BL-81 (10 Oct 2026): v5 has no per-block tariff era to label against.* | 3 |
 | 4 | **segments**: transforms 2 and 3. *Built 10 Oct 2026: on seven real databases, 10 blocks / 28.43 kWh of EV given segments on one install, 12–13 held blocks refitted on each production-like one, none reported.* | 11 |
-| 5 | **the schema drop**: the 10 columns and `rate_reconciled` leave `BlockStore`'s DDL and v5's code (about 400 references, most of them in `block_store.py`), `ev_split`'s LEGACY fallback goes, and the rules become DROP | 5 |
+| 5 | **the schema drop**: the 10 columns and `rate_reconciled` leave `BlockStore`'s DDL and v5's code (about 330 production references), `ev_split`'s LEGACY fallback goes, and the rules become DROP. *Split 10 Oct 2026, after an inventory of every reference, into four, each removing its columns completely (schema, code, importer rule, tests) and raising `EMT_SCHEMA`:* | 5 |
+| 5a | the remainder pair and `rate_reconciled`: plumbing only, since no surface reads the stored values (`EMT_SCHEMA` 3) | — |
+| 5b | `imp_rate_exc`, `standing_charge_exc`, `exc_source`: six readers that load `imp_rate_exc` from the database take a derived rate instead (`imp_cost_exc ÷ imp_cost` as the exc/inc ratio, else the VAT calendar), and the held-rate re-run stops writing back an `imp_cost_exc` stale against its new cost | — |
+| 5c | the five EV-split columns: finalise and the settlement re-run write the segments in the block's own transaction (today a failed segment write leaves the split only in the columns), bands are read from the segments, the split writers become segment-only, and `ev_split`'s LEGACY fallback goes | 5 |
+| 5d | what remains: spec gate 5's final form, the schema notes, the column counts in CLAUDE.md and the spec | — |
 | 6 | positive fixture at 4.5.22, Pi timing, spec v18 | all |
 
 Each PR is a normal `feat/…` or `chore/…` from `dev`. PR 3 is the first to change what v5 writes

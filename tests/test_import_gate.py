@@ -40,6 +40,10 @@ def make_db(path, written_by=G.FLOOR_VERSION, blocks=(), vat_calendar=None,
     st = BlockStore(path)
     # A v4 database: v5 marks the databases it creates (emt_schema), and v4's never are.
     st._conn.execute("DELETE FROM store_meta WHERE key = 'emt_schema'")
+    # ...and v4's blocks still carry the three columns v5 dropped in step 5 (10 Oct 2026).
+    for col in ("imp_kwh_remainder REAL", "imp_cost_remainder REAL",
+                "rate_reconciled INTEGER NOT NULL DEFAULT 0"):
+        st._conn.execute("ALTER TABLE blocks ADD COLUMN " + col)
     if written_by is not None:
         st.set_meta("written_by", written_by)
     if supplier is not None:

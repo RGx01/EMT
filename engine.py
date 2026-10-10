@@ -3192,7 +3192,7 @@ def _refit_devices_to_house(store, starts) -> dict:
     cands = store.dispatch_house_candidates(starts)
     if not cands:
         return out
-    dev_u, main_u = [], []
+    dev_u = []
     _prev = _pass2_quiet
     _pass2_quiet = True
     try:
@@ -3204,9 +3204,6 @@ def _refit_devices_to_house(store, starts) -> dict:
             before = {mid: ((mb.get("channels") or {}).get("import") or {}).get("kwh_grid")
                       for mid, mb in (blk.get("meters") or {}).items()
                       if (mb.get("meta") or {}).get("sub_meter")}
-            mi = (((blk.get("meters") or {}).get("electricity_main") or {})
-                  .get("channels", {}).get("import") or {})
-            rem_before = mi.get("kwh_remainder")
             _apply_pass2(blk)
             moved = False
             for mid, old in before.items():
@@ -3216,26 +3213,22 @@ def _refit_devices_to_house(store, starts) -> dict:
                 dev_u.append((new, new, new, bs, mid))
                 out["kwh_moved"] += abs(new - old)
                 moved = True
-            rem_after = mi.get("kwh_remainder")
-            if rem_after is not None and (rem_before is None or abs(rem_after - rem_before) > 0.0005):
-                main_u.append((rem_after, rem_after, bs, "electricity_main"))
-                moved = True
             if moved:
                 out["refit_blocks"] += 1
     finally:
         _pass2_quiet = _prev
-    store.write_resplit(dev_u, main_u)
+    store.write_resplit(dev_u)
     out["kwh_moved"] = round(out["kwh_moved"], 3)
     return out
 
 
 def recompute_remainders_for_window(parent_meter_id: str, utc_start: str,
                                     utc_end: str) -> int:
-    """Re-derive a main meter's kwh_remainder/cost_remainder after one of its
-    sub-meters' blocks were deleted.
+    """Re-run PASS 2 over a main meter's blocks after one of its sub-meters' blocks were
+    deleted, so the surviving devices' grid shares, the totals and carbon are re-derived.
+    (Step 5, 10 Oct 2026: the main no longer stores a remainder to reset; the house is
+    derived where read, max(0, main − Σ grid shares).)
 
-    Deleting a device in isolation leaves the parent's stored remainder having
-    subtracted a device that no longer exists, so the parent line reads low.
     For each affected parent block in [utc_start, utc_end) this reconstructs the
     block (the deleted device is already absent), re-runs PASS 2 against the
     surviving sub-meters — reattributing the deleted device's grid-attributed
@@ -3262,23 +3255,6 @@ def recompute_remainders_for_window(parent_meter_id: str, utc_start: str,
             block = store.get_block_dict_by_start(bs)
             if not block:
                 continue
-            # Reset the parent's remainder to the full main import first, so a
-            # window left with NO surviving sub-meters yields remainder == main
-            # (no phantom subtraction). _apply_pass2 only writes the remainder
-            # for parents that still have sub-meters, so without this a
-            # fully-emptied window would keep its stale remainder.
-            pm = (block.get("meters") or {}).get(parent_meter_id)
-            if pm:
-                pic = (pm.get("channels") or {}).get("import")
-                if pic is not None:
-                    # BL-46: subtract the dispatch EV (imp_kwh_ev) too, so a device
-                    # delete re-derives the house remainder as grid - EV - surviving
-                    # subs. Without this the EV energy folds into the house line and
-                    # imp_kwh_remainder reads wrong after a delete (dev: kwh/2).
-                    _ev_k = pic.get("kwh_ev") or 0.0
-                    _ev_c = pic.get("cost_ev") or 0.0
-                    pic["kwh_remainder"]  = max((pic.get("kwh") or 0.0) - _ev_k, 0.0)
-                    pic["cost_remainder"] = (pic.get("cost") or 0.0) - _ev_c
             _apply_pass2(block)
             _recompute_pass3_totals(block)
             _recompute_block_carbon(block)
@@ -3880,7 +3856,7 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
         chosen = dcc_kwh if (use_dcc and dcc_kwh is not None) else cad_kwh
         if chosen is not None:
             # Preserve a deliberate rate override — a user correction
-            # (rate_corrected) or a dispatch reconciliation (rate_reconciled). If
+            # (rate_corrected) or a dispatch reconciliation (rate_source). If
             # PASS 2 re-runs after one of those (e.g. a re-settlement), it must NOT
             # re-resolve the overlay over the override; keep the stored rate and
             # only re-cost it against the settled kWh. (Ordering normally puts
@@ -3896,14 +3872,11 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
                     # settlement re-cost can't re-resolve the overlay over the bill.
                     # Read by NAME — this was four positional indexes off a
                     # four-column SELECT.
-                    # Step 5 (8 Oct 2026): held by provenance — rate_source says who set
-                    # the rate. rate_reconciled is read only as a LEGACY fallback, for rows a
-                    # v4 reconcile flagged while leaving rate_source 'schedule' (11 on a real
-                    # database); the importer folds those into rate_source='reconciled', and
-                    # this fallback goes with the column.
+                    # Step 5: held by provenance — rate_source says who set the rate. The
+                    # rate_reconciled flag went with its column (10 Oct 2026); the importer
+                    # folds a v4 row it flagged while leaving 'schedule' into 'reconciled'.
                     if (_mrow and (_mrow["rate_corrected"]
-                                   or _mrow["rate_source"] in ("reconciled", "settled", "corrected")
-                                   or _mrow["rate_reconciled"])
+                                   or _mrow["rate_source"] in ("reconciled", "settled", "corrected"))
                             and _mrow["imp_rate"] is not None):
                         _override_rate = _mrow["imp_rate"]
                     elif use_dcc and _mrow and _mrow["imp_rate"]:
@@ -12208,12 +12181,10 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
         else:
             segs.append(_ps.Segment(round(kwh, 6), imp_rate, exc_rate, home_band, "house"))
 
-    # Legacy EV columns from the segments; cost is the BILL (remainder absorbs the
-    # clean-rate-vs-bill sub-penny sliver so EV + house == imp_cost exactly).
+    # Legacy EV columns from the segments; cost is the BILL.
     ev_cost = round(sum(sg.kwh * sg.inc_rate for sg in segs if sg.attribution == "ev"), 6)
     ev_kwh_sum = round(sum(sg.kwh for sg in segs if sg.attribution == "ev"), 6)
     rate_ev = round(ev_cost / ev_kwh_sum, 6) if ev_kwh_sum > 1e-9 else None
-    remainder = round(cost_incl - ev_cost, 6)
     _cost_exc = (round(cost_excl, 6) if cost_excl is not None
                  else round(cost_incl * _exc_f, 6))
     try:
@@ -12227,7 +12198,7 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
             kwh_ev=(ev_kwh_sum if ev_kwh_sum > 1e-9 else None),
             rate_ev=rate_ev,
             cost_ev=(ev_cost if ev_kwh_sum > 1e-9 else None),
-            ev_band=ev_band, home_band=home_band, cost_remainder=remainder,
+            ev_band=ev_band, home_band=home_band,
             segments=segs)
     except Exception as e:
         logger.warning("apply_measured: write failed for %s, left for the next pass: %s", bs, e)
@@ -12645,7 +12616,7 @@ async def reconcile_dispatch_overlay() -> dict:
                     logger.warning("reconcile: band relabel failed for %s: %s", bs, _be)
                 # 4.5.0 fix (companion to the band sweep): the same stale-provisional
                 # problem hits the legacy EV columns Usage Stats reads (imp_rate_ev /
-                # imp_cost_ev / bands / imp_cost_remainder). An OLDER reconcile that
+                # imp_cost_ev / bands). An OLDER reconcile that
                 # rewrote the segments but not these columns leaves imp_rate_ev != the
                 # block rate — so Usage Stats keeps the old EV cost and spills the
                 # difference into Direct, diverging from Billing. Re-stamp to the block
