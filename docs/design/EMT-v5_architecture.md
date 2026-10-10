@@ -475,7 +475,8 @@ behind them. Far less risk than "build an API", and the work is mostly deciding 
 **Note what step 5 does *not* include.** An earlier draft had the band vocabulary "unified" here.
 It is not: v5 keeps all four labels (house `day`/`night`, EV `peak`/`off_peak`), because the two
 axes are different determinations — clock versus dispatch — not two names for cheap and expensive.
-The only change is a **house `off_peak → night` relabel, SMB era only**, and it belongs to **step 7,
+*(Closed 10 Oct 2026, ROADMAP BL-81: the relabel is not wanted. Octopus's 28 Sep rename made its own buckets side × rate — HOME/EV LOW RATE, HOME/EV STANDARD RATE — with no "night"; house `off_peak` stays in every era and the importer relabels nothing.)*
+The only change was to be a **house `off_peak → night` relabel, SMB era only**, and it belongs to **step 7,
 in the importer**, as a declarative column rule. See [EMT-v5_schema_notes.md](EMT-v5_schema_notes.md)
 §3a and the import spec §5.2.
 

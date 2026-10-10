@@ -195,6 +195,10 @@ readers accept it. The era test natively is the one v5 already has (`_import_is_
 agreement history for past blocks). Measured on blocks-20, 15,225 house `off_peak` segments exist,
 about 420 a month both before the SMB era and inside it.
 
+> **Closed 10 Oct 2026: the relabel is not wanted (ROADMAP BL-81).** Octopus's 28 Sep rename made its
+> own vocabulary side × rate — HOME/EV LOW RATE, HOME/EV STANDARD RATE — with no "night". House
+> `off_peak` stays in every era; transform 4 is not built.
+>
 > **Superseded 10 Oct 2026: the relabel moves to ROADMAP BL-81.** The sentence above assumed v5
 > has an era test for past blocks. It does not. A trace of every writer of a house band found about
 > ten paths, and each decides "SMB" from the **current** tariff (`ev_device_*` schedules,

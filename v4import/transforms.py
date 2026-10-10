@@ -10,10 +10,10 @@ importer's copy.
     1  provenance          'measured' -> 'settled', the reconciled fold
     2  EV segments         from the legacy columns, where a block has none
     3  held-rate refit     segments fitted to a settled kWh
-    4  band relabel        house off_peak -> night, SMB era (waits on ROADMAP BL-81)
+    4  band relabel        not built: BL-81 closed (house off_peak stays in every era)
     5  meta                the allow-listed store_meta / kraken_state keys
 
-4 waits on BL-81 (E design §10); the others run in this order.
+4 is not built (ROADMAP BL-81, closed 10 Oct 2026); the others run in this order.
 
 Blocks whose segments 2 and 3 write are recorded in the temp table `v4i_resegmented`, so
 verify.py can check them by their own gates and the rest as carried exactly.

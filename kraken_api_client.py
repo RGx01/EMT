@@ -407,6 +407,9 @@ def _looks_like_edge_block(body: str) -> bool:
 #   IOG-SMB v1 : CONSUMPTION_CHARGE_ECO7_DAY_x, CONSUMPTION_CHARGE_ECO7_NIGHT_x,
 #                CONSUMPTION_CHARGE_EV_DEVICE_OFF_PEAK_x, CONSUMPTION_CHARGE_EV_DEVICE_PEAK_x
 #   IOG-SMB v2 : HOME LOW RATE, HOME STANDARD RATE, EV LOW RATE, EV STANDARD RATE
+#   expected   : an EV boost bucket. Octopus added EV_BOOST to its rate-type enums on
+#                2026-09-28 (the day of the v2 rename); no product carries it yet, and its
+#                bucket spelling is unknown — EV_BOOST, EV BOOST RATE, ..._EV_DEVICE_BOOST_x.
 # Note the SAME band has several spellings: home off-peak is NIGHT (v1) or LOW RATE (v2),
 # EV off-peak is OFF_PEAK (v1) or LOW RATE (v2).
 #
@@ -419,6 +422,9 @@ _PEAK_WORDS = ("PEAK", "DAY", "STANDARD_RATE", "STANDARD")
 # Distinct unrecognised bucket labels already reported, so a vocabulary change is logged
 # once per label rather than on every slot of every poll.
 _UNKNOWN_BUCKET_LABELS: set = set()
+# Boost-labelled buckets already reported: the first one is news (Octopus has shipped EV_BOOST),
+# logged once per label.
+_BOOST_BUCKET_LABELS: set = set()
 
 
 def bucket_side(label) -> Optional[str]:
@@ -430,11 +436,24 @@ def bucket_side(label) -> Optional[str]:
     the v2 rename did exactly that, and the `else: # home` catch-all it replaced made an
     account-wide loss of the EV split invisible (no flag, no log, no figure out of range).
     ORDER MATTERS: the EV test runs first because 'EV STANDARD RATE' also matches the
-    home band words."""
+    home band words.
+
+    An EV BOOST bucket is EV, however it is spelled (10 Oct 2026): any label starting `EV_` or
+    `EV ` or carrying BOOST. Before, the enum's own spelling `EV_BOOST` matched nothing and
+    was refused — that half-hour's EV split lost — and `EV_BOOST_PEAK` fell to the pre-SMB
+    catch-all and was booked to the HOUSE. Its band is left to label_band (no band word in
+    `EV_BOOST`: None, so the rate is resolved by time of day; a boost is a charge outside a
+    dispatch, at the EV's standard rate). The first boost label seen is logged once."""
     lab = (label or "").upper().strip()
     if not lab:
         return None
-    if "EV_DEVICE" in lab or lab.startswith("EV "):
+    if "BOOST" in lab:
+        if lab not in _BOOST_BUCKET_LABELS:
+            _BOOST_BUCKET_LABELS.add(lab)
+            logger.info("bucket_side: first boost-labelled bucket %r — Octopus's EV_BOOST "
+                        "(28 Sep 2026) is in use; booked to the EV", label)
+        return "ev"
+    if "EV_DEVICE" in lab or lab.startswith("EV ") or lab.startswith("EV_"):
         return "ev"
     if "ECO7" in lab or lab.startswith("HOME "):
         return "home"

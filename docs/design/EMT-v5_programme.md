@@ -267,6 +267,8 @@ boundary to cut along, so unwiring was the cheap move and deletion never followe
 the one part of v5 guaranteed to become obsolete. It is the one part that must be shaped so that
 obsolete means *deletable*, not *unwired*.
 
+*(Closed 10 Oct 2026, ROADMAP BL-81: the relabel is not wanted. Octopus's 28 Sep rename made its own buckets side × rate — HOME/EV LOW RATE, HOME/EV STANDARD RATE — with no "night"; house `off_peak` stays in every era and the importer relabels nothing.)*
+
 *Consequence for the band question:* the SMB-era `house off_peak → night` relabel lives here as a
 declarative column rule. It is a schema translation, not a heal — it runs once, in one direction,
 and expires with the module. Putting it in the domain instead would have made it permanent, because
@@ -337,6 +339,8 @@ example, and the example was not true.
    `day`/`night` (clock-determined, Economy-7) and EV `peak`/`off_peak` (dispatch-determined) — plus
    `standard` for unknown. They are different determinations that happen to share the adjectives
    "cheap" and "expensive".
+
+   *(Closed 10 Oct 2026, ROADMAP BL-81: the relabel is not wanted. Octopus's 28 Sep rename made its own buckets side × rate — HOME/EV LOW RATE, HOME/EV STANDARD RATE — with no "night"; house `off_peak` stays in every era and the importer relabels nothing.)*
 
    **v5 keeps all four.** The importer makes exactly one change: house low `off_peak → night`,
    **IOG-SMB era only**, because only SMB has an `ECO7_NIGHT` bucket; pre-SMB house low genuinely
