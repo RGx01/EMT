@@ -28,7 +28,7 @@ from unittest import mock
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
-import import_gate as G                           # noqa: E402
+from v4import import gate as G                    # noqa: E402  (import_gate.py until 10 Oct 2026)
 import job_coordinator as C                       # noqa: E402
 from block_store import BlockStore                # noqa: E402
 
@@ -38,6 +38,8 @@ def make_db(path, written_by=G.FLOOR_VERSION, blocks=(), vat_calendar=None,
     """A real schema, a stamp (None for none), and blocks given as
     (block_start, meter_id, imp_rate, imp_rate_exc, imp_cost, imp_cost_exc)."""
     st = BlockStore(path)
+    # A v4 database: v5 marks the databases it creates (emt_schema), and v4's never are.
+    st._conn.execute("DELETE FROM store_meta WHERE key = 'emt_schema'")
     if written_by is not None:
         st.set_meta("written_by", written_by)
     if supplier is not None:

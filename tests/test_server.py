@@ -125,6 +125,8 @@ bs_mod.local_datetime_to_utc           = _bs_real.local_datetime_to_utc
 bs_mod.utc_to_local_label              = _bs_real.utc_to_local_label
 bs_mod.outward_code          = _bs_real.outward_code
 bs_mod.derive_region_periods = _bs_real.derive_region_periods
+bs_mod.EMT_SCHEMA            = _bs_real.EMT_SCHEMA         # the restore classifies by it
+bs_mod.read_emt_schema       = _bs_real.read_emt_schema
 sys.modules["block_store"] = bs_mod
 
 

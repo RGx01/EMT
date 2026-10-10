@@ -50,6 +50,34 @@ logger = logging.getLogger("block_store")
 
 SCHEMA_VERSION = 1
 
+# What a v5 database is (E design §2). Written into store_meta['emt_schema'] when v5 CREATES
+# a database, and by the importer on the database it builds. A database without it is
+# v4-shaped, whoever wrote it: v4, or a v5 build before the marker, whose `written_by`
+# (4.5.22-a23) cannot tell it from v4. `schema_version` cannot either: it reads 1 on every
+# v4 database (import spec §3). A revision, raised by each change to what v5 stores
+# (the provenance words, the band, the column drop); a restore refuses a v5 backup of any
+# other revision until the first release fixes the baseline.
+EMT_SCHEMA = 1
+
+
+def read_emt_schema(path):
+    """The `emt_schema` revision of the database file at `path`, or None when it has none
+    (a v4-shaped database). Opened read-only and immutable, like the import gate."""
+    from urllib.parse import quote as _quote
+    conn = sqlite3.connect("file:%s?immutable=1" % _quote(os.path.abspath(path)), uri=True)
+    try:
+        row = conn.execute("SELECT value FROM store_meta WHERE key = 'emt_schema'").fetchone()
+    except sqlite3.Error:
+        return None
+    finally:
+        conn.close()
+    if row is None or row[0] is None:
+        return None
+    try:
+        return int(json.loads(row[0]))
+    except (TypeError, ValueError):
+        return None
+
 # ── 3.5.0 Historical-import provenance source values ─────────────────────────
 # Reconstructed blocks carry one of these in blocks.source. The reconstructed-
 # history delete filter matches the shared 'imported' prefix, so a bad import can
@@ -1285,7 +1313,15 @@ class BlockStore:
         """)
 
     def _ensure_schema(self) -> None:
+        # Brand new: no tables yet. Only then is this database v5's own (EMT_SCHEMA); a
+        # v4-shaped database opened here keeps no marker, so a restore still imports it.
+        _new = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'blocks'").fetchone() is None
         self._conn.executescript(_DDL)
+        if _new:
+            with self._conn:
+                self._conn.execute("INSERT OR IGNORE INTO store_meta (key, value) VALUES "
+                                   "('emt_schema', ?)", (json.dumps(EMT_SCHEMA),))
 
         # ── Incremental column additions ──────────────────────────────────────
         # These run on every open so new columns are available immediately,

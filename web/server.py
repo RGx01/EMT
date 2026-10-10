@@ -2868,8 +2868,55 @@ class _RestoreRefused(Exception):
 
 
 def _import_gate():
-    import import_gate
-    return import_gate
+    from v4import import gate
+    return gate
+
+
+V5_OLDER_SCHEMA = (
+    "This backup was made by an earlier development build of EMT, and its data is stored "
+    "differently from this one. Restore a backup from the v4 add-on instead.")
+V5_NEWER_SCHEMA = (
+    "This backup was made by a newer version of EMT than this one. Update EMT, then "
+    "restore it.")
+
+
+def _prepare_restore_db(candidate, step=None):
+    """The database file to swap in for `candidate`, and the import report (None for a v5
+    backup). Raises _RestoreRefused with the user-facing reason; the live database is not
+    touched either way (E design §2).
+
+    A v5 backup (it carries emt_schema) takes gate 1 alone and is swapped in as it is. Any
+    other database is v4-shaped: it takes the v4 gate, then the importer builds a v5
+    database from it beside the live one, as DATA_DIR/import_target.db."""
+    import block_store as _bs
+    gate = _import_gate()
+    rev = _bs.read_emt_schema(candidate)
+    if rev is not None:
+        why = gate.check_intact_file(candidate)
+        if why:
+            raise _RestoreRefused(why)
+        if rev < _bs.EMT_SCHEMA:
+            raise _RestoreRefused(V5_OLDER_SCHEMA)
+        if rev > _bs.EMT_SCHEMA:
+            raise _RestoreRefused(V5_NEWER_SCHEMA)
+        logger.info("restore: a v5 backup (emt_schema %d)", rev)
+        return candidate, None
+    why = gate.check(candidate)
+    if why:
+        raise _RestoreRefused(why)
+    logger.info("restore: v4 backup admitted; supplier %s", gate.describe_supplier(candidate))
+    import v4import
+    target = os.path.join(DATA_DIR, "import_target.db")
+    try:
+        report = v4import.import_v4(candidate, target, progress=step)
+    except v4import.ImportFailed as e:
+        raise _RestoreRefused(str(e))
+    logger.info("restore: imported from v4 %s — %s; keys carried %s",
+                report["source"].get("written_by"),
+                ", ".join("%s %d" % (t, c["out"]) for t, c in report["tables"].items()
+                          if c["out"]),
+                sum(len(k["carried"]) for k in report["keys"].values()))
+    return target, report
 
 
 def _zip_has_hot_wal(zf):
@@ -2955,15 +3002,15 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
                 _j["error"] = str(_rr)
                 return
             _zip_candidate = _candidate
+        _swap_from = None              # the file swapped in: the candidate, or the import
         if _candidate and os.path.exists(_candidate):
-            _refusal = _import_gate().check(_candidate)
-            if _refusal:
-                logger.warning("restore refused: %s", _refusal)
+            try:
+                _swap_from, _ = _prepare_restore_db(_candidate, _step)
+            except _RestoreRefused as _rr:
+                logger.warning("restore refused: %s", _rr)
                 _j["status"] = "error"
-                _j["error"] = _refusal
+                _j["error"] = str(_rr)
                 return
-            logger.info("restore: backup admitted; supplier %s",
-                        _import_gate().describe_supplier(_candidate))
 
         # ── Step 1b: STOP any running API import before touching the DB ───────
         # The background import writes via the SQLite store on the engine loop.
@@ -3067,7 +3114,7 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
             # the same atomic write the zip/flat paths use, then drop the staging
             # file. Everything downstream (reset, migrate, gap-detect) is shared.
             dest = os.path.join(DATA_DIR, "blocks.db")
-            with open(staged, "rb") as _src:
+            with open(_swap_from or staged, "rb") as _src:
                 _atomic_write(dest, lambda d, _s=_src: shutil.copyfileobj(_s, d))
             restored.append("blocks.db")
             try: os.remove(staged)
@@ -3078,6 +3125,8 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
                 if fname not in known:
                     continue
                 src_path = f"{_share_backup_dir()}/{fname}"
+                if fname == "blocks.db" and _swap_from:
+                    src_path = _swap_from
                 dst_path = os.path.join(DATA_DIR, fname)
                 if os.path.exists(src_path):
                     with open(src_path, "rb") as _src:
@@ -3098,11 +3147,11 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
                     if selected is not None and basename not in selected:
                         continue
                     dest = os.path.join(DATA_DIR, basename)
-                    if basename == "blocks.db" and _zip_candidate:
-                        # the copy Step 1a extracted, fsynced and checked: rename it
-                        # into place (same directory, so atomic) rather than write
-                        # the database a second time
-                        os.replace(_zip_candidate, dest)
+                    if basename == "blocks.db" and _swap_from:
+                        # the copy Step 1a extracted and checked, or the database the
+                        # importer built from it: rename it into place (same directory,
+                        # so atomic) rather than write the database a second time
+                        os.replace(_swap_from, dest)
                         _fsync_dir(dest)
                     else:
                         with zf.open(name) as zf_src:
@@ -3215,9 +3264,10 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
         if staged and _j.get("status") == "error" and os.path.exists(staged):
             try: os.remove(staged)          # a refused upload is not kept
             except Exception: pass
-        if _zip_candidate and os.path.exists(_zip_candidate):
-            try: os.remove(_zip_candidate)
-            except Exception: pass
+        for _left in (_zip_candidate, os.path.join(DATA_DIR, "import_target.db")):
+            if _left and os.path.exists(_left):
+                try: os.remove(_left)       # extracted, or imported and not swapped in
+                except Exception: pass
         # Always resume engine — reset_store already called above on success,
         # but we must resume even if an exception occurred mid-restore
         import sys as _sys_fin
@@ -6874,19 +6924,20 @@ def api_import_from_zip():
                     count = _tc.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]
                     _tc.close()
                     logger.info("api_import_from_zip: validated %d blocks in tmp file", count)
-                    _refusal = _import_gate().check(tmp)
-                    if _refusal:
+                    try:
+                        _swap_from, _ = _prepare_restore_db(tmp)
+                    except _RestoreRefused as _rr:
                         os.remove(tmp)
-                        logger.warning("api_import_from_zip: refused: %s", _refusal)
-                        return jsonify({"error": _refusal}), 400
-                    logger.info("api_import_from_zip: backup admitted; supplier %s",
-                                _import_gate().describe_supplier(tmp))
+                        logger.warning("api_import_from_zip: refused: %s", _rr)
+                        return jsonify({"error": str(_rr)}), 400
                     # Close web server store
                     if _store:
                         try: _store.close()
                         except Exception: pass
                         _store = None
-                    os.replace(tmp, dest)
+                    os.replace(_swap_from, dest)
+                    if os.path.exists(tmp):
+                        os.remove(tmp)          # the importer built `dest` from it
                     imported.append("blocks.db")
                     logger.info("api_import_from_zip: restored blocks.db (%d blocks)", count)
 

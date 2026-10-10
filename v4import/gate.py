@@ -1,5 +1,8 @@
 """
-import_gate.py — may this database replace the live one? (import spec §3, phase 1)
+v4import/gate.py — may this v4 database be imported? (import spec §3, phase 1)
+
+Moved from import_gate.py into the importer package on 10 Oct 2026 (E design §1): the floor,
+the stamp and the pence check are v4-shaped, and leave with the package.
 
 v5 carries no v4 heals. What makes that safe is the floor: a database last opened by
 v4 release X has had every heal X carries (every heal is marker-gated, and ungated
@@ -26,6 +29,9 @@ amended 4 Oct 2026): an absent supplier with a stamped Octopus account is Octopu
 
 Raising the floor: change FLOOR_VERSION, here only, in the same change as the import
 spec §1.1, ROADMAP §E, programme §E and CLAUDE.md.
+
+`has_hot_wal` and `check_intact` are not v4-shaped: the restore worker also runs them on a
+v5 backup, which takes no other gate here.
 """
 import json
 import os
@@ -217,9 +223,7 @@ def describe_supplier(path):
     return supplier + (" (inferred from the Octopus account stamp)" if inferred else "")
 
 
-def check(path):
-    """Phase-1 gates 1–4 on the database at `path`, in the spec's order.
-    Returns None when it may be restored, else the user-facing refusal."""
+def _run(path, *gates):
     if has_hot_wal(path):
         return HOT_WAL
     try:
@@ -227,11 +231,25 @@ def check(path):
     except sqlite3.Error as e:
         return UNREADABLE.format(error=e)
     try:
-        return (check_intact(conn) or check_written_by(conn)
-                or check_supplier(conn) or check_units(conn))
+        for g in (check_intact,) + gates:
+            why = g(conn)
+            if why:
+                return why
+        return None
     except sqlite3.Error as e:
         # "malformed" is a damaged database (gate 1); anything else — "file is not a
         # database", a missing table — is not one EMT can read.
         return DAMAGED if "malformed" in str(e) else UNREADABLE.format(error=e)
     finally:
         conn.close()
+
+
+def check(path):
+    """Phase-1 gates 1–4 on the database at `path`, in the spec's order.
+    Returns None when it may be restored, else the user-facing refusal."""
+    return _run(path, check_written_by, check_supplier, check_units)
+
+
+def check_intact_file(path):
+    """Gate 1 alone — not a live copy, and intact. What a v5 backup takes (E design §2)."""
+    return _run(path)
