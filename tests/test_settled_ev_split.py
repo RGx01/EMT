@@ -34,6 +34,7 @@ from kraken_rates import RateSchedule
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import engine
+import ev_split
 
 SLOT = "2026-09-01T02:00:00"          # inside the IOG off-peak window
 CFG = {"meters": {"electricity_main": {"meta": {
@@ -83,10 +84,11 @@ class _Base(unittest.TestCase):
                                               source="unknown", energy_kwh=-abs(kwh))
 
     def _ev(self):
+        # the EV split is the block's EV segments (step 5c, 10 Oct 2026)
         r = engine._store._conn.execute(
-            "SELECT imp_kwh_ev FROM blocks WHERE block_start=? AND meter_id='electricity_main'",
-            (SLOT,)).fetchone()
-        return r["imp_kwh_ev"]
+            "SELECT " + ev_split.sql_kwh("b") + " AS ev FROM blocks b "
+            "WHERE block_start=? AND meter_id='electricity_main'", (SLOT,)).fetchone()
+        return r["ev"]
 
     def _apply(self):
         return engine.apply_measured_to_block(SLOT, cost_incl=0.329580,
@@ -205,6 +207,7 @@ class TestTheHealDoesNotLoop(_Base):
         for blk, bill_ev, disp, want in cases:
             with self.subTest(blk=blk, disp=disp):
                 engine._store._conn.execute("DELETE FROM blocks")
+                engine._store._conn.execute("DELETE FROM block_segments")
                 engine._store._conn.execute("DELETE FROM dispatch_history")
                 engine._store._conn.execute("DELETE FROM measured_cost")
                 engine._store._conn.commit()

@@ -1,7 +1,8 @@
 """
 test_synth_capped.py — prove the synthetic capped fixture is TRUSTWORTHY before task-16
-reader tests lean on it: its stored columns and segments agree, the cap cases are present,
-and device attribution reconciles to the grid.
+reader tests lean on it: its stored columns and segments agree, the EV split and bands the
+segments carry are the crafted ones, the cap cases are present, and device attribution
+reconciles to the grid.
 """
 
 import os
@@ -11,6 +12,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))   # tests/ for synth_capped
 from block_store import BlockStore
+import ev_split
 import pricing_segments as ps
 import segment_helpers as sh   # import_segments & co. — test builders (BL-63)
 import synth_capped as sc
@@ -28,13 +30,25 @@ class TestSynthCappedFixture(unittest.TestCase):
     def test_columns_and_segments_agree(self):
         for start in self.starts:
             r = self.st._conn.execute(
-                "SELECT imp_kwh, imp_cost, imp_kwh_ev, imp_cost_ev FROM blocks "
+                "SELECT imp_kwh, imp_cost FROM blocks "
                 "WHERE block_start=? AND meter_id=?", (start, sc.MAIN)).fetchone()
             segs = self._segs(start)
             self.assertAlmostEqual(ps.total_kwh(segs), r["imp_kwh"], places=5)
             self.assertAlmostEqual(ps.total_cost(segs), r["imp_cost"], places=5)
-            self.assertAlmostEqual(ps.attribution_kwh(segs, "ev"), r["imp_kwh_ev"] or 0, places=5)
-            self.assertAlmostEqual(ps.attribution_cost(segs, "ev"), r["imp_cost_ev"] or 0, places=5)
+
+    def test_split_and_bands_are_the_crafted_ones(self):
+        # step 5c: the EV split and its bands are read from the segments alone.
+        for (start, ek, hk, eof, hof, _z, _b) in sc._DAY:
+            r = self.st._conn.execute(
+                "SELECT " + ev_split.sql_kwh("b") + " AS ev_kwh FROM blocks b "
+                "WHERE b.block_start=? AND b.meter_id=?", (start, sc.MAIN)).fetchone()
+            if ek > 0:
+                self.assertAlmostEqual(r["ev_kwh"], ek, places=5)
+            else:
+                self.assertIsNone(r["ev_kwh"])
+            imp = self.st.get_block_dict_by_start(start)["meters"][sc.MAIN]["channels"]["import"]
+            self.assertEqual(imp.get("ev_band"), sc._band(eof) if ek > 0 else None)
+            self.assertEqual(imp.get("home_band"), sc._house_band(hof) if hk > 0 else None)
 
     def test_cap_cases_present(self):
         bands = set()
@@ -89,9 +103,9 @@ class TestSynthCappedFixture(unittest.TestCase):
                                 "WHERE attribution='ev' AND band='peak'").fetchone()["n"]
         self.assertGreater(peak, 0)
         # every re-priced block still reconciles to its stored figures
-        for r in st._conn.execute("SELECT block_start, imp_kwh, imp_cost FROM blocks "
-                                  "WHERE imp_kwh_ev IS NOT NULL AND meter_id='electricity_main'"
-                                  ).fetchall():
+        for r in st._conn.execute("SELECT block_start, imp_kwh, imp_cost FROM blocks b "
+                                  "WHERE " + ev_split.sql_kwh("b") + " IS NOT NULL "
+                                  "AND meter_id='electricity_main'").fetchall():
             segs = [ps.Segment(**x) for x in st.get_block_segments(r["block_start"], sc.MAIN)]
             if segs:
                 self.assertAlmostEqual(ps.total_cost(segs), r["imp_cost"] or 0, places=4)

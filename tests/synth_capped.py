@@ -6,12 +6,14 @@ so this crafts one controlled noon→noon cap-day — within-cap, a boundary blo
 and EV+battery simultaneous — with a physical EV charger and battery whose METERED kWh
 differs slightly from the dispatch (the realistic case). Every block is priced with
 `pricing_segments`, so the stored imp_* columns AND block_segments are mutually consistent
-and the segments are the ground truth reader tests assert against.
+and the segments are the ground truth reader tests assert against. Step 5c (10 Oct 2026):
+the EV split and its bands are the segments alone (no imp_*_ev / band columns).
 
 `build_capped_day(store)` injects the day into any store (a :memory: one, or a copy of a
 real DB like Staging — "on top of Staging"). `CFG` describes the meters for the readers.
 """
 
+import ev_split
 import pricing_segments as ps
 import segment_helpers as sh   # import_segments & co. — test builders (BL-63)
 
@@ -67,19 +69,12 @@ def build_capped_day(store):
         imp_kwh = ps.total_kwh(segs)
         imp_cost = ps.total_cost(segs)
         imp_rate = ps.blended_rate(segs)
-        ev_c = ps.attribution_cost(segs, "ev")
-        ev_k = ps.attribution_kwh(segs, "ev")
         c.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, imp_cost_exc, "
-            "imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band, imp_kwh_api) "
-            "VALUES (?,?,?,1,?,?,?,?,?,?,?,?,?,?)",
+            "imp_kwh, imp_rate, imp_cost, imp_cost_exc, imp_kwh_api) "
+            "VALUES (?,?,?,1,?,?,?,?,?)",
             (start, start, MAIN, imp_kwh, imp_rate, imp_cost,
-             round(imp_cost / (1 + VAT), 6),
-             (ev_k or None), (ev_c or None),
-             (ps.attribution_rate(segs, "ev") or None) if ev_k else None,
-             _band(eof) if ek > 0 else None, _house_band(hof) if hk > 0 else None,
-             imp_kwh))
+             round(imp_cost / (1 + VAT), 6), imp_kwh))
         store.set_block_segments(start, MAIN, segs)
         # physical device blocks — priced the OLD way (parent blended rate); the reader
         # migration must re-price EV on the EV band and the battery on the house rate.
@@ -103,8 +98,9 @@ def reprice_under_cap(store, *, cap_hours: float = 3.0, tz: str = "Europe/London
     """Re-price a real DB's DISPATCHED blocks under a LOWER cap so the cap actually
     breaches (Staging's real dispatch reaches 6h but never exceeds it — a 3h cap turns
     the same real data into a genuine capped account across many days). Uses the real
-    `imp_kwh_ev` (the grid-clipped dispatch EV per block) and the real dispatch windows,
-    runs `iog_cap` at `cap_hours`, and rewrites the 4-rate columns + block_segments. Returns
+    EV split (the block's 'ev' segments — the grid-clipped dispatch EV per block) and the real
+    dispatch windows, runs `iog_cap` at `cap_hours`, and rewrites the imp_* columns +
+    block_segments (the segments carry the EV split and its bands). Returns
     the number of blocks re-priced."""
     from datetime import datetime, time
     from zoneinfo import ZoneInfo
@@ -124,9 +120,9 @@ def reprice_under_cap(store, *, cap_hours: float = 3.0, tz: str = "Europe/London
 
     n = 0
     blocks = c.execute(
-        "SELECT block_start, block_end, imp_kwh, imp_kwh_ev FROM blocks "
-        "WHERE imp_kwh_ev IS NOT NULL AND imp_kwh_ev > 0 "
-        "AND meter_id = 'electricity_main'").fetchall()
+        "SELECT * FROM (SELECT b.block_start, b.block_end, b.imp_kwh, "
+        + ev_split.sql_kwh("b") + " AS imp_kwh_ev FROM blocks b "
+        "WHERE b.meter_id = 'electricity_main') WHERE imp_kwh_ev > 0").fetchall()
     for r in blocks:
         bs, be = r["block_start"], r["block_end"] or r["block_start"]
         cls = iog_cap.classify_slot(
@@ -141,13 +137,9 @@ def reprice_under_cap(store, *, cap_hours: float = 3.0, tz: str = "Europe/London
             vat=vat)
         ic, ik = ps.total_cost(segs), ps.total_kwh(segs)
         c.execute(
-            "UPDATE blocks SET imp_rate=?, imp_cost=?, imp_cost_exc=?, "
-            "imp_kwh_ev=?, imp_cost_ev=?, imp_rate_ev=?, imp_ev_band=?, imp_home_band=? "
+            "UPDATE blocks SET imp_rate=?, imp_cost=?, imp_cost_exc=? "
             "WHERE block_start=? AND meter_id='electricity_main'",
-            (ps.blended_rate(segs), ic,
-             round(ic / (1 + vat), 6), ps.attribution_kwh(segs, "ev") or None,
-             ps.attribution_cost(segs, "ev") or None, ps.attribution_rate(segs, "ev") or None,
-             cls["ev"], cls["house"], bs))
+            (ps.blended_rate(segs), ic, round(ic / (1 + vat), 6), bs))
         store.set_block_segments(bs, "electricity_main", segs)
         n += 1
     store._conn.commit()

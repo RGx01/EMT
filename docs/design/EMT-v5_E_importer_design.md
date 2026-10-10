@@ -343,8 +343,8 @@ step usable on the Pi.
 | 5 | **the schema drop**: the 10 columns and `rate_reconciled` leave `BlockStore`'s DDL and v5's code (about 330 production references), `ev_split`'s LEGACY fallback goes, and the rules become DROP. *Split 10 Oct 2026, after an inventory of every reference, into four, each removing its columns completely (schema, code, importer rule, tests) and raising `EMT_SCHEMA`:* | 5 |
 | 5a | the remainder pair and `rate_reconciled`: plumbing only, since no surface reads the stored values (`EMT_SCHEMA` 3) | — |
 | 5b | `imp_rate_exc`, `standing_charge_exc`, `exc_source`: six readers that load `imp_rate_exc` from the database take a derived rate instead (`imp_cost_exc ÷ imp_cost` as the exc/inc ratio, else the VAT calendar), and the held-rate re-run stops writing back an `imp_cost_exc` stale against its new cost | — |
-| 5c | the five EV-split columns: finalise and the settlement re-run write the segments in the block's own transaction (today a failed segment write leaves the split only in the columns), bands are read from the segments, the split writers become segment-only, and `ev_split`'s LEGACY fallback goes | 5 |
-| 5d | what remains: spec gate 5's final form, the schema notes, the column counts in CLAUDE.md and the spec | — |
+| 5c | the five EV-split columns: finalise and the settlement re-run write the segments in the block's own transaction (a failed segment write used to leave the split only in the columns), bands are read from the segments, the split writers become segment-only, and `ev_split`'s LEGACY fallback goes. *Built 10 Oct 2026, with gate 5 (`verify.split_reproduced`).* | 5 |
+| 5d | *folded into 5c (10 Oct 2026):* gate 5 landed with the EV columns it checks, and the documented counts were already right | — |
 | 6 | positive fixture at 4.5.22, Pi timing, spec v18 | all |
 
 Each PR is a normal `feat/…` or `chore/…` from `dev`. PR 3 is the first to change what v5 writes

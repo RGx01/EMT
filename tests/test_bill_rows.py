@@ -77,24 +77,20 @@ def _store():
         sc = 0.0 if (day == 4 and t.hour < 2) else (0.61 if day < 12 else 0.58)
         ev = round(k * rnd.uniform(0.3, 1.2), 3) if night else 0.0
         bat = round(rnd.uniform(0.0, 0.4), 3) if i % 4 == 0 else 0.0
-        evk = evc = evr = evb = hb = None
         segs = []
-        if night and i % 2 == 0:
-            if i % 4 == 0:                                              # priced segments
-                segs = [(round(ev * 0.9, 6), rate, (rate / (1 + vat)) if i % 8 else None, "off_peak", "ev"),
-                        (round(k - ev * 0.9, 6), rate, rate / (1 + vat), "off_peak", "house"),
-                        (0.0, 0.30, None, "peak", "house")]               # skipped (no kWh)
-            else:                                                       # stored split, no segments
-                evk, evc, evr = round(ev * 0.9, 6), round(ev * 0.9 * rate, 6), rate
-                evb = "mixed" if i % 3 == 0 else "off_peak"
-                hb = "mixed" if i % 5 == 0 else "off_peak"
+        # Step 5c (10 Oct 2026): the split is only segments. A night block with
+        # i % 4 == 2 used to carry a column split with no segments (the bill's
+        # 'mixed' transition rows); it is now a plain no-segment block (no EV).
+        if night and i % 4 == 0:                                        # priced segments
+            segs = [(round(ev * 0.9, 6), rate, (rate / (1 + vat)) if i % 8 else None, "off_peak", "ev"),
+                    (round(k - ev * 0.9, 6), rate, rate / (1 + vat), "off_peak", "house"),
+                    (0.0, 0.30, None, "peak", "house")]                   # skipped (no kWh)
         c.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
             "imp_rate, imp_cost, imp_read_start, imp_read_end, imp_cost_exc, "
-            "imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band, "
             "exp_kwh, exp_rate, exp_cost, exp_read_start, exp_read_end, standing_charge"
-            ") VALUES (?,?,'electricity_main',1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (bs, bs, k, rate_col, cost, rs, re_, exc, evk, evc, evr, evb, hb,
+            ") VALUES (?,?,'electricity_main',1,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (bs, bs, k, rate_col, cost, rs, re_, exc,
              0.2 if not night else 0.0, 0.15 if i % 7 else None, 0.03 if not night else 0.0,
              10.0 + i if i % 9 else None, 10.2 + i if i % 9 else None, sc))
         for seq, (sk, si, sx, band, attr) in enumerate(segs):
@@ -160,8 +156,8 @@ class TheSummary(Base):
             self.st.get_blocks_lightweight(LO, HI), _local(LO), _local(HI),
             store=self.st, tz_name=TZ)
         self.assertTrue(old["ev_by_rate"] and old["home_by_rate"])
-        self.assertGreater(old["ev_transition"]["kwh"], 0)
-        self.assertGreater(old["home_transition"]["kwh"], 0)
+        # The ev/home transition rows came only from a no-segment block's column
+        # bands, dropped in step 5c; no stored block reaches them now.
         self.assertTrue(any(v["is_submeter"] for v in old["totals"].values()))
         self.assertTrue(any(r < 0 for r in old["main_import_raw"]))
         self.assertEqual(len({round(v, 2) for v in old["standing"].values()}), 2)

@@ -3,24 +3,16 @@
 
 Five statements, four transactions, three store methods. Two findings.
 
-1. THE EV RESTAMP WAS WRITTEN THREE TIMES, and two of the three carried
-   `AND imp_kwh_ev IS NOT NULL` while the middle one did not. One
-   `_EV_RESTAMP_SQL` constant now serves all three, guarded.
+1. THE EV RESTAMP WAS WRITTEN THREE TIMES, two of the three guarded by
+   `AND imp_kwh_ev IS NOT NULL`. Folded into one `_EV_RESTAMP_SQL`, then deleted
+   with the EV columns themselves (step 5c, 10 Oct 2026): the split is now only
+   the block's segments, which the verdict re-writes.
 
-   I first argued the guard was redundant — the unguarded site is reached only
-   where the caller has already established a split exists. That was the wrong
-   way round. The guard is THE INVARIANT: these columns are DERIVED from the
-   split, and stamping them where none exists leaves the row asserting two
-   contradictory things. `web/server.py`'s correction tool states the same rule a
-   third way (`CASE WHEN imp_kwh_ev IS NOT NULL ... ELSE <unchanged>`), with the
-   comment *"so imp_cost_ev + imp_cost_remainder == imp_cost"*. Three
-   independent implementations, no assertion anywhere — until here.
-
-2. THE VERDICT IS ONE TRANSACTION OF THREE STATEMENTS. Main row, sub-meters, EV
-   columns. A partial verdict leaves sub-meters priced at the old rate while the
-   main row moves, and sub-meter cost derives from the main rate — so the block
-   disagrees with itself. That atomicity is why `apply_reconcile_verdict` is one
-   method rather than three.
+2. THE VERDICT IS ONE TRANSACTION. Main row, sub-meters, segments. A partial
+   verdict leaves sub-meters priced at the old rate while the main row moves,
+   and sub-meter cost derives from the main rate — so the block disagrees with
+   itself. That atomicity is why `apply_reconcile_verdict` is one method rather
+   than three.
 """
 import os
 import sys
@@ -55,46 +47,20 @@ def _block(st, meter_id="electricity_main", **cols):
     st._conn.commit()
 
 
+def _segs(st, meter_id="electricity_main"):
+    return [(r["kwh"], r["inc_rate"], r["band"], r["attribution"])
+            for r in st.get_block_segments(S, meter_id)]
+
+
 def _row(st, meter_id="electricity_main"):
     return st._conn.execute(
-        "SELECT imp_rate, imp_cost, imp_rate_ev, imp_cost_ev, imp_ev_band, "
-        "imp_home_band, rate_source, needs_review "
+        "SELECT imp_rate, imp_cost, rate_source, needs_review "
         "FROM blocks WHERE block_start=? AND meter_id=?", (S, meter_id)).fetchone()
 
 
-class TheEvColumnInvariant(unittest.TestCase):
-
-    def setUp(self):
-        self.st = _mk_store()
-
-    def test_an_unsplit_block_is_left_entirely_alone(self):
-        """The invariant. Without the guard this row would come back claiming
-        imp_cost_ev = 0 and the whole block as remainder, while imp_kwh_ev still
-        says the split is unknown."""
-        _block(self.st)
-        n = self.st.restamp_ev_columns(S, 0.32, "peak", "day")
-        self.assertEqual(n, 0)
-        r = _row(self.st)
-        for col in ("imp_rate_ev", "imp_cost_ev", "imp_ev_band",
-                    "imp_home_band"):
-            self.assertIsNone(r[col], "%s was stamped on an unsplit block" % col)
-
-    def test_a_split_block_is_restamped(self):
-        _block(self.st, imp_kwh_ev=2.0)
-        self.assertEqual(self.st.restamp_ev_columns(S, 0.32, "peak", "day"), 1)
-        r = _row(self.st)
-        self.assertAlmostEqual(r["imp_rate_ev"], 0.32)
-        self.assertAlmostEqual(r["imp_cost_ev"], round(2.0 * 0.32, 6))
-        self.assertEqual(r["imp_ev_band"], "peak")
-
-    # test_the_cost_columns_add_up (imp_cost_ev + imp_cost_remainder == imp_kwh x rate) went
-    # with imp_cost_remainder (dropped, step 5, 10 Oct 2026); the restamp no longer writes it.
-
-    def test_it_is_meter_scoped(self):
-        _block(self.st, imp_kwh_ev=2.0)
-        self.assertEqual(
-            self.st.restamp_ev_columns(S, 0.32, "peak", "day",
-                                       meter_id="sub_meter_ev"), 0)
+# TheEvColumnInvariant (restamp_ev_columns and its `imp_kwh_ev IS NOT NULL` guard) went
+# with the EV columns (dropped, step 5c, 10 Oct 2026): the split is the block's segments,
+# so there is nothing derived left to restamp.
 
 
 class BandRelabel(unittest.TestCase):
@@ -141,18 +107,25 @@ class ReconcileVerdict(unittest.TestCase):
     def setUp(self):
         self.st = _mk_store()
 
+    def _split(self, rate=0.32, exc=0.305):
+        import pricing_segments as ps
+        return [ps.Segment(2.0, rate, exc, "peak", "ev"),
+                ps.Segment(3.0, rate, exc, "day", "house")]
+
     def test_main_sub_and_ev_all_move_together(self):
-        _block(self.st, imp_kwh=5.0, imp_kwh_ev=2.0, needs_review=1)
+        _block(self.st, imp_kwh=5.0, needs_review=1)
         _block(self.st, meter_id="sub_meter_ev", imp_kwh=2.0, imp_kwh_grid=1.5)
-        out = self.st.apply_reconcile_verdict(S, 0.32, 0.305,
-                                              "peak", "day")
-        self.assertEqual(out, {"main": 1, "sub_meters": 1, "ev_columns": 1})
+        out = self.st.apply_reconcile_verdict(S, 0.32, 0.305, segments=self._split())
+        self.assertEqual(out, {"main": 1, "sub_meters": 1})
 
         m = _row(self.st)
         self.assertAlmostEqual(m["imp_rate"], 0.32)
         self.assertAlmostEqual(m["imp_cost"], round(5.0 * 0.32, 6))
         # Step 5: the verdict is recorded in rate_source (the second flag was dropped, 10 Oct 2026).
         self.assertEqual(m["rate_source"], "reconciled")
+        # Step 5c: the EV split moves as the block's segments, in the same verdict.
+        self.assertEqual(_segs(self.st), [(2.0, 0.32, "peak", "ev"),
+                                          (3.0, 0.32, "day", "house")])
 
         sub = _row(self.st, "sub_meter_ev")
         self.assertAlmostEqual(sub["imp_rate"], 0.32)
@@ -162,40 +135,35 @@ class ReconcileVerdict(unittest.TestCase):
     def test_a_verdict_leaves_a_stored_review_flag(self):
         """BL-74: the flag is history; a verdict no longer clears it."""
         _block(self.st, needs_review=1)
-        self.st.apply_reconcile_verdict(S, 0.32, 0.305, "peak", "day")
+        self.st.apply_reconcile_verdict(S, 0.32, 0.305)
         self.assertEqual(_row(self.st)["needs_review"], 1)
 
     def test_a_corrected_sub_meter_is_left_alone(self):
         _block(self.st)
         _block(self.st, meter_id="sub_meter_ev", imp_kwh=2.0, imp_rate=0.11,
                rate_corrected=1)
-        out = self.st.apply_reconcile_verdict(S, 0.32, 0.305,
-                                              "peak", "day")
+        out = self.st.apply_reconcile_verdict(S, 0.32, 0.305)
         self.assertEqual(out["sub_meters"], 0)
         self.assertAlmostEqual(_row(self.st, "sub_meter_ev")["imp_rate"], 0.11)
 
-    def test_the_ev_guard_holds_inside_the_verdict_too(self):
-        """The third statement is the same guarded SQL — an unsplit block takes
-        the rate change without acquiring phantom EV columns."""
+    def test_an_unsplit_block_acquires_no_segments(self):
+        """No segments passed, none written — an unsplit block takes the rate
+        change without acquiring a phantom EV split."""
         _block(self.st)
-        out = self.st.apply_reconcile_verdict(S, 0.32, 0.305,
-                                              "peak", "day")
+        out = self.st.apply_reconcile_verdict(S, 0.32, 0.305)
         self.assertEqual(out["main"], 1)
-        self.assertEqual(out["ev_columns"], 0)
-        self.assertIsNone(_row(self.st)["imp_cost_ev"])
+        self.assertEqual(_segs(self.st), [])
 
     def test_it_is_one_transaction(self):
-        """Atomicity, shown rather than asserted: make the third statement fail
-        and check the first two did not land."""
-        _block(self.st, imp_kwh=5.0, imp_kwh_ev=2.0)
-        original = BlockStore._EV_RESTAMP_SQL
-        try:
-            BlockStore._EV_RESTAMP_SQL = "UPDATE blocks SET no_such_column = 1"
-            with self.assertRaises(Exception):
-                self.st.apply_reconcile_verdict(S, 0.32, 0.305,
-                                                "peak", "day")
-        finally:
-            BlockStore._EV_RESTAMP_SQL = original
+        """Atomicity, shown rather than asserted: make the segment write fail
+        and check the main row did not land."""
+        _block(self.st, imp_kwh=5.0)
+
+        def boom(*a, **k):
+            raise RuntimeError("segment write failed")
+        self.st._replace_segments = boom
+        with self.assertRaises(RuntimeError):
+            self.st.apply_reconcile_verdict(S, 0.32, 0.305, segments=self._split())
         self.assertAlmostEqual(_row(self.st)["imp_rate"], 0.25,
                                msg="the main row committed despite a failed verdict")
         self.assertIsNone(_row(self.st)["rate_source"],
@@ -204,10 +172,9 @@ class ReconcileVerdict(unittest.TestCase):
 
 class Surfaces(unittest.TestCase):
 
-    def test_all_three_are_writes(self):
+    def test_both_are_writes(self):
         from store_types import ReadStore, WriteStore
-        for name in ("restamp_ev_columns", "relabel_segment_bands",
-                     "apply_reconcile_verdict"):
+        for name in ("relabel_segment_bands", "apply_reconcile_verdict"):
             self.assertTrue(hasattr(WriteStore, name), name)
             self.assertFalse(hasattr(ReadStore, name),
                              "%s on the read surface has no thread guard" % name)

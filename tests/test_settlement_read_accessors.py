@@ -71,8 +71,12 @@ class BlockMeasuredInputs(unittest.TestCase):
         repeats the settleable check as defence in depth — it is the single
         stamper of rate_source='settled', whoever calls it."""
         st = _mk_store()
-        _block(st, imp_kwh_api=4.9, source="imported_csv", imp_kwh_ev=2.0)
+        _block(st, imp_kwh_api=4.9, source="imported_csv")
+        # the stored EV split is the block's EV segments (step 5c, 10 Oct 2026)
+        st.set_block_segments(S, "electricity_main", [(2.0, 0.3, 0.29, "peak", "ev"),
+                                                      (3.0, 0.3, 0.29, "peak", "house")])
         r = st.get_block_measured_inputs(S)
+        self.assertAlmostEqual(r["imp_kwh_ev"], 2.0)
         for col in ("imp_kwh", "imp_kwh_ev", "imp_rate", "source", "imp_kwh_api"):
             self.assertIn(col, r)
 
@@ -311,7 +315,9 @@ class SettledBlocksMissingEvSplit(unittest.TestCase):
         self.assertEqual(len(self.st.get_settled_blocks_missing_ev_split(10)), 1)
 
     def test_a_block_that_already_has_a_split_is_left_alone(self):
-        _block(self.st, imp_kwh=5.0, rate_source="settled", imp_kwh_ev=2.0)
+        _block(self.st, imp_kwh=5.0, rate_source="settled")
+        self.st.set_block_segments(S, "electricity_main", [   # the split is its EV segment
+            (2.0, 0.07, 0.067, "off_peak", "ev"), (3.0, 0.07, 0.067, "off_peak", "house")])
         _measured(self.st, S, ev_kwh=2.0)
         self.assertEqual(self.st.get_settled_blocks_missing_ev_split(10), [])
 

@@ -10,6 +10,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import engine
+import ev_split
 import pricing_segments as ps
 from block_store import BlockStore
 
@@ -41,20 +42,30 @@ class TestMeasuredApply(unittest.TestCase):
     def _blk(self, kwh, evk, rate=0.05493):
         self.st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_kwh_api, imp_rate, imp_cost, imp_kwh_ev, rate_source) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "imp_kwh, imp_kwh_api, imp_rate, imp_cost, rate_source) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (self.SLOT, self.SLOT, "electricity_main", 1, kwh, kwh, rate,   # DCC-settled
-             round(kwh*rate, 6), evk, "reconciled"))
+             round(kwh*rate, 6), "reconciled"))
         self.st._conn.commit()
+        # the stored EV split is the block's EV segment (step 5c, 10 Oct 2026); evk None = none
+        if evk is not None:
+            self.st.set_block_segments(self.SLOT, "electricity_main", [
+                (evk, rate, rate / 1.05, "off_peak", "ev"),
+                (kwh - evk, rate, rate / 1.05, "off_peak", "house")])
 
     def _row(self):
+        # the EV split's £ / rate / bands are the segments' (the imp_*_ev columns went in step 5c)
         return self.st._conn.execute(
-            "SELECT imp_rate, imp_cost, imp_rate_ev, imp_cost_ev, imp_ev_band, "
-            "imp_home_band, rate_source, imp_cost_exc FROM blocks "
+            "SELECT imp_rate, imp_cost, "
+            + ev_split.sql_cost("b") + " / " + ev_split.sql_kwh("b") + " AS imp_rate_ev, "
+            + ev_split.sql_cost("b") + " AS imp_cost_ev, "
+            + ev_split.sql_band("b", "ev") + " AS imp_ev_band, "
+            + ev_split.sql_band("b", "house") + " AS imp_home_band, "
+            "rate_source, imp_cost_exc FROM blocks b "
             "WHERE block_start=?", (self.SLOT,)).fetchone()
 
     def test_orphaned_ev_attributed_from_completed_dispatch(self):
-        # EV-split race: imp_kwh_ev NULL but a COMPLETED dispatch exists -> the measured pass
+        # EV-split race: no EV segment but a COMPLETED dispatch exists -> the measured pass
         # attributes the EV from the dispatch (grid-clipped), instead of writing house-only.
         self._blk(3.0, None, rate=0.05493)
         self.st.record_dispatch_history(self.SLOT, "completed", provider="Myenergi",
@@ -67,7 +78,7 @@ class TestMeasuredApply(unittest.TestCase):
         self.assertAlmostEqual(r["imp_cost_ev"], round(2.0*0.05493, 6), places=5)
 
     def test_no_dispatch_stays_house_only(self):
-        # imp_kwh_ev NULL and NO dispatch -> house-only (never invents EV).
+        # no EV segment and NO dispatch -> house-only (never invents EV).
         self._blk(3.0, None, rate=0.05493)
         engine.apply_measured_to_block(self.SLOT, cost_incl=round(3.0*0.05493, 6),
                                        label="OFF_PEAK")
@@ -103,6 +114,10 @@ class TestMeasuredApply(unittest.TestCase):
         # label says STANDARD but the COST is the off-peak amount (25/08 23:00 signature).
         # Band must follow the COST (off_peak), not the label.
         self._blk(1.0, 0.5, rate=0.05493)
+        # A completed session, so the bill writes an EV segment whose band can be read. (Until
+        # step 5c the imp_ev_band column carried the band even on a house-only bill; with the
+        # split held only as segments, a house-only bill has no EV band to assert.)
+        self.st.record_dispatch_history(self.SLOT, "completed", source="unknown", energy_kwh=-0.5)
         engine.apply_measured_to_block(
             self.SLOT, cost_incl=0.05493, cost_excl=0.052314, label="STANDARD_RATE")
         r = self._row()
@@ -146,7 +161,7 @@ class TestMeasuredApply(unittest.TestCase):
         self.assertAlmostEqual(r["imp_cost"], bill_incl, places=6)   # cost stays the bill
         self.assertEqual(r["imp_ev_band"], "mixed")
         # EV cost = clean sum (1x0.055 + 1x0.323); the house absorbs the bill delta. (Its stored
-        # imp_cost_remainder was dropped in step 5, 10 Oct 2026; derived it is imp_cost − imp_cost_ev,
+        # imp_cost_remainder was dropped in step 5, 10 Oct 2026; derived it is imp_cost − the EV segments' £,
         # which the two assertions here already fix.)
         self.assertAlmostEqual(r["imp_cost_ev"], round(0.055 + 0.323, 6), places=6)
 

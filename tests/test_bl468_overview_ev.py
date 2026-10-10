@@ -9,7 +9,8 @@ showed a PHYSICAL sub-meter. Two disagreements with the billing chart followed:
                     charges the grid-clipped synthetic.
 
 Both are now resolved by the rule every other surface uses: synthetic wins
-wherever `imp_kwh_ev IS NOT NULL`, else the recorded physical meter. These tests
+wherever the main block has an EV split (its EV segments; until step 5 the
+`imp_kwh_ev` column), else the recorded physical meter. These tests
 pin that rule as SQL, and — more importantly — pin the display-only invariant:
 'Total Import' never moves, and the rows always sum back to it.
 """
@@ -17,14 +18,17 @@ import os
 import tempfile
 import unittest
 
+import ev_split
 from block_store import BlockStore
 
-# The aggregate the card runs. Kept verbatim so a change to server.py that drifts
-# from _hybrid_ev_by_block's rule fails here.
-HYBRID_SQL = """
-SELECT COALESCE(SUM(CASE WHEN m.imp_kwh_ev IS NOT NULL THEN m.imp_kwh_ev
+# The aggregate the card runs, with the split read through ev_split (step 5c: the
+# EV segments; the card joins them once, sql_kwh is the same value per row), so a
+# change to the card's CASE that drifts from _hybrid_ev_by_block's rule fails here.
+_EK, _EC = ev_split.sql_kwh("m"), ev_split.sql_cost("m")
+HYBRID_SQL = f"""
+SELECT COALESCE(SUM(CASE WHEN {_EK} IS NOT NULL THEN {_EK}
                          ELSE COALESCE(s.imp_kwh_grid, s.imp_kwh, 0) END), 0.0) AS kwh,
-       COALESCE(SUM(CASE WHEN m.imp_kwh_ev IS NOT NULL THEN COALESCE(m.imp_cost_ev, 0)
+       COALESCE(SUM(CASE WHEN {_EK} IS NOT NULL THEN COALESCE({_EC}, 0)
                          ELSE COALESCE(s.imp_cost, 0) END), 0.0) AS cost
 FROM blocks m
 LEFT JOIN blocks s ON s.block_start = m.block_start AND s.meter_id = ?
@@ -69,10 +73,12 @@ class _Base(unittest.TestCase):
     def _blk(self, slot, meter, kwh, cost, kwh_ev=None, cost_ev=None, kwh_grid=None):
         self.store._conn.execute(
             "INSERT INTO blocks (block_start, block_end, config_period_id, meter_id, "
-            "imp_kwh, imp_cost, imp_kwh_ev, imp_cost_ev, imp_kwh_grid) "
-            "VALUES (?,?,?,?,?,?,?,?,?)",
-            (slot, slot[:-2] + "30", 1, meter, kwh, cost, kwh_ev, cost_ev, kwh_grid))
+            "imp_kwh, imp_cost, imp_kwh_grid) VALUES (?,?,?,?,?,?,?)",
+            (slot, slot[:-2] + "30", 1, meter, kwh, cost, kwh_grid))
         self.store._conn.commit()
+        if kwh_ev is not None:            # the split is the block's EV segment (step 5c)
+            rate = (cost_ev or 0.0) / kwh_ev if kwh_ev > 1e-9 else 0.0
+            self.store.set_block_segments(slot, meter, [(kwh_ev, rate, None, "off_peak", "ev")])
 
     def _sql(self, ev_mid, s="2026-01-01", e="2027-01-01"):
         r = self.store._conn.execute(HYBRID_SQL, (ev_mid, s, e)).fetchone()
@@ -97,7 +103,7 @@ class TestNoEvDevice(_Base):
         self.assertAlmostEqual(direct, 1.0, places=6)
 
     def test_no_dispatch_no_ev_row(self):
-        """A non-IOG / no-dispatch account has imp_kwh_ev NULL throughout — the card
+        """A non-IOG / no-dispatch account has no EV split throughout — the card
         must stay byte-identical to before."""
         self._blk("2026-03-01T00:00:00", "electricity_main", 3.0, 0.95)
         self.assertEqual(self._sql(None), (0.0, 0.0))
@@ -113,7 +119,7 @@ class TestWithEvDevice(_Base):
                          "grid-clipped synthetic must win over the meter's own draw")
 
     def test_recorded_meter_used_where_no_synthetic(self):
-        """Pre-seam blocks: imp_kwh_ev IS NULL, so the physical meter is authority."""
+        """Pre-seam blocks: no EV split, so the physical meter is authority."""
         self._blk("2026-03-01T00:00:00", "electricity_main", 5.0, 1.60)
         self._blk("2026-03-01T00:00:00", "ev_charger", 3.4, 1.05)
         self.assertEqual(self._sql("ev_charger"), (3.4, 1.05))

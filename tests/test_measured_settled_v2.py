@@ -5,6 +5,7 @@ NEVER derives a cost/kWh rate: it snaps to the tariff agreement, or skips the sl
 import os, sys, unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import engine
+import ev_split
 from block_store import BlockStore
 
 OFF, PK = 0.05493, 0.323092
@@ -80,7 +81,7 @@ class TestMeasuredSettledV2(unittest.TestCase):
         # 4.5.9: Octopus's settled EV_DEVICE bucket over-attributes on a slot where the home
         # battery grid-charged inside the dispatch window (no battery bucket). The car's
         # completed-dispatch session is the measured ceiling — the settlement must cap EV to
-        # it, not write the inflated bill bucket into imp_kwh_ev. TOTAL cost is untouched.
+        # it, not write the inflated bill bucket into the EV segment. TOTAL cost is untouched.
         slot = "2026-09-08T02:30:00"
         self._blk(slot, 4.347, OFF)                              # main grid import, off-peak
         self._meas(slot, round(4.347 * OFF, 6), "OFF_PEAK")
@@ -93,8 +94,8 @@ class TestMeasuredSettledV2(unittest.TestCase):
         self.st._conn.commit()
         engine.apply_measured_settled()
         r = self.st._conn.execute(
-            "SELECT imp_kwh_ev, imp_cost FROM blocks WHERE block_start=? "
-            "AND meter_id='electricity_main'", (slot,)).fetchone()
+            "SELECT " + ev_split.sql_kwh("b") + " AS imp_kwh_ev, imp_cost FROM blocks b "
+            "WHERE block_start=? AND meter_id='electricity_main'", (slot,)).fetchone()
         self.assertAlmostEqual(r["imp_kwh_ev"], 1.37, places=5)         # capped to dispatch
         self.assertAlmostEqual(r["imp_cost"], round(4.347 * OFF, 6), places=6)  # TOTAL unchanged
 

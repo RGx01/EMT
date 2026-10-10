@@ -2084,8 +2084,7 @@ def _blocks_data_version(store) -> str:
         # the device/house division and the standing charge. Until #23 these moved
         # the token through the chart regen every such write triggered. Outside the
         # covering index, so this is a table scan: measured 15 ms against 9 ms.
-        "ROUND(COALESCE(SUM(imp_kwh_ev), 0), 4) AS xe, "
-        "ROUND(COALESCE(SUM(imp_cost_ev), 0), 4) AS xc, "
+        # (The EV/Home split is the segments since step 5c; _sf below fingerprints them.)
         "ROUND(COALESCE(SUM(imp_cost_exc), 0), 4) AS xx, "
         "ROUND(COALESCE(SUM(imp_kwh_grid), 0), 4) AS xg, "
         "ROUND(COALESCE(SUM(standing_charge), 0), 4) AS xs "
@@ -2125,7 +2124,7 @@ def _blocks_data_version(store) -> str:
         _sf = "0"
     return (f"{row['c']}:{row['m'] or ''}:"
             f"{row['ik']}:{row['ic']}:{row['ek']}:{row['ec']}:{row['cg']}:"
-            f"{row['xe']}:{row['xc']}:{row['xx']}:{row['xg']}:{row['xs']}:"
+            f"{row['xx']}:{row['xg']}:{row['xs']}:"
             f"{_cfgf}:{_epoch}:{_br}:{_sf}")
 
 
@@ -8296,21 +8295,12 @@ def api_corrections_apply():
                              if col in ("imp_rate", "exp_rate") else "")
                     if recalc_cost and channel == "import":
                         # P4.6 (watch #11) — the corrected rate applies to the WHOLE block: imp_cost
-                        # already recomputes over imp_kwh, which INCLUDES the EV kWh. Keep the EV-split
-                        # columns consistent in the same UPDATE so imp_cost_ev follows the corrected
-                        # imp_cost and imp_rate_ev tracks the correction — otherwise the split surfaces
-                        # (EV bar, per-rate breakdown) keep reading the stale pre-correction figure
-                        # (the correction-tool "partial-heal" that left the 2026-08-18 EV columns 100x).
-                        # Non-EV blocks (imp_kwh_ev IS NULL) leave the split columns untouched.
+                        # already recomputes over imp_kwh, which INCLUDES the EV kWh. The EV split is
+                        # the segments (step 5c), re-priced below in this same transaction (P4.10).
                         cur = st._conn.execute(
                             f"""UPDATE blocks
                                 SET imp_rate = ?,
                                     imp_cost = ROUND(imp_kwh * ?, 6),
-                                    imp_rate_ev = CASE WHEN imp_kwh_ev IS NOT NULL
-                                                       THEN ? ELSE imp_rate_ev END,
-                                    imp_cost_ev = CASE WHEN imp_kwh_ev IS NOT NULL
-                                                       THEN ROUND(imp_kwh_ev * ?, 6)
-                                                       ELSE imp_cost_ev END,
                                     -- BL-57: block-level exc must follow the corrected inc (the
                                     -- reconcile already does this; the corrections tool didn't, so a
                                     -- corrected block kept a stale ex-VAT figure). Rescale by
@@ -8320,7 +8310,7 @@ def api_corrections_apply():
                                                        THEN ROUND(imp_cost_exc * ? / imp_rate, 6)
                                                        ELSE imp_cost_exc END{_mark}
                                 WHERE {where}""",
-                            [value, value, value, value, value] + params
+                            [value, value, value] + params
                         )
                     elif recalc_cost:
                         cost_col = "imp_cost" if channel == "import" else "exp_cost"

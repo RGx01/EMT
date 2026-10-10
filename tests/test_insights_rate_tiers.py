@@ -134,16 +134,15 @@ class TestAggregateInsightsRateTiers(unittest.TestCase):
         self.assertAlmostEqual(kwh_by[rates[1]], 2.5, places=3)      # peak: 1+1.5
 
     def test_synthetic_ev_device_sources_from_segments(self):
-        # BL-27: the sensor-less synthetic EV device now prices from the EV-attributed
-        # SEGMENTS, not the imp_*_ev columns. Seed a deliberately WRONG imp_cost_ev column
-        # and correct segments — the device must reflect the segments (0.60, not 99).
+        # BL-27: the sensor-less synthetic EV device prices from the EV-attributed
+        # SEGMENTS. (It used to seed a deliberately wrong imp_cost_ev column beside them;
+        # step 5c dropped the columns, so the segments are the only source.)
         import pricing_segments as ps
         st = self._store()
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, imp_kwh_ev, imp_cost_ev, imp_rate_ev, source) "
-            "VALUES (?,?, 'electricity_main', ?, 3.0, 0.31, 0.923092, 2.0, 99.0, 99.0, "
-            "'imported_api')",
+            "imp_kwh, imp_rate, imp_cost, source) "
+            "VALUES (?,?, 'electricity_main', ?, 3.0, 0.31, 0.923092, 'imported_api')",
             ("2025-01-01T02:00:00", "2025-01-01T02:00:00", self._cp))
         st.set_block_segments("2025-01-01T02:00:00", "electricity_main", [
             ps.Segment(2.0, 0.30, None, "peak", "ev"),
@@ -154,13 +153,20 @@ class TestAggregateInsightsRateTiers(unittest.TestCase):
         st._conn.commit()
         ev = self._agg(st)["sub_meters"]["ev_dispatch"]
         self.assertAlmostEqual(ev["imp_kwh"], 2.0, places=5)
-        self.assertAlmostEqual(ev["imp_cost"], 0.60, places=5)   # segments, NOT the 99 column
+        self.assertAlmostEqual(ev["imp_cost"], 0.60, places=5)   # 2.0 kWh × 0.30 from the segment
+
+
+def _split(st):
+    """The 02:00 block's 2.0 kWh EV split, as its segments (step 5c)."""
+    st.set_block_segments("2025-01-01T02:00:00", "electricity_main", [
+        (2.0, 0.30, None, "off_peak", "ev"), (1.0, 0.30, None, "off_peak", "house")])
 
 
 class TestInsightsSyntheticEvCarbon(unittest.TestCase):
     """Δ5-wire: _aggregate_insights exposes an ADDITIVE `ev_carbon` block sourced from the
     synthetic dispatch device (single-source), price-free. The credit is the draw gap
-    (completed dispatch − grid-clipped imp_kwh_ev) × block intensity."""
+    (completed dispatch − grid-clipped EV split) × block intensity. The split is the main
+    block's EV segment (step 5c; it was imp_kwh_ev)."""
 
     def _store(self):
         st = BlockStore(":memory:")
@@ -182,12 +188,13 @@ class TestInsightsSyntheticEvCarbon(unittest.TestCase):
 
     def test_ev_saving_from_draw_gap(self):
         st = self._store()
-        # clipped billing EV = 2.0 (imp_kwh_ev); completed dispatch (unclipped) = 2.3 → 0.3 behind
+        # clipped billing EV = 2.0 (the EV segment); completed dispatch (unclipped) = 2.3 → 0.3 behind
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, imp_kwh_ev, carbon_intensity_g, carbon_g, source) "
-            "VALUES (?,?, 'electricity_main', ?, 3.0, 0.30, 0.90, 2.0, 140.0, 420.0, 'imported_api')",
+            "imp_kwh, imp_rate, imp_cost, carbon_intensity_g, carbon_g, source) "
+            "VALUES (?,?, 'electricity_main', ?, 3.0, 0.30, 0.90, 140.0, 420.0, 'imported_api')",
             ("2025-01-01T02:00:00", "2025-01-01T02:00:00", self._cp))
+        _split(st)
         st._conn.execute("INSERT INTO dispatch_history (slot_start, kind, energy_kwh, "
                          "first_seen, last_seen) VALUES ('2025-01-01T02:00:00','completed',"
                          "2.3,'2025-01-01T02:00:00','2025-01-01T02:00:00')")
@@ -204,9 +211,10 @@ class TestInsightsSyntheticEvCarbon(unittest.TestCase):
         st = self._store()
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, imp_kwh_ev, carbon_intensity_g, carbon_g, source) "
-            "VALUES (?,?, 'electricity_main', ?, 3.0, 0.30, 0.90, 2.0, 140.0, 420.0, 'imported_api')",
+            "imp_kwh, imp_rate, imp_cost, carbon_intensity_g, carbon_g, source) "
+            "VALUES (?,?, 'electricity_main', ?, 3.0, 0.30, 0.90, 140.0, 420.0, 'imported_api')",
             ("2025-01-01T02:00:00", "2025-01-01T02:00:00", self._cp))
+        _split(st)
         st._conn.commit()
         self.assertIsNone(self._agg(st)["ev_carbon"])
 

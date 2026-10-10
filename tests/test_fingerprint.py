@@ -120,12 +120,13 @@ class ItCoversEverythingDisplayed(_Base):
 
     def test_an_ev_split_only_change_moves_it(self):
         """REGRESSION (C, 30 Sep 2026): the Billing tab shows the IOG EV/Home split,
-        and the carve / settled-split heal move it without touching a total."""
+        and the carve / settled-split heal move it without touching a total. Step 5c:
+        the split is the block's segments (it was imp_kwh_ev / imp_cost_ev), so the
+        carve writes them onto a block that had none."""
         self.blk("2026-09-09T00:00:00", imp_kwh=2.0, imp_cost=0.14)
         before = self.fp()["2026-09-09"]
-        self.st._conn.execute("UPDATE blocks SET imp_kwh_ev=1.2, imp_cost_ev=0.084 "
-                              "WHERE block_start='2026-09-09T00:00:00'")
-        self.st._conn.commit()
+        self.st.carve_ev_split("2026-09-09T00:00:00", segments=[
+            (1.2, 0.07, None, "off_peak", "ev"), (0.8, 0.07, None, "off_peak", "house")])
         self.assertNotEqual(before, self.fp()["2026-09-09"])
 
     def test_an_attribution_move_moves_it(self):

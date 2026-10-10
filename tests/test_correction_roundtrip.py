@@ -25,18 +25,26 @@ class TestCorrectionRoundTrip(unittest.TestCase):
              kwh=3.0, ev_kwh=None, ev_rate=None):
         self.st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
-            "imp_rate, imp_cost, imp_kwh_ev, imp_rate_ev, imp_cost_ev, "
-            "rate_corrected, rate_source) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "imp_rate, imp_cost, rate_corrected, rate_source) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
             (slot, slot, "electricity_main", self.cp, kwh, rate, round(kwh*rate, 6),
-             ev_kwh, ev_rate, (round(ev_kwh*ev_rate, 6) if ev_kwh and ev_rate else None),
              rate_corrected, rate_source))
         self.st._conn.commit()
+        if ev_kwh is not None:
+            # the EV split is the block's segments (step 5c: the imp_*_ev columns went)
+            self.st.set_block_segments(slot, "electricity_main", [
+                (ev_kwh, ev_rate, None, "peak", "ev"),
+                (round(kwh - ev_kwh, 6), rate, None, "day", "house")])
 
     def _flags(self, slot):
         return self.st._conn.execute(
-            "SELECT rate_corrected, rate_source, imp_rate, imp_rate_ev "
+            "SELECT rate_corrected, rate_source, imp_rate "
             "FROM blocks WHERE block_start=? AND meter_id='electricity_main'", (slot,)).fetchone()
+
+    def _ev_rate(self, slot):
+        ev = [x for x in self.st.get_block_segments(slot, "electricity_main")
+              if x["attribution"] == "ev"]
+        return ev[0]["inc_rate"] if ev else None
 
     def _roundtrip(self, slot):
         # read the block dict, then write it straight back (the exact round-trip shape)
@@ -53,7 +61,7 @@ class TestCorrectionRoundTrip(unittest.TestCase):
         self.assertEqual(r["rate_corrected"], 1)          # correction survives
         self.assertEqual(r["rate_source"], "corrected")   # authority survives
         self.assertAlmostEqual(r["imp_rate"], PK, places=5)
-        self.assertAlmostEqual(r["imp_rate_ev"], PK, places=5)
+        self.assertAlmostEqual(self._ev_rate(slot), PK, places=5)   # the EV split survives
 
     def test_reconciled_source_survives_roundtrip(self):
         slot = "2026-08-30T13:00:00"

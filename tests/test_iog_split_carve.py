@@ -1,11 +1,15 @@
 """4.5.9 recurring predicted-split carve: an unsettled dispatched block whose completed
-dispatch landed AFTER finalise is left house-only (imp_kwh_ev NULL, single 'house' segment)
+dispatch landed AFTER finalise is left house-only (a single 'house' segment, no EV split)
 until settlement. run_iog_split_carve fills the PREDICTED EV/Home split from the dispatch
 (grid-clipped), ADDITIVELY (imp_cost/imp_rate untouched; segments re-split at the block's own
-rate). Only unsettled blocks; settled/corrected are settlement's realm."""
+rate). Only unsettled blocks; settled/corrected are settlement's realm.
+
+Step 5c (10 Oct 2026): the imp_*_ev columns are gone; `imp_kwh_ev` below is ev_split's split
+(the EV segments)."""
 import os, sys, asyncio, unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import engine
+import ev_split
 from block_store import BlockStore
 
 OFF = 0.05493
@@ -43,8 +47,8 @@ class TestIogSplitCarve(unittest.TestCase):
     def _blk(self, slot, kwh, rate=OFF, rate_source="schedule"):
         self.st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, imp_kwh_ev, rate_source) "
-            "VALUES (?,?,?,1,?,?,?,NULL,?)",
+            "imp_kwh, imp_rate, imp_cost, rate_source) "
+            "VALUES (?,?,?,1,?,?,?,?)",
             (slot, slot, "electricity_main", kwh, rate, round(kwh * rate, 6), rate_source))
         # single house segment (what the finalise seam left when dispatch was absent)
         self.st.set_block_segments(slot, "electricity_main",
@@ -57,13 +61,14 @@ class TestIogSplitCarve(unittest.TestCase):
 
     def _state(self, slot):
         r = self.st._conn.execute(
-            "SELECT imp_kwh, imp_kwh_ev, imp_cost FROM blocks WHERE block_start=? "
+            "SELECT imp_kwh, " + ev_split.sql_kwh("b") + " AS imp_kwh_ev, imp_cost FROM blocks b "
+            "WHERE block_start=? "
             "AND meter_id='electricity_main'", (slot,)).fetchone()
         return r, self.st.get_block_segments(slot, "electricity_main")
 
     def test_carves_unsettled_dispatched_block_additively(self):
         slot = "2026-09-10T02:00:00"
-        self._blk(slot, 3.45)                    # unsettled, house-only, imp_kwh_ev NULL
+        self._blk(slot, 3.45)                    # unsettled, house-only, no EV split
         self._dispatch(slot, 3.39)               # completed dispatch arrived after finalise
         self.st._conn.commit()
         cost0 = self._state(slot)[0]["imp_cost"]

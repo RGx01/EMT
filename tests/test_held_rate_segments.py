@@ -8,7 +8,8 @@ and a corrected one had segments that no longer summed to imp_kwh. The bill's EV
 every EV surface (ev_split) read the segments, so they no longer added up to the block.
 
 Now the segments are fitted to the settled kWh at the rates they carry: the house takes the
-change; only when the house is gone does the EV shrink, and the EV columns follow it.
+change; only when the house is gone does the EV shrink, and the EV split (ev_split, read from the
+segments since step 5c dropped the imp_*_ev columns) follows it.
 
 Discriminating: test_its_segments_follow_the_settled_kwh, test_the_house_takes_a_rise and
 test_the_ev_shrinks_only_when_the_house_is_gone fail on the parent. No-re-price, the predicted
@@ -21,6 +22,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(__file__))
 import test_rebuild_meter_type as H              # noqa: E402  (stubs, real engine, flat tariff)
 import pricing_segments as ps                    # noqa: E402
+import ev_split                                  # noqa: E402
 engine = H.engine
 
 MAIN = H.MAIN                                    # 7.058 kWh at the close
@@ -31,16 +33,13 @@ class _Held(H._Harness):
     def _segs(self):
         return engine._store.get_block_segments(H.START, "electricity_main")
 
-    def _hold(self, word, segs=None, kwh_ev=None):
-        """Mark the closed block's rate as held by `word`; optionally give it an EV split."""
+    def _hold(self, word, segs=None):
+        """Mark the closed block's rate as held by `word`; optionally give it segments (an EV
+        split is its 'ev' segments)."""
         c = engine._store._conn
         with c:
             c.execute("UPDATE blocks SET rate_source=? WHERE block_start=? "
                       "AND meter_id='electricity_main'", (word, H.START))
-            if kwh_ev is not None:
-                c.execute("UPDATE blocks SET imp_kwh_ev=?, imp_cost_ev=ROUND(?*imp_rate, 6), "
-                          "imp_rate_ev=imp_rate WHERE block_start=? AND meter_id='electricity_main'",
-                          (kwh_ev, kwh_ev, H.START))
         if segs is not None:
             engine._store.set_block_segments(H.START, "electricity_main", segs)
 
@@ -50,8 +49,9 @@ class _Held(H._Harness):
 
     def _row(self):
         return engine._store._conn.execute(
-            "SELECT imp_kwh, imp_rate, imp_kwh_ev, imp_cost_ev FROM blocks WHERE block_start=? "
-            "AND meter_id='electricity_main'", (H.START,)).fetchone()
+            "SELECT b.imp_kwh, b.imp_rate, " + ev_split.sql_kwh("b") + " AS ev_kwh, "
+            + ev_split.sql_cost("b") + " AS ev_cost FROM blocks b WHERE b.block_start=? "
+            "AND b.meter_id='electricity_main'", (H.START,)).fetchone()
 
 
 class ACorrectedBlock(_Held):
@@ -78,7 +78,7 @@ class AMeasuredBlockWithAnEv(_Held):
     def _ev_block(self):
         self._finalise()
         r = H.FLAT
-        self._hold("settled", kwh_ev=3.0, segs=[
+        self._hold("settled", segs=[
             ps.Segment(3.0, r, round(r / 1.05, 6), "off_peak", "ev"),
             ps.Segment(round(MAIN - 3.0, 6), r, round(r / 1.05, 6), "off_peak", "house")])
 
@@ -93,8 +93,8 @@ class AMeasuredBlockWithAnEv(_Held):
         self._settle(dcc=2.0)
         self.assertAlmostEqual(self._total("ev"), 2.0, places=6)
         self.assertAlmostEqual(self._total("house"), 0.0, places=6)
-        self.assertAlmostEqual(self._row()["imp_kwh_ev"], 2.0, places=6)    # the columns follow
-        self.assertAlmostEqual(self._row()["imp_cost_ev"], round(2.0 * H.FLAT, 6), places=6)
+        self.assertAlmostEqual(self._row()["ev_kwh"], 2.0, places=6)        # the split follows
+        self.assertAlmostEqual(self._row()["ev_cost"], round(2.0 * H.FLAT, 6), places=6)
 
 
 class AHeldPredictionKeepsItsBands(_Held):

@@ -10,7 +10,7 @@ only rewrites blocks that already have a split.
 Two methods, and the interesting design point is that there are TWO write methods
 for what looks like one operation:
 
-    carve_ev_split      fills a BLANK   (guarded `imp_kwh_ev IS NULL`, COALESCE bands)
+    carve_ev_split      fills a BLANK   (guarded "no EV segment yet", keeps the house band)
     replace_ev_split    OVERWRITES      (the re-attribution path)
 
 A single method with an `overwrite=` flag would put "never stomp a manual
@@ -26,6 +26,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
 from block_store import BlockStore          # noqa: E402
+import ev_split                             # noqa: E402
 
 
 def _mk_store():
@@ -34,7 +35,13 @@ def _mk_store():
     return st
 
 
-def _block(st, start, **cols):
+def _segs(ev, house, ev_band="off_peak", home_band="off_peak", rate=0.25):
+    """An EV/house split as segments (step 5c: the split IS the segments)."""
+    return ([(ev, rate, None, ev_band, "ev")]
+            + ([(house, rate, None, home_band, "house")] if house > 1e-9 else []))
+
+
+def _block(st, start, ev=None, **cols):
     base = {"block_start": start, "block_end": start, "config_period_id": 1,
             "meter_id": "electricity_main", "imp_kwh": 5.0, "imp_cost": 1.25,
             "imp_rate": 0.25}
@@ -43,6 +50,8 @@ def _block(st, start, **cols):
                      % (",".join(base), ",".join("?" * len(base))),
                      tuple(base.values()))
     st._conn.commit()
+    if ev is not None:                         # the block's stored EV split, as segments
+        st.set_block_segments(start, base["meter_id"], _segs(ev, base["imp_kwh"] - ev))
 
 
 def _completed(st, slot, kwh=3.0):
@@ -68,7 +77,7 @@ class MissingSplitSelection(unittest.TestCase):
         self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
 
     def test_a_block_that_already_has_a_split_is_left_alone(self):
-        _block(self.st, S, imp_kwh_ev=3.0)
+        _block(self.st, S, ev=3.0)
         _completed(self.st, S)
         self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
 
@@ -96,19 +105,19 @@ class GapFilledDisagreement(unittest.TestCase):
         self.st = _mk_store()
 
     def test_a_materially_wrong_gap_fill_is_reselected(self):
-        _block(self.st, S, interpolated=1, imp_kwh_ev=0.5)
+        _block(self.st, S, interpolated=1, ev=0.5)
         _completed(self.st, S, kwh=3.0)          # stored 0.5 vs actual 3.0
         self.assertEqual(len(self.st.get_blocks_missing_ev_split()), 1)
 
     def test_agreement_within_tolerance_is_left_alone(self):
-        _block(self.st, S, interpolated=1, imp_kwh_ev=3.0)
+        _block(self.st, S, interpolated=1, ev=3.0)
         _completed(self.st, S, kwh=3.02)
         self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
 
     def test_a_normally_captured_block_is_not_reselected_on_disagreement(self):
         """The BL-39 arm is scoped to gap-filled blocks. A finalised block that
         disagrees is settlement's business, not this job's."""
-        _block(self.st, S, interpolated=0, imp_kwh_ev=0.5)
+        _block(self.st, S, interpolated=0, ev=0.5)
         _completed(self.st, S, kwh=3.0)
         self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
 
@@ -116,7 +125,7 @@ class GapFilledDisagreement(unittest.TestCase):
         """`MIN(a, b)` is SQLite's two-argument SCALAR min. A dispatch larger
         than the block's own import is clipped to it, so it cannot manufacture a
         disagreement out of a figure the grid never delivered."""
-        _block(self.st, S, imp_kwh=2.0, interpolated=1, imp_kwh_ev=2.0)
+        _block(self.st, S, imp_kwh=2.0, interpolated=1, ev=2.0)
         _completed(self.st, S, kwh=9.0)          # clipped to 2.0 == stored
         self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
 
@@ -129,29 +138,29 @@ class ReplaceVersusCarve(unittest.TestCase):
 
     def _row(self):
         return self.st._conn.execute(
-            "SELECT imp_kwh_ev, imp_ev_band FROM blocks WHERE block_start=?",
-            (S,)).fetchone()
+            "SELECT " + ev_split.sql_kwh("b") + " AS ev_kwh, " + ev_split.sql_band("b", "ev")
+            + " AS ev_band FROM blocks b WHERE block_start=?", (S,)).fetchone()
 
     def test_replace_overwrites_where_carve_refuses(self):
         """The two methods on the same already-split block, side by side."""
-        self.st.replace_ev_split(S, 2.0, 0.5, 0.25, "off_peak", "day")
-        self.assertEqual(self.st.carve_ev_split(S, 9.9, 9.9, 9.9, "peak", "night"), 0)
-        self.assertAlmostEqual(self._row()["imp_kwh_ev"], 2.0)
-        self.assertEqual(self.st.replace_ev_split(S, 4.0, 1.0, 0.25, "peak", "night"), 1)
-        self.assertAlmostEqual(self._row()["imp_kwh_ev"], 4.0)
+        self.st.replace_ev_split(S, segments=_segs(2.0, 3.0, "off_peak", "day"))
+        self.assertEqual(self.st.carve_ev_split(S, segments=_segs(4.9, 0.1, "peak", "night")), 0)
+        self.assertAlmostEqual(self._row()["ev_kwh"], 2.0)
+        self.assertEqual(self.st.replace_ev_split(S, segments=_segs(4.0, 1.0, "peak", "night")), 1)
+        self.assertAlmostEqual(self._row()["ev_kwh"], 4.0)
 
     def test_replace_sets_bands_outright(self):
-        """carve COALESCEs the bands; replace does not — its caller has already
+        """carve keeps a recorded house band; replace does not — its caller has already
         established that what is stored is wrong."""
-        self.st.replace_ev_split(S, 2.0, 0.5, 0.25, "off_peak", "day")
-        self.assertEqual(self._row()["imp_ev_band"], "off_peak")
-        self.st.replace_ev_split(S, 2.0, 0.5, 0.25, "peak", "night")
-        self.assertEqual(self._row()["imp_ev_band"], "peak")
+        self.st.replace_ev_split(S, segments=_segs(2.0, 3.0, "off_peak", "day"))
+        self.assertEqual(self._row()["ev_band"], "off_peak")
+        self.st.replace_ev_split(S, segments=_segs(2.0, 3.0, "peak", "night"))
+        self.assertEqual(self._row()["ev_band"], "peak")
 
     def test_it_is_meter_scoped(self):
         self.assertEqual(
-            self.st.replace_ev_split(S, 2.0, 0.5, 0.25, "off_peak", "day",
-                                     meter_id="sub_meter_ev"), 0)
+            self.st.replace_ev_split(S, meter_id="sub_meter_ev",
+                                     segments=_segs(2.0, 3.0, "off_peak", "day")), 0)
 
 
 class Surfaces(unittest.TestCase):

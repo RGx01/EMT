@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """138 read-only methods of BlockStore, and nothing else.
+    """136 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -69,7 +69,6 @@ class ReadStore:
     _BUMP_SOURCES = _BS._BUMP_SOURCES
     _CARBON_ELIGIBLE = _BS._CARBON_ELIGIBLE
     _EPOCH_KEY = _BS._EPOCH_KEY
-    _EV_RESTAMP_SQL = _BS._EV_RESTAMP_SQL
     _NEEDS_REPRICE_WHERE = _BS._NEEDS_REPRICE_WHERE
     _RECONCILED_SOURCE = _BS._RECONCILED_SOURCE
     _SETTLEABLE_SQL = _BS._SETTLEABLE_SQL
@@ -104,7 +103,6 @@ class ReadStore:
     count_block_segments = _BS.count_block_segments
     count_blocks = _BS.count_blocks
     count_blocks_for_date_range = _BS.count_blocks_for_date_range
-    count_blocks_missing_iog_split = _BS.count_blocks_missing_iog_split
     count_blocks_missing_segments = _BS.count_blocks_missing_segments
     count_blocks_needing_reprice = _BS.count_blocks_needing_reprice
     count_import_blocks_missing_exc = _BS.count_import_blocks_missing_exc
@@ -141,7 +139,6 @@ class ReadStore:
     get_blocks_for_utc_range = _BS.get_blocks_for_utc_range
     get_blocks_lightweight = _BS.get_blocks_lightweight
     get_blocks_missing_ev_split = _BS.get_blocks_missing_ev_split
-    get_blocks_missing_iog_split = _BS.get_blocks_missing_iog_split
     get_blocks_missing_segments = _BS.get_blocks_missing_segments
     get_blocks_needing_pass2_rerun = _BS.get_blocks_needing_pass2_rerun
     get_blocks_needing_reprice = _BS.get_blocks_needing_reprice
@@ -227,7 +224,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 99 writers.
+    """The full store: every read method, plus the 98 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or

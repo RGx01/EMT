@@ -31,7 +31,7 @@ deconstructed in the open; the forward fixes from 4.5.15 (#473, #475) and 4.5.16
 ported afterwards, and 4.5.17–4.5.19's VAT forward fixes with them, 4.5.20's gap-fill fix, 4.5.21's four, and 4.5.22's VAT resync (as forward code: it waits on Octopus, so the floor alone cannot guarantee it ran). **Each new v4 release:** port its forward fixes, not its heal, and raise the
 floor if it carries a heal (`v4import/gate.py` `FLOOR_VERSION`, import spec, ROADMAP §E, programme §E, this file).
 Steps: 1 dead code, 2 extract `billing.py`, 3 ReadStore/WriteStore, 4 API consolidated + HTML
-pipeline deleted, 5 schema (11 columns dropped, band moves to `block_segments`), 6 client +
+pipeline deleted, 5 schema (11 columns dropped, band moves to `block_segments`; done 10 Oct 2026 in PRs 5a–5c), 6 client +
 first-run fork, 7 importer. Workstreams A (store split) and B (job coordinator) merged in PR #2.
 **A is closed (30 Sep 2026)** after five Pi soaks — A design §5e; **B is closed (5 Oct 2026)**,
 all six acceptances met (B §5); **C's eight acceptances are met** (C §0, 3 Oct 2026 — the pre-rendered

@@ -735,6 +735,14 @@ legacy-column removal): ~~`imp_kwh_grid`,~~ `imp_kwh_remainder`, `imp_cost_remai
 > block's ex-VAT rate is derived where read from its own pair (imp_rate × imp_cost_exc / imp_cost),
 > else the VAT calendar; the standing charge's from the calendar. The importer reads a source's
 > `imp_rate_exc` for transforms 2 and 3 (the EV segments' and the refit's ex-VAT), joined on id.
+>
+> *Then (importer PR 5c, `EMT_SCHEMA` 5):* `imp_kwh_ev`, `imp_cost_ev`, `imp_rate_ev`, `imp_ev_band`,
+> `imp_home_band`. The EV split and both bands are the block's segments; `ev_split` has no LEGACY
+> fallback; v5 writes a block's segments in the block's own transaction. The importer reads the
+> five from the source for transforms 2 and 3, and **gate 5** (`verify.split_reproduced`) checks,
+> for every main block, that the segments reproduce `imp_kwh_ev` and `imp_cost_ev` and that no
+> block has EV segments where the columns had none. Measured on five real databases: 0 kWh and 0 £
+> mismatches, worst £ divergence 1.5 × 10⁻⁶, 0 phantom. **All 11 columns are now dropped.**
 
 > **`imp_provisional` REMOVED from the drop list, 5 Oct 2026.** `imp_provisional` came OFF the drop list on 5 Oct 2026: it is not a duplicate of `is_provisional`. It marks a SUB-METER block written without its post-boundary read (v4 2.10.0); `is_provisional` marks a MAIN block not yet DCC-settled (3.0.0). `_amend_provisional_sub_meter_blocks` finds and corrects the former. They looked alike because both are 0 on every row measured — data is not proof.
 >

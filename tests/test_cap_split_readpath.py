@@ -1,7 +1,8 @@
 """
-test_cap_split_readpath.py — the stored IOG house/EV split (imp_*_ev) is surfaced
-on the read block's import channel (kwh_ev/cost_ev/rate_ev) via _row_to_block, so
-the billing summary can render the EV-vs-Home breakdown. Absent when NULL.
+test_cap_split_readpath.py — the stored IOG house/EV split (the block's 'ev'
+segments, step 5c) is surfaced on the read block's import channel
+(kwh_ev/cost_ev/rate_ev) via _row_to_block, so the billing summary can render the
+EV-vs-Home breakdown. Absent when the block has no EV segment.
 """
 
 import os
@@ -9,7 +10,7 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from block_store import BlockStore
+from block_store import BlockStore, STAGED_SEGMENTS
 
 
 class TestCapSplitReadPath(unittest.TestCase):
@@ -40,7 +41,8 @@ class TestCapSplitReadPath(unittest.TestCase):
 
     def test_split_surfaced_on_channel(self):
         st = self._store()
-        self._append(st, {"kwh_ev": 2.0, "cost_ev": 0.10, "rate_ev": 0.05})
+        self._append(st, {STAGED_SEGMENTS: [(2.0, 0.05, 0.047619, "off_peak", "ev"),
+                                            (1.0, 0.07, 0.066667, "day", "house")]})
         imp = self._imp_channel(st)
         self.assertEqual(imp["kwh_ev"], 2.0)
         self.assertEqual(imp["cost_ev"], 0.10)
