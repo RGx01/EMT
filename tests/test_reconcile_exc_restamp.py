@@ -178,12 +178,12 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
             "imp_kwh, imp_rate, imp_cost, imp_rate_exc, imp_cost_exc, exc_source, "
-            "rate_corrected, rate_reconciled, imp_kwh_api, imp_kwh_ev, imp_cost_ev, "
+            "rate_corrected, rate_source, imp_kwh_api, imp_kwh_ev, imp_cost_ev, "
             "imp_rate_ev, imp_ev_band, imp_home_band) VALUES "
             "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (self.SLOT, self.SLOT, "electricity_main", 1, 3.186, 0.323092,
              round(3.186*0.323092, 6), 0.323092/1.05, round(3.186*0.323092/1.05, 6),
-             "tariff", 0, 1, 3.186, 2.24, round(2.24*0.05493, 6), 0.05493,
+             "tariff", 0, "reconciled", 3.186, 2.24, round(2.24*0.05493, 6), 0.05493,
              "off_peak", "off_peak"))
         st.set_block_segments(self.SLOT, "electricity_main", [
             ps.Segment(2.24, 0.05493, 0.052314, "off_peak", "ev"),
@@ -228,9 +228,9 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
             "block_minutes, timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, 'UTC')")
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, rate_corrected, rate_reconciled, imp_kwh_api, "
+            "imp_kwh, imp_rate, imp_cost, rate_corrected, rate_source, imp_kwh_api, "
             "imp_kwh_ev, imp_rate_ev) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (self.SLOT, self.SLOT, "electricity_main", 1, 2.0, 0.30, 0.60, 0, 1, 2.0,
+            (self.SLOT, self.SLOT, "electricity_main", 1, 2.0, 0.30, 0.60, 0, "reconciled", 2.0,
              1.0, 0.28))
         st.set_block_segments(self.SLOT, "electricity_main", [
             ps.Segment(1.0, 0.28, 0.2667, "peak", "ev"),        # distinct rates → multi-band
@@ -265,10 +265,10 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
         # block PEAK 0.323092; segments PEAK but 0.32300 (rounding drift, same band)
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, rate_corrected, rate_reconciled, imp_kwh_api, "
+            "imp_kwh, imp_rate, imp_cost, rate_corrected, rate_source, imp_kwh_api, "
             "imp_kwh_ev, imp_rate_ev) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (self.SLOT, self.SLOT, "electricity_main", 1, 2.0, 0.323092,
-             round(2.0*0.323092, 6), 0, 1, 2.0, 1.0, 0.32300))
+             round(2.0*0.323092, 6), 0, "reconciled", 2.0, 1.0, 0.32300))
         st.set_block_segments(self.SLOT, "electricity_main", [
             ps.Segment(1.0, 0.32300, 0.30762, "peak", "ev"),
             ps.Segment(1.0, 0.32300, 0.30762, "day", "house")])

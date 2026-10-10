@@ -38,12 +38,11 @@ def _store(*, ev_metered, ev_dispatch, hp_metered, grid=10.0, rate=0.30,
             st._conn.execute("INSERT INTO meters (config_period_id, meter_id, is_sub_meter, "
                              "meter_type, parent_meter_id) VALUES (?, 'heat_pump', 1, 'heat_pump', "
                              "'electricity_main')", (cp,))
-        subs = (ev_metered or 0.0) + (hp_metered or 0.0)
         # main block — fully segmented so BL-27 runs
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
-            "imp_kwh_grid, imp_kwh_remainder, imp_rate, imp_cost) VALUES (?,?, 'electricity_main', "
-            "?, ?, ?, ?, ?, ?)", (T, T2, cp, grid, grid, grid - subs, rate, round(grid*rate, 6)))
+            "imp_kwh_grid, imp_rate, imp_cost) VALUES (?,?, 'electricity_main', "
+            "?, ?, ?, ?, ?)", (T, T2, cp, grid, grid, rate, round(grid*rate, 6)))
         house_seg = round(grid - ev_dispatch, 6)
         for seq, (kwh, rt, band, attr) in enumerate([
                 (ev_dispatch, ev_rate, ev_band, "ev"),

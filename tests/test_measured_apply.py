@@ -50,7 +50,7 @@ class TestMeasuredApply(unittest.TestCase):
     def _row(self):
         return self.st._conn.execute(
             "SELECT imp_rate, imp_cost, imp_rate_ev, imp_cost_ev, imp_ev_band, "
-            "imp_home_band, rate_source, imp_rate_exc, imp_cost_exc, imp_cost_remainder FROM blocks "
+            "imp_home_band, rate_source, imp_rate_exc, imp_cost_exc FROM blocks "
             "WHERE block_start=?", (self.SLOT,)).fetchone()
 
     def test_orphaned_ev_attributed_from_completed_dispatch(self):
@@ -109,7 +109,7 @@ class TestMeasuredApply(unittest.TestCase):
     def test_mixed_uses_4band_clean_no_rescale(self):
         # A genuine over-cap boundary slot (label='mixed'): keep the true 4-band split at the
         # schedule's CLEAN per-band rates — NOT rescaled to the bill (clean-rate invariant).
-        # imp_cost stays the bill; the split reconciles to it via imp_cost_remainder.
+        # imp_cost stays the bill; the house is what is left of it after the EV.
         import iog_cap
         self._blk(3.0, 2.0, rate=0.05493)          # 2 kWh EV, 1 kWh house
         self.st.record_dispatch_history(self.SLOT, "completed", source="unknown", energy_kwh=-2.0)
@@ -141,9 +141,10 @@ class TestMeasuredApply(unittest.TestCase):
         self.assertEqual(r["rate_source"], "settled")
         self.assertAlmostEqual(r["imp_cost"], bill_incl, places=6)   # cost stays the bill
         self.assertEqual(r["imp_ev_band"], "mixed")
-        # EV cost = clean sum (1x0.055 + 1x0.323); house remainder absorbs the bill delta
+        # EV cost = clean sum (1x0.055 + 1x0.323); the house absorbs the bill delta. (Its stored
+        # imp_cost_remainder was dropped in step 5, 10 Oct 2026; derived it is imp_cost − imp_cost_ev,
+        # which the two assertions here already fix.)
         self.assertAlmostEqual(r["imp_cost_ev"], round(0.055 + 0.323, 6), places=6)
-        self.assertAlmostEqual(r["imp_cost_remainder"], round(bill_incl - (0.055 + 0.323), 6), places=6)
 
     def test_no_kwh_is_noop(self):
         self._blk(0.0, 0.0, rate=0.05493)

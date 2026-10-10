@@ -81,12 +81,12 @@ def insert_block(store, cp_id, block_start_utc, imp_kwh, imp_cost,
         INSERT INTO blocks (
             block_start, block_end,
             meter_id, config_period_id, interpolated,
-            imp_kwh, imp_kwh_grid, imp_kwh_remainder,
-            imp_rate, imp_cost, imp_cost_remainder,
+            imp_kwh, imp_kwh_grid,
+            imp_rate, imp_cost,
             imp_read_start, imp_read_end,
             exp_kwh, exp_rate, exp_cost,
             exp_read_start, exp_read_end, standing_charge, carbon_g)
-        VALUES (?,?,?,?,?,?,NULL,NULL,NULL,?,NULL,NULL,NULL,?,NULL,?,NULL,NULL,?,?)
+        VALUES (?,?,?,?,?,?,NULL,NULL,?,NULL,NULL,?,NULL,?,NULL,NULL,?,?)
     """, (block_start_utc,
           (datetime.fromisoformat(block_start_utc)+timedelta(minutes=30)).isoformat(),
           meter_id, cp_id, 0,
@@ -275,26 +275,23 @@ class TestNoSubMeterDailyKwh(unittest.TestCase):
         self.store, self.cp = make_store()
 
     def test_daily_chart_shows_kwh_for_no_submeter_block(self):
-        # The real api+mini/CAD no-sub-meter case: imp_kwh_remainder is NULL
-        # (the engine never sets it without sub-meters). get_blocks_lightweight
-        # must omit the key when NULL (matching _row_to_block) so the chart reads
-        # the real kwh, not a present-None remainder treated as zero. This was
-        # the "cost but no kWh" billing bug.
+        # The real api+mini/CAD no-sub-meter case: imp_kwh_grid is NULL. The chart
+        # must read the real kwh, not a missing remainder treated as zero. This was
+        # the "cost but no kWh" billing bug. (The stored remainder was dropped in
+        # step 5, 10 Oct 2026, so the "lightweight omits a NULL kwh_remainder" check
+        # went with it.)
         self.store._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, "
             "config_period_id, interpolated, imp_kwh, imp_kwh_grid, "
-            "imp_kwh_remainder, imp_rate, imp_cost, imp_read_start, "
+            "imp_rate, imp_cost, imp_read_start, "
             "imp_read_end, exp_kwh, exp_rate, exp_cost, exp_read_start, "
             "exp_read_end, standing_charge, carbon_g) "
-            "VALUES (?,?,?,?,0,?,NULL,NULL,?,?,NULL,NULL,0,NULL,0,NULL,NULL,?,NULL)",
+            "VALUES (?,?,?,?,0,?,NULL,?,?,NULL,NULL,0,NULL,0,NULL,NULL,?,NULL)",
             ("2026-01-10T21:00:00", "2026-01-10T21:30:00", "electricity_main",
              self.cp, 0.053, 0.3231, 0.0171, 0.50))
         self.store._conn.commit()
         blocks = self.store.get_blocks_lightweight()
-        # Confirm the reconstructed channel OMITS kwh_remainder (matches _row_to_block)
         imp = blocks[0]["meters"]["electricity_main"]["channels"]["import"]
-        self.assertNotIn("kwh_remainder", imp,
-            "lightweight must omit NULL kwh_remainder so charts read the real kwh")
         self.assertAlmostEqual(imp["kwh"], 0.053, places=3)
         # The day's chart as the Billing tab is served it (C, 30 Sep 2026: this built
         # the whole pre-rendered page, deleted since).
@@ -608,10 +605,10 @@ class TestBillSummaryMainImportRaw(unittest.TestCase):
                 INSERT INTO blocks (
                     block_start, block_end,
                     meter_id, config_period_id, interpolated,
-                    imp_kwh, imp_kwh_grid, imp_kwh_remainder,
+                    imp_kwh, imp_kwh_grid,
                     imp_rate, imp_cost, exp_kwh, exp_rate, exp_cost, standing_charge)
                 VALUES (?,?,?,?,0,
-                        ?,NULL,NULL, ?,?, ?,?,?,?)
+                        ?,NULL, ?,?, ?,?,?,?)
             """, (block_start, block_start,
                   meter_id, self.cp,
                   imp_kwh, rate, round(imp_kwh * rate, 6),
@@ -653,14 +650,14 @@ class TestBillSummaryMainImportRaw(unittest.TestCase):
         kwh total), the breakdown must show the GRID share — so it reconciles to
         the grid import total and matches Usage Stats — not the larger total
         consumption. Regression for the billing-vs-usage-stats device drift."""
-        def ins(meter_id, imp_kwh, grid, cost, rem=None):
+        def ins(meter_id, imp_kwh, grid, cost):
             self.store._conn.execute(
                 "INSERT INTO blocks (block_start, block_end, meter_id, "
                 "config_period_id, interpolated, imp_kwh, imp_kwh_grid, "
-                "imp_kwh_remainder, imp_rate, imp_cost, standing_charge) "
-                "VALUES ('2026-03-01T00:00:00','2026-03-01T00:00:00',?,?,0,?,?,?,0.10,?,0.50)",
-                (meter_id, self.cp, imp_kwh, grid, rem, cost))
-        ins("electricity_main", 10.0, None, 1.00, rem=3.0)  # 3 kWh direct grid
+                "imp_rate, imp_cost, standing_charge) "
+                "VALUES ('2026-03-01T00:00:00','2026-03-01T00:00:00',?,?,0,?,?,0.10,?,0.50)",
+                (meter_id, self.cp, imp_kwh, grid, cost))
+        ins("electricity_main", 10.0, None, 1.00)  # 3 kWh direct grid (derived: 10 - 4 - 3)
         ins("ev_charger",        5.0,  4.0, 0.40)            # 1 kWh from battery
         ins("house_battery",     4.0,  3.0, 0.30)            # 1 kWh from solar
         self.store._conn.commit()
@@ -1091,10 +1088,10 @@ class TestLivePowerBillingCard(unittest.TestCase):
                 INSERT INTO blocks (
                     block_start, block_end,
                     meter_id, config_period_id, interpolated,
-                    imp_kwh, imp_kwh_grid, imp_kwh_remainder,
+                    imp_kwh, imp_kwh_grid,
                     imp_rate, imp_cost, exp_kwh, exp_rate, exp_cost, standing_charge)
                 VALUES (?,?,?,?,0,
-                        ?,NULL,NULL, ?,?, ?,?,?,?)
+                        ?,NULL, ?,?, ?,?,?,?)
             """, (ts, ts, meter_id, self.cp,
                   imp_kwh, rate, round(imp_kwh * rate, 6),
                   exp if meter_id == "electricity_main" else 0.0,
@@ -1175,10 +1172,10 @@ class TestLivePowerBillingCard(unittest.TestCase):
             INSERT INTO blocks (
                 block_start, block_end,
                 meter_id, config_period_id, interpolated,
-                imp_kwh, imp_kwh_grid, imp_kwh_remainder,
+                imp_kwh, imp_kwh_grid,
                 imp_rate, imp_cost, standing_charge)
             VALUES ('2026-04-27T00:00:00','2026-04-27T00:00:00',
-                    'electricity_main',?,0, 10.0,NULL,NULL, 0.07,0.70,0.50)
+                    'electricity_main',?,0, 10.0,NULL, 0.07,0.70,0.50)
         """, (self.cp,))
         self.store._conn.commit()
         raw_kwh, _ = self._get_raw_grid()

@@ -127,7 +127,7 @@ class _Harness(unittest.TestCase):
 
     def _row(self, meter, start=START):
         return engine._store._conn.execute(
-            "SELECT imp_kwh, imp_kwh_grid, imp_cost, imp_rate, imp_kwh_remainder FROM blocks "
+            "SELECT imp_kwh, imp_kwh_grid, imp_cost, imp_rate, rate_source FROM blocks "
             "WHERE block_start=? AND meter_id=?", (start, meter)).fetchone()
 
 

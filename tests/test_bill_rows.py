@@ -79,7 +79,6 @@ def _store():
         sce = round(sc / (1 + vat), 6) if day % 2 == 0 else None
         ev = round(k * rnd.uniform(0.3, 1.2), 3) if night else 0.0
         bat = round(rnd.uniform(0.0, 0.4), 3) if i % 4 == 0 else 0.0
-        rem = round(k - ev - bat, 6) if (night or bat) else None        # may go negative
         evk = evc = evr = evb = hb = None
         segs = []
         if night and i % 2 == 0:
@@ -93,11 +92,11 @@ def _store():
                 hb = "mixed" if i % 5 == 0 else "off_peak"
         c.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
-            "imp_kwh_remainder, imp_rate, imp_cost, imp_read_start, imp_read_end, imp_cost_exc, "
+            "imp_rate, imp_cost, imp_read_start, imp_read_end, imp_cost_exc, "
             "imp_rate_exc, imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band, "
             "exp_kwh, exp_rate, exp_cost, exp_read_start, exp_read_end, standing_charge, "
-            "standing_charge_exc) VALUES (?,?,'electricity_main',1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (bs, bs, k, rem, rate_col, cost, rs, re_, exc, rexc, evk, evc, evr, evb, hb,
+            "standing_charge_exc) VALUES (?,?,'electricity_main',1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (bs, bs, k, rate_col, cost, rs, re_, exc, rexc, evk, evc, evr, evb, hb,
              0.2 if not night else 0.0, 0.15 if i % 7 else None, 0.03 if not night else 0.0,
              10.0 + i if i % 9 else None, 10.2 + i if i % 9 else None, sc, sce))
         for seq, (sk, si, sx, band, attr) in enumerate(segs):

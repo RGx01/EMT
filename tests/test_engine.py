@@ -5027,7 +5027,11 @@ class TestRecomputeRemaindersForWindow(unittest.TestCase):
     """After a device's blocks are deleted, the parent main meter's remainder
     must be rebuilt: the device's grid-attributed energy returns to the main
     'rest of house' line (fully if it was the last device, else net of the
-    surviving devices)."""
+    surviving devices).
+
+    Step 5 (10 Oct 2026): the remainder is no longer stored, so these read it as it is derived
+    (direct_import: max(0, main imp_kwh − Σ devices' COALESCE(imp_kwh_grid, imp_kwh))). With the
+    device's rows gone the derivation no longer needs the recompute, so these are now guards."""
 
     BS = "2025-05-16T12:00:00"
     BE = "2025-05-16T12:30:00"
@@ -5083,11 +5087,15 @@ class TestRecomputeRemaindersForWindow(unittest.TestCase):
         return self._parent_remainder()
 
     def _parent_remainder(self):
-        r = self.store._conn.execute(
-            "SELECT imp_kwh_remainder FROM blocks "
+        main = self.store._conn.execute(
+            "SELECT imp_kwh FROM blocks "
             "WHERE meter_id='electricity_main' AND block_start=?", (self.BS,)
-        ).fetchone()
-        return r["imp_kwh_remainder"]
+        ).fetchone()["imp_kwh"]
+        subs = self.store._conn.execute(
+            "SELECT COALESCE(SUM(COALESCE(imp_kwh_grid, imp_kwh)), 0) FROM blocks "
+            "WHERE meter_id!='electricity_main' AND block_start=?", (self.BS,)
+        ).fetchone()[0]
+        return max(0.0, main - subs)
 
     def test_last_device_deleted_returns_full_main(self):
         self._finalise({"battery": 0.5})
@@ -5167,7 +5175,9 @@ if __name__ == "__main__":
 class TestReconciledRateSurvivesPass2(unittest.TestCase):
     """§12/marker: a reconciliation-set rate must survive a PASS 2 re-run — the
     overlay must NOT re-apply off-peak over a slot the reconciliation deliberately
-    reverted to peak (rate_reconciled). Belt-and-braces for a re-settlement."""
+    reverted to peak (rate_source='reconciled'; the rate_reconciled flag was dropped in
+    step 5, 10 Oct 2026). Belt-and-braces for a re-settlement. GUARD: checked 10 Oct 2026, it
+    also passes with rate_source NULL — this slot is not repriced by the overlay either way."""
 
     class _Sched:
         def is_empty(self): return False
@@ -5201,7 +5211,7 @@ class TestReconciledRateSurvivesPass2(unittest.TestCase):
         self.store._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id,"
             " interpolated, imp_kwh, imp_rate, imp_cost, imp_kwh_api, standing_charge,"
-            " needs_pass2_rerun, rate_reconciled) VALUES (?,?,?,?,0,?,?,?,?,?,1,1)",
+            " needs_pass2_rerun, rate_source) VALUES (?,?,?,?,0,?,?,?,?,?,1,'reconciled')",
             (bs, bs, "electricity_main", self.cp, 3.0, 0.323092,
              round(3.0 * 0.323092, 6), 3.0, 0.5))
         self.store._conn.commit()

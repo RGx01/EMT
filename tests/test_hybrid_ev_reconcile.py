@@ -37,8 +37,8 @@ def _hybrid_store(rate=0.30):
                              "meter_type) VALUES (?,?,?,?)", (cp, mid, sub, mt))
         # PRE-seam: grid 10, physical EV 4.0, heat pump 2.0, no dispatch, imp_kwh_ev NULL
         st._conn.execute("INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_kwh_grid, imp_kwh_remainder, imp_rate, imp_cost) VALUES (?,?, "
-            "'electricity_main', ?, 10.0, 10.0, 4.0, ?, ?)", (PRE, PREe, cp, rate, round(10*rate, 6)))
+            "imp_kwh, imp_kwh_grid, imp_rate, imp_cost) VALUES (?,?, "
+            "'electricity_main', ?, 10.0, 10.0, ?, ?)", (PRE, PREe, cp, rate, round(10*rate, 6)))
         _seg(st, cp, PRE, 10.0, rate, "house", 0)
         st._conn.execute("INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
             "imp_kwh, imp_kwh_grid, imp_rate, imp_cost) VALUES (?,?, 'ev_charger', ?, 4.0, 4.0, ?, ?)",
@@ -48,8 +48,8 @@ def _hybrid_store(rate=0.30):
             (PRE, PREe, cp, rate, round(2*rate, 6)))
         # POST-seam: grid 10, synthetic EV 3.5, heat pump 2.0, physical EV 3.8 (superseded)
         st._conn.execute("INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_kwh_grid, imp_kwh_remainder, imp_rate, imp_cost, imp_kwh_ev, imp_cost_ev) "
-            "VALUES (?,?, 'electricity_main', ?, 10.0, 10.0, 4.2, ?, ?, 3.5, ?)",
+            "imp_kwh, imp_kwh_grid, imp_rate, imp_cost, imp_kwh_ev, imp_cost_ev) "
+            "VALUES (?,?, 'electricity_main', ?, 10.0, 10.0, ?, ?, 3.5, ?)",
             (POST, POSTe, cp, rate, round(10*rate, 6), round(3.5*rate, 6)))
         _seg(st, cp, POST, 3.5, rate, "ev", 0)
         _seg(st, cp, POST, 6.5, rate, "house", 1)
@@ -75,8 +75,8 @@ def _flat_store(rate=0.25):
                          "VALUES (?, 'electricity_main', 0, '')", (cp,))
         for bs, be in [(PRE, PREe), (POST, POSTe)]:
             st._conn.execute("INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-                "imp_kwh, imp_kwh_grid, imp_kwh_remainder, imp_rate, imp_cost) VALUES (?,?, "
-                "'electricity_main', ?, 8.0, 8.0, 8.0, ?, ?)", (bs, be, cp, rate, round(8*rate, 6)))
+                "imp_kwh, imp_kwh_grid, imp_rate, imp_cost) VALUES (?,?, "
+                "'electricity_main', ?, 8.0, 8.0, ?, ?)", (bs, be, cp, rate, round(8*rate, 6)))
             _seg(st, cp, bs, 8.0, rate, "house", 0)
     st._conn.commit()
     return st

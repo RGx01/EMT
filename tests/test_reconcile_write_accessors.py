@@ -58,7 +58,7 @@ def _block(st, meter_id="electricity_main", **cols):
 def _row(st, meter_id="electricity_main"):
     return st._conn.execute(
         "SELECT imp_rate, imp_cost, imp_rate_ev, imp_cost_ev, imp_ev_band, "
-        "imp_home_band, imp_cost_remainder, rate_reconciled, rate_source, needs_review "
+        "imp_home_band, rate_source, needs_review "
         "FROM blocks WHERE block_start=? AND meter_id=?", (S, meter_id)).fetchone()
 
 
@@ -76,7 +76,7 @@ class TheEvColumnInvariant(unittest.TestCase):
         self.assertEqual(n, 0)
         r = _row(self.st)
         for col in ("imp_rate_ev", "imp_cost_ev", "imp_ev_band",
-                    "imp_home_band", "imp_cost_remainder"):
+                    "imp_home_band"):
             self.assertIsNone(r[col], "%s was stamped on an unsplit block" % col)
 
     def test_a_split_block_is_restamped(self):
@@ -87,14 +87,8 @@ class TheEvColumnInvariant(unittest.TestCase):
         self.assertAlmostEqual(r["imp_cost_ev"], round(2.0 * 0.32, 6))
         self.assertEqual(r["imp_ev_band"], "peak")
 
-    def test_the_cost_columns_add_up(self):
-        """`imp_cost_ev + imp_cost_remainder == imp_kwh x rate`. Stated in three
-        places in the codebase and asserted in none of them."""
-        _block(self.st, imp_kwh=5.0, imp_kwh_ev=2.0)
-        self.st.restamp_ev_columns(S, 0.32, "peak", "day")
-        r = _row(self.st)
-        self.assertAlmostEqual(r["imp_cost_ev"] + r["imp_cost_remainder"],
-                               round(5.0 * 0.32, 6), places=6)
+    # test_the_cost_columns_add_up (imp_cost_ev + imp_cost_remainder == imp_kwh x rate) went
+    # with imp_cost_remainder (dropped, step 5, 10 Oct 2026); the restamp no longer writes it.
 
     def test_it_is_meter_scoped(self):
         _block(self.st, imp_kwh_ev=2.0)
@@ -157,9 +151,8 @@ class ReconcileVerdict(unittest.TestCase):
         m = _row(self.st)
         self.assertAlmostEqual(m["imp_rate"], 0.32)
         self.assertAlmostEqual(m["imp_cost"], round(5.0 * 0.32, 6))
-        # Step 5: the verdict is recorded in rate_source, not the second flag (drop list).
+        # Step 5: the verdict is recorded in rate_source (the second flag was dropped, 10 Oct 2026).
         self.assertEqual(m["rate_source"], "reconciled")
-        self.assertEqual(m["rate_reconciled"], 0)
 
         sub = _row(self.st, "sub_meter_ev")
         self.assertAlmostEqual(sub["imp_rate"], 0.32)
@@ -205,7 +198,8 @@ class ReconcileVerdict(unittest.TestCase):
             BlockStore._EV_RESTAMP_SQL = original
         self.assertAlmostEqual(_row(self.st)["imp_rate"], 0.25,
                                msg="the main row committed despite a failed verdict")
-        self.assertEqual(_row(self.st)["rate_reconciled"], 0)
+        self.assertIsNone(_row(self.st)["rate_source"],
+                          "the verdict's provenance committed despite a failed verdict")
 
 
 class Surfaces(unittest.TestCase):

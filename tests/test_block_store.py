@@ -1292,13 +1292,8 @@ class TestAppendBlock(unittest.TestCase):
         blocks = self.store.get_all_blocks()
         self.assertTrue(blocks[0]["interpolated"])
 
-    def test_kwh_remainder_stored(self):
-        block = make_block("2026-03-01T00:00:00", imp_kwh=1.0)
-        self.store.append_block(block)
-        blocks = self.store.get_all_blocks()
-        imp = blocks[0]["meters"]["electricity_main"]["channels"]["import"]
-        self.assertIn("kwh_remainder", imp)
-        self.assertAlmostEqual(imp["kwh_remainder"], 0.95, places=4)
+    # test_kwh_remainder_stored went with imp_kwh_remainder (dropped, step 5, 10 Oct 2026):
+    # the house is derived where read, so a loaded block no longer carries it.
 
     def test_config_fields_joined(self):
         block = make_block("2026-03-01T00:00:00")
@@ -1876,11 +1871,11 @@ class TestMixedSourceBilling(unittest.TestCase):
       - Mini blocks (source='kraken_mini', provisional): kWh in imp_kwh only
 
     The billing aggregation is source-agnostic — it must pick the right kWh per
-    block via COALESCE(imp_kwh_remainder, imp_kwh_grid, imp_kwh) and sum the
+    block via COALESCE(imp_kwh_grid, imp_kwh) and sum the
     materialised imp_cost, with no double-count, no omission, and standing charge
     once per local day across the mode boundary. This pins that behaviour (the
     mixed case was never previously exercised — the reconciliation harness leaves
-    imp_kwh_grid/imp_kwh_remainder NULL on every block).
+    imp_kwh_grid NULL on every block).
     """
 
     def setUp(self):
@@ -1893,19 +1888,19 @@ class TestMixedSourceBilling(unittest.TestCase):
             "SELECT id FROM config_periods LIMIT 1").fetchone()["id"]
 
     def _insert(self, start, *, imp_kwh=None, imp_kwh_grid=None,
-                imp_kwh_remainder=None, imp_cost=0.0, exp_kwh=0.0, exp_cost=0.0,
+                imp_cost=0.0, exp_kwh=0.0, exp_cost=0.0,
                 standing=0.50, source=None, is_provisional=0, imp_kwh_api=None):
         from datetime import datetime, timedelta
         end = (datetime.fromisoformat(start) + timedelta(minutes=30)).isoformat()
         self.store._conn.execute(
             """INSERT INTO blocks
                (block_start, block_end, meter_id, config_period_id, interpolated,
-                imp_kwh, imp_kwh_grid, imp_kwh_remainder, imp_rate, imp_cost,
+                imp_kwh, imp_kwh_grid, imp_rate, imp_cost,
                 exp_kwh, exp_rate, exp_cost, standing_charge,
                 source, is_provisional, imp_kwh_api)
-               VALUES (?,?,?,?,0, ?,?,?,NULL,?, ?,NULL,?, ?, ?,?,?)""",
+               VALUES (?,?,?,?,0, ?,?,NULL,?, ?,NULL,?, ?, ?,?,?)""",
             (start, end, "electricity_main", self.cp,
-             imp_kwh, imp_kwh_grid, imp_kwh_remainder, imp_cost,
+             imp_kwh, imp_kwh_grid, imp_cost,
              exp_kwh, exp_cost, standing, source, is_provisional, imp_kwh_api))
         self.store._conn.commit()
 
@@ -2224,12 +2219,12 @@ class TestCurrentBlock(unittest.TestCase):
             "SELECT id FROM config_periods LIMIT 1"
         ).fetchone()["id"]
 
-        # main: 3.0 kWh total, remainder=1.0 (house), cost=0.735
+        # main: 3.0 kWh total (house 1.0, derived), cost=0.735
         # ev:   2.0 kWh, all from grid, no independent cost
         self.store._conn.execute("""
             INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_kwh_remainder, imp_cost, exp_kwh, exp_cost, standing_charge)
-            VALUES ('2026-01-01T00:00:00','2026-01-01T00:30:00','electricity_main',?,0, 3.0,1.0,0.735, 0.2,0.024, 0.5)
+            imp_kwh, imp_cost, exp_kwh, exp_cost, standing_charge)
+            VALUES ('2026-01-01T00:00:00','2026-01-01T00:30:00','electricity_main',?,0, 3.0,0.735, 0.2,0.024, 0.5)
         """, (cp_id,))
         self.store._conn.execute("""
             INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
@@ -2280,12 +2275,12 @@ class TestCurrentBlock(unittest.TestCase):
         ).fetchone()["id"]
 
         # One block: main draws 3.0 kWh total, EV uses 2.0, house uses 1.0
-        # main: imp_kwh=3.0, imp_kwh_remainder=1.0 (house only), imp_cost=0.735
+        # main: imp_kwh=3.0 (house 1.0, derived), imp_cost=0.735
         # ev:   imp_kwh=2.0, imp_kwh_grid=2.0 (all from grid), no independent cost
         self.store._conn.execute("""
             INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_kwh_remainder, imp_cost, exp_kwh, exp_cost, standing_charge)
-            VALUES ('2026-01-01T00:00:00','2026-01-01T00:30:00','electricity_main',?,0, 3.0,1.0,0.735, 0.0,0.0, 0.5)
+            imp_kwh, imp_cost, exp_kwh, exp_cost, standing_charge)
+            VALUES ('2026-01-01T00:00:00','2026-01-01T00:30:00','electricity_main',?,0, 3.0,0.735, 0.0,0.0, 0.5)
         """, (cp_id,))
         self.store._conn.execute("""
             INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
@@ -2306,22 +2301,8 @@ class TestCurrentBlock(unittest.TestCase):
         self.assertNotAlmostEqual(totals["import_kwh"], 5.0, places=1,
             msg="5.0 would indicate double-counting bug")
 
-    def test_get_cumulative_totals_ignores_a_stale_remainder(self):
-        """Step 5 (8 Oct 2026): a device's rows gone, its remainder left behind (the real shape on
-        two databases) must not make the published total short of the meter. Fails on the parent,
-        which summed the stale remainder (1.0) and published 1.0 instead of 3.0."""
-        self.store.insert_config_period({"meters": {
-            "electricity_main": {"meta": {"billing_day": 1, "block_minutes": 30, "timezone": "UTC",
-                                          "currency_symbol": "£", "currency_code": "GBP"}},
-            "ev_charger": {"meta": {"sub_meter": True, "parent_meter": "electricity_main"}}}})
-        cp_id = self.store._conn.execute("SELECT id FROM config_periods LIMIT 1").fetchone()["id"]
-        self.store._conn.execute("""
-            INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_kwh_remainder, imp_cost, exp_kwh, exp_cost, standing_charge)
-            VALUES ('2026-01-01T00:00:00','2026-01-01T00:30:00','electricity_main',?,0, 3.0,1.0,0.735, 0.0,0.0, 0.5)
-        """, (cp_id,))
-        self.store._conn.commit()
-        self.assertAlmostEqual(self.store.get_cumulative_totals()["import_kwh"], 3.0, places=4)
+    # test_get_cumulative_totals_ignores_a_stale_remainder went with imp_kwh_remainder (dropped,
+    # step 5, 10 Oct 2026): there is no stored remainder left to go stale.
 
 
 class TestUpgradePaths(unittest.TestCase):
@@ -2909,8 +2890,8 @@ class TestBillingTotalsSubMeterNullGrid(unittest.TestCase):
         """Sub-meter with imp_kwh_grid set should be included in total."""
         self.store._conn.execute("""
             INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_kwh_remainder, imp_cost, standing_charge)
-            VALUES ('2026-03-01T00:00:00','2026-03-01T00:30:00','electricity_main',?,0, 13.0,2.5,1.17,0.5)
+            imp_kwh, imp_cost, standing_charge)
+            VALUES ('2026-03-01T00:00:00','2026-03-01T00:30:00','electricity_main',?,0, 13.0,1.17,0.5)
         """, (self.cp,))
         self.store._conn.execute("""
             INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
@@ -2931,8 +2912,8 @@ class TestBillingTotalsSubMeterNullGrid(unittest.TestCase):
         """imp_cost comes from main meter only — it already includes sub-meter costs."""
         self.store._conn.execute("""
             INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_kwh_remainder, imp_cost, standing_charge)
-            VALUES ('2026-03-01T00:00:00','2026-03-01T00:30:00','electricity_main',?,0, 13.0,2.5,1.90,0.5)
+            imp_kwh, imp_cost, standing_charge)
+            VALUES ('2026-03-01T00:00:00','2026-03-01T00:30:00','electricity_main',?,0, 13.0,1.90,0.5)
         """, (self.cp,))
         # Battery: has its own imp_cost but main meter already includes it
         self.store._conn.execute("""

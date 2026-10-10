@@ -7,8 +7,8 @@ Declarative on purpose. Every source table, every column of a carried table, and
 is named in the message, so a table, column or key that v4 added after this file was
 written reaches a person. It is never carried, and never dropped, by default.
 
-Until the schema moves (architecture step 5) every carried column is carried as it is.
-The remaps (`rate_source`, the band) are later transforms, and the drop list is step 5's.
+Every carried column is carried as it is; the remaps are transforms. A column on step 5's
+drop list (DROP_COLUMNS) is read by any transform that needs it and is not carried.
 """
 
 # ── Tables ──────────────────────────────────────────────────────────────────────────
@@ -29,13 +29,13 @@ CARRY = (
                         "standing_charge_sensor", "mpan", "tariff", "rate_source",
                         "standing_charge_source")),
     ("blocks", ("id", "block_start", "block_end", "meter_id", "config_period_id",
-                "interpolated", "imp_kwh", "imp_kwh_grid", "imp_kwh_remainder", "imp_rate",
-                "imp_cost", "imp_cost_remainder", "imp_cost_exc", "imp_rate_exc",
+                "interpolated", "imp_kwh", "imp_kwh_grid", "imp_rate",
+                "imp_cost", "imp_cost_exc", "imp_rate_exc",
                 "imp_read_start", "imp_read_end", "exp_kwh", "exp_rate", "exp_cost",
                 "exp_read_start", "exp_read_end", "standing_charge", "standing_charge_exc",
                 "carbon_g", "imp_provisional", "source", "exc_source", "is_provisional",
                 "needs_pass2_rerun", "imp_kwh_api", "exp_kwh_api", "needs_review",
-                "carbon_intensity_g", "rate_corrected", "rate_reconciled", "derivation_id",
+                "carbon_intensity_g", "rate_corrected", "derivation_id",
                 "finalised_from_cad", "review_reason", "review_dismissed", "rate_source",
                 "imp_kwh_ev", "imp_cost_ev", "imp_rate_ev", "imp_ev_band",
                 "imp_home_band")),
@@ -61,6 +61,16 @@ CARRY = (
                           "intensity_actual", "ci_index")),
     ("generation_mix", ("block_id", "fuel", "perc")),
 )
+
+# Columns v5 no longer has (architecture step 5; spec §5.2's drop list). Named, so a source
+# that holds them is not "unknown"; read by the transforms that need them first (the
+# reconciled fold reads rate_reconciled), never carried.
+DROP_COLUMNS = {
+    "blocks": frozenset({
+        "imp_kwh_remainder", "imp_cost_remainder",   # the house, derived where read
+        "rate_reconciled",                           # folded into rate_source (transform 1)
+    }),
+}
 
 # Spec §5.5: in-flight state the new app forms for itself, and `reads`, which nothing
 # has ever written (spec Q7).

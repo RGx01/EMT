@@ -52,15 +52,15 @@ def _block(st, meter_id="electricity_main", **cols):
 def _row(st, meter_id="electricity_main"):
     return st._conn.execute(
         "SELECT imp_rate, imp_cost, imp_rate_exc, imp_cost_exc, exc_source, "
-        "rate_source, rate_reconciled, needs_review, review_reason, "
+        "rate_source, needs_review, review_reason, "
         "imp_kwh_ev, imp_rate_ev, imp_cost_ev, imp_ev_band, imp_home_band, "
-        "imp_cost_remainder, imp_kwh "
+        "imp_kwh "
         "FROM blocks WHERE block_start=? AND meter_id=?", (S, meter_id)).fetchone()
 
 
 _BILL = dict(rate=0.0549, cost=0.2745, rate_exc=0.0523, cost_exc=0.2614,
              kwh_ev=2.0, rate_ev=0.0549, cost_ev=0.1098,
-             ev_band="off_peak", home_band="off_peak", cost_remainder=0.1647)
+             ev_band="off_peak", home_band="off_peak")
 
 
 class ApplyMeasuredToMain(unittest.TestCase):
@@ -100,7 +100,7 @@ class ApplyMeasuredToMain(unittest.TestCase):
         self.assertIsNone(r["imp_cost_ev"])
 
     def test_the_arguments_are_keyword_only(self):
-        """Eleven values, four of them costs and three of them rates, on the one
+        """Ten values, three of them costs and three of them rates, on the one
         write that records what the supplier charged. `cost` and `cost_exc`
         transposed positionally is a silently wrong bill."""
         with self.assertRaises(TypeError):

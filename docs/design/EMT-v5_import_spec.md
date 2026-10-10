@@ -726,6 +726,11 @@ legacy-column removal): ~~`imp_kwh_grid`,~~ `imp_kwh_remainder`, `imp_cost_remai
 ~~`imp_provisional`~~, ~~`imp_cost_exc`~~ *(carried, v15)*, `imp_rate_exc`, `standing_charge_exc`, `exc_source`,
 `imp_kwh_ev`, `imp_cost_ev`, `imp_rate_ev`, `imp_ev_band`, `imp_home_band`.
 
+> *Dropped so far (10 Oct 2026, importer PR 5a, `EMT_SCHEMA` 3):* `imp_kwh_remainder`,
+> `imp_cost_remainder`, and `rate_reconciled` (folded above, read from the source by the importer).
+> They are `v4import/rules.py` `DROP_COLUMNS`: named, so a source holding them is not unknown, and
+> never carried.
+
 > **`imp_provisional` REMOVED from the drop list, 5 Oct 2026.** `imp_provisional` came OFF the drop list on 5 Oct 2026: it is not a duplicate of `is_provisional`. It marks a SUB-METER block written without its post-boundary read (v4 2.10.0); `is_provisional` marks a MAIN block not yet DCC-settled (3.0.0). `_amend_provisional_sub_meter_blocks` finds and corrects the former. They looked alike because both are 0 on every row measured — data is not proof.
 >
 > **`imp_kwh_grid` REMOVED from the drop list, 24 Sep 2026 — it is not reconstructable, because

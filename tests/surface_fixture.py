@@ -35,15 +35,15 @@ def build(path, days):
         ev = 2.5 if (night and t.day % 3 == 0) else 0.0
         bat = 0.4 if night else 0.0
         main = 0.3 + ev + bat
-        rows.append((bs, be, "electricity_main", main, main - ev - bat, rate, round(main * rate, 6),
+        rows.append((bs, be, "electricity_main", main, rate, round(main * rate, 6),
                      0.0, 0.0, 0.5, round(main * 120, 2)))
-        rows.append((bs, be, "ev_charger", ev, None, rate, round(ev * rate, 6), 0, 0, 0, None))
-        rows.append((bs, be, "house_battery", bat, None, rate, round(bat * rate, 6), 0, 0, 0, None))
+        rows.append((bs, be, "ev_charger", ev, rate, round(ev * rate, 6), 0, 0, 0, None))
+        rows.append((bs, be, "house_battery", bat, rate, round(bat * rate, 6), 0, 0, 0, None))
         t += timedelta(minutes=30)
     with st._conn:
         st._conn.executemany(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
-            "imp_kwh_remainder, imp_rate, imp_cost, exp_kwh, exp_cost, standing_charge, carbon_g) "
-            "VALUES (?, ?, ?, %d, ?, ?, ?, ?, ?, ?, ?, ?)" % cp, rows)
+            "imp_rate, imp_cost, exp_kwh, exp_cost, standing_charge, carbon_g) "
+            "VALUES (?, ?, ?, %d, ?, ?, ?, ?, ?, ?, ?)" % cp, rows)
     st.close()
     return path

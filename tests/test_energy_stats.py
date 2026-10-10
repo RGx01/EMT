@@ -53,13 +53,13 @@ def _store(start, hours):
     t = datetime.fromisoformat(start)
     for i in range(hours * 2):
         bs, be = t.isoformat(), (t + timedelta(minutes=30)).isoformat()
-        for mid, kwh, grid, rem in (("electricity_main", 1.0, None, 0.8),
-                                    ("house_battery", 0.2, 0.2, None)):
+        for mid, kwh, grid in (("electricity_main", 1.0, None),
+                               ("house_battery", 0.2, 0.2)):
             st._conn.execute(
                 "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
-                "imp_kwh_grid, imp_kwh_remainder, imp_rate, imp_cost, standing_charge, "
-                "is_provisional, interpolated) VALUES (?,?,?,1,?,?,?,0.25,?,0.5,0,0)",
-                (bs, be, mid, kwh, grid, rem, kwh * 0.25))
+                "imp_kwh_grid, imp_rate, imp_cost, standing_charge, "
+                "is_provisional, interpolated) VALUES (?,?,?,1,?,?,0.25,?,0.5,0,0)",
+                (bs, be, mid, kwh, grid, kwh * 0.25))
         t += timedelta(minutes=30)
     st._conn.commit()
     return st

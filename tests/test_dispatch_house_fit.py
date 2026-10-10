@@ -6,10 +6,12 @@ devices against the WHOLE main, never reading `kwh_ev`, and nothing re-fitted th
 completed dispatch arrived. A battery charging alongside the car kept grid the car used; the EV
 then had nothing left to sit in (the bill capped it, Insights' house went negative).
 
-Now the car's grid is reserved first and the devices fit in what is left; the stored remainder
-keeps its shape (grid − devices, the EV inside it) and can no longer be smaller than the EV. Each
-later writer of `kwh_ev` re-fits the devices (`_refit_devices_to_house`), keeping a measured
-block's bill-set £ remainder. With an EV meter the meter is the EV and nothing changes.
+Now the car's grid is reserved first and the devices fit in what is left; the remainder keeps its
+shape (grid − devices, the EV inside it) and can no longer be smaller than the EV. Each later
+writer of `kwh_ev` re-fits the devices (`_refit_devices_to_house`), leaving a measured block's
+bill on the main untouched. With an EV meter the meter is the EV and nothing changes. (Step 5,
+10 Oct 2026: the remainder is no longer stored; on a loaded row it is derived as the main's
+imp_kwh − the devices' grid shares, which is how these tests read it.)
 
 Ported from v4 4.5.21 without its heal (`dispatch_house_refit_done`); the 4.5.21 import floor means
 a database arrives already re-fitted. v5's store owns the SQL: `dispatch_house_candidates` (read)
@@ -121,7 +123,7 @@ class TheRefit(H._Harness):
         with engine._store._conn:
             engine._store._conn.execute(
                 "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ROUND(? * imp_rate, 6)"
-                + (", rate_source = 'settled', imp_cost_remainder = 1.2345" if measured else "")
+                + (", rate_source = 'settled', imp_cost = 1.2345" if measured else "")
                 + " WHERE block_start = ? AND meter_id = 'electricity_main'", (EV, EV, H.START))
         # The EV arrives in the SEGMENTS too, as every real writer now records it (BL-79): the
         # split is the segments', and the refit's candidates are read from them.
@@ -142,17 +144,20 @@ class TheRefit(H._Harness):
         batt, main = self._row("house_battery"), self._row("electricity_main")
         self.assertAlmostEqual(batt["imp_kwh_grid"], MAIN - EV, places=4)
         self.assertAlmostEqual(batt["imp_cost"], round((MAIN - EV) * batt["imp_rate"], 6), places=6)
-        self.assertAlmostEqual(main["imp_kwh_remainder"], EV, places=4)
+        self.assertAlmostEqual(main["imp_kwh"] - batt["imp_kwh_grid"], EV, places=4)  # derived house
         self.assertAlmostEqual(batt["imp_kwh"], BATT, places=4)          # the reading is kept
 
-    def test_a_measured_block_keeps_its_bill_remainder(self):
+    def test_a_measured_block_keeps_its_bill(self):
+        """GUARD (step 5, 10 Oct 2026): this kept the bill-set £ remainder, a column now dropped.
+        What survives is that the re-fit writes only the devices — the measured main's bill and its
+        provenance are left as they were, and the derived house still holds the EV."""
         self._close_then_arrive(measured=True)
         engine._refit_devices_to_house(engine._store, [H.START])
-        row = engine._store._conn.execute(
-            "SELECT imp_cost_remainder, imp_kwh_remainder FROM blocks WHERE block_start=? "
-            "AND meter_id='electricity_main'", (H.START,)).fetchone()
-        self.assertAlmostEqual(row["imp_cost_remainder"], 1.2345, places=6)
-        self.assertAlmostEqual(row["imp_kwh_remainder"], EV, places=4)
+        main, batt = self._row("electricity_main"), self._row("house_battery")
+        self.assertAlmostEqual(main["imp_cost"], 1.2345, places=6)
+        self.assertEqual(main["rate_source"], "settled")
+        self.assertAlmostEqual(batt["imp_kwh_grid"], MAIN - EV, places=4)
+        self.assertAlmostEqual(main["imp_kwh"] - batt["imp_kwh_grid"], EV, places=4)
 
     def test_it_is_idempotent(self):
         self._close_then_arrive()

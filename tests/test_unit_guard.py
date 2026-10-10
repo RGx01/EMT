@@ -6,8 +6,9 @@ Two protections against an INC-in-pence / exc-in-£ unit mix on a main-import bl
       (`_reprice_main_import_block`): any inc rate above the £/kWh ceiling is pence-not-pounds,
       normalised /100 across ALL inc fields (rate/cost + EV split); exc (already £) untouched.
   (2) the Cost-Corrections recalc UPDATE — when a user corrects the import rate, the EV-split
-      columns are recomputed in the SAME statement so imp_cost_ev + imp_cost_remainder == imp_cost
-      (previously only imp_rate/imp_cost were updated → the split kept the stale figure).
+      columns are recomputed in the SAME statement (previously only imp_rate/imp_cost were
+      updated → the split kept the stale figure). Step 5 (10 Oct 2026) dropped the stored
+      imp_cost_remainder the statement also wrote, and with it the EV + house == total check.
 """
 import os, sys, unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -58,9 +59,7 @@ _CORR_RECALC_SQL = (
     "  imp_rate = ?, "
     "  imp_cost = ROUND(imp_kwh * ?, 6), "
     "  imp_rate_ev = CASE WHEN imp_kwh_ev IS NOT NULL THEN ? ELSE imp_rate_ev END, "
-    "  imp_cost_ev = CASE WHEN imp_kwh_ev IS NOT NULL THEN ROUND(imp_kwh_ev * ?, 6) ELSE imp_cost_ev END, "
-    "  imp_cost_remainder = CASE WHEN imp_kwh_ev IS NOT NULL "
-    "       THEN ROUND(imp_kwh * ? - ROUND(imp_kwh_ev * ?, 6), 6) ELSE imp_cost_remainder END "
+    "  imp_cost_ev = CASE WHEN imp_kwh_ev IS NOT NULL THEN ROUND(imp_kwh_ev * ?, 6) ELSE imp_cost_ev END "
     "WHERE block_start = ? AND meter_id = 'electricity_main'")
 
 
@@ -87,32 +86,28 @@ class TestCorrectionRecalcSplit(unittest.TestCase):
     def test_ev_block_split_stays_consistent(self):
         # a block priced 100x (pence) with an EV split, corrected to 0.069 £/kWh
         st = _store_with_block(imp_kwh=3.929, imp_rate=6.89997, imp_cost=27.109982,
-                               imp_kwh_ev=3.55, imp_rate_ev=6.89997, imp_cost_ev=24.494893,
-                               imp_cost_remainder=2.822088)
+                               imp_kwh_ev=3.55, imp_rate_ev=6.89997, imp_cost_ev=24.494893)
         v = 0.069
-        st._conn.execute(_CORR_RECALC_SQL, [v, v, v, v, v, v, "2026-08-18T03:30:00"])
+        st._conn.execute(_CORR_RECALC_SQL, [v, v, v, v, "2026-08-18T03:30:00"])
         st._conn.commit()
-        r = st._conn.execute("SELECT imp_rate, imp_cost, imp_rate_ev, imp_cost_ev, imp_cost_remainder "
+        r = st._conn.execute("SELECT imp_rate, imp_cost, imp_rate_ev, imp_cost_ev "
                              "FROM blocks WHERE meter_id='electricity_main'").fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.069, places=6)
         self.assertAlmostEqual(r["imp_cost"], round(3.929*v, 6), places=6)
         self.assertAlmostEqual(r["imp_rate_ev"], 0.069, places=6)
         self.assertAlmostEqual(r["imp_cost_ev"], round(3.55*v, 6), places=6)
-        # the invariant: EV + house == total
-        self.assertAlmostEqual(r["imp_cost_ev"] + r["imp_cost_remainder"], r["imp_cost"], places=6)
 
     def test_non_ev_block_split_columns_untouched(self):
         st = _store_with_block(imp_kwh=2.0, imp_rate=6.9, imp_cost=13.8)  # no EV split
         v = 0.069
-        st._conn.execute(_CORR_RECALC_SQL, [v, v, v, v, v, v, "2026-08-18T03:30:00"])
+        st._conn.execute(_CORR_RECALC_SQL, [v, v, v, v, "2026-08-18T03:30:00"])
         st._conn.commit()
-        r = st._conn.execute("SELECT imp_rate, imp_cost, imp_cost_ev, imp_rate_ev, imp_cost_remainder "
+        r = st._conn.execute("SELECT imp_rate, imp_cost, imp_cost_ev, imp_rate_ev "
                              "FROM blocks WHERE meter_id='electricity_main'").fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.069, places=6)
         self.assertAlmostEqual(r["imp_cost"], 0.138, places=6)
         self.assertIsNone(r["imp_cost_ev"])
         self.assertIsNone(r["imp_rate_ev"])
-        self.assertIsNone(r["imp_cost_remainder"])
 
 
 
@@ -145,7 +140,7 @@ class TestCorrectionSegmentRescale(unittest.TestCase):
         st = self._seg_store()
         v = 0.069
         # correct the block columns (P4.8 SQL) …
-        st._conn.execute(_CORR_RECALC_SQL, [v, v, v, v, v, v, "2026-08-18T03:30:00"])
+        st._conn.execute(_CORR_RECALC_SQL, [v, v, v, v, "2026-08-18T03:30:00"])
         # … and rescale its segments (P4.10 SQL)
         st._conn.execute(_CORR_SEG_SQL, [v, v, "2026-08-18T03:30:00"])
         st._conn.commit()
