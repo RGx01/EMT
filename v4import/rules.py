@@ -36,9 +36,7 @@ CARRY = (
                 "carbon_g", "imp_provisional", "source", "is_provisional",
                 "needs_pass2_rerun", "imp_kwh_api", "exp_kwh_api", "needs_review",
                 "carbon_intensity_g", "rate_corrected", "derivation_id",
-                "finalised_from_cad", "review_reason", "review_dismissed", "rate_source",
-                "imp_kwh_ev", "imp_cost_ev", "imp_rate_ev", "imp_ev_band",
-                "imp_home_band")),
+                "finalised_from_cad", "review_reason", "review_dismissed", "rate_source")),
     ("block_segments", ("id", "block_start", "meter_id", "channel", "seq", "kwh",
                         "inc_rate", "exc_rate", "band", "attribution")),
     ("measured_cost", ("slot_start", "mpan", "direction", "cost_incl", "cost_excl",
@@ -72,6 +70,9 @@ DROP_COLUMNS = {
         # the ex-VAT rate, the standing charge's ex-VAT and their provenance: derived where
         # read from imp_cost_exc (carried, spec v15) and the VAT calendar (5b)
         "imp_rate_exc", "standing_charge_exc", "exc_source",
+        # the EV split and its bands: the block's segments, written from these by transform 2
+        # where a block had none (5c)
+        "imp_kwh_ev", "imp_cost_ev", "imp_rate_ev", "imp_ev_band", "imp_home_band",
     }),
 }
 

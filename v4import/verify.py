@@ -27,7 +27,8 @@ _UNTOUCHED = {"block_segments": "WHERE block_start NOT IN (SELECT block_start FR
 _HELD_SRC = ("(rate_source IN ('corrected', 'reconciled', 'measured') OR (rate_reconciled = 1 "
              "AND (rate_source IS NULL OR rate_source = 'schedule')))")
 _SEG = ("(SELECT block_start, SUM(kwh) AS k, SUM(kwh * inc_rate) AS c, "
-        "SUM(CASE WHEN attribution = 'ev' THEN kwh ELSE 0 END) AS ev FROM %s.block_segments "
+        "SUM(CASE WHEN attribution = 'ev' THEN kwh ELSE 0 END) AS ev, "
+        "SUM(CASE WHEN attribution = 'ev' THEN kwh * inc_rate ELSE 0 END) AS ec FROM %s.block_segments "
         "WHERE meter_id = 'electricity_main' AND channel = 'import' GROUP BY block_start)")
 
 
@@ -129,18 +130,49 @@ def ev_segments(conn, report):
     report["gates"]["ev_segments"]["blocks"] = got
     if got != want:
         return "EV segments written for %d block(s), expected %d" % (got, want)
-    left = _one(conn, "SELECT COUNT(*) FROM main.blocks b WHERE b.meter_id = 'electricity_main' "
-                      "AND b.imp_kwh_ev > 1e-6 AND NOT EXISTS (SELECT 1 FROM main.block_segments "
-                      "s WHERE s.block_start = b.block_start AND s.meter_id = b.meter_id "
+    # the EV split is a v4-only column (rules.DROP_COLUMNS): the source's, joined on id
+    left = _one(conn, "SELECT COUNT(*) FROM src.blocks v WHERE v.meter_id = 'electricity_main' "
+                      "AND v.imp_kwh_ev > 1e-6 AND NOT EXISTS (SELECT 1 FROM main.block_segments "
+                      "s WHERE s.block_start = v.block_start AND s.meter_id = v.meter_id "
                       "AND s.channel = 'import')")
-    bad = _one(conn, "SELECT COUNT(*) FROM main.blocks b JOIN " + _SEG % "main" + " g "
+    bad = _one(conn, "SELECT COUNT(*) FROM main.blocks b JOIN src.blocks v ON v.id = b.id "
+                     "JOIN " + _SEG % "main" + " g "
                      "ON g.block_start = b.block_start JOIN temp.v4i_resegmented t "
                      "ON t.block_start = b.block_start AND t.why = 'ev_segments' "
                      "WHERE b.meter_id = 'electricity_main' AND (ABS(g.k - b.imp_kwh) > 1e-6 "
-                     "OR ABS(g.ev - b.imp_kwh_ev) > 1e-6 OR ABS(g.c - b.imp_cost) > 1e-5)")
+                     "OR ABS(g.ev - v.imp_kwh_ev) > 1e-6 OR ABS(g.c - b.imp_cost) > 1e-5)")
     if left or bad:
         return ("%d EV-split block(s) still without segments, %d not reproducing their columns"
                 % (left, bad))
+    return None
+
+
+def split_reproduced(conn, report):
+    """Spec §9.5: the dropped EV-split columns reproduce from the segments for EVERY main block,
+    at stored precision — the gate that makes the column drop safe. EV kWh to imp_kwh_ev, EV £ to
+    imp_cost_ev, and no block with EV segments where the columns said none. The one expected
+    difference is a held block whose refit shrank the EV because the house was gone (gate 11's
+    note): there the segments' EV is smaller than the column's, never larger. Reports the worst
+    divergence (£), not just pass/fail."""
+    seg = _SEG % "main"
+    base = ("FROM main.blocks b JOIN src.blocks v ON v.id = b.id LEFT JOIN " + seg + " g "
+            "ON g.block_start = b.block_start "
+            "LEFT JOIN temp.v4i_resegmented t ON t.block_start = b.block_start "
+            "WHERE b.meter_id = 'electricity_main' ")
+    shrunk = "(t.why = 'refit' AND COALESCE(g.ev, 0) <= v.imp_kwh_ev + 1e-6)"
+    kwh = _one(conn, "SELECT COUNT(*) " + base + "AND v.imp_kwh_ev > 1e-6 AND "
+                     "ABS(COALESCE(g.ev, 0) - v.imp_kwh_ev) > 1e-6 AND NOT " + shrunk)
+    cost = _one(conn, "SELECT COUNT(*) " + base + "AND v.imp_kwh_ev > 1e-6 AND "
+                      "ABS(COALESCE(g.ec, 0) - COALESCE(v.imp_cost_ev, 0)) > 1e-5 AND NOT " + shrunk)
+    phantom = _one(conn, "SELECT COUNT(*) " + base + "AND COALESCE(v.imp_kwh_ev, 0) <= 1e-6 "
+                         "AND g.ev > 1e-6")
+    worst = _one(conn, "SELECT MAX(ABS(COALESCE(g.ec, 0) - COALESCE(v.imp_cost_ev, 0))) " + base
+                       + "AND v.imp_kwh_ev > 1e-6 AND NOT " + shrunk)
+    report["gates"]["split_reproduced"].update(
+        worst_cost=round(worst or 0.0, 9), kwh_differ=kwh, cost_differ=cost, phantom=phantom)
+    if kwh or cost or phantom:
+        return ("the EV segments do not reproduce the EV-split columns: %d kWh, %d £, %d with EV "
+                "segments where the columns had none" % (kwh, cost, phantom))
     return None
 
 
@@ -210,7 +242,8 @@ def keys(conn, report):
 
 GATES = (("row_counts", row_counts), ("carried_exactly", carried_exactly),
          ("cost_parity", cost_parity), ("provenance", provenance),
-         ("ev_segments", ev_segments), ("held_fit", held_fit),
+         ("ev_segments", ev_segments), ("split_reproduced", split_reproduced),
+         ("held_fit", held_fit),
          ("corrections", corrections), ("tombstones", tombstones), ("keys", keys))
 
 

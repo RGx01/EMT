@@ -10,6 +10,11 @@ write fails, neither changes.
 The atomicity cases make the segment write fail (whichever store call does it on either tree) and
 assert the columns are unchanged. The reprice sweep's case is a path that wrote the columns and
 no segments at all. Discriminating: each first case fails on the parent; the rest are guards.
+
+Step 5c (10 Oct 2026) dropped the imp_*_ev columns: the split IS the segments, so there is no
+second write for them to disagree with. The cases that asserted "the columns are unchanged" now
+assert "no split was written" (guards on this tree), and the stale-rated split heal's
+restamp_ev_columns case went with that method.
 """
 import os
 import sys
@@ -21,6 +26,7 @@ import test_ev_back_attribution as BA            # noqa: E402  (store + schedule
 import test_measured_apply as MA                 # noqa: E402
 import test_reprice_history_sweep as RS          # noqa: E402
 import test_reconcile_exc_restamp as RC          # noqa: E402
+import ev_split                                  # noqa: E402
 engine = BA.engine
 
 
@@ -33,12 +39,25 @@ def _segments_fail(store):
 
 class TheBackAttribution(unittest.TestCase):
     setUp, tearDown = BA.TestEvBackAttribution.setUp, BA.TestEvBackAttribution.tearDown
-    _block, _completed, _row = (BA.TestEvBackAttribution._block,
-                                BA.TestEvBackAttribution._completed,
-                                BA.TestEvBackAttribution._row)
+    _completed = BA.TestEvBackAttribution._completed
     SLOT = BA.TestEvBackAttribution.SLOT
 
+    def _block(self, imp_kwh=3.0, ev=None):
+        """A main block with no EV split (step 5c: no EV segment; `ev` must be None)."""
+        assert ev is None
+        self.st._conn.execute(
+            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
+            "imp_kwh, imp_rate, imp_cost) VALUES (?,?,?,1,?,?,?)",
+            (self.SLOT, self.SLOT, "electricity_main", imp_kwh, BA.OFF,
+             round(imp_kwh * BA.OFF, 6)))
+
+    def _row(self):
+        return self.st._conn.execute(
+            "SELECT " + ev_split.sql_kwh("b") + " AS imp_kwh_ev FROM blocks b "
+            "WHERE block_start=? AND meter_id='electricity_main'", (self.SLOT,)).fetchone()
+
     def test_a_failed_segment_write_leaves_the_columns(self):
+        """GUARD since step 5c: a failed segment write leaves no split (and does not raise)."""
         self._block(imp_kwh=3.0, ev=None)
         self._completed(energy=-2.0)
         ps = _segments_fail(self.st)
@@ -52,13 +71,14 @@ class TheBackAttribution(unittest.TestCase):
         self.assertIsNone(self._row()["imp_kwh_ev"])
 
     def test_it_still_writes_both(self):
-        """GUARD: with the write working, columns and segments carry the same EV."""
+        """GUARD: with the write working, the segments carry the EV."""
         self._block(imp_kwh=3.0, ev=None)
         self._completed(energy=-2.0)
         self.assertEqual(engine._attribute_missing_ev_split(), 1)
         ev = sum(s["kwh"] for s in self.st.get_block_segments(self.SLOT, "electricity_main")
                  if s["attribution"] == "ev")
-        self.assertAlmostEqual(ev, self._row()["imp_kwh_ev"], places=6)
+        self.assertAlmostEqual(ev, 2.0, places=6)
+        self.assertAlmostEqual(self._row()["imp_kwh_ev"], 2.0, places=6)
 
 
 def _failing(store, fn):
@@ -119,9 +139,6 @@ class TheRepriceSweep(unittest.TestCase):
 
     def test_the_split_reaches_the_segments(self):
         engine._reprice_history_blocks(self._house_only(), "UTC", RS._RATE_SEGS)
-        ev_col = self.st._conn.execute("SELECT imp_kwh_ev FROM blocks WHERE block_start=?",
-                                       (self.B,)).fetchone()[0]
-        self.assertAlmostEqual(ev_col, 2.0, places=6)
         self.assertAlmostEqual(sum(s["kwh"] for s in self._segs(self.B) if s["attribution"] == "ev"),
                                2.0, places=6)
 
@@ -175,9 +192,9 @@ class TheReconcileVerdict(unittest.IsolatedAsyncioTestCase):
 class TheStaleRatedSplitHeal(unittest.IsolatedAsyncioTestCase):
     """The reconcile's stale-rated split heal (a block already at peak whose split is still
     priced off-peak) wrote the re-priced segments, then restamped the columns on their own: if
-    the restamp failed, the segments had moved and the columns had not. Now restamp_ev_columns
-    writes both. Discriminating: the first case fails on the parent (it writes the segments
-    before the call that fails)."""
+    the restamp failed, the segments had moved and the columns had not. Then restamp_ev_columns
+    wrote both; since step 5c (10 Oct 2026) the split is the segments and the heal writes only
+    them, so the failed-restamp case went with restamp_ev_columns. The guard remains."""
     SLOT = RC.TestReconcileRestampsExc.SLOT
 
     def _seed(self):
@@ -189,13 +206,11 @@ class TheStaleRatedSplitHeal(unittest.IsolatedAsyncioTestCase):
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
             "imp_kwh, imp_rate, imp_cost, imp_cost_exc, "
-            "rate_corrected, rate_source, imp_kwh_api, imp_kwh_ev, imp_cost_ev, "
-            "imp_rate_ev, imp_ev_band, imp_home_band) VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "rate_corrected, rate_source, imp_kwh_api) VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?)",
             (self.SLOT, self.SLOT, "electricity_main", 1, 3.186, 0.323092,
              round(3.186 * 0.323092, 6), round(3.186 * 0.323092 / 1.05, 6),
-             0, "reconciled", 3.186, 2.24, round(2.24 * 0.05493, 6), 0.05493,
-             "off_peak", "off_peak"))
+             0, "reconciled", 3.186))
         st.set_block_segments(self.SLOT, "electricity_main", [
             ps.Segment(2.24, 0.05493, 0.052314, "off_peak", "ev"),
             ps.Segment(0.946, 0.05493, 0.052314, "off_peak", "house")])
@@ -219,19 +234,16 @@ class TheStaleRatedSplitHeal(unittest.IsolatedAsyncioTestCase):
     def _seg_rates(self, st):
         return {round(s["inc_rate"], 6) for s in st.get_block_segments(self.SLOT, "electricity_main")}
 
-    async def test_a_failed_restamp_moves_neither(self):
-        st = self._seed()
-        with patch.object(st, "restamp_ev_columns", side_effect=RuntimeError("restamp failed")):
-            await self._reconcile(st)
-        self.assertEqual(self._seg_rates(st), {0.05493})                # segments not moved
-
     async def test_it_still_heals_both(self):
-        """GUARD: with the write working, segments and columns move to peak together."""
+        """GUARD: the split's segments move to peak, the EV kept."""
         st = self._seed()
         await self._reconcile(st)
         self.assertEqual(self._seg_rates(st), {0.323092})
-        self.assertAlmostEqual(st._conn.execute("SELECT imp_rate_ev FROM blocks WHERE block_start=?",
-                                                (self.SLOT,)).fetchone()[0], 0.323092, places=5)
+        ev_kwh, ev_cost = st._conn.execute(
+            "SELECT " + ev_split.sql_kwh("b") + ", " + ev_split.sql_cost("b") + " FROM blocks b "
+            "WHERE block_start=?", (self.SLOT,)).fetchone()
+        self.assertAlmostEqual(ev_kwh, 2.24, places=6)
+        self.assertAlmostEqual(ev_cost / ev_kwh, 0.323092, places=5)
 
 
 class TheCorrectionsRoute(unittest.TestCase):
@@ -275,7 +287,7 @@ class TheCorrectionsRoute(unittest.TestCase):
 
 class TheSplitTheyRebuildFrom(unittest.IsolatedAsyncioTestCase):
     """BL-79 part 3: the reconcile verdict rebuilds a block's segments from its split, and
-    measured settlement prefers the block's stored EV; both read the imp_kwh_ev COLUMN. With the
+    measured settlement prefers the block's stored EV; both read the imp_kwh_ev COLUMN (since gone, step 5c). With the
     EV in the segments and the columns blank (the gap-fill shape), the verdict rebuilt the block
     house-only and settlement took the dispatch instead. Both now read ev_split's split.
     Discriminating: both fail on the parent."""

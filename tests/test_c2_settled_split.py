@@ -2,13 +2,14 @@
 buckets, but its QUANTITY is bounded by the car's completed-dispatch session (measured is king).
 Octopus's EV_DEVICE bucket over-attributes on slots where a home battery grid-charged inside the
 dispatch window (no battery bucket), so the bill's ev_kwh is capped to the dispatch. A completed
-dispatch that lands AFTER a block is priced leaves imp_kwh_ev NULL; the bill split still recovers
+dispatch that lands AFTER a block is priced leaves it with no EV segment; the bill split still recovers
 the EV, but never beyond the dispatched session. No dispatch -> house-only."""
 import os, sys, tempfile, unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from block_store import BlockStore
 from kraken_rates import RateSchedule
 import engine
+import ev_split
 
 OFF, PK = 5.49297, 32.30924  # pence
 
@@ -33,12 +34,12 @@ class TestC2SettledSplit(unittest.TestCase):
             self.store._conn.execute(
                 "INSERT INTO config_periods (id, effective_from, block_minutes, timezone) "
                 "VALUES (1,'2026-08-01T00:00:00',30,'Europe/London')")
-            # block: 5 kWh, EV split NULL (late dispatch), not yet settled
+            # block: 5 kWh, no EV split (no EV segment: late dispatch), not yet settled
             self.store._conn.execute(
                 "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-                "imp_kwh, imp_kwh_api, imp_rate, imp_cost, imp_kwh_ev, is_provisional, interpolated) "
+                "imp_kwh, imp_kwh_api, imp_rate, imp_cost, is_provisional, interpolated) "
                 "VALUES ('2026-09-08T02:00:00','2026-09-08T02:30:00','electricity_main',1,"
-                "5.0,5.0,?,?,NULL,0,0)", (round(OFF/100,6), round(5.0*OFF/100,6)))   # DCC-settled
+                "5.0,5.0,?,?,0,0)", (round(OFF/100,6), round(5.0*OFF/100,6)))   # DCC-settled
         self._prev = (engine._store, engine._kraken_rate_schedules)
         engine._store = self.store
         engine._kraken_rate_schedules = {"import": _sched()}
@@ -55,7 +56,8 @@ class TestC2SettledSplit(unittest.TestCase):
 
     def _ev(self):
         return self.store._conn.execute(
-            "SELECT imp_kwh_ev FROM blocks WHERE block_start='2026-09-08T02:00:00'").fetchone()[0]
+            "SELECT " + ev_split.sql_kwh("b") + " FROM blocks b "
+            "WHERE block_start='2026-09-08T02:00:00'").fetchone()[0]
 
     def test_split_from_bill_when_breakdown_cached(self):
         # bill bucket (3.0) within the car's dispatch session (3.0) -> EV = 3.0 from the bill.

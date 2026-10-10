@@ -53,9 +53,11 @@ def _store():
         for bs, (k, c, rem, ek, ec) in SLOTS.items():
             st._conn.execute(
                 "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
-                "imp_rate, imp_cost, exp_kwh, exp_cost, standing_charge, "
-                "imp_kwh_ev, imp_cost_ev) VALUES (?, ?, 'electricity_main', ?, ?, 0.3, ?, 0, 0, "
-                "0, ?, ?)", (bs, bs, cp, k, c, ek, ec))
+                "imp_rate, imp_cost, exp_kwh, exp_cost, standing_charge) "
+                "VALUES (?, ?, 'electricity_main', ?, ?, 0.3, ?, 0, 0, 0)", (bs, bs, cp, k, c))
+            # the dispatch EV split is the block's EV segment (step 5c: the columns went)
+            st._replace_segments(bs, "electricity_main",
+                                 [(ek, round(ec / ek, 6), None, "off_peak", "ev")])
             if k - rem > 1e-9:                    # the battery's grid draw: main − Direct
                 st._conn.execute(
                     "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "

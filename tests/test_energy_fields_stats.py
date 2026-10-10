@@ -47,12 +47,19 @@ def _blank():
     return st
 
 
-def _ins(st, bs, mid, cp=1, **v):
+def _ins(st, bs, mid, cp=1, ev=None, **v):
+    """`ev`: (kWh, £) of a stored EV split, written as the block's EV segment (step 5c:
+    the split is only segments)."""
     be = (datetime.fromisoformat(bs) + timedelta(minutes=30)).isoformat()
     cols = ["block_start", "block_end", "meter_id", "config_period_id", "is_provisional",
             "interpolated"] + list(v)
     st._conn.execute("INSERT INTO blocks (%s) VALUES (%s)" % (",".join(cols), ",".join("?" * len(cols))),
                      [bs, be, mid, cp, 0, 0] + list(v.values()))
+    if ev is not None:
+        st._conn.execute("INSERT INTO block_segments (block_start, meter_id, channel, seq, kwh, "
+                         "inc_rate, exc_rate, band, attribution) "
+                         "VALUES (?, ?, 'import', 0, ?, ?, NULL, 'off_peak', 'ev')",
+                         (bs, mid, ev[0], ev[1] / ev[0]))
 
 
 def _edge_store(ev_meter):
@@ -86,7 +93,7 @@ def _edge_store(ev_meter):
              imp_kwh_grid=(imp * 0.9 if i % 3 == 1 else None),
              imp_rate=[0.07, 0.3, 0.07][i % 3], imp_cost=round(imp * [0.07, 0.3, 0.07][i % 3], 4),
              exp_cost=round(exp * 0.15, 4), standing_charge=sc, carbon_g=cg,
-             imp_kwh_ev=(0.3 if i % 4 == 0 else None), imp_cost_ev=(0.021 if i % 4 == 0 else None))
+             ev=((0.3, 0.021) if i % 4 == 0 else None))
         order = devices if i % 2 else devices[::-1]
         for j, d in enumerate(order):
             _ins(st, bs, d, cp, imp_kwh=0.1 * (j + 1) + 0.0001 * i, imp_kwh_grid=(None if i % 6 == 0 else 0.05 * (j + 1)),
@@ -125,7 +132,7 @@ def _single_meter_store():
         bs = t.isoformat()
         _ins(st, bs, "electricity_main", imp_kwh=1.0 + 0.01 * i, imp_rate=0.07, imp_cost=0.07 + 0.0007 * i,
              standing_charge=0.48, carbon_g=50.0 + i,
-             imp_kwh_ev=(0.6 if i % 8 == 0 else None), imp_cost_ev=(0.042 if i % 8 == 0 else None))
+             ev=((0.6, 0.042) if i % 8 == 0 else None))
         if i % 3 == 0:
             c.execute("INSERT INTO dispatch_history (slot_start, kind, energy_kwh, first_seen, last_seen) "
                       "VALUES (?, 'completed', ?, ?, ?)", (bs, -0.5, bs, bs))

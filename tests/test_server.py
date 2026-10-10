@@ -3515,7 +3515,6 @@ class TestAggregateUsage(unittest.TestCase):
                 imp_read_start REAL, imp_read_end REAL,
                 exp_kwh REAL, exp_rate REAL, exp_cost REAL,
                 exp_read_start REAL, exp_read_end REAL,
-                imp_kwh_ev REAL, imp_cost_ev REAL, imp_rate_ev REAL,
                 standing_charge REAL, carbon_g REAL, interpolated INTEGER DEFAULT 0
             );
         """)
@@ -4762,15 +4761,14 @@ class TestDispatchDerivedEVWiring(unittest.TestCase):
                 imp_kwh REAL, imp_kwh_grid REAL,
                 imp_rate REAL, imp_cost REAL,
                 exp_kwh REAL, exp_rate REAL, exp_cost REAL, standing_charge REAL,
-                imp_kwh_ev REAL, imp_cost_ev REAL, imp_rate_ev REAL,
                 carbon_g REAL, interpolated INTEGER DEFAULT 0
             );
             CREATE TABLE dispatch_history (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 slot_start TEXT, kind TEXT, provider TEXT, energy_kwh REAL
             );
-            -- Empty: these blocks have no segments, so a stored split is the LEGACY column
-            -- one (ev_split). Every real schema has the table.
+            -- Empty unless a test stores a split: since step 5c the EV split is ONLY a
+            -- block's EV segments (ev_split). Every real schema has the table.
             CREATE TABLE block_segments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, block_start TEXT, meter_id TEXT,
                 channel TEXT, seq INTEGER, kwh REAL, inc_rate REAL, exc_rate REAL,
@@ -4839,8 +4837,11 @@ class TestDispatchDerivedEVWiring(unittest.TestCase):
         store, conn = self._store()
         conn.execute("INSERT INTO meters (config_period_id,meter_id,is_sub_meter,meter_type) "
                      "VALUES (1,'electricity_main',0,NULL)")
-        conn.execute("UPDATE blocks SET imp_kwh_ev=4.0, imp_cost_ev=0.30, imp_rate_ev=0.075 "
-                     "WHERE block_start='2026-08-04T00:00:00'"); conn.commit()
+        conn.executemany(
+            "INSERT INTO block_segments (block_start,meter_id,channel,seq,kwh,inc_rate,"
+            "exc_rate,band,attribution) VALUES ('2026-08-04T00:00:00','electricity_main',"
+            "'import',?,?,?,NULL,'off_peak',?)",
+            [(0, 4.0, 0.075, "ev"), (1, 1.0, 0.05, "house")]); conn.commit()
         cfg = {"meters": {"electricity_main": {"meta": {"timezone": "UTC"}}}}
         d = server._aggregate_usage(store, cfg,
                                     "2026-08-04T00:00:00", "2026-08-05T00:00:00", tz_name="UTC")
@@ -6298,8 +6299,11 @@ class TestBlocksDataVersion(unittest.TestCase):
         conn.row_factory = sqlite3.Row
         conn.execute(
             "CREATE TABLE blocks (block_start TEXT, imp_kwh REAL, imp_cost REAL, "
-            "exp_kwh REAL, exp_cost REAL, carbon_g REAL, imp_kwh_ev REAL, imp_cost_ev REAL, "
+            "exp_kwh REAL, exp_cost REAL, carbon_g REAL, "
             "imp_cost_exc REAL, imp_kwh_grid REAL, standing_charge REAL)")
+        conn.execute(
+            "CREATE TABLE block_segments (block_start TEXT, meter_id TEXT, channel TEXT, "
+            "seq INTEGER, kwh REAL, inc_rate REAL, exc_rate REAL, band TEXT, attribution TEXT)")
         conn.executemany(
             "INSERT INTO blocks (block_start, imp_kwh, imp_cost, exp_kwh, exp_cost, carbon_g) "
             "VALUES (?,?,?,?,?,?)",
@@ -6341,12 +6345,14 @@ class TestBlocksDataVersion(unittest.TestCase):
         """REGRESSION (C, 30 Sep 2026): the IOG split carve and the settled-split heal
         move kWh between house and EV and leave every total alone. They moved the token
         through the chart regen they triggered; with the regen gone (#23) an open
-        Billing tab kept the old EV/Home rows until the next half-hour."""
+        Billing tab kept the old EV/Home rows until the next half-hour. Step 5c: the
+        split is the block's segments (it was imp_kwh_ev / imp_cost_ev)."""
         import server
         st = self._store()
         before = server._blocks_data_version(st)
-        st._conn.execute("UPDATE blocks SET imp_kwh_ev = 0.6, imp_cost_ev = 0.04 "
-                         "WHERE block_start = '2026-02-12T00:30:00'")
+        st._conn.executemany(
+            "INSERT INTO block_segments VALUES ('2026-02-12T00:30:00', 'electricity_main', "
+            "'import', ?, ?, 20.0, NULL, 'off_peak', ?)", [(0, 0.6, "ev"), (1, 0.4, "house")])
         st._conn.commit()
         self.assertNotEqual(before, server._blocks_data_version(st))
 

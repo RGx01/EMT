@@ -46,10 +46,12 @@ def v4_db(path, *, written_by=G.FLOOR_VERSION, meta=None, state=None, extra_sql=
     st = BlockStore(path)
     c = st._conn
     c.execute("DELETE FROM store_meta WHERE key = 'emt_schema'")
-    # v4's blocks still carry the columns v5 dropped in steps 5a and 5b (10 Oct 2026).
+    # v4's blocks still carry the columns v5 dropped in steps 5a, 5b and 5c (10 Oct 2026).
     for col in ("imp_kwh_remainder REAL", "imp_cost_remainder REAL",
                 "rate_reconciled INTEGER NOT NULL DEFAULT 0",
-                "imp_rate_exc REAL", "standing_charge_exc REAL", "exc_source TEXT"):
+                "imp_rate_exc REAL", "standing_charge_exc REAL", "exc_source TEXT",
+                "imp_kwh_ev REAL", "imp_cost_ev REAL", "imp_rate_ev REAL",
+                "imp_ev_band TEXT", "imp_home_band TEXT"):
         c.execute("ALTER TABLE blocks ADD COLUMN " + col)
     if written_by is not None:
         st.set_meta("written_by", written_by)
@@ -231,8 +233,9 @@ EV_BS, HELD_BS, LOOSE_BS, FOLD_BS = ("2026-08-25T23:00:00", "2026-08-26T00:00:00
 SEG_SQL = (
     # an EV split in the columns and no segments (spec §5.2 v14)
     _blk(60, EV_BS, 4.0, 0.07, "schedule", ev=(3.0, 0.21, 0.07, "off_peak", "off_peak")),
-    # settled, re-costed by v4 to 7.5 kWh, segments still at 7.058 (BL-79 (1))
-    _blk(61, HELD_BS, 7.5, 0.30, "measured"),
+    # settled, re-costed by v4 to 7.5 kWh, segments still at 7.058 (BL-79 (1)); its EV split
+    # in the columns matches its EV segment, as v4 wrote both
+    _blk(61, HELD_BS, 7.5, 0.30, "measured", ev=(3.0, 0.21, 0.07, "off_peak", "day")),
     _seg(HELD_BS, 0, 3.0, 0.07, "off_peak", "ev"), _seg(HELD_BS, 1, 4.058, 0.30, "day", "house"),
     # not held, and its segments miss its kWh: reported, never refitted
     _blk(62, LOOSE_BS, 2.0, 0.30, "schedule"), _seg(LOOSE_BS, 0, 1.9, 0.30, "day", "house"),
@@ -256,8 +259,7 @@ class TheSegmentTransforms(_Dir):
         self.assertEqual(report["transforms"]["ev_segments"], {"blocks": 1, "kwh_ev": 3.0})
 
     def test_ev_split_readers_see_it_from_the_segments(self):
-        """GUARD until the column drop: ev_split's LEGACY fallback reads the same 3.0 from the
-        columns on the parent. After the drop, only the segments can say it."""
+        """The EV-split columns are dropped (step 5c): only the segments can say it."""
         self.imported(extra_sql=SEG_SQL)
         conn = sqlite3.connect(self.target)
         self.addCleanup(conn.close)
@@ -282,10 +284,11 @@ class TheSegmentTransforms(_Dir):
         self.assertEqual(report["transforms"]["refit_held"]["reported"], [LOOSE_BS])
 
     def test_every_column_is_carried_as_it_is(self):
-        """GUARD: the transforms write segments only (spec §5.2)."""
+        """GUARD: the transforms write segments only (spec §5.2); the EV-split columns are
+        v4-only and not carried (step 5c), so the EV is in the segments alone."""
         conn, _ = self.imported(extra_sql=SEG_SQL)
-        self.assertEqual(tuple(conn.execute("SELECT imp_kwh, imp_cost, imp_kwh_ev FROM blocks "
-                                            "WHERE id = 60").fetchone()), (4.0, 0.28, 3.0))
+        self.assertEqual(tuple(conn.execute("SELECT imp_kwh, imp_cost FROM blocks "
+                                            "WHERE id = 60").fetchone()), (4.0, 0.28))
 
     def test_a_block_with_segments_keeps_them(self):
         """GUARD: the fixture's block 40 already has segments matching its kWh."""
@@ -460,6 +463,19 @@ class TheGatesBite(_Dir):
         self.src = self._seg_src
         self._broken("UPDATE main.block_segments SET inc_rate = 0.25 WHERE block_start = '%s' "
                      "AND attribution = 'ev'" % HELD_BS, "re-priced by the refit")
+
+    def test_an_ev_segment_whose_cost_moved(self):
+        """Gate 5 (spec §9.5): the EV segments reproduce the source's imp_cost_ev."""
+        self.src = self._seg_src
+        self._broken("UPDATE main.block_segments SET inc_rate = inc_rate + 0.01 "
+                     "WHERE block_start = '%s' AND attribution = 'ev'" % EV_BS,
+                     "do not reproduce the EV-split columns")
+
+    def test_a_phantom_ev_segment(self):
+        """Gate 5: no block has EV segments where the source's columns had no split."""
+        self.src = self._seg_src
+        self._broken("UPDATE main.block_segments SET attribution = 'ev' WHERE block_start = '%s'"
+                     % B1, "with EV segments where the columns had none")
 
     def test_a_rewritten_segment_outside_the_transforms(self):
         """GUARD: "carried exactly" caught this before; it still does for untouched blocks."""

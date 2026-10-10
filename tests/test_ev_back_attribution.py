@@ -7,6 +7,9 @@ reports a slot's completed energy hours later — often after the block was pric
 'planned' dispatch — so the real charge is never attributed: it sits in Home. Two instances
 that priced the same slot at different times then disagree permanently. On 4.4.0 the fix
 rewrites the columns AND the block's segments (the readers' source of truth).
+
+Step 5c (10 Oct 2026): the imp_*_ev columns are gone; the split is the EV segments, read here
+through ev_split.
 """
 
 import os
@@ -15,6 +18,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import engine
+import ev_split
 import pricing_segments as ps
 from block_store import BlockStore
 
@@ -55,8 +59,13 @@ class TestEvBackAttribution(unittest.TestCase):
         slot = slot or self.SLOT
         self.st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, imp_kwh_ev, source) VALUES (?,?,?,1,?,?,?,?,?)",
-            (slot, slot, "electricity_main", imp_kwh, OFF, round(imp_kwh * OFF, 6), ev, source))
+            "imp_kwh, imp_rate, imp_cost, source) VALUES (?,?,?,1,?,?,?,?)",
+            (slot, slot, "electricity_main", imp_kwh, OFF, round(imp_kwh * OFF, 6), source))
+        self.st._conn.commit()
+        if ev is not None:                       # an existing split, as its segments
+            self.st.set_block_segments(slot, "electricity_main", [
+                (ev, OFF, None, "off_peak", "ev"),
+                (imp_kwh - ev, OFF, None, "off_peak", "house")])
 
     def _completed(self, energy=-2.0, slot=None):
         slot = slot or self.SLOT
@@ -66,13 +75,17 @@ class TestEvBackAttribution(unittest.TestCase):
         self.st._conn.commit()
 
     def _row(self, slot=None):
-        return self.st._conn.execute(
-            "SELECT imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band FROM blocks "
+        r = self.st._conn.execute(
+            "SELECT " + ev_split.sql_kwh("b") + " AS imp_kwh_ev, " + ev_split.sql_cost("b")
+            + " AS imp_cost_ev, " + ev_split.sql_band("b", "ev") + " AS imp_ev_band FROM blocks b "
             "WHERE block_start=? AND meter_id='electricity_main'",
             (slot or self.SLOT,)).fetchone()
+        r = dict(r)
+        r["imp_rate_ev"] = (r["imp_cost_ev"] / r["imp_kwh_ev"]) if r["imp_kwh_ev"] else None
+        return r
 
-    def test_attributes_columns_and_segments(self):
-        # NULL split + completed dispatch → EV attributed on the columns AND the segments.
+    def test_attributes_the_segments(self):
+        # No split + completed dispatch → EV attributed on the segments (step 5c: the split).
         self._block(imp_kwh=3.0, ev=None)
         self._completed(energy=-2.0)
         self.assertEqual(engine._attribute_missing_ev_split(), 1)

@@ -7,9 +7,11 @@ through a raw `with conn:` transaction that a `conn = _store._conn` alias had
 made invisible to the ratchet (see test_raw_connection_ratchet.py).
 
 The carve's two guards are the interesting part and are pinned individually:
-`imp_kwh_ev IS NULL` in the WHERE, so a block carved between selection and write
-is not carved twice; and `COALESCE` on the bands, so a predicted carve fills a
-blank rather than overwriting an answer settlement already gave.
+"no EV segment yet", checked in the write's own transaction, so a block carved
+between selection and write is not carved twice; and the house band already
+recorded on the block's segments is kept, so a predicted carve fills a blank
+rather than overwriting an answer settlement already gave. (Until step 5c both
+lived in the imp_*_ev columns: `imp_kwh_ev IS NULL` and `COALESCE` on the bands.)
 """
 import os
 import sys
@@ -42,6 +44,11 @@ def _dispatch(st, slot, kwh=3.0, kind="completed"):
     st.record_dispatch_history(slot_start=slot, kind=kind, provider="octopus",
                                source=None, energy_kwh=kwh,
                                raw_start=None, raw_end=None)
+
+
+def _carve_segs(ev_kwh=2.0, house_kwh=3.0, rate=0.25, ev_band="off_peak",
+                home_band="day"):
+    return [(ev_kwh, rate, None, ev_band, "ev"), (house_kwh, rate, None, home_band, "house")]
 
 
 class PricingRangeScan(unittest.TestCase):
@@ -90,7 +97,8 @@ class EvCarveCandidates(unittest.TestCase):
         self.assertEqual(len(self.st.get_blocks_awaiting_ev_carve(10)), 1)
 
     def test_already_carved_is_excluded(self):
-        _block(self.st, "2026-09-01T00:00:00", imp_kwh=5.0, imp_kwh_ev=2.0)
+        _block(self.st, "2026-09-01T00:00:00", imp_kwh=5.0)
+        self.st.set_block_segments("2026-09-01T00:00:00", "electricity_main", _carve_segs())
         _dispatch(self.st, "2026-09-01T00:00:00")
         self.assertEqual(self.st.get_blocks_awaiting_ev_carve(10), [])
 
@@ -129,46 +137,42 @@ class CarveWrite(unittest.TestCase):
         self.st = _mk_store()
         _block(self.st, "2026-09-01T00:00:00", imp_kwh=5.0, imp_rate=0.25)
 
-    def _row(self):
-        return self.st._conn.execute(
-            "SELECT imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band "
-            "FROM blocks WHERE block_start='2026-09-01T00:00:00'").fetchone()
+    def _segs(self):
+        return {s["attribution"]: s for s in
+                self.st.get_block_segments("2026-09-01T00:00:00", "electricity_main")}
 
     def test_it_writes_and_reports_one_row(self):
-        n = self.st.carve_ev_split("2026-09-01T00:00:00", 2.0, 0.5, 0.25,
-                                   "off_peak", "day")
+        n = self.st.carve_ev_split("2026-09-01T00:00:00", segments=_carve_segs())
         self.assertEqual(n, 1)
-        r = self._row()
-        self.assertAlmostEqual(r["imp_kwh_ev"], 2.0)
-        self.assertEqual(r["imp_ev_band"], "off_peak")
+        r = self._segs()
+        self.assertAlmostEqual(r["ev"]["kwh"], 2.0)
+        self.assertEqual(r["ev"]["band"], "off_peak")
 
     def test_a_second_carve_is_refused(self):
-        """The `imp_kwh_ev IS NULL` guard lives in the WHERE, so selection and
-        write cannot come apart -- a block carved in between is not carved
-        twice."""
-        self.st.carve_ev_split("2026-09-01T00:00:00", 2.0, 0.5, 0.25,
-                               "off_peak", "day")
-        n = self.st.carve_ev_split("2026-09-01T00:00:00", 9.9, 9.9, 9.9,
-                                   "peak", "night")
+        """The "no EV segment yet" guard is checked in the write's own
+        transaction, so selection and write cannot come apart -- a block carved
+        in between is not carved twice."""
+        self.st.carve_ev_split("2026-09-01T00:00:00", segments=_carve_segs())
+        n = self.st.carve_ev_split("2026-09-01T00:00:00", segments=_carve_segs(
+            9.9, 9.9, 9.9, "peak", "night"))
         self.assertEqual(n, 0, "a second carve must change nothing")
-        self.assertAlmostEqual(self._row()["imp_kwh_ev"], 2.0)
+        self.assertAlmostEqual(self._segs()["ev"]["kwh"], 2.0)
 
     def test_an_existing_band_is_not_overwritten(self):
-        """COALESCE: a band already recorded was decided by something with
-        better information. A prediction fills a blank; it does not argue."""
-        self.st._conn.execute(
-            "UPDATE blocks SET imp_ev_band='peak' WHERE block_start=?",
-            ("2026-09-01T00:00:00",))
-        self.st._conn.commit()
-        self.st.carve_ev_split("2026-09-01T00:00:00", 2.0, 0.5, 0.25,
-                               "off_peak", "day")
-        r = self._row()
-        self.assertEqual(r["imp_ev_band"], "peak", "existing band was clobbered")
-        self.assertEqual(r["imp_home_band"], "day", "blank band should fill")
+        """A band already recorded was decided by something with better
+        information. A prediction fills a blank; it does not argue. Under the
+        guard the block has no EV segment, so the recorded answer is the house
+        segments' band (step 5c; it was COALESCE on the band columns)."""
+        self.st.set_block_segments("2026-09-01T00:00:00", "electricity_main",
+                                   [(5.0, 0.25, None, "peak", "house")])
+        self.st.carve_ev_split("2026-09-01T00:00:00", segments=_carve_segs())
+        r = self._segs()
+        self.assertEqual(r["house"]["band"], "peak", "existing band was clobbered")
+        self.assertEqual(r["ev"]["band"], "off_peak", "blank band should fill")
 
     def test_it_is_meter_scoped(self):
-        n = self.st.carve_ev_split("2026-09-01T00:00:00", 2.0, 0.5, 0.25,
-                                   "off_peak", "day", meter_id="sub_meter_ev")
+        n = self.st.carve_ev_split("2026-09-01T00:00:00", meter_id="sub_meter_ev",
+                                   segments=_carve_segs())
         self.assertEqual(n, 0)
 
 

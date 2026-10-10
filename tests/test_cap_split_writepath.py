@@ -1,8 +1,8 @@
 """
 test_cap_split_writepath.py — the BL-9 IOG house/EV split persists through the
-finalise write path (_block_rows → _insert_block_rows). Additive: an import
-channel carrying kwh_ev/cost_ev/rate_ev is stored on the main block; a block
-without them stores NULL (no regression).
+finalise write path (_block_rows → _insert_block_rows). Step 5c (10 Oct 2026): an
+import channel carrying its priced segments (STAGED_SEGMENTS) has them committed
+with the block; a block without them stores no EV split (no regression).
 """
 
 import os
@@ -10,7 +10,8 @@ import sys
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from block_store import BlockStore
+from block_store import BlockStore, STAGED_SEGMENTS
+import ev_split
 
 
 class TestCapSplitWritePath(unittest.TestCase):
@@ -36,28 +37,29 @@ class TestCapSplitWritePath(unittest.TestCase):
 
     def _read(self, st):
         return st._conn.execute(
-            "SELECT imp_kwh, imp_cost, imp_kwh_ev, imp_cost_ev, imp_rate_ev "
-            "FROM blocks WHERE meter_id='electricity_main'").fetchone()
+            "SELECT b.imp_kwh, b.imp_cost, " + ev_split.sql_kwh("b") + " AS ev_kwh, "
+            + ev_split.sql_cost("b") + " AS ev_cost "
+            "FROM blocks b WHERE b.meter_id='electricity_main'").fetchone()
 
     def test_split_persists(self):
         st = self._store()
         st.append_block(self._block(
-            {"kwh_ev": 2.0, "cost_ev": 0.10, "rate_ev": 0.05}), self._cp)
+            {STAGED_SEGMENTS: [(2.0, 0.05, 0.047619, "off_peak", "ev"),
+                               (1.0, 0.07, 0.066667, "day", "house")]}), self._cp)
         row = self._read(st)
-        self.assertEqual(row["imp_kwh_ev"], 2.0)
-        self.assertEqual(row["imp_cost_ev"], 0.10)
-        self.assertEqual(row["imp_rate_ev"], 0.05)
+        self.assertAlmostEqual(row["ev_kwh"], 2.0)
+        self.assertAlmostEqual(row["ev_cost"], 0.10)
+        self.assertAlmostEqual(row["ev_cost"] / row["ev_kwh"], 0.05)
         # house remainder derivable, and unchanged inc totals
-        self.assertAlmostEqual(row["imp_kwh"] - row["imp_kwh_ev"], 1.0)
+        self.assertAlmostEqual(row["imp_kwh"] - row["ev_kwh"], 1.0)
         self.assertAlmostEqual(row["imp_cost"], 0.17)
 
     def test_absent_split_stores_null(self):
         st = self._store()
-        st.append_block(self._block({}), self._cp)   # no kwh_ev/cost_ev/rate_ev
+        st.append_block(self._block({}), self._cp)   # no segments staged
         row = self._read(st)
-        self.assertIsNone(row["imp_kwh_ev"])
-        self.assertIsNone(row["imp_cost_ev"])
-        self.assertIsNone(row["imp_rate_ev"])
+        self.assertIsNone(row["ev_kwh"])
+        self.assertIsNone(row["ev_cost"])
         self.assertAlmostEqual(row["imp_cost"], 0.17)   # unaffected
 
 

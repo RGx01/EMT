@@ -403,7 +403,6 @@ BILL_ROW_COLUMNS = (
     "block_start", "meter_id", "is_sub_meter", "device_label", "timezone",
     "imp_kwh", "imp_kwh_grid", "imp_rate", "imp_cost",
     "imp_read_start", "imp_read_end", "imp_cost_exc",
-    "imp_kwh_ev", "imp_cost_ev", "imp_rate_ev", "imp_ev_band", "imp_home_band",
     "exp_kwh", "exp_rate", "exp_cost", "exp_read_start", "exp_read_end",
     "standing_charge")
 
@@ -415,7 +414,7 @@ def _records_from_rows(rows, segments):
     names = {}
     rec = None
     for (bs, mid, is_sub_meter, device, tz, imp_kwh, kwh_grid, imp_rate, imp_cost,
-         imp_rs, imp_re, cost_exc, kwh_ev, cost_ev, rate_ev, ev_band, home_band,
+         imp_rs, imp_re, cost_exc,
          exp_kwh, exp_rate, exp_cost, exp_rs, exp_re, sc) in rows:
         if rec is None or rec[0] != bs:
             if rec is not None:
@@ -444,8 +443,8 @@ def _records_from_rows(rows, segments):
             if _sg:
                 segs = [(k or 0.0, i or 0.0, x, a == "ev") for k, i, x, _band, a in _sg]
         channels = [(keys[0], False, round(imp_rate or 0.0, 4), sub_kwh, kwh, icost, 0.0,
-                     cost_exc, segs, kwh_ev or 0.0, cost_ev or 0.0, round(rate_ev or 0.0, 4),
-                     ev_band, home_band,
+                     # the EV split is the segments' (step 5c): a block without them has none
+                     cost_exc, segs, 0.0, 0.0, 0.0, None, None,
                      imp_rs, imp_re, None, None, True)]
         if not is_sub:
             exp = exp_kwh or 0.0

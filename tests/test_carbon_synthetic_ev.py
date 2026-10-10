@@ -14,6 +14,13 @@ T  = "2025-07-01T02:00:00"
 Te = "2025-07-01T02:30:00"
 
 
+def _ev_segments(st, start, ev_kwh, imp_kwh):
+    """The main block's EV split, as its segments (step 5c: the imp_*_ev columns are gone)."""
+    st._replace_segments(start, "electricity_main", [
+        (ev_kwh, 0.07, 0.0667, "off_peak", "ev"),
+        (round(imp_kwh - ev_kwh, 6), 0.07, 0.0667, "off_peak", "house")])
+
+
 def _store():
     st = BlockStore(":memory:")
     with st._conn:
@@ -25,11 +32,12 @@ def _store():
                          "VALUES (?, 'electricity_main', 0, '')", (cp,))
         st._conn.execute("INSERT INTO meters (config_period_id, meter_id, is_sub_meter, meter_type, "
                          "parent_meter_id) VALUES (?, 'ev_charger', 1, 'ev_charger', 'electricity_main')", (cp,))
-        # main block: 10 kWh grid @ 200 g/kWh = 2000 g; grid EV clipped = 4 kWh
+        # main block: 10 kWh grid @ 200 g/kWh = 2000 g; grid EV clipped = 4 kWh (its 'ev' segment)
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
-            "exp_kwh, carbon_g, carbon_intensity_g, imp_kwh_ev) VALUES (?,?, 'electricity_main', "
-            "?, 10.0, 0.0, 2000.0, 200.0, 4.0)", (T, Te, cp))
+            "exp_kwh, carbon_g, carbon_intensity_g) VALUES (?,?, 'electricity_main', "
+            "?, 10.0, 0.0, 2000.0, 200.0)", (T, Te, cp))
+        _ev_segments(st, T, 4.0, 10.0)
         # physical EV clamp: DIVERGENT inflated carbon (3000 g) vs the 800 g the dispatch says
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
@@ -75,7 +83,7 @@ class TestCarbonSyntheticEv(unittest.TestCase):
 
     def test_straddling_window_folds_recorded_preseam_ev(self):
         # H4: a window straddling the dispatch seam counts SYNTHETIC EV post-seam +
-        # RECORDED physical EV pre-seam (imp_kwh_ev NULL) — not synthetic only.
+        # RECORDED physical EV pre-seam (no EV segment) — not synthetic only.
         A, Ae = "2025-07-07T23:00:00", "2025-07-07T23:30:00"   # post-seam (dispatch)
         Bp, Bpe = "2025-07-06T22:00:00", "2025-07-06T22:30:00" # pre-seam  (no dispatch)
         st = BlockStore(":memory:")
@@ -88,18 +96,19 @@ class TestCarbonSyntheticEv(unittest.TestCase):
                              "VALUES (?, 'electricity_main', 0, '')", (cp,))
             st._conn.execute("INSERT INTO meters (config_period_id, meter_id, is_sub_meter, meter_type, "
                              "parent_meter_id) VALUES (?, 'ev_charger', 1, 'ev_charger', 'electricity_main')", (cp,))
-            # post-seam main: 10 kWh @200g, synthetic EV 4 kWh
+            # post-seam main: 10 kWh @200g, synthetic EV 4 kWh (its 'ev' segment)
             st._conn.execute(
                 "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
-                "exp_kwh, carbon_g, carbon_intensity_g, imp_kwh_ev) VALUES (?,?, 'electricity_main', "
-                "?, 10.0, 0.0, 2000.0, 200.0, 4.0)", (A, Ae, cp))
+                "exp_kwh, carbon_g, carbon_intensity_g) VALUES (?,?, 'electricity_main', "
+                "?, 10.0, 0.0, 2000.0, 200.0)", (A, Ae, cp))
+            _ev_segments(st, A, 4.0, 10.0)
             st._conn.execute(
                 "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
                 "carbon_g) VALUES (?,?, 'ev_charger', ?, 4.0, 900.0)", (A, Ae, cp))
             st._conn.execute(
                 "INSERT INTO dispatch_history (slot_start, kind, energy_kwh, first_seen, last_seen) "
                 "VALUES (?, 'completed', 4.0, ?, ?)", (A, A, A))
-            # pre-seam main: 8 kWh @200g, imp_kwh_ev NULL; physical EV recorded 3 kWh / 600 g
+            # pre-seam main: 8 kWh @200g, no EV segment; physical EV recorded 3 kWh / 600 g
             st._conn.execute(
                 "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
                 "exp_kwh, carbon_g, carbon_intensity_g) VALUES (?,?, 'electricity_main', "

@@ -40,7 +40,9 @@ import ev_split as _evsplit
 # reservation, the remainder recompute, the re-fit) then follows the record every surface reads,
 # and a round trip writes it back to the columns.
 _SPLIT_COLS = ("(" + _evsplit.sql_kwh("b") + ") AS _split_kwh, ("
-               + _evsplit.sql_cost("b") + ") AS _split_cost, ")
+               + _evsplit.sql_cost("b") + ") AS _split_cost, "
+               + _evsplit.sql_band("b", "ev") + " AS _split_ev_band, "
+               + _evsplit.sql_band("b", "house") + " AS _split_home_band, ")
 
 logger = logging.getLogger("block_store")
 
@@ -57,11 +59,16 @@ SCHEMA_VERSION = 1
 # v4 database (import spec §3). A revision, raised by each change to what v5 stores
 # (the provenance words, the band, the column drop); a restore refuses a v5 backup of any
 # other revision until the first release fixes the baseline.
-EMT_SCHEMA = 4
+EMT_SCHEMA = 5
 #   1  10 Oct 2026  the marker itself (v4's schema and words)
 #   2  10 Oct 2026  rate_source 'measured' -> 'settled'
 #   3  10 Oct 2026  imp_kwh_remainder, imp_cost_remainder, rate_reconciled dropped
 #   4  10 Oct 2026  imp_rate_exc, standing_charge_exc, exc_source dropped
+#   5  10 Oct 2026  imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band dropped
+
+# A main import channel's priced segments, built by pricing and committed by the block write
+# (append_block / append_block_replace) in the SAME transaction as the block row (step 5c).
+STAGED_SEGMENTS = "_staged_segments"
 
 
 def read_emt_schema(path):
@@ -667,6 +674,18 @@ def _channel(meter_block: dict, channel_name: str) -> dict:
     return (meter_block.get("channels") or {}).get(channel_name) or {}
 
 
+def _staged(block: dict) -> list:
+    """(block_start, meter_id, segments) for each import channel that pricing left its
+    segments on (STAGED_SEGMENTS), taking them off the dict so a re-used dict cannot write
+    them twice. The block write commits them in its own transaction (step 5c, 10 Oct 2026)."""
+    out = []
+    for mid, mb in (block.get("meters") or {}).items():
+        ch = ((mb or {}).get("channels") or {}).get("import")
+        if isinstance(ch, dict) and STAGED_SEGMENTS in ch:
+            out.append((block.get("start"), mid, ch.pop(STAGED_SEGMENTS) or []))
+    return out
+
+
 def _block_rows(block: dict, config_period_id: int, tz_name: str) -> list[dict]:
     """
     Decompose a finalised block dict (as written to blocks.json) into a list
@@ -698,13 +717,7 @@ def _block_rows(block: dict, config_period_id: int, tz_name: str) -> list[dict]:
             # BL-23: exc-VAT import cost + rate, when the import channel carries them
             # (NULL otherwise — inc-VAT figures are unaffected).
             "imp_cost_exc":      imp.get("cost_exc"),
-            # BL-9: IOG house/EV split — the dispatch-derived EV portion of import
-            # (NULL when not an IOG-priced dispatched slot; house = the remainder).
-            "imp_kwh_ev":        imp.get("kwh_ev"),
-            "imp_cost_ev":       imp.get("cost_ev"),
-            "imp_rate_ev":       imp.get("rate_ev"),
-            "imp_ev_band":       imp.get("ev_band"),
-            "imp_home_band":     imp.get("home_band"),
+            # BL-9's EV split is not a column: it is the block's EV segments (step 5c).
             "imp_read_start":    imp.get("read_start"),
             "imp_read_end":      imp.get("read_end"),
             # export channel
@@ -912,34 +925,25 @@ def _row_to_block(rows: list[sqlite3.Row]) -> dict:
                     imp_ch["cost_exc"] = row["imp_cost_exc"]
             except (IndexError, KeyError):
                 pass
-            # BL-9: IOG house/EV split — surface the stored EV portion so the billing
-            # summary can show the EV vs Home breakdown (None/absent = no EV this slot).
-            for _evk, _evcol in (("kwh_ev", "imp_kwh_ev"),
-                                 ("cost_ev", "imp_cost_ev"),
-                                 ("rate_ev", "imp_rate_ev"),
-                                 ("ev_band", "imp_ev_band"),
-                                 ("home_band", "imp_home_band")):
-                try:
-                    if row[_evcol] is not None:
-                        imp_ch[_evk] = row[_evcol]
-                except (IndexError, KeyError):
-                    pass
-            # BL-79 (3): where the loader selected ev_split's split (_SPLIT_COLS), it is the
-            # split — the EV segments, or the columns for a block with no segments. A block whose
-            # segments hold no EV has no split, whatever a stale column says.
+            # BL-9 / step 5c (10 Oct 2026): the IOG house/EV split, from the block's segments
+            # (_SPLIT_COLS) — the EV portion, and the bands each attribution was priced in
+            # ('mixed' where its segments span two). The imp_*_ev columns are gone; a loader
+            # that did not select _SPLIT_COLS gets no split keys.
             try:
                 _sk, _sc = row["_split_kwh"], row["_split_cost"]
+                _eb, _hb = row["_split_ev_band"], row["_split_home_band"]
             except (IndexError, KeyError):
                 pass
             else:
-                if _sk is None or float(_sk) <= 1e-9:
-                    for _k in ("kwh_ev", "cost_ev", "rate_ev"):
-                        imp_ch.pop(_k, None)
-                else:
+                if _sk is not None and float(_sk) > 1e-9:
                     _sk, _sc = float(_sk), float(_sc or 0.0)
                     imp_ch["kwh_ev"] = round(_sk, 6)
                     imp_ch["cost_ev"] = round(_sc, 6)
                     imp_ch["rate_ev"] = round(_sc / _sk, 6)
+                if _eb is not None:
+                    imp_ch["ev_band"] = _eb
+                if _hb is not None:
+                    imp_ch["home_band"] = _hb
             # Expose provisional flag so the amendment path can identify blocks
             # written without a post-boundary sub-meter read.
             try:
@@ -1353,21 +1357,8 @@ class BlockStore:
             ("derivation_id",      "blocks",        "INTEGER",                    _b_cols),
             # ── 4.1.x BL-23: exc-VAT import cost (additive; NULL until captured)
             ("imp_cost_exc",       "blocks",        "REAL",                       _b_cols),
-            # ── 4.2 BL-23: exc-VAT rate + standing + provenance (additive; NULL until captured)
-            # ── 4.3 BL-9: IOG house/EV billing split. The dispatch-derived EV
-            # portion of this block's main import (grid-clipped) + its cost/rate;
-            # house = imp_kwh − imp_kwh_ev, imp_cost − imp_cost_ev (not stored).
-            # Additive, NULL until a dispatched IOG slot is priced — populated for
-            # ALL IOG tariffs (the capped tariff prices the EV portion at
-            # ev_device_*, uncapped IOG at the general off-peak overlay).
-            ("imp_kwh_ev",         "blocks",        "REAL",                       _b_cols),
-            ("imp_cost_ev",        "blocks",        "REAL",                       _b_cols),
-            ("imp_rate_ev",        "blocks",        "REAL",                       _b_cols),
-            # BL-9: the EV and Home rate bands for this slot (off_peak|peak|mixed /
-            # off_peak|day|mixed) — lets the billing summary group clean bands and
-            # collapse the boundary (mixed) blocks into one transition row.
-            ("imp_ev_band",        "blocks",        "TEXT",                       _b_cols),
-            ("imp_home_band",      "blocks",        "TEXT",                       _b_cols),
+            # (4.2's ex-VAT rate/standing/provenance and 4.3's BL-9 EV-split columns were
+            # dropped in step 5, 10 Oct 2026: derived where read / the EV segments.)
             ("carbon_gco2_min",  "power_history",   "REAL",              _ph_cols),
             # ── 3.1.x dispatch lifecycle capture (observe-only, no billing effect)
             ("state",            "dispatch_slots", "TEXT",  _ds_cols),
@@ -3527,72 +3518,28 @@ class BlockStore:
     # columns. These three mirror the ex-VAT backfill trio so a one-shot startup pass
     # can carve the split onto that history without a re-import.
 
-    def get_blocks_missing_iog_split(self, limit: int = 2000,
-                                     after_start: str | None = None) -> list:
-        """Page MAIN-meter import blocks that sit on a completed smart-charge
-        dispatch slot but have no EV/Home split yet (imp_kwh_ev IS NULL, imp_kwh > 0).
-        Sub-meter blocks are excluded — the dispatch EV is carved out of the parent's
-        grid import, never a device channel. Ordered by block_start; pass the last
-        start back as `after_start` to walk past blocks that can't be carved (so an
-        unfillable slot never re-pages forever). Returns [{start, meter_id, kwh, rate}]."""
-        sql = ("SELECT b.block_start, b.meter_id, b.imp_kwh, b.imp_rate FROM blocks b "
-               "WHERE b.imp_kwh_ev IS NULL AND b.imp_kwh IS NOT NULL AND b.imp_kwh > 0 "
-               "AND b.meter_id NOT IN (SELECT meter_id FROM meters WHERE is_sub_meter = 1) "
-               "AND EXISTS (SELECT 1 FROM dispatch_history d "
-               "            WHERE d.kind = 'completed' AND d.slot_start = b.block_start)")
-        params: list = []
-        if after_start is not None:
-            sql += " AND b.block_start > ?"
-            params.append(after_start)
-        sql += " ORDER BY b.block_start LIMIT ?"
-        params.append(int(limit))
-        rows = self._conn.execute(sql, params).fetchall()
-        return [{"start": r["block_start"], "meter_id": r["meter_id"],
-                 "kwh": r["imp_kwh"], "rate": r["imp_rate"]} for r in rows]
-
-    def count_blocks_missing_iog_split(self) -> int:
-        """Count of MAIN-meter blocks on a completed dispatch slot still lacking the
-        EV/Home split — the backfill's remaining-work signal (0 ⇒ mark the pass done).
-        Same coverage as get_blocks_missing_iog_split."""
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM blocks b "
-            "WHERE b.imp_kwh_ev IS NULL AND b.imp_kwh IS NOT NULL AND b.imp_kwh > 0 "
-            "AND b.meter_id NOT IN (SELECT meter_id FROM meters WHERE is_sub_meter = 1) "
-            "AND EXISTS (SELECT 1 FROM dispatch_history d "
-            "            WHERE d.kind = 'completed' AND d.slot_start = b.block_start)"
-        ).fetchone()
-        return int(row["n"]) if row else 0
-
-    # DEPRECATED — remove in 5.0.0 (BL-33): one-time pre-4.4.0 legacy migration; retired once 5.0.0 requires a 4.4.0-migrated DB.
     def set_blocks_iog_split(self, updates) -> int:
-        """Batch EV/Home split writer: many UPDATEs in ONE transaction (one fsync per
-        chunk, not per block — same event-loop-friendliness as set_blocks_exc).
-        `updates` = iterable of
-        (block_start, meter_id, kwh_ev, cost_ev, rate_ev, ev_band, home_band
-         [, segments, needs_segments]).
-        ADDITIVE ONLY — writes just the five split columns behind a NULL-only guard
-        (idempotent; never re-carves) and NEVER touches imp_rate/imp_cost, so the
-        settled inc bill stays byte-identical. Returns the number of rows changed.
+        """The history sweep's EV/Home split writer: many blocks in ONE transaction (one fsync
+        per chunk, not per block). `updates` = iterable of
+        (block_start, meter_id, segments, needs_segments).
+        ADDITIVE ONLY — fills a split only where the block has none (idempotent; never
+        re-carves) and NEVER touches imp_rate/imp_cost, so the settled inc bill stays
+        byte-identical. Returns the number of splits filled.
 
-        `segments` (BL-79, 8 Oct 2026): the split's priced segments, written in the SAME
-        transaction when the guarded UPDATE fills the split — or when `needs_segments` says
-        the block had none. The sweep used to write segments only to a block that lacked
-        them, so a block admitted for its ex-VAT alone got the EV columns over house-only
-        segments, and every surface (which reads the segments) still showed no EV."""
+        Step 5c (10 Oct 2026): the split IS the segments, so filling it is writing them. A
+        block that already has an EV split keeps its segments unless `needs_segments` says it
+        had none at all (then it gets them, as before)."""
         changed = 0
         with self._tx():
-            for u in updates:
-                bs, mid, kev, cev, rev, evb, hmb = u[:7]
-                segs = u[7] if len(u) > 7 else None
-                needs = bool(u[8]) if len(u) > 8 else False
-                cur = self._conn.execute(
-                    "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ?, imp_rate_ev = ?, "
-                    "imp_ev_band = ?, imp_home_band = ? "
-                    "WHERE block_start = ? AND meter_id = ? AND "
-                    + _evsplit.sql_kwh("blocks") + " IS NULL",       # BL-79 (3)
-                    (kev, cev, rev, evb, hmb, bs, mid))
-                changed += cur.rowcount
-                if segs is not None and (cur.rowcount or needs):
+            for bs, mid, segs, needs in updates:
+                row = self._conn.execute(
+                    "SELECT " + _evsplit.sql_kwh("blocks") + " IS NULL AS open FROM blocks "
+                    "WHERE block_start = ? AND meter_id = ?", (bs, mid)).fetchone()
+                if row is None or segs is None:
+                    continue
+                if row["open"]:
+                    changed += 1
+                if row["open"] or needs:
                     self._replace_segments(bs, mid, segs)
         return changed
 
@@ -3646,10 +3593,8 @@ class BlockStore:
         """Page MAIN-meter import blocks that carry energy but have no priced segments yet
         (BL-27 backfill). Sub-meters are excluded — segments live on the main import; a
         device's share is attributed from them at read time. Ordered by block_start; pass
-        the last start back as `after_start` to continue. Returns the legacy columns each
-        block's segments are derived from."""
+        the last start back as `after_start` to continue."""
         sql = ("SELECT b.block_start, b.meter_id, b.imp_kwh, b.imp_cost, b.imp_rate, "
-               "b.imp_kwh_ev, b.imp_cost_ev, b.imp_rate_ev, b.imp_ev_band, b.imp_home_band, "
                "b.source, b.imp_kwh_api FROM blocks b "
                "WHERE b.imp_kwh IS NOT NULL AND b.imp_kwh > 0 "
                "AND b.meter_id NOT IN (SELECT meter_id FROM meters WHERE is_sub_meter = 1) "
@@ -3699,7 +3644,6 @@ class BlockStore:
         Each row carries `needs_segments` (1 = no segments yet) so the driver only (re)writes
         segments when they are ABSENT — split/exc use fill-null-only writers and are always safe."""
         sql = ("SELECT b.block_start, b.meter_id, b.imp_kwh, b.imp_cost, b.imp_rate, "
-               "b.imp_kwh_ev, b.imp_cost_ev, b.imp_rate_ev, b.imp_ev_band, b.imp_home_band, "
                "b.source, b.imp_kwh_api, "
                "(NOT EXISTS (SELECT 1 FROM block_segments s WHERE s.block_start = b.block_start "
                "             AND s.meter_id = b.meter_id AND s.channel = 'import')) AS needs_segments "
@@ -6552,7 +6496,7 @@ class BlockStore:
         cp = self.get_config_period(period_id)
         tz_name = cp["timezone"] if cp else "UTC"
         rows = _block_rows(block, period_id, tz_name)
-        self._insert_block_rows(rows)
+        self._insert_block_rows(rows, _staged(block))
 
     def append_blocks(self, blocks: list[dict],
                       config_period_id: Optional[int] = None) -> int:
@@ -6573,7 +6517,7 @@ class BlockStore:
         self._insert_block_rows(all_rows)
         return len(all_rows)
 
-    def _insert_block_rows(self, rows: list[dict]) -> None:
+    def _insert_block_rows(self, rows: list[dict], staged=()) -> None:
         if not rows:
             return
         sql = """
@@ -6588,7 +6532,6 @@ class BlockStore:
                 standing_charge, carbon_g, carbon_intensity_g, imp_provisional,
                 source, is_provisional, needs_pass2_rerun, imp_kwh_api, needs_review,
                 exp_kwh_api,
-                imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band,
                 rate_corrected, rate_source
             ) VALUES (
                 :block_start, :block_end,
@@ -6601,14 +6544,15 @@ class BlockStore:
                 :standing_charge, :carbon_g, :carbon_intensity_g, :imp_provisional,
                 :source, :is_provisional, :needs_pass2_rerun, :imp_kwh_api, :needs_review,
                 :exp_kwh_api,
-                :imp_kwh_ev, :imp_cost_ev, :imp_rate_ev, :imp_ev_band, :imp_home_band,
                 :rate_corrected, :rate_source
             )
         """
         with self._conn:
             self._conn.executemany(sql, rows)
+            for bs, mid, segs in staged:
+                self._replace_segments(bs, mid, segs)
 
-    def _insert_block_rows_replace(self, rows: list[dict]) -> None:
+    def _insert_block_rows_replace(self, rows: list[dict], staged=()) -> None:
         """Like _insert_block_rows but uses INSERT OR REPLACE to overwrite
         existing blocks. Used by gap fill to correct zero/bad blocks in the DB.
 
@@ -6643,7 +6587,6 @@ class BlockStore:
                 source, is_provisional, needs_pass2_rerun, imp_kwh_api, needs_review,
                 review_reason, review_dismissed, finalised_from_cad, derivation_id,
                 exp_kwh_api,
-                imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band,
                 rate_corrected, rate_source
             ) VALUES (
                 :block_start, :block_end,
@@ -6667,12 +6610,13 @@ class BlockStore:
                 (SELECT o.derivation_id FROM blocks o
                   WHERE o.block_start = :block_start AND o.meter_id = :meter_id),
                 :exp_kwh_api,
-                :imp_kwh_ev, :imp_cost_ev, :imp_rate_ev, :imp_ev_band, :imp_home_band,
                 :rate_corrected, :rate_source
             )
         """
         with self._conn:
             self._conn.executemany(sql, rows)
+            for bs, mid, segs in staged:
+                self._replace_segments(bs, mid, segs)
 
     def append_block_replace(self, block: dict,
                              config_period_id: Optional[int] = None) -> None:
@@ -6686,7 +6630,7 @@ class BlockStore:
         cp = self.get_config_period(period_id)
         tz_name = cp["timezone"] if cp else "UTC"
         rows = _block_rows(block, period_id, tz_name)
-        self._insert_block_rows_replace(rows)
+        self._insert_block_rows_replace(rows, _staged(block))
 
     def get_provisional_sub_meter_blocks(self) -> list[dict]:
         """Return the most-recent block for each sub-meter that has imp_provisional=1.
@@ -6757,7 +6701,6 @@ class BlockStore:
         "block_start", "meter_id", "is_sub_meter", "device_label", "timezone",
         "imp_kwh", "imp_kwh_grid", "imp_rate", "imp_cost",
         "imp_read_start", "imp_read_end", "imp_cost_exc",
-        "imp_kwh_ev", "imp_cost_ev", "imp_rate_ev", "imp_ev_band", "imp_home_band",
         "exp_kwh", "exp_rate", "exp_cost", "exp_read_start", "exp_read_end",
         "standing_charge")
 
@@ -6774,7 +6717,6 @@ class BlockStore:
             """SELECT b.block_start, b.meter_id, m.is_sub_meter, m.device_label, cp.timezone,
                       b.imp_kwh, b.imp_kwh_grid, b.imp_rate, b.imp_cost,
                       b.imp_read_start, b.imp_read_end, b.imp_cost_exc,
-                      b.imp_kwh_ev, b.imp_cost_ev, b.imp_rate_ev, b.imp_ev_band, b.imp_home_band,
                       b.exp_kwh, b.exp_rate, b.exp_cost, b.exp_read_start, b.exp_read_end,
                       b.standing_charge
                FROM blocks b
@@ -6827,8 +6769,6 @@ class BlockStore:
                        b.imp_kwh, b.imp_kwh_grid,
                        b.imp_rate, b.imp_cost, b.imp_read_start, b.imp_read_end,
                        b.imp_cost_exc,
-                       b.imp_kwh_ev, b.imp_cost_ev, b.imp_rate_ev,
-                       b.imp_ev_band, b.imp_home_band,
                        b.exp_kwh, b.exp_rate, b.exp_cost,
                        b.exp_read_start, b.exp_read_end,
                        b.standing_charge, b.carbon_g, b.carbon_intensity_g, b.interpolated,
@@ -6859,8 +6799,6 @@ class BlockStore:
             (bs, mid, r_imp_kwh, r_imp_kwh_grid,
              r_imp_rate, r_imp_cost, r_imp_read_start, r_imp_read_end,
              r_imp_cost_exc,
-             r_imp_kwh_ev, r_imp_cost_ev, r_imp_rate_ev,
-             r_imp_ev_band, r_imp_home_band,
              r_exp_kwh, r_exp_rate, r_exp_cost,
              r_exp_read_start, r_exp_read_end,
              r_standing_charge, r_carbon_g, r_carbon_intensity_g, r_interpolated,
@@ -6921,20 +6859,7 @@ class BlockStore:
             # standing charge's ex-VAT and exc_source are derived where read, not carried.
             if r_imp_cost_exc is not None:
                 imp_channel["cost_exc"] = float(r_imp_cost_exc)
-            # BL-9: surface the IOG house/EV split so the billing summary's
-            # 'Import — total grid' section shows the EV/Home rows. _row_to_block does
-            # this too; the lightweight chart fetch MUST match or the split silently
-            # falls back to the plain per-rate rows (kwh_ev never reaches the aggregator).
-            if r_imp_kwh_ev is not None:
-                imp_channel["kwh_ev"] = float(r_imp_kwh_ev)
-            if r_imp_cost_ev is not None:
-                imp_channel["cost_ev"] = float(r_imp_cost_ev)
-            if r_imp_rate_ev is not None:
-                imp_channel["rate_ev"] = float(r_imp_rate_ev)
-            if r_imp_ev_band is not None:
-                imp_channel["ev_band"] = r_imp_ev_band
-            if r_imp_home_band is not None:
-                imp_channel["home_band"] = r_imp_home_band
+            # BL-9: the IOG house/EV split is read from the segments attached below (5c).
 
             exp_channel = {
                 "kwh":        exp,
@@ -7247,16 +7172,6 @@ class BlockStore:
         """Rows in mix_history. Startup backfills from generation_mix when 0."""
         return self._conn.execute(
             "SELECT COUNT(*) FROM mix_history").fetchone()[0]
-
-    # The EV-split derived columns, restamped to one rate. Written once and used
-    # twice -- standalone by `restamp_ev_columns`, and inside
-    # `apply_reconcile_verdict`'s transaction -- because it appeared THREE times
-    # in reconcile_dispatch_overlay and two of the three carried the guard below.
-    _EV_RESTAMP_SQL = (
-        "UPDATE blocks SET imp_rate_ev = ?, "
-        "imp_cost_ev = ROUND(COALESCE(imp_kwh_ev, 0) * ?, 6), "
-        "imp_ev_band = ?, imp_home_band = ? "
-        "WHERE block_start = ? AND meter_id = ? AND imp_kwh_ev IS NOT NULL")
 
     # A block is SETTLEABLE when it carries an authoritative kWh figure: imported
     # history brings its own, and a DCC-settled block has imp_kwh_api. A live CAD
@@ -7631,7 +7546,6 @@ class BlockStore:
             "       ROUND(COALESCE(SUM(imp_kwh), 0), 3) AS ik, ROUND(COALESCE(SUM(imp_cost), 0), 2) AS ic, "
             "       ROUND(COALESCE(SUM(exp_kwh), 0), 3) AS ek, ROUND(COALESCE(SUM(exp_cost), 0), 2) AS ec, "
             "       ROUND(COALESCE(SUM(carbon_g), 0), 0) AS cg, "
-            "       ROUND(COALESCE(SUM(imp_kwh_ev), 0), 4) AS xe, ROUND(COALESCE(SUM(imp_cost_ev), 0), 4) AS xc, "
             "       ROUND(COALESCE(SUM(imp_cost_exc), 0), 4) AS xx, ROUND(COALESCE(SUM(imp_kwh_grid), 0), 4) AS xg, "
             "       ROUND(COALESCE(SUM(standing_charge), 0), 4) AS xs "
             # NOT INDEXED: the window is nearly every row, and walking the block_start index
@@ -7776,11 +7690,9 @@ class BlockStore:
             "       ROUND(COALESCE(SUM(b.exp_kwh), 0), 3) AS ek, "
             "       ROUND(COALESCE(SUM(b.exp_cost), 0), 2) AS ec, "
             "       ROUND(COALESCE(SUM(b.carbon_g), 0), 0) AS cg, "
-            # The Billing tab's cost-neutral inputs (C, 30 Sep 2026): EV/Home split,
-            # ex-VAT, device/house division, standing charge. Same set as
-            # server._blocks_data_version.
-            "       ROUND(COALESCE(SUM(b.imp_kwh_ev), 0), 4) AS xe, "
-            "       ROUND(COALESCE(SUM(b.imp_cost_ev), 0), 4) AS xc, "
+            # The Billing tab's cost-neutral inputs (C, 30 Sep 2026): ex-VAT, device/house
+            # division, standing charge — the EV/Home split is the segments' (`seg`, step
+            # 5c). Same set as server._blocks_data_version.
             "       ROUND(COALESCE(SUM(b.imp_cost_exc), 0), 4) AS xx, "
             "       ROUND(COALESCE(SUM(b.imp_kwh_grid), 0), 4) AS xg, "
             "       ROUND(COALESCE(SUM(b.standing_charge), 0), 4) AS xs "
@@ -7798,9 +7710,9 @@ class BlockStore:
         seg = {r["day"]: "%s:%s:%s:%s:%s" % (r["n"], r["ir"], r["er"], r["ea"], r["pk"]) for r in segs}
         # Not the stored remainder (step 5, 8 Oct 2026): no surface reads it, and the main's import
         # and the grid shares it was derived from (ik, xg) are already here.
-        return {r["day"]: "%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s" % (
+        return {r["day"]: "%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s" % (
                     r["n"], r["newest"] or "", r["ik"], r["ic"],
-                    r["ek"], r["ec"], r["cg"], r["xe"], r["xc"], r["xx"], r["xg"],
+                    r["ek"], r["ec"], r["cg"], r["xx"], r["xg"],
                     r["xs"], seg.get(r["day"], "0"))
                 for r in rows}
 
@@ -7876,14 +7788,12 @@ class BlockStore:
             (block_start, meter_id)).fetchone()
         return row["id"] if row else None
 
-    def apply_measured_to_main(self, block_start: str, *, rate, cost,
-                               cost_exc, kwh_ev, rate_ev, cost_ev,
-                               ev_band, home_band,
+    def apply_measured_to_main(self, block_start: str, *, rate, cost, cost_exc,
                                meter_id: str = "electricity_main", segments=None) -> int:
         """Stamp Octopus's billed figure onto a main block. Returns rows changed.
 
-        **Keyword-only after `block_start`, deliberately.** Nine values, of
-        which three are costs and two are rates, on the one write in the system
+        **Keyword-only after `block_start`, deliberately.** Three values, of
+        which two are costs, on the one write in the system
         that records what the supplier actually charged. Positionally, `cost` and
         `cost_exc` transposed is a silently wrong bill; by keyword it does not
         compile into a mistake.
@@ -7893,20 +7803,16 @@ class BlockStore:
         query already gated on it: once this runs, the drain's backlog can never
         revisit the block.
 
-        `kwh_ev` / `cost_ev` are passed as None when there is no EV split, rather
-        than 0.0. NULL means "no split"; 0.0 would mean "a split of nothing", and
-        the jobs that back-attribute a late-arriving dispatch select on
-        `imp_kwh_ev IS NULL`.
+        The bill's EV/house split is its `segments` (step 5c, 10 Oct 2026): a bill with no EV
+        has no EV segment, which is what the jobs that back-attribute a late-arriving dispatch
+        select on.
         """
         with self._conn:
             cur = self._conn.execute(
                 "UPDATE blocks SET imp_rate = ?, imp_cost = ?, rate_source = 'settled', "
-                "imp_cost_exc = ?, "
-                "imp_kwh_ev = ?, imp_rate_ev = ?, imp_cost_ev = ?, imp_ev_band = ?, "
-                "imp_home_band = ? "
+                "imp_cost_exc = ? "
                 "WHERE block_start = ? AND meter_id = ?",
-                (rate, cost, cost_exc, kwh_ev, rate_ev, cost_ev,
-                 ev_band, home_band, block_start, meter_id))
+                (rate, cost, cost_exc, block_start, meter_id))
             # BL-79 (8 Oct 2026): the bill's segments in the same transaction. Written after,
             # a failed segment write left the block stamped 'settled' — never revisited by
             # the drain — under its pre-bill segments, which every surface reads.
@@ -8002,60 +7908,6 @@ class BlockStore:
                 "              AND ABS(COALESCE(m.imp_rate,0) - COALESCE(blocks.imp_rate,0)) > 0.0001)")
         return cur.rowcount
 
-    def restamp_ev_columns(self, block_start: str, rate: float, ev_band: str,
-                           home_band: str,
-                           meter_id: str = "electricity_main", segments=None) -> int:
-        """Re-derive the EV-split columns at `rate`. Returns rows changed.
-
-        Usage Stats read `imp_rate_ev` / `imp_cost_ev` / the bands (and, until step 5,
-        `imp_cost_remainder`), while Billing prices from `block_segments`. A
-        reconcile that rewrote the segments without these columns left Usage
-        Stats on the OLD (e.g. off-peak) EV cost and spilled the shortfall into
-        Direct import -- the two surfaces then disagree about one block.
-
-        **`AND imp_kwh_ev IS NOT NULL` IS THE INVARIANT, NOT AN OPTIMISATION.**
-        These columns are DERIVED from the split. Stamping them where no split
-        exists leaves the row saying two contradictory things: `imp_kwh_ev` still
-        NULL ("split unknown") while `imp_cost_ev = 0` asserts "evaluated, all
-        house".
-        Anything reading the cost columns without checking `imp_kwh_ev` then
-        reports a confident answer for a block that has not been derived.
-
-        Measured: the unguarded form leaves `imp_kwh_ev` NULL, so the block stays
-        eligible for back-attribution -- the damage is column INCOHERENCE, not a
-        lost split. `web/server.py`'s correction tool states the same invariant a
-        third way, with `CASE WHEN imp_kwh_ev IS NOT NULL ... ELSE <unchanged>`:
-        *"so imp_cost_ev + imp_cost_remainder == imp_cost"* (the remainder column went
-        in step 5, 10 Oct 2026).
-
-        PROVENANCE, because the guard reads as defensive clutter without it and
-        the reasoning above was reconstructed by measurement rather than read off
-        the code. `git log -S "imp_kwh_ev IS NOT NULL"` finds six commits between
-        4.3.1 and 4.5.8. The oldest is **4.3.1 "phantom rates"** -- four minor
-        versions before the earliest SMB heal, so the rule is nothing to do with
-        heal machinery and does not retire with it. And the name is the symptom:
-        stamping these columns with no split to derive them from is exactly how a
-        phantom rate appears on a block.
-
-        The most recent is **4.5.8 "corrected ev split + heal"**, which is the
-        likely origin of the divergence this method resolves -- three copies of
-        the statement existed and one had lost the guard. Six commits touching
-        one rule across five releases is what a rule re-implemented rather than
-        shared looks like; `_EV_RESTAMP_SQL` is the fix for that, not just for
-        the duplication.
-
-        `segments` (BL-79, 8 Oct 2026): the block's re-priced segments, written in THIS
-        transaction — whether or not the block has a split for the columns to restamp, since a
-        house-only block is re-priced too. The caller used to write them first, on their own.
-        """
-        with self._conn:
-            cur = self._conn.execute(
-                self._EV_RESTAMP_SQL,
-                (rate, rate, ev_band, home_band, block_start, meter_id))
-            if segments is not None:
-                self._replace_segments(block_start, meter_id, segments)
-        return cur.rowcount
-
     def relabel_segment_bands(self, block_start: str, ev_band: str,
                               home_band: str,
                               meter_id: str = "electricity_main") -> int:
@@ -8080,12 +7932,10 @@ class BlockStore:
     _RECONCILED_SOURCE = ("rate_source = CASE WHEN rate_source IN ('settled', 'corrected') "
                           "THEN rate_source ELSE 'reconciled' END")
 
-    def apply_reconcile_verdict(self, block_start: str, rate: float,
-                                rate_exc, ev_band: str,
-                                home_band: str,
+    def apply_reconcile_verdict(self, block_start: str, rate: float, rate_exc,
                                 meter_id: str = "electricity_main", segments=None) -> dict:
         """Apply a dispatch-overlay verdict to a block: main row, its sub-meters
-        and the EV columns, in ONE transaction. Returns rows changed per part.
+        and its segments, in ONE transaction. Returns rows changed per part.
 
         The atomicity is load-bearing and is why this is one method rather than
         three. A partial verdict leaves sub-meters priced at the OLD rate while
@@ -8114,15 +7964,12 @@ class BlockStore:
                 "WHERE block_start = ? AND rate_corrected = 0 AND meter_id IN "
                 "(SELECT meter_id FROM meters WHERE is_sub_meter = 1)",
                 (rate, rate, rate_exc, block_start)).rowcount
-            ev = self._conn.execute(
-                self._EV_RESTAMP_SQL,
-                (rate, rate, ev_band, home_band,
-                 block_start, meter_id)).rowcount
             # BL-79 (8 Oct 2026): the re-priced segments in the same transaction; they were
-            # written after it, on their own.
+            # written after it, on their own. They ARE the EV split (step 5c): the EV columns
+            # this used to restamp alongside are gone.
             if main and segments is not None:
                 self._replace_segments(block_start, meter_id, segments)
-        return {"main": main, "sub_meters": subs, "ev_columns": ev}
+        return {"main": main, "sub_meters": subs}
 
     def get_reconcile_candidates(self, before_iso: str,
                                  meter_id: str = "electricity_main") -> list:
@@ -8181,15 +8028,14 @@ class BlockStore:
         back as a row with `imp_kwh_ev` None rather than as None. Test the
         COLUMN, not the row.
 
-        BL-79 (3): `ev_kwh` is ev_split's split (the EV segments; the column only for a block with
-        no segments) — what a caller rebuilding the segments reads. `imp_kwh_ev` / `imp_rate_ev`
-        stay the COLUMNS, for the restamp that keeps them coherent with each other. `rate_exc`
+        BL-79 (3): `ev_kwh` is ev_split's split (the EV segments) — what a caller rebuilding the
+        segments reads (the EV columns went in step 5c). `rate_exc`
         is DERIVED, the block's ex-VAT rate from its own pair (imp_rate × imp_cost_exc /
         imp_cost; NULL with no ex-VAT £): the column went in step 5b, 10 Oct 2026.
         """
         row = self._conn.execute(
-            "SELECT b.imp_kwh, b.imp_kwh_ev, " + _evsplit.sql_kwh("b") + " AS ev_kwh, "
-            "b.imp_rate, b.imp_rate_ev, b.imp_rate * b.imp_cost_exc / NULLIF(b.imp_cost, 0) AS rate_exc, b.imp_ev_band, b.imp_home_band "
+            "SELECT b.imp_kwh, " + _evsplit.sql_kwh("b") + " AS ev_kwh, b.imp_rate, "
+            "b.imp_rate * b.imp_cost_exc / NULLIF(b.imp_cost, 0) AS rate_exc "
             "FROM blocks b WHERE b.block_start = ? AND b.meter_id = ?",
             (block_start, meter_id)).fetchone()
         return dict(row) if row else None
@@ -8270,16 +8116,15 @@ class BlockStore:
             (meter_id, tolerance)).fetchall()
         return [dict(r) for r in rows]
 
-    def replace_ev_split(self, block_start: str, kwh_ev: float, cost_ev: float,
-                         rate_ev: float, ev_band: str, home_band: str,
-                         meter_id: str = "electricity_main", segments=None) -> int:
-        """Write an EV/house split OVER whatever is there. Returns rows changed.
+    def replace_ev_split(self, block_start: str, meter_id: str = "electricity_main",
+                         segments=None) -> int:
+        """Write an EV/house split OVER whatever is there. Returns rows changed (0 or 1).
 
         The counterpart to `carve_ev_split`, and the difference is the whole
         point of having two methods rather than one with a flag:
 
-          carve_ev_split    fills a BLANK. Guarded by `imp_kwh_ev IS NULL` and
-                            COALESCE on the bands, so it cannot overwrite an
+          carve_ev_split    fills a BLANK. Guarded by "no EV split yet", and it keeps
+                            the house band already recorded, so it cannot overwrite an
                             answer something better-informed already gave.
           replace_ev_split  is the RE-ATTRIBUTION path. Its caller has already
                             established that what is stored is absent or wrong
@@ -8292,58 +8137,50 @@ class BlockStore:
         being got wrong at a call site, which is how a manual correction gets
         stomped.
 
-        `segments` (BL-79, 8 Oct 2026): written in THIS transaction with the columns, so a failed
-        write leaves neither changed. The caller used to write them in a second transaction.
+        Step 5c (10 Oct 2026): the split IS the segments, so this writes them, for a block that
+        exists. The EV columns it used to write alongside them are gone.
         """
         with self._conn:
-            cur = self._conn.execute(
-                "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ?, imp_rate_ev = ?, "
-                "imp_ev_band = ?, imp_home_band = ? "
-                "WHERE block_start = ? AND meter_id = ?",
-                (kwh_ev, cost_ev, rate_ev, ev_band, home_band, block_start, meter_id))
-            if cur.rowcount and segments is not None:
-                self._replace_segments(block_start, meter_id, segments)
-        return cur.rowcount
+            if segments is None or self._conn.execute(
+                    "SELECT 1 FROM blocks WHERE block_start = ? AND meter_id = ?",
+                    (block_start, meter_id)).fetchone() is None:
+                return 0
+            self._replace_segments(block_start, meter_id, segments)
+        return 1
 
-    def carve_ev_split(self, block_start: str, kwh_ev: float, cost_ev: float,
-                       rate_ev: float, ev_band: str, home_band: str,
-                       meter_id: str = "electricity_main", segments=None) -> int:
+    def carve_ev_split(self, block_start: str, meter_id: str = "electricity_main",
+                       segments=None) -> int:
         """Write a PREDICTED EV/house split onto an un-carved block. Returns the
         number of rows changed (0 or 1).
 
         Two guards, both part of the operation rather than caller hygiene:
 
-          * `AND imp_kwh_ev IS NULL` in the WHERE -- the sweep selects un-carved
-            blocks and then writes them one at a time, so the row can have been
-            carved in between. Re-writing it would double-count. Making the
-            UPDATE itself conditional means the check and the write cannot come
-            apart.
-          * `COALESCE(imp_ev_band, ?)` -- a band already recorded for this block
-            was determined by something with better information (settlement, a
-            user correction). A predicted carve fills a blank; it does not
-            overwrite an answer.
+          * "no EV split yet" -- the sweep selects un-carved blocks and then writes
+            them one at a time, so the block can have been carved in between.
+            Re-writing it would double-count. Checking in the write's own
+            transaction means the check and the write cannot come apart.
+          * the house band already recorded -- by the block's existing (house-only)
+            segments, when they share one -- was determined by something with better
+            information (settlement, a user correction). A predicted carve fills a
+            blank; it does not overwrite an answer. (Until step 5c, 10 Oct 2026, both
+            lived in the imp_*_ev columns: `imp_kwh_ev IS NULL` and
+            `COALESCE(imp_home_band, ?)`. Under the guard the block has no EV segment, so
+            only the house band has a recorded answer to keep.)
 
-        `segments` (BL-79, 8 Oct 2026): the carve's (kwh, inc_rate, exc_rate, band, attribution)
-        rows, written IN THIS TRANSACTION and only when the guarded UPDATE changed the row. The
-        caller used to write them first, unguarded, so a block carved in between kept its old
-        columns under the new segments. Each segment takes the band the columns end with — the
-        stored one where COALESCE kept it — so the two cannot disagree.
+        `segments`: the carve's (kwh, inc_rate, exc_rate, band, attribution) rows.
         """
         with self._conn:
-            cur = self._conn.execute(
-                "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ?, imp_rate_ev = ?, "
-                "imp_ev_band = COALESCE(imp_ev_band, ?), "
-                "imp_home_band = COALESCE(imp_home_band, ?) "
-                "WHERE meter_id = ? AND block_start = ? AND "
-                + _evsplit.sql_kwh("blocks") + " IS NULL",
-                (kwh_ev, cost_ev, rate_ev, ev_band, home_band, meter_id, block_start))
-            if cur.rowcount and segments is not None:
-                evb, hmb = self._conn.execute(
-                    "SELECT imp_ev_band, imp_home_band FROM blocks WHERE meter_id = ? "
-                    "AND block_start = ?", (meter_id, block_start)).fetchone()
-                self._replace_segments(block_start, meter_id, [
-                    (k, i, x, (evb if a == "ev" else hmb) or b, a) for k, i, x, b, a in segments])
-        return cur.rowcount
+            row = self._conn.execute(
+                "SELECT " + _evsplit.sql_kwh("b") + " IS NULL AS open, "
+                + _evsplit.sql_band("b", "house") + " AS house_band "
+                "FROM blocks b WHERE b.meter_id = ? AND b.block_start = ?",
+                (meter_id, block_start)).fetchone()
+            if row is None or not row["open"] or segments is None:
+                return 0
+            hb = row["house_band"] if row["house_band"] not in (None, "mixed") else None
+            self._replace_segments(block_start, meter_id, [
+                (k, i, x, (hb if a == "house" else None) or b, a) for k, i, x, b, a in segments])
+        return 1
 
     def get_blocks_pricing_for_range(self, meter_id: str, from_iso: str,
                                      to_iso: str, limit: int) -> list:
@@ -8360,7 +8197,8 @@ class BlockStore:
         """
         rows = self._conn.execute(
             "SELECT block_start, meter_id, imp_kwh, imp_rate, imp_cost, imp_cost_exc, "
-            "imp_kwh_ev, imp_rate * imp_cost_exc / NULLIF(imp_cost, 0) AS rate_exc, "
+            + _evsplit.sql_kwh("blocks") + " AS imp_kwh_ev, "
+            "imp_rate * imp_cost_exc / NULLIF(imp_cost, 0) AS rate_exc, "
             "source, imp_kwh_api FROM blocks "
             "WHERE meter_id = ? AND block_start >= ? AND block_start < ? "
             "ORDER BY block_start LIMIT ?",

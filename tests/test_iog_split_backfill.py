@@ -6,10 +6,12 @@ The split seam only fires on finalise/settlement, so blocks priced before it shi
 billing summary shows no split. The re-price sweep now carves it (the one-shot backfill,
 _run_historical_iog_split_backfill, and its runner tests were deleted — BL-33, 4 Oct
 2026). Guarantees checked here, on the store side the sweep shares:
-  * the block_store paging finds dispatched MAIN-meter blocks missing the split, and
-    excludes sub-meters and non-dispatched slots;
   * the batch writer is additive + idempotent (never touches imp_rate/imp_cost);
   * the lightweight fetch surfaces the split, and omits it when null.
+
+Step 5c (10 Oct 2026): the imp_*_ev columns are gone and the split is the EV segments. The
+paging pair (get/count_blocks_missing_iog_split) went with them, and their tests here; the
+lightweight fetch now surfaces the split as the channel's segments.
 """
 
 import asyncio
@@ -19,8 +21,13 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import engine
+import ev_split
 from block_store import BlockStore
 from kraken_rates import RateSchedule
+
+
+# The carve's 2.0 kWh EV / 1.0 kWh house split of the 3.0 kWh block, at its 0.05 rate.
+SPLIT = [(2.0, 0.05, None, "off_peak", "ev"), (1.0, 0.05, None, "off_peak", "house")]
 
 
 def _run(coro):
@@ -38,7 +45,7 @@ class TestIogSplitBackfill(unittest.TestCase):
             "block_minutes, timezone, currency_symbol, currency_code) "
             "VALUES (1, '2026-01-01T00:00:00', 1, 30, 'UTC', '£', 'GBP')")
         self.st._conn.commit()
-        # A dispatched main-meter block, priced before the split shipped (no imp_kwh_ev).
+        # A dispatched main-meter block, priced before the split shipped (no EV split).
         self._insert_block("2026-01-01T13:00:00", "electricity_main",
                            imp_kwh=3.0, imp_rate=0.05, imp_cost=0.15, sub=0)
         self._completed("2026-01-01T13:00:00", 2.0)
@@ -71,43 +78,23 @@ class TestIogSplitBackfill(unittest.TestCase):
 
     def _row(self, start="2026-01-01T13:00:00", meter="electricity_main"):
         return self.st._conn.execute(
-            "SELECT imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band, "
-            "imp_rate, imp_cost FROM blocks WHERE block_start=? AND meter_id=?",
+            "SELECT " + ev_split.sql_kwh("b") + " AS imp_kwh_ev, "
+            "imp_rate, imp_cost FROM blocks b WHERE block_start=? AND meter_id=?",
             (start, meter)).fetchone()
-
-    # ── block_store paging ───────────────────────────────────────────────────
-    def test_paging_finds_dispatched_main_block(self):
-        rows = self.st.get_blocks_missing_iog_split()
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0]["start"], "2026-01-01T13:00:00")
-        self.assertEqual(self.st.count_blocks_missing_iog_split(), 1)
-
-    def test_paging_excludes_sub_meter(self):
-        self._insert_block("2026-01-01T13:00:00", "sub_ev",
-                           imp_kwh=2.0, imp_rate=0.05, imp_cost=0.10, sub=1)
-        starts = [(r["start"], r["meter_id"])
-                  for r in self.st.get_blocks_missing_iog_split()]
-        self.assertNotIn(("2026-01-01T13:00:00", "sub_ev"), starts)
-
-    def test_paging_excludes_undispatched(self):
-        self._insert_block("2026-01-01T18:00:00", "electricity_main",
-                           imp_kwh=1.0, imp_rate=0.30, imp_cost=0.30, sub=0)
-        starts = [r["start"] for r in self.st.get_blocks_missing_iog_split()]
-        self.assertNotIn("2026-01-01T18:00:00", starts)
 
     # ── batch writer: additive + idempotent ─────────────────────────────────
     def test_writer_additive_and_idempotent(self):
         n = self.st.set_blocks_iog_split([
-            ("2026-01-01T13:00:00", "electricity_main", 2.0, 0.10, 0.05,
-             "off_peak", "off_peak")])
+            ("2026-01-01T13:00:00", "electricity_main", SPLIT, 0)])
         self.assertEqual(n, 1)
         r = self._row()
         self.assertEqual(r["imp_kwh_ev"], 2.0)
         self.assertAlmostEqual(r["imp_cost"], 0.15)     # inc untouched
         self.assertAlmostEqual(r["imp_rate"], 0.05)
-        # Second write is a no-op (NULL-only guard) — never re-carves.
+        # Second write is a no-op (no-split-only guard) — never re-carves.
         n2 = self.st.set_blocks_iog_split([
-            ("2026-01-01T13:00:00", "electricity_main", 9.9, 9.9, 9.9, "x", "y")])
+            ("2026-01-01T13:00:00", "electricity_main",
+             [(3.0, 9.9, None, "x", "ev")], 0)])
         self.assertEqual(n2, 0)
         self.assertEqual(self._row()["imp_kwh_ev"], 2.0)
 
@@ -116,16 +103,16 @@ class TestIogSplitBackfill(unittest.TestCase):
     #    fetch omitted the columns, so 'Import — total grid' fell back to plain rows) ──
     def test_lightweight_fetch_surfaces_split(self):
         self.st.set_blocks_iog_split([
-            ("2026-01-01T13:00:00", "electricity_main", 2.0, 0.10, 0.05,
-             "off_peak", "off_peak")])
+            ("2026-01-01T13:00:00", "electricity_main", SPLIT, 0)])
         blks = self.st.get_blocks_lightweight(
             "2026-01-01T00:00:00", "2026-01-02T00:00:00")
         imp = blks[0]["meters"]["electricity_main"]["channels"]["import"]
-        self.assertEqual(imp["kwh_ev"], 2.0)
-        self.assertAlmostEqual(imp["cost_ev"], 0.10)
-        self.assertAlmostEqual(imp["rate_ev"], 0.05)
-        self.assertEqual(imp["ev_band"], "off_peak")
-        self.assertEqual(imp["home_band"], "off_peak")
+        k, c, r = ev_split.from_channel(imp)
+        self.assertAlmostEqual(k, 2.0)
+        self.assertAlmostEqual(c, 0.10)
+        self.assertAlmostEqual(r, 0.05)
+        bands = {s["attribution"]: s["band"] for s in imp["segments"]}
+        self.assertEqual(bands, {"ev": "off_peak", "house": "off_peak"})
 
     def test_lightweight_fetch_omits_split_when_null(self):
         # An undispatched block never got the carve → keys absent, not present-as-None
@@ -137,6 +124,7 @@ class TestIogSplitBackfill(unittest.TestCase):
         imp = blks[0]["meters"]["electricity_main"]["channels"]["import"]
         self.assertNotIn("kwh_ev", imp)
         self.assertNotIn("ev_band", imp)
+        self.assertIsNone(ev_split.from_channel(imp))
 
 
 if __name__ == "__main__":

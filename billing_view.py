@@ -146,9 +146,8 @@ def _bill_blocks(rows, segments, ev_meter):
     i_sc = c["standing_charge"]
     # Ex-VAT is the stored cost alone (step 5, 8 Oct 2026): the rate and the standing charge's
     # ex-VAT are derived where they are read (energy_charts), not carried.
-    opt = tuple((k, c[col]) for k, col in (("cost_exc", "imp_cost_exc"),
-                                           ("kwh_ev", "imp_kwh_ev"), ("cost_ev", "imp_cost_ev"),
-                                           ("rate_ev", "imp_rate_ev")))
+    # The EV split is the segments' (step 5c, 10 Oct 2026), attached below.
+    opt = tuple((k, c[col]) for k, col in (("cost_exc", "imp_cost_exc"),))
     out, cur, last = [], None, None
     for r in rows:
         bs, mid = r[0], r[1]

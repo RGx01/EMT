@@ -28,6 +28,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
 from block_store import BlockStore          # noqa: E402
+import ev_split                             # noqa: E402
 
 S = "2026-09-01T00:00:00"
 
@@ -53,14 +54,15 @@ def _row(st, meter_id="electricity_main"):
     return st._conn.execute(
         "SELECT imp_rate, imp_cost, imp_cost_exc, "
         "rate_source, needs_review, review_reason, "
-        "imp_kwh_ev, imp_rate_ev, imp_cost_ev, imp_ev_band, imp_home_band, "
+        + ev_split.sql_kwh("blocks") + " AS ev_kwh, "
+        + ev_split.sql_cost("blocks") + " AS ev_cost, "
         "imp_kwh "
         "FROM blocks WHERE block_start=? AND meter_id=?", (S, meter_id)).fetchone()
 
 
-_BILL = dict(rate=0.0549, cost=0.2745, cost_exc=0.2614,
-             kwh_ev=2.0, rate_ev=0.0549, cost_ev=0.1098,
-             ev_band="off_peak", home_band="off_peak")
+# The bill's EV/house split is its segments (step 5c, 10 Oct 2026): 2 kWh EV + 3 kWh house.
+_SEGS = [(2.0, 0.0549, 0.0523, "off_peak", "ev"), (3.0, 0.0549, 0.0523, "off_peak", "house")]
+_BILL = dict(rate=0.0549, cost=0.2745, cost_exc=0.2614, segments=_SEGS)
 
 
 class ApplyMeasuredToMain(unittest.TestCase):
@@ -77,6 +79,9 @@ class ApplyMeasuredToMain(unittest.TestCase):
         self.assertEqual(r["rate_source"], "settled")
         # exc_source dropped (step 5b, 10 Oct 2026); the bill's ex-VAT £ is what is stored.
         self.assertAlmostEqual(r["imp_cost_exc"], 0.2614)
+        # ...and its split, as segments, in the same write (BL-79)
+        self.assertAlmostEqual(r["ev_kwh"], 2.0)
+        self.assertAlmostEqual(r["ev_cost"], round(2.0 * 0.0549, 6))
 
     def test_the_bill_leaves_a_stored_review_flag(self):
         """BL-74: the flag is history; settlement no longer clears it."""
@@ -93,15 +98,16 @@ class ApplyMeasuredToMain(unittest.TestCase):
     def test_no_split_is_NULL_not_zero(self):
         """NULL means 'no split'; 0.0 would mean 'a split of nothing'. The jobs
         that back-attribute a late-arriving dispatch select on
-        `imp_kwh_ev IS NULL`, so a zero here would hide the block from them."""
-        bill = dict(_BILL, kwh_ev=None, cost_ev=None)
+        "no EV segment" (ev_split.sql_kwh IS NULL; the imp_kwh_ev column until step 5c), so
+        a zero here would hide the block from them. A house-only bill writes no EV segment."""
+        bill = dict(_BILL, segments=[(5.0, 0.0549, 0.0523, "off_peak", "house")])
         self.st.apply_measured_to_main(S, **bill)
         r = _row(self.st)
-        self.assertIsNone(r["imp_kwh_ev"])
-        self.assertIsNone(r["imp_cost_ev"])
+        self.assertIsNone(r["ev_kwh"])
+        self.assertIsNone(r["ev_cost"])
 
     def test_the_arguments_are_keyword_only(self):
-        """Ten values, three of them costs and three of them rates, on the one
+        """Three values, two of them costs, on the one
         write that records what the supplier charged. `cost` and `cost_exc`
         transposed positionally is a silently wrong bill."""
         with self.assertRaises(TypeError):

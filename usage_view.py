@@ -605,7 +605,7 @@ def _ev_rows(store, cfg, meters, utc_start, utc_end):
     if ev_mid is None and not dispatch:
         return []
     instants = _evsplit.sql_instants()
-    params = [utc_start, utc_end, utc_start, utc_end]
+    params = [utc_start, utc_end]
     if dispatch:
         instants += (" UNION SELECT slot_start FROM dispatch_history WHERE kind = 'completed' "
                      "AND slot_start >= ? AND slot_start < ?")

@@ -9,7 +9,11 @@ coverage (imported OR DCC-settled), so provisional blocks stay NULL until settle
 import os, sys, unittest, asyncio
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import engine
+import ev_split
 from block_store import BlockStore
+
+# The block's EV split: its EV segments (step 5c; it was the imp_kwh_ev column).
+_EV = ev_split.sql_kwh("blocks")
 
 
 class _Exc:
@@ -80,9 +84,9 @@ class TestRepriceHistoryBlockCore(unittest.TestCase):
         self._blk(A, 2.0, 0.30, 0.60, source="imported_api")
         self.st._conn.commit()
         engine._reprice_history_blocks([self._row(A)], "UTC", _RATE_SEGS)
-        r = self.st._conn.execute("SELECT imp_kwh_ev, imp_cost_exc FROM blocks "
+        r = self.st._conn.execute("SELECT " + _EV + " AS ev, imp_cost_exc FROM blocks "
                                   "WHERE block_start=?", (A,)).fetchone()
-        self.assertIsNone(r["imp_kwh_ev"])
+        self.assertIsNone(r["ev"])
         self.assertAlmostEqual(r["imp_cost_exc"], round(2.0 * _EXC, 6), places=6)
         segs = self._segs(A)
         self.assertEqual(len(segs), 1)
@@ -111,8 +115,9 @@ class TestRepriceHistoryBlockCore(unittest.TestCase):
         self._blk(B, 3.0, 0.30, 0.90, source="imported_api", dispatch=2.0)
         self.st._conn.commit()
         engine._reprice_history_blocks([self._row(B)], "UTC", _RATE_SEGS)
-        r = self.st._conn.execute("SELECT imp_kwh_ev FROM blocks WHERE block_start=?", (B,)).fetchone()
-        self.assertAlmostEqual(r["imp_kwh_ev"], 2.0, places=6)
+        r = self.st._conn.execute("SELECT " + _EV + " AS ev FROM blocks WHERE block_start=?",
+                                  (B,)).fetchone()
+        self.assertAlmostEqual(r["ev"], 2.0, places=6)
         segs = self.st._conn.execute("SELECT kwh, attribution FROM block_segments WHERE "
                                      "block_start=?", (B,)).fetchall()
         self.assertAlmostEqual(sum(s["kwh"] for s in segs), 3.0, places=6)

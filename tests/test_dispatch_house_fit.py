@@ -120,13 +120,14 @@ class TheRefit(H._Harness):
             blk["meters"][meter]["channels"]["import"]["reads"] = [
                 {"ts": H.START, "value": lo}, {"ts": H.END, "value": round(lo + d, 6)}]
         engine.finalise_block(H._HA(), block_data=blk)
-        with engine._store._conn:
-            engine._store._conn.execute(
-                "UPDATE blocks SET imp_kwh_ev = ?, imp_cost_ev = ROUND(? * imp_rate, 6)"
-                + (", rate_source = 'settled', imp_cost = 1.2345" if measured else "")
-                + " WHERE block_start = ? AND meter_id = 'electricity_main'", (EV, EV, H.START))
-        # The EV arrives in the SEGMENTS too, as every real writer now records it (BL-79): the
-        # split is the segments', and the refit's candidates are read from them.
+        if measured:
+            with engine._store._conn:
+                engine._store._conn.execute(
+                    "UPDATE blocks SET rate_source = 'settled', imp_cost = 1.2345"
+                    " WHERE block_start = ? AND meter_id = 'electricity_main'", (H.START,))
+        # The EV arrives in the SEGMENTS, as every real writer records it (BL-79; step 5c, the
+        # imp_*_ev columns are gone): the split is the segments', and the refit's candidates are
+        # read from them.
         r = engine._store._conn.execute("SELECT imp_rate FROM blocks WHERE block_start = ? "
                                         "AND meter_id = 'electricity_main'", (H.START,)).fetchone()[0]
         engine._store.set_block_segments(H.START, "electricity_main", [
@@ -184,27 +185,13 @@ class AnAccountWithAnEvMeter(H._Harness):
 
     def test_no_candidates(self):
         self._finalise()
-        with engine._store._conn:
-            engine._store._conn.execute("UPDATE blocks SET imp_kwh_ev = 2.0 "
-                                        "WHERE meter_id = 'electricity_main'")
+        for (bs, r, k) in engine._store._conn.execute(
+                "SELECT block_start, imp_rate, imp_kwh FROM blocks "
+                "WHERE meter_id = 'electricity_main'").fetchall():
+            engine._store.set_block_segments(bs, "electricity_main", [
+                (2.0, r, None, "off_peak", "ev"),
+                (round(max(0.0, (k or 0.0) - 2.0), 6), r, None, "off_peak", "house")])
         self.assertEqual(engine._store.dispatch_house_candidates(), [])
-
-
-class TheRefitFollowsTheSegments(H._Harness):
-    """BL-79 part 3 (9 Oct 2026): with the EV in the segments and the columns blank (the shape a
-    gap-fill rewrite leaves), the loaded block had no EV, so the battery kept the whole grid. The
-    block dicts the engine loads now carry ev_split's split. Discriminating: fails on the parent."""
-
-    # TheRefit's fixture, without inheriting (and re-running) its tests.
-    _make_cfg, _close_then_arrive = TheRefit._make_cfg, TheRefit._close_then_arrive
-
-    def test_the_battery_fits_inside_the_house_from_the_segments(self):
-        self._close_then_arrive()
-        with engine._store._conn as c:                       # blank the columns, keep the segments
-            c.execute("UPDATE blocks SET imp_kwh_ev = NULL, imp_cost_ev = NULL "
-                      "WHERE block_start = ? AND meter_id = 'electricity_main'", (H.START,))
-        engine._refit_devices_to_house(engine._store, [H.START])
-        self.assertAlmostEqual(self._row("house_battery")["imp_kwh_grid"], MAIN - EV, places=4)
 
 
 if __name__ == "__main__":

@@ -34,6 +34,10 @@ COVERAGE, stated honestly: segments exist on 64.0% of main rows (37,027 of
 57,891) -- the backfill is incomplete, so this invariant is silent on unsegmented
 history. It is NOT silent where it matters: 560 of the 562 blocks carrying an EV
 split have EV segments. The two that do not are a known blind spot, not a pass.
+
+Step 5c (10 Oct 2026): imp_kwh_ev / imp_cost_ev are dropped -- the EV segments ARE
+the split -- so the two EV legs (and the NULL-column leg) have nothing left to
+compare and went with their negative cases. The block-level anchor stays.
 """
 import os
 import tempfile
@@ -41,11 +45,8 @@ import unittest
 
 from block_store import BlockStore
 
-# kWh is compared tighter than cost because cost carries a rounding step the kWh
-# does not; the block-level anchor is loosest because it sums every segment and so
-# accumulates the most rounding (worst observed on prod: 0.16p).
-TOL_KWH        = 5e-4
-TOL_EV_COST    = 5e-3
+# The block-level anchor is loose because it sums every segment and so accumulates
+# the most rounding (worst observed on prod: 0.16p).
 TOL_BLOCK_COST = 5e-3
 
 
@@ -62,30 +63,13 @@ def ev_split_discrepancies(store, block_start, meter_id="electricity_main"):
         return []
 
     row = store._conn.execute(
-        "SELECT imp_kwh_ev, imp_cost_ev, imp_cost FROM blocks "
+        "SELECT imp_cost FROM blocks "
         "WHERE block_start = ? AND meter_id = ?", (block_start, meter_id)).fetchone()
     if row is None:
         return ["%s: segments exist but no block row" % block_start]
 
     out = []
-    ev_kwh   = sum(s["kwh"] for s in segs if s["attribution"] == "ev")
-    ev_cost  = sum(s["kwh"] * s["inc_rate"] for s in segs if s["attribution"] == "ev")
     all_cost = sum(s["kwh"] * s["inc_rate"] for s in segs)
-
-    col_kwh, col_cost = row["imp_kwh_ev"], row["imp_cost_ev"]
-    if col_kwh is None:
-        # NULL means "no split derived". Segments claiming EV energy contradict
-        # that -- a breach, but only in this direction.
-        if ev_kwh > TOL_KWH:
-            out.append("%s: segments attribute %.4f kWh to EV but imp_kwh_ev is NULL "
-                       "(no split derived)" % (block_start, ev_kwh))
-    else:
-        if abs(ev_kwh - col_kwh) > TOL_KWH:
-            out.append("%s: EV kWh segments=%.4f imp_kwh_ev=%.4f"
-                       % (block_start, ev_kwh, col_kwh))
-        if abs(ev_cost - (col_cost or 0.0)) > TOL_EV_COST:
-            out.append("%s: EV cost segments=%.5f imp_cost_ev=%.5f"
-                       % (block_start, ev_cost, col_cost or 0.0))
 
     if row["imp_cost"] is not None and abs(all_cost - row["imp_cost"]) > TOL_BLOCK_COST:
         out.append("%s: block cost segments=%.5f imp_cost=%.5f"
@@ -116,22 +100,22 @@ class _Base(unittest.TestCase):
         self.house_cost = round(self.house_kwh * self.RATE_DAY, 6)
         self.total_cost = round(self.ev_cost + self.house_cost, 6)
 
-        self._write_block(self.ev_kwh, self.ev_cost)
+        self._write_block()
         self.store.set_block_segments(self.bs, "electricity_main", [
             (self.ev_kwh,    self.RATE_OFF, None, "off_peak", "ev"),
             (self.house_kwh, self.RATE_DAY, None, "day",      "house"),
         ])
 
-    def _write_block(self, kwh_ev, cost_ev, cost=None):
+    def _write_block(self, cost=None):
         with self.store._conn:
             self.store._conn.execute(
                 "INSERT OR REPLACE INTO blocks (block_start, block_end, meter_id, "
-                "config_period_id, imp_kwh, imp_rate, imp_cost, imp_kwh_ev, imp_cost_ev, "
+                "config_period_id, imp_kwh, imp_rate, imp_cost, "
                 "exp_kwh, exp_cost, standing_charge) "
-                "VALUES (?, '2026-04-07T02:30:00', 'electricity_main', ?, ?, ?, ?, ?, ?, "
+                "VALUES (?, '2026-04-07T02:30:00', 'electricity_main', ?, ?, ?, ?, "
                 "0.0, 0.0, 0.0)",
                 (self.bs, self.cp, self.ev_kwh + self.house_kwh, self.RATE_DAY,
-                 self.total_cost if cost is None else cost, kwh_ev, cost_ev))
+                 self.total_cost if cost is None else cost))
 
     def tearDown(self):
         self.store._conn.close()
@@ -160,24 +144,8 @@ class TestInvariantHasTeeth(_Base):
     implementations produced the same number, so it distinguished nothing.
     """
 
-    def test_miscomputed_ev_cost_is_caught(self):
-        self._write_block(self.ev_kwh, self.ev_cost + 0.05)
-        self.assertTrue(any("EV cost" in x for x in
-                            ev_split_discrepancies(self.store, self.bs)))
-
-    def test_miscomputed_ev_kwh_is_caught(self):
-        self._write_block(self.ev_kwh + 0.5, self.ev_cost)
-        self.assertTrue(any("EV kWh" in x for x in
-                            ev_split_discrepancies(self.store, self.bs)))
-
-    def test_ev_segments_with_null_split_column_are_caught(self):
-        """`imp_kwh_ev IS NULL` means "no split derived" -- segments must agree."""
-        self._write_block(None, None)
-        self.assertTrue(any("imp_kwh_ev is NULL" in x for x in
-                            ev_split_discrepancies(self.store, self.bs)))
-
     def test_block_cost_drifting_from_its_segments_is_caught(self):
-        self._write_block(self.ev_kwh, self.ev_cost, cost=self.total_cost + 0.10)
+        self._write_block(cost=self.total_cost + 0.10)
         self.assertTrue(any("block cost" in x for x in
                             ev_split_discrepancies(self.store, self.bs)))
 

@@ -81,12 +81,17 @@ def _store():
     for i in range(4):
         bs, be = t.isoformat(), (t + timedelta(minutes=30)).isoformat()
         ins = ("INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
-               "imp_kwh_grid, imp_cost, exp_kwh, exp_cost, standing_charge, imp_kwh_ev, imp_cost_ev, "
-               "is_provisional, interpolated) VALUES (?,?,?,1,?,?,?,?,?,?,?,?,0,0)")
+               "imp_kwh_grid, imp_cost, exp_kwh, exp_cost, standing_charge, "
+               "is_provisional, interpolated) VALUES (?,?,?,1,?,?,?,?,?,?,0,0)")
         st._conn.execute(ins, (bs, be, "electricity_main", 2.0, None, 0.5, 1.0 if i == 0 else 0,
-                               0.15 if i == 0 else 0, 0.48, 1.0 if i < 2 else None, 0.05 if i < 2 else None))
-        st._conn.execute(ins, (bs, be, "ev_charger", 0.8, 0.8, 0.2, 0, 0, 0, None, None))
-        st._conn.execute(ins, (bs, be, "house_battery", 0.6, 0.5, 0.125, 0, 0, 0, None, None))
+                               0.15 if i == 0 else 0, 0.48))
+        if i < 2:                          # the bill split: the main's EV segment (step 5c)
+            st._conn.execute("INSERT INTO block_segments (block_start, meter_id, channel, seq, kwh, "
+                             "inc_rate, exc_rate, band, attribution) "
+                             "VALUES (?, 'electricity_main', 'import', 0, 1.0, 0.05, NULL, "
+                             "'off_peak', 'ev')", (bs,))
+        st._conn.execute(ins, (bs, be, "ev_charger", 0.8, 0.8, 0.2, 0, 0, 0))
+        st._conn.execute(ins, (bs, be, "house_battery", 0.6, 0.5, 0.125, 0, 0, 0))
         t += timedelta(minutes=30)
     st._conn.commit()
     return st

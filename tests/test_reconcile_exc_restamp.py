@@ -110,9 +110,10 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
         import pricing_segments as ps
         st = BlockStore(":memory:")
         self._seed_stale(st)
-        st._conn.execute(
-            "UPDATE blocks SET imp_kwh_ev=0.23, imp_cost_ev=ROUND(0.23*0.05493,6), "
-            "imp_rate_ev=0.05493 WHERE block_start=?", (self.SLOT,)); st._conn.commit()
+        # the stale off-peak EV split, as segments (step 5c: they ARE the split)
+        st.set_block_segments(self.SLOT, "electricity_main", [
+            ps.Segment(0.23, 0.05493, 0.052314, "off_peak", "ev"),
+            ps.Segment(0.77, 0.05493, 0.052314, "off_peak", "house")])
         res = await self._run(st, with_exc=True)         # uncapped (no ev_device scheds)
         self.assertEqual(res["reverted"], 1)
         segs = [ps.Segment(**x) for x in
@@ -134,9 +135,10 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
         import pricing_segments as ps
         st = BlockStore(":memory:")
         self._seed_stale(st)
-        st._conn.execute(
-            "UPDATE blocks SET imp_kwh_ev=0.23, imp_cost_ev=ROUND(0.23*0.05493,6), "
-            "imp_rate_ev=0.05493 WHERE block_start=?", (self.SLOT,)); st._conn.commit()
+        # the stale off-peak EV split, as segments (step 5c: they ARE the split)
+        st.set_block_segments(self.SLOT, "electricity_main", [
+            ps.Segment(0.23, 0.05493, 0.052314, "off_peak", "ev"),
+            ps.Segment(0.77, 0.05493, 0.052314, "off_peak", "house")])
         engine._store = st
         engine._RECONCILE_SETTLE_HOURS = 0.0
         engine._kraken_rate_schedules = {"import": _Sched(True),
@@ -148,20 +150,18 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
             engine._store = None
         self.assertEqual(res["reverted"], 1)
         r = st._conn.execute(
-            "SELECT imp_rate, imp_cost, imp_rate_ev, imp_cost_ev, imp_ev_band, "
-            "imp_home_band FROM blocks WHERE block_start=?", (self.SLOT,)).fetchone()
-        # EV column now follows the peak rate (was 0.05493) with capped band labels
-        self.assertAlmostEqual(r["imp_rate_ev"], 0.323092, places=5)
-        self.assertAlmostEqual(r["imp_cost_ev"], round(0.23 * 0.323092, 6), places=6)
-        self.assertEqual(r["imp_ev_band"], "peak")
-        self.assertEqual(r["imp_home_band"], "day")
-        # segments restamped: EV peak + house day, both at the new rate, summing to the bill
+            "SELECT imp_rate, imp_cost FROM blocks WHERE block_start=?",
+            (self.SLOT,)).fetchone()
+        # segments restamped: EV peak + house day, both at the new rate (EV was 0.05493),
+        # summing to the bill (step 5c: the EV columns asserted here went; segments are the split)
         segs = [ps.Segment(**x) for x in
                 st.get_block_segments(self.SLOT, "electricity_main")]
         _ev = [x for x in segs if x.attribution == "ev"]
         _ho = [x for x in segs if x.attribution == "house"]
         self.assertTrue(_ev and abs(_ev[0].inc_rate - 0.323092) < 1e-5)
         self.assertEqual(_ev[0].band, "peak")
+        self.assertAlmostEqual(ps.attribution_cost(segs, "ev"),
+                               round(0.23 * 0.323092, 6), places=6)
         self.assertTrue(_ho and _ho[0].band == "day")
         self.assertAlmostEqual(ps.total_cost(segs), r["imp_cost"], places=6)  # ev+house=bill
 
@@ -176,17 +176,15 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
         st._conn.execute(
             "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
             "block_minutes, timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, 'UTC')")
-        # block already PEAK + reconciled; EV columns + segments stale OFF-PEAK
+        # block already PEAK + reconciled; segments (the EV split) stale OFF-PEAK
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
             "imp_kwh, imp_rate, imp_cost, imp_cost_exc, "
-            "rate_corrected, rate_source, imp_kwh_api, imp_kwh_ev, imp_cost_ev, "
-            "imp_rate_ev, imp_ev_band, imp_home_band) VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "rate_corrected, rate_source, imp_kwh_api) VALUES "
+            "(?,?,?,?,?,?,?,?,?,?,?)",
             (self.SLOT, self.SLOT, "electricity_main", 1, 3.186, 0.323092,
              round(3.186*0.323092, 6), round(3.186*0.323092/1.05, 6),
-             0, "reconciled", 3.186, 2.24, round(2.24*0.05493, 6), 0.05493,
-             "off_peak", "off_peak"))
+             0, "reconciled", 3.186))
         st.set_block_segments(self.SLOT, "electricity_main", [
             ps.Segment(2.24, 0.05493, 0.052314, "off_peak", "ev"),
             ps.Segment(0.946, 0.05493, 0.052314, "off_peak", "house")])
@@ -213,12 +211,10 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(_ev[0].band, "peak")
         self.assertTrue(_ho and abs(_ho[0].inc_rate - 0.323092) < 1e-5 and _ho[0].band == "day")
         row = st._conn.execute(
-            "SELECT imp_cost, imp_rate_ev, imp_cost_ev, imp_ev_band FROM blocks "
-            "WHERE block_start=?", (self.SLOT,)).fetchone()
+            "SELECT imp_cost FROM blocks WHERE block_start=?", (self.SLOT,)).fetchone()
         self.assertAlmostEqual(ps.total_cost(segs), row["imp_cost"], places=6)   # ev+house=bill
-        self.assertAlmostEqual(row["imp_rate_ev"], 0.323092, places=5)           # column healed
-        self.assertAlmostEqual(row["imp_cost_ev"], round(2.24*0.323092, 6), places=6)
-        self.assertEqual(row["imp_ev_band"], "peak")
+        self.assertAlmostEqual(ps.attribution_cost(segs, "ev"),                  # EV healed
+                               round(2.24*0.323092, 6), places=6)
 
     async def test_ok_leaves_genuine_multiband_capped_split(self):
         # Safety: a REAL multi-band cap block (EV peak + house day, two distinct segment
@@ -230,10 +226,9 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
             "block_minutes, timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, 'UTC')")
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, rate_corrected, rate_source, imp_kwh_api, "
-            "imp_kwh_ev, imp_rate_ev) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-            (self.SLOT, self.SLOT, "electricity_main", 1, 2.0, 0.30, 0.60, 0, "reconciled", 2.0,
-             1.0, 0.28))
+            "imp_kwh, imp_rate, imp_cost, rate_corrected, rate_source, imp_kwh_api) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (self.SLOT, self.SLOT, "electricity_main", 1, 2.0, 0.30, 0.60, 0, "reconciled", 2.0))
         st.set_block_segments(self.SLOT, "electricity_main", [
             ps.Segment(1.0, 0.28, 0.2667, "peak", "ev"),        # distinct rates → multi-band
             ps.Segment(1.0, 0.32, 0.3048, "day", "house")])
@@ -267,10 +262,10 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
         # block PEAK 0.323092; segments PEAK but 0.32300 (rounding drift, same band)
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, rate_corrected, rate_source, imp_kwh_api, "
-            "imp_kwh_ev, imp_rate_ev) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "imp_kwh, imp_rate, imp_cost, rate_corrected, rate_source, imp_kwh_api) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (self.SLOT, self.SLOT, "electricity_main", 1, 2.0, 0.323092,
-             round(2.0*0.323092, 6), 0, "reconciled", 2.0, 1.0, 0.32300))
+             round(2.0*0.323092, 6), 0, "reconciled", 2.0))
         st.set_block_segments(self.SLOT, "electricity_main", [
             ps.Segment(1.0, 0.32300, 0.30762, "peak", "ev"),
             ps.Segment(1.0, 0.32300, 0.30762, "day", "house")])

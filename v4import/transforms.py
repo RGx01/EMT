@@ -104,11 +104,12 @@ def ev_segments(conn, report):
     import pricing_segments as ps
     vat_at = _vat_lookup(conn)
     rows = conn.execute(
-        # imp_rate_exc is a v4-only column (rules.DROP_COLUMNS): read from the source
-        "SELECT b.block_start, b.imp_kwh, b.imp_cost, b.imp_rate, v.imp_rate_exc, b.imp_kwh_ev, "
-        "b.imp_cost_ev, b.imp_rate_ev, b.imp_ev_band, b.imp_home_band FROM main.blocks b "
+        # the EV split and imp_rate_exc are v4-only columns (rules.DROP_COLUMNS): read from the
+        # source, by the carried id
+        "SELECT b.block_start, b.imp_kwh, b.imp_cost, b.imp_rate, v.imp_rate_exc, v.imp_kwh_ev, "
+        "v.imp_cost_ev, v.imp_rate_ev, v.imp_ev_band, v.imp_home_band FROM main.blocks b "
         "JOIN src.blocks v ON v.id = b.id "
-        "WHERE b.meter_id = ? AND b.imp_kwh_ev > ? AND NOT EXISTS (SELECT 1 FROM "
+        "WHERE b.meter_id = ? AND v.imp_kwh_ev > ? AND NOT EXISTS (SELECT 1 FROM "
         "main.block_segments s WHERE s.block_start = b.block_start AND s.meter_id = b.meter_id "
         "AND s.channel = 'import') ORDER BY b.block_start", (MAIN, _EPS)).fetchall()
     kwh_ev = 0.0
@@ -138,7 +139,7 @@ def refit_held(conn, report):
     refitted: its cause is not this one, and a refit would hide it."""
     import pricing_segments as ps
     rows = conn.execute(
-        "SELECT b.block_start, b.imp_kwh, b.imp_rate, v.imp_rate_exc, b.imp_home_band, "
+        "SELECT b.block_start, b.imp_kwh, b.imp_rate, v.imp_rate_exc, v.imp_home_band, "
         "b.rate_source, SUM(s.kwh) AS seg_kwh FROM main.blocks b JOIN src.blocks v "
         "ON v.id = b.id JOIN main.block_segments s "
         "ON s.block_start = b.block_start AND s.meter_id = b.meter_id AND s.channel = 'import' "

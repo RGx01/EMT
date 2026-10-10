@@ -133,22 +133,27 @@ class BlockSplitColumns(unittest.TestCase):
     def test_it_carries_every_column_the_three_sites_wanted(self):
         # imp_rate_exc dropped (step 5b, 10 Oct 2026): the read derives `rate_exc` from the
         # block's pair, imp_rate × imp_cost_exc / imp_cost = 0.25 × 1.19 / 1.25.
-        _block(self.st, imp_kwh_ev=2.0, imp_rate_ev=0.25, imp_cost=1.25, imp_cost_exc=1.19,
-               imp_ev_band="off_peak", imp_home_band="day")
+        # Step 5c (10 Oct 2026): the EV columns went; `ev_kwh` is the EV segments' kWh, and
+        # the EV rate / bands the sites wanted are read from the segments themselves.
+        import pricing_segments as ps
+        _block(self.st, imp_cost=1.25, imp_cost_exc=1.19)
+        self.st.set_block_segments(S, "electricity_main", [
+            ps.Segment(2.0, 0.25, 0.238, "off_peak", "ev"),
+            ps.Segment(3.0, 0.25, 0.238, "day", "house")])
         r = self.st.get_block_split_columns(S)
-        for col in ("imp_kwh", "imp_kwh_ev", "imp_rate", "imp_rate_ev",
-                    "rate_exc", "imp_ev_band", "imp_home_band"):
+        for col in ("imp_kwh", "ev_kwh", "imp_rate", "rate_exc"):
             self.assertIn(col, r)
+        self.assertAlmostEqual(r["ev_kwh"], 2.0)
         self.assertAlmostEqual(r["rate_exc"], 0.238, places=6)
 
     def test_an_unsplit_block_is_a_row_with_a_null_column(self):
         """The behaviour change to be aware of. One caller used to filter
         `AND imp_kwh_ev IS NOT NULL` in SQL and test the ROW for None; it now
-        tests the COLUMN. A row comes back either way."""
+        tests the COLUMN (`ev_kwh`, from the EV segments). A row comes back either way."""
         _block(self.st)
         r = self.st.get_block_split_columns(S)
         self.assertIsNotNone(r, "the block exists, so there is a row")
-        self.assertIsNone(r["imp_kwh_ev"], "but it has no split")
+        self.assertIsNone(r["ev_kwh"], "but it has no split")
 
     def test_it_is_meter_scoped(self):
         _block(self.st)

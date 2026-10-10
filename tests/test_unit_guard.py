@@ -5,10 +5,11 @@ Two protections against an INC-in-pence / exc-in-£ unit mix on a main-import bl
   (1) engine `_sanitise_inc_units` — the write-side guard at the single main-import chokepoint
       (`_reprice_main_import_block`): any inc rate above the £/kWh ceiling is pence-not-pounds,
       normalised /100 across ALL inc fields (rate/cost + EV split); exc (already £) untouched.
-  (2) the Cost-Corrections recalc UPDATE — when a user corrects the import rate, the EV-split
-      columns are recomputed in the SAME statement (previously only imp_rate/imp_cost were
-      updated → the split kept the stale figure). Step 5 (10 Oct 2026) dropped the stored
-      imp_cost_remainder the statement also wrote, and with it the EV + house == total check.
+  (2) the Cost-Corrections recalc — when a user corrects the import rate, the EV split is
+      re-priced with the block (previously only imp_rate/imp_cost were updated → the split kept
+      the stale figure). Step 5 (10 Oct 2026) dropped the stored imp_cost_remainder the
+      statement also wrote; step 5c dropped the EV columns, so the split is the block's
+      segments, re-priced by the segment UPDATE (P4.10) in the same transaction.
 """
 import os, sys, unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -51,15 +52,15 @@ class TestIncUnitGuard(unittest.TestCase):
         self.assertEqual(ch, again)
 
 
-# ── P4.6: the correction-tool recalc UPDATE keeps the EV split consistent ────────
-# This runs the SAME statement shipped in web/server.py api_corrections_apply
-# (import + recalc branch) against an in-memory block, and asserts the invariant.
+# ── P4.6: the correction-tool recalc keeps the EV split consistent ────────────────
+# This runs the block columns of the statement shipped in web/server.py api_corrections_apply
+# (import + recalc branch) against an in-memory block, and asserts the invariant. Step 5c
+# (10 Oct 2026): the EV columns it also recomputed went; the split is the segments, which
+# _CORR_SEG_SQL below re-prices.
 _CORR_RECALC_SQL = (
     "UPDATE blocks SET "
     "  imp_rate = ?, "
-    "  imp_cost = ROUND(imp_kwh * ?, 6), "
-    "  imp_rate_ev = CASE WHEN imp_kwh_ev IS NOT NULL THEN ? ELSE imp_rate_ev END, "
-    "  imp_cost_ev = CASE WHEN imp_kwh_ev IS NOT NULL THEN ROUND(imp_kwh_ev * ?, 6) ELSE imp_cost_ev END "
+    "  imp_cost = ROUND(imp_kwh * ?, 6) "
     "WHERE block_start = ? AND meter_id = 'electricity_main'")
 
 
@@ -85,30 +86,27 @@ def _store_with_block(**cols):
 class TestCorrectionRecalcSplit(unittest.TestCase):
     def test_ev_block_split_stays_consistent(self):
         # a block priced 100x (pence) with an EV split, corrected to 0.069 £/kWh
-        st = _store_with_block(imp_kwh=3.929, imp_rate=6.89997, imp_cost=27.109982,
-                               imp_kwh_ev=3.55, imp_rate_ev=6.89997, imp_cost_ev=24.494893)
+        import pricing_segments as ps
+        st = _store_with_block(imp_kwh=3.929, imp_rate=6.89997, imp_cost=27.109982)
+        st.set_block_segments("2026-08-18T03:30:00", "electricity_main", [
+            (3.55, 6.89997, None, "off_peak", "ev"),
+            (0.379, 6.89997, None, "off_peak", "house")])
         v = 0.069
-        st._conn.execute(_CORR_RECALC_SQL, [v, v, v, v, "2026-08-18T03:30:00"])
+        st._conn.execute(_CORR_RECALC_SQL, [v, v, "2026-08-18T03:30:00"])
+        st._conn.execute(_CORR_SEG_SQL, [v, v, "2026-08-18T03:30:00"])
         st._conn.commit()
-        r = st._conn.execute("SELECT imp_rate, imp_cost, imp_rate_ev, imp_cost_ev "
+        r = st._conn.execute("SELECT imp_rate, imp_cost "
                              "FROM blocks WHERE meter_id='electricity_main'").fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.069, places=6)
         self.assertAlmostEqual(r["imp_cost"], round(3.929*v, 6), places=6)
-        self.assertAlmostEqual(r["imp_rate_ev"], 0.069, places=6)
-        self.assertAlmostEqual(r["imp_cost_ev"], round(3.55*v, 6), places=6)
+        segs = [ps.Segment(**x) for x in
+                st.get_block_segments("2026-08-18T03:30:00", "electricity_main")]
+        ev = [x for x in segs if x.attribution == "ev"]
+        self.assertAlmostEqual(ev[0].inc_rate, 0.069, places=6)
+        self.assertAlmostEqual(ps.attribution_cost(segs, "ev"), round(3.55*v, 6), places=6)
 
-    def test_non_ev_block_split_columns_untouched(self):
-        st = _store_with_block(imp_kwh=2.0, imp_rate=6.9, imp_cost=13.8)  # no EV split
-        v = 0.069
-        st._conn.execute(_CORR_RECALC_SQL, [v, v, v, v, "2026-08-18T03:30:00"])
-        st._conn.commit()
-        r = st._conn.execute("SELECT imp_rate, imp_cost, imp_cost_ev, imp_rate_ev "
-                             "FROM blocks WHERE meter_id='electricity_main'").fetchone()
-        self.assertAlmostEqual(r["imp_rate"], 0.069, places=6)
-        self.assertAlmostEqual(r["imp_cost"], 0.138, places=6)
-        self.assertIsNone(r["imp_cost_ev"])
-        self.assertIsNone(r["imp_rate_ev"])
-
+    # test_non_ev_block_split_columns_untouched (the CASE WHEN imp_kwh_ev IS NOT NULL guard
+    # leaving a no-split block's EV columns NULL) went with the EV columns (step 5c).
 
 
 # ── P4.10 (watch #11): a rate correction rescales block_segments too ─────────────
@@ -140,7 +138,7 @@ class TestCorrectionSegmentRescale(unittest.TestCase):
         st = self._seg_store()
         v = 0.069
         # correct the block columns (P4.8 SQL) …
-        st._conn.execute(_CORR_RECALC_SQL, [v, v, v, v, "2026-08-18T03:30:00"])
+        st._conn.execute(_CORR_RECALC_SQL, [v, v, "2026-08-18T03:30:00"])
         # … and rescale its segments (P4.10 SQL)
         st._conn.execute(_CORR_SEG_SQL, [v, v, "2026-08-18T03:30:00"])
         st._conn.commit()
