@@ -144,7 +144,7 @@ class ReconcileVerdict(unittest.TestCase):
     def test_main_sub_and_ev_all_move_together(self):
         _block(self.st, imp_kwh=5.0, imp_kwh_ev=2.0, needs_review=1)
         _block(self.st, meter_id="sub_meter_ev", imp_kwh=2.0, imp_kwh_grid=1.5)
-        out = self.st.apply_reconcile_verdict(S, 0.32, 0.305, "schedule",
+        out = self.st.apply_reconcile_verdict(S, 0.32, 0.305,
                                               "peak", "day")
         self.assertEqual(out, {"main": 1, "sub_meters": 1, "ev_columns": 1})
 
@@ -162,14 +162,14 @@ class ReconcileVerdict(unittest.TestCase):
     def test_a_verdict_leaves_a_stored_review_flag(self):
         """BL-74: the flag is history; a verdict no longer clears it."""
         _block(self.st, needs_review=1)
-        self.st.apply_reconcile_verdict(S, 0.32, 0.305, "schedule", "peak", "day")
+        self.st.apply_reconcile_verdict(S, 0.32, 0.305, "peak", "day")
         self.assertEqual(_row(self.st)["needs_review"], 1)
 
     def test_a_corrected_sub_meter_is_left_alone(self):
         _block(self.st)
         _block(self.st, meter_id="sub_meter_ev", imp_kwh=2.0, imp_rate=0.11,
                rate_corrected=1)
-        out = self.st.apply_reconcile_verdict(S, 0.32, 0.305, "schedule",
+        out = self.st.apply_reconcile_verdict(S, 0.32, 0.305,
                                               "peak", "day")
         self.assertEqual(out["sub_meters"], 0)
         self.assertAlmostEqual(_row(self.st, "sub_meter_ev")["imp_rate"], 0.11)
@@ -178,7 +178,7 @@ class ReconcileVerdict(unittest.TestCase):
         """The third statement is the same guarded SQL — an unsplit block takes
         the rate change without acquiring phantom EV columns."""
         _block(self.st)
-        out = self.st.apply_reconcile_verdict(S, 0.32, 0.305, "schedule",
+        out = self.st.apply_reconcile_verdict(S, 0.32, 0.305,
                                               "peak", "day")
         self.assertEqual(out["main"], 1)
         self.assertEqual(out["ev_columns"], 0)
@@ -192,7 +192,7 @@ class ReconcileVerdict(unittest.TestCase):
         try:
             BlockStore._EV_RESTAMP_SQL = "UPDATE blocks SET no_such_column = 1"
             with self.assertRaises(Exception):
-                self.st.apply_reconcile_verdict(S, 0.32, 0.305, "schedule",
+                self.st.apply_reconcile_verdict(S, 0.32, 0.305,
                                                 "peak", "day")
         finally:
             BlockStore._EV_RESTAMP_SQL = original

@@ -107,8 +107,10 @@ class OneSweepPass(unittest.TestCase):
         """GUARD: the outcome is unchanged — segments and exc on every block, done set."""
         self._pass(batch=N)
         self.assertEqual(self.st.count_blocks_missing_segments(), 0)
-        bad = self.st._conn.execute("SELECT COUNT(*) FROM blocks WHERE imp_rate_exc IS NULL "
-                                    "OR ABS(imp_rate_exc - ?) > 1e-6", (_EXC,)).fetchone()[0]
+        # imp_rate_exc dropped (step 5b, 10 Oct 2026): every block is 1.0 kWh, so its ex-VAT £
+        # is its ex-VAT rate.
+        bad = self.st._conn.execute("SELECT COUNT(*) FROM blocks WHERE imp_cost_exc IS NULL "
+                                    "OR ABS(imp_cost_exc - ?) > 1e-6", (_EXC,)).fetchone()[0]
         self.assertEqual(bad, 0)
         self.assertTrue((self.st.get_meta(engine._REPRICE_HISTORY_MARKER, {}) or {}).get("done"))
 

@@ -22,9 +22,9 @@ class TestCorrectionsExcVat(unittest.TestCase):
     def _blk(self, slot, inc_rate, kwh=2.0, exc=None):
         self.st._conn.execute(
             "INSERT INTO blocks (block_start,block_end,meter_id,config_period_id,"
-            "imp_kwh,imp_rate,imp_cost,imp_rate_exc,imp_cost_exc) VALUES (?,?,?,?,?,?,?,?,?)",
+            "imp_kwh,imp_rate,imp_cost,imp_cost_exc) VALUES (?,?,?,?,?,?,?,?)",
             (slot, slot, "electricity_main", 1, kwh, inc_rate, round(kwh*inc_rate,6),
-             exc, (round(kwh*exc,6) if exc is not None else None)))
+             (round(kwh*exc,6) if exc is not None else None)))
         self.st._conn.commit()
 
     def test_derives_exc_from_inc_incl_null(self):
@@ -37,13 +37,13 @@ class TestCorrectionsExcVat(unittest.TestCase):
         self.assertEqual(n, 2)
         for slot in ("2026-08-14T19:00:00", "2026-08-15T20:00:00"):
             r = self.st._conn.execute(
-                "SELECT imp_rate, imp_rate_exc, imp_cost, imp_cost_exc, exc_source "
+                "SELECT imp_rate, imp_cost, imp_cost_exc "
                 "FROM blocks WHERE block_start=?", (slot,)).fetchone()
-            self.assertAlmostEqual(r["imp_rate_exc"], round(0.30*f, 6), places=6)   # inc/(1+VAT)
+            # imp_rate_exc and exc_source dropped (step 5b, 10 Oct 2026): the ex-VAT rate is
+            # derived from the pair, so the £ carries it.
             self.assertAlmostEqual(r["imp_cost_exc"], round(r["imp_cost"]*f, 6), places=6)
-            self.assertEqual(r["exc_source"], "tariff")
             # exc/inc ratio is a valid VAT ratio (0.95..), never > 1 or stale
-            self.assertAlmostEqual(r["imp_rate_exc"]/r["imp_rate"], f, places=4)  # valid VAT ratio, not stale
+            self.assertAlmostEqual(r["imp_cost_exc"]/r["imp_cost"], f, places=4)  # valid VAT ratio, not stale
 
     def test_segments_exc_follow(self):
         f = 1.0/(1.0+self.vat)

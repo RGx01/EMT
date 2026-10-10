@@ -80,10 +80,9 @@ class TestRepriceHistoryBlockCore(unittest.TestCase):
         self._blk(A, 2.0, 0.30, 0.60, source="imported_api")
         self.st._conn.commit()
         engine._reprice_history_blocks([self._row(A)], "UTC", _RATE_SEGS)
-        r = self.st._conn.execute("SELECT imp_kwh_ev, imp_rate_exc, imp_cost_exc FROM blocks "
+        r = self.st._conn.execute("SELECT imp_kwh_ev, imp_cost_exc FROM blocks "
                                   "WHERE block_start=?", (A,)).fetchone()
         self.assertIsNone(r["imp_kwh_ev"])
-        self.assertAlmostEqual(r["imp_rate_exc"], _EXC, places=6)
         self.assertAlmostEqual(r["imp_cost_exc"], round(2.0 * _EXC, 6), places=6)
         segs = self._segs(A)
         self.assertEqual(len(segs), 1)
@@ -95,8 +94,8 @@ class TestRepriceHistoryBlockCore(unittest.TestCase):
         self._blk(A, 2.0, 0.30, 0.60, source="live", imp_kwh_api=None)
         self.st._conn.commit()
         engine._reprice_history_blocks([self._row(A)], "UTC", _RATE_SEGS)
-        r = self.st._conn.execute("SELECT imp_rate_exc FROM blocks WHERE block_start=?", (A,)).fetchone()
-        self.assertIsNone(r["imp_rate_exc"])          # gated out — no stale exc on a movable rate
+        r = self.st._conn.execute("SELECT imp_cost_exc FROM blocks WHERE block_start=?", (A,)).fetchone()
+        self.assertIsNone(r["imp_cost_exc"])          # gated out — no stale exc on a movable rate
         self.assertEqual(len(self._segs(A)), 1)       # segments still derived
 
     def test_settled_live_block_gets_exc(self):
@@ -104,8 +103,8 @@ class TestRepriceHistoryBlockCore(unittest.TestCase):
         self._blk(A, 2.0, 0.30, 0.60, source="live", imp_kwh_api=2.0)   # DCC-settled
         self.st._conn.commit()
         engine._reprice_history_blocks([self._row(A)], "UTC", _RATE_SEGS)
-        r = self.st._conn.execute("SELECT imp_rate_exc FROM blocks WHERE block_start=?", (A,)).fetchone()
-        self.assertAlmostEqual(r["imp_rate_exc"], _EXC, places=6)
+        r = self.st._conn.execute("SELECT imp_cost_exc FROM blocks WHERE block_start=?", (A,)).fetchone()
+        self.assertAlmostEqual(r["imp_cost_exc"], round(2.0 * _EXC, 6), places=6)
 
     def test_dispatched_split_invariant(self):
         B = "2025-01-04T02:00:00"
@@ -139,10 +138,13 @@ class TestSweepAndConformance(unittest.TestCase):
 
     def _blk(self, start, kwh, rate, cost, source="imported_api", imp_kwh_api=None,
              dispatch=None, rate_exc=None):
+        # imp_rate_exc dropped (step 5b, 10 Oct 2026): a stored ex-VAT rate is now the £ it
+        # prices, imp_cost_exc = kWh × rate_exc; reads derive the rate back from the pair.
+        cost_exc = round(kwh * rate_exc, 6) if rate_exc is not None else None
         self.st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
-            "imp_rate, imp_cost, source, imp_kwh_api, imp_rate_exc) VALUES (?,?, 'electricity_main', "
-            "?, ?, ?, ?, ?, ?, ?)", (start, start, self._cp, kwh, rate, cost, source, imp_kwh_api, rate_exc))
+            "imp_rate, imp_cost, source, imp_kwh_api, imp_cost_exc) VALUES (?,?, 'electricity_main', "
+            "?, ?, ?, ?, ?, ?, ?)", (start, start, self._cp, kwh, rate, cost, source, imp_kwh_api, cost_exc))
         if dispatch is not None:
             self.st._conn.execute(
                 "INSERT INTO dispatch_history (slot_start, kind, energy_kwh, first_seen, last_seen)"
@@ -158,9 +160,9 @@ class TestSweepAndConformance(unittest.TestCase):
             if (self.st.get_meta(engine._REPRICE_HISTORY_MARKER, {}) or {}).get("done"):
                 break
         self.assertEqual(self.st.count_blocks_missing_segments(), 0)
-        exc = self.st._conn.execute("SELECT imp_rate_exc FROM blocks WHERE "
-                                    "block_start='2025-03-01T13:00:00'").fetchone()["imp_rate_exc"]
-        self.assertAlmostEqual(exc, _EXC, places=6)
+        exc = self.st._conn.execute("SELECT imp_cost_exc FROM blocks WHERE "
+                                    "block_start='2025-03-01T13:00:00'").fetchone()["imp_cost_exc"]
+        self.assertAlmostEqual(exc, round(2.0 * _EXC, 6), places=6)
         self.assertEqual(asyncio.run(engine._run_historical_reprice_sweep()), 0)
 
     def test_sweep_superset_fills_exc_on_settled_block_with_segments(self):
@@ -178,9 +180,9 @@ class TestSweepAndConformance(unittest.TestCase):
             asyncio.run(engine._run_historical_reprice_sweep(batch=50))
             if (self.st.get_meta(engine._REPRICE_HISTORY_MARKER, {}) or {}).get("done"):
                 break
-        r = self.st._conn.execute("SELECT imp_rate_exc FROM blocks WHERE block_start=?",
+        r = self.st._conn.execute("SELECT imp_cost_exc FROM blocks WHERE block_start=?",
                                   (start,)).fetchone()
-        self.assertAlmostEqual(r["imp_rate_exc"], _EXC, places=6)          # exc filled
+        self.assertAlmostEqual(r["imp_cost_exc"], round(2.0 * _EXC, 6), places=6)   # exc filled
         n = self.st._conn.execute("SELECT COUNT(*) n FROM block_segments WHERE block_start=?",
                                   (start,)).fetchone()["n"]
         self.assertEqual(n, 1)                                            # segments NOT rebuilt
@@ -239,7 +241,7 @@ class TestSweepHardening(unittest.TestCase):
     def _blk(self, start, kwh=2.0, rate=0.30, cost=0.60):
         self.st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
-            "imp_rate, imp_cost, source, imp_kwh_api, imp_rate_exc) VALUES (?,?, 'electricity_main', "
+            "imp_rate, imp_cost, source, imp_kwh_api, imp_cost_exc) VALUES (?,?, 'electricity_main', "
             "?, ?, ?, ?, 'imported_api', NULL, NULL)", (start, start, self._cp, kwh, rate, cost))
 
     def _marker(self):

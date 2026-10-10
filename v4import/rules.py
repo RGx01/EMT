@@ -30,10 +30,10 @@ CARRY = (
                         "standing_charge_source")),
     ("blocks", ("id", "block_start", "block_end", "meter_id", "config_period_id",
                 "interpolated", "imp_kwh", "imp_kwh_grid", "imp_rate",
-                "imp_cost", "imp_cost_exc", "imp_rate_exc",
+                "imp_cost", "imp_cost_exc",
                 "imp_read_start", "imp_read_end", "exp_kwh", "exp_rate", "exp_cost",
-                "exp_read_start", "exp_read_end", "standing_charge", "standing_charge_exc",
-                "carbon_g", "imp_provisional", "source", "exc_source", "is_provisional",
+                "exp_read_start", "exp_read_end", "standing_charge",
+                "carbon_g", "imp_provisional", "source", "is_provisional",
                 "needs_pass2_rerun", "imp_kwh_api", "exp_kwh_api", "needs_review",
                 "carbon_intensity_g", "rate_corrected", "derivation_id",
                 "finalised_from_cad", "review_reason", "review_dismissed", "rate_source",
@@ -69,6 +69,9 @@ DROP_COLUMNS = {
     "blocks": frozenset({
         "imp_kwh_remainder", "imp_cost_remainder",   # the house, derived where read
         "rate_reconciled",                           # folded into rate_source (transform 1)
+        # the ex-VAT rate, the standing charge's ex-VAT and their provenance: derived where
+        # read from imp_cost_exc (carried, spec v15) and the VAT calendar (5b)
+        "imp_rate_exc", "standing_charge_exc", "exc_source",
     }),
 }
 

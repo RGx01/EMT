@@ -86,10 +86,11 @@ class TestParse(unittest.TestCase):
                "2024-07-01T01:00:00+01:00,2024-07-01T01:30:00+01:00,2.0,26.1537,24.9083,47.52,45.26\n")
         b = ci.parse_octopus_csv(csv, "import")["blocks"][0]
         self.assertAlmostEqual(b["rate"], 0.261537, places=6)          # inc rate
-        self.assertAlmostEqual(b["rate_exc"], 0.249083, places=6)      # exc rate
-        self.assertAlmostEqual(b["cost_exc"], 0.249083 * 2.0, places=6)  # rate_exc × kWh
-        self.assertAlmostEqual(b["standing_exc"], 0.4526, places=6)
-        self.assertEqual(b["exc_source"], "csv")
+        self.assertAlmostEqual(b["cost_exc"], 0.249083 * 2.0, places=6)  # exc rate × kWh
+        # Step 5b (10 Oct 2026): rows carry only cost_exc — the ex-VAT rate, the standing
+        # charge's ex-VAT and exc_source are derived where read (or gone).
+        self.assertNotIn("rate_exc", b)
+        self.assertNotIn("standing_exc", b)
 
     def test_exc_cost_column_when_no_exc_rate(self):
         # Exc cost column used when no exc rate; inc/exc cost columns disambiguated.
@@ -98,7 +99,6 @@ class TestParse(unittest.TestCase):
         b = ci.parse_octopus_csv(csv, "import")["blocks"][0]
         self.assertAlmostEqual(b["cost"], 0.5231, places=6)            # from inc-cost col
         self.assertAlmostEqual(b["cost_exc"], 0.4982, places=6)        # from exc-cost col
-        self.assertEqual(b["exc_source"], "csv")
 
     def test_inc_only_csv_has_no_exc(self):
         # Back-compat: an inc-only CSV yields no exc — behaviour unchanged.
@@ -239,7 +239,6 @@ class TestTemplateGeneration(unittest.TestCase):
         self.assertIsNotNone(b0["cost"])
         # v2: the example ex-VAT rate parses through to cost_exc.
         self.assertIsNotNone(b0["cost_exc"])
-        self.assertEqual(b0["exc_source"], "csv")
         self.assertLess(b0["cost_exc"], b0["cost"])   # exc < inc
 
     def test_slots_template_arbitrary_slots(self):

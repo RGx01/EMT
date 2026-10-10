@@ -50,7 +50,7 @@ class TestMeasuredApply(unittest.TestCase):
     def _row(self):
         return self.st._conn.execute(
             "SELECT imp_rate, imp_cost, imp_rate_ev, imp_cost_ev, imp_ev_band, "
-            "imp_home_band, rate_source, imp_rate_exc, imp_cost_exc FROM blocks "
+            "imp_home_band, rate_source, imp_cost_exc FROM blocks "
             "WHERE block_start=?", (self.SLOT,)).fetchone()
 
     def test_orphaned_ev_attributed_from_completed_dispatch(self):
@@ -88,7 +88,11 @@ class TestMeasuredApply(unittest.TestCase):
         self.assertAlmostEqual(r["imp_cost"], 1.029372, places=6)
         self.assertEqual(r["imp_ev_band"], "peak")       # cost ~0.323 → peak band
         self.assertEqual(r["imp_home_band"], "day")
-        self.assertAlmostEqual(r["imp_rate_exc"], round(0.980355/3.186, 6), places=6)
+        # imp_rate_exc dropped (step 5b, 10 Oct 2026): the bill's ex-VAT £ is stored and the
+        # ex-VAT rate derives from the pair.
+        self.assertAlmostEqual(r["imp_cost_exc"], 0.980355, places=6)
+        self.assertAlmostEqual(r["imp_rate"] * r["imp_cost_exc"] / r["imp_cost"],
+                               round(0.980355/3.186, 6), places=6)
         segs = [ps.Segment(**x) for x in
                 self.st.get_block_segments(self.SLOT, "electricity_main")]
         self.assertAlmostEqual(ps.total_cost(segs), 1.029372, places=5)   # sums to the bill
@@ -216,7 +220,7 @@ class TestMeasuredApplyDeviceRecost(unittest.TestCase):
 
     def _dev_row(self, mid):
         return self.st._conn.execute(
-            "SELECT imp_kwh, imp_kwh_grid, imp_rate, imp_rate_exc, imp_cost, imp_cost_exc "
+            "SELECT imp_kwh, imp_kwh_grid, imp_rate, imp_cost, imp_cost_exc "
             "FROM blocks WHERE block_start=? AND meter_id=?", (self.SLOT, mid)).fetchone()
 
     def test_device_cost_uses_grid_attributed_kwh(self):
@@ -240,11 +244,14 @@ class TestMeasuredApplyDeviceRecost(unittest.TestCase):
         """inc and exc must derive from the same kWh or the ex-VAT view disagrees."""
         self._device("battery", 4.0, 0.01)
         self._settle()
-        r = self._dev_row("battery")
-        self.assertIsNotNone(r["imp_rate_exc"])
-        # exact: cost_exc is the SAME 0.01 kWh priced at the row's own ex-VAT rate
-        self.assertAlmostEqual(r["imp_cost_exc"], round(0.01 * r["imp_rate_exc"], 6), places=6)
-        self.assertNotAlmostEqual(r["imp_cost_exc"], round(4.0 * r["imp_rate_exc"], 6), places=4)
+        r, m = self._dev_row("battery"), self._dev_row("electricity_main")
+        self.assertIsNotNone(r["imp_cost_exc"])
+        # imp_rate_exc dropped (step 5b, 10 Oct 2026): the ex-VAT rate is the settled main's,
+        # derived from its pair.
+        rate_exc = m["imp_rate"] * m["imp_cost_exc"] / m["imp_cost"]
+        # exact: cost_exc is the SAME 0.01 kWh priced at the ex-VAT rate
+        self.assertAlmostEqual(r["imp_cost_exc"], round(0.01 * rate_exc, 6), places=6)
+        self.assertNotAlmostEqual(r["imp_cost_exc"], round(4.0 * rate_exc, 6), places=4)
 
     def test_unclipped_device_still_costs_from_raw_kwh(self):
         """imp_kwh_grid NULL means PASS 2 never clipped — the COALESCE fallback.

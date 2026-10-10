@@ -38,14 +38,14 @@ def _store(device_exc=PEAK_EXC, device_rate=PEAK):
     with st._conn:
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated, "
-            "imp_kwh, imp_kwh_api, imp_rate, imp_cost, imp_rate_exc, imp_cost_exc, exp_kwh, exp_cost) "
-            "VALUES (?, '2026-07-21T05:00:00', 'electricity_main', ?, 0, 0.142, 0.142, ?, ?, ?, ?, 0, 0)",
-            (BS, cp, PEAK, round(0.142 * PEAK, 6), PEAK_EXC, round(0.142 * PEAK_EXC, 6)))
+            "imp_kwh, imp_kwh_api, imp_rate, imp_cost, imp_cost_exc, exp_kwh, exp_cost) "
+            "VALUES (?, '2026-07-21T05:00:00', 'electricity_main', ?, 0, 0.142, 0.142, ?, ?, ?, 0, 0)",
+            (BS, cp, PEAK, round(0.142 * PEAK, 6), round(0.142 * PEAK_EXC, 6)))
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated, "
-            "imp_kwh, imp_kwh_grid, imp_rate, imp_cost, imp_rate_exc, imp_cost_exc, exp_kwh, exp_cost) "
-            "VALUES (?, '2026-07-21T05:00:00', 'house_battery', ?, 0, 0.002, 0.002, ?, ?, ?, ?, 0, 0)",
-            (BS, cp, device_rate, round(0.002 * device_rate, 6), device_exc,
+            "imp_kwh, imp_kwh_grid, imp_rate, imp_cost, imp_cost_exc, exp_kwh, exp_cost) "
+            "VALUES (?, '2026-07-21T05:00:00', 'house_battery', ?, 0, 0.002, 0.002, ?, ?, ?, 0, 0)",
+            (BS, cp, device_rate, round(0.002 * device_rate, 6),
              round(0.002 * device_exc, 6) if device_exc is not None else None))
     return st
 
@@ -63,9 +63,14 @@ class ACorrectionOnAnApiAccount(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.data)
 
     def _row(self, st, meter):
-        return st._conn.execute(
-            "SELECT imp_rate, imp_cost, imp_rate_exc, imp_cost_exc FROM blocks "
-            "WHERE block_start=? AND meter_id=?", (BS, meter)).fetchone()
+        # imp_rate_exc was dropped (step 5b, 10 Oct 2026): the ex-VAT rate is derived from the
+        # row's own pair, imp_rate × imp_cost_exc / imp_cost.
+        r = dict(st._conn.execute(
+            "SELECT imp_rate, imp_cost, imp_cost_exc FROM blocks "
+            "WHERE block_start=? AND meter_id=?", (BS, meter)).fetchone())
+        r["rate_exc"] = (r["imp_rate"] * r["imp_cost_exc"] / r["imp_cost"]
+                         if r["imp_cost_exc"] is not None and r["imp_cost"] else None)
+        return r
 
     def test_the_main_is_corrected(self):
         """GUARD: the main's own rewrite (BL-57) was already right."""
@@ -73,15 +78,14 @@ class ACorrectionOnAnApiAccount(unittest.TestCase):
         self._correct(st)
         m = self._row(st, "electricity_main")
         self.assertAlmostEqual(m["imp_rate"], OFF, places=6)
-        self.assertAlmostEqual(m["imp_rate_exc"], OFF_EXC, places=6)
+        self.assertAlmostEqual(m["imp_cost_exc"], 0.142 * OFF_EXC, places=6)
 
     def test_the_devices_take_the_corrected_exc_rate(self):
         st = _store()
         self._correct(st)
         d, m = self._row(st, "house_battery"), self._row(st, "electricity_main")
         self.assertAlmostEqual(d["imp_rate"], OFF, places=6)
-        self.assertAlmostEqual(d["imp_rate_exc"], m["imp_rate_exc"], places=6)
-        self.assertAlmostEqual(d["imp_cost_exc"], round(0.002 * m["imp_rate_exc"], 6), places=6)
+        self.assertAlmostEqual(d["imp_cost_exc"], round(0.002 * m["rate_exc"], 6), places=6)
 
     def test_reapplying_repairs_a_stale_device(self):
         """A device an earlier correction left with the old exc rate: its inc rate is already the
@@ -89,7 +93,7 @@ class ACorrectionOnAnApiAccount(unittest.TestCase):
         st = _store(device_rate=OFF, device_exc=PEAK_EXC)
         self._correct(st)
         d, m = self._row(st, "house_battery"), self._row(st, "electricity_main")
-        self.assertAlmostEqual(d["imp_rate_exc"], m["imp_rate_exc"], places=6)
+        self.assertAlmostEqual(d["imp_cost_exc"], round(0.002 * m["rate_exc"], 6), places=6)
 
 
 if __name__ == "__main__":

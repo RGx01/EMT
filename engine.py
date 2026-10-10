@@ -768,7 +768,9 @@ def _refit_held_segments(imp_ch: dict, block_start: str, meter_id: str, kwh: flo
         if not segs or abs(sum(float(x["kwh"] or 0.0) for x in segs) - float(kwh or 0.0)) <= 1e-6:
             return False
         _hb = imp_ch.get("home_band")
-        new = _ps.refit_to_kwh(segs, kwh, rate=rate, exc_rate=imp_ch.get("rate_exc"),
+        _r = _exc_ratio(imp_ch, block_start)
+        new = _ps.refit_to_kwh(segs, kwh, rate=rate,
+                               exc_rate=(round(rate * _r, 6) if _r is not None and rate else None),
                                band=_hb if _hb in ("off_peak", "day") else "standard")
         _store.set_block_segments(block_start, meter_id, new)
         if imp_ch.get("kwh_ev") is not None:
@@ -819,6 +821,42 @@ def _persist_block_segments(block_start: str, meter_id: str, imp_ch: dict, *,
                        block_start, meter_id, _SEGMENT_WRITE_FAILURES, e)
 
 
+def _exc_ratio(imp_ch: dict, block_start: str, *, vat_fallback: bool = True):
+    """A main import channel's ex-VAT / inc-VAT ratio: the ex-VAT rate this pricing run derived
+    (`rate_exc`, set by _apply_import_exc), else the block's OWN stored pair (`cost_exc` /
+    `cost`), else 1 / (1 + VAT on its day). None when none can be had.
+
+    Step 5b (10 Oct 2026): `imp_rate_exc` is no longer stored or loaded, so on a channel read
+    from the database `rate_exc` is absent and the pair speaks. The pair is the per-block
+    ex-VAT authority (import spec §5.2, v15) — on a settled block it is the bill's own."""
+    rate = float(imp_ch.get("rate") or 0.0)
+    rexc = imp_ch.get("rate_exc")
+    if rexc is not None and rate:
+        return float(rexc) / rate
+    cost, cexc = imp_ch.get("cost"), imp_ch.get("cost_exc")
+    if cexc is not None and cost:
+        return float(cexc) / float(cost)
+    if not vat_fallback:
+        return None
+    try:
+        return 1.0 / (1.0 + _store.vat_rate_at(block_start))
+    except Exception:
+        return None
+
+
+def _carry_exc_to_cost(imp_ch: dict, ratio) -> None:
+    """Keep a re-costed channel's ex-VAT with its new inc figure, at `ratio` (the block's own,
+    taken BEFORE the re-cost). The settlement re-run moves kWh and £ to the settled figure; with
+    no ex-VAT tariff to re-derive from, the loaded `cost_exc` was written back unchanged — stale
+    against the new cost, hidden while `imp_rate_exc` was stored. A tariff, if one covers the
+    slot, still overrides this (_apply_import_exc runs after)."""
+    if ratio is None or imp_ch.get("cost") is None:
+        return
+    imp_ch["cost_exc"] = round(float(imp_ch["cost"]) * ratio, 6)
+    if imp_ch.get("rate") is not None:
+        imp_ch["rate_exc"] = round(float(imp_ch["rate"]) * ratio, 6)
+
+
 def _build_block_segments(block_start: str, imp_ch: dict) -> list:
     """The priced segments for a just-priced MAIN import channel, unwritten — the seam's own
     where it emitted them, else reconstructed from the channel's columns. For a writer that
@@ -826,14 +864,7 @@ def _build_block_segments(block_start: str, imp_ch: dict) -> list:
     """
     import pricing_segments as _ps
     _rate = float(imp_ch.get("rate") or 0.0)
-    _rexc = imp_ch.get("rate_exc")
-    if _rexc is not None and _rate:
-        _ratio = float(_rexc) / _rate
-    else:
-        try:
-            _ratio = 1.0 / (1.0 + _store.vat_rate_at(block_start))
-        except Exception:
-            _ratio = None
+    _ratio = _exc_ratio(imp_ch, block_start)
     # BL-27: prefer the FULL-fidelity segments the pricing seam emitted (all four bands
     # on a boundary block); apply the block's exc ratio here. Fall back to reconstructing
     # from the columns for non-dispatched / non-seam blocks (single house segment).
@@ -856,7 +887,7 @@ def _apply_import_exc(imp_ch: dict, start: str) -> bool:
     """The ONE ex-VAT computation (design 4.4.0 §4): derive rate_exc/cost_exc from the
     POST-split inc rate x the tariff's exc/inc ratio at this slot — computed alongside inc,
     from the same knowledge, so exc can never go stale versus the split. Returns True when a
-    tariff exc was applied (caller stamps the meter's exc_source='tariff'); a no-op when no
+    tariff exc was applied; a no-op when no
     ex-VAT tariff covers the slot (the view then falls back to inc / (1+VAT))."""
     _isched = _kraken_rate_schedules.get("import")
     _iexc = getattr(_isched, "exc", None) if _isched is not None else None
@@ -910,7 +941,7 @@ def _reprice_main_import_block(result: dict, start: str, meter_name: str,
     apply the dispatch off-peak overlay (the finalise-time started-gate), carve the IOG
     EV/house split, derive ex-VAT from the post-split rate, and persist the segments — ALL
     derived fields together, one path, so nothing (exc especially) can drift. No-op for
-    non-IOG / no-dispatch. `meter` (when given) receives exc_source='tariff'.
+    non-IOG / no-dispatch.
 
     `apply_overlay=False` — INHERIT the stored rate, don't re-resolve the overlay (design §3d:
     never re-derive the overlay over history). Used by the reconcile back-attribution, which
@@ -929,8 +960,8 @@ def _reprice_main_import_block(result: dict, start: str, meter_name: str,
                          _iog_site_tz(), hold_rate=hold_rate)
         # ex-VAT from the POST-split rate — one place, in the same breath as inc. Only when the
         # rate was (re)resolved here; the inherit path keeps the finalised rate AND its exc.
-        if apply_overlay and _apply_import_exc(result, start) and meter is not None:
-            meter["exc_source"] = "tariff"
+        if apply_overlay:
+            _apply_import_exc(result, start)
     # SAFETY GUARD (§4a) — INC must be £, never pence. One chokepoint for every main-import
     # write (finalise, reconcile back-attribution, reprice sweep); PASS 2 devices then inherit
     # the corrected £ rate. Byte-identical on healthy blocks.
@@ -3925,12 +3956,13 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
                 logger.info("_rerun_pass2: %s rate preserved (%.5f) — %s; re-costed to "
                             "chosen kWh (not re-resolved)",
                             block.get("start", ""), rate, _override_why)
+                _own_ratio = _exc_ratio(imp_ch, block.get("start", ""), vat_fallback=False)
                 imp_ch["rate"] = rate
                 imp_ch["kwh"] = chosen
                 imp_ch["kwh_total"] = chosen
                 imp_ch["cost"] = round(chosen * rate, 6)
-                if _apply_import_exc(imp_ch, block.get("start", "")) and main is not None:
-                    main["exc_source"] = "tariff"
+                _carry_exc_to_cost(imp_ch, _own_ratio)
+                _apply_import_exc(imp_ch, block.get("start", ""))
                 if _preserved_prediction:
                     # Re-derive the carve + segments against the settled kWh, priced at the
                     # HELD band (hold_rate=True). apply_overlay=False so the overlay itself
@@ -3949,6 +3981,7 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
                     _refit_held_segments(imp_ch, block.get("start", ""), main_meter_id, chosen,
                                          rate)
             else:
+                _own_ratio = _exc_ratio(imp_ch, block.get("start", ""), vat_fallback=False)
                 rate, rep = _resolve_block_rate(imp_ch, block.get("start", ""),
                                                 "import", rate_resolver)
                 _rate_repaired = _rate_repaired or rep
@@ -3956,6 +3989,7 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
                 imp_ch["kwh"] = chosen
                 imp_ch["kwh_total"] = chosen
                 imp_ch["cost"] = round(chosen * rate, 6)
+                _carry_exc_to_cost(imp_ch, _own_ratio)
                 # 4.4.0 §4: the ONE per-block re-price — overlay + IOG split + ex-VAT
                 # (from the POST-split rate) + persist, all together. Replaces the inline
                 # overlay/split/exc/persist whose exc came from the pre-split rate (a
@@ -7077,7 +7111,7 @@ def reprice_history_conformance(from_iso: str, to_iso: str,
         checked += 1
         ch = _reprice_history_block(r, tz, rate_segs)
         new_kev, new_rexc = ch.get("kwh_ev"), ch.get("rate_exc")
-        st_kev, st_rexc = r["imp_kwh_ev"], r["imp_rate_exc"]
+        st_kev, st_rexc = r["imp_kwh_ev"], r["rate_exc"]      # derived from the stored pair (5b)
         if (new_kev is not None) or (st_kev is not None):
             dispatched += 1
         rec = {"start": r["block_start"], "stored_kwh_ev": st_kev, "new_kwh_ev": new_kev,
@@ -7165,8 +7199,15 @@ async def run_iog_split_carve(max_blocks: int = 2000) -> dict:
         if ev is None or float(ev) <= 1e-9:
             continue                                   # no dispatch EV this slot -> stays house
         ev = round(float(ev), 6)
-        rexc = r["imp_rate_exc"]
-        rexc = round(float(rexc), 6) if rexc is not None else round(rate / 1.05, 6)
+        # The block's ex-VAT rate from its own pair (the column went in 5b), else the VAT
+        # calendar on its day — not a fixed 1.05, which priced a 0%-VAT day at 5%.
+        rexc = r["rate_exc"]
+        if rexc is None:
+            try:
+                rexc = rate / (1.0 + _store.vat_rate_at(bs))
+            except Exception:
+                rexc = rate / 1.05
+        rexc = round(float(rexc), 6)
         ev_band = tmp.get("ev_band") or "off_peak"
         home_band = tmp.get("home_band") or ev_band
         house = round(kwh - ev, 6)
@@ -7272,7 +7313,7 @@ def _reprice_history_blocks(rows, tz_name: "str | None", rate_segs) -> dict:
         ch = _reprice_history_block(row, tz_name, rate_segs)
         start, meter_id = ch.get("_start"), ch.get("_meter_id")
         if ch.get("rate_exc") is not None:
-            exc_updates.append((start, meter_id, ch.get("cost_exc"), ch.get("rate_exc"), "tariff"))
+            exc_updates.append((start, meter_id, ch.get("cost_exc")))
         # Segments are written by REPLACE (delete+insert), so only (re)build them when the block
         # LACKS them — never overwrite an existing set — or when this pass fills its EV split
         # (BL-79): then the split's segments go with its columns, in set_blocks_iog_split's
@@ -8173,14 +8214,11 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
         # STANDING_CHARGE_COST is patchy (whole stretches return none → £0/day),
         # which was silently under-billing the reconstructed range.
         meas_standing: dict = {}
-        meas_standing_exc: dict = {}   # BL-23 (4.2): parallel ex-VAT standing sum
         meas_count: dict = {}
         for st in imported:
             d = st[:10]
             meas_standing[d] = (meas_standing.get(d, 0.0)
                                 + (by_start[st].get("standing_incl") or 0.0))
-            meas_standing_exc[d] = (meas_standing_exc.get(d, 0.0)
-                                    + (by_start[st].get("standing_excl") or 0.0))
             meas_count[d] = meas_count.get(d, 0) + 1
         try:
             _slots_per_day = int(round(24 * 60 / max(1, int(get_block_minutes()))))
@@ -8200,19 +8238,6 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
                 n = meas_count.get(d, 0)
                 day_standing[d] = (round(meas_standing[d] / n * _slots_per_day, 6)
                                    if n else meas_standing[d])
-        # BL-23 (4.2): parallel ex-VAT daily standing — prefer the schedule's exc
-        # sibling, else extrapolate the summed Measurements standing_excl to a whole day
-        # (same logic as inc). Left absent (→ NULL) when no exc source covers the day.
-        day_standing_exc: dict = {}
-        _standing_segs_exc = _exc_segs(standing_segs)
-        for d in meas_standing:
-            sc = _standing_for(_standing_segs_exc, d) if _standing_segs_exc else None
-            if sc is None and meas_standing_exc.get(d):
-                n = meas_count.get(d, 0)
-                sc = (round(meas_standing_exc[d] / n * _slots_per_day, 6)
-                      if n else meas_standing_exc[d])
-            if sc is not None:
-                day_standing_exc[d] = sc
 
         priced = off_peak = 0
         fb_material = fb_no_bucket = 0     # IOG-dispatch pricing diagnostic
@@ -8240,19 +8265,15 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
                 cost = None
             # BL-23: ex-VAT capture. A measurement slot carries the exact cost_excl;
             # a tariff-reconstructed slot takes kWh × the exc SCHEDULED rate (same band
-            # as the inc rate, via rate_segs.exc). rate_exc is stored for the tariff case
-            # (published primary); for a measurement slot it's derived on read (cost_exc/kWh).
-            rate_exc = None
+            # as the inc rate, via rate_segs.exc). Only the £ is stored: the rate, the
+            # standing charge's ex-VAT and their provenance are derived where read (5b).
             if meas_cost is not None:
                 cost_exc = r.get("cost_excl")
-                exc_source = "measurement" if cost_exc is not None else None
             elif cost is not None and kwh > 0:
                 rate_exc = _tariff_rate_for(_exc_segs(rate_segs), st, ofp)
                 cost_exc = round(kwh * rate_exc, 6) if rate_exc is not None else None
-                exc_source = "tariff" if cost_exc is not None else None
             else:
                 cost_exc = None
-                exc_source = None
             if cost is not None:
                 priced += 1
             if ofp:
@@ -8287,11 +8308,9 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
             # the export channel must not write it (it would clobber the import's
             # value with 0, since OUTGOING tariffs have no standing charge).
             _standing = day_standing.get(st[:10]) if channel == "import" else None
-            _standing_exc = day_standing_exc.get(st[:10]) if channel == "import" else None
             rows_to_write.append({"start": st, "kwh": kwh, "rate": rate,
                                   "cost": cost, "standing": _standing,
-                                  "cost_exc": cost_exc, "rate_exc": rate_exc,
-                                  "standing_exc": _standing_exc, "exc_source": exc_source})
+                                  "cost_exc": cost_exc})
         # Total flagged this chunk BEFORE in-pass recovery reduces it — the "raised"
         # figure the post-import health summary reports.
         flags_raised_ch = fb_material
@@ -8359,7 +8378,6 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
                     _ce = node.get("cost_excl")
                     if _ce is not None:
                         row["cost_exc"] = _ce
-                        row["exc_source"] = "measurement"
                     row["_was_off_peak"] = bool(ofp)
                     _healed.append(st)
                 if _healed:
@@ -8690,8 +8708,7 @@ async def repair_import_pricing(from_date=None, to_date=None, *,
                 rate = _billed_rate(rate_segs, st, ofp, mc, kwh,
                                     labelled=bool(r.get("buckets")))
                 if _store.reprice_imported_block(st, meter_id, channel, rate, mc,
-                                                 cost_exc=r.get("cost_excl"),
-                                                 exc_source="measurement"):
+                                                 cost_exc=r.get("cost_excl")):
                     recovered += 1
                     fixed.append(st)
             # Queue mode: a slot the API returns a cost for is DONE — whether we
@@ -8733,8 +8750,7 @@ async def repair_import_pricing(from_date=None, to_date=None, *,
                     if not improves:
                         continue
                     if _store.reprice_imported_block(st, meter_id, channel, new_rate, mc,
-                                                     cost_exc=r.get("cost_excl"),
-                                                     exc_source="measurement"):
+                                                     cost_exc=r.get("cost_excl")):
                         recovered += 1
                         opportunistic += 1
 
@@ -8767,8 +8783,7 @@ async def repair_import_pricing(from_date=None, to_date=None, *,
                 rate = _billed_rate(rate_segs, st, ofp, mc, node.get("kwh") or 0,
                                     labelled=bool(node.get("buckets")))
                 if _store.reprice_imported_block(st, meter_id, channel, rate, mc,
-                                                 cost_exc=node.get("cost_excl"),
-                                                 exc_source="measurement"):
+                                                 cost_exc=node.get("cost_excl")):
                     recovered += 1
                     fixed_ss.append(st)
             # Same as the window pass: clear every slot now confirmed to hold a cost,
@@ -12194,7 +12209,7 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
         store.apply_measured_to_main(
             bs,
             rate=imp_rate, cost=round(cost_incl, 6),
-            rate_exc=exc_rate, cost_exc=_cost_exc,
+            cost_exc=_cost_exc,
             kwh_ev=(ev_kwh_sum if ev_kwh_sum > 1e-9 else None),
             rate_ev=rate_ev,
             cost_ev=(ev_cost if ev_kwh_sum > 1e-9 else None),
@@ -12559,7 +12574,7 @@ async def reconcile_dispatch_overlay() -> dict:
                     import pricing_segments as _ps_ok
                     _brow = store.get_block_split_columns(bs)
                     if _brow is not None and (_brow["imp_kwh"] or 0) > 0:
-                        _exc_ok = _brow["imp_rate_exc"]
+                        _exc_ok = _brow["rate_exc"]        # derived from the pair (5b)
                         if _exc_ok is None:
                             try:
                                 _exc_ok = round(cur_rate / (1.0 + store.vat_rate_at(bs)), 6)
@@ -12647,7 +12662,7 @@ async def reconcile_dispatch_overlay() -> dict:
                         target, bs, cur_rate, new_rate, reason)
             continue
         # BL-23/BL-9: re-stamp the ex-VAT columns alongside the inc rate/cost. A
-        # reconcile that rewrites imp_rate WITHOUT this leaves imp_rate_exc/imp_cost_exc
+        # reconcile that rewrites imp_rate WITHOUT this leaves imp_cost_exc
         # at the OLD band's value — a stale ex-VAT figure (e.g. an off-peak exc rate on
         # a block reverted to peak), which then shows a wrong rate in the billing
         # summary's EV/Home split and understates Total (exc). Derive the fresh exc rate
@@ -12663,7 +12678,6 @@ async def reconcile_dispatch_overlay() -> dict:
             _exc_p = _iexc.resolve(bs)
             if _exc_p is not None and _inc_p and abs(_inc_p) > 1e-6:
                 _exc_rate = round(new_rate * (_exc_p / _inc_p), 6)
-        _exc_src = "tariff" if _exc_rate is not None else None
         # BL-9 / BL-58: the same drift hits the EV/house SPLIT — imp_rate_ev must follow
         # the rewrite or the split keeps the old band (off-peak EV on a block reverted to
         # peak) and the home remainder derives a phantom rate above the tariff peak. The
@@ -12709,7 +12723,7 @@ async def reconcile_dispatch_overlay() -> dict:
             logger.warning("reconcile: segment build failed for %s: %s", bs, _rc_e)
             _segs_rc = None
         try:
-            store.apply_reconcile_verdict(bs, new_rate, _exc_rate, _exc_src,
+            store.apply_reconcile_verdict(bs, new_rate, _exc_rate,
                                           _ev_band_col, _home_band_col, segments=_segs_rc)
         except Exception as _vd_e:
             # Nothing was written (one transaction), so the block stays a candidate.

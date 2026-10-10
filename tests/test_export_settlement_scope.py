@@ -229,36 +229,38 @@ class TestExportOnlySettlementScope(unittest.TestCase):
     def test_settled_kwh_holds_exc_vat_rate_too(self):
         """The hold applies to the ex-VAT rate as well as the inc-VAT one.
 
-        `imp_rate_exc` is a second pricing column written alongside `imp_rate`. A hold that
-        pinned only the inc rate would leave the exc figure re-derived from the moved band,
-        so the ex-VAT bill would disagree with the inc-VAT bill on the same block.
+        The ex-VAT rate is derived from the block's own pair, `imp_rate x imp_cost_exc /
+        imp_cost` (its stored column `imp_rate_exc` was dropped in step 5b, 10 Oct 2026). A
+        hold that pinned only the inc rate would leave the exc figure re-derived from the
+        moved band, so the ex-VAT bill would disagree with the inc-VAT bill on the same block.
 
-        This harness's finalise path leaves `imp_rate_exc` NULL (no VAT calendar is
+        This harness's finalise path leaves `imp_cost_exc` NULL (no VAT calendar is
         seeded), and asserting "still NULL" would pass under either model — a vacuous
-        test. So seed the exc rate explicitly to the peak band's ex-VAT value first;
+        test. So seed the ex-VAT cost explicitly to the peak band's ex-VAT value first;
         the assertion then discriminates.
         """
         self._finalise(BIG, BIG_END, imp=4.0, exp=0.5)
         peak_exc = round(PEAK / 1.05, 6)
         with engine._store._conn:
             engine._store._conn.execute(
-                "UPDATE blocks SET imp_rate_exc = ?, imp_cost_exc = ? "
+                "UPDATE blocks SET imp_cost_exc = ? "
                 "WHERE block_start=? AND meter_id='electricity_main'",
-                (peak_exc, round(4.0 * peak_exc, 6), BIG))
+                (round(4.0 * peak_exc, 6), BIG))
         self._late_dispatch(BIG, 3.5)
         self._settle(BIG, imp_api=4.5)
-        rate_inc, rate_exc = self._row(BIG, "imp_rate", "imp_rate_exc")
+        rate_inc, cost, cost_exc = self._row(BIG, "imp_rate", "imp_cost", "imp_cost_exc")
+        rate_exc = rate_inc * cost_exc / cost
         self.assertAlmostEqual(
             rate_exc, peak_exc, places=6,
             msg="the ex-VAT rate must be held on the peak band")
         # The discriminating assertion: inc and exc must describe the SAME band. The
-        # pre-fix code moved imp_rate to off-peak and left imp_rate_exc on the peak
-        # value, so the two columns disagreed about what this block cost — checking
-        # only that exc was "unchanged" would pass for that wrong reason.
+        # pre-fix code moved imp_rate to off-peak and left the ex-VAT figure on the peak
+        # value, so the two disagreed about what this block cost — checking only that
+        # exc was "unchanged" would pass for that wrong reason.
         self.assertAlmostEqual(
             rate_exc, round(rate_inc / 1.05, 6), places=6,
             msg="inc and exc rates must describe the same band (pre-fix: imp_rate "
-                "re-banded to off-peak while imp_rate_exc stayed on peak)")
+                "re-banded to off-peak while the ex-VAT figure stayed on peak)")
 
     def test_settled_kwh_segments_agree_with_block_cost(self):
         """Segments are the seam the hold has to reach, not just the columns.

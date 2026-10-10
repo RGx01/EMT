@@ -55,10 +55,10 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
             "block_minutes, timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, 'UTC')")
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, imp_rate_exc, imp_cost_exc, exc_source, "
-            "rate_corrected, imp_kwh_api) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            "imp_kwh, imp_rate, imp_cost, imp_cost_exc, "
+            "rate_corrected, imp_kwh_api) VALUES (?,?,?,?,?,?,?,?,?,?)",
             (self.SLOT, self.SLOT, "electricity_main", 1, 1.0, 0.05493, 0.05493,
-             0.052314, 0.052314, "tariff", 0, 1.0))
+             0.052314, 0, 1.0))
         st.upsert_dispatch_slot(self.SLOT, off_peak=True, provider="Myenergi",
                                 source="smart-charge", state="planned")
         st.record_dispatch_history(self.SLOT, "planned", provider="Myenergi")
@@ -74,8 +74,10 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
             engine._store = None
 
     def _row(self, st):
+        # imp_rate_exc dropped (step 5b, 10 Oct 2026): the ex-VAT rate is derived from the
+        # pair, imp_rate × imp_cost_exc / imp_cost.
         return st._conn.execute(
-            "SELECT imp_rate, imp_rate_exc, imp_cost_exc FROM blocks WHERE block_start=?",
+            "SELECT imp_rate, imp_cost, imp_cost_exc FROM blocks WHERE block_start=?",
             (self.SLOT,)).fetchone()
 
     async def test_revert_restamps_exc_to_new_band(self):
@@ -86,8 +88,9 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
         r = self._row(st)
         self.assertAlmostEqual(r["imp_rate"], 0.323092, places=5)          # peak inc
         # exc re-stamped to the PEAK exc — NOT left at the stale off-peak 0.052314
-        self.assertAlmostEqual(r["imp_rate_exc"], 0.323092 / 1.05, places=5)
         self.assertAlmostEqual(r["imp_cost_exc"], 1.0 * 0.323092 / 1.05, places=5)
+        self.assertAlmostEqual(r["imp_rate"] * r["imp_cost_exc"] / r["imp_cost"],
+                               0.323092 / 1.05, places=5)
 
     async def test_revert_nulls_exc_when_no_exc_schedule(self):
         st = BlockStore(":memory:")
@@ -97,7 +100,6 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
         r = self._row(st)
         self.assertAlmostEqual(r["imp_rate"], 0.323092, places=5)
         # no exc schedule → stale exc NULLed (falls back to inc÷VAT), never left wrong
-        self.assertIsNone(r["imp_rate_exc"])
         self.assertIsNone(r["imp_cost_exc"])
 
     async def test_revert_puts_ev_split_on_new_rate_via_segments(self):
@@ -177,13 +179,13 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
         # block already PEAK + reconciled; EV columns + segments stale OFF-PEAK
         st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, imp_rate_exc, imp_cost_exc, exc_source, "
+            "imp_kwh, imp_rate, imp_cost, imp_cost_exc, "
             "rate_corrected, rate_source, imp_kwh_api, imp_kwh_ev, imp_cost_ev, "
             "imp_rate_ev, imp_ev_band, imp_home_band) VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            "(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (self.SLOT, self.SLOT, "electricity_main", 1, 3.186, 0.323092,
-             round(3.186*0.323092, 6), 0.323092/1.05, round(3.186*0.323092/1.05, 6),
-             "tariff", 0, "reconciled", 3.186, 2.24, round(2.24*0.05493, 6), 0.05493,
+             round(3.186*0.323092, 6), round(3.186*0.323092/1.05, 6),
+             0, "reconciled", 3.186, 2.24, round(2.24*0.05493, 6), 0.05493,
              "off_peak", "off_peak"))
         st.set_block_segments(self.SLOT, "electricity_main", [
             ps.Segment(2.24, 0.05493, 0.052314, "off_peak", "ev"),
