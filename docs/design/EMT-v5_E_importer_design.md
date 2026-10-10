@@ -309,6 +309,52 @@ Beyond spec §9's gates, which run on every import:
 
 ---
 
+### 8a. The Pi soaks, 10 Oct 2026
+
+Two soaks on the reference Pi 4 (HA OS 18.3, SD card, 28 GB with 4.9 GB free), each restoring the
+soak copy of prod-dev's 4.5.22 backup (`soak_prepare_db.py`: every segment stripped, so the sweep
+rebuilds them) through the importer. The first ran #128–#133; the second added #134 (no WAL, rename
+into place, the snapshot marker carried).
+
+| | 4 Oct soak (no importer) | 10 Oct, first | 10 Oct, after #134 |
+|---|---|---|---|
+| whole restore, after the upload | — | 2 min 54 s | 2 min 21 s |
+| gate (integrity over 80 MB) | — | 23 s | 51 s |
+| import | — | 80.7 s | 93.1 s |
+| — prepare / carry / transforms / verify / commit | — | 0.8 / 4.6 / 0.6 / 6.5 / **68.2** | **45.5** / 4.5 / 0.6 / 6.2 / **36.3** |
+| safety backup | — | 24 s | 46 s |
+| copy into place | — | 40 s | **0 s** (a rename) |
+| sweep (36,711 blocks) | ~17 min (37,103, 29 Sep) | ~45 s | ~90 s |
+| commits over 1 s after the restore | — | 8, worst 18.3 s | 1, worst 1.85 s |
+| quiet p50 / p95, all requests | 0.06 / 1.9 s | 0.12 / 4.0 s | 0.11 / 4.4 s |
+| Spiral / Usage Stats: all days, p50 | 2.6 s | 8.7 s | 10.0 s |
+| verdict | PASS | FAIL (10 over budget) | FAIL (16 over budget) |
+
+**What #134 did.** The commit halved and the copy went: three of the ~six 80 MB writes a restore
+made are gone, and the engine-loop stalls after a restore with them (8 commits over 1 s → 1).
+`prepare` (creating the empty target, reading the source's stamp) and the safety backup were SLOWER
+in the second soak — the card was still writing out the upload. On this card a restore's time is set
+by how much it writes, and the importer's own work (carry, transforms, gates) is ~11 s of it.
+
+**What it did not do: the quiet phase.** Reads stayed 2–4× slower than 4 Oct's, through both
+soaks. **It is not the code.** On a Mac the same four routes over the same data take the same time at
+the 4 Oct soak's tree (#68) and at `dev` after step 5 and the importer — `/api/energy` all days 0.60 s
+→ 0.66 s, `/api/periods` live 0.17 s → 0.19 s, picker totals 0.22 s → 0.21 s, with #111, #112 and
+#117 in between flat too (timed through each tree's own Flask app, 10 Oct). And halving the write load did not move
+it. So the Pi reads more slowly than it did on 4 Oct: page-cache pressure (the 80 MB database no
+longer held in RAM), other load on the host (HA's own sensors returned nothing at 16:28 in the first
+soak), or the card.
+
+**Open, to settle it:** the A/B — the 4 Oct build (`11004c7`) on this Pi now, restoring `blocks-25.db`
+as it is (v4-shaped, which that build takes directly). Slow too → the host, not EMT. And the host's
+memory and temperature from a shell on the Pi (`free -m`, `/sys/class/thermal/thermal_zone0/temp`).
+The share holds a rolling 20 backups, so the soaks' safety backups do not accumulate.
+
+**Also measured:** the sweep rebuilt all 37,415 stripped blocks in both soaks. 24,617 of 38,048
+segment rows differ from the originals — house `off_peak` at the clean rate rebuilt as `standard` at
+a cost-derived rate, mostly 2023 CSV history (ROADMAP BL-81). A real import keeps its segments; this
+is the sweep's rebuild path.
+
 ## 9. Spec amendments this design needs
 
 To be written into the import spec as **v18** when the PRs that need them land, not before:
@@ -345,7 +391,7 @@ step usable on the Pi.
 | 5b | `imp_rate_exc`, `standing_charge_exc`, `exc_source`: six readers that load `imp_rate_exc` from the database take a derived rate instead (`imp_cost_exc ÷ imp_cost` as the exc/inc ratio, else the VAT calendar), and the held-rate re-run stops writing back an `imp_cost_exc` stale against its new cost | — |
 | 5c | the five EV-split columns: finalise and the settlement re-run write the segments in the block's own transaction (a failed segment write used to leave the split only in the columns), bands are read from the segments, the split writers become segment-only, and `ev_split`'s LEGACY fallback goes. *Built 10 Oct 2026, with gate 5 (`verify.split_reproduced`).* | 5 |
 | 5d | *folded into 5c (10 Oct 2026):* gate 5 landed with the EV columns it checks, and the documented counts were already right | — |
-| 6 | positive fixture at 4.5.22, Pi timing, spec v18. *Corpus test, timings and v18 in #129. The 4.5.22 fixture (prod-dev, 10 Oct 2026) imports with every gate holding in 2.8 s on a Mac; a key no earlier backup held, `corrected_device_exc_done`, dropped under the `_done` rule as intended. *The Pi (soak, 10 Oct 2026): the import took 80.7 s, 68 s of it the commit — the target was in WAL mode, so every page was written twice. Fixed (no WAL, one fsync, rename into place), and the pre-live snapshot marker now crosses. The soak's quiet phase was 2–3× slower than 4 Oct's and engine-loop blocking failed (commits of 5–18 s at 16:30–16:35, no checkpoint in any): a restore wrote the 80 MB database ~6× to the SD card (upload spool, staging, the import twice, the safety backup, the copy, the snapshot). A repeat soak after the fix is the check. The sweep rebuilt every stripped block (37,415) in ~45 s; 24,617 of 38,048 segment rows differ, house `off_peak` → `standard` at a cost-derived rate, the BL-81 weakness on CSV history.* | all |
+| 6 | positive fixture at 4.5.22, Pi timing, spec v18. *Corpus test, timings and v18 in #129. The 4.5.22 fixture (prod-dev, 10 Oct 2026) imports with every gate holding in 2.8 s on a Mac; a key no earlier backup held, `corrected_device_exc_done`, dropped under the `_done` rule as intended. *The Pi (soak, 10 Oct 2026): the import took 80.7 s, 68 s of it the commit — the target was in WAL mode, so every page was written twice. Fixed (no WAL, one fsync, rename into place), and the pre-live snapshot marker now crosses. The soak's quiet phase was 2–3× slower than 4 Oct's and engine-loop blocking failed (commits of 5–18 s at 16:30–16:35, no checkpoint in any): a restore wrote the 80 MB database ~6× to the SD card (upload spool, staging, the import twice, the safety backup, the copy, the snapshot). The repeat soak after the fix is §8a. The sweep rebuilt every stripped block (37,415) in ~45 s; 24,617 of 38,048 segment rows differ, house `off_peak` → `standard` at a cost-derived rate, the BL-81 weakness on CSV history.* | all |
 
 Each PR is a normal `feat/…` or `chore/…` from `dev`. PR 3 is the first to change what v5 writes
 natively, and PR 5 is by far the largest. Dev databases made before PR 3 are re-restored from a v4
