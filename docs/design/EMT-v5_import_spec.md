@@ -1118,7 +1118,8 @@ it must take the BL-50 job lock, not run alongside an import or delete.
 > Oct 2026): 80.7 s** — prepare 0.8, carry 4.6, transforms 0.6, verify 6.5, **commit 68.2**: the target
 > was in WAL mode, so the import was written twice. Now built with its journal in memory and one
 > fsync (no WAL), and swapped in by rename, not copy; the whole restore was ~3 min after the upload
-> (gate 23 s, import 81 s, safety backup 24 s, copy into place 40 s). `store_meta.import_audit` and
+> (gate 23 s, import 81 s, safety backup 24 s, copy into place 40 s); after the fix 2 min 21 s, the
+> commit 36 s and the copy a rename (E design §8a). `store_meta.import_audit` and
 > the restore log carry each phase's time.
 > It runs inside the restore job, which holds the BL-50 lock.
 
