@@ -195,6 +195,13 @@ readers accept it. The era test natively is the one v5 already has (`_import_is_
 agreement history for past blocks). Measured on blocks-20, 15,225 house `off_peak` segments exist,
 about 420 a month both before the SMB era and inside it.
 
+> **Superseded 10 Oct 2026: the relabel moves to ROADMAP BL-81.** The sentence above assumed v5
+> has an era test for past blocks. It does not. A trace of every writer of a house band found about
+> ten paths, and each decides "SMB" from the **current** tariff (`ev_device_*` schedules,
+> `_import_is_smb_capped`), not the block's date. The whole-history sweep also rebuilds segments and
+> discards the stored band. So the native half needs a per-block era first. Until BL-81, both
+> v5 and the importer keep house `off_peak` in every era, and transform 4 is not built.
+
 *Also to trace before PR 3, not to assume:* `chart_emit.py:86` does not count house `day` as the
 bill having spoken. That may be deliberate (the chart's house line may only want the low band), or
 a gap. Settle it by reading the introducing commit (memory: trace v4 intent before deleting).
@@ -331,7 +338,7 @@ step usable on the Pi.
 |---|---|---|
 | 1 | this document | — |
 | 2 | **skeleton, wired into the restore**: `v4import/` with the gate moved in, the classification and `emt_schema`, the fresh-target carry with every column and table classified (identity rules, since the schema has not moved yet), the §7 key allow-lists, REGEN, the audit record and the boundary test | 1, 2, 3 (pre-rename), 4, 6, 9 |
-| 3 | **vocabulary**: `'measured'` → `'settled'` (28 sites in `engine.py` and `block_store.py`, `.build/bill_conformance.py`, 24 lines in tests) with transform 1; house `night` in v5's writers and readers, with transform 4 | 3 |
+| 3 | **vocabulary**: `'measured'` → `'settled'` (28 sites in `engine.py` and `block_store.py`, `.build/bill_conformance.py`, 24 lines in tests) with transform 1 and the reconciled fold; `EMT_SCHEMA` 2. *House `night` and transform 4 split out to ROADMAP BL-81 (10 Oct 2026): v5 has no per-block tariff era to label against.* | 3 |
 | 4 | **segments**: transforms 2 and 3 | 11 |
 | 5 | **the schema drop**: the 10 columns and `rate_reconciled` leave `BlockStore`'s DDL and v5's code (about 400 references, most of them in `block_store.py`), `ev_split`'s LEGACY fallback goes, and the rules become DROP | 5 |
 | 6 | positive fixture at 4.5.22, Pi timing, spec v18 | all |

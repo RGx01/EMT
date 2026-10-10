@@ -10,10 +10,10 @@ importer's copy.
     1  provenance          'measured' -> 'settled', the reconciled fold
     2  EV segments         from the legacy columns, where a block has none
     3  held-rate refit     segments fitted to a settled kWh
-    4  band relabel        house off_peak -> night, SMB era
+    4  band relabel        house off_peak -> night, SMB era (waits on ROADMAP BL-81)
     5  meta                the allow-listed store_meta / kraken_state keys
 
-1 and 5 exist; 2 to 4 follow, in this order (E design §10).
+1 and 5 exist; 2 and 3 follow, in this order, and 4 waits on BL-81 (E design §10).
 """
 from . import rules
 
