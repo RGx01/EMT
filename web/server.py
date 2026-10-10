@@ -7045,10 +7045,13 @@ def api_import():
     (blocks.json import removed in 2.2.2; meters_config.json is ignored — the DB is
     authoritative.)"""
     global _restore_job
+    import time as _t
+    _t0 = _t.monotonic()
     try:
-        blocks_file = request.files.get("blocks")
+        blocks_file = request.files.get("blocks")      # the multipart body, parsed (spooled)
         if not blocks_file:
             return jsonify({"error": "No files received"}), 400
+        _t_parse = _t.monotonic() - _t0
 
         # Refuse BEFORE saving anything while a restore runs (10 Oct 2026). The upload used
         # to be saved first, to one fixed path, then refused — overwriting, and then
@@ -7066,13 +7069,26 @@ def api_import():
         _fd, staged = _tf.mkstemp(prefix="uploaded_restore-", suffix=".db", dir=DATA_DIR)
         os.close(_fd)
         try:
+            _t1 = _t.monotonic()
             blocks_file.save(staged)
+            _t_save = _t.monotonic() - _t1
+            # A cheap probe, not a COUNT(*) of every block: that the file is a database with a
+            # readable `blocks` table. The restore's import gate checks the rest (integrity, the
+            # stamp, the units) before anything is swapped. Immutable and read-only, so it
+            # leaves no -wal / -shm beside the staged file.
+            _t1 = _t.monotonic()
             import sqlite3 as _sq3
-            _tc = _sq3.connect(staged)
+            from urllib.parse import quote as _q
+            _tc = _sq3.connect("file:%s?mode=ro&immutable=1" % _q(os.path.abspath(staged)),
+                               uri=True)
             try:
-                _tc.execute("SELECT COUNT(*) FROM blocks")
+                _tc.execute("SELECT 1 FROM blocks LIMIT 1").fetchone()
             finally:
                 _tc.close()
+            _t_check = _t.monotonic() - _t1
+            logger.info("api_import: received %.1f MB — parsed in %.1f s, saved in %.1f s, "
+                        "checked in %.1f s; starting the restore",
+                        os.path.getsize(staged) / 1048576.0, _t_parse, _t_save, _t_check)
         except Exception as _ve:
             if os.path.exists(staged):
                 try: os.remove(staged)
