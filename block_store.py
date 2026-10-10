@@ -59,7 +59,7 @@ SCHEMA_VERSION = 1
 # other revision until the first release fixes the baseline.
 EMT_SCHEMA = 2
 #   1  10 Oct 2026  the marker itself (v4's schema and words)
-#   2  10 Oct 2026  rate_source 'measured' -> 'settled'; house low band 'night' in the SMB era
+#   2  10 Oct 2026  rate_source 'measured' -> 'settled'
 
 
 def read_emt_schema(path):
