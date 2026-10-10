@@ -345,7 +345,7 @@ step usable on the Pi.
 | 5b | `imp_rate_exc`, `standing_charge_exc`, `exc_source`: six readers that load `imp_rate_exc` from the database take a derived rate instead (`imp_cost_exc ÷ imp_cost` as the exc/inc ratio, else the VAT calendar), and the held-rate re-run stops writing back an `imp_cost_exc` stale against its new cost | — |
 | 5c | the five EV-split columns: finalise and the settlement re-run write the segments in the block's own transaction (a failed segment write used to leave the split only in the columns), bands are read from the segments, the split writers become segment-only, and `ev_split`'s LEGACY fallback goes. *Built 10 Oct 2026, with gate 5 (`verify.split_reproduced`).* | 5 |
 | 5d | *folded into 5c (10 Oct 2026):* gate 5 landed with the EV columns it checks, and the documented counts were already right | — |
-| 6 | positive fixture at 4.5.22, Pi timing, spec v18 | all |
+| 6 | positive fixture at 4.5.22, Pi timing, spec v18. *Corpus test, timings and v18 in #129. The 4.5.22 fixture (prod-dev, 10 Oct 2026) imports with every gate holding in 2.8 s on a Mac; a key no earlier backup held, `corrected_device_exc_done`, dropped under the `_done` rule as intended. The Pi timing is still to take.* | all |
 
 Each PR is a normal `feat/…` or `chore/…` from `dev`. PR 3 is the first to change what v5 writes
 natively, and PR 5 is by far the largest. Dev databases made before PR 3 are re-restored from a v4
