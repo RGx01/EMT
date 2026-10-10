@@ -41,6 +41,16 @@ def _remove(path):
             pass
 
 
+def _sync(path):
+    """fsync the finished target once — the only durability the import needs, since it was
+    built without per-write syncs and is swapped in only after this returns."""
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _src_names(conn, sql):
     return [r[0] for r in conn.execute(sql).fetchall()]
 
@@ -121,6 +131,14 @@ def import_v4(source, target, progress=None):
     conn = sqlite3.connect("file:%s" % quote(os.path.abspath(target)), uri=True,
                            isolation_level=None)
     conn.row_factory = sqlite3.Row
+    # The target is nobody's live database: a failed import deletes it. So it is built with
+    # its journal in memory and no fsync per write, and synced ONCE when done (_sync). BlockStore
+    # created it in WAL mode, which wrote the whole import twice — into the WAL at COMMIT, then
+    # back into the file when the journal left WAL mode: 68 s of an 81 s import on the Pi's
+    # SD card (10 Oct 2026 soak). A 16 MB page cache also keeps the gates' reads off the card.
+    conn.execute("PRAGMA journal_mode=MEMORY")
+    conn.execute("PRAGMA synchronous=OFF")
+    conn.execute("PRAGMA cache_size=-16000")
     ok = False
     try:
         conn.execute("ATTACH DATABASE ? AS src",
@@ -150,8 +168,10 @@ def import_v4(source, target, progress=None):
                      ("import_audit", json.dumps(report, sort_keys=True)))
         conn.execute("COMMIT")
         conn.execute("DETACH DATABASE src")
-        # One self-contained file for the swap: no -wal beside it to leave behind.
+        # One self-contained file for the swap, never a WAL: the mode v5 then opens it in is
+        # BlockStore's to set.
         conn.execute("PRAGMA journal_mode=DELETE")
+        _sync(target)
         _lap("commit", t)          # after the audit was written: in the returned report only
         secs["total"] = round(time.monotonic() - t0, 3)
         ok = True

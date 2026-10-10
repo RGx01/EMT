@@ -1114,8 +1114,12 @@ it must take the BL-50 job lock, not run alongside an import or delete.
 
 > **As built (v18):** ONE transaction into a fresh file beside the live one, not chunks. An
 > interrupted import leaves a target that is deleted, so all-or-nothing needs no resume. Measured on
-> a Mac: 2.8 s for 139k blocks, of which the carry 0.9 s and the gates 1.6 s; the Pi on its SD card
-> is still to measure, and `store_meta.import_audit` / the restore log now carry each phase's time.
+> a Mac: 2.8 s for 139k blocks, of which the carry 0.9 s and the gates 1.6 s. **On the Pi (soak, 10
+> Oct 2026): 80.7 s** — prepare 0.8, carry 4.6, transforms 0.6, verify 6.5, **commit 68.2**: the target
+> was in WAL mode, so the import was written twice. Now built with its journal in memory and one
+> fsync (no WAL), and swapped in by rename, not copy; the whole restore was ~3 min after the upload
+> (gate 23 s, import 81 s, safety backup 24 s, copy into place 40 s). `store_meta.import_audit` and
+> the restore log carry each phase's time.
 > It runs inside the restore job, which holds the BL-50 lock.
 
 **All-or-nothing per run.** On failure, the target is left empty (or rolled back), never partially

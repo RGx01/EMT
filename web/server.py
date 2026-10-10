@@ -2767,6 +2767,24 @@ def _fsync_dir(path):
         pass
 
 
+def _move_restore_into_place(src, dest):
+    """Rename a database already in DATA_DIR (the import target, or a staged upload) over
+    `dest`: same filesystem, so atomic, and no second 80 MB write on the Pi's SD card, which a
+    copy was (40 s of the 10 Oct 2026 soak's restore). `src` is synced first, so the rename
+    can never expose a file whose pages are still in the OS cache."""
+    fd = os.open(src, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    os.replace(src, dest)
+    _fsync_dir(dest)
+
+
+def _in_data_dir(path):
+    return bool(path) and os.path.dirname(os.path.abspath(path)) == os.path.abspath(DATA_DIR)
+
+
 def _atomic_restore_write(dest, fill):
     """Write `dest` atomically: fill a temp file, fsync it, then os.replace into
     place. An interrupted restore (e.g. the add-on being rebuilt/restarted
@@ -3116,12 +3134,12 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
         restored = []
 
         if staged:
-            # #356: swap in the uploaded (already SQLite-validated) blocks.db with
-            # the same atomic write the zip/flat paths use, then drop the staging
-            # file. Everything downstream (reset, migrate, gap-detect) is shared.
+            # #356: swap in the uploaded (already SQLite-validated) blocks.db — or the
+            # database the importer built from it — then drop the staging file.
+            # Everything downstream (reset, migrate, gap-detect) is shared. Both live in
+            # DATA_DIR, so the swap is a rename, not a copy (10 Oct 2026).
             dest = os.path.join(DATA_DIR, "blocks.db")
-            with open(_swap_from or staged, "rb") as _src:
-                _atomic_write(dest, lambda d, _s=_src: shutil.copyfileobj(_s, d))
+            _move_restore_into_place(_swap_from or staged, dest)
             restored.append("blocks.db")
             try: os.remove(staged)
             except Exception: pass
@@ -3135,9 +3153,12 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
                     src_path = _swap_from
                 dst_path = os.path.join(DATA_DIR, fname)
                 if os.path.exists(src_path):
-                    with open(src_path, "rb") as _src:
-                        _atomic_write(dst_path,
-                                      lambda d, _s=_src: shutil.copyfileobj(_s, d))
+                    if _in_data_dir(src_path):     # the import target: rename it in
+                        _move_restore_into_place(src_path, dst_path)
+                    else:                          # the share's own copy: never moved
+                        with open(src_path, "rb") as _src:
+                            _atomic_write(dst_path,
+                                          lambda d, _s=_src: shutil.copyfileobj(_s, d))
                     restored.append(fname)
             logger.info("api_backup_restore: restored flat files %s", restored)
         else:

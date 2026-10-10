@@ -250,6 +250,7 @@ carried user data** is a setup fact in effect, and crosses.
 | `billing_source` | state | the user's choice of what settles a block (*added in PR 2, from v5's own keys*) |
 | `carbon_paused` | meta | the user's carbon kill switch (*added in PR 2*) |
 | `import_cost_coverage` | meta | what the API import found about this history, per tariff era (*added in PR 2*) |
+| `pre_live_snapshot_done` | state | v4 already took its one snapshot before the first live DCC write, and the restore has just taken its own safety backup. *Moved from DROP, 10 Oct 2026: re-run, it wrote a third 80 MB copy on the Pi's SD card in the soak.* |
 
 **REGEN**: `written_by` (v5's own version), `db_uuid` (new; the source's goes in the audit
 record), `emt_schema` (new, §2).
@@ -261,7 +262,6 @@ record), `emt_schema` (new, §2).
 | `last_poll_utc` | the DCC poll's first-run window (`backfill_days`), with its re-check overlap |
 | `last_settlement_sweep_utc`, `verify_pricing_cursor`, `verify_pricing_summary`, `import_health_summary`, `import_run_status`, `import_pricing_diag` | runtime state, rebuilt |
 | `import_gaps_import/export` | recomputed (to verify alongside the `api_import_*` keys) |
-| `pre_live_snapshot_done` | takes its one snapshot |
 | `export_zero_fill_v1` | fills blank export slots on imported days again; idempotent |
 | `carbon_backfill_state`, `import_reprice_queue`, `region_reconcile_pending`, `reprice_history_state` | spec §6. The whole-history sweep then runs (spec §8). |
 | `measured_vat_resync` (4.5.22, not yet on hand) | v5's forward resync starts from the data. If v4 finished, v5 finds no disagreeing block and marks itself done. If not, it waits for a new hint, as v4 would have. |
@@ -345,7 +345,7 @@ step usable on the Pi.
 | 5b | `imp_rate_exc`, `standing_charge_exc`, `exc_source`: six readers that load `imp_rate_exc` from the database take a derived rate instead (`imp_cost_exc ÷ imp_cost` as the exc/inc ratio, else the VAT calendar), and the held-rate re-run stops writing back an `imp_cost_exc` stale against its new cost | — |
 | 5c | the five EV-split columns: finalise and the settlement re-run write the segments in the block's own transaction (a failed segment write used to leave the split only in the columns), bands are read from the segments, the split writers become segment-only, and `ev_split`'s LEGACY fallback goes. *Built 10 Oct 2026, with gate 5 (`verify.split_reproduced`).* | 5 |
 | 5d | *folded into 5c (10 Oct 2026):* gate 5 landed with the EV columns it checks, and the documented counts were already right | — |
-| 6 | positive fixture at 4.5.22, Pi timing, spec v18. *Corpus test, timings and v18 in #129. The 4.5.22 fixture (prod-dev, 10 Oct 2026) imports with every gate holding in 2.8 s on a Mac; a key no earlier backup held, `corrected_device_exc_done`, dropped under the `_done` rule as intended. The Pi timing is still to take.* | all |
+| 6 | positive fixture at 4.5.22, Pi timing, spec v18. *Corpus test, timings and v18 in #129. The 4.5.22 fixture (prod-dev, 10 Oct 2026) imports with every gate holding in 2.8 s on a Mac; a key no earlier backup held, `corrected_device_exc_done`, dropped under the `_done` rule as intended. *The Pi (soak, 10 Oct 2026): the import took 80.7 s, 68 s of it the commit — the target was in WAL mode, so every page was written twice. Fixed (no WAL, one fsync, rename into place), and the pre-live snapshot marker now crosses. The soak's quiet phase was 2–3× slower than 4 Oct's and engine-loop blocking failed (commits of 5–18 s at 16:30–16:35, no checkpoint in any): a restore wrote the 80 MB database ~6× to the SD card (upload spool, staging, the import twice, the safety backup, the copy, the snapshot). A repeat soak after the fix is the check. The sweep rebuilt every stripped block (37,415) in ~45 s; 24,617 of 38,048 segment rows differ, house `off_peak` → `standard` at a cost-derived rate, the BL-81 weakness on CSV history.* | all |
 
 Each PR is a normal `feat/…` or `chore/…` from `dev`. PR 3 is the first to change what v5 writes
 natively, and PR 5 is by far the largest. Dev databases made before PR 3 are re-restored from a v4

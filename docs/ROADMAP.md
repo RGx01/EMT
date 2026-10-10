@@ -505,6 +505,13 @@ arrives; and whether the era should come from the agreement history when the API
 Until BL-81, v5 and the importer both keep house `off_peak` in every era. One label, so nothing
 writes two.
 
+*Measured on the 10 Oct 2026 soak:* with every segment stripped (the soak prep), the sweep rebuilt all
+37,415 blocks, and 24,617 of 38,048 segment rows came back different from the originals — mostly 2023
+CSV history, a house `off_peak` at the clean rate (0.0749994) rebuilt as `standard` at the cost-derived
+rate (0.07497; BL-80: there `imp_cost` is not kWh × rate). A real import keeps its segments, so this is
+the sweep's rebuild path, not the importer — the same weakness: a band the sweep cannot re-derive is
+lost.
+
 *Checked while tracing (10 Oct 2026), and not a defect:* the sweep can rebuild a held block's
 segments without touching `imp_cost`, which looked as if it would let the segments drift from the
 bill. On three real databases no reconciled block drifts at all. 18 settled blocks do, by up to 2.6p:
