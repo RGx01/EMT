@@ -290,6 +290,23 @@ class TheSegmentTransforms(_Dir):
         self.assertEqual(tuple(conn.execute("SELECT imp_kwh, imp_cost FROM blocks "
                                             "WHERE id = 60").fetchone()), (4.0, 0.28))
 
+    def test_an_all_ev_block_whose_bill_is_not_kwh_times_rate(self):
+        """An EV split with no house share and no segments, whose bill is not kWh × rate
+        (the 5%-VAT October bill against a 0% rate, v4 #505). The reconstruction gives the EV
+        segment the whole bill, so the segments still sum to imp_cost; imp_cost_ev is kWh ×
+        rate. Gate 5 refused it, comparing £ against the column on a block the importer had
+        just rebuilt by its own rule (found on the 10 Oct soak copy). Fails on the parent."""
+        bs = "2026-10-09T01:00:00"
+        conn, report = self.imported(extra_sql=(
+            "INSERT INTO blocks (id, block_start, block_end, meter_id, config_period_id, imp_kwh, "
+            "imp_rate, imp_cost, imp_cost_exc, rate_source, imp_kwh_ev, imp_cost_ev, imp_rate_ev, "
+            "imp_ev_band, imp_home_band) VALUES (70, '%s', '%s', 'electricity_main', 1, 0.156, "
+            "0.052314, 0.008569, 0.008161, 'measured', 0.156, 0.008161, 0.052314, 'off_peak', "
+            "'off_peak')" % (bs, bs),))
+        self.assertEqual(self._segs(conn, bs), [("ev", "off_peak", 0.156,
+                                                 round(0.008569 / 0.156, 6))])
+        self.assertTrue(report["gates"]["split_reproduced"]["ok"], report["gates"])
+
     def test_a_block_with_segments_keeps_them(self):
         """GUARD: the fixture's block 40 already has segments matching its kWh."""
         conn, _ = self.imported(extra_sql=SEG_SQL)
@@ -465,11 +482,20 @@ class TheGatesBite(_Dir):
                      "AND attribution = 'ev'" % HELD_BS, "re-priced by the refit")
 
     def test_an_ev_segment_whose_cost_moved(self):
-        """Gate 5 (spec §9.5): the EV segments reproduce the source's imp_cost_ev."""
+        """Gate 5 (spec §9.5): the EV segments reproduce the source's imp_cost_ev — on a block
+        whose segments came from the source (the held block: refitted, its EV unchanged)."""
+        self.src = self._seg_src
+        self._broken("UPDATE main.block_segments SET inc_rate = inc_rate + 0.01 "
+                     "WHERE block_start = '%s' AND attribution = 'ev'" % HELD_BS,
+                     "do not reproduce the EV-split columns")
+
+    def test_a_rebuilt_ev_segment_whose_cost_moved(self):
+        """GUARD: a block transform 2 rebuilt is judged by the EV-segments gate's rule instead
+        (on the parent gate 5 refused it too, with its own message)."""
         self.src = self._seg_src
         self._broken("UPDATE main.block_segments SET inc_rate = inc_rate + 0.01 "
                      "WHERE block_start = '%s' AND attribution = 'ev'" % EV_BS,
-                     "do not reproduce the EV-split columns")
+                     "not reproducing their columns")
 
     def test_a_phantom_ev_segment(self):
         """Gate 5: no block has EV segments where the source's columns had no split."""
