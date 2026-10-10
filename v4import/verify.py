@@ -18,6 +18,18 @@ from . import rules
 # their own gate instead.
 REWRITTEN = {"blocks": ("rate_source",)}           # transform 1, checked by `provenance`
 
+# Rows a transform replaces wholesale: the segments of the blocks transforms 2 and 3 wrote
+# (temp.v4i_resegmented). Counted and compared exactly everywhere else; checked by
+# `ev_segments` and `held_fit` where they were written. The id is not compared: a rewritten
+# block's rows are new rows.
+_UNTOUCHED = {"block_segments": "WHERE block_start NOT IN (SELECT block_start FROM "
+                                "temp.v4i_resegmented)"}
+_HELD_SRC = ("(rate_source IN ('corrected', 'reconciled', 'measured') OR (rate_reconciled = 1 "
+             "AND (rate_source IS NULL OR rate_source = 'schedule')))")
+_SEG = ("(SELECT block_start, SUM(kwh) AS k, SUM(kwh * inc_rate) AS c, "
+        "SUM(CASE WHEN attribution = 'ev' THEN kwh ELSE 0 END) AS ev FROM %s.block_segments "
+        "WHERE meter_id = 'electricity_main' AND channel = 'import' GROUP BY block_start)")
+
 
 def _src_cols(conn, table):
     return [r[1] for r in conn.execute('PRAGMA src.table_info("%s")' % table).fetchall()]
@@ -42,8 +54,9 @@ def row_counts(conn, report):
     for table, _ in rules.CARRY:
         if not _src_cols(conn, table):
             continue
-        a = _one(conn, 'SELECT COUNT(*) FROM src."%s"' % table)
-        b = _one(conn, 'SELECT COUNT(*) FROM main."%s"' % table)
+        where = _UNTOUCHED.get(table, "")
+        a = _one(conn, 'SELECT COUNT(*) FROM src."%s" %s' % (table, where))
+        b = _one(conn, 'SELECT COUNT(*) FROM main."%s" %s' % (table, where))
         if a != b:
             bad.append("%s %d of %d rows" % (table, b, a))
     return ("row counts: " + ", ".join(bad)) if bad else None
@@ -58,8 +71,10 @@ def carried_exactly(conn, report):
         if not sel:
             continue
         for a, b in (("src", "main"), ("main", "src")):
-            n = _one(conn, 'SELECT COUNT(*) FROM (SELECT %s FROM %s."%s" EXCEPT '
-                           'SELECT %s FROM %s."%s")' % (sel, a, table, sel, b, table))
+            where = _UNTOUCHED.get(table, "")
+            n = _one(conn, 'SELECT COUNT(*) FROM (SELECT %s FROM %s."%s" %s EXCEPT '
+                           'SELECT %s FROM %s."%s" %s)' % (sel, a, table, where,
+                                                         sel, b, table, where))
             if n:
                 bad.append("%s: %d row(s) differ" % (table, n))
                 break
@@ -102,6 +117,66 @@ def provenance(conn, report):
     return ("%d block(s) changed provenance outside the rule" % n) if n else None
 
 
+def ev_segments(conn, report):
+    """Spec §5.2 v14: no main block keeps an EV split with no segments, and each block given
+    them reproduces its columns: kWh to imp_kwh, the EV to imp_kwh_ev, the cost to imp_cost.
+    The count equals the source's own (blocks with an EV split and no segments)."""
+    want = _one(conn, "SELECT COUNT(*) FROM src.blocks b WHERE b.meter_id = 'electricity_main' "
+                      "AND b.imp_kwh_ev > 1e-6 AND NOT EXISTS (SELECT 1 FROM src.block_segments s "
+                      "WHERE s.block_start = b.block_start AND s.meter_id = b.meter_id "
+                      "AND s.channel = 'import')")
+    got = report["transforms"].get("ev_segments", {}).get("blocks", 0)
+    report["gates"]["ev_segments"]["blocks"] = got
+    if got != want:
+        return "EV segments written for %d block(s), expected %d" % (got, want)
+    left = _one(conn, "SELECT COUNT(*) FROM main.blocks b WHERE b.meter_id = 'electricity_main' "
+                      "AND b.imp_kwh_ev > 1e-6 AND NOT EXISTS (SELECT 1 FROM main.block_segments "
+                      "s WHERE s.block_start = b.block_start AND s.meter_id = b.meter_id "
+                      "AND s.channel = 'import')")
+    bad = _one(conn, "SELECT COUNT(*) FROM main.blocks b JOIN " + _SEG % "main" + " g "
+                     "ON g.block_start = b.block_start JOIN temp.v4i_resegmented t "
+                     "ON t.block_start = b.block_start AND t.why = 'ev_segments' "
+                     "WHERE b.meter_id = 'electricity_main' AND (ABS(g.k - b.imp_kwh) > 1e-6 "
+                     "OR ABS(g.ev - b.imp_kwh_ev) > 1e-6 OR ABS(g.c - b.imp_cost) > 1e-5)")
+    if left or bad:
+        return ("%d EV-split block(s) still without segments, %d not reproducing their columns"
+                % (left, bad))
+    return None
+
+
+def held_fit(conn, report):
+    """Spec §9.11: no held main block's segments miss its kWh by more than 1e-6. The refitted
+    and reported counts equal a query of the source, and no segment was re-priced: every rate
+    in a refitted block's segments was in its source segments, or is the block's held rate."""
+    miss = ("SELECT b.block_start FROM src.blocks b JOIN " + _SEG % "src" + " g ON "
+            "g.block_start = b.block_start WHERE b.meter_id = 'electricity_main' "
+            "AND ABS(g.k - COALESCE(b.imp_kwh, 0)) > 1e-6")
+    want_refit = _one(conn, "SELECT COUNT(*) FROM (%s AND %s)" % (miss, _HELD_SRC.replace(
+        "rate_", "b.rate_")))
+    want_report = _one(conn, "SELECT COUNT(*) FROM (%s AND NOT %s)" % (miss, _HELD_SRC.replace(
+        "rate_", "b.rate_")))
+    t = report["transforms"].get("refit_held", {"refitted": 0, "reported": []})
+    report["gates"]["held_fit"].update(refitted=t["refitted"], reported=len(t["reported"]))
+    if (t["refitted"], len(t["reported"])) != (want_refit, want_report):
+        return ("held-rate refit: %d refitted and %d reported, expected %d and %d"
+                % (t["refitted"], len(t["reported"]), want_refit, want_report))
+    still = _one(conn, "SELECT COUNT(*) FROM main.blocks b JOIN " + _SEG % "main" + " g ON "
+                       "g.block_start = b.block_start WHERE b.meter_id = 'electricity_main' "
+                       "AND b.rate_source IN ('corrected', 'reconciled', 'settled') "
+                       "AND ABS(g.k - COALESCE(b.imp_kwh, 0)) > 1e-6")
+    repriced = _one(conn, "SELECT COUNT(*) FROM main.block_segments m JOIN main.blocks b ON "
+                          "b.block_start = m.block_start AND b.meter_id = m.meter_id "
+                          "JOIN temp.v4i_resegmented t ON t.block_start = m.block_start "
+                          "AND t.why = 'refit' WHERE m.meter_id = 'electricity_main' "
+                          "AND m.inc_rate IS NOT b.imp_rate AND NOT EXISTS (SELECT 1 FROM "
+                          "src.block_segments s WHERE s.block_start = m.block_start "
+                          "AND s.meter_id = m.meter_id AND s.inc_rate IS m.inc_rate)")
+    if still or repriced:
+        return ("%d held block(s) still miss their kWh, %d segment(s) re-priced by the refit"
+                % (still, repriced))
+    return None
+
+
 def corrections(conn, report):
     """Spec §9.4: every corrected block keeps its corrected rate and cost."""
     n = _one(conn, "SELECT COUNT(*) FROM src.blocks s LEFT JOIN main.blocks m ON m.id = s.id "
@@ -135,6 +210,7 @@ def keys(conn, report):
 
 GATES = (("row_counts", row_counts), ("carried_exactly", carried_exactly),
          ("cost_parity", cost_parity), ("provenance", provenance),
+         ("ev_segments", ev_segments), ("held_fit", held_fit),
          ("corrections", corrections), ("tombstones", tombstones), ("keys", keys))
 
 

@@ -339,7 +339,7 @@ step usable on the Pi.
 | 1 | this document | — |
 | 2 | **skeleton, wired into the restore**: `v4import/` with the gate moved in, the classification and `emt_schema`, the fresh-target carry with every column and table classified (identity rules, since the schema has not moved yet), the §7 key allow-lists, REGEN, the audit record and the boundary test | 1, 2, 3 (pre-rename), 4, 6, 9 |
 | 3 | **vocabulary**: `'measured'` → `'settled'` (28 sites in `engine.py` and `block_store.py`, `.build/bill_conformance.py`, 24 lines in tests) with transform 1 and the reconciled fold; `EMT_SCHEMA` 2. *House `night` and transform 4 split out to ROADMAP BL-81 (10 Oct 2026): v5 has no per-block tariff era to label against.* | 3 |
-| 4 | **segments**: transforms 2 and 3 | 11 |
+| 4 | **segments**: transforms 2 and 3. *Built 10 Oct 2026: on seven real databases, 10 blocks / 28.43 kWh of EV given segments on one install, 12–13 held blocks refitted on each production-like one, none reported.* | 11 |
 | 5 | **the schema drop**: the 10 columns and `rate_reconciled` leave `BlockStore`'s DDL and v5's code (about 400 references, most of them in `block_store.py`), `ev_split`'s LEGACY fallback goes, and the rules become DROP | 5 |
 | 6 | positive fixture at 4.5.22, Pi timing, spec v18 | all |
 
