@@ -482,6 +482,35 @@ four, and `quick_check` + `foreign_key_check` take under 0.5 s on the largest (7
 Last deliberately: its contract is "write the EMT schema", so it cannot be finished until A–D have
 settled what that schema is.
 
+**BL-81 — the house `night` band needs a per-block tariff era first.** Proposed 10 Oct 2026, split
+out of the importer's PR 3 (E design §5, §10). The importer can relabel an imported SMB-era house
+`off_peak` segment to `night` (import spec §5.2). But the relabel only holds if v5's own writers say
+`night` too, and v5 cannot tell which tariff era a past block is in. A trace of every writer of a house
+segment's band (10 Oct) found about ten paths:
+- the cap classifier (`iog_cap.classify_slot`), and the seam (`_apply_iog_split`);
+- `_build_block_segments` / `segments_from_legacy`, and `_refit_held_segments`;
+- the carve, settlement from the bill (`apply_measured_to_block`), back-attribution;
+- reconcile, three ways;
+- the whole-history sweep.
+
+Every one decides "capped / SMB" from the **current** tariff (`ev_device_*` schedules,
+`_import_is_smb_capped`), not the block's own date. The sweep also rebuilds a block's segments from
+a fresh channel and discards the band the bill gave it. All of them write through
+`BlockStore._replace_segments`.
+
+The likely shape: one labelling rule at that write point, keyed to a per-block SMB era that the
+importer shares. The importer's rule takes the era from the earliest four-bucket `measured_cost`
+row, decided 10 Oct. Open: how a new SMB account labels its first days, before any four-bucket row
+arrives; and whether the era should come from the agreement history when the API is connected.
+Until BL-81, v5 and the importer both keep house `off_peak` in every era. One label, so nothing
+writes two.
+
+*Checked while tracing (10 Oct 2026), and not a defect:* the sweep can rebuild a held block's
+segments without touching `imp_cost`, which looked as if it would let the segments drift from the
+bill. On three real databases no reconciled block drifts at all. 18 settled blocks do, by up to 2.6p:
+all are 1–6 Oct 2026, single-rate, and in the ratio 1.050 exactly. That is v4 #505 (Octopus's
+settled cost still at 5% VAT), not the sweep.
+
 ---
 
 ## F. Carried from v4's backlog

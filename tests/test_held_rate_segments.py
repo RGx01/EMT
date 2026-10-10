@@ -78,7 +78,7 @@ class AMeasuredBlockWithAnEv(_Held):
     def _ev_block(self):
         self._finalise()
         r = H.FLAT
-        self._hold("measured", kwh_ev=3.0, segs=[
+        self._hold("settled", kwh_ev=3.0, segs=[
             ps.Segment(3.0, r, round(r / 1.05, 6), "off_peak", "ev"),
             ps.Segment(round(MAIN - 3.0, 6), r, round(r / 1.05, 6), "off_peak", "house")])
 

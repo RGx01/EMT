@@ -2,7 +2,7 @@
 test_measured_apply.py — BL-53 step 3 helper apply_measured_to_block (still inert in prod).
 
 Writes Octopus's billed cost as authoritative: rate keyed on cost/kWh (NOT the label),
-EV+house split summing to the bill exactly, rate_source='measured'.
+EV+house split summing to the bill exactly, rate_source='settled'.
 """
 import os
 import sys
@@ -83,7 +83,7 @@ class TestMeasuredApply(unittest.TestCase):
             self.SLOT, cost_incl=1.029372, cost_excl=0.980355, label="STANDARD_RATE")
         self.assertTrue(ok)
         r = self._row()
-        self.assertEqual(r["rate_source"], "measured")
+        self.assertEqual(r["rate_source"], "settled")
         self.assertAlmostEqual(r["imp_rate"], round(1.029372/3.186, 6), places=6)
         self.assertAlmostEqual(r["imp_cost"], 1.029372, places=6)
         self.assertEqual(r["imp_ev_band"], "peak")       # cost ~0.323 → peak band
@@ -138,7 +138,7 @@ class TestMeasuredApply(unittest.TestCase):
         for sg in segs:
             self.assertIn(round(sg.inc_rate, 3), (0.055, 0.323))
         r = self._row()
-        self.assertEqual(r["rate_source"], "measured")
+        self.assertEqual(r["rate_source"], "settled")
         self.assertAlmostEqual(r["imp_cost"], bill_incl, places=6)   # cost stays the bill
         self.assertEqual(r["imp_ev_band"], "mixed")
         # EV cost = clean sum (1x0.055 + 1x0.323); house remainder absorbs the bill delta

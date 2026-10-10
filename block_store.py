@@ -57,7 +57,9 @@ SCHEMA_VERSION = 1
 # v4 database (import spec §3). A revision, raised by each change to what v5 stores
 # (the provenance words, the band, the column drop); a restore refuses a v5 backup of any
 # other revision until the first release fixes the baseline.
-EMT_SCHEMA = 1
+EMT_SCHEMA = 2
+#   1  10 Oct 2026  the marker itself (v4's schema and words)
+#   2  10 Oct 2026  rate_source 'measured' -> 'settled'
 
 
 def read_emt_schema(path):
@@ -1832,10 +1834,10 @@ class BlockStore:
 
     def measured_main_costs_since(self, since: str) -> list:
         """(block_start, imp_cost, imp_cost_exc) of every settled main block — rate_source
-        'measured', not hand-corrected — at or after `since`, oldest first."""
+        'settled', not hand-corrected — at or after `since`, oldest first."""
         return [tuple(r) for r in self._conn.execute(
             "SELECT block_start, imp_cost, imp_cost_exc FROM blocks "
-            "WHERE meter_id = 'electricity_main' AND rate_source = 'measured' "
+            "WHERE meter_id = 'electricity_main' AND rate_source = 'settled' "
             "AND COALESCE(rate_corrected, 0) = 0 AND block_start >= ? ORDER BY block_start",
             (since,)).fetchall()]
 
@@ -7200,7 +7202,7 @@ class BlockStore:
                 self._conn.executemany(
                     "UPDATE blocks SET imp_kwh_remainder = ?, "
                     "  imp_cost_remainder = CASE "
-                    "       WHEN COALESCE(rate_source, '') = 'measured' THEN imp_cost_remainder "
+                    "       WHEN COALESCE(rate_source, '') = 'settled' THEN imp_cost_remainder "
                     "       WHEN imp_rate IS NOT NULL THEN ROUND(? * imp_rate, 6) "
                     "       ELSE imp_cost_remainder END "
                     "WHERE block_start = ? AND meter_id = ?", main_updates)
@@ -7325,7 +7327,7 @@ class BlockStore:
 
     # A block is SETTLEABLE when it carries an authoritative kWh figure: imported
     # history brings its own, and a DCC-settled block has imp_kwh_api. A live CAD
-    # block has neither and must never be stamped 'measured'. Written once here
+    # block has neither and must never be stamped 'settled'. Written once here
     # and used by three queries, which previously spliced the same string into
     # their SQL by concatenation (twice) and an f-string (once).
     _SETTLEABLE_SQL = "(b.source LIKE 'imported%' OR b.imp_kwh_api IS NOT NULL)"
@@ -7410,7 +7412,7 @@ class BlockStore:
             "  AND b.imp_kwh > 0 "
             "  AND " + self._SETTLEABLE_SQL + " "
             "  AND b.block_start >= ? AND b.block_start > ? AND b.block_start < ? "
-            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('measured','corrected')) "
+            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
             "  AND NOT EXISTS (SELECT 1 FROM measured_cost mc WHERE mc.slot_start = b.block_start) "
             "ORDER BY b.block_start ASC LIMIT ?",
             (meter_id, floor, after, before, limit)).fetchall()
@@ -7428,7 +7430,7 @@ class BlockStore:
             "  AND b.imp_kwh > 0 "
             "  AND " + self._SETTLEABLE_SQL + " "
             "  AND b.block_start >= ? AND b.block_start < ? "
-            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('measured','corrected')) "
+            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
             "  AND NOT EXISTS (SELECT 1 FROM measured_cost mc WHERE mc.slot_start = b.block_start)",
             (meter_id, floor, before)).fetchone()[0]
 
@@ -7446,7 +7448,7 @@ class BlockStore:
             "JOIN measured_cost m ON m.slot_start = b.block_start "
             "     AND m.mpan = ? AND m.direction = 'CONSUMPTION' "
             "WHERE b.meter_id = ? AND b.rate_corrected = 0 "
-            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('measured','corrected')) "
+            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
             "  AND " + self._SETTLEABLE_SQL + " "
             "  AND b.block_start >= ? AND m.cost_incl IS NOT NULL AND m.cost_incl > 0 "
             "ORDER BY b.block_start",
@@ -7457,7 +7459,7 @@ class BlockStore:
                                             meter_id: str = "electricity_main") -> list:
         """Blocks settled WITHOUT an EV split, whose cached bill does carry one.
 
-        These are stamped `rate_source = 'measured'`, so the drain's backlog can
+        These are stamped `rate_source = 'settled'`, so the drain's backlog can
         never revisit them -- they were settled house-only because the dispatch
         ceiling was ambiguous at the time. The bill's own EV bucket is the
         evidence that arrived later.
@@ -7465,7 +7467,7 @@ class BlockStore:
         rows = self._conn.execute(
             "SELECT b.block_start, mc.cost_incl, mc.cost_excl, mc.label "
             "FROM blocks b JOIN measured_cost mc ON mc.slot_start = b.block_start "
-            "WHERE b.meter_id = ? AND b.rate_source = 'measured' "
+            "WHERE b.meter_id = ? AND b.rate_source = 'settled' "
             # BL-79 (3): "no split" is ev_split's — no EV segment (the columns only where
             # the block has no segments at all), not the column alone.
             "  AND " + _evsplit.sql_kwh("b") + " IS NULL AND COALESCE(b.imp_kwh, 0) > 0 "
@@ -7495,7 +7497,7 @@ class BlockStore:
             "FROM blocks b "
             "WHERE b.meter_id = ? AND b.imp_kwh_api IS NOT NULL "
             "  AND b.rate_corrected = 0 "
-            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('measured','corrected')) "
+            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
             "  AND (b.source IS NULL OR b.source NOT LIKE 'imported%') "
             "  AND b.block_start >= ? "
             "  AND EXISTS (SELECT 1 FROM dispatch_slots s "
@@ -7580,7 +7582,7 @@ class BlockStore:
             "       EXISTS(SELECT 1 FROM measured_cost mc "
             "              WHERE mc.slot_start = b.block_start "
             "                AND mc.direction = 'CONSUMPTION') AS bill_cached, "
-            "       (COALESCE(p.rate_source, b.rate_source) = 'measured') AS bill_applied "
+            "       (COALESCE(p.rate_source, b.rate_source) = 'settled') AS bill_applied "
             "FROM blocks b "
             "LEFT JOIN meters m ON m.meter_id = b.meter_id "
             "                  AND m.config_period_id = b.config_period_id "
@@ -7953,7 +7955,7 @@ class BlockStore:
         `cost_exc` transposed is a silently wrong bill; by keyword it does not
         compile into a mistake.
 
-        `rate_source = 'measured'` is stamped here and nowhere else, which is why
+        `rate_source = 'settled'` is stamped here and nowhere else, which is why
         the caller re-checks settleability as defence in depth even though its own
         query already gated on it: once this runs, the drain's backlog can never
         revisit the block.
@@ -7965,7 +7967,7 @@ class BlockStore:
         """
         with self._conn:
             cur = self._conn.execute(
-                "UPDATE blocks SET imp_rate = ?, imp_cost = ?, rate_source = 'measured', "
+                "UPDATE blocks SET imp_rate = ?, imp_cost = ?, rate_source = 'settled', "
                 "imp_rate_exc = ?, imp_cost_exc = ?, exc_source = 'tariff', "
                 "imp_kwh_ev = ?, imp_rate_ev = ?, imp_cost_ev = ?, imp_ev_band = ?, "
                 "imp_home_band = ?, imp_cost_remainder = ? "
@@ -7973,7 +7975,7 @@ class BlockStore:
                 (rate, cost, rate_exc, cost_exc, kwh_ev, rate_ev, cost_ev,
                  ev_band, home_band, cost_remainder, block_start, meter_id))
             # BL-79 (8 Oct 2026): the bill's segments in the same transaction. Written after,
-            # a failed segment write left the block stamped 'measured' — never revisited by
+            # a failed segment write left the block stamped 'settled' — never revisited by
             # the drain — under its pre-bill segments, which every surface reads.
             if cur.rowcount and segments is not None:
                 self._replace_segments(block_start, meter_id, segments)
@@ -8143,7 +8145,7 @@ class BlockStore:
                 (ev_band, home_band, block_start, meter_id, ev_band, home_band))
         return cur.rowcount
 
-    _RECONCILED_SOURCE = ("rate_source = CASE WHEN rate_source IN ('measured', 'corrected') "
+    _RECONCILED_SOURCE = ("rate_source = CASE WHEN rate_source IN ('settled', 'corrected') "
                           "THEN rate_source ELSE 'reconciled' END")
 
     def apply_reconcile_verdict(self, block_start: str, rate: float,
@@ -8203,7 +8205,7 @@ class BlockStore:
         Every exclusion here was added after something went wrong, so each is
         named rather than left to read as a filter:
 
-          * `rate_corrected = 0` and `rate_source NOT IN ('measured','corrected')`
+          * `rate_corrected = 0` and `rate_source NOT IN ('settled','corrected')`
             -- BL-53. Never reconcile a block priced by a HIGHER authority than
             this heuristic: Octopus's billed cost, or a user's own correction.
           * `source NOT LIKE 'imported%'` -- imported history carries Octopus's
@@ -8226,7 +8228,7 @@ class BlockStore:
                       b.imp_kwh_api, b.interpolated
                FROM blocks b
                WHERE b.meter_id = ? AND b.rate_corrected = 0
-                 AND (b.rate_source IS NULL OR b.rate_source NOT IN ('measured','corrected'))
+                 AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected'))
                  AND (b.source IS NULL OR b.source NOT LIKE 'imported%')
                  AND b.block_start < ?
                  AND EXISTS (SELECT 1 FROM dispatch_slots s
@@ -8446,7 +8448,7 @@ class BlockStore:
           * `imp_kwh_ev IS NULL`  -- not yet carved. Re-carving a block that
             already has a split would double-count.
           * `imp_kwh > 0`         -- nothing to carve out of an empty block.
-          * `rate_source NOT IN ('measured','corrected')` -- settled and
+          * `rate_source NOT IN ('settled','corrected')` -- settled and
             user-corrected splits belong to settlement, not to this sweep.
             NULL passes, which is why the clause is written with the explicit
             `IS NULL` arm: `NOT IN` is UNKNOWN against NULL and would drop every
@@ -8461,7 +8463,7 @@ class BlockStore:
             "SELECT b.block_start, b.imp_kwh, b.imp_rate, b.imp_rate_exc "
             "FROM blocks b WHERE b.meter_id = ? AND " + _evsplit.sql_kwh("b") + " IS NULL "
             "  AND b.imp_kwh > 0 "
-            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('measured','corrected')) "
+            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
             "  AND EXISTS (SELECT 1 FROM dispatch_history d WHERE d.kind = 'completed' "
             "              AND d.slot_start = b.block_start AND d.energy_kwh IS NOT NULL) "
             "ORDER BY b.block_start LIMIT ?", (meter_id, int(limit))).fetchall()

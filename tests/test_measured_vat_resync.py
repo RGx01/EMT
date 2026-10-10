@@ -78,7 +78,7 @@ class _Base(unittest.TestCase):
             self.st._conn.execute(
                 "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
                 "imp_kwh_api, imp_rate, imp_cost, imp_cost_exc, rate_source, rate_corrected) "
-                "VALUES (?,?,'electricity_main',1,?,?,?,?,?,'measured',0)",
+                "VALUES (?,?,'electricity_main',1,?,?,?,?,?,'settled',0)",
                 (slot, slot, KWH, KWH, OFF_EXC, inc, exc))
             self.st.upsert_measured_cost(slot, mpan=MPAN, cost_incl=inc, cost_excl=exc,
                                          label="OFF_PEAK", kwh=KWH)

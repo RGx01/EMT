@@ -156,6 +156,52 @@ class TheCarry(_Dir):
         again.close()
 
 
+class TheProvenanceWords(_Dir):
+    """Transform 1 (spec §5.2, BL-61(5)): v4's 'measured' is v5's 'settled', and a block a
+    reconciliation flagged while leaving 'schedule' says 'reconciled'. Every meter."""
+
+    ROWS = (  # id, meter, rate_source, rate_reconciled, rate_corrected
+        (50, MAIN, "schedule", 1, 0),          # flagged, word left behind  -> reconciled
+        (51, MAIN, None, 1, 0),                # flagged, no word           -> reconciled
+        (52, MAIN, "measured", 1, 0),          # settled outranks the flag  -> settled
+        (53, MAIN, "corrected", 1, 1),         # corrected outranks it      -> corrected
+        (54, MAIN, "schedule", 0, 0),          # untouched
+        (55, "ev_charger", "schedule", 1, 0),  # a sub-meter row            -> reconciled
+    )
+
+    def _src(self):
+        sql = tuple(
+            "INSERT INTO blocks (id, block_start, block_end, meter_id, config_period_id, "
+            "imp_kwh, rate_source, rate_reconciled, rate_corrected) VALUES "
+            "(%d, '2026-09-1%dT00:00:00', '2026-09-1%dT00:30:00', '%s', 1, 1.0, %s, %d, %d)"
+            % (i, i - 50, i - 50, m, "NULL" if w is None else "'%s'" % w, f, c)
+            for i, m, w, f, c in self.ROWS)
+        return dict(extra_sql=sql)
+
+    def test_each_word_follows_the_rule(self):
+        conn, _ = self.imported(**self._src())
+        got = dict(conn.execute("SELECT id, rate_source FROM blocks WHERE id >= 50"))
+        self.assertEqual(got, {50: "reconciled", 51: "reconciled", 52: "settled",
+                               53: "corrected", 54: "schedule", 55: "reconciled"})
+
+    def test_no_measured_word_survives(self):
+        conn, _ = self.imported(**self._src())
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM blocks "
+                                      "WHERE rate_source = 'measured'").fetchone()[0], 0)
+
+    def test_the_report_counts_them(self):
+        _, report = self.imported(**self._src())
+        # the fixture's block 40 is 'measured' too
+        self.assertEqual(report["transforms"]["provenance"],
+                         {"settled": 2, "reconciled_folded": 3})
+
+    def test_v5_reads_an_imported_settled_block_as_settled(self):
+        self.imported()
+        st = BlockStore(self.target)
+        self.addCleanup(st.close)
+        self.assertEqual([r[0] for r in st.measured_main_costs_since("2026-01-01")], [B1])
+
+
 class TheKeys(_Dir):
     """E design §7: setup facts and user choices cross; claims that work already ran do
     not, because v5 carries no v4 heals and its own passes have not run."""
@@ -294,6 +340,12 @@ class TheGatesBite(_Dir):
     def test_a_moved_provenance_word(self):
         self._broken("UPDATE main.blocks SET rate_source = 'schedule' WHERE id = 40",
                      "provenance counts moved")
+
+    def test_a_word_swapped_between_two_blocks(self):
+        """Counts alone would pass: the row-by-row half of the gate catches it."""
+        self._broken("UPDATE main.blocks SET rate_source = CASE id WHEN 40 THEN 'corrected' "
+                     "WHEN 41 THEN 'settled' END WHERE id IN (40, 41)",
+                     "changed provenance outside the rule")
 
     def test_a_changed_key(self):
         def _src(**kw):

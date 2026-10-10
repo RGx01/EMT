@@ -74,7 +74,7 @@ class _Base(unittest.TestCase):
     def setUp(self):
         self.st = _mk_store()
         _block(self.st, "electricity_main", imp_kwh=1.0, imp_rate=NEW,
-               imp_rate_exc=NEW_EXC, rate_source="measured")
+               imp_rate_exc=NEW_EXC, rate_source="settled")
         # battery: drew 4 kWh, only 0.01 of it from the grid (the rest was solar)
         _block(self.st, "sub_meter_battery", imp_kwh=4.0, imp_kwh_grid=0.01,
                imp_rate=OLD, imp_rate_exc=OLD_EXC)

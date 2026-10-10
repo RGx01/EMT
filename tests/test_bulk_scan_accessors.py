@@ -100,7 +100,7 @@ class EvCarveCandidates(unittest.TestCase):
         self.assertEqual(self.st.get_blocks_awaiting_ev_carve(10), [])
 
     def test_settled_and_corrected_are_excluded(self):
-        for i, src in enumerate(("measured", "corrected")):
+        for i, src in enumerate(("settled", "corrected")):
             s = "2026-09-0%dT00:00:00" % (i + 1)
             _block(self.st, s, imp_kwh=5.0, rate_source=src)
             _dispatch(self.st, s)

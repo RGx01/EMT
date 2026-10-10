@@ -3902,7 +3902,7 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
                     # database); the importer folds those into rate_source='reconciled', and
                     # this fallback goes with the column.
                     if (_mrow and (_mrow["rate_corrected"]
-                                   or _mrow["rate_source"] in ("reconciled", "measured", "corrected")
+                                   or _mrow["rate_source"] in ("reconciled", "settled", "corrected")
                                    or _mrow["rate_reconciled"])
                             and _mrow["imp_rate"] is not None):
                         _override_rate = _mrow["imp_rate"]
@@ -10908,7 +10908,7 @@ async def _tick_dispatch_capture() -> None:
         except Exception as e:
             logger.warning("_tick_dispatch_capture: measured history drain schedule failed: %s", e)
         # Blocks already settled house-only because the dispatch ceiling was ambiguous are
-        # stamped 'measured', so the drain's backlog can never revisit them. Heal from the
+        # stamped 'settled', so the drain's backlog can never revisit them. Heal from the
         # cached bill buckets (no API calls); empty in the steady state.
         try:
             run_settled_ev_split_heal()
@@ -11889,7 +11889,7 @@ def run_settled_ev_split_heal(limit: int = 2000) -> dict:
     Until the ambiguous-ceiling fix, `apply_measured_to_block` treated a dispatch ceiling of
     zero as "no EV" even where no dispatch data existed for the slot at all. On imported
     history that is always the case — Octopus serves a short rolling dispatch window — so a
-    freshly imported IOG-SMB era settled from the bill with `rate_source='measured'`, the
+    freshly imported IOG-SMB era settled from the bill with `rate_source='settled'`, the
     correct total cost, and a house-only split, discarding the EV_DEVICE bucket the bill had
     already supplied.
 
@@ -11981,7 +11981,7 @@ def _maybe_drain_measured_history() -> None:
 
 def apply_measured_settled() -> dict:
     """BL-53 step 3: write Octopus's billed cost as authoritative for EVERY settled IOG
-    dispatched block that has a cached measured_cost but isn't yet 'measured'/'corrected'.
+    dispatched block that has a cached measured_cost but isn't yet 'settled'/'corrected'.
     Operates over the whole cached-unapplied set (soak backlog + freshly-cached), so it is
     not limited to this pass's fetch. Rate keyed on cost via apply_measured_to_block.
 
@@ -11989,7 +11989,7 @@ def apply_measured_settled() -> dict:
     both bands, with NO age-gate and NO review-flag — a divergence from EMT's prediction is
     Octopus's own bill, not an anomaly to surface. The RATE is snapped to the tariff agreement
     in apply_measured_to_block (never cost/kWh). Idempotent: once a block is rate_source=
-    'measured' it drops out of the query. Only runs when _MEASURED_APPLY. Local writes only.
+    'settled' it drops out of the query. Only runs when _MEASURED_APPLY. Local writes only.
 
     (BL-70: `m.cost_incl > 0` skips the cached zero rows — a half-hour the bill says drew
     nothing has no cost to apply and no rate to snap, and apply_measured_to_block refuses it
@@ -12084,7 +12084,7 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
     (what catches a mis-banded slot — e.g. 2026-08-14 billed peak while EMT had it off-peak);
     the clean band VALUE is what gets stored. exc mirrors: rate ex-VAT from the clean rate via
     the VAT calendar, cost ex-VAT from the bill. A genuine over-cap MIXED slot keeps the true
-    4-band split at the schedule's CLEAN rates (no rescale). rate_source='measured'.
+    4-band split at the schedule's CLEAN rates (no rescale). rate_source='settled'.
     (rate x kWh can differ from the stored bill cost by a sub-penny sliver — every surface
     reads the stored cost, and a materially-off bill is review-flagged by the caller.)
     """
@@ -12096,7 +12096,7 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
         return False
     # Defence in depth (4.5.12): NEVER settle an unsettled LIVE block, whoever calls us.
     # The callers' queries gate on BlockStore._SETTLEABLE_SQL too, but this is the single stamper of
-    # rate_source='measured', so it must refuse on its own — a future/direct caller must
+    # rate_source='settled', so it must refuse on its own — a future/direct caller must
     # not be able to price a block off a provisional CAD kWh before its meter DCC-settles.
     if not str(row["source"] or "").startswith("imported") and row["imp_kwh_api"] is None:
         return False
@@ -12219,7 +12219,7 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
     try:
         # BL-79: the segments in one transaction with the columns. If it fails, nothing is
         # stamped, so the block stays a candidate for the next pass instead of being marked
-        # 'measured' under stale segments.
+        # 'settled' under stale segments.
         store.apply_measured_to_main(
             bs,
             rate=imp_rate, cost=round(cost_incl, 6),
@@ -12239,7 +12239,7 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
     # lock-step — device == main == bill. kWh (the grid-clipped device draw) is untouched; only
     # the priced rate layer moves. No-op for a synthetic-EV account (no sub-meter blocks). This
     # is the targeted equivalent of a PASS 2 re-run without round-tripping the whole block
-    # (which would drop rate_source='measured').
+    # (which would drop rate_source='settled').
     try:
         store.recost_sub_meters(bs, imp_rate, exc_rate)
     except Exception as e:

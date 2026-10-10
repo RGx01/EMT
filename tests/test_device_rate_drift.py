@@ -6,11 +6,11 @@ physical device block (ev_charger / battery) must carry the same `imp_rate` as t
 main block for its slot.
 
 WHY IT NEEDS ENFORCING: `apply_measured_to_block` applies the bill in TWO
-transactions. The main row (rate, cost, split, `rate_source='measured'`) is
+transactions. The main row (rate, cost, split, `rate_source='settled'`) is
 written unguarded — it propagates on failure, so the block stays unsettled and the
 drain revisits it. The sub-meter re-cost that follows is in its own `try`, logs and
 continues. So a failure there leaves the main meter settled and its devices on the
-pre-settlement (often peak) rate, with `rate_source='measured'` already stamped —
+pre-settlement (often peak) rate, with `rate_source='settled'` already stamped —
 which means the drain will never look at that block again.
 
 HOW IT WAS NEARLY LOST: this predicate was the body of v4's
@@ -64,7 +64,7 @@ class DriftIsRepaired(unittest.TestCase):
         self.st = _mk_store()
         # the settled main row
         _block(self.st, "electricity_main", imp_kwh=10.0, imp_rate=0.0549,
-               imp_rate_exc=0.0523, rate_source="measured")
+               imp_rate_exc=0.0523, rate_source="settled")
 
     def test_a_stale_device_is_recosted_to_the_parent(self):
         """The exact failure: main settled off-peak, device left at peak."""
@@ -149,10 +149,10 @@ class TheSettlementFailureConverges(unittest.TestCase):
         _block(st, "sub_meter_ev", imp_kwh=4.0, imp_rate=0.3231,
                imp_rate_exc=0.3077)
         # settlement's FIRST transaction lands: main flips to the settled band and
-        # is stamped 'measured', so the drain will not revisit it.
+        # is stamped 'settled', so the drain will not revisit it.
         with st._conn:
             st._conn.execute(
-                "UPDATE blocks SET imp_rate=?, imp_rate_exc=?, rate_source='measured' "
+                "UPDATE blocks SET imp_rate=?, imp_rate_exc=?, rate_source='settled' "
                 "WHERE block_start=? AND meter_id='electricity_main'",
                 (0.0549, 0.0523, S))
         # its SECOND, best-effort transaction does not. Nothing else would notice.

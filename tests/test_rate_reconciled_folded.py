@@ -4,7 +4,7 @@ Step 5 — `rate_reconciled` folded into `rate_source`, the provenance model (8 
 `rate_reconciled` is on the drop list: "a second provenance flag beside rate_source". It meant
 "an authority set this rate, so a later re-split keeps it". Its writers were the overlay reconcile
 verdict (which set it and left rate_source alone, so a reconciled block could still say
-'schedule') and measured settlement (which also stamps rate_source='measured'). Its one deciding
+'schedule') and measured settlement (which also stamps rate_source='settled'). Its one deciding
 reader is the settlement re-run, which keeps a held rate instead of re-resolving it.
 
 Now the verdict writes rate_source='reconciled' (a measured or corrected row keeps its word), no
@@ -51,7 +51,7 @@ class TheVerdict(H._Harness):
 
     def test_a_measured_or_corrected_row_keeps_its_word(self):
         self._finalise()
-        for word in ("measured", "corrected"):
+        for word in ("settled", "corrected"):
             with self.subTest(rate_source=word):
                 with engine._store._conn:
                     engine._store._conn.execute(
@@ -68,7 +68,7 @@ class TheVerdict(H._Harness):
             kwh_ev=None, rate_ev=None, cost_ev=None, ev_band=None, home_band=None,
             cost_remainder=None)
         r = self._row()
-        self.assertEqual(r["rate_source"], "measured")
+        self.assertEqual(r["rate_source"], "settled")
         self.assertEqual(r["rate_reconciled"], 0)
 
 

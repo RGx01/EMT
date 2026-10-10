@@ -15,8 +15,8 @@ one, so each keeps its own message once the transforms change some of those colu
 from . import rules
 
 # Columns a transform rewrites, by table: excluded from "carried exactly" and checked by
-# their own gate instead. Empty until the first remap.
-REWRITTEN = {}
+# their own gate instead.
+REWRITTEN = {"blocks": ("rate_source",)}           # transform 1, checked by `provenance`
 
 
 def _src_cols(conn, table):
@@ -76,13 +76,30 @@ def cost_parity(conn, report):
 
 
 def provenance(conn, report):
-    """Spec §9.3: counts by provenance word, the source's mapped as transform 1 maps it."""
-    src = dict(conn.execute("SELECT COALESCE(rate_source, ''), COUNT(*) FROM src.blocks "
-                            "WHERE meter_id = 'electricity_main' GROUP BY 1").fetchall())
-    dst = dict(conn.execute("SELECT COALESCE(rate_source, ''), COUNT(*) FROM main.blocks "
-                            "WHERE meter_id = 'electricity_main' GROUP BY 1").fetchall())
-    report["gates"]["provenance"]["counts"] = dst
-    return None if src == dst else "provenance counts moved: %s -> %s" % (src, dst)
+    """Spec §9.3: counts by provenance word match the source's, read through spec §5.2's
+    rule. Worked out here from the source's (word, flag) pairs, not by re-running the
+    transform's SQL, so a faulty transform cannot agree with itself. Every meter."""
+    want = {}
+    for word, flag, n in conn.execute(
+            "SELECT rate_source, rate_reconciled, COUNT(*) FROM src.blocks GROUP BY 1, 2"):
+        if word == "measured":
+            word = "settled"
+        elif flag == 1 and word in (None, "schedule"):
+            word = "reconciled"
+        want[word or ""] = want.get(word or "", 0) + n
+    got = dict(conn.execute("SELECT COALESCE(rate_source, ''), COUNT(*) FROM main.blocks "
+                            "GROUP BY 1").fetchall())
+    report["gates"]["provenance"]["counts"] = got
+    if got != want:
+        return "provenance counts moved: expected %s, got %s" % (want, got)
+    # and row by row: a block's word may change only by that rule
+    n = conn.execute(
+        "SELECT COUNT(*) FROM src.blocks s JOIN main.blocks m ON m.id = s.id WHERE "
+        "m.rate_source IS NOT s.rate_source AND NOT ("
+        "(s.rate_source = 'measured' AND m.rate_source = 'settled') OR "
+        "(s.rate_reconciled = 1 AND (s.rate_source IS NULL OR s.rate_source = 'schedule') "
+        " AND m.rate_source = 'reconciled'))").fetchone()[0]
+    return ("%d block(s) changed provenance outside the rule" % n) if n else None
 
 
 def corrections(conn, report):
