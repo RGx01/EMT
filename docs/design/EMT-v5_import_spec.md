@@ -1222,7 +1222,7 @@ on hand:
 | `4.5.20-a21` (a v5 dev build) | **refused** | v5's build stamp before 7 Oct 2026, running 4.5.20's code |
 | 4.5.21 | **refused** | below the 4.5.22 floor since v17 — has not run the October VAT resync |
 | `4.5.21-a22` (a v5 dev build) | **refused** | v5's build stamp before 9 Oct 2026, running 4.5.21's code |
-| **4.5.22** | **admitted** | the positive fixture at `FLOOR_VERSION` — to be taken from prod-dev once it runs 4.5.22. Real backups never enter the repo: `tests/test_import_corpus.py` judges every `*.db` in `EMT_IMPORT_CORPUS` by its own stamp (v18). |
+| **4.5.22** | **admitted** | the positive fixture at `FLOOR_VERSION` — to be taken from prod-dev once it runs 4.5.22. Real backups never enter the repo: `tests/test_import_corpus.py` judges every `*.db` in `EMT_IMPORT_CORPUS` by its own stamp (v18). **Taken 10 Oct 2026** (prod-dev, blocks-25): admitted, imports with every gate holding — 139,475 blocks, 38,048 segments; 1,001 `measured` → `settled`, 46 reconciled folds, 12 held blocks refitted, 0 reported; gate 5 0 kWh / 0 £ / 0 phantom; 2.8 s on a Mac. Its below-floor copy is refused. |
 | **below** `FLOOR_VERSION` | **refused** | stamped, but from a release older than the floor |
 
 Two of these carry most of the value.
