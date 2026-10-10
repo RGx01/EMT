@@ -795,6 +795,11 @@ and reported with their block starts.
 > EV on each; 0.13 and 0.10 kWh of segments short or over), none on a third account; on a dev
 > database none held and one tariff-priced block (0.009 kWh) — which this rule would report.
 > **Acceptance:** §9 gate 11.
+>
+> *Built 10 Oct 2026 (importer PR 4), re-measured on seven databases:* 12–13 refitted on the
+> production-like installs, none on the third account. The dev database's block is **refitted**,
+> not reported: it says `schedule` with `rate_reconciled = 1`, so the reconciled fold (transform 1,
+> which runs first) makes it `reconciled`, a held rate, as v5's own re-run already treats it.
 
 **CARRY+REMAP — band vocabulary.** `imp_ev_band` / `imp_home_band` are dropped as columns, but the
 *words* in them survive in `block_segments.band`. v4 uses four words, and they are **not** four names

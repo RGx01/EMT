@@ -202,6 +202,97 @@ class TheProvenanceWords(_Dir):
         self.assertEqual([r[0] for r in st.measured_main_costs_since("2026-01-01")], [B1])
 
 
+def _blk(i, bs, kwh, rate, source, *, ev=None, flag=0):
+    """SQL for one main block; `ev` = (kwh_ev, cost_ev, rate_ev, ev_band, home_band)."""
+    cols = ("id, block_start, block_end, meter_id, config_period_id, imp_kwh, imp_rate, "
+            "imp_rate_exc, imp_cost, imp_cost_exc, rate_source, rate_reconciled")
+    vals = "%d, '%s', '%s', 'electricity_main', 1, %r, %r, %r, %r, %r, '%s', %d" % (
+        i, bs, bs, kwh, rate, round(rate / 1.05, 6), round(kwh * rate, 6),
+        round(kwh * rate / 1.05, 6), source, flag)
+    if ev:
+        cols += ", imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band"
+        vals += ", %r, %r, %r, '%s', '%s'" % ev
+    return "INSERT INTO blocks (%s) VALUES (%s)" % (cols, vals)
+
+
+def _seg(bs, seq, kwh, rate, band, attr):
+    return ("INSERT INTO block_segments (block_start, meter_id, channel, seq, kwh, inc_rate, "
+            "exc_rate, band, attribution) VALUES ('%s', 'electricity_main', 'import', %d, %r, "
+            "%r, %r, '%s', '%s')" % (bs, seq, kwh, rate, round(rate / 1.05, 6), band, attr))
+
+
+EV_BS, HELD_BS, LOOSE_BS, FOLD_BS = ("2026-08-25T23:00:00", "2026-08-26T00:00:00",
+                                     "2026-08-26T01:00:00", "2026-08-26T02:00:00")
+SEG_SQL = (
+    # an EV split in the columns and no segments (spec §5.2 v14)
+    _blk(60, EV_BS, 4.0, 0.07, "schedule", ev=(3.0, 0.21, 0.07, "off_peak", "off_peak")),
+    # settled, re-costed by v4 to 7.5 kWh, segments still at 7.058 (BL-79 (1))
+    _blk(61, HELD_BS, 7.5, 0.30, "measured"),
+    _seg(HELD_BS, 0, 3.0, 0.07, "off_peak", "ev"), _seg(HELD_BS, 1, 4.058, 0.30, "day", "house"),
+    # not held, and its segments miss its kWh: reported, never refitted
+    _blk(62, LOOSE_BS, 2.0, 0.30, "schedule"), _seg(LOOSE_BS, 0, 1.9, 0.30, "day", "house"),
+    # flagged while left 'schedule': the fold makes it held, so it is refitted
+    _blk(63, FOLD_BS, 1.0, 0.30, "schedule", flag=1), _seg(FOLD_BS, 0, 0.9, 0.30, "day", "house"),
+)
+
+
+class TheSegmentTransforms(_Dir):
+    """Transforms 2 and 3 (spec §5.2 v14, v16; gate 11)."""
+
+    def _segs(self, conn, bs):
+        return [tuple(r) for r in conn.execute(
+            "SELECT attribution, band, round(kwh, 6), inc_rate FROM block_segments "
+            "WHERE block_start = ? ORDER BY seq", (bs,))]
+
+    def test_an_ev_split_with_no_segments_gets_them_from_its_columns(self):
+        conn, report = self.imported(extra_sql=SEG_SQL)
+        self.assertEqual(self._segs(conn, EV_BS), [("ev", "off_peak", 3.0, 0.07),
+                                                   ("house", "off_peak", 1.0, 0.07)])
+        self.assertEqual(report["transforms"]["ev_segments"], {"blocks": 1, "kwh_ev": 3.0})
+
+    def test_ev_split_readers_see_it_from_the_segments(self):
+        """GUARD until the column drop: ev_split's LEGACY fallback reads the same 3.0 from the
+        columns on the parent. After the drop, only the segments can say it."""
+        self.imported(extra_sql=SEG_SQL)
+        conn = sqlite3.connect(self.target)
+        self.addCleanup(conn.close)
+        import ev_split
+        n = conn.execute("SELECT %s FROM blocks WHERE block_start = ?" % ev_split.sql_kwh("blocks"),
+                         (EV_BS,)).fetchone()[0]
+        self.assertAlmostEqual(n, 3.0, places=6)
+
+    def test_a_held_block_is_fitted_to_its_settled_kwh(self):
+        conn, report = self.imported(extra_sql=SEG_SQL)
+        self.assertEqual(self._segs(conn, HELD_BS), [("ev", "off_peak", 3.0, 0.07),
+                                                     ("house", "day", 4.5, 0.30)])
+        self.assertEqual(report["transforms"]["refit_held"]["refitted"], 2)
+
+    def test_a_block_held_by_the_fold_is_refitted_too(self):
+        conn, _ = self.imported(extra_sql=SEG_SQL)
+        self.assertEqual(self._segs(conn, FOLD_BS), [("house", "day", 1.0, 0.30)])
+
+    def test_a_block_that_is_not_held_is_reported_not_changed(self):
+        conn, report = self.imported(extra_sql=SEG_SQL)
+        self.assertEqual(self._segs(conn, LOOSE_BS), [("house", "day", 1.9, 0.30)])
+        self.assertEqual(report["transforms"]["refit_held"]["reported"], [LOOSE_BS])
+
+    def test_every_column_is_carried_as_it_is(self):
+        """GUARD: the transforms write segments only (spec §5.2)."""
+        conn, _ = self.imported(extra_sql=SEG_SQL)
+        self.assertEqual(tuple(conn.execute("SELECT imp_kwh, imp_cost, imp_kwh_ev FROM blocks "
+                                            "WHERE id = 60").fetchone()), (4.0, 0.28, 3.0))
+
+    def test_a_block_with_segments_keeps_them(self):
+        """GUARD: the fixture's block 40 already has segments matching its kWh."""
+        conn, _ = self.imported(extra_sql=SEG_SQL)
+        self.assertEqual(self._segs(conn, B1), [("house", "day", 2.0, 0.245)])
+
+    def test_the_gates_hold(self):
+        _, report = self.imported(extra_sql=SEG_SQL)
+        self.assertTrue(all(g["ok"] for g in report["gates"].values()), report["gates"])
+        self.assertEqual(report["gates"]["held_fit"]["refitted"], 2)
+
+
 class TheKeys(_Dir):
     """E design §7: setup facts and user choices cross; claims that work already ran do
     not, because v5 carries no v4 heals and its own passes have not run."""
@@ -346,6 +437,30 @@ class TheGatesBite(_Dir):
         self._broken("UPDATE main.blocks SET rate_source = CASE id WHEN 40 THEN 'corrected' "
                      "WHEN 41 THEN 'settled' END WHERE id IN (40, 41)",
                      "changed provenance outside the rule")
+
+    def _seg_src(self, **kw):
+        return v4_db(os.path.join(self.dir, "src.db"), extra_sql=SEG_SQL)
+
+    def test_ev_segments_that_miss_the_columns(self):
+        self.src = self._seg_src
+        self._broken("UPDATE main.block_segments SET kwh = 2.5 WHERE block_start = '%s' "
+                     "AND attribution = 'ev'" % EV_BS, "not reproducing their columns")
+
+    def test_a_held_block_left_unfitted(self):
+        self.src = self._seg_src
+        self._broken("UPDATE main.block_segments SET kwh = 4.058 WHERE block_start = '%s' "
+                     "AND attribution = 'house'" % HELD_BS, "still miss their kWh")
+
+    def test_a_refit_that_re_priced_a_segment(self):
+        self.src = self._seg_src
+        self._broken("UPDATE main.block_segments SET inc_rate = 0.25 WHERE block_start = '%s' "
+                     "AND attribution = 'ev'" % HELD_BS, "re-priced by the refit")
+
+    def test_a_rewritten_segment_outside_the_transforms(self):
+        """GUARD: "carried exactly" caught this before; it still does for untouched blocks."""
+        self.src = self._seg_src
+        self._broken("UPDATE main.block_segments SET band = 'peak' WHERE block_start = '%s'"
+                     % B1, "block_segments")
 
     def test_a_changed_key(self):
         def _src(**kw):
