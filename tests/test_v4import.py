@@ -152,6 +152,20 @@ class TheCarry(_Dir):
         self.assertEqual(sqlite3.connect(self.target).execute(
             "PRAGMA journal_mode").fetchone()[0], "delete")
 
+    def test_the_import_never_writes_a_wal(self):
+        """10 Oct 2026 soak: built in WAL mode, the target took the whole import twice — into
+        the WAL at COMMIT, then back into the file — 68 s of an 81 s import on the Pi's SD
+        card. Built with its journal in memory, no -wal ever exists. Fails on the parent."""
+        seen = []
+        real = v4import.transforms.run
+
+        def _run(conn, report):
+            real(conn, report)
+            seen.append(os.path.exists(self.target + "-wal"))
+        with mock.patch.object(v4import.transforms, "run", _run):
+            v4import.import_v4(self.src(), self.target)
+        self.assertEqual(seen, [False])
+
     def test_importing_twice_gives_the_same_rows(self):
         """GUARD (by construction: the target is rebuilt from nothing each time)."""
         conn, _ = self.imported()
@@ -363,6 +377,12 @@ class TheKeys(_Dir):
         self.assertIsNone(self.meta(conn, "db_uuid"))
         self.assertEqual(report["source"]["written_by"], G.FLOOR_VERSION)   # recorded instead
         self.assertEqual(report["source"]["db_uuid"], "abc123")
+
+    def test_the_pre_live_snapshot_marker_crosses(self):
+        """v4 took its one pre-live snapshot and the restore has just taken a safety backup:
+        re-run, it wrote a third 80 MB copy on the Pi (10 Oct 2026). Fails on the parent."""
+        conn, _ = self.imported(state={"pre_live_snapshot_done": "1"})
+        self.assertEqual(self.meta(conn, "pre_live_snapshot_done", "kraken_state"), "1")
 
     def test_an_unseen_completion_marker_is_dropped(self):
         conn, report = self.imported(state={"some_future_heal_done_v3": "1"})
@@ -599,6 +619,38 @@ class TheRestore(unittest.TestCase):
         self.srv._restore_worker("", None, True)
         self._done()
         self.assertEqual(read_emt_schema(self.live), EMT_SCHEMA)
+        self.assertTrue(os.path.exists(os.path.join(self.share, "blocks.db")),
+                        "the share's own copy was moved, not read")
+
+    def _copies(self):
+        calls = []
+        real = self.srv._atomic_restore_write
+
+        def _rec(dest, fill):
+            calls.append(os.path.basename(dest))
+            return real(dest, fill)
+        return calls, mock.patch.object(self.srv, "_atomic_restore_write", _rec)
+
+    def test_an_upload_is_moved_into_place_not_copied(self):
+        """10 Oct 2026 soak: the swap copied the 80 MB import target into place — 40 s and a
+        second write on the Pi's SD card. Both files are in DATA_DIR, so it is a rename.
+        Fails on the parent."""
+        staged = v4_db(os.path.join(self.data, "uploaded_restore-x.db"))
+        calls, p = self._copies()
+        with p:
+            self.srv._restore_worker("", ["blocks.db"], False, staged=staged)
+        self._done()
+        self.assertNotIn("blocks.db", calls)
+        self.assertEqual(read_emt_schema(self.live), EMT_SCHEMA)
+
+    def test_a_flat_v4_copy_is_moved_from_its_import_not_copied(self):
+        """Fails on the parent."""
+        v4_db(os.path.join(self.share, "blocks.db"))
+        calls, p = self._copies()
+        with p:
+            self.srv._restore_worker("", None, True)
+        self._done()
+        self.assertNotIn("blocks.db", calls)
 
     def test_a_v5_backup_is_swapped_in_as_it_is(self):
         """It takes gate 1 alone: no stamp is needed, and nothing is dropped."""

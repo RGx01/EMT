@@ -99,6 +99,10 @@ CARRY_KEYS = {
         # how far back the carried history reaches, per direction
         "api_import_oldest_import", "api_import_oldest_export",
         "api_import_done_import", "api_import_done_export",
+        # the one-time snapshot before the first live DCC write: v4 took it, and a restore
+        # has just taken its own safety backup — re-run, it wrote a third 80 MB copy on the
+        # Pi's SD card in the 10 Oct 2026 soak
+        "pre_live_snapshot_done",
     }),
 }
 
