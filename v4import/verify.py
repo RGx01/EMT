@@ -153,21 +153,32 @@ def split_reproduced(conn, report):
     imp_cost_ev, and no block with EV segments where the columns said none. The one expected
     difference is a held block whose refit shrank the EV because the house was gone (gate 11's
     note): there the segments' EV is smaller than the column's, never larger. Reports the worst
-    divergence (£), not just pass/fail."""
+    divergence (£), not just pass/fail.
+
+    The £ comparison skips a block transform 2 rebuilt from the columns: the reconstruction
+    gives an all-EV block's EV segment the whole bill so the segments sum to imp_cost, and
+    imp_cost_ev is kWh × rate, which differs wherever the bill does (#505's 5% October bill on a
+    0% rate). Those blocks are judged by `ev_segments` against the reconstruction's own rule;
+    their kWh is still compared here (10 Oct 2026, found on a soak copy whose segments the prep
+    had stripped)."""
     seg = _SEG % "main"
     base = ("FROM main.blocks b JOIN src.blocks v ON v.id = b.id LEFT JOIN " + seg + " g "
             "ON g.block_start = b.block_start "
             "LEFT JOIN temp.v4i_resegmented t ON t.block_start = b.block_start "
             "WHERE b.meter_id = 'electricity_main' ")
-    shrunk = "(t.why = 'refit' AND COALESCE(g.ev, 0) <= v.imp_kwh_ev + 1e-6)"
+    # a refit that actually shrank the EV (by more than rounding); a refit that left the EV as
+    # it was is compared like any other block
+    shrunk = "(t.why = 'refit' AND COALESCE(g.ev, 0) < v.imp_kwh_ev - 1e-6)"
     kwh = _one(conn, "SELECT COUNT(*) " + base + "AND v.imp_kwh_ev > 1e-6 AND "
                      "ABS(COALESCE(g.ev, 0) - v.imp_kwh_ev) > 1e-6 AND NOT " + shrunk)
+    rebuilt = "COALESCE(t.why, '') = 'ev_segments'"
     cost = _one(conn, "SELECT COUNT(*) " + base + "AND v.imp_kwh_ev > 1e-6 AND "
-                      "ABS(COALESCE(g.ec, 0) - COALESCE(v.imp_cost_ev, 0)) > 1e-5 AND NOT " + shrunk)
+                      "ABS(COALESCE(g.ec, 0) - COALESCE(v.imp_cost_ev, 0)) > 1e-5 AND NOT " + shrunk
+                      + " AND NOT " + rebuilt)
     phantom = _one(conn, "SELECT COUNT(*) " + base + "AND COALESCE(v.imp_kwh_ev, 0) <= 1e-6 "
                          "AND g.ev > 1e-6")
     worst = _one(conn, "SELECT MAX(ABS(COALESCE(g.ec, 0) - COALESCE(v.imp_cost_ev, 0))) " + base
-                       + "AND v.imp_kwh_ev > 1e-6 AND NOT " + shrunk)
+                       + "AND v.imp_kwh_ev > 1e-6 AND NOT " + shrunk + " AND NOT " + rebuilt)
     report["gates"]["split_reproduced"].update(
         worst_cost=round(worst or 0.0, 9), kwh_differ=kwh, cost_differ=cost, phantom=phantom)
     if kwh or cost or phantom:
