@@ -2200,6 +2200,35 @@ class TestApiImportBlocksDb(unittest.TestCase):
             self.assertEqual(f.read(), b"the running restore's candidate")
         self.assertEqual(sorted(os.listdir(self.tmpdir)), before, "the refused upload left a file")
 
+    def test_the_upload_check_leaves_nothing_beside_the_staged_file(self):
+        """10 Oct 2026: the upload was checked with a plain connect and a COUNT(*) of every
+        block. A backup in WAL mode then grew a -wal and -shm beside the staged file, and the
+        count read all 139k rows from the Pi's SD card before the restore had even started.
+        Now an immutable read-only probe of one row, and the route logs what the upload cost.
+        Fails on the parent."""
+        import io, os, tempfile
+        d = tempfile.mkdtemp()
+        p = os.path.join(d, "wal.db")
+        st = BlockStore(p)                 # a file database: WAL mode, as a real backup is
+        st.set_meta("written_by", "4.5.22")
+        st.close()
+        with open(p, "rb") as f:
+            db_bytes = f.read()
+        seen = {}
+
+        def _fake_worker(zipname, selected, from_flat, staged=None):
+            seen["beside"] = sorted(x for x in os.listdir(self.tmpdir)
+                                    if x.startswith(os.path.basename(staged)) and x != os.path.basename(staged))
+        server._restore_job = {"status": "idle"}
+        data = {"blocks": (io.BytesIO(db_bytes), "blocks.db")}
+        with patch.object(server, "_restore_worker", _fake_worker), \
+             patch("server.threading.Thread", _SyncThread), \
+             self.assertLogs("server", level="INFO") as logs:
+            r = self.client.post("/api/import", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(seen["beside"], [])
+        self.assertTrue(any("api_import: received" in m for m in logs.output), logs.output)
+
     def test_two_uploads_are_staged_apart(self):
         """GUARD (new code): each upload has its own staged file."""
         import io

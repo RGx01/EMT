@@ -241,6 +241,50 @@ async function uploadReply(r) {
     'open the add-on\'s Web UI directly (port 8098 by default) and restore from there.');
 }
 
+// An upload that says how far it has got (10 Oct 2026). fetch() reports nothing until the
+// server replies, and an 80 MB backup took about two minutes to reach a Pi: the page sat
+// silent, the button stayed live, and a second click (or an ingress retry) started a second
+// upload. XMLHttpRequest reports the bytes sent. `onStage(text)` is called as the upload
+// progresses, and once more when it has all arrived and the server is checking it. Resolves to
+// what uploadReply() reads — the status, the content type and the body.
+function uploadWithProgress(url, form, onStage) {
+  return new Promise(function(resolve, reject) {
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    var mb = function(n) { return (n / 1048576).toFixed(1); };
+    xhr.upload.onprogress = function(e) {
+      if (!e.lengthComputable) { onStage('Uploading… ' + mb(e.loaded) + ' MB sent'); return; }
+      var pct = Math.floor(100 * e.loaded / e.total);
+      onStage('Uploading… ' + pct + '% (' + mb(e.loaded) + ' of ' + mb(e.total) + ' MB)');
+    };
+    xhr.upload.onload = function() {
+      onStage('Uploaded — EMT is checking the file. On a Pi this can take a minute or two.');
+    };
+    xhr.onload = function() {
+      var body = xhr.responseText;
+      resolve({
+        status: xhr.status,
+        headers: { get: function(h) { return xhr.getResponseHeader(h); } },
+        json: function() { return Promise.resolve(JSON.parse(body)); }
+      });
+    };
+    xhr.onerror = function() { reject(new Error('the upload did not reach EMT')); };
+    xhr.send(form);
+  });
+}
+
+// For the length of one upload: the banner says how far it has got, and the button that
+// would start a second upload is off. Afterwards the button follows the file list again.
+function _uploadBusy(busy, text) {
+  document.getElementById('import-btn').disabled =
+    busy || !Object.keys(selectedFiles).length;
+  if (busy) {
+    var el = document.getElementById('alert-success');
+    el.textContent = '⏳ ' + text;
+    el.classList.add('show');
+  }
+}
+
 const KNOWN_FILES = ['blocks.db'];
 let selectedFiles = {};
 let _restoreZip   = null;
@@ -312,10 +356,11 @@ async function doZipRestore() {
       } catch(e) { /* backup failure non-fatal */ }
     }
 
-    statusEl.textContent = '⏳ Restoring database…';
+    statusEl.textContent = '⏳ Uploading…';
     const form = new FormData();
     form.append('zipfile', zipFile);
-    const r    = await fetch(apiUrl('/api/import/from-zip'), { method: 'POST', body: form });
+    const r    = await uploadWithProgress(apiUrl('/api/import/from-zip'), form,
+                                          function(t) { statusEl.textContent = '⏳ ' + t; });
     const data = await uploadReply(r);
 
     if (data.ok) {
@@ -412,8 +457,10 @@ async function doImport() {
     return;
   }
 
+  _uploadBusy(true, 'Uploading…');
   try {
-    const r    = await fetch(apiUrl('/api/import'), { method: 'POST', body: form });
+    const r    = await uploadWithProgress(apiUrl('/api/import'), form,
+                                          function(t) { _uploadBusy(true, t); });
     const data = await uploadReply(r);
     if (data.ok) {
       // The upload now restores through the SAME background job as a backup-zip
@@ -423,9 +470,13 @@ async function doImport() {
       _restoreWasRunning = true;
       pollRestoreStatus();
     } else {
+      document.getElementById('alert-success').classList.remove('show');
+      _uploadBusy(false);
       showError(data.error || 'Import failed');
     }
   } catch(e) {
+    document.getElementById('alert-success').classList.remove('show');
+    _uploadBusy(false);
     showError('Restore failed: ' + e.message);
   }
 }
