@@ -18,6 +18,7 @@ target in afterwards, as it swapped the candidate in before.
 import json
 import os
 import sqlite3
+import time
 from datetime import datetime, timezone
 from urllib.parse import quote
 
@@ -104,13 +105,19 @@ def import_v4(source, target, progress=None):
     Returns the report (also stored as store_meta.import_audit). Raises ImportFailed."""
     from block_store import BlockStore, EMT_SCHEMA
 
+    t0 = time.monotonic()
     _remove(target)
     BlockStore(target).close()           # v5's own schema; it marks itself emt_schema
     report = {"importer": IMPORTER_REVISION, "emt_schema": EMT_SCHEMA,
               "imported_at": datetime.now(timezone.utc).replace(tzinfo=None)
                                      .isoformat(timespec="seconds"),
               "source": _source_facts(source), "tables": {}, "keys": {},
-              "transforms": {}, "gates": {}}
+              "transforms": {}, "gates": {}, "seconds": {}}
+    secs = report["seconds"]       # per phase — the Pi's SD card is the time that matters
+
+    def _lap(phase, since):
+        secs[phase] = round(time.monotonic() - since, 3)
+        return time.monotonic()
     conn = sqlite3.connect("file:%s" % quote(os.path.abspath(target)), uri=True,
                            isolation_level=None)
     conn.row_factory = sqlite3.Row
@@ -123,14 +130,18 @@ def import_v4(source, target, progress=None):
             raise ImportFailed(
                 "This backup holds data this version of EMT does not know how to import "
                 "(%s). Nothing was changed." % ", ".join(problems))
+        t = _lap("prepare", t0)
         conn.execute("BEGIN")
         _carry_tables(conn, report, progress)
+        t = _lap("carry", t)
         if progress:
             progress("translating")
         transforms.run(conn, report)
+        t = _lap("transforms", t)
         if progress:
             progress("checking the import")
         failures = verify.run(conn, report)
+        t = _lap("verify", t)
         if failures:
             raise ImportFailed(
                 "The import did not reconcile with the backup (%s). Nothing was changed."
@@ -141,6 +152,8 @@ def import_v4(source, target, progress=None):
         conn.execute("DETACH DATABASE src")
         # One self-contained file for the swap: no -wal beside it to leave behind.
         conn.execute("PRAGMA journal_mode=DELETE")
+        _lap("commit", t)          # after the audit was written: in the returned report only
+        secs["total"] = round(time.monotonic() - t0, 3)
         ok = True
         return report
     except ImportFailed:

@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v17 — revised 9 Oct 2026, floor raised to 4.5.22 (v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v18 — revised 10 Oct 2026, the importer as built (v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -116,6 +116,24 @@ still carry 5%. So v5 carries the detection and resync as **forward code** (it r
 change and on imported data alike), not as a v4 heal; the floor guarantees only that 4.5.21's heals
 ran and that 4.5.22's state marker travels with the data. 4.5.21 and the v5 dev build `4.5.21-a22`
 join the below-floor negatives; v5's own builds now stamp `4.5.22-a23`.*
+
+*Changes in v18 (10 Oct 2026): **the importer is built** (`v4import/`; [E design](EMT-v5_E_importer_design.md)),
+and five decisions from building it change the text:*
+1. *§3 — **classification by `store_meta.emt_schema`.** v5 marks a database it creates; a restore
+   imports any database without the marker (v4, or a v5 build before it) and swaps a v5 backup in
+   as it is, refusing one at another schema revision until the first release.*
+2. *§5.2 — **the house `night` relabel is not built.** v5's own writers cannot tell which tariff era
+   a past block is in, so the relabel alone would label one band two ways. It waits on ROADMAP
+   BL-81; until then house `off_peak` stands in every era, on both sides of the import.*
+3. *§6 — **every key has a rule**, in `v4import/rules.py` (E design §7): v4's whole key history,
+   the backups' keys and v5's own. Any key ending `_done` / `_done_v<n>` is a completion marker and
+   drops; any other unknown key, table or column aborts the import and is named.*
+4. *§8 — **one transaction into a fresh target, which REPLACES the live database.** Not chunked and
+   resumable: all-or-nothing by construction, and a re-import gives an identical database. Not a
+   merge: the `pre_restore` safety backup keeps what was replaced (decided 10 Oct 2026).*
+5. *§9 — **the gates run in the import's transaction**, against the attached source, and a failure
+   rolls everything back. Gate 5 is `verify.split_reproduced`; gate 11 is `verify.held_fit`. The
+   §9 corpus runs against real backups with `tests/test_import_corpus.py` (EMT_IMPORT_CORPUS).*
 
 ---
 
@@ -844,6 +862,12 @@ exists to answer.
 
 ### The one remap: house low, SMB era only
 
+> **Not built (v18, 10 Oct 2026): waits on ROADMAP BL-81.** Everything below still describes the
+> intended rule. What stops it is v5's side: every writer of a house band decides "SMB" from the
+> CURRENT tariff, not the block's date, and the whole-history re-price sweep rewrites segments
+> after an import. A relabel only the importer made would leave the same era labelled two ways.
+> The era rule for when it is built is decided: the earliest four-bucket `measured_cost` row.
+
 **v5 keeps all four labels.** The importer performs exactly one relabel:
 
 ```
@@ -917,6 +941,13 @@ gate 5. A mismatch means BL-27 is incomplete, not that the data is bad.
 
 These hold one-time markers, and **most must not be carried** — a stale "done" flag in the new app
 suppresses a pass that should run. Default is **DROP**; carry only by explicit allow-list.
+
+> **As built (v18):** the allow-list and the drop list are `v4import/rules.py`, classified key by key
+> in the [E design §7](EMT-v5_E_importer_design.md). Beyond the list below, the API import's
+> coverage keys (`api_import_oldest_*`, `api_import_done_*`, `import_cost_coverage`) and the user's
+> `billing_source` and `carbon_paused` cross, and `region_probe_clobber_done` crosses because re-run
+> it would overwrite the carried regions. `written_by` and `db_uuid` are left for v5's
+> `engine_startup` to stamp (REGEN by v5's own mechanism). An unknown key aborts the import.
 
 **CARRY:**
 
@@ -1073,9 +1104,19 @@ add-on and would make failures hard to reason about.
 duplicate — key on (`block_start`, `meter_id`) for blocks and the natural keys elsewhere. A user who
 retries after a failure must not end up with doubled history.
 
+> **As built (v18):** stronger — the target is built from nothing each time, so a re-import gives an
+> identical database (only `db_uuid` differs, by design). The import **replaces** the live database,
+> as a restore always has; it does not merge (decided 10 Oct 2026).
+
 **Bounded and observable.** 135k blocks + 37k segments + 33k sub-meter rows is a large but
 tractable import. Chunk it, report progress, and make it resumable. It is a bounded mutating job —
 it must take the BL-50 job lock, not run alongside an import or delete.
+
+> **As built (v18):** ONE transaction into a fresh file beside the live one, not chunks. An
+> interrupted import leaves a target that is deleted, so all-or-nothing needs no resume. Measured on
+> a Mac: 2.8 s for 139k blocks, of which the carry 0.9 s and the gates 1.6 s; the Pi on its SD card
+> is still to measure, and `store_meta.import_audit` / the restore log now carry each phase's time.
+> It runs inside the restore job, which holds the BL-50 lock.
 
 **All-or-nothing per run.** On failure, the target is left empty (or rolled back), never partially
 populated. A half-imported database that *looks* complete is the worst outcome here.
@@ -1181,7 +1222,7 @@ on hand:
 | `4.5.20-a21` (a v5 dev build) | **refused** | v5's build stamp before 7 Oct 2026, running 4.5.20's code |
 | 4.5.21 | **refused** | below the 4.5.22 floor since v17 — has not run the October VAT resync |
 | `4.5.21-a22` (a v5 dev build) | **refused** | v5's build stamp before 9 Oct 2026, running 4.5.21's code |
-| **4.5.22** | **admitted** | the positive fixture at `FLOOR_VERSION` — to be taken from prod-dev once it runs 4.5.22. |
+| **4.5.22** | **admitted** | the positive fixture at `FLOOR_VERSION` — to be taken from prod-dev once it runs 4.5.22. Real backups never enter the repo: `tests/test_import_corpus.py` judges every `*.db` in `EMT_IMPORT_CORPUS` by its own stamp (v18). |
 | **below** `FLOOR_VERSION` | **refused** | stamped, but from a release older than the floor |
 
 Two of these carry most of the value.
@@ -1289,8 +1330,8 @@ silently stops testing anything the day v4 reaches .15.
 
    *Action, not an answer:* `FLOOR_VERSION` is pinned as the last step before v5's first release,
    from whatever v4 has actually reached by then, and §9's positive fixture is regenerated at that
-   version. On the release checklist, not in this paragraph. **Currently `4.5.19`** (v12; was
-   `4.5.18` in v11, `4.5.17` in v10, `4.5.16` in v9, `4.5.15` in v8). The release-checklist step stays: confirm the final v4 release, and capture
+   version. On the release checklist, not in this paragraph. **Currently `4.5.22`** (v17; was
+   `4.5.21` in v13, `4.5.19` in v12, `4.5.18` in v11, `4.5.17` in v10, `4.5.16` in v9, `4.5.15` in v8). The release-checklist step stays: confirm the final v4 release, and capture
    the positive fixture at it.
 
    *(This question originally read "does the required `heal_level` ever rise?" and the answer is

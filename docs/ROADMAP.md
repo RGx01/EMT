@@ -12,7 +12,7 @@ its forward fix. This repository was seeded with a verbatim copy of 4.5.14 (suit
 the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below deconstruct it. v4 is at
 **4.5.22**; the import floor is **4.5.22** (E).
 
-*Refreshed 4 Oct 2026.*
+*Refreshed 10 Oct 2026.*
 
 | # | Workstream | Depends on | State |
 |---|---|---|---|
@@ -20,7 +20,7 @@ the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below decons
 | B | Job coordinator (v4 BL-50) | A | ✅ all six acceptances met — 6 on the Pi, 5 Oct 2026 |
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | ✅ closed 5 Oct 2026 — queries asserted in CI (#102), time on the Pi (#64) |
-| E | Importer | A–D | 📝 spec v17, floor 4.5.22 |
+| E | Importer | A–D | 🔨 built 10 Oct 2026 (#122–#128, step 5 done), spec v18, floor 4.5.22 — open: the 4.5.22 positive fixture, the Pi timing; the house `night` band waits on BL-81 |
 | F | Carried from v4's backlog | — | 📋 9 items open, 1 done (BL-50 = B) |
 | G | Local tariff store | A, B | 📝 proposed 4 Oct 2026 |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
