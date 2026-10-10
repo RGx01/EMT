@@ -70,13 +70,11 @@ def _store():
         else:
             rate_col = rate
         exc = round(cost / (1 + vat), 6) if i % 3 == 0 else None
-        rexc = round(rate / (1 + vat), 6) if (i % 5 == 0 and rate_col is not None) else None
         rs = 0.0 if i % 53 == 0 else reg
         reg += k
         re_ = 0.0 if i % 53 == 0 else reg
         day = (t - t0).days
         sc = 0.0 if (day == 4 and t.hour < 2) else (0.61 if day < 12 else 0.58)
-        sce = round(sc / (1 + vat), 6) if day % 2 == 0 else None
         ev = round(k * rnd.uniform(0.3, 1.2), 3) if night else 0.0
         bat = round(rnd.uniform(0.0, 0.4), 3) if i % 4 == 0 else 0.0
         evk = evc = evr = evb = hb = None
@@ -93,12 +91,12 @@ def _store():
         c.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
             "imp_rate, imp_cost, imp_read_start, imp_read_end, imp_cost_exc, "
-            "imp_rate_exc, imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band, "
-            "exp_kwh, exp_rate, exp_cost, exp_read_start, exp_read_end, standing_charge, "
-            "standing_charge_exc) VALUES (?,?,'electricity_main',1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (bs, bs, k, rate_col, cost, rs, re_, exc, rexc, evk, evc, evr, evb, hb,
+            "imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band, "
+            "exp_kwh, exp_rate, exp_cost, exp_read_start, exp_read_end, standing_charge"
+            ") VALUES (?,?,'electricity_main',1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (bs, bs, k, rate_col, cost, rs, re_, exc, evk, evc, evr, evb, hb,
              0.2 if not night else 0.0, 0.15 if i % 7 else None, 0.03 if not night else 0.0,
-             10.0 + i if i % 9 else None, 10.2 + i if i % 9 else None, sc, sce))
+             10.0 + i if i % 9 else None, 10.2 + i if i % 9 else None, sc))
         for seq, (sk, si, sx, band, attr) in enumerate(segs):
             c.execute("INSERT INTO block_segments (block_start, meter_id, channel, seq, kwh, inc_rate, "
                       "exc_rate, band, attribution) VALUES (?,'electricity_main','import',?,?,?,?,?,?)",

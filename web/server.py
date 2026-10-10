@@ -8315,15 +8315,12 @@ def api_corrections_apply():
                                     -- reconcile already does this; the corrections tool didn't, so a
                                     -- corrected block kept a stale ex-VAT figure). Rescale by
                                     -- new/old inc to preserve the block's VAT ratio; leave NULL exc
-                                    -- (view falls back to inc / VAT).
-                                    imp_rate_exc = CASE WHEN imp_rate_exc IS NOT NULL AND imp_rate != 0
-                                                       THEN ROUND(imp_rate_exc * ? / imp_rate, 6)
-                                                       ELSE imp_rate_exc END,
+                                    -- (view falls back to inc / VAT). Only the £ is stored (5b).
                                     imp_cost_exc = CASE WHEN imp_cost_exc IS NOT NULL AND imp_rate != 0
                                                        THEN ROUND(imp_cost_exc * ? / imp_rate, 6)
                                                        ELSE imp_cost_exc END{_mark}
                                 WHERE {where}""",
-                            [value, value, value, value, value, value] + params
+                            [value, value, value, value, value] + params
                         )
                     elif recalc_cost:
                         cost_col = "imp_cost" if channel == "import" else "exp_cost"
@@ -8356,23 +8353,25 @@ def api_corrections_apply():
                                    "(SELECT meter_id FROM meters WHERE is_sub_meter = 1)")
                             # v4 4.5.21 forward fix: the ex-VAT rate follows too — the main's, as the
                             # UPDATE above has just corrected it (BL-57). It didn't: a corrected device
-                            # kept its pre-correction imp_rate_exc / imp_cost_exc, so every ex-VAT view
+                            # kept its pre-correction ex-VAT, so every ex-VAT view
                             # still priced it at the old band. Taken from the MAIN rather than rescaled
                             # from the device's own, so re-applying a correction also repairs a device
                             # an earlier one left stale.
-                            main_exc = ("(SELECT m.imp_rate_exc FROM blocks m "
+                            # The main's ex-VAT rate from its own pair, as the UPDATE above left it
+                            # (its imp_rate_exc column went in step 5b, 10 Oct 2026).
+                            main_exc = ("(SELECT m.imp_rate * m.imp_cost_exc / NULLIF(m.imp_cost, 0) "
+                                        "FROM blocks m "
                                         " WHERE m.block_start = blocks.block_start AND m.meter_id IN "
                                         "   (SELECT meter_id FROM meters WHERE is_sub_meter = 0) LIMIT 1)")
                             if recalc_cost:
                                 st._conn.execute(
                                     f"UPDATE blocks SET imp_rate = ?, "
                                     f"imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
-                                    f"imp_rate_exc = {main_exc}, "
                                     f"imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * {main_exc}, 6) "
                                     f"WHERE {dev}", [value, value] + bs_list)
                             else:
                                 st._conn.execute(
-                                    f"UPDATE blocks SET imp_rate = ?, imp_rate_exc = {main_exc} "
+                                    f"UPDATE blocks SET imp_rate = ? "
                                     f"WHERE {dev}",
                                     [value] + bs_list)
 

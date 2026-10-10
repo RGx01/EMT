@@ -73,14 +73,16 @@ class _Base(unittest.TestCase):
 
     def setUp(self):
         self.st = _mk_store()
+        # imp_rate_exc was dropped (step 5b, 10 Oct 2026): a row's ex-VAT rate is derived from
+        # its pair, imp_rate x imp_cost_exc / imp_cost, so each row carries both costs.
         _block(self.st, "electricity_main", imp_kwh=1.0, imp_rate=NEW,
-               imp_rate_exc=NEW_EXC, rate_source="settled")
+               imp_cost=NEW, imp_cost_exc=NEW_EXC, rate_source="settled")
         # battery: drew 4 kWh, only 0.01 of it from the grid (the rest was solar)
         _block(self.st, "sub_meter_battery", imp_kwh=4.0, imp_kwh_grid=0.01,
-               imp_rate=OLD, imp_rate_exc=OLD_EXC)
+               imp_rate=OLD, imp_cost=round(0.01 * OLD, 6), imp_cost_exc=round(0.01 * OLD_EXC, 6))
         # a device PASS 2 never clipped: imp_kwh_grid NULL -> keeps costing from raw
         _block(self.st, "sub_meter_nogrid", imp_kwh=0.5, imp_kwh_grid=None,
-               imp_rate=OLD, imp_rate_exc=OLD_EXC)
+               imp_rate=OLD, imp_cost=round(0.5 * OLD, 6), imp_cost_exc=round(0.5 * OLD_EXC, 6))
 
     def _assert_clipped(self):
         b = _row(self.st, "sub_meter_battery")

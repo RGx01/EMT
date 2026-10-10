@@ -57,10 +57,11 @@ SCHEMA_VERSION = 1
 # v4 database (import spec §3). A revision, raised by each change to what v5 stores
 # (the provenance words, the band, the column drop); a restore refuses a v5 backup of any
 # other revision until the first release fixes the baseline.
-EMT_SCHEMA = 3
+EMT_SCHEMA = 4
 #   1  10 Oct 2026  the marker itself (v4's schema and words)
 #   2  10 Oct 2026  rate_source 'measured' -> 'settled'
 #   3  10 Oct 2026  imp_kwh_remainder, imp_cost_remainder, rate_reconciled dropped
+#   4  10 Oct 2026  imp_rate_exc, standing_charge_exc, exc_source dropped
 
 
 def read_emt_schema(path):
@@ -190,7 +191,6 @@ CREATE TABLE IF NOT EXISTS blocks (
     imp_rate         REAL,
     imp_cost         REAL,
     imp_cost_exc     REAL,               -- 4.1.x BL-23: exc-VAT import cost (NULL until captured; inc figures unchanged)
-    imp_rate_exc     REAL,               -- 4.2 BL-23: exc-VAT import unit rate, full precision (NULL until captured)
     imp_read_start   REAL,
     imp_read_end     REAL,
     exp_kwh          REAL,
@@ -199,12 +199,10 @@ CREATE TABLE IF NOT EXISTS blocks (
     exp_read_start   REAL,
     exp_read_end     REAL,
     standing_charge  REAL    NOT NULL DEFAULT 0,
-    standing_charge_exc REAL,            -- 4.2 BL-23: exc-VAT daily standing charge (NULL until captured)
     carbon_g         REAL,               -- net gCO2 for this block (NULL if no CI data)
     imp_provisional  INTEGER NOT NULL DEFAULT 0,  -- 1 = sub-meter kWh written without post-boundary read; 0 = final
     -- ── 3.0.0 Kraken API integration columns ──────────────────────────────
     source              TEXT,                       -- 'ha_sensor' | 'kraken_api' | 'kraken_mini' (NULL = legacy/ha_sensor)
-    exc_source          TEXT,                       -- 4.2 BL-23: provenance of exc figures: 'measurement'|'tariff'|'bill'|'csv'|NULL
     is_provisional      INTEGER NOT NULL DEFAULT 0, -- 1 = main meter not yet DCC-settled (api / api+mini modes)
     needs_pass2_rerun   INTEGER NOT NULL DEFAULT 0, -- 1 = DCC arrived, PASS 2+3b re-run pending
     imp_kwh_api         REAL,                       -- DCC-settled import kWh from Kraken REST (NULL until settlement)
@@ -700,7 +698,6 @@ def _block_rows(block: dict, config_period_id: int, tz_name: str) -> list[dict]:
             # BL-23: exc-VAT import cost + rate, when the import channel carries them
             # (NULL otherwise — inc-VAT figures are unaffected).
             "imp_cost_exc":      imp.get("cost_exc"),
-            "imp_rate_exc":      imp.get("rate_exc"),
             # BL-9: IOG house/EV split — the dispatch-derived EV portion of import
             # (NULL when not an IOG-priced dispatched slot; house = the remainder).
             "imp_kwh_ev":        imp.get("kwh_ev"),
@@ -719,8 +716,6 @@ def _block_rows(block: dict, config_period_id: int, tz_name: str) -> list[dict]:
             # standing charge on main meter import
             "standing_charge":   float(meter_block.get("standing_charge") or 0),
             # BL-23 (4.2): exc-VAT standing + exc provenance (NULL until captured)
-            "standing_charge_exc": meter_block.get("standing_charge_exc"),
-            "exc_source":        meter_block.get("exc_source"),
             # carbon footprint (NULL if no CI data available)
             "carbon_g":          meter_block.get("carbon_g"),
             # gCO2/kWh at block_start, stored at write time (3.0.0) — survives
@@ -897,18 +892,6 @@ def _row_to_block(rows: list[sqlite3.Row]) -> dict:
                 meter_block["price_rate_source"] = row["rate_source"]
         except (IndexError, KeyError):
             pass
-        # BL-23 (4.2): exc-VAT standing + provenance — surfaced so a read→modify→rewrite
-        # round-trip preserves them. Guarded for older DBs / pre-join fetches.
-        try:
-            if row["standing_charge_exc"] is not None:
-                meter_block["standing_charge_exc"] = row["standing_charge_exc"]
-        except (IndexError, KeyError):
-            pass
-        try:
-            if row["exc_source"] is not None:
-                meter_block["exc_source"] = row["exc_source"]
-        except (IndexError, KeyError):
-            pass
 
         if row["imp_kwh"] is not None:
             imp_ch = {
@@ -920,16 +903,13 @@ def _row_to_block(rows: list[sqlite3.Row]) -> dict:
             }
             if row["imp_kwh_grid"] is not None:
                 imp_ch["kwh_grid"] = row["imp_kwh_grid"]
-            # BL-23 exc-VAT cost + rate — surfaced (and thus preserved on round-trip
-            # rewrite). Guarded for older DBs / pre-join fetches lacking the column.
+            # BL-23 exc-VAT cost — surfaced (and thus preserved on round-trip rewrite).
+            # The ex-VAT RATE is not loaded (step 5b, 10 Oct 2026): `rate_exc` on a channel
+            # means "this pricing run derived it"; a loaded block's own ratio is
+            # cost_exc / cost (exc_ratio_of). Guarded for pre-join fetches lacking the column.
             try:
                 if row["imp_cost_exc"] is not None:
                     imp_ch["cost_exc"] = row["imp_cost_exc"]
-            except (IndexError, KeyError):
-                pass
-            try:
-                if row["imp_rate_exc"] is not None:
-                    imp_ch["rate_exc"] = row["imp_rate_exc"]
             except (IndexError, KeyError):
                 pass
             # BL-9: IOG house/EV split — surface the stored EV portion so the billing
@@ -1374,9 +1354,6 @@ class BlockStore:
             # ── 4.1.x BL-23: exc-VAT import cost (additive; NULL until captured)
             ("imp_cost_exc",       "blocks",        "REAL",                       _b_cols),
             # ── 4.2 BL-23: exc-VAT rate + standing + provenance (additive; NULL until captured)
-            ("imp_rate_exc",       "blocks",        "REAL",                       _b_cols),
-            ("standing_charge_exc","blocks",        "REAL",                       _b_cols),
-            ("exc_source",         "blocks",        "TEXT",                       _b_cols),
             # ── 4.3 BL-9: IOG house/EV billing split. The dispatch-derived EV
             # portion of this block's main import (grid-clipped) + its cost/rate;
             # house = imp_kwh − imp_kwh_ev, imp_cost − imp_cost_ev (not stored).
@@ -3215,7 +3192,7 @@ class BlockStore:
         kwh: float, rate: float | None, cost: float | None,
         standing: float | None = None, source: str = IMPORTED_SOURCE_CSV,
         derivation_id: int | None = None, overwrite: bool = False,
-        cost_exc=None, rate_exc=None, standing_exc=None, exc_source=None,
+        cost_exc=None,
     ) -> tuple[Optional[int], bool]:
         """Insert one reconstructed block for a single channel — FIRST-MAN-WINS.
 
@@ -3262,23 +3239,17 @@ class BlockStore:
                         (block_start, meter_id)).fetchone()
                     return (ex["id"] if ex else None), False
             is_import = channel == "import"
-            # BL-23 (4.2 Slice D): persist ex-VAT for the import channel (NULL otherwise).
-            exc_cols = (", imp_cost_exc, imp_rate_exc, standing_charge_exc, exc_source"
-                        if is_import else "")
-            exc_ph = ", ?, ?, ?, ?" if is_import else ""
+            # BL-23 (4.2 Slice D): persist the ex-VAT cost for the import channel (NULL
+            # otherwise). Its rate, the standing charge's and their provenance are derived
+            # where read (step 5b, 10 Oct 2026).
+            exc_cols = ", imp_cost_exc" if is_import else ""
+            exc_ph = ", ?" if is_import else ""
             exc_upd = (""",
-                       imp_cost_exc = excluded.imp_cost_exc,
-                       imp_rate_exc = excluded.imp_rate_exc,
-                       standing_charge_exc = CASE
-                           WHEN excluded.standing_charge_exc IS NULL
-                                OR excluded.standing_charge_exc = 0
-                                THEN blocks.standing_charge_exc
-                           ELSE excluded.standing_charge_exc END,
-                       exc_source = excluded.exc_source""" if is_import else "")
+                       imp_cost_exc = excluded.imp_cost_exc""" if is_import else "")
             _p = [block_start, block_end, meter_id, cp_id,
                   kwh, rate, cost, (standing or 0.0), source, derivation_id]
             if is_import:
-                _p += [cost_exc, rate_exc, standing_exc, exc_source]
+                _p += [cost_exc]
             cur = self._conn.execute(
                 f"""INSERT INTO blocks
                       (block_start, block_end, meter_id, config_period_id,
@@ -3320,21 +3291,13 @@ class BlockStore:
         is_import = channel == "import"
         kcol, rcol, ccol = (("imp_kwh", "imp_rate", "imp_cost") if is_import
                             else ("exp_kwh", "exp_rate", "exp_cost"))
-        # BL-23 (4.2): persist ex-VAT figures for the IMPORT channel when the row
-        # carries them (NULL otherwise — inc figures unaffected). Export exc is out of
-        # scope (phase D+). Additive: rows without these keys write NULL.
-        exc_cols = (", imp_cost_exc, imp_rate_exc, standing_charge_exc, exc_source"
-                    if is_import else "")
-        exc_ph = ", ?, ?, ?, ?" if is_import else ""
+        # BL-23 (4.2): persist the ex-VAT cost for the IMPORT channel when the row carries
+        # it (NULL otherwise — inc figures unaffected). Its rate, the standing charge's
+        # and their provenance are derived where read (step 5b, 10 Oct 2026).
+        exc_cols = ", imp_cost_exc" if is_import else ""
+        exc_ph = ", ?" if is_import else ""
         exc_upd = (""",
-                      imp_cost_exc = excluded.imp_cost_exc,
-                      imp_rate_exc = excluded.imp_rate_exc,
-                      standing_charge_exc = CASE
-                          WHEN excluded.standing_charge_exc IS NULL
-                               OR excluded.standing_charge_exc = 0
-                               THEN blocks.standing_charge_exc  -- export (0) never clobbers
-                          ELSE excluded.standing_charge_exc END,
-                      exc_source = excluded.exc_source""" if is_import else "")
+                      imp_cost_exc = excluded.imp_cost_exc""" if is_import else "")
         sql = (f"""INSERT INTO blocks
                      (block_start, block_end, meter_id, config_period_id,
                       interpolated, {kcol}, {rcol}, {ccol}, standing_charge,
@@ -3376,9 +3339,8 @@ class BlockStore:
                     start, block_end, meter_id, cp_id,
                     r.get("kwh") or 0.0, r.get("rate"), r.get("cost"),
                     (r.get("standing") or 0.0), source, derivation_id]
-                if is_import:      # BL-23 exc fields (NULL when the row omits them)
-                    params += [r.get("cost_exc"), r.get("rate_exc"),
-                               r.get("standing_exc"), r.get("exc_source")]
+                if is_import:      # BL-23 exc cost (NULL when the row omits it)
+                    params += [r.get("cost_exc")]
                 self._conn.execute(sql, params)
                 written += 1
         return written
@@ -3431,21 +3393,21 @@ class BlockStore:
         self.set_meta("import_reprice_queue", q)
 
     def reprice_imported_block(self, start: str, meter_id: str, channel: str,
-                               rate, cost, cost_exc=None, exc_source=None) -> bool:
+                               rate, cost, cost_exc=None) -> bool:
         """Update an IMPORTED block's rate + cost in place (source LIKE
         'imported%' only — never touches live/settled rows), ONLY when the value
         actually differs (so the returned rowcount = a genuine correction, which
         the repair pass uses as its 'recovered' signal). Returns True if changed.
 
         BL-23 (4.2 C3): when a re-fetch supplies the ex-VAT cost too (import channel),
-        correct imp_cost_exc + exc_source in the same UPDATE, so the repair/settlement
+        correct imp_cost_exc in the same UPDATE, so the repair/settlement
         reprice keeps the exc figure in step with the billed inc cost."""
         rcol, ccol = (("imp_rate", "imp_cost") if channel == "import"
                       else ("exp_rate", "exp_cost"))
         set_exc, extra = "", []
         if channel == "import" and cost_exc is not None:
-            set_exc = ", imp_cost_exc = ?, exc_source = ?"
-            extra = [cost_exc, exc_source or "measurement"]
+            set_exc = ", imp_cost_exc = ?"
+            extra = [cost_exc]
         with self._conn:
             cur = self._conn.execute(
                 f"UPDATE blocks SET {rcol} = ?, {ccol} = ?{set_exc} "
@@ -3524,8 +3486,7 @@ class BlockStore:
         ).fetchone()
         return int(row["n"]) if row else 0
 
-    def set_block_exc(self, block_start: str, meter_id: str, cost_exc, rate_exc,
-                      exc_source: str = "tariff") -> bool:
+    def set_block_exc(self, block_start: str, meter_id: str, cost_exc) -> bool:
         """Write ex-VAT import figures IN PLACE for one block+meter — a targeted
         UPDATE of only the exc columns (mirrors set_block_carbon; no row round-trip,
         so source / imp_kwh_api / derivation_id are preserved). Only fills a NULL
@@ -3534,10 +3495,10 @@ class BlockStore:
         changed."""
         with self._conn:
             cur = self._conn.execute(
-                "UPDATE blocks SET imp_cost_exc = ?, imp_rate_exc = ?, exc_source = ? "
+                "UPDATE blocks SET imp_cost_exc = ? "
                 "WHERE block_start = ? AND meter_id = ? AND imp_cost_exc IS NULL "
                 "AND (source LIKE 'imported%' OR imp_kwh_api IS NOT NULL)",
-                (cost_exc, rate_exc, exc_source, block_start, meter_id))
+                (cost_exc, block_start, meter_id))
         return cur.rowcount > 0
 
     def set_blocks_exc(self, updates) -> int:
@@ -3545,17 +3506,17 @@ class BlockStore:
         transaction (a single commit/fsync for the whole chunk, not one per block —
         the per-block commit made the historical backfill a minutes-long fsync storm
         that blocked the event loop). `updates` = iterable of
-        (block_start, meter_id, cost_exc, rate_exc, exc_source). Same NULL-only
+        (block_start, meter_id, cost_exc). Same NULL-only
         guard and coverage (imported OR settled live) as set_block_exc. Returns the
         number of rows changed."""
         changed = 0
         with self._tx():
-            for bs, mid, ce, rx, src in updates:
+            for bs, mid, ce in updates:
                 cur = self._conn.execute(
-                    "UPDATE blocks SET imp_cost_exc = ?, imp_rate_exc = ?, exc_source = ? "
+                    "UPDATE blocks SET imp_cost_exc = ? "
                     "WHERE block_start = ? AND meter_id = ? AND imp_cost_exc IS NULL "
                     "AND (source LIKE 'imported%' OR imp_kwh_api IS NOT NULL)",
-                    (ce, rx, src, bs, mid))
+                    (ce, bs, mid))
                 changed += cur.rowcount
         return changed
 
@@ -3689,7 +3650,7 @@ class BlockStore:
         block's segments are derived from."""
         sql = ("SELECT b.block_start, b.meter_id, b.imp_kwh, b.imp_cost, b.imp_rate, "
                "b.imp_kwh_ev, b.imp_cost_ev, b.imp_rate_ev, b.imp_ev_band, b.imp_home_band, "
-               "b.imp_rate_exc, b.source, b.imp_kwh_api FROM blocks b "
+               "b.source, b.imp_kwh_api FROM blocks b "
                "WHERE b.imp_kwh IS NOT NULL AND b.imp_kwh > 0 "
                "AND b.meter_id NOT IN (SELECT meter_id FROM meters WHERE is_sub_meter = 1) "
                "AND NOT EXISTS (SELECT 1 FROM block_segments s "
@@ -3739,7 +3700,7 @@ class BlockStore:
         segments when they are ABSENT — split/exc use fill-null-only writers and are always safe."""
         sql = ("SELECT b.block_start, b.meter_id, b.imp_kwh, b.imp_cost, b.imp_rate, "
                "b.imp_kwh_ev, b.imp_cost_ev, b.imp_rate_ev, b.imp_ev_band, b.imp_home_band, "
-               "b.imp_rate_exc, b.source, b.imp_kwh_api, "
+               "b.source, b.imp_kwh_api, "
                "(NOT EXISTS (SELECT 1 FROM block_segments s WHERE s.block_start = b.block_start "
                "             AND s.meter_id = b.meter_id AND s.channel = 'import')) AS needs_segments "
                "FROM blocks b WHERE " + self._NEEDS_REPRICE_WHERE)
@@ -3808,10 +3769,9 @@ class BlockStore:
             for bs in block_starts:
                 f = 1.0 / (1.0 + self.vat_rate_at(bs))
                 cur = self._conn.execute(
-                    "UPDATE blocks SET imp_rate_exc = ROUND(imp_rate * ?, 6), "
-                    "imp_cost_exc = ROUND(imp_cost * ?, 6), exc_source = 'tariff' "
+                    "UPDATE blocks SET imp_cost_exc = ROUND(imp_cost * ?, 6) "
                     "WHERE block_start = ? AND meter_id = ? AND imp_rate IS NOT NULL",
-                    (f, f, bs, meter_id))
+                    (f, bs, meter_id))
                 n += cur.rowcount
                 if seg:
                     self._conn.execute(
@@ -4044,8 +4004,7 @@ class BlockStore:
                     kwh=b["kwh"], rate=rate, cost=b.get("cost"),
                     standing=day_standing.get(b["block_start"][:10]),
                     derivation_id=did, overwrite=_may_replace,
-                    cost_exc=b.get("cost_exc"), rate_exc=b.get("rate_exc"),
-                    standing_exc=b.get("standing_exc"), exc_source=b.get("exc_source"))
+                    cost_exc=b.get("cost_exc"))
                 if wrote:
                     if _may_replace:
                         replaced += 1
@@ -6622,12 +6581,12 @@ class BlockStore:
                 block_start, block_end,
                 meter_id, config_period_id, interpolated,
                 imp_kwh, imp_kwh_grid,
-                imp_rate, imp_cost, imp_cost_exc, imp_rate_exc,
+                imp_rate, imp_cost, imp_cost_exc,
                 imp_read_start, imp_read_end,
                 exp_kwh, exp_rate, exp_cost,
                 exp_read_start, exp_read_end,
-                standing_charge, standing_charge_exc, carbon_g, carbon_intensity_g, imp_provisional,
-                source, exc_source, is_provisional, needs_pass2_rerun, imp_kwh_api, needs_review,
+                standing_charge, carbon_g, carbon_intensity_g, imp_provisional,
+                source, is_provisional, needs_pass2_rerun, imp_kwh_api, needs_review,
                 exp_kwh_api,
                 imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band,
                 rate_corrected, rate_source
@@ -6635,12 +6594,12 @@ class BlockStore:
                 :block_start, :block_end,
                 :meter_id, :config_period_id, :interpolated,
                 :imp_kwh, :imp_kwh_grid,
-                :imp_rate, :imp_cost, :imp_cost_exc, :imp_rate_exc,
+                :imp_rate, :imp_cost, :imp_cost_exc,
                 :imp_read_start, :imp_read_end,
                 :exp_kwh, :exp_rate, :exp_cost,
                 :exp_read_start, :exp_read_end,
-                :standing_charge, :standing_charge_exc, :carbon_g, :carbon_intensity_g, :imp_provisional,
-                :source, :exc_source, :is_provisional, :needs_pass2_rerun, :imp_kwh_api, :needs_review,
+                :standing_charge, :carbon_g, :carbon_intensity_g, :imp_provisional,
+                :source, :is_provisional, :needs_pass2_rerun, :imp_kwh_api, :needs_review,
                 :exp_kwh_api,
                 :imp_kwh_ev, :imp_cost_ev, :imp_rate_ev, :imp_ev_band, :imp_home_band,
                 :rate_corrected, :rate_source
@@ -6676,12 +6635,12 @@ class BlockStore:
                 block_start, block_end,
                 meter_id, config_period_id, interpolated,
                 imp_kwh, imp_kwh_grid,
-                imp_rate, imp_cost, imp_cost_exc, imp_rate_exc,
+                imp_rate, imp_cost, imp_cost_exc,
                 imp_read_start, imp_read_end,
                 exp_kwh, exp_rate, exp_cost,
                 exp_read_start, exp_read_end,
-                standing_charge, standing_charge_exc, carbon_g, carbon_intensity_g, imp_provisional,
-                source, exc_source, is_provisional, needs_pass2_rerun, imp_kwh_api, needs_review,
+                standing_charge, carbon_g, carbon_intensity_g, imp_provisional,
+                source, is_provisional, needs_pass2_rerun, imp_kwh_api, needs_review,
                 review_reason, review_dismissed, finalised_from_cad, derivation_id,
                 exp_kwh_api,
                 imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band,
@@ -6690,12 +6649,12 @@ class BlockStore:
                 :block_start, :block_end,
                 :meter_id, :config_period_id, :interpolated,
                 :imp_kwh, :imp_kwh_grid,
-                :imp_rate, :imp_cost, :imp_cost_exc, :imp_rate_exc,
+                :imp_rate, :imp_cost, :imp_cost_exc,
                 :imp_read_start, :imp_read_end,
                 :exp_kwh, :exp_rate, :exp_cost,
                 :exp_read_start, :exp_read_end,
-                :standing_charge, :standing_charge_exc, :carbon_g, :carbon_intensity_g, :imp_provisional,
-                :source, :exc_source, :is_provisional, :needs_pass2_rerun, :imp_kwh_api,
+                :standing_charge, :carbon_g, :carbon_intensity_g, :imp_provisional,
+                :source, :is_provisional, :needs_pass2_rerun, :imp_kwh_api,
                 COALESCE((SELECT o.needs_review FROM blocks o
                           WHERE o.block_start = :block_start AND o.meter_id = :meter_id),
                          :needs_review),
@@ -7173,8 +7132,14 @@ class BlockStore:
                 "UPDATE blocks SET imp_kwh_grid = ?, "
                 "  imp_cost = CASE WHEN imp_rate IS NOT NULL "
                 "       THEN ROUND(? * imp_rate, 6) ELSE imp_cost END, "
-                "  imp_cost_exc = CASE WHEN imp_rate_exc IS NOT NULL "
-                "       THEN ROUND(? * imp_rate_exc, 6) ELSE imp_cost_exc END "
+                # The ex-VAT £ keeps the row's own exc/inc ratio (imp_cost_exc / imp_cost: the
+                # rate column went in step 5b). SET reads the OLD row, so both are the stored
+                # pair. A row with no £ to take the ratio from keeps its ex-VAT as it is: no
+                # v5 surface reads a device's ex-VAT (import spec §5.2, v15).
+                "  imp_cost_exc = CASE WHEN imp_cost_exc IS NOT NULL AND imp_rate IS NOT NULL "
+                "       AND imp_cost IS NOT NULL AND imp_cost != 0 "
+                "       THEN ROUND(? * imp_rate * imp_cost_exc / imp_cost, 6) "
+                "       ELSE imp_cost_exc END "
                 "WHERE block_start = ? AND meter_id = ?", device_updates)
 
     def get_block_dict_by_start(self, block_start: str) -> Optional[dict]:
@@ -7912,13 +7877,13 @@ class BlockStore:
         return row["id"] if row else None
 
     def apply_measured_to_main(self, block_start: str, *, rate, cost,
-                               rate_exc, cost_exc, kwh_ev, rate_ev, cost_ev,
+                               cost_exc, kwh_ev, rate_ev, cost_ev,
                                ev_band, home_band,
                                meter_id: str = "electricity_main", segments=None) -> int:
         """Stamp Octopus's billed figure onto a main block. Returns rows changed.
 
-        **Keyword-only after `block_start`, deliberately.** Ten values, of
-        which three are costs and three are rates, on the one write in the system
+        **Keyword-only after `block_start`, deliberately.** Nine values, of
+        which three are costs and two are rates, on the one write in the system
         that records what the supplier actually charged. Positionally, `cost` and
         `cost_exc` transposed is a silently wrong bill; by keyword it does not
         compile into a mistake.
@@ -7936,11 +7901,11 @@ class BlockStore:
         with self._conn:
             cur = self._conn.execute(
                 "UPDATE blocks SET imp_rate = ?, imp_cost = ?, rate_source = 'settled', "
-                "imp_rate_exc = ?, imp_cost_exc = ?, exc_source = 'tariff', "
+                "imp_cost_exc = ?, "
                 "imp_kwh_ev = ?, imp_rate_ev = ?, imp_cost_ev = ?, imp_ev_band = ?, "
                 "imp_home_band = ? "
                 "WHERE block_start = ? AND meter_id = ?",
-                (rate, cost, rate_exc, cost_exc, kwh_ev, rate_ev, cost_ev,
+                (rate, cost, cost_exc, kwh_ev, rate_ev, cost_ev,
                  ev_band, home_band, block_start, meter_id))
             # BL-79 (8 Oct 2026): the bill's segments in the same transaction. Written after,
             # a failed segment write left the block stamped 'settled' — never revisited by
@@ -7979,11 +7944,9 @@ class BlockStore:
             cur = self._conn.execute(
                 "UPDATE blocks SET imp_rate = ?, "
                 "imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
-                "imp_rate_exc = ?, "
-                "imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
-                "exc_source = 'tariff' "
+                "imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6) "
                 "WHERE block_start = ? AND meter_id != ? AND imp_kwh IS NOT NULL",
-                (rate, rate, rate_exc, rate_exc, block_start, main_meter_id))
+                (rate, rate, rate_exc, block_start, main_meter_id))
         return cur.rowcount
 
     def repair_device_rate_drift(self) -> int:
@@ -8027,11 +7990,11 @@ class BlockStore:
                 "              WHERE m.meter_id='electricity_main' AND m.block_start=blocks.block_start), "
                 "  imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * (SELECT m.imp_rate FROM blocks m "
                 "              WHERE m.meter_id='electricity_main' AND m.block_start=blocks.block_start), 6), "
-                "  imp_rate_exc = (SELECT m.imp_rate_exc FROM blocks m "
-                "              WHERE m.meter_id='electricity_main' AND m.block_start=blocks.block_start), "
-                "  imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * (SELECT m.imp_rate_exc FROM blocks m "
-                "              WHERE m.meter_id='electricity_main' AND m.block_start=blocks.block_start), 6), "
-                "  exc_source = 'tariff' "
+                # the main's ex-VAT rate, derived from its own pair (step 5b: rate × exc/inc);
+                # NULL where the main has no ex-VAT £, as before
+                "  imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * (SELECT m.imp_rate * "
+                "              m.imp_cost_exc / NULLIF(m.imp_cost, 0) FROM blocks m "
+                "              WHERE m.meter_id='electricity_main' AND m.block_start=blocks.block_start), 6) "
                 # sub-meters only; an export meter has no imp_kwh
                 "WHERE meter_id != 'electricity_main' AND imp_kwh IS NOT NULL "
                 "  AND EXISTS (SELECT 1 FROM blocks m WHERE m.meter_id='electricity_main' "
@@ -8118,7 +8081,7 @@ class BlockStore:
                           "THEN rate_source ELSE 'reconciled' END")
 
     def apply_reconcile_verdict(self, block_start: str, rate: float,
-                                rate_exc, exc_source, ev_band: str,
+                                rate_exc, ev_band: str,
                                 home_band: str,
                                 meter_id: str = "electricity_main", segments=None) -> dict:
         """Apply a dispatch-overlay verdict to a block: main row, its sub-meters
@@ -8141,22 +8104,16 @@ class BlockStore:
             main = self._conn.execute(
                 "UPDATE blocks SET imp_rate = ?, " + self._RECONCILED_SOURCE + ", "
                 "imp_cost = ROUND(COALESCE(imp_kwh, 0) * ?, 6), "
-                "imp_rate_exc = ?, "
-                "imp_cost_exc = ROUND(COALESCE(imp_kwh, 0) * ?, 6), "
-                "exc_source = ? "
+                "imp_cost_exc = ROUND(COALESCE(imp_kwh, 0) * ?, 6) "
                 "WHERE block_start = ? AND meter_id = ?",
-                (rate, rate, rate_exc, rate_exc, exc_source,
-                 block_start, meter_id)).rowcount
+                (rate, rate, rate_exc, block_start, meter_id)).rowcount
             subs = self._conn.execute(
                 "UPDATE blocks SET imp_rate = ?, " + self._RECONCILED_SOURCE + ", "
                 "imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
-                "imp_rate_exc = ?, "
-                "imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
-                "exc_source = ? "
+                "imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6) "
                 "WHERE block_start = ? AND rate_corrected = 0 AND meter_id IN "
                 "(SELECT meter_id FROM meters WHERE is_sub_meter = 1)",
-                (rate, rate, rate_exc, rate_exc, exc_source,
-                 block_start)).rowcount
+                (rate, rate, rate_exc, block_start)).rowcount
             ev = self._conn.execute(
                 self._EV_RESTAMP_SQL,
                 (rate, rate, ev_band, home_band,
@@ -8226,11 +8183,13 @@ class BlockStore:
 
         BL-79 (3): `ev_kwh` is ev_split's split (the EV segments; the column only for a block with
         no segments) — what a caller rebuilding the segments reads. `imp_kwh_ev` / `imp_rate_ev`
-        stay the COLUMNS, for the restamp that keeps them coherent with each other.
+        stay the COLUMNS, for the restamp that keeps them coherent with each other. `rate_exc`
+        is DERIVED, the block's ex-VAT rate from its own pair (imp_rate × imp_cost_exc /
+        imp_cost; NULL with no ex-VAT £): the column went in step 5b, 10 Oct 2026.
         """
         row = self._conn.execute(
             "SELECT b.imp_kwh, b.imp_kwh_ev, " + _evsplit.sql_kwh("b") + " AS ev_kwh, "
-            "b.imp_rate, b.imp_rate_ev, b.imp_rate_exc, b.imp_ev_band, b.imp_home_band "
+            "b.imp_rate, b.imp_rate_ev, b.imp_rate * b.imp_cost_exc / NULLIF(b.imp_cost, 0) AS rate_exc, b.imp_ev_band, b.imp_home_band "
             "FROM blocks b WHERE b.block_start = ? AND b.meter_id = ?",
             (block_start, meter_id)).fetchone()
         return dict(row) if row else None
@@ -8400,8 +8359,9 @@ class BlockStore:
         fixtures and these dicts are interchangeable there.
         """
         rows = self._conn.execute(
-            "SELECT block_start, meter_id, imp_kwh, imp_rate, imp_cost, "
-            "imp_kwh_ev, imp_rate_exc, source, imp_kwh_api FROM blocks "
+            "SELECT block_start, meter_id, imp_kwh, imp_rate, imp_cost, imp_cost_exc, "
+            "imp_kwh_ev, imp_rate * imp_cost_exc / NULLIF(imp_cost, 0) AS rate_exc, "
+            "source, imp_kwh_api FROM blocks "
             "WHERE meter_id = ? AND block_start >= ? AND block_start < ? "
             "ORDER BY block_start LIMIT ?",
             (meter_id, from_iso, to_iso, limit)).fetchall()
@@ -8429,7 +8389,7 @@ class BlockStore:
         Returns dicts.
         """
         rows = self._conn.execute(
-            "SELECT b.block_start, b.imp_kwh, b.imp_rate, b.imp_rate_exc "
+            "SELECT b.block_start, b.imp_kwh, b.imp_rate, b.imp_rate * b.imp_cost_exc / NULLIF(b.imp_cost, 0) AS rate_exc "
             "FROM blocks b WHERE b.meter_id = ? AND " + _evsplit.sql_kwh("b") + " IS NULL "
             "  AND b.imp_kwh > 0 "
             "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "

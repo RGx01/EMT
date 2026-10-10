@@ -67,10 +67,11 @@ def parse_octopus_csv(text: str, channel: str) -> dict:
     col_start = _find_col(fn, "start")
     col_end   = _find_col(fn, "end")
     # BL-23 (4.2 Slice D) — optional ex-VAT columns (CSV v2). Prefer-when-populated;
-    # absent columns leave exc NULL (→ inc-only, unchanged behaviour).
+    # absent columns leave exc NULL (→ inc-only, unchanged behaviour). Only the ex-VAT £ is
+    # kept: a standing-charge ex-VAT column is still accepted in a file and is derived where
+    # read instead (step 5b, 10 Oct 2026).
     col_rate_exc  = _find_col(fn, "rate", "exc")
     col_cost_exc  = _find_col(fn, "cost", "exc")
-    col_stand_exc = _find_col(fn, "standing", "exc")
     if not (col_kwh and col_start):
         return {"ok": False, "channel": channel, "blocks": [], "row_count": 0,
                 "errors": [{"row": 0, "reason":
@@ -111,7 +112,6 @@ def parse_octopus_csv(text: str, channel: str) -> dict:
             cost_exc = cost_exc_p / 100.0
         else:
             cost_exc = None
-        stand_exc_p = _num(row.get(col_stand_exc)) if col_stand_exc else None
         blocks.append({
             "channel": channel,
             "block_start": start,
@@ -120,11 +120,8 @@ def parse_octopus_csv(text: str, channel: str) -> dict:
             "rate": (rate_p / 100.0) if rate_p is not None else None,      # £/kWh, if given
             "cost": cost,
             "standing": (stand_p / 100.0) if stand_p is not None else None,
-            # BL-23: ex-VAT (NULL when the CSV omits the columns)
-            "rate_exc": (rate_exc_p / 100.0) if rate_exc_p is not None else None,
+            # BL-23: the ex-VAT £ (NULL when the CSV omits the columns)
             "cost_exc": cost_exc,
-            "standing_exc": (stand_exc_p / 100.0) if stand_exc_p is not None else None,
-            "exc_source": "csv" if cost_exc is not None else None,
         })
     blocks.sort(key=lambda b: b["block_start"])
     return {"ok": True, "channel": channel, "blocks": blocks,

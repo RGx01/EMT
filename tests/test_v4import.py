@@ -46,9 +46,10 @@ def v4_db(path, *, written_by=G.FLOOR_VERSION, meta=None, state=None, extra_sql=
     st = BlockStore(path)
     c = st._conn
     c.execute("DELETE FROM store_meta WHERE key = 'emt_schema'")
-    # v4's blocks still carry the three columns v5 dropped in step 5 (10 Oct 2026).
+    # v4's blocks still carry the columns v5 dropped in steps 5a and 5b (10 Oct 2026).
     for col in ("imp_kwh_remainder REAL", "imp_cost_remainder REAL",
-                "rate_reconciled INTEGER NOT NULL DEFAULT 0"):
+                "rate_reconciled INTEGER NOT NULL DEFAULT 0",
+                "imp_rate_exc REAL", "standing_charge_exc REAL", "exc_source TEXT"):
         c.execute("ALTER TABLE blocks ADD COLUMN " + col)
     if written_by is not None:
         st.set_meta("written_by", written_by)

@@ -131,12 +131,15 @@ class BlockSplitColumns(unittest.TestCase):
         self.assertIsNone(self.st.get_block_split_columns(S))
 
     def test_it_carries_every_column_the_three_sites_wanted(self):
-        _block(self.st, imp_kwh_ev=2.0, imp_rate_ev=0.25, imp_rate_exc=0.238,
+        # imp_rate_exc dropped (step 5b, 10 Oct 2026): the read derives `rate_exc` from the
+        # block's pair, imp_rate × imp_cost_exc / imp_cost = 0.25 × 1.19 / 1.25.
+        _block(self.st, imp_kwh_ev=2.0, imp_rate_ev=0.25, imp_cost=1.25, imp_cost_exc=1.19,
                imp_ev_band="off_peak", imp_home_band="day")
         r = self.st.get_block_split_columns(S)
         for col in ("imp_kwh", "imp_kwh_ev", "imp_rate", "imp_rate_ev",
-                    "imp_rate_exc", "imp_ev_band", "imp_home_band"):
+                    "rate_exc", "imp_ev_band", "imp_home_band"):
             self.assertIn(col, r)
+        self.assertAlmostEqual(r["rate_exc"], 0.238, places=6)
 
     def test_an_unsplit_block_is_a_row_with_a_null_column(self):
         """The behaviour change to be aware of. One caller used to filter

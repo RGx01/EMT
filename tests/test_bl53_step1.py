@@ -19,12 +19,12 @@ def _mk_store():
 
 
 def _ins(c, bs, *, rate=None, rc=0, rs=None, kwh=None,
-         rate_exc=None, cost_exc=None, cost=None):
+         cost_exc=None, cost=None):
     c.execute(
         "INSERT INTO blocks (block_start, block_end, config_period_id, meter_id, "
-        "imp_kwh, imp_rate, imp_cost, imp_rate_exc, imp_cost_exc, rate_corrected, "
-        "rate_source) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-        (bs, bs[:-2] + "30", 1, "electricity_main", kwh, rate, cost, rate_exc,
+        "imp_kwh, imp_rate, imp_cost, imp_cost_exc, rate_corrected, "
+        "rate_source) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (bs, bs[:-2] + "30", 1, "electricity_main", kwh, rate, cost,
          cost_exc, rc, rs))
 
 
@@ -83,24 +83,22 @@ class TestCorrectionsExc(unittest.TestCase):
     def test_exc_restamped_preserves_vat_ratio(self):
         st, p = _mk_store(); c = st._conn
         _ins(c, "2026-08-23T10:00:00", kwh=2.0, rate=0.30, cost=0.60,
-             rate_exc=0.2857, cost_exc=0.5714)      # VAT ~1.05
+             cost_exc=0.5714)      # VAT ~1.05
         c.commit()
         value = 0.20
         c.execute(
             """UPDATE blocks SET imp_rate=?, imp_cost=ROUND(imp_kwh*?,6),
-                 imp_rate_exc=CASE WHEN imp_rate_exc IS NOT NULL AND imp_rate!=0
-                                   THEN ROUND(imp_rate_exc*?/imp_rate,6) ELSE imp_rate_exc END,
                  imp_cost_exc=CASE WHEN imp_cost_exc IS NOT NULL AND imp_rate!=0
                                    THEN ROUND(imp_cost_exc*?/imp_rate,6) ELSE imp_cost_exc END,
                  rate_corrected=1, rate_source='corrected'
                WHERE block_start='2026-08-23T10:00:00'""",
-            [value, value, value, value])
+            [value, value, value])
         c.commit()
-        r = dict(c.execute("SELECT imp_rate, imp_rate_exc, imp_cost_exc, rate_source "
+        r = dict(c.execute("SELECT imp_rate, imp_cost, imp_cost_exc, rate_source "
                            "FROM blocks").fetchone())
-        self.assertAlmostEqual(r["imp_rate_exc"], round(0.2857 * 0.20 / 0.30, 6), places=6)
+        # imp_rate_exc dropped (step 5b, 10 Oct 2026): the ex-VAT rate is derived from the pair.
         self.assertAlmostEqual(r["imp_cost_exc"], round(0.5714 * 0.20 / 0.30, 6), places=6)
-        self.assertAlmostEqual(r["imp_rate"] / r["imp_rate_exc"], 0.30 / 0.2857, places=3)  # VAT preserved
+        self.assertAlmostEqual(r["imp_cost"] / r["imp_cost_exc"], 0.60 / 0.5714, places=3)  # VAT preserved
         self.assertEqual(r["rate_source"], "corrected")
         os.remove(p)
 

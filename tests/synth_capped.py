@@ -67,15 +67,14 @@ def build_capped_day(store):
         imp_kwh = ps.total_kwh(segs)
         imp_cost = ps.total_cost(segs)
         imp_rate = ps.blended_rate(segs)
-        rate_exc = round(imp_rate / (1 + VAT), 6)
         ev_c = ps.attribution_cost(segs, "ev")
         ev_k = ps.attribution_kwh(segs, "ev")
         c.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, imp_rate_exc, imp_cost_exc, "
+            "imp_kwh, imp_rate, imp_cost, imp_cost_exc, "
             "imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band, imp_home_band, imp_kwh_api) "
-            "VALUES (?,?,?,1,?,?,?,?,?,?,?,?,?,?,?)",
-            (start, start, MAIN, imp_kwh, imp_rate, imp_cost, rate_exc,
+            "VALUES (?,?,?,1,?,?,?,?,?,?,?,?,?,?)",
+            (start, start, MAIN, imp_kwh, imp_rate, imp_cost,
              round(imp_cost / (1 + VAT), 6),
              (ev_k or None), (ev_c or None),
              (ps.attribution_rate(segs, "ev") or None) if ev_k else None,
@@ -142,10 +141,10 @@ def reprice_under_cap(store, *, cap_hours: float = 3.0, tz: str = "Europe/London
             vat=vat)
         ic, ik = ps.total_cost(segs), ps.total_kwh(segs)
         c.execute(
-            "UPDATE blocks SET imp_rate=?, imp_cost=?, imp_rate_exc=?, imp_cost_exc=?, "
+            "UPDATE blocks SET imp_rate=?, imp_cost=?, imp_cost_exc=?, "
             "imp_kwh_ev=?, imp_cost_ev=?, imp_rate_ev=?, imp_ev_band=?, imp_home_band=? "
             "WHERE block_start=? AND meter_id='electricity_main'",
-            (ps.blended_rate(segs), ic, round(ps.blended_rate(segs) / (1 + vat), 6),
+            (ps.blended_rate(segs), ic,
              round(ic / (1 + vat), 6), ps.attribution_kwh(segs, "ev") or None,
              ps.attribution_cost(segs, "ev") or None, ps.attribution_rate(segs, "ev") or None,
              cls["ev"], cls["house"], bs))

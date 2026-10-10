@@ -5245,12 +5245,14 @@ class TestReconciledRateSurvivesPass2(unittest.TestCase):
             block, rate_resolver=engine._kraken_rate_resolver, billing_source="dcc")
         engine.append_block_replace(block)
         row = self.store._conn.execute(
-            "SELECT imp_cost, imp_cost_exc, imp_rate_exc, exc_source FROM blocks "
+            "SELECT imp_rate, imp_cost, imp_cost_exc FROM blocks "
             "WHERE block_start=?", (bs,)).fetchone()
         self.assertAlmostEqual(row["imp_cost"], 0.60, places=5)          # 2.0 × 0.30 (inc)
-        self.assertAlmostEqual(row["imp_rate_exc"], 0.285714, places=5)  # 0.30 × 28.5714/30
         self.assertAlmostEqual(row["imp_cost_exc"], 0.571428, places=5)  # 2.0 × 0.285714
-        self.assertEqual(row["exc_source"], "tariff")
+        # imp_rate_exc / exc_source dropped (step 5b, 10 Oct 2026): the ex-VAT rate derives
+        # from the pair — 0.30 × 28.5714/30.
+        self.assertAlmostEqual(row["imp_rate"] * row["imp_cost_exc"] / row["imp_cost"],
+                               0.285714, places=5)
 
 
 class TestUnsupportedTariffGuard(unittest.IsolatedAsyncioTestCase):

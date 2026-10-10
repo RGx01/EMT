@@ -41,7 +41,7 @@ class TheVerdict(H._Harness):
 
     def test_it_is_recorded_in_rate_source(self):
         self._finalise()
-        engine._store.apply_reconcile_verdict(H.START, OFF, round(OFF / 1.05, 6), "tariff",
+        engine._store.apply_reconcile_verdict(H.START, OFF, round(OFF / 1.05, 6),
                                               "off_peak", "off_peak")
         for meter in ("electricity_main", "house_battery", "ev_charger"):
             with self.subTest(meter=meter):
@@ -56,14 +56,14 @@ class TheVerdict(H._Harness):
                     engine._store._conn.execute(
                         "UPDATE blocks SET rate_source=? WHERE block_start=? "
                         "AND meter_id='electricity_main'", (word, H.START))
-                engine._store.apply_reconcile_verdict(H.START, OFF, None, "tariff",
+                engine._store.apply_reconcile_verdict(H.START, OFF, None,
                                                       "off_peak", "off_peak")
                 self.assertEqual(self._row()["rate_source"], word)
 
     def test_measured_settlement_is_recorded_in_rate_source(self):
         self._finalise()
         engine._store.apply_measured_to_main(
-            H.START, rate=OFF, cost=round(H.MAIN * OFF, 6), rate_exc=None, cost_exc=None,
+            H.START, rate=OFF, cost=round(H.MAIN * OFF, 6), cost_exc=None,
             kwh_ev=None, rate_ev=None, cost_ev=None, ev_band=None, home_band=None)
         self.assertEqual(self._row()["rate_source"], "settled")
 

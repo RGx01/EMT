@@ -475,21 +475,18 @@ class TestSchema(unittest.TestCase):
         store.insert_config_period(EXAMPLE_CONFIG)
         store.upsert_imported_blocks(
             [dict(start="2026-02-04T00:00:00", kwh=2.0, rate=0.21, cost=0.42,
-                  standing=0.4752, cost_exc=0.40, rate_exc=0.20,
-                  standing_exc=0.4526, exc_source="measurement")],
+                  standing=0.4752, cost_exc=0.40)],
             "electricity_main", "import", source="imported_api")
+        # Step 5b (10 Oct 2026): imp_rate_exc, standing_charge_exc and exc_source are dropped;
+        # only the ex-VAT cost is stored.
         row = store._conn.execute(
-            "SELECT imp_cost, imp_cost_exc, imp_rate_exc, standing_charge_exc, exc_source "
+            "SELECT imp_cost, imp_cost_exc "
             "FROM blocks WHERE block_start='2026-02-04T00:00:00'").fetchone()
         self.assertAlmostEqual(row["imp_cost"], 0.42, places=4)         # inc unchanged
         self.assertAlmostEqual(row["imp_cost_exc"], 0.40, places=4)
-        self.assertAlmostEqual(row["imp_rate_exc"], 0.20, places=4)
-        self.assertAlmostEqual(row["standing_charge_exc"], 0.4526, places=4)
-        self.assertEqual(row["exc_source"], "measurement")
         store.upsert_imported_blocks(     # re-import corrects the exc figure
             [dict(start="2026-02-04T00:00:00", kwh=2.0, rate=0.21, cost=0.42,
-                  standing=0.4752, cost_exc=0.41, rate_exc=0.205,
-                  standing_exc=0.4526, exc_source="measurement")],
+                  standing=0.4752, cost_exc=0.41)],
             "electricity_main", "import", source="imported_api")
         row = store._conn.execute(
             "SELECT imp_cost_exc FROM blocks "
@@ -504,40 +501,37 @@ class TestSchema(unittest.TestCase):
         store.insert_config_period(EXAMPLE_CONFIG)
         store.upsert_imported_blocks(
             [dict(start="2026-02-05T00:00:00", kwh=1.0, rate=0.21, cost=0.21,
-                  standing=0.4752, cost_exc=0.20, rate_exc=0.20,
-                  exc_source="measurement")],
+                  standing=0.4752, cost_exc=0.20)],
             "electricity_main", "import", source="imported_api")
         store.upsert_imported_blocks(
             [dict(start="2026-02-05T00:00:00", kwh=0.5, rate=0.15, cost=0.075,
                   standing=None)],
             "electricity_main", "export", source="imported_api")
         row = store._conn.execute(
-            "SELECT imp_cost_exc, exc_source, exp_kwh FROM blocks "
+            "SELECT imp_cost_exc, exp_kwh FROM blocks "
             "WHERE block_start='2026-02-05T00:00:00'").fetchone()
         self.assertAlmostEqual(row["imp_cost_exc"], 0.20, places=4)     # import exc preserved
-        self.assertEqual(row["exc_source"], "measurement")
         self.assertAlmostEqual(row["exp_kwh"], 0.5, places=4)           # export still lands
         store.close()
 
     def test_reprice_updates_exvat(self):
-        # BL-23 (4.2 C3): reprice_imported_block corrects imp_cost_exc + exc_source
+        # BL-23 (4.2 C3): reprice_imported_block corrects imp_cost_exc
         # alongside the billed inc cost when a re-fetch supplies the ex-VAT figure.
         store = BlockStore(":memory:")
         store.insert_config_period(EXAMPLE_CONFIG)
         store.upsert_imported_blocks(
             [dict(start="2026-02-06T00:00:00", kwh=2.0, rate=0.21, cost=0.42,
-                  cost_exc=0.40, exc_source="tariff")],
+                  cost_exc=0.40)],
             "electricity_main", "import", source="imported_api")
         changed = store.reprice_imported_block(
             "2026-02-06T00:00:00", "electricity_main", "import",
-            0.205, 0.41, cost_exc=0.39, exc_source="measurement")
+            0.205, 0.41, cost_exc=0.39)
         self.assertTrue(changed)
         row = store._conn.execute(
-            "SELECT imp_cost, imp_cost_exc, exc_source FROM blocks "
+            "SELECT imp_cost, imp_cost_exc FROM blocks "
             "WHERE block_start='2026-02-06T00:00:00'").fetchone()
         self.assertAlmostEqual(row["imp_cost"], 0.41, places=4)
         self.assertAlmostEqual(row["imp_cost_exc"], 0.39, places=4)
-        self.assertEqual(row["exc_source"], "measurement")
         store.close()
 
     def test_reprice_without_exc_leaves_exvat(self):
@@ -547,16 +541,15 @@ class TestSchema(unittest.TestCase):
         store.insert_config_period(EXAMPLE_CONFIG)
         store.upsert_imported_blocks(
             [dict(start="2026-02-07T00:00:00", kwh=2.0, rate=0.21, cost=0.42,
-                  cost_exc=0.40, exc_source="measurement")],
+                  cost_exc=0.40)],
             "electricity_main", "import", source="imported_api")
         store.reprice_imported_block(
             "2026-02-07T00:00:00", "electricity_main", "import", 0.205, 0.41)
         row = store._conn.execute(
-            "SELECT imp_cost, imp_cost_exc, exc_source FROM blocks "
+            "SELECT imp_cost, imp_cost_exc FROM blocks "
             "WHERE block_start='2026-02-07T00:00:00'").fetchone()
         self.assertAlmostEqual(row["imp_cost"], 0.41, places=4)      # inc corrected
         self.assertAlmostEqual(row["imp_cost_exc"], 0.40, places=4)  # exc untouched
-        self.assertEqual(row["exc_source"], "measurement")
         store.close()
 
     def test_upsert_imported_block_persists_exvat(self):
@@ -566,16 +559,13 @@ class TestSchema(unittest.TestCase):
         store.upsert_imported_block(
             "2026-02-08T00:00:00", "electricity_main", "import",
             kwh=2.0, rate=0.21, cost=0.42, standing=0.4752,
-            cost_exc=0.40, rate_exc=0.20, standing_exc=0.4526,
-            exc_source="csv", source="imported_csv")
+            cost_exc=0.40, source="imported_csv")
+        # Step 5b (10 Oct 2026): only the ex-VAT cost is stored; rate/standing derive.
         row = store._conn.execute(
-            "SELECT imp_cost, imp_cost_exc, imp_rate_exc, standing_charge_exc, exc_source "
+            "SELECT imp_cost, imp_cost_exc "
             "FROM blocks WHERE block_start='2026-02-08T00:00:00'").fetchone()
         self.assertAlmostEqual(row["imp_cost"], 0.42, places=4)       # inc unchanged
         self.assertAlmostEqual(row["imp_cost_exc"], 0.40, places=4)
-        self.assertAlmostEqual(row["imp_rate_exc"], 0.20, places=4)
-        self.assertAlmostEqual(row["standing_charge_exc"], 0.4526, places=4)
-        self.assertEqual(row["exc_source"], "csv")
         store.close()
 
     def test_exc_backfill_pager_and_count(self):
@@ -586,7 +576,7 @@ class TestSchema(unittest.TestCase):
         store.upsert_imported_blocks(
             [dict(start="2026-03-01T00:00:00", kwh=2.0, rate=0.21, cost=0.42),          # NULL exc
              dict(start="2026-03-01T00:30:00", kwh=1.0, rate=0.21, cost=0.21,
-                  cost_exc=0.20, exc_source="measurement"),                             # has exc → skip
+                  cost_exc=0.20),                                                       # has exc → skip
              dict(start="2026-03-01T01:00:00", kwh=0.0, rate=0.21, cost=0.0)],          # zero kWh → skip
             "electricity_main", "import", source="imported_api")
         self.assertEqual(store.count_import_blocks_missing_exc(), 1)
@@ -608,17 +598,15 @@ class TestSchema(unittest.TestCase):
             [dict(start="2026-03-02T00:00:00", kwh=2.0, rate=0.21, cost=0.42)],
             "electricity_main", "import", source="imported_api")
         self.assertTrue(store.set_block_exc(
-            "2026-03-02T00:00:00", "electricity_main", 0.40, 0.20, "tariff"))
+            "2026-03-02T00:00:00", "electricity_main", 0.40))
         row = store._conn.execute(
-            "SELECT imp_cost, imp_cost_exc, imp_rate_exc, exc_source FROM blocks "
+            "SELECT imp_cost, imp_cost_exc FROM blocks "
             "WHERE block_start='2026-03-02T00:00:00'").fetchone()
         self.assertAlmostEqual(row["imp_cost"], 0.42, places=4)        # inc untouched
         self.assertAlmostEqual(row["imp_cost_exc"], 0.40, places=4)
-        self.assertAlmostEqual(row["imp_rate_exc"], 0.20, places=4)
-        self.assertEqual(row["exc_source"], "tariff")
         # idempotent: a second call finds no NULL-exc row to fill
         self.assertFalse(store.set_block_exc(
-            "2026-03-02T00:00:00", "electricity_main", 0.99, 0.50, "tariff"))
+            "2026-03-02T00:00:00", "electricity_main", 0.99))
         row2 = store._conn.execute(
             "SELECT imp_cost_exc FROM blocks "
             "WHERE block_start='2026-03-02T00:00:00'").fetchone()
@@ -697,21 +685,20 @@ class TestSchema(unittest.TestCase):
             [dict(start="2026-03-03T00:00:00", kwh=2.0, rate=0.21, cost=0.42),
              dict(start="2026-03-03T00:30:00", kwh=1.0, rate=0.21, cost=0.21),
              dict(start="2026-03-03T01:00:00", kwh=1.0, rate=0.21, cost=0.21,
-                  cost_exc=0.19, exc_source="measurement")],   # already has exc → skipped
+                  cost_exc=0.19)],   # already has exc → skipped
             "electricity_main", "import", source="imported_api")
         changed = store.set_blocks_exc([
-            ("2026-03-03T00:00:00", "electricity_main", 0.40, 0.20, "tariff"),
-            ("2026-03-03T00:30:00", "electricity_main", 0.20, 0.20, "tariff"),
-            ("2026-03-03T01:00:00", "electricity_main", 0.99, 0.50, "tariff"),  # guarded out
+            ("2026-03-03T00:00:00", "electricity_main", 0.40),
+            ("2026-03-03T00:30:00", "electricity_main", 0.20),
+            ("2026-03-03T01:00:00", "electricity_main", 0.99),  # guarded out
         ])
         self.assertEqual(changed, 2)
         rows = {r["block_start"]: r for r in store._conn.execute(
-            "SELECT block_start, imp_cost, imp_cost_exc, exc_source FROM blocks "
+            "SELECT block_start, imp_cost, imp_cost_exc FROM blocks "
             "WHERE block_start LIKE '2026-03-03%'").fetchall()}
         self.assertAlmostEqual(rows["2026-03-03T00:00:00"]["imp_cost_exc"], 0.40, places=4)
         self.assertAlmostEqual(rows["2026-03-03T00:00:00"]["imp_cost"], 0.42, places=4)  # inc kept
         self.assertAlmostEqual(rows["2026-03-03T01:00:00"]["imp_cost_exc"], 0.19, places=4)  # not clobbered
-        self.assertEqual(rows["2026-03-03T01:00:00"]["exc_source"], "measurement")
         self.assertEqual(store.count_import_blocks_missing_exc(), 0)
         store.close()
 
@@ -744,16 +731,15 @@ class TestSchema(unittest.TestCase):
             ["2026-02-12T00:00:00"])
         # The writer fills the settled live block…
         self.assertTrue(store.set_block_exc(
-            "2026-02-12T00:00:00", "electricity_main", 0.40, 0.20, "tariff"))
+            "2026-02-12T00:00:00", "electricity_main", 0.40))
         # …but refuses the unsettled live block (left for settlement capture).
         self.assertFalse(store.set_block_exc(
-            "2026-02-12T00:30:00", "electricity_main", 0.20, 0.20, "tariff"))
+            "2026-02-12T00:30:00", "electricity_main", 0.20))
         got = {r["block_start"]: r for r in store._conn.execute(
-            "SELECT block_start, imp_cost, imp_cost_exc, exc_source FROM blocks "
+            "SELECT block_start, imp_cost, imp_cost_exc FROM blocks "
             "WHERE block_start LIKE '2026-02-12%'").fetchall()}
         self.assertAlmostEqual(got["2026-02-12T00:00:00"]["imp_cost_exc"], 0.40, places=4)
         self.assertAlmostEqual(got["2026-02-12T00:00:00"]["imp_cost"], 0.42, places=4)  # inc kept
-        self.assertEqual(got["2026-02-12T00:00:00"]["exc_source"], "tariff")
         self.assertIsNone(got["2026-02-12T00:30:00"]["imp_cost_exc"])   # untouched
         self.assertEqual(store.count_import_blocks_missing_exc(), 0)
         store.close()
@@ -765,7 +751,7 @@ class TestSchema(unittest.TestCase):
         store.insert_config_period(EXAMPLE_CONFIG)
         store.upsert_imported_blocks(
             [dict(start="2026-07-26T02:30:00", kwh=2.995, rate=0.05493, cost=0.164514,
-                  cost_exc=0.15668, exc_source="measurement")],       # measurement: rate_exc NULL
+                  cost_exc=0.15668)],
             "electricity_main", "import", source="imported_api")
         blk = store.get_blocks_lightweight()[0]
         imp = blk["meters"]["electricity_main"]["channels"]["import"]
@@ -1180,21 +1166,16 @@ class TestAppendBlock(unittest.TestCase):
         store2.close()
 
     def test_exvat_fields_round_trip(self):
-        # BL-23 (4.2 Slice A): imp_cost_exc / imp_rate_exc + standing_charge_exc +
-        # exc_source persist and read back; the inc-VAT figures are untouched.
+        # BL-23 (4.2 Slice A): imp_cost_exc persists and reads back; the inc-VAT figures
+        # are untouched. (imp_rate_exc, standing_charge_exc and exc_source were dropped in
+        # step 5b, 10 Oct 2026 — derived where read, so their round-trip is gone.)
         block = make_block("2026-03-01T00:00:00", imp_kwh=2.0)
         m = block["meters"]["electricity_main"]
         m["channels"]["import"]["cost_exc"] = 0.40
-        m["channels"]["import"]["rate_exc"] = 0.20
-        m["standing_charge_exc"] = 0.4762
-        m["exc_source"] = "bill"
         self.store.append_block_replace(block)
         got = self.store.get_all_blocks()[0]["meters"]["electricity_main"]
         ch = got["channels"]["import"]
         self.assertAlmostEqual(ch["cost_exc"], 0.40, places=4)
-        self.assertAlmostEqual(ch["rate_exc"], 0.20, places=4)
-        self.assertAlmostEqual(got["standing_charge_exc"], 0.4762, places=4)
-        self.assertEqual(got["exc_source"], "bill")
         self.assertAlmostEqual(ch["cost"], round(2.0 * 0.245, 4), places=4)  # inc untouched
 
     def test_no_exvat_fields_stay_absent(self):

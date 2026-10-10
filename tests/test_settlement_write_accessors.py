@@ -51,14 +51,14 @@ def _block(st, meter_id="electricity_main", **cols):
 
 def _row(st, meter_id="electricity_main"):
     return st._conn.execute(
-        "SELECT imp_rate, imp_cost, imp_rate_exc, imp_cost_exc, exc_source, "
+        "SELECT imp_rate, imp_cost, imp_cost_exc, "
         "rate_source, needs_review, review_reason, "
         "imp_kwh_ev, imp_rate_ev, imp_cost_ev, imp_ev_band, imp_home_band, "
         "imp_kwh "
         "FROM blocks WHERE block_start=? AND meter_id=?", (S, meter_id)).fetchone()
 
 
-_BILL = dict(rate=0.0549, cost=0.2745, rate_exc=0.0523, cost_exc=0.2614,
+_BILL = dict(rate=0.0549, cost=0.2745, cost_exc=0.2614,
              kwh_ev=2.0, rate_ev=0.0549, cost_ev=0.1098,
              ev_band="off_peak", home_band="off_peak")
 
@@ -75,7 +75,8 @@ class ApplyMeasuredToMain(unittest.TestCase):
         self.assertAlmostEqual(r["imp_rate"], 0.0549)
         self.assertAlmostEqual(r["imp_cost"], 0.2745)
         self.assertEqual(r["rate_source"], "settled")
-        self.assertEqual(r["exc_source"], "tariff")
+        # exc_source dropped (step 5b, 10 Oct 2026); the bill's ex-VAT £ is what is stored.
+        self.assertAlmostEqual(r["imp_cost_exc"], 0.2614)
 
     def test_the_bill_leaves_a_stored_review_flag(self):
         """BL-74: the flag is history; settlement no longer clears it."""
@@ -124,7 +125,9 @@ class RecostSubMeters(unittest.TestCase):
         for m in ("sub_meter_ev", "sub_meter_battery"):
             r = _row(self.st, m)
             self.assertAlmostEqual(r["imp_rate"], 0.0549)
-            self.assertEqual(r["exc_source"], "tariff")
+            # exc_source dropped (step 5b, 10 Oct 2026); the ex-VAT £ follows the parent rate.
+            self.assertAlmostEqual(r["imp_cost_exc"],
+                                   round((4.0 if m == "sub_meter_ev" else 2.0) * 0.0523, 6))
 
     def test_cost_is_recomputed_from_the_devices_own_kwh(self):
         self.st.recost_sub_meters(S, 0.0549, 0.0523)

@@ -54,7 +54,7 @@ def _block(st, meter_id, **cols):
 
 def _row(st, meter_id):
     return st._conn.execute(
-        "SELECT imp_rate, imp_cost, imp_rate_exc, imp_cost_exc, exc_source, imp_kwh "
+        "SELECT imp_rate, imp_cost, imp_cost_exc, imp_kwh "
         "FROM blocks WHERE block_start=? AND meter_id=?", (S, meter_id)).fetchone()
 
 
@@ -62,20 +62,20 @@ class DriftIsRepaired(unittest.TestCase):
 
     def setUp(self):
         self.st = _mk_store()
-        # the settled main row
+        # the settled main row (imp_rate_exc dropped, step 5b: its ex-VAT rate derives from
+        # the pair, 0.0549 x 0.523 / 0.549 = 0.0523)
         _block(self.st, "electricity_main", imp_kwh=10.0, imp_rate=0.0549,
-               imp_rate_exc=0.0523, rate_source="settled")
+               imp_cost=0.549, imp_cost_exc=0.523, rate_source="settled")
 
     def test_a_stale_device_is_recosted_to_the_parent(self):
         """The exact failure: main settled off-peak, device left at peak."""
         _block(self.st, "sub_meter_ev", imp_kwh=4.0, imp_rate=0.3231,
-               imp_rate_exc=0.3077)
+               imp_cost=round(4.0 * 0.3231, 6), imp_cost_exc=round(4.0 * 0.3077, 6))
         self.assertEqual(self.st.repair_device_rate_drift(), 1)
         r = _row(self.st, "sub_meter_ev")
         self.assertAlmostEqual(r["imp_rate"], 0.0549)
         self.assertAlmostEqual(r["imp_cost"], round(4.0 * 0.0549, 6))
-        self.assertAlmostEqual(r["imp_rate_exc"], 0.0523)
-        self.assertEqual(r["exc_source"], "tariff")
+        self.assertAlmostEqual(r["imp_cost_exc"], round(4.0 * 0.0523, 6))
 
     def test_the_device_kwh_is_never_touched(self):
         """kWh is the grid-clipped device draw and is not this method's business.
@@ -145,16 +145,16 @@ class TheSettlementFailureConverges(unittest.TestCase):
         st = _mk_store()
         # before settlement: main and device agree at peak
         _block(st, "electricity_main", imp_kwh=10.0, imp_rate=0.3231,
-               imp_rate_exc=0.3077)
+               imp_cost=3.231, imp_cost_exc=3.077)
         _block(st, "sub_meter_ev", imp_kwh=4.0, imp_rate=0.3231,
-               imp_rate_exc=0.3077)
+               imp_cost=round(4.0 * 0.3231, 6), imp_cost_exc=round(4.0 * 0.3077, 6))
         # settlement's FIRST transaction lands: main flips to the settled band and
         # is stamped 'settled', so the drain will not revisit it.
         with st._conn:
             st._conn.execute(
-                "UPDATE blocks SET imp_rate=?, imp_rate_exc=?, rate_source='settled' "
+                "UPDATE blocks SET imp_rate=?, imp_cost=?, imp_cost_exc=?, rate_source='settled' "
                 "WHERE block_start=? AND meter_id='electricity_main'",
-                (0.0549, 0.0523, S))
+                (0.0549, 0.549, 0.523, S))
         # its SECOND, best-effort transaction does not. Nothing else would notice.
         self.assertAlmostEqual(_row(st, "sub_meter_ev")["imp_rate"], 0.3231)
         self.assertEqual(st.repair_device_rate_drift(), 1)
