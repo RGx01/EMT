@@ -2148,7 +2148,8 @@ class TestApiImportBlocksDb(unittest.TestCase):
         # The worker was handed the staged upload and asked to restore blocks.db.
         self.assertEqual(captured.get("selected"), ["blocks.db"])
         self.assertFalse(captured.get("from_flat"))
-        self.assertTrue(str(captured.get("staged", "")).endswith("uploaded_restore.db"))
+        _name = os.path.basename(str(captured.get("staged", "")))
+        self.assertTrue(_name.startswith("uploaded_restore-") and _name.endswith(".db"), _name)
 
     def test_invalid_upload_rejected_without_touching_live_db(self):
         """A non-SQLite upload is rejected synchronously (400) and the staged file
@@ -2165,7 +2166,8 @@ class TestApiImportBlocksDb(unittest.TestCase):
         self.assertEqual(r.status_code, 400)
         self.assertIn("error", r.get_json())
         self.assertEqual(called["n"], 0)                       # worker never launched
-        self.assertFalse(os.path.exists(os.path.join(self.tmpdir, "uploaded_restore.db")))
+        self.assertEqual([f for f in os.listdir(self.tmpdir) if f.startswith("uploaded_restore")],
+                         [])
 
     def test_upload_rejected_when_restore_already_running(self):
         import io
@@ -2176,6 +2178,42 @@ class TestApiImportBlocksDb(unittest.TestCase):
             r = self.client.post("/api/import", data=data,
                                  content_type="multipart/form-data")
         self.assertEqual(r.status_code, 409)
+
+    def test_a_second_upload_never_touches_the_running_restores_file(self):
+        """10 Oct 2026, on the Pi: a second upload during a running restore (an ingress
+        retry) was saved over the running restore's candidate — one fixed path — and then
+        deleted with the 409, so the import read a half-written file ("no such table:
+        store_meta"). Now it is refused before anything is saved. Fails on the parent."""
+        import io, os
+        running = os.path.join(self.tmpdir, "uploaded_restore.db")   # the parent's one path
+        with open(running, "wb") as f:
+            f.write(b"the running restore's candidate")
+        before = sorted(os.listdir(self.tmpdir))
+        server._restore_job = {"status": "running"}
+        data = {"blocks": (io.BytesIO(self._make_db_bytes()), "blocks.db")}
+        with patch("server.threading.Thread", _SyncThread):
+            r = self.client.post("/api/import", data=data,
+                                 content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 409)
+        self.assertTrue(os.path.exists(running), "the running restore's file was deleted")
+        with open(running, "rb") as f:
+            self.assertEqual(f.read(), b"the running restore's candidate")
+        self.assertEqual(sorted(os.listdir(self.tmpdir)), before, "the refused upload left a file")
+
+    def test_two_uploads_are_staged_apart(self):
+        """GUARD (new code): each upload has its own staged file."""
+        import io
+        seen = []
+        def _fake_worker(zipname, selected, from_flat, staged=None):
+            seen.append(staged)
+        for _ in range(2):
+            server._restore_job = {"status": "idle"}
+            data = {"blocks": (io.BytesIO(self._make_db_bytes()), "blocks.db")}
+            with patch.object(server, "_restore_worker", _fake_worker), \
+                 patch("server.threading.Thread", _SyncThread):
+                self.assertEqual(self.client.post("/api/import", data=data,
+                                                  content_type="multipart/form-data").status_code, 200)
+        self.assertEqual(len(set(seen)), 2, seen)
 
     def test_restore_worker_staged_swaps_db_and_cleans_up(self):
         """The staged-upload branch of _restore_worker atomically swaps blocks.db in

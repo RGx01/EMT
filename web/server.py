@@ -2751,6 +2751,10 @@ def api_backup_list():
 
 
 _restore_job = {"status": "idle"}
+# Held while a restore is checked for and launched, so two requests cannot both see "not
+# running" and start one each (10 Oct 2026). The worker clears nothing under it: the job's
+# status says whether one is running, and this only makes the check-and-claim one step.
+_restore_launch_lock = threading.Lock()
 
 
 def _fsync_dir(path):
@@ -2798,12 +2802,13 @@ def api_backup_restore():
                 return jsonify({"error": "Invalid zip name"}), 400
             if not os.path.exists(f"{_share_backup_dir()}/backups/{zipname}"):
                 return jsonify({"error": "Backup not found"}), 404
-        if _restore_job.get("status") == "running":
-            return jsonify({"error": "a restore is already running",
-                            "status": _restore_job}), 409
-        _restore_job.clear()
-        _restore_job.update({"status": "running", "step": "starting",
-                             "restored": None, "error": None})
+        with _restore_launch_lock:
+            if _restore_job.get("status") == "running":
+                return jsonify({"error": "a restore is already running",
+                                "status": _restore_job}), 409
+            _restore_job.clear()
+            _restore_job.update({"status": "running", "step": "starting",
+                                 "restored": None, "error": None})
         threading.Thread(target=_restore_worker,
                          args=(zipname, selected, from_flat),
                          daemon=True, name="restore").start()
@@ -7024,10 +7029,21 @@ def api_import():
         if not blocks_file:
             return jsonify({"error": "No files received"}), 400
 
+        # Refuse BEFORE saving anything while a restore runs (10 Oct 2026). The upload used
+        # to be saved first, to one fixed path, then refused — overwriting, and then
+        # deleting, the running restore's own candidate. With the importer a restore takes
+        # minutes on a Pi, and a second upload (an ingress retry, a second click) landed in
+        # that window: the import read a half-written file ("no such table: store_meta").
+        if _restore_job.get("status") == "running":
+            return jsonify({"error": "a restore is already running",
+                            "status": _restore_job}), 409
+
         # Stage + validate BEFORE touching the live DB. A non-SQLite / wrong-schema
         # upload is rejected synchronously here and the live database is never
-        # disturbed.
-        staged = os.path.join(DATA_DIR, "uploaded_restore.db")
+        # disturbed. Each upload has its own file, so no two can share one.
+        import tempfile as _tf
+        _fd, staged = _tf.mkstemp(prefix="uploaded_restore-", suffix=".db", dir=DATA_DIR)
+        os.close(_fd)
         try:
             blocks_file.save(staged)
             import sqlite3 as _sq3
@@ -7044,17 +7060,18 @@ def api_import():
             return jsonify({"error": "That file is not a valid EMT database "
                                      "(blocks.db)."}), 400
 
-        # Don't collide with an in-flight restore.
-        if _restore_job.get("status") == "running":
-            if os.path.exists(staged):
+        # Don't collide with an in-flight restore — one that started while this upload was
+        # being saved. Checked and claimed under the lock; THIS upload's file is the only one
+        # removed on a refusal.
+        with _restore_launch_lock:
+            if _restore_job.get("status") == "running":
                 try: os.remove(staged)
                 except Exception: pass
-            return jsonify({"error": "a restore is already running",
-                            "status": _restore_job}), 409
-
-        _restore_job.clear()
-        _restore_job.update({"status": "running", "step": "starting",
-                             "restored": None, "error": None})
+                return jsonify({"error": "a restore is already running",
+                                "status": _restore_job}), 409
+            _restore_job.clear()
+            _restore_job.update({"status": "running", "step": "starting",
+                                 "restored": None, "error": None})
         threading.Thread(target=_restore_worker,
                          args=("", ["blocks.db"], False),
                          kwargs={"staged": staged},
