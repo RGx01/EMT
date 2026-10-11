@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v19 — revised 10 Oct 2026, the `night` relabel dropped (v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v20 — revised 11 Oct 2026, §3a: a mismatch on the fork asks and imports, it does not stop the import (v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -617,8 +617,10 @@ first start
 ```
 
 **Every path ends with the history imported.** The only outcomes that stop an import are the phase 1
-refusals — too old, damaged, unsupported supplier, inconsistent markers — and a genuine account
-mismatch. Absent credentials, on either side, never block it.
+refusals — too old, damaged, unsupported supplier, inconsistent markers. A genuine account mismatch
+asks: the history imports without connecting the account (§3's table), unless the user goes back to
+enter another key — and on the fork the mismatched key is not kept (v20; [first-run design
+§2.4](EMT-v5_first_run_design.md)). Absent credentials, on either side, never block it.
 
 ### Why the backup drives the credential prompt, not the reverse
 

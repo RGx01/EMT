@@ -50,6 +50,7 @@ pipeline went on 30 Sep); #31 and C §7.3 closed 5 Oct, so nothing in C is open.
 | `docs/design/EMT-v5_import_spec.md` | how v5 reads a v4 database; the floor (§1.1) |
 | `docs/design/EMT-v5_A_storage_design.md`, `…_B_coordinator_design.md`, `…_C_surfaces_design.md` | each workstream's design |
 | `docs/design/EMT-v5_E_importer_design.md` | step 7: the `v4import/` package, the restore wiring, transform order, key allow-lists, PR order |
+| `docs/design/EMT-v5_first_run_design.md` | step 6: the first-run fork — the welcome page, the two-step restore, where the account check runs |
 | `docs/design/EMT-v5_A1_writer_thread_design.md` | ROADMAP §A.1: why commits stall the loop on the SD card, and the writer thread |
 | `docs/ROADMAP.md` | open backlog, priority ordered — nothing in it has shipped |
 | `docs/CONTRIBUTING.md`, `docs/DEVELOPMENT.md` | branch model, PR flow, what a change must carry |
