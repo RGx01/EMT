@@ -182,12 +182,17 @@ SCENARIOS = [
 
 def upload_blocks(base_url, blocks_path):
     """
-    Upload a blocks.db file to the add-on via /api/import.
+    Restore a blocks.db file on the add-on: stage it (/api/restore/stage), then confirm it
+    with no credentials (/api/restore/confirm) — first-run design §2.
     blocks_path must be a SQLite DB file (not blocks.json).
     """
-    url = f"{base_url}/api/import"
     with open(blocks_path, "rb") as f:
-        resp = requests.post(url, files={"blocks": ("blocks.db", f, "application/octet-stream")}, timeout=60)
+        resp = requests.post(f"{base_url}/api/restore/stage",
+                             files={"file": ("blocks.db", f, "application/octet-stream")},
+                             timeout=60)
+    resp.raise_for_status()
+    resp = requests.post(f"{base_url}/api/restore/confirm",
+                         json={"token": resp.json()["token"]}, timeout=60)
     resp.raise_for_status()
     return resp.json()
 

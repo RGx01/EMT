@@ -122,18 +122,21 @@ The rows are spec §3 gate 3's. An unsupported supplier never reaches this table
 it. `prompt` is the supplier key itself, so a second API-capable supplier adds a row and its own
 prompt shape; the routes do not change.
 
-**Where the facts are read.** A v4 backup's supplier comes from `v4import.gate.source_supplier`,
-because inferring Octopus from a bare account stamp is a v4 rule (v4's supplier field was optional
-free text). A v5 backup is read directly — `store_meta.supplier`, which v5 always stamps, and
-`kraken_state.kraken_account_number` — in `web/server.py`, so nothing on the v5 path imports
-`v4import` and the package can still be deleted whole (E design §1).
+**Where the facts are read.** In `web/server.py`, from the staged file, the same way for both
+kinds: `store_meta.supplier`, and where it is absent but `kraken_state.kraken_account_number` is
+set, Octopus — the only API EMT has had (spec §3, as `v4import.gate.source_supplier` reads it).
+Either kind can lack the supplier stamp: v5 writes it only when its config names a supplier, and
+real v4 Octopus installs have it empty. Reading it here means a v5 backup's facts take nothing
+v4-shaped. (Its gate 1, `gate.check_intact_file`, does still live in `v4import`; it is the one
+piece that moves out when the package retires.)
 
 ### 2.2 The token
 
 The staged file's basename, `uploaded_restore-XXXXXXXX.db`. `confirm` accepts it only when it
 matches that pattern and the file is in `DATA_DIR` (`_in_data_dir`), so a token can name nothing
-else. A stage that is never confirmed leaves the file behind; the next `stage`, and engine startup,
-remove any `uploaded_restore-*.db` older than an hour. One restore runs at a time, so at most one
+else. A stage that is never confirmed leaves the file behind; the next `stage` removes any
+`uploaded_restore-*.db` older than an hour, and the web server's start removes them all (only the
+process that staged a file can confirm it). One restore runs at a time, so at most one
 staged file is live.
 
 `confirm` does not run phase 1 again: the staged file is EMT's own, in its data directory, and

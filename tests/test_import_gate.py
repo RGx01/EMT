@@ -362,19 +362,22 @@ class TheRestorePaths(unittest.TestCase):
         self.srv._restore_worker("live.zip", None, False)
         self._refused_untouched(says="was running")
 
-    def test_from_zip_refuses_a_hot_wal(self):
+    def test_stage_refuses_a_zip_with_a_hot_wal(self):
+        self.srv._restore_job["status"] = "idle"
         src = make_db(os.path.join(self.share, "live.db"))
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             zf.write(src, "blocks.db")
             zf.writestr("blocks.db-wal", b"x" * 64)
         buf.seek(0)
-        r = self.srv.app.test_client().post("/api/import/from-zip",
-                                            data={"zipfile": (buf, "live.zip")},
+        r = self.srv.app.test_client().post("/api/restore/stage",
+                                            data={"file": (buf, "live.zip")},
                                             content_type="multipart/form-data")
         self.assertEqual(r.status_code, 400)
         self.assertEqual(r.get_json()["error"], G.HOT_WAL)
         self.assertEqual(open(self.live, "rb").read(), self.live_bytes)
+        self.assertEqual(sorted(os.listdir(self.data)), ["blocks.db"],
+                         "the saved upload or its extracted copy was left behind")
 
     def test_a_below_floor_upload_is_refused(self):
         staged = make_db(os.path.join(self.data, "uploaded_restore.db"), written_by=BELOW)
@@ -409,14 +412,15 @@ class TheRestorePaths(unittest.TestCase):
         self.assertEqual(n, 2)
         self.assertFalse(os.path.exists(os.path.join(self.data, "restore_candidate.db")))
 
-    def test_from_zip_refuses_below_the_floor(self):
+    def test_stage_refuses_a_zip_below_the_floor(self):
+        self.srv._restore_job["status"] = "idle"
         src = make_db(os.path.join(self.share, "old.db"), written_by=BELOW)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             zf.write(src, "blocks.db")
         buf.seek(0)
-        r = self.srv.app.test_client().post("/api/import/from-zip",
-                                            data={"zipfile": (buf, "old.zip")},
+        r = self.srv.app.test_client().post("/api/restore/stage",
+                                            data={"file": (buf, "old.zip")},
                                             content_type="multipart/form-data")
         self.assertEqual(r.status_code, 400)
         self.assertIn(BELOW, r.get_json()["error"])

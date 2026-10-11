@@ -397,8 +397,9 @@ class TestRouteRegistration(unittest.TestCase):
         """Nothing to regenerate: the charts are drawn in the browser (C, 30 Sep 2026)."""
         self.assertFalse(self._registered("api_regenerate_charts"))
 
-    def test_api_import_registered(self):
-        self.assertTrue(self._registered("api_import"))
+    def test_api_restore_stage_and_confirm_registered(self):
+        self.assertTrue(self._registered("api_restore_stage"))
+        self.assertTrue(self._registered("api_restore_confirm"))
 
     def test_api_logs_registered(self):
         self.assertTrue(self._registered("api_logs"))
@@ -2068,7 +2069,7 @@ if __name__ == "__main__":
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# /api/import — blocks.db import (regression test for silent drop bug)
+# /api/restore/stage + /api/restore/confirm — the staged restore (first-run design §2)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class _SyncThread:
@@ -2081,12 +2082,13 @@ class _SyncThread:
             self._t(*self._a, **self._k)
 
 
-class TestApiImportBlocksDb(unittest.TestCase):
+class TestApiRestoreStaged(unittest.TestCase):
     """
-    Regression tests for the api_import endpoint. #356: an uploaded blocks.db now
-    restores through the SAME background job as a backup-zip restore — the endpoint
-    stages + validates synchronously, then returns {ok, status:"running"} and the
-    swap runs in _restore_worker (progress via /api/backup/restore/status).
+    The staged restore (first-run design §2, 11 Oct 2026): POST /api/restore/stage saves an
+    upload and runs phase 1 on it, and says what the backup is; POST /api/restore/confirm checks
+    a typed key against the backup's account stamp (phase 2), then hands the staged file to the
+    SAME background job as a backup-zip restore (#356). They replace /api/import and
+    /api/import/from-zip. The routes are new: every test here fails on the parent (404).
     """
 
     def setUp(self):
@@ -2095,20 +2097,27 @@ class TestApiImportBlocksDb(unittest.TestCase):
         server.DATA_DIR = self.tmpdir
         self.client = make_client()
         server.DATA_DIR = self.tmpdir  # re-set after make_client resets it
-        self._saved_job = server._restore_job
+        server._restore_job = {"status": "idle"}
+        self.saved = []
+        eng = MagicMock()
+        eng._norm_account = lambda x: str(x or "").strip().upper()
+        eng.api_import_running.return_value = False
+        eng.save_kraken_credentials = lambda *a: self.saved.append(a)
+        self._eng = patch.dict(sys.modules, {"engine": eng})
+        self._eng.start()
 
     def tearDown(self):
         import shutil
+        self._eng.stop()
         shutil.rmtree(self.tmpdir, ignore_errors=True)
         server.DATA_DIR = "/tmp/emt_test_data"  # restore default
-        # Reset to a FRESH idle dict: api_import / _restore_worker mutate _restore_job
-        # in place (.clear()/.update()), so restoring the saved reference could hand
-        # back a dict that's since been flipped to "running" — which then trips the
-        # config-save restore guard in a later test.
+        # A FRESH idle dict: the routes and _restore_worker mutate _restore_job in place, so
+        # restoring a saved reference could hand back one flipped to "running" — which then
+        # trips the config-save restore guard in a later test.
         server._restore_job = {"status": "idle"}
 
-    def _make_db_bytes(self):
-        """Create a minimal valid SQLite blocks.db as bytes."""
+    def _make_db_bytes(self, account=None, supplier=None, path=None):
+        """A minimal valid backup at the import floor, as bytes."""
         import tempfile, os
         store = BlockStore(_memory_uri())
         store.insert_config_period({"meters": {"electricity_main": {"meta": {
@@ -2118,6 +2127,10 @@ class TestApiImportBlocksDb(unittest.TestCase):
             "postcode_prefix": "DE1",
         }, "channels": {"import": {}, "export": {}}}}})
         store.set_meta("written_by", "4.5.22")     # at the import floor
+        if supplier:
+            store.set_meta("supplier", supplier)
+        if account:
+            store.set_kraken_state("kraken_account_number", account)
         tmp = tempfile.mktemp(suffix=".db")
         try:
             store.backup(tmp)
@@ -2127,165 +2140,321 @@ class TestApiImportBlocksDb(unittest.TestCase):
             if os.path.exists(tmp):
                 os.remove(tmp)
 
-    def test_blocks_db_upload_launches_restore_job(self):
-        """A valid blocks.db upload stages the file, returns running, and hands the
-        actual swap to _restore_worker with the staged path (#356)."""
-        import io, os
-        db_bytes = self._make_db_bytes()
-        data = {"blocks": (io.BytesIO(db_bytes), "blocks.db")}
-        captured = {}
-        def _fake_worker(zipname, selected, from_flat, staged=None):
-            captured.update(zipname=zipname, selected=selected,
-                            from_flat=from_flat, staged=staged)
-        with patch.object(server, "_restore_worker", _fake_worker), \
-             patch("server.threading.Thread", _SyncThread):
-            r = self.client.post("/api/import", data=data,
-                                 content_type="multipart/form-data")
-        self.assertEqual(r.status_code, 200)
-        result = r.get_json()
-        self.assertTrue(result.get("ok"), msg=f"Import failed: {result}")
-        self.assertEqual(result.get("status"), "running")
-        # The worker was handed the staged upload and asked to restore blocks.db.
-        self.assertEqual(captured.get("selected"), ["blocks.db"])
-        self.assertFalse(captured.get("from_flat"))
-        _name = os.path.basename(str(captured.get("staged", "")))
-        self.assertTrue(_name.startswith("uploaded_restore-") and _name.endswith(".db"), _name)
+    def _stage(self, db_bytes=None, name="blocks.db"):
+        import io
+        data = {"file": (io.BytesIO(self._make_db_bytes() if db_bytes is None else db_bytes),
+                         name)}
+        return self.client.post("/api/restore/stage", data=data,
+                                content_type="multipart/form-data")
 
-    def test_invalid_upload_rejected_without_touching_live_db(self):
-        """A non-SQLite upload is rejected synchronously (400) and the staged file
-        is cleaned up — the live DB is never disturbed."""
-        import io, os
-        data = {"blocks": (io.BytesIO(b"not a database"), "blocks.db")}
-        called = {"n": 0}
-        def _fake_worker(*a, **k):
-            called["n"] += 1
-        with patch.object(server, "_restore_worker", _fake_worker), \
+    def _staged_files(self):
+        import os
+        return sorted(f for f in os.listdir(self.tmpdir) if f.startswith("uploaded_restore"))
+
+    def _confirm(self, body, worker=None):
+        captured = {}
+        def _fake_worker(zipname, selected, from_flat, staged=None, checked=False):
+            captured.update(zipname=zipname, selected=selected, from_flat=from_flat,
+                            staged=staged, checked=checked)
+        with patch.object(server, "_restore_worker", worker or _fake_worker), \
              patch("server.threading.Thread", _SyncThread):
-            r = self.client.post("/api/import", data=data,
-                                 content_type="multipart/form-data")
+            r = self.client.post("/api/restore/confirm", json=body)
+        return r, captured
+
+    # ── stage ─────────────────────────────────────────────────────────────────
+
+    def test_a_staged_backup_says_what_it_is(self):
+        import os
+        r = self._stage(self._make_db_bytes(account="A-1234567"))
+        self.assertEqual(r.status_code, 200, r.get_json())
+        d = r.get_json()
+        self.assertEqual(d["facts"]["kind"], "v5")
+        self.assertEqual(d["facts"]["written_by"], "4.5.22")
+        self.assertEqual(d["facts"]["prompt"], "octopus")       # inferred from the stamp
+        self.assertTrue(d["facts"]["supplier_inferred"])
+        self.assertTrue(d["facts"]["account_stamped"])
+        self.assertNotIn("A-1234567", r.get_data(as_text=True), "the account left the server")
+        self.assertEqual(self._staged_files(), [d["token"]])
+        self.assertFalse(os.path.exists(os.path.join(self.tmpdir, "blocks.db")),
+                         "staging touched the live database")
+
+    def test_the_prompt_follows_the_backups_supplier(self):
+        """First-run design §2.1's table."""
+        for supplier, account, prompt in (("octopus", None, "octopus"),
+                                          ("octopus", "A-1", "octopus"),
+                                          ("not-listed", None, None),
+                                          (None, None, None)):
+            with self.subTest(supplier=supplier, account=account):
+                r = self._stage(self._make_db_bytes(account=account, supplier=supplier))
+                self.assertEqual(r.status_code, 200, r.get_json())
+                self.assertEqual(r.get_json()["facts"]["prompt"], prompt)
+
+    def test_a_zip_is_staged_from_its_blocks_db(self):
+        import io, zipfile
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("blocks.db", self._make_db_bytes())
+        r = self._stage(buf.getvalue(), name="emt_backup.zip")
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(self._staged_files(), [r.get_json()["token"]])
+
+    def test_a_zip_without_a_database_is_refused(self):
+        import io, zipfile, os
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("meters_config.json", "{}")
+        r = self._stage(buf.getvalue(), name="emt_backup.zip")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("no blocks.db", r.get_json()["error"])
+        self.assertEqual(os.listdir(self.tmpdir), [], "the upload was left behind")
+
+    def test_invalid_upload_rejected_without_touching_anything(self):
+        import os
+        r = self._stage(b"not a database")
         self.assertEqual(r.status_code, 400)
         self.assertIn("error", r.get_json())
-        self.assertEqual(called["n"], 0)                       # worker never launched
-        self.assertEqual([f for f in os.listdir(self.tmpdir) if f.startswith("uploaded_restore")],
-                         [])
+        self.assertEqual(os.listdir(self.tmpdir), [])
 
-    def test_upload_rejected_when_restore_already_running(self):
-        import io
-        server._restore_job = {"status": "running"}
-        db_bytes = self._make_db_bytes()
-        data = {"blocks": (io.BytesIO(db_bytes), "blocks.db")}
-        with patch("server.threading.Thread", _SyncThread):
-            r = self.client.post("/api/import", data=data,
-                                 content_type="multipart/form-data")
-        self.assertEqual(r.status_code, 409)
+    def test_a_below_floor_backup_is_refused_at_stage(self):
+        import os, tempfile, sqlite3
+        b = self._make_db_bytes()
+        # a v4-shaped file: no emt_schema, stamped below the floor
+        p = tempfile.mktemp(suffix=".db")
+        open(p, "wb").write(b)
+        c = sqlite3.connect(p)
+        c.execute("DELETE FROM store_meta WHERE key = 'emt_schema'")
+        c.execute("UPDATE store_meta SET value = '\"4.5.13\"' WHERE key = 'written_by'")
+        c.commit(); c.close()
+        r = self._stage(open(p, "rb").read())
+        os.remove(p)
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("last v4 release", r.get_json()["error"])
+        self.assertEqual(os.listdir(self.tmpdir), [])
 
-    def test_a_second_upload_never_touches_the_running_restores_file(self):
-        """10 Oct 2026, on the Pi: a second upload during a running restore (an ingress
-        retry) was saved over the running restore's candidate — one fixed path — and then
-        deleted with the 409, so the import read a half-written file ("no such table:
-        store_meta"). Now it is refused before anything is saved. Fails on the parent."""
-        import io, os
-        running = os.path.join(self.tmpdir, "uploaded_restore.db")   # the parent's one path
+    def test_stage_refused_when_restore_already_running(self):
+        import os
+        running = os.path.join(self.tmpdir, "uploaded_restore-running.db")
         with open(running, "wb") as f:
             f.write(b"the running restore's candidate")
-        before = sorted(os.listdir(self.tmpdir))
         server._restore_job = {"status": "running"}
-        data = {"blocks": (io.BytesIO(self._make_db_bytes()), "blocks.db")}
-        with patch("server.threading.Thread", _SyncThread):
-            r = self.client.post("/api/import", data=data,
-                                 content_type="multipart/form-data")
+        r = self._stage()
         self.assertEqual(r.status_code, 409)
-        self.assertTrue(os.path.exists(running), "the running restore's file was deleted")
-        with open(running, "rb") as f:
-            self.assertEqual(f.read(), b"the running restore's candidate")
-        self.assertEqual(sorted(os.listdir(self.tmpdir)), before, "the refused upload left a file")
+        self.assertEqual(open(running, "rb").read(), b"the running restore's candidate")
+        self.assertEqual(self._staged_files(), ["uploaded_restore-running.db"],
+                         "the refused upload left a file")
 
-    def test_the_upload_check_leaves_nothing_beside_the_staged_file(self):
-        """10 Oct 2026: the upload was checked with a plain connect and a COUNT(*) of every
-        block. A backup in WAL mode then grew a -wal and -shm beside the staged file, and the
-        count read all 139k rows from the Pi's SD card before the restore had even started.
-        Now an immutable read-only probe of one row, and the route logs what the upload cost.
-        Fails on the parent."""
-        import io, os, tempfile
+    def test_the_stage_check_leaves_nothing_beside_the_staged_file(self):
+        """A backup in WAL mode, checked immutably: no -wal or -shm grows beside it (10 Oct
+        2026, carried from /api/import)."""
+        import os, tempfile
         d = tempfile.mkdtemp()
         p = os.path.join(d, "wal.db")
         st = BlockStore(p)                 # a file database: WAL mode, as a real backup is
         st.set_meta("written_by", "4.5.22")
         st.close()
-        with open(p, "rb") as f:
-            db_bytes = f.read()
-        seen = {}
-
-        def _fake_worker(zipname, selected, from_flat, staged=None):
-            seen["beside"] = sorted(x for x in os.listdir(self.tmpdir)
-                                    if x.startswith(os.path.basename(staged)) and x != os.path.basename(staged))
-        server._restore_job = {"status": "idle"}
-        data = {"blocks": (io.BytesIO(db_bytes), "blocks.db")}
-        with patch.object(server, "_restore_worker", _fake_worker), \
-             patch("server.threading.Thread", _SyncThread), \
-             self.assertLogs("server", level="INFO") as logs:
-            r = self.client.post("/api/import", data=data, content_type="multipart/form-data")
+        with self.assertLogs("server", level="INFO") as logs:
+            r = self._stage(open(p, "rb").read())
         self.assertEqual(r.status_code, 200, r.get_json())
-        self.assertEqual(seen["beside"], [])
-        self.assertTrue(any("api_import: received" in m for m in logs.output), logs.output)
+        self.assertEqual(self._staged_files(), [r.get_json()["token"]])
+        self.assertEqual(sorted(os.listdir(self.tmpdir)), [r.get_json()["token"]])
+        self.assertTrue(any("restore/stage: received" in m for m in logs.output), logs.output)
 
     def test_two_uploads_are_staged_apart(self):
-        """GUARD (new code): each upload has its own staged file."""
-        import io
-        seen = []
-        def _fake_worker(zipname, selected, from_flat, staged=None):
-            seen.append(staged)
-        for _ in range(2):
-            server._restore_job = {"status": "idle"}
-            data = {"blocks": (io.BytesIO(self._make_db_bytes()), "blocks.db")}
-            with patch.object(server, "_restore_worker", _fake_worker), \
-                 patch("server.threading.Thread", _SyncThread):
-                self.assertEqual(self.client.post("/api/import", data=data,
-                                                  content_type="multipart/form-data").status_code, 200)
-        self.assertEqual(len(set(seen)), 2, seen)
+        a, b = self._stage().get_json()["token"], self._stage().get_json()["token"]
+        self.assertNotEqual(a, b)
+
+    def test_a_stale_stage_is_removed_by_the_next(self):
+        import os, time
+        old = os.path.join(self.tmpdir, "uploaded_restore-old.db")
+        open(old, "wb").write(b"x")
+        t = time.time() - 2 * 3600
+        os.utime(old, (t, t))
+        self.assertEqual(self._stage().status_code, 200)
+        self.assertFalse(os.path.exists(old))
+
+    def test_server_start_removes_every_stage(self):
+        import os
+        left = os.path.join(self.tmpdir, "uploaded_restore-left.db")
+        open(left, "wb").write(b"x")
+        server._remove_stale_stages(max_age=0)
+        self.assertFalse(os.path.exists(left))
+
+    def test_empty_stage_returns_error(self):
+        r = self.client.post("/api/restore/stage", data={}, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("error", r.get_json())
+
+    # ── confirm ───────────────────────────────────────────────────────────────
+
+    def test_confirm_without_a_key_starts_the_restore(self):
+        import os
+        tok = self._stage().get_json()["token"]
+        r, w = self._confirm({"token": tok})
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(r.get_json()["status"], "running")
+        self.assertEqual(os.path.basename(w["staged"]), tok)
+        self.assertEqual(w["selected"], ["blocks.db"])
+        self.assertTrue(w["checked"], "phase 1 ran at stage; the worker need not repeat it")
+        self.assertEqual(self.saved, [])
+
+    def test_a_token_names_nothing_but_a_staged_file(self):
+        import os
+        live = os.path.join(self.tmpdir, "blocks.db")
+        open(live, "wb").write(self._make_db_bytes())
+        for tok in ("blocks.db", "../blocks.db", "uploaded_restore-x.db/../../blocks.db",
+                    "uploaded_restore-gone.db", None, 7):
+            with self.subTest(token=tok):
+                r, w = self._confirm({"token": tok})
+                self.assertEqual(r.status_code, 400)
+                self.assertEqual(w, {}, "the worker was started")
+
+    def test_a_matching_key_is_saved_before_the_restore(self):
+        tok = self._stage(self._make_db_bytes(account="A-1234567")).get_json()["token"]
+        order = []
+        def _worker(*a, **k):
+            order.append(("worker", list(self.saved)))
+        with patch.object(server, "_test_supplier_key",
+                          return_value={"ok": True, "account_number": "a-1234567"}):
+            r, _ = self._confirm({"token": tok, "credentials": {"api_key": " sk_live_x "}},
+                                 worker=_worker)
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(self.saved, [("sk_live_x", "a-1234567", None)])
+        self.assertEqual(order, [("worker", [("sk_live_x", "a-1234567", None)])],
+                         "the key was not saved before the worker ran")
+
+    def test_a_mismatched_key_asks_and_saves_nothing(self):
+        tok = self._stage(self._make_db_bytes(account="A-1234567")).get_json()["token"]
+        with patch.object(server, "_test_supplier_key",
+                          return_value={"ok": True, "account_number": "A-7654321"}):
+            r, w = self._confirm({"token": tok, "credentials": {"api_key": "sk"}})
+        self.assertEqual(r.status_code, 409)
+        mm = r.get_json()["mismatch"]
+        self.assertNotIn("1234567", mm["backup"])                # masked
+        self.assertNotEqual(mm["backup"], mm["key"])
+        self.assertEqual(w, {}, "the restore started on a mismatch")
+        self.assertEqual(self.saved, [])
+        self.assertEqual(self._staged_files(), [tok], "the staged backup was dropped")
+
+    def test_an_accepted_mismatch_imports_without_the_key(self):
+        tok = self._stage(self._make_db_bytes(account="A-1234567")).get_json()["token"]
+        with patch.object(server, "_test_supplier_key",
+                          return_value={"ok": True, "account_number": "A-7654321"}):
+            r, w = self._confirm({"token": tok, "credentials": {"api_key": "sk"},
+                                  "accept_mismatch": True})
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertTrue(w["staged"])
+        self.assertEqual(self.saved, [], "the mismatched key was kept")
+
+    def test_a_key_that_fails_its_check_starts_nothing(self):
+        tok = self._stage(self._make_db_bytes(account="A-1")).get_json()["token"]
+        with patch.object(server, "_test_supplier_key",
+                          return_value={"ok": False, "detail": "auth failed — check API key"}):
+            r, w = self._confirm({"token": tok, "credentials": {"api_key": "bad"}})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("auth failed", r.get_json()["error"])
+        self.assertEqual((w, self.saved), ({}, []))
+
+    def test_an_unstamped_octopus_backup_takes_the_key(self):
+        """No stamp: nothing to compare. The key is saved; discovery stamps the restored file."""
+        tok = self._stage(self._make_db_bytes(supplier="octopus")).get_json()["token"]
+        with patch.object(server, "_test_supplier_key",
+                          return_value={"ok": True, "account_number": "A-9"}):
+            r, _ = self._confirm({"token": tok, "credentials": {"api_key": "sk"}})
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(self.saved, [("sk", "A-9", None)])
+
+    def test_a_key_for_a_backup_with_no_supplier_account_is_refused(self):
+        tok = self._stage(self._make_db_bytes(supplier="not-listed")).get_json()["token"]
+        with patch.object(server, "_test_supplier_key") as probe:
+            r, w = self._confirm({"token": tok, "credentials": {"api_key": "sk"}})
+        self.assertEqual(r.status_code, 400)
+        probe.assert_not_called()
+        self.assertEqual(w, {})
+
+    def test_confirm_refused_when_restore_already_running(self):
+        tok = self._stage().get_json()["token"]
+        server._restore_job = {"status": "running"}
+        r, w = self._confirm({"token": tok})
+        self.assertEqual(r.status_code, 409)
+        self.assertEqual(w, {})
 
     def test_restore_worker_staged_swaps_db_and_cleans_up(self):
         """The staged-upload branch of _restore_worker atomically swaps blocks.db in
         and removes the staging file, marking the job done (#356)."""
         import os
-        staged = os.path.join(self.tmpdir, "uploaded_restore.db")
+        staged = os.path.join(self.tmpdir, "uploaded_restore-x.db")
         with open(staged, "wb") as f:
             f.write(self._make_db_bytes())
         server._restore_job = {"status": "running", "step": "starting"}
         with patch.object(server, "_create_backup_zip", return_value=None):
-            server._restore_worker("", ["blocks.db"], False, staged=staged)
+            server._restore_worker("", ["blocks.db"], False, staged=staged, checked=True)
         self.assertTrue(os.path.exists(os.path.join(self.tmpdir, "blocks.db")))
         self.assertFalse(os.path.exists(staged))          # staging cleaned up
         self.assertEqual(server._restore_job["status"], "done")
         self.assertIn("blocks.db", server._restore_job.get("restored") or [])
 
-    def test_meters_config_alone_returns_error(self):
-        """Importing meters_config.json without blocks.db is rejected — DB is sole source of truth since 2.1.0."""
-        import io, json
-        cfg = {"meters": {"electricity_main": {"meta": {
-            "billing_day": 1, "block_minutes": 30,
-            "timezone": "Europe/London",
-            "currency_symbol": "£", "currency_code": "GBP",
-        }, "channels": {"import": {}, "export": {}}}}}
-        cfg_bytes = json.dumps(cfg).encode()
-        data = {"meters_config": (io.BytesIO(cfg_bytes), "meters_config.json")}
-        r = self.client.post(
-            "/api/import",
-            data=data,
-            content_type="multipart/form-data"
-        )
-        result = r.get_json()
-        self.assertIn("error", result, msg="Expected error when importing meters_config.json alone")
+    def test_a_zip_restored_on_a_first_run_restarts_the_engine(self):
+        """/api/import/from-zip swapped the file and never reran engine_startup: on a first run
+        nothing else restarts the engine, so the restored history sat unpriced until the add-on
+        restarted (first-run design §0). A staged zip goes through the worker, which reruns it."""
+        import io, zipfile, os
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w") as zf:
+            zf.writestr("blocks.db", self._make_db_bytes())
+        tok = self._stage(buf.getvalue(), name="emt_backup.zip").get_json()["token"]
+        loop = MagicMock()
+        loop.is_running.return_value = True
+        scheduled = []
+        def _on_loop(coro, timeout=30.0):
+            coro.close()
+        def _threadsafe(coro, lp):
+            scheduled.append(getattr(coro, "__name__", repr(coro)))
+            if hasattr(coro, "close"):
+                coro.close()
+        async def engine_startup(ha):
+            return None
+        sys.modules["engine"].engine_startup = engine_startup
+        with patch.object(server, "_event_loop", loop), \
+             patch.object(server, "_ha_client", object()), \
+             patch.object(server, "_run_on_engine_loop", _on_loop), \
+             patch.object(server, "_create_backup_zip", return_value=None), \
+             patch("asyncio.run_coroutine_threadsafe", _threadsafe), \
+             patch("server.threading.Thread", _SyncThread):
+            r = self.client.post("/api/restore/confirm", json={"token": tok})
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(server._restore_job["status"], "done", server._restore_job)
+        self.assertTrue(os.path.exists(os.path.join(self.tmpdir, "blocks.db")))
+        self.assertIn("engine_startup", scheduled)
 
-    def test_empty_import_returns_error(self):
-        """Importing nothing returns an error."""
-        r = self.client.post(
-            "/api/import",
-            data={},
-            content_type="multipart/form-data"
-        )
-        self.assertEqual(r.status_code, 400)
-        self.assertIn("error", r.get_json())
+    def test_the_key_check_is_a_throwaway_client(self):
+        """Phase 2 tests the key on its own client, then closes it: nothing saved, nothing on
+        the live engine (first-run design §2.3)."""
+        made = []
+        class _Client:
+            def __init__(self, key, **kw):
+                self.key, self.kw, self.closed = key, kw, False
+                made.append(self)
+            async def test_connection(self):
+                return {"ok": True, "detail": "connected", "account_number": "A-9"}
+            async def close(self):
+                self.closed = True
+        fake = MagicMock()
+        fake.KrakenAPIClient = _Client
+        with patch.dict(sys.modules, {"kraken_api_client": fake}), \
+             patch.object(server, "_event_loop", None):
+            out = server._test_supplier_key("octopus", {"api_key": " sk ", "account_number": ""})
+        self.assertEqual(out["account_number"], "A-9")
+        self.assertEqual(len(made), 1)
+        self.assertEqual((made[0].key, made[0].kw.get("account_number")), ("sk", None))
+        self.assertTrue(made[0].closed)
+        self.assertEqual(self.saved, [])
+
+    def test_the_old_upload_routes_are_gone(self):
+        """One restore path (first-run design §2.5): /api/import/from-zip swapped in the request
+        thread with no job claim and no engine_startup after it."""
+        for url in ("/api/import", "/api/import/from-zip"):
+            with self.subTest(url=url):
+                self.assertEqual(self.client.post(url, data={}).status_code, 404)
 
 
 class TestApiCorrectionsEnhanced(unittest.TestCase):

@@ -231,10 +231,12 @@ class TheEpochAcrossAFileSwap(_Base):
         self.st.set_meta(self.st._EPOCH_KEY, "9")
         self.assertEqual(self.st.bump_data_epoch(floor=5), 10)
 
-    def test_both_swap_paths_bump_with_the_pre_swap_epoch(self):
+    def test_the_swap_path_bumps_with_the_pre_swap_epoch(self):
+        """The restore worker is the one swap path since 11 Oct 2026 (api_import_from_zip, the
+        second, went with the staged restore — first-run design §2.5)."""
         import ast
         tree = ast.parse(open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read())
-        for name in ("_restore_worker", "api_import_from_zip"):
+        for name in ("_restore_worker",):
             fn = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == name)
             src = ast.unparse(fn)
             self.assertIn("bump_data_epoch(floor=_epoch_before)", src, name)

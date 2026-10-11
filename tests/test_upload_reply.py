@@ -19,7 +19,7 @@ import unittest
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGE = open(os.path.join(_ROOT, "web", "templates", "data_management.html"),
             encoding="utf-8").read()
-UPLOADS = ("/api/import/from-zip", "/api/import/extract-zip", "/api/import")
+UPLOADS = ("/api/restore/stage", "/api/import/extract-zip")
 
 
 class ThePage(unittest.TestCase):
@@ -55,9 +55,13 @@ class ThePage(unittest.TestCase):
         reports nothing until the reply — the page sat silent with its button live, and a
         second click started a second upload. Both restore uploads now report progress and the
         import button is off while one runs. STRUCTURAL; fails on the parent."""
-        for url in ("/api/import/from-zip", "/api/import"):
-            with self.subTest(url=url):
-                self.assertIn("uploadWithProgress(apiUrl('%s')" % url, PAGE)
+        # 11 Oct 2026: both restore uploads go through restoreUpload(), which stages the file
+        # with uploadWithProgress (first-run design §2.5)
+        self.assertIn("uploadWithProgress(apiUrl('/api/restore/stage')", PAGE)
+        for fn in ("async function doImport()", "async function doZipRestore()"):
+            with self.subTest(fn=fn):
+                j = PAGE.index(fn)
+                self.assertIn("restoreUpload(", PAGE[j:PAGE.index("\n}\n", j)])
         i = PAGE.index("function uploadWithProgress(")
         body = PAGE[i:PAGE.index("\n}\n", i)]
         self.assertIn("xhr.upload.onprogress", body)
@@ -92,8 +96,7 @@ class TheServer(unittest.TestCase):
         cls.client = srv.app.test_client()
 
     def test_a_refused_upload_is_still_json(self):
-        for url, field in (("/api/import", "blocks"), ("/api/import/from-zip", "zipfile"),
-                           ("/api/import/extract-zip", "zipfile")):
+        for url, field in (("/api/restore/stage", "file"), ("/api/import/extract-zip", "zipfile")):
             with self.subTest(url=url):
                 r = self.client.post(url, data={}, content_type="multipart/form-data")
                 self.assertGreaterEqual(r.status_code, 400)

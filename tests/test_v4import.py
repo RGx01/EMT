@@ -695,16 +695,30 @@ class TheRestore(unittest.TestCase):
         self._refused(v4_db(os.path.join(self.share, "old.db"), written_by="4.5.13"),
                       "last v4 release")
 
-    def test_from_zip_imports_a_v4_backup(self):
+    def test_a_staged_zip_imports_a_v4_backup(self):
+        """Stage, then confirm (first-run design §2): the zip goes through the restore worker,
+        as every upload now does."""
         src = v4_db(os.path.join(self.share, "v4.db"))
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w") as zf:
             zf.write(src, "blocks.db")
         buf.seek(0)
-        r = self.srv.app.test_client().post("/api/import/from-zip",
-                                            data={"zipfile": (buf, "v4.zip")},
-                                            content_type="multipart/form-data")
+        self.srv._restore_job["status"] = "idle"
+        client = self.srv.app.test_client()
+        r = client.post("/api/restore/stage", data={"file": (buf, "v4.zip")},
+                        content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(r.get_json()["facts"]["kind"], "v4")
+
+        class _Now:
+            def __init__(self, target, args=(), kwargs=None, **_):
+                self.run = lambda: target(*args, **(kwargs or {}))
+            def start(self):
+                self.run()
+        with mock.patch.object(self.srv.threading, "Thread", _Now):
+            r = client.post("/api/restore/confirm", json={"token": r.get_json()["token"]})
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self._done()
         self.assertEqual(read_emt_schema(self.live), EMT_SCHEMA)
 
 
