@@ -757,7 +757,14 @@ def index():
         }
         last = page_map.get(last, "charts")
         return redirect(url_for(last + "_page"))
-    return redirect(url_for("settings_page"))
+    # No configuration: the first-run fork — new setup, or restore a backup (first-run design
+    # §1). A restore running into an empty instance lands there too, and the page follows it.
+    return redirect(url_for("welcome_page"))
+
+
+@app.route("/welcome")
+def welcome_page():
+    return render_template("welcome.html", active="welcome")
 
 
 @app.route("/api/last-page", methods=["POST"])
