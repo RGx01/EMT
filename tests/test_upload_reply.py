@@ -17,8 +17,15 @@ import re
 import unittest
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PAGE = open(os.path.join(_ROOT, "web", "templates", "data_management.html"),
-            encoding="utf-8").read()
+def _template(name):
+    return open(os.path.join(_ROOT, "web", "templates", name), encoding="utf-8").read()
+
+
+# The upload helpers live in a partial both upload pages include (11 Oct 2026); the page under
+# test is Data Management with it inlined, as Jinja renders it.
+HELPERS = _template("_upload_js.html")
+PAGE = _template("data_management.html").replace('{% include "_upload_js.html" %}', HELPERS)
+WELCOME = _template("welcome.html")
 UPLOADS = ("/api/restore/stage", "/api/import/extract-zip")
 
 
@@ -76,6 +83,32 @@ class ThePage(unittest.TestCase):
         self.assertIn("application/json", body)
         self.assertIn("r.status", body)
         self.assertIn("directly", body)
+
+
+class TheWelcomePage(unittest.TestCase):
+    """The first-run fork's restore (11 Oct 2026). STRUCTURAL; new page, so it fails on the parent."""
+
+    def test_it_takes_the_shared_helpers(self):
+        self.assertIn('{% include "_upload_js.html" %}', WELCOME)
+        self.assertNotIn("function uploadReply(", WELCOME, "a second copy of the helper")
+
+    def test_its_upload_and_its_confirm_read_their_replies_through_uploadReply(self):
+        i = WELCOME.index("uploadWithProgress(apiUrl('/api/restore/stage')")
+        self.assertRegex(WELCOME[i:i + 300], r"const|var")
+        self.assertIn("await uploadReply(r)", WELCOME[i:i + 300])
+        j = WELCOME.index("fetch(apiUrl('/api/restore/confirm')")
+        self.assertIn("await uploadReply(r)", WELCOME[j:j + 400])
+
+    def test_a_mismatch_offers_to_import_unconnected_or_rekey(self):
+        """First-run design §2.4."""
+        self.assertIn("r.status === 409 && data.mismatch", WELCOME)
+        self.assertIn("accept_mismatch = true", WELCOME)
+        self.assertIn("Import without connecting", WELCOME)
+        self.assertIn("Enter a different key", WELCOME)
+
+    def test_a_skipped_key_hands_off_to_settings(self):
+        """First-run design §3: credentials missing on an API mode -> Settings and its banner."""
+        self.assertIn("m.credentials_missing", WELCOME)
 
 
 def _server():

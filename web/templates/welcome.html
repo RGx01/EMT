@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+
+{#
+  The first-run fork (first-run design §1, import spec §3a). An instance with no meters lands
+  here: set up a new account (the wizard), or restore a backup. On the restore path the backup
+  decides which key to ask for — stage it, read what it is, ask (or not), then confirm.
+#}
+
+{% block topbar %}
+<div class="topbar">
+  <div>
+    <h2>Welcome to Energy Meter Tracker</h2>
+    <div class="sub">Start fresh, or bring your history across</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<div id="alert-success" class="alert alert-success"></div>
+<div id="alert-error"   class="alert alert-danger"></div>
+
+<div id="fork" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px;max-width:820px;">
+  <div class="card" style="padding:24px;">
+    <h3 style="margin:0 0 8px;font-size:15px;">Set up a new account</h3>
+    <p style="font-size:13px;line-height:1.7;color:var(--muted);margin:0 0 16px;">
+      Choose your supplier, connect it, and pick your meters. History starts from today, and you can
+      still restore a backup later from Data Management.
+    </p>
+    <a class="btn btn-primary" id="btn-new" href="{{ url_for('settings_page') }}?wizard=1">✦ Set up</a>
+  </div>
+
+  <div class="card" style="padding:24px;">
+    <h3 style="margin:0 0 8px;font-size:15px;">Restore from an Energy Meter Tracker backup</h3>
+    <p style="font-size:13px;line-height:1.7;color:var(--muted);margin:0 0 16px;">
+      A backup <code>.zip</code> or a <code>blocks.db</code> from this add-on or from the v4 add-on
+      (4.5.22 or later). Your history, meters and settings come with it.
+    </p>
+    <input type="file" id="restore-file" accept=".zip,.db" style="display:none;" onchange="onRestoreFile(this.files)">
+    <button class="btn btn-primary" id="btn-restore-pick" onclick="document.getElementById('restore-file').click()">📥 Choose a backup</button>
+  </div>
+</div>
+
+<!-- ── What the backup is, and the key it needs ─────────────────────────────── -->
+<div id="restore-panel" class="card" style="display:none;padding:24px;max-width:820px;margin-top:16px;">
+  <h3 style="margin:0 0 8px;font-size:15px;">Restore this backup</h3>
+  <div id="restore-facts" style="font-size:13px;line-height:1.7;margin-bottom:16px;"></div>
+
+  <div id="restore-key" style="display:none;">
+    <div style="font-size:13px;line-height:1.7;margin-bottom:12px;">
+      <strong>This backup is from an Octopus account.</strong> Connect it to keep costing live, or skip
+      and connect later — your history imports either way.
+    </div>
+    <div style="display:grid;gap:10px;max-width:420px;margin-bottom:16px;">
+      <label style="font-size:12px;color:var(--muted);">API key
+        <input type="password" id="key-api" autocomplete="off" style="width:100%;">
+      </label>
+      <label style="font-size:12px;color:var(--muted);">Account number (optional — read from the key if blank)
+        <input type="text" id="key-account" autocomplete="off" style="width:100%;">
+      </label>
+    </div>
+  </div>
+
+  <div id="restore-mismatch" style="display:none;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:var(--radius);padding:12px 14px;margin-bottom:16px;font-size:13px;line-height:1.7;"></div>
+
+  <div id="restore-actions" style="display:flex;gap:10px;flex-wrap:wrap;">
+    <button class="btn btn-primary"   id="btn-connect"   onclick="confirmRestore(true)">Connect and restore</button>
+    <button class="btn btn-secondary" id="btn-skip"      onclick="confirmRestore(false)">Skip — restore without connecting</button>
+    <button class="btn btn-primary"   id="btn-plain"     onclick="confirmRestore(false)">↩ Restore</button>
+    <button class="btn btn-primary"   id="btn-accept"    onclick="confirmRestore(false, true)">Import without connecting</button>
+    <button class="btn btn-secondary" id="btn-rekey"     onclick="showKeyPrompt()">Enter a different key</button>
+    <button class="btn btn-secondary" id="btn-cancel"    onclick="resetFork()">Cancel</button>
+  </div>
+</div>
+
+{% endblock %}
+
+{% block scripts %}
+<script>
+{% include "_upload_js.html" %}
+
+var _token = null, _facts = null, _restoreTimer = null;
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[<>&"]/g, function(c) {
+    return {'<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;'}[c]; });
+}
+function showBusy(text) {
+  var el = document.getElementById('alert-success');
+  el.textContent = '⏳ ' + text;
+  el.classList.add('show');
+  document.getElementById('alert-error').classList.remove('show');
+}
+function showError(text) {
+  document.getElementById('alert-success').classList.remove('show');
+  var el = document.getElementById('alert-error');
+  el.textContent = text;
+  el.classList.add('show');
+}
+function hideAlerts() {
+  document.getElementById('alert-success').classList.remove('show');
+  document.getElementById('alert-error').classList.remove('show');
+}
+function setButtons(ids) {
+  ['btn-connect', 'btn-skip', 'btn-plain', 'btn-accept', 'btn-rekey', 'btn-cancel'].forEach(function(id) {
+    document.getElementById(id).style.display = ids.indexOf(id) === -1 ? 'none' : '';
+  });
+}
+function setBusy(busy) {
+  document.querySelectorAll('#fork button, #fork a, #restore-actions button').forEach(function(b) {
+    b.disabled = busy;
+    if (b.tagName === 'A') b.style.pointerEvents = busy ? 'none' : '';
+  });
+}
+
+function resetFork() {
+  _token = null; _facts = null;
+  document.getElementById('restore-panel').style.display = 'none';
+  document.getElementById('restore-file').value = '';
+  hideAlerts();
+}
+
+// Step 1: stage it. Phase 1 runs on the upload; a refusal comes back here, with nothing touched.
+async function onRestoreFile(files) {
+  var file = files && files[0];
+  if (!file) return;
+  if (!/\.(zip|db)$/i.test(file.name)) { showError('Choose a backup .zip or a blocks.db.'); return; }
+  resetFork();
+  setBusy(true);
+  try {
+    var form = new FormData();
+    form.append('file', file);
+    var r    = await uploadWithProgress(apiUrl('/api/restore/stage'), form, showBusy);
+    var data = await uploadReply(r);
+    if (!data.ok) throw new Error(data.error || 'That backup could not be checked');
+    _token = data.token; _facts = data.facts;
+    hideAlerts();
+    showFacts();
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    setBusy(false);
+    document.getElementById('restore-file').value = '';
+  }
+}
+
+function showFacts() {
+  var f = _facts, n = Number(f.blocks || 0).toLocaleString();
+  var from = f.kind === 'v4' ? 'the v4 add-on' : 'Energy Meter Tracker';
+  var who  = f.supplier === 'octopus' ? 'Octopus' :
+             f.supplier === 'not-listed' ? 'local meter readings only' :
+             f.supplier ? f.supplier : 'no supplier recorded';
+  document.getElementById('restore-facts').innerHTML =
+    'A backup from ' + esc(from) + (f.written_by ? ' ' + esc(f.written_by) : '') + ': ' +
+    esc(n) + ' half-hours' + (f.first_day ? ', ' + esc(f.first_day) + ' to ' + esc(f.last_day) : '') +
+    '. Supplier: ' + esc(who) + '.';
+  document.getElementById('restore-panel').style.display = '';
+  document.getElementById('restore-mismatch').style.display = 'none';
+  if (f.prompt) showKeyPrompt();
+  else { document.getElementById('restore-key').style.display = 'none';
+         setButtons(['btn-plain', 'btn-cancel']); }
+}
+
+function showKeyPrompt() {
+  document.getElementById('restore-mismatch').style.display = 'none';
+  document.getElementById('restore-key').style.display = '';
+  setButtons(['btn-connect', 'btn-skip', 'btn-cancel']);
+  document.getElementById('key-api').focus();
+}
+
+// Step 2: confirm. With a key, phase 2 checks it against the backup's account first; a key for
+// another account asks (409), and "Import without connecting" goes ahead without keeping it.
+async function confirmRestore(withKey, acceptMismatch) {
+  if (!_token) return;
+  var body = {token: _token};
+  if (withKey || acceptMismatch) {
+    var key = document.getElementById('key-api').value.trim();
+    if (withKey && !key) { showError('Enter the API key, or skip and connect later.'); return; }
+    body.credentials = {api_key: key,
+                        account_number: document.getElementById('key-account').value.trim()};
+    if (acceptMismatch) body.accept_mismatch = true;
+  }
+  setBusy(true);
+  showBusy(withKey ? 'Checking the key…' : 'Starting the restore…');
+  try {
+    var r = await fetch(apiUrl('/api/restore/confirm'), {
+      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    });
+    var data = await uploadReply(r);
+    if (r.status === 409 && data.mismatch) {
+      hideAlerts();
+      var m = document.getElementById('restore-mismatch');
+      m.innerHTML = 'This backup belongs to account <strong>' + esc(data.mismatch.backup) +
+        '</strong>, and that key is for <strong>' + esc(data.mismatch.key) + '</strong>. ' +
+        'Import the history without connecting an account, or enter the key for ' +
+        esc(data.mismatch.backup) + '.';
+      m.style.display = '';
+      document.getElementById('restore-key').style.display = 'none';
+      setButtons(['btn-accept', 'btn-rekey', 'btn-cancel']);
+      return;
+    }
+    if (!data.ok) throw new Error(data.error || 'The restore did not start');
+    document.getElementById('key-api').value = '';
+    document.getElementById('restore-panel').style.display = 'none';
+    pollRestore();
+  } catch (e) {
+    showError(e.message);
+  } finally {
+    setBusy(false);
+  }
+}
+
+// The restore runs as a background job: show its step, and when it is done go on — to Settings
+// when the backup uses the supplier API and no key is stored (its banner is the hand-off to
+// connecting an account, first-run design §3), otherwise to the app.
+function pollRestore() {
+  fetch(apiUrl('/api/backup/restore/status')).then(function(r) { return r.json(); }).then(function(d) {
+    if (d.status === 'running') {
+      document.getElementById('fork').style.display = 'none';
+      showBusy('Restoring… ' + (d.step || '') + ' — do not restart the add-on until this finishes.');
+      _restoreTimer = setTimeout(pollRestore, 1500);
+    } else if (d.status === 'done') {
+      showBusy('Restored. Opening…');
+      fetch(apiUrl('/api/data-source-mode')).then(function(r) { return r.json(); })
+        .catch(function() { return {}; })
+        .then(function(m) {
+          window.location.href = m.credentials_missing
+            ? '{{ url_for("settings_page") }}' : '{{ url_for("index") }}';
+        });
+    } else if (d.status === 'error') {
+      document.getElementById('fork').style.display = '';
+      showError(d.error || 'Restore failed');
+    }
+  }).catch(function() { _restoreTimer = setTimeout(pollRestore, 3000); });
+}
+
+// A restore already running (the page was reloaded, or reached from the redirect): follow it.
+document.addEventListener('DOMContentLoaded', function() {
+  fetch(apiUrl('/api/backup/restore/status')).then(function(r) { return r.json(); })
+    .then(function(d) { if (d.status === 'running') pollRestore(); })
+    .catch(function() {});
+});
+</script>
+{% endblock %}

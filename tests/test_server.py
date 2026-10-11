@@ -299,6 +299,9 @@ class TestRouteRegistration(unittest.TestCase):
     def test_index_registered(self):
         self.assertTrue(self._registered("index"))
 
+    def test_welcome_page_registered(self):
+        self.assertTrue(self._registered("welcome_page"))
+
     def test_config_page_registered(self):
         self.assertTrue(self._registered("settings_page"))
 
@@ -1110,11 +1113,23 @@ class TestIndexRedirect(unittest.TestCase):
     def setUp(self):
         self.client = make_client()
 
-    def test_no_config_redirects_to_config(self):
+    def test_no_config_redirects_to_the_first_run_fork(self):
+        """11 Oct 2026: an unconfigured instance lands on /welcome — new setup or restore
+        (first-run design §1) — not straight in the setup wizard. Fails on the parent."""
         with patch.object(server, "load_config", return_value={"meters": {}}):
             r = self.client.get("/", follow_redirects=False)
         self.assertIn(r.status_code, (301, 302))
-        self.assertIn("settings", r.headers["Location"])
+        self.assertTrue(r.headers["Location"].endswith("/welcome"), r.headers["Location"])
+
+    def test_the_welcome_page_offers_both_paths(self):
+        r = self.client.get("/welcome")
+        self.assertEqual(r.status_code, 200)
+        page = r.get_data(as_text=True)
+        self.assertIn("Set up a new account", page)
+        self.assertIn("Restore from an Energy Meter Tracker backup", page)
+        self.assertIn("/settings?wizard=1", page)
+        self.assertIn("/api/restore/stage", page)
+        self.assertIn("/api/restore/confirm", page)
 
     def test_with_config_redirects_to_charts_by_default(self):
         with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):

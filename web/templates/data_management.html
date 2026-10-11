@@ -228,50 +228,7 @@
 
 {% block scripts %}
 <script>
-// The answer to an UPLOAD, as JSON — or a plain reason when it is not JSON (5 Oct 2026).
-// Through Home Assistant's ingress proxy a large upload can be refused before it reaches
-// EMT, and the reply is the proxy's own page, not JSON; `r.json()` on it failed with the
-// browser's parse error ("The string did not match the expected pattern." in Safari),
-// which named nothing. Say what happened and where it works instead.
-async function uploadReply(r) {
-  var type = (r.headers.get('content-type') || '').toLowerCase();
-  if (type.indexOf('application/json') !== -1) return r.json();
-  throw new Error('the server answered HTTP ' + r.status + ' without a result. ' +
-    'Home Assistant\'s ingress can refuse a large upload before it reaches EMT — ' +
-    'open the add-on\'s Web UI directly (port 8098 by default) and restore from there.');
-}
-
-// An upload that says how far it has got (10 Oct 2026). fetch() reports nothing until the
-// server replies, and an 80 MB backup took about two minutes to reach a Pi: the page sat
-// silent, the button stayed live, and a second click (or an ingress retry) started a second
-// upload. XMLHttpRequest reports the bytes sent. `onStage(text)` is called as the upload
-// progresses, and once more when it has all arrived and the server is checking it. Resolves to
-// what uploadReply() reads — the status, the content type and the body.
-function uploadWithProgress(url, form, onStage) {
-  return new Promise(function(resolve, reject) {
-    var xhr = new XMLHttpRequest();
-    xhr.open('POST', url);
-    var mb = function(n) { return (n / 1048576).toFixed(1); };
-    xhr.upload.onprogress = function(e) {
-      if (!e.lengthComputable) { onStage('Uploading… ' + mb(e.loaded) + ' MB sent'); return; }
-      var pct = Math.floor(100 * e.loaded / e.total);
-      onStage('Uploading… ' + pct + '% (' + mb(e.loaded) + ' of ' + mb(e.total) + ' MB)');
-    };
-    xhr.upload.onload = function() {
-      onStage('Uploaded — EMT is checking the file. On a Pi this can take a minute or two.');
-    };
-    xhr.onload = function() {
-      var body = xhr.responseText;
-      resolve({
-        status: xhr.status,
-        headers: { get: function(h) { return xhr.getResponseHeader(h); } },
-        json: function() { return Promise.resolve(JSON.parse(body)); }
-      });
-    };
-    xhr.onerror = function() { reject(new Error('the upload did not reach EMT')); };
-    xhr.send(form);
-  });
-}
+{% include "_upload_js.html" %}
 
 // A restore of an uploaded backup — a .zip or a blocks.db — in its two steps (first-run design
 // §2, 11 Oct 2026): stage it, which checks it (a refusal comes back here, before anything live
