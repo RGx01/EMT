@@ -15,6 +15,7 @@ import gzip as _gzip
 import json
 import logging
 import os
+import re
 import threading
 from pathlib import Path
 
@@ -334,6 +335,9 @@ def init(data_dir: str, ha_client):
     _event_loop = _asyncio.get_event_loop()
     DATA_DIR   = data_dir
     _ha_client = ha_client
+    # A staged upload is only ever confirmed by the page that staged it, in this process:
+    # after a restart none can be, so none is kept (first-run design §2.2).
+    _remove_stale_stages(max_age=0)
     # Workstream A §5b: store_access.bind() is NOT called here. It moved to
     # main.py, ahead of BOTH engine_startup() and this init(), because the read
     # path has to serve the pre-wizard state -- a fresh install, or one just
@@ -2902,14 +2906,11 @@ V5_NEWER_SCHEMA = (
     "restore it.")
 
 
-def _prepare_restore_db(candidate, step=None):
-    """The database file to swap in for `candidate`, and the import report (None for a v5
-    backup). Raises _RestoreRefused with the user-facing reason; the live database is not
-    touched either way (E design §2).
-
-    A v5 backup (it carries emt_schema) takes gate 1 alone and is swapped in as it is. Any
-    other database is v4-shaped: it takes the v4 gate, then the importer builds a v5
-    database from it beside the live one, as DATA_DIR/import_target.db."""
+def _restore_phase1(candidate):
+    """Import spec §3 phase 1 on `candidate`: everything checkable from the file alone. Returns
+    its emt_schema revision (a v5 backup) or None (a v4 one), and raises _RestoreRefused with
+    the user-facing reason. A v5 backup takes gate 1 and must be this build's revision; any
+    other database takes the v4 gate."""
     import block_store as _bs
     gate = _import_gate()
     rev = _bs.read_emt_schema(candidate)
@@ -2921,11 +2922,31 @@ def _prepare_restore_db(candidate, step=None):
             raise _RestoreRefused(V5_OLDER_SCHEMA)
         if rev > _bs.EMT_SCHEMA:
             raise _RestoreRefused(V5_NEWER_SCHEMA)
-        logger.info("restore: a v5 backup (emt_schema %d)", rev)
-        return candidate, None
+        return rev
     why = gate.check(candidate)
     if why:
         raise _RestoreRefused(why)
+    return None
+
+
+def _prepare_restore_db(candidate, step=None, checked=False):
+    """The database file to swap in for `candidate`, and the import report (None for a v5
+    backup). Raises _RestoreRefused with the user-facing reason; the live database is not
+    touched either way (E design §2).
+
+    A v5 backup (it carries emt_schema) is swapped in as it is. Any other database is
+    v4-shaped: the importer builds a v5 database from it beside the live one, as
+    DATA_DIR/import_target.db. Phase 1 runs first unless `checked` — the staged upload
+    /api/restore/stage has already checked (first-run design §2.2)."""
+    import block_store as _bs
+    if checked:
+        rev = _bs.read_emt_schema(candidate)
+    else:
+        rev = _restore_phase1(candidate)
+    if rev is not None:
+        logger.info("restore: a v5 backup (emt_schema %d)", rev)
+        return candidate, None
+    gate = _import_gate()
     logger.info("restore: v4 backup admitted; supplier %s", gate.describe_supplier(candidate))
     import v4import
     target = os.path.join(DATA_DIR, "import_target.db")
@@ -2976,7 +2997,7 @@ def _extract_restore_candidate(zipname, selected):
 
 
 @job("restore", depends_on=("import",))
-def _restore_worker(zipname, selected, from_flat, staged=None):
+def _restore_worker(zipname, selected, from_flat, staged=None, checked=False):
     """Background restore worker (runs in its own thread; survives navigation).
     Updates _restore_job at each phase. Restores selected data files from a named
     backup zip, from last-finalise flat files, or — when `staged` is an absolute
@@ -3029,7 +3050,8 @@ def _restore_worker(zipname, selected, from_flat, staged=None):
         _swap_from = None              # the file swapped in: the candidate, or the import
         if _candidate and os.path.exists(_candidate):
             try:
-                _swap_from, _ = _prepare_restore_db(_candidate, _step)
+                _swap_from, _ = _prepare_restore_db(_candidate, _step,
+                                                    checked=bool(staged) and checked)
             except _RestoreRefused as _rr:
                 logger.warning("restore refused: %s", _rr)
                 _j["status"] = "error"
@@ -6891,231 +6913,290 @@ def _safety_backup_or_refuse(label):
 
 
 
-@app.route("/api/import/from-zip", methods=["POST"])
-def api_import_from_zip():
-    """
-    Accept an uploaded backup zip and restore blocks.db (and optionally
-    meters_config.json) directly server-side — no base64 round-trip through
-    the browser, which can corrupt binary DB files.
-    The DB is always authoritative; meters_config.json is written FROM the DB.
-    """
-    import zipfile, sys
-    global _store
-    try:
-        zf_file = request.files.get("zipfile")
-        if not zf_file:
-            return jsonify({"error": "No zip file provided"}), 400
+# ── Restore: stage, then confirm (first-run design §2, 11 Oct 2026) ─────────────────────────
+# One restore path for an uploaded backup. `stage` saves the upload and runs phase 1 on it, and
+# says what the backup is; the page asks for that supplier's credentials (or does not); `confirm`
+# checks a typed key against the backup's account stamp (phase 2), and starts _restore_worker.
+# They replace /api/import (a blocks.db, straight into the worker) and /api/import/from-zip (a
+# zip restored in the request thread, with no job claim and no engine_startup after it).
 
-        engine = sys.modules.get("engine")
-        if engine and hasattr(engine, "pause_engine"):
-            engine.pause_engine("zip import")
-        try:                                   # C §2a — see the bump below
-            _epoch_before = store_access.store().get_data_epoch()
-        except Exception:
-            _epoch_before = 0
-
-        known    = {"blocks.db", "blocks.json"}
-        imported = []
-
-        # Auto-backup before overwriting
-        try:
-            _create_backup_zip(label="pre_import")
-        except Exception as _bke:
-            logger.warning("api_import_from_zip: pre-import backup failed: %s", _bke)
-
-        # Open the zip from a file, not the upload stream: on Python 3.10 that stream is a
-        # SpooledTemporaryFile with no seekable(), which zipfile needs (added in 3.11).
-        _upload_zip = os.path.join(DATA_DIR, "upload_import.zip")
-        zf_file.save(_upload_zip)
-        with zipfile.ZipFile(_upload_zip, "r") as zf:
-            if _zip_has_hot_wal(zf):
-                logger.warning("api_import_from_zip: refused: a live copy, not a backup")
-                return jsonify({"error": _import_gate().HOT_WAL}), 400
-            names = {os.path.basename(n): n for n in zf.namelist() if os.path.basename(n) in known}
-            logger.info("api_import_from_zip: zip contains %s", list(names.keys()))
-
-            # ── blocks.db — extract directly, no base64 ───────────────────────
-            if "blocks.db" in names:
-                dest = os.path.join(DATA_DIR, "blocks.db")
-                tmp  = dest + ".import_tmp"
-                try:
-                    zip_info = zf.getinfo(names["blocks.db"])
-                    logger.info("api_import_from_zip: blocks.db in zip is %d bytes", zip_info.file_size)
-                    with zf.open(names["blocks.db"]) as src, open(tmp, "wb") as dst:
-                        dst.write(src.read())
-                    tmp_size = os.path.getsize(tmp)
-                    logger.info("api_import_from_zip: wrote tmp file %d bytes", tmp_size)
-                    # Validate
-                    import sqlite3 as _sq3
-                    _tc = _sq3.connect(tmp)
-                    count = _tc.execute("SELECT COUNT(*) FROM blocks").fetchone()[0]
-                    _tc.close()
-                    logger.info("api_import_from_zip: validated %d blocks in tmp file", count)
-                    try:
-                        _swap_from, _ = _prepare_restore_db(tmp)
-                    except _RestoreRefused as _rr:
-                        os.remove(tmp)
-                        logger.warning("api_import_from_zip: refused: %s", _rr)
-                        return jsonify({"error": str(_rr)}), 400
-                    # Close web server store
-                    if _store:
-                        try: _store.close()
-                        except Exception: pass
-                        _store = None
-                    os.replace(_swap_from, dest)
-                    if os.path.exists(tmp):
-                        os.remove(tmp)          # the importer built `dest` from it
-                    imported.append("blocks.db")
-                    logger.info("api_import_from_zip: restored blocks.db (%d blocks)", count)
-
-                    # Reset engine store so it picks up the new file immediately
-                    _eng_early = sys.modules.get("engine")
-                    if _eng_early and hasattr(_eng_early, "reset_store"):
-                        try:
-                            _reset_engine_store()
-                            logger.info("api_import_from_zip: engine store reset OK")
-                        except Exception as _re:
-                            logger.warning("api_import_from_zip: engine reset_store failed: %s", _re)
-
-                except Exception as _dbe:
-                    if os.path.exists(tmp):
-                        try: os.remove(tmp)
-                        except Exception: pass
-                    raise RuntimeError(f"blocks.db restore failed: {_dbe}") from _dbe
-
-        if not imported:
-            return jsonify({"error": "No blocks.db found in zip"}), 400
-
-        # ── Post-import: remove WAL/SHM and reset engine store ───────────────
-        # No need to write meters_config.json — engine_startup reads config
-        # directly from the restored DB on next start.
-        if "blocks.db" in imported:
-            _dest = os.path.join(DATA_DIR, "blocks.db")
-            for _ext in ("-wal", "-shm"):
-                _f = _dest + _ext
-                if os.path.exists(_f):
-                    try: os.remove(_f)
-                    except Exception: pass
-
-        # Reset engine store so it reopens from the new DB file
-        import sys as _sys
-        _eng = _sys.modules.get("engine")
-        if _eng and hasattr(_eng, "reset_store"):
-            try:
-                _reset_engine_store()
-                logger.info("api_import_from_zip: engine store reset OK")
-            except Exception as _re:
-                logger.warning("api_import_from_zip: engine reset_store failed: %s", _re)
-        if "blocks.db" in imported:
-            # C §2a: all history replaced, and the new file carries its own epoch —
-            # set it above the pre-import value so no client keeps its cache.
-            try:
-                _ep = _engine_write(lambda st: st.bump_data_epoch(floor=_epoch_before))
-                logger.info("api_import_from_zip: data epoch -> %s", _ep)
-            except Exception as _be:
-                logger.warning("api_import_from_zip: epoch bump failed: %s", _be)
-
-        return jsonify({"ok": True, "imported": imported})
-
-    except Exception as e:
-        logger.error("api_import_from_zip: %s", e)
-        return jsonify({"error": str(e)}), 500
-    finally:
-        _upload_zip = os.path.join(DATA_DIR, "upload_import.zip")
-        if os.path.exists(_upload_zip):
-            try: os.remove(_upload_zip)
-            except Exception: pass
-        import sys as _sys
-        _eng = _sys.modules.get("engine")
-        if _eng and hasattr(_eng, "resume_engine"):
-            try: _eng.resume_engine()
-            except Exception: pass
+_STAGED_PREFIX = "uploaded_restore-"
+_STAGED_RE = re.compile(r"^uploaded_restore-[A-Za-z0-9_]+\.db$")
+_STAGED_MAX_AGE_S = 3600
 
 
-@app.route("/api/import", methods=["POST"])
-def api_import():
-    """Accept an uploaded blocks.db and restore it through the SAME background job
-    as the backup-zip restore (#356): a pre-restore safety backup, live progress
-    via /api/backup/restore/status, an atomic swap, store reset and gap detection.
+def _staged_path(token):
+    """The staged file a token names, or None: the token must be a staged file's own name, and
+    the file must still be in DATA_DIR (first-run design §2.2)."""
+    if not isinstance(token, str) or not _STAGED_RE.match(token):
+        return None
+    p = os.path.join(DATA_DIR, token)
+    return p if _in_data_dir(p) and os.path.isfile(p) else None
 
-    The upload is staged and SQLite-validated synchronously (a bad file fails here,
-    with the live DB untouched); the swap itself runs in the shared _restore_worker
-    so the client sees the same progress banner instead of a silent, blocking wait.
-    Returns {ok, status:"running"}; the client polls the restore status.
-    (blocks.json import removed in 2.2.2; meters_config.json is ignored — the DB is
-    authoritative.)"""
-    global _restore_job
+
+def _remove_stale_stages(max_age=_STAGED_MAX_AGE_S, keep=None):
+    """Remove staged uploads nobody confirmed. Never the running restore's own file."""
     import time as _t
-    _t0 = _t.monotonic()
+    now = _t.time()
     try:
-        blocks_file = request.files.get("blocks")      # the multipart body, parsed (spooled)
-        if not blocks_file:
-            return jsonify({"error": "No files received"}), 400
-        _t_parse = _t.monotonic() - _t0
-
-        # Refuse BEFORE saving anything while a restore runs (10 Oct 2026). The upload used
-        # to be saved first, to one fixed path, then refused — overwriting, and then
-        # deleting, the running restore's own candidate. With the importer a restore takes
-        # minutes on a Pi, and a second upload (an ingress retry, a second click) landed in
-        # that window: the import read a half-written file ("no such table: store_meta").
-        if _restore_job.get("status") == "running":
-            return jsonify({"error": "a restore is already running",
-                            "status": _restore_job}), 409
-
-        # Stage + validate BEFORE touching the live DB. A non-SQLite / wrong-schema
-        # upload is rejected synchronously here and the live database is never
-        # disturbed. Each upload has its own file, so no two can share one.
-        import tempfile as _tf
-        _fd, staged = _tf.mkstemp(prefix="uploaded_restore-", suffix=".db", dir=DATA_DIR)
-        os.close(_fd)
+        names = os.listdir(DATA_DIR)
+    except OSError:
+        return
+    running = _restore_job.get("status") == "running"
+    for n in names:
+        if not _STAGED_RE.match(n):
+            continue
+        p = os.path.join(DATA_DIR, n)
+        if p == keep or running:
+            continue
         try:
-            _t1 = _t.monotonic()
-            blocks_file.save(staged)
-            _t_save = _t.monotonic() - _t1
-            # A cheap probe, not a COUNT(*) of every block: that the file is a database with a
-            # readable `blocks` table. The restore's import gate checks the rest (integrity, the
-            # stamp, the units) before anything is swapped. Immutable and read-only, so it
-            # leaves no -wal / -shm beside the staged file.
-            _t1 = _t.monotonic()
-            import sqlite3 as _sq3
-            from urllib.parse import quote as _q
+            if now - os.path.getmtime(p) > max_age:
+                os.remove(p)
+                logger.info("restore: removed a staged upload nobody confirmed (%s)", n)
+        except OSError:
+            pass
+
+
+def _restore_facts(path, rev):
+    """What a staged backup is, for the page (first-run design §2.1), and its account stamp.
+    `rev` is phase 1's: a v5 revision, or None for v4. Read here for both kinds, so the v5 path
+    needs nothing v4-shaped."""
+    import json as _json
+    import sqlite3 as _sq3
+    import suppliers as _sup
+    from urllib.parse import quote as _q
+    conn = _sq3.connect("file:%s?immutable=1" % _q(os.path.abspath(path)), uri=True)
+    try:
+        def _meta(key):
+            row = conn.execute("SELECT value FROM store_meta WHERE key = ?", (key,)).fetchone()
+            if not row or row[0] is None:
+                return None
+            try:
+                return _json.loads(row[0])
+            except (TypeError, ValueError):
+                return row[0]
+        try:
+            row = conn.execute("SELECT value FROM kraken_state "
+                               "WHERE key = 'kraken_account_number'").fetchone()
+            account = (row[0] or None) if row else None
+        except _sq3.Error:
+            account = None
+        n, first, last = conn.execute(
+            "SELECT COUNT(*), MIN(block_start), MAX(block_start) FROM blocks").fetchone()
+        written_by = _meta("written_by")
+        own_supplier = _meta("supplier") or None
+    finally:
+        conn.close()
+    # No supplier stamp, but an account stamp: Octopus, the only API EMT has had (import spec
+    # §3, 4 Oct 2026 — the v4 gate's source_supplier reads it the same way). Either kind can
+    # lack the stamp: v5 stamps the supplier only when its config names one.
+    supplier, inferred = own_supplier, False
+    if not supplier and account:
+        supplier, inferred = "octopus", True
+    return {
+        "kind": "v4" if rev is None else "v5",
+        "written_by": written_by,
+        "supplier": supplier,
+        "supplier_inferred": bool(inferred),
+        "prompt": supplier if supplier in _sup.API_CAPABLE else None,
+        "account_stamped": bool(account),
+        "blocks": n,
+        "first_day": (first or "")[:10] or None,
+        "last_day": (last or "")[:10] or None,
+    }, account
+
+
+def _test_supplier_key(supplier, creds):
+    """Phase 2's key check (first-run design §2.3): a throwaway client, one account query, closed
+    again. Saves nothing and touches no store, so the live database is not stamped and no poll
+    starts. Returns test_connection's {ok, detail, account_number}."""
+    if supplier != "octopus":
+        return {"ok": False, "detail": "no key check for supplier %r" % supplier,
+                "account_number": None}
+
+    async def _probe():
+        from kraken_api_client import KrakenAPIClient
+        kw = {"account_number": (creds.get("account_number") or "").strip() or None}
+        if (creds.get("base_url") or "").strip():
+            kw["base_url"] = creds["base_url"].strip()
+        client = KrakenAPIClient(creds["api_key"].strip(), **kw)
+        try:
+            return await client.test_connection()
+        finally:
+            try:
+                await client.close()
+            except Exception:
+                pass
+    if _event_loop and _event_loop.is_running():
+        return _run_on_engine_loop(_probe(), timeout=45.0)
+    import asyncio as _asyncio
+    return _asyncio.run(_probe())
+
+
+def _stage_upload(upload):
+    """Save an upload as DATA_DIR/uploaded_restore-*.db — a .db as it is, a zip's blocks.db
+    extracted. Returns the staged path; raises _RestoreRefused with the user-facing reason, and
+    leaves nothing behind when it does."""
+    import tempfile as _tf
+    import zipfile as _zf
+    import shutil as _sh
+    import sqlite3 as _sq3
+    from urllib.parse import quote as _q
+    _fd, staged = _tf.mkstemp(prefix=_STAGED_PREFIX, suffix=".db", dir=DATA_DIR)
+    os.close(_fd)
+    try:
+        upload.save(staged)
+        if _zf.is_zipfile(staged):
+            # From a file, not the upload stream: on Python 3.10 that stream is a
+            # SpooledTemporaryFile with no seekable(), which zipfile needs (added in 3.11).
+            _fd, zpath = _tf.mkstemp(prefix="upload_restore-", suffix=".zip", dir=DATA_DIR)
+            os.close(_fd)
+            os.replace(staged, zpath)
+            try:
+                with _zf.ZipFile(zpath, "r") as zf:
+                    if _zip_has_hot_wal(zf):
+                        raise _RestoreRefused(_import_gate().HOT_WAL)
+                    name = next((n for n in zf.namelist()
+                                 if os.path.basename(n) == "blocks.db"), None)
+                    if not name:
+                        raise _RestoreRefused("That zip has no blocks.db in it — it is not an "
+                                              "Energy Meter Tracker backup.")
+                    with zf.open(name) as src, open(staged, "wb") as dst:
+                        _sh.copyfileobj(src, dst)
+                        dst.flush()
+                        os.fsync(dst.fileno())
+            finally:
+                try: os.remove(zpath)
+                except OSError: pass
+        # A cheap probe, not a COUNT(*): that the file is a database with a readable `blocks`
+        # table. Immutable, so it leaves no -wal / -shm beside the staged file.
+        try:
             _tc = _sq3.connect("file:%s?mode=ro&immutable=1" % _q(os.path.abspath(staged)),
                                uri=True)
             try:
                 _tc.execute("SELECT 1 FROM blocks LIMIT 1").fetchone()
             finally:
                 _tc.close()
-            _t_check = _t.monotonic() - _t1
-            logger.info("api_import: received %.1f MB — parsed in %.1f s, saved in %.1f s, "
-                        "checked in %.1f s; starting the restore",
-                        os.path.getsize(staged) / 1048576.0, _t_parse, _t_save, _t_check)
-        except Exception as _ve:
-            if os.path.exists(staged):
-                try: os.remove(staged)
-                except Exception: pass
-            logger.error("api_import: uploaded file is not a valid blocks.db: %s", _ve)
-            return jsonify({"error": "That file is not a valid EMT database "
-                                     "(blocks.db)."}), 400
+        except _sq3.Error:
+            raise _RestoreRefused("That file is not a valid EMT database (blocks.db).")
+        return staged
+    except BaseException:
+        try: os.remove(staged)
+        except OSError: pass
+        raise
 
-        # Don't collide with an in-flight restore — one that started while this upload was
-        # being saved. Checked and claimed under the lock; THIS upload's file is the only one
-        # removed on a refusal.
+
+@app.route("/api/restore/stage", methods=["POST"])
+def api_restore_stage():
+    """Stage an uploaded backup (.zip or blocks.db) and run phase 1 on it. 200 {token, facts}:
+    the token names the staged file for /api/restore/confirm, and facts say what the backup is
+    and which credentials to ask for (first-run design §2). A refusal is 400 {error}, and the
+    staged file is gone. Nothing live is touched."""
+    import time as _t
+    _t0 = _t.monotonic()
+    try:
+        upload = request.files.get("file")
+        if not upload:
+            return jsonify({"error": "No file received"}), 400
+        # Refuse BEFORE saving anything while a restore runs (10 Oct 2026): a second upload
+        # (an ingress retry, a second click) must never land beside the running one.
+        if _restore_job.get("status") == "running":
+            return jsonify({"error": "a restore is already running",
+                            "status": _restore_job}), 409
+        _t_parse = _t.monotonic() - _t0
+        _t1 = _t.monotonic()
+        try:
+            staged = _stage_upload(upload)
+        except _RestoreRefused as e:
+            logger.warning("restore/stage: refused: %s", e)
+            return jsonify({"error": str(e)}), 400
+        _t_save = _t.monotonic() - _t1
+        _remove_stale_stages(keep=staged)
+        _t1 = _t.monotonic()
+        try:
+            rev = _restore_phase1(staged)
+            facts, _account = _restore_facts(staged, rev)
+        except Exception as e:
+            try: os.remove(staged)
+            except OSError: pass
+            msg = str(e) if isinstance(e, _RestoreRefused) else \
+                "That file is not a valid EMT database (blocks.db)."
+            logger.warning("restore/stage: refused: %s", e)
+            return jsonify({"error": msg}), 400
+        logger.info("restore/stage: received %.1f MB — parsed in %.1f s, saved in %.1f s, "
+                    "checked in %.1f s; a %s backup, written by %s, supplier %s",
+                    os.path.getsize(staged) / 1048576.0, _t_parse, _t_save,
+                    _t.monotonic() - _t1, facts["kind"], facts["written_by"],
+                    facts["supplier"] or "none")
+        return jsonify({"ok": True, "token": os.path.basename(staged), "facts": facts})
+    except Exception as e:
+        logger.error("restore/stage: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/restore/confirm", methods=["POST"])
+def api_restore_confirm():
+    """Restore a staged backup. Body {token, credentials?, accept_mismatch?}.
+
+    With credentials, phase 2 first (first-run design §2.3–2.4): the key is tested without
+    saving it; a failed test is 400; a key for another account than the backup's stamp is 409
+    {mismatch} unless accept_mismatch, which imports without keeping the key; a match (or a
+    backup with no stamp) saves the key, so the restore's own engine_startup connects. Then the
+    staged file goes to _restore_worker. 200 {ok, status:'running'}; the page polls
+    /api/backup/restore/status."""
+    global _restore_job
+    try:
+        body = request.get_json(silent=True) or {}
+        staged = _staged_path(body.get("token"))
+        if not staged:
+            return jsonify({"error": "That upload is no longer waiting — upload the backup "
+                                     "again."}), 400
+        if _restore_job.get("status") == "running":
+            return jsonify({"error": "a restore is already running",
+                            "status": _restore_job}), 409
+        creds = body.get("credentials") or None
+        save_creds = None
+        if creds and (creds.get("api_key") or "").strip():
+            import block_store as _bs
+            facts, stamped = _restore_facts(staged, _bs.read_emt_schema(staged))
+            if not facts["prompt"]:
+                return jsonify({"error": "This backup has no supplier account to connect."}), 400
+            result = _test_supplier_key(facts["prompt"], creds)
+            if not result.get("ok"):
+                return jsonify({"error": "That key could not be checked: %s"
+                                         % (result.get("detail") or "unknown")}), 400
+            key_acct = (creds.get("account_number") or "").strip() or result.get("account_number")
+            import engine as _eng
+            if stamped and key_acct and _eng._norm_account(stamped) != _eng._norm_account(key_acct):
+                if not body.get("accept_mismatch"):
+                    from kraken_api_client import _mask
+                    logger.info("restore/confirm: the key is for another account than the "
+                                "backup's (%s, %s) — asking", _mask(stamped), _mask(key_acct))
+                    return jsonify({"mismatch": {"backup": _mask(stamped),
+                                                 "key": _mask(key_acct)}}), 409
+                logger.info("restore/confirm: account mismatch accepted — importing without "
+                            "connecting; the key is not kept")
+            else:
+                save_creds = (creds["api_key"].strip(), key_acct,
+                              (creds.get("base_url") or "").strip() or None)
         with _restore_launch_lock:
             if _restore_job.get("status") == "running":
-                try: os.remove(staged)
-                except Exception: pass
                 return jsonify({"error": "a restore is already running",
                                 "status": _restore_job}), 409
+            if save_creds:
+                import engine as _eng
+                _eng.save_kraken_credentials(*save_creds)
+                logger.info("restore/confirm: the key matches the backup's account — saved")
             _restore_job.clear()
             _restore_job.update({"status": "running", "step": "starting",
                                  "restored": None, "error": None})
         threading.Thread(target=_restore_worker,
                          args=("", ["blocks.db"], False),
-                         kwargs={"staged": staged},
+                         kwargs={"staged": staged, "checked": True},
                          daemon=True, name="restore-upload").start()
         return jsonify({"ok": True, "status": "running"})
     except Exception as e:
-        logger.error("api_import: %s", e)
+        logger.error("restore/confirm: %s", e)
         return jsonify({"error": str(e)}), 500
 
 # ── Database maintenance ───────────────────────────────────────────────────────────────────

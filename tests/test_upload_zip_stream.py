@@ -1,5 +1,5 @@
 """
-The two routes that take an uploaded backup zip open it from a file, not the upload
+The routes that take an uploaded backup zip open it from a file, not the upload
 stream (4 Oct 2026).
 
 On Python 3.10 werkzeug's upload stream is a SpooledTemporaryFile with no seekable()
@@ -9,8 +9,9 @@ On Python 3.10 werkzeug's upload stream is a SpooledTemporaryFile with no seekab
 Python by making access to SpooledTemporaryFile.seekable raise AttributeError, as
 3.10's missing attribute does.
 
-`extract-zip` fails on the parent tree (it still read the stream); `from-zip` is a
-GUARD here (fixed in #82, before this test existed — it failed there on CI 3.10).
+`extract-zip` fails on the parent tree (it still read the stream); `from-zip` was a
+GUARD here (fixed in #82, before this test existed — it failed there on CI 3.10). Since 11 Oct
+2026 a restore zip goes to `/api/restore/stage`, which saves it the same way: a GUARD.
 """
 import importlib.util
 import io
@@ -70,9 +71,9 @@ class UploadedZips(unittest.TestCase):
             x.stop()
         shutil.rmtree(self.data, ignore_errors=True)
 
-    def _post(self, route):
+    def _post(self, route, field="zipfile"):
         self.zip.seek(0)
-        return self.srv.app.test_client().post(route, data={"zipfile": (self.zip, "b.zip")},
+        return self.srv.app.test_client().post(route, data={field: (self.zip, "b.zip")},
                                                content_type="multipart/form-data")
 
     def test_the_simulation_breaks_the_stream(self):
@@ -89,16 +90,12 @@ class UploadedZips(unittest.TestCase):
         self.assertIn("blocks.db", r.get_json()["files"])
         self.assertEqual(os.listdir(self.data), [], "the saved upload was left behind")
 
-    def test_from_zip(self):
-        """GUARD: fixed in #82."""
-        with mock.patch.object(self.srv, "_create_backup_zip", lambda label="b": None), \
-             mock.patch.object(self.srv, "_reset_engine_store", lambda: None), \
-             mock.patch.object(self.srv, "_engine_write", lambda op, timeout=30.0: 1), \
-             mock.patch.object(self.srv.store_access, "store", side_effect=RuntimeError):
-            r = self._post("/api/import/from-zip")
+    def test_restore_stage(self):
+        """GUARD: the restore zip is saved to a file and its blocks.db extracted from that."""
+        r = self._post("/api/restore/stage", field="file")
         self.assertEqual(r.status_code, 200, r.get_json())
-        self.assertEqual(r.get_json().get("imported"), ["blocks.db"])
-        self.assertEqual(sorted(os.listdir(self.data)), ["blocks.db"])
+        left = os.listdir(self.data)
+        self.assertEqual(left, [r.get_json()["token"]], "only the staged database is kept")
 
 
 if __name__ == "__main__":

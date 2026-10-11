@@ -273,6 +273,26 @@ function uploadWithProgress(url, form, onStage) {
   });
 }
 
+// A restore of an uploaded backup — a .zip or a blocks.db — in its two steps (first-run design
+// §2, 11 Oct 2026): stage it, which checks it (a refusal comes back here, before anything live
+// is touched), then confirm it. This page is for a configured instance, so no key is asked for:
+// the credentials already on disk meet the backup's account when the engine restarts, as they
+// always have. Resolves once the restore is running; throws with the reason otherwise.
+async function restoreUpload(file, onStage) {
+  const form = new FormData();
+  form.append('file', file);
+  const r    = await uploadWithProgress(apiUrl('/api/restore/stage'), form, onStage);
+  const data = await uploadReply(r);
+  if (!data.ok) throw new Error(data.error || 'That backup could not be checked');
+  onStage('Checked — starting the restore…');
+  const c = await fetch(apiUrl('/api/restore/confirm'), {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({token: data.token})
+  });
+  const started = await uploadReply(c);
+  if (!started.ok) throw new Error(started.error || 'The restore did not start');
+}
+
 // For the length of one upload: the banner says how far it has got, and the button that
 // would start a second upload is off. Afterwards the button follows the file list again.
 function _uploadBusy(busy, text) {
@@ -356,20 +376,9 @@ async function doZipRestore() {
       } catch(e) { /* backup failure non-fatal */ }
     }
 
-    statusEl.textContent = '⏳ Uploading…';
-    const form = new FormData();
-    form.append('zipfile', zipFile);
-    const r    = await uploadWithProgress(apiUrl('/api/import/from-zip'), form,
-                                          function(t) { statusEl.textContent = '⏳ ' + t; });
-    const data = await uploadReply(r);
-
-    if (data.ok) {
-      statusEl.textContent = '✓ Restored successfully. Reloading…';
-      setTimeout(function() { sessionStorage.setItem('emt_db_restored', Date.now()); window.location.reload(); }, 2500);
-    } else {
-      statusEl.classList.remove('show');
-      showError(data.error || 'Restore failed');
-    }
+    await restoreUpload(zipFile, function(t) { statusEl.textContent = '⏳ ' + t; });
+    _restoreWasRunning = true;
+    pollRestoreStatus();
   } catch(e) {
     statusEl.classList.remove('show');
     showError('Restore failed: ' + e.message);
@@ -441,39 +450,20 @@ function removeFile(name) {
 
 async function doImport() {
   hideAlerts();
-  const form = new FormData();
-  const fieldMap = {
-    'blocks.db': 'blocks',
-  };
-
-  let hasKnown = false;
-  Object.entries(selectedFiles).forEach(([name, file]) => {
-    const field = fieldMap[name];
-    if (field) { form.append(field, file); hasKnown = true; }
-  });
-
-  if (!hasKnown) {
+  const file = selectedFiles['blocks.db'];
+  if (!file) {
     showError('No recognised files selected. Please select blocks.db.');
     return;
   }
-
   _uploadBusy(true, 'Uploading…');
   try {
-    const r    = await uploadWithProgress(apiUrl('/api/import'), form,
-                                          function(t) { _uploadBusy(true, t); });
-    const data = await uploadReply(r);
-    if (data.ok) {
-      // The upload now restores through the SAME background job as a backup-zip
-      // restore (#356): show progress via the shared banner and reload on done.
-      selectedFiles = {};
-      renderFileList();
-      _restoreWasRunning = true;
-      pollRestoreStatus();
-    } else {
-      document.getElementById('alert-success').classList.remove('show');
-      _uploadBusy(false);
-      showError(data.error || 'Import failed');
-    }
+    // The restore runs as a background job (#356): the shared banner shows its progress and
+    // the page reloads when it is done.
+    await restoreUpload(file, function(t) { _uploadBusy(true, t); });
+    selectedFiles = {};
+    renderFileList();
+    _restoreWasRunning = true;
+    pollRestoreStatus();
   } catch(e) {
     document.getElementById('alert-success').classList.remove('show');
     _uploadBusy(false);

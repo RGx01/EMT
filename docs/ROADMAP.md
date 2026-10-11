@@ -507,7 +507,8 @@ string comparison v5's own CalVer `2026.9.0` sorts *below* the v4 floor.
 
 **Enforced at restore since 4 Oct 2026** (`import_gate.py`, moved to `v4import/gate.py` on 10 Oct with the importer): gates 2 (the floor) and 4 (units) run
 on the candidate file before anything is stopped, backed up or swapped, on every path that replaces
-the live database — a backup zip, the flat share copy, an upload, and `/api/import/from-zip`. Until
+the live database — a backup zip, the flat share copy, and an upload (since 11 Oct 2026 one route,
+`/api/restore/stage`, for a `.db` or a zip; `/api/import/from-zip` went with it). Until
 then `written_by` was stamped and never read, so a restore took any v4 backup. Gates 1 (live copy +
 integrity) and 3 (supplier) followed the same day; all seven admissible databases on hand pass all
 four, and `quick_check` + `foreign_key_check` take under 0.5 s on the largest (79 MB).
