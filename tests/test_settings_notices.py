@@ -8,7 +8,7 @@ the .alert class: the reset's "deleting all data…" never appeared, and nor did
 delete, disconnect or reactivate. The reset's restart notice was a 6-second toast for a restart
 that takes longer.
 
-STRUCTURAL (no JS runtime in the suite). Discriminating: both tests fail on the parent.
+STRUCTURAL (no JS runtime in the suite). Discriminating: every test here fails on the parent.
 """
 import os
 import unittest
@@ -30,6 +30,19 @@ class TheSettingsNotices(unittest.TestCase):
         self.assertIn("progress('✓ All data deleted", after, "the restart notice is not persistent")
         j = PAGE.index("function progress(")
         self.assertIn("transient: false", PAGE[j:PAGE.index("\n}\n", j)])
+
+
+class TheWizardFinish(unittest.TestCase):
+
+    def test_the_page_is_drawn_with_the_chosen_mode(self):
+        """Pi run, 12 Oct 2026 (finding 5): finishing the wizard redrew the page before the mode
+        was saved, with the page-load mode (`unset`) and the key the credentials step had saved —
+        "API is configured but inactive" until the next refresh. STRUCTURAL; fails on the parent."""
+        i = PAGE.index("async function wizApplyAndClose()")
+        body = PAGE[i:PAGE.index("\n}\n", i)]
+        j = body.index("  renderAll();")
+        self.assertIn("DATA_SOURCE_MODE = wiz.data.mode", body[:j])
+        self.assertLess(j, body.index("/api/data-source-mode"))
 
 
 if __name__ == "__main__":

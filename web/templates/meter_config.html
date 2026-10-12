@@ -2920,6 +2920,11 @@ async function wizApplyAndClose() {
   });
 
   closeWizard();
+  // The page redraws now, before the POST below saves the mode: draw it with the mode just chosen.
+  // With the page-load value (`unset` on a fresh install) and the key the credentials step already
+  // saved, the card read "API is configured but inactive … Data source: unset" until the next
+  // refresh (Pi run, 12 Oct 2026).
+  DATA_SOURCE_MODE = wiz.data.mode || 'cad';
   renderAll();
   // Persist the derived data-source mode (drives Mini gating, sensor needs).
   // Send supplier too so the server can ENFORCE the gating (an api mode is
