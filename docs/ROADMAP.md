@@ -383,24 +383,66 @@ total follows them; the one that doesn't is the energy, 10p high because EMT put
 into peak than Octopus did, which carries into the total. That band split is the open remainder: a
 kWh question, not a rounding one (see BL-80's note).
 
-**BL-82 — the settlement re-run replaces a settled block's bill with kWh × rate.** Found 10 Oct 2026,
-open, not yet decided. When `_rerun_pass2_for_settled_block` reaches a block whose rate is held —
-`rate_source` `settled`, `corrected` or `reconciled` — it keeps the rate and re-costs the block to
-the settled kWh: `imp_cost = chosen × imp_rate`. On a `settled` block `imp_rate` is the clean tariff
-rate the bill was snapped to, and `imp_cost` WAS the bill, so the re-run swaps what Octopus charged
-for kWh × rate. The import spec says the opposite: "`imp_cost` on a settled block **is the bill** and
-must not be recomputed from segments" (§5.2).
+**BL-82 — the settlement re-run replaces a settled block's bill with kWh × rate.** Found 10 Oct 2026;
+**measured and decided in part 12 Oct 2026.** When `_rerun_pass2_for_settled_block` reaches a block
+whose rate is held — `rate_source` `settled`, `corrected` or `reconciled` — it keeps the rate and
+re-costs the block to the settled kWh: `imp_cost = chosen × imp_rate`. On a `settled` block `imp_cost`
+WAS the bill, so the re-run swaps what Octopus charged for kWh × rate. The import spec says the
+opposite: "`imp_cost` on a settled block **is the bill** and must not be recomputed from segments"
+(§5.2). v4 behaves the same.
 
-*Seen:* after the dev database was imported on 10 Oct, the drain re-ran all of 9 Oct's settled
-blocks (`rate preserved (0.05231) — … re-costed to chosen kWh`). Their bill carried Octopus's 5% VAT
-(#505) and the re-cost at the 0% rate made them read 0% — the right answer, by accident, as it was for
-1–5 Oct on 8 Oct. Elsewhere the same re-cost would discard a real bill: a bill's sub-penny differences
-from kWh × rate, or a bill at a rate the clean snap does not reproduce. v4 behaves the same.
+*Why kWh × rate exists (the user, 12 Oct):* it is the best cost **before** the bill — a provisional
+figure that firms as the kWh settles. It is right for every half-hour whose cost is never billed
+separately (export; undispatched import, priced at the known tariff rate) and for a corrected or
+reconciled rate. It is wrong only once a bill has arrived.
 
-*To decide:* whether a held SETTLED block keeps its bill cost when only its kWh is re-confirmed
-(re-cost only when the settled kWh actually differs from the kWh the bill priced, and then by the
-bill's own £/kWh), and how that meets the VAT resync (v4 #505, below). Measure first: how many settled
-blocks on real databases have `imp_cost` ≠ `imp_kwh × imp_rate`, and by how much.
+*Measured 12 Oct 2026, read-only, on the 4.5.22 production backup and the 4.5.23 dev backup:*
+
+| | prod | dev |
+|---|---|---|
+| settled blocks with a cached bill | 1,021 | 1,319 |
+| stored cost equals the bill | 759 | 1,072 |
+| stored cost ≠ the bill | 262 | 247 |
+| … of which = kWh × rate exactly (the re-cost) | 261 | 247 |
+| … October, where the bill = stored × 1.05 (v4 #505's 5%) | 230 | 221 |
+| … September (rounding: the bill's per-bucket £ against kWh × rate) | 34, net −£0.02 | 26, net £0.00 |
+| the bill's kWh ≠ the block's kWh | **0** | **0** |
+
+**The re-cost never had a different kWh to apply.** It fires when DCC kWh arrives or is re-confirmed,
+not when it changes.
+
+*Decided:* **re-cost kWh × rate only while the cost is not settled.** A settled block keeps its bill;
+if the settled kWh ever differs from the kWh the bill priced, the block is flagged for attention
+(BL-85), not recomputed — the bill is Octopus's own kWh, and the difference is a question to ask
+Octopus (BL-86), not a figure for EMT to invent.
+
+*Open — October, before the fix lands:* the 230 October blocks read 0% VAT only because the re-cost
+overwrote a bill that still carries 5% (#505, not restated as of 12 Oct). Keeping the bill makes them
+match Octopus's half-hourly figures and 5% high against the statement until the VAT resync (v4 4.5.22,
+v5 forward) picks up the restatement. #505's own rule — the VAT calendar recognises Octopus's
+figures and never replaces them — says keep the bill. The fix can wait for Octopus to restate, or
+land and leave October 5% high until it does.
+
+*The model under it (12 Oct 2026).* A half-hour carries up to three settled facts, from two sources,
+and each settles on its own:
+
+| fact | source | when (prod since 1 Sep) | which half-hours |
+|---|---|---|---|
+| kWh | DCC consumption (`imp_kwh_api`, `exp_kwh_api`) | 1–2 days | every one, import and export |
+| cost | the bill per half-hour (`measured_cost`) | 10–279 h after the slot, 68 h on average | import only; dispatched half-hours, and imported history (the drain) |
+| House/EV split | the same bill's four buckets | **the same fetch as the cost** | IOG-SMB only |
+
+- kWh before cost is EMT's rule, by construction: the live pass asks only for blocks with DCC kWh
+  (prod: all 1,021 settled blocks have it).
+- The split cannot settle before the cost on IOG-SMB — one breakdown carries both, and every bill on
+  hand without a split is a "nothing drawn" zero (46). But both can be **provisional together**: on
+  10 Oct the first breakdown was wrong in both and the restatement fixed both (v4 4.5.23). Off SMB the
+  split never settles from a bill, and EMT's dispatch split is final.
+- Export settles kWh only; its cost is kWh × the export rate, final once the kWh is.
+
+Three representations of one idea today — `imp_kwh_api IS NOT NULL` (kWh), `rate_source` (cost) and
+4.5.23's wait map (split) — and BL-82 is the defect that comes from reading them as one. Any surface
+that says "settled" should say which of the three.
 
 **BL-83 — the bill's VAT line takes each day's rate from its first half-hour.** Found 10 Oct 2026.
 `energy_charts._bill_method_breakdown` names the VAT in force per local day with
@@ -423,22 +465,51 @@ half-hours still arrive at 5%. No resync hint has fired (`measured_vat_resync` a
 0% only where BL-82's re-run re-costed them.
 
 **BL-84 — a heatmap of half-hours missing their House/EV split, on IOG tariffs.** Proposed 12 Oct
-2026. On 10 Oct, Octopus's first device breakdown put a whole night's charging on the house, and EMT
-settled from it (v4 4.5.23, #510). Nothing on any surface showed it: the night just read as house use
-until the user spotted it on the bill. A heatmap in the shape of the existing one (day × half-hour)
-would show, per half-hour, whether a completed dispatch has an EV split. Colour by state: split from
-the bill; split from EMT's own carve, not yet settled; **held back** (4.5.23's wait: the bill has no EV
-yet); **kept EMT's** (28 days on, the bill never attributed the car); and **missing** (a completed
-dispatch with no split at all — the case to act on). Shown only on an Intelligent tariff
-(`_import_is_smb_capped()` or an IOG/INTELLI tariff code), where a dispatch means an EV split is
-expected; elsewhere there is nothing to show.
+2026; **folded into BL-85 the same day**, as its split layer. On 10 Oct Octopus's first breakdown
+put a night's charging on the house, and nothing on any surface showed it (v4 4.5.23, #510). On the 12
+Oct production copy, 7 of 707 completed dispatches since 7 Jul had no split: 10 Oct's six, and one the
+hourly carve had not reached.
 
-*Sized on the 12 Oct production copy:* 707 completed dispatches of 0.1 kWh or more since 7 Jul; 7 with
-no split — 10 Oct's six, and one from that morning the hourly carve had not reached. So the map is
-mostly one colour, and that is the point: a missing night stands out. *Open:* where it lives (Data
-Management beside the coverage view, or Insights), and whether it is fed by `/api/energy` (`include=`)
-or its own small query; and whether it carries v4 #505-style cost disagreements too, or stays about
-the split.
+**BL-85 — surfaces that say what has settled, and what needs attention.** Proposed 12 Oct 2026 (the
+user), from BL-82's model. Three parts; the detail needs refining before it is built.
+
+1. **The chart pill tells the truth.** The Charts pill reads "N blocks awaiting **cost** settlement",
+   but counts blocks without DCC **kWh** (`_UNSETTLED_WHERE`: `imp_kwh_api` or `exp_kwh_api` NULL).
+   On the production copy's last 14 days it said 59; dispatched blocks awaiting a bill were 0, and
+   the 255 settled blocks whose stored cost is not the bill (BL-82) count nowhere. It should name
+   each fact it counts — kWh, bill, split — or say only what it counts.
+2. **Heatmaps by settlement state, per channel.** Import, export, and on IOG the split (BL-84): each
+   half-hour coloured by its state — provisional; kWh settled; bill settled; split from the bill, or
+   EMT's own, or held back (4.5.23's wait), or kept EMT's after 28 days; and **needs attention**.
+   *Needs attention* is what is worth a user's time: a completed dispatch with no split; a settled
+   block whose stored cost is not its bill (BL-82); a bill whose kWh differs from the settled kWh; a
+   bill held back past N days; a VAT pair that disagrees with the calendar (#505).
+3. **Acting on it — context menus** on a half-hour or a selected range: re-fetch the kWh, re-fetch the
+   bill, re-fetch the split, and show what was fetched against what is stored. The re-fetch itself is
+   BL-86. *To refine:* which actions each state offers, how a range is selected on a heatmap, and what
+   is confirmed before anything is written.
+
+**BL-86 — re-fetch Octopus's figures for a range without deleting it.** Proposed 12 Oct 2026 (the
+user). Octopus restates history: #505's October VAT (not yet seen to happen) and 10 Oct's split
+(seen, two days later). EMT asks once and keeps the answer, so a restatement only reaches it through a
+purpose-built heal. A user's only lever today is to delete the blocks and import them again — which
+destroys the recorded device history: a re-import brings back Octopus's half-hourly kWh, but device
+attribution then comes from Home Assistant's recorder at its 1-hour long-term-statistics resolution
+(BL-87), not the 10–30 s readings EMT recorded live. Wanted: a re-fetch of kWh, bill and split for a
+range, compared against what is stored, applied only where it differs, leaving devices, segments
+that did not change and every user correction alone. The general form of 4.5.22's resync and 4.5.23's
+re-fetch; BL-85's context menus are its front end.
+
+**BL-87 — apply recorder history automatically on a historical API import.** Proposed 12 Oct 2026 (the
+user). A historical import from Octopus brings the main meter's half-hours, but not the devices'
+attribution. The recorder's long-term statistics (hourly) are applied only by a separate manual
+run — `/api/historical/attribute/start`, one device at a time with the sensors the user picks, from the
+recorder-probe page off Fill History; nothing else calls `run_attribution_job`. Wanted: the import
+runs it itself for each configured device whose sensor the recorder holds statistics for, so imported
+history has device splits without a second visit. *To refine:* a device whose configured sensor is not
+the one the recorder kept, and what the import says when the recorder has none. A separate item from BL-86
+because it is worth having on its own — a first install's history is imported this way — and because
+BL-86's whole point is not to need it.
 
 ## D. Surfacing performance
 
