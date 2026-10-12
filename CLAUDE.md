@@ -34,7 +34,7 @@ ported afterwards, and 4.5.17–4.5.19's VAT forward fixes with them, 4.5.20's g
 floor if it carries a heal (`v4import/gate.py` `FLOOR_VERSION`, import spec, ROADMAP §E, programme §E, this file).
 Steps: 1 dead code, 2 extract `billing.py`, 3 ReadStore/WriteStore, 4 API consolidated + HTML
 pipeline deleted, 5 schema (11 columns dropped, band moves to `block_segments`; done 10 Oct 2026 in PRs 5a–5c), 6 client +
-first-run fork, 7 importer. Workstreams A (store split) and B (job coordinator) merged in PR #2.
+first-run fork (the fork done 12 Oct 2026: `/welcome`, the staged restore, run on the Pi — first-run design §9), 7 importer. Workstreams A (store split) and B (job coordinator) merged in PR #2.
 **A is closed (30 Sep 2026)** after five Pi soaks — A design §5e; **B is closed (5 Oct 2026)**,
 all six acceptances met (B §5); **C's eight acceptances are met** (C §0, 3 Oct 2026 — the pre-rendered
 pipeline went on 30 Sep); #31 and C §7.3 closed 5 Oct, so nothing in C is open. The Pi runs from an **SD card**: ROADMAP §A.1 is closed with a caveat — about a minute of 2–6 s commit stalls after a restore or upgrade; the writer-thread design is held in reserve.

@@ -6,7 +6,8 @@ This says **which page, which routes, where the account check runs, and in what 
 lands**. Where the two disagree the spec wins until it is amended; the one amendment this needs is
 §7.*
 
-**Status:** decided 11 Oct 2026 (§8). Architecture step 6. Three choices were made by the user
+**Status:** built and run on the Pi, 12 Oct 2026 (§9) — #139–#141, #144, #145. Decided 11 Oct 2026
+(§8). Architecture step 6. Three choices were made by the user
 before this was written: the fork is its own **welcome page**, the restore becomes **two steps**
 (check, then confirm) so the credential prompt can sit between them, and an **account mismatch on
 the fork asks and defaults to importing** without connecting.
@@ -146,7 +147,13 @@ run). On the Pi, `quick_check` of an 80 MB database is the cost being saved.
 ### 2.3 Phase 2 without side effects
 
 The check builds a `KrakenAPIClient` from the typed key, calls `test_connection` (one account
-query; never raises), and closes it. It does not call `save_kraken_credentials` or
+query; never raises), and closes it. **The account it opens is the typed one, or — left blank — the
+one the backup records** (`kraken_state.kraken_account_number`). Octopus cannot name the account
+behind a key; a key is only tested by opening an account (#144, from the Pi run: blank was sent as
+none, and every key failed). A key that cannot open the backup's account is refused with that
+account named, masked, so a user whose key is for another account knows to type its number — and a
+typed account that differs from the stamp is the mismatch of §2.4. A backup with no stamp needs the
+number typed. It does not call `save_kraken_credentials` or
 `connect_kraken_now`, because both act on the **live** database: discovery would stamp the empty
 first-run database with the account and start the poll task, and the restore would then have to
 cancel an API import it caused (`_restore_worker` step 1b).
@@ -238,7 +245,7 @@ the last v4 release first"). Two strings are new:
 | 1 | this document; spec §3a's amendment (§7) |
 | 2 | `stage` / `confirm`, phase 2, the facts reader, stale-stage cleanup; Data Management onto them; `/api/import` and `/api/import/from-zip` deleted |
 | 3 | `/welcome`, `index`'s redirect, the restore panel and its prompt |
-| 4 | a Pi run of both paths from a fresh data directory: a 4.5.23 zip with the right key, with Skip, and with a wrong key; and "new account" through to the first priced block |
+| 4 | a Pi run of both paths from a fresh data directory: a 4.5.23 zip with the right key, with Skip, and with a wrong key; and "new account" through to the first priced block. *Run 12 Oct 2026 — §9; its fixes are #144 and #145.* |
 
 PR 2 is usable on its own — it is the restore fix — and PR 3 adds only the page.
 
@@ -260,3 +267,44 @@ connecting unless the user goes back to enter another key.
 2. **Two-step restore** (11 Oct 2026): check, prompt, confirm; one restore path. §2.
 3. **A mismatch on the fork asks and defaults to importing unconnected**, and the typed key is
    not kept (11 Oct 2026). §2.4, §7.
+
+---
+
+## 9. The Pi run, 12 Oct 2026
+
+PR 4. `local_emt_soak` on the Pi (SD card) at 4.5.23-a24, each test from an empty data directory
+(Settings → delete the main meter), through `:8098`. The backups were the dev install's 4.5.23
+backup — a zip, a `.db`, and a copy with its account stamp changed to `A-0000000X` — and a v5
+backup (`4.5.22-a23`, emt_schema 5). Every one passed phase 1 on the Mac first.
+
+| test | result |
+|---|---|
+| 1. a made-up key, then the right one (zip) | made-up: refused, naming the backup's account (masked). Right key, account left blank: matched and saved; imported in 30.2 s (commit 21.2); connected (`kraken_discovery: account verified`) and polling, `errors=0`; Charts. Click to Charts: 33 s |
+| 2. Skip (`.db`) | nothing tested or saved; imported in 30.5 s; `no API key configured`; Settings, with the "no API credentials are stored" banner — the hand-off of §3 |
+| 3. a key for another account | blank account: refused against `A…X`. Account typed: the mismatch box (`A…X` / `A…7`); "Import without connecting": imported, the key not kept (no "saved" line), Settings with the banner. "Enter a different key" was checked in the browser pane against the real page: the prompt returns, focused, with what was typed |
+| 4. a v5 backup | "A backup from Energy Meter Tracker 4.5.22-a23"; `a v5 backup (emt_schema 5)`, swapped in with no import; key matched; connected. Click to done: 16 s |
+| 5. Set up a new account | `/welcome` → the wizard; the credentials step connected, the mode went `unset` → `api`, config saved, the poll started, and the first half-hour finalised at the next boundary. Not followed to Octopus's settled cost the next day: block settlement has been proven by weeks of soaks, and nothing here changes it |
+
+**Findings.**
+
+1. *Fixed, #144:* a blank account number reached the key check as no account at all, and every key
+   failed (`account_number is required for get_account`) — §2.3.
+2. *Fixed, #144:* deleting the main meter went back to `/settings`, whose wizard opens on an empty
+   install, past the fork. It goes to `/`.
+3. *Fixed, #145:* nothing showed while the reset ran. Since BL-6 Settings' notices go through the
+   notification region and its alert divs stay hidden; ten places still wrote to them directly, so
+   the reset's progress and every failure of a reset, delete, disconnect or reactivate were
+   invisible. v4 has the same; display only, so it stays.
+4. *Fixed, #145:* finishing the wizard drew the page before the mode was saved — "API is
+   configured but inactive … Data source: unset" until the next refresh. v4 the same, likewise.
+5. *Watch:* one import's "prepare" took 20.0 s (1.0 and 1.4 s in the others), after the page had
+   sat for 4½ minutes; and one restore spent 15 s between "taking a safety backup" and the WAL
+   checkpoint (1 s in test 1). Single SD-card stalls in otherwise ordinary runs; not acted on
+   unless one repeats.
+
+**Timing.** Staging took 6.4 s and 0.6 s for the two `.db` uploads (35 and 42 MB), and 29.3 s and
+16.5 s for the two 5 MB zips — a zip is written, then its 35 MB database extracted and synced, on
+the SD card. A v4 import is ~30 s, two thirds of it the commit — the
+same shape as the E design's soaks (§8a). The 5 MB zip's upload was too quick for the progress line
+to show; the 35 MB `.db`'s showed it.
+
