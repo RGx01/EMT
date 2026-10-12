@@ -1331,7 +1331,7 @@ function executeReactivate(btnEl) {
         if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Reactivate'; }
         var errEl = document.getElementById('alert-error');
         if (errEl) { errEl.textContent = '\u2717 Could not reactivate: ' + (detail ||
-          'connection could not be verified — your key was kept; try again shortly'); errEl.classList.add('show'); }
+          'connection could not be verified — your key was kept; try again shortly'); show('alert-error'); }
       }
       if (res.ok && !res.j.error && res.j.connected) { onReactivated(res.j.account_number); return; }
       if (!res.ok || res.j.error) { onReactFailed(res.j.detail || res.j.error); return; }
@@ -1345,7 +1345,7 @@ function executeReactivate(btnEl) {
     .catch(function(e){
       if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Reactivate'; }
       var errEl = document.getElementById('alert-error');
-      if (errEl) { errEl.textContent = '\u2717 Reactivate failed: ' + e; errEl.classList.add('show'); }
+      if (errEl) { errEl.textContent = '\u2717 Reactivate failed: ' + e; show('alert-error'); }
     });
 }
 function openReconnectModal() {
@@ -1445,7 +1445,7 @@ function executeDisconnect() {
         var errEl = document.getElementById('alert-error');
         if (errEl) {
           errEl.textContent = '\u2717 Disconnect failed: ' + ((d && (d.detail || d.error)) || 'unknown error');
-          errEl.classList.add('show');
+          show('alert-error');
         }
       }
     })
@@ -1453,7 +1453,7 @@ function executeDisconnect() {
       closeDisconnectModal();
       if (btn) { btn.disabled = false; btn.textContent = 'Disconnect'; }
       var errEl = document.getElementById('alert-error');
-      if (errEl) { errEl.textContent = '\u2717 Disconnect failed: ' + e; errEl.classList.add('show'); }
+      if (errEl) { errEl.textContent = '\u2717 Disconnect failed: ' + e; show('alert-error'); }
     });
 }
 
@@ -1472,7 +1472,7 @@ function executeDelete() {
 
   if (isMain) {
     // Main meter — backup DB and wipe everything
-    if (errEl) { errEl.textContent = '⏳ Creating backup and deleting all data…'; errEl.classList.add('show'); }
+    progress('⏳ Backing up, then deleting all data…');
     fetch(apiUrl('/api/meter/main/reset'), {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1480,11 +1480,10 @@ function executeDelete() {
     })
       .then(function(r) { return r.json(); })
       .then(function(d) {
-        if (errEl) errEl.classList.remove('show');
+        progressDone();
         if (d.ok) {
-          document.getElementById('alert-success').textContent =
-            '✓ All data deleted — backup saved. Add-on restarting, please wait…';
-          show('alert-success');
+          progress('✓ All data deleted — backup saved. The add-on is restarting; this page ' +
+                   'moves on when it is back.');
           // Poll until the server comes back then redirect to meter config
           var polls = 0;
           function pollReady() {
@@ -1500,11 +1499,12 @@ function executeDelete() {
           }
           setTimeout(pollReady, 3000);
         } else {
-          if (errEl) { errEl.textContent = '✗ Reset failed: ' + (d.error || 'unknown error'); errEl.classList.add('show'); }
+          if (errEl) { errEl.textContent = '✗ Reset failed: ' + (d.error || 'unknown error'); show('alert-error'); }
         }
       })
       .catch(function(e) {
-        if (errEl) { errEl.textContent = '✗ Reset failed: ' + e; errEl.classList.add('show'); }
+        progressDone();
+        if (errEl) { errEl.textContent = '✗ Reset failed: ' + e; show('alert-error'); }
       });
     return;
   }
@@ -1513,7 +1513,7 @@ function executeDelete() {
   delete config.meters[mid];
   renderAll();
 
-  if (errEl) { errEl.textContent = '⏳ Deleting "' + devName + '"…'; errEl.classList.add('show'); }
+  progress('⏳ Deleting "' + devName + '"…');
 
   fetch(apiUrl('/api/meter/' + encodeURIComponent(mid) + '/delete-data'), {
     method:  'POST',
@@ -1522,18 +1522,19 @@ function executeDelete() {
   })
     .then(function(r) { return r.json(); })
     .then(function(d) {
-      if (errEl) errEl.classList.remove('show');
+      progressDone();
       if (d.ok) {
         document.getElementById('alert-success').textContent =
           '✓ "' + devName + '" deleted — ' + (d.deleted.blocks || 0) + ' blocks removed.';
         show('alert-success');
         setTimeout(function() { window.location.reload(); }, 1500);
       } else {
-        if (errEl) { errEl.textContent = '✗ Delete failed: ' + (d.error || 'unknown error'); errEl.classList.add('show'); }
+        if (errEl) { errEl.textContent = '✗ Delete failed: ' + (d.error || 'unknown error'); show('alert-error'); }
       }
     })
     .catch(function(e) {
-      if (errEl) { errEl.textContent = '✗ Delete failed: ' + e; errEl.classList.add('show'); }
+      progressDone();
+      if (errEl) { errEl.textContent = '✗ Delete failed: ' + e; show('alert-error'); }
     });
 }
 
@@ -2919,6 +2920,11 @@ async function wizApplyAndClose() {
   });
 
   closeWizard();
+  // The page redraws now, before the POST below saves the mode: draw it with the mode just chosen.
+  // With the page-load value (`unset` on a fresh install) and the key the credentials step already
+  // saved, the card read "API is configured but inactive … Data source: unset" until the next
+  // refresh (Pi run, 12 Oct 2026).
+  DATA_SOURCE_MODE = wiz.data.mode || 'cad';
   renderAll();
   // Persist the derived data-source mode (drives Mini gating, sensor needs).
   // Send supplier too so the server can ENFORCE the gating (an api mode is
@@ -3001,13 +3007,25 @@ function show(id) {
     dismissible: isError
   });
 }
+// Work the page is doing on the user's behalf — a reset, a delete — shown in the notification
+// region until it finishes (Pi run, 12 Oct 2026: the reset's "deleting all data…" went to the
+// hidden #alert-error with classList, so nothing showed while it worked). Not transient: it stays
+// until progressDone() or the page moves on.
+function progress(text) {
+  if (!window.EMT || !EMT.notify) return;
+  EMT.notify({id: 'alert-progress', level: 'info', html: esc(text), transient: false,
+              dismissible: false});
+}
+function progressDone() {
+  if (window.EMT && EMT.dismiss) EMT.dismiss('alert-progress');
+}
 function hideAlerts() {
   if (window.EMT && EMT.dismiss) { EMT.dismiss('alert-success'); EMT.dismiss('alert-error'); }
 }
 function showError(msg) {
   var el = document.getElementById('alert-error');
   el.textContent = '✕ ' + msg;
-  el.classList.add('show');
+  show('alert-error');
 }
 
 // ── Device retirement ─────────────────────────────────────────────────────
