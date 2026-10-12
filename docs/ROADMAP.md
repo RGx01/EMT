@@ -429,18 +429,22 @@ and each settles on its own:
 | fact | source | when (prod since 1 Sep) | which half-hours |
 |---|---|---|---|
 | kWh | DCC consumption (`imp_kwh_api`, `exp_kwh_api`) | 1–2 days | every one, import and export |
-| cost | the bill per half-hour (`measured_cost`) | 10–279 h after the slot, 68 h on average | import only, and only **after** its kWh. On IOG-SMB every half-hour: the live pass asks for dispatched ones first, the history drain for the rest (prod, last 14 days: every import half-hour with settled kWh has its bill). Off SMB, dispatched half-hours only; the rest stay kWh × the tariff rate |
-| House/EV split | the same bill's four buckets | **the same fetch as the cost** | IOG-SMB only |
+| cost | the bill per half-hour (`measured_cost`) | 10–279 h after the slot, 68 h on average | import only, and only **after** its kWh. Octopus bills every half-hour on every Intelligent tariff; what differs is what EMT **fetches**. On IOG-SMB, every half-hour: the live pass asks for dispatched ones first, the history drain for the rest (prod, last 14 days: every import half-hour with settled kWh has its bill). On the other Intelligent tariffs (pre-SMB IOG, INTELLI), dispatched half-hours only — the rest keep kWh × the tariff rate and are never compared with the bill (a gap; BL-86) |
+| House/EV split | the same bill's four buckets (HOME/EV × LOW/STANDARD) | with the cost, **or later** | IOG-SMB only. The buckets matter most in a dispatch or bump, where house and EV can be at different rates — the 6-hour EV cap is SMB's; pre-SMB had none |
 
 - kWh before cost is EMT's rule, by construction: the live pass asks only for blocks with DCC kWh
   (prod: all 1,021 settled blocks have it).
-- The split cannot settle before the cost on IOG-SMB — one breakdown carries both, and every bill on
-  hand without a split is a "nothing drawn" zero (46). But both can be **provisional together**: on
-  10 Oct the first breakdown was wrong in both and the restatement fixed both (v4 4.5.23). Off SMB the
-  split never settles from a bill, and EMT's dispatch split is final.
+- **The split can settle after the cost — a third level (the user, 12 Oct).** It never arrives before
+  it: one breakdown carries both, and every bill on hand without a split is a "nothing drawn" zero
+  (46). But on 10 Oct the first breakdown (fetched 11 Oct) put all six dispatched half-hours on the
+  house, and the restated one (12 Oct) split them. For five of the six the cost was **identical to the
+  penny** — the cost had settled, the split had not. For the sixth, 05:30–06:00 BST, the split decides
+  the rate (the EV's dispatch makes it low rate outside the window), so the late split changed the
+  cost too: £0.88 to £0.15. So: **kWh → cost → split**, and a late split can move a cost that read as
+  settled. Off SMB the split never comes from a bill, and EMT's dispatch split is final.
 - Export settles kWh only; its cost is kWh × the export rate, final once the kWh is.
-- So cost settlement is a **pipeline**, not a flag: a half-hour waits for its kWh, then for its bill,
-  then holds it. A half-hour awaiting kWh is awaiting its bill too.
+- So settlement is a **pipeline**, not a flag: a half-hour waits for its kWh, then its bill, then —
+  on IOG-SMB, where it charged — its split. A half-hour awaiting kWh is awaiting the rest too.
 
 Three representations of one idea today — `imp_kwh_api IS NOT NULL` (kWh), `rate_source` (cost) and
 4.5.23's wait map (split) — and BL-82 is the defect that comes from reading them as one. Any surface
