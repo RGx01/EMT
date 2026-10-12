@@ -175,6 +175,7 @@
     "get_dispatched_blocks_awaiting_measure",
     "get_energy_blocks",
     "get_energy_segments",
+    "get_ev_split_kwh",
     "get_generation_mix",
     "get_generation_mix_for_range",
     "get_generation_mix_since",

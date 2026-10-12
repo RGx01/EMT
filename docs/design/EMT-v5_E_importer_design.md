@@ -255,6 +255,7 @@ carried user data** is a setup fact in effect, and crosses.
 | `carbon_paused` | meta | the user's carbon kill switch (*added in PR 2*) |
 | `import_cost_coverage` | meta | what the API import found about this history, per tariff era (*added in PR 2*) |
 | `pre_live_snapshot_done` | state | v4 already took its one snapshot before the first live DCC write, and the restore has just taken its own safety backup. *Moved from DROP, 10 Oct 2026: re-run, it wrote a third 80 MB copy on the Pi's SD card in the soak.* |
+| `bill_split_wait` (4.5.23) | state | bills held back because they had no EV where the split had the car, and the ones whose 28 days ran out with EMT's split kept. v5's forward code reads it; dropped, a kept slot would be asked about again (*added 12 Oct 2026*) |
 
 **REGEN**: `written_by` (v5's own version), `db_uuid` (new; the source's goes in the audit
 record), `emt_schema` (new, §2).
@@ -275,7 +276,7 @@ record), `emt_schema` (new, §2).
 
 **DROP, no v5 reader** (v4 heal and sweep markers, which is what v5 carrying no heals means):
 `band_rate_snap_done_v2`, `bl19_grid_invariant_sweep_done`, `dispatch_house_refit_done`,
-`ev_bucket_refetch_done`, `ev_priority_resplit_done`, `implausible_sub_block_sweep_done`,
+`bill_split_refetch_done` (4.5.23), `ev_bucket_refetch_done`, `ev_priority_resplit_done`, `implausible_sub_block_sweep_done`,
 `register_glitch_sweep_done`, `smb_device_cost_clip_done`, `smb_device_recost_done`,
 `smb_ev_resplit_done`, `smb_rate_repair_done`, `smb_rate_repair_done_v2`,
 `vat_backdate_heal_done_v3`, `vat_backdate_heal_done_v4`, `bill_resettle_v1_done` …`_v4_done`,
