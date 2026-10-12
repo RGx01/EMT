@@ -422,6 +422,24 @@ not restated: on the dev database every settled October half-hour in `measured_c
 half-hours still arrive at 5%. No resync hint has fired (`measured_vat_resync` absent). The blocks read
 0% only where BL-82's re-run re-costed them.
 
+**BL-84 — a heatmap of half-hours missing their House/EV split, on IOG tariffs.** Proposed 12 Oct
+2026. On 10 Oct, Octopus's first device breakdown put a whole night's charging on the house, and EMT
+settled from it (v4 4.5.23, #510). Nothing on any surface showed it: the night just read as house use
+until the user spotted it on the bill. A heatmap in the shape of the existing one (day × half-hour)
+would show, per half-hour, whether a completed dispatch has an EV split. Colour by state: split from
+the bill; split from EMT's own carve, not yet settled; **held back** (4.5.23's wait: the bill has no EV
+yet); **kept EMT's** (28 days on, the bill never attributed the car); and **missing** (a completed
+dispatch with no split at all — the case to act on). Shown only on an Intelligent tariff
+(`_import_is_smb_capped()` or an IOG/INTELLI tariff code), where a dispatch means an EV split is
+expected; elsewhere there is nothing to show.
+
+*Sized on the 12 Oct production copy:* 707 completed dispatches of 0.1 kWh or more since 7 Jul; 7 with
+no split — 10 Oct's six, and one from that morning the hourly carve had not reached. So the map is
+mostly one colour, and that is the point: a missing night stands out. *Open:* where it lives (Data
+Management beside the coverage view, or Insights), and whether it is fed by `/api/energy` (`include=`)
+or its own small query; and whether it carries v4 #505-style cost disagreements too, or stays about
+the split.
+
 ## D. Surfacing performance
 
 *Measure before optimising.* Target hardware is a Raspberry Pi 4 class box on SD storage.
