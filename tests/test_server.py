@@ -1121,6 +1121,18 @@ class TestIndexRedirect(unittest.TestCase):
         self.assertIn(r.status_code, (301, 302))
         self.assertTrue(r.headers["Location"].endswith("/welcome"), r.headers["Location"])
 
+    def test_a_reset_lands_on_the_fork(self):
+        """Pi run, 12 Oct 2026: deleting the main meter went back to /settings, whose wizard
+        opens on an empty install — past the fork. It goes to `/` now. STRUCTURAL; fails on the
+        parent."""
+        import os
+        page = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 "web", "templates", "meter_config.html"), encoding="utf-8").read()
+        i = page.index("fetch(apiUrl('/api/meter/main/reset')")
+        tail = page[i:i + 1500]
+        self.assertIn("window.location.href = apiUrl('/');", tail)
+        self.assertNotIn("window.location.href = apiUrl('/settings');", tail)
+
     def test_the_welcome_page_offers_both_paths(self):
         r = self.client.get("/welcome")
         self.assertEqual(r.status_code, 200)
@@ -2371,14 +2383,51 @@ class TestApiRestoreStaged(unittest.TestCase):
         self.assertIn("auth failed", r.get_json()["error"])
         self.assertEqual((w, self.saved), ({}, []))
 
-    def test_an_unstamped_octopus_backup_takes_the_key(self):
+    def test_an_unstamped_octopus_backup_takes_the_key_with_its_account(self):
         """No stamp: nothing to compare. The key is saved; discovery stamps the restored file."""
         tok = self._stage(self._make_db_bytes(supplier="octopus")).get_json()["token"]
         with patch.object(server, "_test_supplier_key",
                           return_value={"ok": True, "account_number": "A-9"}):
-            r, _ = self._confirm({"token": tok, "credentials": {"api_key": "sk"}})
+            r, _ = self._confirm({"token": tok, "credentials": {"api_key": "sk",
+                                                                "account_number": "A-9"}})
         self.assertEqual(r.status_code, 200, r.get_json())
         self.assertEqual(self.saved, [("sk", "A-9", None)])
+
+    def test_an_unstamped_backup_needs_the_account_number(self):
+        """Octopus cannot name the account behind a key, and this backup records none."""
+        tok = self._stage(self._make_db_bytes(supplier="octopus")).get_json()["token"]
+        with patch.object(server, "_test_supplier_key") as probe:
+            r, w = self._confirm({"token": tok, "credentials": {"api_key": "sk"}})
+        self.assertEqual(r.status_code, 400)
+        self.assertIn("account number", r.get_json()["error"])
+        probe.assert_not_called()
+        self.assertEqual(w, {})
+
+    def test_a_blank_account_tests_the_key_against_the_backups_own(self):
+        """Pi run, 12 Oct 2026: a blank account number went to Octopus as none, and every key
+        failed ("account_number is required for get_account"). Fails on the parent."""
+        tok = self._stage(self._make_db_bytes(account="A-1234567")).get_json()["token"]
+        with patch.object(server, "_test_supplier_key",
+                          return_value={"ok": True, "account_number": "A-1234567"}) as probe:
+            r, _ = self._confirm({"token": tok, "credentials": {"api_key": "sk",
+                                                                "account_number": ""}})
+        self.assertEqual(r.status_code, 200, r.get_json())
+        self.assertEqual(probe.call_args[0][1]["account_number"], "A-1234567")
+        self.assertEqual(self.saved, [("sk", "A-1234567", None)])
+
+    def test_a_key_that_cannot_open_the_backups_account_names_it(self):
+        """Blank account, and the key cannot open the backup's: say which account (masked), so a
+        user with a key for another account knows to enter that one. Fails on the parent."""
+        tok = self._stage(self._make_db_bytes(account="A-1234567")).get_json()["token"]
+        with patch.object(server, "_test_supplier_key",
+                          return_value={"ok": False, "detail": "auth failed — check API key"}):
+            r, w = self._confirm({"token": tok, "credentials": {"api_key": "sk"}})
+        self.assertEqual(r.status_code, 400)
+        err = r.get_json()["error"]
+        self.assertIn("A…7", err)
+        self.assertNotIn("1234567", err)
+        self.assertIn("auth failed", err)
+        self.assertEqual((w, self.saved), ({}, []))
 
     def test_a_key_for_a_backup_with_no_supplier_account_is_refused(self):
         tok = self._stage(self._make_db_bytes(supplier="not-listed")).get_json()["token"]
