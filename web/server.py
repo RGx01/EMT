@@ -764,7 +764,9 @@ def index():
 
 @app.route("/welcome")
 def welcome_page():
-    return render_template("welcome.html", active="welcome")
+    # The floor is named from the gate, so the page cannot fall behind a raise (12 Oct 2026).
+    return render_template("welcome.html", active="welcome",
+                           floor=_import_gate().FLOOR_VERSION)
 
 
 @app.route("/api/last-page", methods=["POST"])

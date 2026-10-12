@@ -10,9 +10,9 @@ in [design/EMT-v5_programme.md](design/EMT-v5_programme.md) — this file tracks
 is frozen to **critical fixes only** (data loss, crash-on-start, a pricing error), each ported here as
 its forward fix. This repository was seeded with a verbatim copy of 4.5.14 (suite **2,764** green at
 the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below deconstruct it. v4 is at
-**4.5.22**; the import floor is **4.5.22** (E).
+**4.5.23**; the import floor is **4.5.23** (E).
 
-*Refreshed 10 Oct 2026.*
+*Refreshed 12 Oct 2026.*
 
 | # | Workstream | Depends on | State |
 |---|---|---|---|
@@ -20,7 +20,7 @@ the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below decons
 | B | Job coordinator (v4 BL-50) | A | ✅ all six acceptances met — 6 on the Pi, 5 Oct 2026 |
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | ✅ closed 5 Oct 2026 — queries asserted in CI (#102), time on the Pi (#64) |
-| E | Importer | A–D | 🔨 built 10 Oct 2026 (#122–#128, step 5 done), spec v18, floor 4.5.22 — open: the 4.5.22 positive fixture, the Pi timing; the house `night` band waits on BL-81 |
+| E | Importer | A–D | 🔨 built 10 Oct 2026 (#122–#128, step 5 done), spec v21, floor 4.5.23 — open: the 4.5.23 positive fixture, the Pi timing |
 | F | Carried from v4's backlog | — | 📋 9 items open, 1 done (BL-50 = B) |
 | G | Local tariff store | A, B | 📝 proposed 4 Oct 2026 |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
@@ -463,7 +463,7 @@ storage. The original criterion asked for both in CI; the split is the accepted 
 
 ## E. Importer
 
-*Ingest a backup at or above the floor version, currently **4.5.22**. Spec at
+*Ingest a backup at or above the floor version, currently **4.5.23**. Spec at
 [design/EMT-v5_import_spec.md](design/EMT-v5_import_spec.md).*
 
 Three things the importer needs from a source. **Two are new in 4.5.14; one already exists** — an
@@ -495,6 +495,11 @@ corrected-device ex-VAT repair. A 4.5.20 database, or a v5 dev build of it (4.5.
 costs carried 5% VAT after the 1 Oct change; 4.5.22 detects Octopus's restatement and re-settles the
 period. Because that waits on Octopus, a 4.5.22 database may still hold 5% October blocks, so v5
 carries the detection and resync as forward code rather than relying on the floor alone.
+**Raised to 4.5.23** (spec v21, 12 Oct 2026): the re-fetch of device breakdowns cached with no EV
+against a completed dispatch (v4 #510). Octopus's first breakdown for 10 Oct put the night's charging
+on the house and was corrected days later; v4 had kept the first answer. v5 ports the forward fix —
+hold such a bill back for up to 28 days, keeping EMT's split — but not the one-off. A 4.5.22 database,
+or a v5 dev build of it (4.5.22-a23), is now refused.
 
 Why a version suffices: every heal is marker-gated and an ungated marker runs at startup, so
 upgrading any older database runs every heal that release carries. **"Last opened by X" means

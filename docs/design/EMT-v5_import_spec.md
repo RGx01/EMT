@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v20 — revised 11 Oct 2026, §3a: a mismatch on the fork asks and imports, it does not stop the import (v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v21 — revised 12 Oct 2026, the floor rises to 4.5.23 (v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -135,6 +135,17 @@ and five decisions from building it change the text:*
    rolls everything back. Gate 5 is `verify.split_reproduced`; gate 11 is `verify.held_fit`. The
    §9 corpus runs against real backups with `tests/test_import_corpus.py` (EMT_IMPORT_CORPUS).*
 
+*Changes in v21 (12 Oct 2026): **the floor rises to `4.5.23`.** Its heal re-fetches the device
+breakdowns cached with no EV against a completed dispatch (v4 #510): on 10 Oct Octopus's first
+breakdown put a whole night's charging on the house and billed its last half-hour at the standard
+rate, then served the true split days later, and v4 had kept the first answer. Unlike 4.5.22's,
+this heal is not conditional: the one-off re-fetch runs once on every install, and where Octopus
+now serves the car the recurring split heal re-settles cost and split. v4's forward fix — hold back
+a bill whose EV is zero where EMT's own split has the car, for up to 28 days — is ported to v5 as
+forward code. 4.5.22 and the v5 dev build `4.5.22-a23` join the below-floor negatives; v5's own
+builds now stamp `4.5.23-a24`. The 4.5.22 positive fixture (prod-dev, 10 Oct) is below the floor
+now; the fixture is re-taken at 4.5.23.*
+
 ---
 
 ## 1. Purpose and shape
@@ -254,8 +265,9 @@ inference, and it is why nothing more elaborate is needed.
 > heal re-armed after 4.5.17's learner undid it), and again to **`4.5.19`** (the heal re-armed
 > for sub-meter rows); **raised 7 Oct 2026 to `4.5.21`** (three heals: EV-priority re-split,
 > dispatch-only device re-fit, corrected-device ex-VAT); **raised 9 Oct 2026 to `4.5.22`** (the
-> October VAT resync — conditional on Octopus restating, so v5 also carries it forward; see v17). A
-> 4.5.14–4.5.21 database is refused.
+> October VAT resync — conditional on Octopus restating, so v5 also carries it forward; see v17);
+> **raised 12 Oct 2026 to `4.5.23`** (the re-fetch of bills that dropped the car's half-hour; v21). A
+> 4.5.14–4.5.22 database is refused.
 
 *Rejected: a computed `heal_level` integer.* An earlier design proposed one, with each heal
 verifying its own invariant at startup so the level could fall when unhealed history arrived. It was
@@ -1234,7 +1246,9 @@ on hand:
 | `4.5.20-a21` (a v5 dev build) | **refused** | v5's build stamp before 7 Oct 2026, running 4.5.20's code |
 | 4.5.21 | **refused** | below the 4.5.22 floor since v17 — has not run the October VAT resync |
 | `4.5.21-a22` (a v5 dev build) | **refused** | v5's build stamp before 9 Oct 2026, running 4.5.21's code |
-| **4.5.22** | **admitted** | the positive fixture at `FLOOR_VERSION` — to be taken from prod-dev once it runs 4.5.22. Real backups never enter the repo: `tests/test_import_corpus.py` judges every `*.db` in `EMT_IMPORT_CORPUS` by its own stamp (v18). **Taken 10 Oct 2026** (prod-dev, blocks-25): admitted, imports with every gate holding — 139,475 blocks, 38,048 segments; 1,001 `measured` → `settled`, 46 reconciled folds, 12 held blocks refitted, 0 reported; gate 5 0 kWh / 0 £ / 0 phantom; 2.8 s on a Mac. Its below-floor copy is refused. |
+| 4.5.22 | **refused** | below the 4.5.23 floor since v21 — has not re-fetched the bills that dropped the car's half-hour. *Was the positive fixture until v21:* Real backups never enter the repo: `tests/test_import_corpus.py` judges every `*.db` in `EMT_IMPORT_CORPUS` by its own stamp (v18). **Taken 10 Oct 2026** (prod-dev, blocks-25): admitted, imports with every gate holding — 139,475 blocks, 38,048 segments; 1,001 `measured` → `settled`, 46 reconciled folds, 12 held blocks refitted, 0 reported; gate 5 0 kWh / 0 £ / 0 phantom; 2.8 s on a Mac. Its below-floor copy is refused. |
+| `4.5.22-a23` (a v5 dev build) | **refused** | v5's build stamp before 12 Oct 2026, running 4.5.22's code |
+| **4.5.23** | **admitted** | the positive fixture at `FLOOR_VERSION` — to be taken from prod-dev once it runs 4.5.23. Real backups never enter the repo (`tests/test_import_corpus.py`, v18). |
 | **below** `FLOOR_VERSION` | **refused** | stamped, but from a release older than the floor |
 
 Two of these carry most of the value.
@@ -1342,7 +1356,7 @@ silently stops testing anything the day v4 reaches .15.
 
    *Action, not an answer:* `FLOOR_VERSION` is pinned as the last step before v5's first release,
    from whatever v4 has actually reached by then, and §9's positive fixture is regenerated at that
-   version. On the release checklist, not in this paragraph. **Currently `4.5.22`** (v17; was
+   version. On the release checklist, not in this paragraph. **Currently `4.5.23`** (v21; was `4.5.22` in v17,
    `4.5.21` in v13, `4.5.19` in v12, `4.5.18` in v11, `4.5.17` in v10, `4.5.16` in v9, `4.5.15` in v8). The release-checklist step stays: confirm the final v4 release, and capture
    the positive fixture at it.
 
