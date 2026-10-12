@@ -1491,7 +1491,9 @@ function executeDelete() {
             polls++;
             if (polls > 30) { window.location.reload(); return; }
             fetch(apiUrl('/api/status')).then(function() {
-              window.location.href = apiUrl('/settings');
+              // to `/`: with no meters it is the first-run fork (welcome), not straight into the
+              // wizard (Pi run, 12 Oct 2026)
+              window.location.href = apiUrl('/');
             }).catch(function() {
               setTimeout(pollReady, 1500);
             });

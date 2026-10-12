@@ -7170,15 +7170,29 @@ def api_restore_confirm():
             facts, stamped = _restore_facts(staged, _bs.read_emt_schema(staged))
             if not facts["prompt"]:
                 return jsonify({"error": "This backup has no supplier account to connect."}), 400
-            result = _test_supplier_key(facts["prompt"], creds)
+            # Octopus cannot name the account behind a key: a key is tested by opening an account.
+            # Blank, that is the account the backup belongs to — the one being connected (Pi run,
+            # 12 Oct 2026: blank was sent as no account and every key failed, "account_number is
+            # required"). Typed, it is the user's own, and a different one is the mismatch below.
+            from kraken_api_client import _mask
+            typed = (creds.get("account_number") or "").strip()
+            tried = typed or stamped
+            if not tried:
+                return jsonify({"error": "Enter the account number for this key — this backup "
+                                         "does not record one."}), 400
+            result = _test_supplier_key(facts["prompt"], dict(creds, account_number=tried))
             if not result.get("ok"):
-                return jsonify({"error": "That key could not be checked: %s"
-                                         % (result.get("detail") or "unknown")}), 400
-            key_acct = (creds.get("account_number") or "").strip() or result.get("account_number")
+                if not typed:
+                    return jsonify({"error": "That key could not open account %s, which this backup "
+                                             "belongs to (%s). Check the key — or, if it is for "
+                                             "another account, enter that account's number."
+                                             % (_mask(tried), result.get("detail") or "unknown")}), 400
+                return jsonify({"error": "That key could not open account %s (%s)."
+                                         % (_mask(tried), result.get("detail") or "unknown")}), 400
+            key_acct = result.get("account_number") or tried
             import engine as _eng
             if stamped and key_acct and _eng._norm_account(stamped) != _eng._norm_account(key_acct):
                 if not body.get("accept_mismatch"):
-                    from kraken_api_client import _mask
                     logger.info("restore/confirm: the key is for another account than the "
                                 "backup's (%s, %s) — asking", _mask(stamped), _mask(key_acct))
                     return jsonify({"mismatch": {"backup": _mask(stamped),
