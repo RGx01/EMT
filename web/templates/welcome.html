@@ -34,7 +34,7 @@
     <h3 style="margin:0 0 8px;font-size:15px;">Restore from an Energy Meter Tracker backup</h3>
     <p style="font-size:13px;line-height:1.7;color:var(--muted);margin:0 0 16px;">
       A backup <code>.zip</code> or a <code>blocks.db</code> from this add-on or from the v4 add-on
-      (4.5.22 or later). Your history, meters and settings come with it.
+      ({{ floor }} or later). Your history, meters and settings come with it.
     </p>
     <input type="file" id="restore-file" accept=".zip,.db" style="display:none;" onchange="onRestoreFile(this.files)">
     <button class="btn btn-primary" id="btn-restore-pick" onclick="document.getElementById('restore-file').click()">📥 Choose a backup</button>

@@ -238,7 +238,7 @@ the last v4 release first"). Two strings are new:
 | 1 | this document; spec §3a's amendment (§7) |
 | 2 | `stage` / `confirm`, phase 2, the facts reader, stale-stage cleanup; Data Management onto them; `/api/import` and `/api/import/from-zip` deleted |
 | 3 | `/welcome`, `index`'s redirect, the restore panel and its prompt |
-| 4 | a Pi run of both paths from a fresh data directory: a 4.5.22 zip with the right key, with Skip, and with a wrong key; and "new account" through to the first priced block |
+| 4 | a Pi run of both paths from a fresh data directory: a 4.5.23 zip with the right key, with Skip, and with a wrong key; and "new account" through to the first priced block |
 
 PR 2 is usable on its own — it is the restore fix — and PR 3 adds only the page.
 

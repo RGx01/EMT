@@ -103,6 +103,9 @@ CARRY_KEYS = {
         # has just taken its own safety backup — re-run, it wrote a third 80 MB copy on the
         # Pi's SD card in the 10 Oct 2026 soak
         "pre_live_snapshot_done",
+        # 4.5.23: bills held back because they had no EV where the split had the car, and
+        # the ones whose 28 days ran out with EMT's own split kept. v5's forward code reads it.
+        "bill_split_wait",
     }),
 }
 

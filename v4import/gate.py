@@ -9,7 +9,7 @@ v4 release X has had every heal X carries (every heal is marker-gated, and ungat
 markers run at startup), so v5 accepts only a database stamped at or above the last
 release that added one. Until 4 Oct 2026 nothing enforced it — `written_by` was
 stamped (engine.stamp_version) and never read, so a restore took any v4 backup, and a
-below-floor one arrived without the 4.5.15–4.5.22 heals.
+below-floor one arrived without the 4.5.15–4.5.23 heals.
 
 The spec's four phase-1 gates live here, checked in its order on the CANDIDATE file
 before it is swapped in (the live database is not touched by a refusal):
@@ -38,10 +38,10 @@ import os
 import re
 import sqlite3
 
-# The last v4 release that carries a heal (4.5.22, raised 9 Oct 2026: the October VAT
-# resync, v4 #505). 4.5.21 (7 Oct: the EV-priority re-split, the dispatch-only device
-# re-fit, the corrected-device ex-VAT repair) was the floor before; 4.5.20 had none.
-FLOOR_VERSION = "4.5.22"
+# The last v4 release that carries a heal (4.5.23, raised 12 Oct 2026: the re-fetch of
+# bills that dropped the car's half-hour, v4 #510). 4.5.22 (9 Oct: the October VAT resync,
+# v4 #505) was the floor before; 4.5.21 (7 Oct) before that; 4.5.20 had none.
+FLOOR_VERSION = "4.5.23"
 
 # A pence block reads ~100 against its own ex-VAT figure; healthy blocks sit at
 # 1.000 at the median, worst 4.8% (measured 4 Oct 2026). Two orders either side.
@@ -79,10 +79,10 @@ from suppliers import API_CAPABLE, LOCAL_ONLY
 
 
 def parse_version(v):
-    """'4.5.22-a23' -> (4, 5, 22); '2026.1.0' -> (2026, 1, 0); unparseable -> None.
+    """'4.5.23-a24' -> (4, 5, 23); '2026.1.0' -> (2026, 1, 0); unparseable -> None.
 
     Numeric, never lexical ('4.5.9' > '4.5.13' is true as strings). A suffix after the
-    third field — a v5 dev build's '-a23' — is dropped: that build runs 4.5.22's code.
+    third field — a v5 dev build's '-a24' — is dropped: that build runs 4.5.23's code.
     v5's CalVer sorts above every 4.x on the first field."""
     m = re.match(r"\s*[vV]?(\d+)\.(\d+)(?:\.(\d+))?", str(v or ""))
     if not m:

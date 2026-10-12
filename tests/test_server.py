@@ -1130,6 +1130,8 @@ class TestIndexRedirect(unittest.TestCase):
         self.assertIn("/settings?wizard=1", page)
         self.assertIn("/api/restore/stage", page)
         self.assertIn("/api/restore/confirm", page)
+        from v4import import gate as _g
+        self.assertIn("(%s or later)" % _g.FLOOR_VERSION, page)   # named from the gate
 
     def test_with_config_redirects_to_charts_by_default(self):
         with patch.object(server, "load_config", return_value=MINIMAL_CONFIG):
@@ -2141,7 +2143,7 @@ class TestApiRestoreStaged(unittest.TestCase):
             "currency_symbol": "£", "currency_code": "GBP",
             "postcode_prefix": "DE1",
         }, "channels": {"import": {}, "export": {}}}}})
-        store.set_meta("written_by", "4.5.22")     # at the import floor
+        store.set_meta("written_by", "4.5.23")     # at the import floor
         if supplier:
             store.set_meta("supplier", supplier)
         if account:
@@ -2184,7 +2186,7 @@ class TestApiRestoreStaged(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.get_json())
         d = r.get_json()
         self.assertEqual(d["facts"]["kind"], "v5")
-        self.assertEqual(d["facts"]["written_by"], "4.5.22")
+        self.assertEqual(d["facts"]["written_by"], "4.5.23")
         self.assertEqual(d["facts"]["prompt"], "octopus")       # inferred from the stamp
         self.assertTrue(d["facts"]["supplier_inferred"])
         self.assertTrue(d["facts"]["account_stamped"])
@@ -2265,7 +2267,7 @@ class TestApiRestoreStaged(unittest.TestCase):
         d = tempfile.mkdtemp()
         p = os.path.join(d, "wal.db")
         st = BlockStore(p)                 # a file database: WAL mode, as a real backup is
-        st.set_meta("written_by", "4.5.22")
+        st.set_meta("written_by", "4.5.23")
         st.close()
         with self.assertLogs("server", level="INFO") as logs:
             r = self._stage(open(p, "rb").read())

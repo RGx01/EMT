@@ -7267,20 +7267,38 @@ class BlockStore:
         return [r["block_start"] for r in rows]
 
     def count_settleable_blocks(self, floor: str, before: str,
-                                meter_id: str = "electricity_main") -> int:
+                                meter_id: str = "electricity_main", exclude=()) -> int:
         """How many blocks `get_settleable_blocks` still has to work through.
 
         Same predicate, no cursor and no limit -- the backlog gate that decides
-        whether the drain is scheduled at all.
+        whether the drain is scheduled at all. `exclude`: block starts that are
+        not backlog however the predicate reads them (a bill held back, v4 4.5.23).
         """
+        exclude = sorted(set(exclude or ()))
         return self._conn.execute(
             "SELECT COUNT(*) FROM blocks b WHERE b.meter_id = ? "
             "  AND b.imp_kwh > 0 "
             "  AND " + self._SETTLEABLE_SQL + " "
             "  AND b.block_start >= ? AND b.block_start < ? "
             "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
-            "  AND NOT EXISTS (SELECT 1 FROM measured_cost mc WHERE mc.slot_start = b.block_start)",
-            (meter_id, floor, before)).fetchone()[0]
+            "  AND NOT EXISTS (SELECT 1 FROM measured_cost mc WHERE mc.slot_start = b.block_start)"
+            + (" AND b.block_start NOT IN (%s)" % ",".join("?" * len(exclude)) if exclude else ""),
+            (meter_id, floor, before, *exclude)).fetchone()[0]
+
+    def get_ev_split_kwh(self, starts, meter_id: str = "electricity_main") -> dict:
+        """{block_start: EV kWh} of the blocks in `starts` that have an EV split — their
+        attribution='ev' import segments, which ARE the split (ev_split.py). A block with no
+        EV segment is absent."""
+        starts = [s for s in dict.fromkeys(starts or []) if s]
+        out = {}
+        for i in range(0, len(starts), 500):
+            chunk = starts[i:i + 500]
+            for r in self._conn.execute(
+                    "SELECT block_start, SUM(kwh) FROM block_segments WHERE meter_id = ? "
+                    "AND channel = 'import' AND attribution = 'ev' AND block_start IN (%s) "
+                    "GROUP BY block_start" % ",".join("?" * len(chunk)), [meter_id] + chunk):
+                out[r[0]] = r[1]
+        return out
 
     def get_measured_costs_to_apply(self, mpan: str, floor: str,
                                     meter_id: str = "electricity_main") -> list:

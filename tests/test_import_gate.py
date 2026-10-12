@@ -3,7 +3,7 @@ The import floor and the units gate, enforced at restore (import spec §3, gates
 
 v5 carries no v4 heals; the floor is what makes that safe. Until 4 Oct 2026 nothing
 read `written_by` — a restore took any v4 backup, so a database last opened by 4.5.14
-arrived without the 4.5.15–4.5.22 heals, and a pence block from the 4.3.0 IOG cap bug
+arrived without the 4.5.15–4.5.23 heals, and a pence block from the 4.3.0 IOG cap bug
 (whose repair v5 deleted with BL-33) arrived unrepaired.
 
 Every test here fails on the parent tree — `import_gate` does not exist there, and the
@@ -11,7 +11,7 @@ restore paths swap in whatever they are given — except where labelled GUARD.
 
 Checked against every database on hand (4 Oct 2026, at the 4.5.19 floor): each one stamped
 at or above it was admitted, each older or unstamped one refused, and none refused for units.
-The floor rose to 4.5.21 on 7 Oct 2026, and to 4.5.22 on 9 Oct.
+The floor rose to 4.5.21 on 7 Oct 2026, to 4.5.22 on 9 Oct, and to 4.5.23 on 12 Oct.
 """
 import importlib.util
 import io
@@ -120,9 +120,17 @@ class TheFloor(_Dir):
         self.assertIn("last v4 release", r)
 
     def test_the_floor_itself_and_above_are_admitted(self):
-        for v in (G.FLOOR_VERSION, "4.5.22-a23", "2026.1.0"):
+        for v in (G.FLOOR_VERSION, "4.5.23-a24", "2026.1.0"):
             with self.subTest(v=v):
                 self.assertIsNone(G.check(self.db(name=v + ".db", written_by=v)))
+
+    def test_4_5_22_is_below_the_floor_now(self):
+        """4.5.23 carries a heal (12 Oct 2026, the re-fetch of bills that dropped the car's
+        half-hour, v4 #510), so a database last opened by 4.5.22 — or by a v5 dev build of its
+        code, 4.5.22-a23 — is refused. Fails at the old floor."""
+        for v in ("4.5.22", "4.5.22-a23"):
+            with self.subTest(v=v):
+                self.assertIsNotNone(G.check(self.db(name=v + ".db", written_by=v)))
 
     def test_4_5_21_is_below_the_floor_now(self):
         """4.5.22 carries a heal (9 Oct 2026, the October VAT resync), so a database last opened
@@ -139,11 +147,11 @@ class TheFloor(_Dir):
                 self.assertIsNotNone(G.check(self.db(name=v + ".db", written_by=v)))
 
     def test_the_stamp_is_read_as_json(self):
-        """store_meta values are JSON-encoded: the raw cell is '"4.5.22"'."""
-        p = self.db(written_by="4.5.22")
+        """store_meta values are JSON-encoded: the raw cell is '"4.5.23"'."""
+        p = self.db(written_by="4.5.23")
         raw = sqlite3.connect(p).execute(
             "SELECT value FROM store_meta WHERE key='written_by'").fetchone()[0]
-        self.assertEqual(raw, json.dumps("4.5.22"))
+        self.assertEqual(raw, json.dumps("4.5.23"))
         self.assertIsNone(G.check(p))
 
     def test_an_unreadable_stamp_is_refused(self):
