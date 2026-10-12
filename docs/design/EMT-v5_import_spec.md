@@ -1248,7 +1248,7 @@ on hand:
 | `4.5.21-a22` (a v5 dev build) | **refused** | v5's build stamp before 9 Oct 2026, running 4.5.21's code |
 | 4.5.22 | **refused** | below the 4.5.23 floor since v21 — has not re-fetched the bills that dropped the car's half-hour. *Was the positive fixture until v21:* Real backups never enter the repo: `tests/test_import_corpus.py` judges every `*.db` in `EMT_IMPORT_CORPUS` by its own stamp (v18). **Taken 10 Oct 2026** (prod-dev, blocks-25): admitted, imports with every gate holding — 139,475 blocks, 38,048 segments; 1,001 `measured` → `settled`, 46 reconciled folds, 12 held blocks refitted, 0 reported; gate 5 0 kWh / 0 £ / 0 phantom; 2.8 s on a Mac. Its below-floor copy is refused. |
 | `4.5.22-a23` (a v5 dev build) | **refused** | v5's build stamp before 12 Oct 2026, running 4.5.22's code |
-| **4.5.23** | **admitted** | the positive fixture at `FLOOR_VERSION` — to be taken from prod-dev once it runs 4.5.23. Real backups never enter the repo (`tests/test_import_corpus.py`, v18). |
+| **4.5.23** | **admitted** | the positive fixture at `FLOOR_VERSION`. Real backups never enter the repo (`tests/test_import_corpus.py`, v18). **Taken 12 Oct 2026** (dev, blocks-31, after 4.5.23's one-off ran): admitted, imports with every gate holding — 58,784 blocks, 38,071 segments; 1,319 `measured` → `settled`, 1 reconciled fold, no EV segments to write, no held block to refit; 1.3 s on a Mac. Its below-floor copy is refused, and so is the 4.5.22 production backup of the same morning. The dev database has no sub-meters; a production backup at 4.5.23 would add them. |
 | **below** `FLOOR_VERSION` | **refused** | stamped, but from a release older than the floor |
 
 Two of these carry most of the value.
