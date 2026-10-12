@@ -429,7 +429,7 @@ and each settles on its own:
 | fact | source | when (prod since 1 Sep) | which half-hours |
 |---|---|---|---|
 | kWh | DCC consumption (`imp_kwh_api`, `exp_kwh_api`) | 1–2 days | every one, import and export |
-| cost | the bill per half-hour (`measured_cost`) | 10–279 h after the slot, 68 h on average | import only; dispatched half-hours, and imported history (the drain) |
+| cost | the bill per half-hour (`measured_cost`) | 10–279 h after the slot, 68 h on average | import only, and only **after** its kWh. On IOG-SMB every half-hour: the live pass asks for dispatched ones first, the history drain for the rest (prod, last 14 days: every import half-hour with settled kWh has its bill). Off SMB, dispatched half-hours only; the rest stay kWh × the tariff rate |
 | House/EV split | the same bill's four buckets | **the same fetch as the cost** | IOG-SMB only |
 
 - kWh before cost is EMT's rule, by construction: the live pass asks only for blocks with DCC kWh
@@ -439,6 +439,8 @@ and each settles on its own:
   10 Oct the first breakdown was wrong in both and the restatement fixed both (v4 4.5.23). Off SMB the
   split never settles from a bill, and EMT's dispatch split is final.
 - Export settles kWh only; its cost is kWh × the export rate, final once the kWh is.
+- So cost settlement is a **pipeline**, not a flag: a half-hour waits for its kWh, then for its bill,
+  then holds it. A half-hour awaiting kWh is awaiting its bill too.
 
 Three representations of one idea today — `imp_kwh_api IS NOT NULL` (kWh), `rate_source` (cost) and
 4.5.23's wait map (split) — and BL-82 is the defect that comes from reading them as one. Any surface
@@ -474,10 +476,13 @@ hourly carve had not reached.
 user), from BL-82's model. Three parts; the detail needs refining before it is built.
 
 1. **The chart pill tells the truth.** The Charts pill reads "N blocks awaiting **cost** settlement",
-   but counts blocks without DCC **kWh** (`_UNSETTLED_WHERE`: `imp_kwh_api` or `exp_kwh_api` NULL).
-   On the production copy's last 14 days it said 59; dispatched blocks awaiting a bill were 0, and
-   the 255 settled blocks whose stored cost is not the bill (BL-82) count nowhere. It should name
-   each fact it counts — kWh, bill, split — or say only what it counts.
+   and counts blocks without DCC **kWh** (`_UNSETTLED_WHERE`: `imp_kwh_api` or `exp_kwh_api` NULL) —
+   including half-hours with no energy, and export, which has no bill stage at all. Cost settlement
+   is a pipeline (BL-82's model), so the pill should name its stages. Production copy, last 14 days,
+   import half-hours with energy: **31 awaiting kWh (and then their bill) · 0 with kWh, awaiting their
+   bill · 303 holding their bill** — and, separately as *needs attention*, the 255 of those whose
+   stored cost is no longer the bill (BL-82), which today count nowhere. The middle stage was empty at
+   that snapshot, but is the one that fills while a bill lags its kWh.
 2. **Heatmaps by settlement state, per channel.** Import, export, and on IOG the split (BL-84): each
    half-hour coloured by its state — provisional; kWh settled; bill settled; split from the bill, or
    EMT's own, or held back (4.5.23's wait), or kept EMT's after 28 days; and **needs attention**.
