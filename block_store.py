@@ -4797,6 +4797,28 @@ class BlockStore:
         row = self._conn.execute(sql, params).fetchone()
         return int(row["n"]) if row else 0
 
+    def count_awaiting_bill(self, since_iso: str, *, every_half_hour: bool, exclude=(),
+                            meter_id: str = "electricity_main") -> int:
+        """Main import blocks whose kWh has settled and whose bill has not arrived — the middle
+        stage of settlement (ROADMAP BL-82's model: kWh, then the bill, then on IOG-SMB the split).
+        `every_half_hour`: on IOG-SMB every half-hour is billed and fetched; elsewhere only a
+        dispatched one is. Corrected and imported blocks are not waiting for a bill; `exclude`
+        takes the half-hours whose bill is held back for its split (they wait at the next stage).
+        """
+        exclude = sorted(set(exclude or ()))
+        sql = ("SELECT COUNT(*) FROM blocks b WHERE b.meter_id = ? AND b.imp_kwh > 0 "
+               "  AND b.imp_kwh_api IS NOT NULL AND COALESCE(b.rate_corrected, 0) = 0 "
+               "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
+               "  AND (b.source IS NULL OR b.source NOT LIKE 'imported%') "
+               "  AND b.block_start >= ? "
+               "  AND NOT EXISTS (SELECT 1 FROM measured_cost mc WHERE mc.slot_start = b.block_start) ")
+        if not every_half_hour:
+            sql += ("  AND EXISTS (SELECT 1 FROM dispatch_slots s WHERE s.slot_start = b.block_start "
+                    "              AND (s.off_peak = 1 OR s.source = 'smart-charge-completed')) ")
+        if exclude:
+            sql += "  AND b.block_start NOT IN (%s) " % ",".join("?" * len(exclude))
+        return int(self._conn.execute(sql, (meter_id, since_iso, *exclude)).fetchone()[0])
+
     def finalise_past_horizon_blocks(self, cutoff_block_start: str,
                                      main_meter_id: str = "electricity_main") -> int:
         """Mark main-meter blocks older than cutoff_block_start that are still

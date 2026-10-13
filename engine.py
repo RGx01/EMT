@@ -11503,6 +11503,30 @@ def _bill_split_kept(store, w: dict) -> set:
     return kept
 
 
+def settlement_awaiting(store, since_iso: str) -> dict:
+    """How many half-hours since `since_iso` wait at each stage of settlement (ROADMAP BL-82's
+    model): their kWh (DCC), then their bill, then — on IOG-SMB, where the bill's split is held
+    back (v4 4.5.23) — their split. For the Charts pill (BL-85, 13 Oct 2026). Read-only: `store`
+    may be a ReadStore.
+    - kwh: count_unsettled_blocks — import kWh, or export kWh where export settles.
+    - bill: only where EMT fetches bills — an Intelligent tariff with the measured fetch on;
+      on IOG-SMB every half-hour, elsewhere dispatched ones. Otherwise 0: there is no bill stage.
+    - split: held-back bills still being asked for (not past the 28 days)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    wait = _bill_split_wait(store)
+    limit = (_dt.now(_tz.utc).replace(tzinfo=None) - _td(days=_BILL_SPLIT_WAIT_DAYS)).isoformat()
+    split = sum(1 for s in wait if s >= limit and s >= since_iso)
+    imp = (_kraken_discovery or {}).get("import") or {}
+    _tu = (imp.get("tariff_code") or "").upper()
+    bill = 0
+    if _MEASURED_FETCH_ENABLED and ("IOG" in _tu or "INTELLI" in _tu):
+        bill = store.count_awaiting_bill(max(since_iso, _measured_floor()),
+                                         every_half_hour=_import_is_smb_capped(),
+                                         exclude=list(wait))
+    return {"kwh": int(store.count_unsettled_blocks(since_iso=since_iso)), "bill": int(bill),
+            "split": int(split)}
+
+
 def _bill_split_hold(w: dict, slot: str) -> None:
     if slot not in w:
         w[slot] = {"first": _dt_now_iso_safe()}
