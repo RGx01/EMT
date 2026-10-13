@@ -480,7 +480,7 @@ Oct production copy, 7 of 707 completed dispatches since 7 Jul had no split: 10 
 hourly carve had not reached.
 
 **BL-85 — surfaces that say what has settled, and what needs attention.** Proposed 12 Oct 2026 (the
-user), from BL-82's model. Three parts; the detail needs refining before it is built.
+user), from BL-82's model. *Design: [EMT-v5_settlement_surfaces_design.md](design/EMT-v5_settlement_surfaces_design.md) (parts 2–3 and BL-86, draft 13 Oct 2026).* Three parts; the detail needs refining before it is built.
 
 1. **The chart pill tells the truth.** *Done 13 Oct 2026: it names the stages — "⏳ 63 awaiting kWh · … awaiting bill · … awaiting split" — from `/api/billing-source`'s `awaiting`; the dev backup of that morning read 63 / 0 / 0.* The Charts pill reads "N blocks awaiting **cost** settlement",
    and counts blocks without DCC **kWh** (`_UNSETTLED_WHERE`: `imp_kwh_api` or `exp_kwh_api` NULL) —
