@@ -5,7 +5,7 @@ a user acts on it. The model is ROADMAP BL-82's: a half-hour settles in three st
 (DCC), then its **bill** (Octopus's cost for it), then on IOG-SMB its **House/EV split** — each on
 its own clock, each able to be restated. Part 1, the Charts pill, is done (#150).*
 
-**Status:** draft for review, 13 Oct 2026. Nothing is built. §7 lists what needs deciding.
+**Status:** agreed 13 Oct 2026 — §7's five proposals accepted by the user as stated. Nothing is built.
 
 ---
 
@@ -193,14 +193,18 @@ instead of by the user.
 
 ---
 
-## 7. To decide
+## 7. Decided (13 Oct 2026, the user — all five as proposed)
 
 a. **The bill's overdue threshold.** Bills on hand arrive 10–279 h after the half-hour, 68 h on
-   average. Proposed: `overdue` at **7 days after the kWh arrived**.
+   average. Proposed: `overdue` at **7 days after the kWh arrived** — to come down if it proves
+   generous (the user).
 b. **Range selection on a touch screen.** Drag on desktop; on a phone, select days from the day
    column only (no half-hour drag). Proposed as stated.
 c. **`differs` before BL-82 is fixed.** Red now would light ~255 cells for a known, parked defect.
    Proposed: show it as **amber with "known (BL-82)"** in the tooltip until the fix lands, then red.
+   *BL-82 was fixed the same day (13 Oct): the re-run no longer re-costs a settled block. Blocks
+   re-costed before the fix still differ — 32 on prod that afternoon, all September rounding, net
+   £0.00 — so the amber "known (BL-82)" state is for those; a new `differs` is red.*
 d. **Is the preview always shown?** Proposed: yes — even for one half-hour, the panel shows stored →
    Octopus before applying. A re-fetch that finds nothing different says so and writes nothing.
 e. **Who may re-fetch how much.** A range is paced against Octopus's rate limit. Proposed: cap a

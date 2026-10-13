@@ -3919,6 +3919,7 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
             # reconcile after settlement, so this is belt-and-braces.)
             _override_rate = None
             _preserved_prediction = False
+            _held_bill = False          # BL-82: the block's cost IS Octopus's bill
             _override_why = "user correction / reconciled / measured"
             try:
                 if _store is not None:
@@ -3935,6 +3936,8 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
                                    or _mrow["rate_source"] in ("reconciled", "settled", "corrected"))
                             and _mrow["imp_rate"] is not None):
                         _override_rate = _mrow["imp_rate"]
+                        _held_bill = (_mrow["rate_source"] == "settled"
+                                      and not _mrow["rate_corrected"])
                     elif use_dcc and _mrow and _mrow["imp_rate"]:
                         # 4.5.15 (v4 #475): a PREDICTED band is held on the same terms.
                         #
@@ -3978,16 +3981,34 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
                 # stored rate, only re-cost to the chosen kWh; no overlay/split/persist so the
                 # rate is never stomped. ex-VAT is still derived (from that same rate).
                 rate = _override_rate
-                logger.info("_rerun_pass2: %s rate preserved (%.5f) — %s; re-costed to "
-                            "chosen kWh (not re-resolved)",
-                            block.get("start", ""), rate, _override_why)
                 _own_ratio = _exc_ratio(imp_ch, block.get("start", ""), vat_fallback=False)
+                _billed_kwh = imp_ch.get("kwh")
                 imp_ch["rate"] = rate
                 imp_ch["kwh"] = chosen
                 imp_ch["kwh_total"] = chosen
-                imp_ch["cost"] = round(chosen * rate, 6)
-                _carry_exc_to_cost(imp_ch, _own_ratio)
-                _apply_import_exc(imp_ch, block.get("start", ""))
+                if _held_bill:
+                    # BL-82 (13 Oct 2026): a settled block's cost and ex-VAT ARE Octopus's bill —
+                    # kept, not re-costed to kWh x rate. The re-run fired on every DCC
+                    # re-confirmation; on 12 Oct's backups it had replaced 262 and 247 bills
+                    # with kWh x rate, none with a different kWh. A settled kWh that does differ
+                    # from the kWh the bill priced is a question for Octopus (ROADMAP BL-86),
+                    # not a figure to invent: logged, and the bill kept.
+                    if (_billed_kwh is not None
+                            and abs(float(_billed_kwh) - float(chosen)) > 0.0005):
+                        logger.warning(
+                            "_rerun_pass2: %s settled kWh %.3f differs from the %.3f the bill "
+                            "priced — bill kept (£%.4f); re-fetch to reconcile",
+                            block.get("start", ""), float(chosen), float(_billed_kwh),
+                            float(imp_ch.get("cost") or 0.0))
+                    logger.info("_rerun_pass2: %s settled — the bill is kept (rate %.5f)",
+                                block.get("start", ""), rate)
+                else:
+                    logger.info("_rerun_pass2: %s rate preserved (%.5f) — %s; re-costed to "
+                                "chosen kWh (not re-resolved)",
+                                block.get("start", ""), rate, _override_why)
+                    imp_ch["cost"] = round(chosen * rate, 6)
+                    _carry_exc_to_cost(imp_ch, _own_ratio)
+                    _apply_import_exc(imp_ch, block.get("start", ""))
                 if _preserved_prediction:
                     # Re-derive the carve + segments against the settled kWh, priced at the
                     # HELD band (hold_rate=True). apply_overlay=False so the overlay itself
