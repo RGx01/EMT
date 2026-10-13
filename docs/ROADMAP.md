@@ -416,12 +416,15 @@ if the settled kWh ever differs from the kWh the bill priced, the block is flagg
 (BL-85), not recomputed — the bill is Octopus's own kWh, and the difference is a question to ask
 Octopus (BL-86), not a figure for EMT to invent.
 
-*Open — October, before the fix lands:* the 230 October blocks read 0% VAT only because the re-cost
+*Decided 12 Oct 2026 (the user): the fix waits for Octopus to restate October.* The question was: the 230 October blocks read 0% VAT only because the re-cost
 overwrote a bill that still carries 5% (#505, not restated as of 12 Oct). Keeping the bill makes them
 match Octopus's half-hourly figures and 5% high against the statement until the VAT resync (v4 4.5.22,
 v5 forward) picks up the restatement. #505's own rule — the VAT calendar recognises Octopus's
 figures and never replaces them — says keep the bill. The fix can wait for Octopus to restate, or
-land and leave October 5% high until it does.
+land and leave October 5% high until it does. Octopus is reported (12 Oct) to have fixed the VAT on
+its online charts; the half-hourly data the resync reads is separate, and the resync's own log
+(`vat resync (#505)`: the hint, then "Octopus restated the period … re-applied N block(s)") is what
+releases the fix.
 
 *The model under it (12 Oct 2026).* A half-hour carries up to three settled facts, from two sources,
 and each settles on its own:
@@ -497,6 +500,13 @@ user), from BL-82's model. Three parts; the detail needs refining before it is b
    bill, re-fetch the split, and show what was fetched against what is stored. The re-fetch itself is
    BL-86. *To refine:* which actions each state offers, how a range is selected on a heatmap, and what
    is confirmed before anything is written.
+4. **A provisional half-hour looks provisional, not half-right.** 13 Oct 2026: while 05:30 BST
+   waited for its split, the chart drew it House with the import rate line stepping to peak at
+   05:30 — yet its cost was already at the low rate ("16.887 kWh @ £0.0523" included it). The line
+   follows the split; the cost follows the dispatch overlay. Until the split lands (within ~5
+   minutes of the completed record since #148; up to an hour before), the two disagree, which read
+   as 4.5.23's bug returning. The line, the bar and the cost should tell one story, or the half-hour
+   should be marked provisional.
 
 **BL-86 — re-fetch Octopus's figures for a range without deleting it.** Proposed 12 Oct 2026 (the
 user). Octopus restates history: #505's October VAT (not yet seen to happen) and 10 Oct's split
