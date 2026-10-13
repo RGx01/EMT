@@ -210,6 +210,7 @@
     "get_settleable_blocks",
     "get_settled_blocks_missing_ev_split",
     "get_settled_to",
+    "get_settlement_detail",
     "get_settlement_facts",
     "get_sub_meter_history",
     "get_timed_out_provisionals",

@@ -67,7 +67,8 @@ class TestRouteStoreUse(unittest.TestCase):
         # −1: /api/billing, deleted (Live Power reads /api/periods?kind=live), 1 Oct 2026.
         # −1: /api/review-blocks, deleted with the review list (BL-74, 4 Oct 2026).
         # −1: /api/blocks/sweep-implausible, deleted with the #307 self-heal (BL-74).
-        self.assertEqual(len(self.d["get_on_companion"]), 32)
+        # +1: /api/blocks/settlement, the settlement detail panel (13 Oct 2026).
+        self.assertEqual(len(self.d["get_on_companion"]), 33)
 
     def test_adoption_is_total(self):
         """Measured at 0% before the port: v4 credited one route with the read

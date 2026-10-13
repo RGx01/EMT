@@ -3737,6 +3737,58 @@ def _settlement_horizon_floor() -> str:
     return (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)).isoformat()
 
 
+@app.route("/api/blocks/settlement", methods=["GET"])
+def api_block_settlement():
+    """One main-meter half-hour's three settlement facts with their sources — the detail panel
+    (settlement surfaces design §4). `start` is the block's naive-UTC start. Read-only.
+
+    {start, end, state: {bill, split, flags}, kwh: {stored, dcc, settled},
+     export: {kwh, dcc} | null, cost: {stored, stored_exc, rate, rate_source, corrected},
+     bill: {cost, cost_exc, kwh, label, fetched_at, home_kwh, home_rate, ev_kwh, ev_rate} | null,
+     segments: [...], dispatch: {completed_kwh, kinds} | null}"""
+    from datetime import datetime as _dt, timedelta as _td
+    start = (request.args.get("start") or "").strip()
+    try:
+        t0 = _dt.fromisoformat(start)
+    except ValueError:
+        return jsonify({"error": "start must be an ISO date-time"}), 400
+    start = t0.replace(tzinfo=None).isoformat()
+    try:
+        store = store_access.store()
+        d = store.get_settlement_detail(start)
+        if d is None:
+            return jsonify({"error": "no block at %s" % start}), 404
+        states = _settlement_states(store, start, (t0.replace(tzinfo=None) + _td(minutes=30)).isoformat())
+        hist = store.get_dispatch_history_for_slot(start)
+        comp = [h for h in hist if h.get("kind") == "completed" and h.get("energy_kwh") is not None]
+        _r = lambda x, n=6: (round(float(x), n) if x is not None else None)
+        return jsonify({
+            "start": d["block_start"], "end": d["block_end"],
+            "state": states.get(d["block_start"]),
+            "kwh": {"stored": _r(d["imp_kwh"]), "dcc": _r(d["imp_kwh_api"]),
+                    "settled": d["imp_kwh_api"] is not None
+                               or (d["source"] or "").startswith("imported")},
+            "export": ({"kwh": _r(d["exp_kwh"]), "dcc": _r(d["exp_kwh_api"])}
+                       if (d["exp_kwh"] or d["exp_kwh_api"]) else None),
+            "cost": {"stored": _r(d["imp_cost"]), "stored_exc": _r(d["imp_cost_exc"]),
+                     "rate": _r(d["imp_rate"]), "rate_source": d["rate_source"],
+                     "corrected": bool(d["rate_corrected"])},
+            "bill": ({"cost": _r(d["bill_cost"]), "cost_exc": _r(d["bill_cost_exc"]),
+                      "kwh": _r(d["bill_kwh"]), "label": d["bill_label"],
+                      "fetched_at": d["bill_fetched_at"],
+                      "home_kwh": _r(d["bill_home_kwh"]), "home_rate": _r(d["bill_home_rate"]),
+                      "ev_kwh": _r(d["bill_ev_kwh"]), "ev_rate": _r(d["bill_ev_rate"])}
+                     if d["bill_cost"] is not None else None),
+            "segments": store.get_block_segments(start, "electricity_main"),
+            "dispatch": ({"completed_kwh": (round(abs(float(comp[-1]["energy_kwh"])), 3)
+                                            if comp else None),
+                          "kinds": sorted({h.get("kind") for h in hist})} if hist else None),
+        })
+    except Exception as e:
+        logger.warning("api_block_settlement: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
 def _settle_views(_eng) -> list:
     try:
         views = ["bill"] if _eng.bill_stage()["fetched"] else []

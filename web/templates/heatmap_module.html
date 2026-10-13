@@ -196,6 +196,7 @@ window.EMTHeatmap = (function () {
       var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, api: 0, apiexp: 0, bill: 0, split: 0}});
       var net = (b.imp_kwh || 0) - (b.exp_kwh || 0), cg = b.carbon_g;
       var c = d.slots[lp.slot] || (d.slots[lp.slot] = {kwh: 0, co2: null, int: null});
+      (c.starts || (c.starts = [])).push(b.block_start);       // UTC, for the detail panel (§4)
       c.kwh += net;                                             // clocks-back: summed
       if (cg !== null && cg !== undefined) c.co2 = (c.co2 || 0) + cg;
       // The payload states the grid's intensity per block (carbon.slot_intensity).
@@ -436,6 +437,102 @@ window.EMTHeatmap = (function () {
     row.addEventListener('mousemove', show);
     row.addEventListener('touchstart', show, {passive: true});
     row.addEventListener('mouseleave', function () { tipEl().style.display = 'none'; });
+    // A click (or tap) on a cell opens that half-hour's settlement detail (design §4).
+    row.addEventListener('click', function (ev) {
+      if (!p.drawn || !p.chart || (p.tot && p.tot.canvas === ev.target)) return;
+      var a = p.chart.chartArea, r = p.chart.canvas.getBoundingClientRect();
+      var x = ev.clientX - r.left, y = ev.clientY - r.top;
+      if (!a || x < a.left || x > a.right || y < a.top || y > a.bottom) return;
+      var day = p.days[Math.floor((y - a.top) / (a.height / p.days.length))];
+      var ci = Math.floor((x - a.left) / (a.width / p.xs.length));
+      var c = day && p.grid[day].slots[ci];
+      if (!c || !c.starts || !c.starts.length) return;
+      tipEl().style.display = 'none';
+      openPanel(c.starts, day + ' ' + p.xs[ci] + '–' + slotLabel(ci + 1));
+    });
+  }
+
+  // ── the settlement detail panel (design §4): the evidence for one half-hour ──
+  function esc(v) {
+    return String(v === null || v === undefined ? '' : v).replace(/[&<>"]/g, function (c) {
+      return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]; });
+  }
+  function localTime(utcIso) {
+    if (!utcIso) return '';
+    try {
+      return new Intl.DateTimeFormat('en-GB', {timeZone: state.tz, day: 'numeric', month: 'short',
+        hour: '2-digit', minute: '2-digit', hourCycle: 'h23'}).format(new Date(utcIso.slice(0, 19) + 'Z'));
+    } catch (e) { return utcIso; }
+  }
+  function panelEl() {
+    var el = document.getElementById('hm-panel');
+    if (!el) {
+      el = document.createElement('div'); el.id = 'hm-panel'; el.className = 'hm-panel';
+      el.addEventListener('click', function (e) { if (e.target === el || e.target.dataset.close) el.style.display = 'none'; });
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape') el.style.display = 'none'; });
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+  function gbp(v) { return v === null || v === undefined ? '—' : '£' + (+v).toFixed(4); }
+  function kwh(v) { return v === null || v === undefined ? '—' : (+v).toFixed(3) + ' kWh'; }
+  function renderPanel(d, label, more) {
+    var st = d.state || {}, b = d.bill, k = d.kwh || {}, c = d.cost || {};
+    var rows = [];
+    function row(name, value, note, cls) {
+      rows.push('<tr' + (cls ? ' class="' + cls + '"' : '') + '><th>' + name + '</th><td>' + value +
+                '</td><td class="hm-note2">' + (note || '') + '</td></tr>');
+    }
+    var kNote = k.settled ? (k.dcc !== null && k.stored !== null && Math.abs(k.dcc - k.stored) > 0.0005
+                  ? 'DCC ' + esc(kwh(k.dcc)) + ' — stored differs' : 'DCC settled')
+              : 'not settled yet — EMT\u2019s own reading';
+    row('kWh', esc(kwh(k.stored)), kNote, k.settled ? '' : 'hm-wait');
+    if (d.export) row('export', esc(kwh(d.export.kwh)), d.export.dcc !== null ? 'DCC settled' : 'not settled yet');
+    if (b) {
+      var same = c.stored !== null && Math.abs(c.stored - b.cost) <= 0.00001;
+      row('bill', esc(gbp(b.cost)), 'Octopus, fetched ' + esc(localTime(b.fetched_at)) + ' · stored ' +
+          esc(gbp(c.stored)) + (same ? ' \u2713' : ' \u2717'), same ? '' : 'hm-bad');
+      if (b.cost_exc) row('', esc(gbp(b.cost_exc)) + ' ex-VAT',
+          'VAT ' + (b.cost_exc > 0.001 ? ((b.cost / b.cost_exc - 1) * 100).toFixed(1) + '%' : '—'));
+    } else {
+      row('bill', '—', esc(CAT_TEXT.bill[st.bill] || st.bill || ''), st.bill === 'overdue' ? 'hm-bad' : 'hm-wait');
+      row('', esc(gbp(c.stored)), 'stored (kWh \u00d7 rate)');
+    }
+    var ev = 0, house = 0;
+    (d.segments || []).forEach(function (sg) { if (sg.attribution === 'ev') ev += sg.kwh; else house += sg.kwh; });
+    if (st.split || d.dispatch) {
+      var dn = d.dispatch && d.dispatch.completed_kwh !== null ? 'completed dispatch ' + d.dispatch.completed_kwh + ' kWh'
+             : d.dispatch ? 'dispatch ' + esc((d.dispatch.kinds || []).join(', ')) : '';
+      row('split', 'EV ' + ev.toFixed(3) + ' / House ' + house.toFixed(3),
+          esc(st.split ? CAT_TEXT.split[st.split] : '') + (dn ? ' · ' + dn : ''),
+          st.split === 'missing' ? 'hm-bad' : (st.split === 'held' ? 'hm-wait' : ''));
+      if (b && b.ev_kwh !== null) row('', 'bill: EV ' + (+b.ev_kwh).toFixed(3) + ' / House ' + (+b.home_kwh).toFixed(3), '');
+    }
+    var bands = {}; (d.segments || []).forEach(function (sg) { bands[sg.band] = 1; });
+    row('rate', c.rate !== null ? (c.rate * 100).toFixed(3) + 'p' : '—',
+        esc(Object.keys(bands).join(', ')) + (c.rate_source ? ' · ' + esc(c.rate_source) : '') + (c.corrected ? ' · your correction' : ''));
+    (st.flags || []).forEach(function (f) { if (FLAG_TEXT[f]) row('\u26a0', esc(FLAG_TEXT[f]), '', 'hm-bad'); });
+    if ((st.flags || []).indexOf('recost_bl82') >= 0) row('', 'stored cost re-costed before the BL-82 fix', 'pennies; known', 'hm-wait');
+    var el = panelEl();
+    el.innerHTML = '<div class="hm-panel-box" role="dialog" aria-label="Half-hour detail">' +
+      '<div class="hm-panel-head"><b>' + esc(label) + '</b><button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' +
+      '<table class="hm-detail">' + rows.join('') + '</table>' +
+      (more ? '<div class="hm-note2">' + esc(more) + '</div>' : '') + '</div>';
+    el.style.display = 'flex';
+  }
+  function openPanel(starts, label) {
+    var el = panelEl();
+    el.innerHTML = '<div class="hm-panel-box"><div class="hm-panel-head"><b>' + esc(label) +
+                   '</b><button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>Loading…</div>';
+    el.style.display = 'flex';
+    fetchJSON('/api/blocks/settlement?start=' + encodeURIComponent(starts[0])).then(function (d) {
+      if (d.error) throw new Error(d.error);
+      // the clocks-back hour folds two half-hours into one cell: show the first, say so
+      renderPanel(d, label, starts.length > 1 ? 'This cell holds ' + starts.length +
+                  ' half-hours (the clocks went back); showing the first.' : '');
+    }).catch(function (e) {
+      el.querySelector('.hm-panel-box').lastChild.textContent = 'Could not load: ' + e.message;
+    });
   }
 
   // ── data ───────────────────────────────────────────────────────────────────
@@ -601,6 +698,20 @@ window.EMTHeatmap = (function () {
   .hm-row { display:flex; gap:12px; flex:1; min-width:0; overflow-x:auto; }
   .hm-grid, .hm-tot { flex:none; }         /* never shrink: cells are sized to stay square */
   .hm-empty { padding:40px; text-align:center; color:var(--muted, #6b7080); }
+  .hm-panel { position:fixed; inset:0; z-index:60; display:none; align-items:center; justify-content:center;
+              background:rgba(0,0,0,.45); padding:16px; }
+  .hm-panel-box { background:var(--surface, #1a1d27); color:var(--text, #e8eaf0); border:1px solid var(--border, #2a2d3a);
+                  border-radius:10px; padding:14px 16px; width:min(520px, 100%); max-height:90vh; overflow:auto;
+                  font-size:13px; box-shadow:0 8px 24px rgba(0,0,0,.35); }
+  .hm-panel-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  .hm-x { background:none; border:none; color:var(--muted, #6b7080); font-size:16px; cursor:pointer; }
+  .hm-detail { width:100%; border-collapse:collapse; }
+  .hm-detail th { text-align:left; font-weight:600; padding:4px 10px 4px 0; vertical-align:top; white-space:nowrap; }
+  .hm-detail td { padding:4px 8px 4px 0; vertical-align:top; }
+  .hm-detail tr.hm-bad td, .hm-detail tr.hm-bad th { color:#e05252; }
+  .hm-detail tr.hm-wait td, .hm-detail tr.hm-wait th { color:#e0a020; }
+  .hm-note2 { color:var(--muted, #6b7080); font-size:12px; }
+  .hm-grid canvas { cursor:pointer; }
   .hm-tip { position:fixed; z-index:50; pointer-events:none; display:none; padding:6px 8px;
             border-radius:6px; font-size:12px; line-height:1.4; background:var(--surface, #1a1d27);
             color:var(--text, #e8eaf0); border:1px solid var(--border, #2a2d3a);

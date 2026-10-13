@@ -4841,6 +4841,25 @@ class BlockStore:
             "ORDER BY b.block_start", (meter_id, utc_start, utc_end)).fetchall()
         return [dict(r) for r in rows]
 
+    def get_settlement_detail(self, block_start: str,
+                              meter_id: str = "electricity_main") -> "dict | None":
+        """One main-meter half-hour's own figures and its cached bill, for the settlement detail
+        panel (settlement surfaces design §4): the block's kWh (stored, DCC), cost, ex-VAT,
+        rate and provenance, its export, and the bill row with when it was fetched. None if
+        there is no such block."""
+        r = self._conn.execute(
+            "SELECT b.block_start, b.block_end, b.imp_kwh, b.imp_kwh_api, b.imp_cost, "
+            "       b.imp_cost_exc, b.imp_rate, b.rate_source, COALESCE(b.rate_corrected, 0) "
+            "       AS rate_corrected, b.source, b.exp_kwh, b.exp_kwh_api, b.exp_cost, b.exp_rate, "
+            "       mc.cost_incl AS bill_cost, mc.cost_excl AS bill_cost_exc, mc.kwh AS bill_kwh, "
+            "       mc.label AS bill_label, mc.fetched_at AS bill_fetched_at, "
+            "       mc.home_kwh AS bill_home_kwh, mc.home_rate AS bill_home_rate, "
+            "       mc.ev_kwh AS bill_ev_kwh, mc.ev_rate AS bill_ev_rate "
+            "FROM blocks b LEFT JOIN measured_cost mc ON mc.slot_start = b.block_start "
+            "     AND mc.direction = 'CONSUMPTION' "
+            "WHERE b.block_start = ? AND b.meter_id = ?", (block_start, meter_id)).fetchone()
+        return dict(r) if r else None
+
     def finalise_past_horizon_blocks(self, cutoff_block_start: str,
                                      main_meter_id: str = "electricity_main") -> int:
         """Mark main-meter blocks older than cutoff_block_start that are still
