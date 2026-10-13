@@ -102,6 +102,11 @@ _MANIFEST: dict = {
     "gap_fill":            ((),                               (),              DEFER),
     "iog_split_carve":     ((),                               (),              DEFER),
     "settled_ev_split_heal": ((),                             (),              DEFER),
+    # BL-86 (13 Oct 2026): a user-asked re-fetch of a range from Octopus — refused, not queued,
+    # while anything else rewrites the same history. Its diff is a snapshot of the range: an
+    # import, delete or restore between preview and apply would make it wrong (and apply refuses a
+    # preview whose range has changed since).
+    "range_refetch":       (("import",),                      ("delete", "restore"), DEFER),
     # PREEMPT, both of them, and evidenced: each cancels a running import, waits
     # up to 60s for it to stop, and ABORTS ITSELF if it will not
     # (web/server.py:2073 for the delete, 3810 for the restore). Not "wait" —
