@@ -438,7 +438,10 @@ function loadBillingSource() {
         var st = document.getElementById('billing-source-status');
         if (st) st.textContent = 'Currently using ' + (d.source === 'dcc'
           ? 'cost settlement' : 'CAD readings') + '. '
-          + (d.unsettled || 0) + ' block(s) awaiting cost settlement.';
+          + (d.unsettled || 0) + ' block(s) awaiting their settled kWh'
+          + ((d.awaiting && d.awaiting.bill) ? ', ' + d.awaiting.bill + ' awaiting their bill' : '')
+          + ((d.awaiting && d.awaiting.split) ? ', ' + d.awaiting.split + ' awaiting their split' : '')
+          + '.';
       }
       // Unsettled-blocks review (and Retry) are relevant whenever a supplier API
       // is present and billing runs on DCC — including a pure-API setup; no CAD

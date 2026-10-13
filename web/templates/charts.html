@@ -2764,6 +2764,20 @@ document.addEventListener('DOMContentLoaded', function() {
   // can actually happen (an API is configured). Without an API the unsettled
   // count is expected and permanent (local/CAD billing), so it must NOT read as
   // "awaiting settlement" (issue: alarmed a user who had no API configured).
+  // The stages of settlement with half-hours waiting at them, in order: the kWh (DCC), then the
+  // bill, then on IOG-SMB the House/EV split. Falls back to `unsettled` (the kWh stage) on a
+  // server that does not send `awaiting`.
+  function _settleStages(d) {
+    var a = d.awaiting || {kwh: d.unsettled || 0, bill: 0, split: 0};
+    return [
+      {n: a.kwh || 0, what: 'kWh',
+       why: 'Octopus has not yet sent the settled meter reading for these half-hours.'},
+      {n: a.bill || 0, what: 'bill',
+       why: 'the settled reading is in; Octopus\u2019s cost for the half-hour is not yet.'},
+      {n: a.split || 0, what: 'split',
+       why: 'Octopus\u2019s bill has no EV share where EMT saw your car charge, so EMT keeps its own split and asks again (up to 28 days).'}
+    ].filter(function(x){ return x.n > 0; });
+  }
   (function loadSettleNote(){
     try {
       fetch(apiUrl('/api/billing-source')).then(function(r){return r.json();}).then(function(d){
@@ -2800,10 +2814,13 @@ document.addEventListener('DOMContentLoaded', function() {
           // API available but billing uses the local CAD figure as the source
           label = 'CAD source \u00b7 API ready';
           tip = 'A supplier API is available, but billing uses the local CAD meter figure as the source rather than cost settlement.';
-        } else if (d.unsettled > 0) {
-          // DCC path with blocks still awaiting the supplier's settled figure
-          label = '\u23f3 ' + d.unsettled + ' block' + (d.unsettled === 1 ? '' : 's') + ' awaiting cost settlement';
-          tip = 'These blocks are billed on EMT\u2019s provisional figure and haven\u2019t yet been reconciled to your supplier\u2019s settled cost figure. See Data Management for detail.';
+        } else if (_settleStages(d).length) {
+          // DCC path: name each stage half-hours are waiting at (BL-85, 13 Oct 2026). It read
+          // "N awaiting cost settlement" while counting only half-hours without their kWh.
+          var st = _settleStages(d);
+          label = '\u23f3 ' + st.map(function(x){ return x.n + ' awaiting ' + x.what; }).join(' \u00b7 ');
+          tip = st.map(function(x){ return x.n + ' awaiting ' + x.what + ': ' + x.why; }).join('\n') +
+                '\nA half-hour settles in that order; until then it is priced on EMT\u2019s own figure. See Data Management for detail.';
           amber = true;
         } else {
           // DCC path, everything settled — nothing to flag

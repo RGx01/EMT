@@ -3747,7 +3747,16 @@ def api_billing_source_get():
         unsettled = store.count_unsettled_blocks(since_iso=_settlement_horizon_floor())
         _uses_api = _eng.mode_uses_api()
         _has_creds = _eng.has_kraken_credentials()
+        _since = _settlement_horizon_floor()
+        try:
+            awaiting = _eng.settlement_awaiting(store, _since)
+        except Exception as _ae:
+            logger.warning("api_billing_source_get: settlement stages: %s", _ae)
+            awaiting = {"kwh": unsettled, "bill": 0, "split": 0}
         return jsonify({"source": source, "unsettled": unsettled,
+                        # BL-85: the three stages a half-hour waits at — kWh, then its bill, then
+                        # (IOG-SMB) its split. `unsettled` is the first, kept for its other readers.
+                        "awaiting": awaiting,
                         "api_available": _eng.kraken_available(),
                         # The supplier API is part of this install's data source — the
                         # rule is mode_uses_api(), so a page need not re-derive it

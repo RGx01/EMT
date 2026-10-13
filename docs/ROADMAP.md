@@ -453,7 +453,7 @@ Three representations of one idea today — `imp_kwh_api IS NOT NULL` (kWh), `ra
 4.5.23's wait map (split) — and BL-82 is the defect that comes from reading them as one. Any surface
 that says "settled" should say which of the three.
 
-**BL-83 — the bill's VAT line takes each day's rate from its first half-hour.** Found 10 Oct 2026.
+**BL-83 — the bill's VAT line takes each day's rate from its first half-hour.** Found 10 Oct 2026. **Parked 13 Oct 2026 (the user):** every symptom comes from half-hours still billed at 5% (#505), so it resolves itself once Octopus restates October and the VAT resync re-applies them. Revisit only if a later VAT change repeats #505; then label each day from the VAT calendar (`vat_at(day)`) and keep the amount as inc − exc.
 `energy_charts._bill_method_breakdown` names the VAT in force per local day with
 `vat_by_day.setdefault(day, the half-hour's own VAT)` — the FIRST priced half-hour, which in BST is
 23:00 UTC the day before. With #505's 5% on 9 Oct's settled half-hours (UTC), the line read "0% … to
@@ -482,7 +482,7 @@ hourly carve had not reached.
 **BL-85 — surfaces that say what has settled, and what needs attention.** Proposed 12 Oct 2026 (the
 user), from BL-82's model. Three parts; the detail needs refining before it is built.
 
-1. **The chart pill tells the truth.** The Charts pill reads "N blocks awaiting **cost** settlement",
+1. **The chart pill tells the truth.** *Done 13 Oct 2026: it names the stages — "⏳ 63 awaiting kWh · … awaiting bill · … awaiting split" — from `/api/billing-source`'s `awaiting`; the dev backup of that morning read 63 / 0 / 0.* The Charts pill reads "N blocks awaiting **cost** settlement",
    and counts blocks without DCC **kWh** (`_UNSETTLED_WHERE`: `imp_kwh_api` or `exp_kwh_api` NULL) —
    including half-hours with no energy, and export, which has no bill stage at all. Cost settlement
    is a pipeline (BL-82's model), so the pill should name its stages. Production copy, last 14 days,

@@ -114,6 +114,7 @@
     "completed_dispatch_kwh",
     "compute_period_net",
     "config_from_db",
+    "count_awaiting_bill",
     "count_backfilled_blocks",
     "count_block_segments",
     "count_blocks",
