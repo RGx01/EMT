@@ -218,7 +218,7 @@ e. **Who may re-fetch how much.** A range is paced against Octopus's rate limit.
 | PR | contents |
 |---|---|
 | 1 | `settle` in the payload; the *Bill* and *Split* views (read-only); tests on fixtures for every state. *Built 13 Oct 2026:* `settlement_state.py`, `BlockStore.get_settlement_facts`, `/api/energy?resolution=block&include=settle`, `/api/billing-source`'s `settle_views`. Two changes from §1: a stored cost within a thousandth of a penny of its bill is `applied` (float and rounding noise — prod's one other "difference"); and an attention flag outranks *known (BL-82)*, which had hidden the 5% VAT on 13 Oct's pre-restatement bills. The overdue clock runs from the half-hour + 2 days, as EMT does not record when the kWh arrived. |
-| 2 | the detail panel and `GET /api/blocks/settlement` |
+| 2 | the detail panel and `GET /api/blocks/settlement`. *Built 13 Oct 2026:* a click or tap on a cell in any view opens it; `BlockStore.get_settlement_detail`. The Re-fetch button waits for PR 3. A clocks-back cell holds two half-hours; the panel shows the first and says so. |
 | 3 | BL-86: the range re-fetch — preview and apply, as a job — with its tests against faked Octopus answers (a restated split, a VAT change, an unchanged range) |
 | 4 | the context menu and range selection, wired to PR 3 |
 | 5 | a Pi check on the dev install: the views over a month, a one-half-hour re-fetch, a one-day re-fetch |
