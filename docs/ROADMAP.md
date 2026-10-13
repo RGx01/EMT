@@ -384,7 +384,9 @@ into peak than Octopus did, which carries into the total. That band split is the
 kWh question, not a rounding one (see BL-80's note).
 
 **BL-82 — the settlement re-run replaces a settled block's bill with kWh × rate.** Found 10 Oct 2026;
-**measured and decided in part 12 Oct 2026.** When `_rerun_pass2_for_settled_block` reaches a block
+**measured and decided in part 12 Oct 2026; fixed in v5 13 Oct 2026** (`_rerun_pass2_for_settled_block`
+keeps a settled block's cost and ex-VAT; a settled kWh that differs from the bill's is logged, the
+bill kept; `tests/test_settled_keeps_bill.py`). v4 unchanged — pennies, below its bar. When `_rerun_pass2_for_settled_block` reaches a block
 whose rate is held — `rate_source` `settled`, `corrected` or `reconciled` — it keeps the rate and
 re-costs the block to the settled kWh: `imp_cost = chosen × imp_rate`. On a `settled` block `imp_cost`
 WAS the bill, so the re-run swaps what Octopus charged for kWh × rate. The import spec says the
@@ -416,7 +418,7 @@ if the settled kWh ever differs from the kWh the bill priced, the block is flagg
 (BL-85), not recomputed — the bill is Octopus's own kWh, and the difference is a question to ask
 Octopus (BL-86), not a figure for EMT to invent.
 
-*Decided 12 Oct 2026 (the user): the fix waits for Octopus to restate October.* The question was: the 230 October blocks read 0% VAT only because the re-cost
+*Decided 12 Oct 2026 (the user): the fix waits for Octopus to restate October. **Octopus restated on 13 Oct 2026:** prod's VAT resync logged the hint at 12:02:13 and "restated the period … stored 279 verified half-hour(s), re-applied 24 block(s)" at 12:02:53; on that afternoon's backup all 176 October bills and 187 October blocks read 0%, and 1,041 of 1,073 settled blocks equal their bill — the other 32 September rounding, net £0.00. So the fix landed the same day.* The question was: the 230 October blocks read 0% VAT only because the re-cost
 overwrote a bill that still carries 5% (#505, not restated as of 12 Oct). Keeping the bill makes them
 match Octopus's half-hourly figures and 5% high against the statement until the VAT resync (v4 4.5.22,
 v5 forward) picks up the restatement. #505's own rule — the VAT calendar recognises Octopus's
@@ -453,7 +455,7 @@ Three representations of one idea today — `imp_kwh_api IS NOT NULL` (kWh), `ra
 4.5.23's wait map (split) — and BL-82 is the defect that comes from reading them as one. Any surface
 that says "settled" should say which of the three.
 
-**BL-83 — the bill's VAT line takes each day's rate from its first half-hour.** Found 10 Oct 2026. **Parked 13 Oct 2026 (the user):** every symptom comes from half-hours still billed at 5% (#505), so it resolves itself once Octopus restates October and the VAT resync re-applies them. Revisit only if a later VAT change repeats #505; then label each day from the VAT calendar (`vat_at(day)`) and keep the amount as inc − exc.
+**BL-83 — the bill's VAT line takes each day's rate from its first half-hour.** Found 10 Oct 2026. **Resolved by Octopus's restatement, 13 Oct 2026** (every October half-hour's pair now agrees with the calendar). **Parked 13 Oct 2026 (the user):** every symptom comes from half-hours still billed at 5% (#505), so it resolves itself once Octopus restates October and the VAT resync re-applies them. Revisit only if a later VAT change repeats #505; then label each day from the VAT calendar (`vat_at(day)`) and keep the amount as inc − exc.
 `energy_charts._bill_method_breakdown` names the VAT in force per local day with
 `vat_by_day.setdefault(day, the half-hour's own VAT)` — the FIRST priced half-hour, which in BST is
 23:00 UTC the day before. With #505's 5% on 9 Oct's settled half-hours (UTC), the line read "0% … to
@@ -467,7 +469,7 @@ so on the line ("VAT @ 0% — includes … on half-hours where Octopus still cha
 restated"). Display only; not a pricing error, so outside v4's critical-fix bar. Less pressing while
 BL-82's re-run happens to re-cost those half-hours to 0%; it is the next settled days that will show it.
 
-**v4 #505 (Octopus's half-hourly costs at 5% after 1 Oct) — still open, 10 Oct 2026.** Octopus has
+**v4 #505 (Octopus's half-hourly costs at 5% after 1 Oct) — resolved 13 Oct 2026:** Octopus restated, and 4.5.22's resync re-applied the period on prod (BL-82 above). *As of 10 Oct:* Octopus has
 not restated: on the dev database every settled October half-hour in `measured_cost`, 1–9 Oct, is
 `cost_incl = cost_excl × 1.05`, including 9 Oct's fetched on 10 Oct at 12:03 — so newly settled
 half-hours still arrive at 5%. No resync hint has fired (`measured_vat_resync` absent). The blocks read
