@@ -4819,6 +4819,28 @@ class BlockStore:
             sql += "  AND b.block_start NOT IN (%s) " % ",".join("?" * len(exclude))
         return int(self._conn.execute(sql, (meter_id, since_iso, *exclude)).fetchone()[0])
 
+    def get_settlement_facts(self, utc_start: str, utc_end: str,
+                             meter_id: str = "electricity_main") -> list:
+        """What `settlement_state.classify` needs for each main-meter half-hour in
+        [utc_start, utc_end): the block's own figures and provenance, its cached bill (cost, ex-VAT,
+        the kWh it priced, its EV share), its EV split (the EV segments), and whether it had a
+        completed dispatch or an off-peak dispatch slot. One query, for the settlement views."""
+        rows = self._conn.execute(
+            "SELECT b.block_start, b.imp_kwh, b.imp_kwh_api, b.imp_cost, b.imp_rate, "
+            "       b.rate_source, COALESCE(b.rate_corrected, 0) AS rate_corrected, b.source, "
+            "       mc.cost_incl AS bill_cost, mc.cost_excl AS bill_cost_exc, mc.kwh AS bill_kwh, "
+            "       mc.ev_kwh AS bill_ev_kwh, "
+            "       " + _evsplit.sql_kwh("b") + " AS ev_kwh, "
+            "       EXISTS (SELECT 1 FROM dispatch_history d WHERE d.slot_start = b.block_start "
+            "               AND d.kind = 'completed' AND d.energy_kwh IS NOT NULL) AS completed, "
+            "       EXISTS (SELECT 1 FROM dispatch_slots s WHERE s.slot_start = b.block_start "
+            "               AND (s.off_peak = 1 OR s.source = 'smart-charge-completed')) AS dispatched "
+            "FROM blocks b LEFT JOIN measured_cost mc ON mc.slot_start = b.block_start "
+            "     AND mc.direction = 'CONSUMPTION' "
+            "WHERE b.meter_id = ? AND b.block_start >= ? AND b.block_start < ? "
+            "ORDER BY b.block_start", (meter_id, utc_start, utc_end)).fetchall()
+        return [dict(r) for r in rows]
+
     def finalise_past_horizon_blocks(self, cutoff_block_start: str,
                                      main_meter_id: str = "electricity_main") -> int:
         """Mark main-meter blocks older than cutoff_block_start that are still

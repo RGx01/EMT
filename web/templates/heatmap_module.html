@@ -47,6 +47,61 @@ window.EMTHeatmap = (function () {
              unit: '', dp: 0, tot: 'Missing', field: 'exp_kwh_authoritative', channel: 'export'}
   };
   function isApi(m) { return m === 'api' || m === 'apiexp'; }
+  // BL-85 (settlement surfaces design §1–§2): the bill and the House/EV split, per main-meter
+  // import half-hour, from the payload's `settle` (include=settle) — the server decides the
+  // state, the grid draws it. Added in init from /api/billing-source's `settle_views`.
+  var SETTLE_METRICS = {
+    bill:  {label: 'Bill', title: 'Bill — Octopus\u2019s cost for each import half-hour', unit: '', dp: 0,
+            tot: 'Waiting', settle: 'bill',
+            sub: 'Green: billed, and the stored cost is the bill · amber: waiting for the bill (or a ' +
+                 'known pre-fix re-cost) · red: overdue, or the stored cost is not the bill, or the ' +
+                 'bill disagrees with the settled kWh or the VAT calendar · blue: your correction · ' +
+                 'grey: no bill to wait for, or imported history'},
+    split: {label: 'Split', title: 'House/EV split — half-hours with a completed dispatch', unit: '',
+            dp: 0, tot: 'To watch', settle: 'split',
+            sub: 'Green: from the bill · teal: EMT\u2019s own split, the bill not in yet · amber: the ' +
+                 'bill had no EV, asking Octopus again · blue: kept EMT\u2019s after 28 days · red: a ' +
+                 'completed dispatch with no split'}
+  };
+  function isSettle(m) { return m === 'bill' || m === 'split'; }
+  function isCat(m) { return isApi(m) || isSettle(m); }
+  var CAT_RANK = {
+    bill:  {none: 0, imported: 0, applied: 1, corrected: 1, waiting: 2, known: 2, overdue: 3, differs: 3, flagged: 3},
+    split: {bill: 1, emt: 1, kept: 1, held: 2, missing: 3}
+  };
+  var CAT_TEXT = {
+    bill: {none: 'no bill stage — kWh \u00d7 rate is final', imported: 'imported history',
+           applied: 'billed — the stored cost is the bill', corrected: 'your rate correction',
+           waiting: 'waiting for the bill', overdue: 'bill overdue',
+           known: 'stored cost re-costed before the BL-82 fix (pennies; known)',
+           differs: 'the stored cost is not the bill', flagged: 'billed — but see below'},
+    split: {bill: 'split from the bill', emt: 'EMT\u2019s split — the bill not in yet',
+            held: 'bill had no EV — asking Octopus again', kept: 'EMT\u2019s split kept (28 days)',
+            missing: 'completed dispatch, no split'}
+  };
+  var FLAG_TEXT = {bill_kwh_differs: 'the bill priced a different kWh than settled',
+                   vat_disagrees: 'the bill\u2019s VAT is not the calendar\u2019s'};
+  function settleColour(m, v) {
+    var C = {green: '#2e9e5b', amber: '#e0a020', red: '#cc0000', blue: '#3b7dd8', teal: '#2a9d9f',
+             grey: dark() ? '#3a3e4a' : '#d4d7de'};
+    var by = m === 'bill'
+      ? {applied: C.green, waiting: C.amber, known: C.amber, overdue: C.red, differs: C.red, flagged: C.red,
+         corrected: C.blue, imported: C.grey, none: C.grey}
+      : {bill: C.green, emt: C.teal, held: C.amber, kept: C.blue, missing: C.red};
+    return by[v] || 'rgba(0,0,0,0)';
+  }
+  // the cell value for a view: the state, with the attention flags folded in (§1.4)
+  function settleValue(m, st) {
+    if (!st) return null;
+    if (m === 'split') return st.split || null;
+    var v = st.bill, fl = st.flags || [];
+    // an attention flag outranks "known": the 13 Oct morning's October bills were both a pre-fix
+    // re-cost AND 5% VAT on a 0% day, and the VAT is what needed seeing
+    if ((v === 'applied' || v === 'differs') &&
+        (fl.indexOf('bill_kwh_differs') >= 0 || fl.indexOf('vat_disagrees') >= 0)) return 'flagged';
+    if (v === 'differs' && fl.indexOf('recost_bl82') >= 0) return 'known';
+    return v;
+  }
   var API_PENDING_H = 48;
   var API_RANK = {imported: 0, ok: 1, pending: 2, missing: 3};      // a clocks-back slot shows the worst
   var API_TEXT = {ok: 'API kWh received', pending: 'no API kWh yet (under 48 h)', missing: 'no API kWh',
@@ -138,7 +193,7 @@ window.EMTHeatmap = (function () {
       if (b.meter_id !== 'electricity_main') return;
       var lp = localParts(b.block_start);
       if (lp.day.slice(0, 7) !== key) return;                  // a UTC edge of the month
-      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, api: 0, apiexp: 0}});
+      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, api: 0, apiexp: 0, bill: 0, split: 0}});
       var net = (b.imp_kwh || 0) - (b.exp_kwh || 0), cg = b.carbon_g;
       var c = d.slots[lp.slot] || (d.slots[lp.slot] = {kwh: 0, co2: null, int: null});
       c.kwh += net;                                             // clocks-back: summed
@@ -152,6 +207,11 @@ window.EMTHeatmap = (function () {
         var st = imported ? 'imported' : b[API_METRICS[k].field] ? 'ok' : young ? 'pending' : 'missing';
         if (!c[k] || API_RANK[st] > API_RANK[c[k]]) c[k] = st;
       });
+      var sm = (state.months[key].settle || {})[b.block_start];          // BL-85
+      Object.keys(SETTLE_METRICS).forEach(function (k) {
+        var v = settleValue(k, sm); if (v === null) return;
+        if (!c[k] || CAT_RANK[k][v] > CAT_RANK[k][c[k]]) { c[k] = v; c[k + 'Flags'] = (sm && sm.flags) || []; }
+      });
       d.total.kwh += net; if (cg) d.total.co2 += cg;
     });
     Object.keys(days).forEach(function (k) {                      // the day's half-hours still owed
@@ -159,16 +219,20 @@ window.EMTHeatmap = (function () {
         days[k].total[m] = days[k].slots.filter(function (c) {
           return c && (c[m] === 'missing' || c[m] === 'pending'); }).length;
       });
+      Object.keys(SETTLE_METRICS).forEach(function (m) {         // amber or red: worth a look
+        days[k].total[m] = days[k].slots.filter(function (c) {
+          return c && c[m] && CAT_RANK[m][c[m]] >= 2; }).length;
+      });
     });
     return days;
   }
-  function metricOf(c, m) { return c ? (m === 'kwh' ? c.kwh : m === 'co2' ? c.co2 : isApi(m) ? c[m] : c.int) : null; }
+  function metricOf(c, m) { return c ? (m === 'kwh' ? c.kwh : m === 'co2' ? c.co2 : isCat(m) ? c[m] : c.int) : null; }
 
   // The range every drawn month shares, so months are comparable: over all LOADED months.
   // It can widen as older months load; drawn months are re-coloured when it does.
   function computeScale() {
     var m = state.metric, lo = Infinity, hi = -Infinity, tlo = Infinity, thi = -Infinity, ints = [];
-    if (isApi(m)) {                     // categorical cells; the bar counts from 0 to the worst day
+    if (isCat(m)) {                     // categorical cells; the bar counts from 0 to the worst day
       var worst = 1;
       Object.keys(state.panels).forEach(function (k) {
         var g = state.panels[k].grid; if (!g) return;
@@ -198,7 +262,7 @@ window.EMTHeatmap = (function () {
   }
   function cellStops(sc) { return state.metric === 'kwh' ? kwhStops(sc.lo, sc.hi) : state.metric === 'co2' ? co2Stops(sc.lo, sc.hi) : INT_STOPS; }
   function totStops(sc) {
-    if (isApi(state.metric)) return [[0, bg()], [1, '#cc0000']];
+    if (isCat(state.metric)) return [[0, bg()], [1, isSettle(state.metric) ? '#e0a020' : '#cc0000']];
     return state.metric === 'kwh' ? kwhStops(sc.tlo, sc.thi) : co2Stops(sc.tlo, sc.thi);
   }
 
@@ -264,7 +328,8 @@ window.EMTHeatmap = (function () {
         backgroundColor: function (ctx) {
           var r = ctx.raw; if (!r) return 'rgba(0,0,0,0)';
           var v = metricOf(r.c, state.metric);
-          return isApi(state.metric) ? apiColour(v) : paint(stops, sc.lo, sc.hi, v);
+          return isApi(state.metric) ? apiColour(v) : isSettle(state.metric) ? settleColour(state.metric, v)
+               : paint(stops, sc.lo, sc.hi, v);
         },
         width: function (ctx) { var a = ctx.chart.chartArea; return a ? a.width / n - 1 : cs - 1; },
         height: function (ctx) { var a = ctx.chart.chartArea; return a ? a.height / days.length - 1 : cs - 1; }}]},
@@ -358,8 +423,12 @@ window.EMTHeatmap = (function () {
       if (hitTot) { v = p.grid[day].total[state.metric]; lab = mm.tot; }
       else { var ci = Math.floor((x - a.left) / (a.width / p.xs.length));
              v = metricOf(p.grid[day].slots[ci], state.metric); lab = p.xs[ci] + '–' + slotLabel(ci + 1); }
-      var txt = (v === null || v === undefined) ? 'no data'
+      var txt = (v === null || v === undefined) ? (state.metric === 'split' ? 'no completed dispatch' : 'no data')
               : isApi(state.metric) ? (hitTot ? v + ' half-hour' + (v === 1 ? '' : 's') + ' without API kWh' : API_TEXT[v])
+              : isSettle(state.metric) ? (hitTot ? v + ' half-hour' + (v === 1 ? '' : 's') + ' to look at'
+                  : CAT_TEXT[state.metric][v] + (((p.grid[day].slots[ci] || {})[state.metric + 'Flags'] || [])
+                      .filter(function (x) { return FLAG_TEXT[x]; })
+                      .map(function (x) { return '<br>\u26a0 ' + FLAG_TEXT[x]; }).join('')))
               : (+v).toFixed(mm.dp) + mm.unit;
       tip.innerHTML = '<b>' + day + '</b> ' + lab + '<br>' + txt;
       tip.style.display = 'block'; tip.style.left = (pt.clientX + 12) + 'px'; tip.style.top = (pt.clientY + 12) + 'px';
@@ -372,14 +441,15 @@ window.EMTHeatmap = (function () {
   // ── data ───────────────────────────────────────────────────────────────────
   function fetchMonth(key) {
     var y = key.slice(0, 4), mo = +key.slice(5, 7);
-    return fetchJSON('/api/energy?resolution=block&kind=month&year=' + y + '&month=' + mo).then(function (r) {
+    var inc = (METRICS.bill || METRICS.split) ? '&include=settle' : '';
+    return fetchJSON('/api/energy?resolution=block&kind=month&year=' + y + '&month=' + mo + inc).then(function (r) {
       if (r.error) throw new Error(r.error);
       state.tz = state.tz || r.timezone;
       if (state.epoch !== null && r.fingerprint.epoch !== state.epoch) {   // bulk change: drop the cache
         state.months = {}; Object.keys(state.panels).forEach(function (k) { state.panels[k].grid = null; });
       }
       state.epoch = r.fingerprint.epoch;
-      state.months[key] = {blocks: r.blocks || [], fp: JSON.stringify(r.fingerprint.days)};
+      state.months[key] = {blocks: r.blocks || [], settle: r.settle || {}, fp: JSON.stringify(r.fingerprint.days)};
       if (state.panels[key]) state.panels[key].grid = null;
     });
   }
@@ -461,6 +531,7 @@ window.EMTHeatmap = (function () {
       Object.keys(API_METRICS).forEach(function (k) {
         if (chans.indexOf(API_METRICS[k].channel) >= 0) METRICS[k] = API_METRICS[k];
       });
+      (r.settle_views || []).forEach(function (k) { if (SETTLE_METRICS[k]) METRICS[k] = SETTLE_METRICS[k]; });
     }, function () {});
     return libs().then(function () { return apiCheck; })
       .then(function () { return fetchJSON('/api/periods?kind=month'); }).then(function (p) {
