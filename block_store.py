@@ -4827,9 +4827,10 @@ class BlockStore:
         completed dispatch or an off-peak dispatch slot. One query, for the settlement views."""
         rows = self._conn.execute(
             "SELECT b.block_start, b.imp_kwh, b.imp_kwh_api, b.imp_cost, b.imp_rate, "
+            "       b.exp_kwh, b.exp_kwh_api, "
             "       b.rate_source, COALESCE(b.rate_corrected, 0) AS rate_corrected, b.source, "
             "       mc.cost_incl AS bill_cost, mc.cost_excl AS bill_cost_exc, mc.kwh AS bill_kwh, "
-            "       mc.ev_kwh AS bill_ev_kwh, "
+            "       mc.ev_kwh AS bill_ev_kwh, mc.home_kwh AS bill_home_kwh, mc.label AS bill_label, "
             "       " + _evsplit.sql_kwh("b") + " AS ev_kwh, "
             "       EXISTS (SELECT 1 FROM dispatch_history d WHERE d.slot_start = b.block_start "
             "               AND d.kind = 'completed' AND d.energy_kwh IS NOT NULL) AS completed, "

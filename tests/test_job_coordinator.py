@@ -312,6 +312,10 @@ class TestTheManifestIsMeasuredNotInvented(unittest.TestCase):
             # a delete writes its tombstone before removing blocks; the GET-side
             # prune could remove it in between (manifest comment, 29 Sep 2026)
             "prune_tombstones": {"delete"},
+            # BL-86 (13 Oct 2026): the range re-fetch's diff is a snapshot of the range; an
+            # import, delete or restore rewriting that history between preview and apply would
+            # make it wrong (apply also refuses a preview whose range changed)
+            "range_refetch": {"import", "delete", "restore"},
         }
         reg = C.registry()
         # manifest entries only — this file declares fixture members with

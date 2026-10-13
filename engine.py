@@ -11840,6 +11840,249 @@ def _vat_resync_row(node, use_buckets: bool) -> "dict | None":
             "label": label, "kwh": node.get("kwh")}
 
 
+# ── Re-fetch a range from Octopus: preview, then apply (ROADMAP BL-86) ─────────────────────
+# Octopus restates history — #505's October VAT, 10 Oct 2026's split two days later — and EMT asks
+# once and keeps the answer. The user's only lever was to delete the range and import it again,
+# which loses the recorded device history. This fetches the range's kWh (DCC), bill and split INTO
+# MEMORY, compares them with what is stored, and reports only what differs (settlement surfaces
+# design §5.2). Nothing is written until apply, which writes only those half-hours, through the
+# paths that already exist, after a safety backup taken by the route. 4.5.22's VAT resync and
+# 4.5.23's re-fetch are special cases of it.
+_REFETCH_MAX_DAYS = 31              # design §7 (e): a longer range runs month by month
+_REFETCH_TTL_S = 3600               # a preview older than this is stale
+_REFETCH_KWH_EPS = 0.0005
+_REFETCH_GBP_EPS = 0.00001          # a thousandth of a penny (settlement_state's tolerance)
+_REFETCH_PARTS = ("kwh", "bill")
+_refetch_state: dict = {"status": "idle"}
+_refetch_preview: dict = {}         # the one preview held: {token, ...}
+
+
+def refetch_status() -> dict:
+    """The job's state, for GET /api/settlement/refetch/status."""
+    return dict(_refetch_state)
+
+
+def refetch_claim() -> tuple:
+    """Claim the job before any slow work (the route's synchronous step). (ok, reason)."""
+    import job_coordinator as _jc
+    if _refetch_state.get("status") == "running":
+        return False, "a re-fetch is already running"
+    if delete_in_progress() or api_import_running():
+        return False, "an import or a delete is running"
+    ok, why = _jc.claim("range_refetch")
+    if ok:
+        _refetch_state.clear()
+        _refetch_state.update({"status": "running", "phase": "starting"})
+    return ok, why
+
+
+def _refetch_check_range(utc_from: str, utc_to: str) -> "str | None":
+    try:
+        a, b = datetime.fromisoformat(utc_from), datetime.fromisoformat(utc_to)
+    except ValueError:
+        return "from and to must be ISO date-times"
+    if b <= a:
+        return "the range is empty"
+    if (b - a).total_seconds() > _REFETCH_MAX_DAYS * 86400 + 1:
+        return "at most %d days at a time" % _REFETCH_MAX_DAYS
+    return None
+
+
+def _refetch_fp(store, utc_from: str, utc_to: str) -> str:
+    """What says the range has not been written since the preview: the data epoch and the
+    range's day fingerprints."""
+    import json as _json
+    return _json.dumps([store.get_data_epoch(), store.day_fingerprints(utc_from, utc_to)],
+                       sort_keys=True, default=str)
+
+
+async def _refetch_octopus(store, utc_from: str, utc_to: str, parts, facts: dict) -> dict:
+    """{slot: {"kwh": float?, "exp_kwh": float?, "bill": parsed row?}} — Octopus's answer for the
+    range, in memory only."""
+    from kraken_ingester import normalise_to_naive_utc as _nn
+    out: dict = {}
+    if "kwh" in parts:
+        ing = _build_kraken_ingester()
+        if ing is not None:
+            _refetch_state["phase"] = "fetching kWh"
+            for chan, mpan, serial in (("kwh", ing.import_mpan, ing.import_serial),
+                                       ("exp_kwh", ing.export_mpan, ing.export_serial)):
+                if not (mpan and serial):
+                    continue
+                rows = await _kraken_client.get_consumption(
+                    mpan, serial, period_from=utc_from + "Z", period_to=utc_to + "Z")
+                for r in rows or []:
+                    if r.get("interval_start") is None or r.get("consumption") is None:
+                        continue
+                    out.setdefault(_nn(r["interval_start"]), {})[chan] = float(r["consumption"])
+    stage = bill_stage()
+    if "bill" in parts and stage["fetched"]:
+        imp = (_kraken_discovery or {}).get("import") or {}
+        mpan = imp.get("mpan")
+        slots = [s for s, f in facts.items()
+                 if (f.get("imp_kwh") or 0) > 1e-9 and not f.get("rate_corrected")
+                 and f.get("rate_source") != "corrected"
+                 and (stage["every_half_hour"] or f.get("dispatched"))]
+        if mpan and slots:
+            _refetch_state["phase"] = "fetching bills (%d half-hours)" % len(slots)
+            use_buckets = _import_is_smb_capped()
+            got = (await _kraken_client.recover_device_breakdown(mpan, slots) if use_buckets
+                   else await _kraken_client.recover_measurement_costs(mpan, slots))
+            for s in slots:
+                row = _vat_resync_row((got or {}).get(s), use_buckets)
+                if row and not row.get("zero"):
+                    out.setdefault(s, {})["bill"] = row
+    return out
+
+
+def _refetch_diff(facts: dict, octo: dict) -> list:
+    """One row per half-hour where Octopus now differs from what is stored."""
+    rows = []
+    for s in sorted(octo):
+        f, o = facts.get(s), octo[s]
+        if f is None:
+            continue                                  # no block here: nothing to correct
+        r: dict = {"start": s}
+        if "kwh" in o and (f.get("imp_kwh_api") is None
+                           or abs(float(f["imp_kwh_api"]) - o["kwh"]) > _REFETCH_KWH_EPS):
+            r["kwh"] = {"stored": f.get("imp_kwh_api"), "octopus": round(o["kwh"], 6)}
+        if "exp_kwh" in o and (f.get("exp_kwh_api") is None
+                               or abs(float(f["exp_kwh_api"]) - o["exp_kwh"]) > _REFETCH_KWH_EPS):
+            r["export"] = {"stored": f.get("exp_kwh_api"), "octopus": round(o["exp_kwh"], 6)}
+        b = o.get("bill")
+        if b is not None:
+            bd = b.get("breakdown")
+            ev_new = bd[2] if bd else None
+            cost_diff = (f.get("bill_cost") is None
+                         or abs(float(f["bill_cost"]) - float(b["cost_incl"])) > _REFETCH_GBP_EPS)
+            ev_diff = (ev_new is not None and
+                       (f.get("bill_ev_kwh") is None
+                        or abs(float(f["bill_ev_kwh"]) - float(ev_new)) > _REFETCH_KWH_EPS))
+            if cost_diff or ev_diff:
+                r["bill"] = {"stored": f.get("bill_cost"), "octopus": b["cost_incl"],
+                             "stored_ev": f.get("bill_ev_kwh"), "octopus_ev": ev_new,
+                             # 4.5.23's rule: a bill with no EV where the stored split has the car
+                             # is held, not applied
+                             "held": bool(bd and _bill_drops_ev(
+                                 max(float(f.get("ev_kwh") or 0), float(f.get("bill_ev_kwh") or 0)),
+                                 ev_new))}
+        if len(r) > 1:
+            rows.append(r)
+    return rows
+
+
+@job("range_refetch")
+async def run_refetch_preview(utc_from: str, utc_to: str, parts=_REFETCH_PARTS) -> dict:
+    """Fetch the range from Octopus into memory and work out what differs. Writes nothing.
+    The route claims the job first (refetch_claim)."""
+    import job_coordinator as _jc
+    import secrets as _secrets
+    global _refetch_preview
+    st = _refetch_state
+    try:
+        _jc.mark("range_refetch", status="running")
+        st.update({"status": "running", "phase": "reading the range", "from": utc_from,
+                   "to": utc_to, "parts": list(parts)})
+        if _store is None or _kraken_client is None:
+            raise RuntimeError("no supplier API connected")
+        facts = {f["block_start"]: f for f in _store.get_settlement_facts(utc_from, utc_to)}
+        fp = _refetch_fp(_store, utc_from, utc_to)
+        octo = await _refetch_octopus(_store, utc_from, utc_to, parts, facts)
+        rows = _refetch_diff(facts, octo)
+        token = _secrets.token_hex(8)
+        _refetch_preview = {"token": token, "from": utc_from, "to": utc_to, "parts": list(parts),
+                            "made": datetime.now(timezone.utc).timestamp(), "fp": fp,
+                            "rows": rows, "octo": {r["start"]: octo[r["start"]] for r in rows}}
+        summary = {"checked": len(facts), "differ": len(rows),
+                   "kwh": sum("kwh" in r for r in rows), "export": sum("export" in r for r in rows),
+                   "bill": sum("bill" in r for r in rows),
+                   "held": sum(bool(r.get("bill", {}).get("held")) for r in rows)}
+        st.update({"status": "done", "phase": "preview", "token": token, "summary": summary,
+                   "rows": rows[:500]})
+        logger.info("range re-fetch: preview %s..%s — %s", utc_from, utc_to, summary)
+        return summary
+    except Exception as e:
+        st.update({"status": "error", "error": str(e)})
+        logger.warning("range re-fetch: preview failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    finally:
+        _jc.mark("range_refetch", status=st.get("status") or "done")
+
+
+def refetch_apply_check(token: str) -> "str | None":
+    """Why `token` cannot be applied, or None. Synchronous, before the safety backup."""
+    p = _refetch_preview
+    if not token or p.get("token") != token:
+        return "that preview is no longer held — preview again"
+    if datetime.now(timezone.utc).timestamp() - p["made"] > _REFETCH_TTL_S:
+        return "that preview is over an hour old — preview again"
+    if _store is None or _refetch_fp(_store, p["from"], p["to"]) != p["fp"]:
+        return "the range has changed since the preview — preview again"
+    return None
+
+
+@job("range_refetch")
+async def run_refetch_apply(token: str) -> dict:
+    """Write the previewed differences: the settled kWh (upsert_kraken_block, which queues the
+    block's re-run), the bill (measured_cost, then apply_measured_to_block), the split with it —
+    except a bill 4.5.23 would hold. Corrected blocks were never fetched. The route has checked
+    the token (refetch_apply_check) and taken the safety backup."""
+    import job_coordinator as _jc
+    global _refetch_preview
+    st, p = _refetch_state, _refetch_preview
+    done = {"kwh": 0, "export": 0, "bill": 0, "held": 0}
+    try:
+        _jc.mark("range_refetch", status="running")
+        st.update({"status": "running", "phase": "applying"})
+        why = refetch_apply_check(token)
+        if why:
+            raise RuntimeError(why)
+        imp = (_kraken_discovery or {}).get("import") or {}
+        mpan = imp.get("mpan") or ""
+        for r in p["rows"]:
+            s, o = r["start"], p["octo"][r["start"]]
+            if "kwh" in r:
+                _store.upsert_kraken_block(s, "electricity_main", o["kwh"], source="kraken_api",
+                                           billing_source="api")
+                done["kwh"] += 1
+            if "export" in r:
+                _store.upsert_kraken_block(s, "electricity_main", o["exp_kwh"], channel="export",
+                                           source="kraken_api", billing_source="api")
+                done["export"] += 1
+            if "bill" in r:
+                if r["bill"]["held"]:
+                    done["held"] += 1
+                    continue
+                b = o["bill"]
+                _store.upsert_measured_cost(s, mpan=mpan, cost_incl=b["cost_incl"],
+                                            cost_excl=b["cost_excl"], label=b["label"], kwh=b["kwh"])
+                if b.get("breakdown"):
+                    hk, hr, ek, er = b["breakdown"]
+                    _store.upsert_measured_breakdown(s, mpan=mpan, home_kwh=hk, home_rate=hr,
+                                                     ev_kwh=ek, ev_rate=er)
+                try:
+                    apply_measured_to_block(s, cost_incl=float(b["cost_incl"]),
+                                            cost_excl=b["cost_excl"], label=b["label"])
+                except Exception as e:
+                    logger.warning("range re-fetch: re-apply failed for %s: %s", s, e)
+                done["bill"] += 1
+        if done["bill"]:
+            try:
+                run_settled_ev_split_heal()       # the bill's split onto the blocks it re-settled
+            except Exception as e:
+                logger.warning("range re-fetch: split heal failed: %s", e)
+        _refetch_preview = {}
+        st.update({"status": "done", "phase": "applied", "applied": done, "token": None})
+        logger.info("range re-fetch: applied %s..%s — %s", p.get("from"), p.get("to"), done)
+        return done
+    except Exception as e:
+        st.update({"status": "error", "error": str(e)})
+        logger.warning("range re-fetch: apply failed: %s", e)
+        return {"ok": False, "error": str(e)}
+    finally:
+        _jc.mark("range_refetch", status=st.get("status") or "done")
+
+
 async def run_measured_vat_resync() -> dict:
     """#505: resync measured costs once Octopus restates them after a VAT change (see above)."""
     store = _store

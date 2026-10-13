@@ -511,7 +511,8 @@ user), from BL-82's model. *Design: [EMT-v5_settlement_surfaces_design.md](desig
    should be marked provisional.
 
 **BL-86 — re-fetch Octopus's figures for a range without deleting it.** Proposed 12 Oct 2026 (the
-user). Octopus restates history: #505's October VAT (not yet seen to happen) and 10 Oct's split
+user). *Engine built 13 Oct 2026 (settlement surfaces PR 3): preview into memory, then apply only
+what differs; the UI is PR 4.* Octopus restates history: #505's October VAT (not yet seen to happen) and 10 Oct's split
 (seen, two days later). EMT asks once and keeps the answer, so a restatement only reaches it through a
 purpose-built heal. A user's only lever today is to delete the blocks and import them again — which
 destroys the recorded device history: a re-import brings back Octopus's half-hourly kWh, but device

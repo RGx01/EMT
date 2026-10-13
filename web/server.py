@@ -3737,6 +3737,89 @@ def _settlement_horizon_floor() -> str:
     return (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)).isoformat()
 
 
+@app.route("/api/settlement/refetch/preview", methods=["POST"])
+def api_refetch_preview():
+    """BL-86: start a re-fetch of a range from Octopus — into memory, compared with what is
+    stored (settlement surfaces design §5.2). Body {from, to, parts?}: naive-UTC ISO, at most 31
+    days; parts ⊆ ["kwh", "bill"], both by default. Writes nothing. Poll /status for the
+    differences and a token; /apply writes them."""
+    try:
+        import engine as _eng
+        import asyncio as _asyncio
+        body = request.get_json(force=True, silent=True) or {}
+        utc_from, utc_to = (body.get("from") or "").strip(), (body.get("to") or "").strip()
+        why = _eng._refetch_check_range(utc_from, utc_to)
+        parts = tuple(body.get("parts") or _eng._REFETCH_PARTS)
+        if not why and (not parts or set(parts) - set(_eng._REFETCH_PARTS)):
+            why = "parts must be some of %s" % list(_eng._REFETCH_PARTS)
+        if why:
+            return jsonify({"ok": False, "error": why}), 400
+        if not _eng.kraken_available():
+            return jsonify({"ok": False, "error": "no supplier API connected"}), 400
+        if _restore_job.get("status") == "running":
+            return jsonify({"ok": False, "error": "a restore is running"}), 409
+        if not (_event_loop and _event_loop.is_running()):
+            return jsonify({"ok": False, "error": "engine loop not running"}), 500
+        ok, reason = _eng.refetch_claim()
+        if not ok:
+            return jsonify({"ok": False, "error": reason}), 409
+        try:
+            _asyncio.run_coroutine_threadsafe(
+                _eng.run_refetch_preview(utc_from, utc_to, parts), _event_loop)
+        except Exception:
+            import job_coordinator as _jc
+            _jc.release("range_refetch")
+            raise
+        return jsonify({"ok": True, "status": "running"})
+    except Exception as e:
+        logger.error("api_refetch_preview: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/settlement/refetch/status", methods=["GET"])
+def api_refetch_status():
+    """The re-fetch job's state: its phase, and when a preview is done, its summary, the
+    half-hours that differ (stored → Octopus) and the token to apply them with."""
+    import engine as _eng
+    return jsonify(_eng.refetch_status())
+
+
+@app.route("/api/settlement/refetch/apply", methods=["POST"])
+def api_refetch_apply():
+    """BL-86: write a preview's differences. Body {token}. Refused if the preview is gone, over
+    an hour old, or the range has been written since; a safety backup first, and none means no
+    apply (as Delete Blocks)."""
+    try:
+        import engine as _eng
+        import asyncio as _asyncio
+        body = request.get_json(force=True, silent=True) or {}
+        token = (body.get("token") or "").strip()
+        why = _eng.refetch_apply_check(token)
+        if why:
+            return jsonify({"ok": False, "error": why}), 409
+        if _restore_job.get("status") == "running":
+            return jsonify({"ok": False, "error": "a restore is running"}), 409
+        if not (_event_loop and _event_loop.is_running()):
+            return jsonify({"ok": False, "error": "engine loop not running"}), 500
+        try:
+            backup = _safety_backup("pre-refetch")
+        except Exception as be:
+            return jsonify({"ok": False, "error": "no safety backup, so nothing applied: %s" % be}), 500
+        ok, reason = _eng.refetch_claim()
+        if not ok:
+            return jsonify({"ok": False, "error": reason}), 409
+        try:
+            _asyncio.run_coroutine_threadsafe(_eng.run_refetch_apply(token), _event_loop)
+        except Exception:
+            import job_coordinator as _jc
+            _jc.release("range_refetch")
+            raise
+        return jsonify({"ok": True, "status": "running", "backup": backup})
+    except Exception as e:
+        logger.error("api_refetch_apply: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/blocks/settlement", methods=["GET"])
 def api_block_settlement():
     """One main-meter half-hour's three settlement facts with their sources — the detail panel
