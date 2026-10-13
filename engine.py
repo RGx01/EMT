@@ -12009,14 +12009,18 @@ async def run_refetch_preview(utc_from: str, utc_to: str, parts=_REFETCH_PARTS) 
         _jc.mark("range_refetch", status=st.get("status") or "done")
 
 
-def refetch_apply_check(token: str) -> "str | None":
-    """Why `token` cannot be applied, or None. Synchronous, before the safety backup."""
+def refetch_apply_check(token: str, store=None) -> "str | None":
+    """Why `token` cannot be applied, or None. The route calls it before the safety backup with
+    its OWN read store (store_access.store()): `_store` is the engine loop's connection, and a
+    web thread must never use it (it is opened check_same_thread=False, so nothing would stop
+    it). The apply coroutine, on the loop, passes nothing and uses `_store`."""
     p = _refetch_preview
+    st = store if store is not None else _store
     if not token or p.get("token") != token:
         return "that preview is no longer held — preview again"
     if datetime.now(timezone.utc).timestamp() - p["made"] > _REFETCH_TTL_S:
         return "that preview is over an hour old — preview again"
-    if _store is None or _refetch_fp(_store, p["from"], p["to"]) != p["fp"]:
+    if st is None or _refetch_fp(st, p["from"], p["to"]) != p["fp"]:
         return "the range has changed since the preview — preview again"
     return None
 
@@ -12030,7 +12034,7 @@ async def run_refetch_apply(token: str) -> dict:
     import job_coordinator as _jc
     global _refetch_preview
     st, p = _refetch_state, _refetch_preview
-    done = {"kwh": 0, "export": 0, "bill": 0, "held": 0}
+    done = {"kwh": 0, "export": 0, "bill": 0, "held": 0, "not_settled": 0}
     try:
         _jc.mark("range_refetch", status="running")
         st.update({"status": "running", "phase": "applying"})
@@ -12060,12 +12064,20 @@ async def run_refetch_apply(token: str) -> dict:
                     hk, hr, ek, er = b["breakdown"]
                     _store.upsert_measured_breakdown(s, mpan=mpan, home_kwh=hk, home_rate=hr,
                                                      ev_kwh=ek, ev_rate=er)
+                # the bill is stored either way; whether the block took it is the applier's call
+                # (it refuses, e.g., with no tariff rate to snap to) — counted apart, not as applied
                 try:
-                    apply_measured_to_block(s, cost_incl=float(b["cost_incl"]),
-                                            cost_excl=b["cost_excl"], label=b["label"])
+                    took = apply_measured_to_block(s, cost_incl=float(b["cost_incl"]),
+                                                   cost_excl=b["cost_excl"], label=b["label"])
                 except Exception as e:
                     logger.warning("range re-fetch: re-apply failed for %s: %s", s, e)
-                done["bill"] += 1
+                    took = False
+                if took:
+                    done["bill"] += 1
+                else:
+                    done["not_settled"] += 1
+                    logger.warning("range re-fetch: %s — the bill is stored, the block did not "
+                                   "re-settle from it", s)
         if done["bill"]:
             try:
                 run_settled_ev_split_heal()       # the bill's split onto the blocks it re-settled

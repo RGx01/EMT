@@ -4819,6 +4819,12 @@ class BlockStore:
             sql += "  AND b.block_start NOT IN (%s) " % ",".join("?" * len(exclude))
         return int(self._conn.execute(sql, (meter_id, since_iso, *exclude)).fetchone()[0])
 
+    # A half-hour's bill is one measured_cost row per MPAN; a meter change (a new MPAN) can leave
+    # two. The settlement surfaces read the latest fetched, as get_measured_breakdown does — a
+    # plain join returned whichever row SQLite met first (13 Oct 2026).
+    _LATEST_BILL_SQL = ("SELECT m2.rowid FROM measured_cost m2 WHERE m2.slot_start = b.block_start "
+                        "AND m2.direction = 'CONSUMPTION' ORDER BY m2.fetched_at DESC LIMIT 1")
+
     def get_settlement_facts(self, utc_start: str, utc_end: str,
                              meter_id: str = "electricity_main") -> list:
         """What `settlement_state.classify` needs for each main-meter half-hour in
@@ -4836,8 +4842,7 @@ class BlockStore:
             "               AND d.kind = 'completed' AND d.energy_kwh IS NOT NULL) AS completed, "
             "       EXISTS (SELECT 1 FROM dispatch_slots s WHERE s.slot_start = b.block_start "
             "               AND (s.off_peak = 1 OR s.source = 'smart-charge-completed')) AS dispatched "
-            "FROM blocks b LEFT JOIN measured_cost mc ON mc.slot_start = b.block_start "
-            "     AND mc.direction = 'CONSUMPTION' "
+            "FROM blocks b LEFT JOIN measured_cost mc ON mc.rowid = (" + self._LATEST_BILL_SQL + ") "
             "WHERE b.meter_id = ? AND b.block_start >= ? AND b.block_start < ? "
             "ORDER BY b.block_start", (meter_id, utc_start, utc_end)).fetchall()
         return [dict(r) for r in rows]
@@ -4856,8 +4861,7 @@ class BlockStore:
             "       mc.label AS bill_label, mc.fetched_at AS bill_fetched_at, "
             "       mc.home_kwh AS bill_home_kwh, mc.home_rate AS bill_home_rate, "
             "       mc.ev_kwh AS bill_ev_kwh, mc.ev_rate AS bill_ev_rate "
-            "FROM blocks b LEFT JOIN measured_cost mc ON mc.slot_start = b.block_start "
-            "     AND mc.direction = 'CONSUMPTION' "
+            "FROM blocks b LEFT JOIN measured_cost mc ON mc.rowid = (" + self._LATEST_BILL_SQL + ") "
             "WHERE b.block_start = ? AND b.meter_id = ?", (block_start, meter_id)).fetchone()
         return dict(r) if r else None
 

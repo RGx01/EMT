@@ -3794,7 +3794,7 @@ def api_refetch_apply():
         import asyncio as _asyncio
         body = request.get_json(force=True, silent=True) or {}
         token = (body.get("token") or "").strip()
-        why = _eng.refetch_apply_check(token)
+        why = _eng.refetch_apply_check(token, store_access.store())   # this thread's own reader
         if why:
             return jsonify({"ok": False, "error": why}), 409
         if _restore_job.get("status") == "running":

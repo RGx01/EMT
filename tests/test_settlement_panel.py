@@ -89,7 +89,7 @@ class ThePanel(unittest.TestCase):
     def test_a_cell_knows_its_half_hours_and_a_click_opens_the_panel(self):
         self.assertIn("(c.starts || (c.starts = [])).push(b.block_start)", self.PAGE)
         self.assertIn("row.addEventListener('click'", self.PAGE)
-        self.assertIn("openPanel(c.starts,", self.PAGE)
+        self.assertIn("openPanel(h.starts,", self.PAGE)
         self.assertIn("/api/blocks/settlement?start=", self.PAGE)
 
     def test_it_escapes_what_it_shows(self):

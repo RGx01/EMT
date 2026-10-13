@@ -219,6 +219,44 @@ class TheApply(_Harness):
         self.assertIn("no longer held", engine.refetch_apply_check("not-the-token"))
 
 
+class TheApplyReportsHonestly(_Harness):
+
+    def test_a_bill_the_block_would_not_take_is_counted_apart(self):
+        """PR 4, 13 Oct 2026: the apply counted every stored bill as applied, even where
+        apply_measured_to_block refused (no tariff rate to snap to)."""
+        self._block(vat=0.05)
+        st = self._preview(_Octopus(node=_node(KWH, 0.0)))
+        engine._kraken_rate_schedules = {}                 # nothing to snap the rate to
+        done = self._apply(st["token"])["applied"]
+        self.assertEqual((done["bill"], done["not_settled"]), (0, 1))
+
+    def test_the_route_checks_with_its_own_store(self):
+        """The apply route's check must not touch the engine loop's connection."""
+        self._block()
+        st = self._preview(_Octopus(node=_node(3.5416, 3.1304)))
+        other = unittest.mock.MagicMock()
+        other.get_data_epoch.return_value = -1             # a different store, a different answer
+        other.day_fingerprints.return_value = {}
+        self.assertIn("changed since", engine.refetch_apply_check(st["token"], other))
+        self.assertIsNone(engine.refetch_apply_check(st["token"]))
+
+
+class TheLatestBill(_Harness):
+
+    def test_two_mpans_read_the_latest_fetched_bill(self):
+        """A meter change leaves two measured_cost rows for a half-hour; a plain join read
+        whichever SQLite met first."""
+        self._block(vat=0.05)
+        self.st._conn.execute("UPDATE measured_cost SET fetched_at='2026-09-02T00:00:00'")
+        self.st.upsert_measured_cost(SLOT, mpan="NEW", cost_incl=round(KWH * OFF, 6),
+                                     cost_excl=round(KWH * OFF, 6), label="OFF_PEAK", kwh=KWH,
+                                     fetched_at="2026-09-05T00:00:00")
+        self.st._conn.commit()
+        (f,) = self.st.get_settlement_facts(FROM, TO)
+        self.assertAlmostEqual(f["bill_cost"], round(KWH * OFF, 6))
+        self.assertAlmostEqual(self.st.get_settlement_detail(SLOT)["bill_cost"], round(KWH * OFF, 6))
+
+
 class TheGuards(unittest.TestCase):
 
     def test_refused_while_a_delete_runs(self):

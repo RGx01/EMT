@@ -18,7 +18,7 @@ def _eng(**over):
     eng = sys.modules["engine"]
     base = {"_refetch_check_range": lambda a, b: None, "_REFETCH_PARTS": ("kwh", "bill"),
             "kraken_available": lambda: True, "refetch_claim": lambda: (True, None),
-            "refetch_apply_check": lambda t: None, "refetch_status": lambda: {"status": "idle"},
+            "refetch_apply_check": lambda t, store=None: None, "refetch_status": lambda: {"status": "idle"},
             "run_refetch_preview": unittest.mock.MagicMock(), "run_refetch_apply": unittest.mock.MagicMock()}
     base.update(over)
     return [unittest.mock.patch.object(eng, k, v, create=True) for k, v in base.items()]
@@ -64,7 +64,7 @@ class TheRoutes(unittest.TestCase):
     def test_a_stale_token_is_409_before_any_backup(self):
         with unittest.mock.patch.object(server, "_safety_backup") as bk:
             r = self._post("/api/settlement/refetch/apply", {"token": "x"},
-                           refetch_apply_check=lambda t: "that preview is no longer held")
+                           refetch_apply_check=lambda t, store=None: "that preview is no longer held")
         self.assertEqual(r.status_code, 409)
         bk.assert_not_called()
 
