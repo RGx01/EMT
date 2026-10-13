@@ -11524,6 +11524,29 @@ def _bill_split_kept(store, w: dict) -> set:
     return kept
 
 
+def bill_stage() -> dict:
+    """Whether this install has a bill stage, and for which half-hours (ROADMAP BL-82's model).
+    `fetched`: an Intelligent tariff with the measured fetch on — EMT asks Octopus for bills.
+    `every_half_hour`: IOG-SMB, where every half-hour's bill is fetched (the live pass for the
+    dispatched ones, the history drain for the rest); otherwise only dispatched ones are.
+    `floor`: the measured pass's floor. One rule for the pill and the settlement views."""
+    imp = (_kraken_discovery or {}).get("import") or {}
+    _tu = (imp.get("tariff_code") or "").upper()
+    fetched = bool(_MEASURED_FETCH_ENABLED and ("IOG" in _tu or "INTELLI" in _tu))
+    return {"fetched": fetched, "every_half_hour": bool(fetched and _import_is_smb_capped()),
+            "floor": _measured_floor()}
+
+
+def bill_split_held(store) -> tuple:
+    """(held, kept): the half-hours whose bill is held back for its split and still being asked
+    for, and those whose 28 days ran out with EMT's split kept (v4 4.5.23). Read-only."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    wait = _bill_split_wait(store)
+    limit = (_dt.now(_tz.utc).replace(tzinfo=None) - _td(days=_BILL_SPLIT_WAIT_DAYS)).isoformat()
+    held = {s for s, e in wait.items() if s >= limit and not (isinstance(e, dict) and e.get("kept"))}
+    return held, set(wait) - held
+
+
 def settlement_awaiting(store, since_iso: str) -> dict:
     """How many half-hours since `since_iso` wait at each stage of settlement (ROADMAP BL-82's
     model): their kWh (DCC), then their bill, then — on IOG-SMB, where the bill's split is held
@@ -11537,12 +11560,11 @@ def settlement_awaiting(store, since_iso: str) -> dict:
     wait = _bill_split_wait(store)
     limit = (_dt.now(_tz.utc).replace(tzinfo=None) - _td(days=_BILL_SPLIT_WAIT_DAYS)).isoformat()
     split = sum(1 for s in wait if s >= limit and s >= since_iso)
-    imp = (_kraken_discovery or {}).get("import") or {}
-    _tu = (imp.get("tariff_code") or "").upper()
+    stage = bill_stage()
     bill = 0
-    if _MEASURED_FETCH_ENABLED and ("IOG" in _tu or "INTELLI" in _tu):
-        bill = store.count_awaiting_bill(max(since_iso, _measured_floor()),
-                                         every_half_hour=_import_is_smb_capped(),
+    if stage["fetched"]:
+        bill = store.count_awaiting_bill(max(since_iso, stage["floor"]),
+                                         every_half_hour=stage["every_half_hour"],
                                          exclude=list(wait))
     return {"kwh": int(store.count_unsettled_blocks(since_iso=since_iso)), "bill": int(bill),
             "split": int(split)}

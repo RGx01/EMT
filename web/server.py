@@ -3737,6 +3737,31 @@ def _settlement_horizon_floor() -> str:
     return (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)).isoformat()
 
 
+def _settle_views(_eng) -> list:
+    try:
+        views = ["bill"] if _eng.bill_stage()["fetched"] else []
+        if _eng._import_is_smb_capped():
+            views.append("split")
+        return views
+    except Exception:
+        return []
+
+
+def _settlement_states(store, utc_start, utc_end) -> dict:
+    """{block_start: {bill, split, flags}} for the main meter over [utc_start, utc_end)."""
+    import engine as _eng
+    import settlement_state as _ss
+    import vat_calendar as _vc
+    from datetime import datetime as _dt, timezone as _tz
+    stage = _eng.bill_stage()
+    held, kept = _eng.bill_split_held(store)
+    return _ss.classify_range(
+        store.get_settlement_facts(utc_start, utc_end),
+        bills=stage["fetched"], every_half_hour=stage["every_half_hour"],
+        smb=bool(_eng._import_is_smb_capped()), now=_dt.now(_tz.utc).replace(tzinfo=None),
+        held=held, kept=kept, vat_at=_vc.rate_lookup(store.get_vat_calendar()))
+
+
 @app.route("/api/billing-source", methods=["GET"])
 def api_billing_source_get():
     """Return the current global billing source and unsettled-block count."""
@@ -3757,6 +3782,9 @@ def api_billing_source_get():
                         # BL-85: the three stages a half-hour waits at — kWh, then its bill, then
                         # (IOG-SMB) its split. `unsettled` is the first, kept for its other readers.
                         "awaiting": awaiting,
+                        # BL-85: the settlement views that mean something here — Bill where EMT
+                        # fetches bills, Split on IOG-SMB (settlement surfaces design §2).
+                        "settle_views": _settle_views(_eng),
                         "api_available": _eng.kraken_available(),
                         # The supplier API is part of this install's data source — the
                         # rule is mode_uses_api(), so a page need not re-derive it
@@ -5548,11 +5576,13 @@ def api_energy():
         # aggregate is an extra scan the caller did not ask for.
         _default_include = "usage" if resolution == "period" else ""
         include = {x.strip() for x in (request.args.get("include") or _default_include).split(",") if x.strip()}
-        unknown = include - {"usage", "carbon", "billing", "stats"}
+        unknown = include - {"usage", "carbon", "billing", "stats", "settle"}
         if unknown:
             return jsonify({"error": "include: unknown facet(s) %s" % sorted(unknown)}), 400
         if "billing" in include and resolution == "block":
             return jsonify({"error": "include=billing is served at resolution=period|day"}), 400
+        if "settle" in include and resolution != "block":
+            return jsonify({"error": "include=settle is served at resolution=block"}), 400
         fields = request.args.get("fields") or ""
         if ("stats" in include or fields == "stats") and resolution == "period":
             return jsonify({"error": "stats are served at resolution=day|block"}), 400
@@ -5636,6 +5666,11 @@ def api_energy():
             # client projecting devices from segments alone gets nothing.
             out["blocks"] = store.get_energy_blocks(utc_start, utc_end)
             out["segments"] = store.get_energy_segments(utc_start, utc_end)
+            if "settle" in include:
+                # BL-85: each main-meter half-hour's bill and split state (settlement
+                # surfaces design §1, §3), decided once here for every surface. Opt-in, so
+                # the surfaces that do not draw it keep their query budget.
+                out["settle"] = _settlement_states(store, utc_start, utc_end)
 
         if "usage" in include:
             out["usage"] = _aggregate_usage(store, cfg, utc_start, utc_end, tz_name)
