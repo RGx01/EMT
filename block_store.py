@@ -8224,7 +8224,7 @@ class BlockStore:
         return [dict(r) for r in rows]
 
     def get_blocks_awaiting_ev_carve(self, limit: int,
-                                     meter_id: str = "electricity_main") -> list:
+                                     meter_id: str = "electricity_main", starts=None) -> list:
         """Unsettled import blocks that have a completed dispatch but no EV
         split yet, oldest first.
 
@@ -8242,8 +8242,14 @@ class BlockStore:
             kWh from Octopus's own per-slot figure, so a slot without one has
             nothing to derive from.
 
+        `starts`, when given, limits it to those block starts — the slots a dispatch capture
+        has just seen completed — so it can run on every capture without scanning history.
+
         Returns dicts.
         """
+        starts = sorted(set(starts)) if starts is not None else None
+        if starts is not None and not starts:
+            return []
         rows = self._conn.execute(
             "SELECT b.block_start, b.imp_kwh, b.imp_rate, b.imp_rate * b.imp_cost_exc / NULLIF(b.imp_cost, 0) AS rate_exc "
             "FROM blocks b WHERE b.meter_id = ? AND " + _evsplit.sql_kwh("b") + " IS NULL "
@@ -8251,7 +8257,9 @@ class BlockStore:
             "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
             "  AND EXISTS (SELECT 1 FROM dispatch_history d WHERE d.kind = 'completed' "
             "              AND d.slot_start = b.block_start AND d.energy_kwh IS NOT NULL) "
-            "ORDER BY b.block_start LIMIT ?", (meter_id, int(limit))).fetchall()
+            + ("  AND b.block_start IN (%s) " % ",".join("?" * len(starts)) if starts else "")
+            + "ORDER BY b.block_start LIMIT ?",
+            (meter_id, *(starts or ()), int(limit))).fetchall()
         return [dict(r) for r in rows]
 
     def count_blocks(self) -> int:
