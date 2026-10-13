@@ -7183,10 +7183,8 @@ def reprice_history_conformance(from_iso: str, to_iso: str,
     return report
 
 
-# DEPRECATED — remove in 5.0.0 (BL-33): one-time pre-4.4.0 legacy migration; retired once 5.0.0 requires a 4.4.0-migrated DB.
-# DEPRECATED — remove in 5.0.0 (BL-33): one-time pre-4.4.0 legacy migration; retired once 5.0.0 requires a 4.4.0-migrated DB.
 @job("iog_split_carve")
-async def run_iog_split_carve(max_blocks: int = 2000) -> dict:
+async def run_iog_split_carve(max_blocks: int = 2000, starts=None) -> dict:
     """Recurring PREDICTED EV/Home carve for UNSETTLED dispatched blocks whose completed
     dispatch arrived AFTER finalise, so the finalise seam left them house-only (imp_kwh_ev
     NULL, a single 'house' segment). Without this the car's charge sits in House on Billing +
@@ -7197,14 +7195,19 @@ async def run_iog_split_carve(max_blocks: int = 2000) -> dict:
     (Sigma segments == imp_cost), so the bill total stays byte-identical and settlement later
     overwrites with the authoritative split. Only UNSETTLED blocks (rate_source not
     measured/corrected) are touched; settled/corrected splits are settlement's realm. No
-    done-marker — it runs each tick and is cheap (only late-dispatch stragglers ever match)."""
+    done-marker — it runs each tick and is cheap (only late-dispatch stragglers ever match).
+
+    `starts`: only those block starts. The dispatch capture passes the slots it has just seen
+    completed, so a split follows Octopus's completed record within the 5-minute capture rather
+    than waiting for the hourly pass (13 Oct 2026: 05:30 BST's charge was recorded at 06:42 and
+    still drawn as house at 06:47)."""
     if _store is None:
         return {"ok": False, "reason": "no store"}
     isched = _kraken_rate_schedules.get("import")
     if isched is None or isched.is_empty():
         return {"ok": True, "deferred": "schedule not ready"}
     tz_name = _iog_site_tz()
-    rows = _store.get_blocks_awaiting_ev_carve(max_blocks)
+    rows = _store.get_blocks_awaiting_ev_carve(max_blocks, starts=starts)
     carved = 0
     _refit_starts: list = []   # v4 4.5.21: blocks whose EV this wrote, for the device re-fit
     for r in rows:
@@ -10662,6 +10665,10 @@ def _record_ohme_dispatch_history(provider, planned, completed) -> int:
     return n
 
 
+# The slots the latest capture saw completed, for the carve that follows it (_tick_dispatch_capture).
+_capture_completed_slots: set = set()
+
+
 async def _capture_dispatch_slots() -> int:
     """STEP 2 (piece 1): persist smart-charge dispatch slots to dispatch_slots.
 
@@ -10749,6 +10756,7 @@ async def _capture_dispatch_slots() -> int:
             for slot_start, e_comp in comp.items():
                 if e_comp is None:
                     continue
+                _capture_completed_slots.add(slot_start)
                 existing = _store.get_dispatch_slot(slot_start)
                 try:
                     if existing:
@@ -10853,10 +10861,19 @@ async def _tick_dispatch_capture() -> None:
     if elapsed is not None and elapsed < 300:  # 5 minutes
         return
     _last_dispatch_capture = now
+    _capture_completed_slots.clear()
     try:
         await _capture_dispatch_slots()
     except Exception as e:
         logger.warning("_tick_dispatch_capture: failed: %s", e)
+    # A completed record is the carve's input: split those slots now, not at the next hourly pass.
+    # Local and additive; a slot already carved, or settled, does not match. Only the slots this
+    # capture saw, so it never scans history.
+    if _capture_completed_slots:
+        try:
+            await run_iog_split_carve(starts=sorted(_capture_completed_slots))
+        except Exception as e:
+            logger.warning("_tick_dispatch_capture: carve after capture failed: %s", e)
 
     # Settlement-time reconciliation (design §12) — hourly, not every 5 min. By
     # now `started` (real-time) and `completed` (~hours) have settled for older
