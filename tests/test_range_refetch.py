@@ -153,11 +153,6 @@ class ThePreview(_Harness):
         self._apply(st["token"])
         self.assertEqual(self._dump(), before)
 
-    def test_a_corrected_block_is_not_asked_about(self):
-        self._block(rate_source="corrected", bill=False)
-        oc = _Octopus(node=_node(3.5416, 3.1304))
-        self._preview(oc)
-        self.assertEqual(oc.asked, [])
 
     def test_the_range_cap(self):
         self.assertIn("31 days", engine._refetch_check_range("2026-09-01T00:00:00",
@@ -348,6 +343,59 @@ class TheSplitArrives(_Harness):
         self._cost_only(ev=3.1)
         st = self._preview(_Octopus(node=_node(KWH, 0.0)))
         self.assertEqual(st["summary"]["differ"], 0, st["rows"])
+
+
+class TheCorrections(_Harness):
+    """14 Oct 2026, decided on the Pi: a re-fetch the user asked for may replace their own Cost
+    Correction with Octopus's bill (design §5.2). `rate_corrected` was set by Corrections and
+    cleared nowhere, so it locked the bill out for good (v4 ROADMAP_archive BL-75 (e)). The
+    automatic passes keep their guard."""
+
+    def _corrected(self, cost=0.5):
+        self._block(rate_source="corrected", cost=cost, bill=False)
+
+    def _row(self):
+        return self.st._conn.execute(
+            "SELECT rate_corrected, rate_source, imp_cost FROM blocks WHERE block_start=? AND "
+            "meter_id='electricity_main'", (SLOT,)).fetchone()
+
+    def test_a_corrected_half_hour_is_asked_about(self):
+        self._corrected()
+        oc = _Octopus(node=_node(KWH, 0.0))
+        st = self._preview(oc)
+        self.assertEqual(oc.asked, [SLOT])
+        (row,) = st["rows"]
+        self.assertEqual((row["bill"]["stored"], row["bill"]["corrected"]), (0.5, True))
+        self.assertEqual(st["summary"]["corrected"], 1)
+
+    def test_apply_replaces_the_correction_with_the_bill(self):
+        self._corrected()
+        st = self._preview(_Octopus(node=_node(KWH, 0.0)))
+        done = self._apply(st["token"])["applied"]
+        self.assertEqual((done["bill"], done["corrections"]), (1, 1))
+        flag, src, cost = self._row()
+        self.assertEqual((flag, src), (0, "settled"))
+        self.assertAlmostEqual(cost, round(KWH * OFF, 6), places=6)
+
+    def test_a_bill_the_block_will_not_take_leaves_the_correction(self):
+        self._corrected()
+        st = self._preview(_Octopus(node=_node(KWH, 0.0)))
+        engine._kraken_rate_schedules = {}                 # nothing to snap the rate to
+        done = self._apply(st["token"])["applied"]
+        self.assertEqual((done["not_settled"], done["corrections"]), (1, 0))
+        self.assertEqual(tuple(self._row()), (1, "corrected", 0.5))
+
+    def test_a_correction_that_agrees_with_the_bill_is_no_difference(self):
+        """GUARD: nothing would change, so nothing is listed."""
+        self._corrected(cost=round(KWH * OFF, 6))
+        st = self._preview(_Octopus(node=_node(KWH, 0.0)))
+        self.assertEqual(st["summary"]["differ"], 0, st["rows"])
+
+    def test_the_automatic_pass_still_leaves_a_correction(self):
+        """GUARD: the settle's flag-clear is opt-in; the default keeps the user's flag."""
+        self._corrected()
+        self.st.apply_measured_to_main(SLOT, rate=OFF, cost=0.1, cost_exc=0.1)
+        self.assertEqual(self._row()[0], 1)
 
 
 class TheGuards(unittest.TestCase):

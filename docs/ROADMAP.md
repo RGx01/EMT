@@ -801,7 +801,9 @@ same change.
 **BL-75 — settlement visibility.** Split into: (b) widen the cost fetch beyond IOG/INTELLI (still
 gated at `measure_settled_dispatched_blocks`) and keep the agreement floor; (c) a per-slot attempt
 count with backoff and a terminal state; (a) the pill reporting both frontiers; (e)/(f) the
-corrections tool as last resort and retry from the pill. **(d) needs a decision:** stop stamping
+corrections tool as last resort and retry from the pill. *(e) in part, 14 Oct 2026: a range
+re-fetch can now replace a correction with the bill, so a correction no longer locks the bill
+out for good — the corrections tool's own warning at the point of use is still open.)* **(d) needs a decision:** stop stamping
 `finalised_from_cad` automatically past the horizon (`finalise_past_horizon_blocks`), and stamp it only
 on the user's acceptance that the usage is unrecoverable.
 

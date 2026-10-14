@@ -11919,12 +11919,12 @@ async def _refetch_octopus(store, utc_from: str, utc_to: str, parts, facts: dict
     if "bill" in parts and stage["fetched"]:
         imp = (_kraken_discovery or {}).get("import") or {}
         mpan = imp.get("mpan")
-        # the settled-cost pass's own scope: from its floor (the current agreement's start), not
-        # corrected, and on IOG-SMB every half-hour, elsewhere dispatched ones
+        # the settled-cost pass's own scope — from its floor (the current agreement's start), on
+        # IOG-SMB every half-hour, elsewhere dispatched ones — and, unlike the pass, corrected
+        # half-hours too: the user asked, so the bill may replace their correction (design §5.2)
         slots = [s for s, f in facts.items()
                  if s >= stage["floor"]
-                 and (f.get("imp_kwh") or 0) > 1e-9 and not f.get("rate_corrected")
-                 and f.get("rate_source") != "corrected"
+                 and (f.get("imp_kwh") or 0) > 1e-9
                  and (stage["every_half_hour"] or f.get("dispatched"))]
         if mpan and slots:
             _refetch_state["phase"] = "fetching bills (%d half-hours)" % len(slots)
@@ -11962,6 +11962,7 @@ def _refetch_diff(facts: dict, octo: dict) -> list:
         if f is None:
             continue                                  # no block here: nothing to correct
         imported = (f.get("source") or "").startswith("imported")
+        corrected = bool(f.get("rate_corrected")) or f.get("rate_source") == "corrected"
         r: dict = {"start": s}
         if "kwh" in o:
             stored = _f(f.get("imp_kwh")) if imported else _f(f.get("imp_kwh_api"))
@@ -11979,7 +11980,8 @@ def _refetch_diff(facts: dict, octo: dict) -> list:
             bd = b.get("breakdown")
             ev_new = _f(bd[2]) if bd else None
             have = _f(f.get("bill_cost"))
-            cost_now = have if have is not None else _f(f.get("imp_cost"))
+            # a corrected block holds the user's figure, not the cached bill: compare with that
+            cost_now = have if have is not None and not corrected else _f(f.get("imp_cost"))
             cost_diff = cost_now is None or abs(cost_now - float(b["cost_incl"])) > _REFETCH_GBP_EPS
             ev_stored = _f(f.get("bill_ev_kwh"))
             ev_is_bill = ev_stored is not None
@@ -11999,7 +12001,8 @@ def _refetch_diff(facts: dict, octo: dict) -> list:
             if held and not cost_diff:
                 arrives = False                          # held: the bill's split is not taken
             if cost_diff or ev_diff or arrives:
-                r["bill"] = {"stored": cost_now, "stored_is_bill": have is not None,
+                r["bill"] = {"stored": cost_now, "stored_is_bill": have is not None and not corrected,
+                             "corrected": corrected,
                              "octopus": b["cost_incl"], "stored_ev": ev_stored,
                              "stored_ev_is_bill": ev_is_bill,
                              "octopus_ev": ev_new, "held": held}
@@ -12033,7 +12036,9 @@ async def run_refetch_preview(utc_from: str, utc_to: str, parts=_REFETCH_PARTS) 
         summary = {"checked": len(facts), "differ": len(rows),
                    "kwh": sum("kwh" in r for r in rows), "export": sum("export" in r for r in rows),
                    "bill": sum("bill" in r for r in rows),
-                   "held": sum(bool(r.get("bill", {}).get("held")) for r in rows)}
+                   "held": sum(bool(r.get("bill", {}).get("held")) for r in rows),
+                   "corrected": sum(bool(r.get("bill", {}).get("corrected"))
+                                    and not r["bill"].get("held") for r in rows)}
         st.update({"status": "done", "phase": "preview", "token": token, "summary": summary,
                    "rows": rows[:500]})
         logger.info("range re-fetch: preview %s..%s — %s", utc_from, utc_to, summary)
@@ -12071,7 +12076,7 @@ async def run_refetch_apply(token: str) -> dict:
     import job_coordinator as _jc
     global _refetch_preview
     st, p = _refetch_state, _refetch_preview
-    done = {"kwh": 0, "export": 0, "bill": 0, "held": 0, "not_settled": 0}
+    done = {"kwh": 0, "export": 0, "bill": 0, "held": 0, "not_settled": 0, "corrections": 0}
     try:
         _jc.mark("range_refetch", status="running")
         st.update({"status": "running", "phase": "applying"})
@@ -12105,14 +12110,21 @@ async def run_refetch_apply(token: str) -> dict:
                                                      ev_kwh=ek, ev_rate=er)
                 # the bill is stored either way; whether the block took it is the applier's call
                 # (it refuses, e.g., with no tariff rate to snap to) — counted apart, not as applied
+                # a corrected half-hour: the bill replaces the user's correction (design §5.2) —
+                # the flag clears in the settle's own UPDATE, so a refusal leaves it as it was
+                corr = bool(r["bill"].get("corrected"))
                 try:
                     took = apply_measured_to_block(s, cost_incl=float(b["cost_incl"]),
-                                                   cost_excl=b["cost_excl"], label=b["label"])
+                                                   cost_excl=b["cost_excl"], label=b["label"],
+                                                   replace_correction=corr)
                 except Exception as e:
                     logger.warning("range re-fetch: re-apply failed for %s: %s", s, e)
                     took = False
                 if took:
                     done["bill"] += 1
+                    if corr:
+                        done["corrections"] += 1
+                        logger.info("range re-fetch: %s — the bill replaced the user's correction", s)
                 else:
                     done["not_settled"] += 1
                     logger.warning("range re-fetch: %s — the bill is stored, the block did not "
@@ -12564,7 +12576,7 @@ def _measured_ev_kwh(store, bs: str, row, kwh: float) -> float:
 
 
 def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
-                            label: str = None) -> bool:
+                            label: str = None, replace_correction: bool = False) -> bool:
     """BL-53 step 3 (used ONLY when _MEASURED_APPLY): for a settled IOG dispatched block,
     take Octopus's billed COST as authoritative (imp_cost = cost_incl) but SNAP imp_rate to
     the CLEAN tariff band rate for the block's OWN date (day_rate_bounds on the agreement-
@@ -12710,7 +12722,7 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
             bs,
             rate=imp_rate, cost=round(cost_incl, 6),
             cost_exc=_cost_exc,
-            segments=segs)
+            segments=segs, replace_correction=replace_correction)
     except Exception as e:
         logger.warning("apply_measured: write failed for %s, left for the next pass: %s", bs, e)
         return False
