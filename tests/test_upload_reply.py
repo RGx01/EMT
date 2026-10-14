@@ -82,7 +82,18 @@ class ThePage(unittest.TestCase):
         body = body[:body.index("\n}\n")]
         for needle in ("/api/restore/upload/begin", "/api/restore/upload/chunk?id=",
                        "/api/restore/upload/finish", ".then(uploadReply)", "file.slice(off",
-                       "if (++tries > 2) throw e;"):
+                       "if (++tries > 2) throw e;", "await uploadReply(await sendPiece("):
+            self.assertIn(needle, body)
+
+    def test_a_piece_goes_by_xhr_as_bytes_with_a_timeout(self):
+        """14 Oct 2026: fetch() with a Blob body never left Safari (no headers, no status; the
+        upload sat at 0%). Each piece is read into memory and sent by XMLHttpRequest — what sent
+        the whole file in the same Safari — with a timeout, so a stall is retried. STRUCTURAL;
+        fails on the parent."""
+        i = PAGE.index("function sendPiece(url, piece)")
+        body = PAGE[i:PAGE.index("\n}\n", i)]
+        for needle in ("piece.arrayBuffer()", "new XMLHttpRequest()", "xhr.timeout = 60000",
+                       "xhr.ontimeout", "xhr.send(buf)"):
             self.assertIn(needle, body)
         for page in (PAGE, WELCOME):
             self.assertNotIn("/api/restore/stage", page, "a page still sends the whole backup "
