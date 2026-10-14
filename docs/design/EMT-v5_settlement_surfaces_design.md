@@ -53,7 +53,7 @@ draws it).
 
 ### 1.2 Bill — import
 
-*Superseded where §9 differs (proposed 14 Oct 2026, under review).*
+*Superseded where §9 differs (decided and built 14 Oct 2026).*
 
 *Revised 14 Oct 2026 (the user, on the Pi).* The Bill view answers one question per half-hour:
 **is the stored cost Octopus's, or EMT's kWh × rate?** Until a settled cost arrives EMT prices
@@ -87,7 +87,7 @@ soak: grid used all day, all grey).
 
 ### 1.2b Bill — export
 
-*Superseded where §9 differs (proposed 14 Oct 2026, under review).*
+*Superseded where §9 differs (decided and built 14 Oct 2026).*
 
 EMT fetches no export bill: an export cost is kWh × the export rate, final once the export kWh is
 settled. So the export view follows the export kWh, on the same window:
@@ -129,7 +129,7 @@ These two add a red dot to an otherwise green cell, and name themselves in the d
 
 ## 2. The views
 
-*Superseded where §9 differs (proposed 14 Oct 2026, under review).*
+*Superseded where §9 differs (decided and built 14 Oct 2026).*
 
 The Heatmaps tab's view selector gains two views beside *API import* and *API export*, for an
 account where they mean something:
@@ -288,7 +288,7 @@ PRs 1–2 are read-only and useful alone; 3 is the engine and testable without t
 
 ---
 
-## 9. Revision 2 — one Import bill view, gated on the API connection (proposed 14 Oct 2026, under review)
+## 9. Revision 2 — one Import bill view, gated on the API connection (decided and built 14 Oct 2026)
 
 *From the Pi check (PR 5), the user's direction: the view is **Import bill**, shown wherever the
 install has a supplier API connection, whatever the tariff; the tariff decides only what runs
@@ -376,15 +376,14 @@ half-hour does not depend on it — its settled kWh makes it final — so the as
 for an **API import's** cost on a published-rate tariff, which reads green either way once its kWh
 is the API's. Verify on the first non-Intelligent install all the same (a one-day re-fetch, its log).
 
-### 9.6 Open question
+### 9.6 Decided (14 Oct 2026, the user)
 
-c. Retire *API import* and *API export* in the same change, or keep them one release alongside?
+a. Widening the automatic bill pass — **withdrawn**: published-rate tariffs reconcile through the
+   kWh, and applying a bill there would mis-set the rate (§9.2).
+b. Red at 48 h — **no**: unsettled kWh is red at the window.
+c. *API import* and *API export* — **retired in the same change.**
 
-*(a) — widening the automatic bill pass — is withdrawn: published-rate tariffs reconcile through
-the kWh, and applying a bill there would mis-set the rate (§9.2). (b) — red at 48 h — decided: red
-at the window.)*
-
-### 9.7 Work, once agreed
+### 9.7 Work — built 14 Oct 2026, in one change on top of #167
 
 1. `engine.tariff_kind_at(start)` → `intelligent` | `published`, from `_agreement_era("import",
    start)`'s tariff code (the current tariff where no agreement covers it).

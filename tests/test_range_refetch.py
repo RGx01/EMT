@@ -474,8 +474,9 @@ class TheTariffKind(_Harness):
         self.assertEqual(engine.tariff_kind_at("2020-01-01T02:00:00"), "intelligent")  # none: current
 
     def test_a_published_rate_half_hour_is_not_asked_for_a_bill(self):
-        """Its settled kWh x rate is the bill; applying one would snap its rate to the day's
-        lowest or highest band (a two-rate model)."""
+        """GUARD (passes on the parent: its whole-account tariff gate skipped Agile too). Its
+        settled kWh x rate is the bill; applying one would snap its rate to the day's lowest or
+        highest band (a two-rate model)."""
         self._block(bill=False)
         engine._kraken_discovery = {"import": {"mpan": "IM", "tariff_code": "E-1R-AGILE-24-10-01-B"}}
         oc = _Octopus(node=_node(KWH, 0.0))
