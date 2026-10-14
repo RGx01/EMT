@@ -180,5 +180,15 @@ class TheBillViews(unittest.TestCase):
         self.assertIn("c[k + 'Flags'] = k === 'bill' ?", PAGE)
 
 
+class TheNoBillCase(unittest.TestCase):
+    """PR 5 on the Pi, 14 Oct 2026: "Done — the range now matches Octopus" over a half-hour
+    Octopus had returned no bill for. Discriminating."""
+
+    def test_matches_is_said_only_when_octopus_answered(self):
+        body = _fn("openRefetch")
+        self.assertIn("noBill += sm.no_bill || 0;", body)
+        self.assertIn("Octopus returned no bill for", body)
+
+
 if __name__ == "__main__":
     unittest.main()
