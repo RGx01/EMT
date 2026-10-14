@@ -139,5 +139,20 @@ class TheFixes(unittest.TestCase):
         self.assertIn("refetch_apply_check(token, store_access.store())", SERVER)
 
 
+class TheApiViews(unittest.TestCase):
+    """14 Oct 2026, on the Pi: the API views greyed out ALL imported history as excluded. An API
+    import's kWh came from the same consumption API, so it counts as received; a CSV import is
+    still excluded. Per channel: an API import with no export figure is not export received.
+    Discriminating: each fails on the parent."""
+
+    def test_an_api_import_counts_as_received(self):
+        self.assertIn("var viaApi = b.source === 'imported_api';", PAGE)
+        self.assertIn("var st = viaApi && has ? 'api_import'", PAGE)
+        self.assertIn("v === 'ok' || v === 'api_import'", _fn("apiColour"))
+
+    def test_a_csv_import_is_still_excluded(self):
+        self.assertIn("imported: 'imported from a CSV (excluded)'", PAGE)
+
+
 if __name__ == "__main__":
     unittest.main()
