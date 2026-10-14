@@ -35,27 +35,20 @@ class TheActions(unittest.TestCase):
         self.assertIn("row.addEventListener('mousedown'", PAGE)
         self.assertIn("state.dragFrom", _fn("attachHover"))
 
-    def test_the_day_column_makes_a_range_on_a_phone(self):
+    def test_the_day_column_offers_its_day(self):
         body = _fn("dayBarPick")
-        self.assertIn("state.pickedDay", body)
-        self.assertIn("Start a range from", body)
-
+        self.assertIn("openRefetch(dr[0], dr[1], day)", body)
 
 class TheSelection(unittest.TestCase):
     """PR 5 on the Pi, 14 Oct 2026: a tap on 10 Oct's day bar offered 10 Aug -> 10 Oct — an
     earlier tap had been kept as a range start, silently — and nothing showed what a click,
-    a drag or a day covered. Discriminating: each fails on the parent."""
+    a drag or a day covered. A span of days is now a drag only. Discriminating: each fails on
+    the tree before #159."""
 
-    def test_a_plain_tap_does_not_start_a_range(self):
-        body = _fn("dayBarPick")
-        i = body.index("state.pickedDay = null;\n    markSelection(dr[0], dr[1]);")
-        # the only place a pick is kept is the explicit "Start a range" item
-        self.assertEqual(body.count("state.pickedDay = {day: day, range: dr}"), 1)
-        self.assertGreater(body.index("Start a range from"), i)
-
-    def test_a_cell_tap_drops_a_picked_day(self):
-        i = PAGE.index("row.addEventListener('click'")
-        self.assertIn("state.pickedDay = null;", PAGE[i:i + 600])
+    def test_a_day_tap_keeps_nothing_for_the_next_tap(self):
+        """The 10 Aug -> 10 Oct case: no picked day survives a tap, so no hidden range."""
+        self.assertNotIn("pickedDay", PAGE)
+        self.assertNotIn("Start a range", PAGE)
 
     def test_what_is_selected_is_outlined(self):
         self.assertIn("function markSelection(from, to)", PAGE)
@@ -69,6 +62,16 @@ class TheSelection(unittest.TestCase):
         self.assertIn("state.dialogOpen = false; clearSelection();", PAGE)
         i = PAGE.index("function showMenu(")
         self.assertIn("clearSelection()", PAGE[i:i + 900])
+
+    def test_a_drag_is_outlined_while_it_is_held(self):
+        """PR 5 on the Pi, 14 Oct 2026 (after #159): nothing showed until the button was released."""
+        body = _fn("attachHover")
+        i = body.index("if (!from || !(ev.buttons & 1)")
+        self.assertIn("markSelection(a.starts[0]", body[i:i + 700])
+
+    def test_a_drag_released_off_the_grid_leaves_no_outline(self):
+        i = PAGE.index("document.addEventListener('mouseup'")
+        self.assertIn("clearSelection()", PAGE[i:i + 400])
 
     def test_the_dialog_names_its_exact_span(self):
         self.assertIn("esc(localTime(from)) + ' \\u2192 ' + esc(localTime(to))", _fn("openRefetch"))
