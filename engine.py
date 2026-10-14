@@ -7956,6 +7956,22 @@ def _agreement_era(channel: str, start: str):
     return None
 
 
+def _is_intelligent_code(code) -> bool:
+    _tu = (code or "").upper()
+    return "IOG" in _tu or "INTELLI" in _tu
+
+
+def tariff_kind_at(start: str) -> str:
+    """'intelligent' | 'published' for the import tariff live at `start` (settlement surfaces
+    design §9.1). On a published-rate tariff the settled kWh x the half-hour's published rate is
+    the bill; on an Intelligent one a dispatch can re-band a half-hour, so only Octopus's cost is
+    final. From the agreements discovery holds (`_agreement_era`); where none covers `start`,
+    the current tariff's kind."""
+    era = _agreement_era("import", start)
+    code = era[0] if era else ((_kraken_discovery or {}).get("import") or {}).get("tariff_code")
+    return "intelligent" if _is_intelligent_code(code) else "published"
+
+
 def _import_pricing_flag(channel: str, kwh, meas_cost, buckets,
                          threshold: float = 1.0):
     """Diagnostic classifier for the IOG-dispatch pricing gap.
@@ -11915,15 +11931,17 @@ async def _refetch_octopus(store, utc_from: str, utc_to: str, parts, facts: dict
                     if r.get("interval_start") is None or r.get("consumption") is None:
                         continue
                     out.setdefault(_nn(r["interval_start"]), {})[chan] = float(r["consumption"])
-    stage = bill_stage()
-    if "bill" in parts and stage["fetched"]:
+    if "bill" in parts:
         imp = (_kraken_discovery or {}).get("import") or {}
         mpan = imp.get("mpan")
-        # every half-hour in the range that imported — wider than the settled-cost pass's own
-        # scope (its floor, the current agreement's start; dispatched only off SMB) and corrected
-        # half-hours too: the user asked, and a red cell outside that scope has no other remedy
-        # (design §1.2, §5.2, 14 Oct 2026). The automatic passes keep their scope.
-        slots = [s for s, f in facts.items() if (f.get("imp_kwh") or 0) > 1e-9]
+        # every half-hour in the range that imported, on an Intelligent tariff — wider than the
+        # settled-cost pass's own scope (its floor, the current agreement's start; dispatched only
+        # off SMB) and corrected half-hours too: the user asked, and a red cell outside that scope
+        # has no other remedy (design §5.2). A published-rate half-hour needs no bill — its settled
+        # kWh x rate is the bill — and applying one would snap its rate to the day's lowest or
+        # highest band, a two-rate model (design §9.2). The automatic passes keep their scope.
+        slots = [s for s, f in facts.items()
+                 if (f.get("imp_kwh") or 0) > 1e-9 and tariff_kind_at(s) == "intelligent"]
         if mpan and slots:
             _refetch_state["phase"] = "fetching bills (%d half-hours)" % len(slots)
             use_buckets = _import_is_smb_capped()

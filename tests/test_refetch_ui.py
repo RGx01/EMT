@@ -139,20 +139,6 @@ class TheFixes(unittest.TestCase):
         self.assertIn("refetch_apply_check(token, store_access.store())", SERVER)
 
 
-class TheApiViews(unittest.TestCase):
-    """14 Oct 2026, on the Pi: the API views greyed out ALL imported history as excluded. An API
-    import's kWh came from the same consumption API, so it counts as received; a CSV import is
-    still excluded. Per channel: an API import with no export figure is not export received.
-    Discriminating: each fails on the parent."""
-
-    def test_an_api_import_counts_as_received(self):
-        self.assertIn("var viaApi = b.source === 'imported_api';", PAGE)
-        self.assertIn("var st = viaApi && has ? 'api_import'", PAGE)
-        self.assertIn("v === 'ok' || v === 'api_import'", _fn("apiColour"))
-
-    def test_a_csv_import_is_still_excluded(self):
-        self.assertIn("imported: 'imported from a CSV (excluded)'", PAGE)
-
 class TheDialogFits(unittest.TestCase):
     """PR 5 on the Pi, 14 Oct 2026: the diff scrolled sideways inside the dialog, and a re-fetch
     before the bill floor said nothing about why no bill was asked. Discriminating."""
@@ -167,9 +153,9 @@ class TheBillViews(unittest.TestCase):
     """14 Oct 2026, design §1.2 revised and §1.2b: the Bill view says whose cost a half-hour
     holds; an Export bill view beside it. Discriminating: each fails on the parent."""
 
-    def test_the_bill_view_says_whose_cost(self):
-        self.assertIn("Octopus\\u2019s cost (a bill, or an API import)", PAGE)
-        self.assertIn("EMT\\u2019s kWh \\u00d7 rate — Octopus\\u2019s cost not in yet", PAGE)
+    def test_the_import_bill_view_says_whether_final_and_whose(self):
+        self.assertIn("bill:  {label: 'Import bill'", PAGE)
+        self.assertIn("applied_emt_split: C.teal, estimate_dcc: C.lamber, estimate_cad: C.amber", PAGE)
 
     def test_the_export_bill_view(self):
         self.assertIn("export: {label: 'Export bill'", PAGE)

@@ -412,6 +412,30 @@ class TheCorrections(_Harness):
         self.assertEqual(self._row()[0], 1)
 
 
+class TheTariffKind(_Harness):
+    """Settlement surfaces design §9.1-§9.2, 14 Oct 2026. Discriminating."""
+
+    def test_each_half_hour_reads_its_own_agreement(self):
+        engine._kraken_discovery = {"import": {"mpan": "IM", "tariff_code": "E-1R-IOG-SMB-X-B",
+            "agreements": [
+                {"tariff_code": "E-1R-AGILE-24-10-01-B", "valid_from": "2025-01-01T00:00:00Z",
+                 "valid_to": "2026-08-01T00:00:00Z"},
+                {"tariff_code": "E-1R-IOG-SMB-X-B", "valid_from": "2026-08-01T00:00:00Z",
+                 "valid_to": None}]}}
+        self.assertEqual(engine.tariff_kind_at("2026-07-01T02:00:00"), "published")
+        self.assertEqual(engine.tariff_kind_at("2026-09-01T02:00:00"), "intelligent")
+        self.assertEqual(engine.tariff_kind_at("2020-01-01T02:00:00"), "intelligent")  # none: current
+
+    def test_a_published_rate_half_hour_is_not_asked_for_a_bill(self):
+        """Its settled kWh x rate is the bill; applying one would snap its rate to the day's
+        lowest or highest band (a two-rate model)."""
+        self._block(bill=False)
+        engine._kraken_discovery = {"import": {"mpan": "IM", "tariff_code": "E-1R-AGILE-24-10-01-B"}}
+        oc = _Octopus(node=_node(KWH, 0.0))
+        self._preview(oc)
+        self.assertEqual((oc.asked, oc.asked_cost), ([], ()))
+
+
 class TheGuards(unittest.TestCase):
 
     def test_refused_while_a_delete_runs(self):

@@ -33,30 +33,19 @@ window.EMTHeatmap = (function () {
     intensity: {label: 'gCO₂/kWh', title: 'Grid Carbon Intensity (gCO₂/kWh)',
                 sub: 'How clean the grid was, regardless of your usage', unit: ' gCO₂/kWh', dp: 0, tot: null}
   };
-  // Supplier-API accounts only (added in init when /api/billing-source says uses_api):
-  // which half-hours still have no smart-meter (DCC) kWh from the API. Imported history
-  // is excluded — it was accepted as the record when it came in. A reading normally
-  // lands in 1–2 days, so a gap under API_PENDING_H is "not yet", not "missing".
-  // One view per channel the API supplies (export settles separately, and later).
-  var API_SUB = 'Half-hours without a smart-meter reading from the API: amber under 48 h (normally 1–2 days), ' +
-                'red after · green received (an API import too) · grey imported from a CSV, excluded';
-  var API_METRICS = {
-    api:    {label: 'API import', title: 'API usage data — import kWh from the supplier', sub: API_SUB,
-             unit: '', dp: 0, tot: 'Missing', field: 'kwh_authoritative', channel: 'import'},
-    apiexp: {label: 'API export', title: 'API usage data — export kWh from the supplier', sub: API_SUB,
-             unit: '', dp: 0, tot: 'Missing', field: 'exp_kwh_authoritative', channel: 'export'}
-  };
-  function isApi(m) { return m === 'api' || m === 'apiexp'; }
+  // The API import / API export views were retired on 14 Oct 2026 (settlement surfaces design
+  // §9.2): Import bill and Export bill carry what they showed, on the cost's window.
   // BL-85 (settlement surfaces design §1–§2): the bill and the House/EV split, per main-meter
   // import half-hour, from the payload's `settle` (include=settle) — the server decides the
   // state, the grid draws it. Added in init from /api/billing-source's `settle_views`.
   var SETTLE_METRICS = {
-    bill:  {label: 'Bill', title: 'Import bill — is each half-hour\u2019s cost Octopus\u2019s?', unit: '', dp: 0,
+    bill:  {label: 'Import bill', title: 'Import bill — is each half-hour\u2019s cost final?', unit: '', dp: 0,
             tot: 'To look at', settle: 'bill',
-            sub: 'Green: Octopus\u2019s cost (a bill, or an API import) · amber: EMT\u2019s kWh \u00d7 rate, ' +
-                 'under 7 days · red: kWh \u00d7 rate after 7 days, or the stored cost is not the bill, or ' +
-                 'the bill disagrees with the settled kWh or the VAT calendar · blue: your correction · ' +
-                 'grey: nothing imported, or CSV history'},
+            sub: 'Green: final — Octopus\u2019s cost (a bill, or an API import), or on a published-rate ' +
+                 'tariff the settled kWh \u00d7 rate · teal: Octopus\u2019s cost, EMT\u2019s House/EV split · ' +
+                 'light amber: settled kWh \u00d7 rate, Octopus\u2019s cost not in yet · amber: kWh not ' +
+                 'settled yet · red: not final after 7 days, or the stored cost is not the bill · blue: ' +
+                 'your correction · grey: nothing imported, or CSV history'},
     export: {label: 'Export bill', title: 'Export bill — is each half-hour\u2019s export cost final?', unit: '',
             dp: 0, tot: 'To look at', settle: 'export',
             sub: 'EMT fetches no export bill: kWh \u00d7 the export rate is final once the export kWh ' +
@@ -69,17 +58,21 @@ window.EMTHeatmap = (function () {
                  'completed dispatch with no split'}
   };
   function isSettle(m) { return m === 'bill' || m === 'export' || m === 'split'; }
-  function isCat(m) { return isApi(m) || isSettle(m); }
+  function isCat(m) { return isSettle(m); }
   var CAT_RANK = {
-    bill:  {none: 0, imported: 0, applied: 1, corrected: 1, waiting: 2, known: 2, overdue: 3, differs: 3, flagged: 3},
+    bill:  {none: 0, imported: 0, applied: 1, applied_emt_split: 1, corrected: 1, estimate_dcc: 2,
+            estimate_cad: 2, known: 2, overdue: 3, differs: 3, flagged: 3},
     export: {none: 0, imported: 0, applied: 1, waiting: 2, overdue: 3},
     split: {bill: 1, emt: 1, kept: 1, held: 2, missing: 3}
   };
   var CAT_TEXT = {
     bill: {none: 'nothing imported in this half-hour', imported: 'CSV history — not Octopus\u2019s cost',
-           applied: 'Octopus\u2019s cost — a bill, or an API import', corrected: 'your rate correction',
-           waiting: 'EMT\u2019s kWh \u00d7 rate — Octopus\u2019s cost not in yet',
-           overdue: 'EMT\u2019s kWh \u00d7 rate — no cost from Octopus after 7 days',
+           applied: 'final — Octopus\u2019s cost, or the settled kWh \u00d7 a published rate',
+           applied_emt_split: 'Octopus\u2019s cost — the House/EV split is still EMT\u2019s',
+           corrected: 'your rate correction',
+           estimate_dcc: 'settled kWh \u00d7 rate — Octopus\u2019s cost not in yet',
+           estimate_cad: 'kWh not settled yet \u00d7 rate',
+           overdue: 'not final after 7 days — kWh \u00d7 rate',
            known: 'stored cost re-costed before the BL-82 fix (pennies; known)',
            differs: 'the stored cost is not the bill', flagged: 'billed — but see below'},
     export: {none: 'no export in this half-hour', imported: 'CSV history',
@@ -92,12 +85,13 @@ window.EMTHeatmap = (function () {
   var FLAG_TEXT = {bill_kwh_differs: 'the bill priced a different kWh than settled',
                    vat_disagrees: 'the bill\u2019s VAT is not the calendar\u2019s'};
   function settleColour(m, v) {
-    var C = {green: '#2e9e5b', amber: '#e0a020', red: '#cc0000', blue: '#3b7dd8', teal: '#2a9d9f',
+    var C = {green: '#2e9e5b', amber: '#e0a020', lamber: '#f2cf7a', red: '#cc0000', blue: '#3b7dd8', teal: '#2a9d9f',
              grey: dark() ? '#3a3e4a' : '#d4d7de'};
     var by = m === 'export'
       ? {applied: C.green, waiting: C.amber, overdue: C.red, imported: C.grey, none: C.grey}
       : m === 'bill'
-      ? {applied: C.green, waiting: C.amber, known: C.amber, overdue: C.red, differs: C.red, flagged: C.red,
+      ? {applied: C.green, applied_emt_split: C.teal, estimate_dcc: C.lamber, estimate_cad: C.amber,
+         known: C.amber, overdue: C.red, differs: C.red, flagged: C.red,
          corrected: C.blue, imported: C.grey, none: C.grey}
       : {bill: C.green, emt: C.teal, held: C.amber, kept: C.blue, missing: C.red};
     return by[v] || 'rgba(0,0,0,0)';
@@ -114,18 +108,6 @@ window.EMTHeatmap = (function () {
         (fl.indexOf('bill_kwh_differs') >= 0 || fl.indexOf('vat_disagrees') >= 0)) return 'flagged';
     if (v === 'differs' && fl.indexOf('recost_bl82') >= 0) return 'known';
     return v;
-  }
-  var API_PENDING_H = 48;
-  var API_RANK = {imported: 0, api_import: 1, ok: 1, pending: 2, missing: 3};   // a clocks-back slot shows the worst
-  var API_TEXT = {ok: 'API kWh received', pending: 'no API kWh yet (under 48 h)', missing: 'no API kWh',
-                  api_import: 'API kWh received (imported from the API)',
-                  imported: 'imported from a CSV (excluded)'};
-  function apiColour(v) {
-    if (v === 'ok' || v === 'api_import') return '#2e9e5b';
-    if (v === 'pending') return '#e0a020';
-    if (v === 'missing') return '#cc0000';
-    if (v === 'imported') return dark() ? '#3a3e4a' : '#d4d7de';
-    return 'rgba(0,0,0,0)';
   }
   var AXIS_TOP = 46, AXIS_LEFT = 30, CELL_MAX = 22, CELL_MIN = 6;
   var state = {metric: 'kwh', tz: null, bm: 30, months: {}, keys: [], panels: {}, epoch: null,
@@ -207,7 +189,7 @@ window.EMTHeatmap = (function () {
       if (b.meter_id !== 'electricity_main') return;
       var lp = localParts(b.block_start);
       if (lp.day.slice(0, 7) !== key) return;                  // a UTC edge of the month
-      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, api: 0, apiexp: 0, bill: 0, split: 0}});
+      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0, split: 0}});
       var net = (b.imp_kwh || 0) - (b.exp_kwh || 0), cg = b.carbon_g;
       var c = d.slots[lp.slot] || (d.slots[lp.slot] = {kwh: 0, co2: null, int: null});
       (c.starts || (c.starts = [])).push(b.block_start);       // UTC, for the detail panel (§4)
@@ -215,18 +197,6 @@ window.EMTHeatmap = (function () {
       if (cg !== null && cg !== undefined) c.co2 = (c.co2 || 0) + cg;
       // The payload states the grid's intensity per block (carbon.slot_intensity).
       if (b.carbon_intensity_g !== null && b.carbon_intensity_g !== undefined) c.int = b.carbon_intensity_g;
-      // API coverage, per channel: the payload's kwh_authoritative / exp_kwh_authoritative
-      // is "imported, or that channel's DCC kWh held".
-      // An API import's kWh came from the same consumption API (it has no DCC field by design):
-      // it is the API's figure, so it counts as received. Only other imports (CSV) are excluded.
-      var imported = /^imported/.test(b.source || ''), young = now - Date.parse(b.block_start + 'Z') < API_PENDING_H * 3600e3;
-      var viaApi = b.source === 'imported_api';
-      Object.keys(API_METRICS).forEach(function (k) {
-        var has = (k === 'api' ? b.imp_kwh : b.exp_kwh) !== null && (k === 'api' ? b.imp_kwh : b.exp_kwh) !== undefined;
-        var st = viaApi && has ? 'api_import' : imported ? 'imported'
-               : b[API_METRICS[k].field] ? 'ok' : young ? 'pending' : 'missing';
-        if (!c[k] || API_RANK[st] > API_RANK[c[k]]) c[k] = st;
-      });
       var sm = (state.months[key].settle || {})[b.block_start];          // BL-85
       Object.keys(SETTLE_METRICS).forEach(function (k) {
         var v = settleValue(k, sm); if (v === null) return;
@@ -235,10 +205,6 @@ window.EMTHeatmap = (function () {
       d.total.kwh += net; if (cg) d.total.co2 += cg;
     });
     Object.keys(days).forEach(function (k) {                      // the day's half-hours still owed
-      Object.keys(API_METRICS).forEach(function (m) {
-        days[k].total[m] = days[k].slots.filter(function (c) {
-          return c && (c[m] === 'missing' || c[m] === 'pending'); }).length;
-      });
       Object.keys(SETTLE_METRICS).forEach(function (m) {         // amber or red: worth a look
         days[k].total[m] = days[k].slots.filter(function (c) {
           return c && c[m] && CAT_RANK[m][c[m]] >= 2; }).length;
@@ -348,7 +314,7 @@ window.EMTHeatmap = (function () {
         backgroundColor: function (ctx) {
           var r = ctx.raw; if (!r) return 'rgba(0,0,0,0)';
           var v = metricOf(r.c, state.metric);
-          return isApi(state.metric) ? apiColour(v) : isSettle(state.metric) ? settleColour(state.metric, v)
+          return isSettle(state.metric) ? settleColour(state.metric, v)
                : paint(stops, sc.lo, sc.hi, v);
         },
         width: function (ctx) { var a = ctx.chart.chartArea; return a ? a.width / n - 1 : cs - 1; },
@@ -444,7 +410,6 @@ window.EMTHeatmap = (function () {
       else { var ci = Math.floor((x - a.left) / (a.width / p.xs.length));
              v = metricOf(p.grid[day].slots[ci], state.metric); lab = p.xs[ci] + '–' + slotLabel(ci + 1); }
       var txt = (v === null || v === undefined) ? (state.metric === 'split' ? 'no completed dispatch' : 'no data')
-              : isApi(state.metric) ? (hitTot ? v + ' half-hour' + (v === 1 ? '' : 's') + ' without API kWh' : API_TEXT[v])
               : isSettle(state.metric) ? (hitTot ? v + ' half-hour' + (v === 1 ? '' : 's') + ' to look at'
                   : CAT_TEXT[state.metric][v] + (((p.grid[day].slots[ci] || {})[state.metric + 'Flags'] || [])
                       .filter(function (x) { return FLAG_TEXT[x]; })
@@ -809,7 +774,7 @@ window.EMTHeatmap = (function () {
           'VAT ' + (b.cost_exc > 0.001 ? ((b.cost / b.cost_exc - 1) * 100).toFixed(1) + '%' : '—'));
     } else {
       row('bill', '—', esc(CAT_TEXT.bill[st.bill] || st.bill || ''),
-          st.bill === 'overdue' ? 'hm-bad' : st.bill === 'waiting' ? 'hm-wait' : '');
+          st.bill === 'overdue' ? 'hm-bad' : /^estimate_/.test(st.bill) ? 'hm-wait' : '');
       row('', esc(gbp(c.stored)), 'stored (kWh \u00d7 rate)');
     }
     var ev = 0, house = 0;
@@ -938,15 +903,11 @@ window.EMTHeatmap = (function () {
     if (state.inited) return refresh();
     state.inited = true;
     state.root.innerHTML = '<div class="hm-empty">Loading…</div>';
-    // The API-coverage view is for supplier-API accounts only; ask once, and a failed
+    // The settlement views are for supplier-API accounts only; ask once, and a failed
     // answer means "not shown", never an error for the heatmap.
     var apiCheck = fetchJSON('/api/billing-source').then(function (r) {
       if (!(r && r.uses_api)) return;
       state.canRefetch = true;                  // BL-86: a re-fetch needs the supplier API
-      var chans = r.api_channels || ['import'];
-      Object.keys(API_METRICS).forEach(function (k) {
-        if (chans.indexOf(API_METRICS[k].channel) >= 0) METRICS[k] = API_METRICS[k];
-      });
       (r.settle_views || []).forEach(function (k) { if (SETTLE_METRICS[k]) METRICS[k] = SETTLE_METRICS[k]; });
     }, function () {});
     return libs().then(function () { return apiCheck; })

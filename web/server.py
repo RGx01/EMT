@@ -3874,8 +3874,10 @@ def api_block_settlement():
 
 def _settle_views(_eng) -> list:
     try:
-        views = ["bill"] if _eng.bill_stage()["fetched"] else []
-        # Export bill beside it where the main meter has an export channel (design §2)
+        # Import bill wherever the install has a supplier API connection, any tariff — the
+        # tariff decides what is final inside it, not whether it shows (design §9.2)
+        views = ["bill"] if (_eng.mode_uses_api() and _eng.has_kraken_credentials()) else []
+        # Export bill beside it where the main meter has an export channel
         if views:
             main = next((m for m in (load_config().get("meters") or {}).values()
                          if not (m.get("meta") or {}).get("sub_meter")), {})
@@ -3898,7 +3900,8 @@ def _settlement_states(store, utc_start, utc_end) -> dict:
     return _ss.classify_range(
         store.get_settlement_facts(utc_start, utc_end),
         smb=bool(_eng._import_is_smb_capped()), now=_dt.now(_tz.utc).replace(tzinfo=None),
-        held=held, kept=kept, vat_at=_vc.rate_lookup(store.get_vat_calendar()))
+        held=held, kept=kept, vat_at=_vc.rate_lookup(store.get_vat_calendar()),
+        kind_at=_eng.tariff_kind_at)
 
 
 @app.route("/api/billing-source", methods=["GET"])
@@ -3921,8 +3924,8 @@ def api_billing_source_get():
                         # BL-85: the three stages a half-hour waits at — kWh, then its bill, then
                         # (IOG-SMB) its split. `unsettled` is the first, kept for its other readers.
                         "awaiting": awaiting,
-                        # BL-85: the settlement views that mean something here — Bill where EMT
-                        # fetches bills, Split on IOG-SMB (settlement surfaces design §2).
+                        # BL-85: the settlement views that mean something here — Import and
+                        # Export bill on an API connection, Split on IOG-SMB (design §9.2).
                         "settle_views": _settle_views(_eng),
                         "api_available": _eng.kraken_available(),
                         # The supplier API is part of this install's data source — the
