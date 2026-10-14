@@ -13,34 +13,39 @@ async function uploadReply(r) {
     'open the add-on\'s Web UI directly (port 8098 by default) and restore from there.');
 }
 
-// An upload that says how far it has got (10 Oct 2026). fetch() reports nothing until the
-// server replies, and an 80 MB backup took about two minutes to reach a Pi: the page sat
-// silent, the button stayed live, and a second click (or an ingress retry) started a second
-// upload. XMLHttpRequest reports the bytes sent. `onStage(text)` is called as the upload
-// progresses, and once more when it has all arrived and the server is checking it. Resolves to
-// what uploadReply() reads — the status, the content type and the body.
-function uploadWithProgress(url, form, onStage) {
-  return new Promise(function(resolve, reject) {
-    var xhr = new XMLHttpRequest();
-    xhr.open('POST', url);
-    var mb = function(n) { return (n / 1048576).toFixed(1); };
-    xhr.upload.onprogress = function(e) {
-      if (!e.lengthComputable) { onStage('Uploading… ' + mb(e.loaded) + ' MB sent'); return; }
-      var pct = Math.floor(100 * e.loaded / e.total);
-      onStage('Uploading… ' + pct + '% (' + mb(e.loaded) + ' of ' + mb(e.total) + ' MB)');
-    };
-    xhr.upload.onload = function() {
-      onStage('Uploaded — EMT is checking the file. On a Pi this can take a minute or two.');
-    };
-    xhr.onload = function() {
-      var body = xhr.responseText;
-      resolve({
-        status: xhr.status,
-        headers: { get: function(h) { return xhr.getResponseHeader(h); } },
-        json: function() { return Promise.resolve(JSON.parse(body)); }
-      });
-    };
-    xhr.onerror = function() { reject(new Error('the upload did not reach EMT')); };
-    xhr.send(form);
-  });
+// A backup sent in pieces (14 Oct 2026). Through Home Assistant's ingress a whole backup in one
+// request was refused before it reached EMT — "HTTP 413", the proxy's body limit — so a restore
+// worked only on the add-on's own port. Each piece is small enough for any limit; the server
+// writes it at the offset it states (a retried piece replaces itself) and stages the whole file at
+// the end, exactly as one upload would be. A piece that fails is tried twice more. `onStage(text)`
+// says how far it has got. Resolves to the stage's reply: {ok, token, facts} or {error}.
+async function stageInPieces(file, onStage) {
+  var post = function (url, opts) {
+    return fetch(apiUrl(url), Object.assign({method: 'POST'}, opts)).then(uploadReply);
+  };
+  var json = function (o) { return {headers: {'Content-Type': 'application/json'}, body: JSON.stringify(o)}; };
+  var mb = function (n) { return (n / 1048576).toFixed(1); };
+  var b = await post('/api/restore/upload/begin', json({size: file.size}));
+  if (!b.ok) return b;
+  var step = b.chunk || 524288, off = 0;
+  onStage('Uploading… 0% (0.0 of ' + mb(file.size) + ' MB)');
+  while (off < file.size) {
+    var piece = file.slice(off, Math.min(file.size, off + step)), tries = 0, r;
+    for (;;) {
+      try {
+        r = await post('/api/restore/upload/chunk?id=' + encodeURIComponent(b.id) + '&offset=' + off,
+                       {headers: {'Content-Type': 'application/octet-stream'}, body: piece});
+        break;
+      } catch (e) {
+        if (++tries > 2) throw e;
+        await new Promise(function (ok) { setTimeout(ok, 1000 * tries); });
+      }
+    }
+    if (!r.ok) return r;
+    off = r.received;
+    onStage('Uploading… ' + Math.floor(100 * off / file.size) + '% (' + mb(off) + ' of ' +
+            mb(file.size) + ' MB)');
+  }
+  onStage('Uploaded — EMT is checking the file. On a Pi this can take a minute or two.');
+  return post('/api/restore/upload/finish', json({id: b.id, size: file.size}));
 }

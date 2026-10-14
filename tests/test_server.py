@@ -1140,7 +1140,7 @@ class TestIndexRedirect(unittest.TestCase):
         self.assertIn("Set up a new account", page)
         self.assertIn("Restore from an Energy Meter Tracker backup", page)
         self.assertIn("/settings?wizard=1", page)
-        self.assertIn("/api/restore/stage", page)
+        self.assertIn("/api/restore/upload/begin", page)       # in pieces (14 Oct 2026)
         self.assertIn("/api/restore/confirm", page)
         from v4import import gate as _g
         self.assertIn("(%s or later)" % _g.FLOOR_VERSION, page)   # named from the gate

@@ -128,10 +128,7 @@ async function onRestoreFile(files) {
   resetFork();
   setBusy(true);
   try {
-    var form = new FormData();
-    form.append('file', file);
-    var r    = await uploadWithProgress(apiUrl('/api/restore/stage'), form, showBusy);
-    var data = await uploadReply(r);
+    var data = await stageInPieces(file, showBusy);     // in pieces: ingress refuses one big body
     if (!data.ok) throw new Error(data.error || 'That backup could not be checked');
     _token = data.token; _facts = data.facts;
     hideAlerts();
