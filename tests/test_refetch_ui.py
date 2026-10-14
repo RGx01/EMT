@@ -113,6 +113,14 @@ class TheDialog(unittest.TestCase):
     def test_the_diff_shows_the_ev_share_only_where_it_moves(self):
         self.assertIn("var evMoved", _fn("diffTable"))
 
+    def test_a_replaced_correction_is_said_before_and_after(self):
+        """14 Oct 2026: a re-fetch may now replace a correction — the dialog says so first."""
+        self.assertIn("(your correction)", _fn("diffTable"))
+        body = _fn("openRefetch")
+        self.assertIn("your own correction with Octopus", body)
+        self.assertIn("replaced your correction", body)
+        self.assertNotIn("Your corrections and device", body)
+
     def test_the_diff_labels_emts_own_split(self):
         """PR 5 on the Pi, 14 Oct 2026: the "stored" EV share was EMT's own, unlabelled."""
         body = _fn("diffTable")

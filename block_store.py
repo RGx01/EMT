@@ -7875,7 +7875,8 @@ class BlockStore:
         return row["id"] if row else None
 
     def apply_measured_to_main(self, block_start: str, *, rate, cost, cost_exc,
-                               meter_id: str = "electricity_main", segments=None) -> int:
+                               meter_id: str = "electricity_main", segments=None,
+                               replace_correction: bool = False) -> int:
         """Stamp Octopus's billed figure onto a main block. Returns rows changed.
 
         **Keyword-only after `block_start`, deliberately.** Three values, of
@@ -7892,11 +7893,15 @@ class BlockStore:
         The bill's EV/house split is its `segments` (step 5c, 10 Oct 2026): a bill with no EV
         has no EV segment, which is what the jobs that back-attribute a late-arriving dispatch
         select on.
+
+        `replace_correction` (a user's range re-fetch only, settlement surfaces design §5.2):
+        the bill replaces the user's Cost Correction, so `rate_corrected` clears in the same
+        UPDATE. No automatic pass passes it — they never reach a corrected block.
         """
         with self._conn:
             cur = self._conn.execute(
                 "UPDATE blocks SET imp_rate = ?, imp_cost = ?, rate_source = 'settled', "
-                "imp_cost_exc = ? "
+                "imp_cost_exc = ?" + (", rate_corrected = 0" if replace_correction else "") + " "
                 "WHERE block_start = ? AND meter_id = ?",
                 (rate, cost, cost_exc, block_start, meter_id))
             # BL-79 (8 Oct 2026): the bill's segments in the same transaction. Written after,

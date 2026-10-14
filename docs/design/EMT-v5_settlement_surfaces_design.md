@@ -178,9 +178,20 @@ selection; it does the parts that apply.
    applies (a bill with no EV against EMT's split is held, not applied). A safety backup first,
    like Delete Blocks.
 
-**Never touched:** corrected blocks (the user's own rate), device rows (they follow their parent
-through the existing re-split), segments of half-hours that did not change, and anything outside
-the range.
+**Never touched:** device rows (they follow their parent through the existing re-split), segments
+of half-hours that did not change, and anything outside the range.
+
+**Corrected half-hours** (decided on the Pi, 14 Oct 2026): a re-fetch asks Octopus for them too,
+and where the bill disagrees with the user's correction the row says *your correction*, the
+dialog warns before Apply that a correction cannot be put back, and Apply settles the half-hour
+from the bill — `rate_corrected` clears in the settle's own UPDATE
+(`apply_measured_to_main(replace_correction=True)`), so a bill the block refuses leaves the
+correction as it was. The first draft of this section listed corrected blocks as never touched.
+That guard exists for EMT's automatic passes, which re-price unattended on every pass and would
+silently overwrite a correction (v4 4.3.0, "so a manual correction is never stomped"); they
+keep it. But `rate_corrected` is cleared nowhere else, so it also locked the bill out for good
+(v4 ROADMAP_archive BL-75 (e)); a re-fetch is the user asking, which is the consent the guard
+protects.
 
 **What this replaces:** delete-and-reimport for a restatement. 4.5.22's VAT resync and 4.5.23's
 re-fetch become special cases of it — the same fetch, compare and apply, run by EMT on a trigger
