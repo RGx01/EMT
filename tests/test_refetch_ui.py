@@ -38,7 +38,40 @@ class TheActions(unittest.TestCase):
     def test_the_day_column_makes_a_range_on_a_phone(self):
         body = _fn("dayBarPick")
         self.assertIn("state.pickedDay", body)
-        self.assertIn("tap another day", body)
+        self.assertIn("Start a range from", body)
+
+
+class TheSelection(unittest.TestCase):
+    """PR 5 on the Pi, 14 Oct 2026: a tap on 10 Oct's day bar offered 10 Aug -> 10 Oct — an
+    earlier tap had been kept as a range start, silently — and nothing showed what a click,
+    a drag or a day covered. Discriminating: each fails on the parent."""
+
+    def test_a_plain_tap_does_not_start_a_range(self):
+        body = _fn("dayBarPick")
+        i = body.index("state.pickedDay = null;\n    markSelection(dr[0], dr[1]);")
+        # the only place a pick is kept is the explicit "Start a range" item
+        self.assertEqual(body.count("state.pickedDay = {day: day, range: dr}"), 1)
+        self.assertGreater(body.index("Start a range from"), i)
+
+    def test_a_cell_tap_drops_a_picked_day(self):
+        i = PAGE.index("row.addEventListener('click'")
+        self.assertIn("state.pickedDay = null;", PAGE[i:i + 600])
+
+    def test_what_is_selected_is_outlined(self):
+        self.assertIn("function markSelection(from, to)", PAGE)
+        self.assertIn(".hm-sel {", PAGE)
+        for ctx in ("row.addEventListener('click'", "row.addEventListener('contextmenu'"):
+            i = PAGE.index(ctx)
+            self.assertIn("markSelection(", PAGE[i:i + 900], ctx)
+        self.assertIn("markSelection(from, to)", _fn("openRefetch"))
+
+    def test_the_outline_goes_when_the_dialog_or_menu_does(self):
+        self.assertIn("state.dialogOpen = false; clearSelection();", PAGE)
+        i = PAGE.index("function showMenu(")
+        self.assertIn("clearSelection()", PAGE[i:i + 900])
+
+    def test_the_dialog_names_its_exact_span(self):
+        self.assertIn("esc(localTime(from)) + ' \\u2192 ' + esc(localTime(to))", _fn("openRefetch"))
 
     def test_the_panel_has_the_re_fetch_button(self):
         self.assertIn('data-act="refetch"', _fn("renderPanel"))
