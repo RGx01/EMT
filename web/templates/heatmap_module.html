@@ -435,42 +435,22 @@ window.EMTHeatmap = (function () {
       tip.style.display = 'block'; tip.style.left = (pt.clientX + 12) + 'px'; tip.style.top = (pt.clientY + 12) + 'px';
     }
     row.addEventListener('mousemove', show);
-    // while a drag is held, outline the span it covers so far (PR 5 on the Pi, 14 Oct 2026: it
-    // showed nothing until the button was released)
-    row.addEventListener('mousemove', function (ev) {
-      var from = state.dragFrom;
-      if (!from || !(ev.buttons & 1) || !state.canRefetch) return;
-      var h = hitCell(p, ev); if (!h || h.tot) return;
-      var at = h.key + h.day + h.ci; if (at === state.dragAt) return;
-      state.dragAt = at;
-      if (from.key === h.key && from.day === h.day && from.ci === h.ci) { clearSelection(); return; }
-      var a = from.starts[0] < h.starts[0] ? from : h, b = a === from ? h : from;
-      markSelection(a.starts[0], plus30(b.starts[b.starts.length - 1]));
-    });
     row.addEventListener('touchstart', show, {passive: true});
     row.addEventListener('mouseleave', function () { tipEl().style.display = 'none'; });
     // A click (or tap) on a cell opens that half-hour's settlement detail (design §4). A drag
-    // from one cell to another selects that span; a right click (a long press on touch) offers
-    // the cell's actions; the day column offers its day (design §5.1).
+    // selects a span — cells to cells, or days down the day column, across months; a right click
+    // (a long press on touch) offers the cell's actions; the day column offers its day (§5.1).
     row.addEventListener('mousedown', function (ev) {
-      if (ev.button !== 0) return;
-      var h = hitCell(p, ev); state.dragFrom = h && !h.tot ? h : null; state.dragAt = null;
-      if (state.dragFrom) ev.preventDefault();     // no text selection while dragging
+      if (ev.button !== 0 || !state.canRefetch) return;
+      var h = hitCell(p, ev); if (!h) return;
+      state.drag = {p: p, h: h, span: null};
+      ev.preventDefault();                         // no text selection while dragging
     });
     row.addEventListener('click', function (ev) {
       var h = hitCell(p, ev); if (!h) return;
       tipEl().style.display = 'none';
+      if (state.dragEnded) return;                 // the drag's own release: its menu is open
       if (h.tot) { dayBarPick(p, h.day, ev); return; }
-      var from = state.dragFrom; state.dragFrom = null;
-      if (from && (from.day !== h.day || from.ci !== h.ci || from.key !== h.key) && state.canRefetch) {
-        var a = from.starts[0] < h.starts[0] ? from : h, b = a === from ? h : from;
-        markSelection(a.starts[0], plus30(b.starts[b.starts.length - 1]));
-        showMenu(ev, [{text: 'Re-fetch from Octopus\u2026', run: function () {
-          openRefetch(a.starts[0], plus30(b.starts[b.starts.length - 1]),
-                      a.day + ' ' + a.label + ' \u2192 ' + b.day + ' ' + b.label); }}],
-                 a.day + ' ' + a.label + ' \u2192 ' + b.day + ' ' + b.label);
-        return;
-      }
       markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
       openPanel(h.starts, h.day + ' ' + h.label);
     });
@@ -529,13 +509,52 @@ window.EMTHeatmap = (function () {
   }
   // What a click, drag, day or range refers to, outlined on the grid while its menu or dialog is
   // open — the cells whose half-hour falls in [from, to), one outline per run of a day's cells.
-  document.addEventListener('mouseup', function () {
-    if (!state.dragFrom) return;
-    setTimeout(function () {                       // after the click, which consumes the drag
-      if (!state.dragFrom) return;
-      state.dragFrom = null;
-      if (!state.dialogOpen) clearSelection();
-    }, 0);
+  // The drag, at document level so it can cross months (each month is its own chart) and run
+  // down the day column (PR 5 on the Pi, 14 Oct 2026: it did neither). It starts on a cell or a
+  // day bar; from a day bar both ends are whole days.
+  function hitAt(ev) {
+    var el = document.elementFromPoint(ev.clientX, ev.clientY);
+    var keys = Object.keys(state.panels);
+    for (var i = 0; i < keys.length; i++) {
+      var p = state.panels[keys[i]];
+      if (el && p.el && p.el.contains(el)) {
+        var h = hitCell(p, {target: el, clientX: ev.clientX, clientY: ev.clientY});
+        return h ? {p: p, h: h} : null;
+      }
+    }
+    return null;
+  }
+  function dragEnd(d, at) {                        // [from, to) and a label for one end
+    if (d.h.tot || at.h.tot) {
+      var dr = dayRange(at.p, at.h.day);
+      return dr ? {from: dr[0], to: dr[1], label: at.h.day} : null;
+    }
+    var st = at.h.starts;
+    return {from: st[0], to: plus30(st[st.length - 1]), label: at.h.day + ' ' + at.h.label};
+  }
+  function dragSpan(d, at) {
+    var a = dragEnd(d, d), b = dragEnd(d, at);
+    if (!a || !b || (a.from === b.from && a.to === b.to)) return null;   // not moved off its start
+    if (b.from < a.from) { var t = a; a = b; b = t; }
+    return {from: a.from, to: b.to, label: a.label + ' \u2192 ' + b.label};
+  }
+  document.addEventListener('mousemove', function (ev) {
+    var d = state.drag; if (!d) return;
+    if (!(ev.buttons & 1)) { state.drag = null; return; }
+    var at = hitAt(ev); if (!at) return;           // between months: keep what is outlined
+    var span = dragSpan(d, at), id = span ? span.from + span.to : '';
+    if (id === d.id) return;
+    d.id = id; d.span = span;
+    if (span) markSelection(span.from, span.to); else clearSelection();
+  });
+  document.addEventListener('mouseup', function (ev) {
+    var d = state.drag; state.drag = null;
+    if (!d || !d.span) return;                     // a tap: the click handles it
+    var sp = d.span;
+    state.dragEnded = true;                        // the click that follows is this release
+    setTimeout(function () { state.dragEnded = false; }, 0);
+    showMenu(ev, [{text: 'Re-fetch ' + sp.label + ' from Octopus\u2026', run: function () {
+      openRefetch(sp.from, sp.to, sp.label); }}], sp.label);
   });
   function clearSelection() {
     document.querySelectorAll('.hm-sel').forEach(function (x) { x.remove(); });
@@ -574,7 +593,8 @@ window.EMTHeatmap = (function () {
         m.style.display = 'none';
         if (!state.dialogOpen) clearSelection();
       };
-      document.addEventListener('click', function (e) { if (!m.contains(e.target)) dismiss(); }, true);
+      document.addEventListener('click', function (e) {
+        if (!m.contains(e.target) && !state.dragEnded) dismiss(); }, true);
       document.addEventListener('keydown', function (e) {
         if (e.key !== 'Escape') return;
         dismiss();
