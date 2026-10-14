@@ -332,7 +332,7 @@ Inside them, the tariff gates only what must be gated:
 | what | gated on |
 |---|---|
 | the settled kWh (DCC poll; a re-fetch's kWh part) | nothing — every tariff |
-| the bill fetch, automatic and on a re-fetch (`recover_measurement_costs`; the device breakdown where the account has buckets, falling back to the billed cost — #167) | Intelligent half-hours only. A published-rate half-hour needs no bill, and **applying** one would be wrong there: `apply_measured_to_block` snaps the rate to the day's lowest or highest band (`day_rate_bounds`), a two-rate model — on Cosy a mid-rate half-hour, on Agile nearly every half-hour, would get a wrong rate and band (the cost would stay right) |
+| the bill fetch, automatic and on a re-fetch (`recover_measurement_costs`; the device breakdown only for half-hours on the IOG-SMB agreement, `split_at` — Octopus answers it before the agreement too, but not as the bill: 24 Aug 2026 05:30 BST, bill £0.0879 off-peak, breakdown £0.5169 day rate — falling back to the billed cost where it does not answer, #167) | Intelligent half-hours only. A published-rate half-hour needs no bill, and **applying** one would be wrong there: `apply_measured_to_block` snaps the rate to the day's lowest or highest band (`day_rate_bounds`), a two-rate model — on Cosy a mid-rate half-hour, on Agile nearly every half-hour, would get a wrong rate and band (the cost would stay right) |
 | the automatic bill pass's scope | unchanged: Intelligent, from the current agreement's start (`bill_stage`). No widening — published-rate tariffs reconcile through the kWh |
 
 Today the view gate is the tariff (`_settle_views` shows Bill only when `bill_stage()["fetched"]`)

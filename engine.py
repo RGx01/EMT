@@ -11955,16 +11955,19 @@ async def _refetch_octopus(store, utc_from: str, utc_to: str, parts, facts: dict
                  if (f.get("imp_kwh") or 0) > 1e-9 and tariff_kind_at(s) == "intelligent"]
         if mpan and slots:
             _refetch_state["phase"] = "fetching bills (%d half-hours)" % len(slots)
-            use_buckets = _import_is_smb_capped()
-            got = (await _kraken_client.recover_device_breakdown(mpan, slots) if use_buckets
-                   else await _kraken_client.recover_measurement_costs(mpan, slots)) or {}
-            # The device breakdown answers on the IOG-SMB agreement only; before it (the previous
-            # tariff has no device buckets) ask the single billed cost, as the importer and the
-            # non-SMB pass do (PR 5 on the Pi, 14 Oct 2026: 19 Aug 06:30, "recovered 0/1").
-            rest = [s for s in slots if not got.get(s)] if use_buckets else []
+            # The device breakdown (cost + House/EV split + band) only for half-hours on the
+            # IOG-SMB agreement (`split_at`); the billed cost (`recover_measurement_costs`, with its
+            # forward look-ahead for a dispatch's off-peak label) for the rest, and for any the
+            # breakdown leaves unanswered. Octopus does answer the breakdown before the agreement,
+            # but not as the bill: PR 5 on the Pi, 14 Oct 2026, 24 Aug 05:30 BST — the cached bill
+            # £0.0879 (1.6 kWh off-peak, the dispatch), the breakdown £0.5169 (all house, day rate),
+            # and "EV 0" on every pre-agreement half-hour.
+            on = [s for s in slots if split_at(s)]
+            got = (await _kraken_client.recover_device_breakdown(mpan, on) or {}) if on else {}
+            rest = [s for s in slots if not got.get(s)]
             cost_only = (await _kraken_client.recover_measurement_costs(mpan, rest) or {}) if rest else {}
             for s in slots:
-                row = (_vat_resync_row(got.get(s), use_buckets) if got.get(s)
+                row = (_vat_resync_row(got.get(s), True) if got.get(s)
                        else _vat_resync_row(cost_only.get(s), False))
                 if row and not row.get("zero"):
                     out.setdefault(s, {})["bill"] = row

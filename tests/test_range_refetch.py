@@ -282,15 +282,17 @@ class ThePiPreview(_Harness):
         self.assertEqual(oc.asked, [SLOT])
 
     def test_off_smb_an_undispatched_half_hour_is_asked_too(self):
-        """GUARD: passes on the parent too — the harness's schedules still read as SMB, so the
-        parent's dispatched-only filter never applied here."""
+        """Off SMB it is asked the billed cost, not the device breakdown (14 Oct 2026, after #169)."""
         self._block(bill=False)
         self.st._conn.execute("DELETE FROM dispatch_slots"); self.st._conn.commit()
         engine._kraken_discovery = {"import": {"mpan": "IM", "tariff_code": "E-1R-INTELLI-VAR-B",
-                                               "product_code": "INTELLI-VAR"}}
+                                               "product_code": "INTELLI-VAR",
+                                               "agreements": [{"tariff_code": "E-1R-INTELLI-VAR-B",
+                                                               "valid_from": "2025-01-01T00:00:00Z",
+                                                               "valid_to": None}]}}
         oc = _Octopus(node=_node(KWH, 0.0))
         self._preview(oc)
-        self.assertEqual(oc.asked, [SLOT])
+        self.assertEqual((oc.asked, oc.asked_cost), ([], (SLOT,)))   # off SMB: the billed cost
 
     def test_imported_history_agrees_with_its_own_kwh(self):
         self._block(bill=False)
@@ -484,6 +486,27 @@ class TheTariffKind(_Harness):
         oc = _Octopus(node=_node(KWH, 0.0))
         self._preview(oc)
         self.assertEqual((oc.asked, oc.asked_cost), ([], ()))
+
+
+class TheBreakdownOnTheAgreement(_Harness):
+    """PR 5 on the Pi, 14 Oct 2026, after #169: Octopus answers the device breakdown before the
+    IOG-SMB agreement too, but not as the bill — 24 Aug 05:30 BST: the cached bill £0.0879 (the
+    dispatch, off-peak), the breakdown £0.5169 (all house, day rate), "EV 0" everywhere. Before
+    the agreement the billed cost is asked instead. Discriminating."""
+
+    def test_before_the_agreement_the_breakdown_is_not_asked(self):
+        self._block(bill=False)
+        engine._kraken_discovery = {"import": {"mpan": "IM", "tariff_code": "E-1R-IOG-SMB-X-B",
+            "agreements": [
+                {"tariff_code": "E-1R-INTELLI-VAR-B", "valid_from": "2025-01-01T00:00:00Z",
+                 "valid_to": "2026-09-02T00:00:00Z"},
+                {"tariff_code": "E-1R-IOG-SMB-X-B", "valid_from": "2026-09-02T00:00:00Z",
+                 "valid_to": None}]}}
+        oc = _Octopus(node=_node(KWH, 0.0)); oc.cost_only = {SLOT: BeforeTheAgreement.COST}
+        st = self._preview(oc)
+        self.assertEqual((oc.asked, oc.asked_cost), ([], (SLOT,)))
+        (row,) = st["rows"]
+        self.assertIsNone(row["bill"]["octopus_ev"])        # no split from a cost-only answer
 
 
 class TheGuards(unittest.TestCase):
