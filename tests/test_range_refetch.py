@@ -316,6 +316,40 @@ class ThePiPreview(_Harness):
         self.assertEqual(row["export"]["octopus"], 0.4)
 
 
+class TheSplitArrives(_Harness):
+    """PR 5 on the Pi, 14 Oct 2026: after 8 Sep was applied, two half-hours stayed "EMT's split".
+    Their bills were cached cost-only (before v4 4.5.7's bucket fetch); Octopus's split now
+    equalled EMT's to the kWh, and the cost agreed, so the diff dropped them and the bill's split
+    was never cached."""
+
+    def _cost_only(self, ev):
+        self._block(ev=ev, bill=False)
+        self.st.upsert_measured_cost(SLOT, mpan="IM", cost_incl=round(KWH * OFF, 6),
+                                     cost_excl=round(KWH * OFF, 6), label="STANDARD_RATE", kwh=KWH)
+        self.st._conn.commit()
+
+    def test_the_bills_split_at_the_same_figures_is_a_difference(self):
+        self._cost_only(ev=KWH)                          # the half-hour wholly on the car
+        st = self._preview(_Octopus(node=_node(0.0, KWH)))
+        (row,) = st["rows"]
+        self.assertFalse(row["bill"]["stored_ev_is_bill"])
+        self._apply(st["token"])
+        self.assertAlmostEqual(self.st.get_measured_breakdown(SLOT)["ev_kwh"], KWH, places=4)
+
+    def test_no_completed_dispatch_and_no_car_is_still_no_difference(self):
+        """GUARD: a house-only half-hour gains nothing from the bill's split."""
+        self._cost_only(ev=None)
+        self.st._conn.execute("DELETE FROM dispatch_history"); self.st._conn.commit()
+        st = self._preview(_Octopus(node=_node(KWH, 0.0)))
+        self.assertEqual(st["summary"]["differ"], 0, st["rows"])
+
+    def test_a_held_bill_is_still_not_a_difference(self):
+        """GUARD: Octopus's split drops the car; 4.5.23 holds it, so nothing would change."""
+        self._cost_only(ev=3.1)
+        st = self._preview(_Octopus(node=_node(KWH, 0.0)))
+        self.assertEqual(st["summary"]["differ"], 0, st["rows"])
+
+
 class TheGuards(unittest.TestCase):
 
     def test_refused_while_a_delete_runs(self):

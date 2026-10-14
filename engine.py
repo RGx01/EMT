@@ -11949,7 +11949,8 @@ def _refetch_diff(facts: dict, octo: dict) -> list:
       unbilled half-hour priced at the same £ is no difference). The EV share against the bill's,
       else EMT's own split.
     - a row where nothing would change is dropped: a bill 4.5.23 would hold whose cost agrees
-      changes nothing either way."""
+      changes nothing either way. The bill's split arriving on a cost-only cached bill is a change, even
+      at the same figures, on a completed dispatch or where the bill has the car."""
     def _f(x):
         try:
             return float(x)
@@ -11981,16 +11982,26 @@ def _refetch_diff(facts: dict, octo: dict) -> list:
             cost_now = have if have is not None else _f(f.get("imp_cost"))
             cost_diff = cost_now is None or abs(cost_now - float(b["cost_incl"])) > _REFETCH_GBP_EPS
             ev_stored = _f(f.get("bill_ev_kwh"))
-            if ev_stored is None:
+            ev_is_bill = ev_stored is not None
+            if not ev_is_bill:
                 ev_stored = _f(f.get("ev_kwh")) or 0.0       # EMT's own split, or none
             ev_diff = ev_new is not None and abs(ev_stored - ev_new) > _REFETCH_KWH_EPS
+            # the bill's split where only EMT's was held: a change even at the same figures — the
+            # half-hour's split moves from EMT's own to the bill's (PR 5 on the Pi, 14 Oct 2026:
+            # two half-hours wholly on the car stayed "EMT's split" after 8 Sep was applied)
+            # (a cached bill only: one not in yet at the same £ is still no difference)
+            arrives = (ev_new is not None and not ev_is_bill and have is not None
+                       and (bool(f.get("completed")) or ev_new > _REFETCH_KWH_EPS))
             held = bool(bd and _bill_drops_ev(
                 max(_f(f.get("ev_kwh")) or 0.0, _f(f.get("bill_ev_kwh")) or 0.0), ev_new))
             if held and not cost_diff:
                 ev_diff = False                          # held, and the £ agrees: nothing changes
-            if cost_diff or ev_diff:
+            if held and not cost_diff:
+                arrives = False                          # held: the bill's split is not taken
+            if cost_diff or ev_diff or arrives:
                 r["bill"] = {"stored": cost_now, "stored_is_bill": have is not None,
                              "octopus": b["cost_incl"], "stored_ev": ev_stored,
+                             "stored_ev_is_bill": ev_is_bill,
                              "octopus_ev": ev_new, "held": held}
         if len(r) > 1:
             rows.append(r)
