@@ -62,6 +62,13 @@ class _Octopus:
         self.asked.extend(slots)
         return {s: self.node for s in slots if self.node is not None}
 
+    cost_only = None                                   # {slot: node} the Measurements answer
+    asked_cost = ()
+
+    async def recover_measurement_costs(self, mpan, slots, **kw):
+        self.asked_cost = tuple(self.asked_cost) + tuple(slots)
+        return {s: self.cost_only[s] for s in slots if self.cost_only and s in self.cost_only}
+
 
 class _Harness(unittest.TestCase):
 
@@ -302,10 +309,18 @@ class ThePiPreview(_Harness):
             "meter_id='electricity_main'", (SLOT,)).fetchone()
         self.assertEqual((api, src), (None, "imported_api"))
 
-    def test_an_unbilled_half_hour_at_the_same_cost_is_no_difference(self):
+    def test_an_unbilled_half_hour_at_the_same_cost_gains_its_bill(self):
+        """Revised 14 Oct 2026 (design §1.2): Octopus's bill where none is held is a change even at
+        the same £ — the cell goes from kWh x rate to Octopus's cost. (Until then: no difference,
+        and a re-fetch left the cell red.)"""
         self._block(bill=False)
         st = self._preview(_Octopus(node=_node(KWH, 0.0)))
-        self.assertEqual(st["summary"]["differ"], 0, st["rows"])
+        (row,) = st["rows"]
+        self.assertTrue(row["bill"]["new_bill"])
+        self._apply(st["token"])
+        self.assertEqual(self.st._conn.execute(
+            "SELECT rate_source FROM blocks WHERE block_start=? AND meter_id='electricity_main'",
+            (SLOT,)).fetchone()[0], "settled")
 
     def test_an_unbilled_half_hour_at_another_cost_compares_with_emts(self):
         self._block(bill=False, cost=0.5)
@@ -410,6 +425,38 @@ class TheCorrections(_Harness):
         self._corrected()
         self.st.apply_measured_to_main(SLOT, rate=OFF, cost=0.1, cost_exc=0.1)
         self.assertEqual(self._row()[0], 1)
+
+
+class BeforeTheAgreement(_Harness):
+    """PR 5 on the Pi, 14 Oct 2026: 19 Aug 06:30 (the previous tariff) re-fetched, "recovered
+    0/1", and the dialog said the range matched Octopus. The device breakdown answers on the
+    IOG-SMB agreement only; before it, the single billed cost is asked, as the importer does."""
+
+    COST = {"cost_incl": round(KWH * OFF, 6), "cost_excl": round(KWH * OFF, 6),
+            "off_peak": True, "kwh": KWH}
+
+    def test_no_breakdown_falls_back_to_the_billed_cost(self):
+        self._block(bill=False)
+        oc = _Octopus(node=None); oc.cost_only = {SLOT: self.COST}
+        st = self._preview(oc)
+        self.assertEqual(oc.asked_cost, (SLOT,))
+        (row,) = st["rows"]
+        self.assertTrue(row["bill"]["new_bill"])
+        self.assertEqual(st["summary"]["no_bill"], 0)
+        done = self._apply(st["token"])["applied"]
+        self.assertEqual(done["bill"], 1, done)
+
+    def test_a_half_hour_octopus_has_no_bill_for_is_counted(self):
+        self._block(bill=False)
+        st = self._preview(_Octopus(node=None))
+        self.assertEqual((st["summary"]["differ"], st["summary"]["no_bill"]), (0, 1))
+
+    def test_a_breakdown_answer_is_not_asked_twice(self):
+        """GUARD: the fallback only covers what the breakdown did not answer."""
+        self._block(bill=False)
+        oc = _Octopus(node=_node(KWH, 0.0))
+        self._preview(oc)
+        self.assertEqual(oc.asked_cost, ())
 
 
 class TheTariffKind(_Harness):

@@ -659,7 +659,7 @@ window.EMTHeatmap = (function () {
   function openRefetch(from, to, label) {
     state.dialogOpen = true; markSelection(from, to);
     var el = panelEl(), chunks = refetchChunks(from, to), i = 0,
-        totals = {kwh: 0, export: 0, bill: 0, held: 0, not_settled: 0, corrections: 0};
+        totals = {kwh: 0, export: 0, bill: 0, held: 0, not_settled: 0, corrections: 0}, noBill = 0;
     function box(inner, buttons) {
       el.innerHTML = '<div class="hm-panel-box" role="dialog" aria-label="Re-fetch from Octopus">' +
         '<div class="hm-panel-head"><b>Re-fetch from Octopus \u2014 ' + esc(label) +
@@ -678,7 +678,14 @@ window.EMTHeatmap = (function () {
       if (totals.kwh || totals.export || totals.bill || totals.not_settled) reloadRange(from, to);
     }
     function next() {
-      if (i >= chunks.length) { finish('Done \u2014 the range now matches Octopus.'); return; }
+      // "matches" only where Octopus answered for every half-hour asked (PR 5 on the Pi)
+      if (i >= chunks.length) {
+        finish(noBill ? 'Done \u2014 but Octopus returned no bill for ' + noBill + ' half-hour' +
+                        (noBill === 1 ? '' : 's') + '; ' + (noBill === 1 ? 'it keeps' : 'they keep') +
+                        ' EMT\u2019s kWh \u00d7 rate. Try again later.'
+                      : 'Done \u2014 the range now matches Octopus.');
+        return;
+      }
       var c = chunks[i];
       box('<p>Asking Octopus' + part() + '\u2026 nothing is changed yet.</p><p class="hm-note2 hm-phase"></p>');
       postJSON('/api/settlement/refetch/preview', {from: c[0], to: c[1]}).then(function (r) {
@@ -686,8 +693,10 @@ window.EMTHeatmap = (function () {
         return pollRefetch(function (ph) { var x = el.querySelector('.hm-phase'); if (x) x.textContent = ph; });
       }).then(function (s) {
         var sm = s.summary || {};
+        noBill += sm.no_bill || 0;
         if (!sm.differ) { i++; next(); return; }                    // nothing different: move on
         box('<p>' + sm.differ + ' of ' + sm.checked + ' half-hours differ from what EMT holds' + part() + '.' +
+            (sm.no_bill ? ' Octopus returned no bill for ' + sm.no_bill + '.' : '') +
             (sm.held ? ' ' + sm.held + ' would be held: Octopus\u2019s bill has no EV where your car charged.' : '') +
             '</p>' + diffTable(s.rows || []) +
             '<p class="hm-note2">Apply writes only these, after a safety backup. ' +
