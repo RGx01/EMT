@@ -472,6 +472,8 @@ class TheTariffKind(_Harness):
         self.assertEqual(engine.tariff_kind_at("2026-07-01T02:00:00"), "published")
         self.assertEqual(engine.tariff_kind_at("2026-09-01T02:00:00"), "intelligent")
         self.assertEqual(engine.tariff_kind_at("2020-01-01T02:00:00"), "intelligent")  # none: current
+        self.assertFalse(engine.split_at("2026-07-01T02:00:00"))       # Agile: no split
+        self.assertTrue(engine.split_at("2026-09-01T02:00:00"))        # IOG-SMB
 
     def test_a_published_rate_half_hour_is_not_asked_for_a_bill(self):
         """GUARD (passes on the parent: its whole-account tariff gate skipped Agile too). Its

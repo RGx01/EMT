@@ -80,6 +80,14 @@ class TheBill(unittest.TestCase):
         self.assertEqual(_c(_f(block_start="2026-10-01T02:00:00", imp_kwh_api=None),
                             kind_at=pub)["bill"], "overdue")
 
+    def test_before_the_split_agreement_emts_split_is_not_pending(self):
+        """PR 5 on the Pi, 14 Oct 2026: before the IOG-SMB agreement Octopus has no split to give,
+        so a dispatched half-hour with Octopus's cost is green, not teal, and has no split state."""
+        emt = dict(BILLED, completed=1, ev_kwh=2.0)
+        st = _c(_f(**emt), split_at=lambda s: False)
+        self.assertEqual((st["bill"], st["split"]), ("applied", None))
+        self.assertEqual(_c(_f(**emt), split_at=lambda s: True)["bill"], "applied_emt_split")
+
     def test_octopuss_cost_with_emts_split_is_teal(self):
         """§9.3: a green cost whose split is still EMT's says so; a missing split does not."""
         emt = dict(BILLED, completed=1, ev_kwh=2.0)
@@ -193,6 +201,7 @@ class TheSurfaces(unittest.TestCase):
                                                       "floor": "2020-01-01T00:00:00"}), \
              unittest.mock.patch.object(eng, "bill_split_held", create=True,
                                         return_value=(set(), set())), \
+             unittest.mock.patch.object(eng, "split_at", create=True, return_value=True), \
              unittest.mock.patch.object(eng, "tariff_kind_at", create=True,
                                         return_value="intelligent"), \
              unittest.mock.patch.object(eng, "_import_is_smb_capped", create=True,

@@ -7972,6 +7972,17 @@ def tariff_kind_at(start: str) -> str:
     return "intelligent" if _is_intelligent_code(code) else "published"
 
 
+def split_at(start: str) -> bool:
+    """Whether the import agreement live at `start` is one Octopus serves a House/EV split for
+    (IOG-SMB's device buckets). Before it EMT's split is the only one there will be, so it is
+    not "still EMT's" (PR 5 on the Pi, 14 Oct 2026: every pre-agreement dispatched half-hour read
+    teal for good). From `_agreement_era`; where none covers `start`, the current tariff."""
+    era = _agreement_era("import", start)
+    if era:
+        return "IOG-SMB" in (era[0] or "").upper()
+    return _import_is_smb_capped()
+
+
 def _import_pricing_flag(channel: str, kwh, meas_cost, buckets,
                          threshold: float = 1.0):
     """Diagnostic classifier for the IOG-dispatch pricing gap.

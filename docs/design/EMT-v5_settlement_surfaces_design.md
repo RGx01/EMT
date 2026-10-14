@@ -356,6 +356,10 @@ part to the half-hour's own tariff kind.
 - **The window** stays §7 (a)'s: 7 days after the kWh, counted from the half-hour + the kWh's
   2-day lag. **Unsettled kWh turns red at the window, not at 48 h** (decided 14 Oct 2026) — the
   *API import* view's 48-hour step is not carried over.
+- **The split stage follows the half-hour's own agreement** (`engine.split_at`, from
+  `_agreement_era`): only on an agreement Octopus serves a House/EV split for (IOG-SMB). Before it
+  EMT's split is the only one there will be, so the cell is green, not teal, and has no split
+  state (PR 5 on the Pi, 14 Oct 2026: every pre-agreement dispatched half-hour read teal for good).
 - **A split `missing`** (a completed dispatch, energy in the block, no split at all) on a green
   cost is not teal: it stays in the Split view's red and §1.4's attention.
 - The tooltip and the detail panel name which case a cell is (whose cost; which kWh).

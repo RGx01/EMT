@@ -45,11 +45,13 @@ def _clock(start, now):
 
 
 def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozenset(),
-             vat_at=None, kind_at=None) -> dict:
+             vat_at=None, kind_at=None, split_at=None) -> dict:
     """One half-hour's {bill, export, split, flags}. `f` is a get_settlement_facts row. `smb` is
     the install's tariff (engine._import_is_smb_capped); `held` / `kept` are 4.5.23's wait map
     (engine.bill_split_held); `vat_at(start)` the VAT calendar; `kind_at(start)` the half-hour's
-    tariff kind, 'intelligent' | 'published' (engine.tariff_kind_at; Intelligent when absent).
+    tariff kind, 'intelligent' | 'published' (engine.tariff_kind_at; Intelligent when absent);
+    `split_at(start)` whether its agreement has a split from the bill (engine.split_at; `smb`
+    when absent).
 
     The Import bill states say whether the half-hour's cost is final, and whose it is (design
     §9.3). On a published-rate tariff the settled kWh x the published rate is the bill; on an
@@ -64,7 +66,7 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
 
     # ── split: IOG-SMB, half-hours with a completed dispatch (first: a green cost reads it) ──
     split = None
-    if smb and f.get("completed"):
+    if (split_at(start) if split_at else smb) and f.get("completed"):
         bill_ev = _f(f.get("bill_ev_kwh"))
         if start in kept:
             split = "kept"
