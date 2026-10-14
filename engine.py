@@ -11919,8 +11919,11 @@ async def _refetch_octopus(store, utc_from: str, utc_to: str, parts, facts: dict
     if "bill" in parts and stage["fetched"]:
         imp = (_kraken_discovery or {}).get("import") or {}
         mpan = imp.get("mpan")
+        # the settled-cost pass's own scope: from its floor (the current agreement's start), not
+        # corrected, and on IOG-SMB every half-hour, elsewhere dispatched ones
         slots = [s for s, f in facts.items()
-                 if (f.get("imp_kwh") or 0) > 1e-9 and not f.get("rate_corrected")
+                 if s >= stage["floor"]
+                 and (f.get("imp_kwh") or 0) > 1e-9 and not f.get("rate_corrected")
                  and f.get("rate_source") != "corrected"
                  and (stage["every_half_hour"] or f.get("dispatched"))]
         if mpan and slots:
@@ -11936,36 +11939,59 @@ async def _refetch_octopus(store, utc_from: str, utc_to: str, parts, facts: dict
 
 
 def _refetch_diff(facts: dict, octo: dict) -> list:
-    """One row per half-hour where Octopus now differs from what is stored."""
+    """One row per half-hour where Octopus now differs from what is stored — compared like with
+    like (PR 5 on the Pi, 14 Oct 2026: a first version listed 401 of 1,488 half-hours over two
+    months, nearly all no-ops):
+    - kWh: a DCC-settled block against its DCC figure; IMPORTED history against its own kWh (it
+      came from the same API and has no DCC field by design) — reported, never written as DCC;
+      export with none stored reads as 0.
+    - the bill: against the cached bill where there is one, else against the stored cost (an
+      unbilled half-hour priced at the same £ is no difference). The EV share against the bill's,
+      else EMT's own split.
+    - a row where nothing would change is dropped: a bill 4.5.23 would hold whose cost agrees
+      changes nothing either way."""
+    def _f(x):
+        try:
+            return float(x)
+        except (TypeError, ValueError):
+            return None
     rows = []
     for s in sorted(octo):
         f, o = facts.get(s), octo[s]
         if f is None:
             continue                                  # no block here: nothing to correct
+        imported = (f.get("source") or "").startswith("imported")
         r: dict = {"start": s}
-        if "kwh" in o and (f.get("imp_kwh_api") is None
-                           or abs(float(f["imp_kwh_api"]) - o["kwh"]) > _REFETCH_KWH_EPS):
-            r["kwh"] = {"stored": f.get("imp_kwh_api"), "octopus": round(o["kwh"], 6)}
-        if "exp_kwh" in o and (f.get("exp_kwh_api") is None
-                               or abs(float(f["exp_kwh_api"]) - o["exp_kwh"]) > _REFETCH_KWH_EPS):
-            r["export"] = {"stored": f.get("exp_kwh_api"), "octopus": round(o["exp_kwh"], 6)}
+        if "kwh" in o:
+            stored = _f(f.get("imp_kwh")) if imported else _f(f.get("imp_kwh_api"))
+            if stored is None or abs(stored - o["kwh"]) > _REFETCH_KWH_EPS:
+                r["kwh"] = {"stored": stored, "octopus": round(o["kwh"], 6), "imported": imported}
+        if "exp_kwh" in o:
+            stored = _f(f.get("exp_kwh") if imported else f.get("exp_kwh_api"))
+            # no export figure stored, and Octopus says none was exported: nothing to change
+            nothing = stored is None and o["exp_kwh"] <= _REFETCH_KWH_EPS \
+                and (_f(f.get("exp_kwh")) or 0.0) <= _REFETCH_KWH_EPS
+            if not nothing and (stored is None or abs(stored - o["exp_kwh"]) > _REFETCH_KWH_EPS):
+                r["export"] = {"stored": stored, "octopus": round(o["exp_kwh"], 6), "imported": imported}
         b = o.get("bill")
         if b is not None:
             bd = b.get("breakdown")
-            ev_new = bd[2] if bd else None
-            cost_diff = (f.get("bill_cost") is None
-                         or abs(float(f["bill_cost"]) - float(b["cost_incl"])) > _REFETCH_GBP_EPS)
-            ev_diff = (ev_new is not None and
-                       (f.get("bill_ev_kwh") is None
-                        or abs(float(f["bill_ev_kwh"]) - float(ev_new)) > _REFETCH_KWH_EPS))
+            ev_new = _f(bd[2]) if bd else None
+            have = _f(f.get("bill_cost"))
+            cost_now = have if have is not None else _f(f.get("imp_cost"))
+            cost_diff = cost_now is None or abs(cost_now - float(b["cost_incl"])) > _REFETCH_GBP_EPS
+            ev_stored = _f(f.get("bill_ev_kwh"))
+            if ev_stored is None:
+                ev_stored = _f(f.get("ev_kwh")) or 0.0       # EMT's own split, or none
+            ev_diff = ev_new is not None and abs(ev_stored - ev_new) > _REFETCH_KWH_EPS
+            held = bool(bd and _bill_drops_ev(
+                max(_f(f.get("ev_kwh")) or 0.0, _f(f.get("bill_ev_kwh")) or 0.0), ev_new))
+            if held and not cost_diff:
+                ev_diff = False                          # held, and the £ agrees: nothing changes
             if cost_diff or ev_diff:
-                r["bill"] = {"stored": f.get("bill_cost"), "octopus": b["cost_incl"],
-                             "stored_ev": f.get("bill_ev_kwh"), "octopus_ev": ev_new,
-                             # 4.5.23's rule: a bill with no EV where the stored split has the car
-                             # is held, not applied
-                             "held": bool(bd and _bill_drops_ev(
-                                 max(float(f.get("ev_kwh") or 0), float(f.get("bill_ev_kwh") or 0)),
-                                 ev_new))}
+                r["bill"] = {"stored": cost_now, "stored_is_bill": have is not None,
+                             "octopus": b["cost_incl"], "stored_ev": ev_stored,
+                             "octopus_ev": ev_new, "held": held}
         if len(r) > 1:
             rows.append(r)
     return rows
@@ -12045,11 +12071,13 @@ async def run_refetch_apply(token: str) -> dict:
         mpan = imp.get("mpan") or ""
         for r in p["rows"]:
             s, o = r["start"], p["octo"][r["start"]]
-            if "kwh" in r:
+            # imported history keeps its own kWh: a difference there is reported, not written
+            # as DCC (it would mark imported history settled and queue it for re-runs)
+            if "kwh" in r and not r["kwh"].get("imported"):
                 _store.upsert_kraken_block(s, "electricity_main", o["kwh"], source="kraken_api",
                                            billing_source="api")
                 done["kwh"] += 1
-            if "export" in r:
+            if "export" in r and not r["export"].get("imported"):
                 _store.upsert_kraken_block(s, "electricity_main", o["exp_kwh"], channel="export",
                                            source="kraken_api", billing_source="api")
                 done["export"] += 1

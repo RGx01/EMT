@@ -190,7 +190,7 @@ class TheApply(_Harness):
     def test_a_changed_kwh_settles_and_queues_the_re_run(self):
         self._block()
         st = self._preview(_Octopus(kwh=7.0, node=_node(KWH, 0.0)), parts=("kwh",))
-        self.assertEqual(st["rows"][0]["kwh"], {"stored": KWH, "octopus": 7.0})
+        self.assertEqual(st["rows"][0]["kwh"], {"stored": KWH, "octopus": 7.0, "imported": False})
         self._apply(st["token"])
         api, rerun = self.st._conn.execute(
             "SELECT imp_kwh_api, needs_pass2_rerun FROM blocks WHERE block_start=? AND "
@@ -255,6 +255,65 @@ class TheLatestBill(_Harness):
         (f,) = self.st.get_settlement_facts(FROM, TO)
         self.assertAlmostEqual(f["bill_cost"], round(KWH * OFF, 6))
         self.assertAlmostEqual(self.st.get_settlement_detail(SLOT)["bill_cost"], round(KWH * OFF, 6))
+
+
+class ThePiPreview(_Harness):
+    """PR 5 on the Pi, 14 Oct 2026: a two-month preview listed 401 of 1,488 half-hours, nearly
+    all no-ops. Each case below was one of them."""
+
+    def _imported(self):
+        self.st._conn.execute("UPDATE blocks SET source='imported_api', imp_kwh_api=NULL")
+        self.st._conn.commit()
+
+    def test_a_half_hour_before_the_floor_is_not_billed(self):
+        self._block(bill=False)
+        was, engine._kraken_current_agreement_from = (engine._kraken_current_agreement_from,
+                                                      "2026-09-02T00:00:00")
+        try:
+            oc = _Octopus(node=_node(3.5416, 3.1304))
+            self._preview(oc)
+        finally:
+            engine._kraken_current_agreement_from = was
+        self.assertEqual(oc.asked, [])
+
+    def test_imported_history_agrees_with_its_own_kwh(self):
+        self._block(bill=False)
+        self._imported()
+        st = self._preview(_Octopus(node=_node(KWH, 0.0)), parts=("kwh",))
+        self.assertEqual(st["summary"]["differ"], 0, st["rows"])
+
+    def test_an_imported_kwh_difference_is_reported_not_written(self):
+        self._block(bill=False)
+        self._imported()
+        st = self._preview(_Octopus(kwh=7.0, node=_node(KWH, 0.0)), parts=("kwh",))
+        self.assertEqual(st["rows"][0]["kwh"], {"stored": KWH, "octopus": 7.0, "imported": True})
+        self._apply(st["token"])
+        api, src = self.st._conn.execute(
+            "SELECT imp_kwh_api, source FROM blocks WHERE block_start=? AND "
+            "meter_id='electricity_main'", (SLOT,)).fetchone()
+        self.assertEqual((api, src), (None, "imported_api"))
+
+    def test_an_unbilled_half_hour_at_the_same_cost_is_no_difference(self):
+        self._block(bill=False)
+        st = self._preview(_Octopus(node=_node(KWH, 0.0)))
+        self.assertEqual(st["summary"]["differ"], 0, st["rows"])
+
+    def test_an_unbilled_half_hour_at_another_cost_compares_with_emts(self):
+        self._block(bill=False, cost=0.5)
+        st = self._preview(_Octopus(node=_node(KWH, 0.0)))
+        (row,) = st["rows"]
+        self.assertEqual((row["bill"]["stored"], row["bill"]["stored_is_bill"]), (0.5, False))
+
+    def test_a_held_bill_at_the_same_cost_changes_nothing(self):
+        self._block(ev=3.1, bill=False)
+        st = self._preview(_Octopus(node=_node(KWH, 0.0)))
+        self.assertEqual(st["summary"]["differ"], 0, st["rows"])
+
+    def test_no_export_stored_and_none_exported_is_no_difference(self):
+        facts = {SLOT: {"imp_kwh": KWH, "imp_kwh_api": KWH, "exp_kwh": 0.0, "exp_kwh_api": None}}
+        self.assertEqual(engine._refetch_diff(facts, {SLOT: {"exp_kwh": 0.0}}), [])
+        (row,) = engine._refetch_diff(facts, {SLOT: {"exp_kwh": 0.4}})
+        self.assertEqual(row["export"]["octopus"], 0.4)
 
 
 class TheGuards(unittest.TestCase):

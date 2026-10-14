@@ -448,28 +448,33 @@ window.EMTHeatmap = (function () {
       var h = hitCell(p, ev); if (!h) return;
       tipEl().style.display = 'none';
       if (h.tot) { dayBarPick(p, h.day, ev); return; }
+      state.pickedDay = null;                     // a cell is not the end of a day range
       var from = state.dragFrom; state.dragFrom = null;
       if (from && (from.day !== h.day || from.ci !== h.ci || from.key !== h.key) && state.canRefetch) {
         var a = from.starts[0] < h.starts[0] ? from : h, b = a === from ? h : from;
+        markSelection(a.starts[0], plus30(b.starts[b.starts.length - 1]));
         showMenu(ev, [{text: 'Re-fetch from Octopus\u2026', run: function () {
           openRefetch(a.starts[0], plus30(b.starts[b.starts.length - 1]),
                       a.day + ' ' + a.label + ' \u2192 ' + b.day + ' ' + b.label); }}],
                  a.day + ' ' + a.label + ' \u2192 ' + b.day + ' ' + b.label);
         return;
       }
+      markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
       openPanel(h.starts, h.day + ' ' + h.label);
     });
     row.addEventListener('contextmenu', function (ev) {
       var h = hitCell(p, ev); if (!h) return;
       ev.preventDefault(); tipEl().style.display = 'none';
       if (h.tot) { dayBarPick(p, h.day, ev); return; }
+      state.pickedDay = null;
+      markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
       var items = [{text: 'Show details', run: function () { openPanel(h.starts, h.day + ' ' + h.label); }}];
       if (state.canRefetch) {
         items.push({text: 'Re-fetch this half-hour from Octopus\u2026', run: function () {
           openRefetch(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label); }});
         var dr = dayRange(p, h.day);
         if (dr) items.push({text: 'Re-fetch ' + h.day + ' from Octopus\u2026', run: function () {
-          openRefetch(dr[0], dr[1], h.day); }});
+          markSelection(dr[0], dr[1]); openRefetch(dr[0], dr[1], h.day); }});
       }
       showMenu(ev, items, h.day + ' ' + h.label);
     });
@@ -501,8 +506,10 @@ window.EMTHeatmap = (function () {
     all.sort();
     return [all[0], plus30(all[all.length - 1])];
   }
-  // The day column: a tap offers that day; a tap on a second day, while one is picked, makes
-  // the range between them — the whole-day selection a phone uses (design §7 (b)).
+  // The day column: a tap offers THAT day — and "Start a range from this day"; only then does a
+  // tap on another day make the range, and the picked day is outlined until it is used or
+  // dismissed (design §7 (b)). PR 5 on the Pi, 14 Oct 2026: the pick was kept silently from any
+  // earlier tap, so a tap on 10 Oct quietly closed a range from 10 Aug — two months, unseen.
   function dayBarPick(p, day, ev) {
     if (!state.canRefetch) return;
     var dr = dayRange(p, day); if (!dr) return;
@@ -511,22 +518,73 @@ window.EMTHeatmap = (function () {
       state.pickedDay = null;
       var lo = first.range[0] < dr[0] ? first : {day: day, range: dr};
       var hi = lo.day === day ? first : {day: day, range: dr};
-      var lab = lo.day + ' \u2192 ' + hi.day;
+      var lab = lo.day + ' \u2192 ' + hi.day + ' (' + spanDays(lo.range[0], hi.range[1]) + ' days)';
+      markSelection(lo.range[0], hi.range[1]);
       showMenu(ev, [{text: 'Re-fetch ' + lab + ' from Octopus\u2026', run: function () {
         openRefetch(lo.range[0], hi.range[1], lab); }}], lab);
       return;
     }
-    state.pickedDay = {day: day, range: dr};
+    state.pickedDay = null;
+    markSelection(dr[0], dr[1]);
     showMenu(ev, [{text: 'Re-fetch ' + day + ' from Octopus\u2026', run: function () {
-                    state.pickedDay = null; openRefetch(dr[0], dr[1], day); }},
-                  {text: 'Or tap another day to make a range', run: null}], day);
+                    openRefetch(dr[0], dr[1], day); }},
+                  {text: 'Start a range from ' + day + '\u2026', run: function () {
+                    state.pickedDay = {day: day, range: dr}; markSelection(dr[0], dr[1]);
+                    toast('Range starts ' + day + ' \u2014 tap the day it should end on'); }}], day);
+  }
+  function spanDays(from, to) { return Math.round((Date.parse(to + 'Z') - Date.parse(from + 'Z')) / 86400e3); }
+  function toast(text) {
+    var t = document.getElementById('hm-toast');
+    if (!t) { t = document.createElement('div'); t.id = 'hm-toast'; t.className = 'hm-toast'; document.body.appendChild(t); }
+    t.textContent = text; t.style.display = 'block';
+    clearTimeout(state.toastT);
+    state.toastT = setTimeout(function () { t.style.display = 'none'; }, 5000);
+  }
+  // What a click, drag, day or range refers to, outlined on the grid while its menu or dialog is
+  // open — the cells whose half-hour falls in [from, to), one outline per run of a day's cells.
+  function clearSelection() {
+    document.querySelectorAll('.hm-sel').forEach(function (x) { x.remove(); });
+  }
+  function markSelection(from, to) {
+    clearSelection();
+    Object.keys(state.panels).forEach(function (k) {
+      var p = state.panels[k]; if (!p.drawn || !p.chart || !p.grid || !p.days) return;
+      var a = p.chart.chartArea, host = p.el.querySelector('.hm-grid'); if (!a || !host) return;
+      var cw = a.width / p.xs.length, rh = a.height / p.days.length;
+      p.days.forEach(function (day, ri) {
+        var run = null, slots = p.grid[day] ? p.grid[day].slots : [];
+        function flush() {
+          if (!run) return;
+          var d = document.createElement('div'); d.className = 'hm-sel';
+          d.style.left = (a.left + run[0] * cw - 1) + 'px'; d.style.top = (a.top + ri * rh - 1) + 'px';
+          d.style.width = ((run[1] - run[0] + 1) * cw + 1) + 'px'; d.style.height = (rh + 1) + 'px';
+          host.appendChild(d); run = null;
+        }
+        for (var ci = 0; ci < slots.length; ci++) {
+          var c = slots[ci];
+          var inside = c && c.starts && c.starts.some(function (x) { return x >= from && x < to; });
+          if (inside) { if (run && run[1] === ci - 1) run[1] = ci; else { flush(); run = [ci, ci]; } }
+          else flush();
+        }
+        flush();
+      });
+    });
   }
   function showMenu(ev, items, title) {
     var m = document.getElementById('hm-menu');
     if (!m) {
       m = document.createElement('div'); m.id = 'hm-menu'; m.className = 'hm-menu';
-      document.addEventListener('click', function (e) { if (!m.contains(e.target)) m.style.display = 'none'; }, true);
-      document.addEventListener('keydown', function (e) { if (e.key === 'Escape') m.style.display = 'none'; });
+      var dismiss = function () {
+        if (m.style.display === 'none') return;
+        m.style.display = 'none';
+        if (!state.pickedDay && !state.dialogOpen) clearSelection();
+      };
+      document.addEventListener('click', function (e) { if (!m.contains(e.target)) dismiss(); }, true);
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        if (state.pickedDay) { state.pickedDay = null; clearSelection(); }
+        dismiss();
+      });
       document.body.appendChild(m);
     }
     m.innerHTML = '<div class="hm-menu-title">' + esc(title) + '</div>';
@@ -579,7 +637,11 @@ window.EMTHeatmap = (function () {
       // pence below 4 dp: show 6, so a real difference never reads "£0.0003 → £0.0003"
       var dp = r.bill && r.bill.stored !== null && (+r.bill.stored).toFixed(4) === (+r.bill.octopus).toFixed(4) ? 6 : 4;
       var g = function (v) { return v === null || v === undefined ? '—' : '£' + (+v).toFixed(dp); };
-      var b = r.bill ? g(r.bill.stored) + ' \u2192 ' + g(r.bill.octopus) : '';
+      var b = r.bill ? g(r.bill.stored) + (r.bill.stored_is_bill ? '' : ' <span class="hm-note2">(EMT\u2019s cost)</span>') +
+                       ' \u2192 ' + g(r.bill.octopus) : '';
+      // imported history keeps its own kWh: the difference is shown, not written
+      if ((r.kwh && r.kwh.imported) || (r.export && r.export.imported))
+        k += ' <span class="hm-note2">imported \u2014 kept</span>';
       // the EV share only where it moves — an unchanged split is not a difference to read
       var evMoved = r.bill && r.bill.octopus_ev !== null && r.bill.octopus_ev !== undefined &&
         (r.bill.stored_ev === null || Math.abs(r.bill.stored_ev - r.bill.octopus_ev) > 0.0005);
@@ -592,11 +654,13 @@ window.EMTHeatmap = (function () {
            (rows.length > 50 ? '<div class="hm-note2">and ' + (rows.length - 50) + ' more</div>' : '');
   }
   function openRefetch(from, to, label) {
+    state.dialogOpen = true; markSelection(from, to);
     var el = panelEl(), chunks = refetchChunks(from, to), i = 0,
         totals = {kwh: 0, export: 0, bill: 0, held: 0, not_settled: 0};
     function box(inner, buttons) {
       el.innerHTML = '<div class="hm-panel-box" role="dialog" aria-label="Re-fetch from Octopus">' +
-        '<div class="hm-panel-head"><b>Re-fetch from Octopus \u2014 ' + esc(label) + '</b>' +
+        '<div class="hm-panel-head"><b>Re-fetch from Octopus \u2014 ' + esc(label) +
+        ' <span class="hm-note2">(' + esc(localTime(from)) + ' \u2192 ' + esc(localTime(to)) + ')</span></b>' +
         '<button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' + inner +
         '<div class="hm-actions">' + (buttons || '') + '</div></div>';
       el.style.display = 'flex';
@@ -675,8 +739,9 @@ window.EMTHeatmap = (function () {
     var el = document.getElementById('hm-panel');
     if (!el) {
       el = document.createElement('div'); el.id = 'hm-panel'; el.className = 'hm-panel';
-      el.addEventListener('click', function (e) { if (e.target === el || e.target.dataset.close) el.style.display = 'none'; });
-      document.addEventListener('keydown', function (e) { if (e.key === 'Escape') el.style.display = 'none'; });
+      var shut = function () { el.style.display = 'none'; state.dialogOpen = false; clearSelection(); };
+      el.addEventListener('click', function (e) { if (e.target === el || e.target.dataset.close) shut(); });
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && el.style.display !== 'none') shut(); });
       document.body.appendChild(el);
     }
     return el;
@@ -929,6 +994,11 @@ window.EMTHeatmap = (function () {
   .hm-detail tr.hm-wait td, .hm-detail tr.hm-wait th { color:#e0a020; }
   .hm-note2 { color:var(--muted, #6b7080); font-size:12px; }
   .hm-grid canvas { cursor:pointer; }
+  .hm-toast { position:fixed; left:50%; top:72px; transform:translateX(-50%); z-index:60; display:none;
+              padding:8px 12px; border-radius:6px; font-size:12px; background:var(--card, #222);
+              color:var(--text, #eee); border:1px solid var(--accent, #3b7dd8); }
+  .hm-sel { position:absolute; pointer-events:none; border:2px solid var(--accent, #3b7dd8);
+            box-shadow:0 0 0 1px rgba(255,255,255,.6); border-radius:2px; z-index:2; }
   .hm-actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; margin-top:12px; }
   .hm-btn { background:none; border:1px solid var(--border, #2a2d3a); color:var(--text, #e8eaf0); border-radius:6px;
             padding:6px 12px; font-size:13px; cursor:pointer; }
