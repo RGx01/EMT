@@ -39,7 +39,7 @@ window.EMTHeatmap = (function () {
   // lands in 1–2 days, so a gap under API_PENDING_H is "not yet", not "missing".
   // One view per channel the API supplies (export settles separately, and later).
   var API_SUB = 'Half-hours without a smart-meter reading from the API: amber under 48 h (normally 1–2 days), ' +
-                'red after · green received · grey imported history, excluded';
+                'red after · green received (an API import too) · grey imported from a CSV, excluded';
   var API_METRICS = {
     api:    {label: 'API import', title: 'API usage data — import kWh from the supplier', sub: API_SUB,
              unit: '', dp: 0, tot: 'Missing', field: 'kwh_authoritative', channel: 'import'},
@@ -103,11 +103,12 @@ window.EMTHeatmap = (function () {
     return v;
   }
   var API_PENDING_H = 48;
-  var API_RANK = {imported: 0, ok: 1, pending: 2, missing: 3};      // a clocks-back slot shows the worst
+  var API_RANK = {imported: 0, api_import: 1, ok: 1, pending: 2, missing: 3};   // a clocks-back slot shows the worst
   var API_TEXT = {ok: 'API kWh received', pending: 'no API kWh yet (under 48 h)', missing: 'no API kWh',
-                  imported: 'imported history (excluded)'};
+                  api_import: 'API kWh received (imported from the API)',
+                  imported: 'imported from a CSV (excluded)'};
   function apiColour(v) {
-    if (v === 'ok') return '#2e9e5b';
+    if (v === 'ok' || v === 'api_import') return '#2e9e5b';
     if (v === 'pending') return '#e0a020';
     if (v === 'missing') return '#cc0000';
     if (v === 'imported') return dark() ? '#3a3e4a' : '#d4d7de';
@@ -203,9 +204,14 @@ window.EMTHeatmap = (function () {
       if (b.carbon_intensity_g !== null && b.carbon_intensity_g !== undefined) c.int = b.carbon_intensity_g;
       // API coverage, per channel: the payload's kwh_authoritative / exp_kwh_authoritative
       // is "imported, or that channel's DCC kWh held".
+      // An API import's kWh came from the same consumption API (it has no DCC field by design):
+      // it is the API's figure, so it counts as received. Only other imports (CSV) are excluded.
       var imported = /^imported/.test(b.source || ''), young = now - Date.parse(b.block_start + 'Z') < API_PENDING_H * 3600e3;
+      var viaApi = b.source === 'imported_api';
       Object.keys(API_METRICS).forEach(function (k) {
-        var st = imported ? 'imported' : b[API_METRICS[k].field] ? 'ok' : young ? 'pending' : 'missing';
+        var has = (k === 'api' ? b.imp_kwh : b.exp_kwh) !== null && (k === 'api' ? b.imp_kwh : b.exp_kwh) !== undefined;
+        var st = viaApi && has ? 'api_import' : imported ? 'imported'
+               : b[API_METRICS[k].field] ? 'ok' : young ? 'pending' : 'missing';
         if (!c[k] || API_RANK[st] > API_RANK[c[k]]) c[k] = st;
       });
       var sm = (state.months[key].settle || {})[b.block_start];          // BL-85
