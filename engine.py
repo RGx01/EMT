@@ -12039,6 +12039,12 @@ async def run_refetch_preview(utc_from: str, utc_to: str, parts=_REFETCH_PARTS) 
                    "held": sum(bool(r.get("bill", {}).get("held")) for r in rows),
                    "corrected": sum(bool(r.get("bill", {}).get("corrected"))
                                     and not r["bill"].get("held") for r in rows)}
+        # before the bill floor no bill is asked for: say so, or a re-fetch there reads as one
+        # that did nothing (PR 5 on the Pi, 14 Oct 2026, a 25 Aug half-hour)
+        stage = bill_stage()
+        if "bill" in parts and stage["fetched"]:
+            summary["before_floor"] = sum(s < stage["floor"] for s in facts)
+            summary["floor"] = stage["floor"]
         st.update({"status": "done", "phase": "preview", "token": token, "summary": summary,
                    "rows": rows[:500]})
         logger.info("range re-fetch: preview %s..%s — %s", utc_from, utc_to, summary)

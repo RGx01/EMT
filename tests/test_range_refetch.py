@@ -260,6 +260,19 @@ class ThePiPreview(_Harness):
         self.st._conn.execute("UPDATE blocks SET source='imported_api', imp_kwh_api=NULL")
         self.st._conn.commit()
 
+    def test_the_preview_says_how_much_is_before_the_floor(self):
+        """PR 5 on the Pi, 14 Oct 2026: a 25 Aug re-fetch matched on kWh and asked no bill, and
+        read as one that did nothing."""
+        self._block(bill=False)
+        was, engine._kraken_current_agreement_from = (engine._kraken_current_agreement_from,
+                                                      "2026-09-02T00:00:00")
+        try:
+            st = self._preview(_Octopus(node=_node(KWH, 0.0)))
+        finally:
+            engine._kraken_current_agreement_from = was
+        self.assertEqual((st["summary"]["before_floor"], st["summary"]["floor"]),
+                         (1, "2026-09-02T00:00:00"))
+
     def test_a_half_hour_before_the_floor_is_not_billed(self):
         self._block(bill=False)
         was, engine._kraken_current_agreement_from = (engine._kraken_current_agreement_from,

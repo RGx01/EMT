@@ -3894,7 +3894,8 @@ def _settlement_states(store, utc_start, utc_end) -> dict:
         store.get_settlement_facts(utc_start, utc_end),
         bills=stage["fetched"], every_half_hour=stage["every_half_hour"],
         smb=bool(_eng._import_is_smb_capped()), now=_dt.now(_tz.utc).replace(tzinfo=None),
-        held=held, kept=kept, vat_at=_vc.rate_lookup(store.get_vat_calendar()))
+        held=held, kept=kept, vat_at=_vc.rate_lookup(store.get_vat_calendar()),
+        floor=stage["floor"])
 
 
 @app.route("/api/billing-source", methods=["GET"])

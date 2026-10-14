@@ -36,10 +36,11 @@ def _f(x):
 
 
 def classify(f: dict, *, bills: bool, every_half_hour: bool, smb: bool, now: datetime,
-             held=frozenset(), kept=frozenset(), vat_at=None) -> dict:
+             held=frozenset(), kept=frozenset(), vat_at=None, floor=None) -> dict:
     """One half-hour's {bill, split, flags}. `f` is a get_settlement_facts row. `bills`,
     `every_half_hour` and `smb` describe the install (engine.bill_stage, _import_is_smb_capped);
-    `held` / `kept` are 4.5.23's wait map (engine.bill_split_held); `vat_at(start)` the VAT calendar."""
+    `held` / `kept` are 4.5.23's wait map (engine.bill_split_held); `vat_at(start)` the VAT calendar;
+    `floor` the bill fetch's floor (engine.bill_stage) — before it EMT never asks for a bill."""
     start = f["block_start"]
     kwh = _f(f.get("imp_kwh")) or 0.0
     cost = _f(f.get("imp_cost"))
@@ -63,8 +64,13 @@ def classify(f: dict, *, bills: bool, every_half_hour: bool, smb: bool, now: dat
             bill = "waiting"          # cached, not applied yet: the next pass applies it
     elif (f.get("source") or "").startswith("imported"):
         bill = "imported"
-    elif not bills or kwh <= 1e-9 or (not every_half_hour and not f.get("dispatched")):
-        bill = "none"                 # no bill stage: kWh x rate is final with the kWh
+    elif (not bills or kwh <= 1e-9 or (floor is not None and start < floor)
+          or (not every_half_hour and not f.get("dispatched"))):
+        # no bill stage: kWh x rate is final with the kWh. Before the floor (the current
+        # agreement's start) EMT never asks for a bill, so none is overdue — PR 5 on the Pi,
+        # 14 Oct 2026: 1-25 Aug showed red "overdue" for bills no pass would fetch, while the
+        # pill, floored, did not count them.
+        bill = "none"
     else:
         age = now - datetime.fromisoformat(start)
         bill = ("overdue" if age >= timedelta(days=BILL_OVERDUE_DAYS + KWH_LAG_DAYS)
