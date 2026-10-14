@@ -51,30 +51,40 @@ window.EMTHeatmap = (function () {
   // import half-hour, from the payload's `settle` (include=settle) — the server decides the
   // state, the grid draws it. Added in init from /api/billing-source's `settle_views`.
   var SETTLE_METRICS = {
-    bill:  {label: 'Bill', title: 'Bill — Octopus\u2019s cost for each import half-hour', unit: '', dp: 0,
-            tot: 'Waiting', settle: 'bill',
-            sub: 'Green: billed, and the stored cost is the bill · amber: waiting for the bill (or a ' +
-                 'known pre-fix re-cost) · red: overdue, or the stored cost is not the bill, or the ' +
-                 'bill disagrees with the settled kWh or the VAT calendar · blue: your correction · ' +
-                 'grey: no bill to wait for, or imported history'},
+    bill:  {label: 'Bill', title: 'Import bill — is each half-hour\u2019s cost Octopus\u2019s?', unit: '', dp: 0,
+            tot: 'To look at', settle: 'bill',
+            sub: 'Green: Octopus\u2019s cost (a bill, or an API import) · amber: EMT\u2019s kWh \u00d7 rate, ' +
+                 'under 7 days · red: kWh \u00d7 rate after 7 days, or the stored cost is not the bill, or ' +
+                 'the bill disagrees with the settled kWh or the VAT calendar · blue: your correction · ' +
+                 'grey: nothing imported, or CSV history'},
+    export: {label: 'Export bill', title: 'Export bill — is each half-hour\u2019s export cost final?', unit: '',
+            dp: 0, tot: 'To look at', settle: 'export',
+            sub: 'EMT fetches no export bill: kWh \u00d7 the export rate is final once the export kWh ' +
+                 'settles. Green: settled (or an API import) · amber: not settled, under 7 days · red: ' +
+                 'not settled after 7 days · grey: no export, or CSV history'},
     split: {label: 'Split', title: 'House/EV split — half-hours with a completed dispatch', unit: '',
             dp: 0, tot: 'To watch', settle: 'split',
             sub: 'Green: from the bill · teal: EMT\u2019s own split, the bill not in yet · amber: the ' +
                  'bill had no EV, asking Octopus again · blue: kept EMT\u2019s after 28 days · red: a ' +
                  'completed dispatch with no split'}
   };
-  function isSettle(m) { return m === 'bill' || m === 'split'; }
+  function isSettle(m) { return m === 'bill' || m === 'export' || m === 'split'; }
   function isCat(m) { return isApi(m) || isSettle(m); }
   var CAT_RANK = {
     bill:  {none: 0, imported: 0, applied: 1, corrected: 1, waiting: 2, known: 2, overdue: 3, differs: 3, flagged: 3},
+    export: {none: 0, imported: 0, applied: 1, waiting: 2, overdue: 3},
     split: {bill: 1, emt: 1, kept: 1, held: 2, missing: 3}
   };
   var CAT_TEXT = {
-    bill: {none: 'no bill stage — kWh \u00d7 rate is final', imported: 'imported history',
-           applied: 'billed — the stored cost is the bill', corrected: 'your rate correction',
-           waiting: 'waiting for the bill', overdue: 'bill overdue',
+    bill: {none: 'nothing imported in this half-hour', imported: 'CSV history — not Octopus\u2019s cost',
+           applied: 'Octopus\u2019s cost — a bill, or an API import', corrected: 'your rate correction',
+           waiting: 'EMT\u2019s kWh \u00d7 rate — Octopus\u2019s cost not in yet',
+           overdue: 'EMT\u2019s kWh \u00d7 rate — no cost from Octopus after 7 days',
            known: 'stored cost re-costed before the BL-82 fix (pennies; known)',
            differs: 'the stored cost is not the bill', flagged: 'billed — but see below'},
+    export: {none: 'no export in this half-hour', imported: 'CSV history',
+             applied: 'export kWh settled — kWh \u00d7 rate is final',
+             waiting: 'export kWh not settled yet', overdue: 'export kWh not settled after 7 days'},
     split: {bill: 'split from the bill', emt: 'EMT\u2019s split — the bill not in yet',
             held: 'bill had no EV — asking Octopus again', kept: 'EMT\u2019s split kept (28 days)',
             missing: 'completed dispatch, no split'}
@@ -84,7 +94,9 @@ window.EMTHeatmap = (function () {
   function settleColour(m, v) {
     var C = {green: '#2e9e5b', amber: '#e0a020', red: '#cc0000', blue: '#3b7dd8', teal: '#2a9d9f',
              grey: dark() ? '#3a3e4a' : '#d4d7de'};
-    var by = m === 'bill'
+    var by = m === 'export'
+      ? {applied: C.green, waiting: C.amber, overdue: C.red, imported: C.grey, none: C.grey}
+      : m === 'bill'
       ? {applied: C.green, waiting: C.amber, known: C.amber, overdue: C.red, differs: C.red, flagged: C.red,
          corrected: C.blue, imported: C.grey, none: C.grey}
       : {bill: C.green, emt: C.teal, held: C.amber, kept: C.blue, missing: C.red};
@@ -94,6 +106,7 @@ window.EMTHeatmap = (function () {
   function settleValue(m, st) {
     if (!st) return null;
     if (m === 'split') return st.split || null;
+    if (m === 'export') return st.export || null;
     var v = st.bill, fl = st.flags || [];
     // an attention flag outranks "known": the 13 Oct morning's October bills were both a pre-fix
     // re-cost AND 5% VAT on a 0% day, and the VAT is what needed seeing
@@ -217,7 +230,7 @@ window.EMTHeatmap = (function () {
       var sm = (state.months[key].settle || {})[b.block_start];          // BL-85
       Object.keys(SETTLE_METRICS).forEach(function (k) {
         var v = settleValue(k, sm); if (v === null) return;
-        if (!c[k] || CAT_RANK[k][v] > CAT_RANK[k][c[k]]) { c[k] = v; c[k + 'Flags'] = (sm && sm.flags) || []; }
+        if (!c[k] || CAT_RANK[k][v] > CAT_RANK[k][c[k]]) { c[k] = v; c[k + 'Flags'] = k === 'bill' ? (sm && sm.flags) || [] : []; }
       });
       d.total.kwh += net; if (cg) d.total.co2 += cg;
     });
@@ -678,15 +691,7 @@ window.EMTHeatmap = (function () {
     return '<table class="hm-detail hm-diff">' + head + body + '</table>' +
            (rows.length > 50 ? '<div class="hm-note2">and ' + (rows.length - 50) + ' more</div>' : '');
   }
-  // EMT takes Octopus's bills from the current agreement's start; a range before it has its kWh
-  // checked, and no bill asked for
-  function floorNote(sm) {
-    return (sm.before_floor === sm.checked ? 'All ' : sm.before_floor + ' of ') + sm.checked +
-      ' half-hours are before ' + esc(localTime(sm.floor)) + ', when EMT starts taking Octopus\u2019s ' +
-      'bills (your current agreement) \u2014 only their kWh was checked.';
-  }
   function openRefetch(from, to, label) {
-    state.floorNote = null;
     state.dialogOpen = true; markSelection(from, to);
     var el = panelEl(), chunks = refetchChunks(from, to), i = 0,
         totals = {kwh: 0, export: 0, bill: 0, held: 0, not_settled: 0, corrections: 0};
@@ -700,8 +705,7 @@ window.EMTHeatmap = (function () {
     }
     function part() { return chunks.length > 1 ? ' (part ' + (i + 1) + ' of ' + chunks.length + ')' : ''; }
     function finish(msg) {
-      var fn = state.floorNote; state.floorNote = null;
-      box('<p>' + msg + '</p>' + (fn ? '<p class="hm-note2">' + fn + '</p>' : '') + '<p class="hm-note2">Applied: ' + totals.kwh + ' kWh, ' + totals.export + ' export, ' +
+      box('<p>' + msg + '</p><p class="hm-note2">Applied: ' + totals.kwh + ' kWh, ' + totals.export + ' export, ' +
           totals.bill + ' bill(s); held ' + totals.held + '.' +
           (totals.corrections ? ' ' + totals.corrections + ' of the bills replaced your correction.' : '') +
           (totals.not_settled ? ' <span class="hm-wait">' + totals.not_settled + ' bill(s) stored but not re-settled ' +
@@ -717,12 +721,10 @@ window.EMTHeatmap = (function () {
         return pollRefetch(function (ph) { var x = el.querySelector('.hm-phase'); if (x) x.textContent = ph; });
       }).then(function (s) {
         var sm = s.summary || {};
-        if (sm.before_floor) state.floorNote = floorNote(sm);
         if (!sm.differ) { i++; next(); return; }                    // nothing different: move on
         box('<p>' + sm.differ + ' of ' + sm.checked + ' half-hours differ from what EMT holds' + part() + '.' +
             (sm.held ? ' ' + sm.held + ' would be held: Octopus\u2019s bill has no EV where your car charged.' : '') +
-            '</p>' + (sm.before_floor ? '<p class="hm-note2">' + floorNote(sm) + '</p>' : '') +
-            diffTable(s.rows || []) +
+            '</p>' + diffTable(s.rows || []) +
             '<p class="hm-note2">Apply writes only these, after a safety backup. ' +
             (sm.corrected ? '<b>' + sm.corrected + ' of them replace' + (sm.corrected === 1 ? 's' : '') +
              ' your own correction with Octopus\u2019s bill</b> \u2014 a correction cannot be put back. ' : '') +
@@ -806,7 +808,8 @@ window.EMTHeatmap = (function () {
       if (b.cost_exc) row('', esc(gbp(b.cost_exc)) + ' ex-VAT',
           'VAT ' + (b.cost_exc > 0.001 ? ((b.cost / b.cost_exc - 1) * 100).toFixed(1) + '%' : '—'));
     } else {
-      row('bill', '—', esc(CAT_TEXT.bill[st.bill] || st.bill || ''), st.bill === 'overdue' ? 'hm-bad' : 'hm-wait');
+      row('bill', '—', esc(CAT_TEXT.bill[st.bill] || st.bill || ''),
+          st.bill === 'overdue' ? 'hm-bad' : st.bill === 'waiting' ? 'hm-wait' : '');
       row('', esc(gbp(c.stored)), 'stored (kWh \u00d7 rate)');
     }
     var ev = 0, house = 0;

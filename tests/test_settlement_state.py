@@ -37,7 +37,7 @@ def _f(**kw):
 
 
 def _c(f, **ctx):
-    c = {"bills": True, "every_half_hour": True, "smb": True, "now": NOW, "vat_at": lambda s: 0.0}
+    c = {"smb": True, "now": NOW, "vat_at": lambda s: 0.0}
     c.update(ctx)
     return ss.classify(f, **c)
 
@@ -68,33 +68,34 @@ class TheBill(unittest.TestCase):
         self.assertEqual(_c(_f())["bill"], "waiting")
         self.assertEqual(_c(_f(block_start="2026-10-01T02:00:00"))["bill"], "overdue")
 
-    def test_off_smb_an_undispatched_half_hour_has_no_bill_stage(self):
-        self.assertEqual(_c(_f(), every_half_hour=False)["bill"], "none")
-        self.assertEqual(_c(_f(dispatched=1), every_half_hour=False)["bill"], "waiting")
+    def test_kwh_x_rate_outside_the_fetch_scope_is_red_after_the_window(self):
+        """14 Oct 2026, revised §1.2: the view says whose cost a half-hour holds. 9 Aug 2026 on the
+        soak — before the agreement, undispatched, grid used — read grey "no bill stage" while it
+        held only kWh x rate. No tariff or agreement gate enters the colour now."""
+        self.assertEqual(_c(_f(block_start="2026-08-09T03:00:00"))["bill"], "overdue")
 
-    def test_before_the_floor_no_bill_is_overdue(self):
-        """PR 5 on the Pi, 14 Oct 2026: 1-25 Aug showed red "overdue" for bills no pass fetches
-        (the fetch starts at the current agreement), while the floored pill did not count them."""
-        old = "2026-10-01T02:00:00"
-        self.assertEqual(_c(_f(block_start=old), floor="2026-10-05T00:00:00")["bill"], "none")
-        self.assertEqual(_c(_f(block_start=old), floor="2026-09-01T00:00:00")["bill"], "overdue")
+    def test_an_api_import_holds_octopuss_cost(self):
+        """The API importer stores Octopus's billed cost per half-hour."""
+        self.assertEqual(_c(_f(source="imported_api", imp_kwh_api=None))["bill"], "applied")
 
-    def test_a_bill_cached_before_the_floor_still_reads_as_a_bill(self):
-        """GUARD: v4 cached bills under an older floor; they are still shown for what they are."""
-        self.assertEqual(_c(_f(**BILLED), floor="2026-10-13T00:00:00")["bill"], "applied")
+    def test_a_csv_import_does_not(self):
+        self.assertEqual(_c(_f(source="imported_csv", imp_kwh_api=None))["bill"], "imported")
 
-    def test_the_views_pass_the_floor(self):
+    def test_nothing_imported_has_no_cost_to_settle(self):
+        """GUARD: as before — a zero-kWh half-hour (solar covered it)."""
+        self.assertEqual(_c(_f(imp_kwh=0.0, imp_cost=0.0))["bill"], "none")
+
+    def test_corrected(self):
+        """GUARD: blue for a manual correction, whatever else holds."""
+        self.assertEqual(_c(_f(rate_source="corrected"))["bill"], "corrected")
+
+    def test_the_views_need_no_fetch_scope(self):
         src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                 "web", "server.py"), encoding="utf-8").read()
         i = src.index("def _settlement_states(")
-        self.assertIn('floor=stage["floor"]', src[i:i + 1200])
-
-    def test_no_bill_stage_where_emt_fetches_none(self):
-        self.assertEqual(_c(_f(), bills=False)["bill"], "none")
-
-    def test_corrected_and_imported(self):
-        self.assertEqual(_c(_f(rate_source="corrected"))["bill"], "corrected")
-        self.assertEqual(_c(_f(source="imported_api"))["bill"], "imported")
+        body = src[i:i + 900]
+        self.assertNotIn("floor=", body)
+        self.assertNotIn("every_half_hour=", body)
 
     def test_a_cached_bill_not_yet_applied_is_waiting(self):
         self.assertEqual(_c(_f(**dict(BILLED, rate_source="schedule")))["bill"], "waiting")
@@ -149,7 +150,7 @@ class TheFacts(unittest.TestCase):
         self.assertAlmostEqual(f["ev_kwh"], 3.1)
         self.assertAlmostEqual(f["bill_ev_kwh"], 3.1)
         self.assertEqual((f["completed"], f["bill_cost"]), (1, 0.33))
-        self.assertEqual(_c(f, vat_at=lambda s: 0.0), {"bill": "applied", "split": "bill", "flags": []})
+        self.assertEqual(_c(f, vat_at=lambda s: 0.0), {"bill": "applied", "export": "none", "split": "bill", "flags": []})
 
 
 class TheSurfaces(unittest.TestCase):

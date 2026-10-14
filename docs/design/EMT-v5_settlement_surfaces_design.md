@@ -51,20 +51,54 @@ draws it).
 
 `imported` · `received` · `pending` (none yet, under 48 h) · `missing` (none after 48 h).
 
-### 1.2 Bill — import only
+### 1.2 Bill — import
+
+*Revised 14 Oct 2026 (the user, on the Pi).* The Bill view answers one question per half-hour:
+**is the stored cost Octopus's, or EMT's kWh × rate?** Until a settled cost arrives EMT prices
+from the CAD or settled kWh × the tariff rate; that figure is provisional inside the recency
+window and a gap after it. The first version asked a different question — "is EMT waiting for a
+bill?" — so a half-hour EMT never fetches a bill for (before the current agreement, or off SMB
+an undispatched one) read grey, "no bill stage", when it holds only kWh × rate (9 Aug 2026 on the
+soak: grid used all day, all grey).
 
 | state | meaning | colour |
 |---|---|---|
-| `none` | no bill stage: a tariff EMT fetches no bill for, or (off SMB) an undispatched half-hour — its cost is kWh × rate and final with its kWh | grey |
-| `waiting` | kWh received, no bill yet, under N days (§7) | amber |
-| `overdue` | kWh received, no bill after N days | red |
-| `applied` | the bill is held and the stored cost equals it | green |
-| `differs` | the bill is held and the stored cost is not it (BL-82) | red — §7 (c) |
+| `applied` | the stored cost is Octopus's: a fetched bill applied, or an **API import**'s cost (the importer reads Octopus's billed cost per half-hour) | green |
+| `waiting` | kWh × rate (CAD or settled kWh), inside the window | amber |
+| `overdue` | kWh × rate, past the window | red |
+| `differs` | a bill is held and the stored cost is not it (BL-82) | red — §7 (c) |
 | `corrected` | the user set the rate (Corrections) | blue |
-| `imported` | imported history with no bill fetched | grey |
+| `imported` | a cost not from Octopus's API: **CSV** history | grey |
+| `none` | no cost to settle: no import kWh in the half-hour | grey |
 
-`cached` (a bill held but not applied yet) is transient — the next pass applies it — and shows as
-`waiting`.
+- **The window** is §7 (a)'s: 7 days after the kWh, measured from the half-hour + the kWh's
+  2-day lag, as EMT does not record when the kWh arrived.
+- **No tariff or agreement gate on the colour.** Which bills EMT fetches by itself (the current
+  agreement's start, IOG/INTELLI, dispatched-only off SMB — `engine.bill_stage`) decides what
+  turns green on its own, not what the cell says. A half-hour outside that scope that holds kWh ×
+  rate goes red after the window; the remedy is a re-fetch (§5.2), which asks for its bill.
+- **The pill counts something else, by design.** It counts the bills EMT is waiting for (floored
+  at the agreement), so it does not count a red cell EMT will never fetch by itself. The view
+  shows provenance; the pill shows the queue.
+- `cached` (a bill held but not applied yet) is transient — the next pass applies it — and shows
+  as `waiting`.
+
+### 1.2b Bill — export
+
+EMT fetches no export bill: an export cost is kWh × the export rate, final once the export kWh is
+settled. So the export view follows the export kWh, on the same window:
+
+| state | meaning | colour |
+|---|---|---|
+| `applied` | export kWh settled (DCC), or an API import's export cost | green |
+| `waiting` | export kWh not settled, inside the window | amber |
+| `overdue` | export kWh not settled, past the window | red |
+| `imported` | CSV history | grey |
+| `none` | no export in the half-hour | grey |
+
+It differs from *API export* (§1.1) only in its window — 7 days to a cost, not 48 h to a reading.
+Fetching Octopus's export statement (`PRODUCTION`) is a separate roadmap item; until then this is
+what an export "bill" can mean.
 
 ### 1.3 Split — IOG-SMB, dispatched half-hours only
 
@@ -96,6 +130,7 @@ account where they mean something:
 
 - **Bill** — import, §1.2. Shown when EMT fetches bills (an Intelligent tariff with the measured
   fetch on — the rule `engine.settlement_awaiting` already uses).
+- **Export bill** — §1.2b. Shown beside it where the account has an export meter.
 - **Split** — §1.3. Shown on IOG-SMB.
 
 Same grid, same categorical drawing and legend as the API views; the day-total column counts the
@@ -180,6 +215,11 @@ selection; it does the parts that apply.
 
 **Never touched:** device rows (they follow their parent through the existing re-split), segments
 of half-hours that did not change, and anything outside the range.
+
+**Before the agreement, and off SMB** (14 Oct 2026, with §1.2's revision): a re-fetch asks for the
+bill of every half-hour in its range that holds kWh × rate — not only the automatic pass's scope
+(the agreement's start; dispatched half-hours off SMB). A red cell outside that scope has no other
+remedy. The automatic passes keep their scope.
 
 **Corrected half-hours** (decided on the Pi, 14 Oct 2026): a re-fetch asks Octopus for them too,
 and where the bill disagrees with the user's correction the row says *your correction*, the

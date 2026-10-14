@@ -161,10 +161,23 @@ class TheDialogFits(unittest.TestCase):
         self.assertNotIn(".hm-diff th, .hm-diff td { font-size:12px; white-space:nowrap; }", PAGE)
         self.assertIn("width:min(640px, 100%); max-height:90vh; overflow-y:auto;", PAGE)
 
-    def test_a_range_before_the_floor_is_said(self):
-        self.assertIn("when EMT starts taking Octopus", _fn("floorNote"))
-        body = _fn("openRefetch")
-        self.assertIn("if (sm.before_floor) state.floorNote = floorNote(sm);", body)
+
+
+class TheBillViews(unittest.TestCase):
+    """14 Oct 2026, design §1.2 revised and §1.2b: the Bill view says whose cost a half-hour
+    holds; an Export bill view beside it. Discriminating: each fails on the parent."""
+
+    def test_the_bill_view_says_whose_cost(self):
+        self.assertIn("Octopus\\u2019s cost (a bill, or an API import)", PAGE)
+        self.assertIn("EMT\\u2019s kWh \\u00d7 rate — Octopus\\u2019s cost not in yet", PAGE)
+
+    def test_the_export_bill_view(self):
+        self.assertIn("export: {label: 'Export bill'", PAGE)
+        self.assertIn("if (m === 'export') return st.export || null;", _fn("settleValue"))
+        self.assertIn("views.append(\"export\")", SERVER)
+
+    def test_each_view_shows_its_own_flags(self):
+        self.assertIn("c[k + 'Flags'] = k === 'bill' ?", PAGE)
 
 
 if __name__ == "__main__":

@@ -260,20 +260,10 @@ class ThePiPreview(_Harness):
         self.st._conn.execute("UPDATE blocks SET source='imported_api', imp_kwh_api=NULL")
         self.st._conn.commit()
 
-    def test_the_preview_says_how_much_is_before_the_floor(self):
-        """PR 5 on the Pi, 14 Oct 2026: a 25 Aug re-fetch matched on kWh and asked no bill, and
-        read as one that did nothing."""
-        self._block(bill=False)
-        was, engine._kraken_current_agreement_from = (engine._kraken_current_agreement_from,
-                                                      "2026-09-02T00:00:00")
-        try:
-            st = self._preview(_Octopus(node=_node(KWH, 0.0)))
-        finally:
-            engine._kraken_current_agreement_from = was
-        self.assertEqual((st["summary"]["before_floor"], st["summary"]["floor"]),
-                         (1, "2026-09-02T00:00:00"))
-
-    def test_a_half_hour_before_the_floor_is_not_billed(self):
+    def test_a_re_fetch_asks_for_bills_before_the_floor(self):
+        """14 Oct 2026 (design §1.2, §5.2): a half-hour outside the automatic pass's scope holding
+        kWh x rate is red past the window; a re-fetch is its remedy, so it asks for that bill.
+        (Until now it asked from the floor only, and 25 Aug 05:00 read as doing nothing.)"""
         self._block(bill=False)
         was, engine._kraken_current_agreement_from = (engine._kraken_current_agreement_from,
                                                       "2026-09-02T00:00:00")
@@ -282,7 +272,18 @@ class ThePiPreview(_Harness):
             self._preview(oc)
         finally:
             engine._kraken_current_agreement_from = was
-        self.assertEqual(oc.asked, [])
+        self.assertEqual(oc.asked, [SLOT])
+
+    def test_off_smb_an_undispatched_half_hour_is_asked_too(self):
+        """GUARD: passes on the parent too — the harness's schedules still read as SMB, so the
+        parent's dispatched-only filter never applied here."""
+        self._block(bill=False)
+        self.st._conn.execute("DELETE FROM dispatch_slots"); self.st._conn.commit()
+        engine._kraken_discovery = {"import": {"mpan": "IM", "tariff_code": "E-1R-INTELLI-VAR-B",
+                                               "product_code": "INTELLI-VAR"}}
+        oc = _Octopus(node=_node(KWH, 0.0))
+        self._preview(oc)
+        self.assertEqual(oc.asked, [SLOT])
 
     def test_imported_history_agrees_with_its_own_kwh(self):
         self._block(bill=False)
