@@ -153,6 +153,19 @@ class TheApiViews(unittest.TestCase):
     def test_a_csv_import_is_still_excluded(self):
         self.assertIn("imported: 'imported from a CSV (excluded)'", PAGE)
 
+class TheDialogFits(unittest.TestCase):
+    """PR 5 on the Pi, 14 Oct 2026: the diff scrolled sideways inside the dialog, and a re-fetch
+    before the bill floor said nothing about why no bill was asked. Discriminating."""
+
+    def test_the_diff_wraps_instead_of_scrolling(self):
+        self.assertNotIn(".hm-diff th, .hm-diff td { font-size:12px; white-space:nowrap; }", PAGE)
+        self.assertIn("width:min(640px, 100%); max-height:90vh; overflow-y:auto;", PAGE)
+
+    def test_a_range_before_the_floor_is_said(self):
+        self.assertIn("when EMT starts taking Octopus", _fn("floorNote"))
+        body = _fn("openRefetch")
+        self.assertIn("if (sm.before_floor) state.floorNote = floorNote(sm);", body)
+
 
 if __name__ == "__main__":
     unittest.main()

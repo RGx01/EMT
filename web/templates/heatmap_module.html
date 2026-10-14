@@ -678,7 +678,15 @@ window.EMTHeatmap = (function () {
     return '<table class="hm-detail hm-diff">' + head + body + '</table>' +
            (rows.length > 50 ? '<div class="hm-note2">and ' + (rows.length - 50) + ' more</div>' : '');
   }
+  // EMT takes Octopus's bills from the current agreement's start; a range before it has its kWh
+  // checked, and no bill asked for
+  function floorNote(sm) {
+    return (sm.before_floor === sm.checked ? 'All ' : sm.before_floor + ' of ') + sm.checked +
+      ' half-hours are before ' + esc(localTime(sm.floor)) + ', when EMT starts taking Octopus\u2019s ' +
+      'bills (your current agreement) \u2014 only their kWh was checked.';
+  }
   function openRefetch(from, to, label) {
+    state.floorNote = null;
     state.dialogOpen = true; markSelection(from, to);
     var el = panelEl(), chunks = refetchChunks(from, to), i = 0,
         totals = {kwh: 0, export: 0, bill: 0, held: 0, not_settled: 0, corrections: 0};
@@ -692,7 +700,8 @@ window.EMTHeatmap = (function () {
     }
     function part() { return chunks.length > 1 ? ' (part ' + (i + 1) + ' of ' + chunks.length + ')' : ''; }
     function finish(msg) {
-      box('<p>' + msg + '</p><p class="hm-note2">Applied: ' + totals.kwh + ' kWh, ' + totals.export + ' export, ' +
+      var fn = state.floorNote; state.floorNote = null;
+      box('<p>' + msg + '</p>' + (fn ? '<p class="hm-note2">' + fn + '</p>' : '') + '<p class="hm-note2">Applied: ' + totals.kwh + ' kWh, ' + totals.export + ' export, ' +
           totals.bill + ' bill(s); held ' + totals.held + '.' +
           (totals.corrections ? ' ' + totals.corrections + ' of the bills replaced your correction.' : '') +
           (totals.not_settled ? ' <span class="hm-wait">' + totals.not_settled + ' bill(s) stored but not re-settled ' +
@@ -708,10 +717,12 @@ window.EMTHeatmap = (function () {
         return pollRefetch(function (ph) { var x = el.querySelector('.hm-phase'); if (x) x.textContent = ph; });
       }).then(function (s) {
         var sm = s.summary || {};
+        if (sm.before_floor) state.floorNote = floorNote(sm);
         if (!sm.differ) { i++; next(); return; }                    // nothing different: move on
         box('<p>' + sm.differ + ' of ' + sm.checked + ' half-hours differ from what EMT holds' + part() + '.' +
             (sm.held ? ' ' + sm.held + ' would be held: Octopus\u2019s bill has no EV where your car charged.' : '') +
-            '</p>' + diffTable(s.rows || []) +
+            '</p>' + (sm.before_floor ? '<p class="hm-note2">' + floorNote(sm) + '</p>' : '') +
+            diffTable(s.rows || []) +
             '<p class="hm-note2">Apply writes only these, after a safety backup. ' +
             (sm.corrected ? '<b>' + sm.corrected + ' of them replace' + (sm.corrected === 1 ? 's' : '') +
              ' your own correction with Octopus\u2019s bill</b> \u2014 a correction cannot be put back. ' : '') +
@@ -1011,7 +1022,7 @@ window.EMTHeatmap = (function () {
   .hm-panel { position:fixed; inset:0; z-index:60; display:none; align-items:center; justify-content:center;
               background:rgba(0,0,0,.45); padding:16px; }
   .hm-panel-box { background:var(--surface, #1a1d27); color:var(--text, #e8eaf0); border:1px solid var(--border, #2a2d3a);
-                  border-radius:10px; padding:14px 16px; width:min(520px, 100%); max-height:90vh; overflow:auto;
+                  border-radius:10px; padding:14px 16px; width:min(640px, 100%); max-height:90vh; overflow-y:auto;
                   font-size:13px; box-shadow:0 8px 24px rgba(0,0,0,.35); }
   .hm-panel-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
   .hm-x { background:none; border:none; color:var(--muted, #6b7080); font-size:16px; cursor:pointer; }
@@ -1028,7 +1039,8 @@ window.EMTHeatmap = (function () {
   .hm-btn { background:none; border:1px solid var(--border, #2a2d3a); color:var(--text, #e8eaf0); border-radius:6px;
             padding:6px 12px; font-size:13px; cursor:pointer; }
   .hm-btn.hm-primary { background:var(--accent, #2e9e5b); border-color:var(--accent, #2e9e5b); color:#fff; }
-  .hm-diff th, .hm-diff td { font-size:12px; white-space:nowrap; }
+  .hm-diff th, .hm-diff td { font-size:12px; }
+  .hm-diff td:first-child { white-space:nowrap; }       /* the half-hour; the rest may wrap */
   .hm-bad { color:#e05252; } .hm-wait { color:#e0a020; }
   .hm-menu { position:fixed; z-index:70; display:none; min-width:220px; background:var(--surface, #1a1d27);
              border:1px solid var(--border, #2a2d3a); border-radius:8px; padding:4px; box-shadow:0 6px 18px rgba(0,0,0,.35); }

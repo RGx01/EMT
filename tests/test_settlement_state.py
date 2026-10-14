@@ -72,6 +72,23 @@ class TheBill(unittest.TestCase):
         self.assertEqual(_c(_f(), every_half_hour=False)["bill"], "none")
         self.assertEqual(_c(_f(dispatched=1), every_half_hour=False)["bill"], "waiting")
 
+    def test_before_the_floor_no_bill_is_overdue(self):
+        """PR 5 on the Pi, 14 Oct 2026: 1-25 Aug showed red "overdue" for bills no pass fetches
+        (the fetch starts at the current agreement), while the floored pill did not count them."""
+        old = "2026-10-01T02:00:00"
+        self.assertEqual(_c(_f(block_start=old), floor="2026-10-05T00:00:00")["bill"], "none")
+        self.assertEqual(_c(_f(block_start=old), floor="2026-09-01T00:00:00")["bill"], "overdue")
+
+    def test_a_bill_cached_before_the_floor_still_reads_as_a_bill(self):
+        """GUARD: v4 cached bills under an older floor; they are still shown for what they are."""
+        self.assertEqual(_c(_f(**BILLED), floor="2026-10-13T00:00:00")["bill"], "applied")
+
+    def test_the_views_pass_the_floor(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "web", "server.py"), encoding="utf-8").read()
+        i = src.index("def _settlement_states(")
+        self.assertIn('floor=stage["floor"]', src[i:i + 1200])
+
     def test_no_bill_stage_where_emt_fetches_none(self):
         self.assertEqual(_c(_f(), bills=False)["bill"], "none")
 
