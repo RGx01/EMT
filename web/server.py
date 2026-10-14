@@ -7132,7 +7132,7 @@ def _remove_stale_stages(max_age=_STAGED_MAX_AGE_S, keep=None):
         return
     running = _restore_job.get("status") == "running"
     for n in names:
-        if not _STAGED_RE.match(n):
+        if not (_STAGED_RE.match(n) or _PART_RE.match(n)):    # an abandoned upload's pieces too
             continue
         p = os.path.join(DATA_DIR, n)
         if p == keep or running:
@@ -7222,18 +7222,29 @@ def _test_supplier_key(supplier, creds):
 
 
 def _stage_upload(upload):
-    """Save an upload as DATA_DIR/uploaded_restore-*.db — a .db as it is, a zip's blocks.db
-    extracted. Returns the staged path; raises _RestoreRefused with the user-facing reason, and
-    leaves nothing behind when it does."""
+    """Save a multipart upload as DATA_DIR/uploaded_restore-*.db and stage it (_stage_file)."""
+    import tempfile as _tf
+    _fd, staged = _tf.mkstemp(prefix=_STAGED_PREFIX, suffix=".db", dir=DATA_DIR)
+    os.close(_fd)
+    try:
+        upload.save(staged)
+    except BaseException:
+        try: os.remove(staged)
+        except OSError: pass
+        raise
+    return _stage_file(staged)
+
+
+def _stage_file(staged):
+    """Stage the file at `staged` (DATA_DIR/uploaded_restore-*.db, already written): a .db as it
+    is, a zip's blocks.db extracted in its place. Returns the staged path; raises _RestoreRefused
+    with the user-facing reason, and leaves nothing behind when it does."""
     import tempfile as _tf
     import zipfile as _zf
     import shutil as _sh
     import sqlite3 as _sq3
     from urllib.parse import quote as _q
-    _fd, staged = _tf.mkstemp(prefix=_STAGED_PREFIX, suffix=".db", dir=DATA_DIR)
-    os.close(_fd)
     try:
-        upload.save(staged)
         if _zf.is_zipfile(staged):
             # From a file, not the upload stream: on Python 3.10 that stream is a
             # SpooledTemporaryFile with no seekable(), which zipfile needs (added in 3.11).
@@ -7298,27 +7309,135 @@ def api_restore_stage():
         except _RestoreRefused as e:
             logger.warning("restore/stage: refused: %s", e)
             return jsonify({"error": str(e)}), 400
-        _t_save = _t.monotonic() - _t1
-        _remove_stale_stages(keep=staged)
-        _t1 = _t.monotonic()
-        try:
-            rev = _restore_phase1(staged)
-            facts, _account = _restore_facts(staged, rev)
-        except Exception as e:
-            try: os.remove(staged)
-            except OSError: pass
-            msg = str(e) if isinstance(e, _RestoreRefused) else \
-                "That file is not a valid EMT database (blocks.db)."
-            logger.warning("restore/stage: refused: %s", e)
-            return jsonify({"error": msg}), 400
-        logger.info("restore/stage: received %.1f MB — parsed in %.1f s, saved in %.1f s, "
-                    "checked in %.1f s; a %s backup, written by %s, supplier %s",
-                    os.path.getsize(staged) / 1048576.0, _t_parse, _t_save,
-                    _t.monotonic() - _t1, facts["kind"], facts["written_by"],
-                    facts["supplier"] or "none")
-        return jsonify({"ok": True, "token": os.path.basename(staged), "facts": facts})
+        return _stage_reply(staged, "parsed in %.1f s, saved in %.1f s"
+                            % (_t_parse, _t.monotonic() - _t1))
     except Exception as e:
         logger.error("restore/stage: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+def _stage_reply(staged, how):
+    """Phase 1 and the facts on a staged file, as the stage routes answer: 200 {token, facts}, or
+    400 {error} with the staged file removed."""
+    import time as _t
+    _remove_stale_stages(keep=staged)
+    _t1 = _t.monotonic()
+    try:
+        rev = _restore_phase1(staged)
+        facts, _account = _restore_facts(staged, rev)
+    except Exception as e:
+        try: os.remove(staged)
+        except OSError: pass
+        msg = str(e) if isinstance(e, _RestoreRefused) else \
+            "That file is not a valid EMT database (blocks.db)."
+        logger.warning("restore/stage: refused: %s", e)
+        return jsonify({"error": msg}), 400
+    logger.info("restore/stage: received %.1f MB — %s, checked in %.1f s; a %s backup, "
+                "written by %s, supplier %s", os.path.getsize(staged) / 1048576.0, how,
+                _t.monotonic() - _t1, facts["kind"], facts["written_by"],
+                facts["supplier"] or "none")
+    return jsonify({"ok": True, "token": os.path.basename(staged), "facts": facts})
+
+
+# ── A restore upload in pieces (14 Oct 2026) ────────────────────────────────────────────────
+# Through Home Assistant's ingress a whole backup in one request is refused before it reaches
+# EMT — "HTTP 413", the proxy's body limit — so the page sends it in pieces small enough for any
+# limit, and the server reassembles it. begin reserves a file; each chunk is written at the offset
+# it states (a retried piece overwrites itself, nothing is appended twice); finish hands the whole
+# file to the same stage checks as a one-request upload.
+_PART_RE = re.compile(r"^uploaded_restore-[A-Za-z0-9_]+\.part$")
+_PART_MAX_BYTES = 1024 * 1024 * 1024          # a backup over 1 GB is not one
+
+
+def _part_path(upload_id):
+    if not isinstance(upload_id, str) or not _PART_RE.match(upload_id):
+        return None
+    p = os.path.join(DATA_DIR, upload_id)
+    return p if _in_data_dir(p) and os.path.isfile(p) else None
+
+
+@app.route("/api/restore/upload/begin", methods=["POST"])
+def api_restore_upload_begin():
+    """Reserve a staging file for an upload in pieces. Body {size}. 200 {id, chunk}."""
+    import tempfile as _tf
+    try:
+        if _restore_job.get("status") == "running":
+            return jsonify({"error": "a restore is already running", "status": _restore_job}), 409
+        body = request.get_json(silent=True) or {}
+        try:
+            size = int(body.get("size") or 0)
+        except (TypeError, ValueError):
+            size = 0
+        if size <= 0 or size > _PART_MAX_BYTES:
+            return jsonify({"error": "That file is not a backup EMT can take."}), 400
+        _fd, part = _tf.mkstemp(prefix=_STAGED_PREFIX, suffix=".part", dir=DATA_DIR)
+        os.close(_fd)
+        return jsonify({"ok": True, "id": os.path.basename(part), "chunk": 512 * 1024})
+    except Exception as e:
+        logger.error("restore/upload/begin: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/restore/upload/chunk", methods=["POST"])
+def api_restore_upload_chunk():
+    """One piece: ?id=&offset=, the bytes as the body. Written at `offset`; 200 {received}."""
+    try:
+        part = _part_path(request.args.get("id"))
+        if not part:
+            return jsonify({"error": "That upload is no longer open — choose the file again."}), 400
+        try:
+            offset = int(request.args.get("offset", ""))
+        except ValueError:
+            return jsonify({"error": "offset must be a number"}), 400
+        have = os.path.getsize(part)
+        if offset < 0 or offset > have:
+            return jsonify({"error": "a piece arrived out of order", "received": have}), 409
+        data = request.get_data(cache=False)
+        if offset + len(data) > _PART_MAX_BYTES:
+            return jsonify({"error": "That file is not a backup EMT can take."}), 400
+        with open(part, "r+b") as f:
+            f.seek(offset)
+            f.write(data)
+            f.truncate(offset + len(data))      # a retried piece replaces itself, no more
+        return jsonify({"ok": True, "received": offset + len(data)})
+    except Exception as e:
+        logger.error("restore/upload/chunk: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/restore/upload/finish", methods=["POST"])
+def api_restore_upload_finish():
+    """The last piece is in: body {id, size}. Stages the whole file exactly as /api/restore/stage
+    does — 200 {token, facts}, or 400 {error} with nothing left behind."""
+    import time as _t
+    try:
+        body = request.get_json(silent=True) or {}
+        part = _part_path(body.get("id"))
+        if not part:
+            return jsonify({"error": "That upload is no longer open — choose the file again."}), 400
+        if _restore_job.get("status") == "running":
+            return jsonify({"error": "a restore is already running", "status": _restore_job}), 409
+        try:
+            want = int(body.get("size"))
+        except (TypeError, ValueError):
+            want = -1
+        if os.path.getsize(part) != want:
+            got = os.path.getsize(part)
+            try: os.remove(part)
+            except OSError: pass
+            return jsonify({"error": "The upload was incomplete (%d of %d bytes) — choose the "
+                                     "file again." % (got, want)}), 400
+        staged = part[:-len(".part")] + ".db"
+        os.replace(part, staged)
+        _t1 = _t.monotonic()
+        try:
+            staged = _stage_file(staged)
+        except _RestoreRefused as e:
+            logger.warning("restore/stage: refused: %s", e)
+            return jsonify({"error": str(e)}), 400
+        return _stage_reply(staged, "in pieces, staged in %.1f s" % (_t.monotonic() - _t1))
+    except Exception as e:
+        logger.error("restore/upload/finish: %s", e)
         return jsonify({"error": str(e)}), 500
 
 

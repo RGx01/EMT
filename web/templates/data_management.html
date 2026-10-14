@@ -236,10 +236,7 @@
 // the credentials already on disk meet the backup's account when the engine restarts, as they
 // always have. Resolves once the restore is running; throws with the reason otherwise.
 async function restoreUpload(file, onStage) {
-  const form = new FormData();
-  form.append('file', file);
-  const r    = await uploadWithProgress(apiUrl('/api/restore/stage'), form, onStage);
-  const data = await uploadReply(r);
+  const data = await stageInPieces(file, onStage);     // in pieces: ingress refuses one big body
   if (!data.ok) throw new Error(data.error || 'That backup could not be checked');
   onStage('Checked — starting the restore…');
   const c = await fetch(apiUrl('/api/restore/confirm'), {
