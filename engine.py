@@ -11919,13 +11919,11 @@ async def _refetch_octopus(store, utc_from: str, utc_to: str, parts, facts: dict
     if "bill" in parts and stage["fetched"]:
         imp = (_kraken_discovery or {}).get("import") or {}
         mpan = imp.get("mpan")
-        # the settled-cost pass's own scope — from its floor (the current agreement's start), on
-        # IOG-SMB every half-hour, elsewhere dispatched ones — and, unlike the pass, corrected
-        # half-hours too: the user asked, so the bill may replace their correction (design §5.2)
-        slots = [s for s, f in facts.items()
-                 if s >= stage["floor"]
-                 and (f.get("imp_kwh") or 0) > 1e-9
-                 and (stage["every_half_hour"] or f.get("dispatched"))]
+        # every half-hour in the range that imported — wider than the settled-cost pass's own
+        # scope (its floor, the current agreement's start; dispatched only off SMB) and corrected
+        # half-hours too: the user asked, and a red cell outside that scope has no other remedy
+        # (design §1.2, §5.2, 14 Oct 2026). The automatic passes keep their scope.
+        slots = [s for s, f in facts.items() if (f.get("imp_kwh") or 0) > 1e-9]
         if mpan and slots:
             _refetch_state["phase"] = "fetching bills (%d half-hours)" % len(slots)
             use_buckets = _import_is_smb_capped()
@@ -12039,12 +12037,6 @@ async def run_refetch_preview(utc_from: str, utc_to: str, parts=_REFETCH_PARTS) 
                    "held": sum(bool(r.get("bill", {}).get("held")) for r in rows),
                    "corrected": sum(bool(r.get("bill", {}).get("corrected"))
                                     and not r["bill"].get("held") for r in rows)}
-        # before the bill floor no bill is asked for: say so, or a re-fetch there reads as one
-        # that did nothing (PR 5 on the Pi, 14 Oct 2026, a 25 Aug half-hour)
-        stage = bill_stage()
-        if "bill" in parts and stage["fetched"]:
-            summary["before_floor"] = sum(s < stage["floor"] for s in facts)
-            summary["floor"] = stage["floor"]
         st.update({"status": "done", "phase": "preview", "token": token, "summary": summary,
                    "rows": rows[:500]})
         logger.info("range re-fetch: preview %s..%s — %s", utc_from, utc_to, summary)

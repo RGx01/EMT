@@ -3875,6 +3875,12 @@ def api_block_settlement():
 def _settle_views(_eng) -> list:
     try:
         views = ["bill"] if _eng.bill_stage()["fetched"] else []
+        # Export bill beside it where the main meter has an export channel (design §2)
+        if views:
+            main = next((m for m in (load_config().get("meters") or {}).values()
+                         if not (m.get("meta") or {}).get("sub_meter")), {})
+            if "export" in (main.get("channels") or {}):
+                views.append("export")
         if _eng._import_is_smb_capped():
             views.append("split")
         return views
@@ -3883,19 +3889,16 @@ def _settle_views(_eng) -> list:
 
 
 def _settlement_states(store, utc_start, utc_end) -> dict:
-    """{block_start: {bill, split, flags}} for the main meter over [utc_start, utc_end)."""
+    """{block_start: {bill, export, split, flags}} for the main meter over [utc_start, utc_end)."""
     import engine as _eng
     import settlement_state as _ss
     import vat_calendar as _vc
     from datetime import datetime as _dt, timezone as _tz
-    stage = _eng.bill_stage()
     held, kept = _eng.bill_split_held(store)
     return _ss.classify_range(
         store.get_settlement_facts(utc_start, utc_end),
-        bills=stage["fetched"], every_half_hour=stage["every_half_hour"],
         smb=bool(_eng._import_is_smb_capped()), now=_dt.now(_tz.utc).replace(tzinfo=None),
-        held=held, kept=kept, vat_at=_vc.rate_lookup(store.get_vat_calendar()),
-        floor=stage["floor"])
+        held=held, kept=kept, vat_at=_vc.rate_lookup(store.get_vat_calendar()))
 
 
 @app.route("/api/billing-source", methods=["GET"])

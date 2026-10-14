@@ -75,7 +75,7 @@ class TheRoute(unittest.TestCase):
         self.assertEqual(d["bill"]["cost"], 0.150397)
         self.assertEqual(d["bill"]["ev_kwh"], 2.5714)
         self.assertEqual(d["dispatch"]["completed_kwh"], 2.6)
-        self.assertEqual(d["state"], {"bill": "applied", "split": "bill", "flags": []})
+        self.assertEqual(d["state"], {"bill": "applied", "export": "none", "split": "bill", "flags": []})
         self.assertEqual(sorted(s["attribution"] for s in d["segments"]), ["ev", "house"])
 
     def test_no_block_is_404_and_a_bad_start_is_400(self):

@@ -7,7 +7,8 @@ then its bill (Octopus's cost for it), then on IOG-SMB its House/EV split. The k
 on the payload (`kwh_authoritative`); this decides the other two, once, so every surface says the
 same thing. Pure: facts in (BlockStore.get_settlement_facts), states out.
 
-    bill   none | waiting | overdue | applied | differs | corrected | imported
+    bill   applied | waiting | overdue | differs | corrected | imported | none   (design §1.2)
+    export applied | waiting | overdue | imported | none                        (design §1.2b)
     split  None (no completed dispatch, or not IOG-SMB) | emt | bill | held | kept | missing
     flags  recost_bl82       — `differs` because the settlement re-run re-costed the bill to
                                 kWh x rate before BL-82's fix (13 Oct 2026): known, not new
@@ -35,22 +36,36 @@ def _f(x):
         return None
 
 
-def classify(f: dict, *, bills: bool, every_half_hour: bool, smb: bool, now: datetime,
-             held=frozenset(), kept=frozenset(), vat_at=None, floor=None) -> dict:
-    """One half-hour's {bill, split, flags}. `f` is a get_settlement_facts row. `bills`,
-    `every_half_hour` and `smb` describe the install (engine.bill_stage, _import_is_smb_capped);
-    `held` / `kept` are 4.5.23's wait map (engine.bill_split_held); `vat_at(start)` the VAT calendar;
-    `floor` the bill fetch's floor (engine.bill_stage) — before it EMT never asks for a bill."""
+def _clock(start, now):
+    """'waiting' inside the window, 'overdue' past it (design §7 (a): 7 days after the kWh, from
+    the half-hour + the kWh's 2-day lag)."""
+    age = now - datetime.fromisoformat(start)
+    return "overdue" if age >= timedelta(days=BILL_OVERDUE_DAYS + KWH_LAG_DAYS) else "waiting"
+
+
+def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozenset(),
+             vat_at=None) -> dict:
+    """One half-hour's {bill, export, split, flags}. `f` is a get_settlement_facts row. `smb` is
+    the install's tariff (engine._import_is_smb_capped); `held` / `kept` are 4.5.23's wait map
+    (engine.bill_split_held); `vat_at(start)` the VAT calendar.
+
+    The bill states say whose cost the half-hour holds — Octopus's, or EMT's kWh x rate — not
+    whether EMT is waiting for a bill (design §1.2, revised 14 Oct 2026). Which bills EMT fetches
+    by itself (engine.bill_stage) does not enter: a half-hour outside that scope holding kWh x
+    rate is red past the window, and a re-fetch is its remedy."""
     start = f["block_start"]
     kwh = _f(f.get("imp_kwh")) or 0.0
     cost = _f(f.get("imp_cost"))
     bill_cost = _f(f.get("bill_cost"))
+    src = f.get("source") or ""
     flags = []
 
-    # ── bill ──
+    # ── bill (import) ──
     if f.get("rate_corrected") or f.get("rate_source") == "corrected":
         bill = "corrected"
-    elif bill_cost is not None and kwh > 1e-9:
+    elif kwh <= 1e-9:
+        bill = "none"                 # nothing imported: no cost to settle
+    elif bill_cost is not None:
         if f.get("rate_source") == "settled":
             if cost is not None and abs(cost - bill_cost) <= _EPS_GBP:
                 bill = "applied"
@@ -62,19 +77,23 @@ def classify(f: dict, *, bills: bool, every_half_hour: bool, smb: bool, now: dat
                     flags.append("recost_bl82")
         else:
             bill = "waiting"          # cached, not applied yet: the next pass applies it
-    elif (f.get("source") or "").startswith("imported"):
-        bill = "imported"
-    elif (not bills or kwh <= 1e-9 or (floor is not None and start < floor)
-          or (not every_half_hour and not f.get("dispatched"))):
-        # no bill stage: kWh x rate is final with the kWh. Before the floor (the current
-        # agreement's start) EMT never asks for a bill, so none is overdue — PR 5 on the Pi,
-        # 14 Oct 2026: 1-25 Aug showed red "overdue" for bills no pass would fetch, while the
-        # pill, floored, did not count them.
-        bill = "none"
+    elif src == "imported_api":
+        bill = "applied"              # the API importer stored Octopus's own billed cost
+    elif src.startswith("imported"):
+        bill = "imported"             # CSV history: a cost not from Octopus's API
     else:
-        age = now - datetime.fromisoformat(start)
-        bill = ("overdue" if age >= timedelta(days=BILL_OVERDUE_DAYS + KWH_LAG_DAYS)
-                else "waiting")
+        bill = _clock(start, now)     # EMT's kWh x rate: provisional, then a gap
+
+    # ── export: no export bill is fetched — kWh x rate is final once the export kWh settles ──
+    exp = _f(f.get("exp_kwh")) or 0.0
+    if exp <= 1e-9:
+        export = "none"
+    elif f.get("exp_kwh_api") is not None or src == "imported_api":
+        export = "applied"
+    elif src.startswith("imported"):
+        export = "imported"
+    else:
+        export = _clock(start, now)
 
     if bill_cost is not None:
         bk, api = _f(f.get("bill_kwh")), _f(f.get("imp_kwh_api"))
@@ -101,7 +120,7 @@ def classify(f: dict, *, bills: bool, every_half_hour: bool, smb: bool, now: dat
             split = "emt"
         elif kwh > 1e-9:
             split = "missing"
-    return {"bill": bill, "split": split, "flags": flags}
+    return {"bill": bill, "export": export, "split": split, "flags": flags}
 
 
 def classify_range(facts, **ctx) -> dict:
