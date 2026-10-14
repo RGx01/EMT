@@ -11928,11 +11928,20 @@ async def _refetch_octopus(store, utc_from: str, utc_to: str, parts, facts: dict
             _refetch_state["phase"] = "fetching bills (%d half-hours)" % len(slots)
             use_buckets = _import_is_smb_capped()
             got = (await _kraken_client.recover_device_breakdown(mpan, slots) if use_buckets
-                   else await _kraken_client.recover_measurement_costs(mpan, slots))
+                   else await _kraken_client.recover_measurement_costs(mpan, slots)) or {}
+            # The device breakdown answers on the IOG-SMB agreement only; before it (the previous
+            # tariff has no device buckets) ask the single billed cost, as the importer and the
+            # non-SMB pass do (PR 5 on the Pi, 14 Oct 2026: 19 Aug 06:30, "recovered 0/1").
+            rest = [s for s in slots if not got.get(s)] if use_buckets else []
+            cost_only = (await _kraken_client.recover_measurement_costs(mpan, rest) or {}) if rest else {}
             for s in slots:
-                row = _vat_resync_row((got or {}).get(s), use_buckets)
+                row = (_vat_resync_row(got.get(s), use_buckets) if got.get(s)
+                       else _vat_resync_row(cost_only.get(s), False))
                 if row and not row.get("zero"):
                     out.setdefault(s, {})["bill"] = row
+            # what Octopus did not answer, so the dialog never says "matches" over a gap
+            out.setdefault("_meta", {})["no_bill"] = sorted(
+                s for s in slots if "bill" not in out.get(s, {}))
     return out
 
 
@@ -11943,9 +11952,10 @@ def _refetch_diff(facts: dict, octo: dict) -> list:
     - kWh: a DCC-settled block against its DCC figure; IMPORTED history against its own kWh (it
       came from the same API and has no DCC field by design) — reported, never written as DCC;
       export with none stored reads as 0.
-    - the bill: against the cached bill where there is one, else against the stored cost (an
-      unbilled half-hour priced at the same £ is no difference). The EV share against the bill's,
-      else EMT's own split.
+    - the bill: against the cached bill where there is one, else against the stored cost. A bill
+      where none is held is a difference even at the same £ (`new_bill`): it turns EMT's kWh x
+      rate into Octopus's cost (design §1.2, revised 14 Oct 2026). The EV share against the
+      bill's, else EMT's own split.
     - a row where nothing would change is dropped: a bill 4.5.23 would hold whose cost agrees
       changes nothing either way. The bill's split arriving on a cost-only cached bill is a change, even
       at the same figures, on a completed dispatch or where the bill has the car."""
@@ -11998,9 +12008,13 @@ def _refetch_diff(facts: dict, octo: dict) -> list:
                 ev_diff = False                          # held, and the £ agrees: nothing changes
             if held and not cost_diff:
                 arrives = False                          # held: the bill's split is not taken
-            if cost_diff or ev_diff or arrives:
+            # no bill held at all, and Octopus has one: a change even at the same £ — the half-hour
+            # goes from EMT's kWh x rate to Octopus's cost, red or amber to green (design §1.2,
+            # revised 14 Oct 2026; 19 Aug 06:30 on the Pi, £0.0003 either way)
+            new_bill = have is None and not corrected and not held
+            if cost_diff or ev_diff or arrives or new_bill:
                 r["bill"] = {"stored": cost_now, "stored_is_bill": have is not None and not corrected,
-                             "corrected": corrected,
+                             "corrected": corrected, "new_bill": new_bill,
                              "octopus": b["cost_incl"], "stored_ev": ev_stored,
                              "stored_ev_is_bill": ev_is_bill,
                              "octopus_ev": ev_new, "held": held}
@@ -12026,6 +12040,7 @@ async def run_refetch_preview(utc_from: str, utc_to: str, parts=_REFETCH_PARTS) 
         facts = {f["block_start"]: f for f in _store.get_settlement_facts(utc_from, utc_to)}
         fp = _refetch_fp(_store, utc_from, utc_to)
         octo = await _refetch_octopus(_store, utc_from, utc_to, parts, facts)
+        no_bill = (octo.pop("_meta", None) or {}).get("no_bill") or []
         rows = _refetch_diff(facts, octo)
         token = _secrets.token_hex(8)
         _refetch_preview = {"token": token, "from": utc_from, "to": utc_to, "parts": list(parts),
@@ -12036,7 +12051,8 @@ async def run_refetch_preview(utc_from: str, utc_to: str, parts=_REFETCH_PARTS) 
                    "bill": sum("bill" in r for r in rows),
                    "held": sum(bool(r.get("bill", {}).get("held")) for r in rows),
                    "corrected": sum(bool(r.get("bill", {}).get("corrected"))
-                                    and not r["bill"].get("held") for r in rows)}
+                                    and not r["bill"].get("held") for r in rows),
+                   "no_bill": len(no_bill)}
         st.update({"status": "done", "phase": "preview", "token": token, "summary": summary,
                    "rows": rows[:500]})
         logger.info("range re-fetch: preview %s..%s — %s", utc_from, utc_to, summary)
