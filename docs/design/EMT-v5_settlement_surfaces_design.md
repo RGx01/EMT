@@ -153,8 +153,9 @@ Read-only.
 ### 5.1 Choosing what
 
 - **One half-hour:** the panel's *Re-fetch from Octopus*.
-- **A range:** drag across cells, then a context menu (right click, or a long press on touch) —
-  *Re-fetch from Octopus…*, *Show details*. A tap on the day column offers that one day. The range
+- **A range:** drag across cells, or down the day column for whole days, across months if need
+  be; then a context menu (right click, or a long press on touch) — *Re-fetch from Octopus…*,
+  *Show details*. A tap on the day column offers that one day. The range
   is whole half-hours in local time; clocks-change days take their real 46 / 50. What a click, drag
   or day covers is outlined on the grid while it is held and while its menu or dialog is open.
   *(14 Oct 2026, on the Pi: a first version also made a range from two day-column taps; a kept

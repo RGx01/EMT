@@ -33,7 +33,7 @@ class TheActions(unittest.TestCase):
 
     def test_a_drag_selects_a_span(self):
         self.assertIn("row.addEventListener('mousedown'", PAGE)
-        self.assertIn("state.dragFrom", _fn("attachHover"))
+        self.assertIn("state.drag = {p: p, h: h, span: null}", _fn("attachHover"))
 
     def test_the_day_column_offers_its_day(self):
         body = _fn("dayBarPick")
@@ -65,13 +65,26 @@ class TheSelection(unittest.TestCase):
 
     def test_a_drag_is_outlined_while_it_is_held(self):
         """PR 5 on the Pi, 14 Oct 2026 (after #159): nothing showed until the button was released."""
-        body = _fn("attachHover")
-        i = body.index("if (!from || !(ev.buttons & 1)")
-        self.assertIn("markSelection(a.starts[0]", body[i:i + 700])
+        i = PAGE.index("document.addEventListener('mousemove'")
+        self.assertIn("if (span) markSelection(span.from, span.to)", PAGE[i:i + 600])
 
-    def test_a_drag_released_off_the_grid_leaves_no_outline(self):
+    def test_a_drag_crosses_months(self):
+        """After #160: each month is its own chart, and the drag lived on one month's row. It is
+        now followed at document level and finds the month under the pointer."""
+        self.assertIn("document.elementFromPoint(ev.clientX, ev.clientY)", _fn("hitAt"))
+        self.assertNotIn("row.addEventListener('mouseup'", PAGE)
         i = PAGE.index("document.addEventListener('mouseup'")
-        self.assertIn("clearSelection()", PAGE[i:i + 400])
+        self.assertIn("openRefetch(sp.from, sp.to, sp.label)", PAGE[i:i + 700])
+
+    def test_a_drag_runs_down_the_day_column(self):
+        """After #160: a drag that started on a day bar was ignored. From a day bar both ends are
+        whole days."""
+        i = PAGE.index("row.addEventListener('mousedown'")
+        self.assertNotIn("!h.tot", PAGE[i:i + 400])
+        self.assertIn("if (d.h.tot || at.h.tot)", _fn("dragEnd"))
+
+    def test_the_release_does_not_close_its_own_menu(self):
+        self.assertIn("!state.dragEnded) dismiss();", PAGE)
 
     def test_the_dialog_names_its_exact_span(self):
         self.assertIn("esc(localTime(from)) + ' \\u2192 ' + esc(localTime(to))", _fn("openRefetch"))
