@@ -7,7 +7,8 @@ then its bill (Octopus's cost for it), then on IOG-SMB its House/EV split. The k
 on the payload (`kwh_authoritative`); this decides the other two, once, so every surface says the
 same thing. Pure: facts in (BlockStore.get_settlement_facts), states out.
 
-    bill   applied | waiting | overdue | differs | corrected | imported | none   (design §1.2)
+    bill   applied | applied_emt_split | estimate_dcc | estimate_cad | overdue | differs |
+           corrected | imported | none                                       (design §9.3)
     export applied | waiting | overdue | imported | none                        (design §1.2b)
     split  None (no completed dispatch, or not IOG-SMB) | emt | bill | held | kept | missing
     flags  recost_bl82       — `differs` because the settlement re-run re-costed the bill to
@@ -44,45 +45,70 @@ def _clock(start, now):
 
 
 def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozenset(),
-             vat_at=None) -> dict:
+             vat_at=None, kind_at=None) -> dict:
     """One half-hour's {bill, export, split, flags}. `f` is a get_settlement_facts row. `smb` is
     the install's tariff (engine._import_is_smb_capped); `held` / `kept` are 4.5.23's wait map
-    (engine.bill_split_held); `vat_at(start)` the VAT calendar.
+    (engine.bill_split_held); `vat_at(start)` the VAT calendar; `kind_at(start)` the half-hour's
+    tariff kind, 'intelligent' | 'published' (engine.tariff_kind_at; Intelligent when absent).
 
-    The bill states say whose cost the half-hour holds — Octopus's, or EMT's kWh x rate — not
-    whether EMT is waiting for a bill (design §1.2, revised 14 Oct 2026). Which bills EMT fetches
-    by itself (engine.bill_stage) does not enter: a half-hour outside that scope holding kWh x
-    rate is red past the window, and a re-fetch is its remedy."""
+    The Import bill states say whether the half-hour's cost is final, and whose it is (design
+    §9.3). On a published-rate tariff the settled kWh x the published rate is the bill; on an
+    Intelligent one only Octopus's cost is final, as a dispatch can re-band the half-hour."""
     start = f["block_start"]
     kwh = _f(f.get("imp_kwh")) or 0.0
     cost = _f(f.get("imp_cost"))
     bill_cost = _f(f.get("bill_cost"))
     src = f.get("source") or ""
+    kind = kind_at(start) if kind_at else "intelligent"
     flags = []
 
-    # ── bill (import) ──
+    # ── split: IOG-SMB, half-hours with a completed dispatch (first: a green cost reads it) ──
+    split = None
+    if smb and f.get("completed"):
+        bill_ev = _f(f.get("bill_ev_kwh"))
+        if start in kept:
+            split = "kept"
+        elif start in held:
+            split = "held"
+        elif bill_ev is not None:
+            # the bill has stated the split; none at all against a completed dispatch is the
+            # 10 Oct 2026 case — needs attention, not a split
+            split = "bill" if (bill_ev > 1e-9 or kwh <= 1e-9) else "missing"
+        elif (_f(f.get("ev_kwh")) or 0.0) > 1e-9:
+            split = "emt"
+        elif kwh > 1e-9:
+            split = "missing"
+
+    # ── Import bill ──
+    def estimate():
+        # EMT's kWh x rate: on which kWh, inside the window; red past it
+        if _clock(start, now) == "overdue":
+            return "overdue"
+        return "estimate_dcc" if f.get("imp_kwh_api") is not None else "estimate_cad"
+
     if f.get("rate_corrected") or f.get("rate_source") == "corrected":
         bill = "corrected"
     elif kwh <= 1e-9:
         bill = "none"                 # nothing imported: no cost to settle
-    elif bill_cost is not None:
-        if f.get("rate_source") == "settled":
-            if cost is not None and abs(cost - bill_cost) <= _EPS_GBP:
-                bill = "applied"
-            else:
-                bill = "differs"
-                rate = _f(f.get("imp_rate"))
-                if (cost is not None and rate is not None
-                        and abs(cost - round(kwh * rate, 6)) <= _EPS_GBP):
-                    flags.append("recost_bl82")
+    elif bill_cost is not None and f.get("rate_source") == "settled":
+        if cost is not None and abs(cost - bill_cost) <= _EPS_GBP:
+            bill = "applied"
         else:
-            bill = "waiting"          # cached, not applied yet: the next pass applies it
+            bill = "differs"
+            rate = _f(f.get("imp_rate"))
+            if (cost is not None and rate is not None
+                    and abs(cost - round(kwh * rate, 6)) <= _EPS_GBP):
+                flags.append("recost_bl82")
     elif src == "imported_api":
         bill = "applied"              # the API importer stored Octopus's own billed cost
     elif src.startswith("imported"):
         bill = "imported"             # CSV history: a cost not from Octopus's API
+    elif kind == "published" and f.get("imp_kwh_api") is not None:
+        bill = "applied"              # settled kWh x the published rate is the bill
     else:
-        bill = _clock(start, now)     # EMT's kWh x rate: provisional, then a gap
+        bill = estimate()             # a cached bill not applied yet reads the same: transient
+    if bill == "applied" and split in ("emt", "held", "kept"):
+        bill = "applied_emt_split"    # Octopus's cost, EMT's split
 
     # ── export: no export bill is fetched — kWh x rate is final once the export kWh settles ──
     exp = _f(f.get("exp_kwh")) or 0.0
@@ -104,22 +130,6 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
             if abs(bill_cost / exc - (1.0 + float(vat_at(start)))) > _VAT_TOL:
                 flags.append("vat_disagrees")
 
-    # ── split: IOG-SMB, half-hours with a completed dispatch ──
-    split = None
-    if smb and f.get("completed"):
-        bill_ev = _f(f.get("bill_ev_kwh"))
-        if start in kept:
-            split = "kept"
-        elif start in held:
-            split = "held"
-        elif bill_ev is not None:
-            # the bill has stated the split; none at all against a completed dispatch is the
-            # 10 Oct 2026 case — needs attention, not a split
-            split = "bill" if (bill_ev > 1e-9 or kwh <= 1e-9) else "missing"
-        elif (_f(f.get("ev_kwh")) or 0.0) > 1e-9:
-            split = "emt"
-        elif kwh > 1e-9:
-            split = "missing"
     return {"bill": bill, "export": export, "split": split, "flags": flags}
 
 

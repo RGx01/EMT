@@ -53,6 +53,8 @@ draws it).
 
 ### 1.2 Bill — import
 
+*Superseded where §9 differs (decided and built 14 Oct 2026).*
+
 *Revised 14 Oct 2026 (the user, on the Pi).* The Bill view answers one question per half-hour:
 **is the stored cost Octopus's, or EMT's kWh × rate?** Until a settled cost arrives EMT prices
 from the CAD or settled kWh × the tariff rate; that figure is provisional inside the recency
@@ -84,6 +86,8 @@ soak: grid used all day, all grey).
   as `waiting`.
 
 ### 1.2b Bill — export
+
+*Superseded where §9 differs (decided and built 14 Oct 2026).*
 
 EMT fetches no export bill: an export cost is kWh × the export rate, final once the export kWh is
 settled. So the export view follows the export kWh, on the same window:
@@ -124,6 +128,8 @@ These two add a red dot to an otherwise green cell, and name themselves in the d
 ---
 
 ## 2. The views
+
+*Superseded where §9 differs (decided and built 14 Oct 2026).*
 
 The Heatmaps tab's view selector gains two views beside *API import* and *API export*, for an
 account where they mean something:
@@ -279,3 +285,112 @@ e. **Who may re-fetch how much.** A range is paced against Octopus's rate limit.
 | 5 | a Pi check on the dev install: the views over a month, a one-half-hour re-fetch, a one-day re-fetch |
 
 PRs 1–2 are read-only and useful alone; 3 is the engine and testable without the UI.
+
+---
+
+## 9. Revision 2 — one Import bill view, gated on the API connection (decided and built 14 Oct 2026)
+
+*From the Pi check (PR 5), the user's direction: the view is **Import bill**, shown wherever the
+install has a supplier API connection, whatever the tariff; the tariff decides only what runs
+inside it and what "final" means. It carries what *API import* shows today, so that view and *API
+export* can go. A green cell whose split is still EMT's says so.*
+
+### 9.1 Two kinds of tariff, one question
+
+The question stays §1.2's — **is the half-hour's cost final, and whose is it?** What makes a cost
+final depends on the tariff the half-hour was on:
+
+- **Published-rate tariffs** (flat, Go, Cosy, Agile — every rate known in advance; EMT fetches
+  Agile's 48 daily prices too): Octopus bills the settled kWh × that half-hour's published rate.
+  Once the kWh is **settled** (DCC), EMT's kWh × rate *is* the bill, to rounding. Nothing a bill
+  adds. This is how these tariffs have always reconciled: the DCC poll (`kraken_poll_task`) has no
+  tariff gate, and the settled kWh re-runs the half-hour.
+- **Intelligent tariffs** (IOG, INTELLI): a smart-charge dispatch can move a half-hour to the
+  off-peak rate after the event, and on IOG-SMB the 6-hour cap decides how much. EMT cannot always
+  derive that, so the cost is final only when **Octopus has costed it** — a bill, or an API
+  import's cost. This is why the bill fetch exists, and why it is Intelligent-only
+  (`measure_settled_dispatched_blocks`, `engine.py` ~11601).
+
+**Per half-hour, by its own agreement.** A user who moved from Agile to Intelligent has both kinds
+of history. EMT already holds the tariff history: discovery keeps every agreement with its tariff
+code (`_kraken_discovery["import"]["agreements"]`), and `engine._agreement_era(channel, start)`
+returns the tariff code live at a half-hour — the API importer's per-agreement coverage uses it.
+The kind is read from that code (IOG / INTELLI → Intelligent; anything else → published-rate).
+No agreement covering the half-hour (before the first, or discovery not run yet): the current
+tariff's kind.
+
+### 9.2 Which views, and what gates them
+
+| view | shown when | replaces |
+|---|---|---|
+| **Import bill** (renamed from *Bill*) | the install has a supplier API connection (`mode_uses_api()` and credentials) — any tariff | *Bill*, *API import* |
+| **Export bill** | as Import bill, and the main meter has an export channel | *API export* |
+| **Split** | the account has a split to show — Octopus's device breakdown (IOG-SMB today) | — |
+
+Inside them, the tariff gates only what must be gated:
+
+| what | gated on |
+|---|---|
+| the settled kWh (DCC poll; a re-fetch's kWh part) | nothing — every tariff |
+| the bill fetch, automatic and on a re-fetch (`recover_measurement_costs`; the device breakdown where the account has buckets, falling back to the billed cost — #167) | Intelligent half-hours only. A published-rate half-hour needs no bill, and **applying** one would be wrong there: `apply_measured_to_block` snaps the rate to the day's lowest or highest band (`day_rate_bounds`), a two-rate model — on Cosy a mid-rate half-hour, on Agile nearly every half-hour, would get a wrong rate and band (the cost would stay right) |
+| the automatic bill pass's scope | unchanged: Intelligent, from the current agreement's start (`bill_stage`). No widening — published-rate tariffs reconcile through the kWh |
+
+Today the view gate is the tariff (`_settle_views` shows Bill only when `bill_stage()["fetched"]`)
+and so is the re-fetch's bill part; the view gate moves to the connection, the re-fetch's bill
+part to the half-hour's own tariff kind.
+
+### 9.3 Import bill — the states
+
+| state | Intelligent half-hour | published-rate half-hour | colour |
+|---|---|---|---|
+| `applied` | Octopus's cost is held (a bill applied, or an API import's cost) | the kWh is settled — kWh × rate is final; or a bill / API import | green |
+| `applied_emt_split` | Octopus's cost, but the split is still EMT's: a completed dispatch whose split is `emt`, `held` or `kept` (§1.3) | — (no split) | teal (the Split view's colour for EMT's split) |
+| `estimate_dcc` | settled kWh × rate, Octopus's cost not in yet, inside the window | — (settled kWh is final: green) | light amber |
+| `estimate_cad` | kWh not settled (CAD / HA reading) × rate, inside the window | the same | amber |
+| `overdue` | past the window with no Octopus cost (either kWh) | past the window with the kWh still not settled | red |
+| `differs` | a bill is held and the stored cost is not it (flags as §1.4) | the same, where a bill is held (an API import's, or one fetched before this rule) | red |
+| `corrected` | the user's rate correction | the same | blue |
+| `imported` | CSV history — a cost not from Octopus's API | the same | grey |
+| `none` | nothing imported in the half-hour | the same | grey |
+
+- **The window** stays §7 (a)'s: 7 days after the kWh, counted from the half-hour + the kWh's
+  2-day lag. **Unsettled kWh turns red at the window, not at 48 h** (decided 14 Oct 2026) — the
+  *API import* view's 48-hour step is not carried over.
+- **A split `missing`** (a completed dispatch, energy in the block, no split at all) on a green
+  cost is not teal: it stays in the Split view's red and §1.4's attention.
+- The tooltip and the detail panel name which case a cell is (whose cost; which kWh).
+
+### 9.4 Export bill — unchanged from §1.2b
+
+EMT fetches no export bill; kWh × the export rate is final once the export kWh settles, on every
+tariff. Green when settled (or API-imported); amber, then red at the window; grey for no export
+or CSV history. It carries what *API export* shows, on the 7-day window instead of 48 h.
+
+### 9.5 An assumption to verify
+
+The per-half-hour billed cost (GraphQL measurements, `statistics` → `costInclTax`) carries no
+tariff in its query, and the API importer has always used it ungated. **On hand it is proven only
+on Intelligent tariffs:** the soak account's API-imported history (Sep 2024 – Aug 2026) has exactly
+two import rates every month (five in March 2026, an agreement change). Under §9.1 a published-rate
+half-hour does not depend on it — its settled kWh makes it final — so the assumption matters only
+for an **API import's** cost on a published-rate tariff, which reads green either way once its kWh
+is the API's. Verify on the first non-Intelligent install all the same (a one-day re-fetch, its log).
+
+### 9.6 Decided (14 Oct 2026, the user)
+
+a. Widening the automatic bill pass — **withdrawn**: published-rate tariffs reconcile through the
+   kWh, and applying a bill there would mis-set the rate (§9.2).
+b. Red at 48 h — **no**: unsettled kWh is red at the window.
+c. *API import* and *API export* — **retired in the same change.**
+
+### 9.7 Work — built 14 Oct 2026, in one change on top of #167
+
+1. `engine.tariff_kind_at(start)` → `intelligent` | `published`, from `_agreement_era("import",
+   start)`'s tariff code (the current tariff where no agreement covers it).
+2. `settlement_state.classify` takes `kind_at`: `estimate_cad` / `estimate_dcc` from `waiting`;
+   green on settled kWh for a published-rate half-hour; `applied_emt_split` from the split state.
+3. `_settle_views`: Import bill and Export bill on the API connection; rename *Bill*; retire *API
+   import* / *API export* (per (c)).
+4. `_refetch_octopus`: the bill part for Intelligent half-hours only (its kWh part everywhere).
+5. Legend, tooltips, panel text; tests for every state on both kinds; fold this section into
+   §1–§2.

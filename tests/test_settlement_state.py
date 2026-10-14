@@ -64,9 +64,28 @@ class TheBill(unittest.TestCase):
         st = _c(_f(**dict(BILLED, bill_cost=round(6 * OFF, 6) + 0.0004)))
         self.assertEqual((st["bill"], st["flags"]), ("differs", ["recost_bl82"]))
 
-    def test_waiting_then_overdue(self):
-        self.assertEqual(_c(_f())["bill"], "waiting")
+    def test_estimate_on_which_kwh_then_overdue(self):
+        """§9.3: settled kWh x rate is light amber, a kWh not settled amber; red past the window."""
+        self.assertEqual(_c(_f())["bill"], "estimate_dcc")
+        self.assertEqual(_c(_f(imp_kwh_api=None))["bill"], "estimate_cad")
         self.assertEqual(_c(_f(block_start="2026-10-01T02:00:00"))["bill"], "overdue")
+        self.assertEqual(_c(_f(block_start="2026-10-01T02:00:00", imp_kwh_api=None))["bill"], "overdue")
+
+    def test_a_published_rate_half_hour_is_final_on_its_settled_kwh(self):
+        """§9.1: on flat / Go / Cosy / Agile the settled kWh x the published rate is the bill."""
+        pub = lambda s: "published"
+        self.assertEqual(_c(_f(), kind_at=pub)["bill"], "applied")
+        self.assertEqual(_c(_f(block_start="2026-10-01T02:00:00"), kind_at=pub)["bill"], "applied")
+        self.assertEqual(_c(_f(imp_kwh_api=None), kind_at=pub)["bill"], "estimate_cad")
+        self.assertEqual(_c(_f(block_start="2026-10-01T02:00:00", imp_kwh_api=None),
+                            kind_at=pub)["bill"], "overdue")
+
+    def test_octopuss_cost_with_emts_split_is_teal(self):
+        """§9.3: a green cost whose split is still EMT's says so; a missing split does not."""
+        emt = dict(BILLED, completed=1, ev_kwh=2.0)
+        self.assertEqual(_c(_f(**emt))["bill"], "applied_emt_split")
+        self.assertEqual(_c(_f(**dict(emt, bill_ev_kwh=2.0)))["bill"], "applied")
+        self.assertEqual(_c(_f(**dict(BILLED, completed=1, ev_kwh=0.0)))["bill"], "applied")
 
     def test_kwh_x_rate_outside_the_fetch_scope_is_red_after_the_window(self):
         """14 Oct 2026, revised §1.2: the view says whose cost a half-hour holds. 9 Aug 2026 on the
@@ -97,8 +116,9 @@ class TheBill(unittest.TestCase):
         self.assertNotIn("floor=", body)
         self.assertNotIn("every_half_hour=", body)
 
-    def test_a_cached_bill_not_yet_applied_is_waiting(self):
-        self.assertEqual(_c(_f(**dict(BILLED, rate_source="schedule")))["bill"], "waiting")
+    def test_a_cached_bill_not_yet_applied_reads_as_an_estimate(self):
+        """Transient: the next pass applies it."""
+        self.assertEqual(_c(_f(**dict(BILLED, rate_source="schedule")))["bill"], "estimate_dcc")
 
 
 class TheFlags(unittest.TestCase):
@@ -173,6 +193,8 @@ class TheSurfaces(unittest.TestCase):
                                                       "floor": "2020-01-01T00:00:00"}), \
              unittest.mock.patch.object(eng, "bill_split_held", create=True,
                                         return_value=(set(), set())), \
+             unittest.mock.patch.object(eng, "tariff_kind_at", create=True,
+                                        return_value="intelligent"), \
              unittest.mock.patch.object(eng, "_import_is_smb_capped", create=True,
                                         return_value=True):
             r = client.get("/api/energy?resolution=block&kind=month&year=2026&month=10"
@@ -181,6 +203,16 @@ class TheSurfaces(unittest.TestCase):
         self.assertIsInstance(json.loads(r.data)["settle"], dict)
         bad = make_client().get("/api/energy?resolution=day&kind=month&include=settle")
         self.assertEqual(bad.status_code, 400)
+
+    def test_the_bill_views_are_gated_on_the_api_connection(self):
+        """§9.2: any tariff, an API connection — not bill_stage's Intelligent-only gate."""
+        import ast
+        src = open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_settle_views")
+        body = ast.unparse(fn)
+        self.assertIn("_eng.mode_uses_api() and _eng.has_kraken_credentials()", body)
+        self.assertNotIn("bill_stage", body)
 
     def test_billing_source_names_the_views(self):
         import ast
