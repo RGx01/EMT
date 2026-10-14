@@ -312,10 +312,12 @@ final depends on the tariff the half-hour was on:
   (`measure_settled_dispatched_blocks`, `engine.py` ~11601).
 
 **Per half-hour, by its own agreement.** A user who moved from Agile to Intelligent has both kinds
-of history. Each agreement's tariff code is fetched on every rate refresh (`_ags`,
-`_refresh_kraken_rate_schedules`) but only the current agreement's start is kept today; this keeps
-the small list (`valid_from`, `valid_to`, `tariff_code`) so the classifier can ask which kind a
-half-hour was on. Unknown (no agreements read yet): the current tariff's kind.
+of history. EMT already holds the tariff history: discovery keeps every agreement with its tariff
+code (`_kraken_discovery["import"]["agreements"]`), and `engine._agreement_era(channel, start)`
+returns the tariff code live at a half-hour — the API importer's per-agreement coverage uses it.
+The kind is read from that code (IOG / INTELLI → Intelligent; anything else → published-rate).
+No agreement covering the half-hour (before the first, or discovery not run yet): the current
+tariff's kind.
 
 ### 9.2 Which views, and what gates them
 
@@ -384,8 +386,8 @@ at the window.)*
 
 ### 9.7 Work, once agreed
 
-1. Keep the import agreements (`valid_from`, `valid_to`, `tariff_code`) from each rate refresh;
-   `engine.tariff_kind_at(start)` → `intelligent` | `published`.
+1. `engine.tariff_kind_at(start)` → `intelligent` | `published`, from `_agreement_era("import",
+   start)`'s tariff code (the current tariff where no agreement covers it).
 2. `settlement_state.classify` takes `kind_at`: `estimate_cad` / `estimate_dcc` from `waiting`;
    green on settled kWh for a published-rate half-hour; `applied_emt_split` from the split state.
 3. `_settle_views`: Import bill and Export bill on the API connection; rename *Bill*; retire *API
