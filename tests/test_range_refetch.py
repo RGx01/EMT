@@ -416,11 +416,15 @@ class TheCorrections(_Harness):
         self.assertEqual((done["not_settled"], done["corrections"]), (1, 0))
         self.assertEqual(tuple(self._row()), (1, "corrected", 0.5))
 
-    def test_a_correction_that_agrees_with_the_bill_is_no_difference(self):
-        """GUARD: nothing would change, so nothing is listed."""
+    def test_a_correction_the_bill_agrees_with_is_replaced_too(self):
+        """PR 5 on the Pi, 15 Oct 2026: a correction equal to the bill was "no difference", so a
+        re-fetch could never replace it and it stayed blue. Now it is listed and Apply settles it."""
         self._corrected(cost=round(KWH * OFF, 6))
         st = self._preview(_Octopus(node=_node(KWH, 0.0)))
-        self.assertEqual(st["summary"]["differ"], 0, st["rows"])
+        (row,) = st["rows"]
+        self.assertTrue(row["bill"]["corrected"])
+        self._apply(st["token"])
+        self.assertEqual(tuple(self._row())[:2], (0, "settled"))
 
     def test_the_automatic_pass_still_leaves_a_correction(self):
         """GUARD: the settle's flag-clear is opt-in; the default keeps the user's flag."""

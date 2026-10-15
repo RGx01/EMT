@@ -12044,7 +12044,11 @@ def _refetch_diff(facts: dict, octo: dict) -> list:
             # goes from EMT's kWh x rate to Octopus's cost, red or amber to green (design §1.2,
             # revised 14 Oct 2026; 19 Aug 06:30 on the Pi, £0.0003 either way)
             new_bill = have is None and not corrected and not held
-            if cost_diff or ev_diff or arrives or new_bill:
+            # a correction Octopus's bill agrees with: still a change — the bill replaces it and the
+            # half-hour becomes an ordinary billed one (PR 5 on the Pi, 15 Oct 2026: 24 Aug 22:00
+            # BST, corrected to the day rate, £0.052341 = the bill, stayed blue and un-replaceable)
+            confirms = corrected and not held and not cost_diff
+            if cost_diff or ev_diff or arrives or new_bill or confirms:
                 r["bill"] = {"stored": cost_now, "stored_is_bill": have is not None and not corrected,
                              "corrected": corrected, "new_bill": new_bill,
                              "octopus": b["cost_incl"], "stored_ev": ev_stored,

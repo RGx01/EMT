@@ -228,7 +228,9 @@ bill of every half-hour in its range that holds kWh × rate — not only the aut
 remedy. The automatic passes keep their scope.
 
 **Corrected half-hours** (decided on the Pi, 14 Oct 2026): a re-fetch asks Octopus for them too,
-and where the bill disagrees with the user's correction the row says *your correction*, the
+and the row says *your correction* — where the bill disagrees with it, and also where the bill
+agrees (15 Oct 2026: otherwise a correction equal to its bill could never be replaced and stayed
+blue) — the
 dialog warns before Apply that a correction cannot be put back, and Apply settles the half-hour
 from the bill — `rate_corrected` clears in the settle's own UPDATE
 (`apply_measured_to_main(replace_correction=True)`), so a bill the block refuses leaves the
