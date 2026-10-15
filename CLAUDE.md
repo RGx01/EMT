@@ -54,6 +54,7 @@ since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-man
 | `docs/design/EMT-v5_E_importer_design.md` | step 7: the `v4import/` package, the restore wiring, transform order, key allow-lists, PR order |
 | `docs/design/EMT-v5_first_run_design.md` | step 6: the first-run fork — the welcome page, the two-step restore, where the account check runs |
 | `docs/design/EMT-v5_settlement_surfaces_design.md` | ROADMAP BL-85 parts 2–3 and BL-86: settlement state per half-hour and channel (kWh, bill, split), the heatmap views, the detail panel, the range re-fetch (draft) |
+| `docs/design/EMT-v5_data_tools_design.md` | ROADMAP BL-88–90: the data tools as actions on a heatmap selection, a data-quality strip on Usage Stats, soft delete (draft) |
 | `docs/design/EMT-v5_A1_writer_thread_design.md` | ROADMAP §A.1: why commits stall the loop on the SD card, and the writer thread |
 | `docs/ROADMAP.md` | open backlog, priority ordered — nothing in it has shipped |
 | `docs/CONTRIBUTING.md`, `docs/DEVELOPMENT.md` | branch model, PR flow, what a change must carry |

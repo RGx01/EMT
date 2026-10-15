@@ -533,6 +533,22 @@ the one the recorder kept, and what the import says when the recorder has none. 
 because it is worth having on its own — a first install's history is imported this way — and because
 BL-86's whole point is not to need it.
 
+**BL-88 — one data-tools surface, driven by the selection.** Proposed 15 Oct 2026 (the user, from
+the PR 5 Pi check). Delete Blocks, Gap fill, Historical import, Corrections and the re-fetch each have
+their own page and range inputs, so fixing an issue means remembering a date from a chart and typing it
+again. Wanted: every tool an action on a heatmap selection, in one shape — preview, a required backup,
+apply. Gap fill's long-period engine is kept. Draft: `docs/design/EMT-v5_data_tools_design.md` §1.
+
+**BL-89 — a data-quality strip on Usage Stats.** Proposed 15 Oct 2026 (the user). A thin strip by the
+date axis, one cell per bar, coloured by the worst settlement state; clicking it opens the heatmap at
+that day or month, selected. Needs a heatmap deep link (none exists) and a per-bar settlement summary.
+Draft: same note §2.
+
+**BL-90 — soft delete.** Proposed 15 Oct 2026 (the user). A delete today removes the half-hour's HA
+register reads (`reads`) with it, so they are lost unless HA's recorder still holds them. Wanted:
+*Delete* hides and keeps the rows, *Restore* brings them back, *Delete permanently* runs today's delete.
+A schema change and a reader audit. Draft: same note §3.
+
 ## D. Surfacing performance
 
 *Measure before optimising.* Target hardware is a Raspberry Pi 4 class box on SD storage.
