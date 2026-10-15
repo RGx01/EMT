@@ -1607,7 +1607,6 @@ def api_meter_main_reset():
     """
     try:
         import shutil, time
-        store = _get_store()
 
         # Back up first, and refuse without one (#67). This called
         # `_backup_to_share(store)`, a name this module never defined: the NameError
@@ -1618,9 +1617,18 @@ def api_meter_main_reset():
             return _refuse
         logger.info("api_meter_main_reset: backup %s written", _bk)
 
-        # Close store connection
-        db_path = store._path
-        store._conn.close()
+        # Drop the web module's shared handle. It belongs to whichever thread opened it, so
+        # it is closed only if this is that thread (a close from another raises); either
+        # way it is not used again. (15 Oct 2026: request threads used it for reads and
+        # failed whenever waitress served them on another thread.)
+        global _store
+        db_path = _os.path.join(DATA_DIR, "blocks.db")
+        if _store is not None:
+            try:
+                _store._conn.close()
+            except Exception:
+                pass
+            _store = None
 
         # Delete the DB files
         for suffix in ["", "-wal", "-shm"]:
@@ -1708,7 +1716,6 @@ def api_meter_delete_data(meter_id: str):
 def _meter_delete_data(meter_id: str):
     """api_meter_delete_data's work, with the "delete" claim held by the caller."""
     try:
-        store    = _get_store()
         payload  = request.get_json(force=True) or {}
         new_cfg  = payload.get("config")          # read on THIS (web) thread — request is thread-local
 
@@ -1752,7 +1759,7 @@ def _meter_delete_data(meter_id: str):
             logger.warning("api_meter_delete_data: import-drain check failed: %s", _ie)
 
         # The whole DB mutation (capture window → delete → EV-aware parent recompute)
-        # as one callable, run with exclusive DB access. Uses `store`/`new_cfg`/`meter_id`
+        # as one callable, run with exclusive DB access. Uses `new_cfg`/`meter_id`
         # from the closure — never `request` (not valid off the web thread).
         # Runs on the ENGINE thread. The tick is already paused and a running
         # import already cancelled by the time we get here, so this is the
@@ -2629,7 +2636,7 @@ def api_save_config():
         try:
             from block_store import config_meta_significant
             import json as _json
-            store = _get_store()
+            store = store_access.store()  # reads only; the write goes through _engine_write
             cur_id = store.get_current_config_period_id()
             should_create = True
             if cur_id is not None:
@@ -4048,7 +4055,7 @@ def api_backfill_plan():
         body   = request.get_json(silent=True) or {}
         scope  = body.get("scope")
         source = body.get("source")
-        store  = _get_store()
+        store  = store_access.store()     # this request thread's own read connection
         api_available = _eng.kraken_available()
         has_blocks    = bool(store.count_blocks())
         gaps          = store.find_block_gaps()
@@ -4103,7 +4110,7 @@ def api_backfill_run():
         body   = request.get_json(silent=True) or {}
         scope  = body.get("scope")
         source = body.get("source")
-        store  = _get_store()
+        store  = store_access.store()     # this request thread's own read connection
         api_available = _eng.kraken_available()
         has_blocks    = bool(store.count_blocks())
         gaps          = store.find_block_gaps()
@@ -4239,7 +4246,7 @@ def api_backfill_fill_gap():
         channels = (ch,) if ch in ("import", "export") else ("import", "export")
         # Include the gap's final half-hour: `to` is the last missing slot's start
         # (inclusive) but the fill window is half-open — extend by one block.
-        to = _gap_end_inclusive(_get_store(), frm, to)
+        to = _gap_end_inclusive(store_access.store(), frm, to)
         _asyncio.run_coroutine_threadsafe(
             _eng.run_gap_fill_job(frm, to, channels=channels), _event_loop)
         return jsonify({"ok": True, "status": "running"}), 200
@@ -5087,7 +5094,7 @@ def api_historical_reprice_from_csv():
     export (the billing source of truth) — the only way to price dispatch slots
     Octopus's Measurements API returns with no cost. Body: {csv, channel?}."""
     try:
-        store = _get_store()
+        store = store_access.store()      # reads only; the write goes through _engine_write
         data = request.get_json(force=True, silent=True) or {}
         csv_text = (data.get("csv") or data.get("import_csv") or "").strip()
         channel = data.get("channel") or "import"
@@ -5271,7 +5278,7 @@ def api_historical_csv_apply():
             backup = os.path.basename(_create_backup_zip(label="pre-csv-import"))
         except Exception as be:
             logger.warning("csv apply: backup failed (continuing): %s", be)
-        store = _get_store()
+        store = store_access.store()      # reads only; the writes go through _engine_write
         # Spans a previous API import proved the supplier does not cost. Inside those,
         # and ONLY there, a bill may replace what the API import left behind (usage x
         # published rate) instead of being skipped by first-man-wins. Live/settled
@@ -5408,7 +5415,7 @@ def api_historical_slots_template():
         channel = (body.get("channel") or "import").strip().lower()
         if not starts:
             return jsonify({"error": "no slots"}), 400
-        bm, tz = _period_block_minutes_tz(_get_store(), starts[0])
+        bm, tz = _period_block_minutes_tz(store_access.store(), starts[0])
         csv_text = _ci.slots_template_csv(starts, block_minutes=bm, tz_name=tz)
         fname = f"emt-slots-{channel}-{len(starts)}.csv"
         return Response(csv_text, mimetype="text/csv",
@@ -7539,7 +7546,7 @@ def api_db_vacuum():
     import os
     try:
         import engine as _eng
-        store = _get_store()
+        store = store_access.store()      # the PRAGMA reads; VACUUM opens its own below
 
         # Measure before
         db_path = store._conn.execute("PRAGMA database_list").fetchone()["file"]
@@ -7638,7 +7645,7 @@ def api_blocks_delete_preview():
                 _tz_name = (_md.get("meta") or {}).get("timezone", "UTC")
                 break
         reconstructed_only = bool(data.get("reconstructed_only"))
-        store = _get_store()
+        store = store_access.store()      # this request thread's own read connection
         # Pass LOCAL times: the store treats from/to as the ends of ONE contiguous
         # span (from_date+from_time .. to_date+to_time), not a per-day window.
         result = store.count_blocks_for_date_range(from_date, to_date, meter_id, from_time, to_time,
@@ -8497,7 +8504,7 @@ def api_corrections_preview():
         if not from_date or not to_date:
             return jsonify({"error": "from_date and to_date required"}), 400
 
-        store = _get_store()
+        store = store_access.store()      # reads only; the write goes through _engine_write
         cfg   = load_config()
         main_meta = {}
         for md in cfg.get("meters", {}).values():
@@ -8674,7 +8681,7 @@ def api_corrections_apply():
         if value < 0:
             return jsonify({"error": "value must be >= 0"}), 400
 
-        store = _get_store()
+        store = store_access.store()      # reads only; the write goes through _engine_write
         cfg   = load_config()
         main_meta = {}
         for md in cfg.get("meters", {}).values():
