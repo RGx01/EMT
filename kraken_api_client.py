@@ -1190,6 +1190,7 @@ class KrakenAPIClient:
         self, mpan: str, starts, *, account_number: Optional[str] = None,
         direction: str = "CONSUMPTION", timezone_name: str = "Europe/London",
         lookahead_ladder=(2, 3), pace_s: float = 0.4, max_attempts: int = 2,
+        wide_rungs: bool = True,
     ) -> dict:
         """Recover the billed cost + dispatch-aware label for slots the bulk fetch
         returned with kWh but NO cost. Built around two proven facts (cost probe):
@@ -1224,6 +1225,17 @@ class KrakenAPIClient:
 
         `starts` are naive-UTC iso strings. Read-only. Paced so recovery doesn't
         re-create the load.
+
+        3. WIDE RUNGS (16 Oct 2026, bill and split paths design §1.3). The strip is not only
+           a dense-run effect: measured on the Pi, 15 Oct (.build/probe_measurement_costs.py),
+           half-hours of 0.001-0.003 kWh came back with kWh and no cost in BOTH ladder windows
+           (two nodes each) and costed in the half-hour's day, or the month — a whole-month
+           query costed all 1,488 half-hours of August. So for what the ladder leaves: one
+           query per DAY that has any, [day - 30 min, next day + 3 h), then one per MONTH,
+           [month - 30 min, next month + 3 h). Each window reaches at least 3 h past every
+           half-hour it covers, so the forward-anchored OFF_PEAK label (§2) is in view and a
+           STANDARD answer from it is the truth, not a missing context. `wide_rungs=False`
+           keeps the ladder alone.
         """
         from datetime import datetime as _dt, timedelta as _td
         recovered: dict = {}
@@ -1283,11 +1295,50 @@ class KrakenAPIClient:
                     pending.discard(s)
             if pending and attempt < max_attempts and pace_s:
                 await asyncio.sleep(pace_s * attempt)
+        n_ladder = len(recovered)
+
+        async def _wide(groups):
+            # one window per group; every pending slot it costs is claimed (§3: >= 3 h forward)
+            for ws_dt, we_dt in sorted(groups):
+                if not pending:
+                    break
+                ws = (ws_dt - _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+                we = (we_dt + _td(hours=3)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+                try:
+                    rows = await self.get_measurements(
+                        mpan, ws, we, account_number=account_number,
+                        direction=direction, timezone_name=timezone_name, quiet=True)
+                except KrakenAPIError:
+                    continue
+                for r in rows:
+                    p = r.get("start")
+                    if p in pending and r.get("cost_incl") is not None:
+                        recovered[p] = r
+                        pending.discard(p)
+                if pace_s:
+                    await asyncio.sleep(pace_s)
+
+        if pending and wide_rungs:
+            days = set()
+            for s in pending:
+                d0 = _dt.fromisoformat(s).replace(hour=0, minute=0, second=0, microsecond=0)
+                days.add((d0, d0 + _td(days=1)))
+            await _wide(days)
+        n_day = len(recovered) - n_ladder
+        if pending and wide_rungs:
+            months = set()
+            for s in pending:
+                m0 = _dt.fromisoformat(s).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+                m1 = (m0 + _td(days=32)).replace(day=1)
+                months.add((m0, m1))
+            await _wide(months)
+        n_month = len(recovered) - n_ladder - n_day
         if total:
             logger.info(
                 "recover_measurement_costs: mpan=%s recovered %d/%d slot(s) via "
-                "look-back ladder %s (%d still missing)",
+                "look-back ladder %s%s (%d still missing)",
                 _mask(mpan), len(recovered), total, tuple(ladder),
+                (" + day %d, month %d" % (n_day, n_month)) if wide_rungs else "",
                 total - len(recovered))
         return recovered
 
