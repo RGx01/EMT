@@ -1,6 +1,6 @@
 # EMT v5 — One bill reader, one split rule (consolidation)
 
-*Draft, 16 Oct 2026. From the PR 5 Pi check: the range re-fetch (BL-86) added a fifth way to ask
+*Draft, 16 Oct 2026; §6's three questions decided the same day. From the PR 5 Pi check: the range re-fetch (BL-86) added a fifth way to ask
 Octopus for a bill, and the next two fixes on the table (a wider cost window; a re-import that keeps
 the bill's split) would each have added another copy. The user asked for the duplication first.
 Every line below was read in the code; nothing is taken from a docstring.*
@@ -149,6 +149,7 @@ covered).
 | 4 | §2: one `emt_ev_at` | the 4.5.23 tests (`test_bill_split_wait.py`) on every path |
 | 5 | §3.3 1, 3, 4: `ev_for`, one builder, one capped test | goldens; real-DB parity on `blocks-35` (before) / `blocks-36` (after the re-import) |
 | 6 | §3.3 2: one population; a re-import takes the bill's split | the 15 Oct re-import: the five SMB half-hours take the bill's EV |
+| 7 | §6 (c): the API import stores its cost as a bill; its recovery through `fetch_bills` | a re-import of the soak's August: every half-hour gains a bill row, no cost moves; published-rate history keeps its rate |
 
 ## 6. Decided (16 Oct 2026, the user)
 
@@ -176,4 +177,18 @@ b. **At the final stage the bill's split wins.** `ev_for` = the bill's EV bucket
    the dispatch capped the bill, −0.53 where the stored split was the dispatch's), the same off the
    house; the total cost is unchanged.
 
-*Open:* (c) does the API import keep its own bulk fetch, or become `fetch_bills` over a month?
+c. **The API import keeps its bulk fetch, as the first read.** Measured on the Pi, 15 Oct: the
+   month-wide measurements query costed all 1,488 half-hours of August where EMT's small recovery
+   windows came back stripped for the same half-hours; it is also the cheapest (one query per 60 days
+   against two to four per half-hour). Two changes so it is not a separate world:
+   1. **Its cost is stored as a bill** — a `measured_cost` row per half-hour, as every other path —
+      not only in the block. The bill views then read one table, and `settlement_state`'s special case
+      ("an API import counts as Octopus's cost") goes: an imported half-hour reaches the final stage
+      for its cost like any other. **A stored bill is applied only on an Intelligent half-hour**
+      (settlement surfaces design §9.2): applying snaps the rate to the day's lowest or highest band, a
+      two-rate model, wrong for Agile / Go / Cosy history, which keeps the import's own rate
+      (`_billed_rate`).
+   2. **Its missing-cost recovery and the reprice queue use `fetch_bills`** (§1.3 3) and its ladder.
+
+   The split stays with the drain: the bulk measurements carry none, and the device breakdown is
+   asked in small chunks only.
