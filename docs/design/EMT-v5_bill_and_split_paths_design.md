@@ -150,7 +150,30 @@ covered).
 | 5 | §3.3 1, 3, 4: `ev_for`, one builder, one capped test | goldens; real-DB parity on `blocks-35` (before) / `blocks-36` (after the re-import) |
 | 6 | §3.3 2: one population; a re-import takes the bill's split | the 15 Oct re-import: the five SMB half-hours take the bill's EV |
 
-*Open:* (a) is the zero rule the live pass's (cache it on a zero-kWh half-hour) for every path?
-(b) should `ev_for` prefer the bill over the dispatch when the dispatch is the larger (30 Aug 12:30:
-dispatch 3.46, bill 3.409)? Today `_measured_ev_kwh` uses the dispatch as a ceiling, so the bill wins
-when lower. (c) does the API import keep its own bulk fetch, or become `fetch_bills` over a month?
+## 6. Decided (16 Oct 2026, the user)
+
+**The tower.** A half-hour's figures settle in three stages, each replacing the one below:
+
+| stage | kWh | House/EV split | Import bill view |
+|---|---|---|---|
+| prediction | local HA readings (CAD) | the dispatch | amber |
+| intermediate | DCC | the dispatch | light amber |
+| final | DCC | Octopus's cost **and split** | green (teal while the split is still the dispatch's) |
+
+a. **One zero rule, in the shared parser.** Octopus answers zero and EMT holds zero kWh → cache it as
+   ZERO (the bill confirms the half-hour; the breakdown stays NULL, so the split heal leaves it).
+   Octopus answers zero where EMT holds kWh → not an answer: not cached, asked again, logged once as a
+   kWh disagreement. On the soak all 90 cached ZERO rows (1 Aug – 14 Oct) are on zero-kWh half-hours;
+   no disagreeing case has occurred. No path changes behaviour — the drain and the re-fetch only ever
+   ask half-hours with kWh, so they already followed it.
+b. **At the final stage the bill's split wins.** `ev_for` = the bill's EV bucket, clipped to the
+   meter's kWh, where a bill split is cached; the dispatch only below the final stage. This replaces
+   v4 4.5.9's rule in `_measured_ev_kwh` (EV = min(bill, dispatch, meter): the dispatch capped the
+   bill, against a battery charging concurrently inflating the EV bucket). Measured on the soak, 26 Aug
+   – 15 Oct: of 382 half-hours with both figures, the bill's EV was higher in 220, the dispatch in 149
+   (by up to 2.2 kWh; 14 Oct 04:30 BST the dispatch said 3.02 kWh where the meter imported 0.809).
+   Letting the bill win changes 231 half-hours: EV 914.5 → 937.1 kWh (+22.65, of which +23.18 where
+   the dispatch capped the bill, −0.53 where the stored split was the dispatch's), the same off the
+   house; the total cost is unchanged.
+
+*Open:* (c) does the API import keep its own bulk fetch, or become `fetch_bills` over a month?
