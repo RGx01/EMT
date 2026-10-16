@@ -11516,6 +11516,28 @@ def _bill_drops_ev(emt_ev_kwh, bill_ev_kwh) -> bool:
     return emt > _BILL_SPLIT_EMT_MIN_KWH and bill <= 1e-9
 
 
+def emt_ev_reference(segment_ev, cached_bill_ev) -> float:
+    """What a new answer is judged against by the 4.5.23 hold-back (`_bill_drops_ev`): the car is
+    known to have charged in a half-hour if EMT's split (its EV segments) OR a bill already cached
+    has it — the larger of the two. Bill and split paths design §2 (16 Oct 2026): the four paths
+    read it three ways (segments; the cached bill; the larger). Where nothing is cached (the live
+    pass, the drain) this is the segments; where a bill is (the VAT resync, the re-fetch), a later
+    answer that drops the car is the 10 Oct 2026 provisional answer the other way round."""
+    def _f(x):
+        try:
+            return float(x or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return max(_f(segment_ev), _f(cached_bill_ev))
+
+
+def emt_ev_at(store, starts) -> dict:
+    """{start: emt_ev_reference} for `starts` — one read of the segments and the cached bills."""
+    seg = store.get_ev_split_kwh(starts)
+    bill = store.get_bill_ev_kwh(starts)
+    return {s: emt_ev_reference(seg.get(s), bill.get(s)) for s in starts}
+
+
 def _bill_split_wait(store) -> dict:
     import json as _json
     try:
@@ -11642,7 +11664,7 @@ async def measure_settled_dispatched_blocks() -> dict:
         [s for s in by_start if s not in _kept], mpan=mpan)[:_MEASURED_MAX_PER_PASS]
     if not missing:
         return {"candidates": len(rows), "fetched": 0}
-    _emt_ev = store.get_ev_split_kwh(missing)
+    _emt_ev = emt_ev_at(store, missing)            # the hold-back's one reference (design §2)
 
     n_store = n_absent = n_mixed = n_zero = n_held = 0
     _fetched_pairs: list = []          # v4 4.5.22 (#505): (slot, cost_incl, cost_excl) for the hint
@@ -12039,7 +12061,7 @@ def _refetch_diff(facts: dict, octo: dict) -> list:
             arrives = (ev_new is not None and not ev_is_bill and have is not None
                        and (bool(f.get("completed")) or ev_new > _REFETCH_KWH_EPS))
             held = bool(bd and _bill_drops_ev(
-                max(_f(f.get("ev_kwh")) or 0.0, _f(f.get("bill_ev_kwh")) or 0.0), ev_new))
+                emt_ev_reference(f.get("ev_kwh"), f.get("bill_ev_kwh")), ev_new))
             if held and not cost_diff:
                 ev_diff = False                          # held, and the £ agrees: nothing changes
             if held and not cost_diff:
@@ -12244,13 +12266,14 @@ async def run_measured_vat_resync() -> dict:
         return {"ok": False, "reason": "fetch_failed"}
     rows, wrong, unverified = {}, [], []
     _kwh = store.get_imp_kwh(slots)
+    _emt_ev = emt_ev_at(store, slots)              # the hold-back's one reference (design §2)
     for slot in slots:
         kind, node = fetched.get(slot, (None, None))
         row = parse_bill(node, kind, _kwh.get(slot))
         # v4 4.5.23: a re-fetch that drops the car from a half-hour whose cached bill had it is not
         # a settled answer either — unverified, so nothing is overwritten (it waits a day).
         if row is None or (row.get("breakdown") and _bill_drops_ev(
-                (store.get_measured_breakdown(slot) or {}).get("ev_kwh"), row["breakdown"][2])):
+                _emt_ev.get(slot), row["breakdown"][2])):
             unverified.append(slot)
             continue
         rows[slot] = row
@@ -12350,7 +12373,7 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
         missing = [s for s in page if s not in _kept]
         if not missing:
             continue
-        _emt_ev = store.get_ev_split_kwh(missing)
+        _emt_ev = emt_ev_at(store, missing)        # the hold-back's one reference (design §2)
         try:
             nodes = await _fetch_bill_nodes(mpan, missing)   # one bill reader (design §1.3)
         except Exception as e:

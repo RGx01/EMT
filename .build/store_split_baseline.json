@@ -137,6 +137,7 @@
     "find_block_gaps",
     "get_all_blocks",
     "get_attribution_runs",
+    "get_bill_ev_kwh",
     "get_bill_rows",
     "get_block_bounds",
     "get_block_by_id",

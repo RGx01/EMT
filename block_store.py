@@ -7378,6 +7378,22 @@ class BlockStore:
                 out[r[0]] = r[1]
         return out
 
+    def get_bill_ev_kwh(self, starts, direction: str = "CONSUMPTION") -> dict:
+        """{slot_start: EV kWh} of the latest cached bill for each slot in `starts` that states
+        one (any mpan) — absent where no bill, or no breakdown, is cached."""
+        starts = [s for s in dict.fromkeys(starts or []) if s]
+        out = {}
+        for i in range(0, len(starts), 500):
+            chunk = starts[i:i + 500]
+            for r in self._conn.execute(
+                    "SELECT slot_start, ev_kwh FROM measured_cost m WHERE direction = ? "
+                    "AND slot_start IN (%s) AND ev_kwh IS NOT NULL AND fetched_at = "
+                    "(SELECT MAX(fetched_at) FROM measured_cost m2 WHERE m2.slot_start = "
+                    "m.slot_start AND m2.direction = m.direction)" % ",".join("?" * len(chunk)),
+                    [direction] + chunk):
+                out[r[0]] = r[1]
+        return out
+
     def get_ev_split_kwh(self, starts, meter_id: str = "electricity_main") -> dict:
         """{block_start: EV kWh} of the blocks in `starts` that have an EV split — their
         attribution='ev' import segments, which ARE the split (ev_split.py). A block with no
