@@ -305,6 +305,46 @@ class TestImportRepriceQueue(unittest.TestCase):
                             "WHERE block_start='2026-06-05T18:30:00'").fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.28)   # untouched (source is NULL)
 
+    def _imported_with_segments(self, s, start, **cols):
+        """The fixture's imported block, made settled/corrected, with an EV + house split."""
+        sets = ", ".join("%s = ?" % k for k in cols)
+        s._conn.execute("UPDATE blocks SET " + sets + " WHERE block_start = ? AND "
+                        "meter_id = 'electricity_main'", (*cols.values(), start))
+        s.set_block_segments(start, "electricity_main",
+                             [(2.0, 0.05493, 0.05231, "off_peak", "ev"),
+                              (1.361, 0.32309, 0.30771, "peak", "house")])
+        s._conn.commit()
+
+    def _segments(self, s, start):
+        return s._conn.execute("SELECT count(*) FROM block_segments WHERE block_start = ? "
+                               "AND meter_id = 'electricity_main'", (start,)).fetchone()[0]
+
+    def test_reprice_leaves_a_bill_settled_imported_block(self):
+        """16 Oct 2026 (bill and split paths design §4): the import cost repair overwrote an
+        imported block settled from a bill, and deleted its segments — the bill's split."""
+        s, bs = self._store(), "2025-10-21T18:30:00"
+        self._imported_with_segments(s, bs, rate_source="settled", imp_rate=0.05493, imp_cost=0.5)
+        self.assertFalse(s.reprice_imported_block(bs, "electricity_main", "import", 0.07, 0.23528))
+        r = s._conn.execute("SELECT imp_rate, imp_cost FROM blocks WHERE block_start = ?",
+                            (bs,)).fetchone()
+        self.assertEqual((r["imp_rate"], r["imp_cost"]), (0.05493, 0.5))
+        self.assertEqual(self._segments(s, bs), 2, "the bill's split was deleted")
+
+    def test_reprice_leaves_a_corrected_imported_block(self):
+        s, bs = self._store(), "2025-10-21T18:30:00"
+        self._imported_with_segments(s, bs, rate_source="corrected", rate_corrected=1,
+                                     imp_rate=0.30, imp_cost=1.0)
+        self.assertFalse(s.reprice_imported_block(bs, "electricity_main", "import", 0.07, 0.23528))
+        self.assertFalse(s.reprice_imported_block(bs, "electricity_main", "export", 0.15, 0.10))
+        self.assertEqual(self._segments(s, bs), 2)
+
+    def test_reprice_still_repairs_a_plain_imported_block(self):
+        """GUARD: the repair's purpose — an imported block priced from the tariff."""
+        s, bs = self._store(), "2025-10-21T18:30:00"
+        self._imported_with_segments(s, bs, rate_source="schedule")
+        self.assertTrue(s.reprice_imported_block(bs, "electricity_main", "import", 0.07, 0.23528))
+        self.assertEqual(self._segments(s, bs), 0)            # rebuilt by the reprice sweep
+
     def test_reprice_from_csv_sets_exact_billed_cost(self):
         # A dispatch slot the API mispriced at peak; the CSV (billing truth) says
         # off-peak. Repricing from the CSV sets the exact billed cost + rate, only

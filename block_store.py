@@ -3392,7 +3392,16 @@ class BlockStore:
 
         BL-23 (4.2 C3): when a re-fetch supplies the ex-VAT cost too (import channel),
         correct imp_cost_exc in the same UPDATE, so the repair/settlement
-        reprice keeps the exc figure in step with the billed inc cost."""
+        reprice keeps the exc figure in step with the billed inc cost.
+
+        "Settled" above meant DCC-settled live rows; `source` alone never covered an IMPORTED
+        block settled from a bill or corrected by the user, which keeps `source='imported_*'`.
+        16 Oct 2026 (bill and split paths design §4): the import cost repair, from the reprice
+        queue and from the deferred verify pass, overwrote those — the bill (or the correction)
+        replaced by the measurements' cost and `_billed_rate`, and the segments deleted, so the
+        bill's split was rebuilt from the dispatch or lost. Now: on import, a block whose
+        `rate_source` is 'settled' or 'corrected', or that carries `rate_corrected`, is left
+        alone; on export, `rate_corrected` (corrections stamp it for an export rate too)."""
         rcol, ccol = (("imp_rate", "imp_cost") if channel == "import"
                       else ("exp_rate", "exp_cost"))
         set_exc, extra = "", []
@@ -3403,7 +3412,10 @@ class BlockStore:
             cur = self._conn.execute(
                 f"UPDATE blocks SET {rcol} = ?, {ccol} = ?{set_exc} "
                 f"WHERE block_start = ? AND meter_id = ? AND source LIKE 'imported%' "
-                f"AND (COALESCE({rcol}, -1) != ? OR COALESCE({ccol}, -1) != ?)",
+                f"AND COALESCE(rate_corrected, 0) = 0 "
+                + ("AND COALESCE(rate_source, '') NOT IN ('settled', 'corrected') "
+                   if channel == "import" else "")
+                + f"AND (COALESCE({rcol}, -1) != ? OR COALESCE({ccol}, -1) != ?)",
                 (rate, cost, *extra, start, meter_id, rate, cost))
             # G2: a real price change (a gap filled or a price corrected) invalidates any stale
             # segment so the reprice sweep rebuilds it from the corrected column — keeps the block
