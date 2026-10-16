@@ -100,6 +100,26 @@ def segments_from_legacy(*, imp_kwh: float, imp_cost: float, imp_rate: float,
     return segs
 
 
+def ev_house_at(kwh: float, ev_kwh: Optional[float], *, inc_rate: float,
+                exc_rate: Optional[float], ev_band: str, home_band: str) -> List[Segment]:
+    """A block's EV + house segments at ONE rate: the EV leg (`ev_kwh`) and the house remainder,
+    or — with no EV — one house segment for the whole kWh. The one builder (bill and split paths
+    design §3.3, 16 Oct 2026) for the four places that wrote it by hand: the carve, the settle's
+    single-band fallback, the reconcile's stale-rated split heal (BL-58b), and its revert/restore
+    verdict. A remainder that rounds to nothing gets no segment."""
+    segs: List[Segment] = []
+    kwh = float(kwh or 0.0)
+    if ev_kwh is not None and float(ev_kwh) > _EPS:
+        ev_kwh = float(ev_kwh)
+        segs.append(Segment(round(ev_kwh, 6), inc_rate, exc_rate, ev_band, "ev"))
+        hk = round(kwh - ev_kwh, 6)
+        if hk > _EPS:
+            segs.append(Segment(hk, inc_rate, exc_rate, home_band, "house"))
+    else:
+        segs.append(Segment(round(kwh, 6), inc_rate, exc_rate, home_band, "house"))
+    return segs
+
+
 # ── Projections — the legacy imp_* columns become views over the segments ────────────
 
 def refit_to_kwh(segs, kwh: float, *, rate: float, exc_rate: Optional[float],

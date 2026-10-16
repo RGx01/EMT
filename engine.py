@@ -7231,6 +7231,7 @@ async def run_iog_split_carve(max_blocks: int = 2000, starts=None) -> dict:
     completed, so a split follows Octopus's completed record within the 5-minute capture rather
     than waiting for the hourly pass (13 Oct 2026: 05:30 BST's charge was recorded at 06:42 and
     still drawn as house at 06:47)."""
+    import pricing_segments as _ps
     if _store is None:
         return {"ok": False, "reason": "no store"}
     isched = _kraken_rate_schedules.get("import")
@@ -7268,12 +7269,8 @@ async def run_iog_split_carve(max_blocks: int = 2000, starts=None) -> dict:
         rexc = round(float(rexc), 6)
         ev_band = tmp.get("ev_band") or "off_peak"
         home_band = tmp.get("home_band") or ev_band
-        house = round(kwh - ev, 6)
-        segs = []
-        if ev > 1e-9:
-            segs.append((ev, rate, rexc, ev_band, "ev"))
-        if house > 1e-9:
-            segs.append((house, rate, rexc, home_band, "house"))
+        segs = _ps.ev_house_at(kwh, ev, inc_rate=rate, exc_rate=rexc,
+                               ev_band=ev_band, home_band=home_band)
         try:
             # BL-79: the segments go in the carve's own transaction, and only if its guard
             # let it write — a block carved since it was selected keeps both as they are.
@@ -12743,14 +12740,8 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
             segs = None
 
     if segs is None:
-        segs = []
-        if evk > 1e-9:
-            segs.append(_ps.Segment(round(evk, 6), imp_rate, exc_rate, ev_band, "ev"))
-            _hk = kwh - evk
-            if _hk > 1e-9:
-                segs.append(_ps.Segment(round(_hk, 6), imp_rate, exc_rate, home_band, "house"))
-        else:
-            segs.append(_ps.Segment(round(kwh, 6), imp_rate, exc_rate, home_band, "house"))
+        segs = _ps.ev_house_at(kwh, evk, inc_rate=imp_rate, exc_rate=exc_rate,
+                               ev_band=ev_band, home_band=home_band)
 
     # The bill's EV/house split is its segments (step 5c); the cost is the BILL.
     _cost_exc = (round(cost_excl, 6) if cost_excl is not None
@@ -13126,18 +13117,9 @@ async def reconcile_dispatch_overlay() -> dict:
                                 _exc_ok = round(cur_rate / (1.0 + store.vat_rate_at(bs)), 6)
                             except Exception:
                                 _exc_ok = None
-                        _evk = _brow["ev_kwh"]          # BL-79 (3): ev_split's split
-                        _segs_ok = []
-                        if _evk is not None and float(_evk) > 1e-9:
-                            _segs_ok.append(_ps_ok.Segment(round(float(_evk), 6), cur_rate,
-                                            _exc_ok, _want_ev, "ev"))
-                            _hk = float(_brow["imp_kwh"]) - float(_evk)
-                            if _hk > 1e-9:
-                                _segs_ok.append(_ps_ok.Segment(round(_hk, 6), cur_rate,
-                                                _exc_ok, _want_home, "house"))
-                        else:
-                            _segs_ok.append(_ps_ok.Segment(round(float(_brow["imp_kwh"]), 6),
-                                            cur_rate, _exc_ok, _want_home, "house"))
+                        _segs_ok = _ps_ok.ev_house_at(           # BL-79 (3): ev_split's split
+                            float(_brow["imp_kwh"]), _brow["ev_kwh"], inc_rate=cur_rate,
+                            exc_rate=_exc_ok, ev_band=_want_ev, home_band=_want_home)
                         # The split is the segments (step 5c): re-pricing them is the heal.
                         store.set_block_segments(bs, "electricity_main", _segs_ok)
                         n_band += 1
@@ -13228,18 +13210,9 @@ async def reconcile_dispatch_overlay() -> dict:
             import pricing_segments as _ps_rc
             _mrow = store.get_block_split_columns(bs)
             if _mrow is not None and (_mrow["imp_kwh"] or 0) > 0:
-                _evk = _mrow["ev_kwh"]                  # BL-79 (3): ev_split's split
-                _segs_rc = []
-                if _evk is not None and float(_evk) > 1e-9:
-                    _segs_rc.append(_ps_rc.Segment(round(float(_evk), 6), new_rate,
-                                    _exc_rate, _ev_band_col, "ev"))
-                    _hk = float(_mrow["imp_kwh"]) - float(_evk)
-                    if _hk > 1e-9:
-                        _segs_rc.append(_ps_rc.Segment(round(_hk, 6), new_rate, _exc_rate,
-                                        _home_band_col, "house"))
-                else:
-                    _segs_rc.append(_ps_rc.Segment(round(float(_mrow["imp_kwh"]), 6), new_rate,
-                                    _exc_rate, _home_band_col, "house"))
+                _segs_rc = _ps_rc.ev_house_at(              # BL-79 (3): ev_split's split
+                    float(_mrow["imp_kwh"]), _mrow["ev_kwh"], inc_rate=new_rate,
+                    exc_rate=_exc_rate, ev_band=_ev_band_col, home_band=_home_band_col)
         except Exception as _rc_e:
             logger.warning("reconcile: segment build failed for %s: %s", bs, _rc_e)
             _segs_rc = None

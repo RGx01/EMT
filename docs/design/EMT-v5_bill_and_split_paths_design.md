@@ -158,18 +158,26 @@ covered).
 | 3 | §1.3 3: `fetch_bills` with the ladder (+ day, + month) | the probe's eight half-hours as a fixture; real-DB parity on the re-fetch. *Built 16 Oct 2026:* the rungs live in `KrakenAPIClient.recover_measurement_costs` itself (`wide_rungs`, on by default) — the one billed-cost fetch every caller already shares (`_fetch_bill_nodes`, the API import's in-pass recovery, `repair_import_pricing`), so no `fetch_bills` wrapper was needed. After the −30 min…+2 h / +3 h ladder: one query per day with a half-hour still missing, then one per month, each [start − 30 min, end + 3 h) so the OFF_PEAK label is in view. The breakdown fetch is unchanged (no stripping seen there). |
 | 4 | §2: one `emt_ev_at` | the 4.5.23 tests (`test_bill_split_wait.py`) on every path. *Built 16 Oct 2026* (§2's note): `emt_ev_reference`, `emt_ev_at`, `BlockStore.get_bill_ev_kwh`. |
 | 5 | §3.3 1, 3, 4: `ev_for`, one builder, one capped test | goldens; real-DB parity on `blocks-35` (before) / `blocks-36` (after the re-import). *Built 16 Oct 2026, without the builder* (it moves to its own PR, 5b — the four builds differ in leg rates, ex-VAT and bands): the rule lives in `_measured_ev_kwh` — on an IOG-SMB agreement (`split_at`) with a bill split cached, the bill's EV clipped to kWh; otherwise the completed dispatch. `dispatch_ev_kwh` is the one dispatch computation (`_iog_slot_ev_kwh` deleted), `_capped_schedules` the one schedule check (four copies). `BlockStore.dispatch_coverage` deleted: the "unknown ceiling" branch it served is gone. Parity on `blocks-35`: of 1,115 settled half-hours with a bill split, 226 on the agreement take a different EV (net +22.72 kWh; the estimate was 231 / +22.65) and 1 before it (24 Aug 05:00 UTC takes back its 0.011 kWh). **These reach stored data only with PR 6** — the rule changes new settles; nothing re-selects a half-hour already settled with an EV split. Not done: capped pricing judged per half-hour by its agreement (pre-agreement history repriced by the seam on an SMB account) — a pricing change, for its own note. |
+| 5b | §3.3 3: one EV + house builder | *Built 16 Oct 2026:* `pricing_segments.ev_house_at`, for the carve, the settle's single-band fallback, BL-58b and the revert/restore verdict; equal to the hand-written form on 2,000 random cases, except that a remainder rounding to nothing gets no segment. |
 | 6 | §3.3 2: one population; a re-import takes the bill's split | the 15 Oct re-import: the five SMB half-hours take the bill's EV |
-| 7 | §6 (c): the API import stores its cost as a bill; its recovery through `fetch_bills` | a re-import of the soak's August: every half-hour gains a bill row, no cost moves; published-rate history keeps its rate |
+| 7 | §6 (c): the API import stores its cost as a bill; its recovery through `fetch_bills` | a re-import of the soak's August: every half-hour gains a bill row, no cost moves; published-rate history keeps its rate. **And:** on an IOG-SMB agreement a cost-only row must not stop the breakdown being asked — the drain (and the live pass) must still ask a half-hour whose cached bill has no breakdown, or its split stays the dispatch's for good (§6, final, split pending) |
 
 ## 6. Decided (16 Oct 2026, the user)
 
 **The tower.** A half-hour's figures settle in three stages, each replacing the one below:
 
-| stage | kWh | House/EV split | Import bill view |
-|---|---|---|---|
-| prediction | local HA readings (CAD) | the dispatch | amber |
-| intermediate | DCC | the dispatch | light amber |
-| final | DCC | Octopus's cost **and split** | green (teal while the split is still the dispatch's) |
+| stage | kWh | cost | House/EV split | Import bill view |
+|---|---|---|---|---|
+| prediction | local HA readings (CAD) | kWh × rate | the dispatch | amber |
+| intermediate | DCC | kWh × rate | the dispatch | light amber |
+| final, split pending | DCC | Octopus's | the dispatch, **until Octopus's split arrives** | teal |
+| final | DCC | Octopus's | Octopus's | green |
+
+*(The split-pending stage made explicit by the user, 16 Oct 2026: on IOG-SMB the split can arrive
+after the cost — the third settlement event, ROADMAP BL-82's model. It needs the split to be asked
+for again: a bill cached with no breakdown on the agreement is never re-asked, so it must not be
+written there — PR 2 removed the re-fetch's cost-only fallback for that reason, and PR 7 must not
+reintroduce it.)*
 
 a. **One zero rule, in the shared parser.** Octopus answers zero and EMT holds zero kWh → cache it as
    ZERO (the bill confirms the half-hour; the breakdown stays NULL, so the split heal leaves it).
