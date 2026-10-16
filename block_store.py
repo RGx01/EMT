@@ -7409,25 +7409,30 @@ class BlockStore:
             (mpan, meter_id, floor)).fetchall()
         return [dict(r) for r in rows]
 
-    def get_settled_blocks_missing_ev_split(self, limit: int,
-                                            meter_id: str = "electricity_main") -> list:
-        """Blocks settled WITHOUT an EV split, whose cached bill does carry one.
+    def get_settled_blocks_off_their_split(self, limit: int,
+                                           meter_id: str = "electricity_main") -> list:
+        """Settled blocks whose stored EV split may not be the settle's rule — the split heal's
+        population (bill and split paths design §3.3 2, consolidation PR 6, 16 Oct 2026).
 
-        These are stamped `rate_source = 'settled'`, so the drain's backlog can
-        never revisit them -- they were settled house-only because the dispatch
-        ceiling was ambiguous at the time. The bill's own EV bucket is the
-        evidence that arrived later.
+        A SQL pre-filter; the caller confirms each against `engine._measured_ev_kwh`. Settled,
+        not corrected, with a bill split cached (the latest CONSUMPTION row states `ev_kwh`), and
+        either the EV segments differ from the bill's EV clipped to the meter (the rule on an
+        IOG-SMB agreement), or the block holds no EV where a completed dispatch does (the rule
+        before it). Until 16 Oct this selected only blocks with NO EV split and a bill EV > 0, so a
+        block settled with a dispatch-capped split (v4 4.5.9) was never revisited.
         """
+        ev = _evsplit.sql_kwh("b")
         rows = self._conn.execute(
-            "SELECT b.block_start, mc.cost_incl, mc.cost_excl, mc.label "
-            "FROM blocks b JOIN measured_cost mc ON mc.slot_start = b.block_start "
+            "SELECT b.block_start, mc.cost_incl, mc.cost_excl, mc.label, "
+            "       " + ev + " AS seg_ev, mc.ev_kwh AS bill_ev "
+            "FROM blocks b JOIN measured_cost mc ON mc.rowid = (" + self._LATEST_BILL_SQL + ") "
             "WHERE b.meter_id = ? AND b.rate_source = 'settled' "
-            # BL-79 (3): "no split" is ev_split's — no EV segment (the columns only where
-            # the block has no segments at all), not the column alone.
-            "  AND " + _evsplit.sql_kwh("b") + " IS NULL AND COALESCE(b.imp_kwh, 0) > 0 "
-            "  AND COALESCE(b.rate_corrected, 0) = 0 "
-            "  AND mc.ev_kwh IS NOT NULL AND mc.ev_kwh > 0 "
-            "  AND mc.cost_incl IS NOT NULL "
+            "  AND COALESCE(b.imp_kwh, 0) > 0 AND COALESCE(b.rate_corrected, 0) = 0 "
+            "  AND mc.ev_kwh IS NOT NULL AND mc.cost_incl IS NOT NULL "
+            "  AND (ABS(COALESCE(" + ev + ", 0) - MIN(mc.ev_kwh, b.imp_kwh)) > 0.0005 "
+            "       OR (COALESCE(" + ev + ", 0) <= 1e-9 AND EXISTS (SELECT 1 FROM dispatch_history d "
+            "           WHERE d.slot_start = b.block_start AND d.kind = 'completed' "
+            "             AND ABS(COALESCE(d.energy_kwh, 0)) > 1e-9))) "
             "ORDER BY b.block_start LIMIT ?",
             (meter_id, int(limit))).fetchall()
         return [dict(r) for r in rows]

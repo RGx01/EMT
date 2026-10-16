@@ -259,5 +259,44 @@ class TestTheHealDoesNotLoop(_Base):
         self.assertAlmostEqual(self._ev() or 0, 4.5, places=6)
 
 
+class TheHealsPopulation(_Base):
+    """Bill and split paths design §3.3 2, consolidation PR 6 (16 Oct 2026): the heal brings every
+    settled block to the settle's rule, not only blocks settled with NO split. Replayed on the soak
+    (blocks-35): 227 blocks moved (226 on the agreement, +22.72 kWh EV; 24 Aug 05:00 UTC its
+    0.011 kWh back), in one pass; costs to the bill (16 by a millionth of a pound), no rate moved.
+    Discriminating, except the guards named."""
+
+    def _settled_with(self, ev):
+        self._block(source="kraken_api", api=6.0)
+        engine._store._conn.execute(
+            "UPDATE blocks SET rate_source='settled' WHERE block_start=?", (SLOT,))
+        engine._store.set_block_segments(SLOT, "electricity_main", [
+            (ev, 0.05493, 0.05231, "off_peak", "ev"), (6.0 - ev, 0.05493, 0.05231, "off_peak", "house")])
+        engine._store._conn.commit()
+
+    def test_a_dispatch_capped_split_takes_the_bills(self):
+        """The 4.5.9 cap left 1.45 where the bill says 4.5 (6 Sep 2026 10:30's shape)."""
+        self._settled_with(1.45)
+        self._bill(ev_kwh=4.5)
+        self._dispatch(1.45)
+        self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 1)
+        self.assertAlmostEqual(self._ev(), 4.5, places=6)
+        self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 0, "it loops")
+
+    def test_a_bill_dropping_the_car_does_not_take_it_away(self):
+        """GUARD: the 4.5.23 rule — a bill of no EV is not grounds to rewrite EMT's car out."""
+        self._settled_with(3.1)
+        self._bill(ev_kwh=0.0)
+        self._dispatch(3.1)
+        self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 0)
+        self.assertAlmostEqual(self._ev(), 3.1, places=6)
+
+    def test_a_split_already_the_bills_is_left_alone(self):
+        """GUARD."""
+        self._settled_with(4.5)
+        self._bill(ev_kwh=4.5)
+        self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 0)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -69,7 +69,7 @@ class EvSegments(unittest.TestCase):
         st = _store(segs=EV_SEGS, rate_source="settled")
         st.upsert_measured_cost(BS, cost_incl=0.16, cost_excl=0.15, label="OFF_PEAK", kwh=3.0)
         st.upsert_measured_breakdown(BS, home_kwh=1.0, home_rate=RATE, ev_kwh=2.0, ev_rate=RATE)
-        self.assertEqual(_starts(st.get_settled_blocks_missing_ev_split(10)), [])
+        self.assertEqual(_starts(st.get_settled_blocks_off_their_split(10)), [])
 
     def test_the_carve_guard_refuses_it(self):
         st = _store(segs=EV_SEGS)
