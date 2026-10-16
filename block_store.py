@@ -7365,6 +7365,19 @@ class BlockStore:
             + (" AND b.block_start NOT IN (%s)" % ",".join("?" * len(exclude)) if exclude else ""),
             (meter_id, floor, before, *exclude)).fetchone()[0]
 
+    def get_imp_kwh(self, starts, meter_id: str = "electricity_main") -> dict:
+        """{block_start: imp_kwh} for the blocks in `starts` (absent where there is no block) —
+        what EMT holds against a bill's answer (bill and split paths design §6 (a))."""
+        starts = [s for s in dict.fromkeys(starts or []) if s]
+        out = {}
+        for i in range(0, len(starts), 500):
+            chunk = starts[i:i + 500]
+            for r in self._conn.execute(
+                    "SELECT block_start, imp_kwh FROM blocks WHERE meter_id = ? "
+                    "AND block_start IN (%s)" % ",".join("?" * len(chunk)), [meter_id] + chunk):
+                out[r[0]] = r[1]
+        return out
+
     def get_ev_split_kwh(self, starts, meter_id: str = "electricity_main") -> dict:
         """{block_start: EV kWh} of the blocks in `starts` that have an EV split — their
         attribution='ev' import segments, which ARE the split (ev_split.py). A block with no

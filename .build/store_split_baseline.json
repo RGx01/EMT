@@ -181,6 +181,7 @@
     "get_generation_mix_for_range",
     "get_generation_mix_since",
     "get_historical_derivation",
+    "get_imp_kwh",
     "get_import_blocks_missing_exc",
     "get_imported_block_pricing",
     "get_imported_block_starts",

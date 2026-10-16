@@ -441,8 +441,17 @@ class BeforeTheAgreement(_Harness):
     COST = {"cost_incl": round(KWH * OFF, 6), "cost_excl": round(KWH * OFF, 6),
             "off_peak": True, "kwh": KWH}
 
-    def test_no_breakdown_falls_back_to_the_billed_cost(self):
+    def _pre_agreement(self):
+        engine._kraken_discovery = {"import": {"mpan": "IM", "tariff_code": "E-1R-IOG-SMB-X-B",
+            "agreements": [
+                {"tariff_code": "E-1R-INTELLI-VAR-B", "valid_from": "2025-01-01T00:00:00Z",
+                 "valid_to": "2026-09-02T00:00:00Z"},
+                {"tariff_code": "E-1R-IOG-SMB-X-B", "valid_from": "2026-09-02T00:00:00Z",
+                 "valid_to": None}]}}
+
+    def test_before_the_agreement_the_billed_cost_is_asked(self):
         self._block(bill=False)
+        self._pre_agreement()
         oc = _Octopus(node=None); oc.cost_only = {SLOT: self.COST}
         st = self._preview(oc)
         self.assertEqual(oc.asked_cost, (SLOT,))
@@ -458,11 +467,21 @@ class BeforeTheAgreement(_Harness):
         self.assertEqual((st["summary"]["differ"], st["summary"]["no_bill"]), (0, 1))
 
     def test_a_breakdown_answer_is_not_asked_twice(self):
-        """GUARD: the fallback only covers what the breakdown did not answer."""
+        """GUARD: a half-hour the breakdown answered is not asked the billed cost."""
         self._block(bill=False)
         oc = _Octopus(node=_node(KWH, 0.0))
         self._preview(oc)
         self.assertEqual(oc.asked_cost, ())
+
+    def test_on_the_agreement_an_unanswered_breakdown_is_not_a_cost_only_bill(self):
+        """Bill and split paths design §1.3, 16 Oct 2026: #167 fell back to the billed cost for any
+        half-hour the breakdown left unanswered. On the agreement that cached a bill with NO split,
+        and a cached half-hour is not asked again — the split froze at EMT's. Now it is no bill."""
+        self._block(bill=False)
+        oc = _Octopus(node=None); oc.cost_only = {SLOT: self.COST}
+        st = self._preview(oc)
+        self.assertEqual(oc.asked_cost, ())
+        self.assertEqual((st["summary"]["differ"], st["summary"]["no_bill"]), (0, 1))
 
 
 class TheTariffKind(_Harness):
