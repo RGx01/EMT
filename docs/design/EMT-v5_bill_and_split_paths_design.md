@@ -75,6 +75,16 @@ two (re-fetch ~12037). The same half-hour can be held on one path and taken on a
 **Proposal:** one `emt_ev_at(start)` — the EV segments (what EMT shows, and what the user would lose);
 the cached bill is the thing being judged, not the reference. Used by all four.
 
+*Built 16 Oct 2026, refined:* `emt_ev_reference(segments, cached bill)` = the **larger** of the two,
+read for all four paths by `emt_ev_at` (and by `_refetch_diff` from its facts). "The cached bill is the
+thing being judged" holds for the live pass and the drain, where no bill is cached yet — there the
+reference is the segments, as before. In the VAT resync and the re-fetch the thing judged is
+Octopus's *new* answer and the cached bill its *earlier* one: an earlier answer with the car and a
+later one without is the 10 Oct 2026 provisional answer the other way round, and segments alone would
+let it through wherever EMT's split is the smaller (the dispatch cap, until PR 5). Behaviour change:
+the VAT resync now also holds an answer dropping the car where EMT's split has it and the cached bill
+had no breakdown.
+
 ---
 
 ## 3. Deciding and writing the House/EV split
@@ -146,7 +156,7 @@ covered).
 | 1 | §4: the repair leaves settled and corrected half-hours alone | a test per case; no golden moves |
 | 2 | §1.3 1–2: `source_for`, `parse_bill` — every path parses through one function | goldens; replay the four paths' fixtures; the zero rule's one behaviour change named. *Built 16 Oct 2026:* `bill_kind_at` (the name for `source_for`), `parse_bill` + `_zero_answer`, `_fetch_bill_nodes`, `_store_bill`, `BlockStore.get_imp_kwh`; `_vat_resync_row` and the two inline copies deleted. Behaviour changes: the source is per half-hour in all four paths; a breakdown half-hour the breakdown leaves unanswered is no longer asked the billed cost (#167's fallback cached a split-less bill that froze); the zero rule applies to cost-only answers and the VAT resync too. |
 | 3 | §1.3 3: `fetch_bills` with the ladder (+ day, + month) | the probe's eight half-hours as a fixture; real-DB parity on the re-fetch. *Built 16 Oct 2026:* the rungs live in `KrakenAPIClient.recover_measurement_costs` itself (`wide_rungs`, on by default) — the one billed-cost fetch every caller already shares (`_fetch_bill_nodes`, the API import's in-pass recovery, `repair_import_pricing`), so no `fetch_bills` wrapper was needed. After the −30 min…+2 h / +3 h ladder: one query per day with a half-hour still missing, then one per month, each [start − 30 min, end + 3 h) so the OFF_PEAK label is in view. The breakdown fetch is unchanged (no stripping seen there). |
-| 4 | §2: one `emt_ev_at` | the 4.5.23 tests (`test_bill_split_wait.py`) on every path |
+| 4 | §2: one `emt_ev_at` | the 4.5.23 tests (`test_bill_split_wait.py`) on every path. *Built 16 Oct 2026* (§2's note): `emt_ev_reference`, `emt_ev_at`, `BlockStore.get_bill_ev_kwh`. |
 | 5 | §3.3 1, 3, 4: `ev_for`, one builder, one capped test | goldens; real-DB parity on `blocks-35` (before) / `blocks-36` (after the re-import) |
 | 6 | §3.3 2: one population; a re-import takes the bill's split | the 15 Oct re-import: the five SMB half-hours take the bill's EV |
 | 7 | §6 (c): the API import stores its cost as a bill; its recovery through `fetch_bills` | a re-import of the soak's August: every half-hour gains a bill row, no cost moves; published-rate history keeps its rate |
