@@ -210,3 +210,72 @@ c. **The API import keeps its bulk fetch, as the first read.** Measured on the P
 
    The split stays with the drain: the bulk measurements carry none, and the device breakdown is
    asked in small chunks only.
+
+---
+
+## 7. Where the rule meets stored data — the importer, not a runtime heal (16 Oct 2026, the user)
+
+**The question.** #180 changed the settle's rule (the bill's split at the final stage) and #182
+widened the split heal so every settled block is brought to it. Its first run rewrites history —
+227 half-hours on the soak — and it would do the same, at runtime and silently, to every v4 user's
+IOG-SMB history after import (v4 settled it under 4.5.9's dispatch cap). The heal is not a v4-style
+heal (no marker, no floor), but its effect is one, and the working rule is that v5 has no heals of
+its own. Decided: **stored data meets the rule in the importer**, where the change is a counted,
+reported transform of the importer's own copy.
+
+**Where stale splits come from.** After #180 a new settle is on the rule from the start. Stale ones
+are v4-imported history (the real users at release) and this project's own dev installs settled
+before #180 (they re-import from a v4 backup).
+
+### 7.1 Importer transform — the bill's split from the cached bill (E design §4, transform 3b)
+
+After 1 (provenance: `measured` → `settled`) and 3 (held-rate refit), for every main block that is:
+
+- settled, not corrected, with kWh;
+- in the IOG-SMB era — from the earliest four-bucket `measured_cost` row (E design's rule; the
+  importer has no agreements to ask), so a pre-agreement half-hour keeps the dispatch's split;
+- with a bill split cached (the latest CONSUMPTION row states `ev_kwh`);
+- whose EV segments differ from the bill's EV clipped to the meter by more than 0.0005 kWh;
+- **and whose segments all carry one rate** —
+
+its segments are rewritten at that rate (`pricing_segments.ev_house_at`): EV = the bill's EV
+clipped to kWh, the house the remainder, bands as they were. One rate means Σ kWh × rate is
+unchanged, so the cost, the rate and every total stay as v4 left them; only the House/EV
+attribution moves. Recorded in `v4i_resegmented` (`why = "bill_split"`), so verify checks them by
+their own gate.
+
+**Not moved, reported:** a block whose segments carry more than one rate (a capped boundary, EV and
+house on different bands): moving kWh would change the cost, and only the runtime settle can
+rebuild it from the rate schedules. And the 4.5.23 case: a bill with no EV where EMT's split has the
+car is not applied. Both are listed in the import report.
+
+**Measured on the soak's v4 file** (`emt_first_run/blocks.db`, written by 4.5.23, 14 Oct): of 991
+settled IOG-SMB half-hours with a bill split, 169 differ — all one-rate, none mixed; EV +12.91 kWh,
+the same off the house; no cost moves. (blocks-35, a day later on v5, had 226.)
+
+### 7.2 Half-hours with no cached split — the user's re-fetch
+
+87 settled half-hours on the soak's agreement have a bill cached **without** a breakdown — fetched
+28 Aug – 9 Sep, before v4 4.5.7 (11 Sep) fetched the four buckets. Octopus serves the buckets for
+them now (the 8 Sep re-fetch, 14 Oct: 10/10 with the car), but nothing asks: a cached bill is not
+re-asked. They read teal ("Octopus's cost, EMT's split") — the tower's split-pending stage. Decided:
+**the user re-fetches them when they see teal**; the range re-fetch lists a split arriving on a
+cost-only bill as a difference (#162) and Apply settles it from the bill (#180's rule). No automatic
+re-ask.
+
+### 7.3 The runtime split heal — removed
+
+With 7.1 at import and #180 at every settle, `run_settled_ev_split_heal` has nothing left that is
+not history: a settle on the rule never writes a split off it, a re-fetch's Apply and the VAT resync
+settle through `apply_measured_to_block` themselves. It goes, with #182's query
+(`get_settled_blocks_off_their_split`) and its call after a re-fetch's Apply — so nothing at runtime
+rewrites stored splits. (Its v4-era purpose, blocks settled house-only under the "unknown ceiling",
+is also covered by 7.1: a block with no EV split and a bill EV is "off the bill".)
+
+### 7.4 Order
+
+| PR | contents | check |
+|---|---|---|
+| 8 | the importer transform 3b (7.1), its verify gate, its report lines; the E design and import spec updated | the soak's v4 file: 169 moved, 0 reported, no cost or rate moves; a fixture with a mixed block, reported not moved |
+| 9 | 7.3: the runtime split heal removed | the suite; the soak after an upgrade logs no heal |
+
