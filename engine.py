@@ -12504,8 +12504,16 @@ def apply_measured_settled() -> dict:
     except Exception as e:
         logger.warning("apply_measured: query failed: %s", e)
         return {}
-    n_apply = 0
+    n_apply = n_published = 0
     for r in rows:
+        # Only an Intelligent half-hour takes a bill (settlement surfaces design §9.2, bill and
+        # split paths design §6 (c), 16 Oct 2026): applying snaps the rate to the day's lowest or
+        # highest band, a two-rate model — on Agile / Go / Cosy / flat it would mis-set the rate
+        # and band, and their settled kWh x the published rate is the bill anyway. Nothing fetches
+        # a bill for such a half-hour today; this is the net under any that arrives in the cache.
+        if tariff_kind_at(r["block_start"]) != "intelligent":
+            n_published += 1
+            continue
         # Settled = authority: apply the bill for every cached settled slot, both bands, no
         # age-gate and no review-flag. apply_measured_to_block skips a slot only when the
         # agreement can't provide a clean rate to snap to.
@@ -12516,7 +12524,7 @@ def apply_measured_settled() -> dict:
     if n_apply:
         logger.info("apply_measured: applied %d block(s) from the bill (settled = authority)",
                     n_apply)
-    return {"applied": n_apply, "candidates": len(rows)}
+    return {"applied": n_apply, "candidates": len(rows), "published_rate": n_published}
 
 
 def _measured_ev_kwh(store, bs: str, row, kwh: float) -> float:

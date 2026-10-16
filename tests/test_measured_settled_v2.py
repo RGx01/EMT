@@ -28,7 +28,9 @@ class TestMeasuredSettledV2(unittest.TestCase):
         self.st = BlockStore(":memory:")
         engine._store = self.st
         engine._kraken_rate_schedules = {"import": _Sched()}
-        engine._kraken_discovery = {"import": {"mpan": "m"}}
+        # an Intelligent tariff (the bill apply takes Intelligent half-hours only, 16 Oct 2026);
+        # not IOG-SMB, so these cases keep the dispatch rule they were written for
+        engine._kraken_discovery = {"import": {"mpan": "m", "tariff_code": "E-1R-INTELLI-VAR-22-10-14-B"}}
         engine._kraken_current_agreement_from = "2026-08-01T00:00:00"
         engine._MEASURED_APPLY = True
         self.st._conn.execute(
@@ -123,6 +125,43 @@ class TestMeasuredSettledV2(unittest.TestCase):
         r = self._rate(slot)
         self.assertAlmostEqual(r["imp_rate"], OFF, places=5)     # unchanged
         self.assertNotEqual(r["rate_source"], "settled")        # NOT settled
+
+
+class TheApplyIsIntelligentOnly(unittest.TestCase):
+    """16 Oct 2026 (settlement surfaces design §9.2; bill and split paths design §6 (c), narrowed):
+    `apply_measured_settled` takes a cached bill on an Intelligent half-hour only — applying snaps
+    the rate to the day's lowest or highest band, which would mis-set an Agile / Go / Cosy / flat
+    half-hour. Discriminating: the parent applied it."""
+
+    def setUp(self):
+        self._save = (engine._store, engine._kraken_rate_schedules, engine._kraken_discovery,
+                      engine._kraken_current_agreement_from, engine._MEASURED_APPLY)
+        self.st = BlockStore(":memory:")
+        engine._store = self.st
+        engine._kraken_discovery = {"import": {"mpan": "m", "tariff_code": "E-1R-AGILE-24-10-01-B"}}
+        engine._kraken_current_agreement_from = "2026-08-01T00:00:00"
+        engine._MEASURED_APPLY = True
+        engine._kraken_rate_schedules = {"import": _Sched()}
+        self.st._conn.execute(
+            "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, block_minutes, "
+            "timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, 'UTC')")
+        self.st._conn.execute(
+            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
+            "imp_kwh_api, imp_rate, imp_cost, source) VALUES ('2026-08-20T12:00:00', "
+            "'2026-08-20T12:30:00', 'electricity_main', 1, 2.0, 2.0, 0.1834, 0.3668, 'kraken_api')")
+        self.st.upsert_measured_cost("2026-08-20T12:00:00", mpan="m", cost_incl=0.3668,
+                                     cost_excl=0.3493, label="STANDARD_RATE", kwh=2.0)
+        self.st._conn.commit()
+
+    def tearDown(self):
+        (engine._store, engine._kraken_rate_schedules, engine._kraken_discovery,
+         engine._kraken_current_agreement_from, engine._MEASURED_APPLY) = self._save
+
+    def test_an_agile_half_hour_keeps_its_rate(self):
+        res = engine.apply_measured_settled()
+        r = self.st._conn.execute("SELECT imp_rate, rate_source FROM blocks").fetchone()
+        self.assertEqual((r[0], r[1]), (0.1834, None), "the bill was applied with the two-rate snap")
+        self.assertEqual((res["applied"], res.get("published_rate")), (0, 1))
 
 
 if __name__ == "__main__":
