@@ -143,8 +143,10 @@ class WhatMustSurvive(unittest.TestCase):
         jobs that fix it are permanent and unaffected by this removal."""
         fns = {n.name for n in ast.walk(_engine_tree())
                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-        for name in ("_attribute_missing_ev_split", "run_iog_split_carve"):
-            self.assertIn(name, fns)
+        self.assertIn("run_iog_split_carve", fns)
+        # `_attribute_missing_ev_split` was merged into the carve on 16 Oct 2026 (bill and split
+        # paths design §3.3 2, 6b): one population, not a deletion of the job's purpose
+        self.assertNotIn("_attribute_missing_ev_split", fns)
 
     def test_the_smb_helpers_with_other_callers_survived(self):
         """`_measured_floor` and `_import_is_smb_capped` sit in the same region

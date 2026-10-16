@@ -59,11 +59,9 @@ def _starts(rows):
 class EvSegments(unittest.TestCase):
     """The gap-fill shape: the segments carry the EV (the imp_kwh_ev column was blank)."""
 
-    def test_the_carve_leaves_it(self):
-        self.assertEqual(_starts(_store(segs=EV_SEGS).get_blocks_awaiting_ev_carve(10)), [])
-
-    def test_back_attribution_leaves_it(self):
-        self.assertEqual(_starts(_store(segs=EV_SEGS).get_blocks_missing_ev_split()), [])
+    def test_the_dispatch_split_population_leaves_it(self):
+        """The carve's and the back-attribution's queries, merged 16 Oct 2026 (6b)."""
+        self.assertEqual(_starts(_store(segs=EV_SEGS).get_blocks_off_dispatch_split(10)), [])
 
     def test_the_carve_guard_refuses_it(self):
         st = _store(segs=EV_SEGS)
@@ -84,7 +82,7 @@ class HouseOnlySegments(unittest.TestCase):
     """An older writer left imp_kwh_ev over these; the segments say no split."""
 
     def test_the_carve_takes_it(self):
-        self.assertEqual(_starts(_store(segs=HOUSE_SEGS).get_blocks_awaiting_ev_carve(10)),
+        self.assertEqual(_starts(_store(segs=HOUSE_SEGS).get_blocks_off_dispatch_split(10)),
                          [BS])
 
 
@@ -92,7 +90,7 @@ class BlocksWithNoSegments(unittest.TestCase):
     """With no segments at all, the block has no EV split."""
 
     def test_an_unsplit_one_is_carved(self):
-        self.assertEqual(_starts(_store(segs=None).get_blocks_awaiting_ev_carve(10)), [BS])
+        self.assertEqual(_starts(_store(segs=None).get_blocks_off_dispatch_split(10)), [BS])
 
 
 class TheLoadedBlock(unittest.TestCase):

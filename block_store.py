@@ -8161,49 +8161,6 @@ class BlockStore:
             "     OR (attribution = 'house' AND band != ?))",
             (block_start, meter_id, ev_band, home_band)).fetchone()[0]
 
-    def get_blocks_missing_ev_split(self, meter_id: str = "electricity_main",
-                                    tolerance: float = 0.1) -> list:
-        """Main import blocks that have a completed dispatch but no usable EV
-        split. Two populations, deliberately in one query:
-
-          * `imp_kwh_ev IS NULL` -- priced before the completed dispatch arrived,
-            so the charge sits entirely in Home. Octopus reports a slot's
-            completed energy hours after the fact, and the reconcile's segment
-            resync only rewrites blocks that ALREADY have a split, so nothing
-            else revisits these.
-          * a GAP-FILLED block (`interpolated = 1`) whose stored EV kWh disagrees
-            with the completed dispatch by more than `tolerance` (BL-39). A gap
-            fill can stamp a WRONG non-NULL split from a stale or planned
-            fragment; the NULL-only rule above would never look at it again.
-
-        Excluded, each for its own reason: imported history (not ours to
-        re-derive), `rate_corrected` blocks (a manual correction is never
-        stomped), and zero-kWh blocks (nothing to split).
-
-        `MIN(a, b)` here is SQLite's two-argument SCALAR min, not the aggregate --
-        it grid-clips the dispatch figure to the block's own import before
-        comparing, so a dispatch larger than the grid draw cannot fake a
-        disagreement.
-        """
-        rows = self._conn.execute(
-            "SELECT b.block_start, b.imp_kwh, b.imp_cost, b.imp_rate FROM blocks b "
-            "WHERE b.meter_id = ? "
-            "AND COALESCE(b.imp_kwh, 0) > 0 "
-            "AND (b.source IS NULL OR b.source NOT LIKE 'imported%') "
-            "AND COALESCE(b.rate_corrected, 0) = 0 "
-            "AND EXISTS (SELECT 1 FROM dispatch_history h WHERE h.slot_start = b.block_start "
-            "            AND h.kind = 'completed' AND h.energy_kwh IS NOT NULL) "
-            # BL-79 (3): the split is ev_split's (the EV segments; LEGACY columns only
-            # where the block has no segments).
-            "AND (" + _evsplit.sql_kwh("b") + " IS NULL "
-            "     OR (b.interpolated = 1 AND EXISTS ("
-            "           SELECT 1 FROM dispatch_history h2 WHERE h2.slot_start = b.block_start "
-            "           AND h2.kind = 'completed' AND h2.energy_kwh IS NOT NULL "
-            "           AND ABS(MIN(ABS(h2.energy_kwh), COALESCE(b.imp_kwh, 0)) "
-            "                   - COALESCE(" + _evsplit.sql_kwh("b") + ", 0)) > ?)))",
-            (meter_id, tolerance)).fetchall()
-        return [dict(r) for r in rows]
-
     def replace_ev_split(self, block_start: str, meter_id: str = "electricity_main",
                          segments=None) -> int:
         """Write an EV/house split OVER whatever is there. Returns rows changed (0 or 1).
@@ -8293,43 +8250,42 @@ class BlockStore:
             (meter_id, from_iso, to_iso, limit)).fetchall()
         return [dict(r) for r in rows]
 
-    def get_blocks_awaiting_ev_carve(self, limit: int,
-                                     meter_id: str = "electricity_main", starts=None) -> list:
-        """Unsettled import blocks that have a completed dispatch but no EV
-        split yet, oldest first.
+    def get_blocks_off_dispatch_split(self, limit: int, meter_id: str = "electricity_main",
+                                      starts=None, tolerance: float = 0.1) -> list:
+        """Main blocks whose split should be the completed dispatch's and is not — the one
+        population for the stages below the final (bill and split paths design §3.3 2, 6b,
+        16 Oct 2026): not corrected, with kWh and a completed dispatch with energy, and either
+        no EV split yet, or a GAP-FILLED block (`interpolated = 1`) whose EV differs from the
+        dispatch clipped to its kWh by more than `tolerance` (BL-39: a gap fill can stamp a
+        wrong split from a stale or planned fragment). The caller leaves out a block at the
+        final stage (settled, on an IOG-SMB agreement, with a bill split cached — the settle's).
 
-        Every clause is part of the question, not a filter bolted on:
+        It replaced two queries that selected this from opposite ends: the carve's (no split,
+        not settled, imported included) and the back-attribution's (no split or BL-39, settled
+        included, imported excluded, uncapped accounts only).
 
-          * `imp_kwh_ev IS NULL`  -- not yet carved. Re-carving a block that
-            already has a split would double-count.
-          * `imp_kwh > 0`         -- nothing to carve out of an empty block.
-          * `rate_source NOT IN ('settled','corrected')` -- settled and
-            user-corrected splits belong to settlement, not to this sweep.
-            NULL passes, which is why the clause is written with the explicit
-            `IS NULL` arm: `NOT IN` is UNKNOWN against NULL and would drop every
-            never-stamped block.
-          * `EXISTS (completed dispatch with energy)` -- the carve derives EV
-            kWh from Octopus's own per-slot figure, so a slot without one has
-            nothing to derive from.
-
-        `starts`, when given, limits it to those block starts — the slots a dispatch capture
-        has just seen completed — so it can run on every capture without scanning history.
-
-        Returns dicts.
-        """
+        `starts`, when given, limits it to those block starts (the slots a dispatch capture has
+        just seen completed). Returns dicts, oldest first."""
         starts = sorted(set(starts)) if starts is not None else None
         if starts is not None and not starts:
             return []
+        ev = _evsplit.sql_kwh("b")
+        disp = ("(SELECT SUM(ABS(d.energy_kwh)) FROM dispatch_history d WHERE d.kind = 'completed' "
+                "AND d.slot_start = b.block_start AND d.energy_kwh IS NOT NULL)")
         rows = self._conn.execute(
-            "SELECT b.block_start, b.imp_kwh, b.imp_rate, b.imp_rate * b.imp_cost_exc / NULLIF(b.imp_cost, 0) AS rate_exc "
-            "FROM blocks b WHERE b.meter_id = ? AND " + _evsplit.sql_kwh("b") + " IS NULL "
-            "  AND b.imp_kwh > 0 "
-            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
-            "  AND EXISTS (SELECT 1 FROM dispatch_history d WHERE d.kind = 'completed' "
-            "              AND d.slot_start = b.block_start AND d.energy_kwh IS NOT NULL) "
+            "SELECT b.block_start, b.imp_kwh, b.imp_rate, b.rate_source, "
+            "       b.imp_rate * b.imp_cost_exc / NULLIF(b.imp_cost, 0) AS rate_exc, "
+            "       " + ev + " AS seg_ev, "
+            "       (SELECT m.ev_kwh FROM measured_cost m WHERE m.slot_start = b.block_start "
+            "        AND m.direction = 'CONSUMPTION' ORDER BY m.fetched_at DESC LIMIT 1) AS bill_ev "
+            "FROM blocks b WHERE b.meter_id = ? AND COALESCE(b.imp_kwh, 0) > 0 "
+            "  AND COALESCE(b.rate_corrected, 0) = 0 AND COALESCE(b.rate_source, '') <> 'corrected' "
+            "  AND COALESCE(" + disp + ", 0) > 1e-9 "
+            "  AND (" + ev + " IS NULL OR (b.interpolated = 1 AND "
+            "       ABS(MIN(" + disp + ", b.imp_kwh) - COALESCE(" + ev + ", 0)) > ?)) "
             + ("  AND b.block_start IN (%s) " % ",".join("?" * len(starts)) if starts else "")
             + "ORDER BY b.block_start LIMIT ?",
-            (meter_id, *(starts or ()), int(limit))).fetchall()
+            (meter_id, tolerance, *(starts or ()), int(limit))).fetchall()
         return [dict(r) for r in rows]
 
     def count_blocks(self) -> int:

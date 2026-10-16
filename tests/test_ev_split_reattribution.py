@@ -1,5 +1,8 @@
 """
-`_attribute_missing_ev_split`'s store access — A acceptance 5.
+The dispatch-split population's store access — A acceptance 5; since 16 Oct 2026 (bill and split
+paths design §3.3 2, 6b) one query, `get_blocks_off_dispatch_split`, for what the carve and
+`_attribute_missing_ev_split` selected from opposite ends. Their cases are kept below, the two that
+changed meaning labelled.
 
 The job re-derives the EV/Home split on blocks that should have one and don't.
 Octopus reports a slot's COMPLETED dispatch energy hours after the fact, usually
@@ -62,39 +65,73 @@ def _completed(st, slot, kwh=3.0):
 S = "2026-09-01T00:00:00"
 
 
-class MissingSplitSelection(unittest.TestCase):
+class OffDispatchSplitSelection(unittest.TestCase):
+    """The no-split arm — the carve's and the attribution's cases together."""
 
     def setUp(self):
         self.st = _mk_store()
 
+    def _got(self):
+        return self.st.get_blocks_off_dispatch_split(10)
+
     def test_a_null_split_with_a_completed_dispatch_is_selected(self):
         _block(self.st, S)
         _completed(self.st, S)
-        self.assertEqual(len(self.st.get_blocks_missing_ev_split()), 1)
+        self.assertEqual(len(self._got()), 1)
+
+    def test_a_null_rate_source_is_a_candidate(self):
+        """A `NOT IN` against NULL is UNKNOWN; the query must not drop never-stamped blocks."""
+        _block(self.st, S)
+        _completed(self.st, S)
+        self.assertIsNone(self.st._conn.execute("SELECT rate_source FROM blocks").fetchone()[0])
+        self.assertEqual(len(self._got()), 1)
 
     def test_no_completed_dispatch_means_nothing_to_derive_from(self):
         _block(self.st, S)
-        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+        self.st.record_dispatch_history(slot_start=S, kind="planned", provider="octopus",
+                                        source=None, energy_kwh=3.0, raw_start=None, raw_end=None)
+        self.assertEqual(self._got(), [])
 
     def test_a_block_that_already_has_a_split_is_left_alone(self):
         _block(self.st, S, ev=3.0)
         _completed(self.st, S)
-        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+        self.assertEqual(self._got(), [])
 
-    def test_imported_history_is_not_ours_to_rederive(self):
+    def test_imported_history_is_selected_too(self):
+        """Changed 16 Oct 2026 (6b): the attribution left imported history out, the carve took
+        it; the one population takes it — a completed dispatch is evidence either way."""
         _block(self.st, S, source="imported_csv")
         _completed(self.st, S)
-        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+        self.assertEqual(len(self._got()), 1)
+
+    def test_a_settled_block_is_selected_and_the_carve_decides(self):
+        """Changed 16 Oct 2026 (6b): the carve left settled blocks out, the attribution took
+        them. The query takes them; the carve skips the final stage (settled, on an IOG-SMB
+        agreement, a bill split cached) — a settled block below it (split pending, or before the
+        agreement) takes the dispatch's split."""
+        _block(self.st, S, rate_source="settled")
+        _completed(self.st, S)
+        self.assertEqual(len(self._got()), 1)
 
     def test_a_manual_correction_is_never_stomped(self):
         _block(self.st, S, rate_corrected=1)
+        _block(self.st, "2026-09-02T00:00:00", rate_source="corrected")
         _completed(self.st, S)
-        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+        _completed(self.st, "2026-09-02T00:00:00")
+        self.assertEqual(self._got(), [])
 
     def test_zero_kwh_has_nothing_to_split(self):
         _block(self.st, S, imp_kwh=0.0)
         _completed(self.st, S)
-        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+        self.assertEqual(self._got(), [])
+
+    def test_starts_limits_it(self):
+        _block(self.st, S)
+        _block(self.st, "2026-09-02T00:00:00")
+        _completed(self.st, S)
+        _completed(self.st, "2026-09-02T00:00:00")
+        self.assertEqual([r["block_start"] for r in
+                          self.st.get_blocks_off_dispatch_split(10, starts=[S])], [S])
 
 
 class GapFilledDisagreement(unittest.TestCase):
@@ -104,30 +141,32 @@ class GapFilledDisagreement(unittest.TestCase):
     def setUp(self):
         self.st = _mk_store()
 
+    def _got(self):
+        return self.st.get_blocks_off_dispatch_split(10)
+
     def test_a_materially_wrong_gap_fill_is_reselected(self):
         _block(self.st, S, interpolated=1, ev=0.5)
         _completed(self.st, S, kwh=3.0)          # stored 0.5 vs actual 3.0
-        self.assertEqual(len(self.st.get_blocks_missing_ev_split()), 1)
+        self.assertEqual(len(self._got()), 1)
 
     def test_agreement_within_tolerance_is_left_alone(self):
         _block(self.st, S, interpolated=1, ev=3.0)
         _completed(self.st, S, kwh=3.02)
-        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+        self.assertEqual(self._got(), [])
 
     def test_a_normally_captured_block_is_not_reselected_on_disagreement(self):
         """The BL-39 arm is scoped to gap-filled blocks. A finalised block that
         disagrees is settlement's business, not this job's."""
         _block(self.st, S, interpolated=0, ev=0.5)
         _completed(self.st, S, kwh=3.0)
-        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+        self.assertEqual(self._got(), [])
 
     def test_the_dispatch_is_grid_clipped_before_comparing(self):
-        """`MIN(a, b)` is SQLite's two-argument SCALAR min. A dispatch larger
-        than the block's own import is clipped to it, so it cannot manufacture a
-        disagreement out of a figure the grid never delivered."""
+        """A dispatch larger than the block's own import is clipped to it, so it cannot
+        manufacture a disagreement out of a figure the grid never delivered."""
         _block(self.st, S, imp_kwh=2.0, interpolated=1, ev=2.0)
         _completed(self.st, S, kwh=9.0)          # clipped to 2.0 == stored
-        self.assertEqual(self.st.get_blocks_missing_ev_split(), [])
+        self.assertEqual(self._got(), [])
 
 
 class ReplaceVersusCarve(unittest.TestCase):
@@ -167,7 +206,7 @@ class Surfaces(unittest.TestCase):
 
     def test_the_read_reads_and_the_write_writes(self):
         from store_types import ReadStore, WriteStore
-        self.assertTrue(hasattr(ReadStore, "get_blocks_missing_ev_split"))
+        self.assertTrue(hasattr(ReadStore, "get_blocks_off_dispatch_split"))
         self.assertTrue(hasattr(WriteStore, "replace_ev_split"))
         self.assertFalse(hasattr(ReadStore, "replace_ev_split"),
                          "a write on the read surface has no thread guard")

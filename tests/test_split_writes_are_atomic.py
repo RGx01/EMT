@@ -16,6 +16,7 @@ second write for them to disagree with. The cases that asserted "the columns are
 assert "no split was written" (guards on this tree), and the stale-rated split heal's
 restamp_ev_columns case went with that method.
 """
+import asyncio
 import os
 import sys
 import unittest
@@ -38,6 +39,8 @@ def _segments_fail(store):
 
 
 class TheBackAttribution(unittest.TestCase):
+    """The back-attribution is the carve since 16 Oct 2026 (bill and split paths design §3.3 2,
+    6b); these run it."""
     setUp, tearDown = BA.TestEvBackAttribution.setUp, BA.TestEvBackAttribution.tearDown
     _completed = BA.TestEvBackAttribution._completed
     SLOT = BA.TestEvBackAttribution.SLOT
@@ -64,7 +67,7 @@ class TheBackAttribution(unittest.TestCase):
         for p in ps:
             p.start()
         try:
-            engine._attribute_missing_ev_split()
+            asyncio.run(engine.run_iog_split_carve())
         finally:
             for p in ps:
                 p.stop()
@@ -74,7 +77,7 @@ class TheBackAttribution(unittest.TestCase):
         """GUARD: with the write working, the segments carry the EV."""
         self._block(imp_kwh=3.0, ev=None)
         self._completed(energy=-2.0)
-        self.assertEqual(engine._attribute_missing_ev_split(), 1)
+        self.assertEqual(asyncio.run(engine.run_iog_split_carve())["carved"], 1)
         ev = sum(s["kwh"] for s in self.st.get_block_segments(self.SLOT, "electricity_main")
                  if s["attribution"] == "ev")
         self.assertAlmostEqual(ev, 2.0, places=6)
