@@ -160,7 +160,7 @@ covered).
 | 5 | §3.3 1, 3, 4: `ev_for`, one builder, one capped test | goldens; real-DB parity on `blocks-35` (before) / `blocks-36` (after the re-import). *Built 16 Oct 2026, without the builder* (it moves to its own PR, 5b — the four builds differ in leg rates, ex-VAT and bands): the rule lives in `_measured_ev_kwh` — on an IOG-SMB agreement (`split_at`) with a bill split cached, the bill's EV clipped to kWh; otherwise the completed dispatch. `dispatch_ev_kwh` is the one dispatch computation (`_iog_slot_ev_kwh` deleted), `_capped_schedules` the one schedule check (four copies). `BlockStore.dispatch_coverage` deleted: the "unknown ceiling" branch it served is gone. Parity on `blocks-35`: of 1,115 settled half-hours with a bill split, 226 on the agreement take a different EV (net +22.72 kWh; the estimate was 231 / +22.65) and 1 before it (24 Aug 05:00 UTC takes back its 0.011 kWh). **These reach stored data only with PR 6** — the rule changes new settles; nothing re-selects a half-hour already settled with an EV split. Not done: capped pricing judged per half-hour by its agreement (pre-agreement history repriced by the seam on an SMB account) — a pricing change, for its own note. |
 | 5b | §3.3 3: one EV + house builder | *Built 16 Oct 2026:* `pricing_segments.ev_house_at`, for the carve, the settle's single-band fallback, BL-58b and the revert/restore verdict; equal to the hand-written form on 2,000 random cases, except that a remainder rounding to nothing gets no segment. |
 | 6 | §3.3 2: one population; a re-import takes the bill's split | the 15 Oct re-import: the five SMB half-hours take the bill's EV. *Built 16 Oct 2026, for the final stage:* the split heal's population is every settled block whose split is not the settle's rule (`get_settled_blocks_off_their_split`, confirmed against `_measured_ev_kwh`), not only those with no split; it never takes EMT's car away entirely (the 4.5.23 case). Replayed on `blocks-35`: 227 blocks moved in one pass (226 on the agreement, +22.72 kWh EV; 24 Aug 05:00 UTC +0.011), a second pass none; 16 costs moved onto their bill by 1–2 millionths of a pound (BL-82-era rounding, net −£0.000028); no rate moved. The 15 Oct re-import's five were very likely a snapshot taken before the tick re-applied the cached bills (`blocks-36` was saved two minutes after the import). **6b**, the carve and the attribution as one population for the stages below the final, is its own PR (re-pricing involved). *6b built 16 Oct 2026:* `get_blocks_off_dispatch_split` (no EV split, or a gap-filled split off its dispatch — BL-39; not corrected; kWh and a completed dispatch) replaces the carve's and the attribution's queries; `run_iog_split_carve` is the one writer (EV at the block's own rate, cost-neutral; `carve_ev_split` for a blank, `replace_ev_split` for BL-39) and skips the final stage (settled, `split_at`, bill split cached); `_attribute_missing_ev_split` and its call in the reconcile removed. Changes: a settled block below the final stage (split pending, or before the agreement) takes the dispatch's split — no job did on a capped account; imported history and capped accounts are in the one population (the carve already took both; the attribution took neither). On the soak (`blocks-35`) it selects one block: 24 Aug 05:00 UTC, +0.011 kWh. |
-| 7 | §6 (c): the API import stores its cost as a bill; its recovery through `fetch_bills` | a re-import of the soak's August: every half-hour gains a bill row, no cost moves; published-rate history keeps its rate. **And:** on an IOG-SMB agreement a cost-only row must not stop the breakdown being asked — the drain (and the live pass) must still ask a half-hour whose cached bill has no breakdown, or its split stays the dispatch's for good (§6, final, split pending) |
+| 7 | §6 (c): the API import stores its cost as a bill; its recovery through `fetch_bills` — **not built** (§6 (c), narrowed); instead the bill apply is gated on Intelligent half-hours | a re-import of the soak's August: every half-hour gains a bill row, no cost moves; published-rate history keeps its rate. **And:** on an IOG-SMB agreement a cost-only row must not stop the breakdown being asked — the drain (and the live pass) must still ask a half-hour whose cached bill has no breakdown, or its split stays the dispatch's for good (§6, final, split pending) |
 
 ## 6. Decided (16 Oct 2026, the user)
 
@@ -210,6 +210,21 @@ c. **The API import keeps its bulk fetch, as the first read.** Measured on the P
 
    The split stays with the drain: the bulk measurements carry none, and the device breakdown is
    asked in small chunks only.
+
+   **Narrowed, 16 Oct 2026 (the user): 1 is not built; 2 stands as done.** Checked before building:
+   a `measured_cost` row for each imported half-hour would be read by `apply_measured_settled`,
+   which applies every cached bill to any settleable block from the floor and had no tariff check —
+   so an Agile / Go / Cosy / flat user's imported half-hours inside their current agreement would
+   have been settled with the two-rate snap, and an Intelligent user's imported history re-settled
+   at runtime (a history rewrite). And the drain asks only half-hours with no cached bill
+   (`NOT EXISTS measured_cost`), so a cost-only row on an imported IOG-SMB half-hour would stop its
+   split ever being asked. All fixable, but the gain — the bill views reading one table, and one
+   line of `settlement_state` ("an API import counts as Octopus's cost") gone — is small; the
+   import keeps its cost in the block. 2 is in place already: since PR 3 the import's own recovery
+   and the reprice queue go through `recover_measurement_costs` and its day / month rungs (only
+   `repair_import_pricing`'s ±1-day windows remain its own). **Done instead:**
+   `apply_measured_settled` takes a cached bill on an Intelligent half-hour only
+   (`tariff_kind_at`), the net under any bill that reaches the cache on a published-rate account.
 
 ---
 
