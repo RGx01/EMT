@@ -221,7 +221,7 @@ class NoRawConnectionLeftInTheFamily(unittest.TestCase):
         tree = ast.parse(open(os.path.join(_ROOT, "engine.py"), encoding="utf-8").read())
         want = {"apply_measured_to_block", "apply_measured_settled",
                 "measure_settled_dispatched_blocks", "run_measured_history_drain",
-                "_measured_history_backlog", "run_settled_ev_split_heal"}
+                "_measured_history_backlog"}            # the split heal: removed 16 Oct 2026
         for n in ast.walk(tree):
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name in want:
                 raw = [x.lineno for x in ast.walk(n)

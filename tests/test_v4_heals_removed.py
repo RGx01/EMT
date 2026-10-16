@@ -34,10 +34,11 @@ the deletion was much larger than its 12 raw-connection sites suggested:
     .build/            3 tool lists
     tests/           678 lines / 37 tests across 5 files
 
-ONE THING THIS MUST NOT TAKE WITH IT. `run_settled_ev_split_heal` is named
-"heal" and is not one: ungated, no done-marker, runs every pass, no retirement
-note. Settlement keeps producing blocks that need it. It is asserted present
-below, because a later name-match deletion is the obvious way to lose it.
+`run_settled_ev_split_heal` was named "heal" and was not one: ungated, no done-marker, runs every
+pass. It was kept here deliberately while settlement produced blocks that needed it (a block settled
+house-only under the old "unknown ceiling"). It was removed — deliberately, not by name-match — on
+16 Oct 2026 (bill and split paths design §7.3): v5's settle takes the bill's split (#180) and the
+importer gives imported history it (#184), so it had nothing left but rewriting history at runtime.
 """
 import ast
 import os
@@ -124,15 +125,17 @@ class TheHealsAreGone(unittest.TestCase):
 
 class WhatMustSurvive(unittest.TestCase):
 
-    def test_the_recurring_ev_split_heal_is_still_here(self):
-        """Named 'heal', is not one. Ungated, every pass, no retirement note."""
-        fns = {n.name: n for n in ast.walk(_engine_tree())
+    def test_the_settled_ev_split_heal_is_gone_deliberately(self):
+        """Removed 16 Oct 2026 (bill and split paths design §7.3), not by a name-match: the
+        consolidation note records why, and the settle (`_measured_ev_kwh`) stays."""
+        fns = {n.name for n in ast.walk(_engine_tree())
                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-        self.assertIn("run_settled_ev_split_heal", fns)
-        doc = ast.get_docstring(fns["run_settled_ev_split_heal"]) or ""
-        self.assertNotIn("retires in v5", doc)
-        self.assertIn("NOT a one-off heal", doc,
-                      "the note warning against a name-match deletion is gone")
+        self.assertNotIn("run_settled_ev_split_heal", fns)
+        self.assertIn("_measured_ev_kwh", fns)
+        note = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                 "docs", "design", "EMT-v5_bill_and_split_paths_design.md"),
+                    encoding="utf-8").read()
+        self.assertIn("### 7.3 The runtime split heal — removed", note)
 
     def test_the_other_recurring_split_jobs_are_still_here(self):
         """Blocks arrive with a NULL split because Octopus reports completed
@@ -140,8 +143,7 @@ class WhatMustSurvive(unittest.TestCase):
         jobs that fix it are permanent and unaffected by this removal."""
         fns = {n.name for n in ast.walk(_engine_tree())
                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-        for name in ("_attribute_missing_ev_split", "run_iog_split_carve",
-                     "run_settled_ev_split_heal"):
+        for name in ("_attribute_missing_ev_split", "run_iog_split_carve"):
             self.assertIn(name, fns)
 
     def test_the_smb_helpers_with_other_callers_survived(self):

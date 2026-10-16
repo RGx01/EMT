@@ -5,7 +5,7 @@ and the writer thread-affine, what is left to coordinate is writers.*
 
 **Status:** the coordinator exists, 23 Sep 2026. `job_coordinator.py`
 holds the decision logic and the dependency manifest; `tests/test_job_coordinator.py` covers it.
-Membership stands at **16/17** registered (`.build/check_job_membership.py`): every engine job
+Membership stands at **15/16** registered (`.build/check_job_membership.py`): every engine job
 including the live tick, the three background workers, and (4 Oct 2026) `api_meter_delete_data`,
 which joined `delete` and now holds the delete flag while it works, so the members
 `exclusive_with` "delete" see it. The 1 outstanding is `api_db_vacuum` (which never joins — see
@@ -72,7 +72,7 @@ because that is a *dependency*, not a race.
 
 `.build/write_scope.py`:
 
-> **10 of the 11 live jobs write `blocks`; 8 also write `block_segments`.**
+> **9 of the 10 live jobs write `blocks`; 7 also write `block_segments`.**
 
 Everything conflicts with everything. A table-level admission rule is a global lock wearing a
 costume.
@@ -91,7 +91,6 @@ declare a scope:
 | `run_api_import_job` | `requested_from, chunk_days, max_chunks` | a start, no end |
 | `_run_historical_reprice_sweep` | `max_blocks, batch, pace_s, force` | no — a budget |
 | `run_measured_history_drain` | `max_batches` | no — a budget |
-| `run_settled_ev_split_heal` | `limit` | no — a budget |
 | `_run_historical_carbon_backfill` | `window_days, max_windows` | no — a budget |
 | `run_iog_split_carve` | `max_blocks` | no — a budget |
 | `run_reprice_history_sweep_to_done` | `max_passes` | no — a budget |
@@ -233,7 +232,7 @@ What is true today, measured:
 
 ### 4.1 The other 19
 
-**16 further members**, enumerated rather than estimated — **17 members** in all.
+**15 further members**, enumerated rather than estimated — **16 members** in all.
 
 *Corrected three times, in both directions. First 23, which missed the three background workers.
 Then 26. Then 20, because **six of the eight route handlers stopped needing membership at all**: once a
@@ -253,18 +252,21 @@ members others most want to avoid: `delete_in_progress()` is the second most con
 codebase. `_delete_worker` and `_purge_worker` are ONE member with two entry points, because that
 is what `delete_in_progress()` already means.
 
-**11 live engine jobs** (`.build/check_job_guards.py`; three further jobs — the legacy exc, segment
+**10 live engine jobs** (`.build/check_job_guards.py`; three further jobs — the legacy exc, segment
 and iog-split backfills — are unreachable and do not come across):
 `run_api_import_job`, `run_deferred_verify_pricing`, `_run_historical_reprice_sweep`,
 `_run_historical_carbon_backfill`, `run_measured_history_drain`, `run_gap_fill_job`,
-`run_iog_split_carve`, `run_attribution_job`, `run_settled_ev_split_heal`,
+`run_iog_split_carve`, `run_attribution_job`,
 `run_reprice_history_sweep_to_done`, `run_device_rate_drift_repair`.
 
-*Was 14, then 10, now 11. The four v4 one-off heals — `run_smb_rate_repair`, `run_smb_device_recost`,
+*Was 14, then 10, then 11, now 10 again: `run_settled_ev_split_heal` was removed on 16 Oct 2026
+(bill and split paths design §7.3) — once v5's settle took the bill's split (#180) and the importer
+gave imported history it (#184), the heal had nothing left but rewriting history at runtime. The four v4 one-off heals — `run_smb_rate_repair`, `run_smb_device_recost`,
 `run_band_rate_snap`, `run_smb_ev_resplit` — retired with v4: each was marker-gated and
 self-marking, and the import floor guarantees they have already run against any database v5 will
 open (EMT-v5_import_spec §1.1). Workstream A removed them; `tests/test_v4_heals_removed.py` pins
-it. `run_settled_ev_split_heal` is named like them and is NOT one — ungated, recurring, stays.*
+it. `run_settled_ev_split_heal` was named like them and was NOT one — ungated, recurring; it stayed
+until its purpose went (above).*
 
 **1 bulk route handler** still writing on the request thread (`.build/write_inventory.py`):
 `api_db_vacuum`. It never moves — see below.

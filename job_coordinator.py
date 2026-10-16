@@ -101,7 +101,6 @@ _MANIFEST: dict = {
     "attribution":         (("import", "verify_pricing"),     ("delete",),     WAIT),
     "gap_fill":            ((),                               (),              DEFER),
     "iog_split_carve":     ((),                               (),              DEFER),
-    "settled_ev_split_heal": ((),                             (),              DEFER),
     # BL-86 (13 Oct 2026): a user-asked re-fetch of a range from Octopus — refused, not queued,
     # while anything else rewrites the same history. Its diff is a snapshot of the range: an
     # import, delete or restore between preview and apply would make it wrong (and apply refuses a

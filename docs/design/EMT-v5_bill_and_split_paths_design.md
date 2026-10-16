@@ -277,5 +277,5 @@ is also covered by 7.1: a block with no EV split and a bill EV is "off the bill"
 | PR | contents | check |
 |---|---|---|
 | 8 | the importer transform 3b (7.1), its verify gate, its report lines; the E design and import spec updated | the soak's v4 file: 169 moved, 0 reported, no cost or rate moves; a fixture with a mixed block, reported not moved. *Built 16 Oct 2026:* `v4import.transforms.bill_split`, gate `verify.bill_split`, `split_reproduced` exempting moved blocks; spec v22. "One rate" is within 0.001p/kWh — v4's house leg was the residual absorber (30 of the 169 have it), and keeps that role. Measured as designed: 169 moved, 0 reported, +12.91 kWh, `imp_cost` total identical, no rate changed. |
-| 9 | 7.3: the runtime split heal removed | the suite; the soak after an upgrade logs no heal |
+| 9 | 7.3: the runtime split heal removed | the suite; the soak after an upgrade logs no heal. *Built 16 Oct 2026:* `run_settled_ev_split_heal`, its job (`settled_ev_split_heal`), its two calls (the dispatch tick, a re-fetch's Apply) and `get_settled_blocks_off_their_split` removed; the job-guard, membership and write-scope tools and the B design's figures updated (10 live jobs, 16 members, 9 of 10 write `blocks`); `tests/test_v4_heals_removed.py` now records the removal as deliberate. |
 

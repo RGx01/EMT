@@ -756,7 +756,9 @@ deletion protocol ([architecture §4a](design/EMT-v5_architecture.md)), and two 
    Healthy blocks measure 1.000 (worst 4.8%); a pence block ~100. The write-point unit guard
    (`_sanitise_inc_units`) stays.
 
-**`run_settled_ev_split_heal` — traced, kept.** Not a one-off: no marker, runs every dispatch-capture
+**`run_settled_ev_split_heal` — traced, kept; removed 16 Oct 2026** (bill and split paths design
+§7.3: v5's settle takes the bill's split, the importer gives imported history it, so the heal had
+nothing left but rewriting history at runtime). The 4 Oct note: Not a one-off: no marker, runs every dispatch-capture
 tick, and its candidate set is empty on every real database checked. The trace found a defect instead:
 on the 12th Pi soak it "restored" the same 20–23 blocks every hour, changing nothing — where the
 dispatch ceiling is a known zero the settle keeps a block house-only (measured is king), and the heal
