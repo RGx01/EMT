@@ -130,7 +130,6 @@
     "count_stale_band_segments",
     "count_unsettled_blocks",
     "day_fingerprints",
-    "dispatch_coverage",
     "dispatch_house_candidates",
     "distinct_segment_rates",
     "emt_recording_continuously",

@@ -7288,27 +7288,6 @@ class BlockStore:
             (slot_start,)).fetchone()
         return float(row[0]) if row and row[0] is not None else 0.0
 
-    def dispatch_coverage(self, slot_start: str):
-        """`(row_here, oldest_slot)` — does dispatch_history hold ANY row for this
-        slot, and what is the oldest slot it holds at all?
-
-        One method and one round trip because the PAIR is the question. With no
-        completed dispatch the applier must distinguish
-
-          * "no dispatch, so no EV this slot"  -- a real, knowable zero; from
-          * "we have no dispatch records reaching back this far" -- in which case
-            the settled bucket is the only evidence there is and must be trusted.
-
-        Splitting this into two accessors invites a caller to answer the first
-        without the second, which is the reading that throws away an imported
-        block's settled EV.
-        """
-        row = self._conn.execute(
-            "SELECT EXISTS(SELECT 1 FROM dispatch_history WHERE slot_start = ?), "
-            "       (SELECT MIN(slot_start) FROM dispatch_history)",
-            (slot_start,)).fetchone()
-        return (bool(row[0]), row[1]) if row else (False, None)
-
     def latest_measured_kwh(self, slot_start: str):
         """The freshest billed kWh for a slot, or None.
 

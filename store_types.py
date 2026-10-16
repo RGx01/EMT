@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """142 read-only methods of BlockStore, and nothing else.
+    """141 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -116,7 +116,6 @@ class ReadStore:
     count_stale_band_segments = _BS.count_stale_band_segments
     count_unsettled_blocks = _BS.count_unsettled_blocks
     day_fingerprints = _BS.day_fingerprints
-    dispatch_coverage = _BS.dispatch_coverage
     dispatch_house_candidates = _BS.dispatch_house_candidates
     distinct_segment_rates = _BS.distinct_segment_rates
     emt_recording_continuously = _BS.emt_recording_continuously
