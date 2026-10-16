@@ -10,7 +10,13 @@ rewrites the columns AND the block's segments (the readers' source of truth).
 
 Step 5c (10 Oct 2026): the imp_*_ev columns are gone; the split is the EV segments, read here
 through ev_split.
+
+16 Oct 2026 (bill and split paths design §3.3 2, 6b): `_attribute_missing_ev_split` was merged into
+the carve (`run_iog_split_carve`), one population for the stages below the final. These cases now
+run the carve; two changed meaning, as labelled: imported history and capped accounts are carved
+too (the attribution skipped both; the carve already took imported history).
 """
+import asyncio
 
 import os
 import sys
@@ -36,6 +42,7 @@ class _Sched:
         return 5.493
 
 
+
 class TestEvBackAttribution(unittest.TestCase):
 
     SLOT = "2026-08-17T02:00:00"
@@ -54,6 +61,9 @@ class TestEvBackAttribution(unittest.TestCase):
     def tearDown(self):
         engine._store = None
         engine._kraken_rate_schedules = {}
+
+    def _carve(self):
+        return asyncio.run(engine.run_iog_split_carve()).get("carved", 0)
 
     def _block(self, slot=None, imp_kwh=3.0, source=None, ev=None):
         slot = slot or self.SLOT
@@ -88,7 +98,7 @@ class TestEvBackAttribution(unittest.TestCase):
         # No split + completed dispatch → EV attributed on the segments (step 5c: the split).
         self._block(imp_kwh=3.0, ev=None)
         self._completed(energy=-2.0)
-        self.assertEqual(engine._attribute_missing_ev_split(), 1)
+        self.assertEqual(self._carve(), 1)
         r = self._row()
         self.assertAlmostEqual(r["imp_kwh_ev"], 2.0, places=5)
         self.assertAlmostEqual(r["imp_rate_ev"], OFF, places=5)
@@ -102,39 +112,47 @@ class TestEvBackAttribution(unittest.TestCase):
     def test_clips_ev_to_grid_import(self):
         self._block(imp_kwh=1.5, ev=None)
         self._completed(energy=-4.0)
-        engine._attribute_missing_ev_split()
+        self._carve()
         self.assertAlmostEqual(self._row()["imp_kwh_ev"], 1.5, places=5)
 
     def test_noop_without_completed_dispatch(self):
         self._block(imp_kwh=3.0, ev=None)
-        self.assertEqual(engine._attribute_missing_ev_split(), 0)
+        self.assertEqual(self._carve(), 0)
         self.assertIsNone(self._row()["imp_kwh_ev"])
 
     def test_leaves_already_attributed(self):
         self._block(imp_kwh=3.0, ev=1.0)
         self._completed(energy=-2.0)
-        self.assertEqual(engine._attribute_missing_ev_split(), 0)
+        self.assertEqual(self._carve(), 0)
         self.assertAlmostEqual(self._row()["imp_kwh_ev"], 1.0, places=5)
 
-    def test_skips_imported_history(self):
+    def test_imported_history_is_carved_too(self):
+        """GUARD (the carve already took it; passes on the parent). Changed for the merged
+        population, 16 Oct 2026 (6b): the attribution skipped imported history."""
         self._block(imp_kwh=3.0, ev=None, source="imported_api")
         self._completed(energy=-2.0)
-        self.assertEqual(engine._attribute_missing_ev_split(), 0)
-        self.assertIsNone(self._row()["imp_kwh_ev"])
+        self.assertEqual(self._carve(), 1)
+        self.assertAlmostEqual(self._row()["imp_kwh_ev"], 2.0, places=5)
 
     def test_idempotent(self):
         self._block(imp_kwh=3.0, ev=None)
         self._completed(energy=-2.0)
-        self.assertEqual(engine._attribute_missing_ev_split(), 1)
-        self.assertEqual(engine._attribute_missing_ev_split(), 0)
+        self.assertEqual(self._carve(), 1)
+        self.assertEqual(self._carve(), 0)
 
-    def test_noop_when_capped(self):
-        engine._kraken_rate_schedules = {"import": _Sched(),
-                                         "ev_device_off_peak": _Sched(),
-                                         "ev_device_peak": _Sched()}
+    def test_a_capped_account_is_carved_too(self):
+        """GUARD (the carve already ran capped; passes on the parent). Changed for the merged
+        population, 16 Oct 2026 (6b): the attribution ran on uncapped accounts only."""
+        from kraken_rates import RateSchedule
+        night = ("2026-08-16T22:30:00", "2026-08-17T04:30:00")
+        day = ("2026-08-17T04:30:00", "2026-08-17T22:30:00")
+        engine._kraken_rate_schedules = {
+            "import": RateSchedule([night + (5.493,), day + (32.3092,)]),
+            "ev_device_off_peak": RateSchedule([night + (5.493,)]),
+            "ev_device_peak": RateSchedule([day + (32.3092,)])}
         self._block(imp_kwh=3.0, ev=None)
         self._completed(energy=-2.0)
-        self.assertEqual(engine._attribute_missing_ev_split(), 0)
+        self.assertEqual(self._carve(), 1)
 
 
 if __name__ == "__main__":

@@ -95,14 +95,38 @@ class TestIogSplitCarve(unittest.TestCase):
         asyncio.run(engine.run_iog_split_carve())
         self.assertAlmostEqual(self._state(slot)[0]["imp_kwh_ev"], 1.20, places=5)
 
-    def test_settled_block_is_not_touched(self):
+    def test_a_settled_block_at_the_final_stage_is_not_touched(self):
+        """GUARD (passes on the parent, which left every settled block alone). Settled, on an
+        IOG-SMB agreement, its bill's split cached: the settle's — the tower's final stage."""
         slot = "2026-09-08T02:00:00"
-        self._blk(slot, 3.0, rate_source="settled")   # SETTLED — settlement's realm
+        self._blk(slot, 3.0, rate_source="settled")
         self._dispatch(slot, 2.0)
+        self.st.upsert_measured_cost(slot, mpan="M", cost_incl=0.16, cost_excl=0.15,
+                                     label="OFF_PEAK", kwh=3.0)
+        self.st.upsert_measured_breakdown(slot, mpan="M", home_kwh=1.0, home_rate=OFF,
+                                          ev_kwh=2.0, ev_rate=OFF)
         self.st._conn.commit()
-        res = asyncio.run(engine.run_iog_split_carve())
+        save = engine._kraken_discovery
+        engine._kraken_discovery = {"import": {"tariff_code": "E-1R-IOG-SMB-X-B"}}
+        try:
+            res = asyncio.run(engine.run_iog_split_carve())
+        finally:
+            engine._kraken_discovery = save
         self.assertEqual(res["carved"], 0)
         self.assertIsNone(self._state(slot)[0]["imp_kwh_ev"])
+
+    def test_a_settled_block_with_no_bill_split_takes_the_dispatchs(self):
+        """16 Oct 2026 (6b): the tower's split-pending stage — Octopus's cost, the dispatch's
+        split until Octopus's arrives. The carve left every settled block alone. Discriminating."""
+        slot = "2026-09-08T02:00:00"
+        self._blk(slot, 3.0, rate_source="settled")
+        self._dispatch(slot, 2.0)
+        self.st.upsert_measured_cost(slot, mpan="M", cost_incl=0.16, cost_excl=0.15,
+                                     label="OFF_PEAK", kwh=3.0)        # cost-only: no split
+        self.st._conn.commit()
+        res = asyncio.run(engine.run_iog_split_carve())
+        self.assertEqual(res["carved"], 1)
+        self.assertAlmostEqual(self._state(slot)[0]["imp_kwh_ev"], 2.0, places=5)
 
     def test_no_dispatch_stays_house(self):
         slot = "2026-09-10T12:00:00"

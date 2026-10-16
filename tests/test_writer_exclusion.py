@@ -212,7 +212,8 @@ class TestASnapshotMidJobIsRecoverable(unittest.TestCase):
 
         The predicate MOVED (workstream A acceptance 5). It used to sit in a raw
         SELECT inside this function; it now lives in
-        `BlockStore.get_blocks_awaiting_ev_carve`, and `carve_ev_split` repeats
+        `BlockStore.get_blocks_off_dispatch_split` (since 16 Oct 2026; it was
+        `get_blocks_awaiting_ev_carve`), and `carve_ev_split` repeats
         it in the UPDATE's own WHERE. That is strictly stronger than before — the
         old version could select a block and then write it after something else
         had carved it, because the check and the write were separate statements.
@@ -230,14 +231,16 @@ class TestASnapshotMidJobIsRecoverable(unittest.TestCase):
             f = bs_funcs[name]
             return "\n".join(bs_lines[f.lineno - 1:f.end_lineno])
 
-        self.assertIn("imp_kwh_ev IS NULL", body("get_blocks_awaiting_ev_carve"),
+        # merged with the back-attribution's on 16 Oct 2026 (6b): the no-split arm is the EV
+        # split's own expression, IS NULL
+        self.assertIn('ev + " IS NULL OR (b.interpolated = 1', body("get_blocks_off_dispatch_split"),
                       "the carve no longer self-selects un-carved blocks")
         self.assertIn("imp_kwh_ev IS NULL", body("carve_ev_split"),
                       "the write lost its own guard — selection and write can "
                       "now come apart")
         # And the job still routes through them rather than round them.
         job = self._body("run_iog_split_carve")
-        self.assertIn("get_blocks_awaiting_ev_carve", job)
+        self.assertIn("get_blocks_off_dispatch_split", job)
         self.assertIn("carve_ev_split", job)
 
 

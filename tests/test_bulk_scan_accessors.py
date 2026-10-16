@@ -83,52 +83,9 @@ class PricingRangeScan(unittest.TestCase):
         self.assertIn("imp_kwh_api", r)
 
 
-class EvCarveCandidates(unittest.TestCase):
-
-    def setUp(self):
-        self.st = _mk_store()
-
-    def _candidate(self, start):
-        _block(self.st, start, imp_kwh=5.0, imp_rate=0.25)
-        _dispatch(self.st, start)
-
-    def test_a_plain_candidate_is_selected(self):
-        self._candidate("2026-09-01T00:00:00")
-        self.assertEqual(len(self.st.get_blocks_awaiting_ev_carve(10)), 1)
-
-    def test_already_carved_is_excluded(self):
-        _block(self.st, "2026-09-01T00:00:00", imp_kwh=5.0)
-        self.st.set_block_segments("2026-09-01T00:00:00", "electricity_main", _carve_segs())
-        _dispatch(self.st, "2026-09-01T00:00:00")
-        self.assertEqual(self.st.get_blocks_awaiting_ev_carve(10), [])
-
-    def test_no_completed_dispatch_is_excluded(self):
-        _block(self.st, "2026-09-01T00:00:00", imp_kwh=5.0)
-        _dispatch(self.st, "2026-09-01T00:00:00", kind="planned")
-        self.assertEqual(self.st.get_blocks_awaiting_ev_carve(10), [])
-
-    def test_settled_and_corrected_are_excluded(self):
-        for i, src in enumerate(("settled", "corrected")):
-            s = "2026-09-0%dT00:00:00" % (i + 1)
-            _block(self.st, s, imp_kwh=5.0, rate_source=src)
-            _dispatch(self.st, s)
-        self.assertEqual(self.st.get_blocks_awaiting_ev_carve(10), [])
-
-    def test_a_null_rate_source_is_a_candidate(self):
-        """`NOT IN` is UNKNOWN against NULL, so the clause needs its explicit
-        `IS NULL` arm -- without it every never-stamped block would be dropped,
-        which is most of them."""
-        self._candidate("2026-09-01T00:00:00")
-        row = self.st._conn.execute(
-            "SELECT rate_source FROM blocks WHERE block_start='2026-09-01T00:00:00'"
-        ).fetchone()
-        self.assertIsNone(row["rate_source"])
-        self.assertEqual(len(self.st.get_blocks_awaiting_ev_carve(10)), 1)
-
-    def test_zero_kwh_is_excluded(self):
-        _block(self.st, "2026-09-01T00:00:00", imp_kwh=0.0)
-        _dispatch(self.st, "2026-09-01T00:00:00")
-        self.assertEqual(self.st.get_blocks_awaiting_ev_carve(10), [])
+# EvCarveCandidates moved to tests/test_ev_split_reattribution.py (OffDispatchSplitSelection):
+# the carve's query and the back-attribution's were merged on 16 Oct 2026 (bill and split paths
+# design §3.3 2, 6b).
 
 
 class CarveWrite(unittest.TestCase):
@@ -180,7 +137,7 @@ class Surfaces(unittest.TestCase):
 
     def test_reads_read_write_writes(self):
         from store_types import ReadStore, WriteStore
-        for name in ("get_blocks_pricing_for_range", "get_blocks_awaiting_ev_carve"):
+        for name in ("get_blocks_pricing_for_range", "get_blocks_off_dispatch_split"):
             self.assertTrue(hasattr(ReadStore, name), name)
         self.assertTrue(hasattr(WriteStore, "carve_ev_split"))
         self.assertFalse(hasattr(ReadStore, "carve_ev_split"),

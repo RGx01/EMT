@@ -49,11 +49,11 @@ class TheCarve(unittest.TestCase):
 
     def test_a_block_carved_since_it_was_selected_keeps_its_segments(self):
         self._ready()
-        rows = self.st.get_blocks_awaiting_ev_carve(10)      # selected while un-carved...
+        rows = self.st.get_blocks_off_dispatch_split(10)      # selected while un-carved...
         theirs = [(1.0, C.OFF, round(C.OFF / 1.05, 6), "off_peak", "ev"),
                   (2.45, C.OFF, round(C.OFF / 1.05, 6), "off_peak", "house")]
         self.st.set_block_segments(SLOT, "electricity_main", theirs)   # ...then split by someone else
-        with patch.object(self.st, "get_blocks_awaiting_ev_carve", return_value=rows):
+        with patch.object(self.st, "get_blocks_off_dispatch_split", return_value=rows):
             res = asyncio.run(engine.run_iog_split_carve())
         self.assertEqual(res["carved"], 0)
         r, segs = self._state(SLOT)

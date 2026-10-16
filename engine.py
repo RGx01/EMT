@@ -7215,8 +7215,11 @@ def reprice_history_conformance(from_iso: str, to_iso: str,
 
 @job("iog_split_carve")
 async def run_iog_split_carve(max_blocks: int = 2000, starts=None) -> dict:
-    """Recurring PREDICTED EV/Home carve for UNSETTLED dispatched blocks whose completed
-    dispatch arrived AFTER finalise, so the finalise seam left them house-only (imp_kwh_ev
+    """The dispatch's EV/Home split for every block below the tower's final stage that should
+    carry it and does not (`get_blocks_off_dispatch_split`; bill and split paths design §3.3 2,
+    6b, 16 Oct 2026 — it absorbed `_attribute_missing_ev_split`, the uncapped back-attribution
+    that selected the same blocks from the other end). Originally: recurring PREDICTED EV/Home
+    carve for UNSETTLED dispatched blocks whose completed dispatch arrived AFTER finalise, so the finalise seam left them house-only (imp_kwh_ev
     NULL, a single 'house' segment). Without this the car's charge sits in House on Billing +
     Usage Stats until Octopus settles the day (~2 days) — even though EMT already has the
     dispatch to predict the split. Carves the EV kWh from the completed dispatch (grid-clipped
@@ -7238,12 +7241,16 @@ async def run_iog_split_carve(max_blocks: int = 2000, starts=None) -> dict:
     if isched is None or isched.is_empty():
         return {"ok": True, "deferred": "schedule not ready"}
     tz_name = _iog_site_tz()
-    rows = _store.get_blocks_awaiting_ev_carve(max_blocks, starts=starts)
+    rows = _store.get_blocks_off_dispatch_split(max_blocks, starts=starts)
     carved = 0
     _refit_starts: list = []   # v4 4.5.21: blocks whose EV this wrote, for the device re-fit
     for r in rows:
         bs = r["block_start"]; kwh = float(r["imp_kwh"] or 0.0); rate = float(r["imp_rate"] or 0.0)
         if kwh <= 1e-9:
+            continue
+        # the final stage is the settle's: a settled block on an IOG-SMB agreement whose bill
+        # stated its split carries that split, not the dispatch's (design §6, the tower)
+        if r["rate_source"] == "settled" and r["bill_ev"] is not None and split_at(bs):
             continue
         # Band-aware carve (dispatch-derived EV, grid-clipped) via the shared seam; we take the
         # kWh + bands from it but re-price the split at the block's OWN single rate for strict
@@ -7272,9 +7279,11 @@ async def run_iog_split_carve(max_blocks: int = 2000, starts=None) -> dict:
         segs = _ps.ev_house_at(kwh, ev, inc_rate=rate, exc_rate=rexc,
                                ev_band=ev_band, home_band=home_band)
         try:
-            # BL-79: the segments go in the carve's own transaction, and only if its guard
-            # let it write — a block carved since it was selected keeps both as they are.
-            if _store.carve_ev_split(bs, segments=segs):
+            # A blank is filled under the carve's guard (BL-79: its own transaction; a block carved
+            # since it was selected keeps both). A gap-filled block whose split is off its dispatch
+            # (BL-39) is re-attributed over what it holds — the selection established it is wrong.
+            write = _store.carve_ev_split if r["seg_ev"] is None else _store.replace_ev_split
+            if write(bs, segments=segs):
                 carved += 1
                 _refit_starts.append(bs)
         except Exception as e:
@@ -12769,70 +12778,6 @@ def run_prune_stale_tombstones() -> dict:
     return {"ok": True, "pruned": n}
 
 
-def _attribute_missing_ev_split() -> int:
-    """Back-attribute the EV/Home split on blocks that HAD EV charging but never got one.
-    `imp_kwh_ev` is stamped once, at pricing, from the COMPLETED dispatch known then — but
-    Octopus reports a slot's completed energy hours later, usually after the block was priced
-    with only a 'planned' dispatch, so the charge is never attributed: it sits in Home, and
-    the reconcile's segment resync only rewrites blocks that already have a split. Whichever
-    instance priced a block before its completed record arrived diverges permanently (the
-    prod vs prod-dev split mismatch). This re-runs the IOG split (`_apply_iog_split`) on every
-    main block that now has a completed dispatch but a NULL split (or a GAP-FILLED block whose
-    split materially disagrees with that completed dispatch — BL-39), writes the columns AND
-    rewrites the block's SEGMENTS (BL-27's source of truth, so the bill split / Usage Stats /
-    chart all follow), and both instances converge deterministically. Idempotent; imported
-    history left alone; gated to UNCAPPED (the capped 4-rate attribution rides the seam).
-    Returns the number of blocks attributed."""
-    if _store is None:
-        return 0
-    sched = _kraken_rate_schedules.get("import")
-    if sched is None or sched.is_empty():
-        return 0
-    if _capped_schedules():
-        return 0        # capped: the 4-rate attribution is priced at the seam
-    try:
-        # 4.5.0 (BL-39): also re-attribute a GAP-FILLED block (interpolated=1) whose stored EV
-        # kWh materially disagrees with its completed dispatch. A gap-fill can stamp a WRONG
-        # (non-NULL) split from a stale/planned fragment; the real completed lands hours later,
-        # and the NULL-only rule never revisits it. Forward-hardening — runs every reconcile
-        # pass, so any outage self-heals once the completed dispatch arrives; idempotent after.
-        # rate_corrected blocks are excluded so a manual correction is never stomped.
-        rows = _store.get_blocks_missing_ev_split()
-    except Exception as e:
-        logger.warning("_attribute_missing_ev_split: query failed: %s", e)
-        return 0
-    n = 0
-    _refit_starts: list = []   # v4 4.5.21: blocks whose EV this wrote, for the device re-fit
-    for r in rows:
-        imp_ch = {"kwh": float(r["imp_kwh"] or 0.0), "cost": float(r["imp_cost"] or 0.0),
-                  "rate": float(r["imp_rate"] or 0.0)}
-        try:
-            # 4.4.0 §4: the ONE re-price entry, INHERIT mode — re-derive only the split from
-            # the now-present completed dispatch, keep the finalised rate (§3d), gate persist
-            # on the split result below.
-            _reprice_main_import_block(imp_ch, r["block_start"], "electricity_main",
-                                       apply_overlay=False, persist=False)
-        except Exception:
-            continue
-        if imp_ch.get("kwh_ev") is None:        # completed dispatch clipped to no grid EV
-            continue
-        try:
-            # BL-27 / BL-79: the segments (the readers' source of truth) go in the SAME
-            # transaction as the columns, so a failed write leaves neither changed.
-            _store.replace_ev_split(
-                r["block_start"], segments=_build_block_segments(r["block_start"], imp_ch))
-            n += 1
-            _refit_starts.append(r["block_start"])
-        except Exception as e:
-            logger.warning("_attribute_missing_ev_split: write failed for %s: %s",
-                           r["block_start"], e)
-    _refit_devices_to_house(_store, _refit_starts)   # v4 4.5.21: the devices re-fit inside the house now the EV is known (dispatch-only accounts)
-    if n:
-        logger.info("ev attribution: back-attributed the EV/Home split on %d block(s) whose "
-                    "completed dispatch arrived after pricing (was silently all-Home)", n)
-    return n
-
-
 async def reconcile_dispatch_overlay() -> dict:
     """Settlement-time reconciliation of the dispatch overlay against the
     accumulated lifecycle (design §12). For each SETTLED, non-user-corrected main
@@ -12873,16 +12818,9 @@ async def reconcile_dispatch_overlay() -> dict:
                         "only dispatch history (no prior billing slot)", n_mat)
     except Exception as e:
         logger.warning("reconcile: completed-only slot materialisation failed: %s", e)
-    # BL-9/BL-27 fix: back-attribute any block whose COMPLETED dispatch landed after it was
-    # priced — otherwise the real EV charge stays in Home and two instances that priced the
-    # same slot at different times disagree permanently. Rewrites columns AND segments, so
-    # every segment-reading surface follows. Heals history on the first run, self-heals late
-    # dispatch thereafter.
-    try:
-        _n_attr = _attribute_missing_ev_split()
-    except Exception as e:
-        _n_attr = 0
-        logger.warning("reconcile: ev back-attribution failed: %s", e)
+    # The back-attribution that ran here (BL-9/BL-27: a block priced before its completed
+    # dispatch landed) is the carve's since 16 Oct 2026 — one population, run at every capture
+    # and hourly (bill and split paths design §3.3 2, 6b).
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     # Two gates: a RESTORE can happen as soon as the slot has ended (`started` is
     # captured in real-time, so it's already known); a REVERT/REVIEW must wait for
@@ -12900,7 +12838,7 @@ async def reconcile_dispatch_overlay() -> dict:
         return {}
     n_restore = n_revert = n_review = n_deferred = n_band = n_boundary = 0
     n_settled_guard = 0
-    changed = bool(_n_attr)          # back-attribution alone should refresh the charts
+    changed = False
     n_candidates = len(rows)
     for r in rows:
         bs = r["block_start"]
