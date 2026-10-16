@@ -265,43 +265,6 @@ class OrderingIsPartOfTheContract(unittest.TestCase):
         self.assertEqual(st.get_dispatched_blocks_awaiting_measure("2026-01-01T00:00:00"), [])
 
 
-class SettledBlocksOffTheirSplit(unittest.TestCase):
-
-    def setUp(self):
-        self.st = _mk_store()
-
-    def test_a_house_only_settlement_with_a_bill_ev_bucket_is_selected(self):
-        _block(self.st, imp_kwh=5.0, rate_source="settled")
-        _measured(self.st, S, ev_kwh=2.0, cost_incl=1.25)
-        self.assertEqual(len(self.st.get_settled_blocks_off_their_split(10)), 1)
-
-    def test_a_block_that_already_has_a_split_is_left_alone(self):
-        _block(self.st, imp_kwh=5.0, rate_source="settled")
-        self.st.set_block_segments(S, "electricity_main", [   # the split is its EV segment
-            (2.0, 0.07, 0.067, "off_peak", "ev"), (3.0, 0.07, 0.067, "off_peak", "house")])
-        _measured(self.st, S, ev_kwh=2.0)
-        self.assertEqual(self.st.get_settled_blocks_off_their_split(10), [])
-
-    def test_a_split_that_is_not_the_bills_is_selected(self):
-        """16 Oct 2026 (bill and split paths design §3.3 2): a block settled with a split the
-        dispatch capped (v4 4.5.9's rule) was never revisited — the old query wanted no split."""
-        _block(self.st, imp_kwh=5.0, rate_source="settled")
-        self.st.set_block_segments(S, "electricity_main", [
-            (1.45, 0.07, 0.067, "off_peak", "ev"), (3.55, 0.07, 0.067, "off_peak", "house")])
-        _measured(self.st, S, ev_kwh=3.409)
-        self.assertEqual(len(self.st.get_settled_blocks_off_their_split(10)), 1)
-
-    def test_a_bill_with_no_ev_bucket_is_no_evidence(self):
-        _block(self.st, imp_kwh=5.0, rate_source="settled")
-        _measured(self.st, S, ev_kwh=0.0)
-        self.assertEqual(self.st.get_settled_blocks_off_their_split(10), [])
-
-    def test_unsettled_blocks_are_not_this_jobs_business(self):
-        _block(self.st, imp_kwh=5.0)
-        _measured(self.st, S, ev_kwh=2.0)
-        self.assertEqual(self.st.get_settled_blocks_off_their_split(10), [])
-
-
 class MeasuredCostsToApply(unittest.TestCase):
 
     def setUp(self):
@@ -330,13 +293,12 @@ class MeasuredCostsToApply(unittest.TestCase):
 
 class Surfaces(unittest.TestCase):
 
-    def test_all_eight_are_reads(self):
+    def test_all_seven_are_reads(self):
         from store_types import ReadStore
         for name in ("get_block_measured_inputs", "completed_dispatch_kwh",
                      "latest_measured_kwh",
                      "get_settleable_blocks", "count_settleable_blocks",
                      "get_measured_costs_to_apply",
-                     "get_settled_blocks_off_their_split",
                      "get_dispatched_blocks_awaiting_measure"):
             self.assertTrue(hasattr(ReadStore, name), name)
 

@@ -118,7 +118,7 @@ class TestBillSaysZero(_Base):
 
     def test_breakdown_columns_stay_null(self):
         """An empty half-hour has no split to state. NULL keeps the row clear of
-        slots_with_bill_split() and run_settled_ev_split_heal()."""
+        slots_with_bill_split() (and out of the settled split heal, removed 16 Oct 2026)."""
         self._block(0.0)
         engine._kraken_client = _CountingClient(ZERO_NODE)
         _run(engine.measure_settled_dispatched_blocks())

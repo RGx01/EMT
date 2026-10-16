@@ -37,7 +37,7 @@ class TestEngineInventory(unittest.TestCase):
         cls.write = set(cls.e["write"])
 
     def test_every_long_running_job_is_a_writer(self):
-        """All 18 of them. A §7 q3 closed on this: there is no such thing as a
+        """All 17 of them. A §7 q3 closed on this: there is no such thing as a
         long-running READ job in EMT, so B's scope is not reduced by them — it is
         defined by them."""
         for job in ("run_api_import_job", "run_deferred_verify_pricing",
@@ -50,7 +50,6 @@ class TestEngineInventory(unittest.TestCase):
                     # (run_smb_rate_repair, run_smb_device_recost,
                     # run_band_rate_snap, run_smb_ev_resplit) were removed for
                     # v5 — see tests/test_v4_heals_removed.py.
-                    "run_settled_ev_split_heal",
                     "run_reprice_history_sweep_to_done"):
             self.assertIn(job, self.write, "%s must be coordinated" % job)
 

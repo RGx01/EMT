@@ -10988,13 +10988,6 @@ async def _tick_dispatch_capture() -> None:
             _maybe_drain_measured_history()
         except Exception as e:
             logger.warning("_tick_dispatch_capture: measured history drain schedule failed: %s", e)
-        # Blocks already settled house-only because the dispatch ceiling was ambiguous are
-        # stamped 'settled', so the drain's backlog can never revisit them. Heal from the
-        # cached bill buckets (no API calls); empty in the steady state.
-        try:
-            run_settled_ev_split_heal()
-        except Exception as e:
-            logger.warning("_tick_dispatch_capture: settled EV split heal failed: %s", e)
         try:
             if _MEASURED_APPLY:
                 apply_measured_settled()
@@ -12211,11 +12204,6 @@ async def run_refetch_apply(token: str) -> dict:
                     done["not_settled"] += 1
                     logger.warning("range re-fetch: %s — the bill is stored, the block did not "
                                    "re-settle from it", s)
-        if done["bill"]:
-            try:
-                run_settled_ev_split_heal()       # the bill's split onto the blocks it re-settled
-            except Exception as e:
-                logger.warning("range re-fetch: split heal failed: %s", e)
         _refetch_preview = {}
         st.update({"status": "done", "phase": "applied", "applied": done, "token": None})
         logger.info("range re-fetch: applied %s..%s — %s", p.get("from"), p.get("to"), done)
@@ -12435,75 +12423,6 @@ def _measured_history_backlog() -> int:
         return 0
 
 
-@job("settled_ev_split_heal")
-def run_settled_ev_split_heal(limit: int = 2000) -> dict:
-    """Bring settled blocks to the settle's EV/Home split (`_measured_ev_kwh`) — since 16 Oct 2026
-    every settled block whose split is not the rule's (bill and split paths design §3.3 2), not
-    only those settled WITHOUT one (the original case, below).
-
-    NOT a one-off heal, despite the name. It is ungated, carries no done-marker,
-    and runs every pass -- forward-hardening, because settlement keeps producing
-    blocks in this state. The four v4 one-offs removed for v5 (smb_rate_repair,
-    smb_device_recost, smb_ev_resplit, band_rate_snap) all said "retires in
-    v5.0.0" in their docstrings and were marker-gated; this one says neither and
-    is not. Deleting it by name-match would stop settled blocks ever acquiring a
-    split.
-
-    Until the ambiguous-ceiling fix, `apply_measured_to_block` treated a dispatch ceiling of
-    zero as "no EV" even where no dispatch data existed for the slot at all. On imported
-    history that is always the case — Octopus serves a short rolling dispatch window — so a
-    freshly imported IOG-SMB era settled from the bill with `rate_source='settled'`, the
-    correct total cost, and a house-only split, discarding the EV_DEVICE bucket the bill had
-    already supplied.
-
-    Those blocks are stamped `measured`, so the drain's backlog (which excludes them) will
-    never revisit them. This heals them from the `measured_cost` rows already cached locally —
-    no API calls — by re-invoking the one settle path, which is idempotent. Recurring rather
-    than marker-gated: the candidate query is empty in the steady state, so it self-heals any
-    later occurrence instead of needing a second migration. Never touches a corrected block.
-    """
-    store = _store
-    if store is None or not _import_is_smb_capped():
-        return {"ok": True, "skipped": "not applicable"}
-    try:
-        rows = store.get_settled_blocks_off_their_split(limit)
-    except Exception as e:
-        logger.warning("settled EV split heal: query failed: %s", e)
-        return {"ok": False, "reason": "query_failed"}
-    if not rows:
-        return {"ok": True, "healed": 0}
-    healed = 0
-    for r in rows:
-        bs = r["block_start"]
-        try:
-            # The settle's own rule decides (one function, so the two cannot drift): a block
-            # already on it is skipped — that is what stops the heal looping (the 12th Pi soak,
-            # 4 Oct 2026, "restored" the same blocks hourly).
-            inputs = store.get_block_measured_inputs(bs)
-            if inputs is None:
-                continue
-            seg_ev = float(r["seg_ev"] or 0.0)
-            want = _measured_ev_kwh(store, bs, inputs, inputs["imp_kwh"] or 0.0)
-            if abs(want - seg_ev) <= 0.0005:
-                continue
-            # Never take the car away entirely: a rule of nothing where EMT's split has the car
-            # is the 4.5.23 hold-back's case (a bill that has not attributed it yet), or a
-            # half-hour with no dispatch evidence — not grounds to rewrite it house-only.
-            if _bill_drops_ev(seg_ev, want):
-                continue
-            if apply_measured_to_block(bs, cost_incl=float(r["cost_incl"]),
-                                       cost_excl=r["cost_excl"], label=r["label"]):
-                after = store.get_ev_split_kwh([bs]).get(bs) or 0.0
-                if abs(after - want) <= 0.0005:
-                    healed += 1                  # counted only when the rule's split was written
-        except Exception as e:
-            logger.warning("settled EV split heal: %s failed: %s", bs, e)
-    if healed:
-        logger.info("settled EV split heal: brought %d settled block(s) to the settle's "
-                    "EV/House split", healed)
-    return {"ok": True, "healed": healed}
-
-
 def _maybe_drain_measured_history() -> None:
     """Schedule the SMB history drain as a loop TASK when a first-time / bulk import has left a
     backlog of capped slots without Octopus's billed breakdown. Guarded by an in-process flag; a
@@ -12593,8 +12512,7 @@ def apply_measured_settled() -> dict:
 
 def _measured_ev_kwh(store, bs: str, row, kwh: float) -> float:
     """The EV kWh the settle gives a settled block — the settle's own rule, one place
-    (split out of apply_measured_to_block, 4 Oct 2026, so run_settled_ev_split_heal can ask it
-    before re-settling). `row` is get_block_measured_inputs' row; `kwh` the block's imp_kwh.
+    (split out of apply_measured_to_block, 4 Oct 2026). `row` is get_block_measured_inputs' row; `kwh` the block's imp_kwh.
 
     On an IOG-SMB agreement (`split_at`) with a bill split cached: the bill's EV, clipped to kWh.
     Otherwise — a cost-only bill, or a half-hour before the agreement, where Octopus's breakdown

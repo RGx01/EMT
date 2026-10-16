@@ -65,12 +65,6 @@ class EvSegments(unittest.TestCase):
     def test_back_attribution_leaves_it(self):
         self.assertEqual(_starts(_store(segs=EV_SEGS).get_blocks_missing_ev_split()), [])
 
-    def test_the_settled_heal_leaves_it(self):
-        st = _store(segs=EV_SEGS, rate_source="settled")
-        st.upsert_measured_cost(BS, cost_incl=0.16, cost_excl=0.15, label="OFF_PEAK", kwh=3.0)
-        st.upsert_measured_breakdown(BS, home_kwh=1.0, home_rate=RATE, ev_kwh=2.0, ev_rate=RATE)
-        self.assertEqual(_starts(st.get_settled_blocks_off_their_split(10)), [])
-
     def test_the_carve_guard_refuses_it(self):
         st = _store(segs=EV_SEGS)
         self.assertEqual(st.carve_ev_split(BS, segments=HOUSE_SEGS), 0)

@@ -165,69 +165,11 @@ class TestBeforeTheAgreementTheDispatchStays(_Base):
         self.assertIsNone(self._ev())
 
 
-class TestSettledEvSplitHeal(_Base):
-    def test_heals_a_block_settled_house_only(self):
-        self._block(); self._bill(ev_kwh=4.5)
-        engine._store._conn.execute(
-            "UPDATE blocks SET rate_source='settled' WHERE block_start=?", (SLOT,))
-        engine._store._conn.commit()
-        self.assertIsNone(self._ev())
-        r = engine.run_settled_ev_split_heal()
-        self.assertEqual(r.get("healed"), 1, r)
-        self.assertAlmostEqual(self._ev() or 0, 4.5, places=6)
+class TheSettlesRule(_Base):
 
-    def test_is_idempotent(self):
-        self._block(); self._bill(ev_kwh=4.5)
-        engine._store._conn.execute(
-            "UPDATE blocks SET rate_source='settled' WHERE block_start=?", (SLOT,))
-        engine._store._conn.commit()
-        engine.run_settled_ev_split_heal()
-        self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 0,
-                         "steady state must be a no-op")
-
-    def test_never_touches_a_corrected_block(self):
-        self._block(corrected=1); self._bill(ev_kwh=4.5)
-        engine._store._conn.execute(
-            "UPDATE blocks SET rate_source='corrected' WHERE block_start=?", (SLOT,))
-        engine._store._conn.commit()
-        self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 0)
-        self.assertIsNone(self._ev())
-
-
-class TestTheHealDoesNotLoop(_Base):
-    """4 Oct 2026: on the 12th Pi soak the heal "restored" the same 20–23 blocks every hour,
-    changing nothing. Its query selects "bill has EV, block has none"; but where the dispatch
-    ceiling is a KNOWN zero the settle keeps the block house-only (measured is king), so
-    re-settling rewrote the same split every pass and counted it as healed. The heal now asks
-    the settle's own rule (_measured_ev_kwh) first, and counts only a split actually written."""
-
-    def _settled(self, **kw):
-        self._block(**kw)
-        engine._store._conn.execute(
-            "UPDATE blocks SET rate_source='settled' WHERE block_start=?", (SLOT,))
-        engine._store._conn.commit()
-
-    def test_a_known_zero_ceiling_heals_once_then_stops(self):
-        """Since §6 (b) the bill's split wins over a zero dispatch record, so this block heals —
-        once: the next passes find a split and select nothing. (Until 16 Oct 2026: left alone.)"""
-        self._settled(source="kraken_api", api=6.0)
-        self._bill(ev_kwh=4.5)
-        self._dispatch(0.0)
-        self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 1)
-        calls = []
-        real = engine.apply_measured_to_block
-        engine.apply_measured_to_block = lambda *a, **k: calls.append(a) or real(*a, **k)
-        try:
-            for _ in range(3):                                  # three hourly passes
-                self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 0)
-        finally:
-            engine.apply_measured_to_block = real
-        self.assertEqual(calls, [], "it re-settled a block that already has its split")
-        self.assertAlmostEqual(self._ev() or 0, 4.5, places=6)
-
-    def test_the_heal_and_the_settle_agree(self):
-        """The rule the heal asks is the rule the settle applies — one function, so the two
-        cannot drift. Each case's settled EV equals what _measured_ev_kwh predicted."""
+    def test_the_rule_is_what_the_settle_writes(self):
+        """The settle writes what `_measured_ev_kwh` says — one function. (The split heal that also
+        asked it was removed on 16 Oct 2026, bill and split paths design §7.3.)"""
         cases = [  # (block kwargs, bill ev, dispatch kwh or None, expected ev)
             (dict(), 4.5, None, 4.5),                                  # unknown ceiling: the bill
             (dict(kwh=3.0), 4.5, None, 3.0),                           # grid-clipped
@@ -249,53 +191,6 @@ class TestTheHealDoesNotLoop(_Base):
                 self._apply()
                 self.assertAlmostEqual(predicted, want, places=6)
                 self.assertAlmostEqual(self._ev() or 0.0, want, places=6)
-
-    def test_a_positive_ceiling_is_still_healed(self):
-        """The case the heal exists for still heals — to the bill's split (§6 (b))."""
-        self._settled(source="kraken_api", api=6.0)
-        self._bill(ev_kwh=4.5)
-        self._dispatch(2.0)
-        self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 1)
-        self.assertAlmostEqual(self._ev() or 0, 4.5, places=6)
-
-
-class TheHealsPopulation(_Base):
-    """Bill and split paths design §3.3 2, consolidation PR 6 (16 Oct 2026): the heal brings every
-    settled block to the settle's rule, not only blocks settled with NO split. Replayed on the soak
-    (blocks-35): 227 blocks moved (226 on the agreement, +22.72 kWh EV; 24 Aug 05:00 UTC its
-    0.011 kWh back), in one pass; costs to the bill (16 by a millionth of a pound), no rate moved.
-    Discriminating, except the guards named."""
-
-    def _settled_with(self, ev):
-        self._block(source="kraken_api", api=6.0)
-        engine._store._conn.execute(
-            "UPDATE blocks SET rate_source='settled' WHERE block_start=?", (SLOT,))
-        engine._store.set_block_segments(SLOT, "electricity_main", [
-            (ev, 0.05493, 0.05231, "off_peak", "ev"), (6.0 - ev, 0.05493, 0.05231, "off_peak", "house")])
-        engine._store._conn.commit()
-
-    def test_a_dispatch_capped_split_takes_the_bills(self):
-        """The 4.5.9 cap left 1.45 where the bill says 4.5 (6 Sep 2026 10:30's shape)."""
-        self._settled_with(1.45)
-        self._bill(ev_kwh=4.5)
-        self._dispatch(1.45)
-        self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 1)
-        self.assertAlmostEqual(self._ev(), 4.5, places=6)
-        self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 0, "it loops")
-
-    def test_a_bill_dropping_the_car_does_not_take_it_away(self):
-        """GUARD: the 4.5.23 rule — a bill of no EV is not grounds to rewrite EMT's car out."""
-        self._settled_with(3.1)
-        self._bill(ev_kwh=0.0)
-        self._dispatch(3.1)
-        self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 0)
-        self.assertAlmostEqual(self._ev(), 3.1, places=6)
-
-    def test_a_split_already_the_bills_is_left_alone(self):
-        """GUARD."""
-        self._settled_with(4.5)
-        self._bill(ev_kwh=4.5)
-        self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 0)
 
 
 if __name__ == "__main__":
