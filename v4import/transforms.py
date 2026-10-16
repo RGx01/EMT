@@ -10,12 +10,13 @@ importer's copy.
     1  provenance          'measured' -> 'settled', the reconciled fold
     2  EV segments         from the legacy columns, where a block has none
     3  held-rate refit     segments fitted to a settled kWh
+    3b the bill's split    a settled IOG-SMB block takes its cached bill's EV (one-rate blocks)
     4  band relabel        not built: BL-81 closed (house off_peak stays in every era)
     5  meta                the allow-listed store_meta / kraken_state keys
 
 4 is not built (ROADMAP BL-81, closed 10 Oct 2026); the others run in this order.
 
-Blocks whose segments 2 and 3 write are recorded in the temp table `v4i_resegmented`, so
+Blocks whose segments 2, 3 and 3b write are recorded in the temp table `v4i_resegmented`, so
 verify.py can check them by their own gates and the rest as carried exactly.
 """
 import json
@@ -24,6 +25,7 @@ from . import rules
 
 MAIN = "electricity_main"
 _EPS = 1e-6                      # the spec's tolerance for "segments miss the kWh"
+_ONE_RATE = 1e-5                 # £/kWh (0.001p): within it, a block's segments carry one rate
 HELD = ("corrected", "reconciled", "settled")     # a held rate, v5's words (after 1)
 
 
@@ -165,6 +167,81 @@ def refit_held(conn, report):
     report["transforms"]["refit_held"] = {"refitted": len(refitted), "reported": reported}
 
 
+def bill_split(conn, report):
+    """3b (bill and split paths design §7.1, 16 Oct 2026): a settled, uncorrected main block in the
+    IOG-SMB era — from the earliest cached bill that states a split (a four-bucket breakdown; the
+    importer has no agreements to ask) — with a bill split cached, whose EV segments are not the
+    bill's EV clipped to the meter, takes it: EV + house at the block's one rate
+    (`pricing_segments.ev_house_at`), bands as they were. One rate, so Σ kWh × rate — the cost, the
+    rate, every total — is unchanged; only the House/EV attribution moves.
+
+    v4 settled IOG-SMB history under 4.5.9's rule (the completed dispatch capped the bill's EV); v5's
+    settle takes the bill's split (#180). This is where imported history meets that rule — once, in
+    the importer's copy — instead of a runtime heal.
+
+    Reported, not moved: a block whose segments carry more than one rate (a capped boundary — moving
+    kWh would change the cost, and only the runtime settle can rebuild it from the rate schedules),
+    and the 4.5.23 case (a bill with no EV where EMT's split has the car). "One rate" is within
+    0.001p/kWh: v4's settle priced the house leg as the residual absorber, a few millionths off the
+    EV leg's rate; the moved block keeps that — the house leg takes the residual, so the segments
+    cost exactly what they did."""
+    import pricing_segments as ps
+    era = conn.execute("SELECT MIN(slot_start) FROM main.measured_cost WHERE direction = "
+                       "'CONSUMPTION' AND ev_kwh IS NOT NULL").fetchone()[0]
+    moved, mixed, held, kwh_ev = [], [], [], 0.0
+    if era is not None:
+        rows = conn.execute(
+            "SELECT b.block_start, b.imp_kwh, m.ev_kwh AS bill_ev FROM main.blocks b "
+            "JOIN main.measured_cost m ON m.rowid = (SELECT m2.rowid FROM main.measured_cost m2 "
+            "  WHERE m2.slot_start = b.block_start AND m2.direction = 'CONSUMPTION' "
+            "  ORDER BY m2.fetched_at DESC LIMIT 1) "
+            "WHERE b.meter_id = ? AND b.rate_source = 'settled' AND COALESCE(b.rate_corrected, 0) = 0 "
+            "AND COALESCE(b.imp_kwh, 0) > ? AND b.block_start >= ? AND m.ev_kwh IS NOT NULL "
+            "ORDER BY b.block_start", (MAIN, _EPS, era)).fetchall()
+        for r in rows:
+            segs = conn.execute(
+                "SELECT kwh, inc_rate, exc_rate, band, attribution FROM main.block_segments "
+                "WHERE block_start = ? AND meter_id = ? AND channel = 'import' ORDER BY seq",
+                (r["block_start"], MAIN)).fetchall()
+            if not segs:
+                continue
+            kwh = float(r["imp_kwh"])
+            seg_ev = sum(float(x["kwh"]) for x in segs if x["attribution"] == "ev")
+            want = min(max(float(r["bill_ev"]), 0.0), kwh)
+            if abs(want - seg_ev) <= 0.0005:
+                continue                                       # already the bill's
+            if seg_ev > 0.05 and want <= 1e-9:                # v4 4.5.23: not the car taken away
+                held.append(r["block_start"])
+                continue
+            rates = [float(x["inc_rate"] or 0.0) for x in segs]
+            if max(rates) - min(rates) > _ONE_RATE:
+                mixed.append(r["block_start"])          # a capped boundary: the runtime settle's
+                continue
+            ev_seg = next((x for x in segs if x["attribution"] == "ev"), None)
+            house_seg = next((x for x in segs if x["attribution"] != "ev"), None)
+            lead = ev_seg or segs[0]
+            new = ps.ev_house_at(
+                kwh, want, inc_rate=lead["inc_rate"], exc_rate=lead["exc_rate"],
+                ev_band=(ev_seg or house_seg)["band"], home_band=(house_seg or ev_seg)["band"])
+            # v4's settle priced the house leg as the residual absorber (its rate a few
+            # millionths off the EV leg's, so the legs sum to the bill exactly); keep that: the
+            # house leg takes whatever the source segments cost beyond the EV leg's
+            cost = sum(float(x["kwh"]) * float(x["inc_rate"] or 0.0) for x in segs)
+            if len(new) == 2 and new[1].kwh > _EPS:
+                hr = round((cost - new[0].kwh * float(new[0].inc_rate)) / new[1].kwh, 7)
+                ratio = (float(new[0].exc_rate) / float(new[0].inc_rate)
+                         if new[0].exc_rate is not None and new[0].inc_rate else None)
+                new[1] = new[1]._replace(inc_rate=hr, exc_rate=(round(hr * ratio, 7)
+                                                                if ratio is not None else None))
+            _write_segments(conn, r["block_start"], new)
+            _resegmented(conn, r["block_start"], "bill_split")
+            moved.append(r["block_start"])
+            kwh_ev += want - seg_ev
+    report["transforms"]["bill_split"] = {"moved": len(moved), "kwh_ev": round(kwh_ev, 6),
+                                          "reported_mixed": mixed, "reported_held": held,
+                                          "era_from": era}
+
+
 def run(conn, report):
     conn.execute("CREATE TEMP TABLE IF NOT EXISTS v4i_resegmented "
                  "(block_start TEXT PRIMARY KEY, why TEXT)")
@@ -172,4 +249,5 @@ def run(conn, report):
     provenance(conn, report)
     ev_segments(conn, report)
     refit_held(conn, report)
+    bill_split(conn, report)
     carry_keys(conn, report)

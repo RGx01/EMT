@@ -332,6 +332,102 @@ class TheSegmentTransforms(_Dir):
         self.assertEqual(report["gates"]["held_fit"]["refitted"], 2)
 
 
+def _bs(i):
+    return "2026-09-%02dT02:00:00" % (1 + i)
+
+
+def _bill_split_sql():
+    """v4 IOG-SMB history settled under 4.5.9 (the dispatch capped the bill's EV). The era begins
+    at the first cached bill that states a split (block 80, 1 Sep)."""
+    rows, n = [], 80
+    def block(bs, kwh, rate_source="measured", corrected=0):
+        nonlocal n
+        n += 1
+        rows.append("INSERT INTO blocks (id, block_start, block_end, meter_id, config_period_id, "
+                    "imp_kwh, imp_rate, imp_cost, imp_cost_exc, rate_source, rate_corrected) VALUES "
+                    "(%d, '%s', '%s', 'electricity_main', 1, %s, 0.05493, %s, %s, '%s', %d)"
+                    % (n, bs, bs, kwh, round(kwh * 0.05493, 6), round(kwh * 0.05231, 6),
+                       rate_source, corrected))
+    def segs(bs, *legs):
+        # v4 carries the split in its columns too, in step with the segments (verify checks both)
+        ev = [(k, r, band) for (k, r, band, attr) in legs if attr == "ev"]
+        if ev:
+            k, r, band = ev[0]
+            rows.append("UPDATE blocks SET imp_kwh_ev = %s, imp_cost_ev = %s, imp_rate_ev = %s, "
+                        "imp_ev_band = '%s' WHERE block_start = '%s'"
+                        % (k, round(k * r, 6), r, band, bs))
+        for i, (k, r, band, attr) in enumerate(legs):
+            rows.append("INSERT INTO block_segments (block_start, meter_id, channel, seq, kwh, "
+                        "inc_rate, exc_rate, band, attribution) VALUES ('%s', 'electricity_main', "
+                        "'import', %d, %s, %s, %s, '%s', '%s')" % (bs, i, k, r, round(r / 1.05, 7),
+                                                                   band, attr))
+    def bill(bs, ev):
+        rows.append("INSERT INTO measured_cost (slot_start, mpan, direction, cost_incl, cost_excl, "
+                    "label, kwh, ev_kwh, home_kwh) VALUES ('%s', 'M1', 'CONSUMPTION', 0.3, 0.28, "
+                    "'OFF_PEAK', 6.0, %s, %s)" % (bs, ev, 6.0 - ev))
+    # 0: dispatch-capped — EV 1.45 where the bill says 3.409 (6 Sep 2026 10:30's shape)
+    block(_bs(0), 6.0); segs(_bs(0), (1.45, 0.05493, "off_peak", "ev"), (4.55, 0.05493, "off_peak", "house")); bill(_bs(0), 3.409)
+    # 1: v4's residual-absorber house rate, a few millionths off the EV leg's: one rate in substance
+    block(_bs(1), 6.0); segs(_bs(1), (3.37, 0.05493, "off_peak", "ev"), (2.63, 0.0549297, "off_peak", "house")); bill(_bs(1), 3.409)
+    # 2: a capped boundary — EV off-peak, house at the day rate: reported, not moved
+    block(_bs(2), 6.0); segs(_bs(2), (1.0, 0.05493, "off_peak", "ev"), (5.0, 0.32309, "day", "house")); bill(_bs(2), 3.0)
+    # 3: the 4.5.23 case — the bill says no EV where EMT's split has the car: reported
+    block(_bs(3), 6.0); segs(_bs(3), (3.1, 0.05493, "off_peak", "ev"), (2.9, 0.05493, "off_peak", "house")); bill(_bs(3), 0.0)
+    # 4: already the bill's — untouched
+    block(_bs(4), 6.0); segs(_bs(4), (3.409, 0.05493, "off_peak", "ev"), (2.591, 0.05493, "off_peak", "house")); bill(_bs(4), 3.409)
+    # 5: corrected — untouched
+    block(_bs(5), 6.0, rate_source="corrected", corrected=1); segs(_bs(5), (1.0, 0.05493, "off_peak", "ev"), (5.0, 0.05493, "off_peak", "house")); bill(_bs(5), 3.409)
+    # 6: before the era (31 Aug, its bill states no split): untouched
+    pre = "2026-08-31T02:00:00"
+    block(pre, 6.0); segs(pre, (1.0, 0.05493, "off_peak", "ev"), (5.0, 0.05493, "off_peak", "house"))
+    rows.append("INSERT INTO measured_cost (slot_start, mpan, direction, cost_incl, cost_excl, label, "
+                "kwh) VALUES ('%s', 'M1', 'CONSUMPTION', 0.3, 0.28, 'OFF_PEAK', 6.0)" % pre)
+    return tuple(rows)
+
+
+class TheBillsSplit(_Dir):
+    """Transform 3b (bill and split paths design §7.1, 16 Oct 2026): settled IOG-SMB history takes
+    its cached bill's split in the importer, not a runtime heal. Replayed on the soak's v4 file:
+    169 of 991 moved, none reported, EV +12.91 kWh; imp_cost total identical, no rate changed.
+    Discriminating (fail on the parent), except the guards named."""
+
+    def _ev(self, conn, bs):
+        return round(conn.execute("SELECT COALESCE(SUM(kwh), 0) FROM block_segments WHERE "
+                                  "block_start = ? AND attribution = 'ev'", (bs,)).fetchone()[0], 6)
+
+    def _cost(self, conn, bs):
+        return conn.execute("SELECT SUM(kwh * inc_rate) FROM block_segments WHERE block_start = ?",
+                            (bs,)).fetchone()[0]
+
+    def test_a_dispatch_capped_split_takes_the_bills(self):
+        conn, report = self.imported(extra_sql=_bill_split_sql())
+        self.assertEqual(self._ev(conn, _bs(0)), 3.409)
+        self.assertAlmostEqual(self._cost(conn, _bs(0)), 6.0 * 0.05493, places=6)
+
+    def test_the_residual_house_rate_is_one_rate_and_its_cost_is_kept(self):
+        conn, report = self.imported(extra_sql=_bill_split_sql())
+        self.assertEqual(self._ev(conn, _bs(1)), 3.409)
+        self.assertAlmostEqual(self._cost(conn, _bs(1)), 3.37 * 0.05493 + 2.63 * 0.0549297, places=6)
+
+    def test_a_capped_boundary_and_the_4523_case_are_reported_not_moved(self):
+        conn, report = self.imported(extra_sql=_bill_split_sql())
+        t = report["transforms"]["bill_split"]
+        self.assertEqual((t["reported_mixed"], t["reported_held"]), ([_bs(2)], [_bs(3)]))
+        self.assertEqual((self._ev(conn, _bs(2)), self._ev(conn, _bs(3))), (1.0, 3.1))
+
+    def test_already_the_bills_corrected_and_pre_era_are_untouched(self):
+        """GUARD."""
+        conn, report = self.imported(extra_sql=_bill_split_sql())
+        self.assertEqual([self._ev(conn, b) for b in (_bs(4), _bs(5), "2026-08-31T02:00:00")],
+                         [3.409, 1.0, 1.0])
+        self.assertEqual(report["transforms"]["bill_split"]["moved"], 2)
+
+    def test_the_gates_hold(self):
+        _, report = self.imported(extra_sql=_bill_split_sql())
+        self.assertTrue(all(g["ok"] for g in report["gates"].values()), report["gates"])
+        self.assertEqual(report["gates"]["bill_split"], {"moved": 2, "reported": 2, "ok": True})
+
+
 class TheKeys(_Dir):
     """E design §7: setup facts and user choices cross; claims that work already ran do
     not, because v5 carries no v4 heals and its own passes have not run."""
