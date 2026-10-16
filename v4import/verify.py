@@ -169,16 +169,20 @@ def split_reproduced(conn, report):
     # a refit that actually shrank the EV (by more than rounding); a refit that left the EV as
     # it was is compared like any other block
     shrunk = "(t.why = 'refit' AND COALESCE(g.ev, 0) < v.imp_kwh_ev - 1e-6)"
+    # transform 3b moved the EV to the bill's on purpose: judged by `bill_split`, not the column
+    moved = "COALESCE(t.why, '') = 'bill_split'"
     kwh = _one(conn, "SELECT COUNT(*) " + base + "AND v.imp_kwh_ev > 1e-6 AND "
-                     "ABS(COALESCE(g.ev, 0) - v.imp_kwh_ev) > 1e-6 AND NOT " + shrunk)
+                     "ABS(COALESCE(g.ev, 0) - v.imp_kwh_ev) > 1e-6 AND NOT " + shrunk
+                     + " AND NOT " + moved)
     rebuilt = "COALESCE(t.why, '') = 'ev_segments'"
     cost = _one(conn, "SELECT COUNT(*) " + base + "AND v.imp_kwh_ev > 1e-6 AND "
                       "ABS(COALESCE(g.ec, 0) - COALESCE(v.imp_cost_ev, 0)) > 1e-5 AND NOT " + shrunk
-                      + " AND NOT " + rebuilt)
+                      + " AND NOT " + rebuilt + " AND NOT " + moved)
     phantom = _one(conn, "SELECT COUNT(*) " + base + "AND COALESCE(v.imp_kwh_ev, 0) <= 1e-6 "
-                         "AND g.ev > 1e-6")
+                         "AND g.ev > 1e-6 AND NOT " + moved)
     worst = _one(conn, "SELECT MAX(ABS(COALESCE(g.ec, 0) - COALESCE(v.imp_cost_ev, 0))) " + base
-                       + "AND v.imp_kwh_ev > 1e-6 AND NOT " + shrunk + " AND NOT " + rebuilt)
+                       + "AND v.imp_kwh_ev > 1e-6 AND NOT " + shrunk + " AND NOT " + rebuilt
+                       + " AND NOT " + moved)
     report["gates"]["split_reproduced"].update(
         worst_cost=round(worst or 0.0, 9), kwh_differ=kwh, cost_differ=cost, phantom=phantom)
     if kwh or cost or phantom:
@@ -220,6 +224,36 @@ def held_fit(conn, report):
     return None
 
 
+def bill_split(conn, report):
+    """Bill and split paths design §7.1 (transform 3b): each block 3b moved now holds the bill's EV
+    clipped to its kWh, its segments sum to its kWh, carry one rate (within 0.001p/kWh), and cost what its source
+    segments cost (Σ kWh × rate, to 1e-5) — the attribution moved, nothing else. A block it reported
+    (more than one rate, or the 4.5.23 case) kept its source segments."""
+    t = report["transforms"].get("bill_split", {"moved": 0, "reported_mixed": [],
+                                                 "reported_held": []})
+    report["gates"]["bill_split"].update(moved=t["moved"], reported=len(t["reported_mixed"])
+                                         + len(t["reported_held"]))
+    sel = ("FROM main.blocks b JOIN temp.v4i_resegmented t ON t.block_start = b.block_start "
+           "AND t.why = 'bill_split' JOIN " + _SEG % "main" + " g ON g.block_start = b.block_start "
+           "JOIN " + _SEG % "src" + " o ON o.block_start = b.block_start "
+           "JOIN main.measured_cost m ON m.rowid = (SELECT m2.rowid FROM main.measured_cost m2 "
+           "  WHERE m2.slot_start = b.block_start AND m2.direction = 'CONSUMPTION' "
+           "  ORDER BY m2.fetched_at DESC LIMIT 1) WHERE b.meter_id = 'electricity_main' ")
+    n = _one(conn, "SELECT COUNT(*) " + sel)
+    bad = _one(conn, "SELECT COUNT(*) " + sel + "AND (ABS(g.k - b.imp_kwh) > 1e-6 "
+                     "OR ABS(g.ev - MIN(m.ev_kwh, b.imp_kwh)) > 1e-6 OR ABS(g.c - o.c) > 1e-5 "
+                     "OR (SELECT MAX(s.inc_rate) - MIN(s.inc_rate) FROM main.block_segments s "
+                     "WHERE s.block_start = b.block_start AND s.meter_id = b.meter_id "
+                     "AND s.channel = 'import') > 1e-5)")
+    kept = [bs for bs in t["reported_mixed"] + t["reported_held"]
+            if _one(conn, "SELECT COUNT(*) FROM temp.v4i_resegmented WHERE block_start = ? "
+                          "AND why = 'bill_split'", bs)]
+    if n != t["moved"] or bad or kept:
+        return ("the bill's split: %d moved, %d recorded, %d not the bill's or not costing what "
+                "they did, %d reported yet moved" % (t["moved"], n, bad, len(kept)))
+    return None
+
+
 def corrections(conn, report):
     """Spec §9.4: every corrected block keeps its corrected rate and cost."""
     n = _one(conn, "SELECT COUNT(*) FROM src.blocks s LEFT JOIN main.blocks m ON m.id = s.id "
@@ -254,7 +288,7 @@ def keys(conn, report):
 GATES = (("row_counts", row_counts), ("carried_exactly", carried_exactly),
          ("cost_parity", cost_parity), ("provenance", provenance),
          ("ev_segments", ev_segments), ("split_reproduced", split_reproduced),
-         ("held_fit", held_fit),
+         ("held_fit", held_fit), ("bill_split", bill_split),
          ("corrections", corrections), ("tombstones", tombstones), ("keys", keys))
 
 

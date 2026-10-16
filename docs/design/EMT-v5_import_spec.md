@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v21 — revised 12 Oct 2026, the floor rises to 4.5.23 (v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v22 — revised 16 Oct 2026, a settled IOG-SMB block takes its cached bill's split (§5.2 BILL SPLIT) (v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -836,6 +836,33 @@ one house segment at the held rate (band: `imp_home_band` where it is `off_peak`
 
 This is a transform, not a heal: no marker, no v4 version gate. The floor does not cover it because
 no v4 release heals it. It runs once, on the importer's copy, like every rule here.
+
+**BILL SPLIT — a settled IOG-SMB block takes its cached bill's split** (v22, 16 Oct 2026; bill and
+split paths design §7.1). v4 settled IOG-SMB history under 4.5.9's rule: the completed dispatch
+capped the bill's EV bucket. v5's settle takes the bill's split at the final stage (#180). After
+REFIT, for each MAIN block with segments where
+
+    rate_source = 'settled' (transform 1's word) AND rate_corrected = 0 AND imp_kwh > 0
+    AND block_start >= the earliest CONSUMPTION measured_cost row stating ev_kwh   (the SMB era)
+    AND the latest CONSUMPTION measured_cost row for it states ev_kwh
+    AND ABS(Σ EV segment kWh − MIN(ev_kwh, imp_kwh)) > 0.0005
+
+and whose segments carry one rate (within 0.001p/kWh — v4's settle priced the house leg as the
+residual absorber, a few millionths off the EV leg's), the importer writes EV + house
+(`pricing_segments.ev_house_at`): EV = `MIN(ev_kwh, imp_kwh)` at the EV leg's rate, the house the
+remainder taking the residual, so the segments cost exactly what they did; bands as they were. Every
+column is carried as it is. **Reported, not moved:** a block whose segments carry more than one rate
+(a capped boundary — only v5's runtime settle can rebuild it from the rate schedules), and a bill with
+no EV where the block's segments have the car (v4 4.5.23's rule). The import report counts moved and
+reported, with their block starts; gate `bill_split` (§9) checks every moved block.
+
+A transform, not a heal (no marker, no version gate), and the reason v5 needs no runtime heal for it.
+Half-hours whose cached bill has **no** split (fetched before v4 4.5.7, 11 Sep 2026) are not moved:
+their split needs Octopus, and the user re-fetches them (they read teal).
+
+> Measured 16 Oct 2026, the soak's v4 file (4.5.23, 14 Oct): of 991 settled IOG-SMB blocks with a
+> bill split, 169 moved (EV +12.91 kWh, the same off the house), 0 reported; `imp_cost` total
+> identical, no rate changed, the segments' £ total within £0.000001. 1.6 s on a Mac.
 
 A main block whose segments miss its kWh but whose rate is NOT held is **reported, not refitted**:
 its cause is not this one, and refitting would hide it. The import report counts both — refitted,
