@@ -608,18 +608,28 @@ def _snap_to_slot(block_start: str) -> str:
 _IOG_BUMP_SOURCES = {"bump-charge", "boost"}
 
 
-def _iog_slot_ev_kwh(block_start: str, chosen_kwh: float) -> float:
-    """Grid-clipped dispatch-derived EV kWh for a slot: the completed-dispatch
-    delta (Octopus's own per-slot EV energy) clipped to the slot's grid import."""
-    if _store is None or not chosen_kwh or chosen_kwh <= 0:
+def dispatch_ev_kwh(block_start: str, kwh: float, store=None) -> float:
+    """The completed dispatch's EV kWh for a half-hour, clipped to the half-hour's grid import —
+    the one computation of the dispatch's EV (bill and split paths design §3.3). It was two: this
+    (the snapped slot, through `_reader()`, for the pricing seam) and `completed_dispatch_kwh` + min
+    in the settle's rule (the exact slot). `store` defaults to this thread's read store."""
+    if not kwh or kwh <= 0:
+        return 0.0
+    st = store if store is not None else (_reader() if _store is not None else None)
+    if st is None:
         return 0.0
     try:
-        rows = _reader().get_dispatch_history_for_slot(
-            _snap_to_slot(block_start), kind="completed")
+        ev = st.completed_dispatch_kwh(_snap_to_slot(block_start))
     except Exception:
         return 0.0
-    ev = sum(abs(float(r["energy_kwh"])) for r in rows if r["energy_kwh"] is not None)
-    return min(ev, float(chosen_kwh))
+    return min(float(ev or 0.0), float(kwh))
+
+
+def _capped_schedules() -> bool:
+    """The capped IOG-SMB rate schedules are loaded (EV device off-peak and peak) — the 6-hour-cap
+    pricing can run. One test where there were four copies (bill and split paths design §3.3)."""
+    return ("ev_device_off_peak" in _kraken_rate_schedules
+            and "ev_device_peak" in _kraken_rate_schedules)
 
 
 def _iog_slot_is_boost(block_start: str, store=None) -> bool:
@@ -702,7 +712,7 @@ def _apply_iog_split(imp_ch: dict, block_start: str, block_end: str,
     import_sched = _kraken_rate_schedules.get("import")
     if import_sched is None or import_sched.is_empty():
         return
-    ev_kwh = _iog_slot_ev_kwh(block_start, chosen_kwh)
+    ev_kwh = dispatch_ev_kwh(block_start, chosen_kwh)
     if ev_kwh <= 1e-9:
         return
     if tz_name is None:
@@ -714,8 +724,7 @@ def _apply_iog_split(imp_ch: dict, block_start: str, block_end: str,
                 + timedelta(minutes=30)).isoformat()
         except Exception:
             return
-    capped = ("ev_device_off_peak" in _kraken_rate_schedules
-              and "ev_device_peak" in _kraken_rate_schedules)
+    capped = _capped_schedules()
     boundary = _iog_cap_day_boundary(block_start, tz_name) if capped else None
     res = iog_cap.compute_iog_split(
         block_start, block_end, chosen_kwh=chosen_kwh, ev_kwh=ev_kwh,
@@ -12577,54 +12586,35 @@ def apply_measured_settled() -> dict:
 
 
 def _measured_ev_kwh(store, bs: str, row, kwh: float) -> float:
-    """The EV kWh the settle gives a settled block — the settle's own rule, one place.
+    """The EV kWh the settle gives a settled block — the settle's own rule, one place
+    (split out of apply_measured_to_block, 4 Oct 2026, so run_settled_ev_split_heal can ask it
+    before re-settling). `row` is get_block_measured_inputs' row; `kwh` the block's imp_kwh.
 
-    Split out of apply_measured_to_block (4 Oct 2026) so run_settled_ev_split_heal can ask
-    it before re-settling: where the dispatch ceiling is a KNOWN zero the settle keeps the
-    block house-only whatever the bill's EV bucket says (measured is king), and a heal
-    that re-ran the settle on such a block rewrote the same house-only split every pass.
-    `row` is get_block_measured_inputs' row; `kwh` the block's imp_kwh."""
-    try:
-        _disp = store.completed_dispatch_kwh(bs)
-    except Exception:
-        _disp = 0.0
-    _disp = min(_disp, kwh)                       # grid-clip the measured dispatch ceiling
-    # C2 (4.5.7, revised 4.5.9): the settled BILL bucket informs the EV RATE/band, but the
-    # dispatch session bounds the QUANTITY (measured is king). The aggregate settled cost
-    # stays authoritative below.
+    On an IOG-SMB agreement (`split_at`) with a bill split cached: the bill's EV, clipped to kWh.
+    Otherwise — a cost-only bill, or a half-hour before the agreement, where Octopus's breakdown
+    is not the bill (24 Aug 2026 05:30 BST) — the completed dispatch (`dispatch_ev_kwh`), capping
+    any EV already stored; no dispatch, no EV."""
+    # The tower (bill and split paths design §6): CAD + dispatch, then DCC + dispatch, then DCC +
+    # Octopus's cost AND split. At the final stage the bill's EV bucket IS the split, clipped to
+    # the meter's kWh (§6 (b), 16 Oct 2026). Until then v4 4.5.9's "measured is king" capped it at
+    # the completed dispatch (against a battery charging concurrently inflating the bucket); on the
+    # soak, 26 Aug - 15 Oct, the bill's EV was the higher in 220 of 382 half-hours. The 4.5.23
+    # hold-back still keeps a bill that drops the car out before it gets here.
     try:
         _bd = store.get_measured_breakdown(bs)
     except Exception:
         _bd = None
     _bill_ev = float(_bd["ev_kwh"]) if (_bd and _bd.get("ev_kwh") is not None) else None
+    if _bill_ev is not None and split_at(bs):
+        return min(max(_bill_ev, 0.0), kwh)
+    # No bill split cached (a cost-only bill): the dispatch, as at the stages below.
+    _disp = dispatch_ev_kwh(bs, kwh, store)
     _stored_ev = row["imp_kwh_ev"]
     _stored_ev = float(_stored_ev) if (_stored_ev is not None and float(_stored_ev) > 1e-9) else 0.0
-    # A dispatch ceiling of ZERO is ambiguous. Either the car genuinely did not charge (a LIVE
-    # slot we were watching) or we hold no dispatch data for that time AT ALL — imported
-    # history, or a slot older than the oldest record we have, because Octopus serves a short
-    # rolling dispatch window and no history. Treating both as "no EV" silently discarded the
-    # bill's own EV_DEVICE bucket on every imported IOG-SMB slot: a fresh install settled 438
-    # slots from the bill, 111 of them carrying EV, and stored a house-only split because
-    # dispatch_history held six rows from that morning. Where the ceiling is genuinely UNKNOWN
-    # the settled bucket is the only evidence there is, so trust it (grid-clipped). Where a
-    # dispatch record exists for the slot, the 4.5.9 measured-is-king cap is unchanged.
-    _ceiling_unknown = False
-    if _disp <= 1e-9:
-        try:
-            _row_here, _oldest = store.dispatch_coverage(bs)
-        except Exception:
-            _row_here, _oldest = True, None       # unsure -> keep the strict 4.5.9 behaviour
-        _imported = str(row["source"] or "").startswith("imported")
-        _pre_observation = bool(_oldest) and str(bs) < str(_oldest)
-        _ceiling_unknown = (not _row_here) and (_imported or _pre_observation)
-    if _ceiling_unknown:
-        evk = min(_bill_ev, kwh) if _bill_ev is not None else 0.0
-    elif _disp <= 1e-9:
-        evk = 0.0                                 # no measured EV session -> house
-    else:
-        _pref = _bill_ev if _bill_ev is not None else (_stored_ev if _stored_ev > 1e-9 else _disp)
-        evk = min(_pref, _disp)                   # cap EV to the car's own dispatched session
-    return evk
+    if _disp > 1e-9:
+        return min(_stored_ev if _stored_ev > 1e-9 else _disp, _disp)
+    return 0.0
+
 
 
 def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
@@ -12723,8 +12713,7 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
     ev_band = band
     # MIXED over-cap boundary block: keep the true 4-band split at the schedule's CLEAN
     # rates (NO rescale — clean per-band rates, not cost-derived).
-    _capped = ("ev_device_off_peak" in _kraken_rate_schedules
-               and "ev_device_peak" in _kraken_rate_schedules)
+    _capped = _capped_schedules()
     if label == "mixed" and evk > 1e-9 and _capped and sched is not None:
         try:
             import iog_cap as _ic
@@ -12881,8 +12870,7 @@ def _attribute_missing_ev_split() -> int:
     sched = _kraken_rate_schedules.get("import")
     if sched is None or sched.is_empty():
         return 0
-    if ("ev_device_off_peak" in _kraken_rate_schedules
-            and "ev_device_peak" in _kraken_rate_schedules):
+    if _capped_schedules():
         return 0        # capped: the 4-rate attribution is priced at the seam
     try:
         # 4.5.0 (BL-39): also re-attribute a GAP-FILLED block (interpolated=1) whose stored EV
@@ -13170,8 +13158,7 @@ async def reconcile_dispatch_overlay() -> dict:
             # once, then matches and is skipped). Because these blocks stay reconcile
             # candidates, the hourly pass sweeps all legacy stale bands — no separate
             # migration needed.
-            _capped_band = ("ev_device_off_peak" in _kraken_rate_schedules
-                            and "ev_device_peak" in _kraken_rate_schedules)
+            _capped_band = _capped_schedules()
             if not _capped_band:
                 _want_ev = "off_peak" if currently_off_peak else "peak"
                 _want_home = "off_peak" if currently_off_peak else "day"

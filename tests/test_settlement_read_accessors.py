@@ -9,9 +9,9 @@ whole family.
 Three of the nine are worth more than a mechanical port, and each has its own
 class below.
 
-  * `dispatch_coverage` is TWO subqueries in ONE round trip because the pair is
-    the question — "no dispatch" and "no dispatch records reaching back this far"
-    are different answers and the applier must tell them apart.
+  * (`dispatch_coverage` was the third — "no dispatch" vs "no dispatch records reaching back
+    this far" — and was deleted 16 Oct 2026, bill and split paths design §6 (b): on the
+    IOG-SMB agreement the bill's split is the split, so the applier no longer asks.)
   * `get_settleable_blocks` has THREE bounds that look redundant and are not:
     floor, cursor, cutoff.
   * `_SETTLEABLE_SQL` was spliced into three queries in engine.py — twice by
@@ -120,45 +120,6 @@ class CompletedDispatchKwh(unittest.TestCase):
         _hist(self.st, S, kwh=-3.0)
         _hist(self.st, "2026-09-01T00:30:00", kwh=-9.0)
         self.assertAlmostEqual(self.st.completed_dispatch_kwh(S), 3.0)
-
-
-class DispatchCoverage(unittest.TestCase):
-    """The distinction that decides whether a settled EV bucket is trusted."""
-
-    def setUp(self):
-        self.st = _mk_store()
-
-    def test_empty_history_knows_it_is_empty(self):
-        row_here, oldest = self.st.dispatch_coverage(S)
-        self.assertFalse(row_here)
-        self.assertIsNone(oldest)
-
-    def test_a_row_for_this_slot_is_a_knowable_zero(self):
-        """dispatch_history HAS a row for the slot, and it is not a completed
-        one: that is a real 'no EV this slot', not an absence of records."""
-        _hist(self.st, S, kind="planned")
-        row_here, oldest = self.st.dispatch_coverage(S)
-        self.assertTrue(row_here)
-        self.assertEqual(oldest, S)
-
-    def test_records_starting_later_than_the_slot_are_the_other_case(self):
-        """No row here AND the oldest record postdates the slot — EMT was not
-        accumulating dispatch then, so the settled bucket is the only evidence
-        there is."""
-        _hist(self.st, "2026-09-10T00:00:00")
-        row_here, oldest = self.st.dispatch_coverage("2026-08-01T00:00:00")
-        self.assertFalse(row_here)
-        self.assertEqual(oldest, "2026-09-10T00:00:00")
-        self.assertGreater(oldest, "2026-08-01T00:00:00",
-                           "this comparison is what the caller branches on")
-
-    def test_both_answers_come_from_one_call(self):
-        """Kept as one method deliberately: a caller that answered 'is there a
-        row' without 'how far back do records go' would throw away an imported
-        block's settled EV."""
-        import inspect
-        sig = inspect.signature(BlockStore.dispatch_coverage)
-        self.assertEqual(list(sig.parameters), ["self", "slot_start"])
 
 
 class LatestMeasuredKwh(unittest.TestCase):
@@ -360,10 +321,10 @@ class MeasuredCostsToApply(unittest.TestCase):
 
 class Surfaces(unittest.TestCase):
 
-    def test_all_nine_are_reads(self):
+    def test_all_eight_are_reads(self):
         from store_types import ReadStore
         for name in ("get_block_measured_inputs", "completed_dispatch_kwh",
-                     "dispatch_coverage", "latest_measured_kwh",
+                     "latest_measured_kwh",
                      "get_settleable_blocks", "count_settleable_blocks",
                      "get_measured_costs_to_apply",
                      "get_settled_blocks_missing_ev_split",

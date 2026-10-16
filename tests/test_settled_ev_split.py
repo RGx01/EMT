@@ -115,26 +115,54 @@ class TestAmbiguousCeiling(_Base):
         self.assertIsNone(self._ev(), "no EV in the bill -> house-only")
 
 
-class TestDispatchCapStillHolds(_Base):
-    """4.5.9 'measured is king' must be unchanged wherever dispatch data exists."""
+class TestTheBillsSplitIsFinal(_Base):
+    """Bill and split paths design §6 (b), 16 Oct 2026 — the tower's final stage: on the IOG-SMB
+    agreement Octopus's split IS the split, clipped to the meter. This replaced v4 4.5.9's
+    'measured is king' (the completed dispatch capped the bill, against a battery charging
+    concurrently inflating the EV bucket); both tests below asserted the cap until then.
+    Discriminating: each fails on the parent."""
 
-    def test_live_slot_with_a_zero_dispatch_record_stays_house(self):
-        # A live block we WERE watching, with a completed record of ~nothing: the car
-        # genuinely did not charge, so the bill's bucket must not override it.
+    def test_a_zero_dispatch_record_does_not_override_the_bill(self):
         self._block(source="kraken_api", api=6.0)
         self._bill(ev_kwh=4.5)
         self._dispatch(0.0)
         self._apply()
-        self.assertIsNone(self._ev(), "a live slot with dispatch evidence stays house-only")
+        self.assertAlmostEqual(self._ev() or 0, 4.5, places=6)
 
-    def test_dispatch_caps_an_over_reading_bill(self):
-        # The battery-absorbed case the cap exists for: bill says 4.5, car did 2.0.
+    def test_the_dispatch_does_not_cap_the_bill(self):
         self._block(source="kraken_api", api=6.0)
         self._bill(ev_kwh=4.5)
         self._dispatch(2.0)
         self._apply()
-        self.assertAlmostEqual(self._ev() or 0, 2.0, places=6,
-                               msg="dispatch remains the ceiling where it is known")
+        self.assertAlmostEqual(self._ev() or 0, 4.5, places=6)
+
+
+class TestBeforeTheAgreementTheDispatchStays(_Base):
+    """Before the IOG-SMB agreement Octopus's breakdown is not the bill (24 Aug 2026 05:30 BST:
+    bill £0.0879 off-peak, breakdown £0.5169 day rate), so the dispatch rule stays there.
+    GUARDS: the parent applied the 4.5.9 cap everywhere, which these cases share."""
+
+    def setUp(self):
+        super().setUp()
+        engine._kraken_discovery = {"import": {"mpan": "IM", "tariff_code": "E-1R-IOG-SMB-X-B",
+            "agreements": [{"tariff_code": "E-1R-INTELLI-VAR-B",
+                            "valid_from": "2025-01-01T00:00:00Z", "valid_to": "2026-09-02T00:00:00Z"},
+                           {"tariff_code": "E-1R-IOG-SMB-X-B",
+                            "valid_from": "2026-09-02T00:00:00Z", "valid_to": None}]}}
+
+    def test_the_dispatch_caps_it(self):
+        self._block(source="kraken_api", api=6.0)
+        self._bill(ev_kwh=4.5)
+        self._dispatch(2.0)
+        self._apply()
+        self.assertAlmostEqual(self._ev() or 0, 2.0, places=6)
+
+    def test_no_dispatch_no_ev(self):
+        self._block(source="kraken_api", api=6.0)
+        self._bill(ev_kwh=4.5)
+        self._dispatch(0.0)
+        self._apply()
+        self.assertIsNone(self._ev())
 
 
 class TestSettledEvSplitHeal(_Base):
@@ -179,11 +207,13 @@ class TestTheHealDoesNotLoop(_Base):
             "UPDATE blocks SET rate_source='settled' WHERE block_start=?", (SLOT,))
         engine._store._conn.commit()
 
-    def test_a_known_zero_ceiling_is_left_alone(self):
-        """Fails on the parent: it re-settled the block and reported it healed."""
+    def test_a_known_zero_ceiling_heals_once_then_stops(self):
+        """Since §6 (b) the bill's split wins over a zero dispatch record, so this block heals —
+        once: the next passes find a split and select nothing. (Until 16 Oct 2026: left alone.)"""
         self._settled(source="kraken_api", api=6.0)
         self._bill(ev_kwh=4.5)
         self._dispatch(0.0)
+        self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 1)
         calls = []
         real = engine.apply_measured_to_block
         engine.apply_measured_to_block = lambda *a, **k: calls.append(a) or real(*a, **k)
@@ -192,8 +222,8 @@ class TestTheHealDoesNotLoop(_Base):
                 self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 0)
         finally:
             engine.apply_measured_to_block = real
-        self.assertEqual(calls, [], "it re-settled a block the settle keeps house-only")
-        self.assertIsNone(self._ev())
+        self.assertEqual(calls, [], "it re-settled a block that already has its split")
+        self.assertAlmostEqual(self._ev() or 0, 4.5, places=6)
 
     def test_the_heal_and_the_settle_agree(self):
         """The rule the heal asks is the rule the settle applies — one function, so the two
@@ -201,8 +231,8 @@ class TestTheHealDoesNotLoop(_Base):
         cases = [  # (block kwargs, bill ev, dispatch kwh or None, expected ev)
             (dict(), 4.5, None, 4.5),                                  # unknown ceiling: the bill
             (dict(kwh=3.0), 4.5, None, 3.0),                           # grid-clipped
-            (dict(source="kraken_api", api=6.0), 4.5, 0.0, 0.0),        # known zero: house
-            (dict(source="kraken_api", api=6.0), 4.5, 2.0, 2.0),        # dispatch caps it
+            (dict(source="kraken_api", api=6.0), 4.5, 0.0, 4.5),        # §6 (b): the bill
+            (dict(source="kraken_api", api=6.0), 4.5, 2.0, 4.5),        # §6 (b): not capped
         ]
         for blk, bill_ev, disp, want in cases:
             with self.subTest(blk=blk, disp=disp):
@@ -221,12 +251,12 @@ class TestTheHealDoesNotLoop(_Base):
                 self.assertAlmostEqual(self._ev() or 0.0, want, places=6)
 
     def test_a_positive_ceiling_is_still_healed(self):
-        """GUARD: the case the heal exists for still heals."""
+        """The case the heal exists for still heals — to the bill's split (§6 (b))."""
         self._settled(source="kraken_api", api=6.0)
         self._bill(ev_kwh=4.5)
         self._dispatch(2.0)
         self.assertEqual(engine.run_settled_ev_split_heal().get("healed"), 1)
-        self.assertAlmostEqual(self._ev() or 0, 2.0, places=6)
+        self.assertAlmostEqual(self._ev() or 0, 4.5, places=6)
 
 
 if __name__ == "__main__":
