@@ -12437,7 +12437,9 @@ def _measured_history_backlog() -> int:
 
 @job("settled_ev_split_heal")
 def run_settled_ev_split_heal(limit: int = 2000) -> dict:
-    """Re-apply the bill's EV/Home split to blocks settled WITHOUT one.
+    """Bring settled blocks to the settle's EV/Home split (`_measured_ev_kwh`) — since 16 Oct 2026
+    every settled block whose split is not the rule's (bill and split paths design §3.3 2), not
+    only those settled WITHOUT one (the original case, below).
 
     NOT a one-off heal, despite the name. It is ungated, carries no done-marker,
     and runs every pass -- forward-hardening, because settlement keeps producing
@@ -12464,7 +12466,7 @@ def run_settled_ev_split_heal(limit: int = 2000) -> dict:
     if store is None or not _import_is_smb_capped():
         return {"ok": True, "skipped": "not applicable"}
     try:
-        rows = store.get_settled_blocks_missing_ev_split(limit)
+        rows = store.get_settled_blocks_off_their_split(limit)
     except Exception as e:
         logger.warning("settled EV split heal: query failed: %s", e)
         return {"ok": False, "reason": "query_failed"}
@@ -12474,24 +12476,31 @@ def run_settled_ev_split_heal(limit: int = 2000) -> dict:
     for r in rows:
         bs = r["block_start"]
         try:
-            # The settle's own EV rule first (4 Oct 2026). Where the dispatch ceiling is a
-            # known zero it keeps the block house-only (measured is king), so re-settling
-            # changes nothing — and did, every pass: the 12th Pi soak "restored" the same
-            # 20–23 blocks hourly. Those are not missing a split; the settle decided it.
+            # The settle's own rule decides (one function, so the two cannot drift): a block
+            # already on it is skipped — that is what stops the heal looping (the 12th Pi soak,
+            # 4 Oct 2026, "restored" the same blocks hourly).
             inputs = store.get_block_measured_inputs(bs)
-            if inputs is None or _measured_ev_kwh(store, bs, inputs,
-                                                  inputs["imp_kwh"] or 0.0) <= 1e-9:
+            if inputs is None:
+                continue
+            seg_ev = float(r["seg_ev"] or 0.0)
+            want = _measured_ev_kwh(store, bs, inputs, inputs["imp_kwh"] or 0.0)
+            if abs(want - seg_ev) <= 0.0005:
+                continue
+            # Never take the car away entirely: a rule of nothing where EMT's split has the car
+            # is the 4.5.23 hold-back's case (a bill that has not attributed it yet), or a
+            # half-hour with no dispatch evidence — not grounds to rewrite it house-only.
+            if _bill_drops_ev(seg_ev, want):
                 continue
             if apply_measured_to_block(bs, cost_incl=float(r["cost_incl"]),
                                        cost_excl=r["cost_excl"], label=r["label"]):
-                after = store.get_block_measured_inputs(bs)
-                if after is not None and after["imp_kwh_ev"] is not None:
-                    healed += 1                  # counted only when the split was written
+                after = store.get_ev_split_kwh([bs]).get(bs) or 0.0
+                if abs(after - want) <= 0.0005:
+                    healed += 1                  # counted only when the rule's split was written
         except Exception as e:
             logger.warning("settled EV split heal: %s failed: %s", bs, e)
     if healed:
-        logger.info("settled EV split heal: restored the bill's EV/Home split on %d "
-                    "settled block(s) that had been stored house-only", healed)
+        logger.info("settled EV split heal: brought %d settled block(s) to the settle's "
+                    "EV/House split", healed)
     return {"ok": True, "healed": healed}
 
 
