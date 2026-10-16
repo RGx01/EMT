@@ -144,7 +144,7 @@ covered).
 | PR | family | parity |
 |---|---|---|
 | 1 | §4: the repair leaves settled and corrected half-hours alone | a test per case; no golden moves |
-| 2 | §1.3 1–2: `source_for`, `parse_bill` — every path parses through one function | goldens; replay the four paths' fixtures; the zero rule's one behaviour change named |
+| 2 | §1.3 1–2: `source_for`, `parse_bill` — every path parses through one function | goldens; replay the four paths' fixtures; the zero rule's one behaviour change named. *Built 16 Oct 2026:* `bill_kind_at` (the name for `source_for`), `parse_bill` + `_zero_answer`, `_fetch_bill_nodes`, `_store_bill`, `BlockStore.get_imp_kwh`; `_vat_resync_row` and the two inline copies deleted. Behaviour changes: the source is per half-hour in all four paths; a breakdown half-hour the breakdown leaves unanswered is no longer asked the billed cost (#167's fallback cached a split-less bill that froze); the zero rule applies to cost-only answers and the VAT resync too. |
 | 3 | §1.3 3: `fetch_bills` with the ladder (+ day, + month) | the probe's eight half-hours as a fixture; real-DB parity on the re-fetch |
 | 4 | §2: one `emt_ev_at` | the 4.5.23 tests (`test_bill_split_wait.py`) on every path |
 | 5 | §3.3 1, 3, 4: `ev_for`, one builder, one capped test | goldens; real-DB parity on `blocks-35` (before) / `blocks-36` (after the re-import) |

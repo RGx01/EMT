@@ -11644,99 +11644,42 @@ async def measure_settled_dispatched_blocks() -> dict:
         return {"candidates": len(rows), "fetched": 0}
     _emt_ev = store.get_ev_split_kwh(missing)
 
-    def _n(v):
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            return 0.0
-
-    _use_buckets = _import_is_smb_capped()
     n_store = n_absent = n_mixed = n_zero = n_held = 0
     _fetched_pairs: list = []          # v4 4.5.22 (#505): (slot, cost_incl, cost_excl) for the hint
-    if _use_buckets:
-        # IOG-SMB: authoritative four-bucket read (cost + split + band), ONE small-window
-        # fetch (recover_device_breakdown chunks internally to dodge the complexity strip).
-        try:
-            bd = await _kraken_client.recover_device_breakdown(mpan, missing)
-        except Exception as e:
-            logger.warning("measure_settled: breakdown fetch failed: %s", e)
-            return {}
-        for slot in missing:
-            node = bd.get(slot)
-            if not node:
-                n_absent += 1
-                continue
-            _hk, _ek = _n(node.get("home_kwh")), _n(node.get("ev_kwh"))
-            cost_incl = round(_n(node.get("home_cost")) + _n(node.get("ev_cost")), 6)
-            if cost_incl <= 0 and (_hk + _ek) <= 1e-9:
-                # BL-70: Octopus ANSWERED, and the answer is "nothing was drawn". That is a
-                # settled fact, not a missing one — the node parsed (recover_device_breakdown
-                # counts it recovered), every bucket is simply zero. Filing it under `absent`
-                # wrote nothing, so `measured_slots_missing` handed the slot straight back on
-                # the next pass: eleven dispatched-but-idle half-hours were re-fetched every
-                # hour, forever, re-proving the same true fact six GraphQL calls at a time.
-                #
-                # Cache the zero and the loop ends — `missing` goes empty and the pass returns
-                # before any fetch. But only believe it when OUR OWN settled kWh agrees: a bill
-                # that simply hasn't run yet also reports zero, and caching that would be a
-                # permanent lie. Where the block HAS energy, keep the old retry behaviour.
-                #
-                # The breakdown columns stay NULL on purpose. A zero-kWh slot has no split to
-                # state, and leaving them NULL keeps the row out of slots_with_bill_split() and
-                # run_settled_ev_split_heal() entirely. The block itself needs no stamp: it
-                # already reads imp_kwh=0 / imp_cost=0, which is what the bill just confirmed,
-                # and apply_measured_to_block rightly refuses an empty half-hour.
-                if (by_start[slot]["imp_kwh"] or 0.0) <= 1e-9:
-                    store.upsert_measured_cost(slot, mpan=mpan, cost_incl=0.0, cost_excl=0.0,
-                                               label="ZERO", kwh=0.0)
-                    n_zero += 1
-                else:
-                    n_absent += 1
-                continue
-            if _bill_drops_ev(_emt_ev.get(slot), _ek):
-                # v4 4.5.23: the bill has not attributed the car yet — keep EMT's split, ask again.
-                _bill_split_hold(_wait, slot)
-                n_held += 1
-                continue
+    # One bill reader (bill and split paths design §1.3): the breakdown for half-hours on the
+    # IOG-SMB agreement, the single billed cost for the rest — chosen per half-hour.
+    try:
+        nodes = await _fetch_bill_nodes(mpan, missing)
+    except Exception as e:
+        logger.warning("measure_settled: bill fetch failed: %s", e)
+        return {}
+    kinds = {k for k, _ in nodes.values()}
+    for slot in missing:
+        kind, node = nodes.get(slot, (None, None))
+        row = parse_bill(node, kind, by_start[slot]["imp_kwh"])
+        if row is None:
+            n_absent += 1                          # no answer, or zero against EMT's kWh: ask again
+            continue
+        if row.get("zero"):
+            # BL-70: nothing was drawn, and EMT's own kWh agrees — a settled fact. Cached, so
+            # the slot is not re-fetched every pass; the breakdown stays NULL (no split to state).
+            store.upsert_measured_cost(slot, mpan=mpan, cost_incl=0.0, cost_excl=0.0,
+                                       label="ZERO", kwh=0.0)
+            n_zero += 1
+            continue
+        bd = row.get("breakdown")
+        if bd and _bill_drops_ev(_emt_ev.get(slot), bd[2]):
+            # v4 4.5.23: the bill has not attributed the car yet — keep EMT's split, ask again.
+            _bill_split_hold(_wait, slot)
+            n_held += 1
+            continue
+        if bd:
             _bill_split_release(_wait, slot)
-            _hre, _ere = node.get("home_rate_exc"), node.get("ev_rate_exc")
-            cost_excl = (round(_hk * _n(_hre) + _ek * _n(_ere), 6)
-                         if (_hre is not None or _ere is not None) else None)
-            _bands = {b for b in (node.get("home_band"), node.get("ev_band")) if b}
-            label = ("OFF_PEAK" if _bands == {"off_peak"}
-                     else ("STANDARD_RATE" if _bands == {"peak"} else "mixed"))
-            if label == "mixed":
-                n_mixed += 1
-            store.upsert_measured_cost(slot, mpan=mpan, cost_incl=cost_incl,
-                                       cost_excl=cost_excl, label=label,
-                                       kwh=round(_hk + _ek, 6))
-            _fetched_pairs.append((slot, cost_incl, cost_excl))
-            store.upsert_measured_breakdown(
-                slot, mpan=mpan, home_kwh=_hk, home_rate=node.get("home_rate"),
-                ev_kwh=_ek, ev_rate=node.get("ev_rate"))
-            n_store += 1
-    else:
-        # Non-SMB IOG: no device buckets — recover the single billed cost (small window).
-        try:
-            recovered = await _kraken_client.recover_measurement_costs(mpan, missing)
-        except Exception as e:
-            logger.warning("measure_settled: measurements fetch failed: %s", e)
-            return {}
-        for slot in missing:
-            node = recovered.get(slot)
-            if not node or node.get("cost_incl") is None:
-                n_absent += 1
-                continue
-            _op = node.get("off_peak")
-            label = ("OFF_PEAK" if _op is True
-                     else ("STANDARD_RATE" if _op is False else "mixed"))
-            if label == "mixed":
-                n_mixed += 1
-            store.upsert_measured_cost(
-                slot, mpan=mpan, cost_incl=node.get("cost_incl"),
-                cost_excl=node.get("cost_excl"), label=label, kwh=node.get("kwh"))
-            _fetched_pairs.append((slot, node.get("cost_incl"), node.get("cost_excl")))
-            n_store += 1
+        if row["label"] == "mixed":
+            n_mixed += 1
+        _store_bill(store, slot, mpan, row)
+        _fetched_pairs.append((slot, row["cost_incl"], row["cost_excl"]))
+        n_store += 1
     _vat_resync_note_fetch(store, _fetched_pairs)   # v4 4.5.22 (#505): has Octopus restated?
     if _wait != _wait_before:
         _bill_split_wait_save(store, _wait)
@@ -11745,7 +11688,9 @@ async def measure_settled_dispatched_blocks() -> dict:
     # zero = the bill stated nothing was drawn; absent = the bill said nothing at all.
     logger.info("measure_settled: candidates=%d fetched=%d stored=%d mixed=%d zero=%d "
                 "absent=%d held=%d (source=%s, apply=%s)", len(rows), len(missing), n_store,
-                n_mixed, n_zero, n_absent, n_held, "buckets" if _use_buckets else "single-cost",
+                n_mixed, n_zero, n_absent, n_held,
+                "+".join(sorted({"breakdown": "buckets", "cost": "single-cost"}[k] for k in kinds))
+                or "-",
                 _MEASURED_APPLY)
     return {"candidates": len(rows), "fetched": len(missing), "stored": n_store,
             "mixed": n_mixed, "zero": n_zero, "absent": n_absent, "held": n_held}
@@ -11834,10 +11779,34 @@ def _vat_resync_wrong(store, mpan: str, key: str) -> "tuple[list, list]":
     return cached, blocks
 
 
-def _vat_resync_row(node, use_buckets: bool) -> "dict | None":
-    """A re-fetched node as the measured_cost row the live fetch would store; None when absent.
-    The same parsing as measure_settled_dispatched_blocks (four buckets on IOG-SMB, else the
-    single billed cost)."""
+# ── One bill reader (bill and split paths design §1.3, §6 (a)) ───────────────────────────────
+# Every path that asks Octopus for a half-hour's bill — the live settled-cost pass, the history
+# drain, the VAT resync (#505), the range re-fetch — chooses its source with `bill_kind_at`, fetches
+# with `_fetch_bill_nodes` and reads the answer with `parse_bill`. Until 16 Oct 2026 the breakdown
+# was parsed in three copies that disagreed on a zero answer, and the source was chosen three ways.
+
+def bill_kind_at(start: str) -> str:
+    """'breakdown' where the half-hour's agreement is one Octopus serves a device breakdown for
+    (IOG-SMB, `split_at`), else 'cost' — the single billed cost. Per half-hour, by its own
+    agreement: before the agreement Octopus answers the breakdown too, but not as the bill
+    (24 Aug 2026 05:30 BST: bill £0.0879 off-peak, breakdown £0.5169 at the day rate)."""
+    return "breakdown" if split_at(start) else "cost"
+
+
+_ZERO_DISAGREE_LOGGED: set = set()
+
+
+def parse_bill(node, kind: str, emt_kwh) -> "dict | None":
+    """One of Octopus's answers for a half-hour as the `measured_cost` row to store, or None when it
+    is not an answer. `kind` is `bill_kind_at`'s; `emt_kwh` the kWh EMT holds for the half-hour.
+
+    * a breakdown node → cost (sum of the buckets), ex-VAT from the buckets' ex-VAT rates, the
+      label from the bands that carried energy, kWh, and `breakdown` (home kWh, rate, EV kWh, rate);
+    * a cost node → cost, ex-VAT, the OFF_PEAK / STANDARD_RATE label, kWh — no breakdown;
+    * **the zero rule** (§6 (a)): an answer of nothing drawn is a settled fact only where EMT holds
+      zero kWh too → `{"zero": True}`, cached as ZERO (the breakdown stays NULL, so the split heal
+      leaves it). Where EMT holds kWh it is not an answer — a bill that has not run yet also reads
+      zero — so None, asked again, and logged once as a kWh disagreement."""
     def _n(v):
         try:
             return float(v)
@@ -11845,11 +11814,11 @@ def _vat_resync_row(node, use_buckets: bool) -> "dict | None":
             return 0.0
     if not node:
         return None
-    if use_buckets:
+    if kind == "breakdown":
         _hk, _ek = _n(node.get("home_kwh")), _n(node.get("ev_kwh"))
         cost_incl = round(_n(node.get("home_cost")) + _n(node.get("ev_cost")), 6)
         if cost_incl <= 0 and (_hk + _ek) <= 1e-9:
-            return {"zero": True}
+            return _zero_answer(node, emt_kwh)
         _hre, _ere = node.get("home_rate_exc"), node.get("ev_rate_exc")
         cost_excl = (round(_hk * _n(_hre) + _ek * _n(_ere), 6)
                      if (_hre is not None or _ere is not None) else None)
@@ -11861,10 +11830,52 @@ def _vat_resync_row(node, use_buckets: bool) -> "dict | None":
                                                           _ek, node.get("ev_rate"))}
     if node.get("cost_incl") is None:
         return None
+    if _n(node.get("cost_incl")) <= 0 and _n(node.get("kwh")) <= 1e-9:
+        return _zero_answer(node, emt_kwh)
     _op = node.get("off_peak")
     label = "OFF_PEAK" if _op is True else ("STANDARD_RATE" if _op is False else "mixed")
     return {"cost_incl": node.get("cost_incl"), "cost_excl": node.get("cost_excl"),
             "label": label, "kwh": node.get("kwh")}
+
+
+def _zero_answer(node, emt_kwh):
+    if emt_kwh is not None and float(emt_kwh or 0.0) <= 1e-9:
+        return {"zero": True}
+    key = str(node.get("start") or node.get("startAt") or id(node))
+    if key not in _ZERO_DISAGREE_LOGGED:
+        _ZERO_DISAGREE_LOGGED.add(key)
+        logger.warning("bill: Octopus answered nothing drawn where EMT holds %s kWh (%s) — not "
+                       "taken as the bill; asked again", emt_kwh, key)
+    return None
+
+
+def _store_bill(store, slot: str, mpan: str, row: dict) -> None:
+    """Cache a parsed bill: the cost row, and the breakdown where it has one."""
+    store.upsert_measured_cost(slot, mpan=mpan, cost_incl=row["cost_incl"],
+                               cost_excl=row["cost_excl"], label=row["label"], kwh=row["kwh"])
+    if row.get("breakdown"):
+        hk, hr, ek, er = row["breakdown"]
+        store.upsert_measured_breakdown(slot, mpan=mpan, home_kwh=hk, home_rate=hr,
+                                        ev_kwh=ek, ev_rate=er)
+
+
+async def _fetch_bill_nodes(mpan: str, slots) -> dict:
+    """{slot: (kind, node)} — the breakdown asked for the half-hours on a breakdown agreement, the
+    single billed cost for the rest. A breakdown half-hour the breakdown leaves unanswered is NOT
+    asked the billed cost: a cost-only bill there would be cached with no split, and a cached slot
+    is not asked again, so the split would freeze at EMT's (16 Oct 2026; #167 had that fallback for
+    every half-hour). The window ladder is PR 3's (`fetch_bills`)."""
+    kinds = {s: bill_kind_at(s) for s in slots}
+    on = [s for s in slots if kinds[s] == "breakdown"]
+    rest = [s for s in slots if kinds[s] == "cost"]
+    got = (await _kraken_client.recover_device_breakdown(mpan, on) or {}) if on else {}
+    cost = (await _kraken_client.recover_measurement_costs(mpan, rest) or {}) if rest else {}
+    out = {}
+    for s in slots:
+        node = got.get(s) if kinds[s] == "breakdown" else cost.get(s)
+        if node:
+            out[s] = (kinds[s], node)
+    return out
 
 
 # ── Re-fetch a range from Octopus: preview, then apply (ROADMAP BL-86) ─────────────────────
@@ -11955,20 +11966,13 @@ async def _refetch_octopus(store, utc_from: str, utc_to: str, parts, facts: dict
                  if (f.get("imp_kwh") or 0) > 1e-9 and tariff_kind_at(s) == "intelligent"]
         if mpan and slots:
             _refetch_state["phase"] = "fetching bills (%d half-hours)" % len(slots)
-            # The device breakdown (cost + House/EV split + band) only for half-hours on the
-            # IOG-SMB agreement (`split_at`); the billed cost (`recover_measurement_costs`, with its
-            # forward look-ahead for a dispatch's off-peak label) for the rest, and for any the
-            # breakdown leaves unanswered. Octopus does answer the breakdown before the agreement,
-            # but not as the bill: PR 5 on the Pi, 14 Oct 2026, 24 Aug 05:30 BST — the cached bill
-            # £0.0879 (1.6 kWh off-peak, the dispatch), the breakdown £0.5169 (all house, day rate),
-            # and "EV 0" on every pre-agreement half-hour.
-            on = [s for s in slots if split_at(s)]
-            got = (await _kraken_client.recover_device_breakdown(mpan, on) or {}) if on else {}
-            rest = [s for s in slots if not got.get(s)]
-            cost_only = (await _kraken_client.recover_measurement_costs(mpan, rest) or {}) if rest else {}
+            # The device breakdown for half-hours on the IOG-SMB agreement, the billed cost for the
+            # rest (`bill_kind_at`; see `_fetch_bill_nodes` for why an unanswered breakdown
+            # half-hour is not asked the billed cost).
+            nodes = await _fetch_bill_nodes(mpan, slots)   # one bill reader (design §1.3)
             for s in slots:
-                row = (_vat_resync_row(got.get(s), True) if got.get(s)
-                       else _vat_resync_row(cost_only.get(s), False))
+                kind, node = nodes.get(s, (None, None))
+                row = parse_bill(node, kind, facts[s].get("imp_kwh"))
                 if row and not row.get("zero"):
                     out.setdefault(s, {})["bill"] = row
             # what Octopus did not answer, so the dialog never says "matches" over a gap
@@ -12231,20 +12235,18 @@ async def run_measured_vat_resync() -> dict:
             pass
     # 2. Verify the WHOLE period — every cached slot since the change, into memory only.
     slots = [r[0] for r in store.measured_costs_since(mpan, key)]
-    use_buckets = _import_is_smb_capped()
     try:
-        if use_buckets:
-            fetched = await _kraken_client.recover_device_breakdown(mpan, slots)
-        else:
-            fetched = await _kraken_client.recover_measurement_costs(mpan, slots)
+        fetched = await _fetch_bill_nodes(mpan, slots)
     except Exception as e:
         logger.warning("vat resync (#505): verification fetch failed (retrying later): %s", e)
         st["last_verify"] = _dt_now_iso_safe()
         _vat_resync_save(store, st)
         return {"ok": False, "reason": "fetch_failed"}
     rows, wrong, unverified = {}, [], []
+    _kwh = store.get_imp_kwh(slots)
     for slot in slots:
-        row = _vat_resync_row((fetched or {}).get(slot), use_buckets)
+        kind, node = fetched.get(slot, (None, None))
+        row = parse_bill(node, kind, _kwh.get(slot))
         # v4 4.5.23: a re-fetch that drops the car from a half-hour whose cached bill had it is not
         # a settled answer either — unverified, so nothing is overwritten (it waits a day).
         if row is None or (row.get("breakdown") and _bill_drops_ev(
@@ -12269,12 +12271,7 @@ async def run_measured_vat_resync() -> dict:
     for slot, row in rows.items():
         if row.get("zero"):
             continue
-        store.upsert_measured_cost(slot, mpan=mpan, cost_incl=row["cost_incl"],
-                                   cost_excl=row["cost_excl"], label=row["label"], kwh=row["kwh"])
-        if row.get("breakdown"):
-            hk, hr, ek, er = row["breakdown"]
-            store.upsert_measured_breakdown(slot, mpan=mpan, home_kwh=hk, home_rate=hr,
-                                            ev_kwh=ek, ev_rate=er)
+        _store_bill(store, slot, mpan, row)
     reapplied = 0
     for bs, cost, _cexc in store.measured_main_costs_since(key):
         row = rows.get(bs)
@@ -12340,13 +12337,6 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
     # Only history Octopus has actually BILLED has a breakdown; the recent tail is left to the
     # live measure_settled pass (which caches a slot the moment its breakdown lands).
     cutoff = (_dt.now(_tz.utc).replace(tzinfo=None) - _td(hours=_RECONCILE_SETTLE_HOURS)).isoformat()
-
-    def _n(v):
-        try:
-            return float(v)
-        except (TypeError, ValueError):
-            return 0.0
-
     cursor = ""            # local high-water mark; advances past absent slots within this run
     settled = 0
     for _ in range(max_batches):
@@ -12362,37 +12352,26 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
             continue
         _emt_ev = store.get_ev_split_kwh(missing)
         try:
-            bd = await _kraken_client.recover_device_breakdown(mpan, missing)
+            nodes = await _fetch_bill_nodes(mpan, missing)   # one bill reader (design §1.3)
         except Exception as e:
-            logger.warning("measured history drain: breakdown fetch failed: %s", e)
+            logger.warning("measured history drain: bill fetch failed: %s", e)
             break
+        _kwh = store.get_imp_kwh(missing)
         stored = 0
         _batch_pairs: list = []        # 4.5.22 (#505): (slot, cost_incl, cost_excl) for the hint
         for slot in missing:
-            node = bd.get(slot)
-            if not node:
+            kind, node = nodes.get(slot, (None, None))
+            row = parse_bill(node, kind, _kwh.get(slot))
+            if row is None or row.get("zero"):
                 continue                                   # not billed yet — cursor skips it
-            _hk, _ek = _n(node.get("home_kwh")), _n(node.get("ev_kwh"))
-            cost_incl = round(_n(node.get("home_cost")) + _n(node.get("ev_cost")), 6)
-            if cost_incl <= 0 and (_hk + _ek) <= 1e-9:
-                continue
-            if _bill_drops_ev(_emt_ev.get(slot), _ek):
+            bd = row.get("breakdown")
+            if bd and _bill_drops_ev(_emt_ev.get(slot), bd[2]):
                 _bill_split_hold(_wait, slot)          # v4 4.5.23: keep EMT's split, ask again
                 continue
-            _bill_split_release(_wait, slot)
-            _hre, _ere = node.get("home_rate_exc"), node.get("ev_rate_exc")
-            cost_excl = (round(_hk * _n(_hre) + _ek * _n(_ere), 6)
-                         if (_hre is not None or _ere is not None) else None)
-            _bands = {b for b in (node.get("home_band"), node.get("ev_band")) if b}
-            label = ("OFF_PEAK" if _bands == {"off_peak"}
-                     else ("STANDARD_RATE" if _bands == {"peak"} else "mixed"))
-            store.upsert_measured_cost(slot, mpan=mpan, cost_incl=cost_incl,
-                                       cost_excl=cost_excl, label=label,
-                                       kwh=round(_hk + _ek, 6))
-            store.upsert_measured_breakdown(slot, mpan=mpan, home_kwh=_hk,
-                                            home_rate=node.get("home_rate"), ev_kwh=_ek,
-                                            ev_rate=node.get("ev_rate"))
-            _batch_pairs.append((slot, cost_incl, cost_excl))
+            if bd:
+                _bill_split_release(_wait, slot)
+            _store_bill(store, slot, mpan, row)
+            _batch_pairs.append((slot, row["cost_incl"], row["cost_excl"]))
             stored += 1
         # 4.5.22 (#505): on IOG-SMB this drain settles every half-hour, dispatched or not, so its
         # newly fetched slots are a hint source too.
