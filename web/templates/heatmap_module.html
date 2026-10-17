@@ -242,7 +242,9 @@ window.EMTHeatmap = (function () {
     var have = {};
     (M.blocks || []).forEach(function (x) { if (x.meter_id === 'electricity_main') have[x.block_start] = 1; });
     var HH = 1800000, ms = function (s) { return Date.parse(s + 'Z'); };
-    var lastDone = Math.floor(Date.now() / HH) * HH - HH;       // the last FINISHED half-hour starts here
+    // the last FINISHED half-hour starts here — with two minutes' grace after a boundary, while
+    // the engine waits for the post-boundary read and writes the block that just ended
+    var lastDone = Math.floor((Date.now() - 120000) / HH) * HH - HH;
     var t = Math.max(ms(M.range.start_utc), ms(b.earliest_block));
     var end = Math.min(ms(M.range.end_utc), lastDone + HH);
     for (; t < end; t += HH) {

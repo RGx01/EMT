@@ -72,7 +72,7 @@ class TheGridWalk(unittest.TestCase):
     def test_it_walks_utc_half_hours_from_the_first_block_to_the_last_finished(self):
         body = _fn("markMissing")
         self.assertIn("ms(b.earliest_block)", body)
-        self.assertIn("var lastDone = Math.floor(Date.now() / HH) * HH - HH;", body)
+        self.assertIn("var lastDone = Math.floor((Date.now() - 120000) / HH) * HH - HH;", body)
         self.assertIn("new Date(t).toISOString().slice(0, 19)", body)
         self.assertIn("if (have[iso]) continue;", body)
 

@@ -114,7 +114,9 @@ takes the shared range too — which the floating header's one scale needs anywa
 
 1. **The width** (§4) — alone, small, a bug.
 2. **Missing half-hours** (§2): `bounds.earliest_block`; the grid from UTC half-hours (every day a
-   row, the clocks days right); the missing colour; tombstoned half-hours apart.
+   row, the clocks days right); the missing colour; a tombstoned half-hour missing too, its tooltip
+   saying when (§6 (c)). *Built 17 Oct 2026* (`markMissing`, `include=gaps`; a half-hour counts once
+   two minutes past its end, while the engine writes it).
 3. **Issues first** (§3): the one "is it clean" rule, the collapse toggle, the selection across a
    fold.
 4. **Then the tools on the selection** (data tools design §1): gap fill on missing half-hours
