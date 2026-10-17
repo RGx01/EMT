@@ -143,6 +143,13 @@ _kraken_account_number: str | None = None
 # (db_account, creds_account) when the loaded DB is stamped to a different Octopus
 # account than the current credentials → API auto-activation is suppressed (#357).
 _kraken_account_mismatch = None
+# When discovery last ran (time.monotonic()), and how often the agreements are asked for again
+# while the engine runs (17 Oct 2026, the user: once a day is adequate). Discovery ran only at
+# startup and on an in-app connect, so a long-running install never learnt of a new agreement —
+# a renewal, an export tariff starting or ending, a move off IOG-SMB — until it restarted.
+_kraken_discovered_at: "float | None" = None
+_REDISCOVERY_INTERVAL_S = 24 * 3600
+_REDISCOVERY_RETRY_S = 3600              # after a failed re-discovery
 # Reference to the running HAClient + poll-task handle, captured when the engine
 # loop starts. Lets connect_kraken_now() (the in-app credential-save path)
 # launch the DCC poll task without an addon restart — the task is otherwise
@@ -6004,7 +6011,7 @@ async def _kraken_startup_discovery(force: bool = False) -> None:
     logged and swallowed — API misconfiguration must never break engine
     startup or the CAD pipeline.
     """
-    global _kraken_client, _kraken_discovery, _kraken_account_number
+    global _kraken_client, _kraken_discovery, _kraken_account_number, _kraken_discovered_at
     env = _kraken_env()
     if not env["api_key"]:
         logger.info("kraken_discovery: no API key configured — API integration off")
@@ -6079,22 +6086,11 @@ async def _kraken_startup_discovery(force: bool = False) -> None:
         _kraken_account_number = acct
         disc = await _kraken_client.auto_discover(acct)
         _kraken_discovery = disc
+        _kraken_discovered_at = time.monotonic()
 
         imp = disc.get("import") or {}
         exp = disc.get("export") or {}
-        # Persist whether this account is on an OUTGOING/export agreement, so the
-        # unsettled-blocks badge only treats export as 'awaiting DCC settlement'
-        # when export is actually expected to settle. A FIT/deemed-export account
-        # has no outgoing agreement — its export never settles — so counting it is
-        # a permanent false alarm. Default (flag absent) is TRUE so a real gap is
-        # never silenced; this write corrects it to False for FIT accounts.
-        try:
-            _store.set_meta(
-                "export_settlement_expected",
-                bool(exp.get("mpan") or exp.get("tariff_code")
-                     or exp.get("agreements")))
-        except Exception:
-            pass
+        _store_export_settlement_expected(disc)
         logger.info("=" * 60)
         logger.info("kraken_discovery: account verified — REVIEW BEFORE ENABLING POLLING")
         logger.info("  account_number : %s", _m(disc.get("account_number")))
@@ -6124,6 +6120,94 @@ async def _kraken_startup_discovery(force: bool = False) -> None:
                     "active" if _kraken_mini_reader is not None else "off")
     except Exception as e:
         logger.warning("kraken_discovery: discovery failed (non-fatal): %s", e)
+
+
+def _export_agreement_now(disc) -> bool:
+    """An export agreement in `disc` covers now. The pill's account-level test for whether export
+    is expected to settle (17 Oct 2026, the user: judged once a day, at discovery). It was "the
+    account has an export MPAN or any export agreement at all", so an export MPAN with no
+    agreement for the current period counted every export half-hour as awaiting settlement."""
+    import api_import as _ai
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+    for a in ((disc or {}).get("export") or {}).get("agreements") or []:
+        try:
+            vf = _ai._iso(_ai._naive_utc(a.get("valid_from"))) if a.get("valid_from") else None
+            vt = _ai._iso(_ai._naive_utc(a.get("valid_to"))) if a.get("valid_to") else None
+        except Exception:
+            continue
+        if vf and vf <= now and (vt is None or now < vt):
+            return True
+    return False
+
+
+def _store_export_settlement_expected(disc) -> None:
+    """Persist whether export is expected to DCC-settle, so the unsettled-blocks badge only
+    treats export as 'awaiting settlement' when an export agreement covers the period (a
+    FIT/deemed-export account, or an export MPAN between agreements, has none — counting it is a
+    permanent false alarm). Default (flag absent) stays TRUE so a real gap is never silenced."""
+    try:
+        _store.set_meta("export_settlement_expected", _export_agreement_now(disc))
+    except Exception:
+        pass
+
+
+def _agreements_signature(disc) -> tuple:
+    """What re-discovery compares: each channel's agreements (tariff, from, to)."""
+    out = []
+    for ch in ("import", "export"):
+        ags = ((disc or {}).get(ch) or {}).get("agreements") or []
+        out.append((ch, tuple(sorted((a.get("tariff_code"), a.get("valid_from"), a.get("valid_to"))
+                                     for a in ags))))
+    return tuple(out)
+
+
+def _meter_points(disc) -> tuple:
+    return tuple((((disc or {}).get(ch) or {}).get("mpan"), ((disc or {}).get(ch) or {}).get("serial"))
+                 for ch in ("import", "export"))
+
+
+async def _maybe_rediscover(now: "float | None" = None) -> bool:
+    """Ask Octopus for the account's agreements again, at most once a day (`_REDISCOVERY_INTERVAL_S`),
+    and take them where the meter points are the same. Returns whether the agreements changed; the
+    caller's rate-schedule refresh then builds on them in the same cycle. Everything judged by
+    agreement reads them: `split_at`, `capped_at`, `_smb_windows`, `tariff_kind_at`,
+    `export_agreement_at` and the pill's export flag.
+
+    The light half of `_kraken_startup_discovery`: the client, the account check and the Mini are
+    left as they are. A changed MPAN or meter serial is not taken — the ingester was built for the
+    old ones — and is logged for a reconnect. A failure retries in an hour. Never raises."""
+    global _kraken_discovery, _kraken_discovered_at
+    t = time.monotonic() if now is None else now
+    if (_kraken_client is None or not _kraken_discovery or _kraken_account_mismatch
+            or not _kraken_account_number):
+        return False
+    if _kraken_discovered_at is not None and t - _kraken_discovered_at < _REDISCOVERY_INTERVAL_S:
+        return False
+    try:
+        disc = await _kraken_client.auto_discover(_kraken_account_number)
+    except Exception as e:
+        logger.warning("kraken_rediscovery: failed (%s) — retrying in an hour", e)
+        _kraken_discovered_at = t - _REDISCOVERY_INTERVAL_S + _REDISCOVERY_RETRY_S
+        return False
+    _kraken_discovered_at = t
+    if not disc or not disc.get("import"):
+        logger.warning("kraken_rediscovery: no import meter point in the answer — kept the last")
+        return False
+    if _meter_points(disc) != _meter_points(_kraken_discovery):
+        logger.warning("kraken_rediscovery: the account's meter points have changed (a new MPAN or "
+                       "meter) — not taken; reconnect in Settings to use them")
+        return False
+    changed = _agreements_signature(disc) != _agreements_signature(_kraken_discovery)
+    if changed:
+        logger.info("kraken_rediscovery: agreements changed — import tariff %s -> %s, export "
+                    "tariff %s -> %s",
+                    (_kraken_discovery.get("import") or {}).get("tariff_code"),
+                    (disc.get("import") or {}).get("tariff_code"),
+                    (_kraken_discovery.get("export") or {}).get("tariff_code"),
+                    (disc.get("export") or {}).get("tariff_code"))
+    _kraken_discovery = disc
+    _store_export_settlement_expected(disc)
+    return changed
 
 
 def _teardown_mini_if_no_api() -> bool:
@@ -13437,6 +13521,9 @@ async def kraken_poll_task(ha: HAClient):
             # Mark the cycle active so a manual delete refuses rather than racing
             # this backfill. Cleared in finally, so it can never wedge deletes.
             set_poll_active(True)
+            # The account's agreements, once a day (17 Oct 2026): before the rate refresh,
+            # so a new agreement's rates are built in this same cycle.
+            await _maybe_rediscover()
             # Chunk 5: refresh rate schedules once per cycle (cheap — fixed
             # tariffs return ~1 record). The sync drain reads these via
             # _kraken_rate_resolver to repair zero/missing rates at reconcile.
