@@ -690,6 +690,16 @@ def _day_segment_split(main_import, meters):
     return out
 
 
+def _is_capped_day(day, cap_from) -> bool:
+    """Whether the 6-hour cap's rate-line rules apply to `day`. `cap_from` is
+    engine._chart_cap_from's [[from_day, to_day | None]] — one per IOG-SMB agreement, to_day
+    exclusive (capped pricing by agreement design §4) — or a single start date (every day from
+    it), or None (no capped days)."""
+    if isinstance(cap_from, (list, tuple)):
+        return any(str(day) >= str(f) and (t is None or str(day) < str(t)) for f, t in cap_from)
+    return bool(cap_from) and str(day) >= str(cap_from)
+
+
 def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, timezone_name, block_minutes=30, currency='£', ev_slot_map=None, bill_rounding=False, fallback_vat=0.05, ev_fold_meter=None, ev_label=None, store=None):
     """Everything one day's billing chart shows, as DATA — no markup.
 
@@ -930,7 +940,7 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
     # Cap gating: the 6-h-cap held-peak / noon-reset rules apply only to days within the
     # capped IOG-SMB era (cap_from = the SMB agreement's start). Pre-cap days follow uncapped
     # TOU -- EV shows its charged rate where charging, else tracks the house line.
-    _capped_day = bool(cap_from) and str(day) >= str(cap_from)
+    _capped_day = _is_capped_day(day, cap_from)
     # Authoritative per-slot house TOU from the tariff schedule, so the house rate line never
     # trusts an unreliable stored rate on a 0-kWh / seam-mis-priced block. resolve() is the
     # base tariff (dispatch overlays don't affect it); schedule is pence -> £.

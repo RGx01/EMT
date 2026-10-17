@@ -3890,7 +3890,7 @@ def _settle_views(_eng) -> list:
                          if not (m.get("meta") or {}).get("sub_meter")), {})
             if "export" in (main.get("channels") or {}):
                 views.append("export")
-        if _eng._import_is_smb_capped():
+        if _eng._any_smb():          # any IOG-SMB agreement, not only the current one
             views.append("split")
         return views
     except Exception:

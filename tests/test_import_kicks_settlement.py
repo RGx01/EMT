@@ -129,7 +129,8 @@ class TestDrainGuardsAreIntact(unittest.TestCase):
         self.assertIn("kraken_available", self.src)
 
     def test_smb_gated(self):
-        self.assertIn("_import_is_smb_capped", self.src)
+        # any IOG-SMB agreement, not only the current one (capped pricing by agreement design §4)
+        self.assertIn("_any_smb", self.src)
 
 
 if __name__ == "__main__":
