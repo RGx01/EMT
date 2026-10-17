@@ -112,6 +112,9 @@ history — soft too, or permanent only? (j) a retention limit on soft-deleted r
 
 ## 4. Order, if agreed
 
+*17 Oct 2026:* the heatmap's own step before the tools — issues first, missing half-hours, one
+width — is `EMT-v5_heatmap_issues_design.md`.
+
 1. The deep link (§2's prerequisite, and useful alone): open the heatmap at a day, selected.
 2. BL-88's shape for the tools that lack it: required backups for purge and gap fill; corrections
    and CSV import as coordinator jobs.
