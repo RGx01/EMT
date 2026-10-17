@@ -97,10 +97,30 @@ class ThePill(unittest.TestCase):
         self.assertIn("d.awaiting", body)
 
     def test_it_no_longer_calls_the_kwh_count_cost_settlement(self):
-        j = self.PAGE.index("(function loadSettleNote(){")
-        body = self.PAGE[j:self.PAGE.index("})();", j)]
+        j = self.PAGE.index("function loadSettleNote(){")
+        body = self.PAGE[j:self.PAGE.index("window._loadSettleNote = loadSettleNote", j)]
         self.assertNotIn("awaiting cost settlement'", body)
         self.assertIn("_settleStages(d)", body)
+
+
+class ThePillRefreshes(unittest.TestCase):
+    """17 Oct 2026, the Pi: the pill was drawn once at load, so its counts stood still until a
+    reload. Discriminating (fail on the parent): all three."""
+    PAGE = ThePill.PAGE
+
+    def test_it_is_a_function_the_page_can_call_again(self):
+        self.assertIn("window._loadSettleNote = loadSettleNote;", self.PAGE)
+        self.assertNotIn("(function loadSettleNote(){", self.PAGE)
+
+    def test_the_data_refresh_redraws_it(self):
+        i = self.PAGE.index("async function _refreshIfChanged(force)")
+        body = self.PAGE[i:self.PAGE.index("\n}\n", i)]
+        self.assertIn("_refreshSettleNote();", body)
+
+    def test_a_tab_coming_back_redraws_it(self):
+        i = self.PAGE.index("document.addEventListener('visibilitychange'")
+        body = self.PAGE[i:self.PAGE.index("\n});\n", i)]
+        self.assertIn("_refreshSettleNote()", body)
 
 
 class TheRoute(unittest.TestCase):
