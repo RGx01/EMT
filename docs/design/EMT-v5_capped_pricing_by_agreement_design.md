@@ -100,6 +100,12 @@ become one function. `split_at` stays as the surfaces' name for it.
 **Fallback:** where discovery has not run, every test falls back to the current tariff, as
 `split_at` and `tariff_kind_at` do now. Nothing changes until discovery has run.
 
+**How fresh the agreements are (17 Oct 2026, the user):** discovery ran only at startup and on an
+in-app connect, so a running install never learnt of a renewal or a move off IOG-SMB until it
+restarted. `_maybe_rediscover` asks again once a day, in the Kraken poll task just before the rate
+refresh, and takes the answer where the meter points are the same (a changed MPAN or meter is
+logged for a reconnect, since the ingester was built for the old ones).
+
 ## 5. Questions for the user — all three decided 17 Oct 2026
 
 **(a) An account that has left IOG-SMB. Decided (17 Oct 2026, the user): asked for 30 days
