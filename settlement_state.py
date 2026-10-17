@@ -9,7 +9,7 @@ same thing. Pure: facts in (BlockStore.get_settlement_facts), states out.
 
     bill   applied | applied_emt_split | estimate_dcc | estimate_cad | overdue | differs |
            corrected | imported | none                                       (design §9.3)
-    export applied | waiting | overdue | imported | none                        (design §1.2b)
+    export applied | waiting | overdue | imported | no_agreement | none        (design §1.2b, §9.4)
     split  None (no completed dispatch, or not IOG-SMB) | emt | bill | held | kept | missing
     flags  recost_bl82       — `differs` because the settlement re-run re-costed the bill to
                                 kWh x rate before BL-82's fix (13 Oct 2026): known, not new
@@ -45,13 +45,17 @@ def _clock(start, now):
 
 
 def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozenset(),
-             vat_at=None, kind_at=None, split_at=None) -> dict:
+             vat_at=None, kind_at=None, split_at=None, export_channel: bool = False,
+             export_agreement_at=None) -> dict:
     """One half-hour's {bill, export, split, flags}. `f` is a get_settlement_facts row. `smb` is
     the install's tariff (engine._import_is_smb_capped); `held` / `kept` are 4.5.23's wait map
     (engine.bill_split_held); `vat_at(start)` the VAT calendar; `kind_at(start)` the half-hour's
     tariff kind, 'intelligent' | 'published' (engine.tariff_kind_at; Intelligent when absent);
     `split_at(start)` whether its agreement has a split from the bill (engine.split_at; `smb`
-    when absent).
+    when absent). `export_channel`: the main meter has an export channel, so a half-hour whose
+    export kWh has not settled is waiting for it, whatever EMT read live.
+    `export_agreement_at(start)`: True / False whether an export agreement covers the half-hour,
+    None where it is not known (engine.export_agreement_at); False makes it `no_agreement`.
 
     The Import bill states say whether the half-hour's cost is final, and whose it is (design
     §9.3). On a published-rate tariff the settled kWh x the published rate is the bill; on an
@@ -113,15 +117,27 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
         bill = "applied_emt_split"    # Octopus's cost, EMT's split
 
     # ── export: no export bill is fetched — kWh x rate is final once the export kWh settles ──
-    exp = _f(f.get("exp_kwh")) or 0.0
-    if exp <= 1e-9:
-        export = "none"
-    elif f.get("exp_kwh_api") is not None or src == "imported_api":
-        export = "applied"
+    # Keyed on whether the export kWh has SETTLED, not on the live reading (17 Oct 2026): a meter
+    # with no live export sensor has no export kWh until DCC settles it, so an unsettled
+    # half-hour read 0 and showed "none", like a night with nothing exported. A live reading of
+    # nothing is still "none"; a settled nothing is "none".
+    exp_live = _f(f.get("exp_kwh"))
+    exp_api = _f(f.get("exp_kwh_api"))
+    exp = exp_api if exp_api is not None else (exp_live or 0.0)
+    if exp_api is not None or src == "imported_api":
+        export = "applied" if exp > 1e-9 else "none"
     elif src.startswith("imported"):
-        export = "imported"
-    else:
+        export = "imported" if exp > 1e-9 else "none"
+    elif exp > 1e-9 or (export_channel and exp_live is None):
         export = _clock(start, now)
+    else:
+        export = "none"
+    # No export agreement covers it: no export rate, so nothing is paid and nothing will settle
+    # into a bill (17 Oct 2026, the user) — not amber, then red for good. An API import's export
+    # cost is Octopus's own and stands.
+    if (export != "none" and src != "imported_api" and export_agreement_at is not None
+            and export_agreement_at(start) is False):
+        export = "no_agreement"
 
     if bill_cost is not None:
         bk, api = _f(f.get("bill_kwh")), _f(f.get("imp_kwh_api"))

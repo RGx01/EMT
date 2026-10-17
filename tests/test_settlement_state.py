@@ -129,6 +129,109 @@ class TheBill(unittest.TestCase):
         self.assertEqual(_c(_f(**dict(BILLED, rate_source="schedule")))["bill"], "estimate_dcc")
 
 
+class TheExport(unittest.TestCase):
+    """The Export bill's state is keyed on whether the export kWh has SETTLED (17 Oct 2026). A meter
+    with no live export sensor has no export kWh until DCC settles it; an unsettled half-hour read
+    0 and showed "none" — grey, like a night with nothing exported — so the view never showed what
+    was still to settle. Discriminating (fail on the parent's behaviour; on the parent itself they
+    also fail by the new `export_channel` argument): the first three. The rest are guards."""
+
+    def _e(self, start=S, **kw):
+        return _c(_f(block_start=start, **kw), export_channel=True)["export"]
+
+    def test_no_live_reading_not_settled_is_waiting(self):
+        self.assertEqual(self._e(exp_kwh=None, exp_kwh_api=None), "waiting")
+
+    def test_no_live_reading_not_settled_after_7_days_is_overdue(self):
+        self.assertEqual(self._e("2026-10-01T12:00:00", exp_kwh=None, exp_kwh_api=None), "overdue")
+
+    def test_a_settled_export_is_applied(self):
+        self.assertEqual(self._e(exp_kwh=None, exp_kwh_api=1.2), "applied")
+
+    def test_a_settled_nothing_is_none(self):
+        self.assertEqual(self._e(exp_kwh=None, exp_kwh_api=0.0), "none")
+
+    def test_a_live_reading_waits_as_before(self):
+        self.assertEqual(self._e(exp_kwh=0.8, exp_kwh_api=None), "waiting")
+
+    def test_a_live_reading_of_nothing_is_none(self):
+        self.assertEqual(self._e(exp_kwh=0.0, exp_kwh_api=None), "none")
+
+    def test_no_export_channel_is_none(self):
+        """An import-only install: nothing to settle."""
+        self.assertEqual(_c(_f(exp_kwh=None, exp_kwh_api=None))["export"], "none")
+
+    # ── no export agreement for the half-hour (17 Oct 2026, the user): new code, guards ──
+    def _a(self, covered, **kw):
+        kw.setdefault("exp_kwh", None)
+        kw.setdefault("exp_kwh_api", None)
+        return _c(_f(**kw), export_channel=True,
+                  export_agreement_at=lambda s: covered)["export"]
+
+    def test_no_agreement_is_not_waiting(self):
+        self.assertEqual(self._a(False), "no_agreement")
+
+    def test_no_agreement_settled_kwh_is_not_applied(self):
+        """No export rate: the settled kWh earns nothing, so there is no bill to call final."""
+        self.assertEqual(self._a(False, exp_kwh_api=1.2), "no_agreement")
+
+    def test_an_agreement_waits(self):
+        self.assertEqual(self._a(True), "waiting")
+
+    def test_not_known_waits(self):
+        self.assertEqual(self._a(None), "waiting")
+
+    def test_nothing_exported_stays_none(self):
+        self.assertEqual(self._a(False, exp_kwh_api=0.0), "none")
+
+    def test_an_api_import_keeps_its_cost(self):
+        self.assertEqual(self._a(False, source="imported_api", exp_kwh=1.2), "applied")
+
+    def test_the_route_passes_the_agreement_check(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "web", "server.py"), encoding="utf-8").read()
+        body = src[src.index("def _settlement_states"):]
+        self.assertIn("export_agreement_at=_eng.export_agreement_at", body[:body.index("\n\n\n")])
+
+    def test_the_route_says_whether_there_is_an_export_channel(self):
+        """GUARD: the heatmap's states are classified with the main meter's export channel."""
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "web", "server.py"), encoding="utf-8").read()
+        body = src[src.index("def _settlement_states"):]
+        self.assertIn("export_channel=_main_has_export()", body[:body.index("\n\n\n")])
+
+
+class TheExportAgreement(unittest.TestCase):
+    """GUARD (new code): engine.export_agreement_at, from the agreements discovery holds."""
+
+    def setUp(self):
+        import engine
+        self.eng, self._save = engine, engine._kraken_discovery
+
+    def tearDown(self):
+        self.eng._kraken_discovery = self._save
+
+    def _at(self, export, start="2026-10-12T02:00:00"):
+        self.eng._kraken_discovery = {"import": {}, "export": export}
+        return self.eng.export_agreement_at(start)
+
+    def test_no_export_mpan_is_not_known(self):
+        self.assertIsNone(self._at(None))
+
+    def test_an_mpan_with_no_agreements_is_none_covered(self):
+        self.assertIs(self._at({"mpan": "1", "agreements": []}), False)
+
+    def test_inside_an_agreement(self):
+        ag = [{"tariff_code": "E-1R-OUTGOING-FIX-12M-19-05-13-H",
+               "valid_from": "2026-01-01T00:00:00Z", "valid_to": None}]
+        self.assertIs(self._at({"mpan": "1", "agreements": ag}), True)
+
+    def test_before_an_agreement(self):
+        ag = [{"tariff_code": "E-1R-OUTGOING-FIX-12M-19-05-13-H",
+               "valid_from": "2026-10-13T00:00:00Z", "valid_to": None}]
+        self.assertIs(self._at({"mpan": "1", "agreements": ag}), False)
+
+
 class TheFlags(unittest.TestCase):
 
     def test_the_bill_priced_another_kwh(self):
@@ -202,6 +305,7 @@ class TheSurfaces(unittest.TestCase):
              unittest.mock.patch.object(eng, "bill_split_held", create=True,
                                         return_value=(set(), set())), \
              unittest.mock.patch.object(eng, "split_at", create=True, return_value=True), \
+             unittest.mock.patch.object(eng, "export_agreement_at", create=True, return_value=None), \
              unittest.mock.patch.object(eng, "tariff_kind_at", create=True,
                                         return_value="intelligent"), \
              unittest.mock.patch.object(eng, "_import_is_smb_capped", create=True,

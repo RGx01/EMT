@@ -7979,6 +7979,17 @@ def _is_intelligent_code(code) -> bool:
     return "IOG" in _tu or "INTELLI" in _tu
 
 
+def export_agreement_at(start: str):
+    """Whether an export agreement covers the half-hour at `start`: True / False where discovery
+    holds the export MPAN (its agreements, `_agreement_era`; an MPAN with none is False — the
+    FIT-like case), None where it holds no export MPAN or has not run. With no agreement there is
+    no export rate: nothing is paid, and the Export bill has nothing to settle (17 Oct 2026)."""
+    info = (_kraken_discovery or {}).get("export") or {}
+    if not info.get("mpan"):
+        return None
+    return _agreement_era("export", start) is not None
+
+
 def tariff_kind_at(start: str) -> str:
     """'intelligent' | 'published' for the import tariff live at `start` (settlement surfaces
     design §9.1). On a published-rate tariff the settled kWh x the half-hour's published rate is

@@ -3885,16 +3885,24 @@ def _settle_views(_eng) -> list:
         # tariff decides what is final inside it, not whether it shows (design §9.2)
         views = ["bill"] if (_eng.mode_uses_api() and _eng.has_kraken_credentials()) else []
         # Export bill beside it where the main meter has an export channel
-        if views:
-            main = next((m for m in (load_config().get("meters") or {}).values()
-                         if not (m.get("meta") or {}).get("sub_meter")), {})
-            if "export" in (main.get("channels") or {}):
-                views.append("export")
+        if views and _main_has_export():
+            views.append("export")
         if _eng._any_smb():          # any IOG-SMB agreement, not only the current one
             views.append("split")
         return views
     except Exception:
         return []
+
+
+def _main_has_export() -> bool:
+    """The main meter has an export channel (the Export bill view, and what an unsettled export
+    half-hour means)."""
+    try:
+        main = next((m for m in (load_config().get("meters") or {}).values()
+                     if not (m.get("meta") or {}).get("sub_meter")), {})
+        return "export" in (main.get("channels") or {})
+    except Exception:
+        return False
 
 
 def _settlement_states(store, utc_start, utc_end) -> dict:
@@ -3908,7 +3916,8 @@ def _settlement_states(store, utc_start, utc_end) -> dict:
         store.get_settlement_facts(utc_start, utc_end),
         smb=bool(_eng._import_is_smb_capped()), now=_dt.now(_tz.utc).replace(tzinfo=None),
         held=held, kept=kept, vat_at=_vc.rate_lookup(store.get_vat_calendar()),
-        kind_at=_eng.tariff_kind_at, split_at=_eng.split_at)
+        kind_at=_eng.tariff_kind_at, split_at=_eng.split_at,
+        export_channel=_main_has_export(), export_agreement_at=_eng.export_agreement_at)
 
 
 @app.route("/api/billing-source", methods=["GET"])

@@ -62,7 +62,7 @@ window.EMTHeatmap = (function () {
   var CAT_RANK = {
     bill:  {none: 0, imported: 0, applied: 1, applied_emt_split: 1, corrected: 1, estimate_dcc: 2,
             estimate_cad: 2, known: 2, overdue: 3, differs: 3, flagged: 3},
-    export: {none: 0, imported: 0, applied: 1, waiting: 2, overdue: 3},
+    export: {none: 0, imported: 0, no_agreement: 0, applied: 1, waiting: 2, overdue: 3},
     split: {bill: 1, emt: 1, kept: 1, held: 2, missing: 3}
   };
   var CAT_TEXT = {
@@ -77,7 +77,8 @@ window.EMTHeatmap = (function () {
            differs: 'the stored cost is not the bill', flagged: 'billed — but see below'},
     export: {none: 'no export in this half-hour', imported: 'CSV history',
              applied: 'export kWh settled — kWh \u00d7 rate is final',
-             waiting: 'export kWh not settled yet', overdue: 'export kWh not settled after 7 days'},
+             waiting: 'export kWh not settled yet', overdue: 'export kWh not settled after 7 days',
+             no_agreement: 'no export agreement for this half-hour \u2014 nothing is paid'},
     split: {bill: 'split from the bill', emt: 'EMT\u2019s split — the bill not in yet',
             held: 'bill had no EV — asking Octopus again', kept: 'EMT\u2019s split kept (28 days)',
             missing: 'completed dispatch, no split'}
@@ -88,7 +89,8 @@ window.EMTHeatmap = (function () {
     var C = {green: '#2e9e5b', amber: '#e0a020', lamber: '#f2cf7a', red: '#cc0000', blue: '#3b7dd8', teal: '#2a9d9f',
              grey: dark() ? '#3a3e4a' : '#d4d7de'};
     var by = m === 'export'
-      ? {applied: C.green, waiting: C.amber, overdue: C.red, imported: C.grey, none: C.grey}
+      ? {applied: C.green, waiting: C.amber, overdue: C.red, imported: C.grey, no_agreement: C.grey,
+         none: C.grey}
       : m === 'bill'
       ? {applied: C.green, applied_emt_split: C.teal, estimate_dcc: C.lamber, estimate_cad: C.amber,
          known: C.amber, overdue: C.red, differs: C.red, flagged: C.red,
