@@ -11612,7 +11612,8 @@ def settlement_awaiting(store, since_iso: str) -> dict:
     - kwh: count_unsettled_blocks — import kWh, or export kWh where export settles.
     - bill: only where EMT fetches bills — an Intelligent tariff with the measured fetch on;
       on IOG-SMB every half-hour, elsewhere dispatched ones. Otherwise 0: there is no bill stage.
-    - split: held-back bills still being asked for (not past the 28 days)."""
+    - split: held-back bills still being asked for (not past the 28 days).
+    A half-hour Octopus has not billed in 30 days of asking is no longer waiting (§5 (a))."""
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     wait = _bill_split_wait(store)
     limit = (_dt.now(_tz.utc).replace(tzinfo=None) - _td(days=_BILL_SPLIT_WAIT_DAYS)).isoformat()
@@ -11620,9 +11621,11 @@ def settlement_awaiting(store, since_iso: str) -> dict:
     stage = bill_stage()
     bill = 0
     if stage["fetched"]:
+        _mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan") or ""
+        _gone = _bill_ask_given_up(_bill_ask(store, _mpan), mark=False)
         bill = store.count_awaiting_bill(max(since_iso, stage["floor"]),
                                          every_half_hour=stage["every_half_hour"],
-                                         exclude=list(wait))
+                                         exclude=list(set(wait) | _gone))
     return {"kwh": int(store.count_unsettled_blocks(since_iso=since_iso)), "bill": int(bill),
             "split": int(split)}
 
@@ -11638,6 +11641,69 @@ def _bill_split_hold(w: dict, slot: str) -> None:
 def _bill_split_release(w: dict, slot: str) -> None:
     if w.pop(slot, None) is not None:
         logger.info("bill split: Octopus's breakdown for %s now carries the EV — settled", slot)
+
+
+# ── A half-hour Octopus never bills is not asked for ever (17 Oct 2026, the user) ────────────
+# The live pass and the history drain asked again, every pass, for any half-hour with no cached
+# bill. One Octopus never answers — no node, or nothing drawn where EMT holds kWh (`parse_bill`) —
+# stayed in the drain's backlog, so the hourly tick rescheduled the drain for it for good: on the
+# soak of 26-30 Sep 2026, 79 of 98 hourly runs were for the same three half-hours. Now each
+# half-hour is asked for up to 30 days from the first time Octopus did not answer it, then
+# dropped from both passes and the backlog. It keeps its estimate (and its cell on the heatmap);
+# the range re-fetch still asks for it. A bill held back for its split (4.5.23) has its own wait.
+# Capped pricing by agreement design §5 (a).
+_BILL_ASK_KEY = "bill_ask"            # JSON {slot: {"first": iso, "gave_up": iso?}}
+_BILL_ASK_DAYS = 30
+
+
+def _bill_ask(store, mpan: str) -> dict:
+    """The unanswered half-hours, less any whose bill has since been cached (by a re-fetch)."""
+    import json as _json
+    try:
+        a = _json.loads(store.get_kraken_state(_BILL_ASK_KEY) or "{}")
+        a = a if isinstance(a, dict) else {}
+    except (TypeError, ValueError):
+        a = {}
+    if a:
+        try:
+            still = set(store.measured_slots_missing(sorted(a), mpan=mpan))
+            a = {s: e for s, e in a.items() if s in still}
+        except Exception:
+            pass
+    return a
+
+
+def _bill_ask_save(store, a: dict) -> None:
+    import json as _json
+    store.set_kraken_state(_BILL_ASK_KEY, _json.dumps(a, sort_keys=True))
+
+
+def _bill_ask_given_up(a: dict, *, mark: bool = True) -> set:
+    """Half-hours first left unanswered 30 days ago or more: no longer asked. With `mark`, marks
+    (and logs) each one once, the first time it is seen past the limit; the passes that ask mark,
+    the counts that only read (the backlog, the pill) do not."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    limit = (_dt.now(_tz.utc).replace(tzinfo=None) - _td(days=_BILL_ASK_DAYS)).isoformat()
+    out = set()
+    for slot, ent in a.items():
+        first = ent.get("first") if isinstance(ent, dict) else None
+        if not first or first >= limit:
+            continue
+        out.add(slot)
+        if mark and not ent.get("gave_up"):
+            ent["gave_up"] = _dt_now_iso_safe()
+            logger.warning("bill: Octopus has not billed %s in %d days of asking — no longer "
+                           "asked; it keeps EMT's estimate (a range re-fetch still asks)",
+                           slot, _BILL_ASK_DAYS)
+    return out
+
+
+def _bill_ask_unanswered(a: dict, slot: str) -> None:
+    a.setdefault(slot, {"first": _dt_now_iso_safe()})
+
+
+def _bill_ask_answered(a: dict, slot: str) -> None:
+    a.pop(slot, None)
 
 
 async def measure_settled_dispatched_blocks() -> dict:
@@ -11668,9 +11734,15 @@ async def measure_settled_dispatched_blocks() -> dict:
     _wait = _bill_split_wait(store)                # bills held back, still being asked (4.5.23)
     _wait_before = dict(_wait)
     _kept = _bill_split_kept(store, _wait)
+    _ask = _bill_ask(store, mpan)                  # never billed in 30 days: not asked (§5 (a))
+    _ask_before = {k: dict(v) for k, v in _ask.items()}
+    _gone = _bill_ask_given_up(_ask)
     missing = store.measured_slots_missing(
-        [s for s in by_start if s not in _kept], mpan=mpan)[:_MEASURED_MAX_PER_PASS]
+        [s for s in by_start if s not in _kept and s not in _gone],
+        mpan=mpan)[:_MEASURED_MAX_PER_PASS]
     if not missing:
+        if _ask != _ask_before:
+            _bill_ask_save(store, _ask)
         return {"candidates": len(rows), "fetched": 0}
     _emt_ev = emt_ev_at(store, missing)            # the hold-back's one reference (design §2)
 
@@ -11689,7 +11761,9 @@ async def measure_settled_dispatched_blocks() -> dict:
         row = parse_bill(node, kind, by_start[slot]["imp_kwh"])
         if row is None:
             n_absent += 1                          # no answer, or zero against EMT's kWh: ask again
+            _bill_ask_unanswered(_ask, slot)
             continue
+        _bill_ask_answered(_ask, slot)
         if row.get("zero"):
             # BL-70: nothing was drawn, and EMT's own kWh agrees — a settled fact. Cached, so
             # the slot is not re-fetched every pass; the breakdown stays NULL (no split to state).
@@ -11713,6 +11787,8 @@ async def measure_settled_dispatched_blocks() -> dict:
     _vat_resync_note_fetch(store, _fetched_pairs)   # v4 4.5.22 (#505): has Octopus restated?
     if _wait != _wait_before:
         _bill_split_wait_save(store, _wait)
+    if _ask != _ask_before:
+        _bill_ask_save(store, _ask)
     # BL-70: `zero` and `absent` were one counter, which made the log self-contradictory —
     # "recovered 11/11" on one line and "absent=11" on the next. They mean opposite things:
     # zero = the bill stated nothing was drawn; absent = the bill said nothing at all.
@@ -12373,8 +12449,13 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
         _wait = _bill_split_wait(store)            # bills held back, still being asked (4.5.23)
         _wait_before = dict(_wait)
         _kept = _bill_split_kept(store, _wait)
-        missing = [s for s in page if s not in _kept]
+        _ask = _bill_ask(store, mpan)              # never billed in 30 days: not asked (§5 (a))
+        _ask_before = {k: dict(v) for k, v in _ask.items()}
+        _gone = _bill_ask_given_up(_ask)
+        missing = [s for s in page if s not in _kept and s not in _gone]
         if not missing:
+            if _ask != _ask_before:
+                _bill_ask_save(store, _ask)
             continue
         _emt_ev = emt_ev_at(store, missing)        # the hold-back's one reference (design §2)
         try:
@@ -12389,7 +12470,9 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
             kind, node = nodes.get(slot, (None, None))
             row = parse_bill(node, kind, _kwh.get(slot))
             if row is None or row.get("zero"):
-                continue                                   # not billed yet — cursor skips it
+                _bill_ask_unanswered(_ask, slot)           # not billed yet — cursor skips it
+                continue
+            _bill_ask_answered(_ask, slot)
             bd = row.get("breakdown")
             if bd and _bill_drops_ev(_emt_ev.get(slot), bd[2]):
                 _bill_split_hold(_wait, slot)          # v4 4.5.23: keep EMT's split, ask again
@@ -12404,6 +12487,8 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
         _vat_resync_note_fetch(store, _batch_pairs)
         if _wait != _wait_before:
             _bill_split_wait_save(store, _wait)
+        if _ask != _ask_before:
+            _bill_ask_save(store, _ask)
         if stored:
             settled += stored
             try:
@@ -12426,8 +12511,12 @@ def _measured_history_backlog() -> int:
     try:
         # A bill held back is not backlog: it would reschedule the drain every tick (v4 4.5.23).
         # The live pass keeps asking for it, and the drain retries it whenever other backlog runs.
+        # Nor is one Octopus has not billed in 30 days of asking: it rescheduled the drain every
+        # hourly tick for good (§5 (a)).
+        _mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan") or ""
+        _gone = _bill_ask_given_up(_bill_ask(store, _mpan), mark=False)
         return int(store.count_settleable_blocks(_measured_floor(), cutoff,
-                                                 exclude=_bill_split_wait(store)))
+                                                 exclude=set(_bill_split_wait(store)) | _gone))
     except Exception:
         return 0
 
