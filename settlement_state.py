@@ -15,6 +15,9 @@ same thing. Pure: facts in (BlockStore.get_settlement_facts), states out.
                                 kWh x rate before BL-82's fix (13 Oct 2026): known, not new
            bill_kwh_differs  — the bill priced a different kWh than the one that settled
            vat_disagrees     — the bill's own VAT is not the calendar's for its day (#505)
+           split_missing     — a completed dispatch, energy in the block, and no split at all
+                               (the Split view's red; the view went 17 Oct 2026, and the Import
+                               bill carries it as attention)
 """
 from datetime import datetime, timedelta
 
@@ -147,6 +150,9 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
         if vat_at is not None and exc is not None and exc >= _MIN_EXC:
             if abs(bill_cost / exc - (1.0 + float(vat_at(start)))) > _VAT_TOL:
                 flags.append("vat_disagrees")
+
+    if split == "missing":
+        flags.append("split_missing")
 
     return {"bill": bill, "export": export, "split": split, "flags": flags}
 

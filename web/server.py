@@ -3887,8 +3887,8 @@ def _settle_views(_eng) -> list:
         # Export bill beside it where the main meter has an export channel
         if views and _main_has_export():
             views.append("export")
-        if _eng._any_smb():          # any IOG-SMB agreement, not only the current one
-            views.append("split")
+        # (The Split view went on 17 Oct 2026: the Import bill carries the split — teal for EMT's,
+        # red for none at all — and the detail panel names each half-hour's split state.)
         return views
     except Exception:
         return []
