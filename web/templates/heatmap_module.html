@@ -67,7 +67,8 @@ window.EMTHeatmap = (function () {
   };
   var CAT_TEXT = {
     bill: {none: 'nothing imported in this half-hour', imported: 'CSV history — not Octopus\u2019s cost',
-           applied: 'final — Octopus\u2019s cost, or the settled kWh \u00d7 a published rate',
+           applied: 'final — Octopus\u2019s cost, or the settled kWh \u00d7 a published rate (or, off ' +
+                    'IOG-SMB, the schedule\u2019s rate where no dispatch touched it)',
            applied_emt_split: 'Octopus\u2019s cost — the House/EV split is still EMT\u2019s',
            corrected: 'your rate correction',
            estimate_dcc: 'settled kWh \u00d7 rate — Octopus\u2019s cost not in yet',

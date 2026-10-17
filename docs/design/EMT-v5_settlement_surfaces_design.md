@@ -351,11 +351,19 @@ part to the half-hour's own tariff kind.
 
 | state | Intelligent half-hour | published-rate half-hour | colour |
 |---|---|---|---|
-| `applied` | Octopus's cost is held (a bill applied, or an API import's cost) | the kWh is settled — kWh × rate is final; or a bill / API import | green |
+| `applied` | Octopus's cost is held (a bill applied, or an API import's cost); **or**, off IOG-SMB, no dispatch touched the half-hour and its kWh is settled — kWh × the schedule's rate is the bill (17 Oct 2026) | the kWh is settled — kWh × rate is final; or a bill / API import | green |
 | `applied_emt_split` | Octopus's cost, but the split is still EMT's: a completed dispatch whose split is `emt`, `held` or `kept` (§1.3) | — (no split) | teal (the Split view's colour for EMT's split) |
 | `estimate_dcc` | settled kWh × rate, Octopus's cost not in yet, inside the window | — (settled kWh is final: green) | light amber |
 | `estimate_cad` | kWh not settled (CAD / HA reading) × rate, inside the window | the same | amber |
 | `overdue` | past the window with no Octopus cost (either kWh) | past the window with the kWh still not settled | red |
+
+*17 Oct 2026, from the Pi (`blocks-38`):* off IOG-SMB EMT asks Octopus only for the dispatched
+half-hours' bills (the live pass's selection, `dispatch_slots` off-peak or a completed smart
+charge, the same as the facts' `dispatched`), so an undispatched half-hour there waited for a bill
+that never comes: every pre-IOG-SMB August day was red. Such a half-hour is now `applied` once its
+kWh settles. A dispatched one before the agreement still waits — the live pass's floor is the
+IOG-SMB agreement's start, so its bill comes only from a re-fetch (one, 13 Aug 05:30 BST, on the
+soak).
 | `differs` | a bill is held and the stored cost is not it (flags as §1.4) | the same, where a bill is held (an API import's, or one fetched before this rule) | red |
 | `corrected` | the user's rate correction | the same | blue |
 | `imported` | CSV history — a cost not from Octopus's API | the same | grey |
