@@ -26,12 +26,12 @@ window.EMTHeatmap = (function () {
   var PLUGIN = 'https://cdn.jsdelivr.net/npm/chartjs-chart-matrix@2.0.1/dist/chartjs-chart-matrix.min.js';
   var CHARTJS = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js';
   var METRICS = {
-    kwh:       {label: 'kWh',      title: 'Net Energy (kWh)',  sub: 'Energy imported minus exported, each half-hour',
+    kwh:       {label: 'kWh',      title: 'Net Energy (kWh)',  sub: 'Energy imported minus exported, each half-hour · black hatched: no block (missing)',
                 unit: ' kWh', dp: 3, tot: 'Daily Total'},
-    co2:       {label: 'gCO₂',     title: 'Carbon (gCO₂)',     sub: 'Emissions from what you drew, net of what you exported',
+    co2:       {label: 'gCO₂',     title: 'Carbon (gCO₂)',     sub: 'Emissions from what you drew, net of what you exported · black hatched: no block (missing)',
                 unit: ' gCO₂', dp: 1, tot: 'Daily CO₂'},
     intensity: {label: 'gCO₂/kWh', title: 'Grid Carbon Intensity (gCO₂/kWh)',
-                sub: 'How clean the grid was, regardless of your usage', unit: ' gCO₂/kWh', dp: 0, tot: null}
+                sub: 'How clean the grid was, regardless of your usage · black hatched: no block (missing)', unit: ' gCO₂/kWh', dp: 0, tot: null}
   };
   // The API import / API export views were retired on 14 Oct 2026 (settlement surfaces design
   // §9.2): Import bill and Export bill carry what they showed, on the cost's window.
@@ -46,21 +46,24 @@ window.EMTHeatmap = (function () {
                  'light amber: settled kWh \u00d7 rate, Octopus\u2019s cost not in yet · amber: kWh not ' +
                  'settled yet · red: not final after 7 days, the stored cost is not the bill, or a ' +
                  'completed dispatch with no House/EV split · blue: ' +
-                 'your correction · grey: nothing imported, or CSV history'},
+                 'your correction · grey: nothing imported, or CSV history · black hatched: no block (missing)'},
     export: {label: 'Export bill', title: 'Export bill — is each half-hour\u2019s export cost final?', unit: '',
             dp: 0, tot: 'To look at', settle: 'export',
             sub: 'EMT fetches no export bill: kWh \u00d7 the export rate is final once the export kWh ' +
                  'settles. Green: settled (or an API import) · amber: not settled, under 7 days · red: ' +
-                 'not settled after 7 days · grey: no export, or CSV history'}
+                 'not settled after 7 days · grey: no export, or CSV history · black hatched: no block (missing)'}
   };
   // The Split view went on 17 Oct 2026: the Import bill carries the split (teal for EMT's, red for
   // a completed dispatch with none — `split_missing`), and the detail panel names its state.
   function isSettle(m) { return m === 'bill' || m === 'export'; }
   function isCat(m) { return isSettle(m); }
+  // A half-hour inside the data's span with no main-meter block (heatmap issues design §2): drawn
+  // black and diagonally hatched on every view, an issue on the bills (rank 3, as red).
+  var MISSING_TEXT = 'no block for this half-hour \u2014 missing';
   var CAT_RANK = {
     bill:  {none: 0, imported: 0, applied: 1, applied_emt_split: 1, corrected: 1, estimate_dcc: 2,
-            estimate_cad: 2, known: 2, overdue: 3, differs: 3, flagged: 3},
-    export: {none: 0, imported: 0, no_agreement: 0, applied: 1, waiting: 2, overdue: 3}
+            estimate_cad: 2, known: 2, overdue: 3, differs: 3, flagged: 3, missing: 3},
+    export: {none: 0, imported: 0, no_agreement: 0, applied: 1, waiting: 2, overdue: 3, missing: 3}
   };
   var CAT_TEXT = {
     bill: {none: 'nothing imported in this half-hour', imported: 'CSV history — not Octopus\u2019s cost',
@@ -71,11 +74,13 @@ window.EMTHeatmap = (function () {
            estimate_cad: 'kWh not settled yet \u00d7 rate',
            overdue: 'not final after 7 days — kWh \u00d7 rate',
            known: 'stored cost re-costed before the BL-82 fix (pennies; known)',
-           differs: 'the stored cost is not the bill', flagged: 'billed — but see below'},
+           differs: 'the stored cost is not the bill', flagged: 'billed — but see below',
+           missing: MISSING_TEXT},
     export: {none: 'no export in this half-hour', imported: 'CSV history',
              applied: 'export kWh settled — kWh \u00d7 rate is final',
              waiting: 'export kWh not settled yet', overdue: 'export kWh not settled after 7 days',
-             no_agreement: 'no export agreement for this half-hour \u2014 nothing is paid'},
+             no_agreement: 'no export agreement for this half-hour \u2014 nothing is paid',
+             missing: MISSING_TEXT},
     split: {bill: 'split from the bill', emt: 'EMT\u2019s split — the bill not in yet',
             held: 'bill had no EV — asking Octopus again', kept: 'EMT\u2019s split kept (28 days)',
             missing: 'completed dispatch, no split'}
@@ -83,7 +88,22 @@ window.EMTHeatmap = (function () {
   var FLAG_TEXT = {bill_kwh_differs: 'the bill priced a different kWh than settled',
                    vat_disagrees: 'the bill\u2019s VAT is not the calendar\u2019s',
                    split_missing: 'a completed dispatch, and no House/EV split at all'};
+  // the missing cells' hatch: black, with grey diagonals so it is neither a colour of the scale
+  // nor the dark theme's near-black background (§6 (b))
+  var _hatch = null;
+  function hatch() {
+    if (_hatch) return _hatch;
+    var c = document.createElement('canvas'); c.width = c.height = 6;
+    var x = c.getContext('2d');
+    x.fillStyle = '#000'; x.fillRect(0, 0, 6, 6);
+    x.strokeStyle = '#6b7080'; x.lineWidth = 1.2;
+    x.beginPath(); x.moveTo(-1, 7); x.lineTo(7, -1); x.moveTo(-1, 1); x.lineTo(1, -1);
+    x.moveTo(5, 7); x.lineTo(7, 5); x.stroke();
+    return (_hatch = x.createPattern(c, 'repeat'));
+  }
+  function isMissing(c) { return !!(c && c.missing && c.kwh === null); }
   function settleColour(m, v) {
+    if (v === 'missing') return hatch();
     var C = {green: '#2e9e5b', amber: '#e0a020', lamber: '#f2cf7a', red: '#cc0000', blue: '#3b7dd8', teal: '#2a9d9f',
              grey: dark() ? '#3a3e4a' : '#d4d7de'};
     var by = m === 'export'
@@ -202,6 +222,7 @@ window.EMTHeatmap = (function () {
       });
       d.total.kwh += net; if (cg) d.total.co2 += cg;
     });
+    markMissing(key, days, n);
     Object.keys(days).forEach(function (k) {                      // the day's half-hours still owed
       Object.keys(SETTLE_METRICS).forEach(function (m) {         // amber or red: worth a look
         days[k].total[m] = days[k].slots.filter(function (c) {
@@ -209,6 +230,38 @@ window.EMTHeatmap = (function () {
       });
     });
     return days;
+  }
+  // Every UTC half-hour of the month inside the data's span — from the first block to the last
+  // finished half-hour — with no main-meter block is MISSING, and its day gets a row even with no
+  // blocks at all, so a gap shows as a band (heatmap issues design §2, §6 (c), (d)). Walking UTC
+  // half-hours, the clocks-forward hour never comes up: it does not exist (§6 (b)). Inside a
+  // tombstone it is still missing; the tooltip says when it was deleted.
+  function markMissing(key, days, n) {
+    var M = state.months[key], b = state.bounds || {};
+    if (!M || !M.range || !b.earliest_block) return;
+    var have = {};
+    (M.blocks || []).forEach(function (x) { if (x.meter_id === 'electricity_main') have[x.block_start] = 1; });
+    var HH = 1800000, ms = function (s) { return Date.parse(s + 'Z'); };
+    var lastDone = Math.floor(Date.now() / HH) * HH - HH;       // the last FINISHED half-hour starts here
+    var t = Math.max(ms(M.range.start_utc), ms(b.earliest_block));
+    var end = Math.min(ms(M.range.end_utc), lastDone + HH);
+    for (; t < end; t += HH) {
+      var iso = new Date(t).toISOString().slice(0, 19);
+      if (have[iso]) continue;
+      var lp = localParts(iso); if (lp.day.slice(0, 7) !== key) continue;
+      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0}});
+      var c = d.slots[lp.slot] || (d.slots[lp.slot] = {kwh: null, co2: null, int: null});
+      c.missing = (c.missing || 0) + 1;
+      (c.starts || (c.starts = [])).push(iso);
+      var del = (M.deleted || []).filter(function (r) { return iso >= r.start_utc && iso < r.end_utc; })[0];
+      if (del) c.deleted = (del.created_at || '').slice(0, 10) || 'yes';
+      Object.keys(SETTLE_METRICS).forEach(function (k) {
+        if (!c[k] || CAT_RANK[k].missing > CAT_RANK[k][c[k]]) { c[k] = 'missing'; c[k + 'Flags'] = []; }
+      });
+    }
+  }
+  function missingText(c) {
+    return MISSING_TEXT + (c && c.deleted ? '<br>deleted ' + c.deleted : '');
   }
   function metricOf(c, m) { return c ? (m === 'kwh' ? c.kwh : m === 'co2' ? c.co2 : isCat(m) ? c[m] : c.int) : null; }
 
@@ -317,6 +370,7 @@ window.EMTHeatmap = (function () {
       data: {datasets: [{data: pts, borderWidth: 0,
         backgroundColor: function (ctx) {
           var r = ctx.raw; if (!r) return 'rgba(0,0,0,0)';
+          if (isMissing(r.c)) return hatch();                 // every view (§2)
           var v = metricOf(r.c, state.metric);
           return isSettle(state.metric) ? settleColour(state.metric, v)
                : paint(stops, sc.lo, sc.hi, v);
@@ -460,7 +514,9 @@ window.EMTHeatmap = (function () {
       if (hitTot) { v = p.grid[day].total[state.metric]; lab = mm.tot; }
       else { var ci = Math.floor((x - a.left) / (a.width / p.xs.length));
              v = metricOf(p.grid[day].slots[ci], state.metric); lab = p.xs[ci] + '–' + slotLabel(ci + 1); }
-      var txt = (v === null || v === undefined) ? 'no data'
+      var hc = hitTot ? null : p.grid[day].slots[ci];
+      var txt = (!hitTot && (v === 'missing' || isMissing(hc))) ? missingText(hc)
+              : (v === null || v === undefined) ? 'no data'
               : isSettle(state.metric) ? (hitTot ? v + ' half-hour' + (v === 1 ? '' : 's') + ' to look at'
                   : CAT_TEXT[state.metric][v] + (((p.grid[day].slots[ci] || {})[state.metric + 'Flags'] || [])
                       .filter(function (x) { return FLAG_TEXT[x]; })
@@ -487,6 +543,7 @@ window.EMTHeatmap = (function () {
       if (state.dragEnded) return;                 // the drag's own release: its menu is open
       if (h.tot) { dayBarPick(p, h.day, ev); return; }
       markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
+      if (isMissing(p.grid[h.day].slots[h.ci])) { openMissing(p.grid[h.day].slots[h.ci], h.day + ' ' + h.label); return; }
       openPanel(h.starts, h.day + ' ' + h.label);
     });
     row.addEventListener('contextmenu', function (ev) {
@@ -494,7 +551,9 @@ window.EMTHeatmap = (function () {
       ev.preventDefault(); tipEl().style.display = 'none';
       if (h.tot) { dayBarPick(p, h.day, ev); return; }
       markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
-      var items = [{text: 'Show details', run: function () { openPanel(h.starts, h.day + ' ' + h.label); }}];
+      var hc = p.grid[h.day].slots[h.ci];
+      var items = [{text: 'Show details', run: function () {
+        if (isMissing(hc)) openMissing(hc, h.day + ' ' + h.label); else openPanel(h.starts, h.day + ' ' + h.label); }}];
       if (state.canRefetch) {
         items.push({text: 'Re-fetch this half-hour from Octopus\u2026', run: function () {
           openRefetch(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label); }});
@@ -863,6 +922,16 @@ window.EMTHeatmap = (function () {
     var rb = el.querySelector('[data-act="refetch"]');
     if (rb) rb.onclick = function () { openRefetch(d.start, d.end, label); };
   }
+  // a missing half-hour has no block, so no detail to fetch: say what it is
+  function openMissing(c, label) {
+    var el = panelEl();
+    el.innerHTML = '<div class="hm-panel-box"><div class="hm-panel-head"><b>' + esc(label) +
+                   '</b><button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' +
+                   '<p>' + (c && c.deleted ? 'Deleted on ' + esc(c.deleted) + ' \u2014 there is no block for this ' +
+                   'half-hour.' : 'EMT holds no block for this half-hour: it was never recorded, or not ' +
+                   'imported.') + '</p></div>';
+    el.style.display = 'flex';
+  }
   function openPanel(starts, label) {
     var el = panelEl();
     el.innerHTML = '<div class="hm-panel-box"><div class="hm-panel-head"><b>' + esc(label) +
@@ -881,7 +950,7 @@ window.EMTHeatmap = (function () {
   // ── data ───────────────────────────────────────────────────────────────────
   function fetchMonth(key) {
     var y = key.slice(0, 4), mo = +key.slice(5, 7);
-    var inc = METRICS.bill ? '&include=settle' : '';
+    var inc = '&include=' + (METRICS.bill ? 'settle,' : '') + 'gaps';
     return fetchJSON('/api/energy?resolution=block&kind=month&year=' + y + '&month=' + mo + inc).then(function (r) {
       if (r.error) throw new Error(r.error);
       state.tz = state.tz || r.timezone;
@@ -889,7 +958,8 @@ window.EMTHeatmap = (function () {
         state.months = {}; Object.keys(state.panels).forEach(function (k) { state.panels[k].grid = null; });
       }
       state.epoch = r.fingerprint.epoch;
-      state.months[key] = {blocks: r.blocks || [], settle: r.settle || {}, fp: JSON.stringify(r.fingerprint.days)};
+      state.months[key] = {blocks: r.blocks || [], settle: r.settle || {}, deleted: r.deleted || [],
+                           range: r.range || null, fp: JSON.stringify(r.fingerprint.days)};
       if (state.panels[key]) state.panels[key].grid = null;
     });
   }

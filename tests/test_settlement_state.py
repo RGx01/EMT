@@ -359,7 +359,7 @@ class TheSurfaces(unittest.TestCase):
 
     def test_the_heatmap_draws_both_views(self):
         page = open(os.path.join(_ROOT, "web", "templates", "heatmap_module.html"), encoding="utf-8").read()
-        for needle in ("var SETTLE_METRICS", "settleColour(state.metric, v)", "&include=settle",
+        for needle in ("var SETTLE_METRICS", "settleColour(state.metric, v)", "'settle,'",
                        "r.settle_views", "settle: r.settle"):
             self.assertIn(needle, page)
 
