@@ -100,7 +100,7 @@ become one function. `split_at` stays as the surfaces' name for it.
 **Fallback:** where discovery has not run, every test falls back to the current tariff, as
 `split_at` and `tariff_kind_at` do now. Nothing changes until discovery has run.
 
-## 5. Questions for the user — (a) and (b) decided 17 Oct 2026
+## 5. Questions for the user — all three decided 17 Oct 2026
 
 **(a) An account that has left IOG-SMB. Decided (17 Oct 2026, the user): asked for 30 days
 past the end of the agreement, and no half-hour asked for ever.** The user's concern was the
@@ -131,17 +131,25 @@ ways: on IOG-SMB it skips the uncapped pre-agreement half-hours, and after leavi
 would flatten capped half-hours still waiting for their bill. On the soak it moves nothing: no
 pre-agreement half-hour is still a reconcile candidate (all are settled or imported).
 
-**(c) The stitched EV-device schedule.** Should it be in the first PR, or wait for a renewal? Without
-it, §2.3's earlier half-hours price on the new product's EV rates. The proposal has it in the
-second PR, well before any renewal.
+**(c) The stitched EV-device schedule. Decided (17 Oct 2026, the user): in PR 2.** Without it, PR 1
+decides correctly but has no rates to act on once the product changes: capped pricing needs both
+EV-device rates to resolve (`compute_iog_split` falls through to the overlay otherwise), and they
+are built for the current product only, and only while the current tariff is IOG. After a renewal
+earlier capped half-hours take the new product's EV rates or none; after leaving IOG-SMB, none at
+all, so PR 1's `capped_at(bs) and _capped_schedules()` prices them uncapped. PR 2's account-level
+gates ("any IOG-SMB agreement") would otherwise keep the drain fetching bills for history the seam
+cannot price. Leaving IOG-SMB has no date, so it goes with them rather than waiting for a renewal.
+The stitch follows the import's (BL-54): each IOG-SMB agreement's product's two EV rate lists,
+cached once the agreement closes, bounded to its dates, VAT applied once to the stitch, built
+whenever discovery holds any IOG-SMB agreement.
 
 ## 6. Order
 
 | PR | what | discriminating tests (fail on `dev`) |
 |---|---|---|
 | 0 | the bill-ask give-up, §5 (a) — *built 17 Oct 2026* | `tests/test_bill_ask_give_up.py`: an unanswered half-hour is recorded; after 30 days the live pass and the drain stop asking, it is not drain backlog and not awaiting a bill; an answer, or a bill cached by a re-fetch, clears the record |
-| 1 | `capped_at` = `split_at`; the seam, the mixed rebuild and the relabel judged per half-hour | a pre-agreement cap-day over six hours, on an account now on IOG-SMB, re-priced by the seam: all EV off-peak, rate unchanged. A post-agreement one is still capped (guard). An account off IOG-SMB re-pricing its capped history keeps it capped. |
-| 2 | the earliest-SMB floor; the account-level gates as "any IOG-SMB agreement"; the stitched EV-device schedules | two IOG-SMB agreements: the drain and the apply reach the first; the first's half-hours take the first product's EV rates |
+| 1 | `capped_at` = `split_at`; the seam, the mixed rebuild and the relabel judged per half-hour — *built 17 Oct 2026* | `tests/test_capped_at.py`: a pre-agreement half-hour on an account now on IOG-SMB is priced uncapped by the seam, is relabelled by BL-34, and a mixed bill on it is not rebuilt into capped bands. Guards: on the agreement each stays capped; no agreements known falls back to the current tariff; no EV-device rates, no capped pricing. (An account off IOG-SMB keeping its history capped needs the EV rates, so it moves to PR 2.) |
+| 2 | the earliest-SMB floor; the account-level gates as "any IOG-SMB agreement"; the stitched EV-device schedules (§5 (c)) | two IOG-SMB agreements on different products: the drain and the apply reach the first; the first's half-hours take the first product's EV rates. After leaving IOG-SMB for a published-rate tariff, a capped half-hour re-priced by the seam stays capped. Guard: one agreement, nothing changes |
 
 Each PR is checked against the tariff goldens and `.build/real_db_parity.py` on `blocks-36`.
 §3 predicts zero stored change on the soak: no re-run has reached the pre-agreement cap-days.

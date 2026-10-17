@@ -724,7 +724,10 @@ def _apply_iog_split(imp_ch: dict, block_start: str, block_end: str,
                 + timedelta(minutes=30)).isoformat()
         except Exception:
             return
-    capped = _capped_schedules()
+    # capped by the half-hour's OWN agreement, and only where the EV-device rates are loaded
+    # (capped pricing by agreement design §4): a pre-agreement half-hour on an account now on
+    # IOG-SMB was uncapped, and the current product's EV rates reach back past the agreement
+    capped = capped_at(block_start) and _capped_schedules()
     boundary = _iog_cap_day_boundary(block_start, tz_name) if capped else None
     res = iog_cap.compute_iog_split(
         block_start, block_end, chosen_kwh=chosen_kwh, ev_kwh=ev_kwh,
@@ -11437,6 +11440,15 @@ _DISPATCH_RECONCILE_APPLY = True  # write (risk accepted; soaked on prod_dev fir
 # toward PEAK (STANDARD/mixed) once it has aged past the rate-settlement horizon — so a
 # PROVISIONAL STANDARD (the 4.5.6 corruption) can never downgrade an off-peak block.
 # Authority is Octopus's settled bill, not EMT's dispatch overlay.
+def capped_at(start: str) -> bool:
+    """Whether the half-hour at `start` is priced under the 6-hour cap: its own import agreement
+    is IOG-SMB. The same question as `split_at` — whether Octopus's four buckets apply — asked by
+    the pricing (capped pricing by agreement design §4); where no agreement covers `start`, the
+    current tariff, as `split_at`. Capped PRICING also needs the EV-device rates loaded
+    (`_capped_schedules`); the band relabel needs only this."""
+    return split_at(start)
+
+
 _MEASURED_FETCH_ENABLED = True      # 4.5.7: settled-label fetch (forward ladder)
 _MEASURED_APPLY = True              # 4.5.7: apply as a check — asymmetric + age-gated
 _MEASURED_MAX_PER_PASS = 40        # bound the rate-limited fetch per hourly pass
@@ -12743,7 +12755,7 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
     ev_band = band
     # MIXED over-cap boundary block: keep the true 4-band split at the schedule's CLEAN
     # rates (NO rescale — clean per-band rates, not cost-derived).
-    _capped = _capped_schedules()
+    _capped = capped_at(bs) and _capped_schedules()     # its own agreement (design §4)
     if label == "mixed" and evk > 1e-9 and _capped and sched is not None:
         try:
             import iog_cap as _ic
@@ -13101,8 +13113,10 @@ async def reconcile_dispatch_overlay() -> dict:
             # untouched, so the reconciliation invariant holds; self-limiting (rewrites
             # once, then matches and is skipped). Because these blocks stay reconcile
             # candidates, the hourly pass sweeps all legacy stale bands — no separate
-            # migration needed.
-            _capped_band = _capped_schedules()
+            # migration needed. Capped by the half-hour's own agreement (capped pricing by
+            # agreement design §5 (b)): an account on IOG-SMB relabels its uncapped
+            # pre-agreement half-hours, and one that has left keeps its capped ones' bands.
+            _capped_band = capped_at(bs)
             if not _capped_band:
                 _want_ev = "off_peak" if currently_off_peak else "peak"
                 _want_home = "off_peak" if currently_off_peak else "day"
