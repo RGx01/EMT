@@ -2778,7 +2778,7 @@ document.addEventListener('DOMContentLoaded', function() {
        why: 'Octopus\u2019s bill has no EV share where EMT saw your car charge, so EMT keeps its own split and asks again (up to 28 days).'}
     ].filter(function(x){ return x.n > 0; });
   }
-  (function loadSettleNote(){
+  function loadSettleNote(){
     try {
       fetch(apiUrl('/api/billing-source')).then(function(r){return r.json();}).then(function(d){
         var el = document.getElementById('dcc-settle-note');
@@ -2832,7 +2832,11 @@ document.addEventListener('DOMContentLoaded', function() {
         el.style.display = show ? 'inline-flex' : 'none';
       }).catch(function(){});
     } catch(e) {}
-  })();
+  }
+  // Drawn at load, and again whenever the page's own refresh sees new data or the tab comes back
+  // (17 Oct 2026, the Pi: it was drawn once, so its counts stood still until a reload).
+  window._loadSettleNote = loadSettleNote;
+  loadSettleNote();
 
   // Sync theme toggle icon immediately
   var theme = document.documentElement.getAttribute('data-theme') || 'dark';
@@ -2915,14 +2919,23 @@ async function _refreshIfChanged(force) {
     else if (_activeChart === 'spiral') { if (window.EMTSpiral) EMTSpiral.refresh(); }
     else { chartsLoaded = {}; await loadChartContent(_activeChart || 'daily'); }
     if (v) _lastDataVersion = v;
+    _refreshSettleNote();
     return true;
   } finally { _refreshInFlight = false; }
+}
+
+// The settlement pill's counts, redrawn with the data (and on a tab coming back): drawn once at
+// load, it stood still until a reload. Best-effort — the pill is a hint, never worth an error.
+function _refreshSettleNote() {
+  try { if (window._loadSettleNote) window._loadSettleNote(); } catch (e) {}
 }
 
 document.addEventListener('visibilitychange', async function() {
   if (document.visibilityState !== 'visible') return;
   var _scroll = _captureChartScroll();
-  try { await _refreshIfChanged(false); } catch (e) { /* leave scroll as-is on failure */ }
+  var _changed = false;
+  try { _changed = await _refreshIfChanged(false); } catch (e) { /* leave scroll as-is on failure */ }
+  if (!_changed) _refreshSettleNote();   // a bill can arrive without the blocks changing
   // Restore after layout settles (rebuild + lazy day-chart render).
   requestAnimationFrame(function() {
     _restoreChartScroll(_scroll);
