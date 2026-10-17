@@ -70,7 +70,9 @@ class TestApplyIogSplit(unittest.TestCase):
 
     # ── uncapped: carve only, totals unchanged ──────────────────────────────
     def test_uncapped_carves_ev_totals_unchanged(self):
-        engine._kraken_rate_schedules = {"import": self._house()}   # no ev_device
+        # pence, as production: the uncapped path reads the day's two rates to label its legs
+        # (17 Oct 2026), so a £ fixture would read 5p against 0.07/0.30 and call it peak
+        engine._kraken_rate_schedules = {"import": self._house_pence()}   # no ev_device
         self._completed("2026-01-01T13:00:00", 2.0)
         imp = self._imp(0.05, 0.15)                   # overlay already off-peak (3*0.05)
         self._apply(imp, overlay=0.05)
@@ -78,14 +80,15 @@ class TestApplyIogSplit(unittest.TestCase):
         self.assertAlmostEqual(imp["cost_ev"], 0.10)  # 2*0.05
         self.assertAlmostEqual(imp["cost"], 0.15)     # UNCHANGED
         self.assertAlmostEqual(imp["rate"], 0.05)
-        self.assertEqual(imp["ev_band"], "off_peak")  # uncapped: whole slot off-peak
+        self.assertEqual(imp["ev_band"], "off_peak")  # uncapped, at the off-peak rate
 
     # ── capped: re-prices ───────────────────────────────────────────────────
     def _house_pence(self):
         # Production stores rate schedules in PENCE (RateSchedule / from_api_records keep the API's
         # native value_inc_vat). compute_iog_split's capped branch converts pence→£, so the capped
-        # tests must feed pence; the £ assertions below then validate that conversion. (The uncapped
-        # / no-op tests take the overlay fall-through, not this branch, so `_house()` stays £.)
+        # tests must feed pence; the £ assertions below then validate that conversion. The uncapped
+        # test feeds pence too: it reads the day's two rates for its labels. (The no-op tests read
+        # no rates, so `_house()` stays £ there.)
         return RateSchedule([
             ("2026-01-01T00:00:00", "2026-01-01T05:30:00", 7.0),    # night 7.0p
             ("2026-01-01T05:30:00", "2026-01-01T23:30:00", 30.0),   # day  30.0p

@@ -73,7 +73,7 @@ The docstring of `_measured_floor()` names this case: "a future account with mor
 
 - **Stored capped pricing before the agreement: none.** Of the dispatched main-import half-hours before 15 Sep, no EV segment is banded `peak`. The pre-agreement ones were finalised live while the uncapped tariff was current, and nothing has re-run the seam over them since.
 - **What a re-run would change:** six cap-days before September carry more than twelve completed dispatch slots, a slot-count approximation of over six hours: 7, 15, 22 and 30 Jul, and 2 and 24 Aug. All are before the agreement; the first cached bill with a split is 23 Aug 23:00 UTC, and 24 Aug's bill was off-peak (settlement surfaces design §9). A gap fill, delete-and-re-import, or late settlement over any of them would put the EV beyond the "cap" on the peak rate.
-- **Aside, not this note's:** 18 EV segments across July (7–31 Jul) carry a peak rate under the `off_peak` band. That is a v4-era band label on a bill-snapped rate, so BL-34 territory.
+- **Aside, fixed separately (17 Oct 2026):** 18 EV segments across July (7–31 Jul) carry a peak rate under the `off_peak` band. They are imported (`imported_api`), so the reconcile and its relabel never see them. The label was the uncapped seam's, not v4's: `compute_iog_split`'s uncapped path labelled every leg off-peak (`in_off_peak_window=True`) whatever the rate, so a dispatch billed at the peak rate came out off-peak at the peak price. It now labels the legs from the rate (`iog_cap._overlay_is_peak`, BL-58b's nearer-rate rule; cost unchanged). Forward only: the 18 stored segments keep their label until something rebuilds them.
 
 ## 4. Proposal: one per-half-hour test
 
@@ -100,7 +100,7 @@ become one function. `split_at` stays as the surfaces' name for it.
 **Fallback:** where discovery has not run, every test falls back to the current tariff, as
 `split_at` and `tariff_kind_at` do now. Nothing changes until discovery has run.
 
-## 5. Questions for the user — (a) decided 17 Oct 2026
+## 5. Questions for the user — (a) and (b) decided 17 Oct 2026
 
 **(a) An account that has left IOG-SMB. Decided (17 Oct 2026, the user): asked for 30 days
 past the end of the agreement, and no half-hour asked for ever.** The user's concern was the
@@ -124,8 +124,12 @@ So the 30 days is a rule per half-hour, and the agreement's end follows from it:
 - **Not changed:** the 4.5.23 hold-back keeps its own 28 days, counted from the half-hour. It is a
   ported v4 rule, and an answer it holds back is an answer, not a silence.
 
-**(b) The relabel.** Should pre-agreement blocks on an SMB account take BL-34's band relabel?
-The proposal says yes: it is the uncapped rule, and they were uncapped.
+**(b) The relabel. Decided (17 Oct 2026, the user): yes, judged per half-hour** —
+`not capped_at(bs)` in `reconcile_dispatch_overlay` (PR 1). The relabel is skipped on capped
+half-hours because their bands legitimately mix; an account-level gate gets that wrong both
+ways: on IOG-SMB it skips the uncapped pre-agreement half-hours, and after leaving IOG-SMB it
+would flatten capped half-hours still waiting for their bill. On the soak it moves nothing: no
+pre-agreement half-hour is still a reconcile candidate (all are settled or imported).
 
 **(c) The stitched EV-device schedule.** Should it be in the first PR, or wait for a renewal? Without
 it, §2.3's earlier half-hours price on the new product's EV rates. The proposal has it in the
