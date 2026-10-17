@@ -129,6 +129,46 @@ class TheBill(unittest.TestCase):
         self.assertEqual(_c(_f(**dict(BILLED, rate_source="schedule")))["bill"], "estimate_dcc")
 
 
+class TheExport(unittest.TestCase):
+    """The Export bill's state is keyed on whether the export kWh has SETTLED (17 Oct 2026). A meter
+    with no live export sensor has no export kWh until DCC settles it; an unsettled half-hour read
+    0 and showed "none" — grey, like a night with nothing exported — so the view never showed what
+    was still to settle. Discriminating (fail on the parent's behaviour; on the parent itself they
+    also fail by the new `export_channel` argument): the first three. The rest are guards."""
+
+    def _e(self, start=S, **kw):
+        return _c(_f(block_start=start, **kw), export_channel=True)["export"]
+
+    def test_no_live_reading_not_settled_is_waiting(self):
+        self.assertEqual(self._e(exp_kwh=None, exp_kwh_api=None), "waiting")
+
+    def test_no_live_reading_not_settled_after_7_days_is_overdue(self):
+        self.assertEqual(self._e("2026-10-01T12:00:00", exp_kwh=None, exp_kwh_api=None), "overdue")
+
+    def test_a_settled_export_is_applied(self):
+        self.assertEqual(self._e(exp_kwh=None, exp_kwh_api=1.2), "applied")
+
+    def test_a_settled_nothing_is_none(self):
+        self.assertEqual(self._e(exp_kwh=None, exp_kwh_api=0.0), "none")
+
+    def test_a_live_reading_waits_as_before(self):
+        self.assertEqual(self._e(exp_kwh=0.8, exp_kwh_api=None), "waiting")
+
+    def test_a_live_reading_of_nothing_is_none(self):
+        self.assertEqual(self._e(exp_kwh=0.0, exp_kwh_api=None), "none")
+
+    def test_no_export_channel_is_none(self):
+        """An import-only install: nothing to settle."""
+        self.assertEqual(_c(_f(exp_kwh=None, exp_kwh_api=None))["export"], "none")
+
+    def test_the_route_says_whether_there_is_an_export_channel(self):
+        """GUARD: the heatmap's states are classified with the main meter's export channel."""
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "web", "server.py"), encoding="utf-8").read()
+        body = src[src.index("def _settlement_states"):]
+        self.assertIn("export_channel=_main_has_export()", body[:body.index("\n\n\n")])
+
+
 class TheFlags(unittest.TestCase):
 
     def test_the_bill_priced_another_kwh(self):
