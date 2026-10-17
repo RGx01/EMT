@@ -56,6 +56,7 @@ since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-man
 | `docs/design/EMT-v5_settlement_surfaces_design.md` | ROADMAP BL-85 parts 2–3 and BL-86: settlement state per half-hour and channel (kWh, bill, split), the heatmap views, the detail panel, the range re-fetch (draft) |
 | `docs/design/EMT-v5_bill_and_split_paths_design.md` | the five bill-fetch paths and six EV-split writers, where they disagree, and the consolidation order (draft) |
 | `docs/design/EMT-v5_capped_pricing_by_agreement_design.md` | whether a half-hour is priced under the 6-hour cap by its own agreement or the account's current one; the gates, the soak's latent cases, `capped_at` (draft) |
+| `docs/design/EMT-v5_heatmap_issues_design.md` | the heatmap as the data-quality surface: missing half-hours, collapsing clean days, one cell width; the step before the data tools (draft) |
 | `docs/design/EMT-v5_data_tools_design.md` | ROADMAP BL-88–90: the data tools as actions on a heatmap selection, a data-quality strip on Usage Stats, soft delete (draft) |
 | `docs/design/EMT-v5_A1_writer_thread_design.md` | ROADMAP §A.1: why commits stall the loop on the SD card, and the writer thread |
 | `docs/ROADMAP.md` | open backlog, priority ordered — nothing in it has shipped |

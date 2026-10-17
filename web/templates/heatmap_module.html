@@ -107,7 +107,7 @@ window.EMTHeatmap = (function () {
     if (v === 'differs' && fl.indexOf('recost_bl82') >= 0) return 'known';
     return v;
   }
-  var AXIS_TOP = 46, AXIS_LEFT = 30, CELL_MAX = 22, CELL_MIN = 6;
+  var AXIS_LEFT = 30, CELL_MAX = 22, CELL_MIN = 6;
   var state = {metric: 'kwh', tz: null, bm: 30, months: {}, keys: [], panels: {}, epoch: null,
                root: null, inited: false, loading: {}, scale: null, forceLight: false};
   var fetchJSON = function (url) { return fetch(apiUrl(url)).then(function (r) { return r.json(); }); };
@@ -253,13 +253,20 @@ window.EMTHeatmap = (function () {
   // The daily-total column narrows with the screen: v4's 150 px on a desktop, 56 px on a
   // phone. Cells are square and sized from what is left; below CELL_MIN the row scrolls
   // sideways rather than squash them.
-  function totW(panel) {
-    if (state.metric === 'intensity') return 0;
-    var w = panel.el.querySelector('.hm-row').clientWidth;
-    return Math.round(Math.max(56, Math.min(150, w * 0.16)));
+  //
+  // ONE size for every month (heatmap issues design §4, 17 Oct 2026): measured from the first
+  // month's row — every row is the same width — not from the panel being drawn, so months drawn
+  // at different moments cannot disagree.
+  function rowWidth() {
+    var p0 = state.panels[state.keys[0]];
+    return p0 ? p0.el.querySelector('.hm-row').clientWidth : 0;
   }
-  function cellSize(panel) {
-    var w = panel.el.querySelector('.hm-row').clientWidth - AXIS_LEFT - totW(panel) - 16;
+  function totW() {
+    if (state.metric === 'intensity') return 0;
+    return Math.round(Math.max(56, Math.min(150, rowWidth() * 0.16)));
+  }
+  function cellSize() {
+    var w = rowWidth() - AXIS_LEFT - totW() - 16;
     return Math.max(CELL_MIN, Math.min(CELL_MAX, Math.floor(w / slots())));
   }
   function monthLabel(key) {
@@ -293,7 +300,7 @@ window.EMTHeatmap = (function () {
     var row = p.el.querySelector('.hm-row');
     if (!days.length) { row.innerHTML = '<div class="hm-empty">No data.</div>'; return; }
     var m = state.metric, sc = state.scale || (state.scale = computeScale()), n = slots();
-    var cs = cellSize(p), TOT_W = totW(p), top = p.first ? AXIS_TOP : 0, h = days.length * cs + top + 2;
+    var cs = cellSize(), TOT_W = totW(), h = days.length * cs + 2;
     var xs = []; for (var i = 0; i < n; i++) xs.push(slotLabel(i));
     var pts = [];
     days.forEach(function (d) { p.grid[d].slots.forEach(function (c, i) { pts.push({x: xs[i], y: d, c: c}); }); });
@@ -303,8 +310,7 @@ window.EMTHeatmap = (function () {
     row.innerHTML = '<div class="hm-grid" style="position:relative;height:' + h + 'px;width:' + (n * cs + AXIS_LEFT + 4) +
       'px"><canvas></canvas></div>' + (m === 'intensity' ? '' :
       '<div class="hm-tot" style="position:relative;height:' + h + 'px;width:' + TOT_W + 'px"><canvas></canvas></div>');
-    var every = cs >= 18 ? 1 : cs >= 10 ? 2 : 4;           // v4 labelled every slot at 20 px
-    var stops = cellStops(sc), fixTop = function (s) { s.height = top; };
+    var stops = cellStops(sc);
     var dpr = Math.min(2, window.devicePixelRatio || 1);
     p.chart = new Chart(row.querySelector('.hm-grid canvas').getContext('2d'), {
       type: 'matrix', plugins: [weekendRows(days, 'afterDatasetsDraw')],
@@ -324,10 +330,10 @@ window.EMTHeatmap = (function () {
         events: [], plugins: {legend: {display: false}, tooltip: {enabled: false}},
         layout: {padding: {right: 2}},
         scales: {
-          x: {type: 'category', labels: xs, position: 'top', offset: true, grid: {display: false},
-              display: p.first, afterFit: fixTop,
-              ticks: {color: axisC(), autoSkip: false, maxRotation: 45, minRotation: 45, font: {size: 10},
-                      callback: function (v, i) { return i % every === 0 ? xs[i] : ''; }}},
+          // No time labels here: they float in one header above every month (drawAxis). The
+          // panel that drew them had its plot area shrunk to fit the last rotated label, so its
+          // cells came out narrower than every other month's (the user's screenshot, 17 Oct).
+          x: {type: 'category', labels: xs, offset: true, grid: {display: false}, display: false},
           // EXPLICIT, not the default: chartjs-chart-matrix's defaults reverse the y axis,
           // which drew the newest day at the BOTTOM while the hover arithmetic counts rows
           // from the top — naming the wrong day. Checked against scale.getPixelForValue.
@@ -350,9 +356,13 @@ window.EMTHeatmap = (function () {
           indexAxis: 'y', animation: false, maintainAspectRatio: false, responsive: true, devicePixelRatio: dpr,
           events: [], plugins: {legend: {display: false}, tooltip: {enabled: false}},
           scales: {
-            x: {position: 'top', display: p.first, afterFit: fixTop, grid: {display: false},
-                ticks: {color: axisC(), maxTicksLimit: TOT_W < 100 ? 2 : 4, font: {size: 10}},
-                title: {display: p.first, text: METRICS[m].tot, color: axisC(), font: {size: 11}}},
+            // the range every month shares, so a bar compares across months (it was each
+            // month's own); its scale floats in the header (drawAxis)
+            // On, but drawing nothing and taking no room: its ticks and pixel mapping are what the
+            // header's labels are placed from.
+            x: {position: 'top', min: Math.min(0, sc.tlo), max: Math.max(0, sc.thi), grid: {display: false},
+                border: {display: false}, afterFit: function (s) { s.height = 0; },
+                ticks: {display: false, maxTicksLimit: TOT_W < 100 ? 2 : 4}},
             y: {type: 'category', labels: days, offset: true, reverse: false, display: false}
           }
         }
@@ -368,6 +378,49 @@ window.EMTHeatmap = (function () {
     }
     p.days = days; p.xs = xs; p.drawn = true;
     attachHover(p);
+    drawAxis(p);
+  }
+
+  // ── the floating axis: the time labels over the grid, the totals' scale over the totals ──
+  // One header under the metric bar, sticky as it is, so the axis stays in view whatever month is
+  // on screen (the user, 17 Oct 2026). Placed from a drawn month's own chart geometry — every
+  // month draws to the same — and kept in step with a row scrolled sideways (narrow screens).
+  function drawAxis(p) {
+    var ax = state.root && state.root.querySelector('.hm-axis');
+    if (!ax || !p || !p.chart) return;
+    var bar = state.root.querySelector('.hm-bar');
+    ax.style.top = (bar ? bar.offsetHeight : 0) + 'px';
+    var inner = ax.querySelector('.hm-axis-in'), base = ax.getBoundingClientRect().left;
+    var ga = p.chart.chartArea, gl = p.chart.canvas.getBoundingClientRect().left - base;
+    var n = p.xs.length, cw = ga.width / n, cs = cellSize();
+    var every = cs >= 18 ? 1 : cs >= 10 ? 2 : 4;           // v4 labelled every slot at 20 px
+    var html = '';
+    for (var i = 0; i < n; i += every) {
+      html += '<span class="hm-ax-t" style="left:' + (gl + ga.left + (i + 0.5) * cw).toFixed(1) + 'px">' +
+              p.xs[i] + '</span>';
+    }
+    if (p.tot) {
+      var tx = p.tot.scales.x, tl = p.tot.canvas.getBoundingClientRect().left - base, ta = p.tot.chartArea;
+      html += '<span class="hm-ax-title" style="left:' + (tl + ta.left + ta.width / 2).toFixed(1) + 'px">' +
+              METRICS[state.metric].tot + '</span>';
+      (tx.ticks || []).forEach(function (t) {
+        html += '<span class="hm-ax-v" style="left:' + (tl + tx.getPixelForValue(t.value)).toFixed(1) + 'px">' +
+                (t.label === undefined ? t.value : t.label) + '</span>';
+      });
+    }
+    inner.innerHTML = html;
+    ax.style.color = axisC();
+  }
+  // a row scrolled sideways takes the others, and the axis, with it
+  function syncRows(src) {
+    if (state.syncing) return;
+    state.syncing = true;
+    Object.keys(state.panels).forEach(function (k) {
+      var r = state.panels[k].el.querySelector('.hm-row'); if (r !== src) r.scrollLeft = src.scrollLeft;
+    });
+    state.syncing = false;
+    var p = state.panels[state.keys.filter(function (k) { return state.panels[k].drawn; })[0]];
+    if (p) drawAxis(p);
   }
   function release(key, keepSize) {
     var p = state.panels[key]; if (!p) return;
@@ -863,7 +916,8 @@ window.EMTHeatmap = (function () {
     var root = state.root;
     root.innerHTML = '<div class="hm-bar"><div class="hm-metrics"></div>' +
       '<span class="hm-note">Local time · newest first</span></div>' +
-      '<div class="hm-head"><div class="hm-title"></div><div class="hm-sub"></div></div><div class="hm-months"></div>';
+      '<div class="hm-head"><div class="hm-title"></div><div class="hm-sub"></div></div>' +
+      '<div class="hm-axis"><div class="hm-axis-in"></div></div><div class="hm-months"></div>';
     var mb = root.querySelector('.hm-metrics');
     Object.keys(METRICS).forEach(function (k) {
       var b = document.createElement('button'); b.className = 'hm-metric-btn' + (k === state.metric ? ' active' : '');
@@ -885,8 +939,9 @@ window.EMTHeatmap = (function () {
     }, {rootMargin: '4000px'});
     state.keys.forEach(function (k, i) {
       var el = document.createElement('section'); el.className = 'hm-month'; el.dataset.key = k;
-      var guess = daysIn(k) * 18 + (i === 0 ? AXIS_TOP : 0);
+      var guess = daysIn(k) * 18;
       el.innerHTML = '<div class="hm-mlabel">' + monthLabel(k) + '</div><div class="hm-row" style="height:' + guess + 'px"></div>';
+      el.querySelector('.hm-row').addEventListener('scroll', function (e) { syncRows(e.target); }, {passive: true});
       wrap.appendChild(el); state.panels[k] = {el: el, first: i === 0};
       // Never make the first month wait on an intersection event — a page that is not
       // visible yet (a background tab, a hidden pane) reports none.
@@ -898,9 +953,11 @@ window.EMTHeatmap = (function () {
     new MutationObserver(function () { redrawAll(true); })
       .observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
     // Width: square cells are sized from it.
+    // Any change, not only one of 8 px or more: a scrollbar appearing is ~15 px on some systems
+    // and less on others, and every month must draw to the one width.
     var lastW = root.clientWidth, rt = null;
     new ResizeObserver(function () {
-      if (Math.abs(root.clientWidth - lastW) < 8) return; lastW = root.clientWidth;
+      if (root.clientWidth === lastW) return; lastW = root.clientWidth;
       clearTimeout(rt); rt = setTimeout(function () { redrawAll(false); }, 150);
     }).observe(root);
   }
@@ -984,6 +1041,14 @@ window.EMTHeatmap = (function () {
   .hm-head { text-align:center; margin:4px 0 6px; }
   .hm-title { font-size:15px; font-weight:600; }
   .hm-sub { font-size:12px; color:var(--muted, #6b7080); margin-top:2px; }
+  /* the floating axis (heatmap issues design §4): under the bar, sticky as it is */
+  .hm-axis { position:sticky; z-index:8; height:46px; margin-bottom:2px; pointer-events:none;
+             background:var(--surface, var(--card, #1a1d27)); }
+  .hm-axis-in { position:relative; height:100%; overflow:hidden; font-size:10px; }
+  .hm-ax-t { position:absolute; bottom:2px; white-space:nowrap; transform-origin:left bottom;
+             transform:rotate(-45deg); }
+  .hm-ax-v { position:absolute; bottom:2px; transform:translateX(-50%); white-space:nowrap; }
+  .hm-ax-title { position:absolute; top:4px; transform:translateX(-50%); font-size:11px; white-space:nowrap; }
   .hm-month { display:flex; align-items:stretch; }
   .hm-mlabel { writing-mode:vertical-rl; transform:rotate(180deg); font-size:11px; color:var(--muted, #6b7080);
                padding:0 4px; text-align:center; white-space:nowrap; }

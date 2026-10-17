@@ -72,8 +72,8 @@ class V4Parity(unittest.TestCase):
 
     def test_cells_are_square(self):
         """One cell size, used for both the width and the height of the grid."""
-        self.assertIn("function cellSize(panel) {", _SRC)
-        self.assertIn("h = days.length * cs + top + 2", _SRC)
+        self.assertIn("function cellSize() {", _SRC)
+        self.assertIn("h = days.length * cs + 2", _SRC)
 
     def test_the_kwh_scale_is_v4s(self):
         """make_colorscale's stops: blue for export, the background at zero, red for import."""
@@ -114,6 +114,48 @@ class ApiViewsRetired(unittest.TestCase):
     def test_the_api_views_are_gone(self):
         for gone in ("API_METRICS", "apiColour", "API_PENDING_H", "isApi("):
             self.assertNotIn(gone, _SRC)
+
+class OneWidthAFloatingAxis(unittest.TestCase):
+    """Heatmap issues design §4 (17 Oct 2026, the user's screenshot): the current month drew
+    narrower than the rest. Only the first panel drew the axes, and Chart.js shrinks a plot area to
+    fit tick labels that overhang it. Now no month draws an axis; one header floats under the
+    metric bar with them, and every month takes one cell size. All fail on the parent; the last
+    tests new code, so it fails there by name."""
+
+    def _draw(self):
+        i = _SRC.index("function drawMonth(key)")
+        return _SRC[i:_SRC.index("\n  function release(", i)]
+
+    def test_no_month_draws_the_axes(self):
+        body = self._draw()
+        self.assertNotIn("p.first", body)
+        self.assertNotIn("maxRotation", body)
+        self.assertIn("display: false},", body)          # the grid's time axis
+
+    def test_one_cell_size_for_every_month(self):
+        self.assertIn("function cellSize() {", _SRC)
+        self.assertIn("function rowWidth() {", _SRC)
+        self.assertNotIn("cellSize(p)", _SRC)
+
+    def test_the_axis_floats_under_the_bar(self):
+        css = _SRC[_SRC.index(".hm-axis {"):]
+        css = css[:css.index("}")]
+        self.assertIn("position:sticky", css)
+        self.assertIn("ax.style.top = (bar ? bar.offsetHeight : 0) + 'px'", _SRC)
+        self.assertIn("'<div class=\"hm-axis\"><div class=\"hm-axis-in\"></div></div>", _SRC)
+
+    def test_the_totals_share_one_range(self):
+        self.assertIn("min: Math.min(0, sc.tlo), max: Math.max(0, sc.thi)", self._draw())
+
+    def test_any_width_change_redraws(self):
+        self.assertIn("if (root.clientWidth === lastW) return;", _SRC)
+        self.assertNotIn("< 8) return;", _SRC)
+
+    def test_rows_scroll_together(self):
+        """GUARD (new code): a row scrolled sideways takes the others and the axis with it."""
+        self.assertIn("function syncRows(src)", _SRC)
+        self.assertIn("addEventListener('scroll', function (e) { syncRows(e.target); }", _SRC)
+
 
 class SplitViewRetired(unittest.TestCase):
     """17 Oct 2026, the user: the Split view is retired; the Import bill carries the split (teal for
