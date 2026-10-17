@@ -260,6 +260,21 @@ class TheSplit(unittest.TestCase):
         self.assertEqual(_c(_f(completed=1, ev_kwh=3.1), held={S})["split"], "held")
         self.assertEqual(_c(_f(completed=1, ev_kwh=3.1), kept={S})["split"], "kept")
 
+    # The Split view went on 17 Oct 2026; the Import bill carries `missing` as attention.
+    def test_a_missing_split_is_an_attention_flag(self):
+        """Discriminating: on the parent the flag does not exist."""
+        self.assertIn("split_missing", _c(_f(completed=1, bill_ev_kwh=0.0, **BILLED))["flags"])
+        self.assertIn("split_missing", _c(_f(completed=1))["flags"])
+
+    def test_no_flag_for_any_other_split(self):
+        """GUARD."""
+        for f, ctx in ((_f(completed=1, ev_kwh=3.1), {}),
+                       (_f(completed=1, bill_ev_kwh=3.1, **BILLED), {}),
+                       (_f(completed=1, ev_kwh=3.1), {"held": {S}}),
+                       (_f(completed=1, ev_kwh=3.1), {"kept": {S}}),
+                       (_f(), {})):
+            self.assertNotIn("split_missing", _c(f, **ctx)["flags"])
+
 
 class TheFacts(unittest.TestCase):
 
@@ -326,6 +341,14 @@ class TheSurfaces(unittest.TestCase):
         body = ast.unparse(fn)
         self.assertIn("_eng.mode_uses_api() and _eng.has_kraken_credentials()", body)
         self.assertNotIn("bill_stage", body)
+
+    def test_the_split_view_is_gone(self):
+        """17 Oct 2026, the user: the Import bill carries the split. Discriminating."""
+        import ast
+        src = open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read()
+        fn = next(n for n in ast.walk(ast.parse(src))
+                  if isinstance(n, ast.FunctionDef) and n.name == "_settle_views")
+        self.assertNotIn("'split'", ast.unparse(fn))
 
     def test_billing_source_names_the_views(self):
         import ast

@@ -115,6 +115,27 @@ class ApiViewsRetired(unittest.TestCase):
         for gone in ("API_METRICS", "apiColour", "API_PENDING_H", "isApi("):
             self.assertNotIn(gone, _SRC)
 
+class SplitViewRetired(unittest.TestCase):
+    """17 Oct 2026, the user: the Split view is retired; the Import bill carries the split (teal for
+    EMT's, red for a completed dispatch with none) and the detail panel names its state.
+    Discriminating: the first two. The third is a guard (the panel kept its split row)."""
+
+    def test_the_split_view_is_gone(self):
+        i = _SRC.index("var SETTLE_METRICS")
+        body = _SRC[i:_SRC.index("};", i)]
+        self.assertNotIn("split:", body)
+        self.assertNotIn("m === 'split'", _SRC)
+
+    def test_a_missing_split_turns_the_import_bill_red(self):
+        i = _SRC.index("function settleValue")
+        body = _SRC[i:_SRC.index("\n  }\n", i)]
+        self.assertIn("fl.indexOf('split_missing') >= 0", body)
+        self.assertIn("split_missing:", _SRC[_SRC.index("var FLAG_TEXT"):])
+
+    def test_the_detail_panel_keeps_the_split(self):
+        self.assertIn("CAT_TEXT.split[st.split]", _SRC)
+
+
 class ThePageUsesIt(unittest.TestCase):
 
     def test_it_is_included_and_the_iframe_path_is_gone(self):

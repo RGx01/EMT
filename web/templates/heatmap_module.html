@@ -44,26 +44,23 @@ window.EMTHeatmap = (function () {
             sub: 'Green: final — Octopus\u2019s cost (a bill, or an API import), or on a published-rate ' +
                  'tariff the settled kWh \u00d7 rate · teal: Octopus\u2019s cost, EMT\u2019s House/EV split · ' +
                  'light amber: settled kWh \u00d7 rate, Octopus\u2019s cost not in yet · amber: kWh not ' +
-                 'settled yet · red: not final after 7 days, or the stored cost is not the bill · blue: ' +
+                 'settled yet · red: not final after 7 days, the stored cost is not the bill, or a ' +
+                 'completed dispatch with no House/EV split · blue: ' +
                  'your correction · grey: nothing imported, or CSV history'},
     export: {label: 'Export bill', title: 'Export bill — is each half-hour\u2019s export cost final?', unit: '',
             dp: 0, tot: 'To look at', settle: 'export',
             sub: 'EMT fetches no export bill: kWh \u00d7 the export rate is final once the export kWh ' +
                  'settles. Green: settled (or an API import) · amber: not settled, under 7 days · red: ' +
-                 'not settled after 7 days · grey: no export, or CSV history'},
-    split: {label: 'Split', title: 'House/EV split — half-hours with a completed dispatch', unit: '',
-            dp: 0, tot: 'To watch', settle: 'split',
-            sub: 'Green: from the bill · teal: EMT\u2019s own split, the bill not in yet · amber: the ' +
-                 'bill had no EV, asking Octopus again · blue: kept EMT\u2019s after 28 days · red: a ' +
-                 'completed dispatch with no split'}
+                 'not settled after 7 days · grey: no export, or CSV history'}
   };
-  function isSettle(m) { return m === 'bill' || m === 'export' || m === 'split'; }
+  // The Split view went on 17 Oct 2026: the Import bill carries the split (teal for EMT's, red for
+  // a completed dispatch with none — `split_missing`), and the detail panel names its state.
+  function isSettle(m) { return m === 'bill' || m === 'export'; }
   function isCat(m) { return isSettle(m); }
   var CAT_RANK = {
     bill:  {none: 0, imported: 0, applied: 1, applied_emt_split: 1, corrected: 1, estimate_dcc: 2,
             estimate_cad: 2, known: 2, overdue: 3, differs: 3, flagged: 3},
-    export: {none: 0, imported: 0, no_agreement: 0, applied: 1, waiting: 2, overdue: 3},
-    split: {bill: 1, emt: 1, kept: 1, held: 2, missing: 3}
+    export: {none: 0, imported: 0, no_agreement: 0, applied: 1, waiting: 2, overdue: 3}
   };
   var CAT_TEXT = {
     bill: {none: 'nothing imported in this half-hour', imported: 'CSV history — not Octopus\u2019s cost',
@@ -84,30 +81,29 @@ window.EMTHeatmap = (function () {
             missing: 'completed dispatch, no split'}
   };
   var FLAG_TEXT = {bill_kwh_differs: 'the bill priced a different kWh than settled',
-                   vat_disagrees: 'the bill\u2019s VAT is not the calendar\u2019s'};
+                   vat_disagrees: 'the bill\u2019s VAT is not the calendar\u2019s',
+                   split_missing: 'a completed dispatch, and no House/EV split at all'};
   function settleColour(m, v) {
     var C = {green: '#2e9e5b', amber: '#e0a020', lamber: '#f2cf7a', red: '#cc0000', blue: '#3b7dd8', teal: '#2a9d9f',
              grey: dark() ? '#3a3e4a' : '#d4d7de'};
     var by = m === 'export'
       ? {applied: C.green, waiting: C.amber, overdue: C.red, imported: C.grey, no_agreement: C.grey,
          none: C.grey}
-      : m === 'bill'
-      ? {applied: C.green, applied_emt_split: C.teal, estimate_dcc: C.lamber, estimate_cad: C.amber,
+      : {applied: C.green, applied_emt_split: C.teal, estimate_dcc: C.lamber, estimate_cad: C.amber,
          known: C.amber, overdue: C.red, differs: C.red, flagged: C.red,
-         corrected: C.blue, imported: C.grey, none: C.grey}
-      : {bill: C.green, emt: C.teal, held: C.amber, kept: C.blue, missing: C.red};
+         corrected: C.blue, imported: C.grey, none: C.grey};
     return by[v] || 'rgba(0,0,0,0)';
   }
   // the cell value for a view: the state, with the attention flags folded in (§1.4)
   function settleValue(m, st) {
     if (!st) return null;
-    if (m === 'split') return st.split || null;
     if (m === 'export') return st.export || null;
     var v = st.bill, fl = st.flags || [];
     // an attention flag outranks "known": the 13 Oct morning's October bills were both a pre-fix
     // re-cost AND 5% VAT on a 0% day, and the VAT is what needed seeing
     if ((v === 'applied' || v === 'differs') &&
-        (fl.indexOf('bill_kwh_differs') >= 0 || fl.indexOf('vat_disagrees') >= 0)) return 'flagged';
+        (fl.indexOf('bill_kwh_differs') >= 0 || fl.indexOf('vat_disagrees') >= 0 ||
+         fl.indexOf('split_missing') >= 0)) return 'flagged';
     if (v === 'differs' && fl.indexOf('recost_bl82') >= 0) return 'known';
     return v;
   }
@@ -191,7 +187,7 @@ window.EMTHeatmap = (function () {
       if (b.meter_id !== 'electricity_main') return;
       var lp = localParts(b.block_start);
       if (lp.day.slice(0, 7) !== key) return;                  // a UTC edge of the month
-      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0, split: 0}});
+      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0}});
       var net = (b.imp_kwh || 0) - (b.exp_kwh || 0), cg = b.carbon_g;
       var c = d.slots[lp.slot] || (d.slots[lp.slot] = {kwh: 0, co2: null, int: null});
       (c.starts || (c.starts = [])).push(b.block_start);       // UTC, for the detail panel (§4)
@@ -411,7 +407,7 @@ window.EMTHeatmap = (function () {
       if (hitTot) { v = p.grid[day].total[state.metric]; lab = mm.tot; }
       else { var ci = Math.floor((x - a.left) / (a.width / p.xs.length));
              v = metricOf(p.grid[day].slots[ci], state.metric); lab = p.xs[ci] + '–' + slotLabel(ci + 1); }
-      var txt = (v === null || v === undefined) ? (state.metric === 'split' ? 'no completed dispatch' : 'no data')
+      var txt = (v === null || v === undefined) ? 'no data'
               : isSettle(state.metric) ? (hitTot ? v + ' half-hour' + (v === 1 ? '' : 's') + ' to look at'
                   : CAT_TEXT[state.metric][v] + (((p.grid[day].slots[ci] || {})[state.metric + 'Flags'] || [])
                       .filter(function (x) { return FLAG_TEXT[x]; })
@@ -832,7 +828,7 @@ window.EMTHeatmap = (function () {
   // ── data ───────────────────────────────────────────────────────────────────
   function fetchMonth(key) {
     var y = key.slice(0, 4), mo = +key.slice(5, 7);
-    var inc = (METRICS.bill || METRICS.split) ? '&include=settle' : '';
+    var inc = METRICS.bill ? '&include=settle' : '';
     return fetchJSON('/api/energy?resolution=block&kind=month&year=' + y + '&month=' + mo + inc).then(function (r) {
       if (r.error) throw new Error(r.error);
       state.tz = state.tz || r.timezone;

@@ -106,6 +106,10 @@ what an export "bill" can mean.
 
 ### 1.3 Split — IOG-SMB, dispatched half-hours only
 
+*The Split view was retired on 17 Oct 2026 (the user): the Import bill carries the split — teal for
+EMT's (`applied_emt_split`, §9.3), red for `missing` (the `split_missing` attention flag, §1.4) —
+and the detail panel names each half-hour's split state below. The states are still computed.*
+
 | state | meaning | colour |
 |---|---|---|
 | `n/a` | no completed dispatch (nothing for the car to have drawn) | none |
@@ -121,7 +125,9 @@ A half-hour needs attention when any layer is red: kWh `missing`, bill `overdue`
 split `missing` — plus two checks that are not a state of their own:
 
 - **the bill's kWh ≠ the settled kWh** (0 cases on hand; BL-82 says flag, never recompute);
-- **the bill's VAT disagrees with the calendar** (#505's 5% after 1 Oct; resolves on restatement).
+- **the bill's VAT disagrees with the calendar** (#505's 5% after 1 Oct; resolves on restatement);
+- **split `missing`** (`split_missing`, 17 Oct 2026): with the Split view gone, it is a flag that
+  turns an otherwise green Import bill cell red.
 
 These two add a red dot to an otherwise green cell, and name themselves in the detail panel.
 
@@ -363,7 +369,8 @@ part to the half-hour's own tariff kind.
   EMT's split is the only one there will be, so the cell is green, not teal, and has no split
   state (PR 5 on the Pi, 14 Oct 2026: every pre-agreement dispatched half-hour read teal for good).
 - **A split `missing`** (a completed dispatch, energy in the block, no split at all) on a green
-  cost is not teal: it stays in the Split view's red and §1.4's attention.
+  cost is not teal: it is §1.4's attention, the `split_missing` flag, red on the Import bill
+  (the Split view that showed it was retired on 17 Oct 2026).
 - The tooltip and the detail panel name which case a cell is (whose cost; which kWh).
 
 ### 9.4 Export bill — unchanged from §1.2b
