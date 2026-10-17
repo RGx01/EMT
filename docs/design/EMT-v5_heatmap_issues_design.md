@@ -1,6 +1,6 @@
 # EMT v5 — The heatmap as the data-quality surface: issues first, missing half-hours, one width
 
-*Draft, 17 Oct 2026; §6 decided the same day, one point to confirm. The user, after #196: "work on the heat map import/export bills and unifying
+*Draft, 17 Oct 2026; §6 decided the same day. The user, after #196: "work on the heat map import/export bills and unifying
 it into the data management tools … start by filtering the heat maps by days with problems (or the
 ability to collapse days with issues). Issues are basically anything that is not green … include
 missing blocks as a new colour (black?) and also include gaps between periods. The current heat
@@ -75,11 +75,11 @@ Import bill that is:
 | red | `overdue`, `differs`, `flagged` (incl. `split_missing`) | yes |
 | blue | `corrected` — the user's own correction | yes (a) |
 | grey | `imported` (CSV history) | no (a) |
-| grey | `none` (nothing imported) | no — to confirm (a) |
+| grey | `none` (nothing imported) | no (a) |
 | black (new) | missing | yes |
 
 and on the Export bill `waiting`, `overdue`, `no_agreement` and missing are issues; `applied`,
-`imported` and (to confirm) `none` are not (a). The rule lives in one place (`CAT_RANK`'s threshold,
+`imported` and `none` are not (a). The rule lives in one place (`CAT_RANK`'s threshold,
 today rank ≥ 2), so the toggle, the day totals and the future quality strip (BL-89) agree.
 
 **The selection still works across a collapsed run:** a drag from a problem day above it to one
@@ -96,12 +96,19 @@ because the list is newest first) draws the 45° time labels across the top of i
 its edges — the last rotated label, "23:30", hangs past the right — so the axis panel's cells and
 bars come out a few pixels narrower than every other month's.
 
-**Proposal:** draw both axes once, in a header above the months (the time labels over the grid,
-the totals' scale over the totals), outside the month charts. Every month's chart is then
+**Proposal (the user: "make the axis float so it's always visible"):** draw both axes once, in a
+header that floats under the metric bar (sticky, as the bar is) — the time labels over the grid,
+the totals' scale over the totals — outside the month charts. Every month's chart is then
 configured the same and draws to the same width. While there, one cell size for the whole heatmap,
 measured from the root rather than per panel, so months drawn at different moments (the first at
 once, the rest as they scroll near) cannot disagree either; and a redraw on any width change, not
 only one of 8 px or more. The test draws two months, one first, and asserts the same plot width.
+
+**A second width-related fault, found while reading:** the totals' x axis has no `min`/`max`, so
+Chart.js scales each month's "To look at" (or kWh / carbon total) bars to that month's own largest
+day. Their colours use the range every month shares (`computeScale`'s `tlo`/`thi`); their
+lengths did not, so a bar in one month could not be compared with one in another. The totals axis
+takes the shared range too — which the floating header's one scale needs anyway.
 
 ## 5. Order
 
@@ -118,10 +125,9 @@ only one of 8 px or more. The test draws two months, one first, and asserts the 
 
 **(a) What is an issue: everything not green except CSV history.** Teal (Octopus's cost, EMT's
 split), blue (the user's correction), grey `no_agreement`, light amber, amber, red and missing are
-issues; green `applied` and grey `imported` (CSV history) are not. *One to confirm*: grey `none`
-(nothing imported, nothing exported). On the Export bill every night half-hour is `none` — the
-screenshot's grey left third — so counting it would make every day an issue and nothing would
-collapse there. The proposal: `none` is not an issue, like CSV history (§3's table).
+issues; green `applied`, grey `imported` (CSV history) and grey `none` (nothing imported or
+exported: nothing to settle) are not. `none` confirmed the same day — on the Export bill every
+night half-hour is `none`, so counting it would make every day an issue.
 
 **(b) The missing colour: black, diagonally hatched**, on both themes. Not on the clocks-forward
 day's missing hour: those half-hours do not exist (§2).
