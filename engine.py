@@ -11623,6 +11623,31 @@ def _bill_split_wait(store) -> dict:
         return {}
 
 
+def _snapshot(m: dict) -> dict:
+    """A copy of a kraken_state map deep enough to diff: its entries are dicts mutated in place."""
+    return {k: (dict(v) if isinstance(v, dict) else v) for k, v in m.items()}
+
+
+def _save_changes(store, before: dict, after: dict, read, save) -> None:
+    """Save what this pass changed in a kraken_state map, not its whole copy (17 Oct 2026).
+
+    The live bill pass and the history drain each read the hold-back's wait map and the bill-ask
+    record, wait on Octopus, then save. They run as separate tasks on the loop, so one's
+    whole-copy save overwrote whatever the other saved in between — a held half-hour's first
+    date, a release, an unanswered half-hour. Re-read just before saving, with no await between
+    the two, and apply only this pass's additions, changes and removals."""
+    if after == before:
+        return
+    cur = read()
+    for k in before:
+        if k not in after:
+            cur.pop(k, None)
+    for k, v in after.items():
+        if k not in before or before[k] != v:
+            cur[k] = v
+    save(store, cur)
+
+
 def _bill_split_wait_save(store, w: dict) -> None:
     import json as _json
     store.set_kraken_state(_BILL_SPLIT_WAIT_KEY, _json.dumps(w, sort_keys=True))
@@ -11823,17 +11848,16 @@ async def measure_settled_dispatched_blocks() -> dict:
         return {}
     by_start = {r["block_start"]: r for r in rows}
     _wait = _bill_split_wait(store)                # bills held back, still being asked (4.5.23)
-    _wait_before = dict(_wait)
+    _wait_before = _snapshot(_wait)
     _kept = _bill_split_kept(store, _wait)
     _ask = _bill_ask(store, mpan)                  # never billed in 30 days: not asked (§5 (a))
-    _ask_before = {k: dict(v) for k, v in _ask.items()}
+    _ask_before = _snapshot(_ask)
     _gone = _bill_ask_given_up(_ask)
     missing = store.measured_slots_missing(
         [s for s in by_start if s not in _kept and s not in _gone],
         mpan=mpan)[:_MEASURED_MAX_PER_PASS]
     if not missing:
-        if _ask != _ask_before:
-            _bill_ask_save(store, _ask)
+        _save_changes(store, _ask_before, _ask, lambda: _bill_ask(store, mpan), _bill_ask_save)
         return {"candidates": len(rows), "fetched": 0}
     _emt_ev = emt_ev_at(store, missing)            # the hold-back's one reference (design §2)
 
@@ -11876,10 +11900,9 @@ async def measure_settled_dispatched_blocks() -> dict:
         _fetched_pairs.append((slot, row["cost_incl"], row["cost_excl"]))
         n_store += 1
     _vat_resync_note_fetch(store, _fetched_pairs)   # v4 4.5.22 (#505): has Octopus restated?
-    if _wait != _wait_before:
-        _bill_split_wait_save(store, _wait)
-    if _ask != _ask_before:
-        _bill_ask_save(store, _ask)
+    # what this pass changed, merged onto what the drain may have saved meanwhile
+    _save_changes(store, _wait_before, _wait, lambda: _bill_split_wait(store), _bill_split_wait_save)
+    _save_changes(store, _ask_before, _ask, lambda: _bill_ask(store, mpan), _bill_ask_save)
     # BL-70: `zero` and `absent` were one counter, which made the log self-contradictory —
     # "recovered 11/11" on one line and "absent=11" on the next. They mean opposite things:
     # zero = the bill stated nothing was drawn; absent = the bill said nothing at all.
@@ -12545,15 +12568,15 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
                 break
             cursor = page[-1]
             _wait = _bill_split_wait(store)            # bills held back, still being asked (4.5.23)
-            _wait_before = dict(_wait)
+            _wait_before = _snapshot(_wait)
             _kept = _bill_split_kept(store, _wait)
             _ask = _bill_ask(store, mpan)              # never billed in 30 days: not asked (§5 (a))
-            _ask_before = {k: dict(v) for k, v in _ask.items()}
+            _ask_before = _snapshot(_ask)
             _gone = _bill_ask_given_up(_ask)
             missing = [s for s in page if s not in _kept and s not in _gone]
             if not missing:
-                if _ask != _ask_before:
-                    _bill_ask_save(store, _ask)
+                _save_changes(store, _ask_before, _ask, lambda: _bill_ask(store, mpan),
+                              _bill_ask_save)
                 continue
             _emt_ev = emt_ev_at(store, missing)        # the hold-back's one reference (design §2)
             try:
@@ -12583,10 +12606,11 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
             # 4.5.22 (#505): on IOG-SMB this drain settles every half-hour, dispatched or not, so its
             # newly fetched slots are a hint source too.
             _vat_resync_note_fetch(store, _batch_pairs)
-            if _wait != _wait_before:
-                _bill_split_wait_save(store, _wait)
-            if _ask != _ask_before:
-                _bill_ask_save(store, _ask)
+            # what this page changed, merged onto what the live pass may have saved meanwhile
+            _save_changes(store, _wait_before, _wait, lambda: _bill_split_wait(store),
+                          _bill_split_wait_save)
+            _save_changes(store, _ask_before, _ask, lambda: _bill_ask(store, mpan),
+                          _bill_ask_save)
             if stored:
                 settled += stored
                 try:
