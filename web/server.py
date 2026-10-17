@@ -5734,13 +5734,15 @@ def api_energy():
         # aggregate is an extra scan the caller did not ask for.
         _default_include = "usage" if resolution == "period" else ""
         include = {x.strip() for x in (request.args.get("include") or _default_include).split(",") if x.strip()}
-        unknown = include - {"usage", "carbon", "billing", "stats", "settle"}
+        unknown = include - {"usage", "carbon", "billing", "stats", "settle", "gaps"}
         if unknown:
             return jsonify({"error": "include: unknown facet(s) %s" % sorted(unknown)}), 400
         if "billing" in include and resolution == "block":
             return jsonify({"error": "include=billing is served at resolution=period|day"}), 400
         if "settle" in include and resolution != "block":
             return jsonify({"error": "include=settle is served at resolution=block"}), 400
+        if "gaps" in include and resolution != "block":
+            return jsonify({"error": "include=gaps is served at resolution=block"}), 400
         fields = request.args.get("fields") or ""
         if ("stats" in include or fields == "stats") and resolution == "period":
             return jsonify({"error": "stats are served at resolution=day|block"}), 400
@@ -5824,6 +5826,15 @@ def api_energy():
             # client projecting devices from segments alone gets nothing.
             out["blocks"] = store.get_energy_blocks(utc_start, utc_end)
             out["segments"] = store.get_energy_segments(utc_start, utc_end)
+            if "gaps" in include:
+                # The main meter's tombstones over the range (heatmap issues design §2, §6 (c)): a
+                # deleted half-hour is a gap like any other, and its tooltip says when.
+                out["deleted"] = [
+                    {"start_utc": r["start_utc"], "end_utc": r["end_utc"],
+                     "created_at": r["created_at"], "reason": r["reason"]}
+                    for r in store.get_deleted_ranges()
+                    if r["meter_id"] in ("electricity_main", "*")
+                    and r["start_utc"] < utc_end and r["end_utc"] > utc_start]
             if "settle" in include:
                 # BL-85: each main-meter half-hour's bill and split state (settlement
                 # surfaces design §1, §3), decided once here for every surface. Opt-in, so
@@ -6025,6 +6036,10 @@ def api_periods():
             "bounds": {
                 "earliest": (bounds.get("earliest") or "")[:10] or None,
                 "latest": (bounds.get("latest") or "")[:10] or None,
+                # the first and last main-meter blocks' starts, naive UTC: where the heatmap's
+                # missing half-hours begin and end (heatmap issues design §2)
+                "earliest_block": bounds.get("earliest") or None,
+                "latest_block": bounds.get("latest") or None,
                 "carbon_earliest": (bounds.get("carbon_earliest") or "")[:10] or None,
                 "carbon_latest": (bounds.get("carbon_latest") or "")[:10] or None,
             },
