@@ -4810,12 +4810,14 @@ class BlockStore:
         return int(row["n"]) if row else 0
 
     def count_awaiting_bill(self, since_iso: str, *, every_half_hour: bool, exclude=(),
+                            until_iso: "str | None" = None,
                             meter_id: str = "electricity_main") -> int:
         """Main import blocks whose kWh has settled and whose bill has not arrived — the middle
         stage of settlement (ROADMAP BL-82's model: kWh, then the bill, then on IOG-SMB the split).
         `every_half_hour`: on IOG-SMB every half-hour is billed and fetched; elsewhere only a
         dispatched one is. Corrected and imported blocks are not waiting for a bill; `exclude`
         takes the half-hours whose bill is held back for its split (they wait at the next stage).
+        `until_iso`: an exclusive upper bound (an IOG-SMB agreement's end), else none.
         """
         exclude = sorted(set(exclude or ()))
         sql = ("SELECT COUNT(*) FROM blocks b WHERE b.meter_id = ? AND b.imp_kwh > 0 "
@@ -4824,12 +4826,16 @@ class BlockStore:
                "  AND (b.source IS NULL OR b.source NOT LIKE 'imported%') "
                "  AND b.block_start >= ? "
                "  AND NOT EXISTS (SELECT 1 FROM measured_cost mc WHERE mc.slot_start = b.block_start) ")
+        args = [meter_id, since_iso]
+        if until_iso:
+            sql += "  AND b.block_start < ? "
+            args.append(until_iso)
         if not every_half_hour:
             sql += ("  AND EXISTS (SELECT 1 FROM dispatch_slots s WHERE s.slot_start = b.block_start "
                     "              AND (s.off_peak = 1 OR s.source = 'smart-charge-completed')) ")
         if exclude:
             sql += "  AND b.block_start NOT IN (%s) " % ",".join("?" * len(exclude))
-        return int(self._conn.execute(sql, (meter_id, since_iso, *exclude)).fetchone()[0])
+        return int(self._conn.execute(sql, (*args, *exclude)).fetchone()[0])
 
     # A half-hour's bill is one measured_cost row per MPAN; a meter change (a new MPAN) can leave
     # two. The settlement surfaces read the latest fetched, as get_measured_breakdown does — a

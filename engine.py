@@ -10297,7 +10297,23 @@ async def _refresh_kraken_rate_schedules() -> None:
     # overlay). The cap prices the EV portion of a dispatched slot from these.
     _imp = _kraken_discovery.get("import") or {}
     _imp_tariff = _imp.get("tariff_code") or ""
-    if _imp.get("product_code") and "IOG" in _imp_tariff.upper():
+    # Stitched across the IOG-SMB agreements discovery holds, whatever the current tariff, so a
+    # capped half-hour takes its own agreement's EV rates after a renewal or after leaving
+    # IOG-SMB (capped pricing by agreement design §5 (c)). Where it holds none, the current
+    # product's, as before.
+    _smb_ags = [a for a in _ags if "IOG-SMB" in (a.get("tariff_code") or "").upper()]
+    if _smb_ags:
+        try:
+            from kraken_rates import build_ev_device_stitched
+            _ev_off, _ev_peak = await build_ev_device_stitched(
+                _kraken_client, _smb_ags, vat=_vat_context("import"))
+            if not _ev_off.is_empty():
+                new_cache["ev_device_off_peak"] = _ev_off
+            if not _ev_peak.is_empty():
+                new_cache["ev_device_peak"] = _ev_peak
+        except Exception as e:
+            logger.warning("_refresh_kraken_rate_schedules: ev_device stitch failed: %s", e)
+    elif _imp.get("product_code") and "IOG" in _imp_tariff.upper():
         try:
             from kraken_rates import build_ev_device_schedules
             _ev_off, _ev_peak = await build_ev_device_schedules(
@@ -11460,9 +11476,40 @@ _MEASURED_FLOOR = "2026-08-01T00:00:00"
 _MEASURED_MATERIAL_GBP = 0.02      # a same-band £ delta below this is rounding noise (skip)
 
 
+def _smb_windows() -> list:
+    """[(from, to | None)] naive-UTC of the import agreements that are IOG-SMB, oldest first, from
+    the agreements discovery holds (as `_agreement_era`). Where it holds none and the current
+    tariff is IOG-SMB: one open window from the current agreement's start (or `_MEASURED_FLOOR`).
+    Empty on an account that has never been on IOG-SMB. Capped pricing by agreement design §4:
+    the account-level gates ask "any IOG-SMB agreement", not "the current one"."""
+    import api_import as _ai
+    info = (_kraken_discovery or {}).get("import") or {}
+    out = []
+    for a in (info.get("agreements") or []):
+        if "IOG-SMB" not in (a.get("tariff_code") or "").upper() or not a.get("valid_from"):
+            continue
+        try:
+            vf = _ai._iso(_ai._naive_utc(a.get("valid_from")))
+            vt = _ai._iso(_ai._naive_utc(a.get("valid_to"))) if a.get("valid_to") else None
+        except Exception:
+            continue
+        out.append((vf, vt))
+    if not out and _import_is_smb_capped():
+        out.append((str(_kraken_current_agreement_from or _MEASURED_FLOOR), None))
+    return sorted(out)
+
+
+def _any_smb() -> bool:
+    """The account has been on IOG-SMB: its capped history is still asked for its bills (the
+    drain), and still shows its split (the heatmap's Split view)."""
+    return bool(_smb_windows())
+
+
 def _measured_floor() -> str:
-    """Effective floor for the measured-cost pass — the START of the current
-    (capped IOG-SMB) agreement, never earlier.
+    """Effective floor for the measured-cost pass — the start of the EARLIEST IOG-SMB agreement
+    (capped pricing by agreement design §4, 17 Oct 2026: a renewal onto a new IOG-SMB agreement
+    moved it to the newest, and the earlier capped history left the live pass, the drain and the
+    apply); on an account never on IOG-SMB, the start of the current agreement, never earlier.
 
     The measured fetch exists to reconcile Octopus's 6-hour-cap accounting, which is
     an SMB-tariff concept. Pre-migration dispatched slots were priced correctly by the
@@ -11471,8 +11518,10 @@ def _measured_floor() -> str:
     pre-cap days into scope). `_kraken_current_agreement_from` is the live import
     agreement's valid_from (naive-UTC iso), maintained on every schedule refresh; for
     a single SMB agreement that is the migration boundary. Falls back to the blunt
-    `_MEASURED_FLOOR` only when the boundary is unknown. (A future account with more
-    than one SMB agreement would instead take the earliest SMB valid_from.)"""
+    `_MEASURED_FLOOR` only when the boundary is unknown."""
+    _w = _smb_windows()
+    if _w:
+        return _w[0][0]
     caf = _kraken_current_agreement_from
     if caf:
         return str(caf)
@@ -11493,23 +11542,30 @@ def _import_is_smb_capped() -> bool:
 
 
 def _chart_cap_from():
-    """Per-day cap-gating date for the rate lines: the SMB agreement's valid_from when
-    on the capped IOG-SMB tariff, else None (pre-cap / non-IOG days render uncapped TOU).
-    Read by billing_view.rate_context for the Billing tab's rate lines (it was the
-    pre-rendered page's, before C deleted that, 30 Sep 2026).
+    """Per-day cap gating for the rate lines: the capped days, as [[from_day, to_day | None]]
+    site-local dates — one per IOG-SMB agreement (`_smb_windows`), to_day exclusive — or None on
+    an account never on IOG-SMB (its days render uncapped TOU). Read by
+    billing_view.rate_context for the Billing tab's rate lines; `energy_charts.day_chart_data`
+    gates on it. One date from the current agreement until 17 Oct 2026 (capped pricing by
+    agreement design §4): after a renewal or after leaving IOG-SMB it gated the wrong days.
 
-    The day is the SITE-LOCAL date the agreement starts: `_measured_floor()` is naive
-    UTC, so an agreement from 00:00 BST on 26 Aug 2026 is 2026-08-25T23:00:00, and its
-    first ten characters made 25 Aug a capped day."""
-    if not _import_is_smb_capped():
+    The day is the SITE-LOCAL date the agreement starts: a window is naive UTC, so an agreement
+    from 00:00 BST on 26 Aug 2026 is 2026-08-25T23:00:00, and its first ten characters made
+    25 Aug a capped day."""
+    windows = _smb_windows()
+    if not windows:
         return None
-    floor = str(_measured_floor())
-    try:
-        from zoneinfo import ZoneInfo
-        dt = datetime.fromisoformat(floor).replace(tzinfo=timezone.utc)
-        return dt.astimezone(ZoneInfo(_iog_site_tz())).date().isoformat()
-    except Exception:
-        return floor[:10]
+
+    def _day(iso):
+        if iso is None:
+            return None
+        try:
+            from zoneinfo import ZoneInfo
+            dt = datetime.fromisoformat(str(iso)).replace(tzinfo=timezone.utc)
+            return dt.astimezone(ZoneInfo(_iog_site_tz())).date().isoformat()
+        except Exception:
+            return str(iso)[:10]
+    return [[_day(vf), _day(vt)] for vf, vt in windows]
 
 
 # ── A bill that drops the car's half-hour is not settled yet (v4 4.5.23, #510) ─────────────
@@ -11596,13 +11652,17 @@ def _bill_split_kept(store, w: dict) -> set:
 def bill_stage() -> dict:
     """Whether this install has a bill stage, and for which half-hours (ROADMAP BL-82's model).
     `fetched`: an Intelligent tariff with the measured fetch on — EMT asks Octopus for bills.
-    `every_half_hour`: IOG-SMB, where every half-hour's bill is fetched (the live pass for the
-    dispatched ones, the history drain for the rest); otherwise only dispatched ones are.
+    `every_half_hour`: the current tariff is IOG-SMB, where every half-hour's bill is fetched
+    (the live pass for the dispatched ones, the history drain for the rest); otherwise only
+    dispatched ones are.
+    `windows`: the IOG-SMB agreements' windows (`_smb_windows`) — every half-hour in them is
+    fetched by the drain, whatever the current tariff (capped pricing by agreement design §4).
     `floor`: the measured pass's floor. One rule for the pill and the settlement views."""
     imp = (_kraken_discovery or {}).get("import") or {}
     _tu = (imp.get("tariff_code") or "").upper()
     fetched = bool(_MEASURED_FETCH_ENABLED and ("IOG" in _tu or "INTELLI" in _tu))
     return {"fetched": fetched, "every_half_hour": bool(fetched and _import_is_smb_capped()),
+            "windows": (_smb_windows() if _MEASURED_FETCH_ENABLED else []),
             "floor": _measured_floor()}
 
 
@@ -11622,8 +11682,9 @@ def settlement_awaiting(store, since_iso: str) -> dict:
     back (v4 4.5.23) — their split. For the Charts pill (BL-85, 13 Oct 2026). Read-only: `store`
     may be a ReadStore.
     - kwh: count_unsettled_blocks — import kWh, or export kWh where export settles.
-    - bill: only where EMT fetches bills — an Intelligent tariff with the measured fetch on;
-      on IOG-SMB every half-hour, elsewhere dispatched ones. Otherwise 0: there is no bill stage.
+    - bill: only where EMT fetches bills. Every half-hour inside an IOG-SMB agreement's window
+      (the drain asks them, whatever the current tariff); outside them, on a current Intelligent
+      tariff with the measured fetch on, dispatched ones from the floor. Otherwise 0.
     - split: held-back bills still being asked for (not past the 28 days).
     A half-hour Octopus has not billed in 30 days of asking is no longer waiting (§5 (a))."""
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
@@ -11632,12 +11693,30 @@ def settlement_awaiting(store, since_iso: str) -> dict:
     split = sum(1 for s in wait if s >= limit and s >= since_iso)
     stage = bill_stage()
     bill = 0
-    if stage["fetched"]:
+    windows = stage.get("windows")
+    if windows is None:                  # an older stage dict: one rule over the whole range
+        windows = [(stage["floor"], None)] if stage.get("every_half_hour") else []
+    if stage["fetched"] or windows:
         _mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan") or ""
         _gone = _bill_ask_given_up(_bill_ask(store, _mpan), mark=False)
-        bill = store.count_awaiting_bill(max(since_iso, stage["floor"]),
-                                         every_half_hour=stage["every_half_hour"],
-                                         exclude=list(set(wait) | _gone))
+        _ex = list(set(wait) | _gone)
+        for vf, vt in windows:           # every half-hour inside an IOG-SMB agreement
+            if vt and vt <= since_iso:
+                continue
+            bill += store.count_awaiting_bill(max(since_iso, vf), every_half_hour=True,
+                                              until_iso=vt, exclude=_ex)
+        if stage["fetched"]:             # the dispatched ones outside them, from the floor
+            lo = max(since_iso, stage["floor"])
+            for vf, vt in sorted(windows):
+                if vf > lo:
+                    bill += store.count_awaiting_bill(lo, every_half_hour=False,
+                                                      until_iso=vf, exclude=_ex)
+                if vt is None:
+                    lo = None
+                    break
+                lo = max(lo, vt)
+            if lo is not None:
+                bill += store.count_awaiting_bill(lo, every_half_hour=False, exclude=_ex)
     return {"kwh": int(store.count_unsettled_blocks(since_iso=since_iso)), "bill": int(bill),
             "split": int(split)}
 
@@ -12440,74 +12519,81 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
     global _measured_history_drain_running
     store = _store
     if (store is None or _kraken_client is None or not _MEASURED_FETCH_ENABLED
-            or not _MEASURED_APPLY or not _import_is_smb_capped()):
+            or not _MEASURED_APPLY or not _any_smb()):
         return {"ok": True, "skipped": "not applicable"}
     imp = (_kraken_discovery or {}).get("import") or {}
     mpan = imp.get("mpan")
     if not mpan:
         return {"ok": True, "skipped": "no mpan"}
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-    floor = _measured_floor()
     # Only history Octopus has actually BILLED has a breakdown; the recent tail is left to the
     # live measure_settled pass (which caches a slot the moment its breakdown lands).
-    cutoff = (_dt.now(_tz.utc).replace(tzinfo=None) - _td(hours=_RECONCILE_SETTLE_HOURS)).isoformat()
-    cursor = ""            # local high-water mark; advances past absent slots within this run
+    now_cut = (_dt.now(_tz.utc).replace(tzinfo=None) - _td(hours=_RECONCILE_SETTLE_HOURS)).isoformat()
     settled = 0
-    for _ in range(max_batches):
-        page = store.get_settleable_blocks(floor, cursor, cutoff, _MEASURED_MAX_PER_PASS)
-        if not page:
-            break
-        cursor = page[-1]
-        _wait = _bill_split_wait(store)            # bills held back, still being asked (4.5.23)
-        _wait_before = dict(_wait)
-        _kept = _bill_split_kept(store, _wait)
-        _ask = _bill_ask(store, mpan)              # never billed in 30 days: not asked (§5 (a))
-        _ask_before = {k: dict(v) for k, v in _ask.items()}
-        _gone = _bill_ask_given_up(_ask)
-        missing = [s for s in page if s not in _kept and s not in _gone]
-        if not missing:
+    batches = 0
+    # Each IOG-SMB agreement's window, whatever the current tariff (capped pricing by agreement
+    # design §4): after a renewal the earlier one is still capped history, and after leaving
+    # IOG-SMB the drain finishes it — a half-hour is asked for 30 days at most (`_bill_ask`), so it
+    # goes quiet by itself. A half-hour outside every window is not the drain's.
+    for floor, w_to in _smb_windows():
+        cutoff = min(now_cut, w_to) if w_to else now_cut
+        cursor = ""        # local high-water mark; advances past absent slots within this run
+        while batches < max_batches:
+            batches += 1
+            page = store.get_settleable_blocks(floor, cursor, cutoff, _MEASURED_MAX_PER_PASS)
+            if not page:
+                break
+            cursor = page[-1]
+            _wait = _bill_split_wait(store)            # bills held back, still being asked (4.5.23)
+            _wait_before = dict(_wait)
+            _kept = _bill_split_kept(store, _wait)
+            _ask = _bill_ask(store, mpan)              # never billed in 30 days: not asked (§5 (a))
+            _ask_before = {k: dict(v) for k, v in _ask.items()}
+            _gone = _bill_ask_given_up(_ask)
+            missing = [s for s in page if s not in _kept and s not in _gone]
+            if not missing:
+                if _ask != _ask_before:
+                    _bill_ask_save(store, _ask)
+                continue
+            _emt_ev = emt_ev_at(store, missing)        # the hold-back's one reference (design §2)
+            try:
+                nodes = await _fetch_bill_nodes(mpan, missing)   # one bill reader (design §1.3)
+            except Exception as e:
+                logger.warning("measured history drain: bill fetch failed: %s", e)
+                break
+            _kwh = store.get_imp_kwh(missing)
+            stored = 0
+            _batch_pairs: list = []        # 4.5.22 (#505): (slot, cost_incl, cost_excl) for the hint
+            for slot in missing:
+                kind, node = nodes.get(slot, (None, None))
+                row = parse_bill(node, kind, _kwh.get(slot))
+                if row is None or row.get("zero"):
+                    _bill_ask_unanswered(_ask, slot)           # not billed yet — cursor skips it
+                    continue
+                _bill_ask_answered(_ask, slot)
+                bd = row.get("breakdown")
+                if bd and _bill_drops_ev(_emt_ev.get(slot), bd[2]):
+                    _bill_split_hold(_wait, slot)          # v4 4.5.23: keep EMT's split, ask again
+                    continue
+                if bd:
+                    _bill_split_release(_wait, slot)
+                _store_bill(store, slot, mpan, row)
+                _batch_pairs.append((slot, row["cost_incl"], row["cost_excl"]))
+                stored += 1
+            # 4.5.22 (#505): on IOG-SMB this drain settles every half-hour, dispatched or not, so its
+            # newly fetched slots are a hint source too.
+            _vat_resync_note_fetch(store, _batch_pairs)
+            if _wait != _wait_before:
+                _bill_split_wait_save(store, _wait)
             if _ask != _ask_before:
                 _bill_ask_save(store, _ask)
-            continue
-        _emt_ev = emt_ev_at(store, missing)        # the hold-back's one reference (design §2)
-        try:
-            nodes = await _fetch_bill_nodes(mpan, missing)   # one bill reader (design §1.3)
-        except Exception as e:
-            logger.warning("measured history drain: bill fetch failed: %s", e)
-            break
-        _kwh = store.get_imp_kwh(missing)
-        stored = 0
-        _batch_pairs: list = []        # 4.5.22 (#505): (slot, cost_incl, cost_excl) for the hint
-        for slot in missing:
-            kind, node = nodes.get(slot, (None, None))
-            row = parse_bill(node, kind, _kwh.get(slot))
-            if row is None or row.get("zero"):
-                _bill_ask_unanswered(_ask, slot)           # not billed yet — cursor skips it
-                continue
-            _bill_ask_answered(_ask, slot)
-            bd = row.get("breakdown")
-            if bd and _bill_drops_ev(_emt_ev.get(slot), bd[2]):
-                _bill_split_hold(_wait, slot)          # v4 4.5.23: keep EMT's split, ask again
-                continue
-            if bd:
-                _bill_split_release(_wait, slot)
-            _store_bill(store, slot, mpan, row)
-            _batch_pairs.append((slot, row["cost_incl"], row["cost_excl"]))
-            stored += 1
-        # 4.5.22 (#505): on IOG-SMB this drain settles every half-hour, dispatched or not, so its
-        # newly fetched slots are a hint source too.
-        _vat_resync_note_fetch(store, _batch_pairs)
-        if _wait != _wait_before:
-            _bill_split_wait_save(store, _wait)
-        if _ask != _ask_before:
-            _bill_ask_save(store, _ask)
-        if stored:
-            settled += stored
-            try:
-                apply_measured_settled()                   # write the cached backlog authoritatively
-            except Exception as e:
-                logger.warning("measured history drain: apply failed: %s", e)
-        await asyncio.sleep(_MEASURED_HISTORY_DRAIN_PACE)
+            if stored:
+                settled += stored
+                try:
+                    apply_measured_settled()                   # write the cached backlog authoritatively
+                except Exception as e:
+                    logger.warning("measured history drain: apply failed: %s", e)
+            await asyncio.sleep(_MEASURED_HISTORY_DRAIN_PACE)
     if settled:
         logger.info("measured history drain: settled %d imported capped slot(s) from the bill", settled)
     return {"ok": True, "settled": settled}
@@ -12516,7 +12602,7 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
 def _measured_history_backlog() -> int:
     """Count of imported capped-window slots still needing the billed breakdown (drain work signal)."""
     store = _store
-    if store is None or not _import_is_smb_capped():
+    if store is None or not _any_smb():
         return 0
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     cutoff = (_dt.now(_tz.utc).replace(tzinfo=None) - _td(hours=_RECONCILE_SETTLE_HOURS)).isoformat()
@@ -12527,8 +12613,11 @@ def _measured_history_backlog() -> int:
         # hourly tick for good (§5 (a)).
         _mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan") or ""
         _gone = _bill_ask_given_up(_bill_ask(store, _mpan), mark=False)
-        return int(store.count_settleable_blocks(_measured_floor(), cutoff,
-                                                 exclude=set(_bill_split_wait(store)) | _gone))
+        _ex = set(_bill_split_wait(store)) | _gone
+        # each IOG-SMB agreement's window, as the drain walks them (design §4)
+        return sum(int(store.count_settleable_blocks(vf, min(cutoff, vt) if vt else cutoff,
+                                                     exclude=_ex))
+                   for vf, vt in _smb_windows())
     except Exception:
         return 0
 
@@ -12539,7 +12628,7 @@ def _maybe_drain_measured_history() -> None:
     no-op with no backlog, no API, or a running import/delete. Re-arms whenever a new backlog appears."""
     global _measured_history_drain_running
     try:
-        if _store is None or _measured_history_drain_running or not _import_is_smb_capped():
+        if _store is None or _measured_history_drain_running or not _any_smb():
             return
         # `kraken_available()` is a PRECONDITION, not a dependency — the supplier
         # API is not a job and cannot be waited for. B §1 keeps the two apart;

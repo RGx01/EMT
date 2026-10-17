@@ -180,7 +180,7 @@ class TheCapDateIsTheLocalAgreementDay(unittest.TestCase):
         with mock.patch.object(engine, "_kraken_current_agreement_from", "2026-08-25T23:00:00"), \
              mock.patch.object(engine, "_import_is_smb_capped", lambda: True), \
              mock.patch.object(engine, "_iog_site_tz", lambda *a, **k: "Europe/London"):
-            self.assertEqual(engine._chart_cap_from(), "2026-08-26")
+            self.assertEqual(engine._chart_cap_from(), [["2026-08-26", None]])
 
 
 if __name__ == "__main__":

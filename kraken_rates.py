@@ -706,6 +706,60 @@ async def build_ev_device_schedules(
     return off_peak, peak
 
 
+_EV_DEVICE_SCHED_CACHE: dict = {}
+
+
+async def build_ev_device_stitched(client, agreements, *, vat) -> tuple:
+    """The EV-device rate buckets (off_peak_schedule, peak_schedule) stitched across the IOG-SMB
+    `agreements`, each agreement's own product's rates clipped to its [valid_from, valid_to) — so
+    a capped half-hour takes the EV rates of the agreement it was on, after a renewal onto a new
+    product or after leaving IOG-SMB (capped pricing by agreement design §5 (c), 17 Oct 2026).
+    The import's stitch, for the EV buckets: closed agreements cached by (tariff, from, to), each
+    built as published, `vat` applied once to each stitch. An agreement whose fetch fails or whose
+    product has no EV buckets leaves its span uncovered (the seam then prices it uncapped)."""
+    ttp = getattr(client, "_tariff_to_product_code", None)
+    off, peak, off_exc, peak_exc = [], [], [], []
+    n_ok = 0
+    ags = sorted(agreements or [], key=lambda a: a.get("valid_from") or "")
+    for ag in ags:
+        tc = ag.get("tariff_code")
+        if not tc:
+            continue
+        vf_raw, vt_raw = ag.get("valid_from"), ag.get("valid_to")
+        try:
+            ag_vf = normalise_to_naive_utc(vf_raw) if vf_raw else None
+            ag_vt = normalise_to_naive_utc(vt_raw) if vt_raw else None
+        except ValueError:
+            continue
+        ckey = (tc, vf_raw, vt_raw)
+        pair = None if ag_vt is None else _EV_DEVICE_SCHED_CACHE.get(ckey)
+        if pair is None:
+            pc = ttp(tc) if ttp else None
+            if not pc:
+                logger.warning("ev stitch: no product for tariff %s — skipped", tc)
+                continue
+            pair = await build_ev_device_schedules(client, pc, tc, vat=NO_VAT,
+                                                   period_from=vf_raw, period_to=vt_raw)
+            if ag_vt is not None and not (pair[0].is_empty() or pair[1].is_empty()):
+                _EV_DEVICE_SCHED_CACHE[ckey] = pair
+        o, p = pair
+        if o.is_empty() or p.is_empty():
+            continue
+        off.extend(_clip_periods(o._periods, ag_vf, ag_vt))
+        peak.extend(_clip_periods(p._periods, ag_vf, ag_vt))
+        if o.exc is not None:
+            off_exc.extend(_clip_periods(o.exc._periods, ag_vf, ag_vt))
+        if p.exc is not None:
+            peak_exc.extend(_clip_periods(p.exc._periods, ag_vf, ag_vt))
+        n_ok += 1
+    if not off or not peak:
+        return RateSchedule([]), RateSchedule([])
+    logger.info("build_ev_device_stitched: stitched %d/%d IOG-SMB agreement(s) → %d/%d periods",
+                n_ok, len(ags), len(off), len(peak))
+    return (RateSchedule(off, off_exc or None).with_vat(vat),
+            RateSchedule(peak, peak_exc or None).with_vat(vat))
+
+
 async def build_standing_charge_schedule(
     client, product_code: str, tariff_code: str,
     *, vat, period_from: Optional[str] = None, period_to: Optional[str] = None,
