@@ -379,6 +379,13 @@ with nothing exported. Where the main meter has an export channel (`export_chann
 that shows the view), a half-hour with no live reading and no settled kWh is `waiting`, then
 `overdue`. A live reading of nothing, or a settled nothing, is `none`.
 
+*The same day, the user:* a half-hour no export agreement covers is **`no_agreement`** (grey, its
+own tooltip), not amber then red for good: with no export rate nothing is paid, so there is no bill
+to settle, and a settled kWh is not "final" either. Judged per half-hour against the agreements
+discovery holds (`engine.export_agreement_at`); an export MPAN with no agreements at all is the
+FIT-like case. Where discovery holds no export MPAN, or has not run, the state is as above. An API
+import's export cost is Octopus's own and stays `applied`.
+
 ### 9.5 An assumption to verify
 
 The per-half-hour billed cost (GraphQL measurements, `statistics` → `costInclTax`) carries no

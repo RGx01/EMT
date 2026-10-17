@@ -3917,7 +3917,7 @@ def _settlement_states(store, utc_start, utc_end) -> dict:
         smb=bool(_eng._import_is_smb_capped()), now=_dt.now(_tz.utc).replace(tzinfo=None),
         held=held, kept=kept, vat_at=_vc.rate_lookup(store.get_vat_calendar()),
         kind_at=_eng.tariff_kind_at, split_at=_eng.split_at,
-        export_channel=_main_has_export())
+        export_channel=_main_has_export(), export_agreement_at=_eng.export_agreement_at)
 
 
 @app.route("/api/billing-source", methods=["GET"])
