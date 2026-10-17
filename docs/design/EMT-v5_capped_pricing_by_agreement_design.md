@@ -100,10 +100,29 @@ become one function. `split_at` stays as the surfaces' name for it.
 **Fallback:** where discovery has not run, every test falls back to the current tariff, as
 `split_at` and `tariff_kind_at` do now. Nothing changes until discovery has run.
 
-## 5. Questions for the user
+## 5. Questions for the user — (a) decided 17 Oct 2026
 
-**(a) An account that has left IOG-SMB.** Should the drain keep asking Octopus for the past
-capped half-hours' breakdowns? The proposal says yes, because the history is still capped.
+**(a) An account that has left IOG-SMB. Decided (17 Oct 2026, the user): asked for 30 days
+past the end of the agreement, and no half-hour asked for ever.** The user's concern was the
+retry, not the agreement: a half-hour Octopus never bills is asked again every pass. That
+already happens on IOG-SMB today:
+- the drain has no give-up, and a half-hour Octopus answers with nothing (or with nothing drawn
+  where EMT holds kWh, `parse_bill`) stays in its backlog, so the hourly tick reschedules it;
+- on the soak of 26–30 Sep 2026, the drain was scheduled 98 times, hourly, and 79 of those were
+  for the same three half-hours; four runs settled anything.
+
+So the 30 days is a rule per half-hour, and the agreement's end follows from it:
+- **Each half-hour is asked for up to 30 days from the first time Octopus did not answer it**,
+  then dropped from the live pass, the drain, the drain's backlog and the Charts pill
+  (`_bill_ask`, kraken_state `bill_ask`; built in its own PR, before PR 1). For live history the
+  first ask is about six hours after the half-hour; for imported history it is the import.
+- **After the agreement ends,** no new capped half-hours appear, so within 30 days every one is
+  billed or dropped and the drain goes quiet by itself. The account-level gates become "any
+  IOG-SMB agreement" (PR 2) with no end date of their own.
+- **A dropped half-hour keeps its estimate** and its cell on the heatmap. The range re-fetch still
+  asks for it; a bill it caches clears the record.
+- **Not changed:** the 4.5.23 hold-back keeps its own 28 days, counted from the half-hour. It is a
+  ported v4 rule, and an answer it holds back is an answer, not a silence.
 
 **(b) The relabel.** Should pre-agreement blocks on an SMB account take BL-34's band relabel?
 The proposal says yes: it is the uncapped rule, and they were uncapped.
@@ -116,6 +135,7 @@ second PR, well before any renewal.
 
 | PR | what | discriminating tests (fail on `dev`) |
 |---|---|---|
+| 0 | the bill-ask give-up, §5 (a) — *built 17 Oct 2026* | `tests/test_bill_ask_give_up.py`: an unanswered half-hour is recorded; after 30 days the live pass and the drain stop asking, it is not drain backlog and not awaiting a bill; an answer, or a bill cached by a re-fetch, clears the record |
 | 1 | `capped_at` = `split_at`; the seam, the mixed rebuild and the relabel judged per half-hour | a pre-agreement cap-day over six hours, on an account now on IOG-SMB, re-priced by the seam: all EV off-peak, rate unchanged. A post-agreement one is still capped (guard). An account off IOG-SMB re-pricing its capped history keeps it capped. |
 | 2 | the earliest-SMB floor; the account-level gates as "any IOG-SMB agreement"; the stitched EV-device schedules | two IOG-SMB agreements: the drain and the apply reach the first; the first's half-hours take the first product's EV rates |
 
