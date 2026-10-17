@@ -45,7 +45,12 @@ class OneCappedTest(unittest.TestCase):
         both = re.findall(r'"ev_device_off_peak" in _kraken_rate_schedules\s*\n?\s*and '
                           r'"ev_device_peak" in _kraken_rate_schedules', SRC)
         self.assertEqual(len(both), 1, "the capped-schedules test is written more than once")
-        self.assertGreaterEqual(SRC.count("_capped_schedules()"), 4)
+        # the definition, the seam and the mixed rebuild — each AND the half-hour's own agreement;
+        # the BL-34 relabel asks only the agreement (capped pricing by agreement design §5 (b))
+        self.assertGreaterEqual(SRC.count("_capped_schedules()"), 3)
+        self.assertEqual(SRC.count("capped_at(block_start) and _capped_schedules()"), 1)
+        self.assertEqual(SRC.count("capped_at(bs) and _capped_schedules()"), 1)
+        self.assertIn("_capped_band = capped_at(bs)", SRC)
 
 
 if __name__ == "__main__":
