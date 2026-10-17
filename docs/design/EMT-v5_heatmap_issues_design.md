@@ -1,6 +1,6 @@
 # EMT v5 — The heatmap as the data-quality surface: issues first, missing half-hours, one width
 
-*Draft, 17 Oct 2026. The user, after #196: "work on the heat map import/export bills and unifying
+*Draft, 17 Oct 2026; §6 decided the same day, one point to confirm. The user, after #196: "work on the heat map import/export bills and unifying
 it into the data management tools … start by filtering the heat maps by days with problems (or the
 ability to collapse days with issues). Issues are basically anything that is not green … include
 missing blocks as a new colour (black?) and also include gaps between periods. The current heat
@@ -70,15 +70,16 @@ Import bill that is:
 | colour | states | an issue? |
 |---|---|---|
 | green | `applied` | no |
-| teal | `applied_emt_split` — Octopus's cost, EMT's split | **(a)** |
+| teal | `applied_emt_split` — Octopus's cost, EMT's split | yes (a) |
 | light amber / amber | `estimate_dcc`, `estimate_cad`, `known` | yes |
 | red | `overdue`, `differs`, `flagged` (incl. `split_missing`) | yes |
-| blue | `corrected` — the user's own correction | **(a)** |
-| grey | `none` (nothing imported), `imported` (CSV history) | **(a)** |
+| blue | `corrected` — the user's own correction | yes (a) |
+| grey | `imported` (CSV history) | no (a) |
+| grey | `none` (nothing imported) | no — to confirm (a) |
 | black (new) | missing | yes |
 
-and on the Export bill `waiting`, `overdue` and missing are issues; `applied` is not; `none`,
-`imported` and `no_agreement` are grey (a). The rule lives in one place (`CAT_RANK`'s threshold,
+and on the Export bill `waiting`, `overdue`, `no_agreement` and missing are issues; `applied`,
+`imported` and (to confirm) `none` are not (a). The rule lives in one place (`CAT_RANK`'s threshold,
 today rank ≥ 2), so the toggle, the day totals and the future quality strip (BL-89) agree.
 
 **The selection still works across a collapsed run:** a drag from a problem day above it to one
@@ -86,20 +87,21 @@ below covers the folded days too, as the range they are.
 
 ## 4. One width for every month (the bug)
 
-*Not reproduced yet: a screenshot, and the browser and device it shows on, would settle it.* What
-the code allows:
+*Found from the user's screenshot (17 Oct 2026, the Export bill on a desktop browser).* The
+current month's cells end at x ≈ 1380, September's at ≈ 1388; its "To look at" bars span
+1409–1548, September's 1403–1556. Both months are at the 22 px cell maximum, so `cellSize` is not
+it. The difference is **the axes**: only the first panel (`p.first`, which is the current month
+because the list is newest first) draws the 45° time labels across the top of its grid and the
+0–60 labels over its totals. Chart.js shrinks a chart's plot area to fit tick labels that overhang
+its edges — the last rotated label, "23:30", hangs past the right — so the axis panel's cells and
+bars come out a few pixels narrower than every other month's.
 
-- **Each panel measures itself when drawn.** The current month is drawn at once ("never make the
-  first month wait"), the others as they scroll near. If the page is not laid out yet when the
-  first one draws — a hidden tab or pane, `.hm-row` 0 px wide — `cellSize` clamps to 6 px, and
-  only a root resize of 8 px or more redraws it.
-- **The 8 px threshold** skips any width change under it — a scrollbar appearing as more months
-  load is ~15 px on Windows and Linux, 0 on macOS.
-
-**Proposal:** one cell size for the whole heatmap, measured from the root, stored in `state`, and
-every panel drawn at it; redrawn when the root's width changes at all (debounced, as now). Months
-can then never disagree, whatever order they draw in. The width bug is fixed first, alone, with a
-test that draws two months at different moments and asserts one cell size.
+**Proposal:** draw both axes once, in a header above the months (the time labels over the grid,
+the totals' scale over the totals), outside the month charts. Every month's chart is then
+configured the same and draws to the same width. While there, one cell size for the whole heatmap,
+measured from the root rather than per panel, so months drawn at different moments (the first at
+once, the rest as they scroll near) cannot disagree either; and a redraw on any width change, not
+only one of 8 px or more. The test draws two months, one first, and asserts the same plot width.
 
 ## 5. Order
 
@@ -112,23 +114,23 @@ test that draws two months at different moments and asserts one cell size.
    first — the black cells are what it fills — then backfill, then delete (with BL-90's soft
    delete), each with the re-fetch's shape: select → preview → apply after a required backup.
 
-## 6. Questions for the user
+## 6. Decided (17 Oct 2026, the user)
 
-**(a) What is clean?** Green only, as asked, would make teal, blue and grey issues too. Teal is
-Octopus's cost with EMT's split (on the soak, for 7 half-hours, the split arrives later); blue is
-the user's own correction; grey is "nothing to settle" (no import, CSV history, no export
-agreement). The proposal counts them **clean**, so a collapsed day means "nothing to do".
+**(a) What is an issue: everything not green except CSV history.** Teal (Octopus's cost, EMT's
+split), blue (the user's correction), grey `no_agreement`, light amber, amber, red and missing are
+issues; green `applied` and grey `imported` (CSV history) are not. *One to confirm*: grey `none`
+(nothing imported, nothing exported). On the Export bill every night half-hour is `none` — the
+screenshot's grey left third — so counting it would make every day an issue and nothing would
+collapse there. The proposal: `none` is not an issue, like CSV history (§3's table).
 
-**(b) The missing colour.** Black reads well on the light theme, but the dark theme's background
-is `#1a1d27`, near black. The proposal: black with a diagonal hatch on both themes, so it is
-neither a colour of the scale nor the background.
+**(b) The missing colour: black, diagonally hatched**, on both themes. Not on the clocks-forward
+day's missing hour: those half-hours do not exist (§2).
 
-**(c) Deleted versus never recorded.** The proposal: missing (never recorded) black-hatched;
-deleted (inside a `deleted_ranges` tombstone) the same hatch on grey, its tooltip "deleted
-<date>", not an issue — it was meant.
+**(c) A deleted half-hour is a gap like any other** — missing, black-hatched, an issue. EMT's gap
+detection already counts the gaps a user made; the tooltip still says when one was deleted, from
+`deleted_ranges`.
 
-**(d) "Gaps between periods".** Is that the stretches with no blocks (§2 draws them as bands of
-missing rows), or something else — between config periods, or between the API import's history
-and the live data?
+**(d) Between periods, a stretch with no blocks is a gap**: every day of the span has a row (§2),
+so it shows as rows of missing half-hours, which are issues and never fold away.
 
-**(e) Collapse, or hide?** The proposal collapses (§3).
+**(e) Collapse and expand** (§3).
