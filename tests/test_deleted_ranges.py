@@ -193,6 +193,63 @@ class TestContiguousRangeDelete(unittest.TestCase):
         self.assertFalse(st.is_slot_tombstoned("electricity_main", "2020-01-02T12:30:00"))
         self.assertTrue(st.is_slot_tombstoned("electricity_main", "2020-01-02T00:00:00"))
 
+    # ── the tombstone's ends on block boundaries (17 Oct 2026, the Pi soak) ──
+    def test_an_end_off_the_boundary_tombstones_only_what_was_deleted(self):
+        """Discriminating: "00:00 to 00:29" deletes the 00:00 block only; the tombstone covered
+        00:30 too (00:29 + 30 min), a block still there."""
+        st = self._store()
+        res = st.delete_blocks_for_date_range(
+            "2020-01-01", "2020-01-01", meter_id=None,
+            from_time="00:00", to_time="00:29", tz_name="UTC")
+        self.assertEqual(res["deleted"], 1)
+        (row,) = st.get_deleted_ranges()
+        self.assertEqual((row["start_utc"], row["end_utc"]),
+                         ("2020-01-01T00:00:00", "2020-01-01T00:30:00"))
+        self.assertFalse(st.is_slot_tombstoned("electricity_main", "2020-01-01T00:30:00"))
+        self.assertIn("2020-01-01T00:30:00", self._present(st))
+
+    def test_a_start_off_the_boundary_starts_at_the_first_deleted_block(self):
+        """Discriminating: from 00:15 the first block deleted is 00:30; the tombstone said 00:15."""
+        st = self._store()
+        res = st.delete_blocks_for_date_range(
+            "2020-01-01", "2020-01-01", meter_id=None,
+            from_time="00:15", to_time="01:00", tz_name="UTC")
+        self.assertEqual(res["deleted"], 2)                     # 00:30 and 01:00
+        (row,) = st.get_deleted_ranges()
+        self.assertEqual((row["start_utc"], row["end_utc"]),
+                         ("2020-01-01T00:30:00", "2020-01-01T01:30:00"))
+
+    def test_the_soaks_delete_in_bst(self):
+        """Discriminating, the case as found: 15 Jul 00:00 to 00:29 BST is 23:00 to 23:29 UTC."""
+        st = BlockStore(":memory:")
+        with st._conn:
+            cp = st._conn.execute(
+                "INSERT INTO config_periods (effective_from, billing_day, block_minutes, timezone, "
+                "currency_symbol, currency_code) VALUES ('2026-01-01T00:00:00',1,30,"
+                "'Europe/London','£','GBP')").lastrowid
+            st._conn.execute("INSERT INTO meters (config_period_id, meter_id, is_sub_meter) "
+                             "VALUES (?, 'electricity_main', 0)", (cp,))
+            for t in ("2026-07-14T22:30:00", "2026-07-14T23:00:00", "2026-07-14T23:30:00",
+                      "2026-07-15T00:00:00"):
+                st._conn.execute("INSERT INTO blocks (block_start, block_end, meter_id, "
+                                 "config_period_id, imp_kwh) VALUES (?,?, 'electricity_main', ?, 1.0)",
+                                 (t, t, cp))
+        st.delete_blocks_for_date_range("2026-07-15", "2026-07-15", meter_id=None,
+                                        from_time="00:00", to_time="00:29",
+                                        tz_name="Europe/London")
+        (row,) = st.get_deleted_ranges()
+        self.assertEqual((row["start_utc"], row["end_utc"]),
+                         ("2026-07-14T23:00:00", "2026-07-14T23:30:00"))
+        self.assertFalse(st.is_slot_tombstoned("electricity_main", "2026-07-14T23:30:00"))
+
+    def test_a_boundary_end_is_as_before(self):
+        """GUARD: an end on a block boundary was already right."""
+        st = self._store()
+        st.delete_blocks_for_date_range("2020-01-01", "2020-01-01", meter_id=None,
+                                        from_time="00:00", to_time="01:00", tz_name="UTC")
+        (row,) = st.get_deleted_ranges()
+        self.assertEqual(row["end_utc"], "2020-01-01T01:30:00")
+
     def test_whole_day_unchanged(self):
         st = self._store()
         res = st.delete_blocks_for_date_range(

@@ -1065,6 +1065,22 @@ class _TimedConnection(sqlite3.Connection):
             if et is None:
                 self._report(t0, w0, sys._getframe(1).f_code.co_name)
 
+def _block_floor(iso: str, step: int) -> str:
+    """The block boundary at or before naive-UTC `iso`, for blocks of `step` minutes (dividing an
+    hour): '2026-07-14T23:29:00' -> '2026-07-14T23:00:00' for 30-minute blocks."""
+    dt = datetime.fromisoformat(iso).replace(second=0, microsecond=0)
+    m = dt.hour * 60 + dt.minute
+    m -= m % step
+    return dt.replace(hour=m // 60, minute=m % 60).isoformat()
+
+
+def _block_ceil(iso: str, step: int) -> str:
+    """The block boundary at or after naive-UTC `iso` (itself when it is one)."""
+    dt = datetime.fromisoformat(iso)
+    fl = datetime.fromisoformat(_block_floor(iso, step))
+    return fl.isoformat() if fl == dt else (fl + timedelta(minutes=step)).isoformat()
+
+
 class BlockStore:
     """
     SQLite-backed block store.
@@ -2818,23 +2834,31 @@ class BlockStore:
                 # exactly what was removed. deleted_ranges is half-open; when the
                 # end is INCLUSIVE (explicit to_time) extend by one block so the last
                 # deleted slot is covered.
+                # Both ends on block boundaries (17 Oct 2026, the Pi soak): an explicit end time
+                # is rarely one. "00:00 to 00:29" on 15 Jul (BST) is 23:00 to 23:29 UTC; the
+                # delete removed only the 23:00 block, but 23:29 + 30 min tombstoned 23:30 too,
+                # a block still there — and a tombstoned slot is never re-created by the
+                # automatic fills. The end is the last block the delete can have removed (the
+                # latest start at or before utc_end) plus one block; the start, the first block
+                # at or after utc_start.
+                try:
+                    _cp = self.get_config_period_for_date(utc_start)
+                    _step = int((_cp or {}).get("block_minutes") or 30)
+                except Exception:
+                    _step = 30
+                _tomb_start = _block_ceil(utc_start, _step)
                 if end_incl:
-                    try:
-                        _cp = self.get_config_period_for_date(utc_end)
-                        _step = int((_cp or {}).get("block_minutes") or 30)
-                    except Exception:
-                        _step = 30
-                    _tomb_end = (datetime.fromisoformat(utc_end)
+                    _tomb_end = (datetime.fromisoformat(_block_floor(utc_end, _step))
                                  + timedelta(minutes=_step)).isoformat()
                 else:
-                    _tomb_end = utc_end
+                    _tomb_end = _block_ceil(utc_end, _step)
                 _reason = "imported_rollback" if reconstructed_only else "user_delete"
                 _now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
                 for _mid in (meter_ids if meter_ids is not None else ["*"]):
                     self._conn.execute(
                         "INSERT INTO deleted_ranges (meter_id, start_utc, end_utc, "
                         "created_at, reason) VALUES (?,?,?,?,?)",
-                        (_mid, utc_start, _tomb_end, _now, _reason))
+                        (_mid, _tomb_start, _tomb_end, _now, _reason))
 
         return {
             "deleted":                n_blocks,
