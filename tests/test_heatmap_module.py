@@ -103,7 +103,7 @@ class V4Features(unittest.TestCase):
         self.assertIn("root.innerHTML = '<div class=\"hm-bar\">", _SRC)
 
     def test_weekends_are_shaded_across_the_grid(self):
-        self.assertIn("type: 'matrix', plugins: [weekendRows(days, 'afterDatasetsDraw')],", _SRC)
+        self.assertIn("type: 'matrix', plugins: [weekendRows(days, 'afterDatasetsDraw'), foldBands(days, p)],", _SRC)
         self.assertIn("plugins: [weekendRows(days, 'beforeDatasetsDraw')],", _SRC)
 
 

@@ -118,7 +118,9 @@ takes the shared range too — which the floating header's one scale needs anywa
    saying when (§6 (c)). *Built 17 Oct 2026* (`markMissing`, `include=gaps`; a half-hour counts once
    two minutes past its end, while the engine writes it).
 3. **Issues first** (§3): the one "is it clean" rule, the collapse toggle, the selection across a
-   fold.
+   fold.  *Built 17 Oct 2026*: `ISSUE` / `isIssue` the one rule, which the "To look at" totals now count
+   too (they counted amber and red only); "Issues only" in the bar, remembered per browser; a fold
+   is a run of two or more clean days, expanded by a click, a tap or the menu.
 4. **Then the tools on the selection** (data tools design §1): gap fill on missing half-hours
    first — the black cells are what it fills — then backfill, then delete (with BL-90's soft
    delete), each with the re-fetch's shape: select → preview → apply after a required backup.

@@ -102,6 +102,19 @@ window.EMTHeatmap = (function () {
     return (_hatch = x.createPattern(c, 'repeat'));
   }
   function isMissing(c) { return !!(c && c.missing && c.kwh === null); }
+  // What is an ISSUE (heatmap issues design §3, §6 (a), decided 17 Oct 2026): anything not green,
+  // except CSV history and `none` (nothing imported or exported — nothing to settle). One rule for
+  // the "To look at" totals and the collapse. On the energy views, only a missing half-hour.
+  var ISSUE = {
+    bill: {applied_emt_split: 1, corrected: 1, estimate_dcc: 1, estimate_cad: 1, known: 1,
+           overdue: 1, differs: 1, flagged: 1, missing: 1},
+    export: {no_agreement: 1, waiting: 1, overdue: 1, missing: 1}
+  };
+  function isIssue(c, m) {
+    if (!c) return false;
+    if (c.missing) return true;                        // every view (§2)
+    return !!(ISSUE[m] && ISSUE[m][c[m]]);
+  }
   function settleColour(m, v) {
     if (v === 'missing') return hatch();
     var C = {green: '#2e9e5b', amber: '#e0a020', lamber: '#f2cf7a', red: '#cc0000', blue: '#3b7dd8', teal: '#2a9d9f',
@@ -128,7 +141,10 @@ window.EMTHeatmap = (function () {
     return v;
   }
   var AXIS_LEFT = 30, CELL_MAX = 22, CELL_MIN = 6;
+  var _collapse0 = false;
+  try { _collapse0 = localStorage.getItem('emt_hm_collapse') === '1'; } catch (e) {}
   var state = {metric: 'kwh', tz: null, bm: 30, months: {}, keys: [], panels: {}, epoch: null,
+               collapse: _collapse0, expanded: {},
                root: null, inited: false, loading: {}, scale: null, forceLight: false};
   var fetchJSON = function (url) { return fetch(apiUrl(url)).then(function (r) { return r.json(); }); };
 
@@ -225,8 +241,7 @@ window.EMTHeatmap = (function () {
     markMissing(key, days, n);
     Object.keys(days).forEach(function (k) {                      // the day's half-hours still owed
       Object.keys(SETTLE_METRICS).forEach(function (m) {         // amber or red: worth a look
-        days[k].total[m] = days[k].slots.filter(function (c) {
-          return c && c[m] && CAT_RANK[m][c[m]] >= 2; }).length;
+        days[k].total[m] = days[k].slots.filter(function (c) { return isIssue(c, m); }).length;
       });
     });
     return days;
@@ -346,11 +361,66 @@ window.EMTHeatmap = (function () {
     return plugin;
   }
 
+  // ── issues first: runs of days with nothing to look at fold into one row (§3) ──
+  // With "Issues only" on, each run of two or more clean days becomes a fold, which a click
+  // expands. A fold carries its days' half-hours, so a drag that starts or ends on one covers them.
+  function foldRows(p, key, days) {
+    p.folds = {};
+    if (!state.collapse) return days;
+    var m = state.metric, out = [], run = [];
+    function flush() {
+      var oldest = run[run.length - 1], newest = run[0];
+      if (run.length >= 2 && !state.expanded[key + '|' + oldest + '|' + newest]) {
+        var id = 'fold:' + oldest + ':' + newest, starts = [];
+        run.forEach(function (d) { p.grid[d].slots.forEach(function (c) {
+          if (c && c.starts) starts = starts.concat(c.starts); }); });
+        starts.sort();
+        p.folds[id] = {key: key, from: oldest, to: newest, n: run.length, starts: starts,
+                       slots: new Array(slots()).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0}};
+        out.push(id);
+      } else out = out.concat(run);
+      run = [];
+    }
+    days.forEach(function (d) {                                  // newest first
+      if (p.grid[d].slots.some(function (c) { return isIssue(c, m); })) { flush(); out.push(d); }
+      else run.push(d);
+    });
+    flush();
+    return out;
+  }
+  function rowOf(p, k) { return (p.folds && p.folds[k]) || p.grid[k]; }
+  function foldLabel(f) {
+    var a = +f.from.slice(8), b = +f.to.slice(8), mo = monthLabel(f.key).split(' ')[0];
+    return a + '\u2013' + b + ' ' + mo;
+  }
+  function foldText(f) {
+    return f.n + ' days with nothing to look at (' + foldLabel(f) + ') \u2014 click to show them';
+  }
+  function expandFold(f) {
+    state.expanded[f.key + '|' + f.from + '|' + f.to] = true;
+    drawMonth(f.key);
+  }
+  function foldBands(rows, p) {
+    return {id: 'hmFolds', afterDatasetsDraw: function (ch) {
+      var a = ch.chartArea, rh = a.height / rows.length, c = ch.ctx;
+      c.save();
+      rows.forEach(function (k, i) {
+        var f = p.folds[k]; if (!f) return;
+        c.fillStyle = dark() ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
+        c.fillRect(a.left, a.top + i * rh, a.width, rh - 1);
+        c.fillStyle = axisC(); c.textAlign = 'center'; c.textBaseline = 'middle';
+        c.font = Math.max(6, Math.min(11, Math.floor(rh - 2))) + 'px sans-serif';
+        c.fillText(foldText(f), a.left + a.width / 2, a.top + i * rh + rh / 2);
+      });
+      c.restore();
+    }};
+  }
+
   // ── draw one month ─────────────────────────────────────────────────────────
   function drawMonth(key) {
     var p = state.panels[key]; if (!p || !state.months[key]) return;
     p.grid = p.grid || monthGrid(key);
-    var days = Object.keys(p.grid).sort().reverse();             // newest at the top
+    var days = foldRows(p, key, Object.keys(p.grid).sort().reverse());   // newest at the top
     release(key, true);
     var row = p.el.querySelector('.hm-row');
     if (!days.length) { row.innerHTML = '<div class="hm-empty">No data.</div>'; return; }
@@ -358,7 +428,7 @@ window.EMTHeatmap = (function () {
     var cs = cellSize(), TOT_W = totW(), h = days.length * cs + 2;
     var xs = []; for (var i = 0; i < n; i++) xs.push(slotLabel(i));
     var pts = [];
-    days.forEach(function (d) { p.grid[d].slots.forEach(function (c, i) { pts.push({x: xs[i], y: d, c: c}); }); });
+    days.forEach(function (d) { rowOf(p, d).slots.forEach(function (c, i) { pts.push({x: xs[i], y: d, c: c}); }); });
     // Fixed-size containers and `responsive: true`: Chart.js sizes the canvas to its
     // parent. (With responsive:false it keeps the canvas's default 300x150 and ignores the
     // container — cells came out 5x3 px instead of square.)
@@ -368,7 +438,7 @@ window.EMTHeatmap = (function () {
     var stops = cellStops(sc);
     var dpr = Math.min(2, window.devicePixelRatio || 1);
     p.chart = new Chart(row.querySelector('.hm-grid canvas').getContext('2d'), {
-      type: 'matrix', plugins: [weekendRows(days, 'afterDatasetsDraw')],
+      type: 'matrix', plugins: [weekendRows(days, 'afterDatasetsDraw'), foldBands(days, p)],
       data: {datasets: [{data: pts, borderWidth: 0,
         backgroundColor: function (ctx) {
           var r = ctx.raw; if (!r) return 'rgba(0,0,0,0)';
@@ -397,13 +467,14 @@ window.EMTHeatmap = (function () {
               afterFit: function (s) { s.width = AXIS_LEFT; },
               ticks: {color: axisC(), autoSkip: false, font: {size: 10}, padding: 2,
                       // every day at v4's size; the 1st and every 5th when cells are small
-                      callback: function (v, i) { var dn = +days[i].slice(8);
+                      callback: function (v, i) { if (p.folds[days[i]]) return '\u22ef';
+                        var dn = +days[i].slice(8);
                         return (cs >= 12 || dn === 1 || dn % 5 === 0) ? String(dn) : ''; }}}
         }
       }
     });
     if (m !== 'intensity') {
-      var ts = totStops(sc), tvals = days.map(function (d) { return p.grid[d].total[m]; });
+      var ts = totStops(sc), tvals = days.map(function (d) { return rowOf(p, d).total[m]; });
       p.tot = new Chart(row.querySelector('.hm-tot canvas').getContext('2d'), {
         type: 'bar', plugins: [weekendRows(days, 'beforeDatasetsDraw')],
         data: {labels: days, datasets: [{data: tvals, barPercentage: 0.8, categoryPercentage: 1,
@@ -513,6 +584,10 @@ window.EMTHeatmap = (function () {
       if (!a || x < a.left || x > a.right || y < a.top || y > a.bottom) { tip.style.display = 'none'; return; }
       day = p.days[Math.floor((y - a.top) / (a.height / p.days.length))];
       if (!day) { tip.style.display = 'none'; return; }
+      if (p.folds && p.folds[day]) {
+        tip.innerHTML = foldText(p.folds[day]); tip.style.display = 'block';
+        tip.style.left = (pt.clientX + 12) + 'px'; tip.style.top = (pt.clientY + 12) + 'px'; return;
+      }
       if (hitTot) { v = p.grid[day].total[state.metric]; lab = mm.tot; }
       else { var ci = Math.floor((x - a.left) / (a.width / p.xs.length));
              v = metricOf(p.grid[day].slots[ci], state.metric); lab = p.xs[ci] + '–' + slotLabel(ci + 1); }
@@ -543,6 +618,7 @@ window.EMTHeatmap = (function () {
       var h = hitCell(p, ev); if (!h) return;
       tipEl().style.display = 'none';
       if (state.dragEnded) return;                 // the drag's own release: its menu is open
+      if (h.fold) { expandFold(h.fold); return; }
       if (h.tot) { dayBarPick(p, h.day, ev); return; }
       markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
       if (isMissing(p.grid[h.day].slots[h.ci])) { openMissing(p.grid[h.day].slots[h.ci], h.day + ' ' + h.label); return; }
@@ -551,6 +627,7 @@ window.EMTHeatmap = (function () {
     row.addEventListener('contextmenu', function (ev) {
       var h = hitCell(p, ev); if (!h) return;
       ev.preventDefault(); tipEl().style.display = 'none';
+      if (h.fold) { expandFold(h.fold); return; }
       if (h.tot) { dayBarPick(p, h.day, ev); return; }
       markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
       var hc = p.grid[h.day].slots[h.ci];
@@ -576,6 +653,9 @@ window.EMTHeatmap = (function () {
     if (!a || x < a.left || x > a.right || y < a.top || y > a.bottom) return null;
     var day = p.days[Math.floor((y - a.top) / (a.height / p.days.length))];
     if (!day) return null;
+    var f = p.folds && p.folds[day];
+    if (f) return f.starts.length ? {key: p.el.dataset.key, day: day, fold: f, starts: f.starts,
+                                     label: foldLabel(f), tot: false} : null;
     if (tot) return {key: p.el.dataset.key, day: day, tot: true};
     var ci = Math.floor((x - a.left) / (a.width / p.xs.length)), c = p.grid[day].slots[ci];
     if (!c || !c.starts || !c.starts.length) return null;
@@ -588,7 +668,9 @@ window.EMTHeatmap = (function () {
   // a local day's [first half-hour, end of its last) in UTC, from the half-hours the grid holds
   function dayRange(p, day) {
     var all = [];
-    (p.grid[day] ? p.grid[day].slots : []).forEach(function (c) { if (c && c.starts) all = all.concat(c.starts); });
+    var g = rowOf(p, day);
+    if (g && g.starts) all = g.starts.slice();                     // a fold: its days' half-hours
+    else (g ? g.slots : []).forEach(function (c) { if (c && c.starts) all = all.concat(c.starts); });
     if (!all.length) return null;
     all.sort();
     return [all[0], plus30(all[all.length - 1])];
@@ -662,7 +744,12 @@ window.EMTHeatmap = (function () {
       var a = p.chart.chartArea, host = p.el.querySelector('.hm-grid'); if (!a || !host) return;
       var cw = a.width / p.xs.length, rh = a.height / p.days.length;
       p.days.forEach(function (day, ri) {
-        var run = null, slots = p.grid[day] ? p.grid[day].slots : [];
+        var run = null, slots = rowOf(p, day) ? rowOf(p, day).slots : [];
+        var f = p.folds && p.folds[day];
+        if (f) {                                   // a fold inside the selection: its whole row
+          if (f.starts.some(function (x) { return x >= from && x < to; })) { run = [0, p.xs.length - 1]; }
+          slots = [];
+        }
         function flush() {
           if (!run) return;
           var d = document.createElement('div'); d.className = 'hm-sel';
@@ -995,10 +1082,22 @@ window.EMTHeatmap = (function () {
       var b = document.createElement('button'); b.className = 'hm-metric-btn' + (k === state.metric ? ' active' : '');
       b.textContent = METRICS[k].label; b.title = METRICS[k].title;
       b.onclick = function () { state.metric = k;
-        mb.querySelectorAll('button').forEach(function (x) { x.classList.toggle('active', x === b); });
+        mb.querySelectorAll('button:not(.hm-collapse)').forEach(function (x) { x.classList.toggle('active', x === b); });
         redrawAll(true); };
       mb.appendChild(b);
     });
+    // "Issues only" (§3): fold the days with nothing to look at; remembered per browser
+    var fb = document.createElement('button');
+    fb.className = 'hm-metric-btn hm-collapse' + (state.collapse ? ' active' : '');
+    fb.textContent = 'Issues only';
+    fb.title = 'Fold the days with nothing to look at; click a fold to show its days';
+    fb.onclick = function () {
+      state.collapse = !state.collapse; state.expanded = {};
+      fb.classList.toggle('active', state.collapse);
+      try { localStorage.setItem('emt_hm_collapse', state.collapse ? '1' : '0'); } catch (e) {}
+      redrawAll(false);
+    };
+    mb.appendChild(fb);
     var wrap = root.querySelector('.hm-months');
     // Draw near the viewport; release far from it (a month's canvases at 2x are ~10 MB).
     var near = new IntersectionObserver(function (ents) {
