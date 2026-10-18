@@ -152,6 +152,34 @@ class TheDrain(_Harness):
         self.assertEqual(engine._measured_history_backlog(), 1)
 
 
+class TwoYears(_Harness):
+    """Octopus keeps two years of half-hourly data (the API import's `_API_RETENTION_DAYS`), so the
+    asking stops there (18 Oct 2026, the user). Discriminating against the commit before the bound:
+    all three (the last reads the live pass's wiring)."""
+
+    def setUp(self):
+        super().setUp()
+        old = [{"tariff_code": INTELLI, "valid_from": _ago(1000) + "Z", "valid_to": _ago(20) + "Z"},
+               {"tariff_code": SMB, "valid_from": _ago(20) + "Z", "valid_to": None}]
+        engine._kraken_discovery = {"import": {"mpan": MPAN, "tariff_code": SMB, "agreements": old}}
+
+    def test_a_half_hour_older_than_two_years_is_not_asked(self):
+        old, recent = _ago(800), _ago(40)
+        self._block(old); self._block(recent)
+        c = self._drain()
+        self.assertNotIn(old, c.cost)
+        self.assertIn(recent, c.cost)
+
+    def test_nor_is_it_backlog(self):
+        self._block(_ago(800))
+        self.assertEqual(engine._measured_history_backlog(), 0)
+
+    def test_the_live_pass_is_bounded_too(self):
+        import inspect
+        self.assertIn("get_dispatched_blocks_awaiting_measure(_ask_floor(_measured_floor()))",
+                      inspect.getsource(engine.measure_settled_dispatched_blocks))
+
+
 class ThePill(_Harness):
 
     def test_the_pill_counts_it(self):

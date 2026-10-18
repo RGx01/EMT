@@ -368,7 +368,9 @@ final. *Built 18 Oct 2026:* the drain walks every Intelligent agreement's window
 (`_intelligent_windows`; the breakdown on IOG-SMB, the billed cost elsewhere; off IOG-SMB not the
 imported history, which holds Octopus's cost), the floor is the earliest Intelligent agreement's
 start, the pill counts what the drain asks, and a bill before the current agreement is applied only
-where the schedule is stitched across the agreements (`_agreement_priced_ok`).
+where the schedule is stitched across the agreements (`_agreement_priced_ok`). The asking goes back no further
+than Octopus keeps — two years, the API import's `_API_RETENTION_DAYS` (`_ask_floor`); a bill
+already cached is applied whatever its age.
 | `differs` | a bill is held and the stored cost is not it (flags as §1.4) | the same, where a bill is held (an API import's, or one fetched before this rule) | red |
 | `corrected` | the user's rate correction | the same | blue |
 | `imported` | CSV history — a cost not from Octopus's API | the same | grey |

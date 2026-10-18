@@ -11621,6 +11621,16 @@ def _intelligent_windows() -> list:
     return sorted(out)
 
 
+def _ask_floor(start: str) -> str:
+    """The later of `start` and two years ago: Octopus keeps two years of half-hourly data
+    (`_API_RETENTION_DAYS`, the API import's limit), so a half-hour older than that has no bill to
+    ask for — it would only be asked for 30 days and given up (18 Oct 2026, the user). Bounds the
+    ASKING only; a bill already cached is applied whatever its age."""
+    ret = (datetime.now(timezone.utc).replace(tzinfo=None)
+           - timedelta(days=_API_RETENTION_DAYS)).isoformat()
+    return max(str(start), ret)
+
+
 def _any_intelligent() -> bool:
     """The account has been on an Intelligent tariff: its history is asked for its bills."""
     return bool(_intelligent_windows())
@@ -11971,7 +11981,7 @@ async def measure_settled_dispatched_blocks() -> dict:
     if not mpan or ("IOG" not in _tu and "INTELLI" not in _tu):
         return {}
     try:
-        rows = store.get_dispatched_blocks_awaiting_measure(_measured_floor())
+        rows = store.get_dispatched_blocks_awaiting_measure(_ask_floor(_measured_floor()))
     except Exception as e:
         logger.warning("measure_settled: query failed: %s", e)
         return {}
@@ -12692,8 +12702,11 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
     # Every Intelligent agreement's window (18 Oct 2026): IOG-SMB for the breakdown, the others
     # for the billed cost (`bill_kind_at` chooses per half-hour). Off IOG-SMB, imported history
     # is not asked: an API import already holds Octopus's billed cost.
-    for floor, w_to, w_smb in _intelligent_windows():
+    for w_from, w_to, w_smb in _intelligent_windows():
+        floor = _ask_floor(w_from)                 # no further back than Octopus keeps
         cutoff = min(now_cut, w_to) if w_to else now_cut
+        if cutoff <= floor:
+            continue
         cursor = ""        # local high-water mark; advances past absent slots within this run
         while batches < max_batches:
             batches += 1
@@ -12774,7 +12787,7 @@ def _measured_history_backlog() -> int:
         _gone = _bill_ask_given_up(_bill_ask(store, _mpan), mark=False)
         _ex = set(_bill_split_wait(store)) | _gone
         # each Intelligent agreement's window, as the drain walks them
-        return sum(int(store.count_settleable_blocks(vf, min(cutoff, vt) if vt else cutoff,
+        return sum(int(store.count_settleable_blocks(_ask_floor(vf), min(cutoff, vt) if vt else cutoff,
                                                      exclude=_ex, include_imported=smb))
                    for vf, vt, smb in _intelligent_windows())
     except Exception:
