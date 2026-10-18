@@ -119,3 +119,23 @@ The row is not hatched and is not an issue. The date is `bounds.reach_from` in `
 (`engine.history_reach_from`, #212): the earliest channel floor the import plan uses (a data floor
 already found, else the earliest agreement), no older than Octopus's two years, and none once EMT's
 oldest block reaches it.
+
+**(d) What "fill the gap" means, and where from. Decided (18 Oct 2026, the user, on the Pi).** The
+first heatmap version (#213) filled the missing half-hours of the *selection*, a cell or a day, and
+the missing cell's panel offered two buttons side by side that did not read as a choice. Now:
+
+- **Any half-hour selected in a gap means the whole gap.** The server finds it
+  (`engine.gap_bounds`, `POST /api/gaps/around`): from the half-hour after the last block before it to
+  the first block after it, or to the last finished half-hour where none follows yet. A gap crossing
+  into months not loaded is still whole. A selection over several gaps means each of them, whole.
+  A half-hour before EMT's oldest block is in no gap (decision (c)).
+- **One action, "Fill this gap…"**, on a cell, a day, a drag and the missing cell's panel, with or
+  without the supplier API. Its dialog names the gap and offers **three separate sources**:
+  - **From Octopus (API)**, the preview, fill and result of §2–§4, shown only with the API;
+  - **From a CSV** and **From Octopus PDF bills**: the Fill History page itself, opened as a
+    **modal over the heatmap** on that gap (`/historical-import?embed=1&source=csv|bills&gap_from=
+    &gap_to=`), so its templates, upload, review and apply are used, not copied. Closing it redraws.
+    One gap at a time, as the page's own gap list does.
+
+The heatmap will replace Data Management (data tools design §1); until then the page is both a page
+and the modal.

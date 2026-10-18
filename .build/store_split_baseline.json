@@ -196,6 +196,7 @@
     "get_missing_carbon_date_range",
     "get_mix_history",
     "get_nearest_carbon_intensity",
+    "get_neighbour_block_starts",
     "get_oldest_block_start",
     "get_oldest_gap_start",
     "get_oldest_unsettled_block_start",

@@ -3890,6 +3890,27 @@ def _gap_fill_runs_from(body):
     return out
 
 
+@app.route("/api/gaps/around", methods=["POST"])
+def api_gaps_around():
+    """The whole gaps the selection's missing half-hours sit in, counted (gap fill, 18 Oct 2026:
+    any half-hour selected in a gap means the gap). Body {at: [half-hour start, …]} (naive UTC).
+    Returns {gaps: [{from, to, missing, deleted, too_recent, too_old, fillable}]}. Read-only, and
+    no supplier API needed: a gap fills from a CSV or the PDF bills too."""
+    try:
+        import engine as _eng
+        at = (request.get_json(force=True, silent=True) or {}).get("at")
+        if not isinstance(at, list) or not at or len(at) > 2000 \
+                or not all(isinstance(x, str) for x in at):
+            return jsonify({"ok": False, "error": "at must be a list of half-hour starts"}), 400
+        st = store_access.store()
+        gaps = _eng.gap_bounds(st, at)
+        plan = _eng.gap_fill_plan(st, gaps, channels=_gap_fill_channels()) if gaps else {"runs": []}
+        return jsonify({"ok": True, "gaps": plan["runs"]})
+    except Exception as e:
+        logger.error("api_gaps_around: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/gaps/fill/preview", methods=["POST"])
 def api_gap_fill_preview():
     """What filling the selection's missing half-hours would do — counted from the store, nothing

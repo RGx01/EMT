@@ -702,6 +702,27 @@ function bfArmGap(from, to, channel) {
   if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 document.addEventListener('DOMContentLoaded', bfProbe);
+// Opened on one gap (the heatmap's "Fill this gap…", 18 Oct 2026): ?source=csv|bills&gap_from=
+// &gap_to= (naive-UTC half-hour starts, `to` exclusive). CSV opens the upload with the gap's
+// pre-filled templates; bills opens the bill builder, the gap named. Without them, as before.
+function bfOpenGapFromUrl() {
+  var q = new URLSearchParams(location.search);
+  var from = q.get('gap_from'), to = q.get('gap_to'), src = q.get('source');
+  if (!from || !to || (src !== 'csv' && src !== 'bills')) return;
+  var csvBtn = document.querySelector('.bf-source-btn[data-source="csv"]');
+  if (csvBtn) bfPickSource(csvBtn);
+  var scope = document.querySelector('.bf-scope-btn.bf-task-csv[data-scope="' + (src === 'bills' ? 'bills' : 'gaps') + '"]');
+  if (src === 'bills') {
+    if (scope) bfPickScope(scope);
+    var st = document.getElementById('bills-status');
+    if (st) st.textContent = 'Filling the gap ' + from.replace('T', ' ') + ' \u2192 ' + to.replace('T', ' ') +
+                             ' (UTC): choose the bills that cover it. Half-hours EMT already holds are kept.';
+    return;
+  }
+  bfHighlight('.bf-scope-btn', scope);
+  csvOpen({from: from, to: to, channel: null, inclusive: false});
+}
+document.addEventListener('DOMContentLoaded', bfOpenGapFromUrl);
 
 function goStep(s){
   ["intro","upload","review","done","bills"].forEach(function(k){

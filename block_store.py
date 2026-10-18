@@ -7906,6 +7906,16 @@ class BlockStore:
         return dict(row) if row else {"earliest": None, "latest": None,
                                       "carbon_earliest": None, "carbon_latest": None}
 
+    def get_neighbour_block_starts(self, meter_id: str, at: str) -> tuple:
+        """The meter's last block start before `at` and first after it, (None where there is
+        none) — the bounds of the gap a missing half-hour sits in (gap fill, 18 Oct 2026)."""
+        row = self._conn.execute(
+            "SELECT (SELECT MAX(block_start) FROM blocks WHERE meter_id = ? AND block_start < ?) "
+            "       AS prev, "
+            "       (SELECT MIN(block_start) FROM blocks WHERE meter_id = ? AND block_start > ?) "
+            "       AS next", (meter_id, at, meter_id, at)).fetchone()
+        return (row["prev"], row["next"]) if row else (None, None)
+
     def get_block_starts_in_range(self, meter_id: str, utc_start: str,
                                   utc_end: str) -> list:
         """Distinct block starts for a meter in [utc_start, utc_end), ascending.

@@ -10066,6 +10066,34 @@ _GAP_FILL_RECENT_H = 48          # DCC has not settled a younger half-hour: Octo
 _GAP_FILL_CHUNK_DAYS = 60
 
 
+def gap_bounds(store, ats, *, now=None, meter_id: str = "electricity_main") -> list:
+    """The whole gaps the half-hours `ats` sit in (decided 18 Oct 2026, the user: any half-hour
+    selected in a gap means the gap). A gap runs from the half-hour after the last block before
+    it to the first block after it — or to the last finished half-hour, where no block follows
+    yet. A half-hour that has a block is in no gap; one before EMT's oldest block is not a gap
+    either (Octopus's history row). Read-only. [[from, to), …] ascending, each gap once."""
+    HH = timedelta(minutes=30)
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    done = now.replace(minute=0 if now.minute < 30 else 30, second=0, microsecond=0)
+    out = []
+    for at in ats or []:
+        try:
+            t = datetime.fromisoformat(str(at)[:19])
+        except (TypeError, ValueError):
+            continue
+        iso = t.isoformat()
+        if store.get_block_starts_in_range(meter_id, iso, (t + HH).isoformat()):
+            continue
+        prev, nxt = store.get_neighbour_block_starts(meter_id, iso)
+        if prev is None:
+            continue
+        a = (datetime.fromisoformat(prev) + HH).isoformat()
+        b = nxt or done.isoformat()
+        if a < b and [a, b] not in out:
+            out.append([a, b])
+    return sorted(out)
+
+
 def gap_fill_plan(store, runs, *, channels=("import", "export"), now=None,
                   meter_id: str = "electricity_main") -> dict:
     """What a heatmap gap fill would do over the selection's runs, counted from the STORE, not
