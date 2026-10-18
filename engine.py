@@ -6911,6 +6911,33 @@ def _earliest_agreement_from(info: dict):
     return naive[0] if naive else None
 
 
+def history_reach_from(earliest_block):
+    """Where Octopus's history starts for the heatmap's "import your history" row (gap fill
+    design, decided 18 Oct 2026): the earliest channel floor `plan_api_import` would use (the
+    resolved data floor, else the earliest agreement), no older than the API's two years. None
+    without the API, without a known floor, or when EMT's oldest block (`earliest_block`, naive
+    UTC) already reaches it. Pure — no network; a heatmap load calls it."""
+    import api_import as _ai
+    if not kraken_available():
+        return None
+    disc = _kraken_discovery or {}
+    floors = [f for f in ((_hist_floor_cache.get(n) or _earliest_agreement_from(disc.get(n) or {}))
+                          for n in ("import", "export") if (disc.get(n) or {}).get("mpan")) if f]
+    if not floors:
+        return None
+    reach = max(min(floors), _retention_floor_iso())
+    # whole half-hours, as the import's chunks start
+    dt = _ai._naive_utc(reach)
+    if dt is not None:
+        dt = dt.replace(minute=0 if dt.minute < 30 else 30, second=0, microsecond=0)
+        if dt.isoformat() < reach:
+            dt += timedelta(minutes=30)
+        reach = dt.isoformat()
+    if earliest_block and reach >= str(earliest_block)[:19]:
+        return None
+    return reach
+
+
 async def diagnose_import_range(*, probe_days: int = 1) -> dict:
     """READ-ONLY: for each channel report the earliest supplier *agreement*, the
     resolved import floor (the earliest half-hour Measurements actually returns —

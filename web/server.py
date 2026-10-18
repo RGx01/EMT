@@ -6183,6 +6183,9 @@ def api_periods():
                 # missing half-hours begin and end (heatmap issues design §2)
                 "earliest_block": bounds.get("earliest") or None,
                 "latest_block": bounds.get("latest") or None,
+                # where Octopus's history starts, when it is older than EMT's oldest block: the
+                # heatmap's "import your history" row — not a gap (gap fill design)
+                "reach_from": _history_reach_from(bounds.get("earliest")),
                 "carbon_earliest": (bounds.get("carbon_earliest") or "")[:10] or None,
                 "carbon_latest": (bounds.get("carbon_latest") or "")[:10] or None,
             },
@@ -6191,6 +6194,16 @@ def api_periods():
         logger.exception("api_periods failed")
         return jsonify({"error": str(e)}), 500
 
+
+
+def _history_reach_from(earliest_block):
+    """`engine.history_reach_from`, or None if it fails — the periods answer never does."""
+    try:
+        import engine as _eng
+        return _eng.history_reach_from(earliest_block)
+    except Exception as e:
+        logger.debug("history_reach_from: %s", e)
+        return None
 
 
 def _collapse_rate_tiers(tiers_list):

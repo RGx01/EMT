@@ -10,6 +10,10 @@ Gap fill as an action on the heatmap's selection — the server (gap fill design
   once; `run_gap_fill_job` (the Historical import page's) is unchanged — its window and finish are
   the same code, now apart.
 
+- `engine.history_reach_from` gives the heatmap's "import your history" row its start: the
+  earliest channel floor, no older than two years, and None once EMT's oldest block reaches it.
+  `/api/periods` answers it as `bounds.reach_from`.
+
 All new code, so on the parent every test fails by name. `test_the_historical_import_fill_is_unchanged`
 is a guard of the split (it patches the split's helpers, so it cannot run on the parent either).
 """
@@ -158,6 +162,56 @@ class TheRoutes(unittest.TestCase):
 
     def test_an_unknown_token_is_refused(self):
         self.assertEqual(self._post("/api/gaps/fill/apply", {"token": "nope"})[0], 409)
+
+
+class TheHistoryReach(unittest.TestCase):
+
+    def _reach(self, disc, earliest, floors=None):
+        with mock.patch.object(real_engine, "kraken_available", return_value=True), \
+             mock.patch.object(real_engine, "_kraken_discovery", disc), \
+             mock.patch.dict(real_engine._hist_floor_cache, floors or {}, clear=True), \
+             mock.patch.object(real_engine, "_retention_floor_iso", return_value="2024-10-18T12:00:00"):
+            return real_engine.history_reach_from(earliest)
+
+    @staticmethod
+    def _ch(*froms):
+        return {"mpan": "x", "agreements": [{"valid_from": f} for f in froms]}
+
+    def test_the_earliest_agreement_of_either_channel(self):
+        disc = {"import": self._ch("2025-03-01T00:00:00Z"), "export": self._ch("2025-01-10T00:00:00Z")}
+        self.assertEqual(self._reach(disc, "2026-09-01T00:00:00"), "2025-01-10T00:00:00")
+
+    def test_a_resolved_data_floor_wins_over_the_agreement(self):
+        disc = {"import": self._ch("2025-03-01T00:00:00Z")}
+        self.assertEqual(self._reach(disc, "2026-09-01T00:00:00", {"import": "2025-02-01T00:00:00"}),
+                         "2025-02-01T00:00:00")
+
+    def test_no_older_than_two_years_on_a_half_hour(self):
+        disc = {"import": self._ch("2019-01-01T00:00:00Z")}
+        self.assertEqual(self._reach(disc, "2026-09-01T00:00:00"), "2024-10-18T12:00:00")
+        with mock.patch.object(real_engine, "kraken_available", return_value=True), \
+             mock.patch.object(real_engine, "_kraken_discovery", disc), \
+             mock.patch.object(real_engine, "_retention_floor_iso", return_value="2024-10-18T12:07:41"):
+            self.assertEqual(real_engine.history_reach_from("2026-09-01T00:00:00"), "2024-10-18T12:30:00")
+
+    def test_none_once_the_oldest_block_reaches_it(self):
+        disc = {"import": self._ch("2025-03-01T00:00:00Z")}
+        self.assertIsNone(self._reach(disc, "2025-03-01T00:00:00"))
+
+    def test_none_without_the_api(self):
+        with mock.patch.object(real_engine, "kraken_available", return_value=False):
+            self.assertIsNone(real_engine.history_reach_from("2026-09-01T00:00:00"))
+
+    def test_the_periods_bounds_carry_it(self):
+        from tests.test_server import make_client, server
+        st = _st(["2026-10-10T10:30:00"])
+        client = make_client(store=st)
+        eng = sys.modules["engine"]
+        with mock.patch.object(eng, "history_reach_from", create=True,
+                               side_effect=lambda e: "2025-01-10T00:00:00" if e else None), \
+             mock.patch.object(server.store_access, "store", lambda: st):
+            d = json.loads(client.get("/api/periods?kind=month").data)
+        self.assertEqual(d["bounds"]["reach_from"], "2025-01-10T00:00:00")
 
 
 class TheRunner(unittest.TestCase):
