@@ -112,7 +112,8 @@ class TheCells(unittest.TestCase):
 
     def test_a_missing_cell_does_not_fetch_a_detail(self):
         self.assertIn("openMissing(p.grid[h.day].slots[h.ci]", _SRC)
-        self.assertIn("function openMissing(c, label)", _SRC)
+        self.assertIn("function openMissing(c, label, p, day)", _SRC)
+        self.assertNotIn("fetchJSON", _fn("openMissing"))
 
 
 if __name__ == "__main__":

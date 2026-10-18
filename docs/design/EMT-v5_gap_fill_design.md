@@ -109,3 +109,13 @@ needs no limit here either.
 last 48 hours is left out of the fill and the preview says so ("too recent: Octopus has not
 settled it yet"); there is no option to try anyway. Once it is 48 hours old a later selection
 fills it.
+
+**(c) A new install's history. Decided (18 Oct 2026, the user): not a gap.** A new instance with the
+supplier API holds nothing before its first block, while Octopus may hold two years. That history
+was never recorded, so it is not missing: the heatmap hatches only inside EMT's own span (from the
+oldest block, §0). It gets **its own row below the oldest month** instead, "Octopus holds your data
+back to <date> — import it", linking to the Historical import page's API import, which fills it.
+The row is not hatched and is not an issue. The date is `bounds.reach_from` in `/api/periods`
+(`engine.history_reach_from`, #212): the earliest channel floor the import plan uses (a data floor
+already found, else the earliest agreement), no older than Octopus's two years, and none once EMT's
+oldest block reaches it.
