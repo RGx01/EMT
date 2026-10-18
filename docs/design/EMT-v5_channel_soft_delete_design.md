@@ -128,12 +128,17 @@ views show the remaining channel's kWh.
 
 ## 6. Questions for the user
 
-**(a) The shelf** (§2) rather than a `deleted_at` flag on `blocks`? It moves rows instead of
-filtering readers.
+**(a) The shelf** (§2) rather than a `deleted_at` flag on `blocks`. **Decided (18 Oct 2026, the user):
+the shelf.**
 
-**(b) Deleting the main meter's import:** the devices' rows are clipped to it, and the day's bill
-becomes `Σdevices` once the main import is gone. Do the devices go with it (soft, the same shelf),
-or stay and read above an absent meter?
+**(b) Deleting the main meter's import. Decided (18 Oct 2026, the user): the devices go with it** —
+their rows for the same half-hours onto the same shelf, restored together. Their rows are clipped to
+the main import, so kept alone they would carry the day's bill (`Σdevices`) over an absent meter.
+What is shelved keeps its provenance: a block its `source`, `derivation_id` and config period; an HA
+reading its sensor — recorded from now on, inferred from the device's primary for older readings
+(`EMT-v5_device_sensors_design.md` §7). Why it matters (the user): an import can be wrong or coarse,
+and the HA data at its original resolution is what a later rebuild works from. A **device** delete
+is not a shelf: it stays permanent (device sensors design §5).
 
 **(c) What goes with a channel:** `standing_charge` is the day's, on the import side — kept when
 import is deleted? `carbon_g` is net of both channels — recomputed from what remains, or NULL?

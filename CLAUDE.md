@@ -62,6 +62,7 @@ since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-man
 | `docs/design/EMT-v5_heatmap_issues_design.md` | the heatmap as the data-quality surface: missing half-hours, collapsing clean days, one cell width; the step before the data tools (draft) |
 | `docs/design/EMT-v5_gap_fill_design.md` | gap fill as an action on the heatmap's selection: what is filled, the preview, the required backup, one job over several runs (draft) |
 | `docs/design/EMT-v5_data_tools_design.md` | ROADMAP BL-88–90: the data tools as actions on a heatmap selection, a data-quality strip on Usage Stats, soft delete (draft) |
+| `docs/design/EMT-v5_device_sensors_design.md` | a device's sensors in one place: one primary, secondaries for history, the v5 upgrade moving Device History's sensors in (draft) |
 | `docs/design/EMT-v5_channel_soft_delete_design.md` | BL-90 with deleting by channel: a shelf the delete moves rows to, the tombstone's channel, refill by re-fetch (draft) |
 | `docs/design/EMT-v5_A1_writer_thread_design.md` | ROADMAP §A.1: why commits stall the loop on the SD card, and the writer thread |
 | `docs/ROADMAP.md` | open backlog, priority ordered — nothing in it has shipped |
