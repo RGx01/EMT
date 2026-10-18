@@ -86,6 +86,9 @@ does not fetch 17,520 half-hours.
 
 ## 3. BL-90 — soft delete
 
+*18 Oct 2026: designed further, with deleting by channel (import or export), in
+`EMT-v5_channel_soft_delete_design.md` — a shelf instead of a flag, and the tombstone's channel.*
+
 **Today** a delete removes the half-hour, its HA register reads (`reads`), its generation mix and its
 segments outright (§0); only a tombstone of the range is kept. The HA readings are gone unless the
 HA recorder still has them — its default keeps detail for about 10 days, and EMT reads only its
