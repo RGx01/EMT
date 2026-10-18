@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """139 read-only methods of BlockStore, and nothing else.
+    """141 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -68,6 +68,7 @@ class ReadStore:
     _ATTRIBUTION_RUNS_KEY = _BS._ATTRIBUTION_RUNS_KEY
     _BUMP_SOURCES = _BS._BUMP_SOURCES
     _CARBON_ELIGIBLE = _BS._CARBON_ELIGIBLE
+    _COST_ONLY_SPLIT_SQL = _BS._COST_ONLY_SPLIT_SQL
     _EPOCH_KEY = _BS._EPOCH_KEY
     _LATEST_BILL_SQL = _BS._LATEST_BILL_SQL
     _NEEDS_REPRICE_WHERE = _BS._NEEDS_REPRICE_WHERE
@@ -107,6 +108,7 @@ class ReadStore:
     count_blocks_for_date_range = _BS.count_blocks_for_date_range
     count_blocks_missing_segments = _BS.count_blocks_missing_segments
     count_blocks_needing_reprice = _BS.count_blocks_needing_reprice
+    count_cost_only_split_slots = _BS.count_cost_only_split_slots
     count_import_blocks_missing_exc = _BS.count_import_blocks_missing_exc
     count_imported_history = _BS.count_imported_history
     count_meter_rows = _BS.count_meter_rows
@@ -147,6 +149,7 @@ class ReadStore:
     get_config_period = _BS.get_config_period
     get_config_period_for_date = _BS.get_config_period_for_date
     get_config_periods = _BS.get_config_periods
+    get_cost_only_split_slots = _BS.get_cost_only_split_slots
     get_cumulative_totals = _BS.get_cumulative_totals
     get_current_config_period_id = _BS.get_current_config_period_id
     get_data_epoch = _BS.get_data_epoch

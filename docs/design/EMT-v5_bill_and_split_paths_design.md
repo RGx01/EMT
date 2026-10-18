@@ -278,6 +278,14 @@ re-asked. They read teal ("Octopus's cost, EMT's split") — the tower's split-p
 cost-only bill as a difference (#162) and Apply settles it from the bill (#180's rule). No automatic
 re-ask.
 
+
+*Reversed 18 Oct 2026 (the user):* the recovery asks them. On IOG-SMB, a half-hour the car drew in
+(a completed dispatch) whose latest cached bill is cost-only is asked its breakdown by the history
+drain (`BlockStore.get_cost_only_split_slots`); an answer is stored and the half-hour re-settled
+from it (`apply_measured_to_block`), so its split is the bill's; a breakdown with no EV where EMT
+had the car is held back (4.5.23); unanswered, it is asked for up to 30 days (`split_ask`). 69 on
+the soak's `blocks-38`.
+
 ### 7.3 The runtime split heal — removed
 
 With 7.1 at import and #180 at every settle, `run_settled_ev_split_heal` has nothing left that is

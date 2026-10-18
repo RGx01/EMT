@@ -7360,6 +7360,39 @@ class BlockStore:
             (meter_id, floor, after, before, limit)).fetchall()
         return [r["block_start"] for r in rows]
 
+    # A cost-only cached bill on a half-hour the car drew in — teal on the Import bill, the split
+    # still EMT's (18 Oct 2026, the user: the recovery asks their breakdown, reversing bill and
+    # split paths design §7.2). Main-meter, uncorrected, with a completed dispatch.
+    _COST_ONLY_SPLIT_SQL = (
+        "FROM measured_cost m JOIN blocks b ON b.block_start = m.slot_start "
+        "  AND b.meter_id = 'electricity_main' "
+        "WHERE m.direction = 'CONSUMPTION' AND m.ev_kwh IS NULL AND m.home_kwh IS NULL "
+        "  AND m.cost_incl IS NOT NULL AND m.cost_incl > 0 AND b.imp_kwh > 0 "
+        "  AND COALESCE(b.rate_corrected, 0) = 0 "
+        "  AND (b.rate_source IS NULL OR b.rate_source != 'corrected') "
+        "  AND m.fetched_at = (SELECT MAX(m2.fetched_at) FROM measured_cost m2 "
+        "                      WHERE m2.slot_start = m.slot_start AND m2.direction = m.direction) "
+        "  AND EXISTS (SELECT 1 FROM dispatch_history d WHERE d.slot_start = m.slot_start "
+        "              AND d.kind = 'completed' AND d.energy_kwh IS NOT NULL) "
+        "  AND m.slot_start >= ? AND m.slot_start < ? ")
+
+    def get_cost_only_split_slots(self, floor: str, after: str, before: str, limit: int) -> list:
+        """One page, oldest first, of the half-hours whose latest cached bill is cost-only though
+        the car drew in them (`_COST_ONLY_SPLIT_SQL`) — the history drain asks their breakdown."""
+        rows = self._conn.execute(
+            "SELECT DISTINCT m.slot_start " + self._COST_ONLY_SPLIT_SQL +
+            "  AND m.slot_start > ? ORDER BY m.slot_start ASC LIMIT ?",
+            (floor, before, after, limit)).fetchall()
+        return [r[0] for r in rows]
+
+    def count_cost_only_split_slots(self, floor: str, before: str, exclude=()) -> int:
+        """How many `get_cost_only_split_slots` still has (the drain's backlog), less `exclude`."""
+        exclude = sorted(set(exclude or ()))
+        return int(self._conn.execute(
+            "SELECT COUNT(DISTINCT m.slot_start) " + self._COST_ONLY_SPLIT_SQL
+            + (" AND m.slot_start NOT IN (%s)" % ",".join("?" * len(exclude)) if exclude else ""),
+            (floor, before, *exclude)).fetchone()[0])
+
     def count_settleable_blocks(self, floor: str, before: str,
                                 meter_id: str = "electricity_main", exclude=(), *,
                                 include_imported: bool = True) -> int:
