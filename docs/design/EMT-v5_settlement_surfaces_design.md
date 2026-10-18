@@ -356,6 +356,15 @@ part to the half-hour's own tariff kind.
 | `estimate_dcc` | settled kWh × rate, Octopus's cost not in yet, inside the window | — (settled kWh is final: green) | light amber |
 | `estimate_cad` | kWh not settled (CAD / HA reading) × rate, inside the window | the same | amber |
 | `overdue` | past the window with no Octopus cost (either kWh) | past the window with the kWh still not settled | red |
+
+*18 Oct 2026, the user (reverting #202):* **every** Intelligent half-hour needs Octopus's cost to be
+final, capped (IOG-SMB) or not: a dispatch can re-band a half-hour to off-peak on any Intelligent
+tariff, and EMT knows only the dispatches it saw. #202 had made an undispatched half-hour on an
+uncapped Intelligent agreement final at the schedule's rate, as on a published tariff; it was
+reverted. The half-hours it turned green (208 on the soak's `blocks-38`, pre-IOG-SMB July and
+August) are red because EMT never asks for their bills — off IOG-SMB the live pass asks only for
+the dispatched ones, from the IOG-SMB agreement's start — and the fix is to ask (the next PR), not
+to call them final.
 | `differs` | a bill is held and the stored cost is not it (flags as §1.4) | the same, where a bill is held (an API import's, or one fetched before this rule) | red |
 | `corrected` | the user's rate correction | the same | blue |
 | `imported` | CSV history — a cost not from Octopus's API | the same | grey |
