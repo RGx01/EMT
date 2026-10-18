@@ -49,7 +49,7 @@ def _clock(start, now):
 
 def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozenset(),
              vat_at=None, kind_at=None, split_at=None, export_channel: bool = False,
-             export_agreement_at=None) -> dict:
+             export_sensor: bool = True, export_agreement_at=None) -> dict:
     """One half-hour's {bill, export, split, flags}. `f` is a get_settlement_facts row. `smb` is
     the install's tariff (engine._import_is_smb_capped); `held` / `kept` are 4.5.23's wait map
     (engine.bill_split_held); `vat_at(start)` the VAT calendar; `kind_at(start)` the half-hour's
@@ -57,6 +57,9 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
     `split_at(start)` whether its agreement has a split from the bill (engine.split_at; `smb`
     when absent). `export_channel`: the main meter has an export channel, so a half-hour whose
     export kWh has not settled is waiting for it, whatever EMT read live.
+    `export_sensor`: the main meter's export channel has a live read sensor. Without one, the
+    live export kWh is not a reading — finalise stores 0.0 from a channel with no sensor (the
+    Mini feeds import only) — so it says nothing about what was exported.
     `export_agreement_at(start)`: True / False whether an export agreement covers the half-hour,
     None where it is not known (engine.export_agreement_at); False makes it `no_agreement`.
 
@@ -123,7 +126,9 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
     # Keyed on whether the export kWh has SETTLED, not on the live reading (17 Oct 2026): a meter
     # with no live export sensor has no export kWh until DCC settles it, so an unsettled
     # half-hour read 0 and showed "none", like a night with nothing exported. A live reading of
-    # nothing is still "none"; a settled nothing is "none".
+    # nothing is still "none"; a settled nothing is "none". But with no export SENSOR, the live
+    # 0.0 is no reading at all (18 Oct 2026, the user: grey runs between amber on an API-only
+    # account) — the half-hour waits for DCC, as a NULL does.
     exp_live = _f(f.get("exp_kwh"))
     exp_api = _f(f.get("exp_kwh_api"))
     exp = exp_api if exp_api is not None else (exp_live or 0.0)
@@ -131,7 +136,7 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
         export = "applied" if exp > 1e-9 else "none"
     elif src.startswith("imported"):
         export = "imported" if exp > 1e-9 else "none"
-    elif exp > 1e-9 or (export_channel and exp_live is None):
+    elif exp > 1e-9 or (export_channel and (exp_live is None or not export_sensor)):
         export = _clock(start, now)
     else:
         export = "none"

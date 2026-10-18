@@ -182,6 +182,33 @@ class TheExport(unittest.TestCase):
     def test_a_live_reading_of_nothing_is_none(self):
         self.assertEqual(self._e(exp_kwh=0.0, exp_kwh_api=None), "none")
 
+    # ── no live export SENSOR (18 Oct 2026, the user): finalise's 0.0 is no reading ──
+    def _n(self, start=S, **kw):
+        return _c(_f(block_start=start, **kw), export_channel=True, export_sensor=False)["export"]
+
+    def test_no_sensor_a_stored_zero_not_settled_is_waiting(self):
+        """Discriminating: the grey runs between amber on an API-only account."""
+        self.assertEqual(self._n(exp_kwh=0.0, exp_kwh_api=None), "waiting")
+
+    def test_no_sensor_a_stored_zero_after_7_days_is_overdue(self):
+        """Discriminating."""
+        self.assertEqual(self._n("2026-10-01T12:00:00", exp_kwh=0.0, exp_kwh_api=None), "overdue")
+
+    def test_no_sensor_a_settled_nothing_is_still_none(self):
+        """GUARD."""
+        self.assertEqual(self._n(exp_kwh=0.0, exp_kwh_api=0.0), "none")
+
+    def test_no_sensor_csv_history_is_still_none(self):
+        """GUARD: imported history with nothing exported stays grey."""
+        self.assertEqual(self._n(source="imported_csv", exp_kwh=0.0, exp_kwh_api=None), "none")
+
+    def test_the_route_says_whether_there_is_an_export_sensor(self):
+        """Discriminating: the route passes it."""
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "web", "server.py"), encoding="utf-8").read()
+        body = src[src.index("def _settlement_states"):]
+        self.assertIn("export_sensor=_main_has_export_sensor()", body[:body.index("\n\n\n")])
+
     def test_no_export_channel_is_none(self):
         """An import-only install: nothing to settle."""
         self.assertEqual(_c(_f(exp_kwh=None, exp_kwh_api=None))["export"], "none")
