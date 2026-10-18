@@ -1,6 +1,6 @@
 # EMT v5 — Gap fill as an action on the heatmap's selection
 
-*Draft, 18 Oct 2026. The user, after the heatmap showed missing half-hours (#199) and folded the
+*Draft, 18 Oct 2026; §7 (a) decided the same day. The user, after the heatmap showed missing half-hours (#199) and folded the
 clean days (#201): gap fill next, as a user-initiated action. Decided the same day: (a) it refills
 deleted half-hours too, the preview saying how many; (b) the Historical import page's gap list
 stays, a deep link to the heatmap later. Every line below was read in the code or queried on
@@ -50,7 +50,8 @@ per-gap fill does. The preview says how many were deleted, so nothing comes back
 - **deleted**: of those, how many lie inside a tombstone — with its date;
 - **too recent**: inside the last 48 h, which Octopus cannot answer yet — left out, and said;
 - **too old**: older than Octopus's two years — left out, and said;
-- **asks**: the fetch's size (60-day chunks per channel), for a time estimate.
+- **the size, per channel**: the half-hours to fetch for import and for export (decided (a)), and
+  the 60-day chunks they make, for a time estimate.
 
 The dialog shows that, and **Apply** or **Cancel**. A selection with nothing fillable says so and
 offers nothing.
@@ -96,9 +97,12 @@ is `imported_api`, so its Import bill reads green (Octopus's own billed cost).
 
 ## 7. Questions for the user
 
-**(a) A long selection.** June's 23 days is one run of 1,104 half-hours — one 60-day chunk per
-channel. Should there be an upper bound on a selection (the re-fetch splits into 31-day parts)?
-The proposal: none — the engine is already paced, resumable and rate-limit aware; the preview
-shows the size.
+**(a) A long selection. Decided (18 Oct 2026, the user): no maximum of its own.** Octopus keeps two
+years of half-hourly data, and that is the bound: anything older is "too old" in the preview and
+left out (§2). The preview gives the size in **half-hours per channel** — what the API import
+fetches — as well as its chunks. June's 23 days is 1,104 half-hours on each channel, one 60-day
+chunk each. The engine is already paced, resumable and rate-limit aware. A CSV or PDF import is
+a separate tool on the selection menu (data tools design §1), bounded by its own file, so it
+needs no limit here either.
 
 **(b) A run still too recent.** Leave it out and say so (the proposal), or offer to try anyway?
