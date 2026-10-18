@@ -9221,6 +9221,7 @@ async def _drain_reprice_queue_after_import(j: dict | None = None,
 # resumable, newest-first chunks, gated on the API allowance, so the split self-
 # heals with no user action and no manual tool. Progress is reported live.
 _VERIFY_CURSOR_KEY = "verify_pricing_cursor"     # kraken_state: oldest date still to verify
+_VERIFY_SPAN_KEY = "verify_pricing_span"         # kraken_state: [from, to] of a scoped pass, or ""
 _VERIFY_SUMMARY_KEY = "verify_pricing_summary"   # kraken_state: last completed run summary
 _verify_job: dict = {"status": "idle"}
 
@@ -9374,13 +9375,20 @@ def _maybe_resume_deferred_verify() -> bool:
 @job("verify_pricing", depends_on=("import",))
 async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: float = 0.5,
                                       wait_s: float = 60.0, max_wait_cycles: int = 120,
-                                      restart: bool = True) -> dict:
+                                      restart: bool = True, span=None) -> dict:
     """Re-check the imported period's PRICING calmly, in resumable newest-first
     chunks gated on the rate-limit allowance. Idempotent (re-pricing a correct slot
     is a no-op). Runs on the engine loop; every await yields, so the heartbeat is
     unaffected. `restart` resets the cursor to the newest edge (fresh pass); omit it
-    to RESUME an interrupted pass from its persisted cursor."""
+    to RESUME an interrupted pass from its persisted cursor.
+
+    `span` (from, to), naive UTC: check only that part of the imported history — a gap fill's
+    runs (18 Oct 2026, the soak: every fill re-checked 2023 → today, ~70 s and ~30 Octopus
+    requests for one gap). Persisted with the cursor, so a pass paused for the allowance or
+    interrupted by a restart resumes over the same span; one deferred to an import widens to
+    the whole history, which that import changed."""
     global _verify_job
+    import json
     _asyncio = __import__("asyncio")
     _dt = datetime
     _td = timedelta
@@ -9404,6 +9412,22 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
     if _prev.get("status") in ("running", "waiting"):
         logger.info("verify pricing: a pass is already running — not starting another")
         return {"ran": False, "already_running": True}
+    # The span: given (a fresh pass), or the persisted one of a pass resuming from its
+    # cursor — but not of one deferred to an import ("resuming"), which checks it all.
+    if span is None and not restart and _prev.get("status") != "resuming":
+        try:
+            _sp = json.loads(_store.get_kraken_state(_VERIFY_SPAN_KEY) or "null")
+            span = tuple(_sp) if _sp else None
+        except (ValueError, TypeError):
+            span = None
+    if span is not None:
+        try:
+            lo = max(lo, _dt.fromisoformat(str(span[0])[:19]))
+            hi = min(hi, _dt.fromisoformat(str(span[1])[:19]))
+        except (ValueError, TypeError, IndexError):
+            span = None
+        if span is not None and hi <= lo:
+            return {"ran": False, "reason": "span outside the imported history"}
     # A pass deferred to an import resumes from its cursor — unless the import added
     # newer history, which a newest-first pass resumed below its cursor would miss.
     if (not restart and _prev.get("status") in ("deferred", "resuming")
@@ -9415,6 +9439,11 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
             _store.set_kraken_state(_VERIFY_CURSOR_KEY, cursor.isoformat())
         except Exception:
             pass
+    try:
+        _store.set_kraken_state(_VERIFY_SPAN_KEY,
+                                json.dumps([lo.isoformat(), hi.isoformat()]) if span else "")
+    except Exception:
+        pass
     else:
         cur_raw = _store.get_kraken_state(_VERIFY_CURSOR_KEY)
         try:
@@ -9440,6 +9469,7 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
     # genuinely uncovered.
     _coord.claim("verify_pricing", force=True)
     _verify_job.update({"status": "running", "phase": "verifying", "hi": hi.isoformat(),
+                        "span": [lo.isoformat(), hi.isoformat()] if span else None,
                         "chunks_total": total_chunks, "chunks_done": done_chunks,
                         "repriced": 0, "checked": 0, "skipped": 0, "elapsed_s": 0,
                         "from": None, "to": None, "corrections": [],
@@ -9543,6 +9573,7 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
                                 "corrections": list(corrections)})
         try:
             _store.set_kraken_state(_VERIFY_CURSOR_KEY, "")   # completed → clear cursor
+            _store.set_kraken_state(_VERIFY_SPAN_KEY, "")
         except Exception:
             pass
         _elapsed = int(__import__("time").monotonic() - _t0)
@@ -10051,7 +10082,10 @@ async def _gap_fill_finish(j, channels) -> None:
     _wrote = _run_wrote_blocks(j)
     if _wrote:
         try:
-            asyncio.create_task(run_deferred_verify_pricing())
+            # only what the fill wrote: its runs' span, not the whole history
+            _g = j.get("gap") or {}
+            _span = (_g["from"], _g["to"]) if _g.get("from") and _g.get("to") else None
+            asyncio.create_task(run_deferred_verify_pricing(span=_span))
         except Exception as _e:
             logger.warning("run_gap_fill_job: verify launch failed: %s", _e)
     else:
