@@ -7,7 +7,7 @@ devices, and reconciles against the supplier's settled figures.
 
 ## Where we are
 
-**v4 is at 4.5.23** (repo `RGx01/energy-meter-tracker-addon`). 4.5.14 was the last feature
+**v4 is at 4.5.24** (repo `RGx01/energy-meter-tracker-addon`). 4.5.14 was the last feature
 release; since then it accepts **critical fixes only** — data loss, crash-on-start, or a pricing
 error. 4.5.15 shipped #473 (device cost from raw `imp_kwh` instead of the grid-clipped
 `imp_kwh_grid`, with a heal) and #475 (a settled kWh re-banding an unpriced block). 4.5.16 shipped
@@ -21,7 +21,10 @@ the house, and carries a correction's ex-VAT rate to devices — three heals. 4.
 restated October costs (its half-hourly data carried 5% VAT after the 0% change, v4 #505) once every half-hour since
 the change agrees with the VAT calendar — a heal that waits on Octopus. 4.5.23 (12 Oct 2026, v4 #510) holds back a
 settled breakdown with no EV where EMT's split has the car (Octopus's first answer for 10 Oct put the night on the
-house, and corrected it days later), for up to 28 days, and re-fetches the ones already cached — a heal. The EV_BOOST band is still expected.
+house, and corrected it days later), for up to 28 days, and re-fetches the ones already cached — a heal. 4.5.24 (18 Oct 2026, v4
+#513) rebuilds a running fixed-term agreement's rates at every refresh: the stitch cached any agreement with a
+`valid_to`, and IOG-SMB's windows reach only now + 2 days, so two days after a restart the bill apply refused every
+bill, silently — no heal, so the floor does not move. The EV_BOOST band is still expected.
 
 **4.5.23 is the v5 import floor** (raised 12 Oct 2026). It carries a heal, and the rule is that a fix adding a heal
 raises the floor EMT will import from. A below-floor database must be **refused** with "open
@@ -30,7 +33,7 @@ the floor is what makes that safe — so a v4 fix is ported as its forward fix o
 
 **The work now is v5**, in this repo (`RGx01/EMT`). It was seeded from v4 4.5.14 and is being
 deconstructed in the open; the forward fixes from 4.5.15 (#473, #475) and 4.5.16 (#481) were
-ported afterwards, and 4.5.17–4.5.19's VAT forward fixes with them, 4.5.20's gap-fill fix, 4.5.21's four, 4.5.22's VAT resync (as forward code: it waits on Octopus, so the floor alone cannot guarantee it ran), and 4.5.23's hold-back. **Each new v4 release:** port its forward fixes, not its heal, and raise the
+ported afterwards, and 4.5.17–4.5.19's VAT forward fixes with them, 4.5.20's gap-fill fix, 4.5.21's four, 4.5.22's VAT resync (as forward code: it waits on Octopus, so the floor alone cannot guarantee it ran), 4.5.23's hold-back, and 4.5.24's stitch cache (EMT #209, found here first). **Each new v4 release:** port its forward fixes, not its heal, and raise the
 floor if it carries a heal (`v4import/gate.py` `FLOOR_VERSION`, import spec, ROADMAP §E, programme §E, this file).
 Steps: 1 dead code, 2 extract `billing.py`, 3 ReadStore/WriteStore, 4 API consolidated + HTML
 pipeline deleted, 5 schema (11 columns dropped, band moves to `block_segments`; done 10 Oct 2026 in PRs 5a–5c), 6 client +
