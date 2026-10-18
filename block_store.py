@@ -7815,7 +7815,12 @@ class BlockStore:
             # 5c). Same set as server._blocks_data_version.
             "       ROUND(COALESCE(SUM(b.imp_cost_exc), 0), 4) AS xx, "
             "       ROUND(COALESCE(SUM(b.imp_kwh_grid), 0), 4) AS xg, "
-            "       ROUND(COALESCE(SUM(b.standing_charge), 0), 4) AS xs "
+            "       ROUND(COALESCE(SUM(b.standing_charge), 0), 4) AS xs, "
+            # The settlement state (18 Oct 2026, the Pi): a bill applied where it agrees with
+            # EMT's estimate moves the cost by under a penny, but turns the half-hour settled —
+            # amber to green on the heatmap — and that moved nothing here, so nothing redrew.
+            "       SUM(CASE WHEN b.rate_source IN ('settled', 'corrected') THEN 1 ELSE 0 END) AS st, "
+            "       SUM(COALESCE(b.rate_corrected, 0)) AS rc "
             "FROM blocks b WHERE b.block_start >= ? AND b.block_start < ? "
             "GROUP BY day", (utc_start, utc_end)).fetchall()
         segs = self._conn.execute(
@@ -7828,12 +7833,21 @@ class BlockStore:
             "FROM block_segments WHERE block_start >= ? AND block_start < ? "
             "GROUP BY day", (utc_start, utc_end)).fetchall()
         seg = {r["day"]: "%s:%s:%s:%s:%s" % (r["n"], r["ir"], r["er"], r["ea"], r["pk"]) for r in segs}
+        # The cached bills: a bill fetched (and not yet applied, or held back) changes the
+        # half-hour's state too — its split, its "Octopus's cost not in yet" — without a block write.
+        bills = self._conn.execute(
+            "SELECT substr(slot_start, 1, 10) AS day, COUNT(*) AS n, "
+            "       ROUND(COALESCE(SUM(cost_incl), 0), 4) AS c, "
+            "       ROUND(COALESCE(SUM(ev_kwh), 0), 4) AS e "
+            "FROM measured_cost WHERE slot_start >= ? AND slot_start < ? "
+            "GROUP BY day", (utc_start, utc_end)).fetchall()
+        bill = {r["day"]: "%s:%s:%s" % (r["n"], r["c"], r["e"]) for r in bills}
         # Not the stored remainder (step 5, 8 Oct 2026): no surface reads it, and the main's import
         # and the grid shares it was derived from (ik, xg) are already here.
-        return {r["day"]: "%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s" % (
+        return {r["day"]: "%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s:%s" % (
                     r["n"], r["newest"] or "", r["ik"], r["ic"],
                     r["ek"], r["ec"], r["cg"], r["xx"], r["xg"],
-                    r["xs"], seg.get(r["day"], "0"))
+                    r["xs"], seg.get(r["day"], "0"), r["st"], r["rc"], bill.get(r["day"], "0"))
                 for r in rows}
 
     def get_block_bounds(self, meter_id: str = "electricity_main") -> dict:

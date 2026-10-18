@@ -2109,6 +2109,21 @@ def _blocks_data_version(store) -> str:
         "ROUND(COALESCE(SUM(imp_kwh_grid), 0), 4) AS xg, "
         "ROUND(COALESCE(SUM(standing_charge), 0), 4) AS xs "
         "FROM blocks").fetchone()
+    # The settlement state and the cached bills (18 Oct 2026, the Pi): a bill that agrees with
+    # EMT's estimate moves the cost by under a penny but turns the half-hour settled; nothing
+    # here moved, so no chart or heatmap redrew. As day_fingerprints. Guarded, as the segments
+    # are: an older schema contributes '0'.
+    try:
+        _b = store._conn.execute(          # one statement: the poll runs every minute per tab
+            "SELECT (SELECT SUM(CASE WHEN rate_source IN ('settled', 'corrected') THEN 1 ELSE 0 END) "
+            "        FROM blocks) AS st, "
+            "       (SELECT SUM(COALESCE(rate_corrected, 0)) FROM blocks) AS rc, "
+            "       (SELECT COUNT(*) FROM measured_cost) AS n, "
+            "       (SELECT ROUND(COALESCE(SUM(cost_incl), 0), 4) FROM measured_cost) AS c, "
+            "       (SELECT ROUND(COALESCE(SUM(ev_kwh), 0), 4) FROM measured_cost) AS e").fetchone()
+        _bf = f"{_b['st']}:{_b['rc']}:{_b['n']}:{_b['c']}:{_b['e']}"
+    except Exception:
+        _bf = "0"
     # What the Billing tab shows beyond the blocks: the billing periods (a billing-day
     # change or an added/removed meter re-cuts them), the bulk epoch (an import, delete
     # or restore — C §2a), and the bill-rounding option (bill method vs inc-VAT).
@@ -2145,7 +2160,7 @@ def _blocks_data_version(store) -> str:
     return (f"{row['c']}:{row['m'] or ''}:"
             f"{row['ik']}:{row['ic']}:{row['ek']}:{row['ec']}:{row['cg']}:"
             f"{row['xx']}:{row['xg']}:{row['xs']}:"
-            f"{_cfgf}:{_epoch}:{_br}:{_sf}")
+            f"{_cfgf}:{_epoch}:{_br}:{_sf}:{_bf}")
 
 
 def _all_history_utc(store, tz_name):

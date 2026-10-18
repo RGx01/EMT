@@ -1159,19 +1159,33 @@ window.EMTHeatmap = (function () {
     }).catch(function (e) { state.root.innerHTML = '<div class="hm-empty">Heatmap unavailable: ' + e.message + '</div>'; });
   }
 
-  // re-fetch the current month (where change happens, C §2a); redraw only if it moved
+  // Re-fetch the current month (where change happens, C §2a), and every other DRAWN month whose
+  // per-day fingerprints moved — asked cheaply (fields=days), so only a month that changed is
+  // re-fetched. Until 18 Oct 2026 only the current month was asked: bills applied to August by
+  // the history drain turned it green in the store and never on the page. A cached month not
+  // drawn is dropped, to be fetched afresh when it scrolls near.
   function refresh() {
     var k = state.keys[0]; if (!k) return Promise.resolve();
     var before = state.months[k] && state.months[k].fp, ep = state.epoch;
     return fetchMonth(k).then(function () {
+      if (state.epoch !== ep) { redrawAll(true); return; }
+      var work = [];
       // fetchMonth drops the month's grid; unchanged, the drawn month still needs it — without
       // it the hover and the click read a null grid after the first quiet poll (13 Oct 2026)
-      if (state.months[k].fp === before && state.epoch === ep) {
-        if (state.panels[k]) state.panels[k].grid = monthGrid(k);
-        return;
-      }
-      if (state.epoch !== ep) { redrawAll(true); return; }
-      state.panels[k].grid = null; return loadMonth(k);
+      if (state.months[k].fp === before) { if (state.panels[k]) state.panels[k].grid = monthGrid(k); }
+      else { state.panels[k].grid = null; work.push(loadMonth(k)); }
+      state.keys.slice(1).forEach(function (o) {
+        if (!state.months[o]) return;
+        if (!(state.panels[o] && state.panels[o].drawn)) { delete state.months[o]; return; }
+        work.push(fetchJSON('/api/energy?fields=days&resolution=block&kind=month&year=' + o.slice(0, 4) +
+                            '&month=' + (+o.slice(5, 7))).then(function (r) {
+          var fp = JSON.stringify(((r || {}).fingerprint || {}).days || {});
+          if (!state.months[o] || fp === state.months[o].fp) return;
+          delete state.months[o]; state.panels[o].grid = null;
+          return loadMonth(o);
+        }, function () {}));
+      });
+      return Promise.all(work);
     });
   }
   function rerender() { redrawAll(true); return Promise.resolve(); }
