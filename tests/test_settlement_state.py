@@ -129,32 +129,29 @@ class TheBill(unittest.TestCase):
         self.assertEqual(_c(_f(**dict(BILLED, rate_source="schedule")))["bill"], "estimate_dcc")
 
 
-class TheUndispatchedOffSmb(unittest.TestCase):
-    """17 Oct 2026, the Pi: off IOG-SMB (an uncapped Intelligent agreement), a half-hour no dispatch
-    touched is billed at the schedule's rate, so its settled kWh x that rate is the bill. EMT asks
-    Octopus only for the dispatched half-hours there, so these waited for a bill that never comes
-    and read red for good (every pre-IOG-SMB August day on the soak). Discriminating: the first
-    and the last (the parent: estimate_dcc, overdue). The rest are guards."""
+class EveryIntelligentHalfHourNeedsItsBill(unittest.TestCase):
+    """18 Oct 2026, the user, reverting #202: on EVERY Intelligent tariff, capped (IOG-SMB) or not, a
+    dispatch can re-band a half-hour to off-peak, and EMT knows only the dispatches it saw — so only
+    Octopus's cost is final there. #202 made an undispatched half-hour on an uncapped Intelligent
+    agreement final at the schedule's rate, as on a published tariff; it is not. Discriminating
+    against #202 (fail with it, pass on its parent and here): the first two. The rest are guards."""
 
     def _b(self, **kw):
         ctx = {"split_at": lambda s: False, "kind_at": lambda s: "intelligent"}
         ctx.update(kw.pop("ctx", {}))
         return _c(_f(**kw), **ctx)["bill"]
 
-    def test_undispatched_with_its_kwh_settled_is_final(self):
-        self.assertEqual(self._b(), "applied")
+    def test_undispatched_off_iog_smb_waits_for_its_bill(self):
+        self.assertEqual(self._b(), "estimate_dcc")
 
-    def test_a_dispatched_half_hour_still_waits_for_its_bill(self):
-        self.assertEqual(self._b(dispatched=1), "estimate_dcc")
+    def test_and_past_the_window_it_is_overdue(self):
+        self.assertEqual(self._b(block_start="2026-08-09T02:00:00"), "overdue")
 
-    def test_without_its_kwh_settled_it_waits(self):
-        self.assertEqual(self._b(imp_kwh_api=None), "estimate_cad")
+    def test_its_bill_makes_it_final(self):
+        self.assertEqual(self._b(**BILLED), "applied")
 
-    def test_on_iog_smb_every_half_hour_waits_for_its_bill(self):
-        self.assertEqual(self._b(ctx={"split_at": lambda s: True}), "estimate_dcc")
-
-    def test_an_old_one_is_not_overdue(self):
-        self.assertEqual(self._b(block_start="2026-08-09T02:00:00"), "applied")
+    def test_on_a_published_tariff_the_settled_kwh_is_the_bill(self):
+        self.assertEqual(self._b(ctx={"kind_at": lambda s: "published"}), "applied")
 
 
 class TheExport(unittest.TestCase):
