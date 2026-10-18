@@ -2,7 +2,6 @@
   "unreachable": [
     "_apply_mini_boundary_read",
     "_delete_window_to_utc_times",
-    "_format_billing",
     "_has_sub_meters",
     "_mini_boundary_callback",
     "_mini_read_and_apply",
@@ -16,7 +15,6 @@
     "clear_current_block",
     "count_backfilled_blocks",
     "count_block_segments",
-    "count_blocks_missing_iog_split",
     "count_blocks_missing_segments",
     "count_import_blocks_missing_exc",
     "count_meter_rows",
@@ -27,7 +25,6 @@
     "get_all_entity_ids",
     "get_block_by_id",
     "get_blocks_for_utc_range",
-    "get_blocks_missing_iog_split",
     "get_blocks_missing_segments",
     "get_cumulative_totals",
     "get_dispatch_slots_in_range",
@@ -57,7 +54,6 @@
     "store_mini_import",
     "supersede_historical_derivation",
     "tag_blocks_with_derivation",
-    "tombstoned_slots_in",
     "utc_to_local_label"
   ]
 }
