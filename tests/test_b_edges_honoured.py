@@ -148,7 +148,9 @@ class TheMeasuredDrain(_Gate):
     def setUp(self):
         super().setUp()
         self.backlog = []
-        self.p += [mock.patch.object(engine, "_import_is_smb_capped", lambda: True),
+        # the drain's own "applicable" gate: any Intelligent agreement (18 Oct 2026; it was
+        # "any IOG-SMB agreement", reached through _import_is_smb_capped)
+        self.p += [mock.patch.object(engine, "_any_intelligent", lambda: True),
                    mock.patch.object(engine, "_measured_history_backlog",
                                      lambda: self.backlog.append(1) or 0)]
         for x in self.p[-2:]:

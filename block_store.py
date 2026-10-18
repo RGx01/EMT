@@ -7335,7 +7335,8 @@ class BlockStore:
 
     def get_settleable_blocks(self, floor: str, after: str, before: str,
                               limit: int,
-                              meter_id: str = "electricity_main") -> list:
+                              meter_id: str = "electricity_main", *,
+                              include_imported: bool = True) -> list:
         """One page of settleable blocks with no cached bill yet, oldest first.
 
         THREE bounds, not two, and they are not redundant: `floor` is fixed for
@@ -7343,11 +7344,15 @@ class BlockStore:
         answer for WITHIN a run, and `before` is the not-yet-billed cutoff.
         Collapsing `floor` and `after` loses the paging and the drain re-reads the
         same page forever.
+
+        `include_imported=False`: live history only — an API import already holds Octopus's
+        billed cost, so off IOG-SMB there is nothing to ask for it (18 Oct 2026).
         """
         rows = self._conn.execute(
             "SELECT b.block_start FROM blocks b WHERE b.meter_id = ? "
             "  AND b.imp_kwh > 0 "
             "  AND " + self._SETTLEABLE_SQL + " "
+            + ("" if include_imported else "  AND (b.source IS NULL OR b.source NOT LIKE 'imported%') ") +
             "  AND b.block_start >= ? AND b.block_start > ? AND b.block_start < ? "
             "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
             "  AND NOT EXISTS (SELECT 1 FROM measured_cost mc WHERE mc.slot_start = b.block_start) "
@@ -7356,7 +7361,8 @@ class BlockStore:
         return [r["block_start"] for r in rows]
 
     def count_settleable_blocks(self, floor: str, before: str,
-                                meter_id: str = "electricity_main", exclude=()) -> int:
+                                meter_id: str = "electricity_main", exclude=(), *,
+                                include_imported: bool = True) -> int:
         """How many blocks `get_settleable_blocks` still has to work through.
 
         Same predicate, no cursor and no limit -- the backlog gate that decides
@@ -7368,6 +7374,7 @@ class BlockStore:
             "SELECT COUNT(*) FROM blocks b WHERE b.meter_id = ? "
             "  AND b.imp_kwh > 0 "
             "  AND " + self._SETTLEABLE_SQL + " "
+            + ("" if include_imported else "  AND (b.source IS NULL OR b.source NOT LIKE 'imported%') ") +
             "  AND b.block_start >= ? AND b.block_start < ? "
             "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
             "  AND NOT EXISTS (SELECT 1 FROM measured_cost mc WHERE mc.slot_start = b.block_start)"

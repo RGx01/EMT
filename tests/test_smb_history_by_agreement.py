@@ -127,7 +127,7 @@ class TheWindows(_Harness):
             {"tariff_code": AGILE, "valid_from": _ago(40) + "Z", "valid_to": None}]}}
         engine._kraken_current_agreement_from = _ago(40)
         self.assertEqual(engine._smb_windows(), [])
-        self.assertFalse(engine._any_smb())
+        self.assertFalse(engine._any_intelligent())      # an Agile account: no bill windows
         self.assertEqual(engine._measured_floor(), _ago(40))
 
 
