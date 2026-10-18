@@ -492,8 +492,16 @@
       return b + ' B';
     };
   </script>
+  {% if request.args.get('embed') %}
+  <style>
+    /* ?embed=1: a page opened as a modal over another (the heatmap's gap fill, 18 Oct 2026) —
+       its content only, no navigation of its own */
+    .sidebar, .sidebar-overlay, #mobile-topbar, .topbar { display:none !important; }
+    .main { margin-left:0 !important; }
+  </style>
+  {% endif %}
 </head>
-<body>
+<body{% if request.args.get('embed') %} class="emt-embed"{% endif %}>
 <div class="sidebar-overlay" id="sidebar-overlay" onclick="closeSidebar()"></div>
 <div class="layout">
 

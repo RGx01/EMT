@@ -14,6 +14,10 @@ Gap fill as an action on the heatmap's selection — the server (gap fill design
   earliest channel floor, no older than two years, and None once EMT's oldest block reaches it.
   `/api/periods` answers it as `bounds.reach_from`.
 
+- `engine.gap_bounds` widens a selected missing half-hour to its WHOLE gap (decided 18 Oct 2026, the
+  user): from the half-hour after the last block before it to the first block after it, or to the
+  last finished half-hour. `/api/gaps/around` answers the gaps, counted, without the API.
+
 All new code, so on the parent every test fails by name. `test_the_historical_import_fill_is_unchanged`
 is a guard of the split (it patches the split's helpers, so it cannot run on the parent either).
 """
@@ -100,6 +104,9 @@ class TheRoutes(unittest.TestCase):
                                     side_effect=lambda st, runs, **k: real_engine.gap_fill_plan(
                                         st, runs, now=NOW, **k)),
                   mock.patch.object(eng, "api_import_running", create=True, return_value=False),
+                  mock.patch.object(eng, "gap_bounds", create=True,
+                                    side_effect=lambda st, at, **k: real_engine.gap_bounds(
+                                        st, at, now=NOW, **k)),
                   mock.patch.object(eng, "run_gap_fill_runs", create=True,
                                     side_effect=lambda runs, **k: ("runner", runs, k)),
                   mock.patch.object(server, "_backfill_verify_active", return_value=False),
@@ -125,6 +132,24 @@ class TheRoutes(unittest.TestCase):
         self.assertEqual(d["total"]["fillable"], 3)
         self.assertTrue(d["token"])
         self.assertEqual(list(d["size"]), ["import"])
+
+    def test_around_gives_the_whole_gap_counted(self):
+        # the store holds 10:30 and 13:00; 11:30 lies in the gap between them
+        self.st._conn.execute("INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
+                              "imp_kwh) VALUES ('2026-10-10T13:00:00','x','electricity_main',1,0.4)")
+        self.st._conn.commit()
+        code, d = self._post("/api/gaps/around", {"at": ["2026-10-10T11:30:00"]})
+        self.assertEqual(code, 200)
+        self.assertEqual([(g["from"], g["to"], g["missing"]) for g in d["gaps"]],
+                         [("2026-10-10T11:00:00", "2026-10-10T13:00:00", 4)])
+
+    def test_around_needs_no_api(self):
+        with mock.patch.object(sys.modules["engine"], "kraken_available", create=True, return_value=False):
+            code, d = self._post("/api/gaps/around", {"at": ["2026-10-10T11:30:00"]})
+        self.assertEqual((code, d["ok"]), (200, True))
+
+    def test_around_refuses_a_bad_body(self):
+        self.assertEqual(self._post("/api/gaps/around", {"at": "2026-10-10T11:30:00"})[0], 400)
 
     def test_bad_runs_are_refused(self):
         self.assertEqual(self._post("/api/gaps/fill/preview", {"runs": [["b", "a"]]})[0], 400)
@@ -212,6 +237,48 @@ class TheHistoryReach(unittest.TestCase):
              mock.patch.object(server.store_access, "store", lambda: st):
             d = json.loads(client.get("/api/periods?kind=month").data)
         self.assertEqual(d["bounds"]["reach_from"], "2025-01-10T00:00:00")
+
+
+class TheGapBounds(unittest.TestCase):
+
+    def _b(self, st, ats):
+        return real_engine.gap_bounds(st, ats, now=NOW)
+
+    def test_a_half_hour_means_its_whole_gap(self):
+        st = _st(["2026-06-07T23:30:00", "2026-07-01T00:00:00"])
+        self.assertEqual(self._b(st, ["2026-06-22T17:00:00"]),
+                         [["2026-06-08T00:00:00", "2026-07-01T00:00:00"]])
+
+    def test_two_half_hours_in_one_gap_are_one_gap(self):
+        st = _st(["2026-06-07T23:30:00", "2026-07-01T00:00:00"])
+        self.assertEqual(len(self._b(st, ["2026-06-10T00:00:00", "2026-06-22T17:00:00"])), 1)
+
+    def test_two_gaps(self):
+        st = _st(["2026-06-07T23:30:00", "2026-06-09T00:00:00", "2026-06-10T00:00:00"])
+        self.assertEqual(self._b(st, ["2026-06-08T12:00:00", "2026-06-09T12:00:00"]),
+                         [["2026-06-08T00:00:00", "2026-06-09T00:00:00"],
+                          ["2026-06-09T00:30:00", "2026-06-10T00:00:00"]])
+
+    def test_no_block_after_runs_to_the_last_finished_half_hour(self):
+        st = _st(["2026-10-17T23:30:00"])
+        self.assertEqual(self._b(st, ["2026-10-18T03:00:00"]),
+                         [["2026-10-18T00:00:00", "2026-10-18T12:00:00"]])
+
+    def test_a_present_half_hour_is_in_no_gap(self):
+        st = _st(["2026-06-07T23:30:00", "2026-06-08T00:00:00"])
+        self.assertEqual(self._b(st, ["2026-06-08T00:00:00"]), [])
+
+    def test_before_the_oldest_block_is_not_a_gap(self):
+        """Octopus's history row, not a gap."""
+        st = _st(["2026-06-08T00:00:00"])
+        self.assertEqual(self._b(st, ["2026-06-01T00:00:00"]), [])
+
+    def test_the_store_reads_the_neighbours(self):
+        st = _st(["2026-06-07T23:30:00", "2026-07-01T00:00:00"])
+        self.assertEqual(st.get_neighbour_block_starts("electricity_main", "2026-06-20T00:00:00"),
+                         ("2026-06-07T23:30:00", "2026-07-01T00:00:00"))
+        self.assertEqual(st.get_neighbour_block_starts("electricity_main", "2026-08-01T00:00:00"),
+                         ("2026-07-01T00:00:00", None))
 
 
 class TheRunner(unittest.TestCase):

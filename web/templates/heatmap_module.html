@@ -610,7 +610,7 @@ window.EMTHeatmap = (function () {
     // selects a span — cells to cells, or days down the day column, across months; a right click
     // (a long press on touch) offers the cell's actions; the day column offers its day (§5.1).
     row.addEventListener('mousedown', function (ev) {
-      if (ev.button !== 0 || !state.canRefetch) return;
+      if (ev.button !== 0) return;
       var h = hitCell(p, ev); if (!h) return;
       state.drag = {p: p, h: h, span: null};
       ev.preventDefault();                         // no text selection while dragging
@@ -622,7 +622,7 @@ window.EMTHeatmap = (function () {
       if (h.fold) { expandFold(h.fold); return; }
       if (h.tot) { dayBarPick(p, h.day, ev); return; }
       markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
-      if (isMissing(p.grid[h.day].slots[h.ci])) { openMissing(p.grid[h.day].slots[h.ci], h.day + ' ' + h.label, p, h.day); return; }
+      if (isMissing(p.grid[h.day].slots[h.ci])) { openMissing(p.grid[h.day].slots[h.ci], h.day + ' ' + h.label); return; }
       openPanel(h.starts, h.day + ' ' + h.label);
     });
     row.addEventListener('contextmenu', function (ev) {
@@ -633,18 +633,16 @@ window.EMTHeatmap = (function () {
       markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
       var hc = p.grid[h.day].slots[h.ci];
       var items = [{text: 'Show details', run: function () {
-        if (isMissing(hc)) openMissing(hc, h.day + ' ' + h.label, p, h.day); else openPanel(h.starts, h.day + ' ' + h.label); }}];
+        if (isMissing(hc)) openMissing(hc, h.day + ' ' + h.label); else openPanel(h.starts, h.day + ' ' + h.label); }}];
       if (state.canRefetch) {
         items.push({text: 'Re-fetch this half-hour from Octopus\u2026', run: function () {
           openRefetch(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label); }});
         var dr = dayRange(p, h.day);
         if (dr) items.push({text: 'Re-fetch ' + h.day + ' from Octopus\u2026', run: function () {
           markSelection(dr[0], dr[1]); openRefetch(dr[0], dr[1], h.day); }});
-        var fc = fillItem(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label);
-        if (fc) items.push(fc);
-        var fd = dr && fillItem(dr[0], dr[1], h.day);
-        if (fd && (!fc || fd.n > fc.n)) items.push(fd);
       }
+      var fc = fillItem(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label);
+      if (fc) items.push(fc);
       showMenu(ev, items, h.day + ' ' + h.label);
     });
   }
@@ -684,12 +682,12 @@ window.EMTHeatmap = (function () {
   // the cells (decided on the Pi, 14 Oct 2026: a first version kept a picked day for a second
   // tap to close a range, and a tap on 10 Oct quietly closed one from 10 Aug).
   function dayBarPick(p, day, ev) {
-    if (!state.canRefetch) return;
     var dr = dayRange(p, day); if (!dr) return;
-    markSelection(dr[0], dr[1]);
-    var items = [{text: 'Re-fetch ' + day + ' from Octopus\u2026', run: function () {
-      openRefetch(dr[0], dr[1], day); }}];
+    var items = state.canRefetch ? [{text: 'Re-fetch ' + day + ' from Octopus\u2026', run: function () {
+      openRefetch(dr[0], dr[1], day); }}] : [];
     var fd = fillItem(dr[0], dr[1], day); if (fd) items.push(fd);
+    if (!items.length) return;
+    markSelection(dr[0], dr[1]);
     showMenu(ev, items, day);
   }
   // What a click, drag, day or range refers to, outlined on the grid while its menu or dialog is
@@ -738,9 +736,10 @@ window.EMTHeatmap = (function () {
     var sp = d.span;
     state.dragEnded = true;                        // the click that follows is this release
     setTimeout(function () { state.dragEnded = false; }, 0);
-    var items = [{text: 'Re-fetch ' + sp.label + ' from Octopus\u2026', run: function () {
-      openRefetch(sp.from, sp.to, sp.label); }}];
+    var items = state.canRefetch ? [{text: 'Re-fetch ' + sp.label + ' from Octopus\u2026', run: function () {
+      openRefetch(sp.from, sp.to, sp.label); }}] : [];
     var fs = fillItem(sp.from, sp.to, sp.label); if (fs) items.push(fs);
+    if (!items.length) { clearSelection(); return; }
     showMenu(ev, items, sp.label);
   });
   function clearSelection() {
@@ -972,56 +971,93 @@ window.EMTHeatmap = (function () {
     return runs.reduce(function (n, r) { return n + Math.round((Date.parse(r[1] + 'Z') - Date.parse(r[0] + 'Z')) / 1800e3); }, 0);
   }
   function hh(n) { return n + ' half-hour' + (n === 1 ? '' : 's'); }
-  // the menu's "Fill … from Octopus…" — only where the selection holds a missing half-hour
+  // the menu's "Fill this gap…" — where the selection holds a missing half-hour. Any half-hour
+  // selected in a gap means the whole gap (decided 18 Oct 2026, the user): the server finds its
+  // bounds. No supplier API needed — a gap fills from a CSV or the PDF bills too.
   function fillItem(from, to, label) {
-    if (!state.canRefetch) return null;
-    var runs = missingRuns(from, to), n = runsCount(runs);
-    if (!n) return null;
-    return {n: n, text: (n === 1 ? 'Fill this missing half-hour' : 'Fill ' + n + ' missing half-hours in ' + label) +
-                         ' from Octopus\u2026',
-            run: function () { openGapFill(runs, label); }};
+    var runs = missingRuns(from, to);
+    if (!runs.length) return null;
+    return {n: runsCount(runs), text: runs.length === 1 ? 'Fill this gap…' : 'Fill these ' + runs.length + ' gaps…',
+            run: function () { openGapFill(runs.map(function (r) { return r[0]; }), label); }};
   }
   var FILL_GOING = {claimed: 1, running: 1, paused: 1, rate_limited: 1, finalising: 1};
   var FILL_PHASE = {importing: 'asking Octopus', finalising: 'finishing', recovering_prices: 'pricing the new half-hours'};
-  function openGapFill(runs, label) {
-    var from = runs[0][0], to = runs[runs.length - 1][1];
-    state.dialogOpen = true; markSelection(from, to);
-    var el = panelEl(), before = null;
+  function gapText(g) {
+    return esc(localTime(g.from)) + ' → ' + esc(localTime(g.to)) + ' · ' + hh(g.missing) +
+           (g.deleted ? ' · ' + g.deleted + ' deleted by you' : '');
+  }
+  function openGapFill(ats, label) {
+    state.dialogOpen = true;
+    var el = panelEl(), gaps = [], from = null, to = null, before = null;
     function box(inner, buttons) {
-      el.innerHTML = '<div class="hm-panel-box" role="dialog" aria-label="Fill from Octopus">' +
-        '<div class="hm-panel-head"><b>Fill from Octopus \u2014 ' + esc(label) + '</b>' +
-        '<button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' + inner +
+      el.innerHTML = '<div class="hm-panel-box" role="dialog" aria-label="Fill the gap">' +
+        '<div class="hm-panel-head"><b>' + (gaps.length > 1 ? 'Fill ' + gaps.length + ' gaps' : 'Fill the gap') + '</b>' +
+        '<button class="hm-x" data-close="1" aria-label="Close">✕</button></div>' + inner +
         '<div class="hm-actions">' + (buttons || '') + '</div></div>';
       el.style.display = 'flex';
     }
     var close = '<button class="hm-btn" data-close="1">Close</button>';
     function fail(e) { box('<p class="hm-bad">' + esc(e.message) + '</p>', close); }
-    box('<p>Counting the missing half-hours\u2026 nothing is changed.</p>');
-    postJSON('/api/gaps/fill/preview', {runs: runs}).then(function (r) {
-      if (!r.ok) throw new Error(r.error || 'the preview failed');
-      before = r;
-      var t = r.total || {}, out = [];
-      out.push('<p>' + hh(t.missing || 0) + ' missing' +
-               (t.deleted ? ', ' + t.deleted + ' of them deleted by you \u2014 filling brings ' +
-                (t.deleted === 1 ? 'it' : 'them') + ' back' : '') + '.</p>');
-      var left = [];
-      if (t.too_recent) left.push(hh(t.too_recent) + ' too recent: Octopus has not settled ' +
-                                  (t.too_recent === 1 ? 'it' : 'them') + ' yet (under 48 hours)');
-      if (t.too_old) left.push(hh(t.too_old) + ' too old: beyond the two years Octopus keeps');
-      if (left.length) out.push('<p class="hm-note2">Left out: ' + left.map(esc).join('; ') + '.</p>');
-      if (!t.fillable) { box(out.join('') + '<p>Nothing here can be filled from Octopus.</p>', close); return; }
-      var sz = Object.keys(r.size || {}).map(function (ch) {
-        var z = r.size[ch]; return esc(ch) + ' ' + hh(z.half_hours) + ' (' + z.chunks + ' request' + (z.chunks === 1 ? '' : 's') + ')';
-      }).join(', ');
-      out.push('<p>Fill ' + hh(t.fillable) + ' in ' + r.fill_runs.length + ' run' + (r.fill_runs.length === 1 ? '' : 's') +
-               ' \u2014 ' + sz + '.</p><p class="hm-note2">Fill writes only half-hours EMT has no block for, after ' +
-               'a safety backup. Their bills follow from Octopus.</p>');
-      box(out.join(''), '<button class="hm-btn hm-primary" data-act="apply">Fill</button>' +
-                        '<button class="hm-btn" data-close="1">Cancel</button>');
-      el.querySelector('[data-act="apply"]').onclick = function () { apply(r.token); };
+    function gapList() {
+      return '<ul class="hm-gaps">' + gaps.map(function (g) { return '<li>' + gapText(g) + '</li>'; }).join('') + '</ul>';
+    }
+    box('<p>Finding the gap…</p>');
+    postJSON('/api/gaps/around', {at: ats}).then(function (r) {
+      if (!r.ok) throw new Error(r.error || 'could not find the gap');
+      gaps = r.gaps || [];
+      if (!gaps.length) { box('<p>This is not inside a gap EMT can fill.</p>', close); return; }
+      from = gaps[0].from; to = gaps[gaps.length - 1].to; markSelection(from, to);
+      choose();
     }).catch(fail);
+    // where the data comes from: three separate choices, each saying what it does
+    function choose() {
+      var fillable = gaps.reduce(function (n, g) { return n + g.fillable; }, 0), one = gaps.length === 1;
+      function card(act, title, what, off) {
+        return '<button class="hm-src" data-src="' + act + '"' + (off ? ' disabled' : '') + '><b>' + title +
+               '</b><span>' + (off || what) + '</span></button>';
+      }
+      var oneOnly = one ? '' : 'One gap at a time — select a single gap to fill it this way.';
+      box(gapList() + '<p class="hm-note2">Where should the data come from?</p><div class="hm-srcs">' +
+          (state.canRefetch ? card('api', 'From Octopus (API)', 'EMT asks Octopus for the missing half-hours. ' +
+                                   hh(fillable) + ' can be filled now.',
+                                   fillable ? '' : 'Nothing here Octopus can fill — too recent, or beyond its two years.') : '') +
+          card('csv', 'From a CSV', 'Download this gap’s pre-filled templates, add your figures, upload them.', oneOnly) +
+          card('bills', 'From Octopus PDF bills', 'EMT reads your bills and builds the CSVs for you.', oneOnly) +
+          '</div>', '<button class="hm-btn" data-close="1">Cancel</button>');
+      el.querySelectorAll('.hm-src').forEach(function (b) {
+        b.onclick = function () {
+          if (b.disabled) return;
+          if (b.dataset.src === 'api') preview(); else openFillHistory(gaps[0], b.dataset.src);
+        };
+      });
+    }
+    function preview() {
+      box(gapList() + '<p>Counting… nothing is changed.</p>');
+      postJSON('/api/gaps/fill/preview', {runs: gaps.map(function (g) { return [g.from, g.to]; })}).then(function (r) {
+        if (!r.ok) throw new Error(r.error || 'the preview failed');
+        before = r;
+        var t = r.total || {}, out = [gapList()];
+        out.push('<p><b>From Octopus (API)</b></p>');
+        if (t.deleted) out.push('<p>' + hh(t.deleted) + ' of it you deleted — filling brings ' +
+                                (t.deleted === 1 ? 'it' : 'them') + ' back.</p>');
+        var left = [];
+        if (t.too_recent) left.push(hh(t.too_recent) + ' too recent: Octopus has not settled ' +
+                                    (t.too_recent === 1 ? 'it' : 'them') + ' yet (under 48 hours)');
+        if (t.too_old) left.push(hh(t.too_old) + ' too old: beyond the two years Octopus keeps');
+        if (left.length) out.push('<p class="hm-note2">Left out: ' + left.map(esc).join('; ') + '.</p>');
+        var sz = Object.keys(r.size || {}).map(function (ch) {
+          var z = r.size[ch]; return esc(ch) + ' ' + hh(z.half_hours) + ' (' + z.chunks + ' request' + (z.chunks === 1 ? '' : 's') + ')';
+        }).join(', ');
+        out.push('<p>Fill ' + hh(t.fillable) + ' — ' + sz + '.</p><p class="hm-note2">Fill writes only half-hours EMT ' +
+                 'has no block for, after a safety backup. Their bills follow from Octopus.</p>');
+        box(out.join(''), '<button class="hm-btn" data-act="back">Back</button>' +
+                          '<button class="hm-btn hm-primary" data-act="apply">Fill</button>');
+        el.querySelector('[data-act="back"]').onclick = choose;
+        el.querySelector('[data-act="apply"]').onclick = function () { apply(r.token); };
+      }).catch(fail);
+    }
     function apply(token) {
-      box('<p>Taking a safety backup\u2026</p>');
+      box('<p>Taking a safety backup…</p>');
       postJSON('/api/gaps/fill/apply', {token: token}).then(function (r) {
         if (!r.ok) throw new Error(r.error || 'the fill did not start');
         return follow();
@@ -1037,9 +1073,9 @@ window.EMTHeatmap = (function () {
             if (FILL_GOING[s.status] && s.runs) {
               seen = true;
               var done = s.runs.filter(function (x) { return x.status === 'done'; }).length;
-              box('<p>Filling \u2014 ' + esc(FILL_PHASE[s.phase] || s.phase || s.status) +
+              box('<p>Filling — ' + esc(FILL_PHASE[s.phase] || s.phase || s.status) +
                   (s.status === 'rate_limited' ? ' (Octopus asked EMT to slow down; it carries on)' : '') +
-                  '\u2026</p><p class="hm-note2">' + done + ' of ' + s.runs.length + ' run' +
+                  '…</p><p class="hm-note2">' + done + ' of ' + s.runs.length + ' run' +
                   (s.runs.length === 1 ? '' : 's') + ' done.</p>',
                   '<button class="hm-btn" data-act="stop">Stop</button>');
               el.querySelector('[data-act="stop"]').onclick = function () {
@@ -1066,6 +1102,32 @@ window.EMTHeatmap = (function () {
         reloadRange(from, to);
       });
     }
+  }
+  // The CSV and PDF routes: the Fill History page itself, as a modal over the heatmap, opened on
+  // this gap (decided 18 Oct 2026, the user) — its templates, upload, review and apply, not a
+  // copy of them. Closing it redraws what changed.
+  function openFillHistory(g, source) {
+    panelEl().style.display = 'none';
+    var m = document.createElement('div'); m.className = 'hm-modal';
+    m.innerHTML = '<div class="hm-modal-box" role="dialog" aria-label="Fill the gap">' +
+      '<div class="hm-panel-head"><b>Fill the gap — ' + gapText(g) + '</b>' +
+      '<button class="hm-x" data-close="1" aria-label="Close">✕</button></div>' +
+      '</div>';
+    // built, not written as markup: the Charts page carries no pre-rendered chart frames (C §3a),
+    // and this is not one — it is a whole EMT page, the Fill History tool
+    var f = document.createElement('iframe'); f.className = 'hm-modal-frame'; f.title = 'Fill History';
+    m.firstChild.appendChild(f);
+    f.src = apiUrl('/historical-import?embed=1&source=' + encodeURIComponent(source) +
+      '&gap_from=' + encodeURIComponent(g.from) + '&gap_to=' + encodeURIComponent(g.to));
+    function shut() {
+      m.remove(); state.dialogOpen = false; clearSelection();
+      document.removeEventListener('keydown', esc1);
+      refresh();
+    }
+    function esc1(e) { if (e.key === 'Escape') shut(); }
+    m.addEventListener('click', function (e) { if (e.target === m || e.target.dataset.close) shut(); });
+    document.addEventListener('keydown', esc1);
+    document.body.appendChild(m);
   }
 
   // ── the settlement detail panel (design §4): the evidence for one half-hour ──
@@ -1143,25 +1205,21 @@ window.EMTHeatmap = (function () {
     if (rb) rb.onclick = function () { openRefetch(d.start, d.end, label); };
   }
   // a missing half-hour has no block, so no detail to fetch: say what it is
-  function openMissing(c, label, p, day) {
+  function openMissing(c, label) {
     var el = panelEl();
-    var g = (c && c.gaps) || [], fc = g.length && fillItem(g[0], plus30(g[g.length - 1]), label);
-    var dr = p && day ? dayRange(p, day) : null, fd = dr && fillItem(dr[0], dr[1], day);
-    if (fd && fc && fd.n <= fc.n) fd = null;
+    var g = (c && c.gaps) || [], fc = g.length ? fillItem(g[0], plus30(g[g.length - 1]), label) : null;
     el.innerHTML = '<div class="hm-panel-box"><div class="hm-panel-head"><b>' + esc(label) +
                    '</b><button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' +
                    '<p>' + (c && c.deleted ? 'Deleted on ' + esc(c.deleted) + ' \u2014 there is no block for this ' +
                    'half-hour.' : 'EMT holds no block for this half-hour: it was never recorded, or not ' +
                    'imported.') + '</p>' +
-                   (fc ? '<div class="hm-actions">' + (fd ? '<button class="hm-btn" data-act="fillday">' +
-                         esc(fd.text) + '</button>' : '') +
-                         '<button class="hm-btn hm-primary" data-act="fill">Fill from Octopus\u2026</button></div>' : '') +
+                   (fc ? '<div class="hm-actions"><button class="hm-btn" data-close="1">Close</button>' +
+                         '<button class="hm-btn hm-primary" data-act="fill">Fill this gap\u2026</button></div>' : '') +
                    '</div>';
     el.style.display = 'flex';
-    var b1 = el.querySelector('[data-act="fill"]'); if (b1) b1.onclick = fc.run;
-    var b2 = el.querySelector('[data-act="fillday"]'); if (b2) b2.onclick = function () {
-      markSelection(dr[0], dr[1]); fd.run(); };
+    var b = el.querySelector('[data-act="fill"]'); if (b) b.onclick = fc.run;
   }
+
   function openPanel(starts, label) {
     var el = panelEl();
     el.innerHTML = '<div class="hm-panel-box"><div class="hm-panel-head"><b>' + esc(label) +
@@ -1442,6 +1500,20 @@ window.EMTHeatmap = (function () {
                   padding:8px 10px; font-size:13px; border-radius:6px; cursor:pointer; }
   .hm-menu-item:hover { background:rgba(127,127,127,.15); }
   .hm-menu-hint { font-size:12px; color:var(--muted, #6b7080); padding:6px 10px; }
+  .hm-gaps { margin:0 0 10px; padding-left:18px; }
+  .hm-srcs { display:flex; flex-direction:column; gap:8px; }
+  .hm-src { display:flex; flex-direction:column; gap:2px; text-align:left; padding:10px 12px; cursor:pointer;
+            background:none; color:var(--text, #e8eaf0); border:1px solid var(--border, #2a2d3a); border-radius:8px;
+            font-size:13px; }
+  .hm-src:hover:not([disabled]) { border-color:var(--accent, #3b82f6); background:rgba(127,127,127,.08); }
+  .hm-src span { color:var(--muted, #6b7080); font-size:12px; }
+  .hm-src[disabled] { opacity:.55; cursor:default; }
+  .hm-modal { position:fixed; inset:0; z-index:65; display:flex; align-items:center; justify-content:center;
+              background:rgba(0,0,0,.45); padding:16px; }
+  .hm-modal-box { background:var(--surface, #1a1d27); color:var(--text, #e8eaf0); border:1px solid var(--border, #2a2d3a);
+                  border-radius:10px; padding:12px 14px; width:min(960px, 100%); height:min(860px, 92vh);
+                  display:flex; flex-direction:column; box-shadow:0 8px 24px rgba(0,0,0,.35); font-size:13px; }
+  .hm-modal-frame { flex:1; width:100%; border:0; border-radius:6px; background:var(--bg, #0f1117); }
   .hm-reach { margin:10px 0 4px; padding:10px 12px; border:1px dashed var(--border, #2a2d3a); border-radius:8px;
               font-size:13px; color:var(--muted, #6b7080); text-align:center; }
   .hm-reach a { color:var(--accent, #3b82f6); }
