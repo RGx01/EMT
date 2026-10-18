@@ -418,6 +418,20 @@ def _build_schedule_and_diag(records, product_code, tariff_code, vat):
 _AGREEMENT_SCHED_CACHE: dict = {}
 
 
+def _agreement_ended(ag_vt) -> bool:
+    """Whether an agreement is over — its `valid_to` (naive-UTC iso) is in the past — so its
+    schedule can no longer change and may be cached for the life of the process.
+
+    Having a `valid_to` is not enough (18 Oct 2026, the Pi): a fixed-term agreement still in force
+    has one, and IOG-SMB's windows are synthesised only up to now + `_IOG_SYNTH_HORIZON_DAYS`
+    (BL-52), so the copy cached when the process started stopped two days later. v4's process ran
+    from the 4.5.23 install on 12 Oct; its schedule stopped at 14 Oct, and every bill from 15 Oct
+    was refused for want of a rate."""
+    if not ag_vt:
+        return False
+    return str(ag_vt) <= datetime.now(timezone.utc).replace(tzinfo=None, microsecond=0).isoformat()
+
+
 def _clip_periods(periods, ag_vf, ag_vt):
     """Clip (vfrom, vto, rate) periods to the agreement window [ag_vf, ag_vt)."""
     out = []
@@ -458,7 +472,7 @@ async def build_agreement_stitched_schedule(client, agreements, *, vat) -> "Rate
                 ag_vt = normalise_to_naive_utc(vt_raw)
             except ValueError:
                 ag_vt = None
-        is_open = ag_vt is None
+        is_open = not _agreement_ended(ag_vt)        # running, or open-ended: rebuilt every refresh
         ckey = (tc, vf_raw, vt_raw)
         ag_sched = None if is_open else _AGREEMENT_SCHED_CACHE.get(ckey)
         if ag_sched is None:
@@ -732,7 +746,7 @@ async def build_ev_device_stitched(client, agreements, *, vat) -> tuple:
         except ValueError:
             continue
         ckey = (tc, vf_raw, vt_raw)
-        pair = None if ag_vt is None else _EV_DEVICE_SCHED_CACHE.get(ckey)
+        pair = _EV_DEVICE_SCHED_CACHE.get(ckey) if _agreement_ended(ag_vt) else None
         if pair is None:
             pc = ttp(tc) if ttp else None
             if not pc:
@@ -740,7 +754,7 @@ async def build_ev_device_stitched(client, agreements, *, vat) -> tuple:
                 continue
             pair = await build_ev_device_schedules(client, pc, tc, vat=NO_VAT,
                                                    period_from=vf_raw, period_to=vt_raw)
-            if ag_vt is not None and not (pair[0].is_empty() or pair[1].is_empty()):
+            if _agreement_ended(ag_vt) and not (pair[0].is_empty() or pair[1].is_empty()):
                 _EV_DEVICE_SCHED_CACHE[ckey] = pair
         o, p = pair
         if o.is_empty() or p.is_empty():
