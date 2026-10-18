@@ -270,6 +270,7 @@ window.EMTHeatmap = (function () {
       var c = d.slots[lp.slot] || (d.slots[lp.slot] = {kwh: null, co2: null, int: null});
       c.missing = (c.missing || 0) + 1;
       (c.starts || (c.starts = [])).push(iso);
+      (c.gaps || (c.gaps = [])).push(iso);                     // which of them: what a fill asks for
       var del = (M.deleted || []).filter(function (r) { return iso >= r.start_utc && iso < r.end_utc; })[0];
       if (del) c.deleted = (del.created_at || '').slice(0, 10) || 'yes';
       Object.keys(SETTLE_METRICS).forEach(function (k) {
@@ -621,7 +622,7 @@ window.EMTHeatmap = (function () {
       if (h.fold) { expandFold(h.fold); return; }
       if (h.tot) { dayBarPick(p, h.day, ev); return; }
       markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
-      if (isMissing(p.grid[h.day].slots[h.ci])) { openMissing(p.grid[h.day].slots[h.ci], h.day + ' ' + h.label); return; }
+      if (isMissing(p.grid[h.day].slots[h.ci])) { openMissing(p.grid[h.day].slots[h.ci], h.day + ' ' + h.label, p, h.day); return; }
       openPanel(h.starts, h.day + ' ' + h.label);
     });
     row.addEventListener('contextmenu', function (ev) {
@@ -632,13 +633,17 @@ window.EMTHeatmap = (function () {
       markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
       var hc = p.grid[h.day].slots[h.ci];
       var items = [{text: 'Show details', run: function () {
-        if (isMissing(hc)) openMissing(hc, h.day + ' ' + h.label); else openPanel(h.starts, h.day + ' ' + h.label); }}];
+        if (isMissing(hc)) openMissing(hc, h.day + ' ' + h.label, p, h.day); else openPanel(h.starts, h.day + ' ' + h.label); }}];
       if (state.canRefetch) {
         items.push({text: 'Re-fetch this half-hour from Octopus\u2026', run: function () {
           openRefetch(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label); }});
         var dr = dayRange(p, h.day);
         if (dr) items.push({text: 'Re-fetch ' + h.day + ' from Octopus\u2026', run: function () {
           markSelection(dr[0], dr[1]); openRefetch(dr[0], dr[1], h.day); }});
+        var fc = fillItem(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label);
+        if (fc) items.push(fc);
+        var fd = dr && fillItem(dr[0], dr[1], h.day);
+        if (fd && (!fc || fd.n > fc.n)) items.push(fd);
       }
       showMenu(ev, items, h.day + ' ' + h.label);
     });
@@ -682,8 +687,10 @@ window.EMTHeatmap = (function () {
     if (!state.canRefetch) return;
     var dr = dayRange(p, day); if (!dr) return;
     markSelection(dr[0], dr[1]);
-    showMenu(ev, [{text: 'Re-fetch ' + day + ' from Octopus\u2026', run: function () {
-      openRefetch(dr[0], dr[1], day); }}], day);
+    var items = [{text: 'Re-fetch ' + day + ' from Octopus\u2026', run: function () {
+      openRefetch(dr[0], dr[1], day); }}];
+    var fd = fillItem(dr[0], dr[1], day); if (fd) items.push(fd);
+    showMenu(ev, items, day);
   }
   // What a click, drag, day or range refers to, outlined on the grid while its menu or dialog is
   // open — the cells whose half-hour falls in [from, to), one outline per run of a day's cells.
@@ -731,8 +738,10 @@ window.EMTHeatmap = (function () {
     var sp = d.span;
     state.dragEnded = true;                        // the click that follows is this release
     setTimeout(function () { state.dragEnded = false; }, 0);
-    showMenu(ev, [{text: 'Re-fetch ' + sp.label + ' from Octopus\u2026', run: function () {
-      openRefetch(sp.from, sp.to, sp.label); }}], sp.label);
+    var items = [{text: 'Re-fetch ' + sp.label + ' from Octopus\u2026', run: function () {
+      openRefetch(sp.from, sp.to, sp.label); }}];
+    var fs = fillItem(sp.from, sp.to, sp.label); if (fs) items.push(fs);
+    showMenu(ev, items, sp.label);
   });
   function clearSelection() {
     document.querySelectorAll('.hm-sel').forEach(function (x) { x.remove(); });
@@ -937,6 +946,128 @@ window.EMTHeatmap = (function () {
     });
   }
 
+  // ── gap fill (gap fill design §1–§4): the selection's missing half-hours, from Octopus ──
+  // The missing half-hours in [from, to) of every loaded month, as contiguous runs [from, to) —
+  // the cells markMissing hatched, not the whole selection: asking Octopus for half-hours EMT
+  // already holds spends the rate limit for nothing (§1). The server counts them again.
+  function missingRuns(from, to) {
+    var all = {};
+    Object.keys(state.panels).forEach(function (k) {
+      var p = state.panels[k], g = p.grid || (state.months[k] ? (p.grid = monthGrid(k)) : null);
+      if (!g) return;
+      Object.keys(g).forEach(function (d) {
+        g[d].slots.forEach(function (c) {
+          (c && c.gaps || []).forEach(function (x) { if (x >= from && x < to) all[x] = 1; });
+        });
+      });
+    });
+    var runs = [];
+    Object.keys(all).sort().forEach(function (x) {
+      var r = runs[runs.length - 1];
+      if (r && r[1] === x) r[1] = plus30(x); else runs.push([x, plus30(x)]);
+    });
+    return runs;
+  }
+  function runsCount(runs) {
+    return runs.reduce(function (n, r) { return n + Math.round((Date.parse(r[1] + 'Z') - Date.parse(r[0] + 'Z')) / 1800e3); }, 0);
+  }
+  function hh(n) { return n + ' half-hour' + (n === 1 ? '' : 's'); }
+  // the menu's "Fill … from Octopus…" — only where the selection holds a missing half-hour
+  function fillItem(from, to, label) {
+    if (!state.canRefetch) return null;
+    var runs = missingRuns(from, to), n = runsCount(runs);
+    if (!n) return null;
+    return {n: n, text: (n === 1 ? 'Fill this missing half-hour' : 'Fill ' + n + ' missing half-hours in ' + label) +
+                         ' from Octopus\u2026',
+            run: function () { openGapFill(runs, label); }};
+  }
+  var FILL_GOING = {claimed: 1, running: 1, paused: 1, rate_limited: 1, finalising: 1};
+  var FILL_PHASE = {importing: 'asking Octopus', finalising: 'finishing', recovering_prices: 'pricing the new half-hours'};
+  function openGapFill(runs, label) {
+    var from = runs[0][0], to = runs[runs.length - 1][1];
+    state.dialogOpen = true; markSelection(from, to);
+    var el = panelEl(), before = null;
+    function box(inner, buttons) {
+      el.innerHTML = '<div class="hm-panel-box" role="dialog" aria-label="Fill from Octopus">' +
+        '<div class="hm-panel-head"><b>Fill from Octopus \u2014 ' + esc(label) + '</b>' +
+        '<button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' + inner +
+        '<div class="hm-actions">' + (buttons || '') + '</div></div>';
+      el.style.display = 'flex';
+    }
+    var close = '<button class="hm-btn" data-close="1">Close</button>';
+    function fail(e) { box('<p class="hm-bad">' + esc(e.message) + '</p>', close); }
+    box('<p>Counting the missing half-hours\u2026 nothing is changed.</p>');
+    postJSON('/api/gaps/fill/preview', {runs: runs}).then(function (r) {
+      if (!r.ok) throw new Error(r.error || 'the preview failed');
+      before = r;
+      var t = r.total || {}, out = [];
+      out.push('<p>' + hh(t.missing || 0) + ' missing' +
+               (t.deleted ? ', ' + t.deleted + ' of them deleted by you \u2014 filling brings ' +
+                (t.deleted === 1 ? 'it' : 'them') + ' back' : '') + '.</p>');
+      var left = [];
+      if (t.too_recent) left.push(hh(t.too_recent) + ' too recent: Octopus has not settled ' +
+                                  (t.too_recent === 1 ? 'it' : 'them') + ' yet (under 48 hours)');
+      if (t.too_old) left.push(hh(t.too_old) + ' too old: beyond the two years Octopus keeps');
+      if (left.length) out.push('<p class="hm-note2">Left out: ' + left.map(esc).join('; ') + '.</p>');
+      if (!t.fillable) { box(out.join('') + '<p>Nothing here can be filled from Octopus.</p>', close); return; }
+      var sz = Object.keys(r.size || {}).map(function (ch) {
+        var z = r.size[ch]; return esc(ch) + ' ' + hh(z.half_hours) + ' (' + z.chunks + ' request' + (z.chunks === 1 ? '' : 's') + ')';
+      }).join(', ');
+      out.push('<p>Fill ' + hh(t.fillable) + ' in ' + r.fill_runs.length + ' run' + (r.fill_runs.length === 1 ? '' : 's') +
+               ' \u2014 ' + sz + '.</p><p class="hm-note2">Fill writes only half-hours EMT has no block for, after ' +
+               'a safety backup. Their bills follow from Octopus.</p>');
+      box(out.join(''), '<button class="hm-btn hm-primary" data-act="apply">Fill</button>' +
+                        '<button class="hm-btn" data-close="1">Cancel</button>');
+      el.querySelector('[data-act="apply"]').onclick = function () { apply(r.token); };
+    }).catch(fail);
+    function apply(token) {
+      box('<p>Taking a safety backup\u2026</p>');
+      postJSON('/api/gaps/fill/apply', {token: token}).then(function (r) {
+        if (!r.ok) throw new Error(r.error || 'the fill did not start');
+        return follow();
+      }).then(result).catch(fail);
+    }
+    // until the job ends; a status from before the fill began (the last run's) is not its end
+    function follow() {
+      var seen = false, polls = 0;
+      return new Promise(function (ok, bad) {
+        (function tick() {
+          fetchJSON('/api/gaps/fill/status').then(function (s) {
+            polls++;
+            if (FILL_GOING[s.status] && s.runs) {
+              seen = true;
+              var done = s.runs.filter(function (x) { return x.status === 'done'; }).length;
+              box('<p>Filling \u2014 ' + esc(FILL_PHASE[s.phase] || s.phase || s.status) +
+                  (s.status === 'rate_limited' ? ' (Octopus asked EMT to slow down; it carries on)' : '') +
+                  '\u2026</p><p class="hm-note2">' + done + ' of ' + s.runs.length + ' run' +
+                  (s.runs.length === 1 ? '' : 's') + ' done.</p>',
+                  '<button class="hm-btn" data-act="stop">Stop</button>');
+              el.querySelector('[data-act="stop"]').onclick = function () {
+                postJSON('/api/historical/api-import/control', {action: 'cancel'}); };
+              setTimeout(tick, 2000);
+            } else if (!seen && polls < 10) setTimeout(tick, 1000);
+            else ok(s);
+          }, function () { setTimeout(tick, 3000); });
+        })();
+      });
+    }
+    // what happened: counted again from the store — what is still missing, Octopus had no data for
+    function result(s) {
+      var lifted = (s.runs || []).reduce(function (n, x) { return n + (x.lifted || 0); }, 0);
+      postJSON('/api/gaps/fill/preview', {runs: before.fill_runs}).then(function (r) {
+        var asked = before.total.fillable, still = r.ok ? (r.total || {}).missing || 0 : null;
+        var msg = s.status === 'error' ? '<p class="hm-bad">The fill stopped: ' + esc(s.error || 'an error') + '.</p>'
+                : s.status === 'cancelled' ? '<p>Stopped.</p>' : '<p>Done.</p>';
+        msg += still === null ? '' : '<p>Filled ' + hh(asked - still) + ' of ' + asked + '.' +
+               (still ? ' ' + hh(still) + ' left missing: Octopus had no data for ' + (still === 1 ? 'it' : 'them') +
+                ' (a meter offline, or before the account).' : '') + '</p>';
+        if (lifted) msg += '<p class="hm-note2">Deleted ranges lifted: ' + lifted + '.</p>';
+        box(msg, close);
+        reloadRange(from, to);
+      });
+    }
+  }
+
   // ── the settlement detail panel (design §4): the evidence for one half-hour ──
   function esc(v) {
     return String(v === null || v === undefined ? '' : v).replace(/[&<>"]/g, function (c) {
@@ -1012,14 +1143,24 @@ window.EMTHeatmap = (function () {
     if (rb) rb.onclick = function () { openRefetch(d.start, d.end, label); };
   }
   // a missing half-hour has no block, so no detail to fetch: say what it is
-  function openMissing(c, label) {
+  function openMissing(c, label, p, day) {
     var el = panelEl();
+    var g = (c && c.gaps) || [], fc = g.length && fillItem(g[0], plus30(g[g.length - 1]), label);
+    var dr = p && day ? dayRange(p, day) : null, fd = dr && fillItem(dr[0], dr[1], day);
+    if (fd && fc && fd.n <= fc.n) fd = null;
     el.innerHTML = '<div class="hm-panel-box"><div class="hm-panel-head"><b>' + esc(label) +
                    '</b><button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' +
                    '<p>' + (c && c.deleted ? 'Deleted on ' + esc(c.deleted) + ' \u2014 there is no block for this ' +
                    'half-hour.' : 'EMT holds no block for this half-hour: it was never recorded, or not ' +
-                   'imported.') + '</p></div>';
+                   'imported.') + '</p>' +
+                   (fc ? '<div class="hm-actions">' + (fd ? '<button class="hm-btn" data-act="fillday">' +
+                         esc(fd.text) + '</button>' : '') +
+                         '<button class="hm-btn hm-primary" data-act="fill">Fill from Octopus\u2026</button></div>' : '') +
+                   '</div>';
     el.style.display = 'flex';
+    var b1 = el.querySelector('[data-act="fill"]'); if (b1) b1.onclick = fc.run;
+    var b2 = el.querySelector('[data-act="fillday"]'); if (b2) b2.onclick = function () {
+      markSelection(dr[0], dr[1]); fd.run(); };
   }
   function openPanel(starts, label) {
     var el = panelEl();
@@ -1119,6 +1260,7 @@ window.EMTHeatmap = (function () {
       if (i === 0) loadMonth(k);
       near.observe(el); far.observe(el);
     });
+    reachRow();
     redrawAll(false);
     // Theme: watch the attribute itself, so any toggle from any code path re-draws.
     new MutationObserver(function () { redrawAll(true); })
@@ -1131,6 +1273,22 @@ window.EMTHeatmap = (function () {
       if (root.clientWidth === lastW) return; lastW = root.clientWidth;
       clearTimeout(rt); rt = setTimeout(function () { redrawAll(false); }, 150);
     }).observe(root);
+  }
+
+  // Octopus's history before EMT's oldest block (decided 18 Oct 2026, the user): its own row below
+  // the oldest month, not hatched and not an issue — never recorded is not missing. It links to the
+  // Historical import's API import, which fills it.
+  function reachRow() {
+    var wrap = state.root && state.root.querySelector('.hm-months'); if (!wrap) return;
+    var el = wrap.querySelector('.hm-reach'), r = (state.bounds || {}).reach_from;
+    if (!(state.canRefetch && r)) { if (el) el.remove(); return; }
+    if (!el) { el = document.createElement('div'); el.className = 'hm-reach'; }
+    wrap.appendChild(el);                                         // after the oldest month
+    var d = '';
+    try { d = new Intl.DateTimeFormat('en-GB', {timeZone: state.tz, day: 'numeric', month: 'long', year: 'numeric'})
+                .format(new Date(r + 'Z')); } catch (e) { d = r.slice(0, 10); }
+    el.innerHTML = 'Octopus holds your data back to <b>' + esc(d) + '</b> \u2014 ' +
+                   '<a href="' + apiUrl('/historical-import#api-import-panel') + '">import it</a>';
   }
 
   function init(root) {
@@ -1173,6 +1331,8 @@ window.EMTHeatmap = (function () {
       // and left the older ones showing what they showed before (18 Oct 2026).
       if (state.epoch !== ep) {
         state.scale = null;
+        fetchJSON('/api/periods?kind=month').then(function (pp) {
+          state.bounds = (pp && pp.bounds) || state.bounds; reachRow(); }, function () {});
         return Promise.all(state.keys.map(function (o) {
           var p = state.panels[o];
           if (!p) return null;
@@ -1282,6 +1442,9 @@ window.EMTHeatmap = (function () {
                   padding:8px 10px; font-size:13px; border-radius:6px; cursor:pointer; }
   .hm-menu-item:hover { background:rgba(127,127,127,.15); }
   .hm-menu-hint { font-size:12px; color:var(--muted, #6b7080); padding:6px 10px; }
+  .hm-reach { margin:10px 0 4px; padding:10px 12px; border:1px dashed var(--border, #2a2d3a); border-radius:8px;
+              font-size:13px; color:var(--muted, #6b7080); text-align:center; }
+  .hm-reach a { color:var(--accent, #3b82f6); }
   .hm-tip { position:fixed; z-index:50; pointer-events:none; display:none; padding:6px 8px;
             border-radius:6px; font-size:12px; line-height:1.4; background:var(--surface, #1a1d27);
             color:var(--text, #e8eaf0); border:1px solid var(--border, #2a2d3a);
