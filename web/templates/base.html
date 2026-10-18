@@ -481,6 +481,9 @@
     EMT.instanceKey = ({{ instance_label|tojson }} || 'default')
       .replace(/[^A-Za-z0-9_-]/g, '_') || 'default';
     EMT.lsKey = function (name) { return name + '::' + EMT.instanceKey; };
+    // The build this page was served with (server.BUILD_ID): the change poll answers with the
+    // running one, and a page that differs is running old code (18 Oct 2026).
+    EMT.build = {{ build_id|default('')|tojson }};
     // Human-readable byte size (shared: backup-ready confirmations, file lists).
     EMT.fmtBytes = function (b) {
       if (b == null) return '';

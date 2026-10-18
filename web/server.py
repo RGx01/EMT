@@ -91,6 +91,27 @@ def _read_version() -> str:
 
 APP_VERSION = _read_version()
 
+
+def _read_build_id() -> str:
+    """What an open page needs to know it is stale (18 Oct 2026, the Pi): a short hash of the
+    version and every page template, worked out once at start. A page keeps running the code it
+    was served with across an add-on update — the heatmap's fix (#205) did nothing until the page
+    was reloaded — and dev builds share a version string, so the version alone cannot tell."""
+    import hashlib
+    h = hashlib.sha1(APP_VERSION.encode())
+    tdir = os.path.join(os.path.dirname(__file__), "templates")
+    try:
+        for name in sorted(os.listdir(tdir)):
+            if name.endswith(".html"):
+                with open(os.path.join(tdir, name), "rb") as f:
+                    h.update(name.encode()); h.update(f.read())
+    except Exception:
+        pass
+    return h.hexdigest()[:12]
+
+
+BUILD_ID = _read_build_id()
+
 # Per-instance display label for the footer. This is deliberately an INSTALL
 # identity, not a data one: it must NOT come from the database (site name lives
 # in the config-period chain and travels with a restore, so prod-dev restored
@@ -152,7 +173,8 @@ def inject_globals():
                 break
     except Exception:
         pass
-    return {"app_version": APP_VERSION, "has_power_sensor": has_power_sensor, "has_postcode": has_postcode,
+    return {"app_version": APP_VERSION, "build_id": BUILD_ID,
+            "has_power_sensor": has_power_sensor, "has_postcode": has_postcode,
             "server_port": int(os.environ.get("EMT_PORT") or "8099"),
             "instance_label": _instance_label()}
 
@@ -5771,7 +5793,9 @@ def api_energy():
             # token over the blocks, segments, config and epoch (_blocks_data_version).
             return jsonify({"fingerprint": {"token": _blocks_data_version(store),
                                             "epoch": store.get_data_epoch(),
-                                            "config": _config_token(store)}})
+                                            "config": _config_token(store)},
+                            # the running build, so an open page can tell it is stale
+                            "build": BUILD_ID})
         cfg = load_config()
         # `_config_timezone()` already exists (server.py:292) and takes NO
         # arguments — it re-reads the config and, unlike a naive first-meter
