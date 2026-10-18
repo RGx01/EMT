@@ -11930,6 +11930,34 @@ def _bill_ask(store, mpan: str) -> dict:
     return a
 
 
+# The same record for a half-hour whose cached bill is cost-only though the car drew in it
+# (teal): asked for its BREAKDOWN up to 30 days, then left as it is. Its own key, because the
+# bill-ask record forgets any half-hour with a cached bill (`_bill_ask`), and these all have one.
+_SPLIT_ASK_KEY = "split_ask"          # JSON {slot: {"first": iso, "gave_up": iso?}}
+
+
+def _split_ask(store) -> dict:
+    """The teal half-hours left unanswered, less any whose breakdown has since been cached."""
+    import json as _json
+    try:
+        a = _json.loads(store.get_kraken_state(_SPLIT_ASK_KEY) or "{}")
+        a = a if isinstance(a, dict) else {}
+    except (TypeError, ValueError):
+        a = {}
+    if a:
+        try:
+            have = store.get_bill_ev_kwh(sorted(a))
+            a = {s: e for s, e in a.items() if s not in have}
+        except Exception:
+            pass
+    return a
+
+
+def _split_ask_save(store, a: dict) -> None:
+    import json as _json
+    store.set_kraken_state(_SPLIT_ASK_KEY, _json.dumps(a, sort_keys=True))
+
+
 def _bill_ask_save(store, a: dict) -> None:
     import json as _json
     store.set_kraken_state(_BILL_ASK_KEY, _json.dumps(a, sort_keys=True))
@@ -12766,9 +12794,67 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
                 except Exception as e:
                     logger.warning("measured history drain: apply failed: %s", e)
             await asyncio.sleep(_MEASURED_HISTORY_DRAIN_PACE)
+    # The teal half-hours (18 Oct 2026, the user; bill and split paths design §7.2 reversed): on
+    # IOG-SMB, a cached bill that is cost-only though the car drew in the half-hour leaves the
+    # split EMT's. Ask the breakdown; an answer is stored and the half-hour re-settled from it,
+    # so the split is the bill's. The 4.5.23 hold-back judges it as any breakdown; unanswered, it
+    # is asked for up to 30 days (`split_ask`).
+    resplit = 0
+    for w_from, w_to, w_smb in _intelligent_windows():
+        if not w_smb:
+            continue
+        floor = _ask_floor(w_from)
+        cutoff = min(now_cut, w_to) if w_to else now_cut
+        cursor = ""
+        while cutoff > floor and batches < max_batches:
+            batches += 1
+            page = store.get_cost_only_split_slots(floor, cursor, cutoff, _MEASURED_MAX_PER_PASS)
+            if not page:
+                break
+            cursor = page[-1]
+            _wait = _bill_split_wait(store)
+            _wait_before = _snapshot(_wait)
+            _kept = _bill_split_kept(store, _wait)
+            _ask = _split_ask(store)
+            _ask_before = _snapshot(_ask)
+            _gone = _bill_ask_given_up(_ask)
+            ask = [s for s in page if s not in _kept and s not in _gone]
+            if ask:
+                _emt_ev = emt_ev_at(store, ask)
+                try:
+                    nodes = await _fetch_bill_nodes(mpan, ask)   # the breakdown, on IOG-SMB
+                except Exception as e:
+                    logger.warning("measured history drain: breakdown fetch failed: %s", e)
+                    break
+                _kwh = store.get_imp_kwh(ask)
+                for slot in ask:
+                    kind, node = nodes.get(slot, (None, None))
+                    row = parse_bill(node, kind, _kwh.get(slot))
+                    if row is None or row.get("zero") or not row.get("breakdown"):
+                        _bill_ask_unanswered(_ask, slot)
+                        continue
+                    _bill_ask_answered(_ask, slot)
+                    if _bill_drops_ev(_emt_ev.get(slot), row["breakdown"][2]):
+                        _bill_split_hold(_wait, slot)        # v4 4.5.23: keep EMT's split
+                        continue
+                    _bill_split_release(_wait, slot)
+                    _store_bill(store, slot, mpan, row)
+                    try:
+                        if apply_measured_to_block(slot, cost_incl=row["cost_incl"],
+                                                   cost_excl=row["cost_excl"], label=row["label"]):
+                            resplit += 1
+                    except Exception as e:
+                        logger.warning("measured history drain: re-settle failed for %s: %s", slot, e)
+            _save_changes(store, _wait_before, _wait, lambda: _bill_split_wait(store),
+                          _bill_split_wait_save)
+            _save_changes(store, _ask_before, _ask, lambda: _split_ask(store), _split_ask_save)
+            await asyncio.sleep(_MEASURED_HISTORY_DRAIN_PACE)
+    if resplit:
+        logger.info("measured history drain: %d half-hour(s) took the bill's House/EV split "
+                    "(their cached bill was cost-only)", resplit)
     if settled:
         logger.info("measured history drain: settled %d imported capped slot(s) from the bill", settled)
-    return {"ok": True, "settled": settled}
+    return {"ok": True, "settled": settled, "resplit": resplit}
 
 
 def _measured_history_backlog() -> int:
@@ -12786,10 +12872,18 @@ def _measured_history_backlog() -> int:
         _mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan") or ""
         _gone = _bill_ask_given_up(_bill_ask(store, _mpan), mark=False)
         _ex = set(_bill_split_wait(store)) | _gone
-        # each Intelligent agreement's window, as the drain walks them
-        return sum(int(store.count_settleable_blocks(_ask_floor(vf), min(cutoff, vt) if vt else cutoff,
-                                                     exclude=_ex, include_imported=smb))
-                   for vf, vt, smb in _intelligent_windows())
+        # each Intelligent agreement's window, as the drain walks them — and on IOG-SMB the teal
+        # half-hours whose cost-only bill is asked its breakdown (less any given up)
+        _sgone = _bill_ask_given_up(_split_ask(store), mark=False)
+        n = 0
+        for vf, vt, smb in _intelligent_windows():
+            lo, hi = _ask_floor(vf), (min(cutoff, vt) if vt else cutoff)
+            if hi <= lo:
+                continue
+            n += int(store.count_settleable_blocks(lo, hi, exclude=_ex, include_imported=smb))
+            if smb:
+                n += int(store.count_cost_only_split_slots(lo, hi, exclude=set(_ex) | _sgone))
+        return n
     except Exception:
         return 0
 
