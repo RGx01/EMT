@@ -363,8 +363,12 @@ tariff, and EMT knows only the dispatches it saw. #202 had made an undispatched 
 uncapped Intelligent agreement final at the schedule's rate, as on a published tariff; it was
 reverted. The half-hours it turned green (208 on the soak's `blocks-38`, pre-IOG-SMB July and
 August) are red because EMT never asks for their bills — off IOG-SMB the live pass asks only for
-the dispatched ones, from the IOG-SMB agreement's start — and the fix is to ask (the next PR), not
-to call them final.
+the dispatched ones, from the IOG-SMB agreement's start — and the fix is to ask, not to call them
+final. *Built 18 Oct 2026:* the drain walks every Intelligent agreement's window
+(`_intelligent_windows`; the breakdown on IOG-SMB, the billed cost elsewhere; off IOG-SMB not the
+imported history, which holds Octopus's cost), the floor is the earliest Intelligent agreement's
+start, the pill counts what the drain asks, and a bill before the current agreement is applied only
+where the schedule is stitched across the agreements (`_agreement_priced_ok`).
 | `differs` | a bill is held and the stored cost is not it (flags as §1.4) | the same, where a bill is held (an API import's, or one fetched before this rule) | red |
 | `corrected` | the user's rate correction | the same | blue |
 | `imported` | CSV history — a cost not from Octopus's API | the same | grey |
