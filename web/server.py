@@ -4046,6 +4046,17 @@ def _main_has_export() -> bool:
         return False
 
 
+def _main_has_export_sensor() -> bool:
+    """The main meter's export channel has a live read sensor, so a live export kWh is a reading.
+    Without one (API-only, the Mini feeds import only) it is not: finalise stores 0.0."""
+    try:
+        main = next((m for m in (load_config().get("meters") or {}).values()
+                     if not (m.get("meta") or {}).get("sub_meter")), {})
+        return bool(((main.get("channels") or {}).get("export") or {}).get("read"))
+    except Exception:
+        return False
+
+
 def _settlement_states(store, utc_start, utc_end) -> dict:
     """{block_start: {bill, export, split, flags}} for the main meter over [utc_start, utc_end)."""
     import engine as _eng
@@ -4058,7 +4069,8 @@ def _settlement_states(store, utc_start, utc_end) -> dict:
         smb=bool(_eng._import_is_smb_capped()), now=_dt.now(_tz.utc).replace(tzinfo=None),
         held=held, kept=kept, vat_at=_vc.rate_lookup(store.get_vat_calendar()),
         kind_at=_eng.tariff_kind_at, split_at=_eng.split_at,
-        export_channel=_main_has_export(), export_agreement_at=_eng.export_agreement_at)
+        export_channel=_main_has_export(), export_sensor=_main_has_export_sensor(),
+        export_agreement_at=_eng.export_agreement_at)
 
 
 @app.route("/api/billing-source", methods=["GET"])
