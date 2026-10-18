@@ -1,6 +1,6 @@
 # EMT v5 — Gap fill as an action on the heatmap's selection
 
-*Draft, 18 Oct 2026; §7 (a) decided the same day. The user, after the heatmap showed missing half-hours (#199) and folded the
+*Draft, 18 Oct 2026; §7 decided the same day. The user, after the heatmap showed missing half-hours (#199) and folded the
 clean days (#201): gap fill next, as a user-initiated action. Decided the same day: (a) it refills
 deleted half-hours too, the preview saying how many; (b) the Historical import page's gap list
 stays, a deep link to the heatmap later. Every line below was read in the code or queried on
@@ -95,7 +95,7 @@ is `imported_api`, so its Import bill reads green (Octopus's own billed cost).
 2. **Heatmap**: the menu item where the selection holds a missing half-hour, the dialog (preview,
    progress, result), the redraw.
 
-## 7. Questions for the user
+## 7. Decided (18 Oct 2026, the user)
 
 **(a) A long selection. Decided (18 Oct 2026, the user): no maximum of its own.** Octopus keeps two
 years of half-hourly data, and that is the bound: anything older is "too old" in the preview and
@@ -105,4 +105,7 @@ chunk each. The engine is already paced, resumable and rate-limit aware. A CSV o
 a separate tool on the selection menu (data tools design §1), bounded by its own file, so it
 needs no limit here either.
 
-**(b) A run still too recent.** Leave it out and say so (the proposal), or offer to try anyway?
+**(b) A run still too recent. Decided (18 Oct 2026, the user): leave it.** A half-hour inside the
+last 48 hours is left out of the fill and the preview says so ("too recent: Octopus has not
+settled it yet"); there is no option to try anyway. Once it is 48 hours old a later selection
+fills it.
