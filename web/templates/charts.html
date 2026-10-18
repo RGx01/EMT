@@ -2894,8 +2894,18 @@ async function _fetchDataVersion() {
   try {
     var r = await fetch(apiUrl('/api/energy?fields=fingerprint'));
     var j = await r.json();
+    _checkBuild(j && j.build);
     return (j && j.fingerprint && j.fingerprint.token) || null;
   } catch (e) { return null; }
+}
+
+// EMT was updated under an open page: the page keeps running the code it was served with — the
+// heatmap's #205 fix did nothing on the Pi until a reload (18 Oct 2026). Say so, once.
+function _checkBuild(running) {
+  if (!running || !window.EMT || !EMT.build || running === EMT.build || !EMT.notify) return;
+  EMT.notify({id: 'emt-updated', level: 'info', dismissible: true,
+              html: 'EMT has been updated since this page loaded \u2014 ' +
+                    '<a href="#" onclick="location.reload(); return false;">reload</a> to use the new version.'});
 }
 
 // Rebuild the active chart ONLY when the block data actually changed since the last

@@ -1168,7 +1168,19 @@ window.EMTHeatmap = (function () {
     var k = state.keys[0]; if (!k) return Promise.resolve();
     var before = state.months[k] && state.months[k].fp, ep = state.epoch;
     return fetchMonth(k).then(function () {
-      if (state.epoch !== ep) { redrawAll(true); return; }
+      // A bulk change (a restore, an import, a delete) moved the epoch: fetchMonth emptied the
+      // cache, so every drawn month is re-fetched — redrawAll alone redraws only cached months,
+      // and left the older ones showing what they showed before (18 Oct 2026).
+      if (state.epoch !== ep) {
+        state.scale = null;
+        return Promise.all(state.keys.map(function (o) {
+          var p = state.panels[o];
+          if (!p) return null;
+          if (o !== k && !p.drawn) return null;               // fetched when it scrolls near
+          p.grid = null;
+          return loadMonth(o);
+        }));
+      }
       var work = [];
       // fetchMonth drops the month's grid; unchanged, the drawn month still needs it — without
       // it the hover and the click read a null grid after the first quiet poll (13 Oct 2026)
