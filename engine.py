@@ -6911,6 +6911,33 @@ def _earliest_agreement_from(info: dict):
     return naive[0] if naive else None
 
 
+def history_reach_from(earliest_block):
+    """Where Octopus's history starts for the heatmap's "import your history" row (gap fill
+    design, decided 18 Oct 2026): the earliest channel floor `plan_api_import` would use (the
+    resolved data floor, else the earliest agreement), no older than the API's two years. None
+    without the API, without a known floor, or when EMT's oldest block (`earliest_block`, naive
+    UTC) already reaches it. Pure — no network; a heatmap load calls it."""
+    import api_import as _ai
+    if not kraken_available():
+        return None
+    disc = _kraken_discovery or {}
+    floors = [f for f in ((_hist_floor_cache.get(n) or _earliest_agreement_from(disc.get(n) or {}))
+                          for n in ("import", "export") if (disc.get(n) or {}).get("mpan")) if f]
+    if not floors:
+        return None
+    reach = max(min(floors), _retention_floor_iso())
+    # whole half-hours, as the import's chunks start
+    dt = _ai._naive_utc(reach)
+    if dt is not None:
+        dt = dt.replace(minute=0 if dt.minute < 30 else 30, second=0, microsecond=0)
+        if dt.isoformat() < reach:
+            dt += timedelta(minutes=30)
+        reach = dt.isoformat()
+    if earliest_block and reach >= str(earliest_block)[:19]:
+        return None
+    return reach
+
+
 async def diagnose_import_range(*, probe_days: int = 1) -> dict:
     """READ-ONLY: for each channel report the earliest supplier *agreement*, the
     resolved import floor (the earliest half-hour Measurements actually returns —
@@ -9920,98 +9947,224 @@ async def run_gap_fill_job(from_ts, to_ts, *, channels=("import", "export"),
     # them to admission(), which sees only the coordinator, and only the full import
     # claimed it (4 Oct 2026).
     _coord.claim("import", force=True)
-    hi = to_ts
     try:
-        while True:
-            ctl = j.get("control")
-            if ctl == "cancel":
-                j["status"] = "cancelled"
-                return
-            if ctl == "pause":
-                j["status"] = "paused"
-                await asyncio.sleep(1.0)
-                continue
-            j["status"] = "running"; j["phase"] = "importing"
-            res = await import_api_history(
-                from_ts, until_ts=hi, channels=tuple(channels),
-                chunk_days=chunk_days, max_chunks=max_chunks, pace_s=pace_s,
-                restart=False, meter_id=meter_id)
-            if not res.get("ok"):
-                j["status"] = "error"; j["error"] = res.get("reason") or "failed"
-                return
-            frontier = None; rate_limited = False
-            for ch, c in (res.get("channels") or {}).items():
-                if not isinstance(c, dict):
-                    continue
-                j["written"][ch] = j["written"].get(ch, 0) + (c.get("written") or 0)
-                j["flags_raised"] = j.get("flags_raised", 0) + (c.get("flags_raised") or 0)
-                j["auto_recovered"] = j.get("auto_recovered", 0) + (c.get("healed_in_pass") or 0)
-                o = c.get("oldest")
-                if o:
-                    j["oldest"][ch] = o
-                    if frontier is None or o < frontier:
-                        frontier = o
-                if c.get("reason") == "rate_limit":
-                    rate_limited = True
-            if rate_limited:
-                j["status"] = "rate_limited"
-                await asyncio.sleep(30)          # cool-down, then retry the same frontier
-                continue
-            # Done when the fetch says so, the frontier reached the floor, or it
-            # stopped advancing (no more supplier data in the window).
-            if res.get("done") or (not frontier) or frontier <= from_ts:
-                break
-            hi = frontier                          # continue newest→oldest below
-
-        # ── Same finish as the full import (bar the region/period extend, which an
-        #     interior gap doesn't need): verify pricing, re-arm carbon, rebuild. ──
-        j["done"] = True; j["status"] = "finalising"; j["phase"] = "finalising"
-        try:
-            if _store is not None:
-                _store.rearm_carbon_backfill()
-        except Exception as _ce:
-            logger.warning("run_gap_fill_job: carbon re-arm failed: %s", _ce)
-        # Historical EXPORT fill: the API returns nothing for a slot with no export
-        # (a solar meter overnight), leaving it NULL — which then reads as a
-        # permanent, un-fillable export gap. Fill blank export slots on days that DID
-        # get export with 0 (day-scoped, imported-only, billing-neutral).
-        if _store is not None and "export" in tuple(channels):
-            try:
-                _zn = _store.zero_fill_imported_export_blanks(_store.site_timezone())
-                if _zn:
-                    logger.info("run_gap_fill_job: zero-filled %d blank export slot(s) "
-                                "on imported export days", _zn)
-            except Exception as _ze:
-                logger.warning("run_gap_fill_job: export zero-fill failed: %s", _ze)
-        try:
-            j["phase"] = "recovering_prices"
-            await repair_import_pricing()
-        except Exception as _ve:
-            logger.warning("run_gap_fill_job: verify pass failed: %s", _ve)
-        # Same finish as the full import: persist the pricing-health summary and
-        # launch the DETACHED deferred verification pass, so a gap fill shows the
-        # off-peak/peak verification in the panel exactly as a whole/date import does.
-        try:
-            _persist_import_health(j)
-        except Exception as _e:
-            logger.warning("run_gap_fill_job: health persist failed: %s", _e)
-        _wrote = _run_wrote_blocks(j)
-        if _wrote:
-            try:
-                asyncio.create_task(run_deferred_verify_pricing())
-            except Exception as _e:
-                logger.warning("run_gap_fill_job: verify launch failed: %s", _e)
-        else:
-            logger.info("run_gap_fill_job: nothing written — skipping the pricing "
-                        "verification pass")
-            j["verify_skipped"] = "no_blocks_written"
-        j["status"] = "done"; j["phase"] = "done"
-        _persist_run_status(j)     # durable summary for reload (poll-on-load)
+        if await _gap_fill_window(j, from_ts, to_ts, channels=channels, chunk_days=chunk_days,
+                                  max_chunks=max_chunks, pace_s=pace_s, meter_id=meter_id):
+            await _gap_fill_finish(j, channels)
     except Exception as e:
         logger.warning("run_gap_fill_job: %s", e)
         j["status"] = "error"; j["error"] = str(e)
     finally:
         _coord.mark("import", status="done")      # every way out: done, cancel, error
+
+
+
+
+async def _gap_fill_window(j, from_ts, to_ts, *, channels, chunk_days, max_chunks, pace_s,
+                           meter_id) -> bool:
+    """One window [from_ts, to_ts) of a gap fill, newest -> oldest through import_api_history
+    (bounded mode), honouring pause / cancel and the rate-limit cool-down, adding to `j`'s
+    counts. True when the window is done; False when cancelled or failed (`j` says which).
+    The fetch loop of `run_gap_fill_job`, apart so a fill over several runs (heatmap gap fill)
+    runs it per run and finishes once."""
+    hi = to_ts
+    while True:
+        ctl = j.get("control")
+        if ctl == "cancel":
+            j["status"] = "cancelled"
+            return False
+        if ctl == "pause":
+            j["status"] = "paused"
+            await asyncio.sleep(1.0)
+            continue
+        j["status"] = "running"; j["phase"] = "importing"
+        res = await import_api_history(
+            from_ts, until_ts=hi, channels=tuple(channels),
+            chunk_days=chunk_days, max_chunks=max_chunks, pace_s=pace_s,
+            restart=False, meter_id=meter_id)
+        if not res.get("ok"):
+            j["status"] = "error"; j["error"] = res.get("reason") or "failed"
+            return False
+        frontier = None; rate_limited = False
+        for ch, c in (res.get("channels") or {}).items():
+            if not isinstance(c, dict):
+                continue
+            j["written"][ch] = j["written"].get(ch, 0) + (c.get("written") or 0)
+            j["flags_raised"] = j.get("flags_raised", 0) + (c.get("flags_raised") or 0)
+            j["auto_recovered"] = j.get("auto_recovered", 0) + (c.get("healed_in_pass") or 0)
+            o = c.get("oldest")
+            if o:
+                j["oldest"][ch] = o
+                if frontier is None or o < frontier:
+                    frontier = o
+            if c.get("reason") == "rate_limit":
+                rate_limited = True
+        if rate_limited:
+            j["status"] = "rate_limited"
+            await asyncio.sleep(30)          # cool-down, then retry the same frontier
+            continue
+        # Done when the fetch says so, the frontier reached the floor, or it
+        # stopped advancing (no more supplier data in the window).
+        if res.get("done") or (not frontier) or frontier <= from_ts:
+            break
+        hi = frontier                          # continue newest→oldest below
+
+    return True
+
+
+async def _gap_fill_finish(j, channels) -> None:
+    """The finish a gap fill shares with the full import (bar the region/period extend, which an
+    interior gap does not need): carbon re-arm, the export zero-fill, the price recovery, the
+    health summary and the deferred verify pass. Once per fill, however many runs."""
+    # ── Same finish as the full import (bar the region/period extend, which an
+    #     interior gap doesn't need): verify pricing, re-arm carbon, rebuild. ──
+    j["done"] = True; j["status"] = "finalising"; j["phase"] = "finalising"
+    try:
+        if _store is not None:
+            _store.rearm_carbon_backfill()
+    except Exception as _ce:
+        logger.warning("run_gap_fill_job: carbon re-arm failed: %s", _ce)
+    # Historical EXPORT fill: the API returns nothing for a slot with no export
+    # (a solar meter overnight), leaving it NULL — which then reads as a
+    # permanent, un-fillable export gap. Fill blank export slots on days that DID
+    # get export with 0 (day-scoped, imported-only, billing-neutral).
+    if _store is not None and "export" in tuple(channels):
+        try:
+            _zn = _store.zero_fill_imported_export_blanks(_store.site_timezone())
+            if _zn:
+                logger.info("run_gap_fill_job: zero-filled %d blank export slot(s) "
+                            "on imported export days", _zn)
+        except Exception as _ze:
+            logger.warning("run_gap_fill_job: export zero-fill failed: %s", _ze)
+    try:
+        j["phase"] = "recovering_prices"
+        await repair_import_pricing()
+    except Exception as _ve:
+        logger.warning("run_gap_fill_job: verify pass failed: %s", _ve)
+    # Same finish as the full import: persist the pricing-health summary and
+    # launch the DETACHED deferred verification pass, so a gap fill shows the
+    # off-peak/peak verification in the panel exactly as a whole/date import does.
+    try:
+        _persist_import_health(j)
+    except Exception as _e:
+        logger.warning("run_gap_fill_job: health persist failed: %s", _e)
+    _wrote = _run_wrote_blocks(j)
+    if _wrote:
+        try:
+            asyncio.create_task(run_deferred_verify_pricing())
+        except Exception as _e:
+            logger.warning("run_gap_fill_job: verify launch failed: %s", _e)
+    else:
+        logger.info("run_gap_fill_job: nothing written — skipping the pricing "
+                    "verification pass")
+        j["verify_skipped"] = "no_blocks_written"
+    j["status"] = "done"; j["phase"] = "done"
+    _persist_run_status(j)     # durable summary for reload (poll-on-load)
+
+
+_GAP_FILL_RECENT_H = 48          # DCC has not settled a younger half-hour: Octopus has nothing yet
+_GAP_FILL_CHUNK_DAYS = 60
+
+
+def gap_fill_plan(store, runs, *, channels=("import", "export"), now=None,
+                  meter_id: str = "electricity_main") -> dict:
+    """What a heatmap gap fill would do over the selection's runs, counted from the STORE, not
+    taken from the client (gap fill design §2). Read-only: `store` may be the request thread's
+    reader. Each run [from, to) (naive-UTC half-hour starts) is walked half-hour by half-hour:
+    a half-hour with no main-meter block is missing — deleted where a tombstone covers it,
+    too recent inside the last 48 h (DCC has not settled it, so Octopus has nothing yet; decided
+    (b): left out), too old beyond Octopus's two years (decided (a): the only bound), else
+    fillable. Returns per-run and total counts, the fillable runs, and the size per channel."""
+    HH = timedelta(minutes=30)
+    now = now or datetime.now(timezone.utc).replace(tzinfo=None)
+    recent = (now - timedelta(hours=_GAP_FILL_RECENT_H)).isoformat()
+    old = (now - timedelta(days=_API_RETENTION_DAYS)).isoformat()
+    total = {"missing": 0, "deleted": 0, "too_recent": 0, "too_old": 0, "fillable": 0}
+    per_run, fill_runs = [], []
+    for a, b in runs or []:
+        try:
+            t, end = datetime.fromisoformat(str(a)), datetime.fromisoformat(str(b))
+        except (TypeError, ValueError):
+            continue
+        have = set(store.get_block_starts_in_range(meter_id, t.isoformat(), end.isoformat()))
+        tombs = store.tombstoned_slots_in(meter_id, t.isoformat(), end.isoformat())
+        c = {"from": t.isoformat(), "to": end.isoformat(), "missing": 0, "deleted": 0,
+             "too_recent": 0, "too_old": 0, "fillable": 0}
+        cur = None
+        while t < end:
+            iso = t.isoformat()
+            if iso not in have:
+                c["missing"] += 1
+                if any(s0 <= iso < e0 for s0, e0 in tombs):
+                    c["deleted"] += 1
+                if iso >= recent:
+                    c["too_recent"] += 1
+                elif iso < old:
+                    c["too_old"] += 1
+                else:
+                    c["fillable"] += 1
+                    nxt = (t + HH).isoformat()
+                    if cur and cur[1] == iso:
+                        cur[1] = nxt
+                    else:
+                        cur = [iso, nxt]
+                        fill_runs.append(cur)
+                    t += HH
+                    continue
+            cur = None
+            t += HH
+        per_run.append(c)
+        for k in total:
+            total[k] += c[k]
+    days = sum((datetime.fromisoformat(b) - datetime.fromisoformat(a)).total_seconds() / 86400
+               for a, b in fill_runs)
+    chunks = sum(max(1, -(-int((datetime.fromisoformat(b) - datetime.fromisoformat(a)).total_seconds())
+                          // (_GAP_FILL_CHUNK_DAYS * 86400))) for a, b in fill_runs)
+    return {"runs": per_run, "total": total, "fill_runs": fill_runs,
+            "size": {ch: {"half_hours": total["fillable"], "chunks": chunks} for ch in channels},
+            "days": round(days, 2)}
+
+
+async def run_gap_fill_runs(runs, *, channels=("import", "export"), chunk_days: int = 60,
+                            max_chunks: int = 6, pace_s: float = 1.5,
+                            meter_id: str = "electricity_main") -> None:
+    """The heatmap's gap fill (gap fill design §3): several runs [[from, to), …] of missing
+    half-hours, newest first, each lifting its own tombstones (a targeted fill) and written
+    first-man-wins — then the import's finish ONCE. Tracked in the shared import job state, with
+    each run's progress under `j["runs"]`; pause and cancel as the import's. Never raises."""
+    j = _api_import_job
+    j.clear()
+    runs = sorted(([str(a), str(b)] for a, b in runs), key=lambda r: r[0], reverse=True)
+    j.update({"status": "running", "phase": "importing", "control": "run",
+              "started_at": _dt_now_iso_safe(),
+              "written": {"import": 0, "export": 0}, "oldest": {},
+              "flags_raised": 0, "auto_recovered": 0,
+              "reason": None, "error": None, "done": False, "go_live": None,
+              "gap": {"from": runs[-1][0] if runs else None, "to": runs[0][1] if runs else None},
+              "runs": [{"from": a, "to": b, "status": "waiting", "lifted": 0} for a, b in runs]})
+    _reset_pricing_health()
+    _coord.claim("import", force=True)
+    try:
+        for r in j["runs"]:
+            r["status"] = "filling"
+            try:
+                if _store is not None:
+                    r["lifted"] = _store.clear_deleted_range(meter_id, r["from"], r["to"]) or 0
+            except Exception as _te:
+                logger.warning("run_gap_fill_runs: tombstone clear failed (non-fatal): %s", _te)
+            ok = await _gap_fill_window(j, r["from"], r["to"], channels=channels,
+                                        chunk_days=chunk_days, max_chunks=max_chunks,
+                                        pace_s=pace_s, meter_id=meter_id)
+            if not ok:
+                r["status"] = j.get("status") or "stopped"
+                return
+            r["status"] = "done"
+        await _gap_fill_finish(j, channels)
+    except Exception as e:
+        logger.warning("run_gap_fill_runs: %s", e)
+        j["status"] = "error"; j["error"] = str(e)
+    finally:
+        _coord.mark("import", status="done")
 
 
 @job("import", exclusive_with=("delete",))

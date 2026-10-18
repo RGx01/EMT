@@ -3864,6 +3864,110 @@ def api_refetch_apply():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+# ── Gap fill as an action on the heatmap's selection (gap fill design §2–§4) ──────────────────
+# The preview is counted from the store on the request thread (no Octopus call), held under a
+# token for an hour; the apply re-counts, takes a required safety backup, and runs the fill as
+# one engine job over the runs, finishing once.
+_GAP_FILL_TTL_S = 3600
+_gap_fill_preview: dict = {}
+
+
+def _gap_fill_channels() -> tuple:
+    return ("import", "export") if _main_has_export() else ("import",)
+
+
+def _gap_fill_runs_from(body):
+    runs = body.get("runs")
+    if not isinstance(runs, list) or not runs or len(runs) > 2000:
+        return None
+    out = []
+    for r in runs:
+        if not (isinstance(r, (list, tuple)) and len(r) == 2 and all(isinstance(x, str) for x in r)):
+            return None
+        if r[0] >= r[1]:
+            return None
+        out.append([r[0], r[1]])
+    return out
+
+
+@app.route("/api/gaps/fill/preview", methods=["POST"])
+def api_gap_fill_preview():
+    """What filling the selection's missing half-hours would do — counted from the store, nothing
+    written. Body {runs: [[from, to), …]} (naive-UTC half-hour starts, the cells the heatmap
+    marked missing). Returns per run and in total: missing, deleted, too recent (under 48 h:
+    left out), too old (beyond Octopus's two years: left out), fillable; the size per channel;
+    and a token for /apply (an hour)."""
+    try:
+        import engine as _eng
+        import secrets as _secrets
+        import time as _time
+        if not _eng.kraken_available():
+            return jsonify({"ok": False, "error": "no supplier API connected"}), 400
+        runs = _gap_fill_runs_from(request.get_json(force=True, silent=True) or {})
+        if runs is None:
+            return jsonify({"ok": False, "error": "runs must be [[from, to), …], from before to"}), 400
+        chans = _gap_fill_channels()
+        plan = _eng.gap_fill_plan(store_access.store(), runs, channels=chans)
+        token = _secrets.token_hex(8) if plan["fill_runs"] else None
+        _gap_fill_preview.clear()
+        if token:
+            _gap_fill_preview.update({"token": token, "made": _time.time(), "runs": runs,
+                                      "fill_runs": plan["fill_runs"], "channels": chans})
+        return jsonify({"ok": True, "token": token, **plan})
+    except Exception as e:
+        logger.error("api_gap_fill_preview: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/gaps/fill/apply", methods=["POST"])
+def api_gap_fill_apply():
+    """Fill a preview's runs. Body {token}. Refused if the preview is gone or over an hour old,
+    if the store no longer gives the same fillable runs, or while an import, its verify pass or a
+    restore runs; a safety backup first, and none means no fill."""
+    try:
+        import engine as _eng
+        import asyncio as _asyncio
+        import time as _time
+        token = ((request.get_json(force=True, silent=True) or {}).get("token") or "").strip()
+        p = dict(_gap_fill_preview)
+        if not token or p.get("token") != token:
+            return jsonify({"ok": False, "error": "that preview is no longer held — preview again"}), 409
+        if _time.time() - p["made"] > _GAP_FILL_TTL_S:
+            return jsonify({"ok": False, "error": "that preview is over an hour old — preview again"}), 409
+        again = _eng.gap_fill_plan(store_access.store(), p["runs"], channels=p["channels"])
+        if again["fill_runs"] != p["fill_runs"]:
+            return jsonify({"ok": False, "error": "the selection has changed since the preview — "
+                                                  "preview again"}), 409
+        if _eng.api_import_running():
+            return jsonify({"ok": False, "error": "an import is already running"}), 409
+        if _backfill_verify_active(_eng):
+            return jsonify({"ok": False, "error": "the previous fill's pricing check is still "
+                                                  "finishing"}), 409
+        if _restore_job.get("status") == "running":
+            return jsonify({"ok": False, "error": "a restore is running"}), 409
+        if not (_event_loop and _event_loop.is_running()):
+            return jsonify({"ok": False, "error": "engine loop not running"}), 500
+        try:
+            backup = _safety_backup("pre-gap-fill")
+        except Exception as be:
+            return jsonify({"ok": False, "error": "no safety backup, so nothing filled: %s" % be}), 500
+        _gap_fill_preview.clear()
+        _asyncio.run_coroutine_threadsafe(
+            _eng.run_gap_fill_runs(p["fill_runs"], channels=p["channels"]), _event_loop)
+        return jsonify({"ok": True, "status": "running", "backup": backup,
+                        "runs": len(p["fill_runs"])})
+    except Exception as e:
+        logger.error("api_gap_fill_apply: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/gaps/fill/status", methods=["GET"])
+def api_gap_fill_status():
+    """The fill's progress: the shared import job state, with each run's under `runs`."""
+    import engine as _eng
+    return jsonify(_eng.api_import_status())
+
+
 @app.route("/api/blocks/settlement", methods=["GET"])
 def api_block_settlement():
     """One main-meter half-hour's three settlement facts with their sources — the detail panel
@@ -6079,6 +6183,9 @@ def api_periods():
                 # missing half-hours begin and end (heatmap issues design §2)
                 "earliest_block": bounds.get("earliest") or None,
                 "latest_block": bounds.get("latest") or None,
+                # where Octopus's history starts, when it is older than EMT's oldest block: the
+                # heatmap's "import your history" row — not a gap (gap fill design)
+                "reach_from": _history_reach_from(bounds.get("earliest")),
                 "carbon_earliest": (bounds.get("carbon_earliest") or "")[:10] or None,
                 "carbon_latest": (bounds.get("carbon_latest") or "")[:10] or None,
             },
@@ -6087,6 +6194,16 @@ def api_periods():
         logger.exception("api_periods failed")
         return jsonify({"error": str(e)}), 500
 
+
+
+def _history_reach_from(earliest_block):
+    """`engine.history_reach_from`, or None if it fails — the periods answer never does."""
+    try:
+        import engine as _eng
+        return _eng.history_reach_from(earliest_block)
+    except Exception as e:
+        logger.debug("history_reach_from: %s", e)
+        return None
 
 
 def _collapse_rate_tiers(tiers_list):
