@@ -12961,6 +12961,7 @@ def apply_measured_settled() -> dict:
         logger.warning("apply_measured: query failed: %s", e)
         return {}
     n_apply = n_published = 0
+    refused: dict = {}                 # reason -> [count, first half-hour]
     for r in rows:
         # Only an Intelligent half-hour takes a bill (settlement surfaces design §9.2, bill and
         # split paths design §6 (c), 16 Oct 2026): applying snaps the rate to the day's lowest or
@@ -12982,10 +12983,20 @@ def apply_measured_settled() -> dict:
                                        cost_excl=r["cost_excl"], label=r["label"])
         if _res:
             n_apply += 1
+        else:
+            _why = _APPLY_REFUSAL or "refused"
+            _first = refused.setdefault(_why, [0, r["block_start"]])
+            _first[0] += 1
+    # Every cached bill that did not apply, by why — one line a pass, so a stuck schedule or a
+    # refusing apply is in the log, not only on the heatmap (18 Oct 2026).
+    for _why, (_n, _first) in sorted(refused.items()):
+        logger.warning("apply_measured: %d cached bill(s) not applied — %s (first %s)",
+                       _n, _why, _first)
     if n_apply:
         logger.info("apply_measured: applied %d block(s) from the bill (settled = authority)",
                     n_apply)
-    return {"applied": n_apply, "candidates": len(rows), "published_rate": n_published}
+    return {"applied": n_apply, "candidates": len(rows), "published_rate": n_published,
+            "refused": {k: v[0] for k, v in refused.items()}}
 
 
 def _measured_ev_kwh(store, bs: str, row, kwh: float) -> float:
@@ -13019,6 +13030,19 @@ def _measured_ev_kwh(store, bs: str, row, kwh: float) -> float:
 
 
 
+# Why the last apply_measured_to_block refused, for the callers' summary (18 Oct 2026): v4's import
+# schedule stopped covering new days after 14 Oct, and its apply refused every bill from then on
+# with nothing in the log — the days read amber with no sign why.
+_APPLY_REFUSAL: "str | None" = None
+_REFUSE_NO_RATE = "no off-peak/peak rate for that day in the import schedule"
+
+
+def _refuse(reason: str) -> bool:
+    global _APPLY_REFUSAL
+    _APPLY_REFUSAL = reason
+    return False
+
+
 def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
                             label: str = None, replace_correction: bool = False) -> bool:
     """BL-53 step 3 (used ONLY when _MEASURED_APPLY): for a settled IOG dispatched block,
@@ -13035,21 +13059,23 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
     (rate x kWh can differ from the stored bill cost by a sub-penny sliver — every surface
     reads the stored cost, and a materially-off bill is review-flagged by the caller.)
     """
+    global _APPLY_REFUSAL
+    _APPLY_REFUSAL = None
     store = _store
     if store is None or not bs or cost_incl is None:
-        return False
+        return _refuse("no store, block or cost")
     row = store.get_block_measured_inputs(bs)
     if row is None:
-        return False
+        return _refuse("no block")
     # Defence in depth (4.5.12): NEVER settle an unsettled LIVE block, whoever calls us.
     # The callers' queries gate on BlockStore._SETTLEABLE_SQL too, but this is the single stamper of
     # rate_source='settled', so it must refuse on its own — a future/direct caller must
     # not be able to price a block off a provisional CAD kWh before its meter DCC-settles.
     if not str(row["source"] or "").startswith("imported") and row["imp_kwh_api"] is None:
-        return False
+        return _refuse("its kWh is not settled")
     kwh = row["imp_kwh"] or 0.0
     if kwh <= 1e-9:
-        return False
+        return _refuse("no kWh")
     # ── EV quantity: MEASURED grid draw is king (dispatch-bounded) ──────────────────
     # Octopus's settled four-bucket EV_DEVICE total OVER-attributes on slots where another
     # grid load (e.g. a home battery grid-charging overnight) drew concurrently INSIDE the
@@ -13095,7 +13121,7 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
         # No clean tariff-agreement rate for this slot -> do NOT settle. The settled RATE
         # must always be an exact agreement band value, never a cost/kWh derivation; leaving
         # the block on its existing schedule-derived (already-clean) rate is the safe result.
-        return False
+        return _refuse(_REFUSE_NO_RATE)
     _lo, _hi = round(_lo / 100.0, 6), round(_hi / 100.0, 6)
     if abs(_cost_rate - _lo) <= abs(_cost_rate - _hi):
         imp_rate, band = _lo, "off_peak"
@@ -13162,7 +13188,7 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
             segments=segs, replace_correction=replace_correction)
     except Exception as e:
         logger.warning("apply_measured: write failed for %s, left for the next pass: %s", bs, e)
-        return False
+        return _refuse("the write failed")
     # SMB device-cost fix: settlement flips the MAIN rate to the settled band, but a physical
     # sub-meter (ev_charger / battery) was costed by PASS 2 at the EARLIER (pre-settlement,
     # often peak) main rate and is NOT re-costed by this write. PASS 2 costs every sub-meter at
@@ -13861,7 +13887,7 @@ async def engine_startup(ha: HAClient):
     one is running sets a flag instead of stacking, and the in-flight run re-runs ONCE
     at the end to pick up the latest state. Single-threaded event loop, so the flag
     handoff is race-free."""
-    global _startup_pending, _last_startup_complete_ts
+    global _startup_pending, _last_startup_complete_ts, _last_reconcile, _last_dispatch_capture
     if _startup_lock.locked():
         _startup_pending = True
         logger.info("engine_startup: already running — request coalesced")
@@ -13871,6 +13897,12 @@ async def engine_startup(ha: HAClient):
             _startup_pending = False
             await _engine_startup_impl(ha)
             _last_startup_complete_ts = time.monotonic()
+            # The dispatch tick's clocks are the process's, and a restore or a config save
+            # rebuilds the store without restarting it: the bill apply, the drain and the
+            # reconcile waited up to an hour after a restore (18 Oct 2026, the Pi — a restored
+            # v4 database's cached bills sat unapplied). Start them on the next tick.
+            _last_reconcile = None
+            _last_dispatch_capture = None
             if not _startup_pending:
                 return
             logger.info("engine_startup: a startup was requested mid-run — re-running once")
