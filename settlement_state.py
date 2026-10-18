@@ -62,9 +62,7 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
 
     The Import bill states say whether the half-hour's cost is final, and whose it is (design
     §9.3). On a published-rate tariff the settled kWh x the published rate is the bill; on an
-    Intelligent one only Octopus's cost is final where a dispatch can re-band the half-hour — on
-    IOG-SMB every half-hour, elsewhere the dispatched ones; an undispatched half-hour there is
-    final once its kWh settles, as on a published tariff."""
+    Intelligent one only Octopus's cost is final, as a dispatch can re-band the half-hour."""
     start = f["block_start"]
     kwh = _f(f.get("imp_kwh")) or 0.0
     cost = _f(f.get("imp_cost"))
@@ -116,14 +114,6 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
         bill = "imported"             # CSV history: a cost not from Octopus's API
     elif kind == "published" and f.get("imp_kwh_api") is not None:
         bill = "applied"              # settled kWh x the published rate is the bill
-    elif (not (split_at(start) if split_at else smb) and not f.get("dispatched")
-          and f.get("imp_kwh_api") is not None):
-        # Intelligent but not IOG-SMB, and no dispatch touched the half-hour: it is billed at the
-        # schedule's rate, so the settled kWh x that rate is the bill, as on a published tariff
-        # (17 Oct 2026, the Pi). EMT asks Octopus only for the dispatched half-hours there (the
-        # live pass's own selection), so these waited for a bill that never comes — red for good
-        # on every pre-IOG-SMB August day of the soak.
-        bill = "applied"
     else:
         bill = estimate()             # a cached bill not applied yet reads the same: transient
     if bill == "applied" and split in ("emt", "held", "kept"):
