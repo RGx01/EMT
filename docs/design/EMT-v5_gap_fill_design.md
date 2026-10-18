@@ -139,3 +139,29 @@ the missing cell's panel offered two buttons side by side that did not read as a
 
 The heatmap will replace Data Management (data tools design §1); until then the page is both a page
 and the modal.
+
+## 8. The fill's pricing check, and a known edge (18 Oct 2026)
+
+**Scoped to the fill (#216).** A fill ends with the deferred pricing verify, which until #216 swept
+the whole imported history after every fill (on the Pi soak: 39 chunks, 43–70 s and ~30 Octopus
+requests for a gap of a few days). It now checks only the fill's span. What does not narrow with it:
+the chunk dates are whole days (the end day inclusive, plus an hour for BST), the cost retry
+(`recover_measurement_costs`) builds its own look-back, day and month windows around each half-hour,
+and the opportunistic neighbour repricing only touches the windows it fetched.
+
+**Known edge — left (the user, 18 Oct 2026).** `_reprice_suspect` decides "priced at peak" from the
+schedule's day bounds where the day is banded; on a FLAT schedule it falls back to an off-peak
+floor, the cheapest stored rate among the imported half-hours in the range. Over a 30-day chunk
+that always held off-peak nights. Over a gap's own days it may not: a short daytime gap filled
+entirely at peak makes the floor the peak rate, nothing reads as suspect, and a dispatch the import
+could not label off-peak goes unchecked. It bites only an Intelligent tariff whose off-peak is not in
+the published schedule — the case the fallback exists for; the soak account's Intelligent
+agreements are all banded. **If an account on such a tariff shows it:** read the floor over the 30
+days up to the gap's end (a local read, no Octopus requests), keeping the targets the gap's, with a
+test where a peak-only gap on a flat schedule is still checked.
+
+**Also left (the user, 18 Oct 2026):** the full-history pass re-checks every ≥ 1 kWh peak-band
+half-hour each time, because nothing stored says Octopus has confirmed it (`exc_source` went in
+step 5). Genuine peak use is asked about again on every full pass — about 30 requests on the soak.
+With the scoping that pass runs only after a full import. A "confirmed" record the suspect rule
+skips would end it, if it ever matters.
