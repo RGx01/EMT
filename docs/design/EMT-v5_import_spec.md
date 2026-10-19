@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v22 — revised 16 Oct 2026, a settled IOG-SMB block takes its cached bill's split (§5.2 BILL SPLIT) (v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v23 — revised 19 Oct 2026, a device's sensors in one place (§6, transform 6) (v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -145,6 +145,14 @@ a bill whose EV is zero where EMT's own split has the car, for up to 28 days —
 forward code. 4.5.22 and the v5 dev build `4.5.22-a23` join the below-floor negatives; v5's own
 builds now stamp `4.5.23-a24`. The 4.5.22 positive fixture (prod-dev, 10 Oct) is below the floor
 now; the fixture is re-taken at 4.5.23.*
+
+*Changes in v23 (19 Oct 2026): **a device's sensors move into one place** (device sensors design §6).
+v4 kept a device's live sensor in its config and the sensors Device History stitched — a renamed
+device's older entity ids among them — only in the run ledger. v5 holds both in `device_sensors`.
+Transform 6, after 5 (which carries the ledger): each current channel's `read_sensor` becomes its
+primary; a sub-meter's Device History sensors that are not its primary become its secondaries, the
+latest run first, deduplicated. Gate `device_sensors` checks the result against the source. The
+ledger is still carried as it is. No block points at an entry: v4 recorded no sensor per block.*
 
 ---
 
@@ -1000,6 +1008,7 @@ suppresses a pass that should run. Default is **DROP**; carry only by explicit a
 - `vat_calendar` — irreplaceable local calendar (`[["2023-06-02", 0.05]]` in the reference DB).
 - `settings` — user preferences (e.g. `{"bill_rounding_summary": true}`).
 - `recorder_attribution_runs` — the attribution back-out ledger; pairs with `historical_derivation`.
+  Carried as it is, and read by transform 6 (v23), which makes its sensors the devices' secondaries.
 - `export_settlement_expected` — whether the account has an outgoing agreement.
 
 **REGEN:** `db_uuid` — the v5 database is a new identity. Record the *source* uuid in the import

@@ -12,6 +12,8 @@ the source's rows, no more and no fewer, compared at stored precision (spec §9.
 rounded display values). The named gates below it state the spec's invariants one by
 one, so each keeps its own message once the transforms change some of those columns.
 """
+import json
+
 from . import rules
 
 # Columns a transform rewrites, by table: excluded from "carried exactly" and checked by
@@ -285,11 +287,52 @@ def keys(conn, report):
     return ("keys not carried: " + ", ".join(bad)) if bad else None
 
 
+def device_sensors(conn, report):
+    """Transform 6, against the SOURCE: every channel of its current config period with a read
+    sensor has that sensor, and only it, as its primary; every sensor a sub-meter's Device History
+    runs used is that device's primary or one of its secondaries. (An entry twice cannot be:
+    the table is unique on device, channel and entity.)"""
+    t = report["transforms"].get("device_sensors", {"primaries": 0, "secondaries": 0})
+    report["gates"]["device_sensors"].update(primaries=t["primaries"], secondaries=t["secondaries"])
+    pid = conn.execute("SELECT id FROM src.config_periods WHERE effective_to IS NULL "
+                       "ORDER BY effective_from DESC LIMIT 1").fetchone()
+    if pid is None:
+        return None
+    wrong = _one(conn,
+        "SELECT COUNT(*) FROM src.meters m JOIN src.meter_channels mc ON mc.meter_id = m.id "
+        "WHERE m.config_period_id = ? AND COALESCE(mc.read_sensor, '') != '' AND "
+        "(SELECT COUNT(*) FROM main.device_sensors s WHERE s.meter_id = m.meter_id AND "
+        " s.channel = mc.channel AND s.role = 'primary' AND s.entity_id = mc.read_sensor) != 1",
+        pid[0])
+    raw = conn.execute("SELECT value FROM src.store_meta WHERE key = "
+                       "'recorder_attribution_runs'").fetchone()
+    try:
+        runs = json.loads(raw[0]) if raw and raw[0] else []
+    except (TypeError, ValueError):
+        runs = []
+    subs = {r[0] for r in conn.execute("SELECT meter_id FROM src.meters WHERE config_period_id = ? "
+                                       "AND is_sub_meter = 1", (pid[0],))}
+    lost = 0
+    for r in runs if isinstance(runs, list) else []:
+        mid = r.get("meter_id") if isinstance(r, dict) else None
+        if mid not in subs:
+            continue
+        for e in r.get("sensor_ids") or []:
+            if e and not _one(conn, "SELECT COUNT(*) FROM main.device_sensors WHERE meter_id = ? "
+                                    "AND channel = 'import' AND entity_id = ?", mid, e):
+                lost += 1
+    if wrong or lost:
+        return ("device sensors: %d configured read(s) not their channel's primary, %d Device "
+                "History sensor(s) not carried" % (wrong, lost))
+    return None
+
+
 GATES = (("row_counts", row_counts), ("carried_exactly", carried_exactly),
          ("cost_parity", cost_parity), ("provenance", provenance),
          ("ev_segments", ev_segments), ("split_reproduced", split_reproduced),
          ("held_fit", held_fit), ("bill_split", bill_split),
-         ("corrections", corrections), ("tombstones", tombstones), ("keys", keys))
+         ("corrections", corrections), ("tombstones", tombstones), ("keys", keys),
+         ("device_sensors", device_sensors))
 
 
 def run(conn, report):
