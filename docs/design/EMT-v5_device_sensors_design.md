@@ -147,5 +147,11 @@ It also gives a device delete its warning's sensors (§5) and the soft delete's 
    `sensor_ids`; `/api/historical/probe-devices` gives each device's primary and history sensors from
    its config; the page shows the live sensor read-only and edits the history sensors, saved on the
    device (`POST /api/meter/<id>/history-sensors`). The ledger is written as now.
-4. **The device screen and the wizard:** the history-sensors list, the rename prompt, the rebuild
-   offer, the delete warning with its figures.
+4. **The device screen and the wizard** (built 19 Oct 2026): the history-sensors list on each device
+   card (`channels.import.history_reads`); the rename prompt before a save (`keep_old_read`; the main
+   meter's old sensor is never a history sensor); the rebuild offer after the reload for a new device
+   with a sensor (the save restarts the engine; the wizard's save now reloads for it too); the delete
+   warning's figures (`GET /api/meter/<id>/delete-preview`). The add-device dialog and the wizard take
+   no history sensors: a new device gets them on its card before the save.
+5. **The Device History page retires** — its sensor check and its runs list with undo move to the device
+   screen first.

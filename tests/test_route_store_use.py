@@ -68,7 +68,8 @@ class TestRouteStoreUse(unittest.TestCase):
         # −1: /api/review-blocks, deleted with the review list (BL-74, 4 Oct 2026).
         # −1: /api/blocks/sweep-implausible, deleted with the #307 self-heal (BL-74).
         # +1: /api/blocks/settlement, the settlement detail panel (13 Oct 2026).
-        self.assertEqual(len(self.d["get_on_companion"]), 33)
+        # +1: /api/meter/<id>/delete-preview, a device delete's figures (19 Oct 2026).
+        self.assertEqual(len(self.d["get_on_companion"]), 34)
 
     def test_adoption_is_total(self):
         """Measured at 0% before the port: v4 credited one route with the read

@@ -6041,8 +6041,13 @@ class BlockStore:
                         ch_cfg.get("standing_charge_source"),
                     )
                 )
+                # A device's old live sensor is kept for history on a rename unless the save says
+                # no (the rename prompt, device sensors design §3); the main meter has no history
+                # sensors (§2), so its old one is kept only while a block points at it.
                 self._sync_device_sensors(meter_id, channel, ch_cfg.get("read"),
-                                          ch_cfg.get("history_reads"))
+                                          ch_cfg.get("history_reads") if is_sub else None,
+                                          keep_old=bool(is_sub) and ch_cfg.get("keep_old_read", True)
+                                          is not False)
 
     # ── Device sensors (device sensors design §2–§3, 19 Oct 2026) ───────────────────────
     def _sync_device_sensors(self, meter_id: str, channel: str, read, history_reads=None,
