@@ -19,7 +19,10 @@ importer's copy.
 4 is not built (ROADMAP BL-81, closed 10 Oct 2026); the others run in this order.
 
 Blocks whose segments 2, 3 and 3b write are recorded in the temp table `v4i_resegmented`, so
-verify.py can check them by their own gates and the rest as carried exactly.
+verify.py can check them by their own gates and the rest as carried exactly. A block can carry
+more than one record — 3 refits it and 3b then moves its split — and keeps each (19 Oct 2026: one
+record per block let 3b's overwrite 3's, so the gates judged a refitted block against its source
+segments). 3b also notes the segments it started from (`v4i_split_from`), for its gate.
 """
 import json
 
@@ -32,7 +35,7 @@ HELD = ("corrected", "reconciled", "settled")     # a held rate, v5's words (aft
 
 
 def _resegmented(conn, block_start, why):
-    conn.execute("INSERT OR REPLACE INTO temp.v4i_resegmented (block_start, why) VALUES (?, ?)",
+    conn.execute("INSERT OR IGNORE INTO temp.v4i_resegmented (block_start, why) VALUES (?, ?)",
                  (block_start, why))
 
 
@@ -292,6 +295,11 @@ def bill_split(conn, report):
                          if new[0].exc_rate is not None and new[0].inc_rate else None)
                 new[1] = new[1]._replace(inc_rate=hr, exc_rate=(round(hr * ratio, 7)
                                                                 if ratio is not None else None))
+            # what this move started from — after transform 3's refit, where it ran — so the gate
+            # can tell "the attribution moved, nothing else" from the refit's own change
+            conn.execute("INSERT OR REPLACE INTO temp.v4i_split_from (block_start, k, c) "
+                         "VALUES (?, ?, ?)", (r["block_start"],
+                                              sum(float(x["kwh"]) for x in segs), cost))
             _write_segments(conn, r["block_start"], new)
             _resegmented(conn, r["block_start"], "bill_split")
             moved.append(r["block_start"])
@@ -303,8 +311,11 @@ def bill_split(conn, report):
 
 def run(conn, report):
     conn.execute("CREATE TEMP TABLE IF NOT EXISTS v4i_resegmented "
-                 "(block_start TEXT PRIMARY KEY, why TEXT)")
+                 "(block_start TEXT, why TEXT, PRIMARY KEY (block_start, why))")
     conn.execute("DELETE FROM temp.v4i_resegmented")
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS v4i_split_from "
+                 "(block_start TEXT PRIMARY KEY, k REAL, c REAL)")
+    conn.execute("DELETE FROM temp.v4i_split_from")
     provenance(conn, report)
     ev_segments(conn, report)
     refit_held(conn, report)

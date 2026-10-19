@@ -862,7 +862,11 @@ remainder taking the residual, so the segments cost exactly what they did; bands
 column is carried as it is. **Reported, not moved:** a block whose segments carry more than one rate
 (a capped boundary — only v5's runtime settle can rebuild it from the rate schedules), and a bill with
 no EV where the block's segments have the car (v4 4.5.23's rule). The import report counts moved and
-reported, with their block starts; gate `bill_split` (§9) checks every moved block.
+reported, with their block starts; gate `bill_split` (§9) checks every moved block. A moved block must cost what its
+segments cost before the move: its source segments', or — where REFIT (transform 3) ran on it first —
+what REFIT left, which gate `held_fit` checks against the source in turn (corrected 19 Oct 2026: the
+gate compared every moved block with its source segments, and refused the staging import of a 4.5.24
+database over four blocks REFIT had correctly changed).
 
 A transform, not a heal (no marker, no version gate), and the reason v5 needs no runtime heal for it.
 Half-hours whose cached bill has **no** split (fetched before v4 4.5.7, 11 Sep 2026) are not moved:
