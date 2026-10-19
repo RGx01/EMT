@@ -544,10 +544,14 @@ date axis, one cell per bar, coloured by the worst settlement state; clicking it
 that day or month, selected. Needs a heatmap deep link (none exists) and a per-bar settlement summary.
 Draft: same note §2.
 
-**BL-90 — soft delete.** Proposed 15 Oct 2026 (the user). A delete today removes the half-hour's HA
-register reads (`reads`) with it, so they are lost unless HA's recorder still holds them. Wanted:
+**BL-90 — soft delete.** Proposed 15 Oct 2026 (the user). A delete today removes the half-hours recorded
+live from HA — the blocks and HA's registers at their edges — and they cannot be got back (HA's
+recorder keeps detail ~10 days; `reads`, once thought lost with them, has never been written). Wanted:
 *Delete* hides and keeps the rows, *Restore* brings them back, *Delete permanently* runs today's delete.
-A schema change and a reader audit. Draft: same note §3.
+A schema change and a reader audit. Draft: same note §3. 18 Oct 2026: with deleting by channel
+(the user, 17 Oct), `docs/design/EMT-v5_soft_delete_design.md` (draft): the shelf decided; per-channel
+delete dropped on 19 Oct except deleting an imported export; only live-recorded rows shelved; (a)–(c)
+decided 19 Oct; a live block points at its sensor's `device_sensors` entry (device sensors design §7).
 
 ## D. Surfacing performance
 

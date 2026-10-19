@@ -86,10 +86,18 @@ does not fetch 17,520 half-hours.
 
 ## 3. BL-90 — soft delete
 
+*18–19 Oct 2026: designed further in
+`EMT-v5_soft_delete_design.md` — a shelf instead of a flag; per-channel delete only for an imported export.*
+
 **Today** a delete removes the half-hour, its HA register reads (`reads`), its generation mix and its
 segments outright (§0); only a tombstone of the range is kept. The HA readings are gone unless the
 HA recorder still has them — its default keeps detail for about 10 days, and EMT reads only its
 long-term hourly statistics.
+
+*Corrected 19 Oct 2026: the `reads` table has never been written (ROADMAP, 19 Sep 2026: "dead, not
+transient"), so a delete loses no samples — HA's data is kept at the half-hour, as the live blocks
+and their start and end registers, and those are what a delete loses. The soft delete design shelves
+exactly those (§2).*
 
 **Direction.** *Delete* hides; *Delete permanently* removes.
 
