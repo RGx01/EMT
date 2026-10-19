@@ -219,9 +219,31 @@ CREATE TABLE IF NOT EXISTS blocks (
     rate_corrected      INTEGER NOT NULL DEFAULT 0, -- 1 = user manually corrected the rate; dispatch reconciliation must not touch it
     -- ── 3.5.0 Historical import ───────────────────────────────────────────────
     derivation_id       INTEGER,                    -- FK → historical_derivation for a reconstructed block (NULL = live)
+    -- ── device sensors design §7: the sensor entry that recorded a live block's channel
+    imp_sensor_id       INTEGER,                    -- FK → device_sensors.id (NULL: imported, rebuilt, no sensor)
+    exp_sensor_id       INTEGER,
     FOREIGN KEY (config_period_id) REFERENCES config_periods(id),
     UNIQUE (block_start, meter_id)
 );
+
+-- Device sensors design §2 (19 Oct 2026): a meter's sensors, keyed by its own id (e.g.
+-- 'ev_charger'), not per config period. One PRIMARY per channel — the live recorder, which
+-- meter_channels.read_sensor mirrors — and ordered SECONDARIES Device History stitches for older
+-- history (`position` NULL: kept only because a block points at it, never stitched). A rename
+-- changes an entry's role and keeps its id, so the blocks it recorded still name it.
+CREATE TABLE IF NOT EXISTS device_sensors (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    meter_id    TEXT    NOT NULL,
+    channel     TEXT    NOT NULL,
+    entity_id   TEXT    NOT NULL,
+    role        TEXT    NOT NULL CHECK (role IN ('primary', 'secondary')),
+    position    INTEGER,
+    origin      TEXT    NOT NULL DEFAULT 'configured',   -- configured | rename | v4_attribution
+    added_at    TEXT    NOT NULL,
+    UNIQUE (meter_id, channel, entity_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_device_sensors_primary
+    ON device_sensors (meter_id, channel) WHERE role = 'primary';
 
 CREATE INDEX IF NOT EXISTS idx_blocks_start     ON blocks (block_start);
 
@@ -1373,6 +1395,9 @@ class BlockStore:
             ("derivation_id",      "blocks",        "INTEGER",                    _b_cols),
             # ── 4.1.x BL-23: exc-VAT import cost (additive; NULL until captured)
             ("imp_cost_exc",       "blocks",        "REAL",                       _b_cols),
+            # ── device sensors design §7: the entry that recorded a live block (19 Oct 2026)
+            ("imp_sensor_id",      "blocks",        "INTEGER",                    _b_cols),
+            ("exp_sensor_id",      "blocks",        "INTEGER",                    _b_cols),
             # (4.2's ex-VAT rate/standing/provenance and 4.3's BL-9 EV-split columns were
             # dropped in step 5, 10 Oct 2026: derived where read / the EV segments.)
             ("carbon_gco2_min",  "power_history",   "REAL",              _ph_cols),
@@ -6016,6 +6041,107 @@ class BlockStore:
                         ch_cfg.get("standing_charge_source"),
                     )
                 )
+                self._sync_device_sensors(meter_id, channel, ch_cfg.get("read"),
+                                          ch_cfg.get("history_reads"))
+
+    # ── Device sensors (device sensors design §2–§3, 19 Oct 2026) ───────────────────────
+    def _sync_device_sensors(self, meter_id: str, channel: str, read, history_reads=None,
+                             *, keep_old: bool = True) -> None:
+        """Bring `device_sensors` to a channel's config on a save (inside the caller's
+        transaction). `read` becomes the PRIMARY. A different primary before it is kept
+        (`keep_old`, the rename prompt's default yes) as the FIRST secondary, `origin='rename'`,
+        with its id — or, without `keep_old`, kept off the stitch only while a block points at
+        it. With `history_reads` given (a list) the secondaries become exactly that list, in
+        order; omitted (None), they are left as they are, so a save that does not know them
+        keeps them. A secondary dropped from the list is deleted unless a block points at it."""
+        from datetime import datetime as _dt, timezone as _tz
+        now = _dt.now(_tz.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+        c = self._conn
+        read = (read or "").strip() or None
+        cur = c.execute("SELECT id, entity_id FROM device_sensors WHERE meter_id=? AND channel=? "
+                        "AND role='primary'", (meter_id, channel)).fetchone()
+        kept = None           # a primary this save replaced and kept for history
+        if not (cur and cur["entity_id"] == read):
+            if cur:
+                if keep_old:      # first among the secondaries
+                    c.execute("UPDATE device_sensors SET position = position + 1 WHERE meter_id=? "
+                              "AND channel=? AND role='secondary' AND position IS NOT NULL",
+                              (meter_id, channel))
+                c.execute("UPDATE device_sensors SET role='secondary', position=?, origin='rename' "
+                          "WHERE id=?", (0 if keep_old else None, cur["id"]))
+                if keep_old:
+                    kept = cur["entity_id"]
+                else:
+                    self._drop_unpointed_sensor(cur["id"])
+            if read:
+                had = c.execute("SELECT id FROM device_sensors WHERE meter_id=? AND channel=? AND "
+                                "entity_id=?", (meter_id, channel, read)).fetchone()
+                if had:           # a secondary promoted back to primary
+                    c.execute("UPDATE device_sensors SET role='primary', position=NULL WHERE id=?",
+                              (had["id"],))
+                else:
+                    c.execute("INSERT INTO device_sensors (meter_id, channel, entity_id, role, "
+                              "origin, added_at) VALUES (?,?,?,'primary','configured',?)",
+                              (meter_id, channel, read, now))
+            self._renumber_secondaries(meter_id, channel)
+        if history_reads is None:
+            return
+        # The page saves back the list it loaded, from before this save's rename: the sensor
+        # just kept stays first unless the list itself names it.
+        want = [kept] if kept and kept not in (history_reads or []) else []
+        for e in history_reads:
+            e = (e or "").strip()
+            if e and e != read and e not in want:
+                want.append(e)
+        have = {r["entity_id"]: r["id"] for r in c.execute(
+            "SELECT id, entity_id FROM device_sensors WHERE meter_id=? AND channel=? "
+            "AND role='secondary'", (meter_id, channel))}
+        for e, sid in have.items():
+            if e not in want:
+                c.execute("UPDATE device_sensors SET position=NULL WHERE id=?", (sid,))
+                self._drop_unpointed_sensor(sid)
+        for i, e in enumerate(want):
+            if e in have:
+                c.execute("UPDATE device_sensors SET position=? WHERE id=?", (i, have[e]))
+            else:
+                c.execute("INSERT INTO device_sensors (meter_id, channel, entity_id, role, position, "
+                          "origin, added_at) VALUES (?,?,?,'secondary',?,'configured',?)",
+                          (meter_id, channel, e, i, now))
+
+    def _renumber_secondaries(self, meter_id: str, channel: str) -> None:
+        rows = self._conn.execute(
+            "SELECT id FROM device_sensors WHERE meter_id=? AND channel=? AND role='secondary' "
+            "AND position IS NOT NULL ORDER BY position, id", (meter_id, channel)).fetchall()
+        for i, r in enumerate(rows):
+            self._conn.execute("UPDATE device_sensors SET position=? WHERE id=?", (i, r["id"]))
+
+    def _drop_unpointed_sensor(self, sensor_id: int) -> None:
+        """Delete a secondary no block points at; one a block points at stays (off the
+        stitch), so the block still names the sensor that recorded it."""
+        self._conn.execute(
+            "DELETE FROM device_sensors WHERE id=? AND role='secondary' AND NOT EXISTS "
+            "(SELECT 1 FROM blocks WHERE imp_sensor_id=? OR exp_sensor_id=?)",
+            (sensor_id, sensor_id, sensor_id))
+
+    def seed_device_sensors(self) -> int:
+        """A database from before `device_sensors` (an earlier v5, or a v4 import): give each
+        channel of the current config period that has a read sensor its primary entry.
+        Idempotent — a channel that has a primary is left alone. Returns entries added."""
+        pid = self.get_current_config_period_id()
+        if pid is None:
+            return 0
+        rows = self._conn.execute(
+            "SELECT m.meter_id, mc.channel, mc.read_sensor FROM meters m "
+            "JOIN meter_channels mc ON mc.meter_id = m.id "
+            "WHERE m.config_period_id = ? AND mc.read_sensor IS NOT NULL AND mc.read_sensor != '' "
+            "AND NOT EXISTS (SELECT 1 FROM device_sensors s WHERE s.meter_id = m.meter_id "
+            "                AND s.channel = mc.channel AND s.role = 'primary')", (pid,)).fetchall()
+        if not rows:
+            return 0
+        with self._conn:
+            for r in rows:
+                self._sync_device_sensors(r["meter_id"], r["channel"], r["read_sensor"])
+        return len(rows)
 
     def config_from_db(self, period_id: int) -> dict:
         """
@@ -6100,8 +6226,14 @@ class BlockStore:
                 pass
 
             channels = {}
+            # device sensors design §2: the channel's secondaries come with it, in stitch order,
+            # in the same statement (a config load is on every surface's query budget)
             ch_rows = self._conn.execute(
-                "SELECT * FROM meter_channels WHERE meter_id=?", (m["id"],)
+                "SELECT mc.*, (SELECT json_group_array(entity_id) FROM ("
+                "    SELECT s.entity_id FROM device_sensors s WHERE s.meter_id = ? "
+                "    AND s.channel = mc.channel AND s.role = 'secondary' "
+                "    AND s.position IS NOT NULL ORDER BY s.position)) AS history_json "
+                "FROM meter_channels mc WHERE mc.meter_id=?", (mid, m["id"])
             ).fetchall()
             for ch in ch_rows:
                 ch_dict = {}
@@ -6130,6 +6262,8 @@ class BlockStore:
                     ch_dict["meta"] = ch_meta
                 if not ch["channel"]:
                     continue          # skip a NULL/empty channel (legacy pre-constraint row) — a None dict key crashes jsonify
+                # device sensors design §2: the secondaries Device History stitches, in order
+                ch_dict["history_reads"] = json.loads(ch["history_json"] or "[]")
                 channels[ch["channel"]] = ch_dict
 
             # Engine compatibility: the overlay path reads meta["rate_source"].
@@ -6642,7 +6776,8 @@ class BlockStore:
                 standing_charge, carbon_g, carbon_intensity_g, imp_provisional,
                 source, is_provisional, needs_pass2_rerun, imp_kwh_api, needs_review,
                 exp_kwh_api,
-                rate_corrected, rate_source
+                rate_corrected, rate_source,
+                imp_sensor_id, exp_sensor_id
             ) VALUES (
                 :block_start, :block_end,
                 :meter_id, :config_period_id, :interpolated,
@@ -6654,7 +6789,13 @@ class BlockStore:
                 :standing_charge, :carbon_g, :carbon_intensity_g, :imp_provisional,
                 :source, :is_provisional, :needs_pass2_rerun, :imp_kwh_api, :needs_review,
                 :exp_kwh_api,
-                :rate_corrected, :rate_source
+                :rate_corrected, :rate_source,
+                CASE WHEN :imp_read_start IS NOT NULL THEN
+                    (SELECT s.id FROM device_sensors s WHERE s.meter_id = :meter_id
+                        AND s.channel = 'import' AND s.role = 'primary') END,
+                CASE WHEN :exp_read_start IS NOT NULL THEN
+                    (SELECT s.id FROM device_sensors s WHERE s.meter_id = :meter_id
+                        AND s.channel = 'export' AND s.role = 'primary') END
             )
         """
         with self._conn:
@@ -6674,6 +6815,8 @@ class BlockStore:
         → mutate → `append_block_replace`) wiped a block's review history. Since
         BL-74 nothing in v5 sets them, so they are history only, and are kept as
         they are. A brand-new row takes the dict's value (0 / NULL / 0).
+        `imp_sensor_id` / `exp_sensor_id` are carried too: a rewrite after a rename must not
+        point an old sensor's block at today's primary; only a new row takes it.
 
         Two more columns the REPLACE dropped are carried the same way, because a
         rewrite does not change what they record: `finalised_from_cad` (a block past
@@ -6697,7 +6840,8 @@ class BlockStore:
                 source, is_provisional, needs_pass2_rerun, imp_kwh_api, needs_review,
                 review_reason, review_dismissed, finalised_from_cad, derivation_id,
                 exp_kwh_api,
-                rate_corrected, rate_source
+                rate_corrected, rate_source,
+                imp_sensor_id, exp_sensor_id
             ) VALUES (
                 :block_start, :block_end,
                 :meter_id, :config_period_id, :interpolated,
@@ -6720,7 +6864,21 @@ class BlockStore:
                 (SELECT o.derivation_id FROM blocks o
                   WHERE o.block_start = :block_start AND o.meter_id = :meter_id),
                 :exp_kwh_api,
-                :rate_corrected, :rate_source
+                :rate_corrected, :rate_source,
+                CASE WHEN EXISTS (SELECT 1 FROM blocks o
+                                 WHERE o.block_start = :block_start AND o.meter_id = :meter_id)
+                     THEN (SELECT o.imp_sensor_id FROM blocks o
+                            WHERE o.block_start = :block_start AND o.meter_id = :meter_id)
+                     ELSE CASE WHEN :imp_read_start IS NOT NULL THEN
+                    (SELECT s.id FROM device_sensors s WHERE s.meter_id = :meter_id
+                        AND s.channel = 'import' AND s.role = 'primary') END END,
+                CASE WHEN EXISTS (SELECT 1 FROM blocks o
+                                 WHERE o.block_start = :block_start AND o.meter_id = :meter_id)
+                     THEN (SELECT o.exp_sensor_id FROM blocks o
+                            WHERE o.block_start = :block_start AND o.meter_id = :meter_id)
+                     ELSE CASE WHEN :exp_read_start IS NOT NULL THEN
+                    (SELECT s.id FROM device_sensors s WHERE s.meter_id = :meter_id
+                        AND s.channel = 'export' AND s.role = 'primary') END END
             )
         """
         with self._conn:

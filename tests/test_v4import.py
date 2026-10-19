@@ -46,6 +46,8 @@ def v4_db(path, *, written_by=G.FLOOR_VERSION, meta=None, state=None, extra_sql=
     st = BlockStore(path)
     c = st._conn
     c.execute("DELETE FROM store_meta WHERE key = 'emt_schema'")
+    from tests.v4_shape import strip_v5_only
+    strip_v5_only(c)
     # v4's blocks still carry the columns v5 dropped in steps 5a, 5b and 5c (10 Oct 2026).
     for col in ("imp_kwh_remainder REAL", "imp_cost_remainder REAL",
                 "rate_reconciled INTEGER NOT NULL DEFAULT 0",

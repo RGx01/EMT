@@ -14162,6 +14162,15 @@ async def _engine_startup_impl(ha: HAClient):
     except Exception as _pube:
         logger.warning("engine_startup: pre-upgrade backup failed: %s", _pube)
     _store = open_block_store(BLOCKS_DB_PATH)
+    # Device sensors design §2: a database from before `device_sensors` (an earlier v5, or a
+    # v4 import) gets each channel's configured read sensor as its primary entry.
+    try:
+        _ds = _store.seed_device_sensors()
+        if _ds:
+            logger.info("engine_startup: device sensors — %d primary entr%s from the config",
+                        _ds, "y" if _ds == 1 else "ies")
+    except Exception as _dse:
+        logger.warning("engine_startup: device sensors seed failed (non-fatal): %s", _dse)
 
     # ── Checkpoint WAL immediately after opening ──────────────────────────
     # Ensures all committed blocks are flushed from WAL into the main DB file.
