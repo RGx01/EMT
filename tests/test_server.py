@@ -2252,6 +2252,8 @@ class TestApiRestoreStaged(unittest.TestCase):
         open(p, "wb").write(b)
         c = sqlite3.connect(p)
         c.execute("DELETE FROM store_meta WHERE key = 'emt_schema'")
+        from tests.v4_shape import strip_v5_only
+        strip_v5_only(c)
         c.execute("UPDATE store_meta SET value = '\"4.5.13\"' WHERE key = 'written_by'")
         c.commit(); c.close()
         r = self._stage(open(p, "rb").read())

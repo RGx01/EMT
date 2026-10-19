@@ -1826,6 +1826,11 @@ def _meter_delete_data(meter_id: str):
                 cur = st._conn.execute("DELETE FROM current_reads WHERE meter_id = ?", (meter_id,))
                 deleted["current_reads"] = cur.rowcount
 
+                # Device sensors design §5: its sensors go with it, so a device recreated
+                # under the same id starts from its own config, not the deleted one's history.
+                cur = st._conn.execute("DELETE FROM device_sensors WHERE meter_id = ?", (meter_id,))
+                deleted["device_sensors"] = cur.rowcount
+
                 # Remove from current_block JSON if present
                 try:
                     cb_row = st._conn.execute(
