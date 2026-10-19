@@ -660,6 +660,8 @@ window.EMTHeatmap = (function () {
       }
       var fc = fillItem(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label);
       if (fc) items.push(fc);
+      var xe = exportDeleteItem(h.starts[0], plus30(h.starts[h.starts.length - 1]));
+      if (xe) items.push(xe);
       showMenu(ev, items, h.day + ' ' + h.label);
     });
   }
@@ -703,6 +705,7 @@ window.EMTHeatmap = (function () {
     var items = state.canRefetch ? [{text: 'Re-fetch ' + day + ' from Octopus\u2026', run: function () {
       openRefetch(dr[0], dr[1], day); }}] : [];
     var fd = fillItem(dr[0], dr[1], day); if (fd) items.push(fd);
+    var xd = exportDeleteItem(dr[0], dr[1]); if (xd) items.push(xd);
     if (!items.length) return;
     markSelection(dr[0], dr[1]);
     showMenu(ev, items, day);
@@ -756,6 +759,7 @@ window.EMTHeatmap = (function () {
     var items = state.canRefetch ? [{text: 'Re-fetch ' + sp.label + ' from Octopus\u2026', run: function () {
       openRefetch(sp.from, sp.to, sp.label); }}] : [];
     var fs = fillItem(sp.from, sp.to, sp.label); if (fs) items.push(fs);
+    var xs = exportDeleteItem(sp.from, sp.to); if (xs) items.push(xs);
     if (!items.length) { clearSelection(); return; }
     showMenu(ev, items, sp.label);
   });
@@ -1145,6 +1149,73 @@ window.EMTHeatmap = (function () {
     m.addEventListener('click', function (e) { if (e.target === m || e.target.dataset.close) shut(); });
     document.addEventListener('keydown', esc1);
     document.body.appendChild(m);
+  }
+
+  // ── Deleting an imported export (soft delete design §4, PR 1) ─────────────────────────────
+  // The export of IMPORTED history (a CSV, a PDF bill, the API import) over whole local days, after
+  // a required backup — for a wrong third-party or FIT export over import that is fine. Not on the
+  // Import bill view; offered on the others whatever the source, so an install without the
+  // supplier API (no Export bill view) has it too. The preview says when there is nothing to do.
+  function localDay(utcIso) { return localParts(utcIso).day; }
+  function exportDeleteItem(from, to) {
+    if (state.metric === 'bill') return null;
+    var a = localDay(from), b = localDay(new Date(Date.parse(to + 'Z') - 1800e3).toISOString().slice(0, 19));
+    return {text: 'Delete the imported export of ' + (a === b ? a : a + ' \u2192 ' + b) + '\u2026',
+            run: function () { openExportDelete(a, b); }};
+  }
+  function openExportDelete(a, b) {
+    state.dialogOpen = true;
+    var el = panelEl(), label = a === b ? a : a + ' \u2192 ' + b;
+    function box(inner, buttons) {
+      el.innerHTML = '<div class="hm-panel-box" role="dialog" aria-label="Delete the imported export">' +
+        '<div class="hm-panel-head"><b>Delete the imported export \u2014 ' + esc(label) + '</b>' +
+        '<button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' + inner +
+        '<div class="hm-actions">' + (buttons || '') + '</div></div>';
+      el.style.display = 'flex';
+    }
+    var close = '<button class="hm-btn" data-close="1">Close</button>';
+    function fail(e) { box('<p class="hm-bad">' + esc(e.message) + '</p>', close); }
+    box('<p>Counting\u2026 nothing is changed.</p>');
+    postJSON('/api/blocks/delete-export/preview', {from_date: a, to_date: b}).then(function (p) {
+      if (!p.ok) throw new Error(p.error || 'the preview failed');
+      markSelection(p.from_utc, p.to_utc);
+      if (!p.half_hours) {
+        box('<p>No imported export on ' + esc(label) + ' \u2014 nothing to delete.' +
+            (p.live_kept ? ' Its ' + hh(p.live_kept) + ' recorded live are not deleted here: Re-fetch from ' +
+             'Octopus corrects a live export.' : '') + '</p>', close);
+        return;
+      }
+      box('<p>Deletes the <b>imported export</b> for ' + hh(p.half_hours) + ' (' + p.kwh + ' kWh) over ' +
+          esc(label) + ', whole days in local time. <b>Import is kept</b>, and its carbon is worked out ' +
+          'again from import alone.</p>' +
+          (p.live_kept ? '<p class="hm-note2">' + hh(p.live_kept) + ' recorded live on these days keep their ' +
+           'export.</p>' : '') +
+          '<p class="hm-note2">A backup is taken first. To put an export back, overlay a CSV for these days ' +
+          '(Historical import \u2192 CSV \u2192 Date range, channel \u201cExport only\u201d).</p>',
+          '<button class="hm-btn" data-close="1">Cancel</button>' +
+          '<button class="hm-btn hm-primary" data-act="go" style="background:#cc0000;border-color:#cc0000;">Delete the export</button>');
+      el.querySelector('[data-act="go"]').onclick = function () { go(p); };
+    }).catch(fail);
+    function go(p) {
+      box('<p>Taking a backup and deleting\u2026</p>');
+      postJSON('/api/blocks/delete-export', {from_date: a, to_date: b, confirmed: true}).then(function (r) {
+        if (!r.ok) throw new Error(r.error || 'the delete did not start');
+        return new Promise(function (ok, bad) {
+          (function tick() {
+            fetchJSON('/api/blocks/delete/status').then(function (s) {
+              if (s.status === 'running') { setTimeout(tick, 1000); return; }
+              if (s.status === 'error') { bad(new Error(s.error || 'the delete failed')); return; }
+              ok(s);
+            }, function () { setTimeout(tick, 2000); });
+          })();
+        });
+      }).then(function (s) {
+        var n = ((s.result || {}).half_hours) || 0;
+        box('<p>Done \u2014 the imported export of ' + hh(n) + ' deleted.</p>' +
+            (s.backup ? '<p class="hm-note2">Backup: ' + esc(s.backup) + '</p>' : ''), close);
+        reloadRange(p.from_utc, p.to_utc);
+      }).catch(fail);
+    }
   }
 
   // ── the settlement detail panel (design §4): the evidence for one half-hour ──

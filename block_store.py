@@ -3436,6 +3436,52 @@ class BlockStore:
         if d != before:
             self.set_kraken_state(self._IMPORT_NO_COST_KEY, json.dumps(d, sort_keys=True))
 
+    # ── Deleting an imported export (soft delete design §4, PR 1, 19 Oct 2026) ───────────────────
+    # The export of IMPORTED main-meter history (CSV, PDF, the API import) over whole LOCAL days —
+    # a third-party or FIT export CSV that was wrong, over import that is fine. Whole days because
+    # zero_fill_imported_export_blanks sets a NULL export to 0.0 on a day that still holds some
+    # imported export. No shelf: the required backup is the way back (the user, 19 Oct 2026).
+    def _local_days_utc(self, from_date: str, to_date: str, tz_name: str) -> tuple:
+        """[local midnight of from_date, local midnight after to_date) in naive UTC."""
+        nxt = (datetime.fromisoformat(to_date[:10]) + timedelta(days=1)).date().isoformat()
+        return (local_datetime_to_utc(from_date[:10], "00:00", tz_name),
+                local_datetime_to_utc(nxt, "00:00", tz_name))
+
+    _EXPORT_PRESENT = "(exp_kwh IS NOT NULL OR exp_kwh_api IS NOT NULL OR exp_cost IS NOT NULL)"
+
+    def count_imported_export(self, from_date: str, to_date: str, tz_name: str,
+                              meter_id: str = "electricity_main") -> dict:
+        """What deleting the imported export over those local days would take: the imported
+        half-hours with an export, and the live ones left alone. Read-only."""
+        a, b = self._local_days_utc(from_date, to_date, tz_name)
+        row = self._conn.execute(
+            "SELECT SUM(CASE WHEN source LIKE 'imported%' THEN 1 ELSE 0 END) AS imported, "
+            "SUM(CASE WHEN source LIKE 'imported%' THEN 0 ELSE 1 END) AS live, "
+            "SUM(CASE WHEN source LIKE 'imported%' THEN COALESCE(exp_kwh, exp_kwh_api, 0) "
+            "    ELSE 0 END) AS kwh "
+            "FROM blocks WHERE meter_id = ? AND block_start >= ? AND block_start < ? AND "
+            + self._EXPORT_PRESENT, (meter_id, a, b)).fetchone()
+        return {"from_utc": a, "to_utc": b, "half_hours": int(row["imported"] or 0),
+                "live_kept": int(row["live"] or 0), "kwh": round(float(row["kwh"] or 0.0), 3)}
+
+    def delete_imported_export(self, from_date: str, to_date: str, tz_name: str,
+                               meter_id: str = "electricity_main") -> dict:
+        """Blank the export of the imported half-hours over those local days, and recompute their
+        carbon from import alone (imp_kwh × carbon_intensity_g, where the intensity is held — the
+        carbon backfill selects on the intensity, so it would not). Live blocks are not touched.
+        One transaction. Returns {half_hours, from_utc, to_utc}."""
+        a, b = self._local_days_utc(from_date, to_date, tz_name)
+        with self._tx():
+            cur = self._conn.execute(
+                "UPDATE blocks SET exp_kwh = NULL, exp_rate = NULL, exp_cost = NULL, "
+                "exp_read_start = NULL, exp_read_end = NULL, exp_kwh_api = NULL, "
+                "carbon_g = CASE WHEN carbon_intensity_g IS NOT NULL "
+                "  THEN ROUND(COALESCE(imp_kwh, 0) * carbon_intensity_g, 4) ELSE carbon_g END "
+                "WHERE meter_id = ? AND source LIKE 'imported%' AND block_start >= ? "
+                "AND block_start < ? AND " + self._EXPORT_PRESENT, (meter_id, a, b))
+            n = cur.rowcount
+        return {"half_hours": n, "from_utc": a, "to_utc": b}
+
     def get_reprice_queue(self) -> dict:
         """{'import': [start,...], 'export': [...]} of slots awaiting re-price."""
         return self.get_meta("import_reprice_queue", None) or {}

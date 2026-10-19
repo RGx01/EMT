@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """143 read-only methods of BlockStore, and nothing else.
+    """144 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -70,6 +70,7 @@ class ReadStore:
     _CARBON_ELIGIBLE = _BS._CARBON_ELIGIBLE
     _COST_ONLY_SPLIT_SQL = _BS._COST_ONLY_SPLIT_SQL
     _EPOCH_KEY = _BS._EPOCH_KEY
+    _EXPORT_PRESENT = _BS._EXPORT_PRESENT
     _IMPORT_NO_COST_KEY = _BS._IMPORT_NO_COST_KEY
     _LATEST_BILL_SQL = _BS._LATEST_BILL_SQL
     _NEEDS_REPRICE_WHERE = _BS._NEEDS_REPRICE_WHERE
@@ -86,6 +87,7 @@ class ReadStore:
     _export_settlement_expected = _BS._export_settlement_expected
     _finalised_clause = staticmethod(_BS._finalised_clause)
     _imported_config_period_id = _BS._imported_config_period_id
+    _local_days_utc = _BS._local_days_utc
     _needs_split_at = _BS._needs_split_at
     _period_starting_at = _BS._period_starting_at
     _resolve_delete_meters = _BS._resolve_delete_meters
@@ -111,6 +113,7 @@ class ReadStore:
     count_blocks_needing_reprice = _BS.count_blocks_needing_reprice
     count_cost_only_split_slots = _BS.count_cost_only_split_slots
     count_import_blocks_missing_exc = _BS.count_import_blocks_missing_exc
+    count_imported_export = _BS.count_imported_export
     count_imported_history = _BS.count_imported_history
     count_meter_rows = _BS.count_meter_rows
     count_mix_history = _BS.count_mix_history
@@ -234,7 +237,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 104 writers.
+    """The full store: every read method, plus the 105 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or

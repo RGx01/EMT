@@ -155,9 +155,11 @@ rows are a small share of a database (§2).
 
 ## 6. PRs, if agreed
 
-1. **Delete an imported export** (§4) — small, standalone: the route, the preview, the backup, the
-   update, the carbon recompute; on the heatmap's selection menu where the selection holds imported
-   days. Tests: export NULL and import kept; carbon from import alone; live blocks refused; partial
+1. **Delete an imported export** (§4) — *built 19 Oct 2026*: `BlockStore.count_imported_export` /
+   `delete_imported_export`; `POST /api/blocks/delete-export/preview` and `/api/blocks/delete-export`
+   (the delete job, its guards, a required `pre-delete-export` backup); on the heatmap's selection
+   menu on every view but the Import bill (an install without the API has no Export bill view, and a
+   FIT export CSV is the case it is for). Tests: export NULL and import kept; carbon from import alone; live blocks refused; partial
    days rounded out; the poll does not refill it; the overlay does.
 2. **Schema:** the shelf tables (blocks, segments, generation mix); the importer carries tombstones as
    they are (import spec).
