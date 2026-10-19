@@ -4715,17 +4715,8 @@ def api_probe_devices():
         from datetime import datetime as _dt
         cfg = load_config()
         today = _dt.now().strftime("%Y-%m-%d")
-        # Sensor ledger: if a device still has a reconstructed layer, remember the
-        # sensor(s) that built it (from the run ledger) and pre-populate them until
-        # that layer is removed — so revisiting the page shows what was used.
-        store = store_access.store()
-        _latest_run_sensors = {}
-        for _r in (store.get_attribution_runs() or []):
-            _mid = _r.get("meter_id")
-            if _mid and _r.get("sensor_ids"):
-                _latest_run_sensors[_mid] = list(_r["sensor_ids"])   # appended in order → last wins
-        _attributed_meters = {m["meter_id"] for m in
-                              (store.count_recorder_attributed().get("meters") or [])}
+        # Device sensors design §2 (PR 3, 19 Oct 2026): a device's sensors are its own — the
+        # primary (live) and its history sensors — no longer the last run's from the ledger.
         devices = []
         for m_id, m_data in (cfg.get("meters") or {}).items():
             meta = (m_data or {}).get("meta", {}) or {}
@@ -4748,14 +4739,13 @@ def api_probe_devices():
                     sensors.append(v)
             seen = set()
             sensors = [s for s in sensors if not (s in seen or seen.add(s))]
-            # Kept sensors from the last reconstruction, while its layer still exists.
-            history_sensors = (_latest_run_sensors.get(m_id, [])
-                               if m_id in _attributed_meters else [])
+            imp = (m_data.get("channels") or {}).get("import") or {}
             devices.append({
                 "meter_id": m_id, "label": label, "is_sub_meter": is_sub,
                 "meter_type": meta.get("meter_type") or ("sub" if is_sub else "main"),
                 "sensors": sensors,
-                "history_sensors": history_sensors,
+                "primary": imp.get("read"),                       # the live recorder
+                "history_sensors": list(imp.get("history_reads") or []),
             })
         devices.sort(key=lambda d: (d["is_sub_meter"], d["label"].lower()))
         return jsonify({"ok": True, "devices": devices})
@@ -4764,19 +4754,59 @@ def api_probe_devices():
         return jsonify({"ok": False, "error": str(e), "devices": []}), 500
 
 
+def _device_sensor_list(meter_id: str):
+    """A device's sensors in Device History's stitch order: its primary, then its history
+    sensors (device sensors design §2). [] when it has none."""
+    imp = ((((load_config().get("meters") or {}).get(meter_id) or {}).get("channels") or {})
+           .get("import") or {})
+    out = [imp["read"]] if imp.get("read") else []
+    for e in imp.get("history_reads") or []:
+        if e and e not in out:
+            out.append(e)
+    return out
+
+
+@app.route("/api/meter/<meter_id>/history-sensors", methods=["POST"])
+def api_meter_history_sensors(meter_id: str):
+    """Set a device's history sensors (its import channel's secondaries, in order). Body
+    {history_sensors: [entity_id, …]}. The primary is the device config's own, changed in
+    Settings. Device sensors design §2, PR 3."""
+    try:
+        body = request.get_json(force=True, silent=True) or {}
+        ents = body.get("history_sensors")
+        if not isinstance(ents, list) or len(ents) > 20 or not all(isinstance(e, str) for e in ents):
+            return jsonify({"ok": False, "error": "history_sensors must be a list of entity ids"}), 400
+        meta = ((load_config().get("meters") or {}).get(meter_id) or {}).get("meta")
+        if meta is None:
+            return jsonify({"ok": False, "error": "no such device"}), 404
+        if not meta.get("sub_meter"):
+            return jsonify({"ok": False, "error": "history sensors are for devices; the house "
+                                                  "total comes from the meter"}), 400
+        ents = [e.strip() for e in ents if e.strip()]
+        saved = _engine_write(lambda st: st.set_device_history_sensors(meter_id, "import", ents))
+        return jsonify({"ok": True, "meter_id": meter_id, "history_sensors": saved})
+    except Exception as e:
+        logger.error("api_meter_history_sensors: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/historical/attribute/start", methods=["POST"])
 def api_attribute_start():
-    """Start a recorder device-attribution run as a BACKGROUND job. Body:
-    {meter_id, sensor_ids:[...]}. Takes a backup, schedules the worker on the engine
-    loop, returns at once. Poll /status, drive /control, undo via /backout."""
+    """Start a recorder device-attribution run as a BACKGROUND job. Body: {meter_id,
+    confirm_override?}. The sensors are the DEVICE's — its primary, then its history sensors
+    (device sensors design §2, PR 3) — not the request's. Takes a backup, schedules the worker
+    on the engine loop, returns at once. Poll /status, drive /control, undo via /backout."""
     try:
         import engine as _eng
         import asyncio as _asyncio
         body = request.get_json(force=True, silent=True) or {}
         meter_id = (body.get("meter_id") or "").strip()
-        sensor_ids = [s for s in (body.get("sensor_ids") or []) if s]
-        if not meter_id or not sensor_ids:
-            return jsonify({"ok": False, "error": "meter_id and at least one sensor required"}), 400
+        if not meter_id:
+            return jsonify({"ok": False, "error": "meter_id required"}), 400
+        sensor_ids = _device_sensor_list(meter_id)
+        if not sensor_ids:
+            return jsonify({"ok": False, "error": "this device has no sensor — give it one in "
+                                                  "Settings, or add a history sensor"}), 400
         # Attribution is for sub-meter DEVICES only. The main meter is the house
         # control total — its usage is the remainder, never a reconstructed device.
         _meta = ((load_config().get("meters") or {}).get(meter_id) or {}).get("meta") or {}

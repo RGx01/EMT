@@ -80,6 +80,7 @@
     "set_block_segments",
     "set_blocks_exc",
     "set_blocks_iog_split",
+    "set_device_history_sensors",
     "set_import_exc_from_inc",
     "set_kraken_state",
     "set_meta",
