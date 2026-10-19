@@ -45,7 +45,8 @@ window.EMTHeatmap = (function () {
                  'tariff the settled kWh \u00d7 rate · teal: Octopus\u2019s cost, EMT\u2019s House/EV split · ' +
                  'light amber: settled kWh \u00d7 rate, Octopus\u2019s cost not in yet · amber: kWh not ' +
                  'settled yet · red: not final after 7 days, the stored cost is not the bill, or a ' +
-                 'completed dispatch with no House/EV split · blue: ' +
+                 'completed dispatch with no House/EV split · red, hatched yellow: no cost from Octopus, ' +
+                 'and EMT no longer asks — kWh \u00d7 rate · blue: ' +
                  'your correction · grey: nothing imported, or CSV history · black hatched: no block (missing)'},
     export: {label: 'Export bill', title: 'Export bill — is each half-hour\u2019s export cost final?', unit: '',
             dp: 0, tot: 'To look at', settle: 'export',
@@ -62,7 +63,7 @@ window.EMTHeatmap = (function () {
   var MISSING_TEXT = 'no block for this half-hour \u2014 missing';
   var CAT_RANK = {
     bill:  {none: 0, imported: 0, applied: 1, applied_emt_split: 1, corrected: 1, estimate_dcc: 2,
-            estimate_cad: 2, known: 2, overdue: 3, differs: 3, flagged: 3, missing: 3},
+            estimate_cad: 2, known: 2, overdue: 3, abandoned: 3, differs: 3, flagged: 3, missing: 3},
     export: {none: 0, imported: 0, no_agreement: 0, applied: 1, waiting: 2, overdue: 3, missing: 3}
   };
   var CAT_TEXT = {
@@ -73,6 +74,8 @@ window.EMTHeatmap = (function () {
            estimate_dcc: 'settled kWh \u00d7 rate — Octopus\u2019s cost not in yet',
            estimate_cad: 'kWh not settled yet \u00d7 rate',
            overdue: 'not final after 7 days — kWh \u00d7 rate',
+           abandoned: 'no cost from Octopus, and EMT no longer asks for it — kWh \u00d7 rate. ' +
+                      'Re-fetch may still get it; a CSV or PDF bill for the day can supply it',
            known: 'stored cost re-costed before the BL-82 fix (pennies; known)',
            differs: 'the stored cost is not the bill', flagged: 'billed — but see below',
            missing: MISSING_TEXT},
@@ -101,13 +104,26 @@ window.EMTHeatmap = (function () {
     x.moveTo(5, 7); x.lineTo(7, 5); x.stroke();
     return (_hatch = x.createPattern(c, 'repeat'));
   }
+  // A cost EMT no longer asks Octopus for (19 Oct 2026, the user): red, hatched yellow — still an
+  // issue, and not one a re-fetch is likely to clear
+  var _hatchAb = null;
+  function hatchAbandoned() {
+    if (_hatchAb) return _hatchAb;
+    var c = document.createElement('canvas'); c.width = c.height = 6;
+    var x = c.getContext('2d');
+    x.fillStyle = '#cc0000'; x.fillRect(0, 0, 6, 6);
+    x.strokeStyle = '#f2c94c'; x.lineWidth = 1.4;
+    x.beginPath(); x.moveTo(-1, 7); x.lineTo(7, -1); x.moveTo(-1, 1); x.lineTo(1, -1);
+    x.moveTo(5, 7); x.lineTo(7, 5); x.stroke();
+    return (_hatchAb = x.createPattern(c, 'repeat'));
+  }
   function isMissing(c) { return !!(c && c.missing && c.kwh === null); }
   // What is an ISSUE (heatmap issues design §3, §6 (a), decided 17 Oct 2026): anything not green,
   // except CSV history and `none` (nothing imported or exported — nothing to settle). One rule for
   // the "To look at" totals and the collapse. On the energy views, only a missing half-hour.
   var ISSUE = {
     bill: {applied_emt_split: 1, corrected: 1, estimate_dcc: 1, estimate_cad: 1, known: 1,
-           overdue: 1, differs: 1, flagged: 1, missing: 1},
+           overdue: 1, abandoned: 1, differs: 1, flagged: 1, missing: 1},
     export: {no_agreement: 1, waiting: 1, overdue: 1, missing: 1}
   };
   function isIssue(c, m) {
@@ -117,6 +133,7 @@ window.EMTHeatmap = (function () {
   }
   function settleColour(m, v) {
     if (v === 'missing') return hatch();
+    if (v === 'abandoned') return hatchAbandoned();
     var C = {green: '#2e9e5b', amber: '#e0a020', lamber: '#f2cf7a', red: '#cc0000', blue: '#3b7dd8', teal: '#2a9d9f',
              grey: dark() ? '#3a3e4a' : '#d4d7de'};
     var by = m === 'export'
@@ -1175,7 +1192,9 @@ window.EMTHeatmap = (function () {
           'VAT ' + (b.cost_exc > 0.001 ? ((b.cost / b.cost_exc - 1) * 100).toFixed(1) + '%' : '—'));
     } else {
       row('bill', '—', esc(CAT_TEXT.bill[st.bill] || st.bill || ''),
-          st.bill === 'overdue' ? 'hm-bad' : /^estimate_/.test(st.bill) ? 'hm-wait' : '');
+          (st.bill === 'overdue' || st.bill === 'abandoned') ? 'hm-bad' : /^estimate_/.test(st.bill) ? 'hm-wait' : '');
+      if (st.bill === 'abandoned' && d.no_cost_since)
+        row('', 'not asked since ' + esc(localTime(d.no_cost_since)), '', 'hm-bad');
       row('', esc(gbp(c.stored)), 'stored (kWh \u00d7 rate)');
     }
     var ev = 0, house = 0;
