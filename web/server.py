@@ -7978,10 +7978,11 @@ def api_blocks_delete_status():
 
 @job("delete")
 def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
-                   meter_id, tz_name, reconstructed_only):
+                   meter_id, tz_name, reconstructed_only, export_only=False):
     """Background date-range delete worker (own thread; survives navigation).
     Same store access as the old synchronous route (off the engine loop thread),
-    just with progress reported into _delete_job."""
+    just with progress reported into _delete_job. `export_only`: the imported export of
+    whole local days (soft delete design §4) — the same job, guards and backup."""
     _j = _delete_job
     import engine as _eng
     _eng.set_delete_active(True)   # pause the carbon backfill from starting mid-delete
@@ -7995,9 +7996,19 @@ def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
         # #67: back up first, and stop without one — the 30-minute share copy this
         # delete used to fall back on is gone.
         _delete_step("taking a safety backup")
-        _j["backup"] = _safety_backup("pre-delete")
-        _delete_step("deleting blocks")
+        _j["backup"] = (_safety_backup("pre-delete-export") if export_only
+                        else _safety_backup("pre-delete"))
         store = _own_store()          # own thread, own connection
+        if export_only:
+            _delete_step("deleting the imported export")
+            result = store.delete_imported_export(from_date, to_date, tz_name)
+            store.bump_data_epoch()
+            logger.info("_delete_worker: deleted the imported export of %d half-hour(s), "
+                        "%s → %s (local days)", result["half_hours"], from_date, to_date)
+            _j.update({"status": "done", "kind": "delete_export", "result": result,
+                       "error": None})
+            return
+        _delete_step("deleting blocks")
         result = store.delete_blocks_for_date_range(
             from_date, to_date, meter_id, from_time_utc, to_time_utc,
             tz_name=tz_name, reconstructed_only=reconstructed_only)
@@ -8130,6 +8141,78 @@ def api_blocks_delete():
         return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error("api_blocks_delete: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+def _site_tz() -> str:
+    for _md in (load_config().get("meters") or {}).values():
+        if not (_md.get("meta") or {}).get("sub_meter"):
+            return (_md.get("meta") or {}).get("timezone", "UTC")
+    return "UTC"
+
+
+def _delete_refusal():
+    """Why a delete cannot start now, as (json, code), or None."""
+    import engine as _eng
+    if _delete_job.get("status") == "running":
+        return {"error": "a delete is already running", "status": _delete_job}, 409
+    if _eng.delete_in_progress():
+        return {"error": "Another delete is running. Try again once it finishes.", "retry": True}, 409
+    if _eng.poll_in_progress():
+        return {"error": "Unable to delete — a backfill is in progress. Please try again once it "
+                         "completes.", "retry": True}, 409
+    return None
+
+
+def _export_days(data):
+    a = (data.get("from_date") or "").strip()[:10]
+    b = (data.get("to_date") or "").strip()[:10] or a
+    if not a:
+        raise ValueError("from_date required")
+    if a > b:
+        raise ValueError("from_date must not be after to_date")
+    return a, b
+
+
+@app.route("/api/blocks/delete-export/preview", methods=["POST"])
+def api_delete_export_preview():
+    """What deleting the IMPORTED export over whole local days would take (soft delete design §4).
+    Body {from_date, to_date} (local dates, inclusive). Read-only."""
+    try:
+        a, b = _export_days(request.get_json(force=True, silent=True) or {})
+        out = store_access.store().count_imported_export(a, b, _site_tz())
+        return jsonify({"ok": True, "from_date": a, "to_date": b, **out})
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        logger.error("api_delete_export_preview: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/blocks/delete-export", methods=["POST"])
+def api_delete_export():
+    """Delete the IMPORTED export over whole local days, after a required backup — the delete job,
+    in the background; poll /api/blocks/delete/status. Body {from_date, to_date, confirmed: true}.
+    Live and settled data are never touched; the CSV "Export only" overlay refills it."""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        a, b = _export_days(data)
+        if not data.get("confirmed"):
+            return jsonify({"error": "confirmed must be true"}), 400
+        why = _delete_refusal()
+        if why:
+            return jsonify(why[0]), why[1]
+        _delete_job.clear()
+        _delete_job.update({"status": "running", "kind": "delete_export", "step": "starting",
+                            "result": None, "error": None})
+        threading.Thread(target=_delete_worker,
+                         args=(a, "00:00", b, "23:59", "electricity_main", _site_tz(), False),
+                         kwargs={"export_only": True}, daemon=True, name="delete").start()
+        return jsonify({"ok": True, "status": "running"})
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        logger.error("api_delete_export: %s", e)
         return jsonify({"error": str(e)}), 500
 
 
