@@ -235,6 +235,15 @@ class MiniBoundaryReader:
                     boundary_iso, read["value"])
         return read
 
+    async def read_latest(self, now_dt: datetime, lookback_s: int = 300):
+        """The Mini's latest import register point {value, ts} from the last `lookback_s`,
+        or None. ONE telemetry call; touches no per-boundary collection state. For a gap
+        fill waiting on a post-outage read after a restart mid-half-hour, which would
+        otherwise wait for the next boundary's collection window."""
+        points = await self._fetch(now_dt - timedelta(seconds=lookback_s),
+                                   now_dt + timedelta(seconds=1))
+        return points[-1] if points else None
+
     async def _fetch(self, start_dt: datetime, end_dt: datetime) -> list[dict]:
         """Fetch telemetry points as [{value, ts}] sorted by ts, or [] on any
         failure. value = cumulative import register (`consumption`)."""

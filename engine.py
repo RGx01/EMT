@@ -5517,6 +5517,10 @@ async def _engine_tick(ha: HAClient):
     except Exception:
         pass
     if has_gap_marker(current_block):
+        try:
+            await _mini_post_outage_read(current_block, now)
+        except Exception as _mpo_e:
+            logger.warning("gap fill: Mini latest read failed (non-fatal): %s", _mpo_e)
         has_real_read = False
         post_reads    = {}
 
@@ -6322,6 +6326,53 @@ def _mini_collection_window_open(current_block: dict, now: datetime,
     # Open from 20s before the boundary onward (and remain open past it — the
     # reader stops itself once the post-boundary point is collected).
     return seconds_to_boundary <= _MINI_COLLECT_LEAD_S
+
+
+# A gap fill waiting for its post-outage read on a Mini-only install asks the Mini for its latest
+# register, sparingly — the telemetry API is rate-limited: at most this many tries per gap, this far
+# apart. Then the boundary collection (20 s before the next boundary) is the fallback, as before.
+_GAP_MINI_TRIES = 3
+_GAP_MINI_EVERY_S = 300
+
+
+async def _mini_post_outage_read(current_block: dict, now: datetime) -> bool:
+    """For a gap waiting on its post-outage read with no local import sensor: ask the Mini for its
+    latest import register (ONE call, paced by the marker — survives a restart) and add it to the
+    current block's main import reads, when it is newer than the gap's last known read. A restart
+    mid-half-hour otherwise waited for the next boundary's Mini collection, up to 30 minutes (Pi soak,
+    19 Oct 2026). True when a read was added."""
+    reader = _kraken_mini_reader
+    marker = current_block.get("_gap_marker")
+    if reader is None or not marker or _has_local_import_sensor():
+        return False
+    main_id = _main_meter_id()
+    if not main_id:
+        return False
+    if any((ch or {}).get("reads") for m in (current_block.get("meters") or {}).values()
+           for ch in ((m or {}).get("channels") or {}).values()):
+        return False                                    # a read is there: nothing to ask
+    tries = int(marker.get("mini_tries") or 0)
+    if tries >= _GAP_MINI_TRIES or (marker.get("mini_next") and iso(now) < marker["mini_next"]):
+        return False
+    marker["mini_tries"] = tries + 1
+    marker["mini_next"] = iso(now + timedelta(seconds=_GAP_MINI_EVERY_S))
+    point = await reader.read_latest(now)
+    pre_ts = (((marker.get("pre_reads") or {}).get(main_id) or {}).get("import") or {}).get("ts")
+    added = bool(point and (not pre_ts or point["ts"] > pre_ts))
+    if added:
+        meter = current_block.setdefault("meters", {}).setdefault(
+            main_id, {"meta": {}, "channels": {}, "interpolated": False})
+        meter["channels"].setdefault("import", {"reads": [], "rates": []})["reads"].append(
+            {"value": point["value"], "ts": point["ts"]})
+    logger.info("gap fill: asked the Mini for its latest read (try %d of %d) — %s",
+                tries + 1, _GAP_MINI_TRIES,
+                "using %s" % point["ts"] if added else
+                ("none newer than the gap" if point else "none returned"))
+    try:
+        _store.save_current_block(current_block)        # the tries, and any read
+    except Exception:
+        pass
+    return added
 
 
 async def _collect_mini_into_block(current_block: dict, now: datetime,
