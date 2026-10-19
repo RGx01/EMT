@@ -37,22 +37,22 @@
     </div>
   </a>
 
-  <!-- Device History -->
-  <a href="{{ url_for('historical_probe_page') }}" class="card"
+  <!-- Device history: on each device's card in Settings since 19 Oct 2026 -->
+  <a href="{{ url_for('settings_page') }}" class="card"
      style="display:block;text-decoration:none;color:inherit;">
     <div style="display:flex;align-items:flex-start;gap:14px;">
       <div style="font-size:26px;line-height:1;">📊</div>
       <div style="flex:1;">
         <div class="card-title" style="margin-bottom:4px;">
-          Device History
-          <span style="font-size:10px;opacity:0.7;font-weight:400;">beta</span>
+          Device history
+          <span style="font-size:10px;opacity:0.7;font-weight:400;">on each device's card in Settings</span>
         </div>
         <div style="font-size:13px;color:var(--muted);line-height:1.7;">
           Reconstruct a device's past usage from Home Assistant's recorder — for an EV
           charger, battery or heat pump you added to EMT after it was already recording
           in HA. It splits each hour across the half-hour blocks by the house import
           shape, never exceeding what the house drew, and joins cleanly onto the device's
-          live history. Every run is reversible with one-click Undo.
+          live history. Every run can be removed. On each device's card in Settings.
         </div>
       </div>
       <div style="font-size:20px;color:var(--muted);align-self:center;">→</div>

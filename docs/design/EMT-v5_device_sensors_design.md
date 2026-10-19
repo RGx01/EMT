@@ -153,5 +153,9 @@ It also gives a device delete its warning's sensors (§5) and the soft delete's 
    with a sensor (the save restarts the engine; the wizard's save now reloads for it too); the delete
    warning's figures (`GET /api/meter/<id>/delete-preview`). The add-device dialog and the wizard take
    no history sensors: a new device gets them on its card before the save.
-5. **The Device History page retires** — its sensor check and its runs list with undo move to the device
-   screen first.
+5. **The Device History page retires** (built 19 Oct 2026): each device's card in Settings gains *History
+   from Home Assistant* — *Check sensors* (its saved sensors, in HA's statistics), *Rebuild history* (with
+   the sanity refusal's *Rebuild anyway*), the run's progress with pause / resume / cancel, and its rebuilt
+   history with *Remove*. Both act on the SAVED sensors; an unsaved change asks for a save first.
+   `historical_probe.html` is deleted; `/historical-probe` redirects to Settings, and the links that pointed
+   at it point there.
