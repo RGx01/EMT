@@ -13,6 +13,8 @@ importer's copy.
     3b the bill's split    a settled IOG-SMB block takes its cached bill's EV (one-rate blocks)
     4  band relabel        not built: BL-81 closed (house off_peak stays in every era)
     5  meta                the allow-listed store_meta / kraken_state keys
+    6  device sensors      each configured read a primary; Device History's other sensors
+                           secondaries (device sensors design §6)
 
 4 is not built (ROADMAP BL-81, closed 10 Oct 2026); the others run in this order.
 
@@ -78,6 +80,63 @@ def carry_keys(conn, report):
             else:
                 dropped.append(row["key"])
         report["keys"][table] = {"carried": carried, "dropped": dropped}
+
+
+def device_sensors(conn, report):
+    """6 (device sensors design §6, import spec v23): a device's sensors in one place. After 5,
+    which carries the attribution ledger. For the current config period:
+    - each channel's `read_sensor` becomes its PRIMARY (`origin='configured'`);
+    - for a sub-meter, every sensor its Device History runs used (`recorder_attribution_runs`,
+      the latest run first, each run's own order) that is not its primary becomes a SECONDARY,
+      in that order, deduplicated (`origin='v4_attribution'`).
+    v4 kept those sensors only in the ledger, so a device's older entity ids reached nothing but
+    the runs. No block points at an entry: v4 recorded no sensor per block."""
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+    pid = conn.execute("SELECT id FROM main.config_periods WHERE effective_to IS NULL "
+                       "ORDER BY effective_from DESC LIMIT 1").fetchone()
+    out = {"primaries": 0, "secondaries": 0, "devices": []}
+    if pid is None:
+        report["transforms"]["device_sensors"] = out
+        return
+    chans = conn.execute(
+        "SELECT m.meter_id, m.is_sub_meter, mc.channel, mc.read_sensor FROM main.meters m "
+        "JOIN main.meter_channels mc ON mc.meter_id = m.id WHERE m.config_period_id = ? "
+        "ORDER BY m.meter_id, mc.channel", (pid[0],)).fetchall()
+    raw = conn.execute("SELECT value FROM main.store_meta WHERE key = "
+                       "'recorder_attribution_runs'").fetchone()
+    try:
+        runs = json.loads(raw[0]) if raw and raw[0] else []
+    except (TypeError, ValueError):
+        runs = []
+    runs = sorted((r for r in runs if isinstance(r, dict)),
+                  key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    for c in chans:
+        mid, ch, read = c["meter_id"], c["channel"], (c["read_sensor"] or "").strip() or None
+        if read:
+            conn.execute("INSERT INTO main.device_sensors (meter_id, channel, entity_id, role, "
+                         "origin, added_at) VALUES (?, ?, ?, 'primary', 'configured', ?)",
+                         (mid, ch, read, now))
+            out["primaries"] += 1
+        # Device History rebuilds a device's import (v4: one channel per device)
+        if not (c["is_sub_meter"] and ch == "import"):
+            continue
+        extra = []
+        for r in runs:
+            if r.get("meter_id") != mid:
+                continue
+            for e in r.get("sensor_ids") or []:
+                e = (str(e) if e else "").strip()
+                if e and e != read and e not in extra:
+                    extra.append(e)
+        for i, e in enumerate(extra):
+            conn.execute("INSERT INTO main.device_sensors (meter_id, channel, entity_id, role, "
+                         "position, origin, added_at) VALUES (?, ?, ?, 'secondary', ?, "
+                         "'v4_attribution', ?)", (mid, ch, e, i, now))
+        if extra:
+            out["secondaries"] += len(extra)
+            out["devices"].append(mid)
+    report["transforms"]["device_sensors"] = out
 
 
 def provenance(conn, report):
@@ -251,3 +310,4 @@ def run(conn, report):
     refit_held(conn, report)
     bill_split(conn, report)
     carry_keys(conn, report)
+    device_sensors(conn, report)

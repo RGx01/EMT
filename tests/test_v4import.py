@@ -840,5 +840,65 @@ class TheBoundary(unittest.TestCase):
         self.assertEqual(offenders, [])
 
 
+
+class TheDeviceSensors(_Dir):
+    """Transform 6 (device sensors design §6, spec v23): each configured read becomes its channel's
+    primary; a sub-meter's Device History sensors that are not its primary become its secondaries,
+    the latest run first. Fails on the parent: the transform and its gate do not exist there."""
+
+    METERS = ("INSERT INTO meters (id, config_period_id, meter_id, is_sub_meter) VALUES "
+              "(1, 1, 'electricity_main', 0), (2, 1, 'ev_charger', 1), (3, 1, 'house_battery', 1)",
+              "INSERT INTO meter_channels (meter_id, channel, read_sensor) VALUES "
+              "(1, 'import', NULL), (1, 'export', NULL), (2, 'import', 'sensor.charger_now'), "
+              "(3, 'import', 'sensor.battery_in')")
+    RUNS = [
+        {"run_id": "a", "meter_id": "ev_charger", "created_at": "2026-08-05T10:06:00",
+         "sensor_ids": ["sensor.charger_now", "sensor.charger_old"]},
+        {"run_id": "b", "meter_id": "house_battery", "created_at": "2026-08-05T10:07:00",
+         "sensor_ids": ["sensor.battery_in"]},
+        {"run_id": "c", "meter_id": "ev_charger", "created_at": "2026-08-26T20:48:00",
+         "sensor_ids": ["sensor.charger_now", "sensor.charger_older", "sensor.charger_old"]}]
+
+    def _entries(self, conn, meter):
+        return [(r["entity_id"], r["role"], r["position"], r["origin"]) for r in conn.execute(
+            "SELECT * FROM device_sensors WHERE meter_id = ? ORDER BY role, position", (meter,))]
+
+    def test_the_configured_read_is_the_primary(self):
+        conn, _ = self.imported(extra_sql=self.METERS)
+        self.assertEqual(self._entries(conn, "ev_charger"),
+                         [("sensor.charger_now", "primary", None, "configured")])
+        self.assertEqual(self._entries(conn, "electricity_main"), [])     # the Mini: no read
+
+    def test_device_history_sensors_become_secondaries_latest_run_first(self):
+        conn, report = self.imported(extra_sql=self.METERS,
+                                     meta={"recorder_attribution_runs": self.RUNS})
+        self.assertEqual(self._entries(conn, "ev_charger")[1:],
+                         [("sensor.charger_older", "secondary", 0, "v4_attribution"),
+                          ("sensor.charger_old", "secondary", 1, "v4_attribution")])
+        self.assertEqual(self._entries(conn, "house_battery"),
+                         [("sensor.battery_in", "primary", None, "configured")])
+        self.assertEqual(report["transforms"]["device_sensors"],
+                         {"primaries": 2, "secondaries": 2, "devices": ["ev_charger"]})
+        self.assertTrue(report["gates"]["device_sensors"]["ok"])
+
+    def test_no_runs_no_secondaries(self):
+        """GUARD (passes on the parent, which writes none at all)."""
+        conn, _ = self.imported(extra_sql=self.METERS)
+        self.assertEqual(conn.execute("SELECT COUNT(*) FROM device_sensors "
+                                      "WHERE role = 'secondary'").fetchone()[0], 0)
+
+    def test_the_gate_checks_against_the_source(self):
+        """A transform that lost a Device History sensor fails the import."""
+        from v4import import transforms
+        real = transforms.device_sensors
+
+        def lossy(conn, report):
+            real(conn, report)
+            conn.execute("DELETE FROM main.device_sensors WHERE entity_id = 'sensor.charger_old'")
+        with mock.patch.object(transforms, "device_sensors", lossy):
+            with self.assertRaises(v4import.ImportFailed) as e:
+                self.imported(extra_sql=self.METERS, meta={"recorder_attribution_runs": self.RUNS})
+        self.assertIn("Device History sensor(s) not carried", str(e.exception))
+
 if __name__ == "__main__":
     unittest.main()
