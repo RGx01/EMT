@@ -492,6 +492,10 @@
       return b + ' B';
     };
   </script>
+  <style>
+    /* before a configuration is in place these pages go to the welcome screen (first-run guard) */
+    .sidebar nav a[data-locked] { opacity:.45; }
+  </style>
   {% if request.args.get('embed') %}
   <style>
     /* ?embed=1: a page opened as a modal over another (the heatmap's gap fill, 18 Oct 2026) —
@@ -515,18 +519,18 @@
       <a href="{{ url_for('settings_page') }}"  class="{{ 'active' if active == 'settings' }}">
         <span class="nav-icon">⚙️</span> Settings
       </a>
-      <a href="{{ url_for('charts_page') }}"  class="{{ 'active' if active == 'charts' }}">
+      <a href="{{ url_for('charts_page') }}" {% if unconfigured %}data-locked="1" title="Finish setting up first — Settings, or restore a backup on the welcome screen"{% endif %}  class="{{ 'active' if active == 'charts' }}">
         <span class="nav-icon">📊</span> Charts
       </a>
-      <a href="{{ url_for('insights_page') }}" class="{{ 'active' if active == 'insights' }}">
+      <a href="{{ url_for('insights_page') }}" {% if unconfigured %}data-locked="1" title="Finish setting up first — Settings, or restore a backup on the welcome screen"{% endif %} class="{{ 'active' if active == 'insights' }}">
         <span class="nav-icon">💡</span> Insights
       </a>
       {% if has_power_sensor or has_postcode %}
-      <a href="{{ url_for('live_power_page') }}" class="{{ 'active' if active == 'live_power' }}">
+      <a href="{{ url_for('live_power_page') }}" {% if unconfigured %}data-locked="1" title="Finish setting up first — Settings, or restore a backup on the welcome screen"{% endif %} class="{{ 'active' if active == 'live_power' }}">
         <span class="nav-icon">⚡</span> Overview
       </a>
       {% endif %}
-      <a href="{{ url_for('data_management_page') }}"  class="{{ 'active' if active == 'data_management' }}">
+      <a href="{{ url_for('data_management_page') }}" {% if unconfigured %}data-locked="1" title="Finish setting up first — Settings, or restore a backup on the welcome screen"{% endif %}  class="{{ 'active' if active == 'data_management' }}">
         <span class="nav-icon">🗄️</span> Data Management
       </a>
       <a href="{{ url_for('logs_page') }}"    class="{{ 'active' if active == 'logs' }}">
