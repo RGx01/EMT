@@ -548,7 +548,8 @@ Draft: same note §2.
 register reads (`reads`) with it, so they are lost unless HA's recorder still holds them. Wanted:
 *Delete* hides and keeps the rows, *Restore* brings them back, *Delete permanently* runs today's delete.
 A schema change and a reader audit. Draft: same note §3. 18 Oct 2026: with deleting by channel
-(the user, 17 Oct), `docs/design/EMT-v5_channel_soft_delete_design.md` (draft, questions (a)–(g)).
+(the user, 17 Oct), `docs/design/EMT-v5_soft_delete_design.md` (draft): the shelf decided; per-channel
+delete dropped on 19 Oct except deleting an imported export; questions (a)–(c).
 
 ## D. Surfacing performance
 

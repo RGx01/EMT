@@ -1,6 +1,6 @@
 # EMT v5 — A device's sensors in one place
 
-*Draft, 18 Oct 2026. From the per-channel soft delete design (§1, tagging what is shelved with the
+*Draft, 18 Oct 2026. From the soft delete design (tagging what is shelved with the
 HA sensor it came from): a device's sensors are configured in two places today, and the user
 decided they should be in one. Decided the same day by the user: §2's model, the rename prompt
 (§3), a device delete stays permanent (§5). Every line in §0 was read in the code or queried on the
