@@ -4766,6 +4766,29 @@ def _device_sensor_list(meter_id: str):
     return out
 
 
+@app.route("/api/meter/<meter_id>/delete-preview", methods=["GET"])
+def api_meter_delete_preview(meter_id: str):
+    """What deleting a device takes, for its warning (device sensors design §5): its half-hours
+    — recorded live, and rebuilt by Device History — the first, and the sensor that recorded
+    them. Read-only."""
+    try:
+        meta = ((load_config().get("meters") or {}).get(meter_id) or {}).get("meta")
+        if meta is None:
+            return jsonify({"ok": False, "error": "no such device"}), 404
+        row = store_access.store()._conn.execute(
+            "SELECT COUNT(*) AS n, MIN(block_start) AS first, "
+            "SUM(CASE WHEN source = 'recorder_attributed' THEN 1 ELSE 0 END) AS rebuilt "
+            "FROM blocks WHERE meter_id = ?", (meter_id,)).fetchone()
+        n, rebuilt = int(row["n"] or 0), int(row["rebuilt"] or 0)
+        return jsonify({"ok": True, "meter_id": meter_id, "half_hours": n,
+                        "recorded_live": n - rebuilt, "rebuilt": rebuilt,
+                        "first": (row["first"] or "")[:10] or None,
+                        "sensors": _device_sensor_list(meter_id)})
+    except Exception as e:
+        logger.error("api_meter_delete_preview: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/meter/<meter_id>/history-sensors", methods=["POST"])
 def api_meter_history_sensors(meter_id: str):
     """Set a device's history sensors (its import channel's secondaries, in order). Body

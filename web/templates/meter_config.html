@@ -161,6 +161,37 @@
   </div>
 </div>
 
+<!-- ── A device's live sensor changed: keep the old one for history? (device sensors §3) ── -->
+<div id="rename-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border-radius:8px;padding:24px;max-width:460px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+    <h3 style="margin:0 0 8px;font-size:16px;" id="rename-title">Keep the old sensor?</h3>
+    <p style="font-size:13px;color:var(--muted);margin:0 0 16px;line-height:1.6;" id="rename-body"></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button id="rename-no" class="btn btn-sm">No, drop it</button>
+      <button id="rename-yes" class="btn btn-sm" style="background:var(--accent);color:#000;font-weight:600;">Keep for history</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── New devices: rebuild their history now? (device sensors §4) ─────────── -->
+<div id="rebuild-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
+  <div style="background:var(--surface);border-radius:8px;padding:24px;max-width:460px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+    <h3 style="margin:0 0 8px;font-size:16px;">Rebuild history from Home Assistant?</h3>
+    <p style="font-size:13px;color:var(--muted);margin:0 0 12px;line-height:1.6;">
+      Home Assistant may already hold these devices' past usage. EMT can rebuild it from the device's
+      sensors (its live sensor, then any history sensors) into the half-hours it has no device data for.
+      A backup is taken first, it runs in the background, and it can be undone on Device History.
+    </p>
+    <div id="rebuild-list" style="margin-bottom:14px;font-size:13px;"></div>
+    <div id="rebuild-status" style="font-size:12px;color:var(--muted);margin-bottom:10px;"></div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button id="rebuild-later" class="btn btn-sm">Not now</button>
+      <button id="rebuild-now" class="btn btn-sm" style="background:var(--accent);color:#000;font-weight:600;">Rebuild now</button>
+    </div>
+  </div>
+</div>
+<datalist id="hist-entities"></datalist>
+
 <!-- ── Retire Device Modal ────────────────────────────────────────────────── -->
 <div id="retire-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
   <div style="background:var(--surface);border-radius:8px;padding:24px;max-width:420px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.3);">
@@ -531,6 +562,7 @@ document.addEventListener('DOMContentLoaded', function() {
     if (Object.keys(config.meters || {}).length === 0) {
       startWizard();
     }
+    _maybeOfferRebuild();      // a save of new devices queued it (device sensors §4)
   });
 });
 
@@ -552,6 +584,10 @@ async function loadEntities() {
     entities = await r.json();  // [{id, unit, device_class}, ...]
     // Also store on window for modal autocomplete
     window._entities = entities.map(function(e) { return { entity_id: e.id, unit: e.unit }; });
+    var dl = document.getElementById('hist-entities');
+    if (dl) dl.innerHTML = entities.filter(function(e) {
+      return (e.device_class || '') === 'energy' || /^(k|m)?wh$/i.test(e.unit || '');
+    }).map(function(e) { return '<option value="' + esc(e.id) + '">'; }).join('');
   } catch(e) { console.warn('Could not load entities', e); }
 }
 
@@ -959,9 +995,37 @@ function buildSubCard(meterId, meter) {
       '<span class="channel-label label-import">Import</span>' +
       '<div class="form-group"><label>Read Sensor — cumulative kWh</label>' +
         buildEntityInput(meterId+'__import__read', imp.read||'', meterId, 'import', 'read') + '</div>' +
+      buildHistoryList(meterId, imp) +
     '</div>' : '');  // end of !meta.retired_at conditional
 
   return div;
+}
+
+// Device sensors design §2, §4 (PR 4): a device's history sensors — older names of the same
+// device, which Device History stitches after the live one to rebuild its past. Never read live.
+// Kept in config as channels.import.history_reads (device_sensors on the server).
+function buildHistoryList(meterId, imp) {
+  var hist = imp.history_reads || [];
+  var rows = hist.map(function(e, i) {
+    return '<div style="display:flex;gap:6px;margin-bottom:6px;">' +
+      '<input type="text" class="js-hist" data-meter="' + meterId + '" data-idx="' + i + '" list="hist-entities" ' +
+        'value="' + esc(e) + '" placeholder="sensor.entity_id (energy / kWh)" style="flex:1;">' +
+      '<button class="btn btn-sm js-hist-remove" data-meter="' + meterId + '" data-idx="' + i + '" title="Remove">✕</button>' +
+    '</div>';
+  }).join('');
+  return '<div class="form-group" style="margin-top:8px;"><label>History sensors ' +
+      '<span style="color:var(--muted);font-weight:400;">(optional — older names of this device, for rebuilding its history)</span></label>' +
+      rows +
+      '<button class="btn btn-sm js-hist-add" data-meter="' + meterId + '">+ Add history sensor</button>' +
+      '<small style="color:var(--muted);display:block;margin-top:4px;">If Home Assistant renamed this device\'s sensor, ' +
+      'list the old name here: rebuilding history (Device History) reads the live sensor first, then these. They are never recorded live.</small>' +
+    '</div>';
+}
+function _histOf(m) {
+  var imp = ((config.meters[m] || {}).channels || {}).import;
+  if (!imp) return null;
+  if (!Array.isArray(imp.history_reads)) imp.history_reads = [];
+  return imp.history_reads;
 }
 
 // ── Advanced meta section ─────────────────────────────────────────────────────
@@ -1093,6 +1157,9 @@ function onContainerChange(e) {
     }
     config.meters[m].meta[k] = val;
   }
+  else if (el.classList.contains('js-hist')) {
+    var h = _histOf(m); if (h) h[parseInt(el.dataset.idx)] = el.value.trim();
+  }
   else if (el.classList.contains('js-meta-int'))  { config.meters[m].meta[k] = parseInt(el.value)||1; }
   else if (el.classList.contains('js-meta-bool')) { config.meters[m].meta[k] = el.checked; }
   else if (el.classList.contains('js-meter-id'))  { renameMeter(m, el.value); }
@@ -1169,6 +1236,15 @@ function onContainerChange(e) {
 function onContainerClick(e) {
   var el = e.target.closest('button');
   if (!el) return;
+  if (el.classList.contains('js-hist-add') || el.classList.contains('js-hist-remove')) {
+    var hl = _histOf(el.dataset.meter);
+    if (hl) {
+      if (el.classList.contains('js-hist-add')) hl.push('');
+      else hl.splice(parseInt(el.dataset.idx), 1);
+      renderAll();
+    }
+    return;
+  }
   if (el.classList.contains('js-retire-meter')) {
     openRetireModal(el.dataset.meter);
     return;
@@ -1222,6 +1298,24 @@ function openDeleteModal(mid, devName, isSub) {
       '<br><br>This action <strong>cannot be undone</strong>.'
     : 'This will permanently delete <strong>all historical data</strong> for this device from the database.' +
       '<br><br>This action <strong>cannot be undone</strong>.';
+  // Device sensors design §5 (PR 4): say what goes, from the figures EMT holds
+  if (!isMain) {
+    fetch(apiUrl('/api/meter/' + encodeURIComponent(mid) + '/delete-preview')).then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (!d.ok || _deleteMid !== mid) return;
+        var sensor = (d.sensors || [])[0];
+        var lines = d.recorded_live
+          ? 'This deletes <strong>' + d.recorded_live.toLocaleString() + ' half-hours</strong> of ' + esc(devName) +
+            ' recorded' + (sensor ? ' from <code>' + esc(sensor) + '</code>' : '') +
+            (d.first ? ' since ' + esc(d.first) : '') + '.'
+          : 'This device has no half-hours recorded live.';
+        if (d.rebuilt) lines += ' And ' + d.rebuilt.toLocaleString() + ' half-hours rebuilt from Home Assistant\'s history.';
+        document.getElementById('del-modal-body').innerHTML = lines +
+          '<br><br>EMT can rebuild history from Home Assistant\'s long-term statistics, which are <strong>hourly</strong> ' +
+          '— not the half-hour readings it recorded. Its sensors go with it.' +
+          '<br><br>This action <strong>cannot be undone</strong>.';
+      }).catch(function() {});
+  }
 
   var input = document.getElementById('del-modal-confirm-input');
   var btn   = document.getElementById('del-modal-confirm-btn');
@@ -1825,6 +1919,7 @@ function _doSave(changeReason) {
     body: JSON.stringify(payload)
   }).then(function(r) { return r.json(); }).then(function(data) {
     if (data.ok) {
+      _queueRebuildOffer();
       // Brief flash then reload so new sensor fields appear for any updated meter_type
       show('alert-success');
       window.scrollTo({ top: 0, behavior: 'smooth' });
@@ -1832,6 +1927,57 @@ function _doSave(changeReason) {
     }
     else showError(data.error || 'Save failed');
   }).catch(function(e) { showError(e.message); });
+}
+
+// Device sensors design §4 (PR 4): saving a NEW device with a sensor offers to rebuild its history
+// from Home Assistant. The save restarts the engine, so the offer waits for the reload.
+var _REBUILD_KEY = 'emt_rebuild_offer';
+function _queueRebuildOffer() {
+  var fresh = Object.keys(config.meters || {}).filter(function(id) {
+    var m = config.meters[id], imp = (m.channels || {}).import || {};
+    return (m.meta || {}).sub_meter && !(_serverConfig.meters || {})[id] && !(m.meta || {}).retired_at &&
+           (imp.read || (imp.history_reads || []).some(Boolean));
+  }).map(function(id) { return {id: id, label: (config.meters[id].meta || {}).device || id}; });
+  if (!fresh.length) return false;
+  try { sessionStorage.setItem(EMT.lsKey(_REBUILD_KEY), JSON.stringify(fresh)); } catch (e) { return false; }
+  return true;
+}
+function _maybeOfferRebuild() {
+  var list = null;
+  try {
+    list = JSON.parse(sessionStorage.getItem(EMT.lsKey(_REBUILD_KEY)) || 'null');
+    sessionStorage.removeItem(EMT.lsKey(_REBUILD_KEY));
+  } catch (e) { list = null; }
+  list = (list || []).filter(function(d) { return (config.meters || {})[d.id]; });
+  if (!list.length) return;
+  var modal = document.getElementById('rebuild-modal'), st = document.getElementById('rebuild-status');
+  document.getElementById('rebuild-list').innerHTML = list.map(function(d) {
+    return '<label style="display:flex;gap:8px;align-items:center;margin-bottom:4px;">' +
+      '<input type="checkbox" class="js-rebuild" value="' + esc(d.id) + '" checked> ' + esc(d.label) + '</label>';
+  }).join('');
+  document.getElementById('rebuild-later').onclick = function() { modal.style.display = 'none'; };
+  document.getElementById('rebuild-now').onclick = function() {
+    var ids = [].slice.call(document.querySelectorAll('.js-rebuild:checked')).map(function(c) { return c.value; });
+    if (!ids.length) { modal.style.display = 'none'; return; }
+    st.textContent = 'Starting…';
+    var notes = [];
+    ids.reduce(function(p, id) {
+      return p.then(function() {
+        return fetch(apiUrl('/api/historical/attribute/start'), {
+          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({meter_id: id})
+        }).then(function(r) { return r.json(); }).then(function(d) {
+          var label = (config.meters[id].meta || {}).device || id;
+          notes.push(d.ok ? '✓ ' + label + ' — rebuilding in the background'
+                          : '⚠ ' + label + ' — ' + (d.warn || d.error || 'not started') + ' (see Device History)');
+        });
+      });
+    }, Promise.resolve()).then(function() {
+      st.innerHTML = notes.map(esc).join('<br>');
+      document.getElementById('rebuild-now').style.display = 'none';
+      document.getElementById('rebuild-later').textContent = 'Close';
+    }).catch(function(e) { st.textContent = 'Could not start: ' + e.message; });
+  };
+  modal.style.display = 'flex';
 }
 
 function isBillingSignificant() {
@@ -1848,7 +1994,44 @@ function isBillingSignificant() {
   return SIGNIFICANT.some(function(k) { return oldMeta[k] !== newMeta[k]; });
 }
 
+// Device sensors design §3 (PR 4): a device whose live sensor changed is asked, one at a time,
+// whether to keep the old sensor for rebuilding history — yes by default. The answer travels
+// with the save as channels.import.keep_old_read; the server keeps the old one as the first
+// history sensor, with its id, so the half-hours it recorded still name it.
+function _renamedDevices() {
+  var out = [];
+  Object.keys(config.meters || {}).forEach(function(id) {
+    var m = config.meters[id], was = (_serverConfig.meters || {})[id];
+    if (!was || !(m.meta || {}).sub_meter) return;
+    var oldRead = ((was.channels || {}).import || {}).read || '';
+    var imp = (m.channels || {}).import || {};
+    if (oldRead && oldRead !== (imp.read || '')) out.push({id: id, label: (m.meta || {}).device || id, old: oldRead});
+  });
+  return out;
+}
+function _askRenames(list, done) {
+  if (!list.length) { done(); return; }
+  var r = list.shift(), modal = document.getElementById('rename-modal');
+  document.getElementById('rename-title').textContent = 'Keep the old sensor of ' + r.label + '?';
+  document.getElementById('rename-body').innerHTML =
+    'Its live sensor was <code>' + esc(r.old) + '</code>. If Home Assistant renamed it, keep the old name ' +
+    'as a <strong>history sensor</strong>: rebuilding the device\'s history then reaches back past the rename. ' +
+    'The half-hours it recorded are kept either way.';
+  function answer(keep) {
+    modal.style.display = 'none';
+    config.meters[r.id].channels.import.keep_old_read = keep;
+    _askRenames(list, done);
+  }
+  document.getElementById('rename-yes').onclick = function() { answer(true); };
+  document.getElementById('rename-no').onclick = function() { answer(false); };
+  modal.style.display = 'flex';
+  setTimeout(function() { document.getElementById('rename-yes').focus(); }, 50);
+}
+
 function saveConfig() {
+  _askRenames(_renamedDevices(), _saveConfigAsked);
+}
+function _saveConfigAsked() {
   if (isBillingSignificant()) {
     // Show change reason modal — billing period may be created
     var modal = document.getElementById('change-reason-modal');
@@ -2953,7 +3136,12 @@ async function wizApplyAndClose() {
       body: JSON.stringify(config)
     });
     var data = await r.json();
-    if (data.ok) show('alert-success');
+    if (data.ok) {
+      show('alert-success');
+      // device sensors design §4: offer to rebuild the new devices' history once the engine,
+      // restarted by the save, is back — on the reload, as a device-screen save does
+      if (_queueRebuildOffer()) setTimeout(function() { window.location.reload(); }, 1200);
+    }
     else showError(data.error || 'Save failed — please press Save Config manually');
   } catch(e) {
     showError('Auto-save failed — please press Save Config manually');
