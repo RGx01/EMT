@@ -551,7 +551,7 @@ recorder keeps detail ~10 days; `reads`, once thought lost with them, has never 
 A schema change and a reader audit. Draft: same note §3. 18 Oct 2026: with deleting by channel
 (the user, 17 Oct), `docs/design/EMT-v5_soft_delete_design.md` (draft): the shelf decided; per-channel
 delete dropped on 19 Oct except deleting an imported export; only live-recorded rows shelved; (a)–(c)
-decided 19 Oct; open: the sensor tag on a live block (device sensors design §7).
+decided 19 Oct; a live block points at its sensor's `device_sensors` entry (device sensors design §7).
 
 ## D. Surfacing performance
 
