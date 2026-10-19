@@ -430,6 +430,64 @@ class TheBillsSplit(_Dir):
         self.assertEqual(report["gates"]["bill_split"], {"moved": 2, "reported": 2, "ok": True})
 
 
+def _refit_then_split_sql():
+    """A settled block transform 3 refits (its segments miss its kWh) and 3b then moves to the
+    bill's split — the staging import of prod's 4.5.24 database, 19 Oct 2026: 11 Sep 00:00's shape."""
+    bs, kwh = "2026-09-09T02:00:00", 2.858
+    return ("INSERT INTO blocks (id, block_start, block_end, meter_id, config_period_id, imp_kwh, "
+            "imp_rate, imp_cost, imp_cost_exc, rate_source, rate_corrected, imp_kwh_ev, imp_cost_ev, "
+            "imp_rate_ev, imp_ev_band) VALUES (120, '%s', '%s', 'electricity_main', 1, %s, 0.0549297, "
+            "0.15699, 0.14951, 'measured', 0, 2.82, 0.154903, 0.05493, 'off_peak')" % (bs, bs, kwh),
+            "INSERT INTO block_segments (block_start, meter_id, channel, seq, kwh, inc_rate, exc_rate, "
+            "band, attribution) VALUES ('%s', 'electricity_main', 'import', 0, 2.82, 0.05493, 0.0523143, "
+            "'off_peak', 'ev'), ('%s', 'electricity_main', 'import', 1, 0.067, 0.0549297, 0.0523140, "
+            "'off_peak', 'house')" % (bs, bs),
+            "INSERT INTO measured_cost (slot_start, mpan, direction, cost_incl, cost_excl, label, kwh, "
+            "ev_kwh, home_kwh) VALUES ('%s', 'M1', 'CONSUMPTION', 0.15699, 0.14951, 'OFF_PEAK', %s, "
+            "2.84125, 0.01675)" % (bs, kwh))
+
+
+class ARefitThenMovedBlock(_Dir):
+    """A block transform 3 refits and 3b then moves (19 Oct 2026). One record per block let 3b's
+    overwrite 3's, so the `bill_split` gate judged it against the source segments the refit had
+    correctly changed, and refused prod's import (4 such blocks); `held_fit` no longer saw it.
+    Discriminating: on the parent the import is refused."""
+    BS = "2026-09-09T02:00:00"
+
+    def _imported(self):
+        return self.imported(extra_sql=_bill_split_sql() + _refit_then_split_sql())
+
+    def test_it_imports(self):
+        _, report = self._imported()
+        self.assertTrue(all(g["ok"] for g in report["gates"].values()), report["gates"])
+        self.assertEqual(report["gates"]["bill_split"]["moved"], 3)
+        self.assertEqual(report["gates"]["held_fit"]["refitted"], 1)
+
+    def test_its_segments_are_the_kwh_the_bill_s_ev_and_its_cost(self):
+        conn, _ = self._imported()
+        k, c, ev = conn.execute(
+            "SELECT SUM(kwh), SUM(kwh * inc_rate), SUM(CASE WHEN attribution = 'ev' THEN kwh END) "
+            "FROM block_segments WHERE block_start = ? AND meter_id = 'electricity_main'",
+            (self.BS,)).fetchone()
+        self.assertAlmostEqual(k, 2.858, places=6)
+        self.assertAlmostEqual(ev, 2.84125, places=6)
+        self.assertAlmostEqual(c, 0.15699, places=5)
+
+    def test_a_refit_that_re_priced_is_still_caught(self):
+        """The move's starting point is the refit's result: a re-priced refit fails the import."""
+        from v4import import transforms
+        real = transforms.refit_held
+
+        def repricing(conn, report):
+            real(conn, report)
+            conn.execute("UPDATE main.block_segments SET inc_rate = inc_rate * 1.01 "
+                         "WHERE block_start = ?", (self.BS,))
+        with mock.patch.object(transforms, "refit_held", repricing):
+            with self.assertRaises(v4import.ImportFailed) as e:
+                self._imported()
+        self.assertIn("re-priced by the refit", str(e.exception))
+
+
 class TheKeys(_Dir):
     """E design §7: setup facts and user choices cross; claims that work already ran do
     not, because v5 carries no v4 heals and its own passes have not run."""

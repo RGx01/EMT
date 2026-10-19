@@ -166,17 +166,20 @@ def split_reproduced(conn, report):
     seg = _SEG % "main"
     base = ("FROM main.blocks b JOIN src.blocks v ON v.id = b.id LEFT JOIN " + seg + " g "
             "ON g.block_start = b.block_start "
-            "LEFT JOIN temp.v4i_resegmented t ON t.block_start = b.block_start "
+            # a block's records together: 3 can refit it and 3b then move it
+            "LEFT JOIN (SELECT block_start, MAX(why = 'refit') AS refit, "
+            "  MAX(why = 'bill_split') AS moved, MAX(why = 'ev_segments') AS rebuilt "
+            "  FROM temp.v4i_resegmented GROUP BY block_start) t ON t.block_start = b.block_start "
             "WHERE b.meter_id = 'electricity_main' ")
     # a refit that actually shrank the EV (by more than rounding); a refit that left the EV as
     # it was is compared like any other block
-    shrunk = "(t.why = 'refit' AND COALESCE(g.ev, 0) < v.imp_kwh_ev - 1e-6)"
+    shrunk = "(COALESCE(t.refit, 0) = 1 AND COALESCE(g.ev, 0) < v.imp_kwh_ev - 1e-6)"
     # transform 3b moved the EV to the bill's on purpose: judged by `bill_split`, not the column
-    moved = "COALESCE(t.why, '') = 'bill_split'"
+    moved = "COALESCE(t.moved, 0) = 1"
     kwh = _one(conn, "SELECT COUNT(*) " + base + "AND v.imp_kwh_ev > 1e-6 AND "
                      "ABS(COALESCE(g.ev, 0) - v.imp_kwh_ev) > 1e-6 AND NOT " + shrunk
                      + " AND NOT " + moved)
-    rebuilt = "COALESCE(t.why, '') = 'ev_segments'"
+    rebuilt = "COALESCE(t.rebuilt, 0) = 1"
     cost = _one(conn, "SELECT COUNT(*) " + base + "AND v.imp_kwh_ev > 1e-6 AND "
                       "ABS(COALESCE(g.ec, 0) - COALESCE(v.imp_cost_ev, 0)) > 1e-5 AND NOT " + shrunk
                       + " AND NOT " + rebuilt + " AND NOT " + moved)
@@ -219,7 +222,18 @@ def held_fit(conn, report):
                           "AND t.why = 'refit' WHERE m.meter_id = 'electricity_main' "
                           "AND m.inc_rate IS NOT b.imp_rate AND NOT EXISTS (SELECT 1 FROM "
                           "src.block_segments s WHERE s.block_start = m.block_start "
-                          "AND s.meter_id = m.meter_id AND s.inc_rate IS m.inc_rate)")
+                          "AND s.meter_id = m.meter_id AND s.inc_rate IS m.inc_rate) "
+                          # a block 3b then moved holds 3b's segments (its house leg the
+                          # residual absorber): its refit is judged below, by what 3b started from
+                          "AND NOT EXISTS (SELECT 1 FROM temp.v4i_resegmented x WHERE "
+                          "x.block_start = m.block_start AND x.why = 'bill_split')")
+    # refitted, then moved by 3b: the refit's result (3b's starting point) sums to the kWh and
+    # costs the block's own stored cost — the held rate, not re-priced
+    repriced += _one(conn, "SELECT COUNT(*) FROM main.blocks b JOIN temp.v4i_split_from f ON "
+                           "f.block_start = b.block_start JOIN temp.v4i_resegmented t ON "
+                           "t.block_start = b.block_start AND t.why = 'refit' "
+                           "WHERE b.meter_id = 'electricity_main' AND (ABS(f.k - b.imp_kwh) > 1e-6 "
+                           "OR ABS(f.c - b.imp_cost) > 1e-5)")
     if still or repriced:
         return ("%d held block(s) still miss their kWh, %d segment(s) re-priced by the refit"
                 % (still, repriced))
@@ -228,9 +242,14 @@ def held_fit(conn, report):
 
 def bill_split(conn, report):
     """Bill and split paths design §7.1 (transform 3b): each block 3b moved now holds the bill's EV
-    clipped to its kWh, its segments sum to its kWh, carry one rate (within 0.001p/kWh), and cost what its source
-    segments cost (Σ kWh × rate, to 1e-5) — the attribution moved, nothing else. A block it reported
-    (more than one rate, or the 4.5.23 case) kept its source segments."""
+    clipped to its kWh, its segments sum to its kWh, carry one rate (within 0.001p/kWh), and cost what its
+    segments cost before the move (Σ kWh × rate, to 1e-5) — the attribution moved, nothing else. A block it reported
+    (more than one rate, or the 4.5.23 case) kept its source segments.
+
+    "Before the move" is its source segments — or, for a block transform 3 refitted first, what 3b
+    started from (`v4i_split_from`), which the `held_fit` gate checks against the source on its own
+    terms (19 Oct 2026: the staging import of prod refused 4 such blocks, judged against segments
+    the refit had correctly changed)."""
     t = report["transforms"].get("bill_split", {"moved": 0, "reported_mixed": [],
                                                  "reported_held": []})
     report["gates"]["bill_split"].update(moved=t["moved"], reported=len(t["reported_mixed"])
@@ -238,12 +257,16 @@ def bill_split(conn, report):
     sel = ("FROM main.blocks b JOIN temp.v4i_resegmented t ON t.block_start = b.block_start "
            "AND t.why = 'bill_split' JOIN " + _SEG % "main" + " g ON g.block_start = b.block_start "
            "JOIN " + _SEG % "src" + " o ON o.block_start = b.block_start "
+           "JOIN temp.v4i_split_from f ON f.block_start = b.block_start "
            "JOIN main.measured_cost m ON m.rowid = (SELECT m2.rowid FROM main.measured_cost m2 "
            "  WHERE m2.slot_start = b.block_start AND m2.direction = 'CONSUMPTION' "
            "  ORDER BY m2.fetched_at DESC LIMIT 1) WHERE b.meter_id = 'electricity_main' ")
+    # the cost before the move: the source's, unless transform 3 refitted the block first
+    before = ("(CASE WHEN EXISTS (SELECT 1 FROM temp.v4i_resegmented r WHERE r.block_start = "
+              "b.block_start AND r.why = 'refit') THEN f.c ELSE o.c END)")
     n = _one(conn, "SELECT COUNT(*) " + sel)
     bad = _one(conn, "SELECT COUNT(*) " + sel + "AND (ABS(g.k - b.imp_kwh) > 1e-6 "
-                     "OR ABS(g.ev - MIN(m.ev_kwh, b.imp_kwh)) > 1e-6 OR ABS(g.c - o.c) > 1e-5 "
+                     "OR ABS(g.ev - MIN(m.ev_kwh, b.imp_kwh)) > 1e-6 OR ABS(g.c - " + before + ") > 1e-5 "
                      "OR (SELECT MAX(s.inc_rate) - MIN(s.inc_rate) FROM main.block_segments s "
                      "WHERE s.block_start = b.block_start AND s.meter_id = b.meter_id "
                      "AND s.channel = 'import') > 1e-5)")
