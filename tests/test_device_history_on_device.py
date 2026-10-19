@@ -4,9 +4,8 @@ Device History on the device's own sensors (device sensors design §2, PR 3).
 - `POST /api/meter/<id>/history-sensors` sets a device's history sensors — its import channel's
   secondaries in `device_sensors`, in order, its primary untouched (`set_device_history_sensors`).
   Refused for an unknown meter, the main meter and a bad body.
-- The Device History page shows the device's live sensor (changed in Settings) and edits its
-  history sensors, saved on the device; "Attribute history" saves them, then starts the run, which
-  the server runs on the device's sensors.
+- The Device History page that edited them retired in PR 5 (19 Oct 2026): checking, rebuilding and
+  removing a device's history are on its card in Settings (`TheCard`).
 
 All new code: on the parent every test fails by name.
 """
@@ -20,16 +19,10 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 from block_store import BlockStore      # noqa: E402
 
-_PAGE = open(os.path.join(_ROOT, "web", "templates", "historical_probe.html"), encoding="utf-8").read()
 CFG = {"meters": {
     "electricity_main": {"meta": {"timezone": "UTC"}, "channels": {"import": {}}},
     "ev_charger": {"meta": {"sub_meter": True, "parent_meter": "electricity_main"},
                    "channels": {"import": {"read": "sensor.ev_now"}}}}}
-
-
-def _fn(name):
-    i = _PAGE.index("function " + name + "(")
-    return _PAGE[i:_PAGE.index("\n}\n", i)]
 
 
 class TheStoreWriter(unittest.TestCase):
@@ -97,27 +90,51 @@ class TheRoute(unittest.TestCase):
         self.assertEqual(self._post("ev_charger", {"history_sensors": "sensor.x"})[0], 400)
 
 
-class ThePage(unittest.TestCase):
+class TheCard(unittest.TestCase):
+    """PR 5 (19 Oct 2026): the Device History page retired; checking a device's sensors,
+    rebuilding its history and removing it are on the device's card in Settings."""
 
-    def test_it_shows_the_live_sensor_read_only(self):
-        body = _fn("_deviceSection")
-        self.assertIn("Live sensor: <code>", body)
-        self.assertIn("changed in Settings", body)
-        self.assertNotIn("_ledger", body)
-        self.assertNotIn("Sensors from your last reconstruction", _PAGE)
+    @staticmethod
+    def _src():
+        return open(os.path.join(_ROOT, "web", "templates", "meter_config.html"), encoding="utf-8").read()
 
-    def test_history_sensors_are_saved_on_the_device(self):
-        self.assertIn("'/history-sensors'", _fn("_saveHistory"))
+    def _fn(self, name):
+        s = self._src(); i = s.index("function " + name + "(")
+        return s[i:s.index("\n}\n", i)]
 
-    def test_attribute_saves_then_starts_without_sensor_ids(self):
-        self.assertIn("_saveHistory(btn).then(function(){ _startAttribute(meter, false); }",
-                      _fn("_attributeDevice"))
-        self.assertIn("JSON.stringify({ meter_id: meter, confirm_override: !!override })",
-                      _fn("_startAttribute"))
+    def test_every_device_card_has_its_history(self):
+        self.assertIn("buildHistorySection(meterId, !!meta.retired_at);", self._fn("buildSubCard"))
+        body = self._fn("buildHistorySection")
+        for c in ("js-hist-check", "js-hist-rebuild", "js-hist-layer", "js-hist-progress"):
+            self.assertIn(c, body)
 
-    def test_the_check_probes_primary_then_history(self):
-        self.assertIn("var p = dv.getAttribute('data-primary') || '';", _fn("_sensorsOf"))
-        self.assertIn("entities: _sensorsOf(dv)", _fn("_runProbe"))
+    def test_check_and_rebuild_use_the_saved_sensors(self):
+        self.assertIn("if (_histUnsaved(m))", self._fn("_histCheck"))
+        self.assertIn("if (_histUnsaved(m))", self._fn("_histRebuild"))
+        self.assertIn("_serverConfig.meters", self._fn("_histSensors"))
+        self.assertIn("'/api/historical/probe'", self._fn("_histCheck"))
+
+    def test_a_sanity_refusal_offers_rebuild_anyway(self):
+        body = self._fn("_histRebuild")
+        self.assertIn("if (d.sanity)", body)
+        self.assertIn("js-hist-override", body)
+        self.assertIn("confirm_override: !!override", body)
+
+    def test_remove_backs_out_the_device(self):
+        self.assertIn("'/api/historical/attribute/backout'", self._fn("_histRemoveLayer"))
+        self.assertIn("JSON.stringify({meter_id: m})", self._fn("_histRemoveLayer"))
+
+    def test_progress_and_control_are_per_device(self):
+        self.assertIn("body: JSON.stringify({action: el.dataset.act, meter_id: el.dataset.meter})",
+                      self._src())
+        self.assertIn("_hist.timer = setTimeout(_loadHistoryState, 2000)", self._fn("_loadHistoryState"))
+
+    def test_the_page_is_gone_and_its_address_goes_to_settings(self):
+        self.assertFalse(os.path.exists(os.path.join(_ROOT, "web", "templates", "historical_probe.html")))
+        from tests.test_server import make_client
+        r = make_client().get("/historical-probe")
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r.headers["Location"].endswith("/settings"))
 
 
 if __name__ == "__main__":

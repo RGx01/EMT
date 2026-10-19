@@ -180,7 +180,7 @@
     <p style="font-size:13px;color:var(--muted);margin:0 0 12px;line-height:1.6;">
       Home Assistant may already hold these devices' past usage. EMT can rebuild it from the device's
       sensors (its live sensor, then any history sensors) into the half-hours it has no device data for.
-      A backup is taken first, it runs in the background, and it can be undone on Device History.
+      A backup is taken first, it runs in the background, and it can be removed from the device's card.
     </p>
     <div id="rebuild-list" style="margin-bottom:14px;font-size:13px;"></div>
     <div id="rebuild-status" style="font-size:12px;color:var(--muted);margin-bottom:10px;"></div>
@@ -563,6 +563,7 @@ document.addEventListener('DOMContentLoaded', function() {
       startWizard();
     }
     _maybeOfferRebuild();      // a save of new devices queued it (device sensors §4)
+    _loadHistoryState();       // each device's rebuilt history and any run in progress
   });
 });
 
@@ -636,6 +637,7 @@ function renderAll() {
 
   attachListeners();
   applySourceToggles();
+  _renderHistoryState();
 }
 
 // ── Main meter card ───────────────────────────────────────────────────────────
@@ -996,7 +998,8 @@ function buildSubCard(meterId, meter) {
       '<div class="form-group"><label>Read Sensor — cumulative kWh</label>' +
         buildEntityInput(meterId+'__import__read', imp.read||'', meterId, 'import', 'read') + '</div>' +
       buildHistoryList(meterId, imp) +
-    '</div>' : '');  // end of !meta.retired_at conditional
+    '</div>' : '') +  // end of !meta.retired_at conditional
+    buildHistorySection(meterId, !!meta.retired_at);
 
   return div;
 }
@@ -1018,9 +1021,153 @@ function buildHistoryList(meterId, imp) {
       rows +
       '<button class="btn btn-sm js-hist-add" data-meter="' + meterId + '">+ Add history sensor</button>' +
       '<small style="color:var(--muted);display:block;margin-top:4px;">If Home Assistant renamed this device\'s sensor, ' +
-      'list the old name here: rebuilding history (Device History) reads the live sensor first, then these. They are never recorded live.</small>' +
+      'list the old name here: rebuilding history (below) reads the live sensor first, then these. They are never recorded live.</small>' +
     '</div>';
 }
+// Device sensors design §8 PR 5 (19 Oct 2026): what Device History did, on the device's own card —
+// check its sensors in HA's statistics, rebuild its history from them, follow the run, and remove
+// what was rebuilt. The run uses the device's SAVED sensors.
+function buildHistorySection(meterId, retired) {
+  return '<hr><div class="section-divider">History from Home Assistant</div>' +
+    '<div class="dev-history" data-meter="' + meterId + '">' +
+      (retired ? '' :
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px;">' +
+          '<button class="btn btn-sm js-hist-check" data-meter="' + meterId + '">Check sensors</button>' +
+          '<button class="btn btn-sm js-hist-rebuild" data-meter="' + meterId + '">▶ Rebuild history</button>' +
+        '</div>' +
+        '<small style="color:var(--muted);display:block;margin-bottom:6px;">Rebuilds the half-hours this device ' +
+        'has no data for, from its live sensor then its history sensors, split by the house import and never above it. ' +
+        'A backup is taken first; live and imported data are untouched; it can be removed below.</small>') +
+      '<div class="js-hist-progress" style="font-size:13px;"></div>' +
+      '<div class="js-hist-check-out" style="font-size:12px;"></div>' +
+      '<div class="js-hist-layer" style="font-size:13px;"></div>' +
+    '</div>';
+}
+var _hist = {runs: {}, layer: {}, timer: null, removing: false};
+function _histEl(m, cls) {
+  var box = document.querySelector('.dev-history[data-meter="' + m + '"]');
+  return box ? box.querySelector('.' + cls) : null;
+}
+function _renderHistoryState() {
+  [].slice.call(document.querySelectorAll('.dev-history')).forEach(function(box) {
+    var m = box.dataset.meter, run = _hist.runs[m] || {}, layer = _hist.layer[m];
+    var pr = box.querySelector('.js-hist-progress'), ly = box.querySelector('.js-hist-layer');
+    var st = run.status;
+    if (st === 'running' || st === 'paused') {
+      var pct = run.total_hours ? Math.round(100 * (run.done_hours || 0) / run.total_hours) : 0;
+      pr.innerHTML = (st === 'paused' ? '⏸ ' : '⏳ ') + 'Rebuilding… ' + (run.done_hours || 0) + '/' +
+        (run.total_hours || 0) + ' hours (' + pct + '%) · ' + (run.written || 0) + ' half-hours written ' +
+        '<button class="btn btn-sm js-hist-ctl" data-meter="' + m + '" data-act="' + (st === 'paused' ? 'resume' : 'pause') + '">' +
+        (st === 'paused' ? 'Resume' : 'Pause') + '</button> ' +
+        '<button class="btn btn-sm js-hist-ctl" data-meter="' + m + '" data-act="cancel">Cancel</button>';
+    } else if (st === 'done' && run.written !== undefined && run._fresh) {
+      pr.innerHTML = '✓ Rebuilt ' + (run.written || 0) + ' half-hours' + (run.gaps ? ' · ' + run.gaps + ' with no HA data' : '') + '.';
+    } else if (st === 'error') {
+      pr.innerHTML = '<span style="color:var(--danger);">Rebuild error: ' + esc(run.error || '') + '</span>';
+    } else if (!pr.dataset.keep) { pr.innerHTML = ''; }
+    ly.innerHTML = layer
+      ? '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;">' +
+          '<span>Rebuilt history: ' + esc((layer.from || '?').substr(0, 10)) + ' → ' + esc((layer.to || '?').substr(0, 10)) +
+          ' · ' + (layer.blocks || 0).toLocaleString() + ' half-hours</span>' +
+          '<button class="btn btn-sm js-hist-remove-layer" data-meter="' + m + '" style="color:var(--danger);"' +
+          (_hist.removing ? ' disabled' : '') + '>🗑 Remove</button></div>'
+      : '';
+  });
+}
+function _loadHistoryState() {
+  return Promise.all([
+    fetch(apiUrl('/api/historical/attribute/status')).then(function(r) { return r.json(); }),
+    fetch(apiUrl('/api/historical/attribute/runs')).then(function(r) { return r.json(); })
+  ]).then(function(res) {
+    var prev = _hist.runs;
+    _hist.runs = {};
+    ((res[0] || {}).runs || []).forEach(function(r) {
+      if (!r.device) return;
+      var was = prev[r.device];
+      // a "done" shown only once it was seen running on this page
+      r._fresh = (was && (was.status === 'running' || was.status === 'paused')) || (was && was._fresh);
+      _hist.runs[r.device] = r;
+    });
+    _hist.layer = {};
+    (((res[1] || {}).summary || {}).meters || []).forEach(function(m) { _hist.layer[m.meter_id] = m; });
+    _renderHistoryState();
+    var active = Object.keys(_hist.runs).some(function(k) {
+      return _hist.runs[k].status === 'running' || _hist.runs[k].status === 'paused'; });
+    clearTimeout(_hist.timer);
+    if (active) _hist.timer = setTimeout(_loadHistoryState, 2000);
+  }).catch(function() {});
+}
+// the run uses the saved sensors: an unsaved change to them must be saved first
+function _histUnsaved(m) {
+  var a = ((config.meters[m] || {}).channels || {}).import || {};
+  var b = (((_serverConfig.meters || {})[m] || {}).channels || {}).import || {};
+  return (a.read || '') !== (b.read || '') ||
+         JSON.stringify((a.history_reads || []).filter(Boolean)) !== JSON.stringify((b.history_reads || []).filter(Boolean));
+}
+function _histSensors(m) {
+  var imp = (((_serverConfig.meters || {})[m] || {}).channels || {}).import || {};
+  var out = imp.read ? [imp.read] : [];
+  (imp.history_reads || []).forEach(function(e) { if (e && out.indexOf(e) < 0) out.push(e); });
+  return out;
+}
+function _histNote(m, html) { var el = _histEl(m, 'js-hist-progress'); if (el) { el.dataset.keep = '1'; el.innerHTML = html; } }
+function _histCheck(m) {
+  var out = _histEl(m, 'js-hist-check-out'), ents = _histSensors(m);
+  if (_histUnsaved(m)) { out.innerHTML = '<span style="color:#b45309;">Save Config first — the check reads the saved sensors.</span>'; return; }
+  if (!ents.length) { out.innerHTML = '<span style="color:#b45309;">No sensor to check.</span>'; return; }
+  out.textContent = 'Asking Home Assistant…';
+  fetch(apiUrl('/api/historical/probe'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                          body: JSON.stringify({entity_ids: ents})})
+    .then(function(r) { return r.json(); }).then(function(d) {
+      if (!d.ok) throw new Error(d.error || d.reason || 'the check failed');
+      var by = {}; (d.reports || []).forEach(function(r) { by[r.statistic_id] = r; });
+      out.innerHTML = ents.map(function(e) {
+        var r = by[e];
+        if (!r || !r.found) return '<div><code>' + esc(e) + '</code> — <span style="color:var(--danger);">no history in Home Assistant</span></div>';
+        var ok = r.value_kind === 'energy_sum' && r.cadence_matches_hourly !== false;
+        return '<div><code>' + esc(e) + '</code> — ' + (ok ? '<span style="color:#15803d;">✓ usable</span>'
+                 : '<span style="color:#b45309;">⚠ ' + (r.value_kind !== 'energy_sum' ? 'not cumulative energy' : 'not hourly') + '</span>') +
+               ' · ' + esc((r.earliest || '?').substr(0, 10)) + ' → ' + esc((r.latest || '?').substr(0, 10)) +
+               (r.coverage_pct != null ? ' · ' + r.coverage_pct + '% coverage' : '') +
+               (r.total_kwh != null ? ' · ≈ ' + Math.round(r.total_kwh) + ' kWh' : '') + '</div>';
+      }).join('');
+    }).catch(function(e) { out.innerHTML = '<span style="color:var(--danger);">' + esc(e.message) + '</span>'; });
+}
+function _histRebuild(m, override) {
+  if (_histUnsaved(m)) { _histNote(m, '<span style="color:#b45309;">Save Config first — the rebuild uses the saved sensors.</span>'); return; }
+  _histNote(m, '⏳ Checking and starting… (a backup is taken first)');
+  fetch(apiUrl('/api/historical/attribute/start'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({meter_id: m, confirm_override: !!override})})
+    .then(function(r) { return r.json(); }).then(function(d) {
+      if (!d.ok) {
+        if (d.sanity) {
+          _histNote(m, '⚠ ' + esc(d.warn || 'This sensor may not be right.') +
+            ' <button class="btn btn-sm js-hist-override" data-meter="' + m + '">Rebuild anyway</button>');
+          return;
+        }
+        _histNote(m, '<span style="color:var(--danger);">' + esc(d.error || 'not started') + '</span>');
+        return;
+      }
+      var el = _histEl(m, 'js-hist-progress'); if (el) delete el.dataset.keep;
+      _hist.runs[m] = {status: 'running', device: m};
+      _loadHistoryState();
+    }).catch(function(e) { _histNote(m, 'Request failed: ' + esc(e.message)); });
+}
+function _histRemoveLayer(m) {
+  if (_hist.removing) return;
+  var label = ((config.meters[m] || {}).meta || {}).device || m;
+  if (!window.confirm('Remove the rebuilt history for ' + label + '?\n\nIts rebuilt half-hours are cleared and that usage ' +
+                      'returns to the house. Live and imported data are untouched; you can rebuild again.')) return;
+  _hist.removing = true; _renderHistoryState();
+  _histNote(m, '⏳ Removing the rebuilt history…');
+  fetch(apiUrl('/api/historical/attribute/backout'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({meter_id: m})})
+    .then(function(r) { return r.json(); }).then(function(d) {
+      _histNote(m, d.ok ? '✓ Removed ' + (d.deleted || 0) + ' half-hours.' : '<span style="color:var(--danger);">' + esc(d.error || 'failed') + '</span>');
+    }).catch(function(e) { _histNote(m, 'Request failed: ' + esc(e.message)); })
+    .then(function() { _hist.removing = false; _loadHistoryState(); });
+}
+
 function _histOf(m) {
   var imp = ((config.meters[m] || {}).channels || {}).import;
   if (!imp) return null;
@@ -1236,6 +1383,16 @@ function onContainerChange(e) {
 function onContainerClick(e) {
   var el = e.target.closest('button');
   if (!el) return;
+  if (el.classList.contains('js-hist-check'))        { _histCheck(el.dataset.meter); return; }
+  if (el.classList.contains('js-hist-rebuild'))      { _histRebuild(el.dataset.meter, false); return; }
+  if (el.classList.contains('js-hist-override'))     { _histRebuild(el.dataset.meter, true); return; }
+  if (el.classList.contains('js-hist-remove-layer')) { _histRemoveLayer(el.dataset.meter); return; }
+  if (el.classList.contains('js-hist-ctl')) {
+    fetch(apiUrl('/api/historical/attribute/control'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({action: el.dataset.act, meter_id: el.dataset.meter})})
+      .then(function() { _loadHistoryState(); });
+    return;
+  }
   if (el.classList.contains('js-hist-add') || el.classList.contains('js-hist-remove')) {
     var hl = _histOf(el.dataset.meter);
     if (hl) {
@@ -1968,11 +2125,12 @@ function _maybeOfferRebuild() {
         }).then(function(r) { return r.json(); }).then(function(d) {
           var label = (config.meters[id].meta || {}).device || id;
           notes.push(d.ok ? '✓ ' + label + ' — rebuilding in the background'
-                          : '⚠ ' + label + ' — ' + (d.warn || d.error || 'not started') + ' (see Device History)');
+                          : '⚠ ' + label + ' — ' + (d.warn || d.error || 'not started') + ' (see its card)');
         });
       });
     }, Promise.resolve()).then(function() {
       st.innerHTML = notes.map(esc).join('<br>');
+      _loadHistoryState();
       document.getElementById('rebuild-now').style.display = 'none';
       document.getElementById('rebuild-later').textContent = 'Close';
     }).catch(function(e) { st.textContent = 'Could not start: ' + e.message; });

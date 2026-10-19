@@ -1999,10 +1999,11 @@ def data_management_page():
 
 @app.route("/historical-probe")
 def historical_probe_page():
-    """Beta, read-only: recorder long-term-statistics probe (historical-import
-    spike). Lets the user pick a sensor per device and characterise what history
-    is available. Creates nothing."""
-    return render_template("historical_probe.html", active="data_management")
+    """The Device History page retired on 19 Oct 2026 (device sensors design §8, PR 5): checking a
+    device's sensors, rebuilding its history and removing it are on the device's own card in
+    Settings. The old address goes there."""
+    from flask import redirect
+    return redirect(url_for("settings_page"))
 
 
 from usage_view import (  # noqa: E402 — moved there (C step 1); the routes and tests use these names

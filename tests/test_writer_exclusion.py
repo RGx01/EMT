@@ -323,9 +323,9 @@ class TestAttributionStartWindow(unittest.TestCase):
                          "clearing the registry is what let one run wipe another")
 
     def test_the_status_shape_stays_backward_compatible(self):
-        """`historical_probe.html` polls a FLAT object and has one pause/cancel
-        pair. Workstream C rewrites that surface; until then the page must keep
-        working, so the active run is still returned flat with `runs` alongside.
+        """The active run is still returned flat with `runs` alongside. Its reader moved on
+        19 Oct 2026 from the retired Device History page to each device's card in Settings,
+        which reads every device's run from `runs` (device sensors design §8, PR 5).
         """
         with open(os.path.join(_ROOT, "engine.py"), encoding="utf-8") as fh:
             src = fh.read()
@@ -333,11 +333,11 @@ class TestAttributionStartWindow(unittest.TestCase):
                   if isinstance(n, ast.FunctionDef) and n.name == "api_attribution_status")
         body = _code_only(fn, src.split("\n"))
         self.assertIn("runs", body)
-        page = os.path.join(_ROOT, "web", "templates", "historical_probe.html")
+        page = os.path.join(_ROOT, "web", "templates", "meter_config.html")
         with open(page, encoding="utf-8") as fh:
             html = fh.read()
-        self.assertIn("d.done_hours", html)
-        self.assertIn("d.status", html)
+        self.assertIn("((res[0] || {}).runs || []).forEach", html)
+        self.assertIn("run.done_hours", html)
 
 
 if __name__ == "__main__":
