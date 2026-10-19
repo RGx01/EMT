@@ -308,3 +308,11 @@ the SD card. A v4 import is ~30 s, two thirds of it the commit — the
 same shape as the E design's soaks (§8a). The 5 MB zip's upload was too quick for the progress line
 to show; the 35 MB `.db`'s showed it.
 
+## The only way in before setup (19 Oct 2026)
+
+Found setting up staging: only `/` sent an unconfigured install to `/welcome`, so a user who opened
+Charts or any other page instead of following the welcome screen could not get back to it. Now every
+page redirects to `/welcome` until there is a configuration (`server._first_run_guard`), except the
+fork's own pages — Settings, for the setup wizard and for a restore that lands without a key — and
+Help and Logs. APIs, static files and the Lovelace cards are not touched, and a failed config read
+never locks the user out. The sidebar dims the links that would bounce.

@@ -158,9 +158,11 @@ def _instance_label() -> str:
 def inject_globals():
     has_power_sensor = False
     has_postcode = False
+    unconfigured = False
     try:
         from energy_engine_io import load_json as _lj
         cfg = load_config()
+        unconfigured = not cfg.get("meters")
         for m_data in cfg.get("meters", {}).values():
             if not (m_data.get("meta") or {}).get("sub_meter"):
                 _meta = (m_data.get("meta") or {})
@@ -176,7 +178,29 @@ def inject_globals():
     return {"app_version": APP_VERSION, "build_id": BUILD_ID,
             "has_power_sensor": has_power_sensor, "has_postcode": has_postcode,
             "server_port": int(os.environ.get("EMT_PORT") or "8099"),
-            "instance_label": _instance_label()}
+            "instance_label": _instance_label(), "unconfigured": unconfigured}
+
+
+# The first-run fork (first-run design §1) is the only way in until a configuration is in place
+# (19 Oct 2026, staging: a user who opened Charts instead of following the welcome screen could not
+# get back to it — only "/" sent an unconfigured install there). Until then a page is the welcome
+# screen, except the pages the fork itself uses (Settings: the setup wizard, and where a restore
+# without a key lands) and the two that help when something goes wrong (Help, Logs). APIs, static
+# files and the Lovelace cards are not pages and are not touched.
+_OPEN_BEFORE_SETUP = frozenset({"welcome_page", "settings_page", "help_page", "logs_page"})
+
+
+@app.before_request
+def _first_run_guard():
+    ep = request.endpoint or ""
+    if request.method != "GET" or not ep.endswith("_page") or ep in _OPEN_BEFORE_SETUP:
+        return None
+    try:
+        if load_config().get("meters"):
+            return None
+    except Exception:
+        return None               # a failed read must never lock the user out
+    return redirect(url_for("welcome_page"))
 
 
 class IngressMiddleware:
