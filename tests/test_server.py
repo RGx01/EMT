@@ -5656,20 +5656,21 @@ class TestProbeDevicesEndpoint(unittest.TestCase):
         self.assertIn("sensor.zappi_energy", by["ev_charger"]["sensors"])
         self.assertIn("sensor.zappi_power", by["ev_charger"]["sensors"])
 
-    def test_history_sensors_prepopulated_while_layer_exists(self):
-        # Sensor ledger: a device that still has a reconstructed layer surfaces the
-        # sensors from its last run; a device with no layer surfaces none.
+    def test_history_sensors_are_the_device_s_own(self):
+        """Device sensors design §2 (PR 3): a device's history sensors come from its config
+        (`history_reads`), with its primary — no longer from the last run in the ledger."""
         cfg = {"meters": {
             "ev_charger": {"meta": {"device": "EV", "sub_meter": True},
-                           "channels": {"import": {"read": "sensor.zappi_energy"}}},
+                           "channels": {"import": {"read": "sensor.zappi_energy",
+                                                   "history_reads": ["sensor.zappi_v1"]}}},
             "house_battery": {"meta": {"device": "Battery", "sub_meter": True},
                               "channels": {"import": {"read": "sensor.bat_energy"}}},
         }}
         store = MagicMock()
         store.get_attribution_runs.return_value = [
-            {"meter_id": "ev_charger", "sensor_ids": ["sensor.zappi_v1", "sensor.zappi_v2"]}]
+            {"meter_id": "ev_charger", "sensor_ids": ["sensor.from_a_run"]}]
         store.count_recorder_attributed.return_value = {
-            "total": 10, "meters": [{"meter_id": "ev_charger"}]}     # only EV has a layer
+            "total": 10, "meters": [{"meter_id": "ev_charger"}]}
         cli = make_client(store=store)
         orig = server.load_config
         server.load_config = lambda: cfg
@@ -5678,9 +5679,9 @@ class TestProbeDevicesEndpoint(unittest.TestCase):
         finally:
             server.load_config = orig
         by = {x["meter_id"]: x for x in d["devices"]}
-        self.assertEqual(by["ev_charger"]["history_sensors"],
-                         ["sensor.zappi_v1", "sensor.zappi_v2"])   # kept from the run
-        self.assertEqual(by["house_battery"]["history_sensors"], [])  # no layer → none
+        self.assertEqual((by["ev_charger"]["primary"], by["ev_charger"]["history_sensors"]),
+                         ("sensor.zappi_energy", ["sensor.zappi_v1"]))
+        self.assertEqual(by["house_battery"]["history_sensors"], [])
 
 
 class TestAttributionEndpoints(unittest.TestCase):
@@ -5690,10 +5691,33 @@ class TestAttributionEndpoints(unittest.TestCase):
         import engine
         engine.attribution_running = lambda meter_id=None: False
 
-    def test_start_requires_meter_and_sensors(self):
-        r = make_client().post("/api/historical/attribute/start",
-                               json={"meter_id": "ev", "sensor_ids": []})
+    def test_start_refuses_a_device_with_no_sensor(self):
+        """The request's sensor_ids are not used: a device with none of its own is refused."""
+        orig = server.load_config
+        server.load_config = lambda: {"meters": {"ev": {"meta": {"sub_meter": True}, "channels": {}}}}
+        try:
+            r = make_client().post("/api/historical/attribute/start",
+                                   json={"meter_id": "ev", "sensor_ids": ["sensor.from_the_page"]})
+        finally:
+            server.load_config = orig
         self.assertEqual(r.status_code, 400)
+        self.assertIn("has no sensor", r.get_json()["error"])
+
+    def test_start_runs_on_the_device_s_sensors(self):
+        """Device sensors design §2 (PR 3): primary, then history sensors, from the config."""
+        import engine
+        orig, _claim, _loop = server.load_config, engine.attribution_claim, server._event_loop
+        seen = []
+        server.load_config = lambda: {"meters": {"ev": {"meta": {"sub_meter": True}, "channels": {
+            "import": {"read": "sensor.ev_now", "history_reads": ["sensor.ev_old"]}}}}}
+        engine.attribution_claim = lambda meter_id, sensor_ids: seen.append(sensor_ids) or False
+        server._event_loop = MagicMock(is_running=lambda: True)
+        try:
+            make_client().post("/api/historical/attribute/start",
+                               json={"meter_id": "ev", "sensor_ids": ["sensor.from_the_page"]})
+        finally:
+            server.load_config, engine.attribution_claim, server._event_loop = orig, _claim, _loop
+        self.assertEqual(seen, [["sensor.ev_now", "sensor.ev_old"]])
 
     def test_start_rejects_main_meter(self):
         # Attribution is for sub-meter devices only — the house total isn't a device.
@@ -5713,7 +5737,8 @@ class TestAttributionEndpoints(unittest.TestCase):
         import engine
         orig = server.load_config
         _claim = engine.attribution_claim
-        server.load_config = lambda: {"meters": {"ev": {"meta": {"sub_meter": True}}}}
+        server.load_config = lambda: {"meters": {"ev": {"meta": {"sub_meter": True},
+                                                        "channels": {"import": {"read": "sensor.ev"}}}}}
         engine.attribution_running = lambda meter_id=None: True
         engine.attribution_claim = lambda meter_id, sensor_ids: False
         # The route checks for a running loop BEFORE claiming, so that a refusal

@@ -6123,6 +6123,20 @@ class BlockStore:
             "(SELECT 1 FROM blocks WHERE imp_sensor_id=? OR exp_sensor_id=?)",
             (sensor_id, sensor_id, sensor_id))
 
+    def set_device_history_sensors(self, meter_id: str, channel: str, entities: list) -> list:
+        """A channel's secondaries become exactly `entities`, in order, its primary untouched
+        (Device History's editor until the device screen has one — device sensors design §2,
+        PR 3). Returns the secondaries as stored."""
+        with self._conn:
+            cur = self._conn.execute(
+                "SELECT entity_id FROM device_sensors WHERE meter_id=? AND channel=? "
+                "AND role='primary'", (meter_id, channel)).fetchone()
+            self._sync_device_sensors(meter_id, channel, cur["entity_id"] if cur else None,
+                                      list(entities or []))
+        return [r["entity_id"] for r in self._conn.execute(
+            "SELECT entity_id FROM device_sensors WHERE meter_id=? AND channel=? "
+            "AND role='secondary' AND position IS NOT NULL ORDER BY position", (meter_id, channel))]
+
     def seed_device_sensors(self) -> int:
         """A database from before `device_sensors` (an earlier v5, or a v4 import): give each
         channel of the current config period that has a read sensor its primary entry.

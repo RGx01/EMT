@@ -20,12 +20,12 @@
 <div class="card">
   <div style="font-size:13px;color:var(--muted);line-height:1.7;margin-bottom:16px;">
     If you added a device to EMT <em>after</em> Home Assistant had already been recording it,
-    its earlier usage is sitting inside your house total with no way to split it out. Pick the
-    sensor that measures each device's <strong>energy (kWh)</strong> below, then
-    <strong>Check sensors</strong> to confirm the history looks right — how far back it goes,
-    its cadence and any gaps — before you attribute anything. Add more than one sensor to a
-    device to <strong>stitch across a Home Assistant change</strong> (a replaced device, a
-    renamed entity, an integration swap). Checking reads only; it writes nothing.
+    its earlier usage is sitting inside your house total with no way to split it out. Each device
+    rebuilds from <strong>its own sensors</strong>: its live sensor (set in Settings), then any
+    <strong>history sensors</strong> you add here — the names the same device had before a Home
+    Assistant change (a renamed entity, an integration swap). They are saved on the device.
+    <strong>Check sensors</strong> first to confirm the history looks right — how far back it goes,
+    its cadence and any gaps. Checking reads only; it writes nothing.
   </div>
 
   <div id="devices"><div style="color:var(--muted);font-size:13px;">Loading your devices…</div></div>
@@ -119,40 +119,60 @@ function _addSensor(btn){
   host.insertAdjacentHTML('beforeend', _sensorRow(''));
 }
 
+function _historyOf(dv){
+  return [].slice.call(dv.querySelectorAll('.sensor-rows .sensor-entity'))
+    .map(function(i){ return i.value.trim(); }).filter(Boolean);
+}
+// the device's sensors in stitch order: its primary, then its history sensors as on the page
+function _sensorsOf(dv){
+  var p = dv.getAttribute('data-primary') || '';
+  var out = p ? [p] : [];
+  _historyOf(dv).forEach(function(e){ if(out.indexOf(e) < 0) out.push(e); });
+  return out;
+}
+
 function _deviceSection(dev){
-  // Sensor ledger: if this device still has a reconstructed layer, pre-fill the
-  // sensor(s) that built it (kept until the layer is Removed). Otherwise pre-fill
-  // the ENERGY (kWh) sensors from config — power/SOC/PV assignments aren't usable
-  // for energy attribution (paste one manually if you really want to check it).
+  // Device sensors design §2 (PR 3): the device's own sensors — its primary (live, set in
+  // Settings) and its history sensors, saved on the device. No longer the last run's.
   var hist = dev.history_sensors || [];
-  var sensors = hist.length
-    ? hist.slice()
-    : (dev.sensors || []).filter(function(s){ return _isEnergy(_entityMeta[s]); });
-  if(!sensors.length) sensors = [''];
-  var rows = sensors.map(function(s){ return _sensorRow(s); }).join('');
-  var ledgerNote = hist.length
-    ? '<div style="font-size:12px;color:var(--muted);margin-bottom:6px;">↩ Sensors from your last reconstruction — kept until you Remove its history below.</div>'
-    : '';
+  var rows = hist.map(function(s){ return _sensorRow(s); }).join('');
+  var primary = dev.primary
+    ? '<div style="font-size:13px;margin-bottom:8px;">Live sensor: <code>' + _esc(dev.primary) + '</code> '
+      + '<span style="font-size:12px;color:var(--muted);">— changed in Settings</span></div>'
+    : '<div style="font-size:13px;margin-bottom:8px;color:#b45309;">No live sensor — give the device one in '
+      + 'Settings, or add a history sensor below.</div>';
   var tag  = dev.is_sub_meter ? 'sub-meter' : 'main meter';
-  // The main meter is the house control total, not a device — its usage is the
-  // remainder, so it's probe-only (no attribution).
-  var actions = '<button class="btn btn-secondary btn-sm" onclick="_addSensor(this)">+ Add sensor</button>';
+  var actions = '<button class="btn btn-secondary btn-sm" onclick="_addSensor(this)">+ Add history sensor</button>'
+    + ' <button class="btn btn-secondary btn-sm" onclick="_saveHistory(this)">Save history sensors</button>';
   if(dev.is_sub_meter){
     actions += ' <button class="btn btn-sm" onclick="_attributeDevice(this)">▶ Attribute history</button>';
   }
-  var note = dev.is_sub_meter ? '' :
-    '<div style="font-size:12px;color:var(--muted);margin-top:6px;">House usage is billed as the '
-    + '<strong>remainder</strong> (house total − devices), so there\'s nothing to attribute here — '
-    + 'these sensors are for the probe only.</div>';
   return '<div class="probe-device" data-meter="'+_esc(dev.meter_id)+'" data-label="'+_esc(dev.label)+'" '
+    +   'data-primary="'+_esc(dev.primary||'')+'" '
     +   'style="border:1px solid var(--border);border-radius:8px;padding:12px 14px;margin-bottom:12px;">'
     + '<div style="font-weight:600;margin-bottom:8px;">'+_esc(dev.label)
     +   ' <span style="font-size:12px;color:var(--muted);font-weight:400;">'+tag+' · '+_esc(dev.meter_id)+'</span></div>'
-    + ledgerNote
+    + primary
+    + '<div style="font-size:12px;color:var(--muted);margin-bottom:4px;">History sensors (older names of this device, stitched after the live one)</div>'
     + '<div class="sensor-rows">'+rows+'</div>'
     + '<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap;">'+actions+'</div>'
-    + note
+    + '<div class="hist-status" style="font-size:12px;color:var(--muted);margin-top:4px;"></div>'
     + '</div>';
+}
+
+// Save a device's history sensors on the device (its config). Resolves with the saved list.
+function _saveHistory(btn){
+  var dv = btn.closest('.probe-device');
+  var st = dv.querySelector('.hist-status');
+  st.textContent = 'Saving…';
+  return fetch(apiUrl('/api/meter/' + encodeURIComponent(dv.getAttribute('data-meter')) + '/history-sensors'), {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ history_sensors: _historyOf(dv) })
+  }).then(function(r){return r.json();}).then(function(d){
+    if(!d.ok) throw new Error(d.error || 'save failed');
+    st.textContent = '✓ Saved on the device' + (d.history_sensors.length ? ' (' + d.history_sensors.length + ')' : '');
+    return d.history_sensors;
+  }).catch(function(e){ st.innerHTML = '<span style="color:var(--danger);">' + _esc(e.message) + '</span>'; throw e; });
 }
 
 function _loadDevices(){
@@ -231,9 +251,7 @@ function _reportCard(row, rep){
 var _lastResult = null;
 function _runProbe(){
   var devices = [].slice.call(document.querySelectorAll('.probe-device')).map(function(dv){
-    var ents = [].slice.call(dv.querySelectorAll('.sensor-entity'))
-      .map(function(i){ return i.value.trim(); }).filter(Boolean);
-    return { meter_id: dv.getAttribute('data-meter'), label: dv.getAttribute('data-label'), entities: ents };
+    return { meter_id: dv.getAttribute('data-meter'), label: dv.getAttribute('data-label'), entities: _sensorsOf(dv) };
   });
   var all = [];
   devices.forEach(function(d){ d.entities.forEach(function(e){ if(all.indexOf(e)<0) all.push(e); }); });
@@ -295,29 +313,30 @@ function _attributeDevice(btn){
   var dv = btn.closest('.probe-device');
   var meter = dv.getAttribute('data-meter');
   var label = dv.getAttribute('data-label');
-  var ents = [].slice.call(dv.querySelectorAll('.sensor-entity'))
-    .map(function(i){ return i.value.trim(); }).filter(Boolean);
-  if(!ents.length){ _setAttr('<span style="color:var(--danger);">Add at least one sensor for ' + _esc(label) + ' first.</span>'); return; }
+  var ents = _sensorsOf(dv);
+  if(!ents.length){ _setAttr('<span style="color:var(--danger);">' + _esc(label) + ' has no sensor — give it one in Settings, or add a history sensor.</span>'); return; }
   // Client-side unit guard: flag any chosen sensor that isn't a known energy/kWh entity.
   var bad = ents.filter(function(e){ var m=_entityMeta[e]; return m && !_isEnergy(m); });
   var warn = bad.length ? ('⚠ ' + bad.join(', ') + ' is not an energy (kWh) sensor — usage would be smeared.\n\n') : '';
   if(!window.confirm('Attribute "' + label + '" history from ' + ents.length + ' sensor(s)?\n\n' + warn
-      + 'A backup is taken first, it runs in the background, and you can Remove it here afterwards.')) return;
-  _startAttribute(meter, ents, false);
+      + 'Its history sensors are saved on the device first. A backup is taken, it runs in the background, '
+      + 'and you can Remove it here afterwards.')) return;
+  // the run uses the device's saved sensors: save what the page shows, then start
+  _saveHistory(btn).then(function(){ _startAttribute(meter, false); }, function(){});
 }
 
 // Kicks the run; on a server sanity refusal (device > house etc.) it surfaces the
 // warning and lets the user proceed with an explicit override.
-function _startAttribute(meter, ents, override){
+function _startAttribute(meter, override){
   _setAttr('⏳ <strong>' + (override ? 'Starting (override)…' : 'Checking &amp; starting…') + '</strong>');
   fetch(apiUrl('/api/historical/attribute/start'), {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ meter_id: meter, sensor_ids: ents, confirm_override: !!override })
+    body: JSON.stringify({ meter_id: meter, confirm_override: !!override })
   }).then(function(r){return r.json();}).then(function(d){
     if(!d.ok){
       if(d.sanity){
         if(window.confirm('⚠ ' + (d.warn || 'This sensor may not be right.') + '\n\nAttribute anyway?')){
-          _startAttribute(meter, ents, true); return;
+          _startAttribute(meter, true); return;
         }
         _setAttr('<span style="color:var(--muted);">Cancelled — pick a different sensor and Check again.</span>');
         return;

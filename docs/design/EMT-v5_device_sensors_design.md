@@ -69,9 +69,10 @@ device's, not a period's. `meter_channels.read_sensor` stays as the live engine'
 channel's primary, written from `device_sensors` on a config save; `load_config` gives each channel a
 `history_reads` list beside `read`.
 
-**Device History then needs no sensors of its own.** It runs on the device's list; the page shows the
-list, read-only, with a link to edit it on the device. The run ledger stays — the record of what each
-run used, for its undo — and is never read as config again.
+**Device History then needs no sensors of its own.** It runs on the device's list. Until the device
+screen can edit the list (PR 4), the page edits it — saved on the device, never in a run (as built in
+PR 3, 19 Oct 2026: a read-only page before PR 4 would have left nowhere to add a history sensor). The
+run ledger stays — the record of what each run used, for its undo — and is never read as config again.
 
 ## 3. A rename keeps the old sensor
 
@@ -142,7 +143,9 @@ It also gives a device delete its warning's sensors (§5) and the soft delete's 
 2. **The upgrade transform** `device_sensors`, import spec v23. Tests: every configured read becomes a
    primary; a v4 database with attribution runs gets its secondaries; the primary is never duplicated;
    none added without runs.
-3. **Device History on the device's list:** the start route takes the device, not `sensor_ids`; the
-   page shows the list. The ledger is written as now.
+3. **Device History on the device's list** (built 19 Oct 2026): the start route takes the device, not
+   `sensor_ids`; `/api/historical/probe-devices` gives each device's primary and history sensors from
+   its config; the page shows the live sensor read-only and edits the history sensors, saved on the
+   device (`POST /api/meter/<id>/history-sensors`). The ledger is written as now.
 4. **The device screen and the wizard:** the history-sensors list, the rename prompt, the rebuild
    offer, the delete warning with its figures.
