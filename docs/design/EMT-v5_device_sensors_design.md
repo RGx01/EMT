@@ -29,8 +29,11 @@ see them. On both of the user's databases the EV charger's config holds its curr
 and its seven to nine attribution runs all list that **and** an older entity id of the same
 charger, stitched below it; the battery uses one sensor in both places.
 
-**HA readings** (`reads`: captured_at, meter_id, channel, reading_kwh, rate, block_id) do not record
-their sensor.
+**HA's data is kept at the half-hour.** The samples within an open half-hour sit in `current_reads`
+and become the finished block's values — the kWh and HA's register at the half-hour's start and end
+(`imp_read_start` / `imp_read_end`, `exp_…`). Nothing keeps the samples: the `reads` table has never
+been written in v4 or v5 (ROADMAP, 19 Sep 2026: "dead, not transient"; empty on both of the user's
+databases). A block does not record which sensor its registers came from.
 
 **A device delete** (`/api/meter/<id>/delete-data`, `@job("delete")`) takes a required backup and
 removes every row the device has, permanently: "This will permanently delete all historical data
@@ -105,18 +108,22 @@ gains none. A v4 restore with no attribution runs changes nothing.
 This is an import transform, not a heal: v5 code reads the new table from then on, and v5 carries no
 v4 heals.
 
-## 7. Readings record their sensor
+## 7. A live block records its sensor
 
-`reads` (and `current_reads`, the block in progress) gain `sensor`, written by `capture_samples`,
-which has the entity id in hand when it reads. For the soft delete's shelf: a reading recorded from
-now on carries its sensor; an older one is tagged with its device's primary when shelved, marked
-**inferred**.
+The half-hour reading is what is kept (the user, 19 Oct 2026: the register at each half-hour, not
+every sample), so the tag goes on the block: `imp_sensor` and `exp_sensor` on `blocks`, written at
+finalise from the channel's primary for a live-recorded block, NULL otherwise (imported, settled
+from Octopus without a live read, rebuilt by Device History). Exact from then on, and true across a
+rename (§3). A block recorded before it is tagged with its device's primary when shelved, marked
+**inferred**. *(Proposed; the alternative — tagging only at shelving, always inferred — needs no
+column but names the new sensor for data an old one recorded after a rename.)*
 
 ## 8. PRs
 
 1. **Storage and config:** `meter_channel_history_sensors`, `load_config`'s `history_reads`, the copy
-   into a new config period; `reads.sensor` written at capture. Tests: the list round-trips through a
-   config save and a new period; a reading carries its sensor.
+   into a new config period; `blocks.imp_sensor` / `exp_sensor` written at finalise. Tests: the list
+   round-trips through a config save and a new period; a live block carries its sensor, an imported one
+   none.
 2. **The upgrade transform** `history_sensors`, import spec v23. Tests: a v4 database with attribution
    runs gets its secondaries; the primary is never duplicated; none added without runs.
 3. **Device History on the device's list:** the start route takes the device, not `sensor_ids`; the

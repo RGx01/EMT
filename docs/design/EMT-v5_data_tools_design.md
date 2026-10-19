@@ -94,6 +94,11 @@ segments outright (§0); only a tombstone of the range is kept. The HA readings 
 HA recorder still has them — its default keeps detail for about 10 days, and EMT reads only its
 long-term hourly statistics.
 
+*Corrected 19 Oct 2026: the `reads` table has never been written (ROADMAP, 19 Sep 2026: "dead, not
+transient"), so a delete loses no samples — HA's data is kept at the half-hour, as the live blocks
+and their start and end registers, and those are what a delete loses. The soft delete design shelves
+exactly those (§2).*
+
 **Direction.** *Delete* hides; *Delete permanently* removes.
 
 - A soft-deleted half-hour is out of every total, chart, bill and settlement surface, and out of

@@ -15,9 +15,13 @@ docstring.*
   half-hour, all meters, as today's delete.
 - **A deleted imported export reads grey on the Export bill, as "no export"** (19 Oct): on CSV history
   EMT cannot tell an export that was never recorded from one that was nothing.
-- What is shelved keeps its provenance — a block its `source`, `derivation_id` and config period, an
-  HA reading its sensor (`EMT-v5_device_sensors_design.md` §7). Why (the user): an import can be
-  wrong or coarse, and HA's data at its original resolution is what a later rebuild works from.
+- **Only data recorded live from HA is shelved** (19 Oct, §2). An import can be wrong or coarse, and
+  HA's data at its half-hour resolution — the block, with HA's registers at its edges — is what a
+  later rebuild works from and cannot be got back; imported data and Device History's rebuild can.
+  Shelved blocks keep their provenance: `source`, `derivation_id`, config period, and the sensor
+  (`EMT-v5_device_sensors_design.md` §7).
+- **(a)–(c) of §5** (19 Oct): shelved HA data is kept until *Delete permanently*, a refill
+  notwithstanding; v4 stays as it is; an old delete is listed as deleted permanently.
 
 This is the delete tool of the data tools design's selection menu (§1, BL-88): *select → preview
 (nothing written) → apply after a required safety backup → a result that says what happened.*
@@ -29,7 +33,8 @@ This is the delete tool of the data tools design's selection menu (§1, BL-88): 
 **The delete** (`POST /api/blocks/delete` → `_delete_worker`, `@job("delete")`, server.py ~7889):
 preempts a running import, takes a required `pre-delete` backup, then
 `BlockStore.delete_blocks_for_date_range` (block_store.py ~2740) deletes whole **rows** in one
-transaction — `reads`, `generation_mix`, `block_segments`, `blocks` — and writes a tombstone. It
+transaction — `reads` (always empty: never written, ROADMAP 19 Sep 2026), `generation_mix`,
+`block_segments`, `blocks` — and writes a tombstone. It
 never blanks a column, and never touches `measured_cost` (the cached bills, keyed by slot, MPAN and
 direction). It bumps the data epoch.
 
@@ -64,19 +69,28 @@ The carbon backfill selects on `carbon_intensity_g IS NULL`, not on `carbon_g`.
 
 ## 2. The shelf
 
-A soft delete **moves** what it deletes out of the live tables, and *Restore* moves it back: a
-half-hour's `blocks`, `reads`, `generation_mix` and `block_segments` rows go to `shelf_blocks`,
-`shelf_reads`, `shelf_generation_mix`, `shelf_segments` (the same columns, plus `shelf_id`), and
-`shelves` (`shelf_id, meter_id, [start_utc, end_utc), created_at, reason, restored_at, purged_at`)
-is what the user sees and restores.
+**What it keeps: what only HA had.** HA's data is kept at the half-hour — a live block's kWh and
+HA's register at its start and end; the samples within the half-hour were never kept (§0). So the
+shelf holds a deleted half-hour's **live-recorded rows** — the main meter's and the devices' whose
+`source` is NULL (recorded live) or `kraken_api` (recorded live, then settled by Octopus: the kWh is
+Octopus's, the registers HA's) — with their `block_segments` and `generation_mix`. Rows from an
+import (`imported%`) or rebuilt by Device History (`recorder_attributed`) are deleted permanently,
+after the required backup, as today: their source can give them again. On the user's prod-dev
+database (28 Aug 2026) the live-recorded rows are ~16,300 of ~133,000.
+
+**The tables:** `shelf_blocks`, `shelf_segments`, `shelf_generation_mix` (the same columns, plus
+`shelf_id`), and `shelves` (`shelf_id, meter_id, [start_utc, end_utc), created_at, reason,
+restored_at, purged_at`) — what the user sees and restores.
 
 **Why not a `deleted_at` flag:** every reader would have to filter it — the reader audit step 5
 needed for 11 columns. With the shelf the live tables hold only live data and **no reader changes**:
 a deleted half-hour is absent, as it is today. The tombstone stays, so the poll and "recover all"
 keep away.
 
-**Delete permanently** empties a shelf (its rows deleted, `purged_at` set). Today's delete is a soft
-delete and a purge.
+**A refill over shelved data** (decided (a)): the shelf is kept — the refill is Octopus's or a CSV's,
+and the HA rows cannot be got back. *Restore* over a refilled span puts the HA rows back in place of
+the refill, after a backup. *Delete permanently* empties a shelf (its rows deleted, `purged_at`
+set). Today's delete is a soft delete and a purge.
 
 ## 3. Deleting half-hours
 
@@ -126,16 +140,18 @@ today; the bill's export credit goes; the energy views show import only.
 kept. A backup is taken first; to put the export back, overlay a CSV for these days."* — with the
 days rounded out to whole local days and shown.
 
-## 5. Questions for the user
+## 5. Decided, and left
 
-**(a) The supersede rule** (BL-90 (g)): a fill over a soft-deleted span writes new data — is the
-shelved data then kept until *Delete permanently*, or dropped at once?
+**(a) Decided (19 Oct 2026, the user):** shelved HA data is kept until *Delete permanently*; a refill
+does not drop it (§2).
 
-**(b)** BL-90's (h)–(j): a v4 restore has no shelf (its tombstones carry over as they are); is the
-purge of imported history soft too; is there a retention limit on shelves?
+**(b) Decided:** v4 stays as v4 — a restore carries its tombstones over as they are, with no shelf.
+The purge of imported history stays permanent (imported data is never shelved, §2).
 
-**(c) The old tombstones:** a delete made before this has no shelf. It stays a tombstone that cannot be
-restored, listed as "deleted permanently".
+**(c) Decided:** a delete made before this has no shelf; it is listed as "deleted permanently".
+
+**Proposed, not asked:** no retention limit — a shelf stays until *Delete permanently*. Live-recorded
+rows are a small share of a database (§2).
 
 ## 6. PRs, if agreed
 
@@ -143,7 +159,8 @@ restored, listed as "deleted permanently".
    update, the carbon recompute; on the heatmap's selection menu where the selection holds imported
    days. Tests: export NULL and import kept; carbon from import alone; live blocks refused; partial
    days rounded out; the poll does not refill it; the overlay does.
-2. **Schema:** the shelf tables; the importer carries tombstones as they are (import spec).
+2. **Schema:** the shelf tables (blocks, segments, generation mix); the importer carries tombstones as
+   they are (import spec).
 3. **Soft delete and restore** — today's delete through the shelf; *Restore*; *Delete permanently*.
 4. **The heatmap menu** — *Delete…* with §3's preview; *Restore* / *Delete permanently* on a deleted
    span.
