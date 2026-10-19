@@ -371,6 +371,7 @@ class TheSurfaces(unittest.TestCase):
                                                       "floor": "2020-01-01T00:00:00"}), \
              unittest.mock.patch.object(eng, "bill_split_held", create=True,
                                         return_value=(set(), set())), \
+             unittest.mock.patch.object(eng, "bill_no_cost", create=True, return_value=(set(), set())), \
              unittest.mock.patch.object(eng, "split_at", create=True, return_value=True), \
              unittest.mock.patch.object(eng, "export_agreement_at", create=True, return_value=None), \
              unittest.mock.patch.object(eng, "tariff_kind_at", create=True,

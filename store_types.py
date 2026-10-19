@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """142 read-only methods of BlockStore, and nothing else.
+    """143 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -70,6 +70,7 @@ class ReadStore:
     _CARBON_ELIGIBLE = _BS._CARBON_ELIGIBLE
     _COST_ONLY_SPLIT_SQL = _BS._COST_ONLY_SPLIT_SQL
     _EPOCH_KEY = _BS._EPOCH_KEY
+    _IMPORT_NO_COST_KEY = _BS._IMPORT_NO_COST_KEY
     _LATEST_BILL_SQL = _BS._LATEST_BILL_SQL
     _NEEDS_REPRICE_WHERE = _BS._NEEDS_REPRICE_WHERE
     _RECONCILED_SOURCE = _BS._RECONCILED_SOURCE
@@ -207,6 +208,7 @@ class ReadStore:
     get_vat_calendar = _BS.get_vat_calendar
     has_interpolated_block = _BS.has_interpolated_block
     history_token = _BS.history_token
+    import_no_cost_slots = _BS.import_no_cost_slots
     imported_block_replaceable = _BS.imported_block_replaceable
     is_meter_retired = _BS.is_meter_retired
     is_slot_tombstoned = _BS.is_slot_tombstoned
@@ -232,7 +234,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 103 writers.
+    """The full store: every read method, plus the 104 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or

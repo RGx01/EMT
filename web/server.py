@@ -4044,9 +4044,14 @@ def api_block_settlement():
         hist = store.get_dispatch_history_for_slot(start)
         comp = [h for h in hist if h.get("kind") == "completed" and h.get("energy_kwh") is not None]
         _r = lambda x, n=6: (round(float(x), n) if x is not None else None)
+        _state = states.get(d["block_start"]) or {}
+        import engine as _eng_nc
         return jsonify({
             "start": d["block_start"], "end": d["block_end"],
             "state": states.get(d["block_start"]),
+            # when EMT stopped asking Octopus for the cost, for an abandoned one (19 Oct 2026)
+            "no_cost_since": (_eng_nc.no_cost_since(store, d["block_start"])
+                              if _state.get("bill") == "abandoned" else None),
             "kwh": {"stored": _r(d["imp_kwh"]), "dcc": _r(d["imp_kwh_api"]),
                     "settled": d["imp_kwh_api"] is not None
                                or (d["source"] or "").startswith("imported")},
@@ -4115,13 +4120,15 @@ def _settlement_states(store, utc_start, utc_end) -> dict:
     import vat_calendar as _vc
     from datetime import datetime as _dt, timezone as _tz
     held, kept = _eng.bill_split_held(store)
+    given_up, import_no_cost = _eng.bill_no_cost(store)
     return _ss.classify_range(
         store.get_settlement_facts(utc_start, utc_end),
         smb=bool(_eng._import_is_smb_capped()), now=_dt.now(_tz.utc).replace(tzinfo=None),
         held=held, kept=kept, vat_at=_vc.rate_lookup(store.get_vat_calendar()),
         kind_at=_eng.tariff_kind_at, split_at=_eng.split_at,
         export_channel=_main_has_export(), export_sensor=_main_has_export_sensor(),
-        export_agreement_at=_eng.export_agreement_at)
+        export_agreement_at=_eng.export_agreement_at,
+        given_up=given_up, import_no_cost=import_no_cost)
 
 
 @app.route("/api/billing-source", methods=["GET"])

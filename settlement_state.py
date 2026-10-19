@@ -8,7 +8,10 @@ on the payload (`kwh_authoritative`); this decides the other two, once, so every
 same thing. Pure: facts in (BlockStore.get_settlement_facts), states out.
 
     bill   applied | applied_emt_split | estimate_dcc | estimate_cad | overdue | differs |
-           corrected | imported | none                                       (design §9.3)
+           corrected | imported | abandoned | none                           (design §9.3)
+           abandoned — EMT's kWh x rate, and EMT no longer asks Octopus for the cost: a bill
+           asked 30 days unanswered, or an API-imported half-hour Octopus gave no cost for
+           (19 Oct 2026, the user: red, hatched)
     export applied | waiting | overdue | imported | no_agreement | none        (design §1.2b, §9.4)
     split  None (no completed dispatch, or not IOG-SMB) | emt | bill | held | kept | missing
     flags  recost_bl82       — `differs` because the settlement re-run re-costed the bill to
@@ -49,7 +52,8 @@ def _clock(start, now):
 
 def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozenset(),
              vat_at=None, kind_at=None, split_at=None, export_channel: bool = False,
-             export_sensor: bool = True, export_agreement_at=None) -> dict:
+             export_sensor: bool = True, export_agreement_at=None,
+             given_up=frozenset(), import_no_cost=frozenset()) -> dict:
     """One half-hour's {bill, export, split, flags}. `f` is a get_settlement_facts row. `smb` is
     the install's tariff (engine._import_is_smb_capped); `held` / `kept` are 4.5.23's wait map
     (engine.bill_split_held); `vat_at(start)` the VAT calendar; `kind_at(start)` the half-hour's
@@ -62,6 +66,8 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
     Mini feeds import only) — so it says nothing about what was exported.
     `export_agreement_at(start)`: True / False whether an export agreement covers the half-hour,
     None where it is not known (engine.export_agreement_at); False makes it `no_agreement`.
+    `given_up` / `import_no_cost` (engine.bill_no_cost): half-hours whose cost EMT no longer asks
+    Octopus for — they read `abandoned` where they would otherwise wait for a bill.
 
     The Import bill states say whether the half-hour's cost is final, and whose it is (design
     §9.3). On a published-rate tariff the settled kWh x the published rate is the bill; on an
@@ -112,13 +118,17 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
                     and abs(cost - round(kwh * rate, 6)) <= _EPS_GBP):
                 flags.append("recost_bl82")
     elif src == "imported_api":
-        bill = "applied"              # the API importer stored Octopus's own billed cost
+        # the API importer stored Octopus's own billed cost — unless Octopus gave none, and the
+        # importer reconstructed kWh x rate (recorded since 19 Oct 2026; nothing asks again)
+        bill = "abandoned" if start in import_no_cost else "applied"
     elif src.startswith("imported"):
         bill = "imported"             # CSV history: a cost not from Octopus's API
     elif kind == "published" and f.get("imp_kwh_api") is not None:
         bill = "applied"              # settled kWh x the published rate is the bill
     else:
         bill = estimate()             # a cached bill not applied yet reads the same: transient
+        if start in given_up:
+            bill = "abandoned"        # asked 30 days, unanswered: no longer asked
     if bill == "applied" and split in ("emt", "held", "kept"):
         bill = "applied_emt_split"    # Octopus's cost, EMT's split
 

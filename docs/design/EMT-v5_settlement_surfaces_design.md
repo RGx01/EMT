@@ -436,3 +436,20 @@ c. *API import* and *API export* — **retired in the same change.**
 4. `_refetch_octopus`: the bill part for Intelligent half-hours only (its kWh part everywhere).
 5. Legend, tooltips, panel text; tests for every state on both kinds; fold this section into
    §1–§2.
+
+## A cost EMT no longer asks for (19 Oct 2026, the user)
+
+The Import bill gains `abandoned`, drawn **red, hatched yellow**, and counted as an issue: EMT's kWh ×
+rate, and EMT no longer asks Octopus for the cost. Two ways in:
+
+- a live half-hour whose bill was asked for 30 days unanswered (`bill_ask`'s give-up, capped pricing
+  design §5 (a)) — until then it reads `overdue` as before;
+- an API-imported half-hour Octopus gave no cost for at import, at once: nothing asks again (the user
+  decided against new asking, for the API's limits). The import records it in `kraken_state`
+  `import_no_cost` — the block cannot tell, and the reprice queue empties at the next import — and an
+  import or repair that gets Octopus's cost takes it off. API-imported history from before the record
+  still reads `applied`: nothing tells its reconstructed half-hours apart.
+
+The detail panel says since when EMT has not asked (`no_cost_since`). Found on staging: re-fetching
+such a half-hour returned the kWh with no cost; deleting and re-importing it showed it green although
+its cost was still kWh × rate.

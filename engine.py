@@ -8574,7 +8574,8 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
             _standing = day_standing.get(st[:10]) if channel == "import" else None
             rows_to_write.append({"start": st, "kwh": kwh, "rate": rate,
                                   "cost": cost, "standing": _standing,
-                                  "cost_exc": cost_exc})
+                                  "cost_exc": cost_exc,
+                                  "_octopus": meas_cost is not None})
         # Total flagged this chunk BEFORE in-pass recovery reduces it — the "raised"
         # figure the post-import health summary reports.
         flags_raised_ch = fb_material
@@ -8643,6 +8644,7 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
                     if _ce is not None:
                         row["cost_exc"] = _ce
                     row["_was_off_peak"] = bool(ofp)
+                    row["_octopus"] = True
                     _healed.append(st)
                 if _healed:
                     _healset = set(_healed)
@@ -8707,6 +8709,18 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
             except Exception as _ce2:
                 logger.warning("import cost coverage: persist failed: %s", _ce2)
 
+        # The half-hours left without Octopus's cost (EMT's kWh × rate) and those that have it:
+        # the Import bill hatches the first at once — nothing asks for them again (19 Oct 2026).
+        if not dry_run and channel == "import" and rows_to_write:
+            try:
+                _store.note_import_cost(
+                    no_cost=[r["start"] for r in rows_to_write
+                             if not r.get("_octopus") and (r.get("kwh") or 0) > 0],
+                    costed=[r["start"] for r in rows_to_write if r.get("_octopus")])
+            except Exception as _nce:
+                logger.warning("import: no-cost record failed (non-fatal): %s", _nce)
+        for _r in rows_to_write:
+            _r.pop("_octopus", None)
         written = 0
         if not dry_run and rows_to_write:
             # One transaction for the whole chunk (not a commit per block) so the
@@ -8981,6 +8995,11 @@ async def repair_import_pricing(from_date=None, to_date=None, *,
             # re-confirms the same cost, reprice returns False, they never clear).
             if confirmed and not (from_date or to_date):
                 _store.clear_reprice_queue_slots(channel, confirmed)
+            if confirmed and channel == "import":
+                try:
+                    _store.note_import_cost(costed=confirmed)
+                except Exception:
+                    pass
 
             # Opportunistic neighbours (suspect-only): the window we just fetched
             # already carries Octopus's label for EVERY half-hour in it, not only the
@@ -8993,6 +9012,7 @@ async def repair_import_pricing(from_date=None, to_date=None, *,
             if suspect_only:
                 _imp = (channel == "import")
                 grp_set = set(grp)
+                _neigh_costed = []
                 for st, r in by_start.items():
                     if st in grp_set:
                         continue
@@ -9017,6 +9037,12 @@ async def repair_import_pricing(from_date=None, to_date=None, *,
                                                      cost_exc=r.get("cost_excl")):
                         recovered += 1
                         opportunistic += 1
+                        _neigh_costed.append(st)
+                if _neigh_costed and _imp:
+                    try:
+                        _store.note_import_cost(costed=_neigh_costed)
+                    except Exception:
+                        pass
 
             windows_done += 1
             if pace_s:
@@ -9054,6 +9080,11 @@ async def repair_import_pricing(from_date=None, to_date=None, *,
             # not just the ones whose value changed (see above).
             if confirmed_ss and not (from_date or to_date):
                 _store.clear_reprice_queue_slots(channel, confirmed_ss)
+            if confirmed_ss and channel == "import":
+                try:
+                    _store.note_import_cost(costed=confirmed_ss)
+                except Exception:
+                    pass
 
     remaining = _store.reprice_queue_count()
     # Self-diagnostic: how much imported data exists at all + how many targets we
@@ -12106,6 +12137,48 @@ def bill_split_held(store) -> tuple:
     limit = (_dt.now(_tz.utc).replace(tzinfo=None) - _td(days=_BILL_SPLIT_WAIT_DAYS)).isoformat()
     held = {s for s, e in wait.items() if s >= limit and not (isinstance(e, dict) and e.get("kept"))}
     return held, set(wait) - held
+
+
+def bill_no_cost(store) -> tuple:
+    """(given_up, imported): the half-hours whose bill was asked for 30 days unanswered (no longer
+    asked), and the API-imported ones Octopus gave no cost for at import (never asked again). Both
+    keep EMT's kWh × rate; the Import bill hatches them (19 Oct 2026, the user). Read-only — the
+    give-up is not marked here."""
+    mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan")
+    given_up = set()
+    if mpan:
+        try:
+            given_up = _bill_ask_given_up(_bill_ask(store, mpan), mark=False)
+        except Exception:
+            given_up = set()
+    try:
+        imported = set(store.import_no_cost_slots())
+    except Exception:
+        imported = set()
+    return given_up, imported
+
+
+def no_cost_since(store, slot: str):
+    """When EMT stopped asking Octopus for this half-hour's cost (naive UTC), or None: the API
+    import's note, or the 30th day of a bill asked unanswered. For the detail panel."""
+    from datetime import datetime as _dt, timedelta as _td
+    try:
+        imp = store.import_no_cost_slots().get(slot)
+        if imp:
+            return imp
+    except Exception:
+        pass
+    mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan")
+    ent = (_bill_ask(store, mpan) if mpan else {}).get(slot) if mpan else None
+    if isinstance(ent, dict):
+        if ent.get("gave_up"):
+            return ent["gave_up"]
+        if ent.get("first"):
+            try:
+                return (_dt.fromisoformat(ent["first"][:19]) + _td(days=_BILL_ASK_DAYS)).isoformat()
+            except ValueError:
+                return None
+    return None
 
 
 def settlement_awaiting(store, since_iso: str) -> dict:

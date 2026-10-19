@@ -3405,6 +3405,37 @@ class BlockStore:
         q[channel] = sorted(merged)
         self.set_meta("import_reprice_queue", q)
 
+    # An API-imported half-hour Octopus gave no cost for (19 Oct 2026, the user): EMT's kWh × rate,
+    # and nothing asks for it again, so the Import bill hatches it at once. Recorded here because the
+    # block cannot tell — an imported block's cost and rate read the same either way, and the reprice
+    # queue empties at the next import. {slot: first noted, naive UTC}; a slot leaves when an import or
+    # a repair gets Octopus's cost for it.
+    _IMPORT_NO_COST_KEY = "import_no_cost"
+
+    def import_no_cost_slots(self) -> dict:
+        """{slot: first noted} of API-imported import half-hours with no Octopus cost."""
+        try:
+            d = json.loads(self.get_kraken_state(self._IMPORT_NO_COST_KEY) or "{}")
+        except (TypeError, ValueError):
+            d = {}
+        return d if isinstance(d, dict) else {}
+
+    def note_import_cost(self, no_cost=(), costed=()) -> None:
+        """Record half-hours an import left without Octopus's cost, and drop those it, or a repair,
+        got one for. One read and write of the record."""
+        no_cost, costed = set(no_cost or ()), set(costed or ())
+        if not (no_cost or costed):
+            return
+        d = self.import_no_cost_slots()
+        before = dict(d)
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+        for st in no_cost - costed:
+            d.setdefault(st, now)
+        for st in costed:
+            d.pop(st, None)
+        if d != before:
+            self.set_kraken_state(self._IMPORT_NO_COST_KEY, json.dumps(d, sort_keys=True))
+
     def get_reprice_queue(self) -> dict:
         """{'import': [start,...], 'export': [...]} of slots awaiting re-price."""
         return self.get_meta("import_reprice_queue", None) or {}
