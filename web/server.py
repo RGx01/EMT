@@ -4124,7 +4124,7 @@ def _settlement_states(store, utc_start, utc_end) -> dict:
     import vat_calendar as _vc
     from datetime import datetime as _dt, timezone as _tz
     held, kept = _eng.bill_split_held(store)
-    given_up, import_no_cost = _eng.bill_no_cost(store)
+    given_up, import_no_cost, import_asked = _eng.bill_no_cost(store)
     return _ss.classify_range(
         store.get_settlement_facts(utc_start, utc_end),
         smb=bool(_eng._import_is_smb_capped()), now=_dt.now(_tz.utc).replace(tzinfo=None),
@@ -4132,7 +4132,7 @@ def _settlement_states(store, utc_start, utc_end) -> dict:
         kind_at=_eng.tariff_kind_at, split_at=_eng.split_at,
         export_channel=_main_has_export(), export_sensor=_main_has_export_sensor(),
         export_agreement_at=_eng.export_agreement_at,
-        given_up=given_up, import_no_cost=import_no_cost)
+        given_up=given_up, import_no_cost=import_no_cost, import_asked=import_asked)
 
 
 @app.route("/api/billing-source", methods=["GET"])

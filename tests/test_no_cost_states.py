@@ -5,7 +5,8 @@ A half-hour whose cost EMT no longer asks Octopus for reads `abandoned`, red hat
 - A live half-hour asked 30 days without a bill (`bill_ask`'s give-up) reads `abandoned` where it
   would otherwise wait (`overdue`); one with a bill, or corrected, does not.
 - An API-imported half-hour Octopus gave no cost for at import (EMT's kWh x rate) reads `abandoned`
-  at once — nothing asks for it again. The import records it (`import_no_cost`, durable: the block
+  at once — nothing asks for it again; except inside an Intelligent window, where the bill drain
+  does (corrected 20 Oct 2026): there it waits for its bill as a live half-hour does. The import records it (`import_no_cost`, durable: the block
   cannot tell, and the reprice queue empties at the next import); an import or a repair that gets
   Octopus's cost takes it off. API-imported history from before the record reads `applied` as before.
 - The heatmap draws it red with yellow hatching, counts it as an issue, and the detail panel says
@@ -17,6 +18,7 @@ import asyncio
 import os
 import sys
 import unittest
+from unittest import mock
 from datetime import datetime
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -63,6 +65,90 @@ class TheState(unittest.TestCase):
     def test_imported_history_without_the_record_is_applied(self):
         """GUARD: as before — nothing tells it apart."""
         self.assertEqual(_bill(_f(source="imported_api", imp_kwh_api=None)), "applied")
+
+
+class InsideAnIogSmbWindow(unittest.TestCase):
+    """Staging, 20 Oct 2026: 21 Jul, deleted and refilled from Octopus, came back with 15 half-hours
+    Octopus gave no cost for, hatched at once — but inside an IOG-SMB window the bill drain asks
+    for imported history's bill, as it had for that day before the delete. Those wait for it."""
+
+    def test_an_asked_import_waits_as_a_live_half_hour_does(self):
+        self.assertEqual(_bill(_f(source="imported_api", imp_kwh_api=None),
+                               import_asked={S}), "overdue")
+
+    def test_until_it_is_given_up(self):
+        self.assertEqual(_bill(_f(source="imported_api", imp_kwh_api=None),
+                               import_asked={S}, given_up={S}), "abandoned")
+
+    def test_a_bill_still_outranks_it(self):
+        """GUARD: the bill comes first (fails on the parent only by the new argument)."""
+        self.assertEqual(_bill(_f(source="imported_api", rate_source="settled", bill_cost=0.3),
+                               import_asked={S}), "applied")
+
+    def _split(self, windows, slots):
+        st = mock.MagicMock()
+        st.import_no_cost_slots.return_value = {k: "2026-10-20T12:00:00" for k in slots}
+        with mock.patch.object(engine, "_intelligent_windows", lambda: windows), \
+             mock.patch.object(engine, "_kraken_discovery", {}), \
+             mock.patch.object(engine, "_ask_floor", lambda vf: vf):
+            return engine.bill_no_cost(st)
+
+    def test_the_drain_s_windows_decide(self):
+        _, imported, asked = self._split([("2026-07-05T23:00:00", None, True)],
+                                         ["2026-07-21T00:00:00", "2026-06-01T00:00:00"])
+        self.assertEqual((imported, asked), ({"2026-06-01T00:00:00"}, {"2026-07-21T00:00:00"}))
+
+    def test_every_intelligent_window_asks_not_only_iog_smb(self):
+        """The user, 20 Oct 2026: on every Intelligent tariff only Octopus's cost is final."""
+        _, imported, asked = self._split([("2026-07-05T23:00:00", None, False)],
+                                         ["2026-07-21T00:00:00"])
+        self.assertEqual((imported, asked), (set(), {"2026-07-21T00:00:00"}))
+
+    def test_outside_every_intelligent_window_nothing_asks(self):
+        """GUARD of what stays hatched at once (fails on the parent only by the third set)."""
+        _, imported, asked = self._split([("2026-07-05T23:00:00", "2026-07-10T23:00:00", False)],
+                                         ["2026-07-21T00:00:00"])
+        self.assertEqual((imported, asked), ({"2026-07-21T00:00:00"}, set()))
+
+
+class TheDrainAsksOffSmb(unittest.TestCase):
+    """Off IOG-SMB the drain's pages and backlog take live history, and the API-imported
+    half-hours the import got no cost for — not the imported ones holding Octopus's cost."""
+
+    def _st(self):
+        st = BlockStore(":memory:")
+        st._conn.execute("INSERT INTO config_periods (id, effective_from) VALUES (1, '2020-01-01')")
+        for bs, src in (("2026-07-21T00:00:00", "imported_api"), ("2026-07-21T00:30:00", "imported_api"),
+                        ("2026-07-21T01:00:00", None)):
+            st._conn.execute("INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
+                             "imp_kwh, imp_kwh_api, imp_cost, source) VALUES (?, ?, 'electricity_main', "
+                             "1, 1.0, 1.0, 0.3, ?)", (bs, bs, src))    # live: its kWh settled
+        st._conn.commit()
+        st.note_import_cost(no_cost=["2026-07-21T00:00:00"])
+        return st
+
+    def test_the_page(self):
+        got = self._st().get_settleable_blocks("2026-07-01", "", "2026-08-01", 40,
+                                               include_imported=False)
+        self.assertEqual(got, ["2026-07-21T00:00:00", "2026-07-21T01:00:00"])
+
+    def test_the_backlog_agrees(self):
+        self.assertEqual(self._st().count_settleable_blocks("2026-07-01", "2026-08-01",
+                                                            include_imported=False), 2)
+
+    def test_the_panel_does_not_say_not_asked(self):
+        st = mock.MagicMock()
+        st.import_no_cost_slots.return_value = {"2026-07-21T00:00:00": "2026-10-20T12:00:00"}
+        with mock.patch.object(engine, "_intelligent_windows",
+                               lambda: [("2026-07-05T23:00:00", None, True)]), \
+             mock.patch.object(engine, "_kraken_discovery", {}), \
+             mock.patch.object(engine, "_ask_floor", lambda vf: vf):
+            self.assertIsNone(engine.no_cost_since(st, "2026-07-21T00:00:00"))
+
+    def test_the_heatmap_passes_it(self):
+        srv = open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read()
+        self.assertIn("given_up, import_no_cost, import_asked = _eng.bill_no_cost(store)", srv)
+        self.assertIn("import_no_cost=import_no_cost, import_asked=import_asked)", srv)
 
 
 class TheRecord(unittest.TestCase):

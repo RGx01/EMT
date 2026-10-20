@@ -3565,8 +3565,12 @@ def _write_device_into_block(block: dict, device_meter_id: str,
     _recompute_pass3_totals(block)
     _recompute_block_carbon(block)
     append_block_replace(block)
-    if live and kept.get("sensor_id") is not None:
-        get_store().point_block_at_sensor(block.get("start"), device_meter_id, kept["sensor_id"])
+    if live:
+        # the sensor that recorded it — none where the read's sensor is only inferred (the v4
+        # import named the primary for a block that named none): the block is put back as it was
+        get_store().point_block_at_sensor(
+            block.get("start"), device_meter_id,
+            None if kept.get("sensor_inferred") else kept.get("sensor_id"))
     return True
 
 
@@ -12270,11 +12274,25 @@ def bill_split_held(store) -> tuple:
     return held, set(wait) - held
 
 
+def _drain_asks(slot: str) -> bool:
+    """Whether the bill drain asks for a no-cost imported half-hour's bill: it lies in an
+    Intelligent window, above the ask floor. On IOG-SMB the drain asks for all imported history;
+    on the others for the half-hours the import got no cost for (`_ASKED_OFF_SMB_SQL`) — so for
+    these, on every Intelligent tariff (20 Oct 2026, the user)."""
+    for vf, vt, _smb in _intelligent_windows():
+        if _ask_floor(vf) <= slot and (vt is None or slot < vt):
+            return True
+    return False
+
+
 def bill_no_cost(store) -> tuple:
-    """(given_up, imported): the half-hours whose bill was asked for 30 days unanswered (no longer
-    asked), and the API-imported ones Octopus gave no cost for at import (never asked again). Both
-    keep EMT's kWh × rate; the Import bill hatches them (19 Oct 2026, the user). Read-only — the
-    give-up is not marked here."""
+    """(given_up, imported, asked): the half-hours whose bill was asked for 30 days unanswered (no longer
+    asked), and the API-imported ones Octopus gave no cost for at import that nothing asks for
+    again. Both keep EMT's kWh × rate; the Import bill hatches them (19 Oct 2026, the user).
+    An imported one inside an Intelligent window is not among them: the bill drain asks for it,
+    as for a live half-hour, so it waits for its bill until given up (staging, 20 Oct 2026 — 21
+    Jul, deleted and refilled from Octopus, read hatched while the drain was still to ask; every
+    Intelligent tariff, the user, the same day) — `asked` holds those. Read-only — the give-up is not marked here."""
     mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan")
     given_up = set()
     if mpan:
@@ -12282,11 +12300,13 @@ def bill_no_cost(store) -> tuple:
             given_up = _bill_ask_given_up(_bill_ask(store, mpan), mark=False)
         except Exception:
             given_up = set()
+    imported, asked = set(), set()
     try:
-        imported = set(store.import_no_cost_slots())
+        for s in store.import_no_cost_slots():
+            (asked if _drain_asks(s) else imported).add(s)
     except Exception:
-        imported = set()
-    return given_up, imported
+        imported, asked = set(), set()
+    return given_up, imported, asked
 
 
 def no_cost_since(store, slot: str):
@@ -12295,7 +12315,7 @@ def no_cost_since(store, slot: str):
     from datetime import datetime as _dt, timedelta as _td
     try:
         imp = store.import_no_cost_slots().get(slot)
-        if imp:
+        if imp and not _drain_asks(slot):
             return imp
     except Exception:
         pass
@@ -12379,8 +12399,12 @@ def _bill_split_release(w: dict, slot: str) -> None:
 # dropped from both passes and the backlog. It keeps its estimate (and its cell on the heatmap);
 # the range re-fetch still asks for it. A bill held back for its split (4.5.23) has its own wait.
 # Capped pricing by agreement design §5 (a).
-_BILL_ASK_KEY = "bill_ask"            # JSON {slot: {"first": iso, "gave_up": iso?}}
+_BILL_ASK_KEY = "bill_ask"            # JSON {slot: {"first": iso, "last": iso?, "gave_up": iso?}}
 _BILL_ASK_DAYS = 30
+# The backoff (20 Oct 2026, the user: go easier on the API): an unanswered bill is asked at every
+# pass — hourly — for its first 2 days, then once a day, until the 30 days run out.
+_BILL_ASK_HOURLY_DAYS = 2
+_BILL_ASK_DAILY_HOURS = 24
 
 
 def _bill_ask(store, mpan: str) -> dict:
@@ -12453,8 +12477,27 @@ def _bill_ask_given_up(a: dict, *, mark: bool = True) -> set:
     return out
 
 
+def _bill_ask_resting(a: dict, now=None) -> set:
+    """Half-hours not to ask this pass: past their first `_BILL_ASK_HOURLY_DAYS` of asking, and
+    asked within the last `_BILL_ASK_DAILY_HOURS` (the backoff). One with no `last` — recorded
+    before the backoff — is asked, and from then on daily."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    now = now or _dt.now(_tz.utc).replace(tzinfo=None)
+    hourly_until = (now - _td(days=_BILL_ASK_HOURLY_DAYS)).isoformat()
+    rested_since = (now - _td(hours=_BILL_ASK_DAILY_HOURS)).isoformat()
+    out = set()
+    for slot, ent in a.items():
+        if not isinstance(ent, dict):
+            continue
+        first, last = ent.get("first"), ent.get("last")
+        if first and first < hourly_until and last and last >= rested_since:
+            out.add(slot)
+    return out
+
+
 def _bill_ask_unanswered(a: dict, slot: str) -> None:
-    a.setdefault(slot, {"first": _dt_now_iso_safe()})
+    now = _dt_now_iso_safe()
+    a.setdefault(slot, {"first": now})["last"] = now
 
 
 def _bill_ask_answered(a: dict, slot: str) -> None:
@@ -12491,7 +12534,7 @@ async def measure_settled_dispatched_blocks() -> dict:
     _kept = _bill_split_kept(store, _wait)
     _ask = _bill_ask(store, mpan)                  # never billed in 30 days: not asked (§5 (a))
     _ask_before = _snapshot(_ask)
-    _gone = _bill_ask_given_up(_ask)
+    _gone = _bill_ask_given_up(_ask) | _bill_ask_resting(_ask)     # given up, or resting today
     missing = store.measured_slots_missing(
         [s for s in by_start if s not in _kept and s not in _gone],
         mpan=mpan)[:_MEASURED_MAX_PER_PASS]
@@ -13199,7 +13242,8 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
     # goes quiet by itself. A half-hour outside every window is not the drain's.
     # Every Intelligent agreement's window (18 Oct 2026): IOG-SMB for the breakdown, the others
     # for the billed cost (`bill_kind_at` chooses per half-hour). Off IOG-SMB, imported history
-    # is not asked: an API import already holds Octopus's billed cost.
+    # is not asked — an API import already holds Octopus's billed cost — except a half-hour the
+    # import got no cost for (`import_no_cost`; 20 Oct 2026, the user), asked as live history is.
     for w_from, w_to, w_smb in _intelligent_windows():
         floor = _ask_floor(w_from)                 # no further back than Octopus keeps
         cutoff = min(now_cut, w_to) if w_to else now_cut
@@ -13218,7 +13262,7 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
             _kept = _bill_split_kept(store, _wait)
             _ask = _bill_ask(store, mpan)              # never billed in 30 days: not asked (§5 (a))
             _ask_before = _snapshot(_ask)
-            _gone = _bill_ask_given_up(_ask)
+            _gone = _bill_ask_given_up(_ask) | _bill_ask_resting(_ask)   # or resting today
             missing = [s for s in page if s not in _kept and s not in _gone]
             if not missing:
                 _save_changes(store, _ask_before, _ask, lambda: _bill_ask(store, mpan),
@@ -13287,7 +13331,7 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
             _kept = _bill_split_kept(store, _wait)
             _ask = _split_ask(store)
             _ask_before = _snapshot(_ask)
-            _gone = _bill_ask_given_up(_ask)
+            _gone = _bill_ask_given_up(_ask) | _bill_ask_resting(_ask)   # or resting today
             ask = [s for s in page if s not in _kept and s not in _gone]
             if ask:
                 _emt_ev = emt_ev_at(store, ask)
@@ -13340,11 +13384,14 @@ def _measured_history_backlog() -> int:
         # Nor is one Octopus has not billed in 30 days of asking: it rescheduled the drain every
         # hourly tick for good (§5 (a)).
         _mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan") or ""
-        _gone = _bill_ask_given_up(_bill_ask(store, _mpan), mark=False)
+        # Nor, until its day comes round, one resting under the backoff.
+        _a = _bill_ask(store, _mpan)
+        _gone = _bill_ask_given_up(_a, mark=False) | _bill_ask_resting(_a)
         _ex = set(_bill_split_wait(store)) | _gone
         # each Intelligent agreement's window, as the drain walks them — and on IOG-SMB the teal
         # half-hours whose cost-only bill is asked its breakdown (less any given up)
-        _sgone = _bill_ask_given_up(_split_ask(store), mark=False)
+        _sa = _split_ask(store)
+        _sgone = _bill_ask_given_up(_sa, mark=False) | _bill_ask_resting(_sa)
         n = 0
         for vf, vt, smb in _intelligent_windows():
             lo, hi = _ask_floor(vf), (min(cutoff, vt) if vt else cutoff)
