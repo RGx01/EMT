@@ -154,8 +154,8 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
         out = _tool("write_scope.py")
         m = re.search(r"(\d+) of (\d+) jobs write `blocks`", out)
         self.assertIsNotNone(m)
-        self.assertIn("**9 of the 10 live jobs write `blocks`", self.doc)
-        self.assertEqual((m.group(1), m.group(2)), ("9", "10"))
+        self.assertIn("**10 of the 10 live jobs write `blocks`", self.doc)
+        self.assertEqual((m.group(1), m.group(2)), ("10", "10"))
 
     def test_only_two_jobs_declare_a_scope(self):
         """§2.2 — the correction. `max_blocks`/`limit`/`force` are budgets, not

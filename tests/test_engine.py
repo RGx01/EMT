@@ -3702,7 +3702,8 @@ class TestRunAttributionJob(unittest.IsolatedAsyncioTestCase):
         store.get_device_live_coverage_start.return_value = None   # no live history → fill fully
         engine.get_store = lambda: store
         calls = []
-        engine._attribute_hour = lambda hour, dev, parent, kwh, block_minutes=30: (
+        store.ha_reads_for.return_value = ({}, {})              # nothing kept yet
+        engine._attribute_hour = lambda hour, dev, parent, kwh, block_minutes=30, kept=None: (
             calls.append((hour, kwh)) or (2, 0, 0))
 
         res = await engine.run_attribution_job("ev_charger", ["sensor.ev"])
@@ -3732,7 +3733,8 @@ class TestRunAttributionJob(unittest.IsolatedAsyncioTestCase):
         store.get_device_live_coverage_start.return_value = "2025-03-01T01:00:00"
         engine.get_store = lambda: store
         calls = []
-        engine._attribute_hour = lambda hour, dev, parent, kwh, block_minutes=30: (
+        store.ha_reads_for.return_value = ({}, {})              # nothing kept yet
+        engine._attribute_hour = lambda hour, dev, parent, kwh, block_minutes=30, kept=None: (
             calls.append(hour) or (2, 0, 0))
 
         res = await engine.run_attribution_job("house_battery", ["sensor.bat"])

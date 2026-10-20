@@ -3512,7 +3512,7 @@ def _naive_iso(ts: str) -> str:
 
 
 def _write_device_into_block(block: dict, device_meter_id: str,
-                             parent_meter_id: str, dev_kwh) -> bool:
+                             parent_meter_id: str, dev_kwh, *, kept: dict | None = None) -> bool:
     """Add a reconstructed device sub-meter to an existing house block and re-run
     PASS 2/3 so the device's grid share is clipped to the parent import and the
     parent remainder is re-derived. Tags ONLY the device row 'recorder_attributed'.
@@ -3526,7 +3526,11 @@ def _write_device_into_block(block: dict, device_meter_id: str,
     (dev_kwh > 0) we OVERWRITE the zero with the reconstructed value. This heals
     sub-meter dropouts — a stretch where the device's own sensor flat-lined at 0
     while the load actually sat in the house remainder — without ever clobbering a
-    real reading."""
+    real reading.
+
+    `kept`: an `ha_reads` row being put back as it was (soft delete design §2) — a live
+    half-hour returns as live (its registers, no source tag, the sensor that recorded it), a
+    recorder half-hour as recorder_attributed. Its kWh is `dev_kwh`."""
     meters = block.get("meters") or {}
     if parent_meter_id not in meters:
         return False
@@ -3538,11 +3542,15 @@ def _write_device_into_block(block: dict, device_meter_id: str,
         if not (dev_kwh and float(dev_kwh) > 1e-9):
             return False                # empty hole, but nothing to heal into it
         # else: zero-hole + real recorder energy → fall through and overwrite it
+    live = bool(kept) and kept.get("origin") == "live"
     dev_block = {
         "meta": {"sub_meter": True, "parent_meter": parent_meter_id},
-        "source": get_store().RECORDER_ATTRIBUTED_SOURCE,
+        "source": None if live else get_store().RECORDER_ATTRIBUTED_SOURCE,
         "channels": {"import": {"kwh": round(float(dev_kwh or 0.0), 6)}},
     }
+    if live:
+        dev_block["channels"]["import"].update(read_start=kept.get("read_start"),
+                                               read_end=kept.get("read_end"))
     # Carbon: _recompute_block_carbon needs a per-meter carbon_intensity_g to
     # compute carbon_g at all (it skips meters with no stored intensity). A freshly
     # reconstructed device row has none, so inherit the intensity persisted on the
@@ -3557,14 +3565,21 @@ def _write_device_into_block(block: dict, device_meter_id: str,
     _recompute_pass3_totals(block)
     _recompute_block_carbon(block)
     append_block_replace(block)
+    if live and kept.get("sensor_id") is not None:
+        get_store().point_block_at_sensor(block.get("start"), device_meter_id, kept["sensor_id"])
     return True
 
 
 def _attribute_hour(hour_iso: str, device_meter_id: str, parent_meter_id: str,
-                    hour_kwh, *, block_minutes: int = 30) -> tuple:
+                    hour_kwh, *, block_minutes: int = 30, kept: dict | None = None) -> tuple:
     """Attribute one hour's measured device energy across its half-hour blocks,
     weighted by the house import shape, writing a recorder_attributed device block
-    wherever one doesn't already exist. Returns (written, skipped, no_house)."""
+    wherever one doesn't already exist. Returns (written, skipped, no_house).
+
+    `kept` {half-hour start: `ha_reads` row} (soft delete design §2): a half-hour HA recorded
+    live is put back as it was, not re-split; the rest of the hour — the recorder's hour less
+    the kept half-hours — is split by the house shape over the others. `hour_kwh` None (no
+    recorder hour): the kept half-hours alone."""
     from datetime import datetime as _dt, timedelta as _td
     store = get_store()
     try:
@@ -3583,13 +3598,27 @@ def _attribute_hour(hour_iso: str, device_meter_id: str, parent_meter_id: str,
             if pm:
                 pi = ((pm.get("channels") or {}).get("import") or {}).get("kwh") or 0.0
         house.append(pi)
-    split = _split_hour_to_blocks(hour_kwh, house)
+    kept = {bs: r for bs, r in (kept or {}).items() if bs in starts}
+    rest = [i for i, bs in enumerate(starts) if bs not in kept]
+    left = None
+    if hour_kwh is not None:
+        left = max(float(hour_kwh) - sum(float(r["kwh"] or 0.0) for r in kept.values()), 0.0)
+    share = dict(zip(rest, _split_hour_to_blocks(left, [house[i] for i in rest])
+                     if left is not None else []))
     written = skipped = no_house = 0
-    for b, dev_kwh in zip(blocks, split):
+    for i, b in enumerate(blocks):
+        row = kept.get(starts[i])
+        if row is None and i not in share:
+            continue                    # no figure for this half-hour
         if not b:                       # no house block → no control total
             no_house += 1
             continue
-        if _write_device_into_block(b, device_meter_id, parent_meter_id, dev_kwh):
+        if row is not None:
+            ok = _write_device_into_block(b, device_meter_id, parent_meter_id, row["kwh"],
+                                          kept=row)
+        else:
+            ok = _write_device_into_block(b, device_meter_id, parent_meter_id, share[i])
+        if ok:
             written += 1
         else:
             skipped += 1                # already attributed / live
@@ -3754,13 +3783,19 @@ async def attribution_preflight(device_meter_id: str, sensor_ids: list) -> dict:
 @job("attribution", depends_on=("import", "verify_pricing"),
      exclusive_with=("delete",), on_conflict=WAIT)
 async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
-                              pace_s: float = 0.0) -> dict:
+                              pace_s: float = 0.0, window: tuple | None = None,
+                              fetch: bool = True) -> dict:
     """Background: attribute a device's HA recorder history onto the house blocks it
     isn't on yet. Fetch stats (on the loop's WS listener), stitch to hourly energy,
     walk oldest-first writing recorder_attributed device blocks — skipping any block
     where the device already has a row (never overwrites live). Cooperative: yields
     between hours and PAUSES while a delete/purge runs, so it coexists with the live
-    tick and the pass-2 settlement drain. Records a ledger run. Never raises."""
+    tick and the pass-2 settlement drain. Records a ledger run. Never raises.
+
+    It rebuilds from `ha_reads` too (soft delete design §2): the hours it keeps, and the
+    half-hours HA recorded live, which go back as they were. `fetch=False` asks HA's recorder
+    nothing — a refill's rebuild (`rebuild_devices_after_refill`); `window` (lo, hi) bounds
+    it to the refilled span."""
     import asyncio as _aio
     # This device's own entry — created by `attribution_claim()` when the route
     # reserved it, or here if the job was started directly (tests, a future
@@ -3781,7 +3816,7 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
               "started_at": j.get("started_at") or _dt_now_iso_safe()})
     run_id = _dt_now_iso_safe() + "|" + device_meter_id
     try:
-        if _engine_ha is None:
+        if fetch and _engine_ha is None:
             j.update({"status": "error", "error": "no HA connection"})
             _coord.mark("attribution", device_meter_id, status="error")
             return {"ok": False, "error": "no HA connection"}
@@ -3789,7 +3824,7 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
         now = datetime.now(timezone.utc)
         start = (now - timedelta(days=3660)).isoformat()
         series = {}
-        for sid in (sensor_ids or []):
+        for sid in (sensor_ids or []) if fetch else []:
             try:
                 res = await _engine_ha.get_statistics([sid], start, now.isoformat(),
                                                       period="hour", timeout=180.0)
@@ -3798,16 +3833,32 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
                 logger.warning("run_attribution_job: stats fetch %s failed: %s", sid, e)
                 series[sid] = []
         src_of: dict = {}
-        hourly = _stitch_hourly_energy(series, list(sensor_ids or []), sources=src_of)
+        fetched = _stitch_hourly_energy(series, list(sensor_ids or []), sources=src_of) \
+            if fetch else {}
         # The hours as HA's recorder gave them, kept as hours (soft delete design §2): the
         # split below is by the house import the blocks hold now, and is redone from these.
-        try:
-            kept = get_store().record_recorder_hours(device_meter_id, "import", hourly, src_of)
-            logger.info("run_attribution_job: device=%s kept %d recorder hours",
-                        device_meter_id, kept)
-        except Exception as e:
-            logger.warning("run_attribution_job: keeping recorder hours failed: %s", e)
-        hours = sorted(hourly.keys())          # oldest first
+        if fetched:
+            try:
+                n_kept = get_store().record_recorder_hours(device_meter_id, "import", fetched,
+                                                           src_of)
+                logger.info("run_attribution_job: device=%s kept %d recorder hours",
+                            device_meter_id, n_kept)
+            except Exception as e:
+                logger.warning("run_attribution_job: keeping recorder hours failed: %s", e)
+        # What EMT already holds: the hours kept before (a fetch's own win where both), and
+        # the half-hours to put back as they were.
+        lo, hi = window if window else (None, None)
+        stored, fixed = get_store().ha_reads_for(device_meter_id, "import",
+                                                 lo[:13] + ":00:00" if lo else None, hi)
+        hourly = {**stored, **fetched}
+        if window:
+            hourly = {h: k for h, k in hourly.items()
+                      if h >= lo[:13] + ":00:00" and h < hi}
+            fixed = {bs: r for bs, r in fixed.items() if lo <= bs < hi}
+        kept_by_hour: dict = {}
+        for bs, r in fixed.items():
+            kept_by_hour.setdefault(bs[:13] + ":00:00", {})[bs] = r
+        hours = sorted(set(hourly) | set(kept_by_hour))          # oldest first
         # Seam: where this device's REAL (live/imported) history begins in EMT.
         # Attribution fills up to — but not into — that boundary so the
         # reconstructed layer butts cleanly against the live one (no overlap, no
@@ -3874,7 +3925,8 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
                 break
             j["status"] = "running"
             w, s, nh = _attribute_hour(hour, device_meter_id, parent,
-                                       hourly[hour], block_minutes=bm)
+                                       hourly.get(hour), block_minutes=bm,
+                                       kept=kept_by_hour.get(hour))
             written += w; skipped += s; gaps += nh
             if (i % 200) == 0:
                 j.update({"written": written, "skipped": skipped, "gaps": gaps,
@@ -3905,6 +3957,36 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
         return {"ok": False, "error": str(e)}
     finally:
         _pass2_quiet = False          # never leave bulk-suppression on after the job
+
+
+async def rebuild_devices_after_refill(lo: str, hi: str) -> list:
+    """After a refill of [lo, hi) — a gap fill or a CSV import, the main meter only — start
+    Device History's rebuild of each device `ha_reads` holds figures for there, from those
+    alone (soft delete design §3): no call to HA's recorder. Each run is the attribution job
+    (it waits on the import and the pricing verify, and fills only absent device rows); a
+    device already running is left to its run. Returns the devices started. Never raises."""
+    started = []
+    try:
+        devices = get_store().ha_read_devices(lo, hi)
+    except Exception as e:
+        logger.warning("rebuild_devices_after_refill: %s", e)
+        return started
+    for mid in devices:
+        try:
+            sensors = get_store().device_stitch_sensors(mid)
+        except Exception:
+            sensors = []
+        if not attribution_claim(mid, sensors):
+            logger.info("rebuild_devices_after_refill: %s already rebuilding — left to its run",
+                        mid)
+            continue
+        asyncio.create_task(run_attribution_job(mid, sensors, pace_s=0.05, window=(lo, hi),
+                                                fetch=False))
+        started.append(mid)
+    if started:
+        logger.info("rebuild_devices_after_refill: %s..%s — rebuilding %s from HA's reads",
+                    lo, hi, ", ".join(started))
+    return started
 
 
 def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricity_main",
@@ -10190,6 +10272,11 @@ async def _gap_fill_finish(j, channels) -> None:
         logger.info("run_gap_fill_job: nothing written — skipping the pricing "
                     "verification pass")
         j["verify_skipped"] = "no_blocks_written"
+    if _wrote:
+        _g = j.get("gap") or {}
+        if _g.get("from") and _g.get("to"):
+            # the main meter is back; its devices from what HA recorded (soft delete §3)
+            j["devices_rebuilding"] = await rebuild_devices_after_refill(_g["from"], _g["to"])
     j["status"] = "done"; j["phase"] = "done"
     _persist_run_status(j)     # durable summary for reload (poll-on-load)
 

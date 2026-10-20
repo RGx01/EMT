@@ -4366,6 +4366,7 @@ def api_backfill_run():
                                            "(rate/period confirmation happens there)."}), 200
             res = _engine_write(lambda st: st.apply_csv_import(channel_csvs),
                                 timeout=1800.0)
+            _rebuild_devices_after_csv(res)
             return jsonify({"ok": True, "action": action, "result": res}), 200
 
         if action == "run_api_import_job":
@@ -4788,6 +4789,21 @@ def api_probe_devices():
     except Exception as e:
         logger.error("api_probe_devices: %s", e)
         return jsonify({"ok": False, "error": str(e), "devices": []}), 500
+
+
+def _rebuild_devices_after_csv(result) -> None:
+    """A CSV import refills the main meter only: start its devices' rebuild over the span it
+    wrote, from what HA recorded (soft delete design §3). The started devices go on the
+    result. Never raises."""
+    span = (result or {}).get("span") or {}
+    if not (result or {}).get("blocks_written") or not span.get("from") or not span.get("to"):
+        return
+    try:
+        import engine as _eng
+        result["devices_rebuilding"] = _run_on_engine_loop(
+            _eng.rebuild_devices_after_refill(span["from"], span["to"]), timeout=30.0) or []
+    except Exception as e:
+        logger.warning("csv apply: device rebuild not started: %s", e)
 
 
 def _device_sensor_list(meter_id: str):
@@ -5576,6 +5592,7 @@ def api_historical_csv_apply():
                 texts, meter_id=meter_id, overrides=overrides,
                 replace_ranges=replace_ranges),
             timeout=1800.0)
+        _rebuild_devices_after_csv(result)
         if result.get("blocks_replaced"):
             logger.info("csv apply: replaced %d block(s) inside %d uncostable tariff "
                         "period(s); %d protected (live or user-corrected)",

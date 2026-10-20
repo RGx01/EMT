@@ -72,7 +72,12 @@ because that is a *dependency*, not a race.
 
 `.build/write_scope.py`:
 
-> **9 of the 10 live jobs write `blocks`; 7 also write `block_segments`.**
+> **10 of the 10 live jobs write `blocks`; 7 also write `block_segments`.**
+
+*(10 of 10 since 20 Oct 2026. The attribution job always wrote `blocks`, through
+`append_block_replace`, five calls down — past the tool's depth of 4. Putting a device half-hour
+back from `ha_reads` points it at its sensor with a direct UPDATE three calls down, which the
+tool sees.)*
 
 Everything conflicts with everything. A table-level admission rule is a global lock wearing a
 costume.
@@ -87,7 +92,7 @@ declare a scope:
 | job | parameters | is that a scope? |
 |---|---|---|
 | `run_gap_fill_job` | `from_ts, to_ts, channels, meter_id` | **yes** |
-| `run_attribution_job` | `device_meter_id, sensor_ids` | **yes — a meter** |
+| `run_attribution_job` | `device_meter_id, sensor_ids` (and, since 20 Oct 2026, `window`) | **yes — a meter** |
 | `run_api_import_job` | `requested_from, chunk_days, max_chunks` | a start, no end |
 | `_run_historical_reprice_sweep` | `max_blocks, batch, pace_s, force` | no — a budget |
 | `run_measured_history_drain` | `max_batches` | no — a budget |

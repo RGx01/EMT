@@ -6280,6 +6280,50 @@ class BlockStore:
             "(SELECT 1 FROM ha_reads WHERE sensor_id=?)",
             (sensor_id, sensor_id, sensor_id, sensor_id))
 
+    def ha_reads_for(self, meter_id: str, channel: str = "import", lo: Optional[str] = None,
+                     hi: Optional[str] = None) -> tuple:
+        """A device's `ha_reads` as Device History rebuilds from them (soft delete design §2):
+        (`hours` {hour start: kWh} — the recorder's hours, to be split by the house's shape —
+        and `fixed` {half-hour start: row} — what is put back as it was: a live half-hour, or a
+        recorder half-hour v4 left alone; live wins). `lo`/`hi` bound the period start, [lo, hi)."""
+        sql = ("SELECT * FROM ha_reads WHERE meter_id = ? AND channel = ?"
+               + (" AND period_start >= ?" if lo else "") + (" AND period_start < ?" if hi else ""))
+        args = [meter_id, channel] + [x for x in (lo, hi) if x]
+        hours, fixed = {}, {}
+        for r in self._conn.execute(sql + " ORDER BY origin DESC", args):   # recorder, then live
+            r = dict(r)
+            if r["origin"] == "recorder" and r["minutes"] == 60:
+                hours[r["period_start"]] = r["kwh"]
+            else:
+                fixed[r["period_start"]] = r
+        return hours, fixed
+
+    def device_stitch_sensors(self, meter_id: str, channel: str = "import") -> list:
+        """A device's sensors in Device History's stitch order: its primary, then its ordered
+        secondaries (one kept only because a block points at it, `position` NULL, is not)."""
+        return [r[0] for r in self._conn.execute(
+            "SELECT entity_id FROM device_sensors WHERE meter_id = ? AND channel = ? AND "
+            "(role = 'primary' OR position IS NOT NULL) ORDER BY role = 'secondary', position",
+            (meter_id, channel))]
+
+    def ha_read_devices(self, lo: str, hi: str) -> list:
+        """The sub-meters with `ha_reads` in [lo, hi) — a refill's devices to rebuild. An hour
+        row is counted from its start: one starting before `lo` is not."""
+        return [r[0] for r in self._conn.execute(
+            "SELECT DISTINCT h.meter_id FROM ha_reads h JOIN meters m ON m.meter_id = h.meter_id "
+            "AND m.config_period_id = (SELECT id FROM config_periods WHERE effective_to IS NULL "
+            "ORDER BY effective_from DESC LIMIT 1) WHERE m.is_sub_meter = 1 AND "
+            "h.period_start >= ? AND h.period_start < ? ORDER BY h.meter_id", (lo, hi))]
+
+    def point_block_at_sensor(self, block_start: str, meter_id: str, sensor_id) -> None:
+        """A device half-hour put back from `ha_reads` names the sensor that recorded it, not
+        today's primary (the new row's default)."""
+        if sensor_id is None:
+            return
+        with self._conn:
+            self._conn.execute("UPDATE blocks SET imp_sensor_id = ? WHERE block_start = ? AND "
+                               "meter_id = ?", (sensor_id, block_start, meter_id))
+
     def record_recorder_hours(self, meter_id: str, channel: str, hours: dict,
                               sources: Optional[dict] = None) -> int:
         """Keep the hours Device History fetched from HA's recorder (soft delete design §2):

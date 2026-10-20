@@ -150,6 +150,7 @@ class TheRecorderHours(unittest.TestCase):
         store.get_parent_meter_id.return_value = "electricity_main"
         store.get_device_live_coverage_start.return_value = None
         store.get_block_dict_by_start.return_value = None
+        store.ha_reads_for.return_value = ({}, {})
         C.reset_for_tests()
         engine._attribution_jobs.pop("heat_pump", None)
         C.claim("attribution", "heat_pump", force=True)

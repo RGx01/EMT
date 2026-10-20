@@ -206,8 +206,14 @@ a recorder hour kept as the hour (§2).
    device's amendment and by the rebuild; a device delete removes it; import transform 7 (spec v24,
    gate `ha_reads`). `reads` is retired separately (§2). Tests: a live half-hour and a recorder hour land; a block
    delete leaves them; a device delete removes them; the transform's pair sums back to the hour.
-3. **The rebuild reads it** — Device History's rebuild takes `ha_reads` first, the recorder only for
-   hours it lacks; a refill over half-hours with a device's reads starts that rebuild (§3). Tests: a
-   deleted and refilled half-hour gets its devices back with no recorder call; a recorder hour re-split
-   by a changed house shape.
+3. **The rebuild reads it** — *built 20 Oct 2026*. Device History's job walks the hours `ha_reads`
+   holds as well as those it fetches (a fetch wins an hour). A half-hour HA recorded live goes back
+   as it was — kWh, registers, no source tag, `imp_sensor_id` the sensor that recorded it — and the
+   rest of its hour (the recorder's hour less it) is split by the house's shape over the others; no
+   recorder hour, the kept half-hours alone. The per-block guard stands: a present device row is
+   never overwritten. `rebuild_devices_after_refill(lo, hi)` runs it with `fetch=False` over the
+   span for each device with reads there, from the gap fill's finish (both the single window and
+   the heatmap's runs) and after a CSV import; a device already rebuilding is left to its run. Tests:
+   a deleted and refilled half-hour gets its device back with no recorder call; the rest of an hour
+   split; the window; the sensor named.
 4. **The heatmap menu** — *Delete…* with §3's preview.
