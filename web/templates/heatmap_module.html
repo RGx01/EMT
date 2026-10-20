@@ -662,6 +662,7 @@ window.EMTHeatmap = (function () {
       if (fc) items.push(fc);
       var xe = exportDeleteItem(h.starts[0], plus30(h.starts[h.starts.length - 1]));
       if (xe) items.push(xe);
+      items.push(deleteItem(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label));
       showMenu(ev, items, h.day + ' ' + h.label);
     });
   }
@@ -706,7 +707,7 @@ window.EMTHeatmap = (function () {
       openRefetch(dr[0], dr[1], day); }}] : [];
     var fd = fillItem(dr[0], dr[1], day); if (fd) items.push(fd);
     var xd = exportDeleteItem(dr[0], dr[1]); if (xd) items.push(xd);
-    if (!items.length) return;
+    items.push(deleteItem(dr[0], dr[1], day));
     markSelection(dr[0], dr[1]);
     showMenu(ev, items, day);
   }
@@ -760,7 +761,7 @@ window.EMTHeatmap = (function () {
       openRefetch(sp.from, sp.to, sp.label); }}] : [];
     var fs = fillItem(sp.from, sp.to, sp.label); if (fs) items.push(fs);
     var xs = exportDeleteItem(sp.from, sp.to); if (xs) items.push(xs);
-    if (!items.length) { clearSelection(); return; }
+    items.push(deleteItem(sp.from, sp.to, sp.label));
     showMenu(ev, items, sp.label);
   });
   function clearSelection() {
@@ -1149,6 +1150,67 @@ window.EMTHeatmap = (function () {
     m.addEventListener('click', function (e) { if (e.target === m || e.target.dataset.close) shut(); });
     document.addEventListener('keydown', esc1);
     document.body.appendChild(m);
+  }
+
+  // ── Deleting half-hours (soft delete design §3, PR 4) ─────────────────────────────────────
+  // Whole half-hours — every meter, both channels — after a required backup, on every view. The
+  // preview says plainly that it is not one channel, and that HA's readings are kept: a refill from
+  // Octopus or a CSV rebuilds the devices from them. Re-fetch is named where it can help instead.
+  function deleteItem(from, to, label) {
+    return {text: 'Delete ' + label + '\u2026', run: function () { openDelete(from, to, label); }};
+  }
+  function openDelete(a, b, label) {
+    state.dialogOpen = true;
+    var el = panelEl();
+    function box(inner, buttons) {
+      el.innerHTML = '<div class="hm-panel-box" role="dialog" aria-label="Delete half-hours">' +
+        '<div class="hm-panel-head"><b>Delete \u2014 ' + esc(label) + '</b>' +
+        '<button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' + inner +
+        '<div class="hm-actions">' + (buttons || '') + '</div></div>';
+      el.style.display = 'flex';
+    }
+    var close = '<button class="hm-btn" data-close="1">Close</button>';
+    function fail(e) { box('<p class="hm-bad">' + esc(e.message) + '</p>', close); }
+    var chan = state.metric === 'export' ? 'export' : 'import';
+    var twoYears = new Date(Date.now() - 730 * 864e5).toISOString().slice(0, 19);
+    box('<p>Counting\u2026 nothing is changed.</p>');
+    postJSON('/api/blocks/delete/preview', {from_utc: a, to_utc: b}).then(function (p) {
+      if (!p.ok) throw new Error(p.error || 'the preview failed');
+      markSelection(p.from_utc, p.to_utc);
+      if (!p.half_hours) { box('<p>Nothing recorded in ' + esc(label) + ' \u2014 nothing to delete.</p>', close); return; }
+      var dev = p.devices.length ? ', and ' + esc(p.devices.join(', ')) + '\u2019s' : '';
+      box('<p><b>Deletes everything in these half-hours, not only the ' + chan + '.</b> Import, export' + dev +
+          ' data for ' + hh(p.half_hours) + ' (' + esc(localTime(p.from_utc)) + ' \u2192 ' +
+          esc(localTime(p.to_utc)) + ') are deleted.</p>' +
+          (p.ha_reads ? '<p>HA\u2019s own readings are kept: when the half-hours are filled again from ' +
+           'Octopus or a CSV, the devices are rebuilt from them.</p>' : '') +
+          (state.canRefetch && p.from_utc >= twoYears ? '<p class="hm-note2">If only the ' + chan +
+           ' is wrong, Re-fetch from Octopus corrects it without deleting anything.</p>' : '') +
+          '<p class="hm-note2">A backup is taken first.</p>',
+          '<button class="hm-btn" data-close="1">Cancel</button>' +
+          '<button class="hm-btn hm-primary" data-act="go" style="background:#cc0000;border-color:#cc0000;">Delete</button>');
+      el.querySelector('[data-act="go"]').onclick = function () { go(p); };
+    }).catch(fail);
+    function go(p) {
+      box('<p>Taking a backup and deleting\u2026</p>');
+      postJSON('/api/blocks/delete', {from_utc: p.from_utc, to_utc: p.to_utc, confirmed: true}).then(function (r) {
+        if (!r.ok) throw new Error(r.error || 'the delete did not start');
+        return new Promise(function (ok, bad) {
+          (function tick() {
+            fetchJSON('/api/blocks/delete/status').then(function (s) {
+              if (s.status === 'running') { setTimeout(tick, 1000); return; }
+              if (s.status === 'error') { bad(new Error(s.error || 'the delete failed')); return; }
+              ok(s);
+            }, function () { setTimeout(tick, 2000); });
+          })();
+        });
+      }).then(function (s) {
+        box('<p>Done \u2014 ' + hh(p.half_hours) + ' deleted. To fill the gap, select it and ' +
+            'choose Fill this gap\u2026</p>' +
+            (s.backup ? '<p class="hm-note2">Backup: ' + esc(s.backup) + '</p>' : ''), close);
+        reloadRange(p.from_utc, p.to_utc);
+      }).catch(fail);
+    }
   }
 
   // ── Deleting an imported export (soft delete design §4, PR 1) ─────────────────────────────
