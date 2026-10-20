@@ -113,8 +113,9 @@ only where the device has no row) — is kept as a 30-minute `recorder` row. Imp
 databases take it by importing their backups again.
 
 **The `reads` table** (`block_store.py` ~256) is not this: keyed on `block_id` and deleted with its
-block (~2872), and never written (ROADMAP, 19 Sep 2026). It is retired in PR 2, after v4's archive is
-read for why it was added.
+block (~2872), and never written (ROADMAP, 19 Sep 2026). It is retired in a PR of its own (20 Oct
+2026): its five methods are the reachability tool's fixtures for dead code
+(`tests/test_reachability_tool.py`), so that tool's tests change with it.
 
 **Why not the shelf** (18–19 Oct, dropped 20 Oct): a shelf copied deleted rows — cost, bands, carbon
 and mix with them, all of which EMT derives again — and needed *Restore*, *Delete permanently* and a
@@ -179,9 +180,19 @@ are. The purge of imported history stays permanent.
 **Decided (20 Oct 2026, the user):** HA's reads in a table of their own, removed only with the device;
 a recorder hour kept as the hour (§2).
 
-**Left for PR 2:** which entry a recorder hour's `sensor_id` names when Device History stitches a
-device's primary and secondaries (`_stitch_hourly_energy`) — the hour's own sensor if the stitch
-can say, else the primary.
+**Settled in PR 2 (20 Oct 2026):**
+- A recorder hour names the sensor whose statistics gave it: the stitch now says, per hour
+  (`_stitch_hourly_energy(..., sources=)`). From v4 it names none — v4 did not record it.
+- A live row's kWh is the block's at finalise. A settled main block's kWh is Octopus's, so from v4 it
+  is the registers' difference (on prod's backup, HA's 7,429 kWh against Octopus's 7,453 over 10,989
+  settled half-hours); a device's is its kWh, since an EV charger's session sensor resets (199 rows on
+  prod where the registers' difference is negative).
+- compute_channel's no-reads 0.0 / 0.0 is left out on the main meter — a grid register is never 0 —
+  and kept on a device, whose session sensor sits at 0 between charges (2,282 EV half-hours on prod).
+  A device with no reads at all reads the same, and is kept with them.
+- Written live at finalise (every meter) and at a provisional device's amendment (that device only).
+  The gap fill's interpolated blocks are not written: they are EMT's interpolation between two HA
+  registers, not a figure HA reported.
 
 ## 6. PRs, if agreed
 
@@ -191,8 +202,9 @@ can say, else the primary.
    menu on every view but the Import bill (an install without the API has no Export bill view, and a
    FIT export CSV is the case it is for). Tests: export NULL and import kept; carbon from import alone; live blocks refused; partial
    days rounded out; the poll does not refill it; the overlay does.
-2. **`ha_reads`** (§2) — the table; written at finalise and by the rebuild; the import transform
-   from v4 (import spec); `reads` retired. Tests: a live half-hour and a recorder hour land; a block
+2. **`ha_reads`** (§2) — *built 20 Oct 2026*: the table; written at finalise, at a provisional
+   device's amendment and by the rebuild; a device delete removes it; import transform 7 (spec v24,
+   gate `ha_reads`). `reads` is retired separately (§2). Tests: a live half-hour and a recorder hour land; a block
    delete leaves them; a device delete removes them; the transform's pair sums back to the hour.
 3. **The rebuild reads it** — Device History's rebuild takes `ha_reads` first, the recorder only for
    hours it lacks; a refill over half-hours with a device's reads starts that rebuild (§3). Tests: a

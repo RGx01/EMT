@@ -15,6 +15,8 @@ importer's copy.
     5  meta                the allow-listed store_meta / kraken_state keys
     6  device sensors      each configured read a primary; Device History's other sensors
                            secondaries (device sensors design §6)
+    7  HA's reads          what HA reported, out of the blocks into `ha_reads` (soft delete
+                           design §2)
 
 4 is not built (ROADMAP BL-81, closed 10 Oct 2026); the others run in this order.
 
@@ -140,6 +142,71 @@ def device_sensors(conn, report):
             out["secondaries"] += len(extra)
             out["devices"].append(mid)
     report["transforms"]["device_sensors"] = out
+
+
+# 7's kWh for a live channel: the block's, unless Octopus settled it — v4 then put Octopus's kWh
+# on the block (`imp_kwh` = `imp_kwh_api`), and HA's is the registers' difference. A device is
+# never settled, and keeps its kWh: an EV charger's sensor resets each session.
+_HA_KWH = ("CASE WHEN b.{c}_kwh_api IS NULL THEN b.{c}_kwh "
+           "ELSE MAX(b.{c}_read_end - b.{c}_read_start, 0) END")
+
+
+def ha_reads(conn, report):
+    """7 (soft delete design §2, import spec v24): HA's reads, kept apart from the blocks. After 6,
+    whose primaries the live rows name.
+    - a live block (`source` NULL or 'kraken_api') gives a half-hour row per channel holding both
+      registers (on the main meter not compute_channel's no-reads 0.0 / 0.0 — a grid register
+      is never 0; a device's session sensor sits at 0 between charges), `sensor_id` its channel's primary
+      marked inferred — v4 recorded no sensor per block;
+    - Device History's `recorder_attributed` half-hours give back their hour, the sum of a whole
+      hour's blocks (the split sums to the hour, within its 6-dp rounding); an hour with a block
+      missing — no house block, or the device's own live row — keeps its half-hours as they are.
+    Imported blocks give nothing: they are not HA's."""
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+    live = 0
+    for c, ch in (("imp", "import"), ("exp", "export")):
+        live += conn.execute(
+            "INSERT INTO main.ha_reads (meter_id, channel, origin, period_start, minutes, "
+            "sensor_id, sensor_inferred, kwh, read_start, read_end, interpolated, recorded_at) "
+            "SELECT b.meter_id, ?, 'live', b.block_start, "
+            "CAST(ROUND((julianday(b.block_end) - julianday(b.block_start)) * 1440) AS INTEGER), "
+            "s.id, s.id IS NOT NULL, " + _HA_KWH.format(c=c) + ", "
+            "b.{c}_read_start, b.{c}_read_end, b.interpolated, ? "
+            "FROM main.blocks b LEFT JOIN main.device_sensors s ON s.meter_id = b.meter_id "
+            "AND s.channel = ? AND s.role = 'primary' "
+            "WHERE (b.source IS NULL OR b.source = 'kraken_api') AND b.{c}_kwh IS NOT NULL "
+            "AND b.{c}_read_start IS NOT NULL AND b.{c}_read_end IS NOT NULL "
+            "AND NOT (b.{c}_read_start = 0 AND b.{c}_read_end = 0 AND b.meter_id NOT IN "
+            "(SELECT meter_id FROM main.meters WHERE is_sub_meter = 1))".replace("{c}", c),
+            (ch, now, ch)).rowcount
+    bm = conn.execute("SELECT block_minutes FROM main.config_periods WHERE effective_to IS NULL "
+                      "ORDER BY effective_from DESC LIMIT 1").fetchone()
+    per_hour = max(1, 60 // int((bm[0] if bm else None) or 30))
+    # the whole hours, once: each recorder half-hour keyed to its hour
+    conn.execute("DROP TABLE IF EXISTS temp.v4i_rec")
+    conn.execute("CREATE TEMP TABLE v4i_rec AS SELECT meter_id, block_start, block_end, imp_kwh, "
+                 "substr(block_start, 1, 13) || ':00:00' AS h FROM main.blocks "
+                 "WHERE source = 'recorder_attributed' AND imp_kwh IS NOT NULL")
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS v4i_whole (meter_id TEXT, h TEXT, "
+                 "PRIMARY KEY (meter_id, h))")
+    conn.execute("DELETE FROM temp.v4i_whole")
+    conn.execute("INSERT INTO temp.v4i_whole SELECT meter_id, h FROM temp.v4i_rec "
+                 "GROUP BY meter_id, h HAVING COUNT(*) = ?", (per_hour,))
+    hours = conn.execute(
+        "INSERT INTO main.ha_reads (meter_id, channel, origin, period_start, minutes, kwh, "
+        "recorded_at) SELECT r.meter_id, 'import', 'recorder', r.h, 60, ROUND(SUM(r.imp_kwh), 6), ? "
+        "FROM temp.v4i_rec r JOIN temp.v4i_whole w ON w.meter_id = r.meter_id AND w.h = r.h "
+        "GROUP BY r.meter_id, r.h", (now,)).rowcount
+    halves = conn.execute(
+        "INSERT INTO main.ha_reads (meter_id, channel, origin, period_start, minutes, kwh, "
+        "recorded_at) SELECT r.meter_id, 'import', 'recorder', r.block_start, "
+        "CAST(ROUND((julianday(r.block_end) - julianday(r.block_start)) * 1440) AS INTEGER), "
+        "r.imp_kwh, ? FROM temp.v4i_rec r WHERE NOT EXISTS (SELECT 1 FROM temp.v4i_whole w "
+        "WHERE w.meter_id = r.meter_id AND w.h = r.h)", (now,)).rowcount
+    conn.execute("DROP TABLE temp.v4i_rec")
+    report["transforms"]["ha_reads"] = {"live": live, "recorder_hours": hours,
+                                        "recorder_half_hours": halves}
 
 
 def provenance(conn, report):
@@ -322,3 +389,4 @@ def run(conn, report):
     bill_split(conn, report)
     carry_keys(conn, report)
     device_sensors(conn, report)
+    ha_reads(conn, report)

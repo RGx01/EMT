@@ -207,7 +207,7 @@ class TheAttribution(unittest.TestCase):
             with mock.patch.object(engine, "_engine_ha", _FakeHA()), \
                  mock.patch.object(engine, "get_store", lambda: store), \
                  mock.patch.object(engine, "_stitch_hourly_energy",
-                                   lambda series, ids: {"2026-03-01T10:00:00": 1.0}):
+                                   lambda series, ids, **kw: {"2026-03-01T10:00:00": 1.0}):
                 if blocker:
                     _running(blocker)
                 C.claim("attribution", "heat_pump", force=True)

@@ -1855,6 +1855,10 @@ def _meter_delete_data(meter_id: str):
                 cur = st._conn.execute("DELETE FROM device_sensors WHERE meter_id = ?", (meter_id,))
                 deleted["device_sensors"] = cur.rowcount
 
+                # Soft delete design §2: HA's reads for the device go only here, with it.
+                cur = st._conn.execute("DELETE FROM ha_reads WHERE meter_id = ?", (meter_id,))
+                deleted["ha_reads"] = cur.rowcount
+
                 # Remove from current_block JSON if present
                 try:
                     cb_row = st._conn.execute(

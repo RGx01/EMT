@@ -350,12 +350,38 @@ def device_sensors(conn, report):
     return None
 
 
+def ha_reads(conn, report):
+    """Transform 7, against the SOURCE: one live row per live channel holding both registers, and
+    the recorder rows' kWh the source's recorder_attributed kWh, per device, within the split's
+    rounding (6 dp per half-hour)."""
+    t = report["transforms"].get("ha_reads", {})
+    report["gates"]["ha_reads"].update(t)
+    want = sum(_one(conn,
+        "SELECT COUNT(*) FROM src.blocks WHERE (source IS NULL OR source = 'kraken_api') "
+        "AND {c}_kwh IS NOT NULL AND {c}_read_start IS NOT NULL AND {c}_read_end IS NOT NULL "
+        "AND NOT ({c}_read_start = 0 AND {c}_read_end = 0 AND meter_id NOT IN (SELECT meter_id "
+        "FROM src.meters WHERE is_sub_meter = 1))".replace("{c}", c)) for c in ("imp", "exp"))
+    have = _one(conn, "SELECT COUNT(*) FROM main.ha_reads WHERE origin = 'live'")
+    off = []
+    for mid, n, k in conn.execute(
+            "SELECT meter_id, COUNT(*), SUM(imp_kwh) FROM src.blocks WHERE source = "
+            "'recorder_attributed' AND imp_kwh IS NOT NULL GROUP BY meter_id").fetchall():
+        got = _one(conn, "SELECT COALESCE(SUM(kwh), 0) FROM main.ha_reads WHERE meter_id = ? "
+                         "AND origin = 'recorder'", mid)
+        if abs(float(got) - float(k)) > 1e-6 * n:
+            off.append(mid)
+    if want != have or off:
+        return ("HA's reads: %d live row(s) for %d live channel(s); recorder kWh not the "
+                "source's for %s" % (have, want, ", ".join(off) or "none"))
+    return None
+
+
 GATES = (("row_counts", row_counts), ("carried_exactly", carried_exactly),
          ("cost_parity", cost_parity), ("provenance", provenance),
          ("ev_segments", ev_segments), ("split_reproduced", split_reproduced),
          ("held_fit", held_fit), ("bill_split", bill_split),
          ("corrections", corrections), ("tombstones", tombstones), ("keys", keys),
-         ("device_sensors", device_sensors))
+         ("device_sensors", device_sensors), ("ha_reads", ha_reads))
 
 
 def run(conn, report):
