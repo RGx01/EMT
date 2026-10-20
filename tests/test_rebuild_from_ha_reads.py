@@ -200,6 +200,14 @@ class TheRefill(_Base):
             self.assertEqual(asyncio.run(engine.rebuild_devices_after_refill(S1, S2)), [])
         job.assert_not_called()
 
+    def test_no_reads_in_the_span_says_so(self):
+        """Staging, 20 Oct 2026: a refill over a database imported before `ha_reads` rebuilt
+        nothing, and the log was silent — indistinguishable from the call never running."""
+        with self.assertLogs(engine.logger, level="INFO") as cm:
+            asyncio.run(engine.rebuild_devices_after_refill(S1, S2))
+        self.assertTrue(any("no device reads kept there; nothing to rebuild" in m
+                            for m in cm.output), cm.output)
+
 
 class TheCallers(unittest.TestCase):
 

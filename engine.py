@@ -3971,6 +3971,11 @@ async def rebuild_devices_after_refill(lo: str, hi: str) -> list:
     except Exception as e:
         logger.warning("rebuild_devices_after_refill: %s", e)
         return started
+    if not devices:
+        # said, so a refill whose devices stay empty can be told from one that never ran this
+        logger.info("rebuild_devices_after_refill: %s..%s — no device reads kept there; "
+                    "nothing to rebuild", lo, hi)
+        return started
     for mid in devices:
         try:
             sensors = get_store().device_stitch_sensors(mid)
