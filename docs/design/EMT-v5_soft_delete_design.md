@@ -216,7 +216,11 @@ a recorder hour kept as the hour (§2).
    recorder hour, the kept half-hours alone. The per-block guard stands: a present device row is
    never overwritten. `rebuild_devices_after_refill(lo, hi)` runs it with `fetch=False` over the
    span for each device with reads there, from the gap fill's finish (both the single window and
-   the heatmap's runs) and after a CSV import; a device already rebuilding is left to its run. Tests:
+   the heatmap's runs) and after a CSV import; a device already rebuilding is left to its run.
+   *Fixed 20 Oct 2026 (staging):* the finish runs while the fill still holds `import`, which the
+   attribution job depends on, so every claim was refused and reported as "already rebuilding".
+   Each device is now queued (`_rebuild_when_admitted`) and claimed once admitted — after the import
+   and the pricing verify — giving up, logged, after an hour. Tests:
    a deleted and refilled half-hour gets its device back with no recorder call; the rest of an hour
    split; the window; the sensor named.
 4. **The heatmap menu** — *built 20 Oct 2026*: *Delete…* on the cell, the day and the drag, on every

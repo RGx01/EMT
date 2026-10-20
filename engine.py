@@ -3959,39 +3959,62 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
         _pass2_quiet = False          # never leave bulk-suppression on after the job
 
 
+_REFILL_REBUILD_POLL_S = 5.0         # how often a queued refill rebuild asks to be admitted
+_REFILL_REBUILD_WAIT_S = 3600.0      # and for how long, before it gives up (logged)
+
+
+async def _rebuild_when_admitted(mid: str, sensors: list, lo: str, hi: str) -> None:
+    """Claim `mid`'s attribution run once the coordinator admits it, then run it from `ha_reads`.
+    The claim is refused while a member it depends on runs — the refill's own import, then the
+    pricing verify — so it is retried, not given up on (staging, 20 Oct 2026: the gap fill's
+    finish runs while its fill still holds "import", and every device's rebuild was refused).
+    A run of the device's own that starts meanwhile is left to finish the job."""
+    waited = 0.0
+    while True:
+        cur = (_attribution_jobs.get(mid) or {}).get("status")
+        if cur in _ACTIVE:
+            logger.info("rebuild_devices_after_refill: %s already rebuilding — left to its run", mid)
+            return
+        if attribution_claim(mid, sensors):
+            break
+        if waited >= _REFILL_REBUILD_WAIT_S:
+            logger.warning("rebuild_devices_after_refill: %s not admitted after %.0f s (%s) — "
+                           "use Rebuild history on its card", mid, waited,
+                           _coord.admission("attribution")[1])
+            return
+        await asyncio.sleep(_REFILL_REBUILD_POLL_S)
+        waited += _REFILL_REBUILD_POLL_S
+    logger.info("rebuild_devices_after_refill: %s %s..%s — rebuilding from HA's reads", mid, lo, hi)
+    await run_attribution_job(mid, sensors, pace_s=0.05, window=(lo, hi), fetch=False)
+
+
 async def rebuild_devices_after_refill(lo: str, hi: str) -> list:
-    """After a refill of [lo, hi) — a gap fill or a CSV import, the main meter only — start
-    Device History's rebuild of each device `ha_reads` holds figures for there, from those
-    alone (soft delete design §3): no call to HA's recorder. Each run is the attribution job
-    (it waits on the import and the pricing verify, and fills only absent device rows); a
-    device already running is left to its run. Returns the devices started. Never raises."""
-    started = []
+    """After a refill of [lo, hi) — a gap fill or a CSV import, the main meter only — rebuild
+    each device `ha_reads` holds figures for there, from those alone (soft delete design §3): no
+    call to HA's recorder. Each device is queued (`_rebuild_when_admitted`): its run is the
+    attribution job, claimed once the coordinator admits it — after the import and the pricing
+    verify — and it fills only absent device rows. Returns the devices queued. Never raises."""
+    queued = []
     try:
         devices = get_store().ha_read_devices(lo, hi)
     except Exception as e:
         logger.warning("rebuild_devices_after_refill: %s", e)
-        return started
+        return queued
     if not devices:
         # said, so a refill whose devices stay empty can be told from one that never ran this
         logger.info("rebuild_devices_after_refill: %s..%s — no device reads kept there; "
                     "nothing to rebuild", lo, hi)
-        return started
+        return queued
     for mid in devices:
         try:
             sensors = get_store().device_stitch_sensors(mid)
         except Exception:
             sensors = []
-        if not attribution_claim(mid, sensors):
-            logger.info("rebuild_devices_after_refill: %s already rebuilding — left to its run",
-                        mid)
-            continue
-        asyncio.create_task(run_attribution_job(mid, sensors, pace_s=0.05, window=(lo, hi),
-                                                fetch=False))
-        started.append(mid)
-    if started:
-        logger.info("rebuild_devices_after_refill: %s..%s — rebuilding %s from HA's reads",
-                    lo, hi, ", ".join(started))
-    return started
+        asyncio.create_task(_rebuild_when_admitted(mid, sensors, lo, hi))
+        queued.append(mid)
+    logger.info("rebuild_devices_after_refill: %s..%s — %s queued, from HA's reads, once the "
+                "import and the pricing verify are done", lo, hi, ", ".join(queued))
+    return queued
 
 
 def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricity_main",

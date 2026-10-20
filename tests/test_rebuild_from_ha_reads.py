@@ -187,12 +187,67 @@ class TheRefill(_Base):
         self.assertEqual((a["imp_kwh"], a["imp_read_start"], a["source"]), (0.4, 5.0, None))
 
     def test_a_device_already_rebuilding_is_left_to_its_run(self):
+        """GUARD (passes on the parent, whose refused claim said the same, true or not)."""
         self.live(S1, 0.4, 5.0)
-        with mock.patch.object(engine, "attribution_claim", lambda m, s: False), \
-             mock.patch.object(engine, "run_attribution_job") as job:
-            got = asyncio.run(engine.rebuild_devices_after_refill(S1, S2))
-        self.assertEqual(got, [])
+        engine._attribution_jobs["ev_charger"] = {"status": "running"}
+        try:
+            with mock.patch.object(engine, "run_attribution_job") as job:
+                async def go():
+                    got = await engine.rebuild_devices_after_refill(S1, S2)
+                    await asyncio.sleep(0.05)
+                    return got
+                with self.assertLogs(engine.logger, level="INFO") as cm:
+                    asyncio.run(go())
+            job.assert_not_called()
+            self.assertTrue(any("ev_charger already rebuilding" in m for m in cm.output))
+        finally:
+            engine._attribution_jobs.pop("ev_charger", None)
+
+    def test_it_waits_for_the_refills_own_import_then_runs(self):
+        """Staging, 20 Oct 2026: the gap fill's finish runs while the fill still holds "import",
+        which the attribution job depends on — the claim was refused, every device reported
+        "already rebuilding", and none was rebuilt. Now it is queued until admitted."""
+        self.live(S1, 0.4, 5.0)
+        C.reset_for_tests()
+        engine._attribution_jobs.pop("ev_charger", None)
+        C.claim("import", force=True)                     # the fill, still finishing
+
+        async def go():
+            with mock.patch.object(engine, "_REFILL_REBUILD_POLL_S", 0.01):
+                await engine.rebuild_devices_after_refill(S1, "2026-10-01T11:00:00")
+                await asyncio.sleep(0.1)
+                self.assertIsNone(_ev(self.st, S1))       # not before the import is done
+                C.mark("import", status="done")
+                for _ in range(100):
+                    if (engine._attribution_jobs.get("ev_charger") or {}).get("status") == "done":
+                        break
+                    await asyncio.sleep(0.02)
+        try:
+            with mock.patch.object(engine, "_engine_ha", None):
+                asyncio.run(go())
+        finally:
+            C.reset_for_tests()
+        self.assertEqual(_ev(self.st, S1)["imp_kwh"], 0.4)
+
+    def test_it_gives_up_after_its_wait_and_says_so(self):
+        self.live(S1, 0.4, 5.0)
+        C.reset_for_tests()
+        engine._attribution_jobs.pop("ev_charger", None)
+        C.claim("import", force=True)
+
+        async def go():
+            with mock.patch.object(engine, "_REFILL_REBUILD_POLL_S", 0.01), \
+                 mock.patch.object(engine, "_REFILL_REBUILD_WAIT_S", 0.03):
+                await engine.rebuild_devices_after_refill(S1, S2)
+                await asyncio.sleep(0.2)
+        try:
+            with mock.patch.object(engine, "run_attribution_job") as job, \
+                 self.assertLogs(engine.logger, level="WARNING") as cm:
+                asyncio.run(go())
+        finally:
+            C.reset_for_tests()
         job.assert_not_called()
+        self.assertTrue(any("not admitted" in m and "Rebuild history" in m for m in cm.output))
 
     def test_no_reads_in_the_span_starts_nothing(self):
         """GUARD (fails on the parent only by the missing function)."""
