@@ -454,8 +454,15 @@ rate, and EMT no longer asks Octopus for the cost. Two ways in:
   day was deleted and refilled; on the other Intelligent tariffs it now asks for the no-cost ones too
   (`_ASKED_OFF_SMB_SQL`), since on every Intelligent tariff only Octopus's cost is final. So such a
   half-hour waits for its bill as a live one does (`overdue` past the window, `abandoned` once its 30
-  days of asking run out; `engine.bill_no_cost`'s third set, `import_asked`). Asked once an hour, by
-  the drain's hourly run, in its batches of 40. Hatched at once only outside every Intelligent window.
+  days of asking run out; `engine.bill_no_cost`'s third set, `import_asked`). Asked by the drain's
+  hourly run, in its batches of 40 — hourly for 2 days, then daily (the backoff below). Hatched at
+  once only outside every Intelligent window.
+
+**The backoff** (20 Oct 2026, the user: go easier on the API). Every pass that asks for a bill —
+the live settled-cost pass, the history drain, the drain's breakdown asks for teal half-hours — asks
+an unanswered half-hour hourly for its first 2 days, then once a day, until its 30 days run out
+(`_bill_ask_resting`; the record keeps `last`). A resting half-hour is not drain backlog. On staging
+(20 Oct) 12 half-hours had been asked every hour, `recovered 0/12` each time.
 
 The detail panel says since when EMT has not asked (`no_cost_since`). Found on staging: re-fetching
 such a half-hour returned the kWh with no cost; deleting and re-importing it showed it green although
