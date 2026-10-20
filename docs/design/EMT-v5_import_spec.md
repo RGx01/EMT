@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v23 — revised 19 Oct 2026, a device's sensors in one place (§6, transform 6) (v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v24 — revised 20 Oct 2026, HA's reads kept apart (§6, transform 7) (v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -145,6 +145,18 @@ a bill whose EV is zero where EMT's own split has the car, for up to 28 days —
 forward code. 4.5.22 and the v5 dev build `4.5.22-a23` join the below-floor negatives; v5's own
 builds now stamp `4.5.23-a24`. The 4.5.22 positive fixture (prod-dev, 10 Oct) is below the floor
 now; the fixture is re-taken at 4.5.23.*
+
+*Changes in v24 (20 Oct 2026): **HA's reads move out of the blocks** (soft delete design §2).
+v4 kept what HA reported only on the blocks built from it, so deleting a block lost it. v5 holds it in
+`ha_reads`, which a delete of blocks leaves. Transform 7, after 6 (whose primaries the live rows
+name): a live block (`source` NULL or `kraken_api`) gives a half-hour row per channel holding both
+registers, its kWh the block's — or, where Octopus settled it, the registers' difference, since v4
+then put Octopus's kWh on the block — and its channel's primary as an **inferred** sensor. The main
+meter's no-reads 0.0 / 0.0 is left out; a device's is kept (a session sensor sits at 0 between
+charges). Device History's `recorder_attributed` half-hours give back their hour, the sum of a whole
+hour's blocks; an hour with one missing keeps its half-hours. Imported blocks give nothing. Gate
+`ha_reads` checks the live count and each device's recorder kWh against the source. On prod's 4.5.24
+backup (19 Oct): 43,900 live rows, 29,951 hours and 2 lone half-hours, in 3.4 s.*
 
 *Changes in v23 (19 Oct 2026): **a device's sensors move into one place** (device sensors design §6).
 v4 kept a device's live sensor in its config and the sensors Device History stitched — a renamed

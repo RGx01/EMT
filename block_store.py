@@ -245,6 +245,29 @@ CREATE TABLE IF NOT EXISTS device_sensors (
 CREATE UNIQUE INDEX IF NOT EXISTS idx_device_sensors_primary
     ON device_sensors (meter_id, channel) WHERE role = 'primary';
 
+-- Soft delete design §2 (20 Oct 2026): what HA reported, kept apart from the blocks built from
+-- it. A half-hour recorded live (its kWh as finalised, HA's registers at its edges), or an hour
+-- from HA's recorder kept AS the hour, so Device History's split by the house's import shape
+-- runs against the blocks as they are when it is applied. A delete of blocks leaves it; only a
+-- device delete removes a device's rows. `sensor_id` names the device_sensors entry the figure
+-- came from (NULL: none known, e.g. the Mini); `sensor_inferred` = 1 where the v4 import named
+-- the device's primary, its block having had no pointer.
+CREATE TABLE IF NOT EXISTS ha_reads (
+    meter_id         TEXT    NOT NULL,
+    channel          TEXT    NOT NULL,
+    origin           TEXT    NOT NULL CHECK (origin IN ('live', 'recorder')),
+    period_start     TEXT    NOT NULL,
+    minutes          INTEGER NOT NULL,
+    sensor_id        INTEGER,
+    sensor_inferred  INTEGER NOT NULL DEFAULT 0,
+    kwh              REAL    NOT NULL,
+    read_start       REAL,
+    read_end         REAL,
+    interpolated     INTEGER NOT NULL DEFAULT 0,
+    recorded_at      TEXT    NOT NULL,
+    PRIMARY KEY (meter_id, channel, origin, period_start)
+);
+
 CREATE INDEX IF NOT EXISTS idx_blocks_start     ON blocks (block_start);
 
 CREATE INDEX IF NOT EXISTS idx_blocks_meter     ON blocks (meter_id);
@@ -706,6 +729,57 @@ def _staged(block: dict) -> list:
         if isinstance(ch, dict) and STAGED_SEGMENTS in ch:
             out.append((block.get("start"), mid, ch.pop(STAGED_SEGMENTS) or []))
     return out
+
+
+def _live_reads(block: dict, meter_ids) -> list[dict]:
+    """`ha_reads` rows for what HA reported for `meter_ids` in a block being written live (soft
+    delete design §2): each channel holding both registers (on the main meter, not the no-reads
+    0.0 / 0.0), its kWh as EMT finalised it (an EV
+    charger's sensor resets each session, so the kWh, not the registers' difference, is the
+    figure). Taken at the write, before settlement can put Octopus's kWh on the block."""
+    try:
+        minutes = int((datetime.fromisoformat(block["end"])
+                       - datetime.fromisoformat(block["start"])).total_seconds() // 60)
+    except (KeyError, TypeError, ValueError):
+        return []
+    now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+    interp = 1 if block.get("interpolated") else 0
+    out = []
+    meters = block.get("meters") or {}
+    for mid in meter_ids or ():
+        meta = ((meters.get(mid) or {}).get("meta")) or {}
+        for ch_name, ch in (((meters.get(mid) or {}).get("channels")) or {}).items():
+            if ch_name not in ("import", "export") or not isinstance(ch, dict):
+                continue
+            rs, re_ = ch.get("read_start"), ch.get("read_end")
+            if rs is None or re_ is None or ch.get("kwh") is None:
+                continue
+            # A grid register is never 0: 0.0 / 0.0 on the main meter is compute_channel's
+            # no-reads output, not HA's. A device's session sensor sits at 0 between charges.
+            if rs == 0.0 and re_ == 0.0 and not meta.get("sub_meter"):
+                continue
+            out.append({"meter_id": mid, "channel": ch_name, "origin": "live",
+                        "period_start": block["start"], "minutes": minutes,
+                        "kwh": float(ch["kwh"]), "read_start": ch["read_start"],
+                        "read_end": ch["read_end"],
+                        "interpolated": 1 if (interp or ch.get("interpolated")) else 0,
+                        "recorded_at": now})
+    return out
+
+
+_HA_READS_UPSERT = """
+    INSERT INTO ha_reads (meter_id, channel, origin, period_start, minutes, sensor_id, kwh,
+                          read_start, read_end, interpolated, recorded_at)
+    VALUES (:meter_id, :channel, :origin, :period_start, :minutes,
+            (SELECT s.id FROM device_sensors s WHERE s.meter_id = :meter_id
+                AND s.channel = :channel AND s.role = 'primary'),
+            :kwh, :read_start, :read_end, :interpolated, :recorded_at)
+    ON CONFLICT (meter_id, channel, origin, period_start) DO UPDATE SET
+        minutes = excluded.minutes, kwh = excluded.kwh, read_start = excluded.read_start,
+        read_end = excluded.read_end, interpolated = excluded.interpolated,
+        recorded_at = excluded.recorded_at,
+        sensor_id = COALESCE(ha_reads.sensor_id, excluded.sensor_id)
+"""
 
 
 def _block_rows(block: dict, config_period_id: int, tz_name: str) -> list[dict]:
@@ -6198,12 +6272,36 @@ class BlockStore:
             self._conn.execute("UPDATE device_sensors SET position=? WHERE id=?", (i, r["id"]))
 
     def _drop_unpointed_sensor(self, sensor_id: int) -> None:
-        """Delete a secondary no block points at; one a block points at stays (off the
-        stitch), so the block still names the sensor that recorded it."""
+        """Delete a secondary no block or HA read points at; one pointed at stays (off the
+        stitch), so the block or read still names the sensor that recorded it."""
         self._conn.execute(
             "DELETE FROM device_sensors WHERE id=? AND role='secondary' AND NOT EXISTS "
-            "(SELECT 1 FROM blocks WHERE imp_sensor_id=? OR exp_sensor_id=?)",
-            (sensor_id, sensor_id, sensor_id))
+            "(SELECT 1 FROM blocks WHERE imp_sensor_id=? OR exp_sensor_id=?) AND NOT EXISTS "
+            "(SELECT 1 FROM ha_reads WHERE sensor_id=?)",
+            (sensor_id, sensor_id, sensor_id, sensor_id))
+
+    def record_recorder_hours(self, meter_id: str, channel: str, hours: dict,
+                              sources: Optional[dict] = None) -> int:
+        """Keep the hours Device History fetched from HA's recorder (soft delete design §2):
+        one `ha_reads` row per hour, AS the hour (`minutes` 60), `sensor_id` the entry whose
+        statistics gave it (`sources`: hour -> entity id). A later fetch replaces an hour; a
+        live half-hour is a different row and is never touched. One transaction."""
+        if not hours:
+            return 0
+        ids = {r["entity_id"]: r["id"] for r in self._conn.execute(
+            "SELECT id, entity_id FROM device_sensors WHERE meter_id=? AND channel=?",
+            (meter_id, channel))}
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+        rows = [(meter_id, channel, h, ids.get((sources or {}).get(h)), float(k), now)
+                for h, k in hours.items() if k is not None]
+        with self._conn:
+            self._conn.executemany(
+                "INSERT INTO ha_reads (meter_id, channel, origin, period_start, minutes, "
+                "sensor_id, kwh, recorded_at) VALUES (?, ?, 'recorder', ?, 60, ?, ?, ?) "
+                "ON CONFLICT (meter_id, channel, origin, period_start) DO UPDATE SET "
+                "minutes = 60, sensor_id = excluded.sensor_id, kwh = excluded.kwh, "
+                "recorded_at = excluded.recorded_at", rows)
+        return len(rows)
 
     def set_device_history_sensors(self, meter_id: str, channel: str, entities: list) -> list:
         """A channel's secondaries become exactly `entities`, in order, its primary untouched
@@ -6822,10 +6920,12 @@ class BlockStore:
     # ── Write ─────────────────────────────────────────────────────────────
 
     def append_block(self, block: dict,
-                     config_period_id: Optional[int] = None) -> None:
+                     config_period_id: Optional[int] = None, *, ha_meters=()) -> None:
         """
         Insert a finalised block (all meters) as one transaction.
         If config_period_id is None, uses the current active period.
+        `ha_meters`: the meters whose channels HA reported live — their `ha_reads` rows are
+        written in the same transaction (soft delete design §2).
         """
         period_id = config_period_id or self.get_current_config_period_id()
         if period_id is None:
@@ -6836,7 +6936,7 @@ class BlockStore:
         cp = self.get_config_period(period_id)
         tz_name = cp["timezone"] if cp else "UTC"
         rows = _block_rows(block, period_id, tz_name)
-        self._insert_block_rows(rows, _staged(block))
+        self._insert_block_rows(rows, _staged(block), _live_reads(block, ha_meters))
 
     def append_blocks(self, blocks: list[dict],
                       config_period_id: Optional[int] = None) -> int:
@@ -6857,7 +6957,7 @@ class BlockStore:
         self._insert_block_rows(all_rows)
         return len(all_rows)
 
-    def _insert_block_rows(self, rows: list[dict], staged=()) -> None:
+    def _insert_block_rows(self, rows: list[dict], staged=(), ha_reads=()) -> None:
         if not rows:
             return
         sql = """
@@ -6898,8 +6998,10 @@ class BlockStore:
             self._conn.executemany(sql, rows)
             for bs, mid, segs in staged:
                 self._replace_segments(bs, mid, segs)
+            if ha_reads:
+                self._conn.executemany(_HA_READS_UPSERT, ha_reads)
 
-    def _insert_block_rows_replace(self, rows: list[dict], staged=()) -> None:
+    def _insert_block_rows_replace(self, rows: list[dict], staged=(), ha_reads=()) -> None:
         """Like _insert_block_rows but uses INSERT OR REPLACE to overwrite
         existing blocks. Used by gap fill to correct zero/bad blocks in the DB.
 
@@ -6981,11 +7083,15 @@ class BlockStore:
             self._conn.executemany(sql, rows)
             for bs, mid, segs in staged:
                 self._replace_segments(bs, mid, segs)
+            if ha_reads:
+                self._conn.executemany(_HA_READS_UPSERT, ha_reads)
 
     def append_block_replace(self, block: dict,
-                             config_period_id: Optional[int] = None) -> None:
+                             config_period_id: Optional[int] = None, *, ha_meters=()) -> None:
         """Insert a finalised block, replacing any existing block at the same
-        (block_start, meter_id, config_period_id). Used by gap fill."""
+        (block_start, meter_id, config_period_id). Used by gap fill.
+        `ha_meters` as append_block's: only a write of what HA reported names any — a
+        round-trip rewrite must not, since a settled block's kWh is Octopus's."""
         period_id = config_period_id or self.get_current_config_period_id()
         if period_id is None:
             raise RuntimeError(
@@ -6994,7 +7100,7 @@ class BlockStore:
         cp = self.get_config_period(period_id)
         tz_name = cp["timezone"] if cp else "UTC"
         rows = _block_rows(block, period_id, tz_name)
-        self._insert_block_rows_replace(rows, _staged(block))
+        self._insert_block_rows_replace(rows, _staged(block), _live_reads(block, ha_meters))
 
     def get_provisional_sub_meter_blocks(self) -> list[dict]:
         """Return the most-recent block for each sub-meter that has imp_provisional=1.

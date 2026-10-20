@@ -1540,11 +1540,13 @@ def _reader():
 # ─────────────────────────────────────────────────────────────────────────────
 
 def append_block(block: dict):
-    get_store().append_block(block)
+    """finalise_block's write: every meter's channels as HA reported them go to `ha_reads` with
+    the block (soft delete design §2) — now, before settlement can put Octopus's kWh on it."""
+    get_store().append_block(block, ha_meters=list(block.get("meters") or {}))
 
 
-def append_block_replace(block: dict):
-    get_store().append_block_replace(block)
+def append_block_replace(block: dict, **kw):
+    get_store().append_block_replace(block, **kw)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3424,7 +3426,8 @@ def backout_recorder_attribution(*, run_id=None, meter_id=None,
         _backout_lock.release()
 
 
-def _stitch_hourly_energy(series_by_sensor: dict, priority: list) -> dict:
+def _stitch_hourly_energy(series_by_sensor: dict, priority: list,
+                          sources: dict | None = None) -> dict:
     """Combine one or more cumulative-kWh statistic series into a single hourly
     ENERGY map {naive-UTC hour ISO: kWh}. Pure.
 
@@ -3434,7 +3437,8 @@ def _stitch_hourly_energy(series_by_sensor: dict, priority: list) -> dict:
     tried in `priority` order and the FIRST to supply an hour wins, so listing
     [new_sensor, old_sensor] stitches a rename: the new sensor owns recent hours,
     the old fills the earlier ones. Each hour's energy is keyed to the hour it
-    belongs to; alignment to the two half-hour blocks happens in _split_hour_to_blocks."""
+    belongs to; alignment to the two half-hour blocks happens in _split_hour_to_blocks.
+    `sources`, when given, is filled with the sensor that supplied each hour."""
     import statistics_probe as _sp
     out: dict = {}
     for sensor in (priority or []):
@@ -3465,6 +3469,8 @@ def _stitch_hourly_energy(series_by_sensor: dict, priority: list) -> dict:
             key = hour.isoformat()
             if e is not None and e >= 0 and key not in out:
                 out[key] = round(float(e), 6)
+                if sources is not None:
+                    sources[key] = sensor
     return out
 
 
@@ -3791,7 +3797,16 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
             except Exception as e:
                 logger.warning("run_attribution_job: stats fetch %s failed: %s", sid, e)
                 series[sid] = []
-        hourly = _stitch_hourly_energy(series, list(sensor_ids or []))
+        src_of: dict = {}
+        hourly = _stitch_hourly_energy(series, list(sensor_ids or []), sources=src_of)
+        # The hours as HA's recorder gave them, kept as hours (soft delete design §2): the
+        # split below is by the house import the blocks hold now, and is redone from these.
+        try:
+            kept = get_store().record_recorder_hours(device_meter_id, "import", hourly, src_of)
+            logger.info("run_attribution_job: device=%s kept %d recorder hours",
+                        device_meter_id, kept)
+        except Exception as e:
+            logger.warning("run_attribution_job: keeping recorder hours failed: %s", e)
         hours = sorted(hourly.keys())          # oldest first
         # Seam: where this device's REAL (live/imported) history begins in EMT.
         # Attribution fills up to — but not into — that boundary so the
@@ -4369,7 +4384,8 @@ def _amend_provisional_sub_meter_blocks(ha: HAClient, current_block: dict) -> No
             _apply_pass2(full_block)
 
             try:
-                append_block_replace(full_block)
+                # Only the amended device is HA's new figure; the others are as stored.
+                append_block_replace(full_block, ha_meters=[meter_name])
                 logger.info(
                     "_amend_provisional: block %s → %s amended for %s",
                     block_start_iso, block_end_iso, meter_name,
