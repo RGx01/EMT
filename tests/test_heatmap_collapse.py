@@ -2,8 +2,9 @@
 Issues first: the heatmap folds the days with nothing to look at (heatmap issues design §3, §6 (a),
 (e), decided 17 Oct 2026, the user).
 
-"Issues only" folds each run of two or more clean days into one row, which a click (or a tap, or
-the menu) expands. An ISSUE is anything not green except CSV history and `none` — on the Import
+"Issues only" folds each run of clean days into one row, which a click (or a tap, or the menu)
+expands — a single clean day too (20 Oct 2026, the user: one left as a row between two days with
+issues read as a day with issues; until then a fold was two or more). An ISSUE is anything not green except CSV history and `none` — on the Import
 bill teal, blue, the ambers, red and missing; on the Export bill `no_agreement`, `waiting`,
 `overdue` and missing; on the energy views only missing. One rule (`isIssue`) for the fold and the
 "To look at" totals, which counted amber and red only (rank >= 2) and now count the same issues.
@@ -46,11 +47,16 @@ class TheIssueRule(unittest.TestCase):
 
 class TheFolds(unittest.TestCase):
 
-    def test_runs_of_two_or_more_clean_days_fold(self):
+    def test_every_run_of_clean_days_folds_a_single_day_too(self):
         body = _fn("foldRows")
         self.assertIn("if (!state.collapse) return days;", body)
-        self.assertIn("run.length >= 2", body)
+        self.assertIn("if (run.length && !state.expanded[", body)
+        self.assertNotIn("run.length >= 2", body)
         self.assertIn("isIssue(c, m)", body)
+
+    def test_a_one_day_fold_says_so(self):
+        self.assertIn("f.n + (f.n === 1 ? ' day' : ' days') + ' with nothing to look at (", _fn("foldText"))
+        self.assertIn("(a === b ? a : a + '\\u2013' + b) + ' ' + mo", _fn("foldLabel"))
 
     def test_a_fold_carries_its_days_half_hours(self):
         self.assertIn("starts: starts", _fn("foldRows"))

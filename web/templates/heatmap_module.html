@@ -380,15 +380,15 @@ window.EMTHeatmap = (function () {
   }
 
   // ── issues first: runs of days with nothing to look at fold into one row (§3) ──
-  // With "Issues only" on, each run of two or more clean days becomes a fold, which a click
-  // expands. A fold carries its days' half-hours, so a drag that starts or ends on one covers them.
+  // With "Issues only" on, each run of clean days becomes a fold, which a click expands — a single
+  // clean day too (20 Oct 2026, the user: a lone clean day left as a row read as a day with issues). A fold carries its days' half-hours, so a drag that starts or ends on one covers them.
   function foldRows(p, key, days) {
     p.folds = {};
     if (!state.collapse) return days;
     var m = state.metric, out = [], run = [];
     function flush() {
       var oldest = run[run.length - 1], newest = run[0];
-      if (run.length >= 2 && !state.expanded[key + '|' + oldest + '|' + newest]) {
+      if (run.length && !state.expanded[key + '|' + oldest + '|' + newest]) {
         var id = 'fold:' + oldest + ':' + newest, starts = [];
         run.forEach(function (d) { p.grid[d].slots.forEach(function (c) {
           if (c && c.starts) starts = starts.concat(c.starts); }); });
@@ -409,10 +409,11 @@ window.EMTHeatmap = (function () {
   function rowOf(p, k) { return (p.folds && p.folds[k]) || p.grid[k]; }
   function foldLabel(f) {
     var a = +f.from.slice(8), b = +f.to.slice(8), mo = monthLabel(f.key).split(' ')[0];
-    return a + '\u2013' + b + ' ' + mo;
+    return (a === b ? a : a + '\u2013' + b) + ' ' + mo;
   }
   function foldText(f) {
-    return f.n + ' days with nothing to look at (' + foldLabel(f) + ') \u2014 click to show them';
+    return f.n + (f.n === 1 ? ' day' : ' days') + ' with nothing to look at (' + foldLabel(f) +
+      ') \u2014 click to show ' + (f.n === 1 ? 'it' : 'them');
   }
   function expandFold(f) {
     state.expanded[f.key + '|' + f.from + '|' + f.to] = true;
