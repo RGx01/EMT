@@ -12275,11 +12275,12 @@ def bill_split_held(store) -> tuple:
 
 
 def _drain_asks(slot: str) -> bool:
-    """Whether the bill drain asks for an imported half-hour's bill: it lies in an IOG-SMB
-    window, above the ask floor (`run_measured_history_drain` walks those with imported history
-    included, `_measured_history_backlog`'s `include_imported=smb`)."""
-    for vf, vt, smb in _intelligent_windows():
-        if smb and _ask_floor(vf) <= slot and (vt is None or slot < vt):
+    """Whether the bill drain asks for a no-cost imported half-hour's bill: it lies in an
+    Intelligent window, above the ask floor. On IOG-SMB the drain asks for all imported history;
+    on the others for the half-hours the import got no cost for (`_ASKED_OFF_SMB_SQL`) — so for
+    these, on every Intelligent tariff (20 Oct 2026, the user)."""
+    for vf, vt, _smb in _intelligent_windows():
+        if _ask_floor(vf) <= slot and (vt is None or slot < vt):
             return True
     return False
 
@@ -12288,10 +12289,10 @@ def bill_no_cost(store) -> tuple:
     """(given_up, imported, asked): the half-hours whose bill was asked for 30 days unanswered (no longer
     asked), and the API-imported ones Octopus gave no cost for at import that nothing asks for
     again. Both keep EMT's kWh × rate; the Import bill hatches them (19 Oct 2026, the user).
-    An imported one inside an IOG-SMB window is not among them: the bill drain asks for it, as for
-    a live half-hour, so it waits for its bill until given up (staging, 20 Oct 2026 — 21 Jul,
-    deleted and refilled from Octopus, read hatched while the drain was still to ask) — `asked`
-    holds those. Read-only — the give-up is not marked here."""
+    An imported one inside an Intelligent window is not among them: the bill drain asks for it,
+    as for a live half-hour, so it waits for its bill until given up (staging, 20 Oct 2026 — 21
+    Jul, deleted and refilled from Octopus, read hatched while the drain was still to ask; every
+    Intelligent tariff, the user, the same day) — `asked` holds those. Read-only — the give-up is not marked here."""
     mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan")
     given_up = set()
     if mpan:
@@ -13218,7 +13219,8 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
     # goes quiet by itself. A half-hour outside every window is not the drain's.
     # Every Intelligent agreement's window (18 Oct 2026): IOG-SMB for the breakdown, the others
     # for the billed cost (`bill_kind_at` chooses per half-hour). Off IOG-SMB, imported history
-    # is not asked: an API import already holds Octopus's billed cost.
+    # is not asked — an API import already holds Octopus's billed cost — except a half-hour the
+    # import got no cost for (`import_no_cost`; 20 Oct 2026, the user), asked as live history is.
     for w_from, w_to, w_smb in _intelligent_windows():
         floor = _ask_floor(w_from)                 # no further back than Octopus keeps
         cutoff = min(now_cut, w_to) if w_to else now_cut

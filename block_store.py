@@ -7748,6 +7748,13 @@ class BlockStore:
             return float(row["kwh"])
         return None
 
+    # Off IOG-SMB the drain asks for live history's bill, and for an API-imported half-hour only
+    # where the import got no cost from Octopus (`import_no_cost`): the rest already hold Octopus's
+    # billed cost (20 Oct 2026, the user: on every Intelligent tariff only Octopus's cost is final).
+    _ASKED_OFF_SMB_SQL = (
+        "(b.source IS NULL OR b.source NOT LIKE 'imported%' OR b.block_start IN "
+        "(SELECT j.key FROM kraken_state k, json_each(k.value) j WHERE k.key = 'import_no_cost'))")
+
     def get_settleable_blocks(self, floor: str, after: str, before: str,
                               limit: int,
                               meter_id: str = "electricity_main", *,
@@ -7760,14 +7767,15 @@ class BlockStore:
         Collapsing `floor` and `after` loses the paging and the drain re-reads the
         same page forever.
 
-        `include_imported=False`: live history only — an API import already holds Octopus's
-        billed cost, so off IOG-SMB there is nothing to ask for it (18 Oct 2026).
+        `include_imported=False`: off IOG-SMB — live history, and the API-imported half-hours
+        Octopus gave the import no cost for (`_ASKED_OFF_SMB_SQL`); the other imported ones
+        already hold Octopus's billed cost (18 Oct 2026; the no-cost ones, 20 Oct 2026).
         """
         rows = self._conn.execute(
             "SELECT b.block_start FROM blocks b WHERE b.meter_id = ? "
             "  AND b.imp_kwh > 0 "
             "  AND " + self._SETTLEABLE_SQL + " "
-            + ("" if include_imported else "  AND (b.source IS NULL OR b.source NOT LIKE 'imported%') ") +
+            + ("" if include_imported else "  AND " + self._ASKED_OFF_SMB_SQL + " ") +
             "  AND b.block_start >= ? AND b.block_start > ? AND b.block_start < ? "
             "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
             "  AND NOT EXISTS (SELECT 1 FROM measured_cost mc WHERE mc.slot_start = b.block_start) "
@@ -7822,7 +7830,7 @@ class BlockStore:
             "SELECT COUNT(*) FROM blocks b WHERE b.meter_id = ? "
             "  AND b.imp_kwh > 0 "
             "  AND " + self._SETTLEABLE_SQL + " "
-            + ("" if include_imported else "  AND (b.source IS NULL OR b.source NOT LIKE 'imported%') ") +
+            + ("" if include_imported else "  AND " + self._ASKED_OFF_SMB_SQL + " ") +
             "  AND b.block_start >= ? AND b.block_start < ? "
             "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
             "  AND NOT EXISTS (SELECT 1 FROM measured_cost mc WHERE mc.slot_start = b.block_start)"
