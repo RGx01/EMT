@@ -420,7 +420,7 @@ class TestSchema(unittest.TestCase):
         self.assertIn("blocks", tables)
         self.assertIn("config_periods", tables)
         self.assertIn("meters", tables)
-        self.assertIn("reads", tables)
+        self.assertNotIn("reads", tables)          # retired 20 Oct 2026
         self.assertIn("store_meta", tables)
         store.close()
 
@@ -837,7 +837,7 @@ class TestSchema(unittest.TestCase):
         indexes = {r["name"] for r in cur.fetchall()}
         self.assertIn("idx_blocks_start", indexes)
         self.assertIn("idx_blocks_meter", indexes)
-        self.assertIn("idx_reads_captured", indexes)
+        self.assertNotIn("idx_reads_captured", indexes)      # with the `reads` table
         self.assertNotIn("idx_blocks_date", indexes)
         self.assertNotIn("idx_blocks_ym", indexes)
         store.close()
@@ -1580,98 +1580,8 @@ class TestLocalDate(unittest.TestCase):
         self.assertEqual(len(blocks_28), 0)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Tests: reads (Phase 2+ table, Phase 1 just verifies table exists and works)
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestReads(unittest.TestCase):
-
-    def setUp(self):
-        self.store = new_store()
-        self.store.insert_config_period(EXAMPLE_CONFIG)
-
-    def tearDown(self):
-        self.store.close()
-
-    def test_insert_read(self):
-        self.store.insert_read(
-            meter_id="electricity_main",
-            channel="import",
-            captured_at="2026-03-01T06:00:00",
-            reading_kwh=1000.5,
-            rate=0.245,
-        )
-        reads = self.store.get_reads_for_range(
-            datetime(2026, 3, 1), datetime(2026, 3, 1, 23, 59)
-        )
-        self.assertEqual(len(reads), 1)
-        self.assertAlmostEqual(reads[0]["reading_kwh"], 1000.5, places=4)
-
-    def test_read_block_id_initially_null(self):
-        self.store.insert_read(
-            meter_id="electricity_main",
-            channel="import",
-            captured_at="2026-03-01T06:00:00",
-            reading_kwh=1000.5,
-        )
-        reads = self.store.get_reads_for_range(
-            datetime(2026, 3, 1), datetime(2026, 3, 2)
-        )
-        self.assertIsNone(reads[0]["block_id"])
-
-    def test_link_reads_to_block(self):
-        # Insert a block and some reads
-        self.store.append_block(make_block("2026-03-01T06:00:00"))
-        for i in range(6):
-            ts = (datetime(2026, 3, 1, 6, 0) + timedelta(minutes=5 * i)).isoformat()
-            self.store.insert_read("electricity_main", "import", ts, 1000.0 + i * 0.1)
-
-        # Get the block's DB id
-        cur = self.store._conn.execute(
-            "SELECT id FROM blocks WHERE block_start = '2026-03-01T06:00:00'"
-        )
-        block_db_id = cur.fetchone()["id"]
-
-        linked = self.store.link_reads_to_block(
-            block_start="2026-03-01T06:00:00",
-            block_end="2026-03-01T06:30:00",
-            block_id=block_db_id,
-        )
-        self.assertEqual(linked, 6)
-
-        reads = self.store.get_reads_for_block(block_db_id)
-        self.assertEqual(len(reads), 6)
-        for r in reads:
-            self.assertEqual(r["block_id"], block_db_id)
-
-    def test_get_reads_for_range_meter_filter(self):
-        self.store.insert_read("electricity_main", "import",
-                               "2026-03-01T06:00:00", 1000.0)
-        self.store.insert_read("zappi_ev", "import",
-                               "2026-03-01T06:00:00", 200.0)
-        reads = self.store.get_reads_for_range(
-            datetime(2026, 3, 1), datetime(2026, 3, 2),
-            meter_id="electricity_main"
-        )
-        self.assertEqual(len(reads), 1)
-        self.assertEqual(reads[0]["meter_id"], "electricity_main")
-
-    def test_purge_reads_older_than(self):
-        from datetime import timezone
-        # Insert an old read
-        old_ts = "2020-01-01T00:00:00"
-        self.store.insert_read("electricity_main", "import", old_ts, 1000.0)
-        # Insert a recent read
-        recent_ts = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-        self.store.insert_read("electricity_main", "import", recent_ts, 1001.0)
-
-        deleted = self.store.purge_reads_older_than(days=30)
-        self.assertEqual(deleted, 1)
-
-        reads = self.store.get_reads_for_range(
-            datetime(2019, 1, 1), datetime(2021, 1, 1)
-        )
-        self.assertEqual(len(reads), 0)
+# TestReads removed 20 Oct 2026 with the `reads` table (v4 2.0.0's raw-sample table, never written):
+# HA's data is kept at the half-hour, in `ha_reads` (tests/test_ha_reads.py).
 
 
 # ─────────────────────────────────────────────────────────────────────────────

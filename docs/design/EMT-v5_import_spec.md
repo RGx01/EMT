@@ -1382,7 +1382,8 @@ silently stops testing anything the day v4 reaches .15.
    subscribes to sensors and creates no entities or statistics, so the one shared namespace
    `instance.py` does not arbitrate is never entered. Two add-ons run side by side indefinitely with
    no contention beyond the `/share` backup directory, which `instance.py` already resolves.
-7. ~~**`reads`**~~ **Closed 19 Sep 2026: DROP — and it is not "transient", it is dead.** Traced in
+7. ~~**`reads`**~~ **Closed 19 Sep 2026: DROP — and it is not "transient", it is dead.** (v5 has no
+   `reads` since 20 Oct 2026; the rule stays, for the v4 source's.) Traced in
    4.5.13 rather than inferred from row counts. The table has a full API —
    `insert_read`, `link_reads_to_block`, `get_reads_for_block`, `get_reads_for_range`,
    `purge_reads_older_than` — and **not one of them has a caller outside the test suite.** Nothing

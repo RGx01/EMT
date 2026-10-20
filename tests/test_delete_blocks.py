@@ -98,24 +98,6 @@ class TestSentinelAndDeviceInclusion(DeleteBlocksBase):
 
 class TestCascade(DeleteBlocksBase):
 
-    def test_reads_cascade_and_no_fk_error(self):
-        keep_id = self._block_id(MAIN, D17)
-        drop_id = self._block_id(MAIN, D16)
-        self.store._conn.execute(
-            "INSERT INTO reads (captured_at, meter_id, channel, reading_kwh, block_id) "
-            "VALUES (?,?,?,?,?)", (_ts(D16), MAIN, "import", 1000.0, drop_id))
-        self.store._conn.execute(
-            "INSERT INTO reads (captured_at, meter_id, channel, reading_kwh, block_id) "
-            "VALUES (?,?,?,?,?)", (_ts(D17), MAIN, "import", 1001.0, keep_id))
-        self.store._conn.commit()
-
-        res = self._delete(D16, D16, meter_id="all")   # must NOT raise (FK on)
-        self.assertEqual(res["reads_deleted"], 1)
-
-        remaining = self.store._conn.execute(
-            "SELECT block_id FROM reads").fetchall()
-        self.assertEqual([r["block_id"] for r in remaining], [keep_id])
-
     def test_generation_mix_cascade(self):
         drop_id = self._block_id(MAIN, D16)
         keep_id = self._block_id(MAIN, D17)
