@@ -120,7 +120,9 @@ takes the shared range too — which the floating header's one scale needs anywa
 3. **Issues first** (§3): the one "is it clean" rule, the collapse toggle, the selection across a
    fold.  *Built 17 Oct 2026*: `ISSUE` / `isIssue` the one rule, which the "To look at" totals now count
    too (they counted amber and red only); "Issues only" in the bar, remembered per browser; a fold
-   is a run of two or more clean days, expanded by a click, a tap or the menu.
+   is a run of two or more clean days, expanded by a click, a tap or the menu. *20 Oct 2026, the
+   user:* any run, a single clean day too — one left as a row between two days with issues read as a
+   day with issues ("1 day with nothing to look at (31 Aug)").
 4. **Then the tools on the selection** (data tools design §1): gap fill on missing half-hours
    first (`EMT-v5_gap_fill_design.md`, 18 Oct 2026) — the black cells are what it fills — then backfill, then delete (with BL-90's soft
    delete), each with the re-fetch's shape: select → preview → apply after a required backup.
