@@ -141,6 +141,7 @@
     "count_stale_band_segments",
     "count_unsettled_blocks",
     "day_fingerprints",
+    "delete_span_preview",
     "device_stitch_sensors",
     "dispatch_house_candidates",
     "distinct_segment_rates",
@@ -267,6 +268,7 @@
     "_snap_to_midnight_utc",
     "_tx",
     "_unsettled_where",
+    "_utc_span_bounds",
     "backup",
     "batch",
     "close"

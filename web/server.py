@@ -7952,6 +7952,12 @@ def api_blocks_delete_preview():
     """
     try:
         data      = request.get_json(force=True) or {}
+        if data.get("from_utc"):
+            # The heatmap's selection (soft delete design §3): half-hours [from_utc, to_utc),
+            # every meter. What the warning needs, from the store.
+            p = store_access.store().delete_span_preview(data.get("from_utc"),
+                                                         data.get("to_utc"))
+            return jsonify(dict(p, ok=True))
         from_date = data.get("from_date", "").strip()
         from_time = data.get("from_time", "00:00").strip() or "00:00"
         to_date   = data.get("to_date", "").strip()
@@ -7975,6 +7981,8 @@ def api_blocks_delete_preview():
         result = store.count_blocks_for_date_range(from_date, to_date, meter_id, from_time, to_time,
                                                    tz_name=_tz_name, reconstructed_only=reconstructed_only)
         return jsonify(result)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
     except Exception as e:
         logger.error("api_blocks_delete_preview: %s", e)
         return jsonify({"error": str(e)}), 500
@@ -7999,7 +8007,7 @@ def api_blocks_delete_status():
 
 @job("delete")
 def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
-                   meter_id, tz_name, reconstructed_only, export_only=False):
+                   meter_id, tz_name, reconstructed_only, export_only=False, utc_span=None):
     """Background date-range delete worker (own thread; survives navigation).
     Same store access as the old synchronous route (off the engine loop thread),
     just with progress reported into _delete_job. `export_only`: the imported export of
@@ -8032,7 +8040,7 @@ def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
         _delete_step("deleting blocks")
         result = store.delete_blocks_for_date_range(
             from_date, to_date, meter_id, from_time_utc, to_time_utc,
-            tz_name=tz_name, reconstructed_only=reconstructed_only)
+            tz_name=tz_name, reconstructed_only=reconstructed_only, utc_span=utc_span)
         # C §2a: a bulk operation bumps the EPOCH rather than moving thousands of
         # day fingerprints. A range delete can span years, and a client holding
         # per-day state needs telling once, not per day.
@@ -8116,6 +8124,14 @@ def api_blocks_delete():
         to_time   = data.get("to_time", "23:59").strip() or "23:59"
         meter_id  = data.get("meter_id") or None
         confirmed = data.get("confirmed", False)
+        # The heatmap's selection (soft delete design §3): whole half-hours [from_utc, to_utc),
+        # every meter, in place of the local dates and times.
+        utc_span = None
+        if data.get("from_utc"):
+            import block_store as _bs
+            utc_span = _bs.BlockStore._utc_span_bounds(
+                (data.get("from_utc"), data.get("to_utc")))[:2]
+            from_date, to_date, meter_id = utc_span[0][:10], utc_span[1][:10], None
         if not from_date or not to_date:
             return jsonify({"error": "from_date and to_date required"}), 400
         if from_date > to_date:
@@ -8156,6 +8172,7 @@ def api_blocks_delete():
             target=_delete_worker,
             args=(from_date, from_time, to_date, to_time,
                   meter_id, _tz_name, reconstructed_only),
+            kwargs={"utc_span": utc_span},
             daemon=True, name="delete").start()
         return jsonify({"ok": True, "status": "running"})
     except ValueError as e:

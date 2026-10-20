@@ -2752,6 +2752,36 @@ class BlockStore:
         ids.extend(r["meter_id"] for r in cur.fetchall())
         return list(dict.fromkeys(ids))
 
+    @staticmethod
+    def _utc_span_bounds(utc_span) -> tuple:
+        """A [from, to) naive-UTC span as the delete's bounds (end exclusive)."""
+        a, b = (str(x or "")[:19] for x in utc_span)
+        try:
+            datetime.fromisoformat(a); datetime.fromisoformat(b)
+        except ValueError:
+            raise ValueError("from_utc and to_utc must be ISO times")
+        if not a < b:
+            raise ValueError("from_utc must be before to_utc")
+        return a, b, False
+
+    def delete_span_preview(self, from_utc: str, to_utc: str) -> dict:
+        """What deleting the half-hours [from_utc, to_utc) takes, for the heatmap's warning (soft
+        delete design §3): the half-hours with any block, the devices among them, and HA's reads
+        there — which the delete leaves, and a refill rebuilds the devices from."""
+        a, b, _ = self._utc_span_bounds((from_utc, to_utc))
+        r = self._conn.execute(
+            "SELECT COUNT(DISTINCT block_start) n, COUNT(*) rows FROM blocks "
+            "WHERE block_start >= ? AND block_start < ?", (a, b)).fetchone()
+        devices = [x[0] for x in self._conn.execute(
+            "SELECT DISTINCT b.meter_id FROM blocks b JOIN meters m ON m.meter_id = b.meter_id "
+            "AND m.config_period_id = b.config_period_id WHERE m.is_sub_meter = 1 AND "
+            "b.block_start >= ? AND b.block_start < ? ORDER BY b.meter_id", (a, b))]
+        kept = self._conn.execute(
+            "SELECT COUNT(*) FROM ha_reads WHERE period_start >= ? AND period_start < ?",
+            (a, b)).fetchone()[0]
+        return {"from_utc": a, "to_utc": b, "half_hours": r["n"] or 0, "rows": r["rows"] or 0,
+                "devices": devices, "ha_reads": kept}
+
     def _delete_range_bounds(self, from_date, to_date, from_time, to_time, tz_name):
         """Resolve the delete/preview window to a CONTIGUOUS UTC datetime span
         [utc_start, utc_end], NOT a per-day time-of-day window.
@@ -2821,7 +2851,7 @@ class BlockStore:
     def delete_blocks_for_date_range(
         self, from_date: str, to_date: str, meter_id: str | None = None,
         from_time: str = "00:00", to_time: str = "23:59", *, tz_name: str,
-        reconstructed_only: bool = False
+        reconstructed_only: bool = False, utc_span: tuple | None = None
     ) -> dict:
         """
         Delete all blocks within [from_date, to_date] local date range (inclusive),
@@ -2838,19 +2868,25 @@ class BlockStore:
         live read-state (current_block + current_reads) is cleared in the same
         transaction so the next block re-anchors from the next live read instead
         of spanning the deleted window.
+
+        `utc_span` (from, to): naive-UTC half-hour starts, [from, to) — the heatmap's selection
+        (soft delete design §3), in place of the local dates and times.
         """
-        if not from_date or not to_date:
-            raise ValueError("from_date and to_date are required")
-        if from_date > to_date:
-            raise ValueError("from_date must not be after to_date")
+        if utc_span:
+            utc_start, utc_end, end_incl = self._utc_span_bounds(utc_span)
+        else:
+            if not from_date or not to_date:
+                raise ValueError("from_date and to_date are required")
+            if from_date > to_date:
+                raise ValueError("from_date must not be after to_date")
 
-        from_time = from_time or "00:00"
-        to_time   = to_time   or "23:59"
+            from_time = from_time or "00:00"
+            to_time   = to_time   or "23:59"
 
-        # CONTIGUOUS span (from_date+from_time .. to_date+to_time), NOT a per-day
-        # time-of-day window (the delete-scoping fix). from_time/to_time are LOCAL.
-        utc_start, utc_end, end_incl = self._delete_range_bounds(
-            from_date, to_date, from_time, to_time, tz_name)
+            # CONTIGUOUS span (from_date+from_time .. to_date+to_time), NOT a per-day
+            # time-of-day window (the delete-scoping fix). from_time/to_time are LOCAL.
+            utc_start, utc_end, end_incl = self._delete_range_bounds(
+                from_date, to_date, from_time, to_time, tz_name)
 
         meter_ids = self._resolve_delete_meters(meter_id)
         where, params = self._block_range_where(
@@ -2975,7 +3011,7 @@ class BlockStore:
     def count_blocks_for_date_range(
         self, from_date: str, to_date: str, meter_id: str | None = None,
         from_time: str = "00:00", to_time: str = "23:59", *, tz_name: str,
-        reconstructed_only: bool = False
+        reconstructed_only: bool = False, utc_span: tuple | None = None
     ) -> dict:
         """
         Preview how many blocks delete_blocks_for_date_range would remove, using
@@ -2989,8 +3025,9 @@ class BlockStore:
 
         # CONTIGUOUS span — identical bounds to the delete so the preview can never
         # disagree with what actually gets removed.
-        utc_start, utc_end, end_incl = self._delete_range_bounds(
-            from_date, to_date, from_time, to_time, tz_name)
+        utc_start, utc_end, end_incl = (self._utc_span_bounds(utc_span) if utc_span else
+                                        self._delete_range_bounds(
+                                            from_date, to_date, from_time, to_time, tz_name))
         meter_ids = self._resolve_delete_meters(meter_id)
         where, params = self._block_range_where(
             utc_start, utc_end, end_incl, meter_ids, reconstructed_only

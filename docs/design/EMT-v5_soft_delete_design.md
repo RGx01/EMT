@@ -216,4 +216,11 @@ a recorder hour kept as the hour (§2).
    the heatmap's runs) and after a CSV import; a device already rebuilding is left to its run. Tests:
    a deleted and refilled half-hour gets its device back with no recorder call; the rest of an hour
    split; the window; the sensor named.
-4. **The heatmap menu** — *Delete…* with §3's preview.
+4. **The heatmap menu** — *built 20 Oct 2026*: *Delete…* on the cell, the day and the drag, on every
+   view, with §3's preview — not one channel (it names the view's channel), the devices, HA's readings
+   kept where `ha_reads` holds any, Re-fetch where the supplier API is connected and the span is
+   inside its two years. `POST /api/blocks/delete/preview` and `/api/blocks/delete` take
+   `from_utc`/`to_utc`, whole half-hours [from, to), every meter, in place of local dates and times
+   (`BlockStore._utc_span_bounds`, `delete_span_preview`); the delete job, its guards and the
+   `pre-delete` backup are today's. Tests: exactly the span, every meter; the tombstone is the span;
+   the count agrees with the delete; HA's reads stay.
