@@ -7,7 +7,7 @@ Replaces the flat blocks.json file with a relational schema that:
 - Separates measurement data (blocks) from configuration (config_periods)
 - Records configuration history so historical bills use the billing_day
   that was active when each block was recorded, not today's value
-- Supports raw sensor reads for future high-resolution charting (Phase 2+)
+- Keeps what HA reported at the half-hour apart from the blocks (`ha_reads`)
 
 Usage::
 
@@ -274,22 +274,6 @@ CREATE INDEX IF NOT EXISTS idx_blocks_meter     ON blocks (meter_id);
 CREATE INDEX IF NOT EXISTS idx_blocks_meter_dt  ON blocks (meter_id, block_start);
 CREATE INDEX IF NOT EXISTS idx_blocks_period    ON blocks (config_period_id);
 
--- Raw sensor reads (Phase 2+): populated by capture_samples().
--- block_id is NULL until the containing block is finalised.
-CREATE TABLE IF NOT EXISTS reads (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    captured_at  TEXT    NOT NULL,
-    meter_id     TEXT    NOT NULL,
-    channel      TEXT    NOT NULL,
-    reading_kwh  REAL    NOT NULL,
-    rate         REAL,
-    block_id     INTEGER,
-    FOREIGN KEY (block_id) REFERENCES blocks(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_reads_captured   ON reads (captured_at);
-CREATE INDEX IF NOT EXISTS idx_reads_block      ON reads (block_id);
-CREATE INDEX IF NOT EXISTS idx_reads_meter_time ON reads (meter_id, captured_at);
 
 -- current_block: single-row table holding the in-progress block state.
 -- Replaces current_block.json as the engine's live state store.
@@ -1400,6 +1384,11 @@ class BlockStore:
         _new = self._conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'blocks'").fetchone() is None
         self._conn.executescript(_DDL)
+        # `reads` (v4 2.0.0's raw-sample table, never written; retired 20 Oct 2026): dropped from
+        # v5's own database. A v4-shaped one keeps it — the importer drops it (rules.DROP_TABLES).
+        if not _new and self._conn.execute(
+                "SELECT 1 FROM store_meta WHERE key = 'emt_schema'").fetchone():
+            self._conn.execute("DROP TABLE IF EXISTS reads")
         if _new:
             with self._conn:
                 self._conn.execute("INSERT OR IGNORE INTO store_meta (key, value) VALUES "
@@ -2926,19 +2915,12 @@ class BlockStore:
             if pr and pr["parent_meter_id"]:
                 recompute_parent = pr["parent_meter_id"]
 
-        reads_deleted = 0
         mix_deleted   = 0
         segments_deleted = 0
         with self._conn:
             if n_blocks:
-                # Children first (reads FK -> blocks(id) with foreign_keys=ON).
+                # Children first (generation_mix FK -> blocks(id) with foreign_keys=ON).
                 # Match by block id via subquery: no huge IN-list, no param cap.
-                cur_r = self._conn.execute(
-                    f"DELETE FROM reads WHERE block_id IN "
-                    f"(SELECT id FROM blocks WHERE {where})",
-                    params,
-                )
-                reads_deleted = cur_r.rowcount
                 cur_m = self._conn.execute(
                     f"DELETE FROM generation_mix WHERE block_id IN "
                     f"(SELECT id FROM blocks WHERE {where})",
@@ -2998,7 +2980,6 @@ class BlockStore:
         return {
             "deleted":                n_blocks,
             "dates":                  n_dates,
-            "reads_deleted":          reads_deleted,
             "generation_mix_deleted": mix_deleted,
             "segments_deleted":       segments_deleted,
             "reseeded":               bool(is_tail and n_blocks),
@@ -3052,7 +3033,7 @@ class BlockStore:
         import can start clean.
 
         Removes: imported blocks (``source LIKE 'imported%'`` — WHOLE blocks, all
-        channels, so no per-meter apportionment is left stale) and their `reads` /
+        channels, so no per-meter apportionment is left stale) and their
         `generation_mix`; the CSV/API **rate derivations**; and the import
         **checkpoints + gap records** in `kraken_state`. Also clears any pending
         region-reconcile prompt and re-arms the carbon backfill. Live/CAD/settled
@@ -3060,9 +3041,6 @@ class BlockStore:
         """
         info = self.count_imported_history()
         with self._conn:
-            reads = self._conn.execute(
-                "DELETE FROM reads WHERE block_id IN "
-                "(SELECT id FROM blocks WHERE source LIKE 'imported%')").rowcount
             mix = self._conn.execute(
                 "DELETE FROM generation_mix WHERE block_id IN "
                 "(SELECT id FROM blocks WHERE source LIKE 'imported%')").rowcount
@@ -3086,7 +3064,7 @@ class BlockStore:
         self.rearm_carbon_backfill()
         logger.info("purge_imported_history: removed %d block(s), %d derivation(s)",
                     info["blocks"], derivs)
-        return {"blocks": info["blocks"], "reads": reads, "generation_mix": mix,
+        return {"blocks": info["blocks"], "generation_mix": mix,
                 "block_segments": segs,
                 "derivations": derivs, "from": info["from"], "to": info["to"]}
 
@@ -3122,9 +3100,6 @@ class BlockStore:
             f"SELECT MIN(block_start) lo, MAX(block_start) hi FROM blocks WHERE {clause}",
             params).fetchone()
         with self._conn:
-            self._conn.execute(
-                "DELETE FROM reads WHERE block_id IN "
-                f"(SELECT id FROM blocks WHERE {clause})", params)
             # P3.1: block_segments keyed by block_start (no FK) — clean before blocks.
             self._conn.execute(
                 f"DELETE FROM block_segments WHERE (block_start, meter_id) IN "
@@ -8834,92 +8809,6 @@ class BlockStore:
         """Total meter-row count — useful for diagnostics."""
         cur = self._conn.execute("SELECT COUNT(*) FROM blocks")
         return cur.fetchone()[0]
-
-    # ── Reads (Phase 2+) ──────────────────────────────────────────────────
-
-    def insert_read(self, meter_id: str, channel: str,
-                    captured_at: str, reading_kwh: float,
-                    rate: Optional[float] = None,
-                    block_id: Optional[int] = None) -> None:
-        """Insert a raw sensor read. block_id is None until block is finalised."""
-        with self._conn:
-            self._conn.execute(
-                """
-                INSERT INTO reads (captured_at, meter_id, channel,
-                                   reading_kwh, rate, block_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-                """,
-                (captured_at, meter_id, channel, reading_kwh, rate, block_id)
-            )
-
-    def link_reads_to_block(self, block_start: str, block_end: str,
-                            block_id: int) -> int:
-        """
-        Set block_id on all reads that fall within [block_start, block_end].
-        Returns the count of reads linked.
-        """
-        with self._conn:
-            cur = self._conn.execute(
-                """
-                UPDATE reads SET block_id = ?
-                WHERE block_id IS NULL
-                  AND captured_at >= ? AND captured_at <= ?
-                """,
-                (block_id, block_start, block_end)
-            )
-        return cur.rowcount
-
-    def get_reads_for_block(self, block_id: int) -> list[dict]:
-        """All reads linked to a specific block."""
-        cur = self._conn.execute(
-            "SELECT * FROM reads WHERE block_id = ? ORDER BY captured_at",
-            (block_id,)
-        )
-        return [dict(r) for r in cur.fetchall()]
-
-    def get_reads_for_range(self, start: datetime, end: datetime,
-                            meter_id: Optional[str] = None) -> list[dict]:
-        """Reads within a datetime range, optionally filtered by meter."""
-        start_iso = start.isoformat()
-        end_iso   = end.isoformat()
-        if meter_id:
-            cur = self._conn.execute(
-                """
-                SELECT * FROM reads
-                WHERE captured_at >= ? AND captured_at <= ?
-                  AND meter_id = ?
-                ORDER BY captured_at
-                """,
-                (start_iso, end_iso, meter_id)
-            )
-        else:
-            cur = self._conn.execute(
-                """
-                SELECT * FROM reads
-                WHERE captured_at >= ? AND captured_at <= ?
-                ORDER BY captured_at
-                """,
-                (start_iso, end_iso)
-            )
-        return [dict(r) for r in cur.fetchall()]
-
-    def purge_reads_older_than(self, days: int) -> int:
-        """
-        Delete reads older than `days` days. Returns count deleted.
-        Block summaries (the blocks table) are never affected.
-        """
-        cutoff = datetime.now(timezone.utc).replace(tzinfo=None)
-        from datetime import timedelta
-        cutoff -= timedelta(days=days)
-        cutoff_iso = cutoff.isoformat()
-        with self._conn:
-            cur = self._conn.execute(
-                "DELETE FROM reads WHERE captured_at < ?", (cutoff_iso,)
-            )
-        deleted = cur.rowcount
-        if deleted:
-            logger.info("purge_reads_older_than: deleted %d reads older than %s", deleted, cutoff_iso)
-        return deleted
 
 
 # ─────────────────────────────────────────────────────────────────────────────

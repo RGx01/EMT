@@ -76,8 +76,8 @@ SKIP_DIRS = {"__pycache__", "tests", "docs", "screenshots", "web/templates", "ve
 # `store_types.py` is generated: it binds every read method of BlockStore as a
 # class attribute (`get_meta = _BS.get_meta`). Scanning it marked 25 genuinely
 # dead names as reachable — including `get_reads_for_block` and
-# `get_reads_for_range`, two of the five `reads`-table methods §4 documents as
-# unreachable. A generated mirror of an API is not a caller of it, any more than
+# `get_reads_for_range`, two of the five `reads`-table methods §4 documented as
+# unreachable (deleted with the table, 20 Oct 2026). A generated mirror of an API is not a caller of it, any more than
 # `tests/` is, and leaving it in would have quietly hollowed out the baseline.
 SKIP_FILES = {"store_types.py"}
 

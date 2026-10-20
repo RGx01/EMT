@@ -85,9 +85,15 @@ class TestAgreesWithHandEstablishedCases(unittest.TestCase):
                    "total_cost", "blended_rate", "attribution_kwh",
                    "attribution_cost", "attribution_rate")
 
-    def test_reads_table_api_is_unreachable(self):
-        self._dead("insert_read", "link_reads_to_block", "get_reads_for_block",
-                   "get_reads_for_range", "purge_reads_older_than")
+    def test_the_reads_table_api_is_gone(self):
+        """The five `reads`-table methods the tool traced dead, deleted 20 Oct 2026 with the table
+        (v4 2.0.0's raw-sample table, never written; HA's data is kept in `ha_reads`)."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "block_store.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        for gone in ("def insert_read(", "def link_reads_to_block(", "def get_reads_for_block(",
+                     "def get_reads_for_range(", "def purge_reads_older_than("):
+            self.assertNotIn(gone, src, "%s came back" % gone)
 
     # `_format_billing` was the superseded-card-formatter case; it was deleted on 6 Oct 2026
     # (a fourth copy of the Direct-import subtraction, architecture §4).
@@ -126,15 +132,13 @@ class TestAgreesWithHandEstablishedCases(unittest.TestCase):
         """`store_types.py` binds every read method of BlockStore as a class
         attribute. Scanning it marked 25 genuinely dead names reachable —
         including `get_reads_for_block` and `get_reads_for_range`, two of the five
-        `reads`-table methods §4 documents as dead. A generated mirror of an API
-        is not a caller of it.
+        `reads`-table methods §4 documented as dead (deleted 20 Oct 2026, with the
+        table). A generated mirror of an API is not a caller of it.
 
         Caught by the ratchet when the file was added, which is the ratchet
         earning its place: the failure mode was a baseline that silently got 25
         names smaller and stopped protecting them.
         """
-        self._dead("get_reads_for_block", "get_reads_for_range", "insert_read",
-                   "link_reads_to_block", "purge_reads_older_than")
         # `tombstoned_slots_in` was in this list until the heatmap's gap fill (gap fill design §2,
         # 18 Oct 2026) began to call it, from `engine.gap_fill_plan`.
         self._dead("get_generation_mix")

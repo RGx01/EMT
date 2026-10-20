@@ -976,7 +976,8 @@ workstreams that depend on them start.
       far earlier date than "replaces v4 for daily use", and decides how much of B–D is pre-release.
 - [x] **Is the `reads` table safe to drop?** **Yes — it is dead, not transient** (19 Sep 2026).
       Its five store methods have no caller outside tests; nothing has ever written a row. Goes in
-      the unwired-paths inventory, not the import question list. *(E)*
+      the unwired-paths inventory, not the import question list. *(E)* **Dropped 20 Oct 2026**: the
+      table and its methods are gone; v5's own database drops its empty one on open.
 - [x] **Does anything read the DB off the engine thread?** **No** (19 Sep 2026). v4's rule is
       offload network/CPU, keep DB access on the loop thread; the two workers that do touch SQLite
       each own their connection. v5's `store()` makes that structural instead of comment-enforced.

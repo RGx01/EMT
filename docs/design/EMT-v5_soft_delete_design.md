@@ -33,7 +33,7 @@ This is the delete tool of the data tools design's selection menu (§1, BL-88): 
 **The delete** (`POST /api/blocks/delete` → `_delete_worker`, `@job("delete")`, server.py ~7889):
 preempts a running import, takes a required `pre-delete` backup, then
 `BlockStore.delete_blocks_for_date_range` (block_store.py ~2740) deletes whole **rows** in one
-transaction — `reads` (always empty: never written, ROADMAP 19 Sep 2026), `generation_mix`,
+transaction — `reads` (always empty, never written; retired 20 Oct 2026), `generation_mix`,
 `block_segments`, `blocks` — and writes a tombstone. It
 never blanks a column, and never touches `measured_cost` (the cached bills, keyed by slot, MPAN and
 direction). It bumps the data epoch.
@@ -112,10 +112,13 @@ within its 6-dp rounding), and a lone half-hour — its partner had no house blo
 only where the device has no row) — is kept as a 30-minute `recorder` row. Imported blocks give nothing: they are not HA's. The staging and Pi
 databases take it by importing their backups again.
 
-**The `reads` table** (`block_store.py` ~256) is not this: keyed on `block_id` and deleted with its
-block (~2872), and never written (ROADMAP, 19 Sep 2026). It is retired in a PR of its own (20 Oct
-2026): its five methods are the reachability tool's fixtures for dead code
-(`tests/test_reachability_tool.py`), so that tool's tests change with it.
+**The `reads` table** was not this: keyed on `block_id` and deleted with its block, and never
+written (ROADMAP, 19 Sep 2026). v4 2.0.0 made it for raw samples — within-block charting, auditing a
+block, mid-block rates, gas (v4's `SQLITE_MIGRATION_PLAN.md`) — and 2.1.0 used `current_reads`
+instead. **Retired 20 Oct 2026** in a PR of its own: v5 creates none, its own database drops the
+empty one on open, and a v4 database keeps its one for the importer, which drops it
+(`rules.DROP_TABLES`). Its five methods were the reachability tool's dead-code fixtures; that test
+now checks they are gone.
 
 **Why not the shelf** (18–19 Oct, dropped 20 Oct): a shelf copied deleted rows — cost, bands, carbon
 and mix with them, all of which EMT derives again — and needed *Restore*, *Delete permanently* and a
@@ -204,7 +207,7 @@ a recorder hour kept as the hour (§2).
    days rounded out; the poll does not refill it; the overlay does.
 2. **`ha_reads`** (§2) — *built 20 Oct 2026*: the table; written at finalise, at a provisional
    device's amendment and by the rebuild; a device delete removes it; import transform 7 (spec v24,
-   gate `ha_reads`). `reads` is retired separately (§2). Tests: a live half-hour and a recorder hour land; a block
+   gate `ha_reads`). `reads` is retired separately (§2; done 20 Oct 2026). Tests: a live half-hour and a recorder hour land; a block
    delete leaves them; a device delete removes them; the transform's pair sums back to the hour.
 3. **The rebuild reads it** — *built 20 Oct 2026*. Device History's job walks the hours `ha_reads`
    holds as well as those it fetches (a fetch wins an hour). A half-hour HA recorded live goes back
