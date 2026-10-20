@@ -201,6 +201,7 @@ class TheAttribution(unittest.TestCase):
         store = mock.MagicMock()
         store.get_parent_meter_id.return_value = "electricity_main"
         store.get_device_live_coverage_start.return_value = None
+        store.ha_reads_for.return_value = ({}, {})
         seen = {}
 
         async def _drive():
