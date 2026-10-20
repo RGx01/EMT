@@ -96,8 +96,8 @@ long-term hourly statistics.
 
 *Corrected 19 Oct 2026: the `reads` table has never been written (ROADMAP, 19 Sep 2026: "dead, not
 transient"), so a delete loses no samples — HA's data is kept at the half-hour, as the live blocks
-and their start and end registers, and those are what a delete loses. The soft delete design shelves
-exactly those (§2).*
+and their start and end registers, and those are what a delete loses. The soft delete design keeps
+exactly those in a table of their own, which a delete leaves alone (§2, 20 Oct 2026).*
 
 **Direction.** *Delete* hides; *Delete permanently* removes.
 

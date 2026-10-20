@@ -1,27 +1,27 @@
-# EMT v5 — Soft delete, and deleting an imported export
+# EMT v5 — HA's reads kept apart, deleting half-hours, and deleting an imported export
 
-*Draft, 18–19 Oct 2026. ROADMAP BL-90 (soft delete, data tools design §3) and the user's idea of
+*Draft, 18–20 Oct 2026. ROADMAP BL-90 (soft delete, data tools design §3) and the user's idea of
 17 Oct 2026, delete by channel. Every claim in §0 was read in the code on `dev`; none is from a
-docstring.*
+docstring. Rewritten 20 Oct 2026: the shelf of 18–19 Oct is dropped (§2's last paragraph says why).*
 
 **Decided so far (the user):**
-- **A shelf, not a flag** (18 Oct, §2).
+- **HA's reads are kept in a table of their own** (20 Oct, §2). What HA reported for a meter or a
+  device — a half-hour recorded live, or an hour from HA's recorder — is written once and kept; a
+  block is built from it, and a delete of blocks leaves it alone. Only a device delete removes a
+  device's reads. This replaces the shelf (18–19 Oct) and *Restore* / *Delete permanently*: the
+  refill is the restore.
+- **An hour from the recorder is kept as the hour** (20 Oct, §2): the split into half-hours by the
+  house's import shape (`_split_hour_to_blocks`) runs whenever the blocks are written, against the
+  house import they hold then.
 - **No general per-channel delete** (19 Oct). Tracing it showed its cost: a channel on the tombstone,
   three writers taught to honour it, a half-hour's `source` being the block's and not a channel's,
   and the devices, standing charge and carbon to settle. Its use cases mostly have other answers
   (§1). What is left is narrow: **deleting the export of imported CSV or PDF history** (§4),
-  with a required backup and no shelf.
-- **Deleting the main import shelves the devices with it** (18 Oct) — now simply the whole
-  half-hour, all meters, as today's delete.
+  with a required backup.
+- **Deleting half-hours deletes them whole** — every meter, both channels — as today's delete (18 Oct).
 - **A deleted imported export reads grey on the Export bill, as "no export"** (19 Oct): on CSV history
   EMT cannot tell an export that was never recorded from one that was nothing.
-- **Only data recorded live from HA is shelved** (19 Oct, §2). An import can be wrong or coarse, and
-  HA's data at its half-hour resolution — the block, with HA's registers at its edges — is what a
-  later rebuild works from and cannot be got back; imported data and Device History's rebuild can.
-  Shelved blocks keep their provenance: `source`, `derivation_id`, config period, and the sensor
-  (`EMT-v5_device_sensors_design.md` §7).
-- **(a)–(c) of §5** (19 Oct): shelved HA data is kept until *Delete permanently*, a refill
-  notwithstanding; v4 stays as it is; an old delete is listed as deleted permanently.
+- **v4 stays as v4** (19 Oct): a restore carries its tombstones over as they are.
 
 This is the delete tool of the data tools design's selection menu (§1, BL-88): *select → preview
 (nothing written) → apply after a required safety backup → a result that says what happened.*
@@ -67,46 +67,77 @@ The carbon backfill selects on `carbon_intensity_g IS NULL`, not on `carbon_g`.
 | **an imported export wrong — a third-party or FIT export CSV, a bill's reconstructed export — over import that is fine, and outside what Octopus can re-fetch** (no export feed, or older than its two years) | **delete the imported export** (§4), overlay the corrected file |
 | live or settled data wrong beyond Octopus's two years | delete the whole half-hours, re-import from CSV or PDF |
 
-## 2. The shelf
+## 2. HA's reads, kept apart
 
-**What it keeps: what only HA had.** HA's data is kept at the half-hour — a live block's kWh and
-HA's register at its start and end; the samples within the half-hour were never kept (§0). So the
-shelf holds a deleted half-hour's **live-recorded rows** — the main meter's and the devices' whose
-`source` is NULL (recorded live) or `kraken_api` (recorded live, then settled by Octopus: the kWh is
-Octopus's, the registers HA's) — with their `block_segments` and `generation_mix`. Rows from an
-import (`imported%`) or rebuilt by Device History (`recorder_attributed`) are deleted permanently,
-after the required backup, as today: their source can give them again. On the user's prod-dev
-database (28 Aug 2026) the live-recorded rows are ~16,300 of ~133,000.
+**What only HA had.** HA's data is kept at the half-hour — a live block's kWh and HA's register at
+its start and end; the samples within the half-hour were never kept (§0). Device History's rebuild
+gets less: HA's recorder keeps its five-minute statistics about ten days, so the rebuild asks for
+**hours** (`get_statistics(..., period="hour")`, engine ~3726 and ~3789) and splits each hour
+between its half-hours by the house's import (`_attribute_hour` → `_split_hour_to_blocks`, engine
+~3471–3590): a charging burst lands in the half-hour it happened, and an hour the house imported
+nothing is split evenly. Today both live only on the blocks, so deleting a block loses them — and
+1 Apr on staging (19 Oct) showed it: a gap fill writes the main meter only, and the devices' rows
+were gone.
 
-**The tables:** `shelf_blocks`, `shelf_segments`, `shelf_generation_mix` (the same columns, plus
-`shelf_id`), and `shelves` (`shelf_id, meter_id, [start_utc, end_utc), created_at, reason,
-restored_at, purged_at`) — what the user sees and restores.
+**The table** (`ha_reads`; the name settled in PR 2), one row per period HA reported:
 
-**Why not a `deleted_at` flag:** every reader would have to filter it — the reader audit step 5
-needed for 11 columns. With the shelf the live tables hold only live data and **no reader changes**:
-a deleted half-hour is absent, as it is today. The tombstone stays, so the poll and "recover all"
-keep away.
+| column | |
+|---|---|
+| `meter_id` | the main meter or a device — its id |
+| `channel` | `import` / `export` |
+| `period_start`, `minutes` | 30 for a half-hour recorded live; 60 for an hour from the recorder |
+| `sensor_id` | the `device_sensors` entry the figure came from (device sensors design §7) |
+| `sensor_inferred` | 1 where the v4 import named the device's primary, the block having no pointer |
+| `kwh` | as HA reported it |
+| `read_start`, `read_end` | HA's register at the edges, where EMT had them (live); NULL from the recorder |
+| `origin` | `live` or `recorder` |
+| `recorded_at` | when EMT wrote it |
 
-**A refill over shelved data** (decided (a)): the shelf is kept — the refill is Octopus's or a CSV's,
-and the HA rows cannot be got back. *Restore* over a refilled span puts the HA rows back in place of
-the refill, after a backup. *Delete permanently* empties a shelf (its rows deleted, `purged_at`
-set). Today's delete is a soft delete and a purge.
+**Written** where the figure arrives: at finalise, in the same transaction as the block (live); by
+Device History's rebuild, one row per hour fetched (recorder). **Precedence:** a live half-hour is
+never replaced by a recorder hour over it, and a block built where both exist takes the live one.
+
+**Read** by whatever builds a device's block: the rebuild looks in the table before asking HA's
+recorder, and splits a recorder hour by the house import the blocks hold *then* — so after a refill
+from Octopus or a CSV, whose shape may differ from what was deleted, the split follows the new house
+figures. Kept as the hour, the split is never stale.
+
+**Removed** only by a device delete (device sensors design §5): the device's reads go with its rows,
+and the warning says so. A delete of half-hours (§3) and the purge of imported history leave it.
+
+**From v4** (an import transform, not a heal — v5 reads the table from then on): a live block
+(`source` NULL or `kraken_api`) gives a half-hour row with its registers and sensor pointer; a pair
+of `recorder_attributed` half-hours gives back its hour as their sum (the split sums to the hour,
+within its 6-dp rounding), and a lone half-hour — its partner had no house block, or was recorded live (`_attribute_hour` writes
+only where the device has no row) — is kept as a 30-minute `recorder` row. Imported blocks give nothing: they are not HA's. The staging and Pi
+databases take it by importing their backups again.
+
+**The `reads` table** (`block_store.py` ~256) is not this: keyed on `block_id` and deleted with its
+block (~2872), and never written (ROADMAP, 19 Sep 2026). It is retired in PR 2, after v4's archive is
+read for why it was added.
+
+**Why not the shelf** (18–19 Oct, dropped 20 Oct): a shelf copied deleted rows — cost, bands, carbon
+and mix with them, all of which EMT derives again — and needed *Restore*, *Delete permanently* and a
+rule for when a refill consumes it. Kept apart from the start, HA's reads need none of that: the delete
+is unchanged, and refilling the main meter and rebuilding the devices is the restore.
 
 ## 3. Deleting half-hours
 
-From a heatmap selection, *Delete…* deletes **whole half-hours** — every meter, both channels — onto
-the shelf. The preview says so plainly, whichever view the selection was made on:
+From a heatmap selection, *Delete…* deletes **whole half-hours** — every meter, both channels — as
+today, after the required backup. The preview says so plainly, whichever view the selection was made on:
 
 > **Deletes everything in these half-hours, not only the export.** Import, export and the devices'
-> data for N half-hours (from → to) go onto the shelf. Restore puts them back as they were; to
-> replace them, fill from Octopus or a CSV. *If only the export is wrong, Re-fetch from Octopus
-> corrects it without deleting anything.*
+> data for N half-hours (from → to) are deleted. HA's own readings are kept: when the half-hours are
+> filled again from Octopus or a CSV, the devices are rebuilt from them. *If only the export is wrong,
+> Re-fetch from Octopus corrects it without deleting anything.*
 
 (On the Import bill and the energy views it names import first.) The last line is offered only where
 Re-fetch can help: the supplier API connected and the span inside its two years.
 
-*Restore* and *Delete permanently* are on the selection menu over a deleted span, and on a list
-(today's Data Management tombstone list, read from `shelves`).
+**A refill rebuilds the devices.** Today none does — the gap fill, the API import and the CSV import
+write the main meter only, and the devices wait for *Rebuild history* on each card. A refill over
+half-hours where `ha_reads` holds a device's figures starts that device's rebuild for them, from the
+table, with no call to HA's recorder.
 
 ## 4. Deleting an imported export
 
@@ -114,8 +145,8 @@ Re-fetch can help: the supplier API connected and the span inside its two years.
 import) of the main meter, over **whole local days**. Not offered on live or settled data (§1 has
 their answers), nor for import (a wrong imported import is both channels from a CSV: §3).
 
-**What it writes,** in one transaction after a required `pre-delete-export` backup (no shelf — the
-backup is enough, the user decided):
+**What it writes,** in one transaction after a required `pre-delete-export` backup (the backup is
+enough, the user decided):
 
 - `exp_kwh`, `exp_rate`, `exp_cost`, `exp_read_start`, `exp_read_end`, `exp_kwh_api` set NULL;
 - `carbon_g` recomputed from import alone, `imp_kwh × carbon_intensity_g`, where the intensity is
@@ -142,16 +173,15 @@ days rounded out to whole local days and shown.
 
 ## 5. Decided, and left
 
-**(a) Decided (19 Oct 2026, the user):** shelved HA data is kept until *Delete permanently*; a refill
-does not drop it (§2).
+**Decided (19 Oct 2026, the user):** v4 stays as v4 — a restore carries its tombstones over as they
+are. The purge of imported history stays permanent.
 
-**(b) Decided:** v4 stays as v4 — a restore carries its tombstones over as they are, with no shelf.
-The purge of imported history stays permanent (imported data is never shelved, §2).
+**Decided (20 Oct 2026, the user):** HA's reads in a table of their own, removed only with the device;
+a recorder hour kept as the hour (§2).
 
-**(c) Decided:** a delete made before this has no shelf; it is listed as "deleted permanently".
-
-**Proposed, not asked:** no retention limit — a shelf stays until *Delete permanently*. Live-recorded
-rows are a small share of a database (§2).
+**Left for PR 2:** which entry a recorder hour's `sensor_id` names when Device History stitches a
+device's primary and secondaries (`_stitch_hourly_energy`) — the hour's own sensor if the stitch
+can say, else the primary.
 
 ## 6. PRs, if agreed
 
@@ -161,8 +191,11 @@ rows are a small share of a database (§2).
    menu on every view but the Import bill (an install without the API has no Export bill view, and a
    FIT export CSV is the case it is for). Tests: export NULL and import kept; carbon from import alone; live blocks refused; partial
    days rounded out; the poll does not refill it; the overlay does.
-2. **Schema:** the shelf tables (blocks, segments, generation mix); the importer carries tombstones as
-   they are (import spec).
-3. **Soft delete and restore** — today's delete through the shelf; *Restore*; *Delete permanently*.
-4. **The heatmap menu** — *Delete…* with §3's preview; *Restore* / *Delete permanently* on a deleted
-   span.
+2. **`ha_reads`** (§2) — the table; written at finalise and by the rebuild; the import transform
+   from v4 (import spec); `reads` retired. Tests: a live half-hour and a recorder hour land; a block
+   delete leaves them; a device delete removes them; the transform's pair sums back to the hour.
+3. **The rebuild reads it** — Device History's rebuild takes `ha_reads` first, the recorder only for
+   hours it lacks; a refill over half-hours with a device's reads starts that rebuild (§3). Tests: a
+   deleted and refilled half-hour gets its devices back with no recorder call; a recorder hour re-split
+   by a changed house shape.
+4. **The heatmap menu** — *Delete…* with §3's preview.
