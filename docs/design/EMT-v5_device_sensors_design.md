@@ -45,7 +45,7 @@ for this device from the database. This action cannot be undone."
 | action | what it means | its data |
 |---|---|---|
 | **Archive** (`retired_at`) | the device was replaced or removed — EMT stops tracking it from that date | kept, unchanged |
-| **Delete** | the device was wrong (e.g. the wrong sensor) | **permanent** — no shelf, no undo (§5) |
+| **Delete** | the device was wrong (e.g. the wrong sensor) | **permanent** — its rows and its HA reads, no undo (§5) |
 | **Recreate** | after a delete: a new device, the right sensors | its history rebuilt from them (§4) |
 
 ## 2. The model: one primary, secondaries for history
@@ -97,8 +97,8 @@ over the device's list, as the page's own start does (its preflight and backup i
 
 ## 5. A device delete says what is lost
 
-It stays permanent — the shelf of the soft delete design is for a selection's half-hours or channel,
-not a whole device. The warning says what goes, from figures EMT holds:
+It stays permanent, and it is the only thing that removes the device's HA reads (soft delete design §2,
+20 Oct 2026); a delete of half-hours leaves them. The warning says what goes, from figures EMT holds:
 
 > This deletes **N half-hours** of *<device>* recorded from *<primary>* since *<first date>*. EMT
 > can rebuild history from Home Assistant's long-term statistics, which are hourly — not the
@@ -129,10 +129,10 @@ every sample), so the tag goes on the block — as a pointer to the device's ent
 entity id (decided 19 Oct): `imp_sensor_id` and `exp_sensor_id` on `blocks`, referencing
 `device_sensors.id`, written at finalise from the channel's primary for a live-recorded block; NULL
 for one imported, rebuilt by Device History, or recorded with no sensor (the Mini). A rename keeps the
-entry (§3), so the pointer stays true. A block recorded before the columns, when shelved, points at
-its device's primary entry as it is then, marked **inferred**.
+entry (§3), so the pointer stays true. A block recorded before the columns, when its reads are carried into `ha_reads` (soft delete design
+§2), points at its device's primary entry as it is then, marked **inferred**.
 
-It also gives a device delete its warning's sensors (§5) and the soft delete's shelf its tag.
+It also gives a device delete its warning's sensors (§5) and `ha_reads` (soft delete design §2) its tag.
 
 ## 8. PRs
 
