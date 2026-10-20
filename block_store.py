@@ -6329,9 +6329,8 @@ class BlockStore:
 
     def point_block_at_sensor(self, block_start: str, meter_id: str, sensor_id) -> None:
         """A device half-hour put back from `ha_reads` names the sensor that recorded it, not
-        today's primary (the new row's default)."""
-        if sensor_id is None:
-            return
+        today's primary (the new row's default) — or none, `sensor_id` None, where that is not
+        known."""
         with self._conn:
             self._conn.execute("UPDATE blocks SET imp_sensor_id = ? WHERE block_start = ? AND "
                                "meter_id = ?", (sensor_id, block_start, meter_id))

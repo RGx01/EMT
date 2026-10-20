@@ -104,6 +104,16 @@ class TheHour(_Base):
                                kept={S1: self.kept(S1)})
         self.assertEqual(_ev(self.st, S1)["imp_sensor_id"], old)
 
+    def test_an_inferred_sensor_is_not_written_onto_the_block(self):
+        """Staging, 20 Oct 2026: a v4-imported block named no sensor; its read names the primary,
+        inferred. Put back, the block names none, as it was — not a guess at which recorded it."""
+        self.live(S1, 0.4, 5.0, sensor=_id(self.st, "sensor.charger_energy"))
+        self.st._conn.execute("UPDATE ha_reads SET sensor_inferred = 1")
+        self.st._conn.commit()
+        engine._attribute_hour(H, "ev_charger", "electricity_main", None,
+                               kept={S1: self.kept(S1)})
+        self.assertIsNone(_ev(self.st, S1)["imp_sensor_id"])
+
     def test_a_present_device_row_is_never_overwritten(self):
         """GUARD: the per-block guard stands for a kept read too (fails on the parent only by
         the `kept` argument)."""

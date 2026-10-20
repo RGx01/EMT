@@ -449,6 +449,11 @@ rate, and EMT no longer asks Octopus for the cost. Two ways in:
   `import_no_cost` — the block cannot tell, and the reprice queue empties at the next import — and an
   import or repair that gets Octopus's cost takes it off. API-imported history from before the record
   still reads `applied`: nothing tells its reconstructed half-hours apart.
+  *Corrected 20 Oct 2026 (staging):* not inside an IOG-SMB window. There the bill drain asks for
+  imported history's bill (`include_imported=smb`), as it had for 21 Jul before that day was deleted
+  and refilled — so such a half-hour waits for its bill as a live one does (`overdue` past the window,
+  `abandoned` once its 30 days of asking run out; `engine.bill_no_cost`'s third set, `import_asked`).
+  Hatched at once only where nothing asks.
 
 The detail panel says since when EMT has not asked (`no_cost_since`). Found on staging: re-fetching
 such a half-hour returned the kWh with no cost; deleting and re-importing it showed it green although

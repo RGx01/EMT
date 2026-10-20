@@ -3565,8 +3565,12 @@ def _write_device_into_block(block: dict, device_meter_id: str,
     _recompute_pass3_totals(block)
     _recompute_block_carbon(block)
     append_block_replace(block)
-    if live and kept.get("sensor_id") is not None:
-        get_store().point_block_at_sensor(block.get("start"), device_meter_id, kept["sensor_id"])
+    if live:
+        # the sensor that recorded it — none where the read's sensor is only inferred (the v4
+        # import named the primary for a block that named none): the block is put back as it was
+        get_store().point_block_at_sensor(
+            block.get("start"), device_meter_id,
+            None if kept.get("sensor_inferred") else kept.get("sensor_id"))
     return True
 
 
@@ -12270,11 +12274,24 @@ def bill_split_held(store) -> tuple:
     return held, set(wait) - held
 
 
+def _drain_asks(slot: str) -> bool:
+    """Whether the bill drain asks for an imported half-hour's bill: it lies in an IOG-SMB
+    window, above the ask floor (`run_measured_history_drain` walks those with imported history
+    included, `_measured_history_backlog`'s `include_imported=smb`)."""
+    for vf, vt, smb in _intelligent_windows():
+        if smb and _ask_floor(vf) <= slot and (vt is None or slot < vt):
+            return True
+    return False
+
+
 def bill_no_cost(store) -> tuple:
-    """(given_up, imported): the half-hours whose bill was asked for 30 days unanswered (no longer
-    asked), and the API-imported ones Octopus gave no cost for at import (never asked again). Both
-    keep EMT's kWh × rate; the Import bill hatches them (19 Oct 2026, the user). Read-only — the
-    give-up is not marked here."""
+    """(given_up, imported, asked): the half-hours whose bill was asked for 30 days unanswered (no longer
+    asked), and the API-imported ones Octopus gave no cost for at import that nothing asks for
+    again. Both keep EMT's kWh × rate; the Import bill hatches them (19 Oct 2026, the user).
+    An imported one inside an IOG-SMB window is not among them: the bill drain asks for it, as for
+    a live half-hour, so it waits for its bill until given up (staging, 20 Oct 2026 — 21 Jul,
+    deleted and refilled from Octopus, read hatched while the drain was still to ask) — `asked`
+    holds those. Read-only — the give-up is not marked here."""
     mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan")
     given_up = set()
     if mpan:
@@ -12282,11 +12299,13 @@ def bill_no_cost(store) -> tuple:
             given_up = _bill_ask_given_up(_bill_ask(store, mpan), mark=False)
         except Exception:
             given_up = set()
+    imported, asked = set(), set()
     try:
-        imported = set(store.import_no_cost_slots())
+        for s in store.import_no_cost_slots():
+            (asked if _drain_asks(s) else imported).add(s)
     except Exception:
-        imported = set()
-    return given_up, imported
+        imported, asked = set(), set()
+    return given_up, imported, asked
 
 
 def no_cost_since(store, slot: str):
@@ -12295,7 +12314,7 @@ def no_cost_since(store, slot: str):
     from datetime import datetime as _dt, timedelta as _td
     try:
         imp = store.import_no_cost_slots().get(slot)
-        if imp:
+        if imp and not _drain_asks(slot):
             return imp
     except Exception:
         pass
