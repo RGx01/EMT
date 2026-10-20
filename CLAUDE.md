@@ -64,6 +64,7 @@ since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-man
 | `docs/design/EMT-v5_data_tools_design.md` | ROADMAP BL-88–90: the data tools as actions on a heatmap selection, a data-quality strip on Usage Stats, soft delete (draft) |
 | `docs/design/EMT-v5_device_sensors_design.md` | a device's sensors in one place: one primary, secondaries for history, the v5 upgrade moving Device History's sensors in (draft) |
 | `docs/design/EMT-v5_soft_delete_design.md` | BL-90: HA's reads kept in a table of their own (a recorder hour as the hour), whole half-hours deleted from the heatmap, a refill rebuilding the devices; and the one per-channel delete kept, an imported export (draft) |
+| `docs/design/EMT-v5_data_management_design.md` | Data Management rebuilt around the data heatmap: a health strip, the tools on a selection, a Whole history card, Safety & housekeeping in two cards; Charts read-only; corrections on the Billing tab, CAD-only (draft) |
 | `docs/design/EMT-v5_A1_writer_thread_design.md` | ROADMAP §A.1: why commits stall the loop on the SD card, and the writer thread |
 | `docs/ROADMAP.md` | open backlog, priority ordered — nothing in it has shipped |
 | `docs/CONTRIBUTING.md`, `docs/DEVELOPMENT.md` | branch model, PR flow, what a change must carry |
