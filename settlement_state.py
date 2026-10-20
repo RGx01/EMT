@@ -107,10 +107,13 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
             return "overdue"
         return "estimate_dcc" if f.get("imp_kwh_api") is not None else "estimate_cad"
 
-    if f.get("rate_corrected") or f.get("rate_source") == "corrected":
+    if kwh <= 1e-9:
+        # nothing imported: no cost to settle, and no rate to have corrected — a correction made
+        # over a span keeps its flag on the half-hours that drew nothing (staging, 20 Oct 2026:
+        # 21 of 33 corrected half-hours had no kWh, blue, and a re-fetch had nothing to change)
+        bill = "none"
+    elif f.get("rate_corrected") or f.get("rate_source") == "corrected":
         bill = "corrected"
-    elif kwh <= 1e-9:
-        bill = "none"                 # nothing imported: no cost to settle
     elif bill_cost is not None and f.get("rate_source") == "settled":
         if cost is not None and abs(cost - bill_cost) <= _EPS_GBP:
             bill = "applied"
