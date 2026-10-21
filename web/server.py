@@ -4872,6 +4872,8 @@ def _support_summary(store) -> dict:
                  ("coordinator", lambda: _coord.state()),
                  ("bill_ask", lambda: json.loads(store.get_kraken_state("bill_ask") or "{}")),
                  ("missing", lambda: _missing_half_hours(store, _config_timezone())),
+                 ("host", lambda: __import__("support_file").host_info(
+                     DATA_DIR or _eng.DATA_DIR, _supervisor_info())),
                  ("blocks_by_meter_source_month", lambda: [
                      list(r) for r in store._conn.execute(
                          "SELECT meter_id, COALESCE(source, 'live'), substr(block_start, 1, 7), COUNT(*) "
@@ -4881,6 +4883,21 @@ def _support_summary(store) -> dict:
         except Exception as e:
             out[k] = {"error": str(e)}
     return out
+
+
+def _supervisor_info() -> dict:
+    """The Supervisor's /info (the board, the OS, the versions), or {} outside the add-on."""
+    import urllib.request
+    if os.environ.get("EMT_MODE", "supervised") == "standalone":
+        return {}
+    try:
+        req = urllib.request.Request("http://supervisor/info", headers={
+            "Authorization": "Bearer " + os.environ.get("SUPERVISOR_TOKEN", "")})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            return (json.loads(resp.read().decode("utf-8")) or {}).get("data") or {}
+    except Exception as e:
+        logger.info("support file: the Supervisor's info could not be read: %s", e)
+        return {}
 
 
 def _support_dir() -> str:
