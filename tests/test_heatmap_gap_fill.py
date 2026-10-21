@@ -120,12 +120,13 @@ class TheFillHistoryModal(unittest.TestCase):
 
     def test_the_page_itself_on_the_gap(self):
         body = _fn("openFillHistory")
-        self.assertIn("var f = document.createElement('iframe');", body)
-        self.assertIn("apiUrl('/historical-import?embed=1&source='", body)
+        # the modal itself is openEmbedded's since 21 Oct 2026 (Data Management's Whole history too)
+        self.assertIn("var f = document.createElement('iframe');", _fn("openEmbedded"))
+        self.assertIn("openEmbedded('/historical-import?embed=1&source='", body)
         self.assertIn("'&gap_from=' + encodeURIComponent(g.from) + '&gap_to=' + encodeURIComponent(g.to)", body)
 
     def test_closing_it_redraws(self):
-        self.assertIn("refresh();", _fn("openFillHistory"))
+        self.assertIn("refresh(); changed();", _fn("openEmbedded"))
 
     def test_embedded_the_page_has_no_navigation(self):
         base = open(os.path.join(_ROOT, "web", "templates", "base.html"), encoding="utf-8").read()

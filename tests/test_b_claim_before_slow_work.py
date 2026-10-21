@@ -68,8 +68,9 @@ class TheOrderInEachMember(unittest.TestCase):
 
     def test_the_purge(self):
         """GUARD: #70."""
+        # its backup required since 21 Oct 2026 (data management design §1 (4))
         self._before(_fn("_purge_worker"), "set_delete_active(True)",
-                     "_stop_running_import()", '_create_backup_zip(label="pre-purge-import")')
+                     "_stop_running_import()", '_safety_backup("pre-purge-import")')
 
     def test_the_device_delete(self):
         """GUARD: #69 — the wrapper claims, the work (with its backup) follows."""

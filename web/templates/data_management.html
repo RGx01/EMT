@@ -4,11 +4,10 @@
 <div class="topbar">
   <div>
     <h2>Data Management</h2>
-    <div class="sub">Bring data in · safety &amp; housekeeping</div>
+    <div class="sub">Your data, half-hour by half-hour · whole history · safety &amp; housekeeping</div>
   </div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;">
     <button class="btn btn-secondary" id="btn-backup" onclick="doManualBackup()">💾 Backup Now</button>
-    <a href="{{ url_for('fill_history_page') }}" class="btn btn-secondary">📥 Fill History &amp; Gaps</a>
     <a href="{{ url_for('corrections_page') }}" class="btn btn-secondary">🔧 Cost Corrections</a>
     <a href="{{ url_for('delete_blocks_page') }}" class="btn btn-secondary" style="color:var(--danger);">🗑️ Delete Blocks</a>
   </div>
@@ -104,23 +103,38 @@
 <!-- Bring-data-in tools (Historical Import + Device History) now live on the
      "Fill History & Gaps" landing page, linked from the topbar. -->
 
-<!-- ── The data heatmap (data management design §1 (1), PR 1): the data views and every tool on a
-     selection. `?day=` opens a day — Charts' detail panel links here. PR 2 builds the page round it. -->
+<!-- ── Health (data management design §1 (2)): each data view's half-hours to look at, counted with
+     the heatmap's own rule over the whole history; the missing half-hours; the last backup; the
+     database's size. Each figure is a link. -->
+<div class="card" id="dm-health" style="padding:12px 16px;">
+  <div id="dm-health-row" style="display:flex;gap:8px 18px;flex-wrap:wrap;align-items:center;font-size:13px;">
+    <span style="color:var(--muted);">Counting…</span>
+  </div>
+</div>
+
+<!-- ── The data heatmap (§1 (1)): the data views and every tool on a selection. `?day=` opens a
+     day — Charts' detail panel links here. -->
 <div class="card" id="dm-heatmap-card" style="padding:0;overflow:visible;">
   <div id="dm-heatmap"></div>
 </div>
 
-<!-- ── Missing-data nudge (deep-links to the unified backfill flow) ─────────────
-     The full find/fill flow now lives on Historical Import (scope → source →
-     preview → apply). Here we only surface a nudge WHEN gaps exist; loadGapNudge()
-     reveals it. When history is continuous the card stays hidden. -->
-<div class="card" id="gap-nudge" style="display:none;">
-  <div class="card-title">🕳️ Missing Data</div>
-  <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
-    <span id="gap-nudge-text" style="font-size:13px;color:var(--muted);line-height:1.6;"></span>
-    <a href="{{ url_for('historical_import_page') }}" class="btn btn-primary" style="white-space:nowrap;">🩹 Fill gaps →</a>
+<!-- ── Whole history (§1 (4)): the jobs that are not a selection, each Historical Import's own
+     flow as a modal over this page. -->
+<div class="card" id="dm-whole">
+  <div class="card-title">🗂️ Whole history</div>
+  <p style="color:var(--muted);font-size:13px;margin:0 0 12px;line-height:1.6;">
+    For a range, select it on the heatmap above. These work on your history as a whole.
+  </p>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <button class="btn btn-secondary dm-api-only" onclick="dmWhole('api:whole_history', 'Import history from Octopus')">📥 Import history from Octopus</button>
+    <button class="btn btn-secondary" onclick="dmWhole('csv:range', 'Import a CSV')">📄 Import a CSV</button>
+    <button class="btn btn-secondary" onclick="dmWhole('csv:bills', 'Import PDF bills')">🧾 Import PDF bills</button>
+    <button class="btn btn-secondary dm-api-only" onclick="dmWhole('api:gaps', 'Recover every gap')">🩹 Recover every gap</button>
+    <button class="btn btn-secondary" id="dm-purge-btn" style="color:var(--danger);display:none;" onclick="dmPurge()">🗑️ Delete all imported history</button>
   </div>
 </div>
+
+
 
 <!-- Correct & review (settlement source + unsettled blocks) moved to the Cost
      Corrections page — they belong with the other billing/cost tools and only
@@ -136,7 +150,7 @@
 </div>
 
 <!-- ── Backups ──────────────────────────────────────────────────────────────── -->
-<div class="card">
+<div class="card" id="dm-backups">
   <div class="card-title">💾 Backups</div>
   <p style="color:var(--muted);font-size:13px;margin-bottom:16px;line-height:1.7;">
     A backup zip is created automatically before every config save. Backups are stored in
@@ -239,7 +253,8 @@
 document.addEventListener('DOMContentLoaded', function () {
   if (!window.EMTHeatmap) return;
   EMTHeatmap.init(document.getElementById('dm-heatmap'),
-                  {mode: 'data', day: new URLSearchParams(window.location.search).get('day')});
+                  {mode: 'data', day: new URLSearchParams(window.location.search).get('day'),
+                   onChange: function () { if (window.loadHealth) loadHealth(); }});
 });
 
 {% include "_upload_js.html" %}
@@ -797,6 +812,11 @@ function showError(msg) {
   el.textContent = '✕ ' + msg;
   el.classList.add('show');
 }
+function showSuccess(msg) {
+  const el = document.getElementById('alert-success');
+  el.textContent = '✓ ' + msg;
+  el.classList.add('show');
+}
 
 document.addEventListener('DOMContentLoaded', function() {
   loadBackupList();
@@ -819,6 +839,9 @@ function showConfirm(opts) {
   document.getElementById('confirm-message').innerHTML = opts.message || '';
   var ok = document.getElementById('confirm-ok-btn');
   ok.textContent = opts.okLabel || 'Confirm';
+  // a destructive action's button reads as one
+  ok.style.background = opts.danger ? 'var(--danger)' : '';
+  ok.style.borderColor = opts.danger ? 'var(--danger)' : '';
   _confirmCb = opts.onConfirm || null;
   document.getElementById('confirm-overlay').style.display = 'block';
 }
@@ -841,27 +864,106 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
-// ── Billing settlement source ────────────────────────────────────────────────
-// Missing-data nudge: reveal the gap-nudge card only when gaps actually exist,
-// deep-linking to the unified backfill flow on Historical Import (the full
-// find/preview/fill flow lives there now: scope → source → preview → apply).
-function loadGapNudge() {
-  var card = document.getElementById('gap-nudge');
-  if (!card) return;
-  fetch(apiUrl('/api/history-gaps'))
-    .then(function (r) { return r.json(); })
-    .then(function (d) {
-      if (!d.ok || !d.gaps || !d.gaps.length) return;      // continuous history -> stay hidden
-      var hrs = (d.total_slots / 2).toFixed(1);
-      document.getElementById('gap-nudge-text').innerHTML =
-        '<strong>' + d.gaps.length + '</strong> gap' + (d.gaps.length > 1 ? 's' : '')
-        + ' · <strong>' + hrs + ' h</strong> of missing half-hourly data'
-        + (d.api_available ? '' : ' — no supplier API, fill from a CSV') + '.';
-      card.style.display = '';
-    })
-    .catch(function () {});
+// ── Health (data management design §1 (2)) ──────────────────────────────────
+// One call, the whole history: each data view's half-hours by state, counted here with the
+// heatmap's own rule (EMTHeatmap.issueCount) — the missing half-hours count in every view, as in
+// the grid's "To look at" — plus the missing, the last backup and the database's size.
+var _BACKUP_WHAT = {manual: 'made by you', pre_config_save: 'before a settings save',
+  pre_restore: 'before a restore', 'pre-refetch': 'before a re-fetch', 'pre-gap-fill': 'before a gap fill',
+  'pre-attribution': 'before a device rebuild', 'pre-import-sites': 'before a site change',
+  'pre-api-import': 'before an import', 'pre-csv-import': 'before a CSV import',
+  'pre-delete': 'before a delete', 'pre-delete-export': 'before an export delete',
+  'pre-purge-import': 'before deleting imported history', 'pre-delete-device': 'before a device delete'};
+function _hEsc(v) { return String(v == null ? '' : v).replace(/[&<>"]/g, function (c) {
+  return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]; }); }
+function _backupWhat(name) {
+  var m = /^\d{8}T\d{6}_(.+)\.zip$/.exec(name || ''); return m ? (_BACKUP_WHAT[m[1]] || m[1]) : '';
 }
-document.addEventListener('DOMContentLoaded', loadGapNudge);
+function _ago(sec) {
+  var d = Math.max(0, Date.now() / 1000 - sec);
+  return d < 90 ? 'just now' : d < 5400 ? Math.round(d / 60) + ' min ago'
+       : d < 129600 ? Math.round(d / 3600) + ' h ago' : Math.round(d / 86400) + ' days ago';
+}
+function _hChip(html, onclick, tone) {
+  var c = tone === 'bad' ? 'var(--danger)' : tone === 'good' ? 'var(--success, #2e9e5b)' : 'var(--text)';
+  return '<a href="#" class="dm-chip" style="color:' + c + ';text-decoration:none;" onclick="' + onclick +
+         ';return false;">' + html + '</a>';
+}
+function dmShowView(view) {
+  if (window.EMTHeatmap) EMTHeatmap.setMetric(view);
+  document.getElementById('dm-heatmap-card').scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+function loadHealth() {
+  var row = document.getElementById('dm-health-row');
+  if (!row) return;
+  fetch(apiUrl('/api/data-health')).then(function (r) { return r.json(); }).then(function (d) {
+    if (!d.ok) throw new Error(d.error || 'unavailable');
+    var miss = (d.missing || {}).half_hours || 0, out = [];
+    [['bill', 'Import bill'], ['export', 'Export bill']].forEach(function (v) {
+      if (!d.views || !d.views[v[0]]) return;
+      var n = EMTHeatmap.issueCount(v[0], d.views[v[0]]) + miss;
+      out.push(_hChip('<b>' + v[1] + '</b> ' + (n ? n + ' to look at' : 'all clear'),
+                      "dmShowView('" + v[0] + "')", n ? 'bad' : 'good'));
+    });
+    out.push(_hChip('<b>Missing</b> ' + (miss ? miss + ' half-hour' + (miss === 1 ? '' : 's') + ' in ' +
+                    d.missing.gaps + ' gap' + (d.missing.gaps === 1 ? '' : 's') : 'none'),
+                    "dmShowView('presence')", miss ? 'bad' : 'good'));
+    var b = d.last_backup;
+    out.push(_hChip('<b>Last backup</b> ' + (b ? _hEsc(_ago(b.mtime)) +
+                    (_backupWhat(b.name) ? ' (' + _hEsc(_backupWhat(b.name)) + ')' : '') : 'none yet'),
+                    "document.getElementById('dm-backups').scrollIntoView({behavior: 'smooth'})", b ? '' : 'bad'));
+    if (d.db_bytes) out.push('<span><b>Database</b> ' + (d.db_bytes / 1048576).toFixed(0) + ' MB</span>');
+    row.innerHTML = out.join('<span style="color:var(--border);">·</span>');
+  }).catch(function (e) {
+    row.innerHTML = '<span style="color:var(--muted);">Health unavailable: ' + _hEsc(e.message) + '</span>';
+  });
+}
+
+// ── Whole history (§1 (4)) ─────────────────────────────────────────────────────
+// Historical Import's own flows, on a task (?task=), as a modal over this page; a close re-counts.
+function dmWhole(task, title) {
+  EMTHeatmap.openEmbedded('/historical-import?embed=1&task=' + encodeURIComponent(task), title, loadHealth);
+}
+function dmPurge() {
+  fetch(apiUrl('/api/historical/purge-preview')).then(function (r) { return r.json(); }).then(function (p) {
+    if (!p.blocks) { showError('There is no imported history to delete.'); return; }
+    showConfirm({
+      title: 'Delete all imported history',
+      message: 'Deletes all <b>' + p.blocks + '</b> imported half-hour rows (' + _hEsc((p.from || '').slice(0, 10)) +
+               ' → ' + _hEsc((p.to || '').slice(0, 10)) + ') — CSV, PDF bills and the API import — with their ' +
+               'rate derivations and the import\'s checkpoints. Live and settled data are kept. A backup ' +
+               'is taken first; nothing is deleted without it.',
+      okLabel: 'Delete all imported history', danger: true,
+      onConfirm: function () {
+        fetch(apiUrl('/api/historical/purge'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({confirmed: true})}).then(function (r) { return r.json(); }).then(function (r) {
+          if (!r.ok) throw new Error(r.error || 'the delete did not start');
+          (function tick() {
+            fetch(apiUrl('/api/blocks/delete/status')).then(function (x) { return x.json(); }).then(function (s) {
+              if (s.status === 'running') { setTimeout(tick, 1000); return; }
+              if (s.status === 'error') { showError(s.error || 'The delete failed'); return; }
+              var res = s.result || {};
+              showSuccess('Deleted ' + (res.blocks || 0) + ' imported rows' + (res.backup ? ' — backup ' + res.backup : '') + '.');
+              if (window.EMTHeatmap) EMTHeatmap.refresh();
+              loadHealth(); dmWholeButtons();
+            }, function () { setTimeout(tick, 2000); });
+          })();
+        }).catch(function (e) { showError(e.message); });
+      }
+    });
+  }).catch(function (e) { showError(e.message); });
+}
+// Octopus's actions only with the supplier API; the purge only with imported history to delete
+function dmWholeButtons() {
+  fetch(apiUrl('/api/billing-source')).then(function (r) { return r.json(); }).then(function (r) {
+    if (r && r.uses_api) return;
+    document.querySelectorAll('#dm-whole .dm-api-only').forEach(function (b) { b.style.display = 'none'; });
+  }, function () {});
+  fetch(apiUrl('/api/historical/purge-preview')).then(function (r) { return r.json(); }).then(function (p) {
+    document.getElementById('dm-purge-btn').style.display = p && p.blocks ? '' : 'none';
+  }, function () {});
+}
+document.addEventListener('DOMContentLoaded', function () { loadHealth(); dmWholeButtons(); });
 
 // ── Historical Corrections ─────────────────────────────────────────────────
 

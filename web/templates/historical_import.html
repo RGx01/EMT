@@ -723,6 +723,19 @@ function bfOpenGapFromUrl() {
   csvOpen({from: from, to: to, channel: null, inclusive: false});
 }
 document.addEventListener('DOMContentLoaded', bfOpenGapFromUrl);
+// Opened on a task (Data Management's Whole history card, data management design §1 (4), 21 Oct
+// 2026): ?task=api:whole_history | api:gaps | csv:range | csv:bills — the source, then the task,
+// as a click on each would. An unknown or unavailable one leaves the page as it opens.
+function bfOpenTaskFromUrl() {
+  var t = (new URLSearchParams(location.search).get('task') || '').split(':');
+  if (t.length !== 2 || !/^(api|csv)$/.test(t[0]) || !/^(whole_history|range|gaps|bills)$/.test(t[1])) return;
+  var src = document.querySelector('.bf-source-btn[data-source="' + t[0] + '"]');
+  if (!src || src.disabled) return;
+  bfPickSource(src);
+  var scope = document.querySelector('.bf-scope-btn.bf-task-' + t[0] + '[data-scope="' + t[1] + '"]');
+  if (scope && !scope.disabled) bfPickScope(scope);
+}
+document.addEventListener('DOMContentLoaded', bfOpenTaskFromUrl);
 
 function goStep(s){
   ["intro","upload","review","done","bills"].forEach(function(k){

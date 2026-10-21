@@ -126,6 +126,8 @@ window.EMTHeatmap = (function () {
   }
   function isMissing(c) { return !!(c && c.missing && c.kwh === null); }
   function isData() { return state.mode === 'data'; }
+  // `opts.onChange` (data mode): called when a tool has written — the health strip re-counts
+  function changed() { try { if (state.onChange) state.onChange(); } catch (e) {} }
   // Chart mode's way to the tools: the day on Data Management (`?day=`)
   function dmUrl(day) { return apiUrl('/data-management?day=' + encodeURIComponent(day)); }
   function openInDM(day) { window.location.href = dmUrl(day); }
@@ -985,6 +987,7 @@ window.EMTHeatmap = (function () {
   }
   // after an apply: drop and redraw the months the range touched
   function reloadRange(from, to) {
+    changed();
     Object.keys(state.panels).forEach(function (k) {
       var lo = k + '-01', hi = k + '-31';
       if (from.slice(0, 10) <= hi && to.slice(0, 10) >= lo) {
@@ -1156,22 +1159,29 @@ window.EMTHeatmap = (function () {
   // this gap (decided 18 Oct 2026, the user) — its templates, upload, review and apply, not a
   // copy of them. Closing it redraws what changed.
   function openFillHistory(g, source) {
+    openEmbedded('/historical-import?embed=1&source=' + encodeURIComponent(source) +
+      '&gap_from=' + encodeURIComponent(g.from) + '&gap_to=' + encodeURIComponent(g.to),
+      'Fill the gap — ' + gapText(g));
+  }
+  // An EMT page as a modal over the heatmap (`path`, with embed=1), redrawing on close — the gap
+  // fill's CSV and bills routes, and Data Management's Whole history card (§1 (4)).
+  function openEmbedded(path, title, onClose) {
     panelEl().style.display = 'none';
     var m = document.createElement('div'); m.className = 'hm-modal';
-    m.innerHTML = '<div class="hm-modal-box" role="dialog" aria-label="Fill the gap">' +
-      '<div class="hm-panel-head"><b>Fill the gap — ' + gapText(g) + '</b>' +
+    m.innerHTML = '<div class="hm-modal-box" role="dialog" aria-label="' + esc(title) + '">' +
+      '<div class="hm-panel-head"><b>' + esc(title) + '</b>' +
       '<button class="hm-x" data-close="1" aria-label="Close">✕</button></div>' +
       '</div>';
     // built, not written as markup: the Charts page carries no pre-rendered chart frames (C §3a),
-    // and this is not one — it is a whole EMT page, the Fill History tool
-    var f = document.createElement('iframe'); f.className = 'hm-modal-frame'; f.title = 'Fill History';
+    // and this is not one — it is a whole EMT page
+    var f = document.createElement('iframe'); f.className = 'hm-modal-frame'; f.title = title;
     m.firstChild.appendChild(f);
-    f.src = apiUrl('/historical-import?embed=1&source=' + encodeURIComponent(source) +
-      '&gap_from=' + encodeURIComponent(g.from) + '&gap_to=' + encodeURIComponent(g.to));
+    f.src = apiUrl(path);
     function shut() {
       m.remove(); state.dialogOpen = false; clearSelection();
       document.removeEventListener('keydown', esc1);
-      refresh();
+      refresh(); changed();
+      if (onClose) onClose();
     }
     function esc1(e) { if (e.key === 'Escape') shut(); }
     m.addEventListener('click', function (e) { if (e.target === m || e.target.dataset.close) shut(); });
@@ -1454,6 +1464,27 @@ window.EMTHeatmap = (function () {
     }));
   }
 
+  // Switch the view (a metric button, or the health strip's figures on Data Management)
+  function setMetric(k) {
+    if (!METRICS[k] || !state.root) return;
+    state.metric = k;
+    state.root.querySelectorAll('.hm-metrics button:not(.hm-collapse)').forEach(function (x) {
+      x.classList.toggle('active', x.dataset.metric === k); });
+    redrawAll(true);
+  }
+  // The health strip's count for a view (data management design §1 (2)): the server's half-hours
+  // by state — `state` or `state|flag,flag` — through this module's own settleValue and isIssue,
+  // so the strip and the grid cannot disagree.
+  function issueCount(view, counts) {
+    var n = 0;
+    Object.keys(counts || {}).forEach(function (key) {
+      var parts = key.split('|'), c = {};
+      c[view] = view === 'bill' ? settleValue('bill', {bill: parts[0], flags: parts[1] ? parts[1].split(',') : []})
+                                : parts[0];
+      if (isIssue(c, view)) n += counts[key];
+    });
+    return n;
+  }
   function buildUI() {
     var root = state.root;
     root.innerHTML = '<div class="hm-bar"><div class="hm-metrics"></div>' +
@@ -1464,9 +1495,8 @@ window.EMTHeatmap = (function () {
     Object.keys(METRICS).forEach(function (k) {
       var b = document.createElement('button'); b.className = 'hm-metric-btn' + (k === state.metric ? ' active' : '');
       b.textContent = METRICS[k].label; b.title = METRICS[k].title;
-      b.onclick = function () { state.metric = k;
-        mb.querySelectorAll('button:not(.hm-collapse)').forEach(function (x) { x.classList.toggle('active', x === b); });
-        redrawAll(true); };
+      b.dataset.metric = k;
+      b.onclick = function () { setMetric(k); };
       mb.appendChild(b);
     });
     // "Issues only" (§3): fold the days with nothing to look at; remembered per browser. Data
@@ -1547,6 +1577,7 @@ window.EMTHeatmap = (function () {
     state.inited = true;
     state.mode = opts.mode === 'data' ? 'data' : 'chart';
     state.dayWanted = isData() && /^\d{4}-\d{2}-\d{2}$/.test(opts.day || '') ? opts.day : null;
+    state.onChange = typeof opts.onChange === 'function' ? opts.onChange : null;
     state.root.innerHTML = '<div class="hm-empty">Loading…</div>';
     var apiCheck = Promise.resolve();
     if (isData()) {
@@ -1675,6 +1706,7 @@ window.EMTHeatmap = (function () {
   }
 
   return {init: init, refresh: refresh, loadMonth: loadMonth, rerender: rerender, snapshot: snapshot,
+          setMetric: setMetric, issueCount: issueCount, openEmbedded: openEmbedded,
           metricLabel: function () { return METRICS[state.metric].title; },
           _state: state, _monthGrid: monthGrid, _paint: paint, _kwhStops: kwhStops, _release: release};
 })();

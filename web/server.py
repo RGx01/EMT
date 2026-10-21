@@ -4654,6 +4654,76 @@ def api_backfill_gaps():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+# The flags the heatmap folds into a bill cell's value (heatmap_module.html `settleValue`): the
+# health strip's counts carry them, so the page counts with the heatmap's own rule.
+_HEALTH_BILL_FLAGS = ("bill_kwh_differs", "vat_disagrees", "split_missing", "recost_bl82")
+
+
+def _missing_half_hours(store, now=None) -> dict:
+    """The main meter's missing half-hours as the heatmap's Missing view counts them: every one
+    from the first block to the last finished half-hour with no block — interior gaps of any age
+    and the tail since the last block. {half_hours, gaps, newest}."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    now = now or _dt.now(_tz.utc).replace(tzinfo=None)
+    gaps = store.find_block_gaps(min_age_hours=0, now=now)
+    n = sum(g["slots"] for g in gaps)
+    newest = gaps[-1]["start"] if gaps else None
+    first, last = store.block_span()
+    if last:
+        t = now - _td(minutes=2)                       # the heatmap's grace after a boundary
+        done = t.replace(minute=0 if t.minute < 30 else 30, second=0, microsecond=0) - _td(minutes=30)
+        tail = int((done - _dt.fromisoformat(last)).total_seconds() // 1800)
+        if tail > 0:
+            n += tail
+            gaps = gaps + [None]
+            newest = (_dt.fromisoformat(last) + _td(minutes=30)).isoformat()
+    return {"half_hours": n, "gaps": len(gaps), "newest": newest}
+
+
+@app.route("/api/data-health")
+def api_data_health():
+    """The Data Management health strip (data management design §1 (2)).
+
+    `views`: for each data view the install has, its half-hours over the whole history counted by
+    state — keyed `state` or `state|flag,flag` for the bill flags the heatmap folds into a cell —
+    so the page counts them with the heatmap's `isIssue`, and the rule stays in one place.
+    `missing`: as the Missing view counts. `last_backup`, `db_bytes`. Read-only."""
+    try:
+        import engine as _eng
+        from collections import Counter
+        store = store_access.store()
+        out = {"ok": True, "views": {}, "missing": _missing_half_hours(store),
+               "last_backup": None, "db_bytes": None}
+        views = _settle_views(_eng)
+        first, _last = store.block_span()
+        if views and first:
+            from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+            hi = (_dt.now(_tz.utc).replace(tzinfo=None) + _td(minutes=30)).isoformat()
+            bill, export = Counter(), Counter()
+            for st in _settlement_states(store, first, hi).values():
+                if "bill" in views and st.get("bill"):
+                    fl = sorted(f for f in (st.get("flags") or []) if f in _HEALTH_BILL_FLAGS)
+                    bill[st["bill"] + ("|" + ",".join(fl) if fl else "")] += 1
+                if "export" in views and st.get("export"):
+                    export[st["export"]] += 1
+            if "bill" in views:
+                out["views"]["bill"] = dict(bill)
+            if "export" in views:
+                out["views"]["export"] = dict(export)
+        import glob
+        zips = sorted(glob.glob(f"{_share_backup_dir()}/backups/*.zip"), reverse=True)
+        if zips:
+            out["last_backup"] = {"name": os.path.basename(zips[0]),
+                                  "mtime": int(os.path.getmtime(zips[0]))}
+        db_path = os.path.join(DATA_DIR or _eng.DATA_DIR, "blocks.db")
+        if os.path.exists(db_path):
+            out["db_bytes"] = os.path.getsize(db_path)
+        return jsonify(out)
+    except Exception as e:
+        logger.error("api_data_health: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/history-gaps")
 def api_history_gaps():
     """Review: missing half-hour slots in the block history (outage holes).
@@ -8085,13 +8155,17 @@ def _purge_worker():
         if not _stop_running_import():
             _j.update({"status": "error", "error": _IMPORT_STILL_FINISHING.format("purge")})
             return
-        store = _own_store()          # own thread, own connection
-        backup = None
+        # The backup is required (data management design §1 (4), 21 Oct 2026): it carried on
+        # without one, and a purge of imported history has no other undo.
+        _delete_step("taking a safety backup")
         try:
-            _delete_step("taking a safety backup")
-            backup = os.path.basename(_create_backup_zip(label="pre-purge-import"))
+            backup = _safety_backup("pre-purge-import")
         except Exception as be:
-            logger.warning("purge: backup failed (continuing): %s", be)
+            logger.error("purge: the safety backup failed, nothing deleted: %s", be)
+            _j.update({"status": "error", "error": "The safety backup failed, so nothing was "
+                       "deleted: %s" % be})
+            return
+        store = _own_store()          # own thread, own connection
         _delete_step("deleting all imported data")
         result = store.purge_imported_history()
         store.bump_data_epoch()          # C §2a — removes all imported history
