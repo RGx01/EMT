@@ -52,7 +52,8 @@ window.EMTHeatmap = (function () {
             dp: 0, tot: 'To look at', settle: 'export',
             sub: 'EMT fetches no export bill: kWh \u00d7 the export rate is final once the export kWh ' +
                  'settles. Green: settled (or an API import) · amber: not settled, under 7 days · red: ' +
-                 'not settled after 7 days · grey: no export, or CSV history · black hatched: no block (missing)'}
+                 'not settled after 7 days · red, hatched yellow: no export figure from Octopus or the CSV · ' +
+                 'grey: no export, or CSV history · black hatched: no block (missing)'}
   };
   // The Split view went on 17 Oct 2026: the Import bill carries the split (teal for EMT's, red for
   // a completed dispatch with none — `split_missing`), and the detail panel names its state.
@@ -69,7 +70,7 @@ window.EMTHeatmap = (function () {
   var CAT_RANK = {
     bill:  {none: 0, imported: 0, applied: 1, applied_emt_split: 1, corrected: 1, estimate_dcc: 2,
             estimate_cad: 2, known: 2, overdue: 3, abandoned: 3, differs: 3, flagged: 3, missing: 3},
-    export: {none: 0, imported: 0, no_agreement: 0, applied: 1, waiting: 2, overdue: 3, missing: 3},
+    export: {none: 0, imported: 0, no_agreement: 0, applied: 1, waiting: 2, overdue: 3, no_data: 3, missing: 3},
     presence: {present: 0, missing: 3}
   };
   var CAT_TEXT = {
@@ -89,6 +90,8 @@ window.EMTHeatmap = (function () {
              applied: 'export kWh settled — kWh \u00d7 rate is final',
              waiting: 'export kWh not settled yet', overdue: 'export kWh not settled after 7 days',
              no_agreement: 'no export agreement for this half-hour \u2014 nothing is paid',
+             no_data: 'no export figure from Octopus or the CSV \u2014 a gap. Re-fetch may get it; ' +
+                      'a CSV can supply it',
              missing: MISSING_TEXT},
     presence: {present: 'recorded', missing: MISSING_TEXT},
     split: {bill: 'split from the bill', emt: 'EMT\u2019s split — the bill not in yet',
@@ -137,7 +140,7 @@ window.EMTHeatmap = (function () {
   var ISSUE = {
     bill: {applied_emt_split: 1, corrected: 1, estimate_dcc: 1, estimate_cad: 1, known: 1,
            overdue: 1, abandoned: 1, differs: 1, flagged: 1, missing: 1},
-    export: {no_agreement: 1, waiting: 1, overdue: 1, missing: 1},
+    export: {no_agreement: 1, waiting: 1, overdue: 1, no_data: 1, missing: 1},
     presence: {missing: 1}
   };
   function isIssue(c, m) {
@@ -147,7 +150,7 @@ window.EMTHeatmap = (function () {
   }
   function settleColour(m, v) {
     if (v === 'missing') return hatch();
-    if (v === 'abandoned') return hatchAbandoned();
+    if (v === 'abandoned' || v === 'no_data') return hatchAbandoned();
     var C = {green: '#2e9e5b', amber: '#e0a020', lamber: '#f2cf7a', red: '#cc0000', blue: '#3b7dd8', teal: '#2a9d9f',
              grey: dark() ? '#3a3e4a' : '#d4d7de'};
     if (m === 'presence') return v === 'present' ? C.green : 'rgba(0,0,0,0)';

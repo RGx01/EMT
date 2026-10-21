@@ -148,7 +148,7 @@ class TheDrainAsksOffSmb(unittest.TestCase):
     def test_the_heatmap_passes_it(self):
         srv = open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read()
         self.assertIn("given_up, import_no_cost, import_asked = _eng.bill_no_cost(store)", srv)
-        self.assertIn("import_no_cost=import_no_cost, import_asked=import_asked)", srv)
+        self.assertIn("import_no_cost=import_no_cost, import_asked=import_asked,", srv)
 
 
 class TheRecord(unittest.TestCase):
@@ -184,7 +184,7 @@ class TheScreens(unittest.TestCase):
     _SRC = open(os.path.join(_ROOT, "web", "templates", "heatmap_module.html"), encoding="utf-8").read()
 
     def test_red_hatched_yellow_and_an_issue(self):
-        self.assertIn("if (v === 'abandoned') return hatchAbandoned();", self._SRC)
+        self.assertIn("if (v === 'abandoned' || v === 'no_data') return hatchAbandoned();", self._SRC)
         self.assertIn("x.fillStyle = '#cc0000'", self._SRC)
         self.assertIn("overdue: 1, abandoned: 1,", self._SRC)            # ISSUE
         self.assertIn("overdue: 3, abandoned: 3,", self._SRC)            # CAT_RANK

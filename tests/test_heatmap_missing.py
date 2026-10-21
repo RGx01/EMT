@@ -99,7 +99,7 @@ class TheCells(unittest.TestCase):
     def test_missing_is_an_issue_on_both_bills(self):
         i = _SRC.index("var CAT_RANK = {"); rank = _SRC[i:_SRC.index("};", i)]
         self.assertIn("flagged: 3, missing: 3}", rank)
-        self.assertIn("overdue: 3, missing: 3}", rank)
+        self.assertIn("overdue: 3, no_data: 3, missing: 3}", rank)
 
     def test_it_is_hatched_on_every_view(self):
         self.assertIn("if (isMissing(r.c)) return hatch();", _SRC)

@@ -3597,6 +3597,21 @@ class BlockStore:
                 "WHERE meter_id = ? AND source LIKE 'imported%' AND block_start >= ? "
                 "AND block_start < ? AND " + self._EXPORT_PRESENT, (meter_id, a, b))
             n = cur.rowcount
+            if n:
+                # the span this cleared, so a deliberately deleted export reads "no export", not a
+                # gap (settlement_state `export_deleted`; 21 Oct 2026)
+                spans = [list(x) for x in (self.get_meta("export_deleted", None) or [])] + [[a, b]]
+                spans.sort()
+                merged = []
+                for lo, hi in spans:
+                    if merged and lo <= merged[-1][1]:
+                        merged[-1][1] = max(merged[-1][1], hi)
+                    else:
+                        merged.append([lo, hi])
+                # in the delete's own transaction (set_meta commits on its own)
+                self._conn.execute(
+                    "INSERT INTO store_meta (key, value) VALUES ('export_deleted', ?) "
+                    "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (json.dumps(merged),))
         return {"half_hours": n, "from_utc": a, "to_utc": b}
 
     def get_reprice_queue(self) -> dict:
