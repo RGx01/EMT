@@ -5,7 +5,7 @@ support_file.py — one zip to send to whoever is helping (data management desig
 The zip holds:
   emt.log       the add-on's log (as much as the caller passes);
   support.json  a summary the caller builds (version, mode, config, counts, the import audit,
-                the coordinator, the bill-ask record, the last errors);
+                the coordinator, the bill-ask record, the last errors, and the machine — `host`);
   blocks.db     the database cut to a span: a `VACUUM INTO` copy keeping that span's rows in the
                 time-indexed tables (blocks, segments, `ha_reads`, bills, dispatches, histories)
                 and every config and state table whole.
@@ -186,6 +186,86 @@ def build(src_db: str, out_zip: str, *, lo=None, hi=None, redact: bool = True,
         if os.path.exists(tmp_db):
             os.remove(tmp_db)
     return {"bytes": os.path.getsize(out_zip), "kept": kept, "redacted": len(mapping)}
+
+
+def _read(path, default=None):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            return f.read()
+    except Exception:
+        return default
+
+
+def _block_device(path: str, mounts_text: str) -> str:
+    """The block device under `path` ('mmcblk0', 'sda', 'nvme0n1'), from /proc/mounts' longest
+    mount point above it; '' when it can't be told (an overlay, a container without /dev)."""
+    best, dev = "", ""
+    for line in (mounts_text or "").splitlines():
+        parts = line.split()
+        if len(parts) < 2 or not parts[0].startswith("/dev/"):
+            continue
+        mp = parts[1]
+        if (path == mp or path.startswith(mp.rstrip("/") + "/")) and len(mp) >= len(best):
+            best, dev = mp, parts[0][5:]
+    m = re.match(r"^(mmcblk\d+|nvme\d+n\d+|[a-z]+?)(p?\d+)?$", dev)
+    return m.group(1) if m else dev
+
+
+def host_info(data_dir: str, supervisor: dict = None) -> dict:
+    """What EMT is running on, for a helper reading the timings in the log (21 Oct 2026, the user:
+    a count that is 0.9 s on a Mac was 22 s on a thin client). Read from the platform, /proc and
+    /sys where they exist; nothing that names the machine or its owner (no hostname, no address).
+    `supervisor` is the Supervisor's /info, when the caller has it: the board, the OS, versions."""
+    import platform
+    out = {"platform": {"system": platform.system(), "release": platform.release(),
+                        "machine": platform.machine(), "python": platform.python_version(),
+                        "sqlite": sqlite3.sqlite_version},
+           "cpu": {"count": os.cpu_count()}}
+    info = _read("/proc/cpuinfo") or ""
+    for key in ("model name", "Model", "Hardware"):      # x86; a Pi names its board as Model
+        m = re.search(r"^%s\s*:\s*(.+)$" % key, info, re.M)
+        if m:
+            out["cpu"][key.lower().replace(" ", "_")] = m.group(1).strip()
+    try:
+        out["cpu"]["load_avg"] = [round(x, 2) for x in os.getloadavg()]
+    except Exception:
+        pass
+    mem = _read("/proc/meminfo") or ""
+    for key in ("MemTotal", "MemAvailable", "SwapTotal"):
+        m = re.search(r"^%s:\s*(\d+) kB" % key, mem, re.M)
+        if m:
+            out.setdefault("memory_mb", {})[key] = int(m.group(1)) // 1024
+    up = (_read("/proc/uptime") or "").split()
+    if up:
+        try:
+            out["uptime_h"] = round(float(up[0]) / 3600, 1)
+        except ValueError:
+            pass
+    disk = {}
+    try:
+        st = os.statvfs(data_dir)
+        disk.update(total_gb=round(st.f_blocks * st.f_frsize / 1e9, 1),
+                    free_gb=round(st.f_bavail * st.f_frsize / 1e9, 1))
+    except Exception:
+        pass
+    dev = _block_device(os.path.abspath(data_dir), _read("/proc/mounts"))
+    if dev:
+        disk["device"] = dev
+        rot = (_read("/sys/block/%s/queue/rotational" % dev) or "").strip()
+        if rot in ("0", "1"):
+            disk["rotational"] = rot == "1"
+        model = (_read("/sys/block/%s/device/model" % dev) or _read("/sys/block/%s/device/name" % dev) or "").strip()
+        if model:
+            disk["model"] = model
+        disk["kind"] = ("SD card or eMMC" if dev.startswith("mmcblk") else "NVMe" if dev.startswith("nvme")
+                        else "disk" if disk.get("rotational") else "SSD or USB")
+    if disk:
+        out["disk"] = disk
+    if supervisor:
+        out["supervisor"] = {k: supervisor.get(k) for k in
+                             ("arch", "machine", "operating_system", "homeassistant", "supervisor",
+                              "docker", "channel") if supervisor.get(k) is not None}
+    return out
 
 
 def last_errors(log_text: str, n: int = 40) -> list:

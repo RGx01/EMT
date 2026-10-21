@@ -248,6 +248,15 @@ is 0.9 s on a Mac. And (10)'s hourly full count would have repeated it hourly on
   it has; a restart before discovery keeps what it has.
 - **No warm-up after start.**
 
+**(14) The support file says what EMT runs on** (21 Oct 2026, the user): `host` in support.json.
+- **From the machine:** the platform; the processor (x86's model name, or a Pi's board); memory;
+  uptime; the disk under the database (its device, rotational or not, its model, and whether an SD
+  card or eMMC, NVMe or an SSD).
+- **From the Supervisor's /info:** the board, the OS and the versions.
+- **Nothing that names the machine:** no hostname, no address.
+
+A helper reads the log's timings against it; the dialog says the file holds it.
+
 ---
 
 ## 2. Open
@@ -376,5 +385,7 @@ clean-up.
 13. **The month counts kept** — *built 21 Oct 2026*: §1 (13). On a copy of the prod box's
     database (141k blocks, Mac): the first count 0.89 s, and after a restart 0.32 s with no month
     counted again, the same answer. The file is 9.8 KB.
+
+14. **The machine in the support file** — *built 21 Oct 2026*: §1 (14).
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.
