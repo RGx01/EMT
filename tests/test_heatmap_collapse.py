@@ -86,7 +86,8 @@ class TheToggle(unittest.TestCase):
         self.assertIn("localStorage.getItem('emt_hm_collapse') !== '0'", _SRC)
 
     def test_switching_metric_keeps_it_lit(self):
-        self.assertIn("mb.querySelectorAll('button:not(.hm-collapse)')", _SRC)
+        # the view switch moved into setMetric (21 Oct 2026, for the health strip's links)
+        self.assertIn("state.root.querySelectorAll('.hm-metrics button:not(.hm-collapse)')", _SRC)
 
 
 if __name__ == "__main__":

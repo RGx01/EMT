@@ -4840,6 +4840,12 @@ class BlockStore:
                     f"WHERE id IN ({ph})", chunk)
         return len(to_fill)
 
+    def block_span(self, meter_id: str = "electricity_main") -> tuple:
+        """(first, last) block_start of a meter, or (None, None)."""
+        r = self._conn.execute("SELECT MIN(block_start), MAX(block_start) FROM blocks "
+                               "WHERE meter_id = ?", (meter_id,)).fetchone()
+        return (r[0], r[1]) if r else (None, None)
+
     def find_block_gaps(self, meter_id: str = "electricity_main",
                         *, min_age_hours: float = 48.0,
                         now: Optional[datetime] = None) -> list:

@@ -183,9 +183,13 @@ the passes that read it. Whether the `cad` branch is then dead, and goes, is a s
    builds the page round it). `?day=` draws every month above the day first, then unfolds, marks and
    scrolls it below both sticky headers (clicked through on a copy of staging's database: scrolled at
    once, the day ended above the view).
-2. **Data Management's new page** — the heatmap in data mode; the health strip (the per-state
-   counts call); the Whole history card, its modals onto Historical Import, the purge's backup
-   required; the topbar's three links and the nudge gone.
+2. **Data Management's new page** — *built 21 Oct 2026*: the health strip (`/api/data-health`, the
+   per-state counts; on a copy of staging's database the strip and the grid's summed "To look at"
+   agreed exactly); the Whole history card, Historical Import's flows as a modal on a task
+   (`?task=source:scope`); the purge's backup required (on the copy, with no backup possible:
+   refused, nothing deleted); the Fill History & Gaps link and the nudge gone. *The Delete Blocks
+   and Cost Corrections links stay* until PR 4 and PR 6 take their jobs — removing them now would
+   leave *reconstructed only* and corrections unreachable.
 3. **Backups & storage** — one card; `/api/backup/list` with size and time; the table; the daily
    copy's row; the storage line with what a compact reclaims; a dropped file opens the modal; the
    legacy row and the Import DB card gone.

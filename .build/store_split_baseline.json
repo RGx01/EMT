@@ -114,6 +114,7 @@
     "_period_starting_at",
     "_resolve_delete_meters",
     "_select_blocks",
+    "block_span",
     "cap_day_boundary",
     "channel_slots_present",
     "classify_kraken_block",
