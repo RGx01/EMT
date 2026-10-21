@@ -197,8 +197,11 @@ the passes that read it. Whether the `cad` branch is then dead, and goes, is a s
    copy with no free pages still compacted 86.6 → 81.1 MB, since a compact also packs part-empty
    pages; a dropped file (zip or `.db`) opens the modal; the legacy row, the Import DB, Storage and
    Compact cards gone. `/api/import/extract-zip` has no caller left (PR 7 can retire it).
-4. **Delete… only the imported half-hours** — the choice in the preview; the delete's `utc_span`
-   with the existing `reconstructed_only`.
+4. **Delete… only the imported half-hours** — *built 21 Oct 2026*: the preview counts the imported
+   half-hours; where a selection holds both, *Everything* or *Only the imported half-hours (N of M)*,
+   sent as the delete's existing `reconstructed_only` with `utc_span`. Only the imported main-meter
+   rows go; the devices' rows over them stay, for a re-import to rejoin (clicked through on a copy of
+   staging's database: 2–3 Mar 2026, 48 of 96 imported, 288 rows → 240 after the backup).
 5. **The support file** — `support.json`, the log, the span's database, redaction, the size
    estimate; from the card and from a selection.
 6. **Corrections on the Billing tab** — the context menu and the modal, CAD-only; one half-hour;
