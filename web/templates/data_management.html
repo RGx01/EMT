@@ -75,6 +75,41 @@
   </div>
 </div>
 
+<!-- ── The support file (data management design §1 (5)) ──────────────────────── -->
+<div id="support-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1003;overflow-y:auto;">
+  <div style="max-width:520px;margin:70px auto;padding:0 16px 60px;">
+    <div class="card" style="padding:24px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <h3 style="margin:0;font-size:15px;font-weight:600;">Make a support file</h3>
+        <button onclick="closeSupport()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;">✕</button>
+      </div>
+      <p style="font-size:13px;color:var(--muted);line-height:1.6;margin:0 0 12px;">
+        One zip to send to whoever is helping you: EMT's log, a summary of your setup, and your
+        data for the span you choose. Nothing is sent anywhere — you download it.
+      </p>
+      <div id="support-spans" style="font-size:13px;line-height:2;">
+        <div><input type="radio" name="support-span" value="30d" id="ss-30d" checked> <span>The last 30 days</span></div>
+        <div><input type="radio" name="support-span" value="month" id="ss-month"> <span>A month:</span>
+             <input type="month" id="ss-month-val" style="font-size:13px;padding:2px 4px;"></div>
+        <div id="ss-range-row" style="display:none;"><input type="radio" name="support-span" value="range" id="ss-range">
+             <span id="ss-range-label"></span></div>
+        <div><input type="radio" name="support-span" value="all" id="ss-all"> <span>Everything</span></div>
+      </div>
+      <div style="font-size:13px;margin:12px 0;line-height:1.6;">
+        <input type="checkbox" id="ss-redact" checked> <span><b>Hide my meter and account details</b> —
+        your MPANs, meter serials, Octopus account number and postcode become placeholders
+        (<code>MPAN-1</code>, <code>ACCOUNT-1</code> …), the same wherever they appear. Your Octopus API key
+        is never in the file.</span>
+      </div>
+      <div id="ss-estimate" style="font-size:12px;color:var(--muted);margin-bottom:14px;">Working out the size…</div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button class="btn btn-secondary" onclick="closeSupport()">Cancel</button>
+        <button class="btn btn-primary" id="ss-build" onclick="buildSupport()">Make the file</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- ── Generic confirm modal (styled, reusable) ─────────────────────────────── -->
 <div id="confirm-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1002;overflow-y:auto;">
   <div style="max-width:460px;margin:90px auto;padding:0 16px 60px;">
@@ -151,6 +186,8 @@
       <button class="btn btn-secondary" onclick="doManualBackup()" id="btn-backup2">💾 Create backup now</button>
       <button class="btn btn-secondary" id="btn-vacuum" onclick="doVacuum()"
               title="Rebuild the database file to reclaim the space deleted or updated rows left. The engine pauses briefly.">🗜️ Compact now</button>
+      <button class="btn btn-secondary" onclick="openSupport()"
+              title="One zip to send to whoever is helping you: the log, a summary and your data for a span">🩺 Make a support file…</button>
     </div>
   </div>
   <div id="dm-storage-line" style="font-size:12px;color:var(--muted);margin-bottom:10px;">Loading…</div>
@@ -180,7 +217,8 @@ document.addEventListener('DOMContentLoaded', function () {
   if (!window.EMTHeatmap) return;
   EMTHeatmap.init(document.getElementById('dm-heatmap'),
                   {mode: 'data', day: new URLSearchParams(window.location.search).get('day'),
-                   onChange: function () { if (window.loadHealth) loadHealth(); }});
+                   onChange: function () { if (window.loadHealth) loadHealth(); },
+                   onSupportFile: function (from, to, label) { openSupport({from: from, to: to, label: label}); }});
 });
 
 {% include "_upload_js.html" %}
@@ -736,6 +774,69 @@ function dmPurge() {
     });
   }).catch(function (e) { showError(e.message); });
 }
+// ── The support file (§1 (5)) ─────────────────────────────────────────────────
+// From the card, or from a heatmap selection (`range`); the size estimated before it is built.
+var _ssRange = null;
+function openSupport(range) {
+  _ssRange = range || null;
+  document.getElementById('ss-range-row').style.display = range ? '' : 'none';
+  if (range) document.getElementById('ss-range-label').textContent = 'This selection: ' + range.label;
+  document.getElementById(range ? 'ss-range' : 'ss-30d').checked = true;
+  var m = document.getElementById('ss-month-val');
+  if (!m.value) { var d = new Date(); d.setMonth(d.getMonth() - 1); m.value = d.toISOString().slice(0, 7); }
+  var b = document.getElementById('ss-build'); b.disabled = false; b.textContent = 'Make the file';
+  document.getElementById('support-overlay').style.display = 'block';
+  supportEstimate();
+}
+function closeSupport() { document.getElementById('support-overlay').style.display = 'none'; }
+function _ssBody() {
+  var span = (document.querySelector('input[name="support-span"]:checked') || {}).value || '30d';
+  var b = {span: span, redact: document.getElementById('ss-redact').checked};
+  if (span === 'month') b.month = document.getElementById('ss-month-val').value;
+  if (span === 'range' && _ssRange) { b.from_utc = _ssRange.from; b.to_utc = _ssRange.to; }
+  return b;
+}
+function _ssPost(url, body) {
+  return fetch(apiUrl(url), {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)}).then(function (r) { return r.json(); });
+}
+// Only the latest estimate is shown: a slower reply to an earlier choice must not overwrite it
+// (clicked through: "A month" then a month asked twice, and the first answer came back last).
+var _ssSeq = 0;
+function supportEstimate() {
+  var el = document.getElementById('ss-estimate'), seq = ++_ssSeq;
+  el.textContent = 'Working out the size…';
+  _ssPost('/api/support/estimate', _ssBody()).then(function (e) {
+    if (seq !== _ssSeq) return;
+    if (!e.ok) throw new Error(e.error || 'unavailable');
+    var mb = e.bytes / 1048576, big = mb > 10;
+    el.innerHTML = 'About <b>' + (mb < 1 ? '< 1' : mb.toFixed(0)) + ' MB</b> · ' + e.half_hours + ' half-hours' +
+      (big ? ' — <span style="color:var(--warning);">over 10 MB, more than many email services take. ' +
+             'A shorter span is smaller.</span>' : '');
+  }).catch(function (e) { if (seq === _ssSeq) el.textContent = 'Size unknown: ' + e.message; });
+}
+document.addEventListener('change', function (e) {
+  if (e.target && (e.target.name === 'support-span' || e.target.id === 'ss-month-val')) supportEstimate();
+});
+function buildSupport() {
+  var b = document.getElementById('ss-build'), el = document.getElementById('ss-estimate');
+  b.disabled = true; b.textContent = 'Making it…';
+  _ssPost('/api/support/build', _ssBody()).then(function (r) {
+    if (!r.ok) throw new Error(r.error || 'it did not start');
+    (function tick() {
+      fetch(apiUrl('/api/support/status')).then(function (x) { return x.json(); }).then(function (s) {
+        if (s.status === 'running') { el.textContent = '⏳ ' + (s.step || 'working') + '…'; setTimeout(tick, 1000); return; }
+        if (s.status === 'error') throw new Error(s.error || 'it failed');
+        el.innerHTML = '✓ <b>' + _hEsc(s.name) + '</b> — ' + (s.bytes / 1048576).toFixed(1) + ' MB' +
+          (s.redacted ? ', ' + s.redacted + ' detail' + (s.redacted === 1 ? '' : 's') + ' hidden' : '') + '.';
+        b.disabled = false; b.textContent = '⬇ Download';
+        b.onclick = function () { window.location.href = apiUrl('/api/support/download'); };
+      }).catch(function (e) { el.textContent = '✕ ' + e.message; b.disabled = false; b.textContent = 'Make the file';
+                              b.onclick = buildSupport; });
+    })();
+  }).catch(function (e) { el.textContent = '✕ ' + e.message; b.disabled = false; b.textContent = 'Make the file'; });
+}
+
 // Octopus's actions only with the supplier API; the purge only with imported history to delete
 function dmWholeButtons() {
   fetch(apiUrl('/api/billing-source')).then(function (r) { return r.json(); }).then(function (r) {
