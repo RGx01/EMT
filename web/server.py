@@ -40,6 +40,21 @@ _GZIP_TYPES = ("text/html", "text/css", "text/plain", "text/javascript",
 
 
 @app.after_request
+def _pages_revalidate(response):
+    """A page is asked for again each time, not reused from the browser's cache: its script is
+    inline, so a stale page is stale code (21 Oct 2026, staging: Data Management after an upgrade
+    needed a hard refresh). `no-cache` still lets the browser keep it, it just checks first. A
+    response that set its own header keeps it (the Lovelace pages: no-store)."""
+    try:
+        ctype = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+        if ctype == "text/html" and "Cache-Control" not in response.headers:
+            response.headers["Cache-Control"] = "no-cache"
+    except Exception:
+        pass
+    return response
+
+
+@app.after_request
 def _compress_response(response):
     try:
         if "gzip" not in (request.headers.get("Accept-Encoding") or "").lower():
@@ -4163,7 +4178,16 @@ def _settlement_states(store, utc_start, utc_end) -> dict:
         kind_at=_eng.tariff_kind_at, split_at=_eng.split_at,
         export_channel=_main_has_export(), export_sensor=_main_has_export_sensor(),
         export_agreement_at=_eng.export_agreement_at,
-        given_up=given_up, import_no_cost=import_no_cost, import_asked=import_asked)
+        given_up=given_up, import_no_cost=import_no_cost, import_asked=import_asked,
+        export_deleted=_export_deleted(store))
+
+
+def _export_deleted(store) -> list:
+    """The spans the imported-export delete cleared (block_store.delete_imported_export)."""
+    try:
+        return [tuple(x) for x in (store.get_meta("export_deleted") or [])]
+    except Exception:
+        return []
 
 
 @app.route("/api/billing-source", methods=["GET"])
@@ -4587,7 +4611,10 @@ def _missing_half_hours(store, tz_name, now=None) -> dict:
 # poll's data token (any write to the blocks, bills or segments moves it) and a ten-minute window
 # (a state can turn with age alone: a bill given up on). One request computes; the rest wait for it.
 _HEALTH_TTL_S = 600
-_HEALTH_FILE_V = 1          # the month counts' file; a new shape bumps it and counts afresh
+# The month counts' file. Its marks see the data, not the rules: a change to how a half-hour is
+# classified (settlement_state) must bump this, or a restart serves counts made by the old rules.
+# 2: an imported half-hour with no export is `no_data` (21 Oct 2026).
+_HEALTH_FILE_V = 2
 _health_lock = threading.Lock()
 _health_cache = {"key": None, "views": None, "missing": None, "months": None}
 
@@ -4741,7 +4768,7 @@ def _health_views(store, views, first, tz_name):
         given_up, no_cost, asked = _eng.bill_no_cost(store)
         ctx = _health_digest([vs, bool(_eng._import_is_smb_capped()), sorted(held), sorted(kept),
                               sorted(given_up), sorted(no_cost), sorted(asked),
-                              store.get_vat_calendar()])
+                              store.get_vat_calendar(), _export_deleted(store)])
     except Exception:
         ctx = None                                  # unknown: every month is counted again
     agr = _health_agreements(_eng)

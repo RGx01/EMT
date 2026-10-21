@@ -257,6 +257,18 @@ is 0.9 s on a Mac. And (10)'s hourly full count would have repeated it hourly on
 
 A helper reads the log's timings against it; the dialog says the file holds it.
 
+**(15) An imported half-hour with no export is a gap** (21 Oct 2026, the user, after an Octopus
+import). Octopus returned import and no export for three days of March 2025. Those half-hours had
+no export figure at all, and the Export bill read them `none`, grey, as nothing exported.
+- **Where the meter exports,** an imported half-hour (the API's, a CSV's) with neither export kWh
+  nor a settled one is `no_data`: red, hatched yellow, an issue. *Re-fetch* may get it, or a CSV
+  can supply it.
+- **The imported-export delete records the span it cleared** (store_meta `export_deleted`), so a
+  deliberate delete keeps reading grey *no export*, as the soft delete design §4 decided.
+
+And pages carry `Cache-Control: no-cache` (Data Management after the upgrade needed a hard
+refresh: a page's script is inline, so a cached page is stale code).
+
 ---
 
 ## 2. Open
@@ -387,5 +399,9 @@ clean-up.
     counted again, the same answer. The file is 9.8 KB.
 
 14. **The machine in the support file** — *built 21 Oct 2026*: §1 (14).
+
+15. **Imported export gaps** — *built 21 Oct 2026*: §1 (15). On the support file's database: 144
+    half-hours `no_data`, exactly 5–7 Mar 2025, and nothing else in the 23,865 imported changed
+    (`applied` 16,104, `none` 7,617).
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.

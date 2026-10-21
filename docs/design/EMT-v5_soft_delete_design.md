@@ -19,7 +19,7 @@ docstring. Rewritten 20 Oct 2026: the shelf of 18–19 Oct is dropped (§2's las
   (§1). What is left is narrow: **deleting the export of imported CSV or PDF history** (§4),
   with a required backup.
 - **Deleting half-hours deletes them whole** — every meter, both channels — as today's delete (18 Oct).
-- **A deleted imported export reads grey on the Export bill, as "no export"** (19 Oct): on CSV history
+- **A deleted imported export reads grey on the Export bill, as "no export"** (19 Oct; since 21 Oct by the span the delete records, `export_deleted` — an imported half-hour with no export elsewhere is a gap, `no_data`): on CSV history
   EMT cannot tell an export that was never recorded from one that was nothing.
 - **v4 stays as v4** (19 Oct): a restore carries its tombstones over as they are.
 

@@ -50,11 +50,13 @@ def _clock(start, now):
     return "overdue" if age >= timedelta(days=BILL_OVERDUE_DAYS + KWH_LAG_DAYS) else "waiting"
 
 
+# A change to what this module returns for a half-hour must bump server._HEALTH_FILE_V: the health
+# strip keeps its month counts across restarts, and its marks see the data, not these rules.
 def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozenset(),
              vat_at=None, kind_at=None, split_at=None, export_channel: bool = False,
              export_sensor: bool = True, export_agreement_at=None,
              given_up=frozenset(), import_no_cost=frozenset(),
-             import_asked=frozenset()) -> dict:
+             import_asked=frozenset(), export_deleted=()) -> dict:
     """One half-hour's {bill, export, split, flags}. `f` is a get_settlement_facts row. `smb` is
     the install's tariff (engine._import_is_smb_capped); `held` / `kept` are 4.5.23's wait map
     (engine.bill_split_held); `vat_at(start)` the VAT calendar; `kind_at(start)` the half-hour's
@@ -71,6 +73,9 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
     Octopus for — they read `abandoned` where they would otherwise wait for a bill.
     `import_asked`: API-imported half-hours Octopus gave no cost for, whose bill the drain still
     asks for (an IOG-SMB window): they wait as a live half-hour does, `abandoned` once given up.
+    `export_deleted`: the [from, to) spans the imported-export delete cleared (soft delete design
+    §4): an imported half-hour there with no export reads `none`, as decided; elsewhere it is
+    `no_data` — Octopus (or the CSV) gave no export figure, a gap.
 
     The Import bill states say whether the half-hour's cost is final, and whose it is (design
     §9.3). On a published-rate tariff the settled kWh x the published rate is the bill; on an
@@ -152,7 +157,13 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
     exp_live = _f(f.get("exp_kwh"))
     exp_api = _f(f.get("exp_kwh_api"))
     exp = exp_api if exp_api is not None else (exp_live or 0.0)
-    if exp_api is not None or src == "imported_api":
+    if (src.startswith("imported") and export_channel and exp_api is None and exp_live is None
+            and not any(lo <= start < hi for lo, hi in export_deleted)):
+        # an imported half-hour with no export figure at all, where the meter exports: a gap, not a
+        # quiet half-hour (21 Oct 2026, staging: three days of March 2025 Octopus returned import
+        # for and no export read grey, as nothing exported)
+        export = "no_data"
+    elif exp_api is not None or src == "imported_api":
         export = "applied" if exp > 1e-9 else "none"
     elif src.startswith("imported"):
         export = "imported" if exp > 1e-9 else "none"
