@@ -269,6 +269,18 @@ no export figure at all, and the Export bill read them `none`, grey, as nothing 
 And pages carry `Cache-Control: no-cache` (Data Management after the upgrade needed a hard
 refresh: a page's script is inline, so a cached page is stale code).
 
+**(16) A bill clears the import's no-cost record** (21 Oct 2026, staging: 21 Jul's red blocks).
+The refill of 21 Jul put 15 half-hours Octopus's measurements gave no cost for on the import's
+no-cost record. The bill drain cached and applied their bills, but nothing took them off the
+record, so they read "no cost, no longer asked" with the right cost on them.
+- **An imported half-hour with its bill cached** is `applied` (or `differs`, if its cost isn't
+  the bill), never `abandoned`.
+- **Caching a bill** (`engine._store_bill`) takes the slot off the record.
+- **The health counts file** goes to version 3.
+
+The pricing check's log line also says the neighbours it re-priced apart, instead of
+"corrected 28 of 26 re-checked".
+
 ---
 
 ## 2. Open
@@ -403,5 +415,9 @@ clean-up.
 15. **Imported export gaps** — *built 21 Oct 2026*: §1 (15). On the support file's database: 144
     half-hours `no_data`, exactly 5–7 Mar 2025, and nothing else in the 23,865 imported changed
     (`applied` 16,104, `none` 7,617).
+
+16. **A bill clears the no-cost record** — *built 21 Oct 2026*: §1 (16). On the support file's
+    database, 21 Jul reads 22 `applied` and 26 `none` (no import), where it was 15 `abandoned`; across
+    the whole history no half-hour is `abandoned` or `differs`.
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.

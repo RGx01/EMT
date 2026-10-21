@@ -9742,9 +9742,13 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
             _sk = int(res.get("skipped") or 0)
             repriced += _cr; checked += _ck; skipped += _sk
             _elapsed = int(__import__("time").monotonic() - _t0)
-            logger.info("verify pricing: %s..%s — corrected %d of %d re-checked "
-                        "(%d already-correct skipped) · %ds elapsed",
-                        c_from.date(), c_to.date(), _cr, _ck, _sk, _elapsed)
+            # `recovered` counts the neighbours the same fetch re-priced too (repair_import_pricing's
+            # `opportunistic`), which were not among the re-checked: "corrected 28 of 26" (staging,
+            # 21 Oct 2026). Said apart.
+            _op = int(res.get("opportunistic") or 0)
+            logger.info("verify pricing: %s..%s — corrected %d of %d re-checked, and %d neighbouring "
+                        "half-hour(s) from the same fetch (%d already-correct skipped) · %ds elapsed",
+                        c_from.date(), c_to.date(), _cr - _op, _ck, _op, _sk, _elapsed)
             if res.get("throttled"):
                 # Paused mid-chunk on low headroom — do NOT advance the cursor; wait
                 # and retry the same chunk (idempotent) once the allowance recovers.
@@ -12749,6 +12753,12 @@ def _store_bill(store, slot: str, mpan: str, row: dict) -> None:
     """Cache a parsed bill: the cost row, and the breakdown where it has one."""
     store.upsert_measured_cost(slot, mpan=mpan, cost_incl=row["cost_incl"],
                                cost_excl=row["cost_excl"], label=row["label"], kwh=row["kwh"])
+    # the half-hour has Octopus's cost now: off the import's no-cost record (21 Oct 2026 — the
+    # drain cached the bills and the record kept them "no cost, no longer asked")
+    try:
+        store.note_import_cost(costed=[slot])
+    except Exception:
+        pass
     if row.get("breakdown"):
         hk, hr, ek, er = row["breakdown"]
         store.upsert_measured_breakdown(slot, mpan=mpan, home_kwh=hk, home_rate=hr,
