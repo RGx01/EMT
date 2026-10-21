@@ -10556,6 +10556,16 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
                         asyncio.create_task(run_deferred_verify_pricing())
                     except Exception as _e:
                         logger.warning("run_api_import_job: verify launch failed: %s", _e)
+                    # the main meter is back; its devices from what HA recorded (soft delete §3:
+                    # the gap fill and the CSV import did this, the API import never did). Over
+                    # the imported history: the rebuild fills only absent device rows.
+                    try:
+                        _ih = _store.count_imported_history()
+                        if _ih.get("from") and _ih.get("to"):
+                            _hi = (datetime.fromisoformat(_ih["to"]) + timedelta(minutes=30)).isoformat()
+                            j["devices_rebuilding"] = await rebuild_devices_after_refill(_ih["from"], _hi)
+                    except Exception as _e:
+                        logger.warning("run_api_import_job: device rebuild not started: %s", _e)
                 else:
                     logger.info("run_api_import_job: nothing written — skipping the "
                                 "pricing verification pass")

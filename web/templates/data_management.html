@@ -154,7 +154,8 @@
   .dm-menu .dm-menu-danger { color: var(--danger); border-top: 1px solid var(--border); }
   .dm-menu-note { padding: 6px 16px 8px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--border); }
   .dm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 999; overflow-y: auto; }
-  .dm-modal { max-width: 760px; margin: 50px auto; padding: 0 16px 60px; }
+  /* wide enough that a backup's row stays on one line (21 Oct 2026, the user) */
+  .dm-modal { max-width: 1040px; margin: 50px auto; padding: 0 16px 60px; }
   .dm-drop-anywhere { position: fixed; inset: 12px; z-index: 1100; border: 2px dashed var(--accent); border-radius: 12px;
     background: rgba(0,0,0,0.55); color: var(--text); font-size: 18px; display: flex; align-items: center;
     justify-content: center; pointer-events: none; }
@@ -579,8 +580,8 @@ async function loadBackupList() {
       var zq = z.name.replace(/'/g, "\\'"), what = _backupWhat(z.name);
       return '<tr title="' + _hEsc(z.name) + '">' +
         '<td style="' + td + 'color:var(--text);">' + _hEsc(what ? what.charAt(0).toUpperCase() + what.slice(1) : z.name) + '</td>' +
-        '<td style="' + td + '">' + (_madeAt(z) ? _hEsc(_localWhen(_madeAt(z))) + ' · ' + _hEsc(_ago(_madeAt(z))) : '') + '</td>' +
-        '<td style="' + td + 'text-align:right;font-family:var(--mono);">' + _fmtBytes(z.size) + '</td>' +
+        '<td style="' + td + 'white-space:nowrap;">' + (_madeAt(z) ? _hEsc(_localWhen(_madeAt(z))) + ' · ' + _hEsc(_ago(_madeAt(z))) : '') + '</td>' +
+        '<td style="' + td + 'text-align:right;font-family:var(--mono);white-space:nowrap;">' + _fmtBytes(z.size) + '</td>' +
         '<td style="' + td + 'text-align:right;white-space:nowrap;">' +
           '<button class="btn btn-secondary btn-sm" onclick="downloadBackup(\'' + zq + '\')">⬇ Download</button> ' +
           '<button class="btn btn-secondary btn-sm" onclick="restoreFromZip(\'' + zq + '\')">↩ Restore</button> ' +
@@ -589,7 +590,7 @@ async function loadBackupList() {
     });
     if (daily) rows.push('<tr><td style="' + td + 'color:var(--text);">Daily copy of the database</td>' +
       '<td style="' + td + '">' + _hEsc((daily.modified || '').replace('T', ' ').slice(0, 16)) + ' UTC</td>' +
-      '<td style="' + td + 'text-align:right;font-family:var(--mono);">' + _fmtBytes(daily.size) + '</td>' +
+      '<td style="' + td + 'text-align:right;font-family:var(--mono);white-space:nowrap;">' + _fmtBytes(daily.size) + '</td>' +
       '<td style="' + td + 'text-align:right;"><button class="btn btn-secondary btn-sm" onclick="restoreFromFlat()">↩ Restore</button></td></tr>');
     if (!rows.length) { el.innerHTML = '<div>No backups yet.</div>'; return; }
     var th = 'text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;padding:4px 8px;';
@@ -789,9 +790,10 @@ function dmPurge() {
     showConfirm({
       title: 'Delete all imported history',
       message: 'Deletes all <b>' + p.blocks + '</b> imported half-hour rows (' + _hEsc((p.from || '').slice(0, 10)) +
-               ' → ' + _hEsc((p.to || '').slice(0, 10)) + ') — CSV, PDF bills and the API import — with their ' +
-               'rate derivations and the import\'s checkpoints. Live and settled data are kept. A backup ' +
-               'is taken first; nothing is deleted without it.',
+               ' → ' + _hEsc((p.to || '').slice(0, 10)) + ') — CSV, PDF bills and the API import — with the ' +
+               'devices\' data in those half-hours, their rate derivations and the import\'s checkpoints. ' +
+               'HA\'s own readings are kept: a re-import rebuilds the devices from them. Live and settled ' +
+               'data are kept. A backup is taken first; nothing is deleted without it.',
       okLabel: 'Delete all imported history', danger: true,
       onConfirm: function () {
         fetch(apiUrl('/api/historical/purge'), {method: 'POST', headers: {'Content-Type': 'application/json'},

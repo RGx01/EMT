@@ -1237,8 +1237,8 @@ window.EMTHeatmap = (function () {
           '<b>Everything</b> \u2014 ' + hh(p.half_hours) + '</label>' +
           '<label style="display:block;margin:4px 0;"><input type="radio" name="hm-del-scope" value="imported"> ' +
           '<b>Only the imported half-hours</b> \u2014 ' + p.imported_half_hours + ' of ' + p.half_hours +
-          ' (CSV, PDF bills or the API import). Live and settled ones are kept, and so are the ' +
-          'devices\u2019 rows for the imported ones, for a re-import to rejoin.</label></div>' : '';
+          ' (CSV, PDF bills or the API import), with the devices\u2019 data in them. Live and settled ' +
+          'ones are kept.</label></div>' : '';
       box('<p><b>Deletes everything in these half-hours, not only the ' + chan + '.</b> Import, export' + dev +
           ' data for ' + hh(p.half_hours) + ' (' + esc(localTime(p.from_utc)) + ' \u2192 ' +
           esc(localTime(p.to_utc)) + ') are deleted.</p>' +
