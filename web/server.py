@@ -8587,9 +8587,31 @@ def _corrections_time_to_utc(time_str: str, tz_name: str,
         return time_str
 
 
+def _corrections_half_hour(data, tz_name, block_minutes=30):
+    """(from_utc, to_utc) for `{day, slot}` — one half-hour of the Billing tab's day chart (data
+    management design §1 (3), 21 Oct 2026) — or None without them.
+
+    The slot is the chart's: the local clock position, slot × block_minutes after local midnight
+    (energy_charts.group_blocks_by_day), so a day always has 48. On the clocks-back day the bar at
+    a repeated time is the later block, so the later one (fold=1) is the one corrected; on the
+    clocks-forward day the missing hour's slots name no time, and an empty span matches nothing."""
+    day, slot = data.get("day"), data.get("slot")
+    if not day or slot is None:
+        return None
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(tz_name or "UTC")
+    bm = int(block_minutes or 30)
+    wall = _dt.fromisoformat(str(day)[:10]) + _td(minutes=bm * int(slot))
+    utc = wall.replace(tzinfo=tz, fold=1).astimezone(_tz.utc).replace(tzinfo=None)
+    if utc.replace(tzinfo=_tz.utc).astimezone(tz).replace(tzinfo=None) != wall:
+        return utc.isoformat(), utc.isoformat()      # a time the clocks skipped
+    return utc.isoformat(), (utc + _td(minutes=bm)).isoformat()
+
+
 def _corrections_build_where(corr_type, from_date, to_date, channel,
                               from_time_utc, to_time_utc, meter_id, tz_name,
-                              api_settled_only=False):
+                              api_settled_only=False, utc_span=None):
     """
     Build WHERE clause and params for corrections queries.
 
@@ -8610,12 +8632,15 @@ def _corrections_build_where(corr_type, from_date, to_date, channel,
     if corr_type == "rate":
         col = "imp_rate" if channel == "import" else "exp_rate"
 
-    # Use UTC bounds derived from local dates — handles BST correctly without local_date column
-    _utc_s, _utc_e = _corr_utc_bounds(from_date, to_date, tz_name)
+    # Use UTC bounds derived from local dates — handles BST correctly without local_date column;
+    # or exactly `utc_span`, one half-hour from the Billing tab (_corrections_half_hour)
+    _utc_s, _utc_e = utc_span if utc_span else _corr_utc_bounds(from_date, to_date, tz_name)
     clauses = ["block_start >= ?", "block_start < ?"]
     params  = [_utc_s, _utc_e]
 
-    if from_time_utc and to_time_utc:
+    if utc_span:
+        pass                                       # the span is the half-hour: no time window
+    elif from_time_utc and to_time_utc:
         if from_time_utc <= to_time_utc:
             # Normal window — entirely within one UTC day
             clauses.append("TIME(block_start) >= ?")
@@ -8674,14 +8699,15 @@ def _corrections_api_gate_active() -> bool:
 
 def _corrections_unreconciled_count(store, from_date, to_date, channel,
                                     from_time_utc, to_time_utc, meter_id,
-                                    tz_name) -> int:
+                                    tz_name, utc_span=None) -> int:
     """Count in-window rate blocks NOT yet DCC-settled — the ones a gated rate
     correction will skip — so the UI can tell the user to retry after settlement.
     """
     settled_col = "imp_kwh_api" if channel == "import" else "exp_kwh_api"
     where, params, _ = _corrections_build_where(
         "rate", from_date, to_date, channel,
-        from_time_utc, to_time_utc, meter_id, tz_name, api_settled_only=False)
+        from_time_utc, to_time_utc, meter_id, tz_name, api_settled_only=False,
+        utc_span=utc_span)
     # Only MAIN-meter blocks settle via DCC (imp_kwh_api). Device rows never get
     # imp_kwh_api — they follow the main — so counting them here produced a
     # spurious "N blocks await settlement" warning (issue #254c).
@@ -9194,6 +9220,8 @@ def api_corrections_preview():
 
         if corr_type not in ("standing", "rate"):
             return jsonify({"error": "type must be 'standing' or 'rate'"}), 400
+        if data.get("day"):                        # the Billing tab: a day, or a half-hour of it
+            from_date = to_date = str(data["day"])[:10]
         if not from_date or not to_date:
             return jsonify({"error": "from_date and to_date required"}), 400
 
@@ -9205,6 +9233,8 @@ def api_corrections_preview():
                 main_meta = md.get("meta") or {}
                 break
         tz_name = main_meta.get("timezone", "UTC")
+        utc_span = (_corrections_half_hour(data, tz_name, main_meta.get("block_minutes"))
+                    if corr_type == "rate" else None)
 
         # Use from_date as DST anchor so March/BST offsets are correct
         from_time_utc = _corrections_time_to_utc(from_time, tz_name, from_date) if from_time else ""
@@ -9212,7 +9242,7 @@ def api_corrections_preview():
 
         where, params, col = _corrections_build_where(
             corr_type, from_date, to_date, channel,
-            from_time_utc, to_time_utc, meter_id, tz_name
+            from_time_utc, to_time_utc, meter_id, tz_name, utc_span=utc_span
         )
 
         # API+ gate: rate corrections only touch DCC-settled blocks (see
@@ -9223,11 +9253,11 @@ def api_corrections_preview():
             where, params, col = _corrections_build_where(
                 corr_type, from_date, to_date, channel,
                 from_time_utc, to_time_utc, meter_id, tz_name,
-                api_settled_only=True
+                api_settled_only=True, utc_span=utc_span
             )
             skipped = _corrections_unreconciled_count(
                 store, from_date, to_date, channel,
-                from_time_utc, to_time_utc, meter_id, tz_name)
+                from_time_utc, to_time_utc, meter_id, tz_name, utc_span=utc_span)
 
         if corr_type == "standing":
             cur = store._conn.execute(
@@ -9260,20 +9290,25 @@ def api_corrections_preview():
                 except Exception:
                     return bs
 
-            def _row(bs, mid, cur_rate, kwh, cur_cost):
+            def _row(bs, mid, cur_rate, kwh, cur_cost, device=False):
                 nc = round(float(kwh or 0) * float(value), 6) if value is not None else None
-                return {"block_start": bs, "display": _display(bs), "meter_id": mid,
+                return {"block_start": bs, "display": _display(bs), "meter_id": mid, "device": device,
                         "current_rate": round(float(cur_rate or 0), 6),
                         "new_rate": float(value) if value is not None else None,
                         "kwh": round(float(kwh or 0), 6),
                         "current_cost": round(float(cur_cost or 0), 6), "new_cost": nc}
 
             blocks_out = []
-            # MAIN blocks (settled gate applied in `where`) — cost basis = imp_kwh
+            # MAIN blocks (settled gate applied in `where`) — cost basis = imp_kwh. Main only
+            # under `meter_id = 'all'`, which matches the device rows too: they are listed below
+            # at their grid kWh, and were listed twice, the first time at their raw kWh.
+            _all = not meter_id or meter_id == "all"
             main_rows = store._conn.execute(
                 f"""SELECT block_start, meter_id, {col} as current_rate,
                            {kwh_col} as kwh, {cost_col} as current_cost
-                    FROM blocks WHERE {where} ORDER BY block_start, meter_id""",
+                    FROM blocks WHERE {where}"""
+                + (" AND meter_id IN (SELECT meter_id FROM meters WHERE is_sub_meter = 0)" if _all else "")
+                + " ORDER BY block_start, meter_id",
                 params).fetchall()
             for r in main_rows:
                 blocks_out.append(_row(r["block_start"], r["meter_id"],
@@ -9294,7 +9329,7 @@ def api_corrections_preview():
                         ORDER BY block_start, meter_id""", bs_list).fetchall()
                 for r in dev_rows:
                     blocks_out.append(_row(r["block_start"], r["meter_id"],
-                                           r["current_rate"], r["kwh"], r["current_cost"]))
+                                           r["current_rate"], r["kwh"], r["current_cost"], device=True))
 
             blocks_out.sort(key=lambda b: (b["block_start"], b["meter_id"]))
             return jsonify({"blocks": blocks_out,
@@ -9365,6 +9400,8 @@ def api_corrections_apply():
 
         if corr_type not in ("standing", "rate"):
             return jsonify({"error": "type must be 'standing' or 'rate'"}), 400
+        if data.get("day"):                        # the Billing tab: a day, or a half-hour of it
+            from_date = to_date = str(data["day"])[:10]
         if not from_date or not to_date:
             return jsonify({"error": "from_date and to_date required"}), 400
         if value is None:
@@ -9382,6 +9419,8 @@ def api_corrections_apply():
                 main_meta = md.get("meta") or {}
                 break
         tz_name = main_meta.get("timezone", "UTC")
+        utc_span = (_corrections_half_hour(data, tz_name, main_meta.get("block_minutes"))
+                    if corr_type == "rate" else None)
 
         # Use from_date as DST anchor so March/BST offsets are correct
         from_time_utc = _corrections_time_to_utc(from_time, tz_name, from_date) if from_time else ""
@@ -9389,7 +9428,7 @@ def api_corrections_apply():
 
         where, params, col = _corrections_build_where(
             corr_type, from_date, to_date, channel,
-            from_time_utc, to_time_utc, meter_id, tz_name
+            from_time_utc, to_time_utc, meter_id, tz_name, utc_span=utc_span
         )
 
         # IOG multi-band guard (4.5.7): a single-rate correction flattens a cap-transition
@@ -9417,11 +9456,11 @@ def api_corrections_apply():
             where, params, col = _corrections_build_where(
                 corr_type, from_date, to_date, channel,
                 from_time_utc, to_time_utc, meter_id, tz_name,
-                api_settled_only=True
+                api_settled_only=True, utc_span=utc_span
             )
             skipped = _corrections_unreconciled_count(
                 store, from_date, to_date, channel,
-                from_time_utc, to_time_utc, meter_id, tz_name)
+                from_time_utc, to_time_utc, meter_id, tz_name, utc_span=utc_span)
 
         # The whole correction runs on the ENGINE thread as ONE unit.
         #

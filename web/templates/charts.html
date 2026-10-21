@@ -964,7 +964,7 @@ async function loadChartContent(name, force) {
   // The Billing tab likewise (billing_module.html) — same contract.
   if (name === 'daily') {
     if (!window.EMTBilling) return;
-    if (!EMTBilling._state.inited) return EMTBilling.init(document.getElementById('chart-daily-content'));
+    if (!EMTBilling._state.inited) return EMTBilling.init(document.getElementById('chart-daily-content'), {corrections: true});
     return force ? EMTBilling.rerender() : EMTBilling.refresh();
   }
 }

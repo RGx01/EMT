@@ -212,9 +212,20 @@ the passes that read it. Whether the `cad` branch is then dead, and goes, is a s
    and SoC histories, two days dense); weighted, 2.8 / 0.60 / 13.1 MB against 2.0 / 0.57 / 11.8 for
    30 days / July / everything. Clicked through: the dialog's estimate raced (an earlier choice's
    reply landing last) — only the latest is shown now.
-6. **Corrections on the Billing tab** — the context menu and the modal, CAD-only; one half-hour;
-   the standing charge from the summary row; the required backup; `from_utc` / `to_utc` on the
-   corrections routes.
+6. **Corrections on the Billing tab** — *built 21 Oct 2026*: right-click (long-press) a day chart
+   → *Correct the import (export) rate, HH:MM – HH:MM…* or the day's standing charge, which the
+   day's summary panel offers too; CAD-only (`/api/billing-source`'s `uses_api`), on the Charts
+   page and not the Lovelace card. The corrections routes take `{day, slot}` (a rate) or `{day}`
+   (the standing charge) in place of the dates and times — not `from_utc` / `to_utc`, so the page
+   never converts a time: the slot is the chart's, the local clock position, so on the clocks-back
+   day the repeated hour is the later block, as its bar is, and the clocks-forward day's missing
+   slots match nothing. The modal: the half-hour as it stands (the preview with no value), the
+   nearby rates, the value, *recalculate the cost*, the preview with the devices under the meter
+   and only the meter's £ totalled, the apply behind the required `pre-correction` backup, the
+   page refreshed. The preview had listed each device twice under `meter_id: "all"` (once among
+   the meter rows at its raw kWh); now once, at its grid kWh, flagged `device`. Clicked through on
+   a copy of staging's database set CAD-only: 19 Oct 02:30 BST corrected alone (its neighbours
+   untouched, the battery's cost from its grid kWh), the standing charge on exactly 48 half-hours.
 7. **Retire the sub-pages** — Fill History & Gaps, Delete Blocks, Cost Corrections, with redirects;
    the billing settlement source's UI.
 
