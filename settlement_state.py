@@ -128,6 +128,11 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
             if (cost is not None and rate is not None
                     and abs(cost - round(kwh * rate, 6)) <= _EPS_GBP):
                 flags.append("recost_bl82")
+    elif src == "imported_api" and bill_cost is not None:
+        # Octopus's bill is cached for it: whatever the import's no-cost record says, the cost is
+        # Octopus's (21 Oct 2026, staging: 15 half-hours of 21 Jul read "no cost, no longer asked"
+        # with their bills cached and applied — the record was never cleared)
+        bill = "applied" if cost is not None and abs(cost - bill_cost) <= _EPS_GBP else "differs"
     elif src == "imported_api" and start in import_asked:
         # Octopus gave the importer no cost and the drain asks for its bill (an IOG-SMB window,
         # engine.bill_no_cost): it waits as a live half-hour does, until the bill or the give-up
