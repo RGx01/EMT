@@ -1,13 +1,29 @@
 {% extends "base.html" %}
 
 {% block topbar %}
-<div class="topbar">
+<div class="topbar dm-topbar">
   <div>
     <h2>Data Management</h2>
-    <div class="sub">Your data, half-hour by half-hour · whole history · safety &amp; housekeeping</div>
+    <div class="sub">Your data, half-hour by half-hour</div>
   </div>
-  <div style="display:flex;gap:8px;flex-wrap:wrap;">
-    <button class="btn btn-secondary" id="btn-backup" onclick="doManualBackup()">💾 Backup Now</button>
+  <!-- The jobs off the heatmap, in the topbar (21 Oct 2026, the user): below it they moved as its
+       months loaded. Whole history's items are decided here, so the menu is whole at first paint. -->
+  <div class="dm-top-actions">
+    <div class="dm-menu-wrap">
+      <button class="btn btn-secondary" id="btn-whole" onclick="dmToggleWhole(event)"
+              aria-haspopup="menu" aria-expanded="false">🗂️ <span class="dm-long">Whole history</span><span class="dm-short">History</span> ▾</button>
+      <div id="dm-whole-menu" class="dm-menu" role="menu" style="display:none;">
+        <div class="dm-menu-note">For a range, select it on the heatmap.</div>
+        {% if uses_api %}<button role="menuitem" onclick="dmWhole('api:whole_history', 'Import history from Octopus')">📥 Import history from Octopus</button>{% endif %}
+        <button role="menuitem" onclick="dmWhole('csv:range', 'Import a CSV')">📄 Import a CSV</button>
+        <button role="menuitem" onclick="dmWhole('csv:bills', 'Import PDF bills')">🧾 Import PDF bills</button>
+        {% if uses_api %}<button role="menuitem" onclick="dmWhole('api:gaps', 'Recover every gap')">🩹 Recover every gap</button>{% endif %}
+        <button role="menuitem" id="dm-purge-btn" class="dm-menu-danger" onclick="dmPurge()"
+                {% if not has_imported %}style="display:none;"{% endif %}>🗑️ Delete all imported history</button>
+      </div>
+    </div>
+    <button class="btn btn-secondary" id="btn-backups" onclick="openBackups()">🗄️ <span class="dm-long">Backup &amp; restore</span><span class="dm-short">Backups</span></button>
+    <button class="btn btn-secondary" id="btn-backup" onclick="doManualBackup()">💾 Backup now</button>
   </div>
 </div>
 {% endblock %}
@@ -126,15 +142,33 @@
 </div>
 
 <style>
-  .dm-group-head { margin: 30px 0 12px; }
-  .dm-group-head.first { margin-top: 4px; }
-  .dm-group-head h3 { margin: 0 0 4px; font-size: 15px; font-weight: 600; color: var(--text); }
-  .dm-group-head p  { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.6; }
-  .dm-links { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .dm-top-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .dm-short { display: none; }
+  .dm-menu-wrap { position: relative; display: inline-block; }
+  .dm-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 200; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    min-width: 240px; overflow: hidden; padding: 4px 0; }
+  .dm-menu button { display: block; width: 100%; text-align: left; padding: 9px 16px; border: none; background: transparent;
+    color: var(--text); cursor: pointer; font-size: 13px; }
+  .dm-menu button:hover, .dm-menu button:focus { background: var(--border); outline: none; }
+  .dm-menu .dm-menu-danger { color: var(--danger); border-top: 1px solid var(--border); }
+  .dm-menu-note { padding: 6px 16px 8px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--border); }
+  .dm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 999; overflow-y: auto; }
+  .dm-modal { max-width: 760px; margin: 50px auto; padding: 0 16px 60px; }
+  .dm-drop-anywhere { position: fixed; inset: 12px; z-index: 1100; border: 2px dashed var(--accent); border-radius: 12px;
+    background: rgba(0,0,0,0.55); color: var(--text); font-size: 18px; display: flex; align-items: center;
+    justify-content: center; pointer-events: none; }
+  @media (max-width: 600px) {
+    /* the title on its row, the three on one row beneath it, shorter */
+    .dm-topbar { flex-wrap: wrap; gap: 8px; }
+    .dm-top-actions { flex-basis: 100%; flex-wrap: nowrap; }
+    .dm-top-actions .btn { padding: 6px 10px; font-size: 12px; white-space: nowrap; }
+    .dm-long { display: none; }
+    .dm-short { display: inline; }
+    .dm-menu { right: auto; left: 0; }
+    .dm-modal { margin: 16px auto; }
+  }
 </style>
-
-<!-- Bring-data-in tools (Historical Import + Device History) now live on the
-     "Fill History & Gaps" landing page, linked from the topbar. -->
 
 <!-- ── Health (data management design §1 (2)): each data view's half-hours to look at, counted with
      the heatmap's own rule over the whole history; the missing half-hours; the last backup; the
@@ -151,36 +185,17 @@
   <div id="dm-heatmap"></div>
 </div>
 
-<!-- ── Whole history (§1 (4)): the jobs that are not a selection, each Historical Import's own
-     flow as a modal over this page. -->
-<div class="card" id="dm-whole">
-  <div class="card-title">🗂️ Whole history</div>
-  <p style="color:var(--muted);font-size:13px;margin:0 0 12px;line-height:1.6;">
-    For a range, select it on the heatmap above. These work on your history as a whole.
-  </p>
-  <div style="display:flex;gap:8px;flex-wrap:wrap;">
-    <button class="btn btn-secondary dm-api-only" onclick="dmWhole('api:whole_history', 'Import history from Octopus')">📥 Import history from Octopus</button>
-    <button class="btn btn-secondary" onclick="dmWhole('csv:range', 'Import a CSV')">📄 Import a CSV</button>
-    <button class="btn btn-secondary" onclick="dmWhole('csv:bills', 'Import PDF bills')">🧾 Import PDF bills</button>
-    <button class="btn btn-secondary dm-api-only" onclick="dmWhole('api:gaps', 'Recover every gap')">🩹 Recover every gap</button>
-    <button class="btn btn-secondary" id="dm-purge-btn" style="color:var(--danger);display:none;" onclick="dmPurge()">🗑️ Delete all imported history</button>
-  </div>
-</div>
-
-
-
-<!-- Correct & review (settlement source + unsettled blocks) moved to the Cost
-     Corrections page — they belong with the other billing/cost tools and only
-     apply to a cad+api setup. -->
-
-<!-- ═══ Backups & storage (data management design §1 (5)) ════════════════════════
-     One card: create a backup or compact in its head; storage as one line; the backups as a table
-     (what made each, when, its size); the daily copy restorable; a file dropped on the last row
-     opens the restore at once — a zip or a blocks.db alike. -->
-<div class="card" id="dm-backups">
+<!-- ═══ Backup & restore (data management design §1 (5)) ═══════════════════════
+     A modal from the topbar (21 Oct 2026): create a backup, compact or make a support file in its
+     head; storage as one line; the backups as a table (what made each, when, its size); the daily
+     copy restorable; a file dropped here — or anywhere on the page — opens the restore at once. -->
+<div id="backups-overlay" class="dm-overlay" style="display:none;" onclick="if (event.target === this) closeBackups()">
+<div class="dm-modal">
+<div class="card" id="dm-backups" role="dialog" aria-modal="true" aria-label="Backup and restore">
   <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
-    <div class="card-title" style="margin:0;">💾 Backups &amp; storage</div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <div class="card-title" style="margin:0;">🗄️ Backup &amp; restore</div>
+    <button onclick="closeBackups()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;">✕</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;flex-basis:100%;">
       <button class="btn btn-secondary" onclick="doManualBackup()" id="btn-backup2">💾 Create backup now</button>
       <button class="btn btn-secondary" id="btn-vacuum" onclick="doVacuum()"
               title="Rebuild the database file to reclaim the space deleted or updated rows left. The engine pauses briefly.">🗜️ Compact now</button>
@@ -203,6 +218,9 @@
     — the 20 most recent. Every irreversible action takes one first.
   </div>
 </div>
+</div>
+</div>
+<div id="drop-anywhere" class="dm-drop-anywhere" style="display:none;">📂 Drop to restore this backup</div>
 
 
 {% include "heatmap_module.html" %}
@@ -730,7 +748,7 @@ function loadHealth() {
     var b = d.last_backup;
     out.push(_hChip('<b>Last backup</b> ' + (b ? _hEsc(_ago(_madeAt(b))) +
                     (_backupWhat(b.name) ? ' (' + _hEsc(_backupWhat(b.name)) + ')' : '') : 'none yet'),
-                    "document.getElementById('dm-backups').scrollIntoView({behavior: 'smooth'})", b ? '' : 'bad'));
+                    "openBackups()", b ? '' : 'bad'));
     if (d.db_bytes) out.push('<span><b>Database</b> ' + (d.db_bytes / 1048576).toFixed(0) + ' MB</span>');
     row.innerHTML = out.join('<span style="color:var(--border);">·</span>');
   }).catch(function (e) {
@@ -740,10 +758,31 @@ function loadHealth() {
 
 // ── Whole history (§1 (4)) ─────────────────────────────────────────────────────
 // Historical Import's own flows, on a task (?task=), as a modal over this page; a close re-counts.
+function dmToggleWhole(e) {
+  e.stopPropagation();
+  var menu = document.getElementById('dm-whole-menu'), btn = document.getElementById('btn-whole');
+  var open = menu.style.display === 'none';
+  menu.style.display = open ? 'block' : 'none';
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (!open) return;
+  function off(evt) {
+    if (evt.type === 'keydown' && evt.key !== 'Escape') return;
+    if (evt.type === 'mousedown' && (btn.contains(evt.target) || menu.contains(evt.target))) return;
+    dmCloseWhole();
+    document.removeEventListener('mousedown', off); document.removeEventListener('keydown', off);
+  }
+  document.addEventListener('mousedown', off); document.addEventListener('keydown', off);
+}
+function dmCloseWhole() {
+  document.getElementById('dm-whole-menu').style.display = 'none';
+  document.getElementById('btn-whole').setAttribute('aria-expanded', 'false');
+}
 function dmWhole(task, title) {
+  dmCloseWhole();
   EMTHeatmap.openEmbedded('/historical-import?embed=1&task=' + encodeURIComponent(task), title, loadHealth);
 }
 function dmPurge() {
+  dmCloseWhole();
   fetch(apiUrl('/api/historical/purge-preview')).then(function (r) { return r.json(); }).then(function (p) {
     if (!p.blocks) { showError('There is no imported history to delete.'); return; }
     showConfirm({
@@ -836,15 +875,49 @@ function buildSupport() {
 }
 
 // Octopus's actions only with the supplier API; the purge only with imported history to delete
+// The purge's item, after a write that may add or remove imported history (the page renders it
+// first; the API items follow the mode, which a write here does not change).
 function dmWholeButtons() {
-  fetch(apiUrl('/api/billing-source')).then(function (r) { return r.json(); }).then(function (r) {
-    if (r && r.uses_api) return;
-    document.querySelectorAll('#dm-whole .dm-api-only').forEach(function (b) { b.style.display = 'none'; });
-  }, function () {});
   fetch(apiUrl('/api/historical/purge-preview')).then(function (r) { return r.json(); }).then(function (p) {
     document.getElementById('dm-purge-btn').style.display = p && p.blocks ? '' : 'none';
   }, function () {});
 }
+
+// ── Backup & restore, from the topbar; `?open=backups` (or `support`) opens it from a link ──
+function openBackups() {
+  document.getElementById('backups-overlay').style.display = 'block';
+  loadBackupList(); loadStorageInfo();
+}
+function closeBackups() { document.getElementById('backups-overlay').style.display = 'none'; }
+document.addEventListener('keydown', function (e) {
+  if (e.key !== 'Escape' || document.getElementById('backups-overlay').style.display !== 'block') return;
+  // a modal above it closes first
+  var above = ['restore-overlay', 'zip-restore-overlay', 'confirm-overlay', 'support-overlay'].some(function (id) {
+    var el = document.getElementById(id); return el && el.style.display === 'block';
+  });
+  if (!above) closeBackups();
+});
+document.addEventListener('DOMContentLoaded', function () {
+  var o = new URLSearchParams(window.location.search).get('open');
+  if (o === 'backups') openBackups();
+  else if (o === 'support') openSupport();
+});
+
+// A backup dropped anywhere on the page opens the restore — the drop row is in a modal now.
+(function () {
+  var hint = null, depth = 0;
+  function files(e) { return e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0; }
+  function show(on) { hint = hint || document.getElementById('drop-anywhere'); if (hint) hint.style.display = on ? 'flex' : 'none'; }
+  window.addEventListener('dragenter', function (e) { if (files(e)) { depth++; show(true); } });
+  window.addEventListener('dragleave', function (e) { if (files(e) && --depth <= 0) { depth = 0; show(false); } });
+  window.addEventListener('dragover', function (e) { if (files(e)) e.preventDefault(); });
+  window.addEventListener('drop', function (e) {
+    depth = 0; show(false);
+    if (!files(e) || e.defaultPrevented) return;      // the drop row handled it
+    e.preventDefault();
+    onFileSelect(e.dataTransfer.files);
+  });
+})();
 document.addEventListener('DOMContentLoaded', function () { loadHealth(); dmWholeButtons(); });
 
 // ── Historical Corrections ─────────────────────────────────────────────────
