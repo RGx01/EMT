@@ -929,33 +929,36 @@ window.EMTBilling = (function () {
 
   /* bill card */
   .emt-bill .bill-compare-wrap { display: flex; gap: 20px; margin-bottom: 16px; flex-wrap: wrap; }
-  .emt-bill .bill-compare-col { flex: 1; min-width: 300px; }
+  /* half the row, with or without a comparison beside it (21 Oct 2026, the user: one bill
+     alone stretched to the full width) */
+  .emt-bill .bill-compare-col { flex: 1 1 0; min-width: 300px; max-width: calc(50% - 10px); }
   .emt-bill .bill-compare-empty { display: flex; align-items: center; justify-content: center; background: var(--surface);
     border: 1px dashed var(--border); border-radius: 8px; color: var(--muted); font-style: italic; padding: 20px; }
   .emt-bill .bill-view-heading h2 { font-size: 15px; font-weight: 600; margin: 0 0 8px; color: var(--text); }
   .emt-bill .bill-view-heading.compare h2 { color: var(--muted); }
-  .emt-bill .billing-summary { background: var(--surface); padding: 16px 20px; margin-bottom: 12px; border-radius: 8px;
+  .emt-bill .billing-summary { background: var(--surface); padding: 10px 16px; margin-bottom: 12px; border-radius: 8px;
     border: 1px solid var(--border); position: relative; overflow: hidden; }
   .emt-bill .billing-summary::after, .emt-bill .day-chart-wrap::after { content: "Informational — not authoritative";
     position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) rotate(-30deg); font-size: 22px; font-weight: 700;
     color: rgba(127,127,127,0.08); pointer-events: none; user-select: none; letter-spacing: 0.05em; }
   .emt-bill .billing-summary.current-period { border: 2px solid var(--accent); background: rgba(0,212,170,0.05); }
   .emt-bill .bill-site-header td { text-align: left; font-size: 15px; font-weight: 700; color: var(--text);
-    padding: 0 0 12px; border-bottom: 2px solid var(--border); }
+    padding: 0 0 6px; border-bottom: 2px solid var(--border); }
   .emt-bill .reads { font-size: 11px; font-weight: 400; color: var(--muted); }
-  .emt-bill .billing-table { border-collapse: collapse; width: 100%; font-size: 12px; }
-  .emt-bill .billing-table td { padding: 3px 0; text-align: right; }
-  .emt-bill .channel-title td { text-align: left; padding-top: 10px; padding-bottom: 2px; font-weight: 600; font-size: 13px;
+  /* compact (21 Oct 2026, the user): the card's rows at 1.25 with 1 px padding */
+  .emt-bill .billing-table { border-collapse: collapse; width: 100%; font-size: 12px; line-height: 1.25; }
+  .emt-bill .billing-table td { padding: 1px 0; text-align: right; }
+  .emt-bill .channel-title td { text-align: left; padding-top: 6px; padding-bottom: 1px; font-weight: 600; font-size: 13px;
     color: var(--text); border-top: 1px solid var(--border); }
-  .emt-bill .channel-header td { font-size: 11px; color: var(--muted); padding-bottom: 2px; }
-  .emt-bill .channel-total td { padding-top: 2px; font-weight: 600; }
-  .emt-bill .standing td { padding-top: 8px; }
-  .emt-bill .submeter-breakdown-header td { text-align: left; padding-top: 10px; padding-bottom: 3px; font-size: 11px;
+  .emt-bill .channel-header td { font-size: 11px; color: var(--muted); padding-bottom: 1px; }
+  .emt-bill .channel-total td { padding-top: 1px; font-weight: 600; }
+  .emt-bill .standing td { padding-top: 4px; }
+  .emt-bill .submeter-breakdown-header td { text-align: left; padding-top: 6px; padding-bottom: 2px; font-size: 11px;
     font-weight: 600; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; border-top: 1px solid var(--border); }
   .emt-bill .submeter-indent td:first-child { padding-left: 12px; }
-  .emt-bill .channel-title.submeter-indent td { border-top: none; padding-top: 6px; font-size: 12px; }
+  .emt-bill .channel-title.submeter-indent td { border-top: none; padding-top: 4px; font-size: 12px; }
   .emt-bill .channel-header.submeter-indent td { padding-left: 12px; }
-  .emt-bill .grand-total td { padding-top: 8px; font-size: 14px; font-weight: 700; color: var(--accent); border-top: 2px solid var(--accent); }
+  .emt-bill .grand-total td { padding-top: 4px; font-size: 14px; font-weight: 700; color: var(--accent); border-top: 2px solid var(--accent); }
 
   /* toggles */
   .emt-bill .bill-toggle, .emt-bill .day-charts-toggle { background: var(--surface); border-radius: 8px;
@@ -1046,7 +1049,7 @@ window.EMTBilling = (function () {
     .emt-bill .chart-container { flex: none; width: 100%; height: 320px; }
     .emt-bill .day-label { width: 100%; margin-bottom: 2px; }
     .emt-bill .bill-compare-wrap { flex-direction: column; }
-    .emt-bill .bill-compare-col { min-width: 0; }
+    .emt-bill .bill-compare-col { min-width: 0; max-width: none; }
     .emt-bill #period-rolodex-label { width: 170px; }
   }
 </style>

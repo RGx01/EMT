@@ -657,7 +657,6 @@ function showSuccess(msg) {
 
 document.addEventListener('DOMContentLoaded', function() {
   loadBackupList();
-  // Corrections and Delete Blocks moved to sub-pages
   // Update backup path display
   fetch(apiUrl('/api/backup/info'))
     .then(function(r) { return r.json(); })

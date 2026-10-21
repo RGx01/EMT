@@ -214,6 +214,17 @@ dropped anywhere on the page opens the restore, since the drop row is in a modal
 - **The support file's log is the log.** The Supervisor sends its last 100 entries unless asked for
   more: a support file held 99 lines. It and the Logs page now pass `lines`.
 
+**(11) The third round, on staging** (21 Oct 2026, the user):
+- **An Octopus import with nothing to fetch isn't offered.** Both channels' windows empty means the
+  history already covers what Octopus holds. The plan says so, *Nothing to import*, and has no
+  Start. It used to run, write 0 and look as though it never finished: the page held for a verify
+  the server skips when nothing was written (`verify_skipped`). The page now reads that, and a
+  run that wrote nothing ends *nothing new*.
+- **The Bill Summary card is compact.** Its rows are 1.25 high with 1 px padding, and its section
+  gaps are halved: a 735 px card is 622.
+- **One bill keeps its width.** Without a comparison, a bill is as wide as it is beside one, half
+  the row, not the whole of it.
+
 ---
 
 ## 2. Open
@@ -326,5 +337,9 @@ clean-up.
       counted again (the days' fingerprints are most of it); cached 0.07 s.
     - **Billing:** at 1400 px the chart matches its summary; at phone width it stays 320.
     - **Octopus import:** *Preview plan* is enabled on opening.
+
+11. **The third round** — *built 21 Oct 2026*: §1 (11). Locally, with the plan Octopus answered
+    on staging, there is no Start and the message is shown; at 1400 px a bill is 554 px with or
+    without its comparison.
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.
