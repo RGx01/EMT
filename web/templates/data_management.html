@@ -744,7 +744,9 @@ function loadHealth() {
     });
     out.push(_hChip('<b>Missing</b> ' + (miss ? miss + ' half-hour' + (miss === 1 ? '' : 's') + ' in ' +
                     d.missing.gaps + ' gap' + (d.missing.gaps === 1 ? '' : 's') : 'none'),
-                    "dmShowView('presence')", miss ? 'bad' : 'good'));
+                    // the bill views show a missing half-hour as an issue; Missing is CAD-only's view
+                    "dmShowView('" + (d.views && d.views.bill ? 'bill' : d.views && d.views.export ? 'export' : 'presence') + "')",
+                    miss ? 'bad' : 'good'));
     var b = d.last_backup;
     out.push(_hChip('<b>Last backup</b> ' + (b ? _hEsc(_ago(_madeAt(b))) +
                     (_backupWhat(b.name) ? ' (' + _hEsc(_backupWhat(b.name)) + ')' : '') : 'none yet'),

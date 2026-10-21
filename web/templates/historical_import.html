@@ -16,8 +16,8 @@
 {% block content %}
 <!-- Guided backfill (unified front door: scope -> source -> preview -> apply) -->
 <div class="card" id="bf-card">
-  <div style="font-weight:600;margin-bottom:2px;">Fill missing data</div>
-  <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:12px;">
+  <div id="bf-head" style="font-weight:600;margin-bottom:2px;">Fill missing data</div>
+  <div id="bf-intro" style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:12px;">
     One place to backfill your history or fill gaps. Pick what's missing and where the data
     should come from — you'll see exactly what will happen before anything is written.
     Backfilled blocks have no per-device breakdown, and filling gaps can restore blocks you
@@ -34,7 +34,7 @@
     You can start a new one once it finishes — watch its progress in the panel below.
   </div>
 
-  <div style="font-size:12px;color:var(--muted);margin-bottom:4px;">1 · Where should the data come from?</div>
+  <div id="bf-source-label" style="font-size:12px;color:var(--muted);margin-bottom:4px;">1 · Where should the data come from?</div>
   <div id="bf-source" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;">
     <button class="btn btn-secondary bf-source-btn" data-source="api" onclick="bfPickSource(this)">API</button>
     <button class="btn btn-secondary bf-source-btn" data-source="csv" onclick="bfPickSource(this)">CSV</button>
@@ -726,6 +726,16 @@ document.addEventListener('DOMContentLoaded', bfOpenGapFromUrl);
 // Opened on a task (Data Management's Whole history card, data management design §1 (4), 21 Oct
 // 2026): ?task=api:whole_history | api:gaps | csv:range | csv:bills — the source, then the task,
 // as a click on each would. An unknown or unavailable one leaves the page as it opens.
+var _BF_TASK_INTRO = {
+  'api:whole_history': 'Fetches your history from Octopus, back as far as it holds, before your first ' +
+    'half-hour. You see the plan before anything is written. Imported half-hours have no per-device breakdown.',
+  'api:gaps': 'Every gap in your history, each filled from Octopus. Filling a gap also brings back ' +
+    'half-hours you deleted.',
+  'csv:range': 'Extends your history back from a CSV, from any supplier: choose how far back, download ' +
+    'the pre-filled template, fill it in and upload it. Imported half-hours have no per-device breakdown.',
+  'csv:bills': 'Builds your history from Octopus PDF bills: choose the bills, check what they give, ' +
+    'then apply. Half-hours you already have are kept.'
+};
 function bfOpenTaskFromUrl() {
   var t = (new URLSearchParams(location.search).get('task') || '').split(':');
   if (t.length !== 2 || !/^(api|csv)$/.test(t[0]) || !/^(whole_history|range|gaps|bills)$/.test(t[1])) return;
@@ -733,7 +743,16 @@ function bfOpenTaskFromUrl() {
   if (!src || src.disabled) return;
   bfPickSource(src);
   var scope = document.querySelector('.bf-scope-btn.bf-task-' + t[0] + '[data-scope="' + t[1] + '"]');
-  if (scope && !scope.disabled) bfPickScope(scope);
+  if (!scope || scope.disabled) return;
+  bfPickScope(scope);
+  // The menu item chose both, so neither chooser is offered again (21 Oct 2026, the user: picking
+  // API again reset the task and left the modal half on one flow, half on the other). The modal's
+  // own title names the task, so the page's heading goes, and the intro says what this one does.
+  ['bf-source-label', 'bf-source', 'bf-task-label', 'bf-task', 'bf-head'].forEach(function (id) {
+    var el = document.getElementById(id); if (el) el.style.display = 'none';
+  });
+  var intro = document.getElementById('bf-intro'), say = _BF_TASK_INTRO[t[0] + ':' + t[1]];
+  if (intro && say) intro.textContent = say;
 }
 document.addEventListener('DOMContentLoaded', bfOpenTaskFromUrl);
 

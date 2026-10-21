@@ -47,7 +47,7 @@ class TheMissingCount(unittest.TestCase):
     def test_interior_gaps_of_any_age_and_the_tail(self):
         from tests.test_server import server
         st = _st(["2026-10-21T08:00:00", "2026-10-21T09:00:00"])    # 08:30 missing, 2 h ago
-        got = server._missing_half_hours(st, now=datetime(2026, 10, 21, 10, 10))
+        got = server._missing_half_hours(st, "UTC", now=datetime(2026, 10, 21, 10, 10))
         # 08:30 (interior, recent) + 09:30 (the tail; 10:00 is not finished at 10:10)
         self.assertEqual((got["half_hours"], got["gaps"]), (2, 2))
         self.assertEqual(got["newest"], "2026-10-21T09:30:00")
@@ -56,7 +56,7 @@ class TheMissingCount(unittest.TestCase):
         """GUARD (fails on the parent only by the new function)."""
         from tests.test_server import server
         st = _st(["2026-10-21T09:00:00", "2026-10-21T09:30:00"])
-        self.assertEqual(server._missing_half_hours(st, now=datetime(2026, 10, 21, 10, 10))["half_hours"], 0)
+        self.assertEqual(server._missing_half_hours(st, "UTC", now=datetime(2026, 10, 21, 10, 10))["half_hours"], 0)
 
 
 class TheHealthCall(unittest.TestCase):
@@ -76,7 +76,7 @@ class TheHealthCall(unittest.TestCase):
                   mock.patch.object(server, "_settle_views", lambda e: ["bill", "export"]),
                   mock.patch.object(server, "_settlement_states", lambda s, a, b: states),
                   mock.patch.object(server, "_missing_half_hours",
-                                    lambda s: {"half_hours": 0, "gaps": 0, "newest": None})]
+                                    lambda s, tz: {"half_hours": 0, "gaps": 0, "newest": None})]
         for x in self.p:
             x.start()
 
@@ -116,7 +116,7 @@ class TheHealthCache(unittest.TestCase):
                   mock.patch.object(server, "_settle_views", lambda e: ["bill"]),
                   mock.patch.object(server, "_settlement_states", states),
                   mock.patch.object(server, "_missing_half_hours",
-                                    lambda s: {"half_hours": 0, "gaps": 0, "newest": None})]
+                                    lambda s, tz: {"half_hours": 0, "gaps": 0, "newest": None})]
         for x in self.p:
             x.start()
 
