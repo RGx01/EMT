@@ -4663,11 +4663,20 @@ def _health_digest(obj) -> str:
 def _health_agreements(eng):
     """The agreements every month's states read (tariff kind, split, export), as a digest — or None
     before discovery has run, when they are not known yet."""
-    disc = getattr(eng, "_kraken_discovery", None) or {}
-    agr = {ch: sorted((a.get("tariff_code"), a.get("valid_from"), a.get("valid_to"))
-                      for a in ((disc.get(ch) or {}).get("agreements") or []))
-           for ch in sorted(disc)}
-    return _health_digest(agr) if any(agr.values()) else None
+    # The channels only, as _agreement_era reads them: discovery holds other keys too, not all of
+    # them dicts (staging, 21 Oct 2026: "'str' object has no attribute 'get'" took the health
+    # strip down, and the heatmap's month folds with it). Anything unreadable is "not known yet".
+    try:
+        disc = getattr(eng, "_kraken_discovery", None) or {}
+        agr = {}
+        for ch in ("import", "export"):
+            info = disc.get(ch) if isinstance(disc, dict) else None
+            rows = (info.get("agreements") if isinstance(info, dict) else None) or []
+            agr[ch] = sorted((a.get("tariff_code"), a.get("valid_from"), a.get("valid_to"))
+                             for a in rows if isinstance(a, dict))
+        return _health_digest(agr) if any(agr.values()) else None
+    except Exception:
+        return None
 
 
 def _health_cache_path() -> str:

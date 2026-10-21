@@ -129,6 +129,20 @@ class TheAgreements(_Base):
         self.assertIn("2025-03", self.server._health_cache["counted"])
 
 
+class TheDiscoveryShape(_Base):
+
+    def test_keys_that_are_not_channels_are_ignored(self):
+        """Discovery holds more than the channels, and not all of it dicts: the digest read every
+        key and raised, which took the health strip down (staging, 21 Oct 2026). Fails on the
+        parent."""
+        self.disc = {"account": "A-0000", "devices": [{"type": "EV"}],
+                     "import": {"agreements": [{"tariff_code": "E-1R-X-A", "valid_from": "2024-01-01",
+                                                "valid_to": None}]}, "export": None}
+        totals, _ = self.count()
+        self.assertEqual(totals, {"bill": {"applied": 2}})
+        self.assertIsNotNone(self.server._health_cache["per"]["2025-03"]["mark"]["agr"])   # import's read
+
+
 class NoWarmUp(unittest.TestCase):
 
     def test_start_does_not_count(self):
