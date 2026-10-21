@@ -80,7 +80,7 @@
     <div style="font-size:12px;color:var(--muted);line-height:1.6;margin-bottom:10px;">
       Fetches each half-hour's kWh with its exact billed cost and off-peak/peak label —
       dispatch-aware, IOG included, reaching your full history. Imported blocks are flagged
-      and reversible (Delete Blocks → reconstructed history).
+      and reversible (Delete… on the heatmap, only the imported half-hours).
       <details style="margin-top:6px;">
         <summary style="cursor:pointer;">How it works &amp; timing</summary>
         <div style="margin-top:8px;line-height:1.6;">
@@ -852,6 +852,12 @@ function _readFile(id){
   });
 }
 
+// A channel's note from the plan, as a sentence: the server's `empty_window — …` key read aloud.
+function _planNote(note){
+  var n = String(note || 'not available');
+  if(/^empty[_ ]window/i.test(n)) return 'nothing to fetch \u2014 already in EMT, or older than Octopus keeps';
+  return n.charAt(0).toUpperCase() + n.slice(1);
+}
 function planApi(){
   var st = document.getElementById('api-plan-status');
   var out = document.getElementById('api-plan-out');
@@ -866,13 +872,16 @@ function planApi(){
              ? 'No existing history yet — imports everything up to now:'
              : 'Tiles up to go-live '+_esc((d.go_live||'').substr(0,10))+':')
         + '</div>';
+      var fetchable = 0;
       ["import","export"].forEach(function(chn){
         var c = (d.channels||{})[chn]; if(!c) return;
-        if(!c.ok){ html += '<div style="text-transform:capitalize;">'+chn+': '+_esc(c.note||'not available')+'</div>'; return; }
-        html += '<div style="text-transform:capitalize;">'+chn+': <strong>'+_esc(c.window.from.substr(0,10))+'</strong> → '
+        var name = '<span style="text-transform:capitalize;">'+chn+'</span>: ';
+        if(!c.ok){ html += '<div>'+name+_esc(_planNote(c.note))+'</div>'; return; }
+        fetchable++;
+        html += '<div>'+name+'<strong>'+_esc(c.window.from.substr(0,10))+'</strong> → '
           + _esc(c.window.to.substr(0,10))+' · '+c.chunk_count+' chunks</div>';
       });
-      if(d.retention_capped){
+      if(d.retention_capped && fetchable){
         var yrs = d.retention_days ? (Math.round(d.retention_days/365*10)/10) : 2;
         html += '<div style="margin-top:8px;padding:8px 10px;background:rgba(180,83,9,0.08);'
           + 'border-radius:6px;font-size:12px;color:#b45309;line-height:1.6;">⚠ The supplier API only '
@@ -880,6 +889,17 @@ function planApi(){
           + '<strong>'+_esc((d.retention_floor||'').substr(0,10))+'</strong>. Older history (an earlier '
           + 'tariff/trial) has aged out of the API and can only be added from your <strong>bill via the '
           + 'CSV route</strong> (Import a CSV).</div>';
+      }
+      // Nothing either channel could fetch: say so, and offer no Start (21 Oct 2026, staging: an
+      // import of an already-complete history ran, wrote 0 and looked as though it never ended).
+      if(!fetchable){
+        html += '<div style="margin-top:10px;padding:8px 10px;border-radius:6px;background:rgba(46,158,91,0.08);'
+          + 'color:var(--success, #2e9e5b);font-size:13px;line-height:1.6;">\u2713 Nothing to import \u2014 your history '
+          + 'already covers everything Octopus holds' + (d.retention_floor ? ' (back to ' + _esc(d.retention_floor.substr(0,10)) + ')' : '')
+          + '. Anything older can only come from your bills, with Import a CSV.</div>';
+        out.innerHTML = html;
+        document.getElementById('api-apply-row').style.display = 'none';
+        return;
       }
       out.innerHTML = html;
       document.getElementById('api-confirm').checked = false;
@@ -1127,16 +1147,19 @@ function _renderApiStatus(d){
       + '\u23f3 A pricing check is running now \u2014 its progress is below. The figures '
       + 'above are from that earlier run.</div>';
     if(status==='done') html += '<div style="color:var(--muted);margin-top:4px;">'
-      + 'Charts were rebuilt after that run. Undo any time via Delete Blocks \u2192 '
-      + 'reconstructed history.</div>';
+      + 'Charts were rebuilt after that run. Undo any time with Delete\u2026 on the heatmap '
+      + '(only the imported half-hours).</div>';
   } else if(_tailRunning && _terminal){
     // This session's import has written everything; the verify is its tail. Describe
     // the tail rather than declaring the whole job finished.
     html += '<div style="color:#b45309;margin-top:4px;">'
       + '\u23f3 All blocks written. The pricing check is still running \u2014 progress '
       + 'is below, and prices may read high until it reaches them.</div>';
+  } else if(status==='done' && !((w.import||0) + (w.export||0))){
+    html += '<div style="color:var(--success, #2e9e5b);margin-top:4px;">\u2713 Finished \u2014 nothing new: '
+      + 'your history already held all of it.</div>';
   } else if(status==='done'){
-    html += '<div style="color:var(--muted);margin-top:4px;">Charts are rebuilt automatically — see the pricing health below. Undo any time via Delete Blocks → reconstructed history.</div>';
+    html += '<div style="color:var(--muted);margin-top:4px;">Charts are rebuilt automatically — see the pricing health below. Undo any time with Delete\u2026 on the heatmap.</div>';
   }
   out.innerHTML = html;
   _apiButtons(status);
@@ -1178,7 +1201,9 @@ function pollStatus(expectStart){
     // Import just finished writing → the background verify launches server-side
     // immediately. Hold the lock ("settling") until loadPricingHealth confirms the
     // verify state, so the lock never drops in the handoff gap.
-    if(_prevImportActive && !nowActive){ _settling = true;
+    // ...unless the server skipped it: a run that wrote nothing has nothing to verify, and
+    // holding for one that never comes read as a backfill still running.
+    if(_prevImportActive && !nowActive && !(d && d.verify_skipped)){ _settling = true;
       _verifyWatchUntil = Date.now() + 20000;   // #391: watch ~20s for the post-import verify to appear
       if(!_verifyTimer) _verifyTimer = setTimeout(loadPricingHealth, 1500); }
     _prevImportActive = nowActive;
@@ -2026,11 +2051,11 @@ function doApply(){
       html += '<div style="color:var(--muted);margin-top:6px;">'
         + d.blocks_skipped+' slot(s) already held data and were left untouched '
         + '(first-in wins — an import never overwrites an existing block). '
-        + 'To replace them, Delete Blocks for that span first, then re-import.</div>';
+        + 'To replace them, delete that span on the heatmap first (Delete\u2026), then re-import.</div>';
     }
     html += '<div style="color:var(--muted);margin-top:6px;">Backup: '+_esc(d.backup||'(none)')
       + '. Charts will refresh shortly'
-      + '. To undo: Delete Blocks → reconstructed history.</div>';
+      + '. To undo: Delete\u2026 on the heatmap, only the imported half-hours.</div>';
     document.getElementById('done-out').innerHTML = html;
     goStep('done');
   }).catch(function(e){ st.textContent = 'Request failed: '+e; document.getElementById('btn-apply').disabled=false; });
