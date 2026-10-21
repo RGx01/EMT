@@ -196,6 +196,24 @@ dropped anywhere on the page opens the restore, since the drop row is in a modal
   and Export bill views already, and the health strip's *Missing* opens the Import bill. CAD-only,
   which has no bill view, keeps it.
 
+**(10) The second round, on staging** (21 Oct 2026, the user):
+- **Import history from Octopus loses *Reprice from CSV*.** Import a CSV fills half-hours; the
+  pricing-health panel's per-slot CSV for half-hours Octopus could not price stays.
+- ***Preview plan* opens enabled on a task.** It stayed greyed, and not because the history was
+  complete. Picking the task started a fresh flow before the page's first status check, and a
+  fresh flow skipped the verify check the run lock waits on, so the lock never lifted.
+- **A Billing day's chart fills its row.** It is as tall as the summary beside it, never under
+  320 px, and the summary's lines are closer. A summary of 460 px is now 367, and the chart beside
+  it 367, not 320 with space beneath.
+- **The health strip counts a month at a time.** Each month is kept until its own days'
+  fingerprints move, so a new half-hour counts the current month and not the history:
+  - *Counted again:* a month within the age window (bills turn overdue at 9 days) every ten
+    minutes; every month hourly, or when the bills given up or held change.
+  - *After start:* one count, off the request path.
+  - *The heatmap* waits 1.5 s at most for the month counts, then folds when they come.
+- **The support file's log is the log.** The Supervisor sends its last 100 entries unless asked for
+  more: a support file held 99 lines. It and the Logs page now pass `lines`.
+
 ---
 
 ## 2. Open
@@ -302,5 +320,11 @@ clean-up.
    - **A drag** from 21 Oct 05:00 to 19 Oct 15:00: 19 and 20 Oct whole, and 21 Oct up to its last
      finished half-hour. Within one row it stays cell to cell.
    - **Each Whole history task** opens on its own flow.
+
+10. **The second round** — *built 21 Oct 2026*: §1 (10). On a copy of staging's database:
+    - **Health:** first count 0.88 s; after new data with nothing old moved, 0.31 s with no month
+      counted again (the days' fingerprints are most of it); cached 0.07 s.
+    - **Billing:** at 1400 px the chart matches its summary; at phone width it stays 320.
+    - **Octopus import:** *Preview plan* is enabled on opening.
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.

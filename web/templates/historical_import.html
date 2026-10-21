@@ -141,27 +141,6 @@
 
     <div id="api-gaps-out" style="margin-top:10px;font-size:13px;"></div>
 
-    <!-- Reprice from CSV: last-resort manual price fix, collapsed by default. The
-         old unbounded date-range reprice was removed — the verify pass + the
-         pricing-health retry (and its per-slot CSV escape hatch) cover recovery. -->
-    <details style="margin-top:14px;border-top:1px solid var(--border);padding-top:12px;">
-      <summary style="cursor:pointer;font-weight:600;">Reprice from CSV
-        <span style="font-weight:400;font-size:12px;color:var(--muted);">— last resort, if a price still won't fix</span>
-      </summary>
-      <div style="font-size:12px;color:var(--muted);line-height:1.6;margin:8px 0 10px;">
-        Almost every slot is fixed automatically by the verify pass or the pricing-health retry
-        above. Only if a handful <em>still</em> won't price: download the consumption CSV for the
-        affected period from your account, add each half-hour's <strong>unit rate (p/kWh)</strong>
-        or cost, and upload it here to set the price straight from your bill — it corrects the
-        existing blocks in place.
-      </div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px;">
-        <input type="file" id="reprice-csv-file" accept=".csv,text/csv" style="font-size:13px;">
-        <button class="btn btn-secondary" id="btn-reprice-csv" onclick="repriceFromCsv()">Reprice from CSV</button>
-        <span id="reprice-csv-status" style="color:var(--muted);"></span>
-      </div>
-      <div id="reprice-csv-out" style="margin-top:6px;font-size:13px;"></div>
-    </details>
   </div>
 </div>
 
@@ -900,7 +879,7 @@ function planApi(){
           + 'keeps about <strong>'+yrs+' years</strong> of half-hourly data — this import reaches back to '
           + '<strong>'+_esc((d.retention_floor||'').substr(0,10))+'</strong>. Older history (an earlier '
           + 'tariff/trial) has aged out of the API and can only be added from your <strong>bill via the '
-          + 'CSV route</strong> (choose CSV above, or Reprice from CSV below).</div>';
+          + 'CSV route</strong> (Import a CSV).</div>';
       }
       out.innerHTML = html;
       document.getElementById('api-confirm').checked = false;
@@ -1054,7 +1033,11 @@ function applyRunLock(){
     if(locked){ b.disabled = true; b.style.opacity = '0.5'; b.style.cursor = 'not-allowed'; }
     else { b.disabled = false; b.style.opacity = ''; b.style.cursor = ''; }
   });
-  var pv = document.getElementById('bf-preview-btn'); if(pv && locked) pv.disabled = true;
+  // Preview plan follows the lock both ways: opened on a task (?task=), the task is picked before
+  // the statuses come back, so the lock lifting must re-enable it (21 Oct 2026, staging: it stayed
+  // greyed with nothing running).
+  var pv = document.getElementById('bf-preview-btn');
+  if(pv){ if(locked) pv.disabled = true; else bfSyncPreviewBtn(); }
   // The START control, not just the picker. The server already refuses a start while an
   // import or the post-import verify is live (409), so leaving it armed offered an action
   // that could only end in a refusal — the worst kind of affordance. Lock the confirm box
@@ -1363,6 +1346,18 @@ function loadPricingHealth(){
     var _v = document.getElementById('verify-status'); if(_v) _v.innerHTML = '';
     var _hr = document.getElementById('health-retry-out'); if(_hr) _hr.innerHTML = '';
     if(_verifyTimer){ clearTimeout(_verifyTimer); _verifyTimer = null; }
+    // The panels stay gone, but the lock still needs to know whether a verify is running: a
+    // flow picked before the first check (?task=, 21 Oct 2026, staging) never learned it, so the
+    // lock never lifted and Preview plan stayed greyed with nothing running.
+    if(!_verifyChecked){
+      fetch(apiUrl('/api/historical/api-import/verify-status')).then(function(r){return r.json();})
+        .catch(function(){return null;}).then(function(v){
+          var vst = v && v.status;
+          _verifyActive = (vst==='running' || vst==='waiting' || vst==='paused');
+          _verifyChecked = true;
+          applyRunLock();
+        });
+    }
     return;
   }
   var vs = document.getElementById('verify-status'); if(vs) vs.innerHTML = '';  // merged in here now
@@ -1826,31 +1821,6 @@ function repriceQueue(btn){
     outId: 'health-retry-out',
     onDone: function(){ loadPricingHealth(); }
   });
-}
-
-function repriceFromCsv(){
-  var st = document.getElementById('reprice-csv-status');
-  var out = document.getElementById('reprice-csv-out');
-  var btn = document.getElementById('btn-reprice-csv');
-  var f = document.getElementById('reprice-csv-file').files[0];
-  if(!f){ st.textContent = 'Choose a CSV file first.'; return; }
-  btn.disabled = true; st.textContent = 'Reading…'; out.innerHTML = '';
-  var r = new FileReader();
-  r.onload = function(){
-    st.textContent = 'Applying billed costs…';
-    fetch(apiUrl('/api/historical/reprice-from-csv'), {
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ csv: r.result })
-    }).then(function(x){return x.json();}).then(function(d){
-      btn.disabled = false; st.textContent = '';
-      if(!d.ok){ out.innerHTML = '<span style="color:var(--danger);">'+_esc(d.error||'failed')+'</span>'; return; }
-      out.innerHTML = '<strong>'+d.changed+'</strong> block(s) re-priced from the bill · '
-        + d.checked+' rows read'
-        + (d.from?(' · '+_esc((d.from||'').substr(0,10))+' → '+_esc((d.to||'').substr(0,10))):'')
-        + '<div style="color:var(--muted);margin-top:4px;">These now carry Octopus\'s exact billed cost; open charts will refresh shortly.</div>';
-    }).catch(function(e){ btn.disabled = false; st.textContent = 'Request failed: '+e; });
-  };
-  r.readAsText(f);
 }
 
 function controlApi(action){

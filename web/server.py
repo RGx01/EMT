@@ -512,6 +512,10 @@ def start():
     """Start Flask in a background daemon thread."""
     t = threading.Thread(target=_run, daemon=True, name="flask")
     t.start()
+    # after the start's own work (engine startup, a restore's commit stalls), not during it
+    w = threading.Timer(_HEALTH_WARM_S, _warm_health)
+    w.daemon = True
+    w.start()
     _port = int(os.environ.get("EMT_PORT") or "8099")
     logger.info("server: Flask started on port %d", _port)
 
@@ -892,8 +896,10 @@ def api_logs():
     else:
         token = os.environ.get("SUPERVISOR_TOKEN", "")
         try:
+            # `lines`: the Supervisor returns its last 100 entries unless asked for more
+            # (supervisor/api/host.py DEFAULT_LINES; 21 Oct 2026, a support file held 99 lines)
             req = urllib.request.Request(
-                "http://supervisor/addons/self/logs",
+                "http://supervisor/addons/self/logs?lines=%d" % lines,
                 headers={"Authorization": "Bearer " + token}
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
@@ -4585,6 +4591,7 @@ def _missing_half_hours(store, tz_name, now=None) -> dict:
 # poll's data token (any write to the blocks, bills or segments moves it) and a ten-minute window
 # (a state can turn with age alone: a bill given up on). One request computes; the rest wait for it.
 _HEALTH_TTL_S = 600
+_HEALTH_WARM_S = 120
 _health_lock = threading.Lock()
 _health_cache = {"key": None, "views": None, "missing": None, "months": None}
 
@@ -4601,22 +4608,7 @@ def api_data_health():
         import engine as _eng
         store = store_access.store()
         out = {"ok": True, "views": {}, "missing": None, "last_backup": None, "db_bytes": None}
-        views = _settle_views(_eng)
-        import time as _time
-        key = (_blocks_data_version(store), int(_time.time() // _HEALTH_TTL_S), tuple(views))
-        with _health_lock:
-            if _health_cache["key"] != key:
-                first, _last = store.block_span()
-                tz = _config_timezone()
-                v, m = _health_views(store, views, first, tz) if views and first else ({}, {})
-                miss = _missing_half_hours(store, tz)
-                for k, n in (miss.pop("by_month", None) or {}).items():
-                    m.setdefault(k, {})["missing"] = n
-                _health_cache.update(views=v, months=m, missing=miss, key=key)
-            out["views"] = dict(_health_cache["views"])
-            out["missing"] = dict(_health_cache["missing"])
-            # by local month: each view's states and the missing half-hours (Issues only, §3)
-            out["months"] = _health_cache["months"]
+        out.update(_health_answer(store, _settle_views(_eng)))
         import glob
         zips = sorted(glob.glob(f"{_share_backup_dir()}/backups/*.zip"), reverse=True)
         if zips:
@@ -4629,6 +4621,39 @@ def api_data_health():
     except Exception as e:
         logger.error("api_data_health: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def _health_answer(store, views) -> dict:
+    """{views, missing, months} from the cache, counted again only if the data token or the
+    ten-minute window moved — and then only the months that need it (_health_views)."""
+    import time as _time
+    key = (_blocks_data_version(store), int(_time.time() // _HEALTH_TTL_S), tuple(views))
+    with _health_lock:
+        if _health_cache["key"] != key:
+            first, _last = store.block_span()
+            tz = _config_timezone()
+            v, m = _health_views(store, views, first, tz) if views and first else ({}, {})
+            miss = _missing_half_hours(store, tz)
+            for k, n in (miss.pop("by_month", None) or {}).items():
+                m.setdefault(k, {})["missing"] = n
+            _health_cache.update(views=v, months=m, missing=miss, key=key)
+        # by local month: each view's states and the missing half-hours (Issues only, §3)
+        return {"views": dict(_health_cache["views"]), "missing": dict(_health_cache["missing"]),
+                "months": _health_cache["months"]}
+
+
+def _warm_health():
+    """The health counts once after start, off the request path (21 Oct 2026): the first count
+    is the whole history, and the first page after a restart should not wait for it."""
+    import time as _time
+    try:
+        import engine as _eng
+        t = _time.time()
+        _health_answer(store_access.store(), _settle_views(_eng))
+        logger.info("data health: counted in %.1f s, ahead of the first page",
+                    _time.time() - t)
+    except Exception as e:
+        logger.warning("data health: the warm-up count failed: %s", e)
 
 
 def _local_month_starts(lo, hi, tz):
@@ -4649,28 +4674,79 @@ def _local_month_starts(lo, hi, tz):
 
 def _health_views(store, views, first, tz_name):
     """({view: {state or state|flags: count}}, {month: {view: {…}}}) over [first, now + 30 min) —
-    the strip's counts, and the same by local month for the heatmap's Issues only."""
-    from collections import Counter, defaultdict
+    the strip's counts, and the same by local month for the heatmap's Issues only.
+
+    A month at a time, each kept until its own data moves (staging, 21 Oct 2026: the whole history
+    again on every new half-hour was several seconds on the Pi). A month is counted again when:
+    - its days' fingerprints (block_store.day_fingerprints: blocks, segments, cached bills) move;
+    - the context every month shares moves (the bills given up or held, the views, SMB);
+    - it is within the age window (BILL_OVERDUE_DAYS + KWH_LAG_DAYS, rounded up) and ten minutes
+      have passed, since its states can turn with age alone;
+    - an hour has passed, for what no key here sees (an agreement, the VAT calendar).
+    Contiguous months to count go in one pass."""
+    import bisect, time as _time
+    import engine as _eng
+    import settlement_state as _ss
+    from collections import Counter
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
     from zoneinfo import ZoneInfo
-    import bisect
     tz = ZoneInfo(tz_name or "UTC")
-    hi = (_dt.now(_tz.utc).replace(tzinfo=None) + _td(minutes=30)).isoformat()
-    total = {v: Counter() for v in views if v in ("bill", "export")}
-    months = defaultdict(lambda: {v: Counter() for v in total})
-    # each local month's first instant in naive UTC, so a half-hour's month is a bisect, not a
-    # timezone conversion per row (+30% on the first count of 59k blocks)
+    now = _dt.now(_tz.utc).replace(tzinfo=None)
+    hi = (now + _td(minutes=30)).isoformat()
+    vs = tuple(v for v in views if v in ("bill", "export"))
     keys, starts = _local_month_starts(first, hi, tz)
-    for bs, st in _settlement_states(store, first, hi).items():
-        m = keys[max(0, bisect.bisect_right(starts, bs) - 1)]
-        if "bill" in total and st.get("bill"):
-            fl = sorted(f for f in (st.get("flags") or []) if f in _HEALTH_BILL_FLAGS)
-            k = st["bill"] + ("|" + ",".join(fl) if fl else "")
-            total["bill"][k] += 1; months[m]["bill"][k] += 1
-        if "export" in total and st.get("export"):
-            total["export"][st["export"]] += 1; months[m]["export"][st["export"]] += 1
-    return ({v: dict(c) for v, c in total.items()},
-            {m: {v: dict(c) for v, c in d.items()} for m, d in months.items()})
+    ends = starts[1:] + [hi]
+    fps = store.day_fingerprints(first, hi)
+    days = sorted(fps)
+    try:
+        held, kept = _eng.bill_split_held(store)
+        given_up, no_cost, asked = _eng.bill_no_cost(store)
+        ctx = hash((vs, bool(_eng._import_is_smb_capped()), frozenset(held), frozenset(kept),
+                    frozenset(given_up), frozenset(no_cost), frozenset(asked)))
+    except Exception:
+        ctx = object()                              # unknown: every month is counted again
+    t = _time.time()
+    window, hour = int(t // _HEALTH_TTL_S), int(t // 3600)
+    young = (now - _td(days=_ss.BILL_OVERDUE_DAYS + _ss.KWH_LAG_DAYS + 1)).isoformat()
+    per = _health_cache.setdefault("per", {})
+    for k in list(per):
+        if k not in keys:
+            del per[k]
+    marks, todo = {}, []
+    for k, lo, up in zip(keys, starts, ends):
+        a, b = bisect.bisect_left(days, lo[:10]), bisect.bisect_right(days, up[:10])
+        mark = (tuple((d, fps[d]) for d in days[a:b]), ctx, hour, window if up > young else None)
+        marks[k] = mark
+        e = per.get(k)
+        if not (e and e["mark"] == mark):
+            todo.append((k, lo, up))
+    runs = []                                       # contiguous months to count, as one span
+    for k, lo, up in todo:
+        if runs and runs[-1][2] == lo:
+            runs[-1][0].append(k); runs[-1][2] = up
+        else:
+            runs.append([[k], lo, up])
+    for ks, lo, up in runs:
+        counts = {k: {v: Counter() for v in vs} for k in ks}
+        for bs, st in _settlement_states(store, lo, up).items():
+            c = counts[keys[max(0, bisect.bisect_right(starts, bs) - 1)]]
+            if "bill" in c and st.get("bill"):
+                fl = sorted(f for f in (st.get("flags") or []) if f in _HEALTH_BILL_FLAGS)
+                c["bill"][st["bill"] + ("|" + ",".join(fl) if fl else "")] += 1
+            if "export" in c and st.get("export"):
+                c["export"][st["export"]] += 1
+        for k in ks:
+            per[k] = {"mark": marks[k], "counts": {v: dict(n) for v, n in counts[k].items()}}
+    total = {v: Counter() for v in vs}
+    months = {}
+    for k in keys:
+        mc = per[k]["counts"]
+        if any(mc.get(v) for v in vs):
+            months[k] = {v: dict(mc[v]) for v in vs if mc.get(v)}
+        for v in vs:
+            total[v].update(mc.get(v) or {})
+    _health_cache["counted"] = [k for k, _lo, _up in todo]       # for the log and the tests
+    return {v: dict(c) for v, c in total.items()}, months
 
 
 # ── The support file (data management design §1 (5), PR 5) ─────────────────────────────────
@@ -4693,7 +4769,8 @@ def _addon_log_text(max_lines: int = _SUPPORT_LOG_LINES) -> str:
                 return ""
             with open(p, "r", errors="replace") as f:
                 return "\n".join(f.read().splitlines()[-max_lines:])
-        req = urllib.request.Request("http://supervisor/addons/self/logs",
+        # `lines`, or the Supervisor sends its last 100 (see api_logs)
+        req = urllib.request.Request("http://supervisor/addons/self/logs?lines=%d" % int(max_lines),
                                      headers={"Authorization": "Bearer " +
                                               os.environ.get("SUPERVISOR_TOKEN", "")})
         with urllib.request.urlopen(req, timeout=20) as resp:

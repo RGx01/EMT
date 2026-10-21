@@ -150,6 +150,7 @@ class TheHealthCache(unittest.TestCase):
         # one SQLite connection cannot cross threads: a stand-in store, the token fixed
         span = mock.MagicMock()
         span.block_span.return_value = ("2026-10-21T08:00:00", "2026-10-21T08:30:00")
+        span.day_fingerprints.return_value = {}
         with mock.patch.object(self.server, "_settlement_states", slow), \
              mock.patch.object(self.server.store_access, "store", lambda: span), \
              mock.patch.object(self.server, "_blocks_data_version", lambda s: "k"):
