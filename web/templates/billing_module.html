@@ -104,7 +104,7 @@ window.EMTBilling = (function () {
   // ── the day side panel: bill_card.panel_lines, printed ────────────────────
   function spans(lines) {
     return lines.map(function (x) {
-      return '<span style="color:' + x.color + ';font-size:' + x.size + ';line-height:1.6;white-space:nowrap;' +
+      return '<span style="color:' + x.color + ';font-size:' + x.size + ';line-height:1.3;white-space:nowrap;' +
              (x.bold ? 'font-weight:600;' : '') + '">' + esc(x.text) + '</span>';
     }).join('');
   }
@@ -975,13 +975,17 @@ window.EMTBilling = (function () {
   .emt-bill .day-chart-wrap { display: flex; flex-wrap: wrap; background: var(--surface); border-bottom: 1px solid var(--border);
     position: relative; overflow: hidden; }
   .emt-bill .day-chart-wrap:last-child { border-bottom: none; }
-  .emt-bill .chart-summary { flex: 0 0 auto; min-width: 120px; max-width: 220px; padding: 12px 10px;
+  .emt-bill .chart-summary { flex: 0 0 auto; min-width: 120px; max-width: 220px; padding: 8px 10px;
     border-right: 1px solid var(--border); display: flex; flex-direction: column; overflow: hidden; font-size: clamp(10px, 1vw, 13px); }
-  .emt-bill .day-label { font-weight: 700; font-size: 1em; color: var(--accent); margin-bottom: 8px; }
-  .emt-bill .scol { display: flex; flex-direction: column; margin-bottom: 7px; }
+  .emt-bill .day-label { font-weight: 700; font-size: 1em; color: var(--accent); margin-bottom: 4px; }
+  .emt-bill .scol { display: flex; flex-direction: column; margin-bottom: 4px; }
   .emt-bill .stotals { display: flex; flex-direction: column; gap: 1px; margin-bottom: 4px; }
-  .emt-bill .sdivider { border-top: 1px solid var(--border); margin: 6px 0; }
-  .emt-bill .chart-container { flex: 1 1 0; min-width: 0; height: 320px; position: relative; }
+  .emt-bill .sdivider { border-top: 1px solid var(--border); margin: 4px 0; }
+  /* The chart fills its row: as tall as the summary beside it, never under 320 px (21 Oct 2026,
+     the user: a long summary left the chart a strip with empty space beneath). The canvas is out
+     of the flow, so it sizes to the container and never holds the row open itself. */
+  .emt-bill .chart-container { flex: 1 1 0; min-width: 0; min-height: 320px; align-self: stretch; position: relative; }
+  .emt-bill .chart-container canvas { position: absolute; inset: 0; }
   .emt-bill .day-data-tables { flex: 0 0 100%; overflow-x: auto; border-top: 1px solid var(--border); }
   .emt-bill .day-meter-table { width: 100%; }
   .emt-bill .day-meter-table table { border-collapse: collapse; width: 100%; font-size: 11px; white-space: nowrap; }
@@ -1039,7 +1043,7 @@ window.EMTBilling = (function () {
     .emt-bill .day-chart-wrap { flex-direction: column; }
     .emt-bill .chart-summary { width: 100%; max-width: none; border-right: none; border-bottom: 1px solid var(--border);
       padding: 8px 12px; flex-direction: row; flex-wrap: wrap; gap: 6px 16px; }
-    .emt-bill .chart-container { flex: none; width: 100%; }
+    .emt-bill .chart-container { flex: none; width: 100%; height: 320px; }
     .emt-bill .day-label { width: 100%; margin-bottom: 2px; }
     .emt-bill .bill-compare-wrap { flex-direction: column; }
     .emt-bill .bill-compare-col { min-width: 0; }

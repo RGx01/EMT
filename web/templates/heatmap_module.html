@@ -1639,9 +1639,11 @@ window.EMTHeatmap = (function () {
                    '<a href="' + apiUrl('/historical-import#api-import-panel') + '">import it</a>';
   }
 
+  var HEALTH_WAIT_MS = 1500;
   function loadMonthHealth() {
     return fetchJSON('/api/data-health').then(function (d) {
       state.mhealth = (d && d.ok && d.months) || null;
+      foldMonths();                                // a no-op before the months are built
     }, function () { state.mhealth = null; });
   }
 
@@ -1674,7 +1676,10 @@ window.EMTHeatmap = (function () {
         // half-hour is an issue in the Import and Export bill views already; CAD-only has no other.
         if (!METRICS.bill && !METRICS.export) METRICS.presence = PRESENCE_METRIC;
         state.metric = METRICS.bill ? 'bill' : METRICS.export ? 'export' : 'presence';
-        return loadMonthHealth();
+        // The month counts fold clean months before they are drawn; the grid waits for them only
+        // so long (21 Oct 2026: a first count after new data is seconds on the Pi), and folds
+        // them when they come.
+        return Promise.race([loadMonthHealth(), new Promise(function (r) { setTimeout(r, HEALTH_WAIT_MS); })]);
       });
     }
     return libs().then(function () { return apiCheck; })
