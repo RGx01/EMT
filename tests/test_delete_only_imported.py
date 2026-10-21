@@ -5,10 +5,10 @@ Where a selection holds both imported (CSV, PDF bills, the API import) and live 
 heatmap's delete preview offers *Everything* or *Only the imported half-hours (N of M)* — the Delete
 Blocks page's *reconstructed only*, the way to roll back a bad import over part of the history.
 The store already took `utc_span` and `reconstructed_only` together; the preview now counts the
-imported ones and the dialog sends the choice. Only the imported main-meter rows go: live and
-settled half-hours stay, and so do the devices' rows over the imported ones, for a re-import to
-rejoin. (Clicked through on a copy of staging's database: 2–3 Mar 2026, 48 of 96 imported; the
-48 went, 288 rows → 240, after the pre-delete backup.)
+imported ones and the dialog sends the choice. The imported half-hours go whole — the meter's rows
+and the devices' in them (soft delete design §3, 21 Oct 2026: the devices' rows had been kept "for a
+re-import to rejoin", and plotted and costed with no meter beside them). HA's reads stay in
+`ha_reads`, and a refill rebuilds the devices from them. Live and settled half-hours stay whole.
 
 Discriminating (fail on the parent), except the GUARDs marked.
 """
@@ -49,18 +49,17 @@ class TheStore(unittest.TestCase):
 
     def test_the_preview_counts_the_imported(self):
         p = _st().delete_span_preview(A, "2026-03-03T01:00:00")
-        self.assertEqual((p["half_hours"], p["imported_half_hours"], p["imported_rows"]), (3, 2, 2))
+        # the imported rows: the meter's two and the device's two in those half-hours
+        self.assertEqual((p["half_hours"], p["imported_half_hours"], p["imported_rows"]), (3, 2, 4))
 
-    def test_only_the_imported_rows_go(self):
-        """GUARD (passes on the parent: the store already took both together — what this PR relies
-        on, pinned)."""
+    def test_the_imported_half_hours_go_whole(self):
+        """The devices' rows in the imported half-hours go with the meter's; the live half-hour
+        stays whole. Fails on the parent, which left the device's two."""
         st = _st()
         r = st.delete_blocks_for_date_range("", "", tz_name="UTC", reconstructed_only=True,
                                             utc_span=(A, "2026-03-03T01:00:00"))
-        self.assertEqual(r["deleted"], 2)
-        self.assertEqual(_rows(st), [("2026-03-02T23:00:00", "ev_charger"),
-                                     ("2026-03-02T23:30:00", "ev_charger"),
-                                     ("2026-03-03T00:00:00", "electricity_main"),
+        self.assertEqual(r["deleted"], 4)
+        self.assertEqual(_rows(st), [("2026-03-03T00:00:00", "electricity_main"),
                                      ("2026-03-03T00:00:00", "ev_charger")])
 
     def test_everything_takes_every_row(self):
@@ -105,7 +104,7 @@ class TheRoute(unittest.TestCase):
                 if server._delete_job.get("status") != "running":
                     break
                 time.sleep(0.05)
-            self.assertEqual(server._delete_job["result"]["deleted"], 2)
+            self.assertEqual(server._delete_job["result"]["deleted"], 4)   # the meter's 2, the device's 2
             pv = json.loads(client.post("/api/blocks/delete/preview", content_type="application/json",
                                         data=json.dumps({"from_utc": A, "to_utc": "2026-03-03T01:00:00"})).data)
             self.assertEqual(pv["imported_half_hours"], 0)

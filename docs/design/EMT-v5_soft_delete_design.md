@@ -103,7 +103,8 @@ from Octopus or a CSV, whose shape may differ from what was deleted, the split f
 figures. Kept as the hour, the split is never stale.
 
 **Removed** only by a device delete (device sensors design §5): the device's reads go with its rows,
-and the warning says so. A delete of half-hours (§3) and the purge of imported history leave it.
+and the warning says so. A delete of half-hours (§3) and the purge of imported history leave it — and take the devices'
+rows in those half-hours, which the refill rebuilds from it.
 
 **From v4** (an import transform, not a heal — v5 reads the table from then on): a live block
 (`source` NULL or `kraken_api`) gives a half-hour row with its registers and sensor pointer; a pair
@@ -137,6 +138,11 @@ today, after the required backup. The preview says so plainly, whichever view th
 
 (On the Import bill and the energy views it names import first.) The last line is offered only where
 Re-fetch can help: the supplier API connected and the span inside its two years.
+
+**The imported deletes too** (21 Oct 2026): the purge of imported history and *Delete… only the
+imported half-hours* take whole half-hours the same way — the devices' rows in them go with the
+meter's. Both had left them (the purge was v4's, the second kept them "for a re-import to rejoin"),
+plotted and costed with no meter beside them.
 
 **A refill rebuilds the devices.** Today none does — the gap fill, the API import and the CSV import
 write the main meter only, and the devices wait for *Rebuild history* on each card. A refill over

@@ -225,6 +225,18 @@ dropped anywhere on the page opens the restore, since the drop row is in a modal
 - **One bill keeps its width.** Without a comparison, a bill is as wide as it is beside one, half
   the row, not the whole of it.
 
+**(12) Deleting imported history takes whole half-hours, back to the soft delete design §3**
+(21 Oct 2026, the user, after a staging purge left the devices' rows with no meter beside them,
+plotted and costed: the day's bill, `max(0, meter − Σdevices) + Σdevices`, is the devices alone).
+- **The purge and *Delete… only the imported half-hours*** remove the devices' rows in the
+  imported half-hours with the meter's: Device History's, and a live device row where a gap was
+  filled under it.
+- **HA's reads stay in `ha_reads`.** On the staging support file, every one of the 59,526 device
+  half-hours the purge had left had its hour there.
+- **The Octopus import rebuilds the devices** over the imported history once it has written, as
+  the gap fill and the CSV import already did. §3 named all three; the API import never had it.
+- **The Backup & restore modal is wider** (1,040 px), and a backup's row stays on one line.
+
 ---
 
 ## 2. Open
@@ -276,9 +288,9 @@ clean-up.
    Compact cards gone. `/api/import/extract-zip` has no caller left (PR 7 can retire it).
 4. **Delete… only the imported half-hours** — *built 21 Oct 2026*: the preview counts the imported
    half-hours; where a selection holds both, *Everything* or *Only the imported half-hours (N of M)*,
-   sent as the delete's existing `reconstructed_only` with `utc_span`. Only the imported main-meter
-   rows go; the devices' rows over them stay, for a re-import to rejoin (clicked through on a copy of
-   staging's database: 2–3 Mar 2026, 48 of 96 imported, 288 rows → 240 after the backup).
+   sent as the delete's existing `reconstructed_only` with `utc_span`. As built, only the imported
+   main-meter rows went and the devices' rows over them stayed "for a re-import to rejoin" — against
+   the soft delete design §3; corrected in PR 12 (§1 (12)).
 5. **The support file** — *built 21 Oct 2026*: `support_file.py` (identifiers, the cut, the zip,
    the estimate) and `/api/support/estimate`, `/build`, `/status`, `/download`; from the card and
    from a heatmap selection. Identifiers as found on a staging copy: `measured_cost.mpan`;
@@ -341,5 +353,13 @@ clean-up.
 11. **The third round** — *built 21 Oct 2026*: §1 (11). Locally, with the plan Octopus answered
     on staging, there is no Start and the message is shown; at 1400 px a bill is 554 px with or
     without its comparison.
+
+12. **Deletes take the devices** — *built 21 Oct 2026*: §1 (12). On a copy of staging's database:
+    - **The purge:** 48,098 imported meter half-hours and 59,622 device rows in them, in 0.8 s.
+      That's the 59,526 the staging purge left, plus 96 live device rows on 21 Jul 2026, a day
+      filled under live devices. None is left without its meter; `ha_reads` (74,201) and the live
+      meter rows (11,110) are untouched.
+    - ***Only the imported* over 1–4 Mar:** 288 rows went, 1–2 Mar's meter and both devices; 3–4 Mar,
+      live, stayed whole. The preview counts the same 288.
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.

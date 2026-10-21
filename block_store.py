@@ -2771,9 +2771,11 @@ class BlockStore:
         # the imported ones (CSV, PDF bills, the API import): what *only the imported* would take
         # (data management design §1 (6)) — the delete's `reconstructed_only`, as the Delete Blocks
         # page offered it
+        # (the rows: the imported meter's and the devices' in those half-hours, as the delete takes)
+        imp_where, imp_params = self._block_range_where(a, b, False, None, True)
         imp = self._conn.execute(
-            "SELECT COUNT(DISTINCT block_start), COUNT(*) FROM blocks WHERE block_start >= ? AND "
-            "block_start < ? AND source LIKE 'imported%'", (a, b)).fetchone()
+            "SELECT COUNT(DISTINCT block_start), COUNT(*) FROM blocks WHERE " + imp_where,
+            imp_params).fetchone()
         return {"from_utc": a, "to_utc": b, "half_hours": r["n"] or 0, "rows": r["rows"] or 0,
                 "devices": devices, "ha_reads": kept,
                 "imported_half_hours": imp[0] or 0, "imported_rows": imp[1] or 0}
@@ -2807,13 +2809,21 @@ class BlockStore:
 
         `reconstructed_only` restricts to historical-import blocks
         (`source LIKE 'imported%'`), so a bad import can be rolled back without
-        touching native live/kraken data."""
-        clauses = ["block_start >= ?",
-                   "block_start <= ?" if end_inclusive else "block_start < ?"]
+        touching native live/kraken data — and to the devices' rows in those same
+        half-hours: a delete takes whole half-hours (soft delete design §3). HA's reads
+        stay in `ha_reads`, and a refill rebuilds the devices from them; until 21 Oct
+        2026 the devices' rows were left, plotted and costed with no meter beside them."""
+        end_op = "<=" if end_inclusive else "<"
+        clauses = ["block_start >= ?", "block_start %s ?" % end_op]
         params  = [utc_start, utc_end]
 
         if reconstructed_only:
-            clauses.append("source LIKE 'imported%'")
+            clauses.append(
+                "(source LIKE 'imported%' OR (meter_id IN "
+                "(SELECT meter_id FROM meters WHERE is_sub_meter = 1) AND block_start IN "
+                "(SELECT block_start FROM blocks WHERE source LIKE 'imported%' AND "
+                "block_start >= ? AND block_start " + end_op + " ?)))")
+            params.extend([utc_start, utc_end])
 
         if meter_ids is not None:
             placeholders = ",".join("?" * len(meter_ids))
@@ -3047,15 +3057,29 @@ class BlockStore:
         blocks are untouched — imports never overlap them (go-live ceiling).
         """
         info = self.count_imported_history()
+        # Whole half-hours (soft delete design §3, 21 Oct 2026): the devices' rows in the imported
+        # half-hours go too — Device History's, built over the imported meter. Left, they plotted
+        # and costed with no meter beside them (a staging purge: ~60k device half-hours). HA's
+        # reads stay in `ha_reads`; an import that brings the meter back rebuilds the devices.
+        target = ("(source LIKE 'imported%' OR (meter_id IN "
+                  "(SELECT meter_id FROM meters WHERE is_sub_meter = 1) AND block_start IN "
+                  "(SELECT block_start FROM temp.purge_starts)))")
         with self._conn:
+            self._conn.execute("DROP TABLE IF EXISTS temp.purge_starts")
+            self._conn.execute("CREATE TEMP TABLE purge_starts AS SELECT DISTINCT block_start "
+                               "FROM blocks WHERE source LIKE 'imported%'")
+            devices = self._conn.execute(
+                "SELECT COUNT(*) FROM blocks WHERE " + target + " AND COALESCE(source, '') NOT LIKE 'imported%'"
+            ).fetchone()[0]
             mix = self._conn.execute(
                 "DELETE FROM generation_mix WHERE block_id IN "
-                "(SELECT id FROM blocks WHERE source LIKE 'imported%')").rowcount
+                "(SELECT id FROM blocks WHERE " + target + ")").rowcount
             # P3.1: block_segments is keyed by block_start (no FK) — clean it too.
             segs = self._conn.execute(
                 "DELETE FROM block_segments WHERE (block_start, meter_id) IN "
-                "(SELECT block_start, meter_id FROM blocks WHERE source LIKE 'imported%')").rowcount
-            self._conn.execute("DELETE FROM blocks WHERE source LIKE 'imported%'")
+                "(SELECT block_start, meter_id FROM blocks WHERE " + target + ")").rowcount
+            self._conn.execute("DELETE FROM blocks WHERE " + target)
+            self._conn.execute("DROP TABLE IF EXISTS temp.purge_starts")
             derivs = self._conn.execute(
                 "DELETE FROM historical_derivation WHERE source LIKE 'imported%'").rowcount
             try:
@@ -3069,9 +3093,9 @@ class BlockStore:
         # Clear the post-import region prompt and let carbon re-scan the survivors.
         self.set_meta("region_reconcile_pending", None)
         self.rearm_carbon_backfill()
-        logger.info("purge_imported_history: removed %d block(s), %d derivation(s)",
-                    info["blocks"], derivs)
-        return {"blocks": info["blocks"], "generation_mix": mix,
+        logger.info("purge_imported_history: removed %d block(s) and %d device row(s) in those "
+                    "half-hours, %d derivation(s)", info["blocks"], devices, derivs)
+        return {"blocks": info["blocks"], "device_rows": devices, "generation_mix": mix,
                 "block_segments": segs,
                 "derivations": derivs, "from": info["from"], "to": info["to"]}
 
