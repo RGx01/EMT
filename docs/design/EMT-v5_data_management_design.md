@@ -237,6 +237,17 @@ plotted and costed: the day's bill, `max(0, meter − Σdevices) + Σdevices`, i
   the gap fill and the CSV import already did. §3 named all three; the API import never had it.
 - **The Backup & restore modal is wider** (1,040 px), and a backup's row stays on one line.
 
+**(13) The month counts kept across restarts** (21 Oct 2026, the user). The prod box, a thin
+client, counted the whole history in 22 s at each restart (the warm-up's log line); the same count
+is 0.9 s on a Mac. And (10)'s hourly full count would have repeated it hourly on a page load.
+- **Kept in a file beside the database** (`health_counts.json`): each month with the digest it was
+  counted under. A restart counts only what moved; a digest holds across processes, `hash()`
+  doesn't.
+- **No hourly count.** What it was there to notice joins the shared context: the VAT calendar, and
+  the agreements once discovery has found them. Counts made before discovery are counted again once
+  it has; a restart before discovery keeps what it has.
+- **No warm-up after start.**
+
 ---
 
 ## 2. Open
@@ -361,5 +372,9 @@ clean-up.
       meter rows (11,110) are untouched.
     - ***Only the imported* over 1–4 Mar:** 288 rows went, 1–2 Mar's meter and both devices; 3–4 Mar,
       live, stayed whole. The preview counts the same 288.
+
+13. **The month counts kept** — *built 21 Oct 2026*: §1 (13). On a copy of the prod box's
+    database (141k blocks, Mac): the first count 0.89 s, and after a restart 0.32 s with no month
+    counted again, the same answer. The file is 9.8 KB.
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.

@@ -7,8 +7,9 @@ The second round from staging (21 Oct 2026, the user).
    waits on, so the lock never lifted. It wasn't the history being complete.
 3. Billing: a day's chart fills its row, as tall as the summary beside it and never under 320 px.
 4. Billing: the summary's line spacing is 1.3, not 1.6 (a 460 px panel is 367).
-5. Data Management: the health counts go a month at a time, each kept until its own data moves,
-   and are counted once after start. The heatmap waits for them only 1.5 s.
+5. Data Management: the health counts go a month at a time, each kept until its own data moves
+   (since 21 Oct 2026 kept across restarts, test_health_counts_kept.py, and the warm-up after start
+   dropped). The heatmap waits for them only 1.5 s.
 6. The support file's log was 99 lines. The Supervisor sends its last 100 unless asked for more;
    both reads now pass `lines`.
 
@@ -51,7 +52,9 @@ class TheHealthByMonthCache(unittest.TestCase):
         server = self.server = TS.server
         self.st = _st([self.OLD, self.NEW])
         server._health_cache.clear()
-        server._health_cache.update(key=None, views=None, missing=None, months=None)
+        server._health_cache.update(key=None, views=None, missing=None, months=None, per={})
+        import tempfile
+        self.tmp = tempfile.mkdtemp()
         self.spans = []
 
         def states(store, lo, hi):
@@ -63,7 +66,9 @@ class TheHealthByMonthCache(unittest.TestCase):
         self.p = [mock.patch.object(server, "_settlement_states", states),
                   mock.patch.object(eng, "bill_split_held", lambda s: (set(), set()), create=True),
                   mock.patch.object(eng, "bill_no_cost", lambda s: (set(), set(), set()), create=True),
-                  mock.patch.object(eng, "_import_is_smb_capped", lambda: False, create=True)]
+                  mock.patch.object(eng, "_import_is_smb_capped", lambda: False, create=True),
+                  mock.patch.object(server, "_health_cache_path",
+                                    lambda: os.path.join(self.tmp, "health_counts.json"))]
         for x in self.p:
             x.start()
 
@@ -102,23 +107,6 @@ class TheHealthByMonthCache(unittest.TestCase):
             self._count()
         self.assertIn("2026-10", self.server._health_cache["counted"])
         self.assertNotIn("2025-03", self.server._health_cache["counted"])
-
-
-class TheWarmUp(unittest.TestCase):
-
-    def test_start_counts_the_health_once_after_a_delay(self):
-        with open(os.path.join(ROOT, "web", "server.py"), encoding="utf-8") as f:
-            src = f.read()
-        start = src[src.index("def start():"):src.index("def _run():")]
-        self.assertIn("threading.Timer(_HEALTH_WARM_S, _warm_health)", start)
-
-    def test_the_warm_up_fills_the_cache(self):
-        server = TS.server
-        with mock.patch.object(server, "_health_answer") as ans, \
-             mock.patch.object(server.store_access, "store", lambda: mock.MagicMock()), \
-             mock.patch.object(server, "_settle_views", lambda e: ["bill"]):
-            server._warm_health()
-        self.assertEqual(ans.call_count, 1)
 
 
 class TheSupervisorLog(unittest.TestCase):

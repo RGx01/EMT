@@ -62,6 +62,9 @@ class TheHealthByMonth(unittest.TestCase):
         st = _st(["2026-09-10T08:00:00", "2026-10-02T08:00:00"], tz="UTC")
         client = TS.make_client(store=st)
         server._health_cache["key"] = None
+        server._health_cache["per"] = {}                # and keeps no file (health_counts.json)
+        self._hp = mock.patch.object(server, "_health_save_per", lambda per: None)
+        self._hp.start(); self.addCleanup(self._hp.stop)
         states = {"2026-09-10T08:00:00": {"bill": "applied", "flags": []},
                   "2026-10-02T08:00:00": {"bill": "overdue", "flags": []}}
         with mock.patch.object(server.store_access, "store", lambda: st), \
