@@ -592,6 +592,25 @@ function globalToggleTheme() {
   var current = document.documentElement.getAttribute('data-theme');
   applyTheme(current === 'light' ? 'dark' : 'light');
 }
+// ?embed=1: a page opened as a modal over another. Its links don't navigate the modal's frame
+// (21 Oct 2026, staging: "← Data Management" after a PDF bill import loaded Data Management
+// inside its own modal). A link back to Data Management closes the modal; any other EMT page
+// opens in place of the page around it.
+{% if request.args.get('embed') %}
+document.addEventListener('click', function (e) {
+  var a = e.target.closest && e.target.closest('a[href]');
+  if (!a || a.target || a.hasAttribute('download') || e.defaultPrevented) return;
+  var u;
+  try { u = new URL(a.href, location.href); } catch (err) { return; }
+  if (u.origin !== location.origin || u.hash && u.pathname === location.pathname) return;
+  e.preventDefault();
+  if (/\/data-management\/?$/.test(u.pathname)) {
+    try { window.parent.postMessage({type: 'emt-embed-close'}, location.origin); } catch (err) {}
+  } else {
+    try { window.parent.location.href = a.href; } catch (err) { location.href = a.href; }
+  }
+}, true);
+{% endif %}
 // Listen for theme changes from iframes (e.g. heatmap toggle button)
 window.addEventListener('message', function(e) {
   if (e.data && e.data.type === 'emt-theme-change') {
