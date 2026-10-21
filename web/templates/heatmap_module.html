@@ -1191,9 +1191,15 @@ window.EMTHeatmap = (function () {
     function shut() {
       m.remove(); state.dialogOpen = false; clearSelection();
       document.removeEventListener('keydown', esc1);
+      window.removeEventListener('message', fromFrame);
       refresh(); changed();
       if (onClose) onClose();
     }
+    // the page inside asks to close (its link back to Data Management — base.html, embed)
+    function fromFrame(e) {
+      if (e.source === f.contentWindow && e.data && e.data.type === 'emt-embed-close') shut();
+    }
+    window.addEventListener('message', fromFrame);
     function esc1(e) { if (e.key === 'Escape') shut(); }
     m.addEventListener('click', function (e) { if (e.target === m || e.target.dataset.close) shut(); });
     document.addEventListener('keydown', esc1);
