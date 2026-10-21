@@ -154,7 +154,7 @@ class TheServer(unittest.TestCase):
         cls.client = srv.app.test_client()
 
     def test_a_refused_upload_is_still_json(self):
-        for url, field in (("/api/restore/stage", "file"), ("/api/import/extract-zip", "zipfile")):
+        for url, field in (("/api/restore/stage", "file"),):
             with self.subTest(url=url):
                 r = self.client.post(url, data={}, content_type="multipart/form-data")
                 self.assertGreaterEqual(r.status_code, 400)

@@ -1040,9 +1040,6 @@ class TestFinaliseHorizon(unittest.TestCase):
         n = self.store.finalise_past_horizon_blocks("2026-05-28T00:00:00")
         self.assertEqual(n, 1)                                   # only the old one
         self.assertEqual(self.store.count_unsettled_blocks(), 1)  # recent still counts
-        starts = [r["block_start"] for r in self.store.get_unsettled_blocks()]
-        self.assertIn(recent, starts)
-        self.assertNotIn(old, starts)                            # excluded from the list
 
     def test_finalise_idempotent(self):
         self._add("2026-05-01T00:00:00")
@@ -1095,7 +1092,6 @@ class TestExportSettlementUnsettled303(unittest.TestCase):
         self._settle(s, 4.7, "import")                    # import settled, export lags
         self.assertEqual(self.store.count_unsettled_blocks(), 1)
         self.assertEqual(self.store.get_oldest_unsettled_block_start(), s)
-        self.assertIn(s, [r["block_start"] for r in self.store.get_unsettled_blocks()])
 
     def test_both_channels_settled_is_settled(self):
         s = "2026-07-09T12:00:00"
@@ -4856,10 +4852,6 @@ class TestUnsettledHorizonFloor(unittest.TestCase):
     def test_count_floored_excludes_old(self):
         self.assertEqual(
             self._store().count_unsettled_blocks(since_iso="2026-07-08T00:00:00"), 1)
-
-    def test_list_floored_excludes_old(self):
-        rows = self._store().get_unsettled_blocks(since_iso="2026-07-08T00:00:00")
-        self.assertEqual([r["block_start"] for r in rows], ["2026-07-20T00:00:00"])
 
 
 class TestRecorderAttributionStore(unittest.TestCase):

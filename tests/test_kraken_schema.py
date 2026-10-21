@@ -1387,21 +1387,11 @@ class TestBillingSourceStoreOps(_StoreBase):
             (bs, end, "electricity_main", self.pid, imp_kwh, imp_kwh_api))
         self.store._conn.commit()
 
-    def test_flag_all_for_pass2_rerun(self):
-        self._block("2026-05-01T00:00:00")
-        self._block("2026-05-01T00:30:00")
-        n = self.store.flag_all_for_pass2_rerun("electricity_main")
-        self.assertEqual(n, 2)
-        self.assertEqual(len(self.store.get_blocks_needing_pass2_rerun()), 2)
-
     def test_unsettled_blocks_query(self):
         self._block("2026-05-01T00:00:00", imp_kwh_api=1.5)
         self._block("2026-05-01T00:30:00", imp_kwh_api=None)
         self._block("2026-05-01T01:00:00", imp_kwh_api=None)
         self.assertEqual(self.store.count_unsettled_blocks("electricity_main"), 2)
-        rows = self.store.get_unsettled_blocks("electricity_main")
-        self.assertEqual(len(rows), 2)
-        self.assertEqual(rows[0]["block_start"], "2026-05-01T01:00:00")
 
 
 class TestDataSourceMode(_StoreBase):
@@ -1468,24 +1458,6 @@ class TestApplyBillingSourceChange(_StoreBase):
 
     def test_default_is_dcc(self):
         self.assertEqual(self.engine._get_billing_source(), "dcc")
-
-    def test_change_to_cad_flags_blocks(self):
-        self._block("2026-05-01T00:00:00")
-        self._block("2026-05-01T00:30:00")
-        res = self.engine.apply_billing_source_change("cad")
-        self.assertTrue(res["changed"])
-        self.assertEqual(res["flagged"], 2)
-        self.assertEqual(self.engine._get_billing_source(), "cad")
-
-    def test_same_source_noop(self):
-        self._block("2026-05-01T00:00:00")
-        res = self.engine.apply_billing_source_change("dcc")
-        self.assertFalse(res["changed"])
-        self.assertEqual(res["flagged"], 0)
-
-    def test_invalid_source_raises(self):
-        with self.assertRaises(ValueError):
-            self.engine.apply_billing_source_change("smart_meter")
 
 
 class TestDispatchSlots(_StoreBase):

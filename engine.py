@@ -486,31 +486,6 @@ def _get_billing_source() -> str:
     return val if val in _VALID_BILLING_SOURCES else "dcc"
 
 
-def apply_billing_source_change(new_source: str,
-                                main_meter_id: str = "electricity_main") -> dict:
-    """Set the global billing source and, if it changed, flag all main-meter
-    blocks for PASS 2 re-run so the drain re-materialises billing to the new
-    source.
-
-    Returns {"changed": bool, "source": str, "flagged": int}. The caller (config
-    UI) shows the "recalculation takes time" warning when changed and flagged>0.
-    Idempotent: setting the same source is a no-op (no re-flag, no churn).
-    """
-    new_source = (new_source or "").lower()
-    if new_source not in _VALID_BILLING_SOURCES:
-        raise ValueError(f"billing_source must be one of {_VALID_BILLING_SOURCES}, "
-                         f"got {new_source!r}")
-    current = _get_billing_source()
-    if new_source == current:
-        return {"changed": False, "source": current, "flagged": 0}
-    _store.set_kraken_state(_BILLING_SOURCE_KEY, new_source)
-    flagged = _store.flag_all_for_pass2_rerun(main_meter_id)
-    logger.info("apply_billing_source_change: %s → %s, flagged %d blocks for "
-                "re-run (drain will re-materialise billing)",
-                current, new_source, flagged)
-    return {"changed": True, "source": new_source, "flagged": flagged}
-
-
 _DISPATCH_OVERLAY_APPLY = True    # live: overlay applies off-peak to validated slots
 
 # Meter-validation noise floor (kWh). A smart-charge slot is credited off-peak

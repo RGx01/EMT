@@ -169,7 +169,7 @@ class ResetStoreBelongsToTheEngineThread(_EngineOnThisThread):
 
     def test_the_engine_mutators_are_not_called_from_request_threads(self):
         src = open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read()
-        for fn in ("set_data_source_mode", "apply_billing_source_change"):
+        for fn in ("set_data_source_mode",):
             self.assertNotIn("_eng.%s(" % fn, src)
             self.assertIn("_engine_call(_eng.%s," % fn, src)
 

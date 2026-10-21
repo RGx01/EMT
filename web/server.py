@@ -2051,22 +2051,26 @@ def bill_rounding_page():
     return render_template("bill_rounding.html", active="settings")
 
 
+# Retired 21 Oct 2026 (data management design §1 (7), PR 7); the old addresses go where their
+# jobs went. Delete Blocks: *Delete…* on the heatmap's selection, the purge on the Whole history
+# card. Fill History & Gaps: the Whole history card and the device cards. Cost Corrections: the
+# Billing tab's correction modal, CAD-only — its settlement source retired, not moved.
 @app.route("/delete-blocks")
 def delete_blocks_page():
-    return render_template("delete_blocks.html", active="data_management")
+    from flask import redirect
+    return redirect(url_for("data_management_page"))
 
 
 @app.route("/corrections")
 def corrections_page():
-    return render_template("corrections.html", active="data_management")
+    from flask import redirect
+    return redirect(url_for("charts_page", tab="daily"))
 
 
 @app.route("/fill-history")
 def fill_history_page():
-    """Landing hub for the two 'bring data in / fill gaps' tools — Historical
-    Import (supplier API / CSV backfill + gap fill) and Device History (recorder
-    attribution). Reached from the Data Management topbar."""
-    return render_template("fill_history.html", active="data_management")
+    from flask import redirect
+    return redirect(url_for("data_management_page"))
 
 
 # ── Lovelace (Home Assistant dashboard) pages ─────────────────────────────────
@@ -4194,45 +4198,6 @@ def api_billing_source_get():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/billing-source", methods=["POST"])
-def api_billing_source_post():
-    """Set the global billing source (cad/dcc). When it changes, all blocks are
-    flagged for PASS 2 re-run (the drain re-materialises billing); the response
-    carries the flagged count so the UI can warn that recalculation takes time.
-    """
-    try:
-        import engine as _eng
-        data = request.get_json(force=True) or {}
-        new_source = (data.get("source") or "").lower()
-        result = _engine_call(_eng.apply_billing_source_change, new_source)
-        return jsonify({"ok": True, **result})
-    except ValueError as ve:
-        return jsonify({"error": str(ve)}), 400
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/unsettled-blocks")
-def api_unsettled_blocks():
-    """View-only report of main-meter blocks with no DCC import settlement
-    (running on CAD fallback). Relevant when billing_source='dcc'. Returns a
-    capped list plus the full count."""
-    try:
-        store = store_access.store()
-        limit = int(request.args.get("limit", 500))
-        _floor = _settlement_horizon_floor()
-        count = store.count_unsettled_blocks(since_iso=_floor)
-        rows = store.get_unsettled_blocks(limit=limit, since_iso=_floor)
-        out = [{"block_start": r["block_start"],
-                "imp_kwh": r["imp_kwh"],
-                "exp_kwh": r["exp_kwh"],
-                "is_provisional": bool(r["is_provisional"])}
-               for r in rows]
-        return jsonify({"count": count, "limit": limit, "blocks": out})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
 # ── Unified backfill (Heal Gaps + Historical Import) ────────────────────────
 def _bf_step_minutes(store) -> int:
     """Block length in minutes from the earliest config period (fallback 30)."""
@@ -4489,109 +4454,6 @@ def api_backfill_fill_gap():
             _eng.run_gap_fill_job(frm, to, channels=channels), _event_loop)
         return jsonify({"ok": True, "status": "running"}), 200
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route("/api/blocks/reimport", methods=["POST"])
-def api_blocks_reimport():
-    """BL-8 phase 2: TARGETED restore of a deliberately-deleted range — the explicit
-    inverse of Delete. Lifts the tombstone over [from_date, to_date] (sub-span split)
-    and IMMEDIATELY re-fills the window from the supplier API. The tombstone lift
-    happens inside `run_gap_fill_job` (the shared targeted-fill worker), so this is
-    the same 'clear + fill' primitive the per-gap button uses, scoped to a date range.
-    Body: {from_date, to_date, meter_id?, channel?, confirmed}."""
-    try:
-        import engine as _eng
-        import asyncio as _asyncio
-        from block_store import local_date_range_to_utc_bounds
-        if not _eng.kraken_available():
-            return jsonify({"ok": False, "reason": "no_api",
-                            "message": "No supplier API configured."}), 400
-        body = request.get_json(silent=True) or {}
-        # Accept EITHER an explicit UTC window (from the deleted-ranges list, exact —
-        # no lossy local-date round-trip across a DST boundary) OR local dates.
-        from_utc = (body.get("from_utc") or "").strip()
-        to_utc   = (body.get("to_utc") or "").strip()
-        if not body.get("confirmed"):
-            return jsonify({"ok": False, "reason": "unconfirmed",
-                            "message": "Confirmation required before writing."}), 400
-        if _eng.api_import_running():
-            return jsonify({"ok": False, "reason": "busy",
-                            "message": "An import is already running.",
-                            "status": _eng.api_import_status()}), 409
-        if not (_event_loop and _event_loop.is_running()):
-            return jsonify({"ok": False, "reason": "no_loop",
-                            "message": "engine loop not running"}), 500
-        if from_utc and to_utc:
-            if from_utc >= to_utc:
-                return jsonify({"ok": False, "reason": "bad_range",
-                                "message": "from_utc must be before to_utc."}), 400
-            utc_start, utc_end = from_utc, to_utc
-        else:
-            from_date = (body.get("from_date") or "").strip()
-            to_date   = (body.get("to_date") or "").strip()
-            if not from_date or not to_date:
-                return jsonify({"ok": False, "reason": "bad_range",
-                                "message": "from_date and to_date (or from_utc and "
-                                           "to_utc) are required."}), 400
-            if from_date > to_date:
-                return jsonify({"ok": False, "reason": "bad_range",
-                                "message": "from_date must not be after to_date."}), 400
-            _cfg = load_config()
-            _tz = "UTC"
-            for _md in (_cfg.get("meters") or {}).values():
-                if not (_md.get("meta") or {}).get("sub_meter"):
-                    _tz = (_md.get("meta") or {}).get("timezone", "UTC")
-                    break
-            utc_start, utc_end = local_date_range_to_utc_bounds(from_date, to_date, _tz)
-        meter_id = body.get("meter_id") or "electricity_main"
-        ch = body.get("channel")
-        channels = (ch,) if ch in ("import", "export") else ("import", "export")
-        _asyncio.run_coroutine_threadsafe(
-            _eng.run_gap_fill_job(utc_start, utc_end, channels=channels,
-                                  meter_id=meter_id), _event_loop)
-        return jsonify({"ok": True, "status": "running",
-                        "window": {"from": utc_start, "to": utc_end}}), 200
-    except ValueError as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
-    except Exception as e:
-        logger.error("api_blocks_reimport: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route("/api/blocks/deleted-ranges")
-def api_blocks_deleted_ranges():
-    """Active deletion tombstones for the Data Management list. Each is annotated
-    with `fillable` — whether the supplier API can re-fetch it (advisory only; the
-    re-import button uses it to warn/disable, it NEVER auto-clears a tombstone)."""
-    try:
-        import engine as _eng
-        from datetime import datetime, timezone, timedelta
-        store = store_access.store()
-        # 4.5.6: orphaned tombstones — rows whose range is already fully populated
-        # again — are HIDDEN here and PRUNED by the engine (run_prune_stale_tombstones,
-        # hourly). This GET used to prune them itself through _engine_write: a write
-        # in a read, and a wait on the engine loop on every page view (first Pi soak:
-        # p50 0.02 s quiet, 16.9 s while the re-price sweep held the loop).
-        try:
-            _stale = set(store.stale_deleted_range_ids())
-        except Exception as _pe:
-            logger.warning("deleted-ranges: stale-tombstone check failed: %s", _pe)
-            _stale = set()
-        api_ok = _eng.kraken_available()
-        horizon_days = getattr(_eng, "_KRAKEN_BACKFILL_DAYS", 400) or 400
-        floor = (datetime.now(timezone.utc).replace(tzinfo=None)
-                 - timedelta(days=horizon_days)).isoformat()
-        from block_store import utc_to_local_label as _lbl
-        _tz = _config_timezone()
-        ranges = [{**r, "fillable": bool(api_ok and r["end_utc"] > floor),
-                   "start_local": _lbl(r["start_utc"], _tz),
-                   "end_local": _lbl(r["end_utc"], _tz)}
-                  for r in store.get_deleted_ranges() if r["id"] not in _stale]
-        return jsonify({"ok": True, "ranges": ranges, "api_available": api_ok,
-                        "timezone": _tz})
-    except Exception as e:
-        logger.error("api_blocks_deleted_ranges: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
@@ -4945,26 +4807,6 @@ def api_resolve_gaps():
                             "error": "No supplier API configured"}), 400
         result = _run_on_engine_loop(_eng.resolve_history_gaps(), timeout=300.0)
         return jsonify(result), (200 if result.get("ok") else 400)
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route("/api/retry-settlement", methods=["POST"])
-def api_retry_settlement():
-    """User-triggered re-fetch of DCC over oldest-unsettled → now, to settle
-    late/old gaps on demand. Requires a configured Kraken API. Runs the async
-    retry on the engine's event loop (server handlers are sync)."""
-    try:
-        import engine as _eng
-        if not _eng.kraken_available():
-            return jsonify({"ok": False, "reason": "no_api",
-                            "error": "No supplier API configured"}), 400
-        result = _run_on_engine_loop(_eng.retry_settlement_for_unsettled(),
-                                     timeout=120.0)
-        # Settlement rewrote block figures (e.g. late export finally landing) — the
-        # pre-built charts still show the pre-settlement values until regenerated.
-        status = 200 if result.get("ok") else 400
-        return jsonify(result), status
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -7445,38 +7287,6 @@ def api_storage_info():
     })
 
 
-@app.route("/api/import/extract-zip", methods=["POST"])
-def api_import_extract_zip():
-    """Extract JSON files from an uploaded zip and return them as base64."""
-    import zipfile, base64
-    _upload_zip = os.path.join(DATA_DIR, "upload_extract.zip")
-    try:
-        zf_file = request.files.get("zipfile")
-        if not zf_file:
-            return jsonify({"error": "No zip file provided"}), 400
-        known = {"blocks.db", "blocks.json"}
-        files = {}
-        # From a file, not the upload stream — see api_import_from_zip (3.10 has no
-        # SpooledTemporaryFile.seekable(), which zipfile needs).
-        zf_file.save(_upload_zip)
-        with zipfile.ZipFile(_upload_zip, "r") as zf:
-            for name in zf.namelist():
-                basename = os.path.basename(name)
-                if basename in known:
-                    files[basename] = base64.b64encode(zf.read(name)).decode("utf-8")
-        if not files:
-            return jsonify({"error": "No recognised files found in zip"}), 400
-        logger.info("api_import_extract_zip: extracted %s", list(files.keys()))
-        return jsonify({"files": files})
-    except Exception as e:
-        logger.error("api_import_extract_zip: %s", e)
-        return jsonify({"error": str(e)}), 500
-    finally:
-        if os.path.exists(_upload_zip):
-            try: os.remove(_upload_zip)
-            except Exception: pass
-
-
 @app.route("/api/backup/flat-info", methods=["GET"])
 def api_backup_flat_info():
     """Return metadata about the last-finalise flat backup files.
@@ -7511,33 +7321,6 @@ def api_backup_flat_info():
                 entry["note"]   = "Legacy format from v1.x/v2.0.x — no longer updated"
             files[fname] = entry
     return jsonify(files)
-
-
-@app.route("/api/import/extract-zip-by-name", methods=["POST"])
-def api_import_extract_zip_by_name():
-    """Extract JSON files from a named backup zip (server-side) and return as base64."""
-    import zipfile, base64
-    try:
-        data    = request.get_json(force=True)
-        zipname = data.get("zip", "")
-        if not zipname or "/" in zipname or "\\" in zipname:
-            return jsonify({"error": "Invalid zip name"}), 400
-        zip_path = f"{_share_backup_dir()}/backups/{zipname}"
-        if not os.path.exists(zip_path):
-            return jsonify({"error": "Backup not found"}), 404
-        known = {"blocks.db", "blocks.json"}
-        files = {}
-        with zipfile.ZipFile(zip_path, "r") as zf:
-            for name in zf.namelist():
-                basename = os.path.basename(name)
-                if basename in known:
-                    files[basename] = base64.b64encode(zf.read(name)).decode("utf-8")
-        if not files:
-            return jsonify({"error": "No recognised JSON files found in backup"}), 400
-        return jsonify({"files": files})
-    except Exception as e:
-        logger.error("api_import_extract_zip_by_name: %s", e)
-        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/backup/zip-entries", methods=["POST"])
@@ -8627,14 +8410,14 @@ def _corrections_build_where(corr_type, from_date, to_date, channel,
     (meter_id in the meters table with is_sub_meter=0) — sub-meter rows
     carry sc=0.0 and must not be overwritten.
     """
-    from block_store import local_date_range_to_utc_bounds as _corr_utc_bounds
+    from block_store import local_date_range_to_utc_bounds
     col = None
     if corr_type == "rate":
         col = "imp_rate" if channel == "import" else "exp_rate"
 
     # Use UTC bounds derived from local dates — handles BST correctly without local_date column;
     # or exactly `utc_span`, one half-hour from the Billing tab (_corrections_half_hour)
-    _utc_s, _utc_e = utc_span if utc_span else _corr_utc_bounds(from_date, to_date, tz_name)
+    _utc_s, _utc_e = utc_span if utc_span else local_date_range_to_utc_bounds(from_date, to_date, tz_name)
     clauses = ["block_start >= ?", "block_start < ?"]
     params  = [_utc_s, _utc_e]
 

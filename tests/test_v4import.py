@@ -517,7 +517,7 @@ class TheKeys(_Dir):
         self.assertEqual(json.loads(self.meta(conn, "vat_calendar")), [["2023-06-02", 0.05]])
         self.assertEqual(json.loads(self.meta(conn, "settings")), {"bill_rounding_summary": True})
         for k, v in (("kraken_account_number", "A-1234"), ("data_source_mode", "api"),
-                     ("billing_source", "dcc"), ("api_import_done_import", "1")):
+                     ("api_import_done_import", "1")):
             with self.subTest(k=k):
                 self.assertEqual(self.meta(conn, k, "kraken_state"), v)
 
@@ -539,6 +539,47 @@ class TheKeys(_Dir):
         re-run, it wrote a third 80 MB copy on the Pi (10 Oct 2026). Fails on the parent."""
         conn, _ = self.imported(state={"pre_live_snapshot_done": "1"})
         self.assertEqual(self.meta(conn, "pre_live_snapshot_done", "kraken_state"), "1")
+
+    MAIN_METER = "INSERT INTO meters (meter_id, config_period_id, is_sub_meter) VALUES ('%s', 1, 0)" % MAIN
+
+    def _rerun(self, conn):
+        return conn.execute("SELECT COUNT(*) FROM blocks WHERE needs_pass2_rerun = 1 AND meter_id IN "
+                            "(SELECT meter_id FROM meters WHERE is_sub_meter = 0)").fetchone()[0]
+
+    def test_the_settlement_source_is_not_carried(self):
+        """Retired 21 Oct 2026 (data management design §1 (7)). Fails on the parent."""
+        conn, report = self.imported(state={"data_source_mode": "cad+api", "billing_source": "dcc"},
+                                     extra_sql=(self.MAIN_METER,))
+        self.assertIsNone(self.meta(conn, "billing_source", "kraken_state"))
+        self.assertIn("billing_source", report["keys"]["kraken_state"]["dropped"])
+        self.assertEqual(self._rerun(conn), 0)                 # 'dcc' is v5's own: nothing moves
+
+    def test_a_chosen_cad_re_runs_the_main_meter(self):
+        """A v4 on CAD + API that billed from its own readings: back to the settled kWh, so every
+        main-meter half-hour is re-priced. Fails on the parent."""
+        conn, report = self.imported(state={"data_source_mode": "cad+api", "billing_source": "cad"},
+                                     extra_sql=(self.MAIN_METER,))
+        n = conn.execute("SELECT COUNT(*) FROM blocks WHERE meter_id IN "
+                         "(SELECT meter_id FROM meters WHERE is_sub_meter = 0)").fetchone()[0]
+        self.assertGreater(n, 0)
+        self.assertEqual(self._rerun(conn), n)
+        self.assertEqual(report["billing_source"], {"was": "cad", "mode": "cad+api", "rerun": n})
+
+    def test_the_gate_refuses_a_re_run_left_undone(self):
+        """Gate `billing_source`: the report says re-run, the blocks are not flagged."""
+        def unflagged(conn, report):
+            report["billing_source"] = {"was": "cad", "mode": "cad+api", "rerun": 1}
+        with mock.patch.object(v4import.transforms, "_billing_source", unflagged):
+            with self.assertRaises(v4import.ImportFailed) as e:
+                self.imported(state={"data_source_mode": "cad+api", "billing_source": "cad"},
+                              extra_sql=(self.MAIN_METER,))
+        self.assertIn("settlement source re-run", str(e.exception))
+
+    def test_cad_without_the_api_moves_nothing(self):
+        """GUARD: on CAD-only the source never meant anything (no settled kWh to prefer)."""
+        conn, report = self.imported(state={"data_source_mode": "cad", "billing_source": "cad"},
+                                     extra_sql=(self.MAIN_METER,))
+        self.assertEqual(self._rerun(conn), 0)
 
     def test_an_unseen_completion_marker_is_dropped(self):
         conn, report = self.imported(state={"some_future_heal_done_v3": "1"})

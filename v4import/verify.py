@@ -18,7 +18,9 @@ from . import rules
 
 # Columns a transform rewrites, by table: excluded from "carried exactly" and checked by
 # their own gate instead.
-REWRITTEN = {"blocks": ("rate_source",)}           # transform 1, checked by `provenance`
+# rate_source: transform 1, checked by `provenance`; needs_pass2_rerun: transform 5's settlement
+# source (spec v25), checked by `billing_source`.
+REWRITTEN = {"blocks": ("rate_source", "needs_pass2_rerun")}
 
 # Rows a transform replaces wholesale: the segments of the blocks transforms 2 and 3 wrote
 # (temp.v4i_resegmented). Counted and compared exactly everywhere else; checked by
@@ -310,6 +312,20 @@ def keys(conn, report):
     return ("keys not carried: " + ", ".join(bad)) if bad else None
 
 
+def billing_source(conn, report):
+    """Transform 5's re-run (spec v25): every main-meter block flagged where v4 chose its own
+    readings on an API mode, and every other block's flag as the source held it."""
+    rerun = (report.get("billing_source") or {}).get("rerun")
+    main = "m.meter_id IN (SELECT meter_id FROM main.meters WHERE is_sub_meter = 0)"
+    bad = _one(conn, "SELECT COUNT(*) FROM main.blocks m WHERE %s AND m.needs_pass2_rerun != 1"
+               % main) if rerun else 0
+    bad += _one(conn, "SELECT COUNT(*) FROM main.blocks m JOIN src.blocks s ON s.id = m.id "
+                      "WHERE %s AND m.needs_pass2_rerun IS NOT s.needs_pass2_rerun"
+                % (("NOT (%s)" % main) if rerun else "1"))
+    report["gates"]["billing_source"]["differ"] = bad
+    return ("settlement source re-run: %d block(s) not as expected" % bad) if bad else None
+
+
 def device_sensors(conn, report):
     """Transform 6, against the SOURCE: every channel of its current config period with a read
     sensor has that sensor, and only it, as its primary; every sensor a sub-meter's Device History
@@ -381,7 +397,8 @@ GATES = (("row_counts", row_counts), ("carried_exactly", carried_exactly),
          ("ev_segments", ev_segments), ("split_reproduced", split_reproduced),
          ("held_fit", held_fit), ("bill_split", bill_split),
          ("corrections", corrections), ("tombstones", tombstones), ("keys", keys),
-         ("device_sensors", device_sensors), ("ha_reads", ha_reads))
+         ("billing_source", billing_source), ("device_sensors", device_sensors),
+         ("ha_reads", ha_reads))
 
 
 def run(conn, report):
