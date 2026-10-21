@@ -66,6 +66,7 @@ class TheHealthCall(unittest.TestCase):
         self.server = server
         self.st = _st(["2026-10-21T08:00:00", "2026-10-21T08:30:00", "2026-10-21T09:00:00"])
         self.client = make_client(store=self.st)
+        server._health_cache["key"] = None              # each test computes its own
         eng = sys.modules["engine"]
         states = {"2026-10-21T08:00:00": {"bill": "applied", "export": "applied", "flags": []},
                   "2026-10-21T08:30:00": {"bill": "applied", "export": "waiting",
@@ -93,6 +94,82 @@ class TheHealthCall(unittest.TestCase):
         with mock.patch.object(self.server, "_settle_views", lambda e: []):
             d = json.loads(self.client.get("/api/data-health").data)
         self.assertEqual(d["views"], {})
+
+
+class TheHealthCache(unittest.TestCase):
+    """Staging, 21 Oct 2026: every page load classified the whole history again — four at once held
+    the web threads and the engine loop. Kept until the data moves or ten minutes pass; one request
+    computes, the rest wait. Discriminating: the first three fail on the parent."""
+
+    def setUp(self):
+        from tests.test_server import make_client, server
+        self.server = server
+        self.st = _st(["2026-10-21T08:00:00", "2026-10-21T08:30:00"])
+        self.client = make_client(store=self.st)
+        server._health_cache["key"] = None
+        self.calls = []
+
+        def states(s, a, b):
+            self.calls.append(1)
+            return {"2026-10-21T08:00:00": {"bill": "applied", "flags": []}}
+        self.p = [mock.patch.object(server.store_access, "store", lambda: self.st),
+                  mock.patch.object(server, "_settle_views", lambda e: ["bill"]),
+                  mock.patch.object(server, "_settlement_states", states),
+                  mock.patch.object(server, "_missing_half_hours",
+                                    lambda s: {"half_hours": 0, "gaps": 0, "newest": None})]
+        for x in self.p:
+            x.start()
+
+    def tearDown(self):
+        for x in self.p:
+            x.stop()
+
+    def _get(self):
+        return json.loads(self.client.get("/api/data-health").data)
+
+    def test_a_second_load_does_not_classify_again(self):
+        a, b = self._get(), self._get()
+        self.assertEqual(len(self.calls), 1)
+        self.assertEqual(a["views"], b["views"])
+
+    def test_a_write_classifies_again(self):
+        self._get()
+        with mock.patch.object(self.server, "_blocks_data_version", lambda s: "moved"):
+            self._get()
+        self.assertEqual(len(self.calls), 2)
+
+    def test_concurrent_loads_classify_once(self):
+        import threading
+        gate = threading.Event()
+        real = self.server._settlement_states
+
+        def slow(s, a, b):
+            gate.wait(2)
+            return real(s, a, b)
+        out = []
+        # one SQLite connection cannot cross threads: a stand-in store, the token fixed
+        span = mock.MagicMock()
+        span.block_span.return_value = ("2026-10-21T08:00:00", "2026-10-21T08:30:00")
+        with mock.patch.object(self.server, "_settlement_states", slow), \
+             mock.patch.object(self.server.store_access, "store", lambda: span), \
+             mock.patch.object(self.server, "_blocks_data_version", lambda s: "k"):
+            ts = [threading.Thread(target=lambda: out.append(
+                self.server.app.test_client().get("/api/data-health").status_code)) for _ in range(4)]
+            for t in ts:
+                t.start()
+            gate.set()
+            for t in ts:
+                t.join(10)
+        self.assertEqual(out, [200] * 4)
+        self.assertEqual(len(self.calls), 1)
+
+    def test_time_alone_turns_it(self):
+        """GUARD on the window: an hour on, a state may have turned with age."""
+        import time as _t
+        self._get()
+        with mock.patch.object(_t, "time", lambda: 10 ** 10):
+            self._get()
+        self.assertEqual(len(self.calls), 2)
 
 
 class ThePurge(unittest.TestCase):

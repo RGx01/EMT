@@ -4555,6 +4555,17 @@ def _missing_half_hours(store, now=None) -> dict:
     return {"half_hours": n, "gaps": len(gaps), "newest": newest}
 
 
+# The health strip's answer, kept until the data moves (staging, 21 Oct 2026). It classifies every
+# half-hour of history — 0.8 s on a 59k-block database on a Mac, several seconds on the Pi — and the
+# page asks on every load: four at once filled waitress's four threads, queued every other request
+# behind them, and held the engine loop off the interpreter for up to 5.9 s. Keyed on the Charts
+# poll's data token (any write to the blocks, bills or segments moves it) and a ten-minute window
+# (a state can turn with age alone: a bill given up on). One request computes; the rest wait for it.
+_HEALTH_TTL_S = 600
+_health_lock = threading.Lock()
+_health_cache = {"key": None, "views": None, "missing": None}
+
+
 @app.route("/api/data-health")
 def api_data_health():
     """The Data Management health strip (data management design §1 (2)).
@@ -4565,26 +4576,19 @@ def api_data_health():
     `missing`: as the Missing view counts. `last_backup`, `db_bytes`. Read-only."""
     try:
         import engine as _eng
-        from collections import Counter
         store = store_access.store()
-        out = {"ok": True, "views": {}, "missing": _missing_half_hours(store),
-               "last_backup": None, "db_bytes": None}
+        out = {"ok": True, "views": {}, "missing": None, "last_backup": None, "db_bytes": None}
         views = _settle_views(_eng)
-        first, _last = store.block_span()
-        if views and first:
-            from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-            hi = (_dt.now(_tz.utc).replace(tzinfo=None) + _td(minutes=30)).isoformat()
-            bill, export = Counter(), Counter()
-            for st in _settlement_states(store, first, hi).values():
-                if "bill" in views and st.get("bill"):
-                    fl = sorted(f for f in (st.get("flags") or []) if f in _HEALTH_BILL_FLAGS)
-                    bill[st["bill"] + ("|" + ",".join(fl) if fl else "")] += 1
-                if "export" in views and st.get("export"):
-                    export[st["export"]] += 1
-            if "bill" in views:
-                out["views"]["bill"] = dict(bill)
-            if "export" in views:
-                out["views"]["export"] = dict(export)
+        import time as _time
+        key = (_blocks_data_version(store), int(_time.time() // _HEALTH_TTL_S), tuple(views))
+        with _health_lock:
+            if _health_cache["key"] != key:
+                first, _last = store.block_span()
+                _health_cache["views"] = _health_views(store, views, first) if views and first else {}
+                _health_cache["missing"] = _missing_half_hours(store)
+                _health_cache["key"] = key
+            out["views"] = dict(_health_cache["views"])
+            out["missing"] = dict(_health_cache["missing"])
         import glob
         zips = sorted(glob.glob(f"{_share_backup_dir()}/backups/*.zip"), reverse=True)
         if zips:
@@ -4597,6 +4601,26 @@ def api_data_health():
     except Exception as e:
         logger.error("api_data_health: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
+def _health_views(store, views, first):
+    """{view: {state or state|flags: count}} over [first, now + 30 min) — the strip's counts."""
+    from collections import Counter
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    hi = (_dt.now(_tz.utc).replace(tzinfo=None) + _td(minutes=30)).isoformat()
+    bill, export = Counter(), Counter()
+    for st in _settlement_states(store, first, hi).values():
+        if "bill" in views and st.get("bill"):
+            fl = sorted(f for f in (st.get("flags") or []) if f in _HEALTH_BILL_FLAGS)
+            bill[st["bill"] + ("|" + ",".join(fl) if fl else "")] += 1
+        if "export" in views and st.get("export"):
+            export[st["export"]] += 1
+    out = {}
+    if "bill" in views:
+        out["bill"] = dict(bill)
+    if "export" in views:
+        out["export"] = dict(export)
+    return out
 
 
 # ── The support file (data management design §1 (5), PR 5) ─────────────────────────────────
