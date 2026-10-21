@@ -2301,8 +2301,6 @@ function computeWizSteps() {
   steps.push('sensors');
   steps.push('devices');
   if (wiz.devices.length > 0) steps.push('sub_sensors');
-  // Settlement-source choice only matters when a supplier API (DCC) is in play.
-  if (mode.indexOf('api') !== -1) steps.push('settlement');
   steps.push('done');
   return steps;
 }
@@ -2391,18 +2389,8 @@ function startWizard() {
     exportRateApi:     exp.rate_source ? (exp.rate_source === 'api') : !((exp.rate || '').trim()),
     powerSensor:   mainMeta.power_sensor         || '',
     postcode:      mainMeta.postcode_prefix       || '',
-    billing_source: 'dcc',        // settlement source (API modes); pre-filled below
     subMeters:     subMeters
   };
-
-  // Pre-fill the current billing source so "Change Setup" shows where the user
-  // is. It lives in kraken_state (not config), so fetch it; defaults to dcc.
-  fetch(apiUrl('/api/billing-source'))
-    .then(function(r) { return r.json(); })
-    .then(function(d) {
-      if (d && d.source) { wiz.data.billing_source = d.source; wiz._origBillingSource = d.source; }
-    })
-    .catch(function() {});
 
   // Pre-populate stored API credential state so "Change Setup" doesn't force
   // re-entry. The key itself is never returned by the server (it's write-only),
@@ -2490,7 +2478,6 @@ function renderWizStep() {
   else if (step === 'credentials') body.innerHTML = wizStepCredentials();
   else if (step === 'devices')     body.innerHTML = wizStepDevices();
   else if (step === 'sub_sensors') body.innerHTML = wizStepSubSensors();
-  else if (step === 'settlement')  body.innerHTML = wizStepSettlement();
   else if (step === 'done')   { wizApplyAndClose(); return; }
 
   setupWizEntityDropdowns();
@@ -2796,32 +2783,6 @@ function wizToggleDevice(id, el) {
   wizUpdateProgress();
 }
 
-function wizStepSettlement() {
-  var src     = wiz.data.billing_source || 'dcc';
-  var supKey  = wizNormalizeSupplierKey(wiz.data.supplier);
-  var supLabel = supKey ? wizSupplierLabel(supKey) : 'your supplier';
-  function opt(val, title, desc) {
-    var on = (src === val);
-    return '<label style="display:flex;gap:10px;align-items:flex-start;padding:12px 14px;' +
-        'border:1px solid ' + (on ? 'var(--accent)' : 'var(--border)') + ';border-radius:8px;' +
-        'margin-bottom:10px;cursor:pointer;">' +
-      '<input type="radio" name="wiz-billing-source" value="' + val + '"' +
-        (on ? ' checked' : '') + ' style="margin-top:3px;flex-shrink:0;">' +
-      '<span><strong>' + title + '</strong><br>' +
-      '<span style="color:var(--muted);font-size:13px;">' + desc + '</span></span></label>';
-  }
-  return '<h3 style="margin:0 0 6px;">Billing settlement source</h3>' +
-    '<p style="color:var(--muted);font-size:13px;margin:0 0 18px;">Which figures should drive ' +
-      'your bill? You can change this later in Data Management (it recalculates your history).</p>' +
-    opt('dcc', 'Cost settlement (recommended)',
-        'Use ' + esc(supLabel) + '\u2019s settled half-hourly data \u2014 what your bill is ' +
-        'actually based on \u2014 falling back to your local readings only where settlement ' +
-        'hasn\u2019t arrived yet.') +
-    opt('cad', 'Local readings only',
-        'Always bill from your own live meter readings and never reconcile against settlement, ' +
-        'even though a supplier API is connected.');
-}
-
 function wizStepSubSensors() {
   var deviceLabels = { ev: 'EV Charger', battery: 'Battery', solar: 'Solar', heat: 'Heat Pump' };
   var deviceHints  = {
@@ -2950,9 +2911,6 @@ function wizCollectStep() {
     var a = document.getElementById('wiz-api-account');
     if (k) wiz.data.apiKey = k.value.trim();
     if (a) wiz.data.accountNumber = a.value.trim();
-  } else if (step === 'settlement') {
-    var bsEl = document.querySelector('input[name="wiz-billing-source"]:checked');
-    if (bsEl) wiz.data.billing_source = bsEl.value;
   } else if (step === 'sensors') {
     // In API modes only the power field is rendered — guard every read so a
     // missing element doesn't throw and block advancing the step.
@@ -3276,16 +3234,6 @@ async function wizApplyAndClose() {
       body: JSON.stringify({ mode: wiz.data.mode || 'cad', supplier: wiz.data.supplier || '' })
     });
   } catch (e) { /* non-fatal; mode defaults to cad */ }
-  // For API modes, set the chosen billing settlement source. Idempotent
-  // server-side (default 'dcc' is a no-op); a 'cad' choice takes effect now.
-  if ((wiz.data.mode || '').indexOf('api') !== -1) {
-    try {
-      await fetch(apiUrl('/api/billing-source'), {
-        method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source: wiz.data.billing_source || 'dcc' })
-      });
-    } catch (e) { /* non-fatal; billing source defaults to dcc */ }
-  }
   // Auto-save after wizard completes — no change reason for initial setup
   try {
     var r = await fetch(apiUrl('/api/config'), {
@@ -3309,17 +3257,14 @@ async function wizApplyAndClose() {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function _wizWillRecompute() {
   // True when finishing will re-calculate history: a Change-Setup re-run (an
-  // existing config was present) where the data-source mode or — in API modes —
-  // the billing source actually changed.
+  // existing config was present) where the data-source mode actually changed. (The
+  // billing source was a choice here too until 21 Oct 2026: retired, data management
+  // design §1 (7).)
   var hadConfig = (typeof existingMeterIds !== 'undefined') && existingMeterIds.size > 0;
   if (!hadConfig) return false;
   var curMode = (DATA_SOURCE_MODE && DATA_SOURCE_MODE !== 'unset') ? DATA_SOURCE_MODE : 'cad';
   var newMode = wiz.data.mode || 'cad';
-  var modeChanged = newMode !== curMode;
-  var srcChanged  = newMode.indexOf('api') !== -1 &&
-                    wiz.data.billing_source &&
-                    wiz.data.billing_source !== (wiz._origBillingSource || 'dcc');
-  return modeChanged || srcChanged;
+  return newMode !== curMode;
 }
 
 function _wizConfirmRecompute() {

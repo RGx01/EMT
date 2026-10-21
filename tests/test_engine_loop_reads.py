@@ -16,7 +16,8 @@ on the Pi). Three fixes, each pinned here:
      engine._reader() since the stale-readers fix).
   2. GET /api/blocks/deleted-ranges no longer prunes: it hides stale tombstones
      with the read-only stale_deleted_range_ids(); the engine prunes hourly
-     (run_prune_stale_tombstones), deferring to a running delete.
+     (run_prune_stale_tombstones), deferring to a running delete. (The route went with
+     the Delete Blocks page on 21 Oct 2026; its tests with it.)
   3. The sweep sizes chunks by time (_SWEEP_SLICE_S), not by count.
 """
 import ast
@@ -66,14 +67,6 @@ class TheseGetsDoNotWaitOnTheEngineLoop(unittest.TestCase):
 
     def test_config(self):
         self.assertEqual(_hops(_route("/api/config")), [])
-
-    def test_deleted_ranges(self):
-        self.assertEqual(_hops(_route("/api/blocks/deleted-ranges")), [])
-
-    def test_deleted_ranges_writes_nothing(self):
-        src = ast.unparse(_route("/api/blocks/deleted-ranges"))
-        self.assertNotIn("prune_stale_deleted_ranges", src)
-        self.assertIn("stale_deleted_range_ids", src)
 
 
 def _tomb_store():

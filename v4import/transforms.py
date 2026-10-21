@@ -85,6 +85,25 @@ def carry_keys(conn, report):
             else:
                 dropped.append(row["key"])
         report["keys"][table] = {"carried": carried, "dropped": dropped}
+    _billing_source(conn, report)
+
+
+def _billing_source(conn, report):
+    """5, the settlement source (spec v25, 21 Oct 2026): not carried — v5 has no choice, and
+    settles against the supplier wherever the API is on. A v4 on an API mode that chose its own
+    readings ('cad') priced its main meter's half-hours from them, so each is flagged for the
+    pass-2 re-run that re-prices it against the settled kWh: what v4's toggle did, back to the
+    default. Without the API, or on 'dcc', nothing moves."""
+    def state(key):
+        row = conn.execute("SELECT value FROM src.kraken_state WHERE key = ?", (key,)).fetchone()
+        return str(row[0]).strip().strip('"') if row and row[0] is not None else None
+    was, mode = state("billing_source"), state("data_source_mode") or ""
+    flagged = 0
+    if was == "cad" and "api" in mode:
+        flagged = conn.execute(
+            "UPDATE main.blocks SET needs_pass2_rerun = 1 WHERE meter_id IN "
+            "(SELECT meter_id FROM main.meters WHERE is_sub_meter = 0)").rowcount
+    report["billing_source"] = {"was": was, "mode": mode or None, "rerun": flagged}
 
 
 def device_sensors(conn, report):

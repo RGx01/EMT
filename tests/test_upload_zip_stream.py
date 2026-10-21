@@ -9,7 +9,8 @@ On Python 3.10 werkzeug's upload stream is a SpooledTemporaryFile with no seekab
 Python by making access to SpooledTemporaryFile.seekable raise AttributeError, as
 3.10's missing attribute does.
 
-`extract-zip` fails on the parent tree (it still read the stream); `from-zip` was a
+`extract-zip` failed on the parent tree (it still read the stream; the route went on 21 Oct
+2026, with no caller left); `from-zip` was a
 GUARD here (fixed in #82, before this test existed — it failed there on CI 3.10). Since 11 Oct
 2026 a restore zip goes to `/api/restore/stage`, which saves it the same way: a GUARD.
 """
@@ -83,12 +84,6 @@ class UploadedZips(unittest.TestCase):
         spool.seek(0)
         with self.assertRaises(AttributeError):
             zipfile.ZipFile(spool).read("blocks.db")
-
-    def test_extract_zip(self):
-        r = self._post("/api/import/extract-zip")
-        self.assertEqual(r.status_code, 200, r.get_json())
-        self.assertIn("blocks.db", r.get_json()["files"])
-        self.assertEqual(os.listdir(self.data), [], "the saved upload was left behind")
 
     def test_restore_stage(self):
         """GUARD: the restore zip is saved to a file and its blocks.db extracted from that."""

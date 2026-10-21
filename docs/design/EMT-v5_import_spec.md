@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v24 — revised 20 Oct 2026, HA's reads kept apart (§6, transform 7) (v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v25 — revised 21 Oct 2026, the settlement source not carried (§6, transform 5) (v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -145,6 +145,14 @@ a bill whose EV is zero where EMT's own split has the car, for up to 28 days —
 forward code. 4.5.22 and the v5 dev build `4.5.22-a23` join the below-floor negatives; v5's own
 builds now stamp `4.5.23-a24`. The 4.5.22 positive fixture (prod-dev, 10 Oct) is below the floor
 now; the fixture is re-taken at 4.5.23.*
+
+*Changes in v25 (21 Oct 2026): **the settlement source is not carried** (data management design
+§2 (b)). v5 retired the choice: it settles against the supplier wherever the API is on.
+`billing_source` moves to the drop list, and a v4 on an API mode that chose its own readings
+(`cad`) has every main-meter half-hour flagged `needs_pass2_rerun`, the re-price v4's own toggle
+ran, back to the default. Gate `billing_source` checks the flags: every main-meter block where
+the re-run is due, every other block as the source held it. On `dcc`, or with no API, nothing
+moves.*
 
 *Changes in v24 (20 Oct 2026): **HA's reads move out of the blocks** (soft delete design §2).
 v4 kept what HA reported only on the blocks built from it, so deleting a block lost it. v5 holds it in
@@ -1015,7 +1023,7 @@ suppresses a pass that should run. Default is **DROP**; carry only by explicit a
 > **As built (v18):** the allow-list and the drop list are `v4import/rules.py`, classified key by key
 > in the [E design §7](EMT-v5_E_importer_design.md). Beyond the list below, the API import's
 > coverage keys (`api_import_oldest_*`, `api_import_done_*`, `import_cost_coverage`) and the user's
-> `billing_source` and `carbon_paused` cross, and `region_probe_clobber_done` crosses because re-run
+> `carbon_paused` cross (`billing_source` did until v25, which drops it and re-runs a `cad` choice), and `region_probe_clobber_done` crosses because re-run
 > it would overwrite the carried regions. `written_by` and `db_uuid` are left for v5's
 > `engine_startup` to stamp (REGEN by v5's own mechanism). An unknown key aborts the import.
 

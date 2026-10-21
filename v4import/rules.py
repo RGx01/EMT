@@ -95,7 +95,7 @@ CARRY_KEYS = {
         "import_cost_coverage",            # what the API import found about this history
     }),
     "kraken_state": frozenset({
-        "kraken_account_number", "data_source_mode", "billing_source",
+        "kraken_account_number", "data_source_mode",
         # how far back the carried history reaches, per direction
         "api_import_oldest_import", "api_import_oldest_export",
         "api_import_done_import", "api_import_done_export",
@@ -124,6 +124,10 @@ DROP_KEYS = {
         "last_poll_utc", "last_settlement_sweep_utc", "verify_pricing_cursor",
         "verify_pricing_summary", "import_health_summary", "import_run_status",
         "import_gaps_import", "import_gaps_export", "measured_vat_resync",
+        # the settlement source, retired 21 Oct 2026 (data management design §1 (7)): v5
+        # settles against the supplier wherever the API is on. Transform 5 re-runs the
+        # main meter's half-hours of a v4 that chose its own readings ('cad').
+        "billing_source",
     }),
 }
 

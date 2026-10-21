@@ -4912,28 +4912,6 @@ class BlockStore:
         )
         self._conn.commit()
 
-    def flag_all_for_pass2_rerun(self, main_meter_id: Optional[str] = None) -> int:
-        """Flag every (main-meter) block for PASS 2 re-run.
-
-        Used when the global billing_source toggle changes (cad<->dcc): the
-        drain then reprocesses each block, rewriting billing figures to the
-        chosen source. Returns the number of blocks flagged. Bounded only by
-        the table size; the drain spreads the actual work across ticks.
-
-        Only main-meter blocks carry the settlement columns, so sub-meter
-        blocks don't need flagging — but flagging all is harmless (their re-run
-        is a no-op) and simpler, so we scope to main meter when given.
-        """
-        if main_meter_id:
-            cur = self._conn.execute(
-                "UPDATE blocks SET needs_pass2_rerun = 1 WHERE meter_id = ?",
-                (main_meter_id,))
-        else:
-            cur = self._conn.execute("UPDATE blocks SET needs_pass2_rerun = 1")
-        self._conn.commit()
-        return cur.rowcount
-
-
     # A main-meter block still awaiting DCC settlement on a channel it should
     # have: import not yet settled, OR export not yet settled on a block that
     # actually exported. Issue #303: export commonly settles days after import,
@@ -4985,37 +4963,6 @@ class BlockStore:
         is chased only when the account is on an outgoing/export agreement."""
         return (self._UNSETTLED_WHERE if export_expected
                 else self._UNSETTLED_WHERE_IMPORT_ONLY)
-
-    def get_unsettled_blocks(self, main_meter_id: str = "electricity_main",
-                             limit: Optional[int] = None,
-                             since_iso: Optional[str] = None) -> list:
-        """Main-meter blocks still awaiting DCC settlement (import or export).
-
-        For the view-only 'review unsettled blocks' report (relevant only when
-        billing_source='dcc'): blocks running on the CAD/estimate fallback
-        because DCC hasn't settled a channel yet. Ordered newest first so the
-        most recent gaps surface at the top.
-
-        `since_iso` floors the result at a settlement-horizon boundary — a block
-        older than the horizon is not "awaiting DCC" (settlement lands within
-        days; anything older either settled or never will), so the caller passes
-        `now − horizon` to keep the count honest even before the settlement sweep
-        has finalised past-horizon blocks.
-        """
-        w = self._unsettled_where(self._export_settlement_expected())
-        sql = ("SELECT block_start, block_end, imp_kwh, imp_kwh_api, "
-               "       exp_kwh, exp_kwh_api, is_provisional "
-               f"FROM blocks WHERE meter_id = ? AND {w} "
-               "AND finalised_from_cad = 0")
-        params: list = [main_meter_id]
-        if since_iso:
-            sql += " AND block_start >= ?"
-            params.append(since_iso)
-        sql += " ORDER BY block_start DESC"
-        if limit is not None:
-            sql += " LIMIT ?"
-            params.append(limit)
-        return self._conn.execute(sql, params).fetchall()
 
     def count_unsettled_blocks(self, main_meter_id: str = "electricity_main",
                                since_iso: Optional[str] = None) -> int:

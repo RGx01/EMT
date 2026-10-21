@@ -70,7 +70,8 @@ class TestRouteStoreUse(unittest.TestCase):
         # +1: /api/blocks/settlement, the settlement detail panel (13 Oct 2026).
         # +1: /api/meter/<id>/delete-preview, a device delete's figures (19 Oct 2026).
         # +1: /api/data-health, Data Management's health strip (21 Oct 2026).
-        self.assertEqual(len(self.d["get_on_companion"]), 35)
+        # −2: /api/unsettled-blocks, /api/blocks/deleted-ranges, with the sub-pages (21 Oct 2026).
+        self.assertEqual(len(self.d["get_on_companion"]), 33)
 
     def test_adoption_is_total(self):
         """Measured at 0% before the port: v4 credited one route with the read

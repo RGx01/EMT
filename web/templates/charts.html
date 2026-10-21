@@ -2863,6 +2863,8 @@ document.addEventListener('DOMContentLoaded', function() {
   setTimeout(function() {
     var saved = null;
     try { saved = localStorage.getItem(EMT.lsKey('emt_chart_tab')); } catch(e) {}
+    // ?tab= opens a tab once, over the remembered one (/corrections → the Billing tab).
+    try { var q = new URLSearchParams(location.search).get('tab'); if (q) saved = q; } catch(e) {}
     var tabs = document.querySelectorAll('.chart-tab');
     if (saved === 'heatmap') { showChart('heatmap', tabs[1]); }
     else if (saved === 'spiral') { showChart('spiral', tabs[2]); }

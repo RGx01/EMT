@@ -254,7 +254,7 @@ carried user data** is a setup fact in effect, and crosses.
 | `kraken_account_number`, `data_source_mode` | state | spec §6, §7 |
 | `api_import_oldest_import/export`, `api_import_done_import/export` | state | *How far back the history reaches* is a fact about the carried blocks, not a sweep. Dropped, they would make v5 offer the API history import again over history it holds. **To verify in PR 2:** what `api_import` does when they are absent and the blocks are present. |
 | `region_probe_clobber_done` | meta | v5 still runs the one-time region overwrite (`engine.py:9622`). Re-run on an import, it would overwrite the carried `config_periods` regions from the API. |
-| `billing_source` | state | the user's choice of what settles a block (*added in PR 2, from v5's own keys*) |
+| `billing_source` | — | **dropped since spec v25** (21 Oct 2026): the choice is retired; a v4 `cad` on an API mode re-runs the main meter's half-hours (transform 5) |
 | `carbon_paused` | meta | the user's carbon kill switch (*added in PR 2*) |
 | `import_cost_coverage` | meta | what the API import found about this history, per tariff era (*added in PR 2*) |
 | `pre_live_snapshot_done` | state | v4 already took its one snapshot before the first live DCC write, and the restore has just taken its own safety backup. *Moved from DROP, 10 Oct 2026: re-run, it wrote a third 80 MB copy on the Pi's SD card in the soak.* |

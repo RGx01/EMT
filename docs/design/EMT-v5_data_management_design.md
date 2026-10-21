@@ -168,10 +168,19 @@ the staged restore; the routes the pages called (corrections preview / apply, th
 ## 2. Open
 
 (a) **CAD-only and HA's cost sensors.** Does setup's *Disconnect Octopus* (or a mode change to
-`cad`) ask for the rate sensors CAD-only pricing needs? To check before PR 7 relies on it.
+`cad`) ask for the rate sensors CAD-only pricing needs? **No** (traced 21 Oct 2026). The disconnect
+lands on `cad` and drops the rate schedule (`engine.disconnect_kraken`); the page reloads with the
+rate and standing-charge sensor fields shown, but nothing asks for them — its modal says only "add
+a local meter sensor". With the fields empty a half-hour takes the last rate carried forward
+(`last_known_rates`, one flat value) and then £0, with an hourly warning in the log. Open: the
+disconnect, and setup in `cad`, asking for the rate and standing-charge sensors.
 
-(b) **The billing source's code.** The toggle's UI goes; `_get_billing_source` stays at `dcc` for
-the passes that read it. Whether the `cad` branch is then dead, and goes, is a separate clean-up.
+(b) **The billing source's code.** The toggle's UI goes, and so does the wizard's step and the
+POST (PR 7). **Decided (21 Oct 2026, the user): reset, not honoured.** The importer no longer
+carries `billing_source`; a v4 on an API mode that chose `cad` has its main meter's half-hours
+re-run against the settled kWh (transform 5, spec v25). With nothing left to store it,
+`_get_billing_source` reads `dcc`; whether the passes' `cad` branch then goes is a separate
+clean-up.
 
 ---
 
@@ -226,7 +235,15 @@ the passes that read it. Whether the `cad` branch is then dead, and goes, is a s
    the meter rows at its raw kWh); now once, at its grid kWh, flagged `device`. Clicked through on
    a copy of staging's database set CAD-only: 19 Oct 02:30 BST corrected alone (its neighbours
    untouched, the battery's cost from its grid kWh), the standing charge on exactly 48 half-hours.
-7. **Retire the sub-pages** — Fill History & Gaps, Delete Blocks, Cost Corrections, with redirects;
-   the billing settlement source's UI.
+7. **Retire the sub-pages** — *built 21 Oct 2026*: Fill History & Gaps, Delete Blocks and Cost
+   Corrections gone, `/fill-history` and `/delete-blocks` → Data Management, `/corrections` →
+   `/charts?tab=daily` (Charts takes `?tab=` once, over the remembered tab); Data Management's
+   topbar keeps *Backup now*. The routes only those pages called go with them: the deleted-ranges
+   list and its *Re-import* (`/api/blocks/deleted-ranges`, `/api/blocks/reimport` — a deleted
+   half-hour is a missing one on the heatmap, "deleted on …", and filling it lifts the deletion),
+   *Review unsettled blocks* and *Retry settlement* (`/api/unsettled-blocks`,
+   `/api/retry-settlement`), `/api/import/extract-zip` and `…-by-name`; and with them
+   `apply_billing_source_change`, `flag_all_for_pass2_rerun` and `get_unsettled_blocks`, left
+   with no caller. The settlement source: the card, the wizard's step and the POST gone; §2 (b).
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs.

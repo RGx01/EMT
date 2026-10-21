@@ -68,7 +68,7 @@ class TestClassifier(unittest.TestCase):
         """Both of these build their statement in a local and execute the
         variable. Reading only the execute() argument sees a bare Name; 16 public
         readers landed in UNDECIDED that way on the first run."""
-        self._is("read", "get_blocks_needing_reprice", "get_unsettled_blocks",
+        self._is("read", "get_blocks_needing_reprice",
                  "get_import_blocks_missing_exc", "get_block_starts_missing_carbon")
         self._is("write", "_insert_block_rows", "upsert_imported_blocks")
 

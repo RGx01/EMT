@@ -335,17 +335,8 @@ class TestRouteRegistration(unittest.TestCase):
     def test_api_billing_source_get_registered(self):
         self.assertTrue(self._registered("api_billing_source_get"))
 
-    def test_api_billing_source_post_registered(self):
-        self.assertTrue(self._registered("api_billing_source_post"))
-
-    def test_api_unsettled_blocks_registered(self):
-        self.assertTrue(self._registered("api_unsettled_blocks"))
-
     def test_api_reprice_history_status_registered(self):
         self.assertTrue(self._registered("api_reprice_history_status"))
-
-    def test_api_retry_settlement_registered(self):
-        self.assertTrue(self._registered("api_retry_settlement"))
 
     def test_api_kraken_config_get_registered(self):
         self.assertTrue(self._registered("api_kraken_config_get"))
@@ -4524,62 +4515,6 @@ class TestHistoryGaps(unittest.TestCase):
         r = client.post("/api/resolve-gaps")
         self.assertEqual(r.status_code, 400)
         self.assertEqual(r.get_json()["reason"], "no_api")
-
-
-class TestDeletedRangesEndpoints(unittest.TestCase):
-    """BL-8 phase 2: the deleted-ranges list + the targeted re-import endpoint."""
-
-    def setUp(self):
-        import engine as _eng
-        self._eng = _eng
-        self._saved = getattr(_eng, "kraken_available", None)
-
-    def tearDown(self):
-        if self._saved is None:
-            if hasattr(self._eng, "kraken_available"):
-                del self._eng.kraken_available
-        else:
-            self._eng.kraken_available = self._saved
-
-    def _store_with_tombstone(self):
-        from block_store import BlockStore
-        st = BlockStore(_memory_uri())
-        with st._conn:
-            cp = st._conn.execute(
-                "INSERT INTO config_periods (effective_from, billing_day, "
-                "block_minutes, timezone, currency_symbol, currency_code) "
-                "VALUES ('2024-01-01T00:00:00',1,30,'UTC','£','GBP')").lastrowid
-            st._conn.execute("INSERT INTO meters (config_period_id, meter_id, "
-                             "is_sub_meter) VALUES (?, 'electricity_main', 0)", (cp,))
-        st._conn.commit()
-        st.add_deleted_range("*", "2026-08-12T00:00:00", "2026-08-13T00:00:00")
-        return st
-
-    def test_deleted_ranges_listed_with_fillable(self):
-        self._eng.kraken_available = lambda: True
-        client = make_client(store=self._store_with_tombstone())
-        d = client.get("/api/blocks/deleted-ranges").get_json()
-        self.assertTrue(d["ok"])
-        self.assertEqual(len(d["ranges"]), 1)
-        self.assertEqual(d["ranges"][0]["meter_id"], "*")
-        self.assertIn("fillable", d["ranges"][0])
-
-    def test_reimport_requires_api(self):
-        self._eng.kraken_available = lambda: False
-        client = make_client(store=self._store_with_tombstone())
-        r = client.post("/api/blocks/reimport",
-                        json={"from_date": "2026-08-12", "to_date": "2026-08-12",
-                              "confirmed": True})
-        self.assertEqual(r.status_code, 400)
-        self.assertEqual(r.get_json()["reason"], "no_api")
-
-    def test_reimport_requires_confirmation(self):
-        self._eng.kraken_available = lambda: True
-        client = make_client(store=self._store_with_tombstone())
-        r = client.post("/api/blocks/reimport",
-                        json={"from_date": "2026-08-12", "to_date": "2026-08-12"})
-        self.assertEqual(r.status_code, 400)
-        self.assertEqual(r.get_json()["reason"], "unconfirmed")
 
 
 class TestInstanceLabel(unittest.TestCase):

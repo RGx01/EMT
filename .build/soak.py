@@ -148,7 +148,6 @@ def query_variants(path, ctx):
                                          for f, t in week],
         "/api/corrections/nearby-rates": [{"channel": "import", "from_date": f, "to_date": t}
                                           for f, t in week],
-        "/api/unsettled-blocks": [{"limit": 50}],
         # all three resolutions (the route's docstring said day|block were 501 — they
         # were not, and the first soaks only ever asked for period). Series over a
         # month: a year at block resolution is ~15 MB raw and not a viewport.
