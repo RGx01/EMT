@@ -2022,7 +2022,19 @@ def api_carbon_current():
 
 @app.route("/data-management")
 def data_management_page():
-    return render_template("data_management.html", active="data_management")
+    # The topbar's Whole history menu, decided here so it is whole at first paint (21 Oct 2026):
+    # the API's jobs with an API connection, the purge when there is imported history.
+    import engine as _eng
+    try:
+        uses_api = bool(_eng.mode_uses_api())
+    except Exception:
+        uses_api = False
+    try:
+        has_imported = bool((store_access.store().count_imported_history() or {}).get("blocks"))
+    except Exception:
+        has_imported = False
+    return render_template("data_management.html", active="data_management",
+                           uses_api=uses_api, has_imported=has_imported)
 
 
 @app.route("/historical-probe")

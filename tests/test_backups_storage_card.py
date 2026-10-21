@@ -79,7 +79,7 @@ class TheStorage(unittest.TestCase):
 class TheCard(unittest.TestCase):
 
     def test_one_card_its_actions_in_its_head(self):
-        i = _DM.index('<div class="card" id="dm-backups">')
+        i = _DM.index('<div class="card" id="dm-backups"')
         head = _DM[i:_DM.index('id="dm-storage-line"', i)]
         self.assertIn('onclick="doManualBackup()"', head)
         self.assertIn('id="btn-vacuum" onclick="doVacuum()"', head)

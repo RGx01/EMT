@@ -163,6 +163,22 @@ history.
 **Stays:** Historical Import (the flows the modals open; reachable by URL); the restore modals and
 the staged restore; the routes the pages called (corrections preview / apply, the delete, the purge).
 
+**(8) The jobs in the topbar** (decided 21 Oct 2026, the user, after staging). Below the heatmap the
+Whole history and Backups & storage cards moved as its months loaded, and reaching them meant
+scrolling past all of it; Whole history's buttons showed only once two requests answered, behind
+the health strip's on the Pi. The page's body is the health strip and the heatmap, nothing else.
+The topbar has:
+- **Whole history ▾**, a menu of the card's jobs, each opening its modal as before. Its items
+  are decided when the page is rendered: the API's two with an API connection, the purge when there
+  is imported history.
+- **Backup & restore**, a modal holding the Backups & storage card: create, compact and the support
+  file in its head.
+- **Backup now**, kept for the one click before a risky change.
+
+On a phone the three share one row, labelled *History*, *Backups* and *Backup now*. A backup
+dropped anywhere on the page opens the restore, since the drop row is in a modal now.
+`?open=backups` and `?open=support` open their modal from a link.
+
 ---
 
 ## 2. Open
@@ -252,4 +268,13 @@ clean-up.
    `apply_billing_source_change`, `flag_all_for_pass2_rerun` and `get_unsettled_blocks`, left
    with no caller. The settlement source: the card, the wizard's step and the POST gone; §2 (b).
 
-1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs.
+8. **The jobs in the topbar** — *built 21 Oct 2026*: §1 (8). Clicked through on a copy of
+   staging's database:
+   - the menu is whole on first paint;
+   - the modal opens and closes, and Escape leaves a modal above it first;
+   - a zip dropped on the heatmap opens the restore, and one dropped on the modal's row opens it
+     once;
+   - `?open=backups` works;
+   - at phone width the three fit one row.
+
+1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.
