@@ -269,7 +269,7 @@
         <br><br>
         <strong>Your billing history is kept</strong> — readings and costs already settled stay exactly as they are; nothing is re-priced.
         <br><br>
-        You'll then need to add a local meter sensor, or reconnect Octopus, to resume collecting new data. This is reversible — re-entering your API key reconnects.
+        You'll then need local meter sensors to resume collecting new data — the import reading, and the <strong>import rate and standing charge</strong> (and export rate, if you export), since prices no longer come from Octopus. Or reconnect: this is reversible — re-entering your API key reconnects.
       </div>
       <div style="display:flex;gap:12px;justify-content:flex-end;">
         <button class="btn btn-secondary" onclick="closeDisconnectModal()">Cancel</button>
@@ -776,6 +776,7 @@ function buildMainCard(meterId, meter) {
     (noLocal ? '' :
       '<hr>' +
       '<div class="section-divider">Import Channel</div>' +
+      (usesApi ? '' : cadPricingNote(imp, exp)) +
       '<div class="channel-card">' +
         '<span class="channel-label label-import">Import</span>' +
         '<div class="form-group"><label>Read Sensor — cumulative kWh from grid</label>' +
@@ -1218,6 +1219,30 @@ function buildEntityInput(id, currentVal, meterId, chId, field, allowClear) {
     '</div>' +
     (allowClear ? '<button class="btn btn-secondary btn-sm js-clear-entity" data-target="' + id + '" title="Clear">✕</button>' : '') +
     '</div>';
+}
+
+// ── CAD-only pricing: the sensors it needs ──────────────────────────────────
+// Without the supplier API every half-hour is priced from Home Assistant: the import rate, the
+// standing charge and, where there is export, the export rate. A disconnect lands here with the
+// fields as they were (data management design §2 (a), 21 Oct 2026), so say what an empty one does.
+function cadMissingSensors(imp, exp) {
+  imp = imp || {}; exp = exp || {};
+  var out = [];
+  if (!(imp.rate || '').trim())
+    out.push('<strong>Import rate</strong> \u2014 half-hours are costed at the last rate known, then at \u00a30');
+  if (!(imp.standing_charge_sensor || '').trim())
+    out.push('<strong>Standing charge</strong> \u2014 no standing charge is added to the bill');
+  if ((exp.read || '').trim() && !(exp.rate || '').trim())
+    out.push('<strong>Export rate</strong> \u2014 export is credited at the last rate known, then at \u00a30');
+  return out;
+}
+function cadPricingNote(imp, exp) {
+  var miss = cadMissingSensors(imp, exp);
+  if (!miss.length) return '';
+  return '<div class="cad-pricing-note" style="margin:0 0 10px;padding:10px 12px;border-radius:6px;font-size:12px;' +
+    'line-height:1.6;border:1px solid var(--warning-color,#b45309);color:var(--warning-color,#b45309);' +
+    'background:rgba(180,83,9,0.08);">\u26a0 Without a supplier API, EMT prices your electricity from ' +
+    'Home Assistant sensors. Missing:<br>' + miss.join('<br>') + '</div>';
 }
 
 // ── Rate-source toggles (API vs sensor; "use main meter rate" for devices) ────
@@ -3046,6 +3071,21 @@ function wizNext() {
     }
     _wizVerifyCredentialsThenAdvance();
     return;
+  }
+
+  // Sensors, without a supplier API: the import rate is what prices every half-hour, so it is
+  // required; going on without a standing charge (or an export rate, with export) is asked.
+  if (curStep === 'sensors' && (wiz.data.mode || 'cad').indexOf('api') === -1) {
+    if (!(wiz.data.importRate || '').trim()) {
+      alert('Without a supplier API, EMT prices your electricity from a Home Assistant rate sensor. '
+            + 'Please choose your Import Rate Sensor.');
+      return;
+    }
+    var _miss = [];
+    if (!(wiz.data.standingCharge || '').trim()) _miss.push('a standing charge sensor (no standing charge will be added to your bill)');
+    if ((wiz.data.exportRead || '').trim() && !(wiz.data.exportRate || '').trim())
+      _miss.push('an export rate sensor (export will be credited at \u00a30)');
+    if (_miss.length && !confirm('Continue without ' + _miss.join(' or ') + '?')) return;
   }
 
   // Validate device names on sub_sensors step

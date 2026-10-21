@@ -4516,6 +4516,15 @@ def finalise_block(ha: HAClient, block_data: dict | None = None, interpolated: b
     parent_sub_kwh   = {}
     parent_sub_cost  = {}
 
+    # A channel's "use the supplier API" choice (rate_source / standing_charge_source = 'api') is
+    # honoured only while the mode uses the API. A disconnect lands on 'cad' and keeps the config
+    # as it was, so the choice outlived the API: the standing charge was forced to 0 over a mapped
+    # sensor, with no schedule left to supply it (traced 21 Oct 2026, a staging copy's config).
+    try:
+        _api_mode = mode_uses_api()
+    except Exception:
+        _api_mode = False
+
     # ── PASS 1 — compute all meters with boundary interpolation ───────────
     for meter_name, meter_data in cb.get("meters", {}).items():
         meter_meta  = meter_data.get("meta", {})
@@ -4531,7 +4540,7 @@ def finalise_block(ha: HAClient, block_data: dict | None = None, interpolated: b
         # Honour an explicit "use supplier API standing charge" choice on the
         # main meter: take the schedule value even when a SC sensor is mapped.
         _sc_force_api          = (import_channel_cfg.get("standing_charge_source") == "api") \
-                                 and not meter_meta.get("sub_meter")
+                                 and not meter_meta.get("sub_meter") and _api_mode
         raw_sc                 = 0.0 if _sc_force_api else \
                                  (read_sensor(ha, standing_charge_sensor) if standing_charge_sensor else 0.0)
         if (raw_sc is None or raw_sc == 0.0) and standing_charge_sensor and not _sc_force_api:
@@ -4588,7 +4597,7 @@ def finalise_block(ha: HAClient, block_data: dict | None = None, interpolated: b
             # If the schedule can't resolve, the sensor value already in
             # valid_rates is left as a graceful fallback.
             _ch_cfg = (meter_cfg or {}).get("channels", {}).get(channel_name, {})
-            if (_ch_cfg.get("rate_source") == "api") and not is_sub \
+            if (_ch_cfg.get("rate_source") == "api") and _api_mode and not is_sub \
                     and channel_name in ("import", "export"):
                 try:
                     _kr = _kraken_rate_resolver(channel_name, start)

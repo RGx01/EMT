@@ -172,8 +172,14 @@ the staged restore; the routes the pages called (corrections preview / apply, th
 lands on `cad` and drops the rate schedule (`engine.disconnect_kraken`); the page reloads with the
 rate and standing-charge sensor fields shown, but nothing asks for them — its modal says only "add
 a local meter sensor". With the fields empty a half-hour takes the last rate carried forward
-(`last_known_rates`, one flat value) and then £0, with an hourly warning in the log. Open: the
-disconnect, and setup in `cad`, asking for the rate and standing-charge sensors.
+(`last_known_rates`, one flat value) and then £0, with an hourly warning in the log. **Done (21 Oct 2026):** the disconnect's
+modal names the import rate and standing charge (and export rate); Settings in `cad` says above
+the import channel which is missing and what that does; the wizard without the API requires the
+import rate sensor and asks before going on without a standing charge (or an export rate, with
+export). And on the way: a channel's "use the supplier API" choice outlived the API — a
+disconnect keeps `standing_charge_source = 'api'`, which forced the standing charge to 0 over a
+mapped sensor (a staging copy's config: both sensors mapped, both sources `api`). Finalise now
+honours the choice only while the mode uses the API.
 
 (b) **The billing source's code.** The toggle's UI goes, and so does the wizard's step and the
 POST (PR 7). **Decided (21 Oct 2026, the user): reset, not honoured.** The importer no longer
