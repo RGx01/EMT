@@ -688,6 +688,8 @@ window.EMTHeatmap = (function () {
       var xe = exportDeleteItem(h.starts[0], plus30(h.starts[h.starts.length - 1]));
       if (xe) items.push(xe);
       items.push(deleteItem(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label));
+      var sf = supportItem(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label);
+      if (sf) items.push(sf);
       showMenu(ev, items, h.day + ' ' + h.label);
     });
   }
@@ -737,6 +739,7 @@ window.EMTHeatmap = (function () {
     var fd = fillItem(dr[0], dr[1], day); if (fd) items.push(fd);
     var xd = exportDeleteItem(dr[0], dr[1]); if (xd) items.push(xd);
     items.push(deleteItem(dr[0], dr[1], day));
+    var sd = supportItem(dr[0], dr[1], day); if (sd) items.push(sd);
     markSelection(dr[0], dr[1]);
     showMenu(ev, items, day);
   }
@@ -791,6 +794,7 @@ window.EMTHeatmap = (function () {
     var fs = fillItem(sp.from, sp.to, sp.label); if (fs) items.push(fs);
     var xs = exportDeleteItem(sp.from, sp.to); if (xs) items.push(xs);
     items.push(deleteItem(sp.from, sp.to, sp.label));
+    var ss = supportItem(sp.from, sp.to, sp.label); if (ss) items.push(ss);
     showMenu(ev, items, sp.label);
   });
   function clearSelection() {
@@ -1193,6 +1197,11 @@ window.EMTHeatmap = (function () {
   // Whole half-hours — every meter, both channels — after a required backup, on every view. The
   // preview says plainly that it is not one channel, and that HA's readings are kept: a refill from
   // Octopus or a CSV rebuilds the devices from them. Re-fetch is named where it can help instead.
+  function supportItem(from, to, label) {
+    if (!state.onSupportFile) return null;
+    return {text: 'Make a support file for ' + label + '\u2026',
+            run: function () { state.onSupportFile(from, to, label); }};
+  }
   function deleteItem(from, to, label) {
     return {text: 'Delete ' + label + '\u2026', run: function () { openDelete(from, to, label); }};
   }
@@ -1594,6 +1603,8 @@ window.EMTHeatmap = (function () {
     state.mode = opts.mode === 'data' ? 'data' : 'chart';
     state.dayWanted = isData() && /^\d{4}-\d{2}-\d{2}$/.test(opts.day || '') ? opts.day : null;
     state.onChange = typeof opts.onChange === 'function' ? opts.onChange : null;
+    // `opts.onSupportFile(from, to, label)` (data mode): the selection's "Make a support file…"
+    state.onSupportFile = typeof opts.onSupportFile === 'function' ? opts.onSupportFile : null;
     state.root.innerHTML = '<div class="hm-empty">Loading…</div>';
     var apiCheck = Promise.resolve();
     if (isData()) {

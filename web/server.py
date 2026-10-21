@@ -4737,6 +4737,179 @@ def api_data_health():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+# ── The support file (data management design §1 (5), PR 5) ─────────────────────────────────
+# One zip for whoever is helping: the log, a summary, and the database cut to a span, identifiers
+# redacted by default (support_file.py). The summary is read here, on the request thread's store;
+# the log and the zip on a worker of their own, which opens only its own SQLite connections.
+_support_job = {"status": "idle"}
+_SUPPORT_LOG_LINES = 20000
+_SUPPORT_LOG_ALLOWANCE = 100 * 1024      # the estimate's allowance for the log, zipped
+
+
+def _addon_log_text(max_lines: int = _SUPPORT_LOG_LINES) -> str:
+    """The add-on's log, its last `max_lines` lines — as /api/logs reads it. '' when unavailable."""
+    import urllib.request
+    try:
+        if os.environ.get("EMT_MODE", "supervised") == "standalone":
+            import engine as _eng
+            p = os.path.join(DATA_DIR or _eng.DATA_DIR, "addon.log")
+            if not os.path.exists(p):
+                return ""
+            with open(p, "r", errors="replace") as f:
+                return "\n".join(f.read().splitlines()[-max_lines:])
+        req = urllib.request.Request("http://supervisor/addons/self/logs",
+                                     headers={"Authorization": "Bearer " +
+                                              os.environ.get("SUPERVISOR_TOKEN", "")})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+        return "\n".join(raw.splitlines()[-max_lines:])
+    except Exception as e:
+        logger.warning("support file: the log could not be read: %s", e)
+        return ""
+
+
+def _support_span(data) -> tuple:
+    """(lo, hi) naive-UTC for the dialog's choice: `30d` (the default), `month` (`month`
+    'YYYY-MM', local), `all`, or `range` (`from_utc` / `to_utc`, the heatmap's selection)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    span = (data.get("span") or "30d").strip()
+    if span == "all":
+        return None, None
+    if span == "range":
+        import block_store as _bs
+        lo, hi, _ = _bs.BlockStore._utc_span_bounds((data.get("from_utc"), data.get("to_utc")))
+        return lo, hi
+    if span == "month":
+        import calendar
+        from block_store import local_date_to_utc_bounds
+        m = str(data.get("month") or "")
+        if not re.match(r"^\d{4}-\d{2}$", m):
+            raise ValueError("month must be YYYY-MM")
+        y, mo = int(m[:4]), int(m[5:])
+        tz = _site_tz()
+        lo = local_date_to_utc_bounds("%04d-%02d-01" % (y, mo), tz)[0]
+        hi = local_date_to_utc_bounds("%04d-%02d-%02d" % (y, mo, calendar.monthrange(y, mo)[1]), tz)[1]
+        return lo, hi
+    if span != "30d":
+        raise ValueError("span must be 30d, month, all or range")
+    lo = _dt.now(_tz.utc).replace(tzinfo=None, minute=0, second=0, microsecond=0) - _td(days=30)
+    return lo.isoformat(), None
+
+
+def _support_summary(store) -> dict:
+    """support.json, less the log's errors (added on the worker): what a helper asks first."""
+    import engine as _eng
+    import job_coordinator as _coord
+    out = {"made_at_utc": __import__("datetime").datetime.utcnow().isoformat(timespec="seconds")}
+    for k, f in (("version", lambda: _eng._read_config_version()),
+                 ("written_by", lambda: store.get_meta("written_by")),
+                 ("data_source_mode", lambda: _eng.get_data_source_mode()),
+                 ("config", lambda: load_config()),
+                 ("import_audit", lambda: store.get_meta("import_audit")),
+                 ("coordinator", lambda: _coord.state()),
+                 ("bill_ask", lambda: json.loads(store.get_kraken_state("bill_ask") or "{}")),
+                 ("missing", lambda: _missing_half_hours(store)),
+                 ("blocks_by_meter_source_month", lambda: [
+                     list(r) for r in store._conn.execute(
+                         "SELECT meter_id, COALESCE(source, 'live'), substr(block_start, 1, 7), COUNT(*) "
+                         "FROM blocks GROUP BY 1, 2, 3 ORDER BY 3, 1, 2")])):
+        try:
+            out[k] = f()
+        except Exception as e:
+            out[k] = {"error": str(e)}
+    return out
+
+
+def _support_dir() -> str:
+    import engine as _eng
+    d = os.path.join(DATA_DIR or _eng.DATA_DIR, "support")
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _support_worker(lo, hi, redact, summary):
+    import support_file as _sf
+    import engine as _eng
+    _j = _support_job
+    try:
+        _j["step"] = "reading the log"
+        log = _addon_log_text()
+        summary["last_errors"] = _sf.last_errors(log)
+        d = _support_dir()
+        for old in os.listdir(d):                       # one file at a time: the newest
+            if old.startswith("emt-support-") and old.endswith(".zip"):
+                os.remove(os.path.join(d, old))
+        name = "emt-support-%s.zip" % __import__("datetime").datetime.utcnow().strftime("%Y%m%dT%H%M%S")
+        _j["step"] = "copying and cutting the database"
+        r = _sf.build(os.path.join(DATA_DIR or _eng.DATA_DIR, "blocks.db"), os.path.join(d, name),
+                      lo=lo, hi=hi, redact=redact, log_text=log, summary=summary, work_dir=d)
+        logger.info("support file: %s, %.1f MB (span %s → %s, redacted %s)", name,
+                    r["bytes"] / 1048576, lo or "the start", hi or "now", redact)
+        _j.update({"status": "done", "name": name, "bytes": r["bytes"], "redacted": r["redacted"],
+                   "error": None})
+    except Exception as e:
+        logger.error("support file: %s", e)
+        _j.update({"status": "error", "error": str(e)})
+
+
+@app.route("/api/support/estimate", methods=["POST"])
+def api_support_estimate():
+    """The support file's size before it is built, and the span's half-hours. Read-only."""
+    try:
+        import support_file as _sf
+        import engine as _eng
+        data = request.get_json(force=True, silent=True) or {}
+        lo, hi = _support_span(data)
+        db_path = os.path.join(DATA_DIR or _eng.DATA_DIR, "blocks.db")
+        db_bytes = os.path.getsize(db_path) if os.path.exists(db_path) else 0
+        e = _sf.estimate(store_access.store()._conn, lo, hi, db_bytes)
+        return jsonify({"ok": True, "from_utc": lo, "to_utc": hi, "half_hours": e["half_hours"],
+                        "bytes": e["bytes"] + _SUPPORT_LOG_ALLOWANCE})
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        logger.error("api_support_estimate: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/support/build", methods=["POST"])
+def api_support_build():
+    """Build the support file in the background; poll /api/support/status, then download it."""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        if _support_job.get("status") == "running":
+            return jsonify({"ok": False, "error": "a support file is already being made"}), 409
+        lo, hi = _support_span(data)
+        redact = data.get("redact", True) is not False
+        summary = _support_summary(store_access.store())
+        _support_job.clear()
+        _support_job.update({"status": "running", "step": "starting", "name": None, "error": None})
+        threading.Thread(target=_support_worker, args=(lo, hi, redact, summary),
+                         daemon=True, name="support-file").start()
+        return jsonify({"ok": True, "status": "running"})
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        logger.error("api_support_build: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/support/status")
+def api_support_status():
+    return jsonify(_support_job)
+
+
+@app.route("/api/support/download")
+def api_support_download():
+    name = _support_job.get("name")
+    if _support_job.get("status") != "done" or not name:
+        return jsonify({"error": "no support file is ready"}), 404
+    path = os.path.join(_support_dir(), name)
+    if not os.path.exists(path):
+        return jsonify({"error": "the support file is gone — make it again"}), 404
+    return send_file(path, as_attachment=True, download_name=name, mimetype="application/zip")
+
+
 @app.route("/api/history-gaps")
 def api_history_gaps():
     """Review: missing half-hour slots in the block history (outage holes).

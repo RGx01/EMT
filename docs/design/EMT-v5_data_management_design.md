@@ -202,8 +202,16 @@ the passes that read it. Whether the `cad` branch is then dead, and goes, is a s
    sent as the delete's existing `reconstructed_only` with `utc_span`. Only the imported main-meter
    rows go; the devices' rows over them stay, for a re-import to rejoin (clicked through on a copy of
    staging's database: 2–3 Mar 2026, 48 of 96 imported, 288 rows → 240 after the backup).
-5. **The support file** — `support.json`, the log, the span's database, redaction, the size
-   estimate; from the card and from a selection.
+5. **The support file** — *built 21 Oct 2026*: `support_file.py` (identifiers, the cut, the zip,
+   the estimate) and `/api/support/estimate`, `/build`, `/status`, `/download`; from the card and
+   from a heatmap selection. Identifiers as found on a staging copy: `measured_cost.mpan`;
+   `meter_channels.mpan`, which holds `serial-MPAN`; `kraken_state.kraken_account_number`;
+   `meters.postcode_prefix` and `carbon_intensity.postcode` (the outward code) — none left in the
+   copy, the log or the summary. The estimate is weighted by every time-indexed table's rows in the
+   span: by the blocks alone it said 0.47 MB for a 30-day file that built at 2.0 (the rolling power
+   and SoC histories, two days dense); weighted, 2.8 / 0.60 / 13.1 MB against 2.0 / 0.57 / 11.8 for
+   30 days / July / everything. Clicked through: the dialog's estimate raced (an earlier choice's
+   reply landing last) — only the latest is shown now.
 6. **Corrections on the Billing tab** — the context menu and the modal, CAD-only; one half-hour;
    the standing charge from the summary row; the required backup; `from_utc` / `to_utc` on the
    corrections routes.
