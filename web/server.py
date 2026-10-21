@@ -4546,25 +4546,36 @@ def api_backfill_gaps():
 _HEALTH_BILL_FLAGS = ("bill_kwh_differs", "vat_disagrees", "split_missing", "recost_bl82")
 
 
-def _missing_half_hours(store, now=None) -> dict:
+def _missing_half_hours(store, tz_name, now=None) -> dict:
     """The main meter's missing half-hours as the heatmap's Missing view counts them: every one
     from the first block to the last finished half-hour with no block — interior gaps of any age
-    and the tail since the last block. {half_hours, gaps, newest}."""
+    and the tail since the last block. {half_hours, gaps, newest, by_month}: `by_month` counts them
+    by local month ('YYYY-MM'), for the heatmap's Issues only to fold a clean month."""
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from zoneinfo import ZoneInfo
     now = now or _dt.now(_tz.utc).replace(tzinfo=None)
+    tz = ZoneInfo(tz_name or "UTC")
     gaps = store.find_block_gaps(min_age_hours=0, now=now)
-    n = sum(g["slots"] for g in gaps)
+    runs = [(_dt.fromisoformat(g["start"]), int(g["slots"])) for g in gaps]
+    n = sum(k for _s, k in runs)
     newest = gaps[-1]["start"] if gaps else None
     first, last = store.block_span()
+    ngaps = len(gaps)
     if last:
         t = now - _td(minutes=2)                       # the heatmap's grace after a boundary
         done = t.replace(minute=0 if t.minute < 30 else 30, second=0, microsecond=0) - _td(minutes=30)
         tail = int((done - _dt.fromisoformat(last)).total_seconds() // 1800)
         if tail > 0:
             n += tail
-            gaps = gaps + [None]
+            ngaps += 1
             newest = (_dt.fromisoformat(last) + _td(minutes=30)).isoformat()
-    return {"half_hours": n, "gaps": len(gaps), "newest": newest}
+            runs.append((_dt.fromisoformat(newest), tail))
+    by_month = {}
+    for start, k in runs:
+        for i in range(k):
+            m = (start + _td(minutes=30 * i)).replace(tzinfo=_tz.utc).astimezone(tz).strftime("%Y-%m")
+            by_month[m] = by_month.get(m, 0) + 1
+    return {"half_hours": n, "gaps": ngaps, "newest": newest, "by_month": by_month}
 
 
 # The health strip's answer, kept until the data moves (staging, 21 Oct 2026). It classifies every
@@ -4575,7 +4586,7 @@ def _missing_half_hours(store, now=None) -> dict:
 # (a state can turn with age alone: a bill given up on). One request computes; the rest wait for it.
 _HEALTH_TTL_S = 600
 _health_lock = threading.Lock()
-_health_cache = {"key": None, "views": None, "missing": None}
+_health_cache = {"key": None, "views": None, "missing": None, "months": None}
 
 
 @app.route("/api/data-health")
@@ -4596,11 +4607,16 @@ def api_data_health():
         with _health_lock:
             if _health_cache["key"] != key:
                 first, _last = store.block_span()
-                _health_cache["views"] = _health_views(store, views, first) if views and first else {}
-                _health_cache["missing"] = _missing_half_hours(store)
-                _health_cache["key"] = key
+                tz = _config_timezone()
+                v, m = _health_views(store, views, first, tz) if views and first else ({}, {})
+                miss = _missing_half_hours(store, tz)
+                for k, n in (miss.pop("by_month", None) or {}).items():
+                    m.setdefault(k, {})["missing"] = n
+                _health_cache.update(views=v, months=m, missing=miss, key=key)
             out["views"] = dict(_health_cache["views"])
             out["missing"] = dict(_health_cache["missing"])
+            # by local month: each view's states and the missing half-hours (Issues only, §3)
+            out["months"] = _health_cache["months"]
         import glob
         zips = sorted(glob.glob(f"{_share_backup_dir()}/backups/*.zip"), reverse=True)
         if zips:
@@ -4615,24 +4631,46 @@ def api_data_health():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-def _health_views(store, views, first):
-    """{view: {state or state|flags: count}} over [first, now + 30 min) — the strip's counts."""
-    from collections import Counter
+def _local_month_starts(lo, hi, tz):
+    """(['YYYY-MM', …], [naive-UTC ISO of each local month's first instant, …]) covering [lo, hi]."""
+    from datetime import datetime as _dt, timezone as _tz
+    loc = _dt.fromisoformat(lo).replace(tzinfo=_tz.utc).astimezone(tz)
+    y, mo = loc.year, loc.month
+    end = _dt.fromisoformat(hi).replace(tzinfo=_tz.utc).astimezone(tz)
+    keys, starts = [], []
+    while (y, mo) <= (end.year, end.month):
+        keys.append("%04d-%02d" % (y, mo))
+        starts.append(_dt(y, mo, 1, tzinfo=tz).astimezone(_tz.utc).replace(tzinfo=None).isoformat())
+        mo += 1
+        if mo > 12:
+            y, mo = y + 1, 1
+    return keys, starts
+
+
+def _health_views(store, views, first, tz_name):
+    """({view: {state or state|flags: count}}, {month: {view: {…}}}) over [first, now + 30 min) —
+    the strip's counts, and the same by local month for the heatmap's Issues only."""
+    from collections import Counter, defaultdict
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from zoneinfo import ZoneInfo
+    import bisect
+    tz = ZoneInfo(tz_name or "UTC")
     hi = (_dt.now(_tz.utc).replace(tzinfo=None) + _td(minutes=30)).isoformat()
-    bill, export = Counter(), Counter()
-    for st in _settlement_states(store, first, hi).values():
-        if "bill" in views and st.get("bill"):
+    total = {v: Counter() for v in views if v in ("bill", "export")}
+    months = defaultdict(lambda: {v: Counter() for v in total})
+    # each local month's first instant in naive UTC, so a half-hour's month is a bisect, not a
+    # timezone conversion per row (+30% on the first count of 59k blocks)
+    keys, starts = _local_month_starts(first, hi, tz)
+    for bs, st in _settlement_states(store, first, hi).items():
+        m = keys[max(0, bisect.bisect_right(starts, bs) - 1)]
+        if "bill" in total and st.get("bill"):
             fl = sorted(f for f in (st.get("flags") or []) if f in _HEALTH_BILL_FLAGS)
-            bill[st["bill"] + ("|" + ",".join(fl) if fl else "")] += 1
-        if "export" in views and st.get("export"):
-            export[st["export"]] += 1
-    out = {}
-    if "bill" in views:
-        out["bill"] = dict(bill)
-    if "export" in views:
-        out["export"] = dict(export)
-    return out
+            k = st["bill"] + ("|" + ",".join(fl) if fl else "")
+            total["bill"][k] += 1; months[m]["bill"][k] += 1
+        if "export" in total and st.get("export"):
+            total["export"][st["export"]] += 1; months[m]["export"][st["export"]] += 1
+    return ({v: dict(c) for v, c in total.items()},
+            {m: {v: dict(c) for v, c in d.items()} for m, d in months.items()})
 
 
 # ── The support file (data management design §1 (5), PR 5) ─────────────────────────────────
@@ -4706,7 +4744,7 @@ def _support_summary(store) -> dict:
                  ("import_audit", lambda: store.get_meta("import_audit")),
                  ("coordinator", lambda: _coord.state()),
                  ("bill_ask", lambda: json.loads(store.get_kraken_state("bill_ask") or "{}")),
-                 ("missing", lambda: _missing_half_hours(store)),
+                 ("missing", lambda: _missing_half_hours(store, _config_timezone())),
                  ("blocks_by_meter_source_month", lambda: [
                      list(r) for r in store._conn.execute(
                          "SELECT meter_id, COALESCE(source, 'live'), substr(block_start, 1, 7), COUNT(*) "

@@ -179,6 +179,23 @@ On a phone the three share one row, labelled *History*, *Backups* and *Backup no
 dropped anywhere on the page opens the restore, since the drop row is in a modal now.
 `?open=backups` and `?open=support` open their modal from a link.
 
+**(9) After the layout, on staging** (decided 21 Oct 2026, the user):
+- **A drag across rows takes whole days.** Within one row a drag runs cell to cell; once it leaves
+  its row, every day it crosses is taken whole, its first row too. Rows run newest first, so one
+  span of time had taken the origin row from midnight up to the cell, the wrong way from where the
+  drag began.
+- ***Issues only* folds whole months.** A month with nothing to look at in the view folds, a run of
+  them into one line ("Apr – Sep 2026: nothing to look at"), which a click shows.
+  - The counts come by local month from the health strip's cached pass (`months` on
+    `/api/data-health`), so a clean month is never fetched to find out.
+  - The newest month, which is live, and the month `?day=` opens are always shown.
+- **A Whole history task hides the choosers.** Opened from the menu, Historical Import's source and
+  task choosers are not offered: picking API again had reset the task and left the modal half on
+  one flow. Its heading gives way to the modal's title, and the intro says what this task does.
+- ***Missing* only without a bill view.** With the API, a missing half-hour is an issue in the Import
+  and Export bill views already, and the health strip's *Missing* opens the Import bill. CAD-only,
+  which has no bill view, keeps it.
+
 ---
 
 ## 2. Open
@@ -276,5 +293,14 @@ clean-up.
      once;
    - `?open=backups` works;
    - at phone width the three fit one row.
+
+9. **After the layout** — *built 21 Oct 2026*: §1 (9). Clicked through on a copy of staging's
+   database:
+   - **CAD + API:** 6 of 41 months shown, the rest in 2 lines; an expanded clean month held no
+     issue row; no Missing view.
+   - **Set CAD-only:** Missing the only view, 2 months shown.
+   - **A drag** from 21 Oct 05:00 to 19 Oct 15:00: 19 and 20 Oct whole, and 21 Oct up to its last
+     finished half-hour. Within one row it stays cell to cell.
+   - **Each Whole history task** opens on its own flow.
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.

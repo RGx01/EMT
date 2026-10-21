@@ -81,7 +81,7 @@ class TheSelection(unittest.TestCase):
         whole days."""
         i = PAGE.index("row.addEventListener('mousedown'")
         self.assertNotIn("!h.tot", PAGE[i:i + 400])
-        self.assertIn("if (d.h.tot || at.h.tot)", _fn("dragEnd"))
+        self.assertIn("var whole = !!(d.h.tot || at.h.tot", _fn("dragSpan"))
 
     def test_the_release_does_not_close_its_own_menu(self):
         self.assertIn("!state.dragEnded) dismiss();", PAGE)

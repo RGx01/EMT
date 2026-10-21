@@ -176,7 +176,7 @@ window.EMTHeatmap = (function () {
   // Two modes (data management design §1 (1), 21 Oct 2026): `chart` — Charts and the Lovelace card,
   // the energy views, read-only — and `data` — Data Management, the data views and every tool.
   var state = {metric: 'kwh', tz: null, bm: 30, months: {}, keys: [], panels: {}, epoch: null,
-               mode: 'chart', collapse: false, expanded: {}, dayWanted: null,
+               mode: 'chart', collapse: false, expanded: {}, dayWanted: null, mhealth: null, mexpanded: {},
                root: null, inited: false, loading: {}, scale: null, forceLight: false};
   var fetchJSON = function (url) { return fetch(apiUrl(url)).then(function (r) { return r.json(); }); };
 
@@ -760,16 +760,20 @@ window.EMTHeatmap = (function () {
     }
     return null;
   }
-  function dragEnd(d, at) {                        // [from, to) and a label for one end
-    if (d.h.tot || at.h.tot) {
+  function dragEnd(at, whole) {                    // [from, to) and a label for one end
+    if (whole) {
       var dr = dayRange(at.p, at.h.day);
-      return dr ? {from: dr[0], to: dr[1], label: at.h.day} : null;
+      return dr ? {from: dr[0], to: dr[1], label: at.h.fold ? at.h.label : at.h.day} : null;
     }
     var st = at.h.starts;
     return {from: st[0], to: plus30(st[st.length - 1]), label: at.h.day + ' ' + at.h.label};
   }
+  // Within one row a drag runs cell to cell; once it leaves its row, every day it crosses is
+  // whole, its first row too (21 Oct 2026, the user: rows run newest first, so a span of time
+  // took the origin row from midnight up to the cell — the wrong way from where it began).
   function dragSpan(d, at) {
-    var a = dragEnd(d, d), b = dragEnd(d, at);
+    var whole = !!(d.h.tot || at.h.tot || d.h.fold || at.h.fold || d.p !== at.p || d.h.day !== at.h.day);
+    var a = dragEnd(d, whole), b = dragEnd(at, whole);
     if (!a || !b || (a.from === b.from && a.to === b.to)) return null;   // not moved off its start
     if (b.from < a.from) { var t = a; a = b; b = t; }
     return {from: a.from, to: b.to, label: a.label + ' \u2192 ' + b.label};
@@ -1492,9 +1496,10 @@ window.EMTHeatmap = (function () {
   // Switch the view (a metric button, or the health strip's figures on Data Management)
   function setMetric(k) {
     if (!METRICS[k] || !state.root) return;
-    state.metric = k;
+    state.metric = k; state.mexpanded = {};
     state.root.querySelectorAll('.hm-metrics button:not(.hm-collapse)').forEach(function (x) {
       x.classList.toggle('active', x.dataset.metric === k); });
+    foldMonths();
     redrawAll(true);
   }
   // The health strip's count for a view (data management design §1 (2)): the server's half-hours
@@ -1532,9 +1537,10 @@ window.EMTHeatmap = (function () {
     fb.textContent = 'Issues only';
     fb.title = 'Fold the days with nothing to look at; click a fold to show its days';
     fb.onclick = function () {
-      state.collapse = !state.collapse; state.expanded = {};
+      state.collapse = !state.collapse; state.expanded = {}; state.mexpanded = {};
       fb.classList.toggle('active', state.collapse);
       try { localStorage.setItem('emt_hm_collapse', state.collapse ? '1' : '0'); } catch (e) {}
+      foldMonths();
       redrawAll(false);
     };
     mb.appendChild(fb);
@@ -1563,6 +1569,7 @@ window.EMTHeatmap = (function () {
       near.observe(el); far.observe(el);
     });
     reachRow();
+    foldMonths();
     redrawAll(false);
     // Theme: watch the attribute itself, so any toggle from any code path re-draws.
     new MutationObserver(function () { redrawAll(true); })
@@ -1575,6 +1582,45 @@ window.EMTHeatmap = (function () {
       if (root.clientWidth === lastW) return; lastW = root.clientWidth;
       clearTimeout(rt); rt = setTimeout(function () { redrawAll(false); }, 150);
     }).observe(root);
+  }
+
+  // ── Issues only, a month at a time (21 Oct 2026, the user): a month with nothing to look at in the
+  // view folds, a run of them into one line, which a click shows. From the health strip's counts by
+  // month (/api/data-health, cached on the server), so a clean month is never fetched to find out.
+  // The newest month is live and always shown; so is the month ?day= opens. A month the counts do
+  // not name has no half-hour in any state and none missing (a month inside the history with no
+  // blocks counts its half-hours missing), so it is clean: CAD-only's counts name only the months
+  // with something missing.
+  function monthClean(k) {
+    if (!isData() || !state.collapse || !state.mhealth || state.mexpanded[k]) return false;
+    if (k === state.keys[0] || (state.dayWanted && k === state.dayWanted.slice(0, 7))) return false;
+    var h = state.mhealth[k] || {};
+    var miss = h.missing || 0;
+    if (state.metric === 'presence') return miss === 0;
+    if (!isSettle(state.metric)) return false;
+    return miss === 0 && issueCount(state.metric, h[state.metric] || {}) === 0;
+  }
+  function foldMonths() {
+    var wrap = state.root && state.root.querySelector('.hm-months'); if (!wrap) return;
+    wrap.querySelectorAll('.hm-mfold').forEach(function (x) { x.remove(); });
+    var run = [];
+    function flush() {
+      if (!run.length) return;
+      var ks = run.slice(), el = document.createElement('button');
+      el.className = 'hm-mfold'; el.type = 'button';
+      var lab = ks.length === 1 ? monthLabel(ks[0]) : monthLabel(ks[ks.length - 1]) + ' \u2013 ' + monthLabel(ks[0]);
+      el.textContent = lab + ': nothing to look at \u2014 click to show';
+      el.onclick = function () { ks.forEach(function (k) { state.mexpanded[k] = true; }); foldMonths(); };
+      wrap.insertBefore(el, state.panels[ks[0]].el);
+      run = [];
+    }
+    state.keys.forEach(function (k) {
+      var p = state.panels[k]; if (!p) return;
+      var clean = monthClean(k);
+      p.el.style.display = clean ? 'none' : '';
+      if (clean) run.push(k); else flush();
+    });
+    flush();
   }
 
   // Octopus's history before EMT's oldest block (decided 18 Oct 2026, the user): its own row below
@@ -1591,6 +1637,12 @@ window.EMTHeatmap = (function () {
                 .format(new Date(r + 'Z')); } catch (e) { d = r.slice(0, 10); }
     el.innerHTML = 'Octopus holds your data back to <b>' + esc(d) + '</b> \u2014 ' +
                    '<a href="' + apiUrl('/historical-import#api-import-panel') + '">import it</a>';
+  }
+
+  function loadMonthHealth() {
+    return fetchJSON('/api/data-health').then(function (d) {
+      state.mhealth = (d && d.ok && d.months) || null;
+    }, function () { state.mhealth = null; });
   }
 
   // `opts.mode`: 'chart' (the default — Charts, the Lovelace card) or 'data' (Data Management);
@@ -1618,8 +1670,11 @@ window.EMTHeatmap = (function () {
         state.canRefetch = true;                // BL-86: a re-fetch needs the supplier API
         (r.settle_views || []).forEach(function (k) { if (SETTLE_METRICS[k]) METRICS[k] = SETTLE_METRICS[k]; });
       }, function () {}).then(function () {
-        METRICS.presence = PRESENCE_METRIC;     // last: [Import bill] [Export bill] [Missing]
-        state.metric = METRICS.bill ? 'bill' : 'presence';
+        // Missing only where there is no bill view (21 Oct 2026, the user): with the API, a missing
+        // half-hour is an issue in the Import and Export bill views already; CAD-only has no other.
+        if (!METRICS.bill && !METRICS.export) METRICS.presence = PRESENCE_METRIC;
+        state.metric = METRICS.bill ? 'bill' : METRICS.export ? 'export' : 'presence';
+        return loadMonthHealth();
       });
     }
     return libs().then(function () { return apiCheck; })
@@ -1679,6 +1734,7 @@ window.EMTHeatmap = (function () {
   // drawn is dropped, to be fetched afresh when it scrolls near.
   function refresh() {
     var k = state.keys[0]; if (!k) return Promise.resolve();
+    if (isData()) loadMonthHealth().then(foldMonths);     // a write may clean, or dirty, a month
     var before = state.months[k] && state.months[k].fp, ep = state.epoch;
     return fetchMonth(k).then(function () {
       // A bulk change (a restore, an import, a delete) moved the epoch: fetchMonth emptied the
@@ -1815,6 +1871,10 @@ window.EMTHeatmap = (function () {
                   border-radius:10px; padding:12px 14px; width:min(960px, 100%); height:min(860px, 92vh);
                   display:flex; flex-direction:column; box-shadow:0 8px 24px rgba(0,0,0,.35); font-size:13px; }
   .hm-modal-frame { flex:1; width:100%; border:0; border-radius:6px; background:var(--bg, #0f1117); }
+  .hm-mfold { display:block; width:100%; margin:6px 0; padding:6px 12px; border:1px dashed var(--border, #2a2d3a);
+              border-radius:8px; background:transparent; font-size:12px; color:var(--muted, #6b7080); cursor:pointer;
+              text-align:center; }
+  .hm-mfold:hover { color:var(--text, #e2e4ea); border-color:var(--muted, #6b7080); }
   .hm-reach { margin:10px 0 4px; padding:10px 12px; border:1px dashed var(--border, #2a2d3a); border-radius:8px;
               font-size:13px; color:var(--muted, #6b7080); text-align:center; }
   .hm-reach a { color:var(--accent, #3b82f6); }

@@ -149,7 +149,7 @@ class TheHistoryRow(unittest.TestCase):
         self.assertIn("(state.bounds || {}).reach_from", body)
         self.assertIn("wrap.appendChild(el);", body)
         self.assertIn("/historical-import#api-import-panel", body)
-        self.assertIn("reachRow();\n    redrawAll(false);", _fn("buildMonths"))
+        self.assertIn("reachRow();\n    foldMonths();\n    redrawAll(false);", _fn("buildMonths"))
 
     def test_only_with_the_api(self):
         self.assertIn("if (!(state.canRefetch && r)) { if (el) el.remove(); return; }", _fn("reachRow"))

@@ -40,7 +40,8 @@ class TheModes(unittest.TestCase):
         body = _fn("init")
         self.assertIn("Object.keys(METRICS).forEach(function (k) { delete METRICS[k]; });", body)
         self.assertIn("METRICS.presence = PRESENCE_METRIC;", body)
-        self.assertIn("state.metric = METRICS.bill ? 'bill' : 'presence';", body)
+        # Missing only without a bill view (21 Oct 2026): test_dm_heatmap_feedback.py
+        self.assertIn("state.metric = METRICS.bill ? 'bill' : METRICS.export ? 'export' : 'presence';", body)
 
     def test_chart_mode_never_adds_the_bill_views(self):
         body = _fn("init")
