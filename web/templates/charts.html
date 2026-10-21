@@ -957,7 +957,8 @@ async function loadChartContent(name, force) {
   // otherwise it is a first load or a fingerprint-checked refresh.
   if (name === 'heatmap') {
     if (!window.EMTHeatmap) return;
-    if (!EMTHeatmap._state.inited) return EMTHeatmap.init(document.getElementById('chart-heatmap-content'));
+    // chart mode: the energy views, read-only — the data views and tools are on Data Management
+    if (!EMTHeatmap._state.inited) return EMTHeatmap.init(document.getElementById('chart-heatmap-content'), {mode: 'chart'});
     return force ? EMTHeatmap.rerender() : EMTHeatmap.refresh();
   }
   // The Billing tab likewise (billing_module.html) — same contract.

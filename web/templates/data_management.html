@@ -104,6 +104,12 @@
 <!-- Bring-data-in tools (Historical Import + Device History) now live on the
      "Fill History & Gaps" landing page, linked from the topbar. -->
 
+<!-- ── The data heatmap (data management design §1 (1), PR 1): the data views and every tool on a
+     selection. `?day=` opens a day — Charts' detail panel links here. PR 2 builds the page round it. -->
+<div class="card" id="dm-heatmap-card" style="padding:0;overflow:visible;">
+  <div id="dm-heatmap"></div>
+</div>
+
 <!-- ── Missing-data nudge (deep-links to the unified backfill flow) ─────────────
      The full find/fill flow now lives on Historical Import (scope → source →
      preview → apply). Here we only surface a nudge WHEN gaps exist; loadGapNudge()
@@ -224,10 +230,18 @@
 </div>
 
 
+{% include "heatmap_module.html" %}
 {% endblock %}
 
 {% block scripts %}
 <script>
+// The data heatmap: data mode, and the day `?day=` names (data management design §1 (1))
+document.addEventListener('DOMContentLoaded', function () {
+  if (!window.EMTHeatmap) return;
+  EMTHeatmap.init(document.getElementById('dm-heatmap'),
+                  {mode: 'data', day: new URLSearchParams(window.location.search).get('day')});
+});
+
 {% include "_upload_js.html" %}
 
 // A restore of an uploaded backup — a .zip or a blocks.db — in its two steps (first-run design

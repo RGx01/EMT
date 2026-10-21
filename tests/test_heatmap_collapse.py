@@ -82,7 +82,8 @@ class TheToggle(unittest.TestCase):
     def test_it_is_in_the_bar_and_remembered(self):
         self.assertIn("fb.textContent = 'Issues only';", _SRC)
         self.assertIn("localStorage.setItem('emt_hm_collapse'", _SRC)
-        self.assertIn("localStorage.getItem('emt_hm_collapse') === '1'", _SRC)
+        # on unless turned off in this browser, in data mode (data management design §1 (1))
+        self.assertIn("localStorage.getItem('emt_hm_collapse') !== '0'", _SRC)
 
     def test_switching_metric_keeps_it_lit(self):
         self.assertIn("mb.querySelectorAll('button:not(.hm-collapse)')", _SRC)

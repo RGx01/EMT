@@ -56,15 +56,21 @@ window.EMTHeatmap = (function () {
   };
   // The Split view went on 17 Oct 2026: the Import bill carries the split (teal for EMT's, red for
   // a completed dispatch with none — `split_missing`), and the detail panel names its state.
+  // The Missing view (data management design §1 (1), 21 Oct 2026): every half-hour, recorded or
+  // missing — the one data view an install without the supplier API has.
+  var PRESENCE_METRIC = {label: 'Missing', title: 'Missing — is every half-hour recorded?', unit: '',
+    dp: 0, tot: 'To look at',
+    sub: 'Green: recorded · black hatched: no block for the half-hour (missing) — select it to fill it'};
   function isSettle(m) { return m === 'bill' || m === 'export'; }
-  function isCat(m) { return isSettle(m); }
+  function isCat(m) { return isSettle(m) || m === 'presence'; }
   // A half-hour inside the data's span with no main-meter block (heatmap issues design §2): drawn
   // black and diagonally hatched on every view, an issue on the bills (rank 3, as red).
   var MISSING_TEXT = 'no block for this half-hour \u2014 missing';
   var CAT_RANK = {
     bill:  {none: 0, imported: 0, applied: 1, applied_emt_split: 1, corrected: 1, estimate_dcc: 2,
             estimate_cad: 2, known: 2, overdue: 3, abandoned: 3, differs: 3, flagged: 3, missing: 3},
-    export: {none: 0, imported: 0, no_agreement: 0, applied: 1, waiting: 2, overdue: 3, missing: 3}
+    export: {none: 0, imported: 0, no_agreement: 0, applied: 1, waiting: 2, overdue: 3, missing: 3},
+    presence: {present: 0, missing: 3}
   };
   var CAT_TEXT = {
     bill: {none: 'nothing imported in this half-hour', imported: 'CSV history — not Octopus\u2019s cost',
@@ -84,6 +90,7 @@ window.EMTHeatmap = (function () {
              waiting: 'export kWh not settled yet', overdue: 'export kWh not settled after 7 days',
              no_agreement: 'no export agreement for this half-hour \u2014 nothing is paid',
              missing: MISSING_TEXT},
+    presence: {present: 'recorded', missing: MISSING_TEXT},
     split: {bill: 'split from the bill', emt: 'EMT\u2019s split — the bill not in yet',
             held: 'bill had no EV — asking Octopus again', kept: 'EMT\u2019s split kept (28 days)',
             missing: 'completed dispatch, no split'}
@@ -118,13 +125,18 @@ window.EMTHeatmap = (function () {
     return (_hatchAb = x.createPattern(c, 'repeat'));
   }
   function isMissing(c) { return !!(c && c.missing && c.kwh === null); }
+  function isData() { return state.mode === 'data'; }
+  // Chart mode's way to the tools: the day on Data Management (`?day=`)
+  function dmUrl(day) { return apiUrl('/data-management?day=' + encodeURIComponent(day)); }
+  function openInDM(day) { window.location.href = dmUrl(day); }
   // What is an ISSUE (heatmap issues design §3, §6 (a), decided 17 Oct 2026): anything not green,
   // except CSV history and `none` (nothing imported or exported — nothing to settle). One rule for
   // the "To look at" totals and the collapse. On the energy views, only a missing half-hour.
   var ISSUE = {
     bill: {applied_emt_split: 1, corrected: 1, estimate_dcc: 1, estimate_cad: 1, known: 1,
            overdue: 1, abandoned: 1, differs: 1, flagged: 1, missing: 1},
-    export: {no_agreement: 1, waiting: 1, overdue: 1, missing: 1}
+    export: {no_agreement: 1, waiting: 1, overdue: 1, missing: 1},
+    presence: {missing: 1}
   };
   function isIssue(c, m) {
     if (!c) return false;
@@ -136,6 +148,7 @@ window.EMTHeatmap = (function () {
     if (v === 'abandoned') return hatchAbandoned();
     var C = {green: '#2e9e5b', amber: '#e0a020', lamber: '#f2cf7a', red: '#cc0000', blue: '#3b7dd8', teal: '#2a9d9f',
              grey: dark() ? '#3a3e4a' : '#d4d7de'};
+    if (m === 'presence') return v === 'present' ? C.green : 'rgba(0,0,0,0)';
     var by = m === 'export'
       ? {applied: C.green, waiting: C.amber, overdue: C.red, imported: C.grey, no_agreement: C.grey,
          none: C.grey}
@@ -158,10 +171,10 @@ window.EMTHeatmap = (function () {
     return v;
   }
   var AXIS_LEFT = 30, CELL_MAX = 22, CELL_MIN = 6;
-  var _collapse0 = false;
-  try { _collapse0 = localStorage.getItem('emt_hm_collapse') === '1'; } catch (e) {}
+  // Two modes (data management design §1 (1), 21 Oct 2026): `chart` — Charts and the Lovelace card,
+  // the energy views, read-only — and `data` — Data Management, the data views and every tool.
   var state = {metric: 'kwh', tz: null, bm: 30, months: {}, keys: [], panels: {}, epoch: null,
-               collapse: _collapse0, expanded: {},
+               mode: 'chart', collapse: false, expanded: {}, dayWanted: null,
                root: null, inited: false, loading: {}, scale: null, forceLight: false};
   var fetchJSON = function (url) { return fetch(apiUrl(url)).then(function (r) { return r.json(); }); };
 
@@ -240,7 +253,7 @@ window.EMTHeatmap = (function () {
       if (b.meter_id !== 'electricity_main') return;
       var lp = localParts(b.block_start);
       if (lp.day.slice(0, 7) !== key) return;                  // a UTC edge of the month
-      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0}});
+      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0, presence: 0}});
       var net = (b.imp_kwh || 0) - (b.exp_kwh || 0), cg = b.carbon_g;
       var c = d.slots[lp.slot] || (d.slots[lp.slot] = {kwh: 0, co2: null, int: null});
       (c.starts || (c.starts = [])).push(b.block_start);       // UTC, for the detail panel (§4)
@@ -257,7 +270,7 @@ window.EMTHeatmap = (function () {
     });
     markMissing(key, days, n);
     Object.keys(days).forEach(function (k) {                      // the day's half-hours still owed
-      Object.keys(SETTLE_METRICS).forEach(function (m) {         // amber or red: worth a look
+      Object.keys(SETTLE_METRICS).concat(['presence']).forEach(function (m) {   // worth a look
         days[k].total[m] = days[k].slots.filter(function (c) { return isIssue(c, m); }).length;
       });
     });
@@ -283,7 +296,7 @@ window.EMTHeatmap = (function () {
       var iso = new Date(t).toISOString().slice(0, 19);
       if (have[iso]) continue;
       var lp = localParts(iso); if (lp.day.slice(0, 7) !== key) continue;
-      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0}});
+      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0, presence: 0}});
       var c = d.slots[lp.slot] || (d.slots[lp.slot] = {kwh: null, co2: null, int: null});
       c.missing = (c.missing || 0) + 1;
       (c.starts || (c.starts = [])).push(iso);
@@ -298,7 +311,11 @@ window.EMTHeatmap = (function () {
   function missingText(c) {
     return MISSING_TEXT + (c && c.deleted ? '<br>deleted ' + c.deleted : '');
   }
-  function metricOf(c, m) { return c ? (m === 'kwh' ? c.kwh : m === 'co2' ? c.co2 : isCat(m) ? c[m] : c.int) : null; }
+  function metricOf(c, m) {
+    if (!c) return null;
+    if (m === 'presence') return c.missing ? 'missing' : 'present';
+    return m === 'kwh' ? c.kwh : m === 'co2' ? c.co2 : isCat(m) ? c[m] : c.int;
+  }
 
   // The range every drawn month shares, so months are comparable: over all LOADED months.
   // It can widen as older months load; drawn months are re-coloured when it does.
@@ -394,7 +411,7 @@ window.EMTHeatmap = (function () {
           if (c && c.starts) starts = starts.concat(c.starts); }); });
         starts.sort();
         p.folds[id] = {key: key, from: oldest, to: newest, n: run.length, starts: starts,
-                       slots: new Array(slots()).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0}};
+                       slots: new Array(slots()).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0, presence: 0}};
         out.push(id);
       } else out = out.concat(run);
       run = [];
@@ -463,7 +480,7 @@ window.EMTHeatmap = (function () {
           var r = ctx.raw; if (!r) return 'rgba(0,0,0,0)';
           if (isMissing(r.c)) return hatch();                 // every view (§2)
           var v = metricOf(r.c, state.metric);
-          return isSettle(state.metric) ? settleColour(state.metric, v)
+          return isCat(state.metric) ? settleColour(state.metric, v)
                : paint(stops, sc.lo, sc.hi, v);
         },
         width: function (ctx) { var a = ctx.chart.chartArea; return a ? a.width / n - 1 : cs - 1; },
@@ -613,7 +630,7 @@ window.EMTHeatmap = (function () {
       var hc = hitTot ? null : p.grid[day].slots[ci];
       var txt = (!hitTot && (v === 'missing' || isMissing(hc))) ? missingText(hc)
               : (v === null || v === undefined) ? 'no data'
-              : isSettle(state.metric) ? (hitTot ? v + ' half-hour' + (v === 1 ? '' : 's') + ' to look at'
+              : isCat(state.metric) ? (hitTot ? v + ' half-hour' + (v === 1 ? '' : 's') + ' to look at'
                   : CAT_TEXT[state.metric][v] + (((p.grid[day].slots[ci] || {})[state.metric + 'Flags'] || [])
                       .filter(function (x) { return FLAG_TEXT[x]; })
                       .map(function (x) { return '<br>\u26a0 ' + FLAG_TEXT[x]; }).join('')))
@@ -628,7 +645,7 @@ window.EMTHeatmap = (function () {
     // selects a span — cells to cells, or days down the day column, across months; a right click
     // (a long press on touch) offers the cell's actions; the day column offers its day (§5.1).
     row.addEventListener('mousedown', function (ev) {
-      if (ev.button !== 0) return;
+      if (ev.button !== 0 || !isData()) return;   // a span is for the tools: data mode only
       var h = hitCell(p, ev); if (!h) return;
       state.drag = {p: p, h: h, span: null};
       ev.preventDefault();                         // no text selection while dragging
@@ -652,6 +669,11 @@ window.EMTHeatmap = (function () {
       var hc = p.grid[h.day].slots[h.ci];
       var items = [{text: 'Show details', run: function () {
         if (isMissing(hc)) openMissing(hc, h.day + ' ' + h.label); else openPanel(h.starts, h.day + ' ' + h.label); }}];
+      if (!isData()) {                             // chart mode: read-only, the tools a click away
+        items.push({text: 'Open ' + h.day + ' in Data Management', run: function () { openInDM(h.day); }});
+        showMenu(ev, items, h.day + ' ' + h.label);
+        return;
+      }
       if (state.canRefetch) {
         items.push({text: 'Re-fetch this half-hour from Octopus\u2026', run: function () {
           openRefetch(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label); }});
@@ -704,6 +726,10 @@ window.EMTHeatmap = (function () {
   // tap to close a range, and a tap on 10 Oct quietly closed one from 10 Aug).
   function dayBarPick(p, day, ev) {
     var dr = dayRange(p, day); if (!dr) return;
+    if (!isData()) {
+      showMenu(ev, [{text: 'Open ' + day + ' in Data Management', run: function () { openInDM(day); }}], day);
+      return;
+    }
     var items = state.canRefetch ? [{text: 'Re-fetch ' + day + ' from Octopus\u2026', run: function () {
       openRefetch(dr[0], dr[1], day); }}] : [];
     var fd = fillItem(dr[0], dr[1], day); if (fd) items.push(fd);
@@ -1351,7 +1377,9 @@ window.EMTHeatmap = (function () {
       '<div class="hm-panel-head"><b>' + esc(label) + '</b><button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' +
       '<table class="hm-detail">' + rows.join('') + '</table>' +
       (more ? '<div class="hm-note2">' + esc(more) + '</div>' : '') +
-      (state.canRefetch ? '<div class="hm-actions"><button class="hm-btn" data-act="refetch">Re-fetch from Octopus</button>' +
+      (!isData() ? '<div class="hm-actions"><button class="hm-btn" data-close="1">Close</button>' +
+                   '<a class="hm-btn hm-primary" href="' + dmUrl(localParts(d.start).day) + '">Open in Data Management</a></div>'
+       : state.canRefetch ? '<div class="hm-actions"><button class="hm-btn" data-act="refetch">Re-fetch from Octopus</button>' +
                           '<button class="hm-btn" data-close="1">Close</button></div>' : '') + '</div>';
     el.style.display = 'flex';
     var rb = el.querySelector('[data-act="refetch"]');
@@ -1360,14 +1388,17 @@ window.EMTHeatmap = (function () {
   // a missing half-hour has no block, so no detail to fetch: say what it is
   function openMissing(c, label) {
     var el = panelEl();
-    var g = (c && c.gaps) || [], fc = g.length ? fillItem(g[0], plus30(g[g.length - 1]), label) : null;
+    var g = (c && c.gaps) || [], fc = g.length && isData() ? fillItem(g[0], plus30(g[g.length - 1]), label) : null;
+    var day = g.length ? localParts(g[0]).day : null;
     el.innerHTML = '<div class="hm-panel-box"><div class="hm-panel-head"><b>' + esc(label) +
                    '</b><button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' +
                    '<p>' + (c && c.deleted ? 'Deleted on ' + esc(c.deleted) + ' \u2014 there is no block for this ' +
                    'half-hour.' : 'EMT holds no block for this half-hour: it was never recorded, or not ' +
                    'imported.') + '</p>' +
                    (fc ? '<div class="hm-actions"><button class="hm-btn" data-close="1">Close</button>' +
-                         '<button class="hm-btn hm-primary" data-act="fill">Fill this gap\u2026</button></div>' : '') +
+                         '<button class="hm-btn hm-primary" data-act="fill">Fill this gap\u2026</button></div>'
+                    : !isData() && day ? '<div class="hm-actions"><button class="hm-btn" data-close="1">Close</button>' +
+                         '<a class="hm-btn hm-primary" href="' + dmUrl(day) + '">Open in Data Management</a></div>' : '') +
                    '</div>';
     el.style.display = 'flex';
     var b = el.querySelector('[data-act="fill"]'); if (b) b.onclick = fc.run;
@@ -1438,7 +1469,9 @@ window.EMTHeatmap = (function () {
         redrawAll(true); };
       mb.appendChild(b);
     });
-    // "Issues only" (§3): fold the days with nothing to look at; remembered per browser
+    // "Issues only" (§3): fold the days with nothing to look at; remembered per browser. Data
+    // mode only — Charts is a chart (data management design §1 (1)).
+    if (!isData()) return buildMonths(root);
     var fb = document.createElement('button');
     fb.className = 'hm-metric-btn hm-collapse' + (state.collapse ? ' active' : '');
     fb.textContent = 'Issues only';
@@ -1450,6 +1483,9 @@ window.EMTHeatmap = (function () {
       redrawAll(false);
     };
     mb.appendChild(fb);
+    buildMonths(root);
+  }
+  function buildMonths(root) {
     var wrap = root.querySelector('.hm-months');
     // Draw near the viewport; release far from it (a month's canvases at 2x are ~10 MB).
     var near = new IntersectionObserver(function (ents) {
@@ -1502,18 +1538,32 @@ window.EMTHeatmap = (function () {
                    '<a href="' + apiUrl('/historical-import#api-import-panel') + '">import it</a>';
   }
 
-  function init(root) {
+  // `opts.mode`: 'chart' (the default — Charts, the Lovelace card) or 'data' (Data Management);
+  // `opts.day`: in data mode, 'YYYY-MM-DD' to open that day's month and mark the day.
+  function init(root, opts) {
+    opts = opts || {};
     state.root = root || document.getElementById('chart-heatmap-content');
     if (state.inited) return refresh();
     state.inited = true;
+    state.mode = opts.mode === 'data' ? 'data' : 'chart';
+    state.dayWanted = isData() && /^\d{4}-\d{2}-\d{2}$/.test(opts.day || '') ? opts.day : null;
     state.root.innerHTML = '<div class="hm-empty">Loading…</div>';
-    // The settlement views are for supplier-API accounts only; ask once, and a failed
-    // answer means "not shown", never an error for the heatmap.
-    var apiCheck = fetchJSON('/api/billing-source').then(function (r) {
-      if (!(r && r.uses_api)) return;
-      state.canRefetch = true;                  // BL-86: a re-fetch needs the supplier API
-      (r.settle_views || []).forEach(function (k) { if (SETTLE_METRICS[k]) METRICS[k] = SETTLE_METRICS[k]; });
-    }, function () {});
+    var apiCheck = Promise.resolve();
+    if (isData()) {
+      // the data views, not the energy ones; Issues only on unless turned off in this browser
+      Object.keys(METRICS).forEach(function (k) { delete METRICS[k]; });
+      try { state.collapse = localStorage.getItem('emt_hm_collapse') !== '0'; } catch (e) { state.collapse = true; }
+      // The settlement views are for supplier-API accounts only; ask once, and a failed
+      // answer means "not shown", never an error for the heatmap.
+      apiCheck = fetchJSON('/api/billing-source').then(function (r) {
+        if (!(r && r.uses_api)) return;
+        state.canRefetch = true;                // BL-86: a re-fetch needs the supplier API
+        (r.settle_views || []).forEach(function (k) { if (SETTLE_METRICS[k]) METRICS[k] = SETTLE_METRICS[k]; });
+      }, function () {}).then(function () {
+        METRICS.presence = PRESENCE_METRIC;     // last: [Import bill] [Export bill] [Missing]
+        state.metric = METRICS.bill ? 'bill' : 'presence';
+      });
+    }
     return libs().then(function () { return apiCheck; })
       .then(function () { return fetchJSON('/api/periods?kind=month'); }).then(function (p) {
       var b = p.bounds || {};
@@ -1525,7 +1575,43 @@ window.EMTHeatmap = (function () {
         if (k <= stop) break; mo--; if (mo < 1) { mo = 12; y--; }
       }
       buildUI();
+      if (state.dayWanted) openDay(state.dayWanted);
     }).catch(function (e) { state.root.innerHTML = '<div class="hm-empty">Heatmap unavailable: ' + e.message + '</div>'; });
+  }
+
+  // `?day=` (data management design §1 (1)): draw every month from the newest down to the day's —
+  // only those above it move it, and Issues only folds them far shorter than their placeholders —
+  // then open the day if it is folded, mark it as a selection, and scroll it in under the view bar.
+  function openDay(day) {
+    var key = day.slice(0, 7), p = state.panels[key], i = state.keys.indexOf(key);
+    if (!p || i < 0) return;
+    return Promise.all(state.keys.slice(0, i + 1).map(function (k) { return loadMonth(k); })).then(function () {
+      var f = p.folds && Object.keys(p.folds).map(function (k) { return p.folds[k]; })
+                .filter(function (x) { return day >= x.from && day <= x.to; })[0];
+      if (f) expandFold(f);
+      var dr = dayRange(p, day);
+      if (dr) markSelection(dr[0], dr[1]);
+      scrollToRow(p, day);
+    });
+  }
+  function scrollToRow(p, day) {
+    var box = scrollParent(state.root), a = p.chart && p.chart.chartArea;
+    var ri = p.days ? p.days.indexOf(day) : -1, rh = a && p.days ? a.height / p.days.length : 0;
+    var grid = p.el.querySelector('.hm-grid') || p.el;
+    var top = grid.getBoundingClientRect().top + (a ? a.top : 0) + (ri > 0 ? ri * rh : 0);
+    // below both sticky headers: the view bar and the time axis under it
+    var under = 0;
+    ['.hm-bar', '.hm-axis'].forEach(function (q) {
+      var e = state.root.querySelector(q); if (e) under = Math.max(under, e.getBoundingClientRect().bottom); });
+    if (box === document.scrollingElement || box === document.body) window.scrollBy(0, top - under - 24);
+    else box.scrollTop += top - Math.max(under, box.getBoundingClientRect().top) - 24;
+  }
+  function scrollParent(el) {
+    for (var n = el && el.parentElement; n; n = n.parentElement) {
+      var o = getComputedStyle(n).overflowY;
+      if ((o === 'auto' || o === 'scroll') && n.scrollHeight > n.clientHeight) return n;
+    }
+    return document.scrollingElement || document.body;
   }
 
   // Re-fetch the current month (where change happens, C §2a), and every other DRAWN month whose

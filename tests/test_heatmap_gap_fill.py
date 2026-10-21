@@ -71,7 +71,7 @@ class TheMenu(unittest.TestCase):
         self.assertNotIn("fillday", body)
 
     def test_a_drag_and_the_day_column_work_without_the_api(self):
-        self.assertIn("if (ev.button !== 0) return;", _SRC)
+        self.assertIn("if (ev.button !== 0 || !isData()) return;", _SRC)
         self.assertIn("var items = state.canRefetch ? [{text: 'Re-fetch ' + day", _fn("dayBarPick"))
 
 
@@ -148,7 +148,7 @@ class TheHistoryRow(unittest.TestCase):
         self.assertIn("(state.bounds || {}).reach_from", body)
         self.assertIn("wrap.appendChild(el);", body)
         self.assertIn("/historical-import#api-import-panel", body)
-        self.assertIn("reachRow();\n    redrawAll(false);", _fn("buildUI"))
+        self.assertIn("reachRow();\n    redrawAll(false);", _fn("buildMonths"))
 
     def test_only_with_the_api(self):
         self.assertIn("if (!(state.canRefetch && r)) { if (el) el.remove(); return; }", _fn("reachRow"))

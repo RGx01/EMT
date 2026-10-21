@@ -177,8 +177,12 @@ the passes that read it. Whether the `cad` branch is then dead, and goes, is a s
 
 ## 3. PRs
 
-1. **The heatmap's two modes and `?day=`** — `init(el, {mode})`; Charts and Lovelace in chart mode
-   (energy views, no menu, *Open in Data Management*); the Missing view.
+1. **The heatmap's two modes and `?day=`** — *built 21 Oct 2026*: `init(el, {mode})`; Charts and
+   Lovelace in chart mode (energy views, no menu, *Open in Data Management*); the Missing view; the
+   data-mode heatmap at the top of Data Management, so the tools have their page from this PR (PR 2
+   builds the page round it). `?day=` draws every month above the day first, then unfolds, marks and
+   scrolls it below both sticky headers (clicked through on a copy of staging's database: scrolled at
+   once, the day ended above the view).
 2. **Data Management's new page** — the heatmap in data mode; the health strip (the per-state
    counts call); the Whole history card, its modals onto Historical Import, the purge's backup
    required; the topbar's three links and the nudge gone.

@@ -35,7 +35,7 @@
   <div id="chart-heatmap-content"></div>
   {% include "heatmap_module.html" %}
   <script>
-    EMTHeatmap.init(document.getElementById('chart-heatmap-content'));
+    EMTHeatmap.init(document.getElementById('chart-heatmap-content'), {mode: 'chart'});
     setInterval(function () { EMTHeatmap.refresh(); }, {{ refresh_s|int }} * 1000);
   </script>
 </body>
