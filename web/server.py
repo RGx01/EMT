@@ -512,10 +512,6 @@ def start():
     """Start Flask in a background daemon thread."""
     t = threading.Thread(target=_run, daemon=True, name="flask")
     t.start()
-    # after the start's own work (engine startup, a restore's commit stalls), not during it
-    w = threading.Timer(_HEALTH_WARM_S, _warm_health)
-    w.daemon = True
-    w.start()
     _port = int(os.environ.get("EMT_PORT") or "8099")
     logger.info("server: Flask started on port %d", _port)
 
@@ -4591,7 +4587,7 @@ def _missing_half_hours(store, tz_name, now=None) -> dict:
 # poll's data token (any write to the blocks, bills or segments moves it) and a ten-minute window
 # (a state can turn with age alone: a bill given up on). One request computes; the rest wait for it.
 _HEALTH_TTL_S = 600
-_HEALTH_WARM_S = 120
+_HEALTH_FILE_V = 1          # the month counts' file; a new shape bumps it and counts afresh
 _health_lock = threading.Lock()
 _health_cache = {"key": None, "views": None, "missing": None, "months": None}
 
@@ -4642,20 +4638,6 @@ def _health_answer(store, views) -> dict:
                 "months": _health_cache["months"]}
 
 
-def _warm_health():
-    """The health counts once after start, off the request path (21 Oct 2026): the first count
-    is the whole history, and the first page after a restart should not wait for it."""
-    import time as _time
-    try:
-        import engine as _eng
-        t = _time.time()
-        _health_answer(store_access.store(), _settle_views(_eng))
-        logger.info("data health: counted in %.1f s, ahead of the first page",
-                    _time.time() - t)
-    except Exception as e:
-        logger.warning("data health: the warm-up count failed: %s", e)
-
-
 def _local_month_starts(lo, hi, tz):
     """(['YYYY-MM', …], [naive-UTC ISO of each local month's first instant, …]) covering [lo, hi]."""
     from datetime import datetime as _dt, timezone as _tz
@@ -4672,17 +4654,64 @@ def _local_month_starts(lo, hi, tz):
     return keys, starts
 
 
+def _health_digest(obj) -> str:
+    """A digest that holds across restarts (hash() of a str does not: PYTHONHASHSEED)."""
+    import hashlib, json as _json
+    return hashlib.sha1(_json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _health_agreements(eng):
+    """The agreements every month's states read (tariff kind, split, export), as a digest — or None
+    before discovery has run, when they are not known yet."""
+    disc = getattr(eng, "_kraken_discovery", None) or {}
+    agr = {ch: sorted((a.get("tariff_code"), a.get("valid_from"), a.get("valid_to"))
+                      for a in ((disc.get(ch) or {}).get("agreements") or []))
+           for ch in sorted(disc)}
+    return _health_digest(agr) if any(agr.values()) else None
+
+
+def _health_cache_path() -> str:
+    import engine as _eng
+    return os.path.join(DATA_DIR or _eng.DATA_DIR or ".", "health_counts.json")
+
+
+def _health_load_per() -> dict:
+    """The months counted before, from the file (a restart is not new data)."""
+    import json as _json
+    try:
+        with open(_health_cache_path(), encoding="utf-8") as f:
+            d = _json.load(f)
+        return d.get("months") or {} if d.get("v") == _HEALTH_FILE_V else {}
+    except Exception:
+        return {}
+
+
+def _health_save_per(per: dict) -> None:
+    import json as _json
+    path = _health_cache_path()
+    try:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            _json.dump({"v": _HEALTH_FILE_V, "months": per}, f)
+        os.replace(tmp, path)
+    except Exception as e:
+        logger.warning("data health: the month counts could not be kept: %s", e)
+
+
 def _health_views(store, views, first, tz_name):
     """({view: {state or state|flags: count}}, {month: {view: {…}}}) over [first, now + 30 min) —
     the strip's counts, and the same by local month for the heatmap's Issues only.
 
-    A month at a time, each kept until its own data moves (staging, 21 Oct 2026: the whole history
-    again on every new half-hour was several seconds on the Pi). A month is counted again when:
+    A month at a time, each kept until it needs counting again (staging, 21 Oct 2026: the whole
+    history on every new half-hour was seconds on the Pi; 22 s on the prod box at a restart). Kept
+    in a file beside the database, so a restart counts only what moved. A month is counted again
+    when:
     - its days' fingerprints (block_store.day_fingerprints: blocks, segments, cached bills) move;
-    - the context every month shares moves (the bills given up or held, the views, SMB);
+    - the context every month shares moves: the views, SMB, the bills given up and held, the VAT
+      calendar, and the agreements once discovery has found them (counts made before then are
+      counted again when it has);
     - it is within the age window (BILL_OVERDUE_DAYS + KWH_LAG_DAYS, rounded up) and ten minutes
-      have passed, since its states can turn with age alone;
-    - an hour has passed, for what no key here sees (an agreement, the VAT calendar).
+      have passed, since its states can turn with age alone.
     Contiguous months to count go in one pass."""
     import bisect, time as _time
     import engine as _eng
@@ -4701,24 +4730,32 @@ def _health_views(store, views, first, tz_name):
     try:
         held, kept = _eng.bill_split_held(store)
         given_up, no_cost, asked = _eng.bill_no_cost(store)
-        ctx = hash((vs, bool(_eng._import_is_smb_capped()), frozenset(held), frozenset(kept),
-                    frozenset(given_up), frozenset(no_cost), frozenset(asked)))
+        ctx = _health_digest([vs, bool(_eng._import_is_smb_capped()), sorted(held), sorted(kept),
+                              sorted(given_up), sorted(no_cost), sorted(asked),
+                              store.get_vat_calendar()])
     except Exception:
-        ctx = object()                              # unknown: every month is counted again
-    t = _time.time()
-    window, hour = int(t // _HEALTH_TTL_S), int(t // 3600)
+        ctx = None                                  # unknown: every month is counted again
+    agr = _health_agreements(_eng)
+    window = int(_time.time() // _HEALTH_TTL_S)
     young = (now - _td(days=_ss.BILL_OVERDUE_DAYS + _ss.KWH_LAG_DAYS + 1)).isoformat()
-    per = _health_cache.setdefault("per", {})
+    if "per" not in _health_cache:
+        _health_cache["per"] = _health_load_per()
+    per = _health_cache["per"]
     for k in list(per):
         if k not in keys:
             del per[k]
     marks, todo = {}, []
     for k, lo, up in zip(keys, starts, ends):
         a, b = bisect.bisect_left(days, lo[:10]), bisect.bisect_right(days, up[:10])
-        mark = (tuple((d, fps[d]) for d in days[a:b]), ctx, hour, window if up > young else None)
+        mark = {"fp": _health_digest([[d, fps[d]] for d in days[a:b]]), "ctx": ctx,
+                "win": window if up > young else None}
+        e = per.get(k) or {}
+        em = e.get("mark") or {}
+        same = (ctx is not None and all(em.get(x) == mark[x] for x in ("fp", "ctx", "win"))
+                and (agr is None or em.get("agr") == agr))
+        mark["agr"] = agr if agr is not None else em.get("agr") if same else None
         marks[k] = mark
-        e = per.get(k)
-        if not (e and e["mark"] == mark):
+        if not same:
             todo.append((k, lo, up))
     runs = []                                       # contiguous months to count, as one span
     for k, lo, up in todo:
@@ -4737,6 +4774,8 @@ def _health_views(store, views, first, tz_name):
                 c["export"][st["export"]] += 1
         for k in ks:
             per[k] = {"mark": marks[k], "counts": {v: dict(n) for v, n in counts[k].items()}}
+    if todo:
+        _health_save_per(per)
     total = {v: Counter() for v in vs}
     months = {}
     for k in keys:
@@ -4746,6 +4785,8 @@ def _health_views(store, views, first, tz_name):
         for v in vs:
             total[v].update(mc.get(v) or {})
     _health_cache["counted"] = [k for k, _lo, _up in todo]       # for the log and the tests
+    if len(todo) > 3:
+        logger.info("data health: counted %d month(s) again", len(todo))
     return {v: dict(c) for v, c in total.items()}, months
 
 

@@ -67,6 +67,9 @@ class TheHealthCall(unittest.TestCase):
         self.st = _st(["2026-10-21T08:00:00", "2026-10-21T08:30:00", "2026-10-21T09:00:00"])
         self.client = make_client(store=self.st)
         server._health_cache["key"] = None              # each test computes its own
+        server._health_cache["per"] = {}                # and keeps no file (health_counts.json)
+        self._hp = mock.patch.object(server, "_health_save_per", lambda per: None)
+        self._hp.start(); self.addCleanup(self._hp.stop)
         eng = sys.modules["engine"]
         states = {"2026-10-21T08:00:00": {"bill": "applied", "export": "applied", "flags": []},
                   "2026-10-21T08:30:00": {"bill": "applied", "export": "waiting",
@@ -107,6 +110,9 @@ class TheHealthCache(unittest.TestCase):
         self.st = _st(["2026-10-21T08:00:00", "2026-10-21T08:30:00"])
         self.client = make_client(store=self.st)
         server._health_cache["key"] = None
+        server._health_cache["per"] = {}                # and keeps no file (health_counts.json)
+        self._hp = mock.patch.object(server, "_health_save_per", lambda per: None)
+        self._hp.start(); self.addCleanup(self._hp.stop)
         self.calls = []
 
         def states(s, a, b):
