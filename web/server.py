@@ -2833,8 +2833,21 @@ def api_backup_list():
                 if fname in legacy:
                     entry["legacy"] = True
                 flat_files.append(entry)
+        def _info(z):
+            try:
+                return {"name": os.path.basename(z), "size": os.path.getsize(z),
+                        "mtime": int(os.path.getmtime(z))}
+            except OSError:
+                return {"name": os.path.basename(z), "size": None, "mtime": None}
+        for f in flat_files:                     # the daily copy's size, for its row
+            try:
+                f["size"] = os.path.getsize(f"{_share_backup_dir()}/{f['name']}")
+            except OSError:
+                f["size"] = None
         return jsonify({
             "zips": [os.path.basename(z) for z in zips],
+            # data management design §1 (5): each zip's size and time, for the table's columns
+            "zip_info": [_info(z) for z in zips],
             "flat": flat_files
         })
     except Exception as e:
@@ -7214,6 +7227,14 @@ def api_storage_info():
     except Exception:
         disk_total = disk_free = disk_used = 0
 
+    # What a compact would reclaim: SQLite's free pages (data management design §1 (5))
+    reclaimable = None
+    try:
+        reclaimable = (store._conn.execute("PRAGMA freelist_count").fetchone()[0]
+                       * store._conn.execute("PRAGMA page_size").fetchone()[0])
+    except Exception:
+        pass
+
     # Growth rate — oldest block to now
     growth_mb_per_day  = None
     runway_days        = None
@@ -7247,6 +7268,7 @@ def api_storage_info():
         "days_of_data":     round(days_of_data, 1) if days_of_data else None,
         "growth_mb_per_day": round(growth_mb_per_day, 4) if growth_mb_per_day else None,
         "runway_days":      runway_days,
+        "reclaimable_bytes": reclaimable,
     })
 
 

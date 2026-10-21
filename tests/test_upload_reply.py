@@ -27,8 +27,9 @@ HELPERS = _template("_upload_js.html")
 PAGE = _template("data_management.html").replace('{% include "_upload_js.html" %}', HELPERS)
 WELCOME = _template("welcome.html")
 # 14 Oct 2026: a restore goes up in pieces (stageInPieces); its replies are read inside the
-# helper, through uploadReply. extract-zip is still one fetch.
-UPLOADS = ("/api/import/extract-zip",)
+# helper, through uploadReply. 21 Oct 2026: the page's last single-fetch upload (extract-zip, the
+# legacy zip extraction) went with the file list (data management design §1 (5)).
+UPLOADS = ()
 
 
 class ThePage(unittest.TestCase):
@@ -51,7 +52,8 @@ class ThePage(unittest.TestCase):
     def test_no_upload_parses_a_reply_blind(self):
         """Any POST of a FormData body — including one added later."""
         starts = [m.start() for m in re.finditer(r"body: form \}\);", PAGE)]
-        self.assertTrue(starts)
+        # none on the page since 21 Oct 2026 — every restore goes up in pieces — so this guards
+        # one added later
         for i in starts:
             m = re.compile(r"const \w+ = await ([\w.]+)\(").search(PAGE, i, i + 400)
             self.assertIsNotNone(m, PAGE[i:i + 200])
@@ -59,9 +61,10 @@ class ThePage(unittest.TestCase):
 
     def test_a_restore_upload_says_how_far_it_has_got(self):
         """10 Oct 2026: an 80 MB upload took about two minutes to reach a Pi, and the page sat
-        silent with its button live. Both restore uploads report progress and the import button
-        is off while one runs. STRUCTURAL."""
-        for fn in ("async function doImport()", "async function doZipRestore()"):
+        silent with its button live. A restore reports progress. Since 21 Oct 2026 a dropped zip
+        and a dropped blocks.db both go through doZipRestore (data management design §1 (5)).
+        STRUCTURAL."""
+        for fn in ("async function doZipRestore()",):
             with self.subTest(fn=fn):
                 j = PAGE.index(fn)
                 self.assertIn("restoreUpload(", PAGE[j:PAGE.index("\n}\n", j)])
@@ -70,8 +73,9 @@ class ThePage(unittest.TestCase):
         body = body[:body.index("\n}\n")]
         self.assertIn("Uploading… ' + Math.floor(100 * off / file.size)", body)
         self.assertIn("EMT is checking the file", body)
-        j = PAGE.index("async function doImport()")
-        self.assertIn("_uploadBusy(true", PAGE[j:PAGE.index("\n}\n", j)])
+        j = PAGE.index("async function doZipRestore()")
+        self.assertIn("restoreUpload(zipFile, function(t) { statusEl.textContent = '⏳ ' + t; });",
+                      PAGE[j:PAGE.index("\n}\n", j)])
 
     def test_a_restore_goes_up_in_pieces(self):
         """14 Oct 2026: through Home Assistant's ingress a whole backup in one request was
