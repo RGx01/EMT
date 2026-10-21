@@ -190,9 +190,13 @@ the passes that read it. Whether the `cad` branch is then dead, and goes, is a s
    refused, nothing deleted); the Fill History & Gaps link and the nudge gone. *The Delete Blocks
    and Cost Corrections links stay* until PR 4 and PR 6 take their jobs — removing them now would
    leave *reconstructed only* and corrections unreachable.
-3. **Backups & storage** — one card; `/api/backup/list` with size and time; the table; the daily
-   copy's row; the storage line with what a compact reclaims; a dropped file opens the modal; the
-   legacy row and the Import DB card gone.
+3. **Backups & storage** — *built 21 Oct 2026*: one card; `/api/backup/list` with each zip's size
+   and time (`zip_info`); the What · When · Size table, *when* from the time in the name (a copy
+   keeps it; the file's modified time moves); the daily copy's row; the storage line with SQLite's
+   free pages as "free inside the file" — what a compact reclaims **at least**: clicked through, a
+   copy with no free pages still compacted 86.6 → 81.1 MB, since a compact also packs part-empty
+   pages; a dropped file (zip or `.db`) opens the modal; the legacy row, the Import DB, Storage and
+   Compact cards gone. `/api/import/extract-zip` has no caller left (PR 7 can retire it).
 4. **Delete… only the imported half-hours** — the choice in the preview; the delete's `utc_span`
    with the existing `reconstructed_only`.
 5. **The support file** — `support.json`, the log, the span's database, redaction, the size

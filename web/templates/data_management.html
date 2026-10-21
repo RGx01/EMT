@@ -52,12 +52,12 @@
   <div style="max-width:480px;margin:80px auto;padding:0 16px 60px;">
     <div class="card" style="padding:28px;">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
-        <h3 style="margin:0;font-size:15px;font-weight:600;">Restore from Zip</h3>
+        <h3 style="margin:0;font-size:15px;font-weight:600;">Restore from a file</h3>
         <button onclick="closeZipConfirm()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;">✕</button>
       </div>
 
       <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:var(--radius);padding:12px 14px;margin-bottom:20px;font-size:13px;line-height:1.7;">
-        ⚠️ This will <strong>replace all current data</strong> with the contents of the selected zip. This cannot be undone.
+        ⚠️ This will <strong>replace all current data</strong> with the contents of this file. It is checked first; a backup of your current data is the way back.
       </div>
 
       <div id="zip-file-info" style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-bottom:16px;font-size:13px;line-height:1.8;font-family:var(--mono);"></div>
@@ -140,107 +140,33 @@
      Corrections page — they belong with the other billing/cost tools and only
      apply to a cad+api setup. -->
 
-<!-- ═══ Intent 3: Safety & housekeeping ═══════════════════════════════════════
-     Marked `first` because the earlier groups (Bring data in, Correct & review)
-     moved to their own pages — so this is now the first content and shouldn't carry
-     the large inter-group top margin (which read as a gap under the top bar). -->
-<div class="dm-group-head first">
-  <h3>🧰 Safety &amp; housekeeping</h3>
-  <p>Create and restore backups, delete data, and keep the database healthy.</p>
-</div>
-
-<!-- ── Backups ──────────────────────────────────────────────────────────────── -->
+<!-- ═══ Backups & storage (data management design §1 (5)) ════════════════════════
+     One card: create a backup or compact in its head; storage as one line; the backups as a table
+     (what made each, when, its size); the daily copy restorable; a file dropped on the last row
+     opens the restore at once — a zip or a blocks.db alike. -->
 <div class="card" id="dm-backups">
-  <div class="card-title">💾 Backups</div>
-  <p style="color:var(--muted);font-size:13px;margin-bottom:16px;line-height:1.7;">
-    A backup zip is created automatically before every config save. Backups are stored in
-    <code id="backup-path-display" style="font-family:var(--mono);font-size:12px;">/share/energy_meter_tracker_backup/backups/</code>
-    and the 20 most recent are kept.
-  </p>
-  <button class="btn btn-secondary" onclick="doManualBackup()" id="btn-backup2" style="margin-bottom:16px;">💾 Create Backup Now</button>
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+    <div class="card-title" style="margin:0;">💾 Backups &amp; storage</div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn btn-secondary" onclick="doManualBackup()" id="btn-backup2">💾 Create backup now</button>
+      <button class="btn btn-secondary" id="btn-vacuum" onclick="doVacuum()"
+              title="Rebuild the database file to reclaim the space deleted or updated rows left. The engine pauses briefly.">🗜️ Compact now</button>
+    </div>
+  </div>
+  <div id="dm-storage-line" style="font-size:12px;color:var(--muted);margin-bottom:10px;">Loading…</div>
+  <div id="vacuum-result" style="font-size:12px;margin-bottom:10px;display:none;"></div>
   <div id="backup-list" style="font-size:13px;color:var(--muted);">Loading...</div>
-</div>
-
-<!-- Delete Blocks now lives in the topbar. -->
-
-<!-- ── Import DB (restore from a .db / backup zip) ──────────────────────────── -->
-<div class="card">
-  <div class="card-title">📥 Import DB</div>
-  <p style="color:var(--muted);font-size:13px;margin-bottom:20px;line-height:1.7;">
-    Drag in a <strong>backup zip</strong> or <strong>blocks.db</strong> file to restore data.
-    <strong style="color:var(--warning);">Warning:</strong> importing will overwrite existing data.
-  </p>
-
-  <div id="drop-zone" style="
-    border: 2px dashed var(--border);
-    border-radius: var(--radius);
-    padding: 40px;
-    text-align: center;
-    margin-bottom: 24px;
-    transition: border-color 0.15s;
-    cursor: pointer;
-  " ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)" onclick="document.getElementById('file-input').click()">
-    <div style="font-size:32px;margin-bottom:8px;">📂</div>
-    <div style="color:var(--text);font-size:14px;margin-bottom:4px;">Drop a backup zip or blocks.db here, or click to browse</div>
-    <div style="color:var(--muted);font-size:12px;">Accepts .zip backup archives or blocks.db</div>
-    <input type="file" id="file-input" multiple accept=".zip,.db" style="display:none" onchange="onFileSelect(this.files)">
+  <div id="drop-zone" style="border:1px dashed var(--border);border-radius:var(--radius);padding:12px;
+       margin-top:12px;text-align:center;font-size:13px;color:var(--muted);cursor:pointer;transition:border-color 0.15s;"
+       ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)"
+       onclick="document.getElementById('file-input').click()">
+    📂 Drop a backup zip or <code>blocks.db</code> here to restore it, or click to choose one
+    <input type="file" id="file-input" accept=".zip,.db" style="display:none" onchange="onFileSelect(this.files); this.value='';">
   </div>
-
-  <div id="file-list" style="margin-bottom:20px;display:none;">
-    <div class="card-title">Files to import</div>
-    <div id="file-items"></div>
+  <div style="font-size:11px;color:var(--muted);margin-top:8px;">
+    Kept in <code id="backup-path-display" style="font-family:var(--mono);">/share/energy_meter_tracker_backup/backups/</code>
+    — the 20 most recent. Every irreversible action takes one first.
   </div>
-
-  <button class="btn btn-primary" onclick="doImport()" id="import-btn" disabled>
-    📥 Import Selected Files
-  </button>
-</div>
-
-
-<!-- ── Database maintenance ──────────────────────────────────────────────────── -->
-<div class="card" id="storage-card">
-  <div class="card-title">💽 Storage</div>
-  <div id="storage-loading" style="font-size:13px;color:var(--muted);">Loading…</div>
-  <div id="storage-info" style="display:none;">
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:16px;">
-      <div>
-        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Database size</div>
-        <div id="si-db-size" style="font-size:20px;font-weight:600;color:var(--text);font-family:var(--mono);"></div>
-      </div>
-      <div>
-        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Disk free</div>
-        <div id="si-disk-free" style="font-size:20px;font-weight:600;color:var(--text);font-family:var(--mono);"></div>
-      </div>
-      <div>
-        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Growth rate</div>
-        <div id="si-growth" style="font-size:20px;font-weight:600;color:var(--text);font-family:var(--mono);"></div>
-      </div>
-      <div>
-        <div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.05em;margin-bottom:4px;">Estimated runway</div>
-        <div id="si-runway" style="font-size:20px;font-weight:600;font-family:var(--mono);"></div>
-      </div>
-    </div>
-    <!-- Disk usage bar -->
-    <div style="margin-bottom:4px;display:flex;justify-content:space-between;font-size:11px;color:var(--muted);">
-      <span id="si-bar-label"></span>
-      <span id="si-bar-pct"></span>
-    </div>
-    <div style="height:6px;border-radius:3px;background:var(--border);overflow:hidden;">
-      <div id="si-bar-fill" style="height:100%;border-radius:3px;background:var(--accent);transition:width 0.4s;"></div>
-    </div>
-    <div style="font-size:11px;color:var(--muted);margin-top:8px;" id="si-note"></div>
-  </div>
-</div>
-
-<div class="card">
-  <div class="card-title">🗜️ Compact Database</div>
-  <div style="font-size:13px;color:var(--muted);margin-bottom:16px;line-height:1.7;">
-    Rebuild the database file to reclaim free pages left by deleted or updated rows.
-    The engine is paused briefly during compaction. At ~40 KB/day growth this is
-    rarely urgent — most useful after bulk deletions.
-  </div>
-  <div id="vacuum-result" style="font-size:13px;color:var(--muted);margin-bottom:12px;display:none;"></div>
-  <button class="btn btn-secondary" id="btn-vacuum" onclick="doVacuum()">🗜️ Compact Now</button>
 </div>
 
 
@@ -278,23 +204,6 @@ async function restoreUpload(file, onStage) {
 
 // For the length of one upload: the banner says how far it has got, and the button that
 // would start a second upload is off. Afterwards the button follows the file list again.
-function _uploadBusy(busy, text) {
-  document.getElementById('import-btn').disabled =
-    busy || !Object.keys(selectedFiles).length;
-  if (busy) {
-    var el = document.getElementById('alert-success');
-    el.textContent = '⏳ ' + text;
-    el.classList.add('show');
-  }
-}
-
-const KNOWN_FILES = ['blocks.db'];
-let selectedFiles = {};
-let _restoreZip   = null;
-let _restoreFlat  = false;
-let _restoreFiles = {};
-
-// ── Drag & drop ───────────────────────────────────────────────────────────────
 function onDragOver(e) {
   e.preventDefault();
   document.getElementById('drop-zone').style.borderColor = 'var(--accent)';
@@ -310,24 +219,20 @@ function onDrop(e) {
 
 let _pendingZipFile = null;
 
+// A dropped or chosen file opens the restore at once (21 Oct 2026, the user: a blocks.db waited
+// for an Import button below the fold) — a backup zip or a blocks.db alike.
 function onFileSelect(files) {
-  for (const f of Array.from(files)) {
-    if (f.name.endsWith('.zip')) {
-      showZipConfirm(f);
-      return;
-    } else if (f.name.endsWith('.db')) {
-      selectedFiles[f.name] = f;
-    }
-  }
-  renderFileList();
+  var f = Array.from(files || []).filter(function (x) { return /\.(zip|db)$/i.test(x.name); })[0];
+  if (!f) { if ((files || []).length) showError('Choose a backup .zip or a blocks.db.'); return; }
+  showZipConfirm(f);
 }
 
 function showZipConfirm(zipFile) {
   _pendingZipFile = zipFile;
-  const sizeKb = (zipFile.size / 1024).toFixed(1);
+  const sizeMb = (zipFile.size / 1048576).toFixed(1);
   document.getElementById('zip-file-info').innerHTML =
-    '<strong>File:</strong> ' + zipFile.name + '<br>' +
-    '<strong>Size:</strong> ' + sizeKb + ' KB';
+    '<strong>File:</strong> ' + _hEsc(zipFile.name) + '<br>' +
+    '<strong>Size:</strong> ' + sizeMb + ' MB';
   document.getElementById('zip-restore-overlay').style.display = 'block';
 }
 
@@ -367,93 +272,6 @@ async function doZipRestore() {
     showError('Restore failed: ' + e.message);
   }
 }
-// Legacy: extract zip contents for manual file selection (non-db files only)
-async function extractZipToSelected(zipFile) {
-  try {
-    const form = new FormData();
-    form.append('zipfile', zipFile);
-    const r    = await fetch(apiUrl('/api/import/extract-zip'), { method: 'POST', body: form });
-    const data = await uploadReply(r);
-    if (data.files) {
-      for (const [name, b64] of Object.entries(data.files)) {
-        if (name === 'blocks.db') continue;  // never round-trip binary DB through base64
-        const bytes = atob(b64);
-        const arr   = new Uint8Array(bytes.length);
-        for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
-        const blob  = new Blob([arr], { type: 'application/json' });
-        selectedFiles[name] = new File([blob], name, { type: 'application/json' });
-      }
-    } else {
-      showError(data.error || 'Could not extract zip');
-    }
-  } catch(e) {
-    showError('Zip extraction failed: ' + e.message);
-  }
-}
-
-function renderFileList() {
-  const items = document.getElementById('file-items');
-  const list  = document.getElementById('file-list');
-  const btn   = document.getElementById('import-btn');
-
-  if (Object.keys(selectedFiles).length === 0) {
-    list.style.display = 'none';
-    btn.disabled = true;
-    return;
-  }
-
-  list.style.display = 'block';
-  btn.disabled = false;
-
-  items.innerHTML = Object.entries(selectedFiles).map(([name, file]) => {
-    const known  = KNOWN_FILES.includes(name);
-    const sizeKb = (file.size / 1024).toFixed(1);
-    const color  = known ? 'var(--success)' : 'var(--warning)';
-    const status = known ? '✓ recognised' : '⚠ unrecognised';
-    return `
-      <div style="display:flex;align-items:center;justify-content:space-between;
-                  padding:10px 12px;background:var(--bg);border-radius:var(--radius);
-                  border:1px solid var(--border);margin-bottom:6px;">
-        <div style="display:flex;align-items:center;gap:10px;">
-          <span style="font-family:var(--mono);font-size:13px;">${name}</span>
-          <span style="font-size:11px;color:${color};">${status}</span>
-        </div>
-        <div style="display:flex;align-items:center;gap:12px;">
-          <span style="color:var(--muted);font-size:12px;">${sizeKb} KB</span>
-          <button class="btn btn-danger btn-sm" onclick="removeFile('${name}')">✕</button>
-        </div>
-      </div>`;
-  }).join('');
-}
-
-function removeFile(name) {
-  delete selectedFiles[name];
-  renderFileList();
-}
-
-async function doImport() {
-  hideAlerts();
-  const file = selectedFiles['blocks.db'];
-  if (!file) {
-    showError('No recognised files selected. Please select blocks.db.');
-    return;
-  }
-  _uploadBusy(true, 'Uploading…');
-  try {
-    // The restore runs as a background job (#356): the shared banner shows its progress and
-    // the page reloads when it is done.
-    await restoreUpload(file, function(t) { _uploadBusy(true, t); });
-    selectedFiles = {};
-    renderFileList();
-    _restoreWasRunning = true;
-    pollRestoreStatus();
-  } catch(e) {
-    document.getElementById('alert-success').classList.remove('show');
-    _uploadBusy(false);
-    showError('Restore failed: ' + e.message);
-  }
-}
-
 // ── Restore modal ─────────────────────────────────────────────────────────────
 async function restoreFromFlat() {
   // Load flat file info then open modal
@@ -681,88 +499,53 @@ async function doManualBackup() {
   }
 }
 
-async function loadBackupList() {
+// The backups as a table (data management design §1 (5)): what made each (the label in its name),
+// when, its size; Download, Restore, Delete. The daily copy of the database a row of its own.
+// When a backup was made: the time in its name (UTC, `YYYYMMDDTHHMMSS_label.zip`) — a copy keeps
+// it, where the file's modified time moves — else the modified time.
+function _madeAt(z) {
+  var m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})_/.exec(z.name || '');
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) / 1000 : z.mtime;
+}
+function _localWhen(sec) {
   try {
-    var r    = await fetch(apiUrl('/api/backup/list'));
-    var data = await r.json();
-    var el   = document.getElementById('backup-list');
-    if (!el) return;
-
-    var html = '';
-
-    // ── The daily flat copy (#67) ──
-    var flat    = data.flat || [];
-    var primary = flat.filter(function(f) { return !f.legacy; });
-    var legacyFiles = flat.filter(function(f) { return f.legacy; });
-
-    if (primary.length > 0) {
-      var latestMod = primary.reduce(function(latest, f) {
-        return f.modified > latest ? f.modified : latest;
-      }, '');
-      html += '<div style="margin-bottom:16px;">' +
-        '<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;' +
-        'color:var(--muted);margin-bottom:8px;">Daily Backup</div>' +
-        '<div style="display:flex;align-items:center;justify-content:space-between;' +
-        'padding:10px 12px;background:var(--bg);border-radius:var(--radius);border:1px solid var(--border);">' +
-        '<div>' +
-          '<div style="font-size:13px;font-weight:500;">Daily snapshot (early hours)</div>' +
-          '<div style="font-size:11px;color:var(--muted);margin-top:2px;">Last updated: ' + latestMod + '</div>' +
-          '<div style="font-size:11px;color:var(--muted);">Contains: ' + primary.map(function(f){return f.name;}).join(', ') + '</div>' +
-        '</div>' +
-        '<button class="btn btn-secondary btn-sm" onclick="restoreFromFlat()">↩ Restore</button>' +
-        '</div>';
-      if (legacyFiles.length > 0) {
-        html += '<div style="margin-top:6px;padding:6px 10px;font-size:11px;color:var(--muted);' +
-          'background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);">' +
-          '⚠ Also present (legacy, no longer updated): ' +
-          legacyFiles.map(function(f) { return f.name; }).join(', ') +
-          ' — these are from a previous version and can be deleted from <code>/share/energy_meter_tracker_backup/</code>' +
-          '</div>';
-      }
-      html += '</div>';
-    } else if (legacyFiles.length > 0) {
-      // Only legacy files present — show with restore option but warn clearly
-      html += '<div style="margin-bottom:16px;">' +
-        '<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;' +
-        'color:var(--muted);margin-bottom:8px;">Daily Backup</div>' +
-        '<div style="padding:10px 12px;background:var(--bg);border-radius:var(--radius);border:1px solid var(--border);">' +
-          '<div style="font-size:13px;font-weight:500;color:var(--warning);">Legacy backup files only</div>' +
-          '<div style="font-size:11px;color:var(--muted);margin-top:4px;">Contains: ' +
-          legacyFiles.map(function(f) { return f.name; }).join(', ') + '</div>' +
-          '<div style="font-size:11px;color:var(--muted);margin-top:2px;">' +
-          'These are from v1.x or v2.0.x. A new <code>blocks.db</code> snapshot will appear here after the next daily backup (early hours).' +
-          '</div>' +
-          '<div style="margin-top:8px;">' +
-          '<button class="btn btn-secondary btn-sm" onclick="restoreFromFlat()">↩ Restore legacy files</button>' +
-          '</div>' +
-        '</div></div>';
-    }
-
-    // ── Zip backups ──
-    var zips = data.zips || [];
-    html += '<div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:8px;">Zip Backups</div>';
-    if (zips.length === 0) {
-      html += '<div style="color:var(--muted);font-size:13px;">No zip backups yet.</div>';
-    } else {
-      var rows = zips.map(function(z) {
-        var zq = z.replace(/'/g, "\\'");
-        return '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;font-family:var(--mono);font-size:12px;padding:6px 0;border-bottom:1px solid var(--border);">'
-          + '<span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + z + '</span>'
-          + '<span style="display:flex;gap:6px;flex:none;">'
-          + '<button class="btn btn-secondary btn-sm" onclick="downloadBackup(\'' + zq + '\')">⬇ Download</button>'
-          + '<button class="btn btn-secondary btn-sm" onclick="restoreFromZip(\'' + zq + '\')">↩ Restore</button>'
-          + '<button class="btn btn-secondary btn-sm" style="color:var(--danger);" onclick="deleteBackup(\'' + zq + '\')">🗑 Delete</button>'
-          + '</span></div>';
-      }).join('');
-      var needsScroll = zips.length > 5;
-      html += '<div style="' + (needsScroll ? 'max-height:196px;overflow-y:auto;' : '') + '">' + rows + '</div>' +
-        (needsScroll ? '<div style="color:var(--muted);font-size:11px;margin-top:6px;">' + zips.length + ' backups — scroll to see all</div>' : '');
-    }
-
-    el.innerHTML = html;
-  } catch(e) {
-    var el = document.getElementById('backup-list');
-    if (el) el.innerHTML = '<div style="color:var(--danger);font-size:13px;">Failed to load backups: ' + e.message + '</div>';
+    return new Intl.DateTimeFormat('en-GB', {day: 'numeric', month: 'short', hour: '2-digit',
+      minute: '2-digit', hourCycle: 'h23'}).format(new Date(sec * 1000));
+  } catch (e) { return ''; }
+}
+async function loadBackupList() {
+  var el = document.getElementById('backup-list');
+  if (!el) return;
+  try {
+    var data = await (await fetch(apiUrl('/api/backup/list'))).json();
+    var zips = data.zip_info || (data.zips || []).map(function (n) { return {name: n}; });
+    var daily = (data.flat || []).filter(function (f) { return !f.legacy && f.name === 'blocks.db'; })[0];
+    var td = 'padding:6px 8px;border-bottom:1px solid var(--border);';
+    var rows = zips.map(function (z) {
+      var zq = z.name.replace(/'/g, "\\'"), what = _backupWhat(z.name);
+      return '<tr title="' + _hEsc(z.name) + '">' +
+        '<td style="' + td + 'color:var(--text);">' + _hEsc(what ? what.charAt(0).toUpperCase() + what.slice(1) : z.name) + '</td>' +
+        '<td style="' + td + '">' + (_madeAt(z) ? _hEsc(_localWhen(_madeAt(z))) + ' · ' + _hEsc(_ago(_madeAt(z))) : '') + '</td>' +
+        '<td style="' + td + 'text-align:right;font-family:var(--mono);">' + _fmtBytes(z.size) + '</td>' +
+        '<td style="' + td + 'text-align:right;white-space:nowrap;">' +
+          '<button class="btn btn-secondary btn-sm" onclick="downloadBackup(\'' + zq + '\')">⬇ Download</button> ' +
+          '<button class="btn btn-secondary btn-sm" onclick="restoreFromZip(\'' + zq + '\')">↩ Restore</button> ' +
+          '<button class="btn btn-secondary btn-sm" style="color:var(--danger);" onclick="deleteBackup(\'' + zq + '\')">🗑 Delete</button>' +
+        '</td></tr>';
+    });
+    if (daily) rows.push('<tr><td style="' + td + 'color:var(--text);">Daily copy of the database</td>' +
+      '<td style="' + td + '">' + _hEsc((daily.modified || '').replace('T', ' ').slice(0, 16)) + ' UTC</td>' +
+      '<td style="' + td + 'text-align:right;font-family:var(--mono);">' + _fmtBytes(daily.size) + '</td>' +
+      '<td style="' + td + 'text-align:right;"><button class="btn btn-secondary btn-sm" onclick="restoreFromFlat()">↩ Restore</button></td></tr>');
+    if (!rows.length) { el.innerHTML = '<div>No backups yet.</div>'; return; }
+    var th = 'text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;padding:4px 8px;';
+    el.innerHTML = '<div style="' + (rows.length > 8 ? 'max-height:300px;overflow-y:auto;' : '') + '">' +
+      '<table style="width:100%;border-collapse:collapse;font-size:13px;">' +
+      '<thead><tr><th style="' + th + '">What</th><th style="' + th + '">When</th>' +
+      '<th style="' + th + 'text-align:right;">Size</th><th></th></tr></thead><tbody>' + rows.join('') +
+      '</tbody></table></div>';
+  } catch (e) {
+    el.innerHTML = '<div style="color:var(--danger);">Failed to load backups: ' + _hEsc(e.message) + '</div>';
   }
 }
 
@@ -909,7 +692,7 @@ function loadHealth() {
                     d.missing.gaps + ' gap' + (d.missing.gaps === 1 ? '' : 's') : 'none'),
                     "dmShowView('presence')", miss ? 'bad' : 'good'));
     var b = d.last_backup;
-    out.push(_hChip('<b>Last backup</b> ' + (b ? _hEsc(_ago(b.mtime)) +
+    out.push(_hChip('<b>Last backup</b> ' + (b ? _hEsc(_ago(_madeAt(b))) +
                     (_backupWhat(b.name) ? ' (' + _hEsc(_backupWhat(b.name)) + ')' : '') : 'none yet'),
                     "document.getElementById('dm-backups').scrollIntoView({behavior: 'smooth'})", b ? '' : 'bad'));
     if (d.db_bytes) out.push('<span><b>Database</b> ' + (d.db_bytes / 1048576).toFixed(0) + ' MB</span>');
@@ -968,61 +751,36 @@ document.addEventListener('DOMContentLoaded', function () { loadHealth(); dmWhol
 // ── Historical Corrections ─────────────────────────────────────────────────
 
 // ── Database compaction ────────────────────────────────────────────────────
+// Storage, one line (data management design §1 (5)): the database, what a compact would reclaim,
+// the disk free, the runway — the runway coloured when it is short.
+function _fmtBytes(b) {
+  if (b == null) return '—';
+  if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB';
+  if (b >= 1048576) return (b / 1048576).toFixed(b >= 104857600 ? 0 : 1) + ' MB';
+  if (b >= 1024) return (b / 1024).toFixed(0) + ' KB';
+  return b + ' B';
+}
 async function loadStorageInfo() {
+  var el = document.getElementById('dm-storage-line');
   try {
     var r = await fetch(apiUrl('/api/storage-info'));
     var d = await r.json();
-
-    function fmtMb(mb) {
-      if (mb >= 1024) return (mb / 1024).toFixed(2) + ' GB';
-      return mb.toFixed(1) + ' MB';
-    }
-
-    function fmtRunway(days) {
-      if (!days) return '—';
-      if (days > 365 * 2) return '> ' + Math.floor(days / 365) + ' years';
-      if (days > 365)     return '~' + (days / 365).toFixed(1) + ' years';
-      if (days > 60)      return '~' + Math.round(days / 30) + ' months';
-      return days + ' days';
-    }
-
-    document.getElementById('si-db-size').textContent  = fmtMb(d.db_mb);
-    document.getElementById('si-disk-free').textContent = fmtMb(d.disk_free_mb);
-    document.getElementById('si-growth').textContent    = d.growth_mb_per_day
-      ? (d.growth_mb_per_day < 0.1
-          ? (d.growth_mb_per_day * 1024).toFixed(1) + ' KB/day'
-          : d.growth_mb_per_day.toFixed(2) + ' MB/day')
-      : '—';
-
-    var runway = fmtRunway(d.runway_days);
-    var runwayEl = document.getElementById('si-runway');
-    runwayEl.textContent = runway;
-    // Colour runway: green > 2yr, amber 6mo-2yr, red < 6mo
-    runwayEl.style.color = !d.runway_days ? 'var(--muted)'
-      : d.runway_days > 730  ? 'var(--success)'
-      : d.runway_days > 180  ? 'var(--warning)'
-      : 'var(--danger)';
-
-    // Disk bar
-    var usedPct = 100 - d.disk_free_pct;
-    document.getElementById('si-bar-fill').style.width  = usedPct + '%';
-    document.getElementById('si-bar-fill').style.background =
-      usedPct > 90 ? 'var(--danger)' : usedPct > 75 ? 'var(--warning)' : 'var(--accent)';
-    document.getElementById('si-bar-label').textContent =
-      fmtMb(d.disk_used_mb) + ' used of ' + fmtMb(d.disk_total_mb);
-    document.getElementById('si-bar-pct').textContent = d.disk_free_pct + '% free';
-
-    // Note
-    if (d.days_of_data) {
-      document.getElementById('si-note').textContent =
-        'Based on ' + Math.round(d.days_of_data) + ' days of data. ' +
-        'Runway estimate assumes current growth rate continues.';
-    }
-
-    document.getElementById('storage-loading').style.display = 'none';
-    document.getElementById('storage-info').style.display    = 'block';
-  } catch(e) {
-    document.getElementById('storage-loading').textContent = 'Failed to load storage info.';
+    var days = d.runway_days, runway = !days ? '' : days > 3650 ? 'over 10 years of room'
+             : days > 730 ? '~' + Math.floor(days / 365) + ' years of room'
+             : days > 365 ? '~' + (days / 365).toFixed(1) + ' years of room'
+             : days > 60 ? '~' + Math.round(days / 30) + ' months of room' : days + ' days of room';
+    var rc = !days ? '' : days > 730 ? '' : days > 180 ? 'var(--warning)' : 'var(--danger)';
+    var parts = ['Database <b>' + _fmtBytes(d.db_bytes) + '</b>'];
+    // SQLite's free pages: what a compact reclaims at least — it also packs part-empty pages
+    if (d.reclaimable_bytes > 1048576)
+      parts.push('<b>' + _fmtBytes(d.reclaimable_bytes) + '</b> free inside the file');
+    if (d.disk_free_mb) parts.push('disk free <b>' + _fmtBytes(d.disk_free_mb * 1048576) + '</b>');
+    if (runway) parts.push('<span' + (rc ? ' style="color:' + rc + ';"' : '') + '>' + runway + '</span>');
+    el.innerHTML = parts.join(' · ');
+    el.title = d.days_of_data ? 'Growth ' + (d.growth_mb_per_day ? d.growth_mb_per_day.toFixed(3) + ' MB/day' : '—') +
+      ' over ' + Math.round(d.days_of_data) + ' days of data; the runway assumes it carries on.' : '';
+  } catch (e) {
+    el.textContent = 'Storage unavailable.';
   }
 }
 
@@ -1065,7 +823,8 @@ async function doVacuum() {
     result.textContent   = 'Error: ' + e.message;
   } finally {
     btn.disabled    = false;
-    btn.textContent = '🗜️ Compact Now';
+    btn.textContent = '🗜️ Compact now';
+    loadStorageInfo();                     // what is left to reclaim
   }
 }
 
