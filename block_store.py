@@ -2768,8 +2768,15 @@ class BlockStore:
         kept = self._conn.execute(
             "SELECT COUNT(*) FROM ha_reads WHERE period_start >= ? AND period_start < ?",
             (a, b)).fetchone()[0]
+        # the imported ones (CSV, PDF bills, the API import): what *only the imported* would take
+        # (data management design §1 (6)) — the delete's `reconstructed_only`, as the Delete Blocks
+        # page offered it
+        imp = self._conn.execute(
+            "SELECT COUNT(DISTINCT block_start), COUNT(*) FROM blocks WHERE block_start >= ? AND "
+            "block_start < ? AND source LIKE 'imported%'", (a, b)).fetchone()
         return {"from_utc": a, "to_utc": b, "half_hours": r["n"] or 0, "rows": r["rows"] or 0,
-                "devices": devices, "ha_reads": kept}
+                "devices": devices, "ha_reads": kept,
+                "imported_half_hours": imp[0] or 0, "imported_rows": imp[1] or 0}
 
     def _delete_range_bounds(self, from_date, to_date, from_time, to_time, tz_name):
         """Resolve the delete/preview window to a CONTIGUOUS UTC datetime span

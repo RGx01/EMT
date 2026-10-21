@@ -1216,6 +1216,16 @@ window.EMTHeatmap = (function () {
       markSelection(p.from_utc, p.to_utc);
       if (!p.half_hours) { box('<p>Nothing recorded in ' + esc(label) + ' \u2014 nothing to delete.</p>', close); return; }
       var dev = p.devices.length ? ', and ' + esc(p.devices.join(', ')) + '\u2019s' : '';
+      // Imported and live together (data management design §1 (6)): the choice to take the
+      // imported half-hours only — the way to roll back a bad import over part of the history
+      var both = p.imported_half_hours > 0 && p.imported_half_hours < p.half_hours;
+      var choice = both ? '<div class="hm-choice" style="margin:8px 0;">' +
+          '<label style="display:block;margin:4px 0;"><input type="radio" name="hm-del-scope" value="all" checked> ' +
+          '<b>Everything</b> \u2014 ' + hh(p.half_hours) + '</label>' +
+          '<label style="display:block;margin:4px 0;"><input type="radio" name="hm-del-scope" value="imported"> ' +
+          '<b>Only the imported half-hours</b> \u2014 ' + p.imported_half_hours + ' of ' + p.half_hours +
+          ' (CSV, PDF bills or the API import). Live and settled ones are kept, and so are the ' +
+          'devices\u2019 rows for the imported ones, for a re-import to rejoin.</label></div>' : '';
       box('<p><b>Deletes everything in these half-hours, not only the ' + chan + '.</b> Import, export' + dev +
           ' data for ' + hh(p.half_hours) + ' (' + esc(localTime(p.from_utc)) + ' \u2192 ' +
           esc(localTime(p.to_utc)) + ') are deleted.</p>' +
@@ -1223,14 +1233,19 @@ window.EMTHeatmap = (function () {
            'Octopus or a CSV, the devices are rebuilt from them.</p>' : '') +
           (state.canRefetch && p.from_utc >= twoYears ? '<p class="hm-note2">If only the ' + chan +
            ' is wrong, Re-fetch from Octopus corrects it without deleting anything.</p>' : '') +
-          '<p class="hm-note2">A backup is taken first.</p>',
+          choice + '<p class="hm-note2">A backup is taken first.</p>',
           '<button class="hm-btn" data-close="1">Cancel</button>' +
           '<button class="hm-btn hm-primary" data-act="go" style="background:#cc0000;border-color:#cc0000;">Delete</button>');
-      el.querySelector('[data-act="go"]').onclick = function () { go(p); };
+      el.querySelector('[data-act="go"]').onclick = function () {
+        var pick = el.querySelector('input[name="hm-del-scope"]:checked');
+        go(p, !!(pick && pick.value === 'imported'));
+      };
     }).catch(fail);
-    function go(p) {
+    function go(p, importedOnly) {
       box('<p>Taking a backup and deleting\u2026</p>');
-      postJSON('/api/blocks/delete', {from_utc: p.from_utc, to_utc: p.to_utc, confirmed: true}).then(function (r) {
+      var n = importedOnly ? p.imported_half_hours : p.half_hours;
+      postJSON('/api/blocks/delete', {from_utc: p.from_utc, to_utc: p.to_utc, confirmed: true,
+                                      reconstructed_only: importedOnly}).then(function (r) {
         if (!r.ok) throw new Error(r.error || 'the delete did not start');
         return new Promise(function (ok, bad) {
           (function tick() {
@@ -1242,7 +1257,8 @@ window.EMTHeatmap = (function () {
           })();
         });
       }).then(function (s) {
-        box('<p>Done \u2014 ' + hh(p.half_hours) + ' deleted. To fill the gap, select it and ' +
+        box('<p>Done \u2014 ' + hh(n) + (importedOnly ? ' of imported history' : '') +
+            ' deleted. To fill the gap, select it and ' +
             'choose Fill this gap\u2026</p>' +
             (s.backup ? '<p class="hm-note2">Backup: ' + esc(s.backup) + '</p>' : ''), close);
         reloadRange(p.from_utc, p.to_utc);
@@ -1736,6 +1752,9 @@ window.EMTHeatmap = (function () {
   .hm-ax-v { position:absolute; bottom:2px; transform:translateX(-50%); white-space:nowrap; }
   .hm-ax-title { position:absolute; top:4px; transform:translateX(-50%); font-size:11px; white-space:nowrap; }
   .hm-month { display:flex; align-items:stretch; }
+  /* the delete's choice: base.html styles every label as a form caption (caps, muted, small) */
+  .hm-choice label { text-transform:none; letter-spacing:normal; font-size:13px; font-weight:400;
+                     color:inherit; margin:4px 0; cursor:pointer; }
   .hm-mlabel { writing-mode:vertical-rl; transform:rotate(180deg); font-size:11px; color:var(--muted, #6b7080);
                padding:0 4px; text-align:center; white-space:nowrap; }
   .hm-row { display:flex; gap:12px; flex:1; min-width:0; overflow-x:auto; }

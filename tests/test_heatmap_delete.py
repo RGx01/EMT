@@ -158,8 +158,9 @@ class TheHeatmap(unittest.TestCase):
 
     def test_delete_then_redraw(self):
         body = self._fn("openDelete")
-        self.assertIn("postJSON('/api/blocks/delete', {from_utc: p.from_utc, to_utc: p.to_utc, "
-                      "confirmed: true})", body)
+        # 21 Oct 2026: with the choice of only the imported half-hours (data management §1 (6))
+        self.assertIn("postJSON('/api/blocks/delete', {from_utc: p.from_utc, to_utc: p.to_utc, confirmed: true,",
+                      body)
         self.assertIn("reloadRange(p.from_utc, p.to_utc);", body)
 
 
