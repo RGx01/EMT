@@ -139,7 +139,9 @@ class TheHealthCache(unittest.TestCase):
         self.assertEqual(a["views"], b["views"])
 
     def test_a_write_classifies_again(self):
+        """Once _HEALTH_MIN_S has passed (22 Oct 2026, test_startup_counts_and_panel.py)."""
         self._get()
+        self.server._health_cache["at"] = 0.0
         with mock.patch.object(self.server, "_blocks_data_version", lambda s: "moved"):
             self._get()
         self.assertEqual(len(self.calls), 2)

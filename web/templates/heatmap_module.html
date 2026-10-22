@@ -1471,11 +1471,15 @@ window.EMTHeatmap = (function () {
       rows.push('<tr' + (cls ? ' class="' + cls + '"' : '') + '><th>' + name + '</th><td>' + value +
                 '</td><td class="hm-note2">' + (note || '') + '</td></tr>');
     }
+    // Import and export side by side, whichever view opened it (22 Oct 2026, the user: the Export
+    // bill's panel gave the import rate alone)
+    function head(name) { rows.push('<tr class="hm-sec"><th colspan="3">' + name + '</th></tr>'); }
+    function pence(r) { return r !== null && r !== undefined ? (r * 100).toFixed(3) + 'p' : '\u2014'; }
     var kNote = k.settled ? (k.dcc !== null && k.stored !== null && Math.abs(k.dcc - k.stored) > 0.0005
                   ? 'DCC ' + esc(kwh(k.dcc)) + ' — stored differs' : 'DCC settled')
               : 'not settled yet — EMT\u2019s own reading';
+    head('Import');
     row('kWh', esc(kwh(k.stored)), kNote, k.settled ? '' : 'hm-wait');
-    if (d.export) row('export', esc(kwh(d.export.kwh)), d.export.dcc !== null ? 'DCC settled' : 'not settled yet');
     if (b) {
       var same = c.stored !== null && Math.abs(c.stored - b.cost) <= 0.00001;
       row('bill', esc(gbp(b.cost)), 'Octopus, fetched ' + esc(localTime(b.fetched_at)) + ' · stored ' +
@@ -1500,10 +1504,19 @@ window.EMTHeatmap = (function () {
       if (b && b.ev_kwh !== null) row('', 'bill: EV ' + (+b.ev_kwh).toFixed(3) + ' / House ' + (+b.home_kwh).toFixed(3), '');
     }
     var bands = {}; (d.segments || []).forEach(function (sg) { bands[sg.band] = 1; });
-    row('rate', c.rate !== null ? (c.rate * 100).toFixed(3) + 'p' : '—',
+    row('rate', pence(c.rate),
         esc(Object.keys(bands).join(', ')) + (c.rate_source ? ' · ' + esc(c.rate_source) : '') + (c.corrected ? ' · your correction' : ''));
     (st.flags || []).forEach(function (f) { if (FLAG_TEXT[f]) row('\u26a0', esc(FLAG_TEXT[f]), '', 'hm-bad'); });
     if ((st.flags || []).indexOf('recost_bl82') >= 0) row('', 'stored cost re-costed before the BL-82 fix', 'pennies; known', 'hm-wait');
+    var x = d.export;
+    if (x && (METRICS.export || x.kwh !== null || x.dcc !== null)) {
+      var xs = st.export, xv = x.dcc !== null ? x.dcc : x.kwh;
+      head('Export');
+      row('kWh', xv !== null ? esc(kwh(xv)) : '\u2014', esc(CAT_TEXT.export[xs] || xs || ''),
+          (xs === 'overdue' || xs === 'no_data') ? 'hm-bad' : xs === 'waiting' ? 'hm-wait' : '');
+      row('earned', x.cost !== null ? esc(gbp(x.cost)) : '\u2014', 'stored (kWh \u00d7 rate)');
+      row('rate', pence(x.rate), '');
+    }
     var el = panelEl();
     el.innerHTML = '<div class="hm-panel-box" role="dialog" aria-label="Half-hour detail">' +
       '<div class="hm-panel-head"><b>' + esc(label) + '</b><button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' +
@@ -1935,6 +1948,7 @@ window.EMTHeatmap = (function () {
   .hm-detail { width:100%; border-collapse:collapse; }
   .hm-detail th { text-align:left; font-weight:600; padding:4px 10px 4px 0; vertical-align:top; white-space:nowrap; }
   .hm-detail td { padding:4px 8px 4px 0; vertical-align:top; }
+  .hm-detail .hm-sec th { padding-top:10px; font-size:11px; text-transform:uppercase; letter-spacing:.05em; opacity:.7; }
   .hm-detail tr.hm-bad td, .hm-detail tr.hm-bad th { color:#e05252; }
   .hm-detail tr.hm-wait td, .hm-detail tr.hm-wait th { color:#e0a020; }
   .hm-note2 { color:var(--muted, #6b7080); font-size:12px; }
