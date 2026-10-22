@@ -92,11 +92,9 @@ class TestExportOnlySettlementScope(unittest.TestCase):
         self._lj.start()
         self._orig_store = engine._store
         self._orig_sched = engine._kraken_rate_schedules
-        self._orig_apply = engine._DISPATCH_OVERLAY_APPLY
         engine._store = BlockStore(":memory:")
         engine._store.insert_config_period(self.cfg)
         engine.set_data_source_mode("api")
-        engine._DISPATCH_OVERLAY_APPLY = True
         # CAPPED IOG-SMB: import + both ev_device legs present, so _apply_iog_split
         # takes the capped branch (the one that re-prices rate/cost).
         _day = ("2026-06-07T04:30:00", "2026-06-07T22:30:00")
@@ -113,7 +111,6 @@ class TestExportOnlySettlementScope(unittest.TestCase):
         self._lj.stop()
         engine._store = self._orig_store
         engine._kraken_rate_schedules = self._orig_sched
-        engine._DISPATCH_OVERLAY_APPLY = self._orig_apply
         shutil.rmtree(self._cfg_dir, ignore_errors=True)
         engine.CONFIG_PATH = self._orig_cfg_path
 

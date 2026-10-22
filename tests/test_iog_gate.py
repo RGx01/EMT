@@ -16,15 +16,6 @@ import backfill
 import engine
 
 
-class TestMeasuredCheckSafeguards(unittest.TestCase):
-    def test_measured_settlement_enabled(self):
-        # 4.5.7 (post-#115): settled-cost apply is enabled and reads the four device buckets.
-        # No age-gate (settled = authority, both bands apply); the rate-settlement horizon
-        # and its 'rates finalising' pill are retired.
-        self.assertTrue(engine._MEASURED_APPLY)
-        self.assertTrue(engine._MEASURED_FETCH_ENABLED)
-
-
 class TestImportGateRemoved(unittest.TestCase):
     def test_evaluate_gates_has_no_iog_lock(self):
         # The iog_locked parameter is gone; API import is allowed on its own merits.

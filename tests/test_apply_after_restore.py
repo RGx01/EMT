@@ -63,10 +63,9 @@ class TheRefusals(unittest.TestCase):
 
     def setUp(self):
         self._save = (engine._store, engine._kraken_rate_schedules, engine._kraken_discovery,
-                      engine._kraken_current_agreement_from, engine._MEASURED_APPLY)
+                      engine._kraken_current_agreement_from)
         self.st = BlockStore(":memory:")
         engine._store = self.st
-        engine._MEASURED_APPLY = True
         engine._kraken_discovery = {"import": {"mpan": MPAN, "tariff_code": "E-1R-IOG-SMB-FIX-12M-H"}}
         engine._kraken_current_agreement_from = "2026-08-25T23:00:00"
         self.st._conn.execute("INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
@@ -81,7 +80,7 @@ class TheRefusals(unittest.TestCase):
 
     def tearDown(self):
         (engine._store, engine._kraken_rate_schedules, engine._kraken_discovery,
-         engine._kraken_current_agreement_from, engine._MEASURED_APPLY) = self._save
+         engine._kraken_current_agreement_from) = self._save
 
     def test_a_day_the_schedule_does_not_cover_is_said(self):
         engine._kraken_rate_schedules = {"import": _Sched((None, None))}

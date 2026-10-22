@@ -66,12 +66,10 @@ class _Harness(unittest.TestCase):
     def setUp(self):
         self._save = (engine._store, engine._kraken_client, engine._kraken_discovery,
                       engine._kraken_rate_schedules, engine._kraken_current_agreement_from,
-                      engine._MEASURED_FETCH_ENABLED, engine._MEASURED_APPLY,
                       engine._MEASURED_HISTORY_DRAIN_PACE)
         self.st = BlockStore(":memory:")
         engine._store = self.st
         engine._kraken_current_agreement_from = "2026-01-01T00:00:00"
-        engine._MEASURED_FETCH_ENABLED = engine._MEASURED_APPLY = True
         engine._MEASURED_HISTORY_DRAIN_PACE = 0
         engine._kraken_discovery = {"import": {"mpan": MPAN, "tariff_code": "IOG-SMB-FIX-12M"}}
         engine._kraken_rate_schedules = {}
@@ -93,7 +91,6 @@ class _Harness(unittest.TestCase):
     def tearDown(self):
         (engine._store, engine._kraken_client, engine._kraken_discovery,
          engine._kraken_rate_schedules, engine._kraken_current_agreement_from,
-         engine._MEASURED_FETCH_ENABLED, engine._MEASURED_APPLY,
          engine._MEASURED_HISTORY_DRAIN_PACE) = self._save
 
     def _both(self, node=None):

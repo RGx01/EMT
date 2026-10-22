@@ -170,11 +170,10 @@ _detected_integrations: dict | None = None
 # window is MIN(block_start)→now via get_oldest_block_start().
 _kraken_ingester = None         # KrakenIngester | None
 _KRAKEN_POLL_INTERVAL_S = 6 * 3600
-# 4b-iii: LIVE. The poll now writes DCC settlement into blocks (imp_kwh_api /
-# exp_kwh_api + needs_pass2_rerun), which the engine drain re-runs into billing.
-# A one-time blocks.db snapshot is taken before the first live write as a
-# rollback point (see _kraken_pre_live_snapshot).
-_KRAKEN_DRY_RUN = False
+# 4b-iii: LIVE. The poll writes DCC settlement into blocks (imp_kwh_api / exp_kwh_api +
+# needs_pass2_rerun), which the engine drain re-runs into billing. A one-time blocks.db
+# snapshot is taken before the first live write as a rollback point (see
+# _kraken_pre_live_snapshot); a cycle that cannot take it runs as a dry run.
 _KRAKEN_BACKFILL_CAP_DAYS = 400
 _KRAKEN_SNAPSHOT_DONE_KEY = "pre_live_snapshot_done"
 # Auto settlement sweep: the 6h incremental poll only re-checks a sliding window
@@ -474,7 +473,6 @@ def _get_billing_source() -> str:
     return val if val in _VALID_BILLING_SOURCES else "dcc"
 
 
-_DISPATCH_OVERLAY_APPLY = True    # live: overlay applies off-peak to validated slots
 
 # Meter-validation noise floor (kWh). A smart-charge slot is credited off-peak
 # only if the block drew at least this much import — a PRESENCE check (did real
@@ -503,10 +501,9 @@ def _dispatch_overlay_rate(channel_name: str, block_start: str,
       - Only overrides when base_rate is ABOVE the off-peak rate (i.e. the slot
         is out-of-window / peak). In-window slots are already off-peak — no-op.
 
-    COMPUTE-AND-LOG: when _DISPATCH_OVERLAY_APPLY is False, the override is
-    computed and LOGGED but NOT applied (returns base_rate unchanged), so it can
-    be validated against real data before affecting any bill. Idempotent: the
-    decision is a pure function of (base schedule, dispatch_slots, meter draw).
+    Idempotent: the decision is a pure function of (base schedule, dispatch_slots,
+    meter draw). (Its compute-and-log mode, never switched on since it went live,
+    went 22 Oct 2026.)
     """
     if channel_name != "import" or _store is None or not block_start:
         return base_rate
@@ -527,11 +524,10 @@ def _dispatch_overlay_rate(channel_name: str, block_start: str,
     # device elevates to provisional collection at runtime, so mode=api can
     # legitimately run with mini=active — and the Mini is what supplies the
     # provisional kWh this guard validates against.
-    _fp = ("mode=%s mini=%s provider=%s source=%s apply=%s"
+    _fp = ("mode=%s mini=%s provider=%s source=%s"
            % (get_data_source_mode(),
               "active" if _kraken_mini_reader is not None else "off",
-              slot.get("provider"), slot.get("source"),
-              _DISPATCH_OVERLAY_APPLY))
+              slot.get("provider"), slot.get("source")))
     # Meter validation: only credit slots that actually drew power. PRESENCE
     # check against the block's CURRENT kWh (provisional at finalise,
     # authoritative at settlement) — a 0.1 kWh noise floor, NOT a dispatch-delta
@@ -551,15 +547,10 @@ def _dispatch_overlay_rate(channel_name: str, block_start: str,
     # Only override if base is meaningfully above off-peak (out-of-window slot).
     if base_rate <= off_peak_rate + 1e-9:
         return base_rate  # already off-peak (in-window) — no-op
-    if _DISPATCH_OVERLAY_APPLY:
-        logger.info("dispatch-overlay: APPLIED %s peak→off-peak %.5f→%.5f "
-                    "(%.4f kWh) [%s]", block_start, base_rate,
-                    off_peak_rate, imp_kwh, _fp)
-        return off_peak_rate
-    logger.info("dispatch-overlay: WOULD apply %s peak→off-peak %.5f→%.5f "
-                "(%.4f kWh) [compute-and-log; not applied] [%s]",
-                block_start, base_rate, off_peak_rate, imp_kwh, _fp)
-    return base_rate
+    logger.info("dispatch-overlay: APPLIED %s peak→off-peak %.5f→%.5f "
+                "(%.4f kWh) [%s]", block_start, base_rate,
+                off_peak_rate, imp_kwh, _fp)
+    return off_peak_rate
 
 
 def _snap_to_slot(block_start: str) -> str:
@@ -1025,8 +1016,8 @@ def _log_config_state(config: dict | None = None) -> None:
         mode, mode_uses_api(mode), mini_note, billing_source,
         has_import, has_export)
     logger.info(
-        "config-state: dispatch_overlay apply=%s min_kwh=%.2f (overlay %s)",
-        _DISPATCH_OVERLAY_APPLY, _DISPATCH_OVERLAY_MIN_KWH,
+        "config-state: dispatch_overlay min_kwh=%.2f (overlay %s)",
+        _DISPATCH_OVERLAY_MIN_KWH,
         "ACTIVE — dispatch capture + repricing runs" if mode_uses_api(mode)
         else "inactive — no API mode, dispatch path off")
     # BCD + OHME detection are reported by _detect_and_log_integrations() once
@@ -11365,8 +11356,7 @@ async def _tick_dispatch_capture() -> None:
         except Exception as e:
             logger.warning("_tick_dispatch_capture: measured history drain schedule failed: %s", e)
         try:
-            if _MEASURED_APPLY:
-                apply_measured_settled()
+            apply_measured_settled()
         except Exception as e:
             logger.warning("_tick_dispatch_capture: measured apply failed: %s", e)
         # LAST, because the settled apply above is what can break the invariant it
@@ -11787,7 +11777,6 @@ def _reconcile_decision(has_started: bool, has_completed: bool,
 
 _RECONCILE_SETTLE_HOURS = 6.0     # revert/review: wait for completed (~hrs) to settle
 _RECONCILE_STARTED_GATE_MIN = 40  # restore: slot ended + a poll margin (started is real-time)
-_DISPATCH_RECONCILE_APPLY = True  # write (risk accepted; soaked on prod_dev first)
 
 # ── BL-53 step 2: measured-cost fetch (Octopus BILLED cost for settled dispatched
 # slots — the authoritative figure the 4-rate cap total is hardest to re-derive) ──
@@ -11814,15 +11803,12 @@ def capped_at(start: str) -> bool:
     return split_at(start)
 
 
-_MEASURED_FETCH_ENABLED = True      # 4.5.7: settled-label fetch (forward ladder)
-_MEASURED_APPLY = True              # 4.5.7: apply as a check — asymmetric + age-gated
 _MEASURED_MAX_PER_PASS = 40        # bound the rate-limited fetch per hourly pass
 # Tariff-era floor: the IOG-SMB rollout began ~1 Aug 2026, so measured pricing only
 # needs to reach back to there (matches the BL-55 heal floor). Older dispatched slots
 # were priced correctly by the pre-migration schedule and need no bill fetch. For the
 # general release this should derive from the per-user tariff-migration boundary.
 _MEASURED_FLOOR = "2026-08-01T00:00:00"
-_MEASURED_MATERIAL_GBP = 0.02      # a same-band £ delta below this is rounding noise (skip)
 
 
 def _smb_windows() -> list:
@@ -12078,11 +12064,10 @@ def bill_stage() -> dict:
     `floor`: the measured pass's floor. One rule for the pill and the settlement views."""
     imp = (_kraken_discovery or {}).get("import") or {}
     _tu = (imp.get("tariff_code") or "").upper()
-    fetched = bool(_MEASURED_FETCH_ENABLED and ("IOG" in _tu or "INTELLI" in _tu))
+    fetched = "IOG" in _tu or "INTELLI" in _tu
     return {"fetched": fetched, "every_half_hour": bool(fetched and _import_is_smb_capped()),
             # every Intelligent agreement's window: the drain asks for every half-hour in them
-            "windows": ([(vf, vt) for vf, vt, _s in _intelligent_windows()]
-                        if _MEASURED_FETCH_ENABLED else []),
+            "windows": [(vf, vt) for vf, vt, _s in _intelligent_windows()],
             "floor": _measured_floor()}
 
 
@@ -12335,7 +12320,7 @@ async def measure_settled_dispatched_blocks() -> dict:
     read). Bounded per pass; skips already-cached slots. The RATE is snapped to the tariff
     agreement at APPLY time (apply_measured_to_block) — never derived from cost/kWh here."""
     store = _store
-    if store is None or _kraken_client is None or not _MEASURED_FETCH_ENABLED:
+    if store is None or _kraken_client is None:
         return {}
     imp = (_kraken_discovery or {}).get("import") or {}
     tariff = imp.get("tariff_code") or ""
@@ -12411,11 +12396,10 @@ async def measure_settled_dispatched_blocks() -> dict:
     # "recovered 11/11" on one line and "absent=11" on the next. They mean opposite things:
     # zero = the bill stated nothing was drawn; absent = the bill said nothing at all.
     logger.info("measure_settled: candidates=%d fetched=%d stored=%d mixed=%d zero=%d "
-                "absent=%d held=%d (source=%s, apply=%s)", len(rows), len(missing), n_store,
+                "absent=%d held=%d (source=%s)", len(rows), len(missing), n_store,
                 n_mixed, n_zero, n_absent, n_held,
                 "+".join(sorted({"breakdown": "buckets", "cost": "single-cost"}[k] for k in kinds))
-                or "-",
-                _MEASURED_APPLY)
+                or "-")
     return {"candidates": len(rows), "fetched": len(missing), "stored": n_store,
             "mixed": n_mixed, "zero": n_zero, "absent": n_absent, "held": n_held}
 
@@ -12939,7 +12923,7 @@ async def run_refetch_apply(token: str) -> dict:
 async def run_measured_vat_resync() -> dict:
     """#505: resync measured costs once Octopus restates them after a VAT change (see above)."""
     store = _store
-    if store is None or _kraken_client is None or not _MEASURED_FETCH_ENABLED:
+    if store is None or _kraken_client is None:
         return {"ok": True, "skipped": "not applicable"}
     imp = (_kraken_discovery or {}).get("import") or {}
     mpan = imp.get("mpan")
@@ -13062,8 +13046,7 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
     fetch, additive apply — never touches a measured/corrected block."""
     global _measured_history_drain_running
     store = _store
-    if (store is None or _kraken_client is None or not _MEASURED_FETCH_ENABLED
-            or not _MEASURED_APPLY or not _any_intelligent()):
+    if store is None or _kraken_client is None or not _any_intelligent():
         return {"ok": True, "skipped": "not applicable"}
     imp = (_kraken_discovery or {}).get("import") or {}
     mpan = imp.get("mpan")
@@ -13299,13 +13282,13 @@ def apply_measured_settled() -> dict:
     both bands, with NO age-gate and NO review-flag — a divergence from EMT's prediction is
     Octopus's own bill, not an anomaly to surface. The RATE is snapped to the tariff agreement
     in apply_measured_to_block (never cost/kWh). Idempotent: once a block is rate_source=
-    'settled' it drops out of the query. Only runs when _MEASURED_APPLY. Local writes only.
+    'settled' it drops out of the query. Local writes only.
 
     (BL-70: `m.cost_incl > 0` skips the cached zero rows — a half-hour the bill says drew
     nothing has no cost to apply and no rate to snap, and apply_measured_to_block refuses it
     on `kwh <= 1e-9` anyway. Excluding them here just saves walking them every pass.)"""
     store = _store
-    if store is None or not _MEASURED_APPLY:
+    if store is None:
         return {}
     imp = (_kraken_discovery or {}).get("import") or {}
     mpan = imp.get("mpan")
@@ -13401,7 +13384,7 @@ def _refuse(reason: str) -> bool:
 
 def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
                             label: str = None, replace_correction: bool = False) -> bool:
-    """BL-53 step 3 (used ONLY when _MEASURED_APPLY): for a settled IOG dispatched block,
+    """BL-53 step 3: for a settled IOG dispatched block,
     take Octopus's billed COST as authoritative (imp_cost = cost_incl) but SNAP imp_rate to
     the CLEAN tariff band rate for the block's OWN date (day_rate_bounds on the agreement-
     stitched schedule) — never a derived cost/kWh.
@@ -13878,10 +13861,6 @@ async def reconcile_dispatch_overlay() -> dict:
                 # only record of the split, so there is nothing left to drift.)
             continue
         new_rate = off_peak if target == "off_peak" else base
-        if not _DISPATCH_RECONCILE_APPLY:
-            logger.info("reconcile: WOULD %s %s %.5f→%.5f (%s)",
-                        target, bs, cur_rate, new_rate, reason)
-            continue
         # BL-23/BL-9: re-stamp the ex-VAT columns alongside the inc rate/cost. A
         # reconcile that rewrites imp_rate WITHOUT this leaves imp_cost_exc
         # at the OLD band's value — a stale ex-VAT figure (e.g. an off-peak exc rate on
@@ -14038,9 +14017,8 @@ async def kraken_poll_task(ha: HAClient):
         logger.info("kraken_poll_task: ingester unavailable — task idle")
         return
 
-    logger.info("kraken_poll_task: started (interval=%ds, dry_run=%s, "
-                "backfill_days=%d)", _KRAKEN_POLL_INTERVAL_S, _KRAKEN_DRY_RUN,
-                ingester.backfill_days)
+    logger.info("kraken_poll_task: started (interval=%ds, backfill_days=%d)",
+                _KRAKEN_POLL_INTERVAL_S, ingester.backfill_days)
     while True:
         try:
             # Don't poll/backfill while a manual delete is mutating blocks: they
@@ -14065,12 +14043,11 @@ async def kraken_poll_task(ha: HAClient):
             # Before the first LIVE write, ensure the rollback snapshot exists.
             # If it can't be taken, downgrade THIS cycle to dry-run rather than
             # mutate blocks without a backup.
-            effective_dry_run = _KRAKEN_DRY_RUN
-            if not _KRAKEN_DRY_RUN:
-                if not _kraken_pre_live_snapshot():
-                    logger.warning("kraken_poll_task: snapshot unavailable — "
-                                   "running this cycle as dry-run (no writes)")
-                    effective_dry_run = True
+            effective_dry_run = False
+            if not _kraken_pre_live_snapshot():
+                logger.warning("kraken_poll_task: snapshot unavailable — "
+                               "running this cycle as dry-run (no writes)")
+                effective_dry_run = True
             summary = await ingester.poll(dry_run=effective_dry_run)
             logger.info(
                 "kraken_poll_task: %s window=%s..%s import_rows=%d "

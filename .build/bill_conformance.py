@@ -35,7 +35,7 @@ WHAT THE REFEREE CAN AND CANNOT ADJUDICATE  (read this before trusting a verdict
     NOT check kwh_ev against the bill, and a version that did would report a
     stream of false divergences on any account with a battery.
 
-  * CIRCULAR ROWS — `_MEASURED_APPLY` is True by default, so where
+  * CIRCULAR ROWS — the bill is always applied (v4's `_MEASURED_APPLY` was True), so where
     `rate_source='measured'` v4 COPIED the bill into the block. Checking those is
     checking the bill against itself. They are excluded and counted separately;
     a high circular share is itself a finding, because it means v4's stored

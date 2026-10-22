@@ -41,13 +41,11 @@ class TestMeasuredHistoryDrain(unittest.TestCase):
     def setUp(self):
         self._save = (engine._store, engine._kraken_client, engine._kraken_discovery,
                       engine._kraken_rate_schedules, engine._kraken_current_agreement_from,
-                      engine._MEASURED_APPLY, engine._MEASURED_FETCH_ENABLED,
                       engine._MEASURED_HISTORY_DRAIN_PACE)
         self.st = BlockStore(":memory:"); engine._store = self.st
         engine._kraken_discovery = {"import": {"mpan": "m", "tariff_code": "E-1R-IOG-SMB-FIX"}}
         engine._kraken_rate_schedules = {"import": _Sched()}
         engine._kraken_current_agreement_from = "2026-07-05T00:00:00"
-        engine._MEASURED_APPLY = True; engine._MEASURED_FETCH_ENABLED = True
         engine._MEASURED_HISTORY_DRAIN_PACE = 0
         self.st._conn.execute(
             "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
@@ -56,7 +54,6 @@ class TestMeasuredHistoryDrain(unittest.TestCase):
     def tearDown(self):
         (engine._store, engine._kraken_client, engine._kraken_discovery,
          engine._kraken_rate_schedules, engine._kraken_current_agreement_from,
-         engine._MEASURED_APPLY, engine._MEASURED_FETCH_ENABLED,
          engine._MEASURED_HISTORY_DRAIN_PACE) = self._save
 
     def _imported_block(self, slot, kwh, rate=0.323092):

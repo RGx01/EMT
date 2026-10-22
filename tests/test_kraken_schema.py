@@ -1254,10 +1254,6 @@ class TestKrakenPollTask(_StoreBase):
         self.engine._kraken_discovery = None
         self._run(self.engine.kraken_poll_task(None))
 
-    def test_live_mode_is_active(self):
-        # 4b-iii: dry-run has been deliberately flipped off.
-        self.assertFalse(self.engine._KRAKEN_DRY_RUN)
-
     def test_pre_live_snapshot_idempotent_and_gated(self):
         # No blocks → snapshot is a safe no-op that marks done and allows writes.
         ok = self.engine._kraken_pre_live_snapshot()
