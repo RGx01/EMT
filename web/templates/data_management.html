@@ -667,6 +667,9 @@ function showSuccess(msg) {
   const el = document.getElementById('alert-success');
   el.textContent = '✓ ' + msg;
   el.classList.add('show');
+  // it goes after a while (22 Oct 2026, the user: the purge's stayed for good); an error stays
+  clearTimeout(showSuccess._t);
+  showSuccess._t = setTimeout(function () { el.classList.remove('show'); }, 10000);
 }
 
 document.addEventListener('DOMContentLoaded', function() {
@@ -746,6 +749,10 @@ function dmShowView(view) {
 var _HEALTH_JOB = {'import': 'the import', gap_fill: 'the gap fill', attribution: 'the device rebuild',
                    verify_pricing: 'the pricing check', reprice_sweep: 'the re-pricing',
                    range_refetch: 'the re-fetch', 'delete': 'the delete', restore: 'the restore'};
+function loadHealthSoon() {               // the poll: a hidden tab waits for the next one
+  if (document.hidden) { loadHealth._t = setTimeout(loadHealthSoon, 60000); return; }
+  loadHealth();
+}
 function loadHealth() {
   var row = document.getElementById('dm-health-row');
   if (!row) return;
@@ -769,12 +776,19 @@ function loadHealth() {
                     "openBackups()", b ? '' : 'bad'));
     if (d.db_bytes) out.push('<span><b>Database</b> ' + (d.db_bytes / 1048576).toFixed(0) + ' MB</span>');
     // the counts stand while a job rewrites history, and are made again once it finishes (§1 (21))
-    if (d.updating && d.updating.length) {
-      out.push('<span style="color:var(--muted);">Counts update when ' +
-               _hEsc(_HEALTH_JOB[d.updating[0]] || 'the running job') + ' finishes</span>');
-      clearTimeout(loadHealth._t); loadHealth._t = setTimeout(loadHealth, 30000);
-    }
+    var busy = !!(d.updating && d.updating.length);
+    if (busy) out.push('<span style="color:var(--muted);">Counts update when ' +
+                       _hEsc(_HEALTH_JOB[d.updating[0]] || 'the running job') + ' finishes</span>');
     row.innerHTML = out.join('<span style="color:var(--border);">·</span>');
+    // The page follows the data: asked again every 30 s while a job runs, every 60 s otherwise
+    // (cheap — the answer is cached until the data moves). When the months' counts move, or a job's
+    // freeze lifts, the heatmap is refreshed too (22 Oct 2026, the user: after an Octopus import
+    // finished, Issues only still folded March 2025's red half-hours away).
+    var sig = JSON.stringify(d.months || {});
+    if (loadHealth._sig !== undefined && (sig !== loadHealth._sig || (loadHealth._busy && !busy)) &&
+        window.EMTHeatmap) EMTHeatmap.refresh();
+    loadHealth._sig = sig; loadHealth._busy = busy;
+    clearTimeout(loadHealth._t); loadHealth._t = setTimeout(loadHealthSoon, busy ? 30000 : 60000);
   }).catch(function (e) {
     row.innerHTML = '<span style="color:var(--muted);">Health unavailable: ' + _hEsc(e.message) + '</span>';
   });

@@ -345,6 +345,14 @@ the count it set off ran beside it.
 - The bill drain, the live tick and the carve don't freeze them.
 - The states pass sleeps 1 ms every 500 half-hours, handing the interpreter to the engine loop.
 
+**(22) The page follows the data** (22 Oct 2026, the user).
+- **A success banner goes after 10 s;** an error stays. The purge's had stayed for good.
+- **The heatmap refreshes when the months' counts move.** After an Octopus import finished, Issues
+  only still folded March 2025's red half-hours away. The heatmap read the counts only on a purge or
+  a modal's close, and the import ran on for minutes after its modal was closed. The page now asks
+  for the counts every 60 s (30 s while a job runs; not while the tab is hidden). When they move, or
+  a job's freeze lifts, it refreshes the heatmap.
+
 ---
 
 ## 2. Open
@@ -511,5 +519,9 @@ clean-up.
 21. **The counts stand during a rewrite** — *built 22 Oct 2026*: §1 (21). On the support file's
     database, with a real `attribution` claim: the request returned the last counts at once, saying
     so, and counted after the release. A full count is 1.2 s on a Mac with the yields (1.0 without).
+
+22. **The page follows the data** — *built 22 Oct 2026*: §1 (22). On a copy of staging's database,
+    with Issues only on: one July 2024 half-hour deleted under the open page, and the next ask
+    unfolded July 2024 and counted it missing, one heatmap refresh. With nothing moved, none.
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.
