@@ -174,7 +174,7 @@ class TheHeatmap(unittest.TestCase):
 
     def test_offered_on_every_view_but_the_import_bill(self):
         self.assertIn("if (state.metric === 'bill') return null;", self._fn("exportDeleteItem"))
-        self.assertEqual(self._SRC.count("exportDeleteItem("), 4)          # the item + 3 menus
+        self.assertEqual(self._SRC.count("exportDeleteItem("), 2)          # the item + toolItems, all 3 menus
 
     def test_preview_then_delete_then_redraw(self):
         body = self._fn("openExportDelete")

@@ -689,9 +689,12 @@ document.addEventListener('DOMContentLoaded', bfProbe);
 // Opened on one gap (the heatmap's "Fill this gap…", 18 Oct 2026): ?source=csv|bills&gap_from=
 // &gap_to= (naive-UTC half-hour starts, `to` exclusive). CSV opens the upload with the gap's
 // pre-filled templates; bills opens the bill builder, the gap named. Without them, as before.
+// &channel=export: only the export is missing (the heatmap's "Fill the missing export…", 22 Oct
+// 2026) — the CSV opens on the export template alone, and the bills fill only the empty export.
 function bfOpenGapFromUrl() {
   var q = new URLSearchParams(location.search);
   var from = q.get('gap_from'), to = q.get('gap_to'), src = q.get('source');
+  var ch = q.get('channel') === 'export' ? 'export' : null;
   if (!from || !to || (src !== 'csv' && src !== 'bills')) return;
   var csvBtn = document.querySelector('.bf-source-btn[data-source="csv"]');
   if (csvBtn) bfPickSource(csvBtn);
@@ -699,12 +702,15 @@ function bfOpenGapFromUrl() {
   if (src === 'bills') {
     if (scope) bfPickScope(scope);
     var st = document.getElementById('bills-status');
-    if (st) st.textContent = 'Filling the gap ' + from.replace('T', ' ') + ' \u2192 ' + to.replace('T', ' ') +
-                             ' (UTC): choose the bills that cover it. Half-hours EMT already holds are kept.';
+    if (st) st.textContent = (ch ? 'Filling the missing export ' : 'Filling the gap ') +
+                             from.replace('T', ' ') + ' \u2192 ' + to.replace('T', ' ') +
+                             ' (UTC): choose the bills that cover it. ' +
+                             (ch ? 'The import EMT already holds is kept; the bills fill the export beside it.'
+                                 : 'Half-hours EMT already holds are kept.');
     return;
   }
   bfHighlight('.bf-scope-btn', scope);
-  csvOpen({from: from, to: to, channel: null, inclusive: false});
+  csvOpen({from: from, to: to, channel: ch, inclusive: false});
 }
 document.addEventListener('DOMContentLoaded', bfOpenGapFromUrl);
 // Opened on a task (Data Management's Whole history card, data management design §1 (4), 21 Oct

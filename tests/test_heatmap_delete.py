@@ -145,7 +145,10 @@ class TheHeatmap(unittest.TestCase):
         return self._SRC[i:self._SRC.index("\n  }\n", i)]
 
     def test_on_the_cell_the_day_and_the_drag_on_every_view(self):
-        self.assertEqual(self._SRC.count("items.push(deleteItem("), 3)
+        # one list for the cell, the day and the selection (toolItems, 22 Oct 2026)
+        self.assertIn("items.push(deleteItem(from, to, label));", self._fn("toolItems"))
+        for m in ("toolItems(h.starts[0]", "toolItems(dr[0], dr[1], day)", "toolItems(sp.from, sp.to, sp.label)"):
+            self.assertIn(m, self._SRC)
         self.assertNotIn("state.metric", self._fn("deleteItem"))
 
     def test_the_warning(self):

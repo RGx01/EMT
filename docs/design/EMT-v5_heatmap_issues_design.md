@@ -78,8 +78,8 @@ Import bill that is:
 | grey | `none` (nothing imported) | no (a) |
 | black (new) | missing | yes |
 
-and on the Export bill `waiting`, `overdue`, `no_agreement` and missing are issues; `applied`,
-`imported` and `none` are not (a). The rule lives in one place (`CAT_RANK`'s threshold,
+and on the Export bill `waiting`, `overdue`, `no_data` and missing are issues; `applied`,
+`imported`, `none` and `no_agreement` are not (a). The rule lives in one place (`CAT_RANK`'s threshold,
 today rank ≥ 2), so the toggle, the day totals and the future quality strip (BL-89) agree.
 
 **The selection still works across a collapsed run:** a drag from a problem day above it to one
@@ -130,10 +130,13 @@ takes the shared range too — which the floating header's one scale needs anywa
 ## 6. Decided (17 Oct 2026, the user)
 
 **(a) What is an issue: everything not green except CSV history.** Teal (Octopus's cost, EMT's
-split), blue (the user's correction), grey `no_agreement`, light amber, amber, red and missing are
-issues; green `applied`, grey `imported` (CSV history) and grey `none` (nothing imported or
-exported: nothing to settle) are not. `none` confirmed the same day — on the Export bill every
-night half-hour is `none`, so counting it would make every day an issue.
+split), blue (the user's correction), light amber, amber, red and missing are issues; green
+`applied`, grey `imported` (CSV history) and grey `none` (nothing imported or exported: nothing to
+settle) are not. `none` confirmed the same day — on the Export bill every night half-hour is
+`none`, so counting it would make every day an issue. **Grey `no_agreement` is not an issue
+either** (22 Oct 2026, the user: it filled grey days' bars yellow): with no export agreement
+nothing is paid and there is nothing to fix. CSV history in such a period reads `imported`, and a
+missing export there is `no_agreement`, not `no_data`.
 
 **(b) The missing colour: black, diagonally hatched**, on both themes. Not on the clocks-forward
 day's missing hour: those half-hours do not exist (§2).
