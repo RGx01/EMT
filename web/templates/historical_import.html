@@ -210,7 +210,7 @@
       I understand this writes reconstructed blocks (a backup is taken first; reversible)
     </label>
     <div style="display:flex;gap:10px;align-items:center;">
-      <button class="btn btn-secondary" onclick="goStep('upload')">← Back</button>
+      <button class="btn btn-secondary" onclick="reviewBack()">← Back</button>
       <button class="btn" id="btn-apply" onclick="doApply()" disabled>Import history</button>
       <span id="apply-status" style="font-size:13px;color:var(--muted);"></span>
     </div>
@@ -221,7 +221,8 @@
 <div class="card" id="step-done" style="display:none;">
   <div style="font-weight:600;margin-bottom:8px;">✓ Import complete</div>
   <div id="done-out" style="font-size:13px;line-height:1.8;"></div>
-  <div style="margin-top:14px;">
+  <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap;">
+    <button class="btn" id="done-bills-back" onclick="goStep('bills')" style="display:none;">← Back to your bills</button>
     <a href="{{ url_for('data_management_page') }}" class="btn btn-secondary">← Data Management</a>
   </div>
 </div>
@@ -231,6 +232,10 @@
 <script>
 var STATE = { import_csv: null, export_csv: null, preview: null };
 var _billsMode = false;   // review came from "build from bills" → rates are the bill's, so skip the noisy tier/confidence editor and just confirm
+var _billsGroup = null;   // which of the built groups is under review (window._BILLS.groups[i])
+// Back from the review: to the bills it came from — the groups are still there — or the upload
+// (22 Oct 2026, staging: Back from a bill group went to the CSV upload, and the groups were lost).
+function reviewBack(){ goStep(_billsMode ? 'bills' : 'upload'); }
 // Import floor: null = whole history (earliest the API has); an ISO string =
 // "import back to this date". Both drive the SAME background job — date-bound is
 // just whole-history with a start. Set by the guided picker (bfGoApi).
@@ -1893,9 +1898,12 @@ function bfRenderBills(d){
     var badge = recon.ok
       ? '<span style="color:var(--success);">✓ reconciled</span>'
       : '<span style="color:#b45309;">⚠ check reconciliation</span>';
+    // an export-only group (export bills whose export MPAN no import group shares) says so
+    var name = g.mpan_import ? 'MPAN '+_esc(g.mpan_import) : (g.export_only ? 'Export only' : 'MPAN unknown');
+    var done = g.imported ? ' · <span style="color:var(--success);font-weight:600;">✓ imported</span>' : '';
     html += '<div style="border:1px solid var(--border);border-radius:6px;padding:8px 12px;margin-top:8px;">'
-      + '<div><strong>MPAN '+_esc(g.mpan_import)+'</strong>'
-      + (g.mpan_export?(' · export '+_esc(g.mpan_export)):'')+' · '+badge+'</div>'
+      + '<div><strong>'+name+'</strong>'
+      + (g.mpan_export?(' · export '+_esc(g.mpan_export)):'')+' · '+badge+done+'</div>'
       + '<div style="font-size:12px;color:var(--muted);margin-top:2px;">'
       + g.import_rows+' import + '+g.export_rows+' export half-hours</div>';
     if((g.warnings||[]).length){
@@ -1905,7 +1913,7 @@ function bfRenderBills(d){
         + g.warnings.map(function(w){return _esc(w);}).join('<br>')+'</div></details>';
     }
     html += '<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;">'
-      + '<button class="btn" onclick="bfUseBills('+i+')">Import this history →</button>'
+      + '<button class="btn" onclick="bfUseBills('+i+')">'+(g.imported ? 'Import again →' : 'Import this history →')+'</button>'
       + '<a class="btn btn-secondary" onclick="bfDownloadCsv('+i+',\'import\')">⬇ Download import CSV</a>'
       + (g.export_rows ? '<a class="btn btn-secondary" onclick="bfDownloadCsv('+i+',\'export\')">⬇ Download export CSV</a>' : '')
       + '<span style="font-size:12px;color:var(--muted);">download to inspect before importing</span>'
@@ -1926,7 +1934,7 @@ function bfDownloadCsv(i, channel){
   var url = URL.createObjectURL(blob);
   var a = document.createElement('a');
   a.href = url;
-  a.download = 'emt-bill-' + channel + '-' + (g.mpan_import || 'mpan') + '.csv';
+  a.download = 'emt-bill-' + channel + '-' + (g.mpan_import || g.mpan_export || 'mpan') + '.csv';
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
 }
@@ -1937,7 +1945,7 @@ function bfUseBills(i){
   STATE.import_csv = g.import_csv || null;
   STATE.export_csv = g.export_csv || null;
   if(!STATE.import_csv && !STATE.export_csv){ window.alert('This group produced no rows.'); return; }
-  _billsMode = true;
+  _billsMode = true; _billsGroup = i;
   var st = document.getElementById('bills-status'); if(st) st.textContent = 'Preparing…';
   fetch(apiUrl('/api/historical/csv/preview'), {
     method:'POST', headers:{'Content-Type':'application/json'},
@@ -2057,6 +2065,16 @@ function doApply(){
       + '. Charts will refresh shortly'
       + '. To undo: Delete\u2026 on the heatmap, only the imported half-hours.</div>';
     document.getElementById('done-out').innerHTML = html;
+    // From the bills: mark the group imported and offer the way back to the rest (22 Oct 2026,
+    // staging: two groups, and once one was imported the other's CSVs were out of reach)
+    var back = document.getElementById('done-bills-back');
+    if(_billsMode && window._BILLS && window._BILLS.groups[_billsGroup]){
+      window._BILLS.groups[_billsGroup].imported = true;
+      bfRenderBills(window._BILLS);
+      var left = window._BILLS.groups.filter(function(g){ return !g.imported; }).length;
+      if(back){ back.style.display = '';
+                back.textContent = left ? '← Back to your bills (' + left + ' more to import)' : '← Back to your bills'; }
+    } else if(back) back.style.display = 'none';
     goStep('done');
   }).catch(function(e){ st.textContent = 'Request failed: '+e; document.getElementById('btn-apply').disabled=false; });
 }
