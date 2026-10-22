@@ -5303,7 +5303,6 @@ def _maybe_backfill_historical_carbon() -> None:
         _carbon_backfill_running = False
 
 
-# DEPRECATED — remove in 5.0.0 (BL-33): one-time pre-4.4.0 legacy migration; retired once 5.0.0 requires a 4.4.0-migrated DB.
 def _ci_slot_plausible(mix, intensity, ci_index) -> bool:
     """BL-38: reject a physically-impossible regional generation-mix / intensity slot.
 
@@ -6008,11 +6007,9 @@ async def _kraken_startup_discovery(force: bool = False) -> None:
     when the user explicitly enters credentials in the wizard (the DB may still
     be empty mid-setup, but the connect is intentional).
 
-    This is the 4b-i gate: it performs only the single read-only account fetch
-    that discovery needs, and does NOT poll consumption or write anything. The
-    operator verifies the logged MPANs/serials/account/tariff before the
-    scheduled (dry-run) polling is enabled in a later step. Any failure is
-    logged and swallowed — API misconfiguration must never break engine
+    It performs the read-only account fetch discovery needs, and writes only the
+    account stamp and `export_settlement_expected` (it polls no consumption). Any
+    failure is logged and swallowed — API misconfiguration must never break engine
     startup or the CAD pipeline.
     """
     global _kraken_client, _kraken_discovery, _kraken_account_number, _kraken_discovered_at
@@ -6110,8 +6107,6 @@ async def _kraken_startup_discovery(force: bool = False) -> None:
             logger.info("  EXPORT : none detected")
         for w in disc.get("warnings", []):
             logger.warning("  ⚠ %s", w)
-        logger.info("kraken_discovery: NO polling scheduled yet (4b-i). Verify the "
-                    "above, then enable scheduled dry-run in the next step.")
         logger.info("=" * 60)
         # Chunk 7: discover an Octopus Mini and, if present, wire the
         # near-real-time provisional import layer (api+mini). Best-effort:
@@ -6523,11 +6518,10 @@ def _sweep_is_due(last_iso, now: datetime, min_interval_s: int) -> bool:
 
 
 async def retry_settlement_for_unsettled(now=None, max_lookback_days=None) -> dict:
-    """User-triggered: re-fetch DCC over the span oldest-unsettled → now and
-    settle whatever is now available, WITHOUT advancing the incremental cursor.
-
-    A cheaper, on-demand alternative to having every poll chase old gaps: the
-    Data Management report shows unsettled blocks and the user clicks retry.
+    """Re-fetch DCC over the span oldest-unsettled → now and settle whatever is now
+    available, WITHOUT advancing the incremental cursor. Run by the daily settlement
+    sweep (_maybe_run_settlement_sweep); its Data Management "retry" button went with
+    the sub-pages (21 Oct 2026).
     Returns {ok, reason?, settled_import, settled_export, unsettled_before,
     unsettled_after, window}.
     """
@@ -7298,9 +7292,10 @@ async def run_iog_split_carve(max_blocks: int = 2000, starts=None) -> dict:
     = dispatch-capped, the SAME source as the 4.5.9 settlement cap) and re-splits the block
     EV/House at its OWN single rate — ADDITIVE: imp_kwh / imp_cost / imp_rate are untouched
     (Sigma segments == imp_cost), so the bill total stays byte-identical and settlement later
-    overwrites with the authoritative split. Only UNSETTLED blocks (rate_source not
-    measured/corrected) are touched; settled/corrected splits are settlement's realm. No
-    done-marker — it runs each tick and is cheap (only late-dispatch stragglers ever match).
+    overwrites with the authoritative split. A settled block whose IOG-SMB bill states its
+    split is left to the bill; every other block off its dispatch split is carved. No
+    done-marker — it runs after each dispatch capture that sees completed slots, and hourly,
+    and is cheap (only late-dispatch stragglers ever match).
 
     `starts`: only those block starts. The dispatch capture passes the slots it has just seen
     completed, so a split follows Octopus's completed record within the 5-minute capture rather
@@ -8503,12 +8498,11 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
             fb_starts = _keep
         healed_in_pass = 0
         # ── In-pass cost recovery ────────────────────────────────────────────
-        # The material no-cost slots above are the empty-`statistics` signature
-        # Octopus emits under the bulk fetch's load — NOT a genuine gap (proven:
-        # an isolated single-slot re-fetch returns the real OFF_PEAK/STANDARD cost
-        # deterministically). So before writing, re-fetch each one calmly, in its
-        # own single-slot query, and price it from the REAL cost. This makes the
-        # import self-heal in one pass instead of leaving it to the repair pass.
+        # The material no-cost slots above came back with kWh and empty `statistics`.
+        # Before writing, ask for each again — by its local day since 22 Oct 2026
+        # (recover_measurement_costs; until then a single-slot window, which priced the
+        # middle of a long charge at the day rate, engine review §2) — and price it from
+        # the real cost, so the import completes in one pass.
         if (recover_costs and not dry_run and fb_starts
                 and channel == "import" and _kraken_client is not None):
             try:
@@ -8804,10 +8798,8 @@ async def repair_import_pricing(from_date=None, to_date=None, *,
             if not starts:
                 continue
 
-        # Slots the window re-fetch STILL returns no cost for — retried one at a
-        # time (single-slot, the calmest request) after the window pass, since the
-        # probe showed an isolated single-slot query recovers what a wider window
-        # under load does not.
+        # Slots the window re-fetch STILL returns no cost for — asked again through
+        # recover_measurement_costs (by the local day, then the month, since 22 Oct 2026).
         sm_starts: list = []
         # Group targets into <=window_days spans so each re-fetch is small + calm.
         groups, cur_group, anchor = [], [], None
@@ -9176,12 +9168,11 @@ async def _drain_reprice_queue_after_import(j: dict | None = None,
 
 
 # ── Deferred pricing verification ─────────────────────────────────────────────
-# The bulk import mislabels the leading/trailing/one-off half-hours of an IOG
-# smart charge (an out-of-window dispatch): they come back bucket-less, get the
-# peak default, and are too small to be 'flagged' for the in-pass recovery — so a
-# fresh import leaves the off-peak/peak split slightly wrong and the only reliable
-# cure is re-checking every slot with a CALM, look-back-wide window (exactly what
-# 'Fix a date range' does). That needs a rested rate-limit allowance, which the
+# Believed when written (4.x): the bulk import mislabels the leading/trailing/one-off
+# half-hours of an IOG smart charge outside the window, so every slot is re-checked
+# with a calm, wide window ('Fix a date range'). Not proved since: on 22 Oct 2026 the
+# 60-day import matched the user's statement on all 144 half-hours of 5–7 Mar 2025,
+# long evening charges included (engine review §2, §4.3). That needs a rested rate-limit allowance, which the
 # import itself has just spent — so we run it DEFERRED: after the import, in calm,
 # resumable, newest-first chunks, gated on the API allowance, so the split self-
 # heals with no user action and no manual tool. Progress is reported live.
@@ -10027,9 +10018,12 @@ async def _gap_fill_finish(j, channels) -> None:
             _store.rearm_carbon_backfill()
     except Exception as _ce:
         logger.warning("run_gap_fill_job: carbon re-arm failed: %s", _ce)
-    # Historical EXPORT fill: the API returns nothing for a slot with no export
-    # (a solar meter overnight), leaving it NULL — which then reads as a
-    # permanent, un-fillable export gap. Fill blank export slots on days that DID
+    # Historical EXPORT fill: a slot with no export (a solar meter overnight) is seen to come back
+    # from neither feed — Measurements omits it, and the import's REST fallback
+    # (import_api_history) writes only the half-hours REST returns — leaving it NULL, which then
+    # reads as a permanent, un-fillable export gap. (import_api_history's gap record says the
+    # opposite — zero-export nights "come back as zero-value rows". Which holds, and for which
+    # feed, is not proved either way: engine review §2.) Fill blank export slots on days that DID
     # get export with 0 (day-scoped, imported-only, billing-neutral).
     if _store is not None and "export" in tuple(channels):
         try:
@@ -10775,8 +10769,8 @@ def _ohme_slot_for_now(now) -> str:
 def _parse_ohme_slots(raw, now_utc, tz_name: str) -> list:
     """Parse Ohme's OWN charge-slot plan into naive-UTC 30-min slot_start ISO strings.
 
-    UNVALIDATED end-to-end (no Ohme tester; author is on Zappi) — but this parser is
-    pure and unit-tested. Accepts either Ohme HA integration shape, defensively:
+    Tested end-to-end by Ohme owners, who report it working (22 Oct 2026, the user; the author is
+    on Zappi), and unit-tested here. Accepts either Ohme HA integration shape, defensively:
 
       * OFFICIAL `sensor.<ohme>_slot_list` STATE — a string like ``"01:00-02:30, 03:30-04:00"``
         in **local** time (merged half-hour slots; ohmepy ``ChargeSlot.__str__`` is
@@ -10955,7 +10949,7 @@ def _capture_ohme_slots(provider, planned) -> int:
                     slot_start, off_peak=True, provider=provider, source=source,
                     state="planned")
                 captured += 1
-                # 4.5.0 (BL-31, UNVALIDATED): a sensor-VERIFIED smart slot is a real
+                # 4.5.0 (BL-31; reported working by Ohme owners): a sensor-VERIFIED smart slot is a real
                 # smart-charge-in-progress → record 'started' so the reconcile confirms
                 # off-peak instead of flagging it 'review' (the OHME review-churn). The
                 # optimistic (no-sensor) source is NOT started — it stays review-eligible.
@@ -10994,7 +10988,7 @@ def _record_ohme_dispatch_history(provider, planned, completed) -> int:
     if _store is None:
         return 0
     n = 0
-    # 4.5.0 (BL-31, UNVALIDATED — pending an Ohme tester; author is on Zappi): prefer
+    # 4.5.0 (BL-31; reported working by Ohme owners, 22 Oct 2026 — the author is on Zappi): prefer
     # Ohme's OWN plan (authoritative — not Octopus's unreliable superset) for 'planned'.
     # This is what lets the smart-charging card show the real forward plan for a
     # charger-connected Ohme user, and gives the reconcile a real plan to key on.
@@ -11024,7 +11018,7 @@ def _record_ohme_dispatch_history(provider, planned, completed) -> int:
                     energy_kwh=None)
                 n += 1
             logger.info("_record_ohme_dispatch_history: using Ohme's OWN plan "
-                        "(%d slot(s), UNVALIDATED) for card + lifecycle", len(own_slots))
+                        "(%d slot(s)) for card + lifecycle", len(own_slots))
         else:
             slot_energy = _planned_dispatch_slot_energy(planned, include_all=True)
             slot_bounds = _planned_dispatch_slot_bounds(planned, include_all=True)
@@ -11283,12 +11277,11 @@ async def _tick_dispatch_capture() -> None:
         # already run against any database v5 will ever open — "last opened by version X
         # means healed to X's standard" (EMT-v5_import_spec §1.1). v5 starts from an
         # empty heal set of its own.
-        # 4.5.7: settled-label reconciliation. Fetch Octopus's settled per-slot label
-        # (asked by the local day) for settled IOG dispatched blocks and reconcile
-        # EMT's band to it — HEAL toward off-peak on an OFF_PEAK read (monotonic-safe,
-        # any age); move toward peak/boundary only once aged past the rate-settlement
-        # horizon (apply_measured_settled's asymmetric gate). Authority is the settled
-        # bill, never the overlay; a provisional STANDARD can't downgrade off-peak.
+        # 4.5.7: settled-label reconciliation. Fetch Octopus's settled per-slot bill (asked by
+        # the local day) for settled IOG dispatched blocks and settle the block from it — both
+        # bands, at any age: there is no asymmetric or age gate (apply_measured_settled; the
+        # 4.5.7 gate this once described went with the rate-settlement horizon). Authority is
+        # the settled bill, never the overlay.
         # 4.5.9: carve the PREDICTED EV/Home split onto unsettled dispatched blocks whose
         # completed dispatch landed after finalise (else the car's charge sits in House until
         # settlement). Additive, dispatch-capped; recurring (no done-marker).
@@ -12017,8 +12010,9 @@ def bill_stage() -> dict:
     `every_half_hour`: the current tariff is IOG-SMB, where every half-hour's bill is fetched
     (the live pass for the dispatched ones, the history drain for the rest); otherwise only
     dispatched ones are.
-    `windows`: the IOG-SMB agreements' windows (`_smb_windows`) — every half-hour in them is
-    fetched by the drain, whatever the current tariff (capped pricing by agreement design §4).
+    `windows`: every Intelligent agreement's window (`_intelligent_windows`) — every half-hour in
+    them is fetched by the drain, whatever the current tariff (capped pricing by agreement design
+    §4; all Intelligent agreements since 20 Oct 2026, not only IOG-SMB).
     `floor`: the measured pass's floor. One rule for the pill and the settlement views."""
     imp = (_kraken_discovery or {}).get("import") or {}
     _tu = (imp.get("tariff_code") or "").upper()
@@ -12536,7 +12530,7 @@ async def _fetch_bill_nodes(mpan: str, slots) -> dict:
     single billed cost for the rest. A breakdown half-hour the breakdown leaves unanswered is NOT
     asked the billed cost: a cost-only bill there would be cached with no split, and a cached slot
     is not asked again, so the split would freeze at EMT's (16 Oct 2026; #167 had that fallback for
-    every half-hour). The window ladder is PR 3's (`fetch_bills`)."""
+    every half-hour). The window is kraken_api_client's: the local day, then the month."""
     kinds = {s: bill_kind_at(s) for s in slots}
     on = [s for s in slots if kinds[s] == "breakdown"]
     rest = [s for s in slots if kinds[s] == "cost"]
@@ -12998,8 +12992,9 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
     breakdown for the imported capped slots (recover_device_breakdown) and caches it, then
     apply_measured_settled() writes the authoritative cost / split / band over the whole backlog.
 
-    Agreement-aware: only the capped SMB window (floored at the agreement valid_from) — flat and
-    uncapped-IOG history price correctly on the schedule and are left alone. Bounded + paced; a
+    Agreement-aware: every Intelligent agreement's window (`_intelligent_windows`; the four-bucket
+    breakdown on IOG-SMB, the billed cost on the others, 20 Oct 2026), each floored at its
+    valid_from; flat-tariff history prices correctly on the schedule and is left alone. Bounded + paced; a
     cursor walks the window once per invocation (skipping absent / not-yet-billed slots). Read-only
     fetch, additive apply — never touches a measured/corrected block."""
     global _measured_history_drain_running
@@ -13354,7 +13349,7 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
     the VAT calendar, cost ex-VAT from the bill. A genuine over-cap MIXED slot keeps the true
     4-band split at the schedule's CLEAN rates (no rescale). rate_source='settled'.
     (rate x kWh can differ from the stored bill cost by a sub-penny sliver — every surface
-    reads the stored cost, and a materially-off bill is review-flagged by the caller.)
+    reads the stored cost. Nothing flags a materially-off bill: settled = authority, BL-74.)
     """
     global _APPLY_REFUSAL
     _APPLY_REFUSAL = None
@@ -13373,17 +13368,12 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
     kwh = row["imp_kwh"] or 0.0
     if kwh <= 1e-9:
         return _refuse("no kWh")
-    # ── EV quantity: MEASURED grid draw is king (dispatch-bounded) ──────────────────
-    # Octopus's settled four-bucket EV_DEVICE total OVER-attributes on slots where another
-    # grid load (e.g. a home battery grid-charging overnight) drew concurrently INSIDE the
-    # dispatch window: the breakdown has no battery bucket, so that concurrent draw lands in
-    # EV. The car's own COMPLETED-dispatch session (Octopus's per-slot smart+boost energy) is
-    # the device-independent measured ceiling — it excludes the battery and matches a physical
-    # EV meter where one exists (dispatch == Zappi to ~0.02% on a device account). So the bill
-    # still sets the EV RATE/band, but never the quantity beyond the dispatched session; the
-    # grid-clip guards a dispatch over-read. No completed dispatch -> no measured EV session
-    # this slot -> the energy stays house (4-rate: not a smart charge). imp_kwh / imp_cost (the
-    # settled TOTAL) are untouched — only the EV<->house split moves.
+    # ── EV quantity: _measured_ev_kwh, the settle's one rule ──────────────────────────
+    # On an IOG-SMB agreement with the bill's split cached: the BILL's EV, clipped to kWh —
+    # what Octopus billed as EV, even where a concurrent grid load (a battery) landed in its EV
+    # bucket. Otherwise the completed dispatch; no dispatch, no EV. (This comment described a
+    # dispatch-bounded EV until 22 Oct 2026, a rule the code no longer follows.) imp_kwh /
+    # imp_cost (the settled TOTAL) are untouched — only the EV<->house split moves.
     evk = _measured_ev_kwh(store, bs, row, kwh)
     sched = _kraken_rate_schedules.get("import")
     import pricing_segments as _ps
