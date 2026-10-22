@@ -86,5 +86,30 @@ class TheWindows(unittest.TestCase):
         self.assertEqual(P.queries_for(P.plan(days, ladder)), 19)
 
 
+class TheBreakdownMode(unittest.TestCase):
+    """--breakdown: IOG-SMB days, Octopus against itself (22 Oct 2026)."""
+
+    def test_chunks_are_emts(self):
+        starts = ["2026-07-14T%02d:%02d:00" % (h, m) for h in range(0, 8) for m in (0, 30)]
+        ch = P.chunks(starts)
+        self.assertEqual([len(c) for c in ch], [12, 4])         # recover_device_breakdown's 12
+
+    def test_the_split_reads_each_side(self):
+        side = lambda lab: "ev" if lab.startswith("EV") else "home"
+        n = _node(3.6, ("TOU_BUCKET_COST", "EV OFF PEAK", 3.2, 16.6),
+                  ("TOU_BUCKET_COST", "OFF PEAK", 0.4, 2.1),
+                  ("TOU_BUCKET_COST", "EV STANDARD RATE", 0.0, 0.0))
+        self.assertEqual(P.read_split(n, side), (0.4, 3.2, 0.187, set()))
+
+    def test_an_unplaced_label_is_reported(self):
+        n = _node(1.0, ("TOU_BUCKET_COST", "MYSTERY", 1.0, 5.0))
+        self.assertEqual(P.read_split(n, lambda lab: None)[3], {"MYSTERY"})
+
+    def test_same_needs_both_sides_and_the_cost(self):
+        self.assertTrue(P.same((0.4, 3.2, 0.187), (0.4, 3.2, 0.1872)))
+        self.assertFalse(P.same((0.4, 3.2, 0.187), (3.6, 0.0, 0.187)))     # the car on the house
+        self.assertFalse(P.same((0.4, 3.2, None), (0.4, 3.2, 0.187)))       # stripped vs costed
+
+
 if __name__ == "__main__":
     unittest.main()

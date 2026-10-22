@@ -7,6 +7,20 @@ Does Octopus's half-hourly cost depend on the window it is asked over? Read-only
 
 One day with the default ladder is about 19 queries; --dry-run says how many before any is made.
 
+    KRAKEN_API_KEY=... python3 .build/probe_window_shapes.py DB --breakdown --day 2026-07-14 [...]
+
+--breakdown is for IOG-SMB days, where EMT reads the four-bucket Home/EV breakdown
+(recover_device_breakdown) and there is no half-hourly statement to compare with. It asks the
+same day three ways and compares Octopus with itself, half-hour by half-hour — Home kWh, EV kWh
+and cost:
+  chunks    EMT's: the day's half-hours with consumption, in runs of at most 12, each asked
+            [first - 30m, last + 30m)
+  day       the local day
+  month     the local month, paged
+If all three agree, the window does not matter there. If they differ, it does, and the month —
+the shape that matched the statement on the earlier tariff — is the one to trust. Up to about 8
+queries a day (the month's pages are shared by the days in it).
+
 22 Oct 2026, the user: EMT's bill reader asks Octopus a narrow window per half-hour (30 min before
 to 2 h, then 3 h, after), on the belief that a smart charge outside the night window is labelled
 off-peak only when the window reaches ~2 h past it. Nobody else has reported that. Against the
@@ -297,7 +311,9 @@ def compare(stmt, answers):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("db")
-    ap.add_argument("--statement", required=True, help="the Octopus PDF statement covering the days")
+    ap.add_argument("--statement", help="the Octopus PDF statement covering the days")
+    ap.add_argument("--breakdown", action="store_true",
+                    help="IOG-SMB days: compare the Home/EV breakdown across windows (no statement)")
     ap.add_argument("--day", action="append", required=True, help="local day, YYYY-MM-DD")
     ap.add_argument("--ladder-max", type=int, default=3)
     ap.add_argument("--ladder-slot", action="append", default=None,
@@ -306,6 +322,10 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
     days = sorted(date.fromisoformat(d) for d in a.day)
+    if a.breakdown:
+        return breakdown_main(a, days)
+    if not a.statement:
+        sys.exit("--statement is needed (or --breakdown for IOG-SMB days)")
     stmt, stmt_mpan = statement_slots(a.statement, days)
     missing = [d for d in days if not any(v["day"] == d for v in stmt.values())]
     if missing:
@@ -376,6 +396,142 @@ def main():
         print("%-9s  %4d of %-4d             %8.2f  %8.2f      %4d     %4d" % (
             s, r["match"], r["n"], r["gbp"], r["want"], r["stripped"], r["absent"]))
     print("\n%d quer%s to Octopus." % (o.queries, "y" if o.queries == 1 else "ies"))
+
+
+# ── --breakdown: IOG-SMB days, Octopus against itself ───────────────────────
+def load_bucket_side():
+    """EMT's own bucket_side, loaded without its HTTP library (as probe_device_breakdown.py does)."""
+    import importlib.util
+    import types
+    sys.modules.setdefault("aiohttp", types.ModuleType("aiohttp"))
+    spec = importlib.util.spec_from_file_location("kac_probe", os.path.join(_ROOT, "kraken_api_client.py"))
+    m = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(m)
+    return m.bucket_side
+
+
+def read_split(n, side):
+    """(home kWh, ev kWh, £ inc VAT or None, unknown labels) from a node's buckets."""
+    home = ev = 0.0
+    pence, unknown, saw = 0.0, set(), False
+    for s in ((n.get("metaData") or {}).get("statistics") or []):
+        if s.get("type") == "STANDING_CHARGE_COST":
+            continue
+        saw = True
+        try:
+            v = float(s.get("value") or 0)
+        except (TypeError, ValueError):
+            v = 0.0
+        try:
+            pence += float((s.get("costInclTax") or {}).get("estimatedAmount") or 0)
+        except (TypeError, ValueError):
+            pass
+        if abs(v) <= 1e-9:
+            continue
+        k = side(s.get("label"))
+        if k == "ev":
+            ev += v
+        elif k == "home":
+            home += v
+        else:
+            unknown.add(s.get("label"))
+    return round(home, 4), round(ev, 4), (round(pence / 100.0, 6) if saw else None), unknown
+
+
+def chunks(starts, size=12):
+    """recover_device_breakdown's grouping: runs of at most `size` half-hours from the first."""
+    out, cur = [], []
+    for s in sorted(starts):
+        if cur and (datetime.fromisoformat(s) - datetime.fromisoformat(cur[0])) >= timedelta(minutes=30 * size):
+            out.append(cur); cur = []
+        cur.append(s)
+    if cur:
+        out.append(cur)
+    return out
+
+
+def local_month(d):
+    n = (d.replace(day=1) + timedelta(days=32)).replace(day=1)
+    a = datetime(d.year, d.month, 1, tzinfo=LONDON).astimezone(timezone.utc).replace(tzinfo=None)
+    b = datetime(n.year, n.month, 1, tzinfo=LONDON).astimezone(timezone.utc).replace(tzinfo=None)
+    return a, b
+
+
+def same(x, y):
+    if x is None or y is None:
+        return x is y
+    return (abs(x[0] - y[0]) <= 0.0005 and abs(x[1] - y[1]) <= 0.0005
+            and (x[2] is None) == (y[2] is None)
+            and (x[2] is None or abs(x[2] - y[2]) <= MATCH_GBP))
+
+
+def breakdown_main(a, days):
+    acct, mpan = from_db(a.db)
+    months = sorted({local_month(d) for d in days})
+    print("%d day(s) as the local day, their consuming half-hours in EMT's chunks, and %d local "
+          "month(s) — up to about %d queries" % (len(days), len(months), len(days) * 5 + 3 * len(months)))
+    for d in days:
+        da, db = local_day(d)
+        print("  day      %s  %s .. %s  first=500, then its chunks of up to 12" % (d, z(da), z(db)))
+    for ma, mb in months:
+        print("  month             %s .. %s  first=500, paged" % (z(ma), z(mb)))
+    if a.dry_run:
+        print("(dry run: nothing asked)")
+        return
+    if not (acct and mpan):
+        sys.exit("no account stamp or MPAN in that database — a support file's are redacted; "
+                 "use a backup's blocks.db")
+    key = os.environ.get("KRAKEN_API_KEY", "").strip()
+    if not key:
+        sys.exit("set KRAKEN_API_KEY in the environment")
+    side = load_bucket_side()
+    o = Octopus(key, acct, mpan, a.pace)
+    month_nodes = {}
+    for ma, mb in months:
+        nodes, pages, errs = o.window(ma, mb, 500)
+        if errs:
+            print("  month ERRORS %s" % errs)
+        month_nodes.update(nodes)
+        print("  month    %s  %d page(s), %d node(s)" % (z(ma)[:7], pages, len(nodes)))
+    tot = {"n": 0, "chunk=day": 0, "day=month": 0, "chunk=month": 0}
+    unknown = set()
+    for d in days:
+        da, db = local_day(d)
+        day_nodes, pages, errs = o.window(da, db, 500)
+        if errs:
+            print("  day %s ERRORS %s" % (d, errs))
+        want = [k for k, n in day_nodes.items() if float(n.get("value") or 0) > 0.05]
+        chunk_nodes = {}
+        for ch in chunks(want):
+            nodes, _p, errs = o.window(datetime.fromisoformat(ch[0]) - timedelta(minutes=30),
+                                       datetime.fromisoformat(ch[-1]) + timedelta(minutes=30), 500)
+            if errs:
+                print("  chunk %s ERRORS %s" % (ch[0], errs))
+            for k in ch:
+                if k in nodes:
+                    chunk_nodes[k] = nodes[k]
+        print("\n== %s: %d half-hour(s) with consumption, %d chunk(s)" % (d, len(want), len(chunks(want))))
+        print("half-hour (local)   chunks: home / ev / £          day: home / ev / £             month: home / ev / £")
+        for k in sorted(want):
+            r = {}
+            for name, src in (("chunk", chunk_nodes), ("day", day_nodes), ("month", month_nodes)):
+                r[name] = read_split(src[k], side) if k in src else None
+                if r[name]:
+                    unknown |= r[name][3]
+            tot["n"] += 1
+            for x, y in (("chunk", "day"), ("day", "month"), ("chunk", "month")):
+                tot["%s=%s" % (x, y)] += same(r[x] and r[x][:3], r[y] and r[y][:3])
+            loc = datetime.fromisoformat(k).replace(tzinfo=timezone.utc).astimezone(LONDON).strftime("%H:%M")
+            flag = "" if same(r["chunk"] and r["chunk"][:3], r["month"] and r["month"][:3]) \
+                and same(r["day"] and r["day"][:3], r["month"] and r["month"][:3]) else "   <- differs"
+            print("%s %s   %s  %s  %s%s" % (d, loc, *[
+                ("%6.3f / %6.3f / %s" % (x[0], x[1], "no cost" if x[2] is None else "£%.4f" % x[2])).ljust(30)
+                if x else "absent".ljust(30) for x in (r["chunk"], r["day"], r["month"])], flag))
+    print("\nhalf-hours agreeing (Home kWh, EV kWh and £):  chunks = day %d of %d · day = month %d · "
+          "chunks = month %d" % (tot["chunk=day"], tot["n"], tot["day=month"], tot["chunk=month"]))
+    if unknown:
+        print("bucket labels EMT does not place on either side: %s" % sorted(unknown))
+    print("%d quer%s to Octopus." % (o.queries, "y" if o.queries == 1 else "ies"))
 
 
 if __name__ == "__main__":
