@@ -342,6 +342,50 @@ class ThePiPreview(_Harness):
         self.assertEqual(row["export"]["octopus"], 0.4)
 
 
+class TheBlockAgainstItsBill(_Harness):
+    """22 Oct 2026, staging: after a purge and a re-import, 5 Mar 2025 20:00 held the import's
+    £0.2986 against a cached bill of £1.0836. Octopus still agreed with the cache, and the preview —
+    comparing Octopus with the cached bill alone — said nothing differed, so a re-fetch could not
+    put the bill on the block. A block whose stored cost is not its cached bill differs now."""
+
+    BILL = round(KWH * OFF, 6)
+
+    def _drifted(self, cost=0.2):
+        self._block(cost=cost, bill=False)
+        self.st.upsert_measured_cost(SLOT, mpan="IM", cost_incl=self.BILL, cost_excl=self.BILL,
+                                     label="OFF_PEAK", kwh=KWH)
+        self.st.upsert_measured_breakdown(SLOT, mpan="IM", home_kwh=KWH, home_rate=OFF,
+                                          ev_kwh=0.0, ev_rate=None)
+        self.st._conn.commit()
+
+    def test_is_a_difference(self):
+        self._drifted()
+        st = self._preview(_Octopus(node=_node(KWH, 0.0)))
+        (row,) = st["rows"]
+        self.assertTrue(row["bill"]["unapplied"])
+        self.assertEqual((row["bill"]["stored"], row["bill"]["stored_is_bill"]), (0.2, False))
+
+    def test_apply_puts_the_bill_on_the_block(self):
+        self._drifted()
+        st = self._preview(_Octopus(node=_node(KWH, 0.0)))
+        self._apply(st["token"])
+        cost = self.st._conn.execute("SELECT imp_cost FROM blocks WHERE block_start=? AND "
+                                     "meter_id='electricity_main'", (SLOT,)).fetchone()[0]
+        self.assertAlmostEqual(cost, self.BILL, places=6)
+
+    def test_the_dialog_says_so(self):
+        with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "web", "templates", "heatmap_module.html"), encoding="utf-8") as f:
+            hm = f.read()
+        self.assertIn("r.bill.unapplied ? ' <span class=\"hm-note2\">(stored \\u2014 the bill not applied)</span>'", hm)
+
+    def test_a_block_carrying_its_bill_is_no_difference(self):
+        """GUARD: the block, the cache and Octopus agree."""
+        self._drifted(cost=self.BILL)
+        st = self._preview(_Octopus(node=_node(KWH, 0.0)))
+        self.assertEqual(st["summary"]["differ"], 0, st["rows"])
+
+
 class TheSplitArrives(_Harness):
     """PR 5 on the Pi, 14 Oct 2026: after 8 Sep was applied, two half-hours stayed "EMT's split".
     Their bills were cached cost-only (before v4 4.5.7's bucket fetch); Octopus's split now
