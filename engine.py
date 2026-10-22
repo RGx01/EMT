@@ -291,7 +291,11 @@ def set_data_source_mode(mode: str) -> str:
     return mode
 
 
-# DEPRECATED — remove in 5.0.0 (BL-33): one-time pre-4.4.0 legacy migration; retired once 5.0.0 requires a 4.4.0-migrated DB.
+# Kept in v5 (22 Oct 2026, engine review step 1): no 2.x database reaches v5 (the import floor
+# refuses it) and a v4 import carries its mode, but the first-run wizard saves the mode before the
+# config and treats a failed mode save as non-fatal ("mode defaults to cad") — this is what makes
+# that default true. (Marked "DEPRECATED — remove in 5.0.0" until then, with another function's
+# wording: a "pre-4.4.0 legacy migration".)
 def _detect_upgrade_mode(config: dict) -> str | None:
     """Upgrade bridge: decide the mode for an install that has no stored mode.
 
