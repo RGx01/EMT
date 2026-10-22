@@ -353,6 +353,16 @@ the count it set off ran beside it.
   for the counts every 60 s (30 s while a job runs; not while the tab is hidden). When they move, or
   a job's freeze lifts, it refreshes the heatmap.
 
+**(23) The device rebuild beside the heatmap's month loads** (22 Oct 2026, staging). After PR 21
+the engine loop was still held up to 16.9 s during a device rebuild; the health count waited, as
+meant. Two things ran at once:
+- **The rebuild read the config for every device row.** `_apply_pass2`'s #307 ceiling wants the
+  block's length. After a purge every device row the rebuild writes is new, with no `block_minutes`
+  in its meta, so each fell through to `load_config()`. It now takes the block's own
+  `_block_minutes` first.
+- **Four heatmap months loaded at once**, filling every web thread. The heatmap now loads at most
+  two at a time, in the order asked.
+
 ---
 
 ## 2. Open
@@ -523,5 +533,9 @@ clean-up.
 22. **The page follows the data** — *built 22 Oct 2026*: §1 (22). On a copy of staging's database,
     with Issues only on: one July 2024 half-hour deleted under the open page, and the next ask
     unfolded July 2024 and counted it missing, one heatmap refresh. With nothing moved, none.
+
+23. **The rebuild and the month loads** — *built 22 Oct 2026*: §1 (23). On a copy of staging's
+    database, scrolling through 20 months: 19 month loads, at most 2 at once. A stored block
+    carries `_block_minutes` (30); `get_block_minutes()` cost 75 µs a call on a Mac, idle.
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.

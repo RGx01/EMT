@@ -1565,7 +1565,21 @@ window.EMTHeatmap = (function () {
   }
 
   // ── data ───────────────────────────────────────────────────────────────────
+  // At most two months at once, in the order asked (22 Oct 2026, staging: four months loading at
+  // once filled every web thread, each classifying and compressing ~2 MB, beside a device rebuild —
+  // the engine loop was held 16.9 s). A month is mostly the server's work, so more at once is not
+  // faster on a small box, only harder on the engine.
+  var FETCH_MAX = 2, fetchQ = [], fetching = 0;
   function fetchMonth(key) {
+    return new Promise(function (ok, bad) { fetchQ.push({key: key, ok: ok, bad: bad}); pumpFetches(); });
+  }
+  function pumpFetches() {
+    while (fetching < FETCH_MAX && fetchQ.length) {
+      var j = fetchQ.shift(); fetching++;
+      fetchMonthNow(j.key).then(j.ok, j.bad).then(function () { fetching--; pumpFetches(); });
+    }
+  }
+  function fetchMonthNow(key) {
     var y = key.slice(0, 4), mo = +key.slice(5, 7);
     var inc = '&include=' + (METRICS.bill ? 'settle,' : '') + 'gaps';
     return fetchJSON('/api/energy?resolution=block&kind=month&year=' + y + '&month=' + mo + inc).then(function (r) {

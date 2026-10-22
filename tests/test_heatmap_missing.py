@@ -107,8 +107,8 @@ class TheCells(unittest.TestCase):
         self.assertIn("createPattern(c, 'repeat')", _fn("hatch"))
 
     def test_the_month_asks_for_its_tombstones(self):
-        self.assertIn("'gaps'", _fn("fetchMonth"))
-        self.assertIn("deleted: r.deleted || []", _fn("fetchMonth"))
+        self.assertIn("'gaps'", _fn("fetchMonthNow"))
+        self.assertIn("deleted: r.deleted || []", _fn("fetchMonthNow"))
 
     def test_a_missing_cell_does_not_fetch_a_detail(self):
         self.assertIn("openMissing(p.grid[h.day].slots[h.ci]", _SRC)
