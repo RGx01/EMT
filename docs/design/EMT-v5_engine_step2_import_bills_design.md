@@ -114,6 +114,28 @@ folds it into `settle()`).
 
 ---
 
+## 3a. Safeguards (22 Oct 2026, the user: "if we get to the end of this exercise and it's a disaster
+can we get back to what we had?")
+
+Step 1 changed only code, and it reverts cleanly: reverting its merge (#272) in a scratch worktree
+applied with no conflict and the suite passed (4,644). The state before the review is tagged
+`pre-engine-review` (0d88e68). **Step 2 is the first step that changes stored data** — it writes
+bills and settles imported half-hours — and reverting its code does not unwrite those rows. So:
+
+1. **A backup before staging takes it.** Each of 2a–2d is deployed to staging only after a fresh
+   backup of staging's database, named for the PR (`pre-step2a` …), kept until the next step is
+   decided. That backup, restored, is the way back for the data; the merge's revert is the way back
+   for the code.
+2. **Nothing goes until the parity is clean.** No removal (2c, 2d) merges until 2b's parity on staging
+   (§3.1) is clean: the cost identical on every imported half-hour, every rate or band that moved
+   listed and explained, and the user has seen the list.
+3. **Additive first.** 2a–2b add the bills and the apply beside today's pricing; the old path stays
+   until §3.1 says the new one agrees. Each PR reverts on its own (`git revert -m 1 <merge>`), and each
+   says in its description how to undo it, data included.
+4. **v4 is untouched.** The user's production install runs v4; all of this runs on v5 staging.
+
+---
+
 ## 4. Order
 
 | PR | what | changes behaviour |
@@ -136,6 +158,12 @@ folds it into `settle()`).
 - (c) **Historical Import's pricing-health card** goes. Its per-half-hour story is on the heatmap
   (no-cost half-hours hatched, asked until answered or given up). Keep a one-line note in the
   import's summary instead — "N half-hours came back without a cost; EMT is asking Octopus for them"?
+
+- (d) **Before step 2 (to discuss, 23 Oct 2026, the user's question):** why do Intelligent tariffs
+  have to behave differently — priced from Octopus's costs — when every other tariff is rate × kWh?
+  If an Intelligent half-hour's price can be derived from the tariff, the dispatch and the kWh, as a
+  published one's is, much of the bill machinery (the bill fetches, the hold-back, the asks, the
+  apply) is a check rather than the source — which would change what step 2 is for.
 
 **Decided alongside (22 Oct 2026, the user):** of the two per-version backups at start-up
 (engine review §3.5), only the raw pre-migration copy is kept; the second, a zip after the store
