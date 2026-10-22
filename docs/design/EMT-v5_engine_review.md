@@ -1,6 +1,6 @@
 # EMT v5 — The engine, looked at again
 
-*Draft, 22 Oct 2026, at the user's request: "the engine has bloated and just needs a fresh look at
+*Draft, 22 Oct 2026 (§6 (a)–(c) decided the same day), at the user's request: "the engine has bloated and just needs a fresh look at
 what we are trying to achieve and see if there are better more simple solutions to the known things
 we work around vs what we've learned are needed." Engine first (`engine.py`, 15,325 lines, 341
 functions); the web server later. Every mechanism below was read in the code; a docstring is a claim.*
@@ -136,7 +136,8 @@ backfill 5140). Rate schedules are built twice (`_refresh_kraken_rate_schedules`
 - **One-offs still in the start-up path:** `_detect_upgrade_mode` (3.0.0), `migrate_full_config_json`
   (2.0→2.1), `export_zero_fill_v1`, the region clobber, the pre-live snapshot, the legacy JSON-store
   warning, `_remove_stale_chart_files`.
-- **Unvalidated:** the OHME capture branch (10943–11277), "UNVALIDATED" in its own comments.
+- **"Unvalidated" in its own comments, but not:** the OHME capture branch (10943–11277) is tested
+  by OHME owners and reported working (22 Oct 2026, the user). It stays; the comments are stale.
 - **Comments that contradict the code:** an age gate on provisional answers that does not exist
   (11519); `fetch_bills` (12779), which does not exist; `_measured_floor`'s third paragraph; the bill
   apply's "dispatch-bounded" EV (13617), where the code takes the bill's; "review-flagged by the
@@ -210,13 +211,12 @@ engine working.
 
 ---
 
-## 6. For the user
+## 6. Decided (22 Oct 2026, the user)
 
-- (a) Does §4's model — sources' answers kept as facts, everything else derived by one rule — match
-  what EMT is meant to be?
-- (b) The OHME branch has never been tested by anyone. Keep it, or take it out until someone with an
-  OHME can?
-- (c) The re-fetch's comparison: Octopus's answer now against the block (what the user sees), with
-  the cached bill shown as history (22 Oct 2026 conversation). Inside §4 this is the natural rule; it
-  can also go in before.
-- (d) Step 1 first, on its own, before deciding the rest?
+- **(a) The model** — sources' answers kept as facts, everything else derived by one rule — is what
+  EMT is meant to be.
+- **(b) OHME stays.** OHME owners have tested it and report it working; step 1 corrects its
+  "UNVALIDATED" comments instead of removing it.
+- **(c) The re-fetch's comparison** (Octopus's answer now against the block, the cached bill shown as
+  history) waits for the new engine, where it is the natural rule.
+- **(d) Open:** step 1 first, on its own, before the rest is designed in detail.
