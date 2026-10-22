@@ -60,9 +60,10 @@ class TheMenu(unittest.TestCase):
         self.assertIn("openGapFill(runs.map(function (r) { return r[0]; }), label)", body)
 
     def test_on_a_cell_a_day_a_drag_and_the_missing_panel(self):
-        self.assertIn("var fc = fillItem(h.starts[0]", _SRC)          # the cell's menu
-        self.assertIn("var fd = fillItem(dr[0], dr[1], day);", _fn("dayBarPick"))
-        self.assertIn("var fs = fillItem(sp.from, sp.to, sp.label);", _SRC)   # the drag
+        self.assertIn("f = fillItem(from, to, label); if (f) items.push(f);", _fn("toolItems"))
+        self.assertIn("toolItems(h.starts[0]", _SRC)                  # the cell's menu
+        self.assertIn("toolItems(dr[0], dr[1], day)", _fn("dayBarPick"))
+        self.assertIn("toolItems(sp.from, sp.to, sp.label)", _fn("selectionMenu"))   # the drag
         self.assertIn("fillItem(g[0], plus30(g[g.length - 1]), label)", _fn("openMissing"))
 
     def test_the_missing_panel_has_one_action(self):
@@ -136,7 +137,7 @@ class TheFillHistoryModal(unittest.TestCase):
     def test_the_page_opens_on_the_gap_from_its_url(self):
         hi = open(os.path.join(_ROOT, "web", "templates", "historical_import.html"), encoding="utf-8").read()
         i = hi.index("function bfOpenGapFromUrl("); body = hi[i:hi.index("\n}\n", i)]
-        self.assertIn("csvOpen({from: from, to: to, channel: null, inclusive: false});", body)
+        self.assertIn("csvOpen({from: from, to: to, channel: ch, inclusive: false});", body)   # ch: null but export
         self.assertIn("if (scope) bfPickScope(scope);", body)
         self.assertIn("if (!from || !to || (src !== 'csv' && src !== 'bills')) return;", body)
         self.assertIn("document.addEventListener('DOMContentLoaded', bfOpenGapFromUrl);", hi)

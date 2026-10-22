@@ -111,7 +111,7 @@ class TheHeatmap(unittest.TestCase):
     def test_no_data_is_an_issue_and_says_so(self):
         with open(os.path.join(_ROOT, "web", "templates", "heatmap_module.html"), encoding="utf-8") as f:
             hm = f.read()
-        self.assertIn("export: {no_agreement: 1, waiting: 1, overdue: 1, no_data: 1, missing: 1},", hm)
+        self.assertIn("export: {waiting: 1, overdue: 1, no_data: 1, missing: 1},", hm)
         self.assertIn("no_data: 'no export figure from Octopus or the CSV", hm)
         self.assertIn("if (v === 'abandoned' || v === 'no_data') return hatchAbandoned();", hm)
 

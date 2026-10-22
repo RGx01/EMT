@@ -65,16 +65,17 @@ class TheSelection(unittest.TestCase):
 
     def test_a_drag_is_outlined_while_it_is_held(self):
         """PR 5 on the Pi, 14 Oct 2026 (after #159): nothing showed until the button was released."""
+        self.assertIn("if (span) markSelection(span.from, span.to)", _fn("dragTo"))
         i = PAGE.index("document.addEventListener('mousemove'")
-        self.assertIn("if (span) markSelection(span.from, span.to)", PAGE[i:i + 600])
+        self.assertIn("dragTo(ev.clientX, ev.clientY);", PAGE[i:i + 600])
 
     def test_a_drag_crosses_months(self):
         """After #160: each month is its own chart, and the drag lived on one month's row. It is
         now followed at document level and finds the month under the pointer."""
         self.assertIn("document.elementFromPoint(ev.clientX, ev.clientY)", _fn("hitAt"))
         self.assertNotIn("row.addEventListener('mouseup'", PAGE)
-        i = PAGE.index("document.addEventListener('mouseup'")
-        self.assertIn("openRefetch(sp.from, sp.to, sp.label)", PAGE[i:i + 700])
+        # since 22 Oct 2026 the release keeps the selection; its right click offers the re-fetch
+        self.assertIn("openRefetch(sp.from, sp.to, sp.label)", _fn("selectionMenu"))
 
     def test_a_drag_runs_down_the_day_column(self):
         """After #160: a drag that started on a day bar was ignored. From a day bar both ends are

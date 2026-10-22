@@ -178,9 +178,11 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
         export = "none"
     # No export agreement covers it: no export rate, so nothing is paid and nothing will settle
     # into a bill (17 Oct 2026, the user) — not amber, then red for good. An API import's export
-    # cost is Octopus's own and stands.
-    if (export != "none" and src != "imported_api" and export_agreement_at is not None
-            and export_agreement_at(start) is False):
+    # cost is Octopus's own and stands; CSV history stays CSV history (22 Oct 2026, the user: it
+    # had turned grey `no_agreement` and, then an issue, filled the day bars); and a missing export
+    # figure there is not a gap — with no agreement there was nothing to miss.
+    if (export_agreement_at is not None and export_agreement_at(start) is False
+            and (export == "no_data" or (export not in ("none", "imported") and src != "imported_api"))):
         export = "no_agreement"
 
     if bill_cost is not None:

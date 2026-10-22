@@ -297,6 +297,23 @@ The pricing check's log line also says the neighbours it re-priced apart, instea
 A bill carries no issue date, so where two different bills cover the same half-hours the later one
 in upload order still wins.
 
+**(18) The selection, and filling a missing export** (22 Oct 2026, the user).
+- **A selection holding missing export** (`no_data`, §1 (15)) offers *Fill the missing export (N
+  half-hours) from PDF bills…* and *…from a CSV…*. Each opens Historical Import on the span from
+  its first to its last such half-hour, export only (`channel=export`): the CSV on the export
+  template alone, the bills saying the import EMT holds is kept. A CSV fills only an empty channel,
+  so the export lands beside the import.
+- **The release leaves the selection outlined, with no menu.** A right click (a long press) inside
+  it opens the selection's menu, which the tooltip says. A right click elsewhere is that cell's, or
+  that day's, as before.
+- **A shift-click extends the selection** from the last click, by the drag's rules: within a row
+  cell to cell, across rows whole days.
+- **A drag near the window's top or bottom edge scrolls the page**, faster the further in, still
+  selecting under the pointer.
+- **Escape lets the selection go;** dismissing its menu keeps it.
+- **`no_agreement` is not an issue** (heatmap issues design §6 (a)); the health counts file goes
+  to version 4.
+
 ---
 
 ## 2. Open
@@ -440,5 +457,15 @@ clean-up.
     - **Back** from one's review keeps both.
     - **After its import,** the done step offers "← Back to your bills (1 more to import)".
     - **The first group** shows *✓ imported*.
+
+18. **The selection and the missing export** — *built 22 Oct 2026*: §1 (18). On a copy of
+    staging's database:
+    - **A drag over 2–10 Jul 2024** stayed outlined; its right click offered *Fill the missing
+      export (432 half-hours)*, 9 days of 48. The CSV route opened export only, its template the
+      432 rows in local time.
+    - **A shift-click** from 2 Jul to 10 Jul selected the same span.
+    - **Held at the bottom edge,** the drag scrolled into 2024's earlier months and stopped on
+      release.
+    - **Escape** closed the menu, then the selection.
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.

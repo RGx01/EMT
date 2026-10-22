@@ -4615,7 +4615,9 @@ _HEALTH_TTL_S = 600
 # classified (settlement_state) must bump this, or a restart serves counts made by the old rules.
 # 2: an imported half-hour with no export is `no_data` (21 Oct 2026).
 # 3: an imported half-hour with its bill cached is never `abandoned` (21 Oct 2026).
-_HEALTH_FILE_V = 3
+# 4: CSV history outside an export agreement stays `imported`; a missing export there is
+#    `no_agreement`, not `no_data` (22 Oct 2026).
+_HEALTH_FILE_V = 4
 _health_lock = threading.Lock()
 _health_cache = {"key": None, "views": None, "missing": None, "months": None}
 

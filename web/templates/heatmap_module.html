@@ -140,7 +140,8 @@ window.EMTHeatmap = (function () {
   var ISSUE = {
     bill: {applied_emt_split: 1, corrected: 1, estimate_dcc: 1, estimate_cad: 1, known: 1,
            overdue: 1, abandoned: 1, differs: 1, flagged: 1, missing: 1},
-    export: {no_agreement: 1, waiting: 1, overdue: 1, no_data: 1, missing: 1},
+    // no_agreement is not an issue (22 Oct 2026, the user): nothing is paid, nothing to fix
+    export: {waiting: 1, overdue: 1, no_data: 1, missing: 1},
     presence: {missing: 1}
   };
   function isIssue(c, m) {
@@ -547,6 +548,7 @@ window.EMTHeatmap = (function () {
     p.days = days; p.xs = xs; p.drawn = true;
     attachHover(p);
     drawAxis(p);
+    if (state.sel) markSelection(state.sel.from, state.sel.to);   // a month drawn inside it
   }
 
   // ── the floating axis: the time labels over the grid, the totals' scale over the totals ──
@@ -640,25 +642,38 @@ window.EMTHeatmap = (function () {
                       .filter(function (x) { return FLAG_TEXT[x]; })
                       .map(function (x) { return '<br>\u26a0 ' + FLAG_TEXT[x]; }).join('')))
               : (+v).toFixed(mm.dp) + mm.unit;
-      tip.innerHTML = '<b>' + day + '</b> ' + lab + '<br>' + txt;
+      var inSel = state.sel && !hitTot && hc && hc.starts && hc.starts.some(function (x) {
+        return x >= state.sel.from && x < state.sel.to; });
+      tip.innerHTML = '<b>' + day + '</b> ' + lab + '<br>' + txt +
+        (inSel ? '<br><i>Right-click (long-press) the selection for its actions</i>' : '');
       tip.style.display = 'block'; tip.style.left = (pt.clientX + 12) + 'px'; tip.style.top = (pt.clientY + 12) + 'px';
     }
     row.addEventListener('mousemove', show);
     row.addEventListener('touchstart', show, {passive: true});
     row.addEventListener('mouseleave', function () { tipEl().style.display = 'none'; });
     // A click (or tap) on a cell opens that half-hour's settlement detail (design §4). A drag
-    // selects a span — cells to cells, or days down the day column, across months; a right click
-    // (a long press on touch) offers the cell's actions; the day column offers its day (§5.1).
+    // selects a span — cells to cells, or days down the day column, across months — and a
+    // shift-click extends one from the last click; the selection stays outlined, and a right
+    // click (a long press on touch) inside it offers its actions (22 Oct 2026, the user: the menu
+    // had opened on the release). A right click elsewhere offers the cell's; the day column
+    // offers its day (§5.1). Escape lets the selection go.
     row.addEventListener('mousedown', function (ev) {
       if (ev.button !== 0 || !isData()) return;   // a span is for the tools: data mode only
       var h = hitCell(p, ev); if (!h) return;
-      state.drag = {p: p, h: h, span: null};
       ev.preventDefault();                         // no text selection while dragging
+      if (ev.shiftKey && state.anchor) return;     // the click extends the selection
+      state.drag = {p: p, h: h, span: null};
     });
     row.addEventListener('click', function (ev) {
       var h = hitCell(p, ev); if (!h) return;
       tipEl().style.display = 'none';
-      if (state.dragEnded) return;                 // the drag's own release: its menu is open
+      if (state.dragEnded) return;                 // the drag's own release: the selection stays
+      if (ev.shiftKey && state.anchor && isData()) {
+        var sp = dragSpan(state.anchor, {p: p, h: h});
+        if (sp) { state.sel = sp; markSelection(sp.from, sp.to); }
+        return;
+      }
+      state.sel = null; state.anchor = {p: p, h: h};
       if (h.fold) { expandFold(h.fold); return; }
       if (h.tot) { dayBarPick(p, h.day, ev); return; }
       markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
@@ -668,6 +683,8 @@ window.EMTHeatmap = (function () {
     row.addEventListener('contextmenu', function (ev) {
       var h = hitCell(p, ev); if (!h) return;
       ev.preventDefault(); tipEl().style.display = 'none';
+      if (isData() && inSelection(p, h)) { selectionMenu(ev); return; }
+      state.sel = null;                            // a right click elsewhere: that cell, that day
       if (h.fold) { expandFold(h.fold); return; }
       if (h.tot) { dayBarPick(p, h.day, ev); return; }
       markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
@@ -686,15 +703,30 @@ window.EMTHeatmap = (function () {
         if (dr) items.push({text: 'Re-fetch ' + h.day + ' from Octopus\u2026', run: function () {
           markSelection(dr[0], dr[1]); openRefetch(dr[0], dr[1], h.day); }});
       }
-      var fc = fillItem(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label);
-      if (fc) items.push(fc);
-      var xe = exportDeleteItem(h.starts[0], plus30(h.starts[h.starts.length - 1]));
-      if (xe) items.push(xe);
-      items.push(deleteItem(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label));
-      var sf = supportItem(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label);
-      if (sf) items.push(sf);
+      items = items.concat(toolItems(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label));
       showMenu(ev, items, h.day + ' ' + h.label);
     });
+  }
+  // The tools on a span, after its re-fetch: fill a gap, fill the missing export, delete the
+  // imported export, delete, the support file — one list for a cell, a day and a selection.
+  function toolItems(from, to, label) {
+    var items = [], f = fillItem(from, to, label); if (f) items.push(f);
+    items = items.concat(exportFillItems(from, to));
+    var x = exportDeleteItem(from, to); if (x) items.push(x);
+    items.push(deleteItem(from, to, label));
+    var sf = supportItem(from, to, label); if (sf) items.push(sf);
+    return items;
+  }
+  function inSelection(p, h) {
+    var s = state.sel; if (!s) return false;
+    var st = h.tot ? (dayRange(p, h.day) || []) : h.starts;
+    return !!st && st.some(function (x) { return x >= s.from && x < s.to; });
+  }
+  function selectionMenu(ev) {
+    var sp = state.sel;
+    var items = state.canRefetch ? [{text: 'Re-fetch ' + sp.label + ' from Octopus\u2026', run: function () {
+      openRefetch(sp.from, sp.to, sp.label); }}] : [];
+    showMenu(ev, items.concat(toolItems(sp.from, sp.to, sp.label)), sp.label);
   }
 
   // the cell (or day bar) under a pointer event: {key, day, ci, label, starts, tot}
@@ -739,10 +771,7 @@ window.EMTHeatmap = (function () {
     }
     var items = state.canRefetch ? [{text: 'Re-fetch ' + day + ' from Octopus\u2026', run: function () {
       openRefetch(dr[0], dr[1], day); }}] : [];
-    var fd = fillItem(dr[0], dr[1], day); if (fd) items.push(fd);
-    var xd = exportDeleteItem(dr[0], dr[1]); if (xd) items.push(xd);
-    items.push(deleteItem(dr[0], dr[1], day));
-    var sd = supportItem(dr[0], dr[1], day); if (sd) items.push(sd);
+    items = items.concat(toolItems(dr[0], dr[1], day));
     markSelection(dr[0], dr[1]);
     showMenu(ev, items, day);
   }
@@ -781,28 +810,55 @@ window.EMTHeatmap = (function () {
     if (b.from < a.from) { var t = a; a = b; b = t; }
     return {from: a.from, to: b.to, label: a.label + ' \u2192 ' + b.label};
   }
-  document.addEventListener('mousemove', function (ev) {
+  function dragTo(x, y) {
     var d = state.drag; if (!d) return;
-    if (!(ev.buttons & 1)) { state.drag = null; return; }
-    var at = hitAt(ev); if (!at) return;           // between months: keep what is outlined
+    var at = hitAt({clientX: x, clientY: y}); if (!at) return;   // between months: keep what is outlined
     var span = dragSpan(d, at), id = span ? span.from + span.to : '';
     if (id === d.id) return;
     d.id = id; d.span = span;
     if (span) markSelection(span.from, span.to); else clearSelection();
+  }
+  // Near the window's top or bottom edge a drag scrolls the page, faster the further in, and
+  // keeps selecting under the pointer (22 Oct 2026, the user: it couldn't reach off the page).
+  var EDGE = 48, autoS = {raf: 0, x: 0, y: 0};
+  function viewEdges() {
+    var box = scrollParent(state.root), doc = box === document.scrollingElement || box === document.body;
+    var r = doc ? {top: 0, bottom: window.innerHeight} : box.getBoundingClientRect(), top = r.top;
+    ['.hm-bar', '.hm-axis'].forEach(function (q) {           // under both sticky headers
+      var e = state.root.querySelector(q); if (e) top = Math.max(top, e.getBoundingClientRect().bottom); });
+    return {box: box, doc: doc, top: top, bottom: Math.min(r.bottom, window.innerHeight)};
+  }
+  function autoScroll() {
+    autoS.raf = 0; if (!state.drag) return;
+    var e = viewEdges(), v = 0;
+    if (autoS.y < e.top + EDGE) v = -(e.top + EDGE - autoS.y);
+    else if (autoS.y > e.bottom - EDGE) v = autoS.y - (e.bottom - EDGE);
+    if (!v) return;
+    v = Math.max(-24, Math.min(24, Math.round(v / 3)));     // up to ~1,400 px a second
+    if (e.doc) window.scrollBy(0, v); else e.box.scrollTop += v;
+    dragTo(autoS.x, Math.max(e.top + 2, Math.min(e.bottom - 2, autoS.y)));
+    autoS.raf = requestAnimationFrame(autoScroll);
+  }
+  document.addEventListener('mousemove', function (ev) {
+    var d = state.drag; if (!d) return;
+    if (!(ev.buttons & 1)) { state.drag = null; return; }
+    autoS.x = ev.clientX; autoS.y = ev.clientY;
+    dragTo(ev.clientX, ev.clientY);
+    if (!autoS.raf) autoS.raf = requestAnimationFrame(autoScroll);
   });
-  document.addEventListener('mouseup', function (ev) {
+  document.addEventListener('mouseup', function () {
     var d = state.drag; state.drag = null;
+    if (autoS.raf) { cancelAnimationFrame(autoS.raf); autoS.raf = 0; }
     if (!d || !d.span) return;                     // a tap: the click handles it
-    var sp = d.span;
     state.dragEnded = true;                        // the click that follows is this release
     setTimeout(function () { state.dragEnded = false; }, 0);
-    var items = state.canRefetch ? [{text: 'Re-fetch ' + sp.label + ' from Octopus\u2026', run: function () {
-      openRefetch(sp.from, sp.to, sp.label); }}] : [];
-    var fs = fillItem(sp.from, sp.to, sp.label); if (fs) items.push(fs);
-    var xs = exportDeleteItem(sp.from, sp.to); if (xs) items.push(xs);
-    items.push(deleteItem(sp.from, sp.to, sp.label));
-    var ss = supportItem(sp.from, sp.to, sp.label); if (ss) items.push(ss);
-    showMenu(ev, items, sp.label);
+    state.sel = d.span; state.anchor = {p: d.p, h: d.h};    // outlined, no menu: right-click it
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape' || state.dialogOpen) return;
+    var m = document.getElementById('hm-menu');
+    if (m && m.style.display !== 'none') return;   // the menu goes first
+    if (state.sel) { state.sel = null; clearSelection(); }
   });
   function clearSelection() {
     document.querySelectorAll('.hm-sel').forEach(function (x) { x.remove(); });
@@ -844,7 +900,8 @@ window.EMTHeatmap = (function () {
       var dismiss = function () {
         if (m.style.display === 'none') return;
         m.style.display = 'none';
-        if (!state.dialogOpen) clearSelection();
+        if (state.sel) markSelection(state.sel.from, state.sel.to);   // the selection stays
+        else if (!state.dialogOpen) clearSelection();
       };
       document.addEventListener('click', function (e) {
         if (!m.contains(e.target) && !state.dragEnded) dismiss(); }, true);
@@ -858,7 +915,7 @@ window.EMTHeatmap = (function () {
     items.forEach(function (it) {
       var b = document.createElement(it.run ? 'button' : 'div');
       b.className = it.run ? 'hm-menu-item' : 'hm-menu-hint'; b.textContent = it.text;
-      if (it.run) b.onclick = function (e) { e.stopPropagation(); m.style.display = 'none'; it.run(); };
+      if (it.run) b.onclick = function (e) { e.stopPropagation(); m.style.display = 'none'; state.sel = null; it.run(); };
       m.appendChild(b);
     });
     m.style.display = 'block';
@@ -1042,6 +1099,33 @@ window.EMTHeatmap = (function () {
     if (!runs.length) return null;
     return {n: runsCount(runs), text: runs.length === 1 ? 'Fill this gap…' : 'Fill these ' + runs.length + ' gaps…',
             run: function () { openGapFill(runs.map(function (r) { return r[0]; }), label); }};
+  }
+  // The half-hours a selection holds whose export is missing (`no_data`: imported, the meter
+  // exports, no export figure) — first to last, and how many. 22 Oct 2026, the user: a selection
+  // over red-hatched export offered no way to fill it from a CSV or the PDF bills.
+  function exportGapSpan(from, to) {
+    var lo = null, hi = null, n = 0;
+    Object.keys(state.months).forEach(function (k) {
+      var s = (state.months[k] && state.months[k].settle) || {};
+      Object.keys(s).forEach(function (x) {
+        if (x < from || x >= to || settleValue('export', s[x]) !== 'no_data') return;
+        n++; if (lo === null || x < lo) lo = x; if (hi === null || x > hi) hi = x;
+      });
+    });
+    return n ? {from: lo, to: plus30(hi), n: n} : null;
+  }
+  // "Fill the missing export from PDF bills… / from a CSV…": the import page on the span, export
+  // only. Import EMT holds is kept (a CSV fills only an empty channel), so the export lands beside it.
+  function exportFillItems(from, to) {
+    var g = exportGapSpan(from, to); if (!g) return [];
+    var what = 'the missing export (' + hh(g.n) + ')';
+    function open(src) {
+      openEmbedded('/historical-import?embed=1&source=' + src + '&channel=export&gap_from=' +
+        encodeURIComponent(g.from) + '&gap_to=' + encodeURIComponent(g.to),
+        'Fill ' + what + ' — ' + localTime(g.from) + ' → ' + localTime(g.to));
+    }
+    return [{text: 'Fill ' + what + ' from PDF bills\u2026', run: function () { open('bills'); }},
+            {text: 'Fill ' + what + ' from a CSV\u2026', run: function () { open('csv'); }}];
   }
   var FILL_GOING = {claimed: 1, running: 1, paused: 1, rate_limited: 1, finalising: 1};
   var FILL_PHASE = {importing: 'asking Octopus', finalising: 'finishing', recovering_prices: 'pricing the new half-hours'};

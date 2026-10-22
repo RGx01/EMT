@@ -75,7 +75,7 @@ class TheKeptCounts(unittest.TestCase):
 
     def test_are_dropped_for_the_new_rule(self):
         with open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8") as f:
-            self.assertIn("_HEALTH_FILE_V = 3", f.read())
+            self.assertRegex(f.read(), r"\n_HEALTH_FILE_V = [3-9]\n")   # 4 since 22 Oct 2026
 
 
 if __name__ == "__main__":

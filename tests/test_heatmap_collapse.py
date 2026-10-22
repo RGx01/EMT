@@ -5,8 +5,8 @@ Issues first: the heatmap folds the days with nothing to look at (heatmap issues
 "Issues only" folds each run of clean days into one row, which a click (or a tap, or the menu)
 expands — a single clean day too (20 Oct 2026, the user: one left as a row between two days with
 issues read as a day with issues; until then a fold was two or more). An ISSUE is anything not green except CSV history and `none` — on the Import
-bill teal, blue, the ambers, red and missing; on the Export bill `no_agreement`, `waiting`,
-`overdue` and missing; on the energy views only missing. One rule (`isIssue`) for the fold and the
+bill teal, blue, the ambers, red and missing; on the Export bill `waiting`, `overdue`, `no_data`
+and missing (`no_agreement` since 22 Oct 2026 is not: nothing is paid, nothing to fix); on the energy views only missing. One rule (`isIssue`) for the fold and the
 "To look at" totals, which counted amber and red only (rank >= 2) and now count the same issues.
 A fold carries its days' half-hours, so a drag that starts or ends on one covers them, and a
 selection across one outlines its row.
@@ -32,9 +32,9 @@ class TheIssueRule(unittest.TestCase):
         i = _SRC.index("var ISSUE = {"); rule = _SRC[i:_SRC.index("};", i)]
         for s in ("applied_emt_split: 1", "corrected: 1", "estimate_dcc: 1", "estimate_cad: 1",
                   "known: 1", "overdue: 1", "differs: 1", "flagged: 1", "missing: 1",
-                  "no_agreement: 1", "waiting: 1"):
+                  "waiting: 1"):
             self.assertIn(s, rule)
-        for s in ("applied:", "imported:", "none:"):
+        for s in ("applied:", "imported:", "none:", "no_agreement:"):
             self.assertNotIn(s, rule)
 
     def test_missing_is_an_issue_on_every_view(self):

@@ -234,7 +234,7 @@ class TheDialog(unittest.TestCase):
     def test_from_the_card_and_from_a_selection(self):
         self.assertIn('onclick="openSupport()"', self._DM)
         self.assertIn("onSupportFile: function (from, to, label) { openSupport({from: from, to: to, label: label}); }", self._DM)
-        self.assertEqual(self._HM.count("supportItem("), 4)          # the item + 3 menus
+        self.assertEqual(self._HM.count("supportItem("), 2)          # the item + toolItems, all 3 menus
 
     def test_redacted_and_30_days_by_default(self):
         self.assertIn('id="ss-30d" checked', self._DM)
