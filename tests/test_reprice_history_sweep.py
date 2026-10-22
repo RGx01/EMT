@@ -192,34 +192,6 @@ class TestSweepAndConformance(unittest.TestCase):
                                   (start,)).fetchone()["n"]
         self.assertEqual(n, 1)                                            # segments NOT rebuilt
 
-    def test_conformance_clean_and_categorises(self):
-        # exact: imported, stored exc correct → exact
-        self._blk("2025-04-01T13:00:00", 2.0, 0.30, 0.60, source="imported_api", rate_exc=_EXC)
-        # fill: settled but stored exc NULL → sweep adds it → FILL (not a regression)
-        self._blk("2025-04-02T13:00:00", 2.0, 0.30, 0.60, source="live", imp_kwh_api=2.0, rate_exc=None)
-        # regression: imported, stored exc WRONG → sweep computes different → REGRESSION
-        self._blk("2025-04-03T13:00:00", 2.0, 0.30, 0.60, source="imported_api", rate_exc=0.99)
-        self.st._conn.commit()
-        rep = engine.reprice_history_conformance("2025-04-01T00:00:00", "2025-04-04T00:00:00", rate_segs=_RATE_SEGS)
-        self.assertEqual(rep["checked"], 3)
-        self.assertEqual(rep["exact"], 1)
-        self.assertEqual(rep["fill_count"], 1)
-        self.assertEqual(rep["regression_count"], 1)
-        self.assertEqual(rep["regressions"][0]["start"], "2025-04-03T13:00:00")
-        self.assertIn("REGRESSION", rep["verdict"])
-
-    def test_conformance_clean_when_no_regressions(self):
-        self._blk("2025-05-01T13:00:00", 2.0, 0.30, 0.60, source="imported_api", rate_exc=_EXC)
-        self._blk("2025-05-02T13:00:00", 2.0, 0.30, 0.60, source="live", imp_kwh_api=2.0)  # fill
-        self.st._conn.commit()
-        rep = engine.reprice_history_conformance("2025-05-01T00:00:00", "2025-05-03T00:00:00", rate_segs=_RATE_SEGS)
-        self.assertEqual(rep["regression_count"], 0)
-        self.assertEqual(rep["verdict"], "clean")
-
-
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestSweepHardening(unittest.TestCase):
     """Watch #10 ROOT CAUSE: a chunk that throws must NOT let the sweep mark 'done' with blocks

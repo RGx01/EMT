@@ -8719,29 +8719,6 @@ class BlockStore:
                 (k, i, x, (hb if a == "house" else None) or b, a) for k, i, x, b, a in segments])
         return 1
 
-    def get_blocks_pricing_for_range(self, meter_id: str, from_iso: str,
-                                     to_iso: str, limit: int) -> list:
-        """The pricing columns for blocks in [from_iso, to_iso), oldest first.
-
-        A projection rather than `get_blocks_for_range`'s full block: the
-        conformance report re-prices each row and compares the result against
-        what is stored, so it needs the stored pricing values and nothing else.
-
-        Rows come back as dicts. The consumer passes each one straight to
-        `_reprice_history_block`, which subscripts by column name only -- the
-        same access a `sqlite3.Row` supports, so the suite's hand-built Row
-        fixtures and these dicts are interchangeable there.
-        """
-        rows = self._conn.execute(
-            "SELECT block_start, meter_id, imp_kwh, imp_rate, imp_cost, imp_cost_exc, "
-            + _evsplit.sql_kwh("blocks") + " AS imp_kwh_ev, "
-            "imp_rate * imp_cost_exc / NULLIF(imp_cost, 0) AS rate_exc, "
-            "source, imp_kwh_api FROM blocks "
-            "WHERE meter_id = ? AND block_start >= ? AND block_start < ? "
-            "ORDER BY block_start LIMIT ?",
-            (meter_id, from_iso, to_iso, limit)).fetchall()
-        return [dict(r) for r in rows]
-
     def get_blocks_off_dispatch_split(self, limit: int, meter_id: str = "electricity_main",
                                       starts=None, tolerance: float = 0.1) -> list:
         """Main blocks whose split should be the completed dispatch's and is not — the one

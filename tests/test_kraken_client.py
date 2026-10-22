@@ -223,56 +223,6 @@ class TestClientRequests(unittest.TestCase):
         self.assertEqual(rows[0]["consumption"], 0.1)
         self.assertEqual(rows[1]["consumption"], 0.2)
 
-    def test_get_consumption_boundary_earliest(self):
-        page = {"results": [{"consumption": 0.1,
-                             "interval_start": "2024-06-12T13:00:00Z",
-                             "interval_end": "2024-06-12T13:30:00Z"}],
-                "next": "https://api.octopus.energy/should-not-follow"}
-
-        def route(url, params):
-            return FakeResp(200, page)
-
-        c = self._client({"/v1/electricity-meter-points/": route})
-        row = run(c.get_consumption_boundary("1000000000001", "11111111"))
-        # Single-page fetch: earliest ordering, page_size=1, and the `next`
-        # cursor is NOT followed (only one call recorded).
-        self.assertEqual(row["interval_start"], "2024-06-12T13:00:00Z")
-        self.assertEqual(len(c._session.calls), 1)
-        params = c._session.calls[0][1]
-        self.assertEqual(params["order_by"], "period")
-        self.assertEqual(params["page_size"], 1)
-
-    def test_get_consumption_boundary_latest(self):
-        page = {"results": [{"consumption": 0.2,
-                             "interval_start": "2026-07-19T20:00:00Z",
-                             "interval_end": "2026-07-19T20:30:00Z"}],
-                "next": None}
-        c = self._client({"/v1/electricity-meter-points/":
-                          (lambda url, params: FakeResp(200, page))})
-        row = run(c.get_consumption_boundary("1000000000001", "11111111",
-                                             newest=True))
-        self.assertEqual(row["interval_start"], "2026-07-19T20:00:00Z")
-        self.assertEqual(c._session.calls[0][1]["order_by"], "-period")
-
-    def test_get_consumption_boundary_passes_period_from(self):
-        # A far-past floor must reach the API, else it defaults to only the last
-        # ~week and the "earliest" is wrong.
-        page = {"results": [{"consumption": 0.1,
-                             "interval_start": "2024-06-12T13:00:00Z"}],
-                "next": None}
-        c = self._client({"/v1/electricity-meter-points/":
-                          (lambda url, params: FakeResp(200, page))})
-        run(c.get_consumption_boundary("1000000000001", "11111111",
-                                       period_from="2015-01-01T00:00:00Z"))
-        self.assertEqual(c._session.calls[0][1]["period_from"],
-                         "2015-01-01T00:00:00Z")
-
-    def test_get_consumption_boundary_empty(self):
-        c = self._client({"/v1/electricity-meter-points/":
-                          FakeResp(200, {"results": [], "next": None})})
-        row = run(c.get_consumption_boundary("1000000000001", "11111111"))
-        self.assertIsNone(row)
-
     def test_get_unit_rates(self):
         payload = {"results": [{"value_inc_vat": 24.5,
                                 "valid_from": "2026-05-01T00:00:00Z",

@@ -1,8 +1,8 @@
 """
 The two bulk candidate scans, and the EV carve write — A acceptance 5.
 
-`reprice_history_conformance` and `run_iog_split_carve` each ran a multi-clause
-SELECT against the raw connection, and the carve then wrote its result back
+`run_iog_split_carve` (and `reprice_history_conformance`, deleted 22 Oct 2026 with its
+`get_blocks_pricing_for_range`) each ran a multi-clause SELECT against the raw connection, and the carve then wrote its result back
 through a raw `with conn:` transaction that a `conn = _store._conn` alias had
 made invisible to the ratchet (see test_raw_connection_ratchet.py).
 
@@ -49,43 +49,6 @@ def _dispatch(st, slot, kwh=3.0, kind="completed"):
 def _carve_segs(ev_kwh=2.0, house_kwh=3.0, rate=0.25, ev_band="off_peak",
                 home_band="day"):
     return [(ev_kwh, rate, None, ev_band, "ev"), (house_kwh, rate, None, home_band, "house")]
-
-
-class PricingRangeScan(unittest.TestCase):
-
-    def setUp(self):
-        self.st = _mk_store()
-
-    def test_range_is_half_open_and_ordered(self):
-        for d in ("01", "02", "03"):
-            _block(self.st, "2026-09-%sT00:00:00" % d, imp_kwh=1.0)
-        out = self.st.get_blocks_pricing_for_range(
-            "electricity_main", "2026-09-01T00:00:00", "2026-09-03T00:00:00", 100)
-        self.assertEqual([r["block_start"] for r in out],
-                         ["2026-09-01T00:00:00", "2026-09-02T00:00:00"])
-
-    def test_limit_applies(self):
-        for d in ("01", "02", "03"):
-            _block(self.st, "2026-09-%sT00:00:00" % d, imp_kwh=1.0)
-        out = self.st.get_blocks_pricing_for_range(
-            "electricity_main", "2026-09-01T00:00:00", "2026-09-09T00:00:00", 2)
-        self.assertEqual(len(out), 2)
-
-    def test_rows_subscript_by_name(self):
-        """The consumer hands each row to `_reprice_history_block`, which
-        subscripts by column name -- the same access a sqlite3.Row supports, so
-        the suite's hand-built Row fixtures stay interchangeable with these."""
-        _block(self.st, "2026-09-01T00:00:00", imp_kwh=2.0, imp_rate=0.25)
-        (r,) = self.st.get_blocks_pricing_for_range(
-            "electricity_main", "2026-09-01T00:00:00", "2026-09-02T00:00:00", 10)
-        self.assertAlmostEqual(r["imp_kwh"], 2.0)
-        self.assertAlmostEqual(r["imp_rate"], 0.25)
-        self.assertIn("imp_kwh_api", r)
-
-
-# EvCarveCandidates moved to tests/test_ev_split_reattribution.py (OffDispatchSplitSelection):
-# the carve's query and the back-attribution's were merged on 16 Oct 2026 (bill and split paths
-# design §3.3 2, 6b).
 
 
 class CarveWrite(unittest.TestCase):
@@ -137,8 +100,7 @@ class Surfaces(unittest.TestCase):
 
     def test_reads_read_write_writes(self):
         from store_types import ReadStore, WriteStore
-        for name in ("get_blocks_pricing_for_range", "get_blocks_off_dispatch_split"):
-            self.assertTrue(hasattr(ReadStore, name), name)
+        self.assertTrue(hasattr(ReadStore, "get_blocks_off_dispatch_split"))
         self.assertTrue(hasattr(WriteStore, "carve_ev_split"))
         self.assertFalse(hasattr(ReadStore, "carve_ev_split"),
                          "a write on the read surface has no thread guard")

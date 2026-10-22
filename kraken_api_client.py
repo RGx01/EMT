@@ -677,41 +677,6 @@ class KrakenAPIClient:
                     _mask(mpan), _mask(serial), len(rows))
         return rows
 
-    async def get_consumption_boundary(
-        self, mpan: str, serial: str, *, newest: bool = False,
-        period_from: Optional[str] = None,
-    ) -> Optional[dict]:
-        """Cheap single-row retention probe: the earliest (default) or latest
-        half-hourly interval available for a meter, WITHOUT paging the whole
-        series. Returns one row dict {consumption, interval_start, interval_end}
-        or None if the meter has no data.
-
-        `order_by='period'` is earliest-first, `-period` latest-first; with
-        `page_size=1` we read just the boundary row from a single page.
-
-        IMPORTANT: pass `period_from` (a far-past floor). Without it the endpoint
-        defaults to only the most recent ~week, so `order_by='period'` returns
-        the earliest of *that* window, not the meter's true earliest. A wide
-        floor makes the ascending scan start from real history. Used by the
-        read-only export-retention probe to measure how far back each channel
-        (import vs export) reaches before any historical import is attempted."""
-        path = (f"/v1/electricity-meter-points/{mpan}"
-                f"/meters/{serial}/consumption/")
-        params: dict[str, Any] = {
-            "order_by": "-period" if newest else "period",
-            "page_size": 1,
-        }
-        if period_from:
-            params["period_from"] = period_from
-        page = await self._get(path, params)          # single page, no pagination
-        results = (page or {}).get("results") or []
-        row = results[0] if results else None
-        logger.info("get_consumption_boundary: mpan=%s serial=%s newest=%s → %s",
-                    _mask(mpan), _mask(serial), newest,
-                    (row or {}).get("interval_start") if row else "<none>")
-        return row
-
-    # ── tariff charges ──────────────────────────────────────────────────────
     async def get_unit_rates(
         self, product_code: str, tariff_code: str,
         *, rate_type: str = "standard-unit-rates",

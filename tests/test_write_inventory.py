@@ -4,11 +4,8 @@ job coordinator, and what it coordinates is writers — so a wrong inventory mea
 either an uncoordinated write (a race) or a coordinated read (a pointless lock).
 
 Checked against cases established by hand, the same discipline as the reachability
-and classifier tools. Two of the assertions below are worth more than the rest:
+and classifier tools. One of the assertions below is worth more than the rest:
 
-  * `reprice_history_conformance` must come back READ-ONLY. Its docstring says it
-    "persists NOTHING", and the tool agreeing with that is an independent check of
-    both the tool and the docstring.
   * the three GET routes fixed during the surfaces port must NOT be writers. They
     still name their write method — inside an `_engine_write(...)` lambda — so a
     tool that missed the hop would overstate B's scope with work already done.
@@ -52,12 +49,6 @@ class TestEngineInventory(unittest.TestCase):
                     # v5 — see tests/test_v4_heals_removed.py.
                     "run_reprice_history_sweep_to_done"):
             self.assertIn(job, self.write, "%s must be coordinated" % job)
-
-    def test_the_conformance_pass_is_read_only(self):
-        """It says so itself — "recompute ... IN MEMORY — persists NOTHING". The
-        tool reaching the same verdict independently is worth more than either
-        claim alone."""
-        self.assertNotIn("reprice_history_conformance", self.write)
 
     def test_pricing_computation_is_separated_from_persistence(self):
         """`_apply_iog_split` mutates the channel dict; `_persist_block_segments`
