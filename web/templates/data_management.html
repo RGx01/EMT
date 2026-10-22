@@ -32,6 +32,7 @@
 
 <div id="alert-success" class="alert alert-success"></div>
 <div id="alert-error"   class="alert alert-danger"></div>
+<div id="alert-working" class="alert alert-info" role="status"></div>
 
 <!-- ── Restore modal ─────────────────────────────────────────────────────── -->
 <div id="restore-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;overflow-y:auto;">
@@ -645,13 +646,24 @@ function show(id) {
 function hideAlerts() {
   document.getElementById('alert-success').classList.remove('show');
   document.getElementById('alert-error').classList.remove('show');
+  document.getElementById('alert-working').classList.remove('show');
+}
+// A job under way, from its start until it ends (22 Oct 2026, the user: the purge showed nothing
+// until it had finished). The success or error banner that follows replaces it.
+function showWorking(msg) {
+  hideAlerts();
+  const el = document.getElementById('alert-working');
+  el.textContent = '\u231b ' + msg;
+  el.classList.add('show');
 }
 function showError(msg) {
+  document.getElementById('alert-working').classList.remove('show');
   const el = document.getElementById('alert-error');
   el.textContent = '✕ ' + msg;
   el.classList.add('show');
 }
 function showSuccess(msg) {
+  document.getElementById('alert-working').classList.remove('show');
   const el = document.getElementById('alert-success');
   el.textContent = '✓ ' + msg;
   el.classList.add('show');
@@ -797,24 +809,36 @@ function dmPurge() {
                'data are kept. A backup is taken first; nothing is deleted without it.',
       okLabel: 'Delete all imported history', danger: true,
       onConfirm: function () {
+        showWorking('Deleting all imported history: starting\u2026');
         fetch(apiUrl('/api/historical/purge'), {method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({confirmed: true})}).then(function (r) { return r.json(); }).then(function (r) {
           if (!r.ok) throw new Error(r.error || 'the delete did not start');
-          (function tick() {
-            fetch(apiUrl('/api/blocks/delete/status')).then(function (x) { return x.json(); }).then(function (s) {
-              if (s.status === 'running') { setTimeout(tick, 1000); return; }
-              if (s.status === 'error') { showError(s.error || 'The delete failed'); return; }
-              var res = s.result || {};
-              showSuccess('Deleted ' + (res.blocks || 0) + ' imported rows' + (res.backup ? ' — backup ' + res.backup : '') + '.');
-              if (window.EMTHeatmap) EMTHeatmap.refresh();
-              loadHealth(); dmWholeButtons();
-            }, function () { setTimeout(tick, 2000); });
-          })();
+          dmPurgeWatch();
         }).catch(function (e) { showError(e.message); });
       }
     });
   }).catch(function (e) { showError(e.message); });
 }
+// The purge's banner, by the job's own step, until it ends — also when the page is opened (or
+// reloaded) while one runs.
+function dmPurgeWatch() {
+  fetch(apiUrl('/api/blocks/delete/status')).then(function (x) { return x.json(); }).then(function (s) {
+    if (s.kind !== 'purge') return;
+    if (s.status === 'running') {
+      showWorking('Deleting all imported history: ' + (s.step || 'working') + '\u2026 ' +
+                  'Keep using EMT; the heatmap refreshes when it is done.');
+      setTimeout(dmPurgeWatch, 1000); return;
+    }
+    if (!document.getElementById('alert-working').classList.contains('show')) return;   // an old job's end
+    if (s.status === 'error') { showError(s.error || 'The delete failed'); return; }
+    if (s.status !== 'done') return;
+    var res = s.result || {};
+    showSuccess('Deleted ' + (res.blocks || 0) + ' imported rows' + (res.backup ? ' — backup ' + res.backup : '') + '.');
+    if (window.EMTHeatmap) EMTHeatmap.refresh();
+    loadHealth(); dmWholeButtons();
+  }, function () { setTimeout(dmPurgeWatch, 2000); });
+}
+document.addEventListener('DOMContentLoaded', dmPurgeWatch);
 // ── The support file (§1 (5)) ─────────────────────────────────────────────────
 // From the card, or from a heatmap selection (`range`); the size estimated before it is built.
 var _ssRange = null;
