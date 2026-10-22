@@ -200,6 +200,16 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
     return {"bill": bill, "export": export, "split": split, "flags": flags}
 
 
-def classify_range(facts, **ctx) -> dict:
-    """{block_start: classify(...)} over get_settlement_facts rows."""
-    return {f["block_start"]: classify(f, **ctx) for f in facts}
+def classify_range(facts, yield_every: int = 0, **ctx) -> dict:
+    """{block_start: classify(...)} over get_settlement_facts rows.
+
+    `yield_every`: every that many half-hours, a 1 ms sleep, so a long pass on a web thread hands
+    the interpreter to the engine loop (staging, 22 Oct 2026: the loop's many short database reads
+    each waited for it behind the health count, and the loop was held 14.5 s)."""
+    import time as _time
+    out = {}
+    for i, f in enumerate(facts):
+        if yield_every and i and i % yield_every == 0:
+            _time.sleep(0.001)
+        out[f["block_start"]] = classify(f, **ctx)
+    return out

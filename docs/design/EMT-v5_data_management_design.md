@@ -335,6 +335,16 @@ in upload order still wins.
 A working banner names the job's step (the backup, then the delete) until the success or error
 banner replaces it. A page opened while one runs picks it up.
 
+**(21) The counts stand while a job rewrites history** (22 Oct 2026, the user). After PR 19 staging
+still held the engine loop 14.5 s. A device rebuild after a re-import wrote across 33 months, and
+the count it set off ran beside it.
+- While an import, gap fill, device rebuild, pricing check, re-price, re-fetch, delete or restore
+  runs, the last counts stand. The strip says "Counts update when the device rebuild finishes" (or
+  the job's name) and asks again every 30 s. The first request after the job counts. With no counts
+  yet, they are made anyway.
+- The bill drain, the live tick and the carve don't freeze them.
+- The states pass sleeps 1 ms every 500 half-hours, handing the interpreter to the engine loop.
+
 ---
 
 ## 2. Open
@@ -497,5 +507,9 @@ clean-up.
 20. **The purge's banner** — *built 22 Oct 2026*: §1 (20). On a copy of staging's database: "taking
     a safety backup…", "deleting all imported data…", then "Deleted 48098 imported rows"; a reload
     afterwards shows no banner.
+
+21. **The counts stand during a rewrite** — *built 22 Oct 2026*: §1 (21). On the support file's
+    database, with a real `attribution` claim: the request returned the last counts at once, saying
+    so, and counted after the release. A full count is 1.2 s on a Mac with the yields (1.0 without).
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.

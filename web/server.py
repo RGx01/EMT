@@ -4175,7 +4175,7 @@ def _settlement_states(store, utc_start, utc_end) -> dict:
     held, kept = _eng.bill_split_held(store)
     given_up, import_no_cost, import_asked = _eng.bill_no_cost(store)
     return _ss.classify_range(
-        store.get_settlement_facts(utc_start, utc_end),
+        store.get_settlement_facts(utc_start, utc_end), yield_every=_STATES_YIELD_EVERY,
         smb=bool(_eng._import_is_smb_capped()), now=_dt.now(_tz.utc).replace(tzinfo=None),
         held=held, kept=kept, vat_at=_vc.rate_lookup(store.get_vat_calendar()),
         kind_at=_eng.tariff_kind_at, split_at=_eng.split_at,
@@ -4627,6 +4627,13 @@ _HEALTH_FILE_V = 4
 # waited for the count takes its answer, and the counts are made again at most this often.
 _HEALTH_MIN_S = 15
 _HEALTH_PASS_MONTHS, _HEALTH_PASS_PAUSE_S = 3, 0.02
+_STATES_YIELD_EVERY = 500
+# While one of these rewrites history the counts are not made again: the last ones stand, the strip
+# says they update when it finishes, and the first request after it counts (22 Oct 2026, the user;
+# staging: a device rebuild after a re-import wrote across 33 months, and the count it set off held
+# the engine loop 14.5 s on the prod box). With no counts yet, they are made anyway.
+_HEALTH_FREEZE_JOBS = ("import", "gap_fill", "attribution", "verify_pricing", "reprice_sweep",
+                       "range_refetch", "delete", "restore")
 _health_lock = threading.Lock()
 _health_cache = {"key": None, "views": None, "missing": None, "months": None, "at": 0.0}
 
@@ -4669,7 +4676,8 @@ def _health_answer(store, views) -> dict:
     try:
         have = _health_cache["key"] is not None and _health_cache["key"][2] == key[2]
         fresh = have and (waited or _time.time() - (_health_cache.get("at") or 0) < _HEALTH_MIN_S)
-        if _health_cache["key"] != key and not fresh:
+        busy = _health_writers() if have and _health_cache["key"] != key else []
+        if _health_cache["key"] != key and not fresh and not busy:
             first, _last = store.block_span()
             tz = _config_timezone()
             v, m = _health_views(store, views, first, tz) if views and first else ({}, {})
@@ -4679,9 +4687,18 @@ def _health_answer(store, views) -> dict:
             _health_cache.update(views=v, months=m, missing=miss, key=key, at=_time.time())
         # by local month: each view's states and the missing half-hours (Issues only, §3)
         return {"views": dict(_health_cache["views"]), "missing": dict(_health_cache["missing"]),
-                "months": _health_cache["months"]}
+                "months": _health_cache["months"], "updating": busy}
     finally:
         _health_lock.release()
+
+
+def _health_writers() -> list:
+    """The jobs in _HEALTH_FREEZE_JOBS running now."""
+    try:
+        import job_coordinator as _jc
+        return [n for n in _HEALTH_FREEZE_JOBS if _jc.running(n)]
+    except Exception:
+        return []
 
 
 def _local_month_starts(lo, hi, tz):
