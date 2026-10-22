@@ -1189,55 +1189,35 @@ class KrakenAPIClient:
     async def recover_measurement_costs(
         self, mpan: str, starts, *, account_number: Optional[str] = None,
         direction: str = "CONSUMPTION", timezone_name: str = "Europe/London",
-        lookahead_ladder=(2, 3), pace_s: float = 0.4, max_attempts: int = 2,
-        wide_rungs: bool = True,
+        pace_s: float = 0.4, max_attempts: int = 2,
     ) -> dict:
-        """Recover the billed cost + dispatch-aware label for slots the bulk fetch
-        returned with kWh but NO cost. Built around two proven facts (cost probe):
+        """The billed cost and Octopus's off-peak / standard label for each half-hour in `starts`,
+        asked a LOCAL DAY at a time, then a month at a time for what a day leaves uncosted.
+        Returns {start: parsed_node} for the half-hours recovered WITH a cost; the rest are
+        omitted, so the caller keeps its fallback. `starts` are naive-UTC iso strings. Read-only,
+        paced.
 
-        1. COMPLEXITY STRIP (deterministic) — Octopus strips a slot's `statistics`
-           (empty, kWh intact, 200, no error) when the QUERY WINDOW is expensive:
-           a small window returns the cost 100% of the time, even for a heavy
-           dispatched slot, while a 12h window *over a dense charging run* comes
-           back empty 100% of the time (too many heavy nodes → over the per-query
-           complexity budget). A window over quiet data is fine at any size. So the
-           cure is a SMALL window — never a wide one over a charging run.
-        2. FORWARD CONTEXT — for an IOG dispatched slot OUTSIDE the core off-peak
-           window (e.g. a daytime charge), the OFF_PEAK label only appears once the
-           query window extends ~2h PAST the slot; look-BACK is irrelevant. Proven by
-           a window-sweep on 2026-07-21/-23 & 08-14: look-ahead 0.5h/1h → STANDARD,
-           2h → OFF_PEAK, at every look-back value. It reads like a fixed ~2h forward
-           attribution window Octopus applies to the TOU bucket (independent of the
-           charge's own size/duration — a 0.09 kWh single-slot bump still needs 2h).
-           Core-off-peak overnight slots already label OFF_PEAK on a tight window.
+        The window is the answer's shape (22 Oct 2026, .build/probe_window_shapes.py against the
+        user's March 2025 statement). Until then each half-hour was asked a narrow window — 30 min
+        before it to 2 h, then 3 h, after — on the belief that Octopus labels a smart charge
+        outside the night window off-peak only once the window reaches ~2 h past it. Asked that
+        way, the middle of a long evening charge came back STANDARD_RATE at the day rate (6 Mar
+        2025 19:30, £0.9223), where the statement billed it off-peak (£0.2542); asked as its local
+        day, at page sizes 500, 48 or 10, or as 60 days, all 48 half-hours of the day matched the
+        statement, none came back without a cost. The label wants the whole charge in view, not
+        only the time after the half-hour.
 
-        Reconciling the two: a FORWARD LADDER. Fetch a tight 30-min look-back and
-        ladder the FORWARD edge (`lookahead_ladder`h past the slot); accept
-        immediately on OFF_PEAK (the truth); only widen forward if a rung came back
-        STANDARD, stopping the instant one returns OFF_PEAK. The first rung (2h) is
-        the minimum that flips the label and is small enough to dodge the strip; a
-        rung that comes back EMPTY (stripped on a dense run) is skipped, and whatever
-        STANDARD a rung gave is kept as the fallback. (Widening BACK was the old
-        design — it tuned the wrong axis and, wide, tripped the strip.) One fetch opportunistically claims any other pending
-        slot it returns OFF_PEAK for. Newest-first so a run's later slots sweep up
-        earlier ones. Returns {start: parsed_node} for slots recovered WITH a cost;
-        the rest are omitted so the caller keeps its fallback.
-
-        `starts` are naive-UTC iso strings. Read-only. Paced so recovery doesn't
-        re-create the load.
-
-        3. WIDE RUNGS (16 Oct 2026, bill and split paths design §1.3). The strip is not only
-           a dense-run effect: measured on the Pi, 15 Oct (.build/probe_measurement_costs.py),
-           half-hours of 0.001-0.003 kWh came back with kWh and no cost in BOTH ladder windows
-           (two nodes each) and costed in the half-hour's day, or the month — a whole-month
-           query costed all 1,488 half-hours of August. So for what the ladder leaves: one
-           query per DAY that has any, [day - 30 min, next day + 3 h), then one per MONTH,
-           [month - 30 min, next month + 3 h). Each window reaches at least 3 h past every
-           half-hour it covers, so the forward-anchored OFF_PEAK label (§2) is in view and a
-           STANDARD answer from it is the truth, not a missing context. `wide_rungs=False`
-           keeps the ladder alone.
-        """
+        A day's window is [local midnight - 30 min, next local midnight + 3 h): at least 3 h past
+        every half-hour it holds, so a charge running past midnight is in view too. A half-hour a
+        day leaves without a cost (Octopus has stripped a half-hour's statistics — kWh, no cost —
+        seen on the Pi, 15 Oct 2026, for half-hours of a few Wh) is asked its local month, padded
+        the same way, which costed all of August then."""
         from datetime import datetime as _dt, timedelta as _td
+        try:
+            from zoneinfo import ZoneInfo
+            tz = ZoneInfo(timezone_name or "Europe/London")
+        except Exception:
+            tz = timezone.utc
         recovered: dict = {}
         pending: set = set()
         for s in dict.fromkeys(starts or []):
@@ -1249,67 +1229,38 @@ class KrakenAPIClient:
                 continue
             pending.add(s)
         total = len(pending)
-        ladder = [max(1, int(h)) for h in (lookahead_ladder or (2,))]
 
-        async def _fetch(base, la_h):
-            # 4.5.7: the OFF_PEAK label is FORWARD-anchored (see docstring §2) —
-            # ladder the FORWARD edge; a tight 30-min look-back just brackets the slot.
-            ws = (base - _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
-            we = (base + _td(hours=la_h)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
-            try:
-                rows = await self.get_measurements(
-                    mpan, ws, we, account_number=account_number,
-                    direction=direction, timezone_name=timezone_name, quiet=True)
-            except KrakenAPIError:
-                return {}
-            return {r["start"]: r for r in rows if r.get("start")}
+        def _local(s):
+            return _dt.fromisoformat(s).replace(tzinfo=timezone.utc).astimezone(tz)
 
-        for attempt in range(1, max(1, max_attempts) + 1):
-            if not pending:
-                break
-            for s in sorted(pending, reverse=True):    # newest-first
-                if s not in pending:                   # swept up already
-                    continue
-                base = _dt.fromisoformat(s)
-                chosen = None                          # first STANDARD seen (fallback)
-                for la_h in ladder:
-                    by_start = await _fetch(base, la_h)
-                    # Opportunistically claim any pending slot this window proves
-                    # OFF_PEAK (OFF_PEAK is the truth; a STANDARD for another slot
-                    # might just lack ITS context, so don't claim those here).
-                    for p in list(pending):
-                        hit = by_start.get(p)
-                        if hit and hit.get("cost_incl") is not None and hit.get("off_peak"):
-                            recovered[p] = hit
-                            pending.discard(p)
-                    hit = by_start.get(s)
-                    if hit and hit.get("cost_incl") is not None:
-                        if hit.get("off_peak"):
-                            chosen = hit               # truth → stop widening
-                            break
-                        chosen = chosen or hit         # remember STANDARD, keep widening
-                    if pace_s:
-                        await asyncio.sleep(pace_s)
-                if chosen is not None and s in pending:
-                    recovered[s] = chosen
-                    pending.discard(s)
-            if pending and attempt < max_attempts and pace_s:
-                await asyncio.sleep(pace_s * attempt)
-        n_ladder = len(recovered)
+        def _utc(local_midnight):
+            return local_midnight.astimezone(timezone.utc).replace(tzinfo=None)
 
-        async def _wide(groups):
-            # one window per group; every pending slot it costs is claimed (§3: >= 3 h forward)
-            for ws_dt, we_dt in sorted(groups):
+        def _day(s):
+            d = _local(s).date()
+            a = _dt(d.year, d.month, d.day, tzinfo=tz)
+            return (_utc(a), _utc(_dt.combine(d + _td(days=1), _dt.min.time(), tzinfo=tz)))
+
+        def _month(s):
+            d = _local(s).date()
+            n = (d.replace(day=1) + _td(days=32)).replace(day=1)
+            return (_utc(_dt(d.year, d.month, 1, tzinfo=tz)), _utc(_dt(n.year, n.month, 1, tzinfo=tz)))
+
+        async def _ask(windows):
+            # newest first; every pending half-hour a window costs is claimed, whatever its label
+            failed = set()
+            for a, b in sorted(windows, reverse=True):
                 if not pending:
                     break
-                ws = (ws_dt - _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
-                we = (we_dt + _td(hours=3)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+                ws = (a - _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+                we = (b + _td(hours=3)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
                 try:
                     rows = await self.get_measurements(
                         mpan, ws, we, account_number=account_number,
                         direction=direction, timezone_name=timezone_name, quiet=True)
                 except KrakenAPIError:
-                    continue
+                    failed.add((a, b))
+                    rows = []
                 for r in rows:
                     p = r.get("start")
                     if p in pending and r.get("cost_incl") is not None:
@@ -1317,29 +1268,25 @@ class KrakenAPIClient:
                         pending.discard(p)
                 if pace_s:
                     await asyncio.sleep(pace_s)
+            return failed
 
-        if pending and wide_rungs:
-            days = set()
-            for s in pending:
-                d0 = _dt.fromisoformat(s).replace(hour=0, minute=0, second=0, microsecond=0)
-                days.add((d0, d0 + _td(days=1)))
-            await _wide(days)
-        n_day = len(recovered) - n_ladder
-        if pending and wide_rungs:
-            months = set()
-            for s in pending:
-                m0 = _dt.fromisoformat(s).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-                m1 = (m0 + _td(days=32)).replace(day=1)
-                months.add((m0, m1))
-            await _wide(months)
-        n_month = len(recovered) - n_ladder - n_day
+        days = {_day(s) for s in pending}
+        for attempt in range(1, max(1, max_attempts) + 1):
+            failed = await _ask(days)
+            days = {w for w in failed if any(_day(p) == w for p in pending)}   # only an error again
+            if not days or attempt == max(1, max_attempts):
+                break
+            if pace_s:
+                await asyncio.sleep(pace_s * attempt)
+        n_day = len(recovered)
+        if pending:
+            await _ask({_month(s) for s in pending})
+        n_month = len(recovered) - n_day
         if total:
             logger.info(
-                "recover_measurement_costs: mpan=%s recovered %d/%d slot(s) via "
-                "look-back ladder %s%s (%d still missing)",
-                _mask(mpan), len(recovered), total, tuple(ladder),
-                (" + day %d, month %d" % (n_day, n_month)) if wide_rungs else "",
-                total - len(recovered))
+                "recover_measurement_costs: mpan=%s recovered %d/%d slot(s) by the day %d, "
+                "the month %d (%d still missing)",
+                _mask(mpan), len(recovered), total, n_day, n_month, total - len(recovered))
         return recovered
 
     async def get_device_breakdown(

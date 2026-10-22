@@ -531,47 +531,33 @@ class TestGraphQLQueries(unittest.TestCase):
         self.assertEqual(len(rows), 2)
         self.assertEqual(len(c._session.post_calls), 2)          # followed the cursor
 
-    def test_recover_rung1_off_peak_stops_immediately(self):
-        # An overnight core-off-peak slot returns OFF_PEAK from the FIRST (rung-1)
-        # forward window, so recovery accepts it and does NOT widen — one fetch. The
-        # window is a tight 30-min look-back bracketing the slot, with the forward
-        # edge at the first ladder rung (+2h); look-back never widens (4.5.7 §2).
+    def test_recover_asks_the_local_day(self):
+        # One query for the half-hour's local day, padded [midnight − 30 min, next midnight + 3 h)
+        # (22 Oct 2026: the narrow per-half-hour ladder is gone — test_measurement_day_windows.py).
         slot = "2026-01-15T02:00:00"
         c = self._client([_gql_data(_meas_page([
             _meas_node("2026-01-15T02:00:00+00:00", "6.326", "OFF_PEAK", "34.7")]))])
         rec = run(c.recover_measurement_costs("2600000000000", [slot], pace_s=0))
         self.assertIn(slot, rec)
         self.assertTrue(rec[slot]["off_peak"])
-        self.assertEqual(len(c._session.post_calls), 1)          # no widening
+        self.assertEqual(len(c._session.post_calls), 1)
         _u, body, _h, _a = c._session.post_calls[0]
-        self.assertEqual(body["variables"]["start"], "2026-01-15T01:30:00Z")  # −30m look-back
-        self.assertEqual(body["variables"]["end"], "2026-01-15T04:00:00Z")    # +2h (rung-1 forward)
+        self.assertEqual(body["variables"]["start"], "2026-01-14T23:30:00Z")
+        self.assertEqual(body["variables"]["end"], "2026-01-16T03:00:00Z")
 
-    def test_recover_ladder_widens_for_context(self):
-        # A morning dispatch-extended slot: rung-1 (+2h forward) lacks the run's start
-        # so it returns STANDARD; the ladder widens the FORWARD edge to rung-2 (+3h)
-        # which returns OFF_PEAK and wins. Proves context is recovered by looking
-        # AHEAD (4.5.7 §2), WITHOUT a huge or backward window.
+    def test_recover_keeps_the_days_standard(self):
+        # The day's answer is the truth, STANDARD too: no second query to look for OFF_PEAK.
         slot = "2026-01-15T08:00:00"
-        standard = _gql_data(_meas_page([
-            _meas_node("2026-01-15T08:00:00+00:00", "3.6", "STANDARD_RATE", "101.0")]))
-        offpeak = _gql_data(_meas_page([
-            _meas_node("2026-01-15T08:00:00+00:00", "3.6", "OFF_PEAK", "25.2")]))
-        c = self._client([standard, offpeak])
+        c = self._client([_gql_data(_meas_page([
+            _meas_node("2026-01-15T08:00:00+00:00", "3.6", "STANDARD_RATE", "101.0")]))])
         rec = run(c.recover_measurement_costs("2600000000000", [slot], pace_s=0))
-        self.assertTrue(rec[slot]["off_peak"])                    # OFF_PEAK won
-        self.assertAlmostEqual(rec[slot]["cost_incl"], 0.252, places=4)
-        self.assertEqual(len(c._session.post_calls), 2)           # widened once
-        _u, b0, _h, _a = c._session.post_calls[0]
-        _u, b1, _h, _a = c._session.post_calls[1]
-        self.assertEqual(b0["variables"]["start"], "2026-01-15T07:30:00Z")  # −30m look-back (fixed)
-        self.assertEqual(b1["variables"]["start"], "2026-01-15T07:30:00Z")  # same look-back
-        self.assertEqual(b0["variables"]["end"], "2026-01-15T10:00:00Z")    # +2h forward (rung-1)
-        self.assertEqual(b1["variables"]["end"], "2026-01-15T11:00:00Z")    # +3h forward (rung-2)
+        self.assertFalse(rec[slot]["off_peak"])
+        self.assertAlmostEqual(rec[slot]["cost_incl"], 1.01, places=4)
+        self.assertEqual(len(c._session.post_calls), 1)
 
     def test_recover_omits_genuinely_empty(self):
-        # Every rung comes back empty (stripped/no cost) → the slot is omitted so
-        # the caller keeps its fallback; a price is never invented.
+        # The day and the month both come back empty (stripped/no cost) → the slot is omitted
+        # so the caller keeps its fallback; a price is never invented.
         empty = lambda: _gql_data(_meas_page([
             {"node": {"value": "3.0", "unit": "kwh",
                       "startAt": "2026-01-15T02:00:00+00:00",
@@ -579,14 +565,12 @@ class TestGraphQLQueries(unittest.TestCase):
                       "metaData": {"statistics": []}}}]))
         c = self._client([empty(), empty()])
         rec = run(c.recover_measurement_costs(
-            "2600000000000", ["2026-01-15T02:00:00"], pace_s=0,
-            lookahead_ladder=(2,), max_attempts=2))
+            "2600000000000", ["2026-01-15T02:00:00"], pace_s=0, max_attempts=2))
         self.assertEqual(rec, {})
+        self.assertEqual(len(c._session.post_calls), 2)   # the day, then the month
 
-    def test_recover_opportunistic_sweep(self):
-        # ONE rung-1 window claims every pending slot it proves OFF_PEAK. Newest-
-        # first, the 08:00 window covers 07:30 too; the far-off slot needs its own
-        # fetch. Two POSTs, all three recovered — not one request per slot.
+    def test_recover_one_query_a_day(self):
+        # Two half-hours of 15 Jan and one of 10 Jan: two queries, newest day first.
         s1a, s1b = "2026-01-15T07:30:00", "2026-01-15T08:00:00"
         s2 = "2026-01-10T22:30:00"
         sweep = _gql_data(_meas_page([
@@ -598,7 +582,7 @@ class TestGraphQLQueries(unittest.TestCase):
         rec = run(c.recover_measurement_costs(
             "2600000000000", [s1a, s1b, s2], pace_s=0))
         self.assertEqual(set(rec), {s1a, s1b, s2})
-        self.assertEqual(len(c._session.post_calls), 2)   # not one-per-slot
+        self.assertEqual(len(c._session.post_calls), 2)   # one a day, not one a half-hour
 
     def test_query_too_large_raises_distinct_error(self):
         # KT-CT-1188 (complexity) / KT-CT-1189 (node count) must raise the
