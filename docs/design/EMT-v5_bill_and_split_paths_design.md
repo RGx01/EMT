@@ -55,14 +55,18 @@ as step 5 was. No stored shape changes.
    zero rule: cache a zero answer on a zero-kWh half-hour (the live pass's rule; it keeps the row out
    of the split heal by leaving the breakdown NULL), drop it otherwise.
 3. **`fetch_bills(starts)`** → `{start: row}` — groups by source, asks the breakdown for its share,
-   the billed cost for the rest and for what the breakdown leaves; the window ladder lives here once:
-   −30 min…+2 h, +3 h, then the half-hour's day, then the month around it (§1.2's measurements). The
-   wider-window fix is this one function.
+   the billed cost for the rest and for what the breakdown leaves; the window lives here once: the
+   half-hour's local day, then its local month, each padded −30 min…+3 h (§1.2's measurements). The
+   wider-window fix is this one function. *22 Oct 2026:* the −30 min…+2 h, +3 h ladder that came
+   first is gone. Against the user's March 2025 statement (`.build/probe_window_shapes.py`), it
+   priced the middle of a long evening charge at the day rate, where the local day, at any page size,
+   and 60 days matched all 48 half-hours, none without a cost. The label wants the whole charge in
+   view.
 4. Paths keep their own **scope** (which half-hours) and their own **apply** (when to settle); they
    stop owning the fetch and the parse.
 
 The API import keeps its bulk measurements fetch (it is the first read, not a recovery), but its
-missing-cost recovery and the repair use `fetch_bills`' ladder.
+missing-cost recovery and the repair use `fetch_bills`' windows.
 
 ---
 

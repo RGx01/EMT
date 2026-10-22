@@ -803,9 +803,10 @@ import-floor argument `test_v4_heals_removed.py` records. The rest are not floor
   a real database (architecture §4a) before the override goes.
 - **(3) the single charting API** is partly C's: every surface reads `/api/energy`, but day charts
   still draw their rate lines through `chart_emit`.
-- **(4) the import-recovery ladder** is still there (`lookahead_ladder` in
-  `kraken_api_client.recover_measurement_costs`). Collapsing it to a plain small-window cost fetch
-  changes what is fetched from Octopus, so it can only be proved against the live API.
+- **(4) the import-recovery ladder** — *done 22 Oct 2026.* `recover_measurement_costs` asks the
+  half-hour's local day, then its month; `lookahead_ladder` is gone. Proved against the live API
+  (`.build/probe_window_shapes.py`, the user's March 2025 statement): the ladder priced the middle
+  of a long evening charge at the day rate; the day matched all 48 half-hours.
 
 **BL-61 (5) — the rename.** Deferred in v4 because it forces a data migration of every `'measured'`
 row. In v5 it belongs to schema step 5, and the importer writes `'settled'` from a v4 `'measured'` —

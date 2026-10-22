@@ -9385,8 +9385,8 @@ async def _drain_reprice_queue_after_import(j: dict | None = None,
     'reprice queue' / 'Fix a date range' click — which is why the split only came
     right when repaired by hand.
 
-    Now that the import is finished the connection is calm, so the look-back ladder
-    finally has the window context it needs: draining the queue here relabels those
+    Now that the import is finished the connection is calm, so the cost reader (a local day at
+    a time since 22 Oct 2026, the whole charge in view) has the context it needs: draining the queue here relabels those
     slots OFF_PEAK and reprices them from the REAL cost, correcting the split
     automatically. Non-fatal; a rate-limit pause or a genuine gap simply leaves the
     remainder queued for the next import or a manual re-run."""
@@ -11517,7 +11517,7 @@ async def _tick_dispatch_capture() -> None:
         # means healed to X's standard" (EMT-v5_import_spec §1.1). v5 starts from an
         # empty heal set of its own.
         # 4.5.7: settled-label reconciliation. Fetch Octopus's settled per-slot label
-        # (forward-anchored ladder) for settled IOG dispatched blocks and reconcile
+        # (asked by the local day) for settled IOG dispatched blocks and reconcile
         # EMT's band to it — HEAL toward off-peak on an OFF_PEAK read (monotonic-safe,
         # any age); move toward peak/boundary only once aged past the rate-settlement
         # horizon (apply_measured_settled's asymmetric gate). Authority is the settled
@@ -11980,7 +11980,8 @@ _DISPATCH_RECONCILE_APPLY = True  # write (risk accepted; soaked on prod_dev fir
 # only ever return peak, and applying it STAMPS SETTLED OFF-PEAK BLOCKS TO PEAK —
 # the 4.5.5 corruption. Both switches are held OFF until Octopus re-exposes a per-slot
 # band signal; the dispatch overlay (live capture) remains the per-slot off-peak truth.
-# 4.5.7: RE-ENABLED, safely. The label reads correctly now (forward-anchored ladder),
+# 4.5.7: RE-ENABLED, safely. The label reads correctly now (asked by the local day since 22 Oct
+# 2026 — the narrow forward ladder had the middle of a long charge STANDARD),
 # and the apply is ASYMMETRIC + AGE-GATED (see apply_measured_settled): it heals toward
 # OFF_PEAK on the crisp/monotonic off-peak label at ANY age, but only moves a block
 # toward PEAK (STANDARD/mixed) once it has aged past the rate-settlement horizon — so a
