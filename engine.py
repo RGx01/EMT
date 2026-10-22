@@ -2644,7 +2644,6 @@ def _apply_pass2(block: dict) -> None:
         parent_settled = parent_block.get("imp_kwh_api") is not None
 
         protected   = []
-        unprotected = []
 
         for meter_name, meter_block in block["meters"].items():
             meta = meter_block.get("meta", {})
@@ -2735,11 +2734,10 @@ def _apply_pass2(block: dict) -> None:
         # be smaller than the EV.
         _dispatch_ev = 0.0
         if not any(((e["meter_block"].get("meta", {}) or {}).get("meter_type") in ("ev", "ev_charger"))
-                   for e in protected + unprotected):
+                   for e in protected):
             _dispatch_ev = min(max(float(parent_import.get("kwh_ev") or 0.0), 0.0), max(grid_kwh, 0.0))
             grid_remaining = max(grid_kwh - _dispatch_ev, 0.0)
         protected.sort(key=_grid_priority)
-        unprotected.sort(key=lambda x: x["kwh"], reverse=True)
 
         is_interpolated = block.get("interpolated", False)
         # BL-19: enforce the sub-meter grid invariant unless this is an UNSETTLED
@@ -2794,37 +2792,6 @@ def _apply_pass2(block: dict) -> None:
             if not _pass2_quiet: logger.info(
                 "PASS 2: %s protected  grid=%.4f  battery=%.4f",
                 entry["meter_name"], claimed, entry["sub_import"]["kwh_battery"],
-            )
-
-        for entry in unprotected:
-            claimed    = min(entry["kwh"], grid_remaining)
-            battery    = entry["kwh"] - claimed
-            if entry["kwh"] > grid_kwh:
-                if not clamp_overflow:
-                    if not _pass2_quiet: logger.warning(
-                        "PASS 2: %s sub-meter %.4f kWh EXCEEDS parent grid import %.4f kWh — "
-                        "unsettled gap block, recording as-is (settlement will re-clamp).",
-                        entry["meter_name"], entry["kwh"], grid_kwh,
-                    )
-                    claimed = entry["kwh"]
-                    battery = 0.0
-                else:
-                    if not _pass2_quiet: logger.warning(
-                        "PASS 2: %s sub-meter %.4f kWh EXCEEDS parent grid import %.4f kWh — "
-                        "clipping to grid import (%s).",
-                        entry["meter_name"], entry["kwh"], grid_kwh,
-                        "settled" if parent_settled else "live",
-                    )
-                    # claimed already = min(kwh, grid_remaining) from above
-                    battery = entry["kwh"] - claimed
-            grid_remaining = max(grid_remaining - claimed, 0.0)
-            entry["sub_import"]["kwh_grid"]    = claimed
-            entry["sub_import"]["kwh_battery"] = battery
-            entry["sub_import"]["rate"]        = parent_rate
-            entry["sub_import"]["cost"]        = round(claimed * parent_rate, 6)
-            if not _pass2_quiet: logger.info(
-                "PASS 2: %s unprotected  grid=%.4f  battery=%.4f",
-                entry["meter_name"], claimed, battery,
             )
 
         remainder_kwh  = max(grid_remaining, 0.0) + _dispatch_ev
@@ -4446,8 +4413,6 @@ def finalise_block(ha: HAClient, block_data: dict | None = None, interpolated: b
     }
 
     config           = load_json(CONFIG_PATH, {"meters": {}})
-    parent_sub_kwh   = {}
-    parent_sub_cost  = {}
 
     # A channel's "use the supplier API" choice (rate_source / standing_charge_source = 'api') is
     # honoured only while the mode uses the API. A disconnect lands on 'cad' and keeps the config
@@ -4558,7 +4523,6 @@ def finalise_block(ha: HAClient, block_data: dict | None = None, interpolated: b
 
             if reads and not is_sub:
                 pre_open  = select_opening_read(reads, block_start_dt)
-                pre_open  = select_opening_read(reads, block_start_dt)
                 post_open = select_closing_read(reads, block_start_dt)
                 if pre_open and post_open and pre_open["ts"] != post_open["ts"]:
                     interpolated_opener = interpolate_value(pre_open, post_open, block_start_dt)
@@ -4634,12 +4598,6 @@ def finalise_block(ha: HAClient, block_data: dict | None = None, interpolated: b
                     )
 
         block["meters"][meter_name] = meter_block
-
-        if meter_meta.get("sub_meter") and parent_name:
-            sub_import = meter_block["channels"].get("import")
-            if sub_import:
-                parent_sub_kwh[parent_name]  = parent_sub_kwh.get(parent_name, 0.0)  + sub_import["kwh"]
-                parent_sub_cost[parent_name] = parent_sub_cost.get(parent_name, 0.0) + sub_import["cost"]
 
     # ── PASS 2 — grid-authoritative sub-meter distribution ────────────────
     _apply_pass2(block)
@@ -5764,7 +5722,6 @@ async def _engine_tick(ha: HAClient):
     # Write sub_meter_history rows every tick for battery/EV sub-meters
     try:
         cfg = load_config()
-        _batt_kws = ['battery', 'batt', 'inverter', 'solax', 'givenergy', 'powerwall', 'solar']
         _pruned_sub = False
         for mid, m_data in cfg.get("meters", {}).items():
             meta = (m_data or {}).get("meta", {}) or {}
@@ -8412,7 +8369,6 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
         # where the data actually begins.
         starts = sorted(by_start.keys(), reverse=True)
         imported = list(starts)
-        halted_at = None
 
         # Record any gaps (runs of missing half-hours) this slice reveals, so the
         # reconstruction's holes are surfaced to the user instead of silently
@@ -8686,9 +8642,8 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
         # or a fetch failed (those must resume).
         reached_floor = len(chunks) <= max_chunks
         no_more_data = (not by_start) and (not paused) and (not fetch_error)
-        done = bool(halted_at) or ((reached_floor or no_more_data)
-                                   and not paused and not fetch_error)
-        reason = ("halted" if halted_at else "rate_limit" if paused
+        done = (reached_floor or no_more_data) and not paused and not fetch_error
+        reason = ("rate_limit" if paused
                   else "fetch_error" if fetch_error
                   else "completed" if done else "more")
         if done and not dry_run and not bounded:
@@ -8702,7 +8657,7 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
             "written": written, "priced": priced, "off_peak_intervals": off_peak,
             "fallback_material": fb_material, "fallback_no_bucket": fb_no_bucket,
             "flags_raised": flags_raised_ch, "healed_in_pass": healed_in_pass,
-            "halted_at": halted_at, "fetch_error": fetch_error, "paused": paused,
+            "fetch_error": fetch_error, "paused": paused,
             "oldest": (imported[-1] if imported else checkpoint),
             "window": {"from": window["from"], "to": window["to"]},
         }

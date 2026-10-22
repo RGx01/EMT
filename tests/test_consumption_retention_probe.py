@@ -555,7 +555,6 @@ class TestApiImportApply(unittest.TestCase):
             restart=True, max_chunks=6, pace_s=0))
         ch = r["channels"]["import"]
         self.assertEqual(ch["imported"], 3)                 # all present; gap skipped
-        self.assertIsNone(ch["halted_at"])
 
     def test_writes_export_channel(self):
         # Export MPAN → direction GENERATION → exp_* columns.
