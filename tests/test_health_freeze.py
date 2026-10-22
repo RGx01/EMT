@@ -83,8 +83,8 @@ class TheStrip(unittest.TestCase):
             dm = f.read()
         fn = dm[dm.index("function loadHealth() {"):]
         fn = fn[:fn.index("\n}\n")]
-        self.assertIn("if (d.updating && d.updating.length) {", fn)
-        self.assertIn("loadHealth._t = setTimeout(loadHealth, 30000);", fn)
+        self.assertIn("var busy = !!(d.updating && d.updating.length);", fn)
+        self.assertIn("setTimeout(loadHealthSoon, busy ? 30000 : 60000);", fn)   # test_dm_follows_jobs.py
         self.assertIn("attribution: 'the device rebuild'", dm)
 
 
