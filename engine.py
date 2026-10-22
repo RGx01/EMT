@@ -9398,23 +9398,26 @@ async def run_deferred_verify_pricing(*, chunk_days: int = 30, headroom_frac: fl
     if (not restart and _prev.get("status") in ("deferred", "resuming")
             and str(_prev.get("hi") or "") < hi.isoformat()):
         restart = True
+    # (Until 22 Oct 2026 the `else:` that reads the cursor back belonged to the span's `try`, not
+    # to `if restart:`: a failed span write on a resumed pass left `cursor` unbound, and a failed
+    # cursor write on a restart resumed from the old cursor.)
     if restart:
         cursor = hi
         try:
             _store.set_kraken_state(_VERIFY_CURSOR_KEY, cursor.isoformat())
         except Exception:
             pass
-    try:
-        _store.set_kraken_state(_VERIFY_SPAN_KEY,
-                                json.dumps([lo.isoformat(), hi.isoformat()]) if span else "")
-    except Exception:
-        pass
     else:
         cur_raw = _store.get_kraken_state(_VERIFY_CURSOR_KEY)
         try:
             cursor = _dt.fromisoformat(cur_raw[:19]) if cur_raw else hi
         except (ValueError, TypeError):
             cursor = hi
+    try:
+        _store.set_kraken_state(_VERIFY_SPAN_KEY,
+                                json.dumps([lo.isoformat(), hi.isoformat()]) if span else "")
+    except Exception:
+        pass
     total_chunks = max(1, int((hi - lo).days // chunk_days) + 1)
     done_chunks = max(0, total_chunks - (max(1, int((cursor - lo).days // chunk_days) + 1)))
     _t0 = __import__("time").monotonic()
