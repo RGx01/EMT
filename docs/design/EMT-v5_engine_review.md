@@ -233,5 +233,5 @@ engine working.
 - **(c) The re-fetch's comparison** (Octopus's answer now against the block, the cached bill shown as
   history) waits for the new engine, where it is the natural rule.
 - **(d) Step 1 first** (decided the same day), on its own before the rest is designed in detail.
-- **Open:** the two per-version start-up backups overlap (§3.5) — keep both, or only the raw
-  pre-migration copy?
+- **(e) One start-up backup per version** (decided 22 Oct 2026): the raw pre-migration copy stays; the
+  zip taken after the store opens goes, in a small PR of its own.
