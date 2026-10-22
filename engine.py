@@ -127,12 +127,6 @@ _last_reconcile:           datetime | None = None   # UTC — last dispatch reco
 _current_slot_mix:         dict            = {}      # captured_at → generationmix list
 _meter_reset_detected:     bool            = False   # set when post-gap read < pre-gap read (possible meter replacement)
 
-# 3.0.0: optional block-boundary callback. The Kraken Mini ingester (Chunk 7)
-# registers here so it can take a Mini register reading at each boundary. None
-# until registered; firing is a guarded no-op otherwise. The full Mini read
-# logic lands in Chunk 7 — this is the hook it plugs into.
-_on_block_boundary_cb = None   # Optional[Callable[[str], None]]
-
 # 3.0.0 Kraken integration runtime state. Populated at startup by
 # _kraken_startup_discovery() when an API key is configured. The ingester
 # task (4b-ii) reads _kraken_discovery for the verified meter identifiers.
@@ -285,12 +279,6 @@ def get_data_source_mode() -> str:
     except Exception:
         val = None
     return val if val in _VALID_MODES else "unset"
-
-
-def is_mode_configured() -> bool:
-    """True once the survey has explicitly set a data-source mode."""
-    return get_data_source_mode() in _VALID_MODES
-
 
 def set_data_source_mode(mode: str) -> str:
     """Persist the data-source mode. Returns the stored value. Raises ValueError
@@ -1186,29 +1174,6 @@ def _kraken_standing_resolver(block_start: str):
         return None
     return round(pence / 100.0, 6)
 
-
-def register_block_boundary_callback(cb) -> None:
-    """Register a callback fired once per finalised block boundary.
-
-    cb receives the boundary timestamp (the block_end ISO string). Pass None
-    to clear. Exceptions raised by the callback are caught and logged so a
-    failing ingester can never break finalisation.
-    """
-    global _on_block_boundary_cb
-    _on_block_boundary_cb = cb
-
-
-def _fire_block_boundary(boundary_time: str) -> None:
-    """Invoke the registered boundary callback, swallowing any error."""
-    cb = _on_block_boundary_cb
-    if cb is None:
-        return
-    try:
-        cb(boundary_time)
-    except Exception as e:
-        logger.warning("_fire_block_boundary: callback failed: %s", e)
-
-
 def setup():
     """Call once from main() before starting any tasks."""
     global _engine_loop_lock
@@ -1650,12 +1615,6 @@ def _maybe_daily_share_backup(now_utc=None) -> bool:
 def floor_to_block(dt: datetime, block_minutes: int = BLOCK_MINUTES) -> datetime:
     minute = (dt.minute // block_minutes) * block_minutes
     return dt.replace(minute=minute, second=0, microsecond=0)
-
-
-def floor_to_hh(dt: datetime) -> datetime:
-    """Deprecated alias — use floor_to_block."""
-    return floor_to_block(dt, BLOCK_MINUTES)
-
 
 def iso(dt: datetime) -> str:
     return dt.isoformat()
@@ -3469,28 +3428,6 @@ def _split_hour_to_blocks(hour_kwh, house_imports: list) -> list:
         return [round(e / n, 6)] * n
     return [round(e * ((x or 0.0) / tot), 6) for x in house_imports]
 
-
-def _naive_iso(ts: str) -> str:
-    """Normalise a timestamp to a naive-UTC ISO string for order comparison.
-    Block starts and stitched hour keys are naive UTC already; this just strips
-    any stray timezone so a lexicographic/temporal compare is apples-to-apples."""
-    s = str(ts or "")
-    try:
-        from datetime import datetime as _dt
-        d = _dt.fromisoformat(s)
-        if d.tzinfo is not None:
-            d = d.astimezone(timezone.utc).replace(tzinfo=None)
-        return d.isoformat()
-    except Exception:
-        # Best-effort: drop a trailing 'Z' or '+hh:mm' offset.
-        if s.endswith("Z"):
-            return s[:-1]
-        for i, ch in enumerate(s):
-            if ch == "+" and i > 10:
-                return s[:i]
-        return s
-
-
 def _write_device_into_block(block: dict, device_meter_id: str,
                              parent_meter_id: str, dev_kwh, *, kept: dict | None = None) -> bool:
     """Add a reconstructed device sub-meter to an existing house block and re-run
@@ -4791,10 +4728,6 @@ def finalise_block(ha: HAClient, block_data: dict | None = None, interpolated: b
         logger.debug("finalise_block: generation mix storage failed: %s", _gme)
 
     logger.info("finalise_block: %s → %s complete", start, end)
-
-    # 3.0.0: notify any registered boundary listener (Kraken Mini ingester).
-    # No-op until Chunk 7 registers a callback.
-    _fire_block_boundary(end)
 
     # ── Prune rolling buffer ───────────────────────────────────────────────
     pruned_block = {
@@ -6389,11 +6322,9 @@ async def _maybe_setup_mini() -> None:
     try:
         from kraken_mini import MiniBoundaryReader
         _kraken_mini_reader = MiniBoundaryReader(_kraken_client, device_id)
-        # 3.0.0: Mini reads are now collected per-tick into the current block's
-        # import buffer (CAD-like) and bracketed/interpolated by finalise — see
-        # _collect_mini_into_block. We deliberately do NOT register the old
-        # post-finalise boundary callback here: that path is kept defined as a
-        # dormant fallback, but registering it too would double-write the block.
+        # 3.0.0: Mini reads are collected per-tick into the current block's import buffer
+        # (CAD-like) and bracketed/interpolated by finalise — see _collect_mini_into_block.
+        # (The post-finalise boundary-read path it replaced, dormant since, went 22 Oct 2026.)
         logger.info("mini_setup: Mini provisional import layer ACTIVE "
                     "(no local sensor; per-tick boundary collection → "
                     "provisional, DCC reconciles)")
@@ -6528,97 +6459,6 @@ async def _collect_mini_into_block(current_block: dict, now: datetime,
         _store.save_current_block(current_block)
     except Exception:
         pass
-
-
-def _mini_boundary_callback(boundary_iso: str) -> None:
-    """Fired (sync) at each block boundary. Schedules the async Mini read so the
-    engine isn't blocked on GraphQL. Best-effort; never raises into the engine."""
-    reader = _kraken_mini_reader
-    if reader is None:
-        return
-    try:
-        loop = asyncio.get_event_loop()
-        if loop.is_running():
-            loop.create_task(_mini_read_and_apply(reader, boundary_iso))
-    except Exception as e:
-        logger.warning("mini: could not schedule boundary read: %s", e)
-
-
-async def _mini_read_and_apply(reader, boundary_iso: str) -> None:
-    """Acquire the interpolated boundary import register read and apply it to
-    the just-closed block as its closing import read, then re-finalise. All
-    best-effort; on any miss, the block stays as-is and DCC reconciles later."""
-    try:
-        read = await reader.read_at_boundary(boundary_iso)
-    except Exception as e:
-        logger.warning("mini: boundary read failed for %s: %s", boundary_iso, e)
-        return
-    if not read:
-        return
-    try:
-        _apply_mini_boundary_read(boundary_iso, read)
-    except Exception as e:
-        logger.warning("mini: apply failed for %s: %s", boundary_iso, e)
-
-
-def _apply_mini_boundary_read(boundary_iso: str, read: dict) -> None:
-    """Apply an interpolated Mini import-register reading at a block boundary.
-
-    The boundary is the END of the block that just finalised; `read` is the
-    interpolated cumulative import register at that instant. The block's import
-    kWh = this boundary's register − the PREVIOUS boundary's register (cumulative
-    register deltas, exactly as CAD computes from boundary reads).
-
-    We persist the boundary register as the block's Mini reading and store the
-    derived provisional import kWh via the store's Mini path, flagged
-    provisional + sourced 'kraken_mini'. DCC settlement later overwrites it.
-
-    Conservative + best-effort: if we don't yet have a previous boundary
-    register (cold start, or a prior gap), we record THIS boundary's register as
-    the anchor for the next block and store no kWh this time — the next boundary
-    will have its pair. Never raises.
-    """
-    global _kraken_mini_last_register
-    reg = read.get("value")
-    if reg is None:
-        return
-    # Defence in depth: never let Mini write onto a block if a local import
-    # sensor exists (CAD is authoritative). Mirrors the setup-time gate.
-    if _has_local_import_sensor():
-        return
-    prev = _kraken_mini_last_register
-    # Always advance the anchor so the next boundary can delta against this one.
-    _kraken_mini_last_register = {"ts": boundary_iso, "value": reg}
-
-    if prev is None:
-        logger.info("mini: anchored first boundary register at %s (%.3f); kWh "
-                    "from next boundary", boundary_iso, reg)
-        return
-
-    # The just-closed block starts at the previous boundary and ends at this one.
-    block_start = prev["ts"]
-    imp_kwh = round(reg - prev["value"], 6)
-    if imp_kwh < 0:
-        # Register went backwards (meter reset / bad point) — don't store a
-        # negative; re-anchor and defer to DCC for this block.
-        logger.warning("mini: register decreased %.3f→%.3f at %s — skipping, "
-                       "DCC will reconcile", prev["value"], reg, boundary_iso)
-        return
-    try:
-        res = _store.store_mini_import(block_start, "electricity_main", imp_kwh)
-        if res.get("status") == "stored":
-            logger.info("mini: provisional import %.3f kWh for block %s "
-                        "(boundary %s)", imp_kwh, block_start, boundary_iso)
-        elif res.get("status") == "missing_block":
-            logger.info("mini: no block at %s for provisional import — skipped",
-                        block_start)
-    except Exception as e:
-        logger.warning("mini: store_mini_import failed for %s: %s",
-                       block_start, e)
-
-
-_kraken_mini_last_register = None   # {"ts": boundary_iso, "value": register}
-
 
 def _kraken_backfill_days() -> int:
     """Compute the first-run backfill window: from the oldest block STILL AWAITING
@@ -8877,28 +8717,6 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
         }
     out["done"] = all_done
     return out
-
-
-async def fetch_api_window(from_ts, to_ts, *, chunk_days: int = 60,
-                           max_chunks: int = 24, pace_s: float = 0.0,
-                           dry_run: bool = False,
-                           meter_id: str = "electricity_main",
-                           channels=("import", "export")) -> dict:
-    """Bounded, contiguous API fetch — the keystone for gap-fill and single-period
-    import. Fetches the supplier's Measurements for exactly [from_ts → to_ts] and
-    upserts `imported_api` blocks for that window, WITHOUT advancing the full-import
-    resume state (checkpoint / done flag / gap record). `to_ts` should be the gap's
-    end, or (for a backward extend) the oldest existing block, so history stays
-    contiguous. Thin wrapper over import_api_history's bounded mode.
-
-    max_chunks defaults high enough to complete a multi-month window in one call
-    (24 × 60d ≈ 4y); callers pass a smaller window for a gap.
-    """
-    return await import_api_history(
-        requested_from=from_ts, until_ts=to_ts, restart=False,
-        chunk_days=chunk_days, max_chunks=max_chunks, pace_s=pace_s,
-        dry_run=dry_run, meter_id=meter_id, channels=channels)
-
 
 async def repair_import_pricing(from_date=None, to_date=None, *,
                                 window_days: int = 7, pace_s: float = 1.0,

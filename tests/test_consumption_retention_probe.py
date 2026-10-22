@@ -397,11 +397,13 @@ class TestApiImportApply(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["imp_rate"], 0.07, places=3)         # cost÷kWh
 
     def test_bounded_window_fills_without_advancing_import_state(self):
-        # fetch_api_window([00:00 → 02:00]) writes those blocks but must NOT touch
-        # the full-import checkpoint / done flag — it's a one-shot gap/period fill.
+        # import_api_history's bounded mode over [00:00 → 02:00] (the gap fill's, through
+        # _gap_fill_window; fetch_api_window, the wrapper only tests called, went 22 Oct 2026)
+        # writes those blocks but must NOT touch the full-import checkpoint / done flag.
         engine._kraken_client = _FakeMeasClient(self._contig())
-        r = asyncio.run(engine.fetch_api_window(
-            "2024-07-01T00:00:00", "2024-07-01T02:00:00", pace_s=0))
+        r = asyncio.run(engine.import_api_history(
+            requested_from="2024-07-01T00:00:00", until_ts="2024-07-01T02:00:00",
+            restart=False, pace_s=0))
         self.assertTrue(r["ok"])
         self.assertGreaterEqual(r["channels"]["import"]["written"], 4)
         ck_key = engine._API_IMPORT_CHECKPOINT + "_import"

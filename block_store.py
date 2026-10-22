@@ -4644,30 +4644,6 @@ class BlockStore:
             "needs_pass2_rerun": new_rerun,
         }
 
-    def store_mini_import(self, block_start: str, meter_id: str,
-                          imp_kwh: float) -> dict:
-        """Store a provisional Mini-derived import kWh on an existing block.
-
-        api+mini near-real-time layer: writes imp_kwh, marks the block
-        provisional + sourced 'kraken_mini', and queues it for PASS 2 re-run so
-        DCC settlement (when it arrives) overwrites it. Returns
-        {"status": "stored"|"missing_block"}.
-
-        Mini is treated like CAD: imp_kwh is the working import figure until DCC
-        reconciles. Export is never Mini-sourced (no Mini export register).
-        """
-        row = self.get_block_by_start(block_start, meter_id)
-        if row is None:
-            return {"status": "missing_block", "block_start": block_start}
-        self._conn.execute(
-            """UPDATE blocks
-               SET imp_kwh = ?, is_provisional = 1, source = 'kraken_mini',
-                   needs_pass2_rerun = 1
-               WHERE block_start = ? AND meter_id = ?""",
-            (imp_kwh, block_start, meter_id))
-        self._conn.commit()
-        return {"status": "stored", "imp_kwh": imp_kwh}
-
     def upsert_kraken_block(
         self,
         block_start: str,

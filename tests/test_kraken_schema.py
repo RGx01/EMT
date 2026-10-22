@@ -571,35 +571,6 @@ class TestCarbonIntensityPersistence(_StoreBase):
         self.assertEqual(row["carbon_intensity_g"], 50.0)
 
 
-class TestBoundaryCallback(unittest.TestCase):
-    """Engine block-boundary callback registration and guarded firing."""
-
-    def setUp(self):
-        import engine
-        self.engine = engine
-        engine.register_block_boundary_callback(None)  # clean slate
-
-    def tearDown(self):
-        self.engine.register_block_boundary_callback(None)
-
-    def test_fire_calls_registered_callback(self):
-        seen = []
-        self.engine.register_block_boundary_callback(lambda t: seen.append(t))
-        self.engine._fire_block_boundary("2026-05-01T00:30:00")
-        self.assertEqual(seen, ["2026-05-01T00:30:00"])
-
-    def test_fire_noop_when_unregistered(self):
-        # Should not raise with no callback registered.
-        self.engine._fire_block_boundary("2026-05-01T00:30:00")
-
-    def test_callback_error_swallowed(self):
-        def boom(_):
-            raise RuntimeError("ingester down")
-        self.engine.register_block_boundary_callback(boom)
-        # Must not propagate — finalisation can never be broken by the ingester.
-        self.engine._fire_block_boundary("2026-05-01T00:30:00")
-
-
 class TestStateColumnRoundTrip(_StoreBase):
     """append_block / append_block_replace must preserve the 3.0.0 state
     columns so a PASS 2 re-run (INSERT OR REPLACE) doesn't reset imp_kwh_api
@@ -1410,7 +1381,6 @@ class TestDataSourceMode(_StoreBase):
         # No mode stored → 'unset' (NOT 'cad') so a flat DB is distinguishable
         # from a deliberate cad choice and the API won't auto-activate.
         self.assertEqual(self.engine.get_data_source_mode(), "unset")
-        self.assertFalse(self.engine.is_mode_configured())
         self.assertFalse(self.engine.mode_uses_api())
         self.assertFalse(self.engine.mode_uses_mini())
 

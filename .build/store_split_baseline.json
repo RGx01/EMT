@@ -87,7 +87,6 @@
     "set_period_postcode",
     "set_vat_calendar",
     "split_config_period_at",
-    "store_mini_import",
     "supersede_historical_derivation",
     "tag_blocks_with_derivation",
     "unretire_meter",

@@ -330,11 +330,6 @@ class TestFloorToBlock(unittest.TestCase):
     def test_5min_mid_block(self):
         self.assertEqual(engine.floor_to_block(dt("2026-01-01T09:13:00"), 5), dt("2026-01-01T09:10:00"))
 
-    def test_floor_to_hh_alias_matches_30min(self):
-        """Deprecated alias floor_to_hh should match floor_to_block(dt, 30)."""
-        d = dt("2026-01-01T09:17:33")
-        self.assertEqual(engine.floor_to_hh(d), engine.floor_to_block(d, 30))
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # detect_currency_symbol
@@ -365,31 +360,31 @@ class TestDetectCurrencySymbol(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# floor_to_hh
+# floor_to_block at 30 minutes (until 22 Oct 2026 through the floor_to_hh alias)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestFloorToHH(unittest.TestCase):
 
     def test_exactly_on_hour(self):
-        self.assertEqual(engine.floor_to_hh(dt("2026-01-01T09:00:00")), dt("2026-01-01T09:00:00"))
+        self.assertEqual(engine.floor_to_block(dt("2026-01-01T09:00:00"), 30), dt("2026-01-01T09:00:00"))
 
     def test_exactly_on_half(self):
-        self.assertEqual(engine.floor_to_hh(dt("2026-01-01T09:30:00")), dt("2026-01-01T09:30:00"))
+        self.assertEqual(engine.floor_to_block(dt("2026-01-01T09:30:00"), 30), dt("2026-01-01T09:30:00"))
 
     def test_early_in_first_half(self):
-        self.assertEqual(engine.floor_to_hh(dt("2026-01-01T09:07:33")), dt("2026-01-01T09:00:00"))
+        self.assertEqual(engine.floor_to_block(dt("2026-01-01T09:07:33"), 30), dt("2026-01-01T09:00:00"))
 
     def test_late_in_first_half(self):
-        self.assertEqual(engine.floor_to_hh(dt("2026-01-01T09:29:59")), dt("2026-01-01T09:00:00"))
+        self.assertEqual(engine.floor_to_block(dt("2026-01-01T09:29:59"), 30), dt("2026-01-01T09:00:00"))
 
     def test_early_in_second_half(self):
-        self.assertEqual(engine.floor_to_hh(dt("2026-01-01T09:30:01")), dt("2026-01-01T09:30:00"))
+        self.assertEqual(engine.floor_to_block(dt("2026-01-01T09:30:01"), 30), dt("2026-01-01T09:30:00"))
 
     def test_late_in_second_half(self):
-        self.assertEqual(engine.floor_to_hh(dt("2026-01-01T09:59:59")), dt("2026-01-01T09:30:00"))
+        self.assertEqual(engine.floor_to_block(dt("2026-01-01T09:59:59"), 30), dt("2026-01-01T09:30:00"))
 
     def test_midnight(self):
-        self.assertEqual(engine.floor_to_hh(dt("2026-01-01T00:00:00")), dt("2026-01-01T00:00:00"))
+        self.assertEqual(engine.floor_to_block(dt("2026-01-01T00:00:00"), 30), dt("2026-01-01T00:00:00"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2432,7 +2427,6 @@ class TestApiModeBlockCreation(unittest.TestCase):
             pass
         engine._store = self._orig_store
         engine.load_config = self._orig_cfg
-        engine.register_block_boundary_callback(None)  # clear any test callback
 
     def test_api_mode_creates_seeded_block(self):
         from datetime import datetime
@@ -2452,10 +2446,10 @@ class TestApiModeBlockCreation(unittest.TestCase):
         blk = engine.ensure_correct_block(None, {}, datetime(2026, 6, 3, 7, 15, 0))
         self.assertFalse(blk and blk.get("start"))
 
-    def test_seeded_block_fires_boundary_on_finalise(self):
+    def test_seeded_block_finalises(self):
+        """A seeded API block finalises and is stored (until 22 Oct 2026 this asserted the boundary
+        callback fired; the callback, registered by nothing, is gone)."""
         from datetime import datetime
-        fired = []
-        engine.register_block_boundary_callback(lambda iso: fired.append(iso))
         blk = engine.create_block(datetime(2026, 6, 3, 7, 0, 0),
                                   datetime(2026, 6, 3, 7, 30, 0), 30,
                                   seed_meters=True)
@@ -2463,7 +2457,8 @@ class TestApiModeBlockCreation(unittest.TestCase):
         class _HA:
             def get_state(self, e): return None
         engine.finalise_block(_HA(), block_data=blk)
-        self.assertIn("2026-06-03T07:30:00", fired)
+        # its last step: the rolling buffer pruned, the next half-hour saved as the current block
+        self.assertEqual((engine._store.load_current_block() or {}).get("start"), "2026-06-03T07:30:00")
 
     def test_api_mode_applies_kraken_rate_and_cost_at_finalise(self):
         # In API/Mini mode (no rate sensor) the import rate must be resolved from
