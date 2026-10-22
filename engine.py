@@ -12900,7 +12900,8 @@ def _refetch_diff(facts: dict, octo: dict) -> list:
     - kWh: a DCC-settled block against its DCC figure; IMPORTED history against its own kWh (it
       came from the same API and has no DCC field by design) — reported, never written as DCC;
       export with none stored reads as 0.
-    - the bill: against the cached bill where there is one, else against the stored cost. A bill
+    - the bill: against the cached bill where there is one, else against the stored cost — and a
+      block whose stored cost is not its cached bill differs too (`unapplied`). A bill
       where none is held is a difference even at the same £ (`new_bill`): it turns EMT's kWh x
       rate into Octopus's cost (design §1.2, revised 14 Oct 2026). The EV share against the
       bill's, else EMT's own split.
@@ -12964,8 +12965,18 @@ def _refetch_diff(facts: dict, octo: dict) -> list:
             # half-hour becomes an ordinary billed one (PR 5 on the Pi, 15 Oct 2026: 24 Aug 22:00
             # BST, corrected to the day rate, £0.052341 = the bill, stayed blue and un-replaceable)
             confirms = corrected and not held and not cost_diff
-            if cost_diff or ev_diff or arrives or new_bill or confirms:
-                r["bill"] = {"stored": cost_now, "stored_is_bill": have is not None and not corrected,
+            # the block does not carry the bill it has cached: a difference even where Octopus
+            # still agrees with the cache — the apply puts the bill on the block (22 Oct 2026,
+            # staging: 5 Mar 2025 20:00 held £0.2986 against a cached £1.0836, and the preview,
+            # comparing Octopus with the cache alone, said nothing differed)
+            block_cost = _f(f.get("imp_cost"))
+            unapplied = (have is not None and not corrected and not held and block_cost is not None
+                         and abs(block_cost - float(b["cost_incl"])) > _REFETCH_GBP_EPS)
+            if unapplied and not cost_diff:
+                cost_now = block_cost                    # what the block holds is what changes
+            if cost_diff or ev_diff or arrives or new_bill or confirms or unapplied:
+                r["bill"] = {"stored": cost_now, "unapplied": unapplied,
+                             "stored_is_bill": have is not None and not corrected and not unapplied,
                              "corrected": corrected, "new_bill": new_bill,
                              "octopus": b["cost_incl"], "stored_ev": ev_stored,
                              "stored_ev_is_bill": ev_is_bill,

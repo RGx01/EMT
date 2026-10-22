@@ -962,6 +962,7 @@ window.EMTHeatmap = (function () {
       var dp = r.bill && r.bill.stored !== null && (+r.bill.stored).toFixed(4) === (+r.bill.octopus).toFixed(4) ? 6 : 4;
       var g = function (v) { return v === null || v === undefined ? '—' : '£' + (+v).toFixed(dp); };
       var b = r.bill ? g(r.bill.stored) + (r.bill.corrected ? ' <span class="hm-note2">(your correction)</span>'
+                       : r.bill.unapplied ? ' <span class="hm-note2">(stored \u2014 the bill not applied)</span>'
                        : r.bill.stored_is_bill ? '' : ' <span class="hm-note2">(EMT\u2019s cost)</span>') +
                        ' \u2192 ' + g(r.bill.octopus) : '';
       // imported history keeps its own kWh: the difference is shown, not written

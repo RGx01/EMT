@@ -247,6 +247,16 @@ keep it. But `rate_corrected` is cleared nowhere else, so it also locked the bil
 (v4 ROADMAP_archive BL-75 (e)); a re-fetch is the user asking, which is the consent the guard
 protects.
 
+**A block that does not carry its cached bill** (22 Oct 2026, staging): the cost is compared with
+the cached bill where there is one, so a block whose stored cost had drifted from it — an import
+written after the bill was cached, here a purge and re-import — read "nothing differs" while
+Octopus still agreed with the cache, and the re-fetch could not put the bill on it. Such a block
+differs now, the row says *stored — the bill not applied*, and Apply settles it from the bill.
+
+**The window Octopus is asked** (22 Oct 2026): the single-cost recovery asks each half-hour's local
+day, then its month (bill and split paths design §1.3). The narrow per-half-hour windows it used
+priced the middle of a long evening charge at the day rate.
+
 **What this replaces:** delete-and-reimport for a restatement. 4.5.22's VAT resync and 4.5.23's
 re-fetch become special cases of it — the same fetch, compare and apply, run by EMT on a trigger
 instead of by the user.
