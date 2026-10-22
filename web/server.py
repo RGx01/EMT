@@ -4075,7 +4075,7 @@ def api_block_settlement():
     (settlement surfaces design §4). `start` is the block's naive-UTC start. Read-only.
 
     {start, end, state: {bill, split, flags}, kwh: {stored, dcc, settled},
-     export: {kwh, dcc} | null, cost: {stored, stored_exc, rate, rate_source, corrected},
+     export: {kwh, dcc, cost, rate}, cost: {stored, stored_exc, rate, rate_source, corrected},
      bill: {cost, cost_exc, kwh, label, fetched_at, home_kwh, home_rate, ev_kwh, ev_rate} | null,
      segments: [...], dispatch: {completed_kwh, kinds} | null}"""
     from datetime import datetime as _dt, timedelta as _td
@@ -4105,8 +4105,11 @@ def api_block_settlement():
             "kwh": {"stored": _r(d["imp_kwh"]), "dcc": _r(d["imp_kwh_api"]),
                     "settled": d["imp_kwh_api"] is not None
                                or (d["source"] or "").startswith("imported")},
-            "export": ({"kwh": _r(d["exp_kwh"]), "dcc": _r(d["exp_kwh_api"])}
-                       if (d["exp_kwh"] or d["exp_kwh_api"]) else None),
+            # always, figures or not: the panel shows import and export side by side, whichever
+            # view it was opened from (22 Oct 2026, the user: the Export bill's panel gave the
+            # import rate alone)
+            "export": {"kwh": _r(d["exp_kwh"]), "dcc": _r(d["exp_kwh_api"]),
+                       "cost": _r(d["exp_cost"]), "rate": _r(d["exp_rate"])},
             "cost": {"stored": _r(d["imp_cost"]), "stored_exc": _r(d["imp_cost_exc"]),
                      "rate": _r(d["imp_rate"]), "rate_source": d["rate_source"],
                      "corrected": bool(d["rate_corrected"])},
@@ -4618,8 +4621,14 @@ _HEALTH_TTL_S = 600
 # 4: CSV history outside an export agreement stays `imported`; a missing export there is
 #    `no_agreement`, not `no_data` (22 Oct 2026).
 _HEALTH_FILE_V = 4
+# While the data keeps moving — a refill rebuilding the devices writes for minutes — every page
+# poll found the token moved and counted again, two more waiting behind it to do the same
+# (staging, 21 Oct 2026: three requests in the count, the engine loop held 11.4 s). A request that
+# waited for the count takes its answer, and the counts are made again at most this often.
+_HEALTH_MIN_S = 15
+_HEALTH_PASS_MONTHS, _HEALTH_PASS_PAUSE_S = 3, 0.02
 _health_lock = threading.Lock()
-_health_cache = {"key": None, "views": None, "missing": None, "months": None}
+_health_cache = {"key": None, "views": None, "missing": None, "months": None, "at": 0.0}
 
 
 @app.route("/api/data-health")
@@ -4654,18 +4663,25 @@ def _health_answer(store, views) -> dict:
     ten-minute window moved — and then only the months that need it (_health_views)."""
     import time as _time
     key = (_blocks_data_version(store), int(_time.time() // _HEALTH_TTL_S), tuple(views))
-    with _health_lock:
-        if _health_cache["key"] != key:
+    waited = not _health_lock.acquire(blocking=False)
+    if waited:
+        _health_lock.acquire()
+    try:
+        have = _health_cache["key"] is not None and _health_cache["key"][2] == key[2]
+        fresh = have and (waited or _time.time() - (_health_cache.get("at") or 0) < _HEALTH_MIN_S)
+        if _health_cache["key"] != key and not fresh:
             first, _last = store.block_span()
             tz = _config_timezone()
             v, m = _health_views(store, views, first, tz) if views and first else ({}, {})
             miss = _missing_half_hours(store, tz)
             for k, n in (miss.pop("by_month", None) or {}).items():
                 m.setdefault(k, {})["missing"] = n
-            _health_cache.update(views=v, months=m, missing=miss, key=key)
+            _health_cache.update(views=v, months=m, missing=miss, key=key, at=_time.time())
         # by local month: each view's states and the missing half-hours (Issues only, §3)
         return {"views": dict(_health_cache["views"]), "missing": dict(_health_cache["missing"]),
                 "months": _health_cache["months"]}
+    finally:
+        _health_lock.release()
 
 
 def _local_month_starts(lo, hi, tz):
@@ -4746,9 +4762,11 @@ def _health_views(store, views, first, tz_name):
     in a file beside the database, so a restart counts only what moved. A month is counted again
     when:
     - its days' fingerprints (block_store.day_fingerprints: blocks, segments, cached bills) move;
-    - the context every month shares moves: the views, SMB, the bills given up and held, the VAT
-      calendar, and the agreements once discovery has found them (counts made before then are
+    - the context every month shares moves: the views, SMB, the VAT calendar, the imported-export
+      deletes, and the agreements once discovery has found them (counts made before then are
       counted again when it has);
+    - the bill drain's slots in it move — held, kept, given up, no cost, asked (until 22 Oct 2026
+      these were shared too, so a drain giving up one half-hour counted the whole history again);
     - it is within the age window (BILL_OVERDUE_DAYS + KWH_LAG_DAYS, rounded up) and ten minutes
       have passed, since its states can turn with age alone.
     Contiguous months to count go in one pass."""
@@ -4769,11 +4787,11 @@ def _health_views(store, views, first, tz_name):
     try:
         held, kept = _eng.bill_split_held(store)
         given_up, no_cost, asked = _eng.bill_no_cost(store)
-        ctx = _health_digest([vs, bool(_eng._import_is_smb_capped()), sorted(held), sorted(kept),
-                              sorted(given_up), sorted(no_cost), sorted(asked),
+        slots = [sorted(x) for x in (held, kept, given_up, no_cost, asked)]
+        ctx = _health_digest([vs, bool(_eng._import_is_smb_capped()),
                               store.get_vat_calendar(), _export_deleted(store)])
     except Exception:
-        ctx = None                                  # unknown: every month is counted again
+        ctx, slots = None, []                       # unknown: every month is counted again
     agr = _health_agreements(_eng)
     window = int(_time.time() // _HEALTH_TTL_S)
     young = (now - _td(days=_ss.BILL_OVERDUE_DAYS + _ss.KWH_LAG_DAYS + 1)).isoformat()
@@ -4786,7 +4804,9 @@ def _health_views(store, views, first, tz_name):
     marks, todo = {}, []
     for k, lo, up in zip(keys, starts, ends):
         a, b = bisect.bisect_left(days, lo[:10]), bisect.bisect_right(days, up[:10])
-        mark = {"fp": _health_digest([[d, fps[d]] for d in days[a:b]]), "ctx": ctx,
+        mine = [x[bisect.bisect_left(x, lo):bisect.bisect_left(x, up)] for x in slots]
+        mark = {"fp": _health_digest([[d, fps[d]] for d in days[a:b]]),
+                "ctx": None if ctx is None else _health_digest([ctx, mine]),
                 "win": window if up > young else None}
         e = per.get(k) or {}
         em = e.get("mark") or {}
@@ -4796,13 +4816,18 @@ def _health_views(store, views, first, tz_name):
         marks[k] = mark
         if not same:
             todo.append((k, lo, up))
-    runs = []                                       # contiguous months to count, as one span
+    # Contiguous months to count, as one span — of at most _HEALTH_PASS_MONTHS, with a pause between,
+    # so a long count gives the engine loop the interpreter back (staging, 22 Oct 2026: 18 months
+    # in one pass held the loop 4.55 s on the prod box).
+    runs = []
     for k, lo, up in todo:
-        if runs and runs[-1][2] == lo:
+        if runs and runs[-1][2] == lo and len(runs[-1][0]) < _HEALTH_PASS_MONTHS:
             runs[-1][0].append(k); runs[-1][2] = up
         else:
             runs.append([[k], lo, up])
-    for ks, lo, up in runs:
+    for i, (ks, lo, up) in enumerate(runs):
+        if i:
+            _time.sleep(_HEALTH_PASS_PAUSE_S)
         counts = {k: {v: Counter() for v in vs} for k in ks}
         for bs, st in _settlement_states(store, lo, up).items():
             c = counts[keys[max(0, bisect.bisect_right(starts, bs) - 1)]]

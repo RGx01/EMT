@@ -314,6 +314,23 @@ in upload order still wins.
 - **`no_agreement` is not an issue** (heatmap issues design §6 (a)); the health counts file goes
   to version 4.
 
+**(19) After the rebuild with PR 18** (22 Oct 2026, the user).
+- **A fill opened from the heatmap hides Historical Import's choosers.** The menu chose the source
+  and the span.
+- **The half-hour panel shows import and export side by side**, each with its kWh, cost and rate,
+  whichever view opened it. The Export bill's panel had shown the import rate alone.
+- **The health count at start-up.** The whole-history count that morning was PR 18's version bump,
+  once: 36 s on the prod box at load 5 on 4 cores. The log also showed the slow days' pattern. A
+  refill rebuilding the devices wrote across 18 months for minutes, and every page poll found the
+  data moved and counted again. Three requests were in the count at once, and the engine loop was
+  held up to 11.4 s.
+  - A request that waited for a count takes its answer.
+  - While the data keeps moving, the counts are made again at most every 15 s.
+  - The bill drain's slots (held, kept, given up, no cost, asked) are each month's own context.
+    A drain giving up one half-hour had counted the whole history again.
+  - A count goes three months a pass, pausing 20 ms between passes, so the engine loop gets the
+    interpreter back.
+
 ---
 
 ## 2. Open
@@ -467,5 +484,10 @@ clean-up.
     - **Held at the bottom edge,** the drag scrolled into 2024's earlier months and stopped on
       release.
     - **Escape** closed the menu, then the selection.
+
+19. **After the rebuild** — *built 22 Oct 2026*: §1 (19). On the support file's database: the
+    whole history counted in 1.0 s on a Mac (0.72 s in one pass); two hours on, only October.
+    The panel for 18 Jul 2024 17:00 shows both sections, the export rate "—" (the export agreement
+    starts in October 2024). The bills fill opens on the bills alone.
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.

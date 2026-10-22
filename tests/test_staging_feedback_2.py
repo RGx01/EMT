@@ -80,9 +80,10 @@ class TheHealthByMonthCache(unittest.TestCase):
         return self.server._health_views(self.st, ["bill"], self.OLD, "UTC")
 
     def test_the_first_count_is_one_pass(self):
-        """GUARD: the whole history in one span, as before."""
-        totals, months = self._count()
-        self.assertEqual(len(self.spans), 1)
+        """GUARD: the whole history — three months a pass since 22 Oct 2026 (20 months: 7)."""
+        with mock.patch.object(self.server, "_HEALTH_PASS_PAUSE_S", 0):
+            totals, months = self._count()
+        self.assertEqual(len(self.spans), 7)
         self.assertEqual(totals, {"bill": {"applied": 2}})
         self.assertEqual(sorted(months), ["2025-03", "2026-10"])
 
