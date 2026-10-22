@@ -2713,7 +2713,12 @@ def _apply_pass2(block: dict) -> None:
             # never reaches this ceiling, so this can't mis-fire on a Zappi/session
             # reset. Baseline read_start onto read_end so the register stays
             # continuous, and zero the block. Logged.
-            _ceiling = _max_plausible_block_kwh((meta or {}).get("block_minutes"))
+            # The block's own length first — a stored block carries its config period's, and the
+            # device rebuild's new device entry has no meta to speak of: falling through to
+            # get_block_minutes() read the config from the database for every device row
+            # (staging, 22 Oct 2026: a rebuild beside the heatmap's month loads, the loop held 16.9 s)
+            _ceiling = _max_plausible_block_kwh((meta or {}).get("block_minutes")
+                                                or block.get("_block_minutes"))
             if delta > _ceiling:
                 logger.warning(
                     "PASS 2: %s implausible %.1f kWh in one block (> %.1f kWh "
