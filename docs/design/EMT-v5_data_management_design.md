@@ -281,6 +281,22 @@ record, so they read "no cost, no longer asked" with the right cost on them.
 The pricing check's log line also says the neighbours it re-priced apart, instead of
 "corrected 28 of 26 re-checked".
 
+**(17) The PDF bills builder** (22 Oct 2026, the user: 21 bills gave 2 groups, one importable).
+- **A file chosen twice is read once.** It's matched by content, and the warning says how many were
+  read once. A bill uploaded twice had put its notes in the list twice.
+- **An export-only bill joins its group.** A re-issued export bill has no import MPAN. It joins the
+  group whose export MPAN it shares, instead of becoming a group of its own ("MPAN unknown"). With
+  no group to join it is *Export only*.
+- **Each group's notes are listed once.**
+- **The way back to the bills:**
+  - Back from a group's review goes to the bills, not the CSV upload.
+  - A group imported is marked *✓ imported*, with *Import again*.
+  - The done step leads back to the bills, saying how many are left. Once one group was imported,
+    the other's CSVs had been out of reach.
+
+A bill carries no issue date, so where two different bills cover the same half-hours the later one
+in upload order still wins.
+
 ---
 
 ## 2. Open
@@ -419,5 +435,10 @@ clean-up.
 16. **A bill clears the no-cost record** — *built 21 Oct 2026*: §1 (16). On the support file's
     database, 21 Jul reads 22 `applied` and 26 `none` (no import), where it was 15 `abandoned`; across
     the whole history no half-hour is `abandoned` or `differs`.
+
+17. **The PDF bills builder** — *built 22 Oct 2026*: §1 (17). Clicked through with two groups:
+    - **Back** from one's review keeps both.
+    - **After its import,** the done step offers "← Back to your bills (1 more to import)".
+    - **The first group** shows *✓ imported*.
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.

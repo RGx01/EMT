@@ -5805,17 +5805,37 @@ def api_historical_bills_build():
         if not pdfs:
             return jsonify({"ok": False, "error": "No PDF files were uploaded."}), 400
 
-        parsed, failed = [], []
+        # The same file chosen twice is read once (22 Oct 2026, staging: a bill uploaded twice put
+        # its notes in the list twice). By content: a copy under another name is still a copy.
+        import hashlib as _hl
+        parsed, failed, duplicates, seen = [], [], [], {}
         for f in pdfs:
+            data = f.read()
+            digest = _hl.sha256(data).hexdigest()
+            if digest in seen:
+                duplicates.append({"file": f.filename, "same_as": seen[digest]})
+                continue
+            seen[digest] = f.filename
             try:
-                b = _bp.parse_bill(f.read(), source_name=f.filename or "bill.pdf")
+                b = _bp.parse_bill(data, source_name=f.filename or "bill.pdf")
                 parsed.append(b)
             except Exception as e:
                 failed.append({"file": f.filename, "error": str(e)})
 
+        # By import MPAN — a folder can span a house move. A bill with export only (a re-issued
+        # export bill, 22 Oct 2026, staging) has no import MPAN: it joins the group whose export
+        # MPAN it shares, not a group of its own as "unknown".
         groups = {}
         for b in parsed:
-            groups.setdefault(b.mpan_import or "unknown", []).append(b)
+            if b.mpan_import:
+                groups.setdefault(b.mpan_import, []).append(b)
+        for b in parsed:
+            if b.mpan_import:
+                continue
+            home = next((k for k, bl in sorted(groups.items())
+                         if b.mpan_export and any(x.mpan_export == b.mpan_export for x in bl)), None)
+            key = home or ("export:" + b.mpan_export if b.mpan_export else "unknown")
+            groups.setdefault(key, []).append(b)
 
         def _dedupe(rows):        # later bill wins on overlap / re-issue (§6)
             by = {}
@@ -5842,18 +5862,23 @@ def api_historical_bills_build():
                 gwarn += b.warnings
             imp_rows, exp_rows = _dedupe(imp_rows), _dedupe(exp_rows)
             recon_ok = (all(d.get("ok") for d in days) and all(p.get("ok") for p in periods))
+            export_only = mpan.startswith("export:")
             out_groups.append({
-                "mpan_import": mpan, "mpan_export": mpan_export,
+                "mpan_import": None if (export_only or mpan == "unknown") else mpan,
+                "mpan_export": mpan_export, "export_only": export_only,
                 "sources": [b.source for b in blist],
                 "import_csv": _bp.rows_to_csv(imp_rows) if imp_rows else "",
                 "export_csv": _bp.rows_to_csv(exp_rows) if exp_rows else "",
                 "import_rows": len(imp_rows), "export_rows": len(exp_rows),
                 "reconciliation": {"ok": recon_ok, "days": days, "import_periods": periods},
-                "warnings": gwarn,
+                "warnings": list(dict.fromkeys(gwarn)),       # a re-issue repeats its notes
             })
 
         warnings = []
-        if len([g for g in groups if g != "unknown"]) > 1:
+        if duplicates:
+            warnings.append(f"{len(duplicates)} file(s) were the same as another and were read once: "
+                            + ", ".join(x["file"] or "?" for x in duplicates))
+        if len([g for g in groups if g != "unknown" and not g.startswith("export:")]) > 1:
             warnings.append(
                 "More than one electricity import MPAN was found across these bills "
                 "(a house move). Each is a separate site — import them one MPAN at a time.")
@@ -5861,7 +5886,7 @@ def api_historical_bills_build():
             warnings.append(f"{len(failed)} file(s) could not be parsed: "
                             + ", ".join(x['file'] or '?' for x in failed))
         return jsonify({"ok": True, "files": len(pdfs), "groups": out_groups,
-                        "failed": failed, "warnings": warnings})
+                        "failed": failed, "duplicates": duplicates, "warnings": warnings})
     except Exception as e:
         logger.error("api_historical_bills_build: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
