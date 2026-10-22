@@ -135,7 +135,11 @@ backfill 5140). Rate schedules are built twice (`_refresh_kraken_rate_schedules`
   already deleted); four overlapping "how far back" probes (6789–7148).
 - **One-offs still in the start-up path:** `_detect_upgrade_mode` (3.0.0), `migrate_full_config_json`
   (2.0→2.1), `export_zero_fill_v1`, the region clobber, the pre-live snapshot, the legacy JSON-store
-  warning, `_remove_stale_chart_files`.
+  warning, `_remove_stale_chart_files`. *Read in step 1: none is dead.* The zero-fill runs on every
+  imported database (the importer drops its marker); the clobber is first-run behaviour; the mode
+  bridge is the wizard's fallback for a failed mode save; `migrate_full_config_json` is the store's
+  schema upgrader; the warning and the cleanup guard v5 run over an older `/data`. The two
+  per-version backups overlap — the user's call.
 - **"Unvalidated" in its own comments, but not:** the OHME capture branch (10943–11277) is tested
   by OHME owners and reported working (22 Oct 2026, the user). It stays; the comments are stale.
 - **Comments that contradict the code:** an age gate on provisional answers that does not exist
@@ -143,12 +147,18 @@ backfill 5140). Rate schedules are built twice (`_refresh_kraken_rate_schedules`
   apply's "dispatch-bounded" EV (13617), where the code takes the bill's; "review-flagged by the
   caller" (13598); old window beliefs at 8718, 9043, 9415 (single-slot, bucket-less) after #269.
 
-**Latent bugs found on the way** (confirmed in the code):
-- `run_deferred_verify_pricing` 9643: the `else:` belongs to the span's `try`, not to `if restart`;
-  a failed span write on a resumed pass leaves `cursor` unbound.
-- `measure_settled_dispatched_blocks` 12557: a failed fetch returns without saving the ask records.
-- `_bill_split_kept` (12248) saves the whole map, bypassing the 17 Oct merge-save race fix.
-- Zero-export answers are "zero-value rows" at 8588 and "nothing" at 10263.
+**Latent bugs reported on the way**, each then read in the code (step 1):
+- **Real, fixed.** `run_deferred_verify_pricing` 9643: the `else:` belonged to the span's `try`, not
+  to `if restart`. A failed span write on a resumed pass left `cursor` unbound; a failed cursor write
+  on a restart resumed from the old cursor.
+- **Not a bug.** `measure_settled_dispatched_blocks` 12557 returns on a failed fetch without saving
+  the ask records — which by then hold only pruning the next pass recomputes.
+- **Not a bug.** `_bill_split_kept` (12248) saves the whole map — synchronously, straight after a
+  fresh load, with no `await` between; nothing can interleave on the engine loop.
+- **Open, a comment matter.** Zero-export answers are "zero-value rows" at 8588 and "nothing" at
+  10263 — two feeds; not proved either way. Both comments say so now.
+- **Also checked and kept:** the "observe-only" notes on dispatch energy are right — the column they
+  describe is not used for billing (billing reads `dispatch_history`).
 
 ---
 
@@ -198,9 +208,12 @@ working); v5 still has no heals.
 Each step is its own PR, checked against the tariff goldens and real-database parity, and leaves the
 engine working.
 
-1. **Clear the dead and fix the latent** (§3.5): delete what nothing calls, the constant switches and
-   their dead branches, the scaffolding and the one-offs the floor makes safe; fix the four latent
-   bugs; correct the comments. No behaviour change but the bugs.
+1. **Clear the dead and fix the latent** (§3.5) — *done 22 Oct 2026, seven commits:* the dead
+   functions and the Mini boundary chain; the six constant switches and their dead branches; the
+   code dead where it stands; the verify cursor; the comments that contradicted the code; the
+   scaffolding (the observe-only dispatch log, the reprice conformance tool, three page-less history
+   probes, `consumption_probe.py`); the start-up one-offs read and kept. 40 of 1,369 definitions
+   unreachable, from 50 of 1,402.
 2. **The import writes Octopus's cost as a bill** (§4.3), and the import's repair, verify and queue
    go. The largest single cut, and the one today's problem came through.
 3. **One ask queue and one record** (§4.4), replacing the live pass, the drain, the VAT resync's own
@@ -219,4 +232,6 @@ engine working.
   "UNVALIDATED" comments instead of removing it.
 - **(c) The re-fetch's comparison** (Octopus's answer now against the block, the cached bill shown as
   history) waits for the new engine, where it is the natural rule.
-- **(d) Open:** step 1 first, on its own, before the rest is designed in detail.
+- **(d) Step 1 first** (decided the same day), on its own before the rest is designed in detail.
+- **Open:** the two per-version start-up backups overlap (§3.5) — keep both, or only the raw
+  pre-migration copy?

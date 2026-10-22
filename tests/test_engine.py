@@ -330,11 +330,6 @@ class TestFloorToBlock(unittest.TestCase):
     def test_5min_mid_block(self):
         self.assertEqual(engine.floor_to_block(dt("2026-01-01T09:13:00"), 5), dt("2026-01-01T09:10:00"))
 
-    def test_floor_to_hh_alias_matches_30min(self):
-        """Deprecated alias floor_to_hh should match floor_to_block(dt, 30)."""
-        d = dt("2026-01-01T09:17:33")
-        self.assertEqual(engine.floor_to_hh(d), engine.floor_to_block(d, 30))
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # detect_currency_symbol
@@ -365,31 +360,31 @@ class TestDetectCurrencySymbol(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# floor_to_hh
+# floor_to_block at 30 minutes (until 22 Oct 2026 through the floor_to_hh alias)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class TestFloorToHH(unittest.TestCase):
 
     def test_exactly_on_hour(self):
-        self.assertEqual(engine.floor_to_hh(dt("2026-01-01T09:00:00")), dt("2026-01-01T09:00:00"))
+        self.assertEqual(engine.floor_to_block(dt("2026-01-01T09:00:00"), 30), dt("2026-01-01T09:00:00"))
 
     def test_exactly_on_half(self):
-        self.assertEqual(engine.floor_to_hh(dt("2026-01-01T09:30:00")), dt("2026-01-01T09:30:00"))
+        self.assertEqual(engine.floor_to_block(dt("2026-01-01T09:30:00"), 30), dt("2026-01-01T09:30:00"))
 
     def test_early_in_first_half(self):
-        self.assertEqual(engine.floor_to_hh(dt("2026-01-01T09:07:33")), dt("2026-01-01T09:00:00"))
+        self.assertEqual(engine.floor_to_block(dt("2026-01-01T09:07:33"), 30), dt("2026-01-01T09:00:00"))
 
     def test_late_in_first_half(self):
-        self.assertEqual(engine.floor_to_hh(dt("2026-01-01T09:29:59")), dt("2026-01-01T09:00:00"))
+        self.assertEqual(engine.floor_to_block(dt("2026-01-01T09:29:59"), 30), dt("2026-01-01T09:00:00"))
 
     def test_early_in_second_half(self):
-        self.assertEqual(engine.floor_to_hh(dt("2026-01-01T09:30:01")), dt("2026-01-01T09:30:00"))
+        self.assertEqual(engine.floor_to_block(dt("2026-01-01T09:30:01"), 30), dt("2026-01-01T09:30:00"))
 
     def test_late_in_second_half(self):
-        self.assertEqual(engine.floor_to_hh(dt("2026-01-01T09:59:59")), dt("2026-01-01T09:30:00"))
+        self.assertEqual(engine.floor_to_block(dt("2026-01-01T09:59:59"), 30), dt("2026-01-01T09:30:00"))
 
     def test_midnight(self):
-        self.assertEqual(engine.floor_to_hh(dt("2026-01-01T00:00:00")), dt("2026-01-01T00:00:00"))
+        self.assertEqual(engine.floor_to_block(dt("2026-01-01T00:00:00"), 30), dt("2026-01-01T00:00:00"))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2432,7 +2427,6 @@ class TestApiModeBlockCreation(unittest.TestCase):
             pass
         engine._store = self._orig_store
         engine.load_config = self._orig_cfg
-        engine.register_block_boundary_callback(None)  # clear any test callback
 
     def test_api_mode_creates_seeded_block(self):
         from datetime import datetime
@@ -2452,10 +2446,10 @@ class TestApiModeBlockCreation(unittest.TestCase):
         blk = engine.ensure_correct_block(None, {}, datetime(2026, 6, 3, 7, 15, 0))
         self.assertFalse(blk and blk.get("start"))
 
-    def test_seeded_block_fires_boundary_on_finalise(self):
+    def test_seeded_block_finalises(self):
+        """A seeded API block finalises and is stored (until 22 Oct 2026 this asserted the boundary
+        callback fired; the callback, registered by nothing, is gone)."""
         from datetime import datetime
-        fired = []
-        engine.register_block_boundary_callback(lambda iso: fired.append(iso))
         blk = engine.create_block(datetime(2026, 6, 3, 7, 0, 0),
                                   datetime(2026, 6, 3, 7, 30, 0), 30,
                                   seed_meters=True)
@@ -2463,7 +2457,8 @@ class TestApiModeBlockCreation(unittest.TestCase):
         class _HA:
             def get_state(self, e): return None
         engine.finalise_block(_HA(), block_data=blk)
-        self.assertIn("2026-06-03T07:30:00", fired)
+        # its last step: the rolling buffer pruned, the next half-hour saved as the current block
+        self.assertEqual((engine._store.load_current_block() or {}).get("start"), "2026-06-03T07:30:00")
 
     def test_api_mode_applies_kraken_rate_and_cost_at_finalise(self):
         # In API/Mini mode (no rate sensor) the import rate must be resolved from
@@ -4355,7 +4350,6 @@ class TestDispatchOverlayResolver(unittest.TestCase):
         from kraken_rates import RateSchedule
         self._orig_store = engine._store
         self._orig_sched = engine._kraken_rate_schedules
-        self._orig_apply = engine._DISPATCH_OVERLAY_APPLY
         engine._store = BlockStore(":memory:")
         engine._kraken_rate_schedules = {"import": RateSchedule([
             ("2026-06-06T22:30:00", "2026-06-07T04:30:00", 5.493),
@@ -4369,23 +4363,13 @@ class TestDispatchOverlayResolver(unittest.TestCase):
     def tearDown(self):
         engine._store = self._orig_store
         engine._kraken_rate_schedules = self._orig_sched
-        engine._DISPATCH_OVERLAY_APPLY = self._orig_apply
 
     def test_apply_overrides_peak_to_offpeak_with_draw(self):
-        engine._DISPATCH_OVERLAY_APPLY = True
         r = engine._dispatch_overlay_rate(
             "import", "2026-06-07T15:00:00", 0.323092, 1.5)
         self.assertAlmostEqual(r, 0.05493, places=5)
 
-    def test_compute_and_log_does_not_apply(self):
-        engine._DISPATCH_OVERLAY_APPLY = False
-        r = engine._dispatch_overlay_rate(
-            "import", "2026-06-07T15:00:00", 0.323092, 1.5)
-        self.assertAlmostEqual(r, 0.323092, places=5,
-            msg="compute-and-log must NOT change the rate")
-
     def test_meter_guard_no_draw_stays_peak(self):
-        engine._DISPATCH_OVERLAY_APPLY = True
         r = engine._dispatch_overlay_rate(
             "import", "2026-06-07T15:00:00", 0.323092, 0.0)
         self.assertAlmostEqual(r, 0.323092, places=5,
@@ -4395,7 +4379,6 @@ class TestDispatchOverlayResolver(unittest.TestCase):
         # 0.05 kWh is real-but-tiny (baseload/noise), below the 0.1 floor.
         # Under the OLD <=0 guard this would have wrongly applied off-peak;
         # the floor must reject it. This is the teeth for _DISPATCH_OVERLAY_MIN_KWH.
-        engine._DISPATCH_OVERLAY_APPLY = True
         r = engine._dispatch_overlay_rate(
             "import", "2026-06-07T15:00:00", 0.323092, 0.05)
         self.assertAlmostEqual(r, 0.323092, places=5,
@@ -4403,7 +4386,6 @@ class TestDispatchOverlayResolver(unittest.TestCase):
 
     def test_draw_just_above_noise_floor_applies(self):
         # 0.15 kWh clears the floor → genuine charging → off-peak applies.
-        engine._DISPATCH_OVERLAY_APPLY = True
         r = engine._dispatch_overlay_rate(
             "import", "2026-06-07T15:00:00", 0.323092, 0.15)
         self.assertAlmostEqual(r, 0.05493, places=5,
@@ -4411,7 +4393,6 @@ class TestDispatchOverlayResolver(unittest.TestCase):
 
     def test_draw_at_noise_floor_applies(self):
         # Exactly at the floor: guard is `< floor`, so 0.1 is NOT below → applies.
-        engine._DISPATCH_OVERLAY_APPLY = True
         r = engine._dispatch_overlay_rate(
             "import", "2026-06-07T15:00:00", 0.323092,
             engine._DISPATCH_OVERLAY_MIN_KWH)
@@ -4419,20 +4400,17 @@ class TestDispatchOverlayResolver(unittest.TestCase):
             msg="draw exactly at floor (0.1) → applies (guard is strict <)")
 
     def test_in_window_slot_is_noop(self):
-        engine._DISPATCH_OVERLAY_APPLY = True
         # In-window block already off-peak; no captured slot needed.
         r = engine._dispatch_overlay_rate(
             "import", "2026-06-07T02:00:00", 0.05493, 1.5)
         self.assertAlmostEqual(r, 0.05493, places=5)
 
     def test_export_never_adjusted(self):
-        engine._DISPATCH_OVERLAY_APPLY = True
         r = engine._dispatch_overlay_rate(
             "export", "2026-06-07T15:00:00", 0.12, 1.5)
         self.assertAlmostEqual(r, 0.12, places=5)
 
     def test_no_slot_no_override(self):
-        engine._DISPATCH_OVERLAY_APPLY = True
         # A peak block with NO captured dispatch slot stays peak.
         r = engine._dispatch_overlay_rate(
             "import", "2026-06-07T16:00:00", 0.323092, 1.5)
@@ -4474,12 +4452,10 @@ class TestDispatchOverlayAtFinalise(unittest.TestCase):
         engine._store.upsert_dispatch_slot(
             "2026-06-07T15:00:00", off_peak=True, provider="MYENERGI_V2",
             source="smart-charge")
-        self._orig_apply = engine._DISPATCH_OVERLAY_APPLY
 
     def tearDown(self):
         import shutil
         self._lj.stop()
-        engine._DISPATCH_OVERLAY_APPLY = self._orig_apply
         engine._kraken_rate_schedules = {}
         engine.DATA_DIR, engine.CONFIG_PATH = self._orig_data_dir, self._orig_config
         shutil.rmtree(self._tmp, ignore_errors=True)
@@ -4501,16 +4477,9 @@ class TestDispatchOverlayAtFinalise(unittest.TestCase):
             (start,)).fetchone()
 
     def test_finalise_applies_overlay_when_enabled(self):
-        engine._DISPATCH_OVERLAY_APPLY = True
         r = self._finalise("2026-06-07T15:00:00", "2026-06-07T15:30:00")
         self.assertAlmostEqual(r["imp_rate"], 0.05493, places=5,
             msg="out-of-window dispatched block must finalise off-peak")
-
-    def test_finalise_compute_and_log_leaves_peak(self):
-        engine._DISPATCH_OVERLAY_APPLY = False
-        r = self._finalise("2026-06-07T15:00:00", "2026-06-07T15:30:00")
-        self.assertAlmostEqual(r["imp_rate"], 0.323092, places=5,
-            msg="compute-and-log must leave the block at peak")
 
 
 class TestConfigStateDiagnostics(unittest.TestCase):
@@ -4537,7 +4506,6 @@ class TestConfigStateDiagnostics(unittest.TestCase):
         self.assertIn("uses_api=True", out)
         self.assertIn("import_sensor=True", out)
         self.assertIn("export_sensor=False", out)
-        self.assertIn("dispatch_overlay apply=True", out)
         self.assertIn("min_kwh=0.10", out)
         # Overlay is ACTIVE in an api mode.
         self.assertIn("ACTIVE", out)
@@ -4574,10 +4542,8 @@ class TestConfigStateDiagnostics(unittest.TestCase):
         engine._store.upsert_dispatch_slot(
             "2026-06-07T15:00:00", off_peak=True, provider="MYENERGI_V2",
             source="smart-charge")
-        _orig = engine._DISPATCH_OVERLAY_APPLY
         _orig_reader = engine._kraken_mini_reader
         try:
-            engine._DISPATCH_OVERLAY_APPLY = True
             # Simulate the runtime Mini elevation (mode stays 'api', reader set).
             engine._kraken_mini_reader = object()
             with self.assertLogs("engine", level="INFO") as cm:
@@ -4591,9 +4557,7 @@ class TestConfigStateDiagnostics(unittest.TestCase):
             self.assertIn("mini=active", out)
             self.assertIn("provider=MYENERGI_V2", out)
             self.assertIn("source=smart-charge", out)
-            self.assertIn("apply=True", out)
         finally:
-            engine._DISPATCH_OVERLAY_APPLY = _orig
             engine._kraken_mini_reader = _orig_reader
             engine._kraken_rate_schedules = {}
 
@@ -5197,12 +5161,10 @@ class TestReconciledRateSurvivesPass2(unittest.TestCase):
         self._os, engine._store = engine._store, self.store
         self._osc, engine._kraken_rate_schedules = \
             engine._kraken_rate_schedules, {"import": self._Sched()}
-        self._oa, engine._DISPATCH_OVERLAY_APPLY = engine._DISPATCH_OVERLAY_APPLY, True
 
     def tearDown(self):
         engine._store = self._os
         engine._kraken_rate_schedules = self._osc
-        engine._DISPATCH_OVERLAY_APPLY = self._oa
 
     def test_reconciled_peak_survives_pass2(self):
         bs = "2026-06-04T20:00:00"   # peak-time slot

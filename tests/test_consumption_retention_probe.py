@@ -1,5 +1,7 @@
-"""Tests for engine.probe_consumption_retention + diagnose_consumption_retention
-(read-only historical-import spikes)."""
+"""The API history import: planning, the bounded and full import, the REST export fallback, the
+job and the data floor. (Until 22 Oct 2026 this file also tested three read-only "how far back"
+probes — probe_consumption_retention, diagnose_consumption_retention, diagnose_import_range —
+whose page panel went in v4 4.0.0; they went with it, engine review step 1.)"""
 import os
 import sys
 import types
@@ -38,166 +40,6 @@ sys.modules["block_store"] = bs
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import engine
-
-
-def _row(iso):
-    return {"consumption": 0.1, "interval_start": iso, "interval_end": iso}
-
-
-class _FakeClient:
-    """Async stand-in for KrakenAPIClient covering the probe surface."""
-    def __init__(self, *, account=None, boundaries=None, below_rows=0):
-        self._account = account or {}
-        self._b = boundaries or {}          # (serial, newest) -> row|None
-        self._below = below_rows
-
-    async def get_account(self, *a, **k):
-        return self._account
-
-    async def get_consumption_boundary(self, mpan, serial, *, newest=False,
-                                       period_from=None):
-        return self._b.get((serial, newest))
-
-    async def get_consumption(self, mpan, serial, *, period_from=None,
-                              period_to=None, order_by="period"):
-        return [_row("x")] * self._below
-
-
-class _EngineState:
-    """Save/restore the engine module globals the probes read."""
-    def setUp(self):
-        self._client = engine._kraken_client
-        self._disc = engine._kraken_discovery
-
-    def tearDown(self):
-        engine._kraken_client = self._client
-        engine._kraken_discovery = self._disc
-
-
-class TestRetentionProbe(_EngineState, unittest.TestCase):
-    def _run(self):
-        return asyncio.run(engine.probe_consumption_retention())
-
-    def test_no_api(self):
-        engine._kraken_client = None
-        engine._kraken_discovery = None
-        r = self._run()
-        self.assertFalse(r["ok"])
-        self.assertEqual(r["reason"], "no_api")
-
-    def test_import_and_export_lag(self):
-        engine._kraken_client = _FakeClient(boundaries={
-            ("IMPS", False): _row("2024-06-12T13:00:00Z"),
-            ("IMPS", True): _row("2026-07-18T20:00:00Z"),
-            ("EXPS", False): _row("2024-06-29T03:00:00Z"),
-            ("EXPS", True): _row("2026-07-18T20:00:00Z"),
-        })
-        engine._kraken_discovery = {
-            "import": {"mpan": "IMPAN", "serial": "IMPS"},
-            "export": {"mpan": "EXPAN", "serial": "EXPS"},
-        }
-        r = self._run()
-        self.assertTrue(r["ok"])
-        self.assertEqual(r["channels"]["import"]["earliest"], "2024-06-12T13:00:00+00:00")
-        self.assertTrue(r["channels"]["export"]["available"])
-        self.assertEqual(r["lag_days"], 16)   # 17d - time-of-day → 16 whole days
-
-    def test_no_export_meter(self):
-        engine._kraken_client = _FakeClient(boundaries={
-            ("IMPS", False): _row("2024-06-12T13:00:00Z"),
-            ("IMPS", True): _row("2026-07-18T20:00:00Z"),
-        })
-        engine._kraken_discovery = {"import": {"mpan": "IMPAN", "serial": "IMPS"}}
-        r = self._run()
-        self.assertFalse(r["channels"]["export"]["available"])
-        self.assertIsNone(r["lag_days"])
-
-
-def _account(meter_points):
-    return {"number": "A-1", "properties": [
-        {"electricity_meter_points": meter_points}]}
-
-
-class TestConsumptionDiagnostic(_EngineState, unittest.TestCase):
-    def _run(self):
-        return asyncio.run(engine.diagnose_consumption_retention())
-
-    def test_no_api(self):
-        engine._kraken_client = None
-        engine._kraken_discovery = None
-        r = self._run()
-        self.assertFalse(r["ok"])
-
-    def test_meter_exchange_shows_both_serials(self):
-        # One MPAN, two meters — an old serial reaching 2024-07-01 and a new one
-        # from 2024-07-20 (exactly what the newest-serial probe would miss).
-        acct = _account([{"mpan": "IMPAN", "is_export": False, "meters": [
-            {"serial_number": "OLDSERIAL01"},
-            {"serial_number": "NEWSERIAL20"},
-        ]}])
-        engine._kraken_client = _FakeClient(account=acct, below_rows=0, boundaries={
-            ("OLDSERIAL01", False): _row("2024-07-01T00:00:00Z"),
-            ("OLDSERIAL01", True): _row("2024-07-19T23:30:00Z"),
-            ("NEWSERIAL20", False): _row("2024-07-20T00:00:00Z"),
-            ("NEWSERIAL20", True): _row("2026-07-18T20:00:00Z"),
-        })
-        engine._kraken_discovery = {"import": {"mpan": "IMPAN", "serial": "NEWSERIAL20"}}
-        r = self._run()
-        self.assertTrue(r["ok"])
-        mp = r["meter_points"][0]
-        self.assertEqual(mp["meter_count"], 2)
-        earliest = sorted(m["earliest"][:10] for m in mp["meters"])
-        self.assertEqual(earliest, ["2024-07-01", "2024-07-20"])
-
-    def test_below_boundary_flag(self):
-        # Single serial, but rows DO exist below the reported earliest → the
-        # boundary query is under-reaching (a query artifact, not a real limit).
-        acct = _account([{"mpan": "IMPAN", "is_export": False, "meters": [
-            {"serial_number": "S1"}]}])
-        engine._kraken_client = _FakeClient(account=acct, below_rows=48, boundaries={
-            ("S1", False): _row("2024-07-20T00:00:00Z"),
-            ("S1", True): _row("2026-07-18T20:00:00Z"),
-        })
-        engine._kraken_discovery = {"import": {"mpan": "IMPAN", "serial": "S1"}}
-        r = self._run()
-        m = r["meter_points"][0]["meters"][0]
-        self.assertEqual(m["rows_just_below_earliest"], 48)
-        self.assertIsNotNone(m["earliest_below"])   # the below row's date is surfaced
-
-    def test_agreement_history_surfaced(self):
-        # Two agreements (a tariff change on 2024-11-01) while consumption starts
-        # 2024-07-01 — proves the tariff change is NOT the data boundary.
-        acct = _account([{"mpan": "IMPAN", "is_export": False,
-                          "meters": [{"serial_number": "S1"}],
-                          "agreements": [
-                              {"valid_from": "2024-11-01T00:00:00Z", "valid_to": None,
-                               "tariff_code": "E-1R-IOG-B"},
-                              {"valid_from": "2024-07-01T00:00:00Z",
-                               "valid_to": "2024-11-01T00:00:00Z",
-                               "tariff_code": "E-1R-VAR-A"}]}])
-        engine._kraken_client = _FakeClient(account=acct, boundaries={
-            ("S1", False): _row("2024-07-01T00:00:00Z"),
-            ("S1", True): _row("2026-07-18T20:00:00Z"),
-        })
-        engine._kraken_discovery = {"import": {"mpan": "IMPAN", "serial": "S1"}}
-        mp = self._run()["meter_points"][0]
-        self.assertEqual(mp["agreement_count"], 2)
-        # Sorted earliest-first → supply start is the first agreement.
-        self.assertEqual(mp["supply_start"], "2024-07-01T00:00:00Z")
-        self.assertEqual(mp["agreements"][0]["tariff"], "E-1R-VAR-A")
-
-    def test_serials_are_tail_masked(self):
-        acct = _account([{"mpan": "IMPAN", "is_export": False, "meters": [
-            {"serial_number": "ABCDEF123456"}]}])
-        engine._kraken_client = _FakeClient(account=acct, boundaries={
-            ("ABCDEF123456", False): _row("2024-07-20T00:00:00Z"),
-            ("ABCDEF123456", True): _row("2026-07-18T20:00:00Z"),
-        })
-        engine._kraken_discovery = {"import": {"mpan": "IMPAN", "serial": "ABCDEF123456"}}
-        r = self._run()
-        tail = r["meter_points"][0]["meters"][0]["serial_tail"]
-        self.assertEqual(tail, "…123456")
-        self.assertNotIn("ABCDEF", tail)
 
 
 class TestApiImportPlan(unittest.TestCase):
@@ -397,11 +239,13 @@ class TestApiImportApply(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["imp_rate"], 0.07, places=3)         # cost÷kWh
 
     def test_bounded_window_fills_without_advancing_import_state(self):
-        # fetch_api_window([00:00 → 02:00]) writes those blocks but must NOT touch
-        # the full-import checkpoint / done flag — it's a one-shot gap/period fill.
+        # import_api_history's bounded mode over [00:00 → 02:00] (the gap fill's, through
+        # _gap_fill_window; fetch_api_window, the wrapper only tests called, went 22 Oct 2026)
+        # writes those blocks but must NOT touch the full-import checkpoint / done flag.
         engine._kraken_client = _FakeMeasClient(self._contig())
-        r = asyncio.run(engine.fetch_api_window(
-            "2024-07-01T00:00:00", "2024-07-01T02:00:00", pace_s=0))
+        r = asyncio.run(engine.import_api_history(
+            requested_from="2024-07-01T00:00:00", until_ts="2024-07-01T02:00:00",
+            restart=False, pace_s=0))
         self.assertTrue(r["ok"])
         self.assertGreaterEqual(r["channels"]["import"]["written"], 4)
         ck_key = engine._API_IMPORT_CHECKPOINT + "_import"
@@ -553,7 +397,6 @@ class TestApiImportApply(unittest.TestCase):
             restart=True, max_chunks=6, pace_s=0))
         ch = r["channels"]["import"]
         self.assertEqual(ch["imported"], 3)                 # all present; gap skipped
-        self.assertIsNone(ch["halted_at"])
 
     def test_writes_export_channel(self):
         # Export MPAN → direction GENERATION → exp_* columns.
@@ -787,52 +630,6 @@ class TestDataFloor(unittest.TestCase):
         engine._kraken_client = None
         floor = asyncio.run(engine._data_floor_for("export", self._info()))
         self.assertEqual(floor[:10], "2025-03-08")
-
-
-class TestDiagnoseImportRange(unittest.TestCase):
-    """diagnose_import_range: reports the per-channel start floor and whether
-    Measurements data exists before it."""
-
-    def setUp(self):
-        self._c, self._d, self._a = (engine._kraken_client,
-                                     engine._kraken_discovery,
-                                     engine._kraken_account_number)
-        engine._kraken_account_number = "A-TEST-7"
-        engine._hist_floor_cache.clear()
-        engine._kraken_discovery = {"import": {
-            "mpan": "IM", "serial": "IS",
-            "agreements": [{"tariff_code": "E-1R-VAR",
-                            "valid_from": "2024-07-01T00:00:00Z",
-                            "valid_to": None}]}}
-
-    def tearDown(self):
-        (engine._kraken_client, engine._kraken_discovery,
-         engine._kraken_account_number) = self._c, self._d, self._a
-        engine._hist_floor_cache.clear()
-
-    def test_no_api(self):
-        engine._kraken_client = None
-        res = asyncio.run(engine.diagnose_import_range())
-        self.assertFalse(res["ok"])
-
-    def test_no_data_before_floor(self):
-        engine._kraken_client = _FakeMeasClient([])
-        res = asyncio.run(engine.diagnose_import_range())
-        self.assertTrue(res["ok"])
-        imp = res["channels"]["import"]
-        self.assertEqual(imp["import_starts_at"][:10], "2024-07-01")
-        self.assertFalse(imp["data_before_floor"])
-
-    def test_data_before_floor_detected(self):
-        # a reading inside the first 30-day probe window (~6 months before the
-        # 2024-07-01 agreement) → the floor extends and flags data earlier
-        engine._kraken_client = _FakeMeasClient([
-            _iv("2024-01-15T00:00:00", 0.1, 0.007)])
-        res = asyncio.run(engine.diagnose_import_range())
-        imp = res["channels"]["import"]
-        self.assertTrue(imp["data_before_floor"])
-        self.assertEqual(imp["import_starts_at"][:10], "2024-01-15")
-        self.assertEqual(imp["earliest_seen_before_floor"][:10], "2024-01-15")
 
 
 if __name__ == "__main__":

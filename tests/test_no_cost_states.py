@@ -173,8 +173,9 @@ class TheRecord(unittest.TestCase):
             # a later import that gets the cost takes it off
             ivs[1] = _iv("2024-07-01T00:30:00", 0.127, 0.00889)
             engine._kraken_client = _FakeMeasClient(ivs)
-            asyncio.run(engine.fetch_api_window("2024-07-01T00:00:00", "2024-07-01T02:00:00",
-                                                pace_s=0))
+            asyncio.run(engine.import_api_history(requested_from="2024-07-01T00:00:00",
+                                                  until_ts="2024-07-01T02:00:00",
+                                                  restart=False, pace_s=0))
             self.assertEqual(t.store.import_no_cost_slots(), {})
         finally:
             t.tearDown()

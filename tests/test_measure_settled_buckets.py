@@ -43,12 +43,10 @@ class TestMeasureSettledBuckets(unittest.TestCase):
 
     def setUp(self):
         self._save = (engine._store, engine._kraken_client, engine._kraken_discovery,
-                      engine._kraken_rate_schedules, engine._kraken_current_agreement_from,
-                      engine._MEASURED_FETCH_ENABLED)
+                      engine._kraken_rate_schedules, engine._kraken_current_agreement_from)
         self.st = BlockStore(":memory:")
         engine._store = self.st
         engine._kraken_current_agreement_from = "2026-08-01T00:00:00"
-        engine._MEASURED_FETCH_ENABLED = True
         self.st._conn.execute(
             "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
             "block_minutes, timezone) VALUES (1,'2020-01-01T00:00:00',1,30,'UTC')")
@@ -62,8 +60,7 @@ class TestMeasureSettledBuckets(unittest.TestCase):
 
     def tearDown(self):
         (engine._store, engine._kraken_client, engine._kraken_discovery,
-         engine._kraken_rate_schedules, engine._kraken_current_agreement_from,
-         engine._MEASURED_FETCH_ENABLED) = self._save
+         engine._kraken_rate_schedules, engine._kraken_current_agreement_from) = self._save
 
     def test_smb_sources_cost_and_split_from_buckets(self):
         engine._kraken_discovery = {"import": {"mpan": "m", "tariff_code": "IOG-SMB-FIX-12M"}}

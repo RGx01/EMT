@@ -5356,88 +5356,6 @@ class TestHistoricalProbeEndpoint(unittest.TestCase):
         self.assertFalse(r.get_json()["ok"])
 
 
-class TestExportProbeEndpoint(unittest.TestCase):
-    """Read-only export-retention probe endpoint (historical-import spike)."""
-
-    def test_registered(self):
-        self.assertIn("api_export_probe", server.app.view_functions)
-
-    def test_no_api_returns_400(self):
-        # The stub engine (types.ModuleType) has no kraken_available; set it.
-        import engine
-        engine.kraken_available = lambda: False
-        try:
-            r = make_client().post("/api/historical/export-probe", json={})
-            self.assertEqual(r.status_code, 400)
-            self.assertFalse(r.get_json()["ok"])
-        finally:
-            del engine.kraken_available
-
-    def test_returns_probe_result(self):
-        import engine
-        saved_run = server._run_on_engine_loop
-        engine.kraken_available = lambda: True
-        engine.probe_consumption_retention = lambda: None   # coro not created
-        server._run_on_engine_loop = lambda coro, timeout=None: {
-            "ok": True,
-            "channels": {
-                "import": {"channel": "import", "available": True,
-                           "earliest": "2024-06-12T13:00:00+00:00"},
-                "export": {"channel": "export", "available": True,
-                           "earliest": "2024-06-29T03:00:00+00:00"},
-            },
-            "lag_days": 16,
-        }
-        try:
-            r = make_client().post("/api/historical/export-probe", json={})
-            self.assertEqual(r.status_code, 200)
-            body = r.get_json()
-            self.assertTrue(body["ok"])
-            self.assertEqual(body["lag_days"], 16)
-        finally:
-            server._run_on_engine_loop = saved_run
-            del engine.kraken_available
-            del engine.probe_consumption_retention
-
-    def test_diagnostic_registered(self):
-        self.assertIn("api_consumption_diagnostic", server.app.view_functions)
-
-    def test_diagnostic_no_api_returns_400(self):
-        import engine
-        engine.kraken_available = lambda: False
-        try:
-            r = make_client().post("/api/historical/consumption-diagnostic", json={})
-            self.assertEqual(r.status_code, 400)
-            self.assertFalse(r.get_json()["ok"])
-        finally:
-            del engine.kraken_available
-
-    def test_diagnostic_returns_meter_points(self):
-        import engine
-        saved_run = server._run_on_engine_loop
-        engine.kraken_available = lambda: True
-        engine.diagnose_consumption_retention = lambda: None
-        server._run_on_engine_loop = lambda coro, timeout=None: {
-            "ok": True,
-            "meter_points": [{"mpan_tail": "…000001", "is_export": False,
-                              "meter_count": 2, "meters": [
-                {"serial_tail": "…AAA", "available": True,
-                 "earliest": "2024-07-01T00:00:00+00:00"},
-                {"serial_tail": "…BBB", "available": True,
-                 "earliest": "2024-07-20T00:00:00+00:00"}]}],
-        }
-        try:
-            r = make_client().post("/api/historical/consumption-diagnostic", json={})
-            self.assertEqual(r.status_code, 200)
-            body = r.get_json()
-            self.assertTrue(body["ok"])
-            self.assertEqual(body["meter_points"][0]["meter_count"], 2)
-        finally:
-            server._run_on_engine_loop = saved_run
-            del engine.kraken_available
-            del engine.diagnose_consumption_retention
-
-
 class TestHistoricalCsvEndpoints(unittest.TestCase):
     """CSV import wizard endpoints (3.5.0). Preview is pure (csv_import); apply is
     guarded here (its write path is covered by test_csv_import_apply)."""
@@ -5953,22 +5871,6 @@ class TestSettingsPageCredentialsFlag(unittest.TestCase):
         r = self._render("api", True)
         html = r.get_data(as_text=True)
         self.assertIn("var HAS_CREDENTIALS = true", html)
-
-
-class TestImportRangeDiagnosticEndpoint(unittest.TestCase):
-    """The import-range diagnostic route is registered and gated on an API."""
-
-    def test_registered(self):
-        self.assertIn("api_import_range_diagnostic", server.app.view_functions)
-
-    def test_gated_without_api(self):
-        import engine
-        engine.kraken_available = lambda: False
-        try:
-            r = make_client().post("/api/historical/import-range-diagnostic")
-            self.assertEqual(r.status_code, 400)
-        finally:
-            del engine.kraken_available
 
 
 class TestImportGapsEndpoint(unittest.TestCase):

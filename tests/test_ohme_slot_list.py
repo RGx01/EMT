@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """Unit tests for _parse_ohme_slots (Ohme own-plan parser, BL-31 OHME card upgrade).
-The end-to-end OHME path is UNVALIDATED (no Ohme tester), but this pure parser is
+The end-to-end OHME path is reported working by Ohme owners (22 Oct 2026); this pure parser is
 fully covered here: official HH:MM local strings (incl. midnight-crossing + anchoring)
 and the dan-r ISO attribute shape."""
 import re, unittest

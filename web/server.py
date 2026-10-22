@@ -5410,59 +5410,6 @@ def api_attribute_backout_status():
     import engine as _eng
     return jsonify(_eng.api_backout_status())
 
-
-@app.route("/api/historical/export-probe", methods=["POST"])
-def api_export_probe():
-    """READ-ONLY beta diagnostic (historical-import spike): measure how far back
-    the Octopus API reaches for import vs export, via cheap single-row boundary
-    fetches. No body — uses the discovered meters. Creates nothing, writes
-    nothing. Gated on an available API (nothing to probe otherwise)."""
-    try:
-        import engine as _eng
-        if not _eng.kraken_available():
-            return jsonify({"ok": False, "error": "no API connected"}), 400
-        result = _run_on_engine_loop(
-            _eng.probe_consumption_retention(), timeout=60.0)
-        return jsonify(result), (200 if result.get("ok") else 400)
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route("/api/historical/consumption-diagnostic", methods=["POST"])
-def api_consumption_diagnostic():
-    """READ-ONLY deep diagnostic: enumerate every meter point + serial on the
-    account with each serial's reachable consumption span, to tell apart an API
-    retention limit, a meter exchange, or a query artifact. No body. Writes
-    nothing. Gated on an available API."""
-    try:
-        import engine as _eng
-        if not _eng.kraken_available():
-            return jsonify({"ok": False, "error": "no API connected"}), 400
-        result = _run_on_engine_loop(
-            _eng.diagnose_consumption_retention(), timeout=180.0)
-        return jsonify(result), (200 if result.get("ok") else 400)
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route("/api/historical/import-range-diagnostic", methods=["POST"])
-def api_import_range_diagnostic():
-    """READ-ONLY: report where each channel's import starts (its earliest supplier
-    agreement) and probe the Measurements API for data BEFORE that floor — so we
-    can tell whether real history exists earlier than where the import began
-    (e.g. import from 01/07/24, export from a later export-agreement date). Writes
-    nothing. Gated on an available API."""
-    try:
-        import engine as _eng
-        if not _eng.kraken_available():
-            return jsonify({"ok": False, "error": "no API connected"}), 400
-        result = _run_on_engine_loop(
-            _eng.diagnose_import_range(), timeout=120.0)
-        return jsonify(result), (200 if result.get("ok") else 400)
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
 @app.route("/api/historical/site-plan", methods=["GET"])
 def api_historical_site_plan():
     """READ-ONLY. Discover the account's property history for the PRE-import
@@ -6202,34 +6149,6 @@ def api_reprice_history_status():
     except Exception as e:
         logger.debug("api_reprice_history_status: %s", e)
         return jsonify({"in_progress": False, "remaining": 0, "done": True, "cause": None})
-
-
-@app.route("/api/reprice-history-conformance")
-def api_reprice_history_conformance():
-    """P3.3c soak check (non-destructive): recompute split+exc for a UTC date range via the
-    unified sweep core and diff against stored values. `verdict` is "clean" only with zero
-    uncapped divergences. Params: from=YYYY-MM-DD, to=YYYY-MM-DD (UTC), meter_id (optional)."""
-    try:
-        import engine as _eng
-        frm = request.args.get("from"); to = request.args.get("to")
-        if not frm or not to:
-            return jsonify({"ok": False, "reason": "from and to (YYYY-MM-DD) required"}), 400
-        meter = request.args.get("meter_id", "electricity_main")
-        # Build the full historical import rate segments ON THE ENGINE LOOP (the Kraken client is
-        # bound to it) and hand them to the harness — a sync-thread build raises "attached to a
-        # different loop". If it fails, the harness simply skips exc (exc_checked=False).
-        rate_segs = None
-        try:
-            rate_segs = _run_on_engine_loop(_eng._build_channel_rate_segs("import"), timeout=60)
-        except Exception as _rse:
-            logger.warning("api_reprice_history_conformance: engine-loop rate-seg build failed: %s", _rse)
-        rep = _eng.reprice_history_conformance(frm + "T00:00:00", to + "T00:00:00", meter,
-                                               rate_segs=rate_segs)
-        return jsonify(rep)
-    except Exception as e:
-        logger.exception("api_reprice_history_conformance failed")
-        return jsonify({"ok": False, "error": str(e)}), 500
-
 
 def _resolve_period(kind, store, cfg, tz, args):
     """Turn a period request into `(utc_start, utc_end, meta)`.

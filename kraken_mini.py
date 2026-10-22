@@ -43,13 +43,6 @@ from kraken_ingester import normalise_to_naive_utc
 
 logger = logging.getLogger("kraken_mini")
 
-# Poll cadence and bound for acquiring the post-boundary point.
-_POLL_INTERVAL_S = 12
-_POLL_TIMEOUT_S = 120
-# Check the shared GraphQL rate-limit budget every Nth boundary (not every one).
-_RATE_LIMIT_CHECK_EVERY = 8
-_RATE_LIMIT_MIN_REMAINING = 20
-
 # --- CAD-like per-boundary collection (the primary model) -------------------
 # Max telemetry calls per boundary before giving up (DCC reconciles later).
 _MAX_CALLS_PER_BOUNDARY = 10
@@ -75,35 +68,15 @@ class MiniBoundaryReader:
 
     Stateless across boundaries except for the rate-limit-check counter and the
     device id (resolved once). Injected with the Kraken client and the resolved
-    device_id; the engine wires the boundary callback to .read_at_boundary().
+    device_id; the engine collects its reads into the current block (collect_into).
     """
 
     def __init__(self, client, device_id: str):
         self.client = client
         self.device_id = device_id
-        self._boundary_count = 0
         # Dedupe repeated telemetry-fetch failures: log the first, suppress the
         # rest (the boundary loop polls ~every 10s), log again only on recovery.
         self._fetch_failing = False
-
-    async def _maybe_check_rate_limit(self) -> bool:
-        """Every Nth boundary, check the shared GraphQL budget. Returns False
-        (skip this burst) if remaining is known and below the floor."""
-        self._boundary_count += 1
-        if self._boundary_count % _RATE_LIMIT_CHECK_EVERY != 0:
-            return True
-        try:
-            info = await self.client.get_rate_limit()
-        except Exception:
-            return True   # unknown → proceed (best-effort)
-        if not info:
-            return True
-        remaining = info.get("remaining")
-        if remaining is not None and remaining < _RATE_LIMIT_MIN_REMAINING:
-            logger.warning("mini: GraphQL budget low (remaining=%s) — skipping "
-                           "this boundary burst", remaining)
-            return False
-        return True
 
     def reset_boundary_collection(self, boundary_iso: str) -> None:
         """Begin a fresh collection burst for a new boundary. Resets the
@@ -189,52 +162,6 @@ class MiniBoundaryReader:
             self._next_call_after = None  # poll again next tick
         return added
 
-    async def read_at_boundary(self, boundary_iso: str,
-                               now_fn: Callable[[], datetime] = None
-                               ) -> Optional[dict]:
-        """Acquire an interpolated import register read at the boundary.
-
-        boundary_iso: the block end time (naive-UTC ISO, as fired by the engine).
-        Returns {value, ts, interpolated} ready to apply as the closing import
-        read, or None if a bracketing pair couldn't be obtained (→ DCC will
-        reconcile). Never raises.
-        """
-        try:
-            boundary_dt = datetime.fromisoformat(boundary_iso)
-        except (ValueError, TypeError):
-            logger.warning("mini: bad boundary %r", boundary_iso)
-            return None
-
-        if not await self._maybe_check_rate_limit():
-            return None
-
-        # Poll until we have a point at/after the boundary, or timeout.
-        now_fn = now_fn or (lambda: datetime.now(timezone.utc).replace(tzinfo=None))
-        deadline = now_fn() + timedelta(seconds=_POLL_TIMEOUT_S)
-        # Fetch window starts a little before the boundary so we always capture
-        # a pre-boundary point too.
-        win_start = (boundary_dt - timedelta(minutes=2))
-
-        pre: Optional[dict] = None
-        post: Optional[dict] = None
-        while True:
-            points = await self._fetch(win_start, boundary_dt + timedelta(minutes=2))
-            pre, post = self._bracket(points, boundary_dt)
-            if pre and post:
-                break
-            if now_fn() >= deadline:
-                logger.info("mini: no post-boundary telemetry for %s within "
-                            "%ds — deferring to DCC", boundary_iso, _POLL_TIMEOUT_S)
-                return None
-            await asyncio.sleep(_POLL_INTERVAL_S)
-
-        # Reuse the engine's interpolation (imported lazily to avoid a cycle).
-        from engine import interpolate_value
-        read = interpolate_value(pre, post, boundary_dt)
-        logger.info("mini: boundary %s import register → %.3f (interpolated)",
-                    boundary_iso, read["value"])
-        return read
-
     async def read_latest(self, now_dt: datetime, lookback_s: int = 300):
         """The Mini's latest import register point {value, ts} from the last `lookback_s`,
         or None. ONE telemetry call; touches no per-boundary collection state. For a gap
@@ -287,20 +214,3 @@ class MiniBoundaryReader:
         out.sort(key=lambda r: r["ts"])
         return out
 
-    @staticmethod
-    def _bracket(points: list[dict], boundary_dt: datetime
-                 ) -> tuple[Optional[dict], Optional[dict]]:
-        """From sorted points, return (last point at/before boundary, first
-        point after boundary), or (None, None)/partial if not bracketed."""
-        pre = post = None
-        for p in points:
-            try:
-                pts = datetime.fromisoformat(p["ts"])
-            except (ValueError, KeyError):
-                continue
-            if pts <= boundary_dt:
-                pre = p          # keep the latest pre-boundary point
-            elif post is None:
-                post = p         # first post-boundary point
-                break
-        return pre, post

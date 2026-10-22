@@ -960,72 +960,7 @@ function loadSitePlan(){
   }).catch(function(){ SITE_PLAN.needs = false; });
 }
 
-// Diagnostic: where does each channel's import start, and does Measurements data
-// exist BEFORE that? Import floors at each channel's earliest supplier agreement,
-// which is why export can begin later than import.
-function diagnoseRange(){
-  var st = document.getElementById('range-diag-status');
-  var out = document.getElementById('range-diag-out');
-  st.textContent = 'Checking… (probes the API back ~4 years)'; out.innerHTML = '';
-  fetch(apiUrl('/api/historical/import-range-diagnostic'), {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
-    .then(function(r){return r.json();}).then(function(d){
-      st.textContent = '';
-      if(!d.ok){ out.innerHTML = '<span style="color:var(--danger);">'+_esc(_bfReason(d))+'</span>'; return; }
-      var html = '';
-      ["import","export"].forEach(function(chn){
-        var c = (d.channels||{})[chn]; if(!c) return;
-        var starts = c.import_starts_at ? _esc(c.import_starts_at.substr(0,10)) : 'unknown';
-        var agree = c.agreement_floor ? _esc(c.agreement_floor.substr(0,10)) : null;
-        html += '<div style="text-transform:capitalize;margin-bottom:4px;"><strong>'+chn+'</strong>: import starts '+starts;
-        if(c.data_before_floor){
-          html += ' — <span style="color:var(--warning-color,#b45309);">reaches earlier than your agreement'
-            + (agree ? ' ('+agree+')' : '')+'</span>';
-        } else if(agree && starts === agree){
-          html += ' — <span style="color:var(--muted);">at your earliest agreement; no meter data found before it</span>';
-        } else {
-          html += ' — <span style="color:var(--muted);">earliest half-hour the API returns</span>';
-        }
-        html += '</div>';
-      });
-      html += '<div style="color:var(--muted);font-size:12px;margin-top:4px;">The floor follows the DATA: it probes 30-day windows back from your earliest agreement and starts wherever the API actually returns readings. '
-        + 'If the Octopus website shows history earlier than this, it is usually under a different meter/MPAN (a meter exchange) or a data source the half-hourly API does not expose.</div>';
-      out.innerHTML = html;
-    }).catch(function(e){ st.textContent = 'failed: '+e; });
-}
 
-// Deep diagnostic: enumerate every meter point + serial on the account with how
-// far back each reaches. A meter exchange (older serial, or a second export MPAN)
-// is where the website's extra history usually lives.
-function meterHistory(){
-  var st = document.getElementById('range-diag-status');
-  var out = document.getElementById('meter-hist-out');
-  st.textContent = 'Enumerating meters…'; out.innerHTML = '';
-  fetch(apiUrl('/api/historical/consumption-diagnostic'), {method:'POST', headers:{'Content-Type':'application/json'}, body:'{}'})
-    .then(function(r){return r.json();}).then(function(d){
-      st.textContent = '';
-      if(!d.ok){ out.innerHTML = '<span style="color:var(--danger);">'+_esc(_bfReason(d))+'</span>'; return; }
-      var html = '';
-      (d.meter_points||[]).forEach(function(mp){
-        var chan = mp.is_export ? 'Export' : 'Import';
-        html += '<div style="margin-top:6px;"><strong>'+chan+'</strong> MPAN …'+_esc(mp.mpan_tail||'')
-          + ' — '+mp.meter_count+' meter(s)'
-          + (mp.supply_start ? ', supply from '+_esc((mp.supply_start||'').substr(0,10)) : '')+'</div>';
-        (mp.meters||[]).forEach(function(m){
-          if(m.available === false){
-            html += '<div style="margin-left:14px;color:var(--muted);">serial '+_esc(m.serial_tail||'?')+': '+_esc(m.note||'unavailable')+'</div>';
-            return;
-          }
-          var e = m.earliest ? _esc(m.earliest.substr(0,10)) : '?';
-          var l = m.latest ? _esc(m.latest.substr(0,10)) : '?';
-          var below = (m.rows_just_below_earliest||0) > 0
-            ? ' <span style="color:var(--warning-color,#b45309);">('+m.rows_just_below_earliest+' rows exist below — under-reaching)</span>' : '';
-          html += '<div style="margin-left:14px;">serial '+_esc(m.serial_tail||'?')+': '+e+' → '+l+below+'</div>';
-        });
-      });
-      html += '<div style="color:var(--muted);font-size:12px;margin-top:4px;">Earlier export under a different MPAN, or an older serial on the same MPAN (a meter exchange), is where the website’s extra history lives. If a serial shows the export you expect, tell me and I can target it.</div>';
-      out.innerHTML = html || '<span style="color:var(--muted);">No meter points returned.</span>';
-    }).catch(function(e){ st.textContent = 'failed: '+e; });
-}
 
 var _statusTimer = null;
 var _apiTermHandled = false;   // guards against an accidental repeat run after completion

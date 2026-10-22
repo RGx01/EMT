@@ -71,11 +71,9 @@ class _Harness(unittest.TestCase):
     def setUp(self):
         self._save = (engine._store, engine._kraken_client, engine._kraken_discovery,
                       engine._kraken_rate_schedules, engine._kraken_current_agreement_from,
-                      engine._MEASURED_FETCH_ENABLED, engine._MEASURED_APPLY,
                       engine._MEASURED_HISTORY_DRAIN_PACE, engine._import_schedule_covers_history)
         self.st = BlockStore(":memory:")
         engine._store = self.st
-        engine._MEASURED_FETCH_ENABLED = engine._MEASURED_APPLY = True
         engine._MEASURED_HISTORY_DRAIN_PACE = 0
         engine._kraken_rate_schedules = {}
         engine._import_schedule_covers_history = True
@@ -89,7 +87,6 @@ class _Harness(unittest.TestCase):
     def tearDown(self):
         (engine._store, engine._kraken_client, engine._kraken_discovery,
          engine._kraken_rate_schedules, engine._kraken_current_agreement_from,
-         engine._MEASURED_FETCH_ENABLED, engine._MEASURED_APPLY,
          engine._MEASURED_HISTORY_DRAIN_PACE, engine._import_schedule_covers_history) = self._save
 
     def _block(self, slot, source=None):

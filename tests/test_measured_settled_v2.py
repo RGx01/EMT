@@ -24,7 +24,7 @@ class _NoBoundsSched:
 class TestMeasuredSettledV2(unittest.TestCase):
     def setUp(self):
         self._save = (engine._store, engine._kraken_rate_schedules, engine._kraken_discovery,
-                      engine._kraken_current_agreement_from, engine._MEASURED_APPLY)
+                      engine._kraken_current_agreement_from)
         self.st = BlockStore(":memory:")
         engine._store = self.st
         engine._kraken_rate_schedules = {"import": _Sched()}
@@ -32,14 +32,13 @@ class TestMeasuredSettledV2(unittest.TestCase):
         # not IOG-SMB, so these cases keep the dispatch rule they were written for
         engine._kraken_discovery = {"import": {"mpan": "m", "tariff_code": "E-1R-INTELLI-VAR-22-10-14-B"}}
         engine._kraken_current_agreement_from = "2026-08-01T00:00:00"
-        engine._MEASURED_APPLY = True
         self.st._conn.execute(
             "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
             "block_minutes, timezone) VALUES (1,'2020-01-01T00:00:00',1,30,'UTC')")
 
     def tearDown(self):
         (engine._store, engine._kraken_rate_schedules, engine._kraken_discovery,
-         engine._kraken_current_agreement_from, engine._MEASURED_APPLY) = self._save
+         engine._kraken_current_agreement_from) = self._save
 
     def _blk(self, slot, kwh, rate):
         self.st._conn.execute(
@@ -135,12 +134,11 @@ class TheApplyIsIntelligentOnly(unittest.TestCase):
 
     def setUp(self):
         self._save = (engine._store, engine._kraken_rate_schedules, engine._kraken_discovery,
-                      engine._kraken_current_agreement_from, engine._MEASURED_APPLY)
+                      engine._kraken_current_agreement_from)
         self.st = BlockStore(":memory:")
         engine._store = self.st
         engine._kraken_discovery = {"import": {"mpan": "m", "tariff_code": "E-1R-AGILE-24-10-01-B"}}
         engine._kraken_current_agreement_from = "2026-08-01T00:00:00"
-        engine._MEASURED_APPLY = True
         engine._kraken_rate_schedules = {"import": _Sched()}
         self.st._conn.execute(
             "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, block_minutes, "
@@ -155,7 +153,7 @@ class TheApplyIsIntelligentOnly(unittest.TestCase):
 
     def tearDown(self):
         (engine._store, engine._kraken_rate_schedules, engine._kraken_discovery,
-         engine._kraken_current_agreement_from, engine._MEASURED_APPLY) = self._save
+         engine._kraken_current_agreement_from) = self._save
 
     def test_an_agile_half_hour_keeps_its_rate(self):
         res = engine.apply_measured_settled()
