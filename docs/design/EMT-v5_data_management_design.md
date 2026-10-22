@@ -331,6 +331,10 @@ in upload order still wins.
   - A count goes three months a pass, pausing 20 ms between passes, so the engine loop gets the
     interpreter back.
 
+**(20) The purge says so from its start** (22 Oct 2026, the user: no banner until it had finished).
+A working banner names the job's step (the backup, then the delete) until the success or error
+banner replaces it. A page opened while one runs picks it up.
+
 ---
 
 ## 2. Open
@@ -489,5 +493,9 @@ clean-up.
     whole history counted in 1.0 s on a Mac (0.72 s in one pass); two hours on, only October.
     The panel for 18 Jul 2024 17:00 shows both sections, the export rate "—" (the export agreement
     starts in October 2024). The bills fill opens on the bills alone.
+
+20. **The purge's banner** — *built 22 Oct 2026*: §1 (20). On a copy of staging's database: "taking
+    a safety backup…", "deleting all imported data…", then "Deleted 48098 imported rows"; a reload
+    afterwards shows no banner.
 
 1 comes first, 2 after it; 3–6 stand alone; 7 last, once 2, 4 and 6 have taken the pages' jobs. 8 after staging, once all seven had shipped.
