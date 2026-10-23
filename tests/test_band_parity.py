@@ -203,14 +203,33 @@ class TheBandNote(_Base):
     """The detail panel's note (engine step 2b, the user 23 Oct 2026): the cell stays green,
     the panel says where Octopus's band is not its rules'."""
 
+    def setUp(self):
+        super().setUp()
+        self.st = BlockStore(":memory:")
+        self.st.record_dispatch_history("2026-07-07T22:30:00", "completed", provider="Myenergi",
+                                        source="unknown", energy_kwh=-3.0)
+        self.p3 = mock.patch.object(engine, "_reader", lambda: self.st)
+        self.p3.start()
+
+    def tearDown(self):
+        self.p3.stop()
+        super().tearDown()
+
     def test_billed_against_the_rules_is_noted(self):
         self.dispatched.add("2026-09-06T19:00:00")
         n = engine.band_note("2026-09-06T19:00:00", 0.17, "STANDARD_RATE")
-        self.assertEqual(n, {"settled": "peak", "predicted": "off_peak", "disagrees": True})
+        self.assertEqual(n, {"settled": "peak", "predicted": "off_peak", "before_record": False,
+                             "disagrees": True})
 
     def test_agreeing_is_not(self):
         n = engine.band_note("2026-09-06T19:00:00", 0.17, "STANDARD_RATE")
         self.assertEqual(n["disagrees"], False)
+
+    def test_before_the_dispatch_record_nothing_disagrees(self):
+        """Imported history's evening charge, billed off-peak: EMT had no dispatch record to
+        predict it from, so the panel says nothing (staging, 23 Oct 2026, after the re-import)."""
+        n = engine.band_note("2025-03-06T19:30:00", 3.6, "OFF_PEAK", live=False)
+        self.assertEqual((n["predicted"], n["before_record"], n["disagrees"]), ("peak", True, False))
 
     def test_a_published_tariff_has_none(self):
         with mock.patch.object(engine, "tariff_kind_at", lambda bs: "published"):
