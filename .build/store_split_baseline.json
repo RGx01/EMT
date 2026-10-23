@@ -233,7 +233,6 @@
     "is_slot_tombstoned",
     "last_block_end",
     "last_standing_charge",
-    "latest_measured_kwh",
     "list_historical_derivations",
     "load_current_block",
     "measured_costs_since",

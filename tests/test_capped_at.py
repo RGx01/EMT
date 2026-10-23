@@ -171,6 +171,8 @@ class TheMixedBill(_Harness):
             "segments": [(1.0, 0.05, "off_peak", "ev"), (1.0, 0.25, "peak", "ev"),
                          (1.0, 0.30, "day", "house")],
             "classification": {"ev": "mixed", "house": "day"}}
+        # Octopus's buckets at both bands: the mixed band (engine step 2b)
+        self.st.upsert_measured_breakdown(S, home_kwh=1.0, home_rate=0.30, ev_kwh=2.0, ev_rate=0.05)
         try:
             engine.apply_measured_to_block(S, cost_incl=0.60, cost_excl=0.57, label="mixed")
         finally:

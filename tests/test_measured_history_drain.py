@@ -56,6 +56,11 @@ class TestMeasuredHistoryDrain(unittest.TestCase):
          engine._kraken_rate_schedules, engine._kraken_current_agreement_from,
          engine._MEASURED_HISTORY_DRAIN_PACE) = self._save
 
+    def _buckets(self, slot, kwh, rate):
+        # IOG-SMB's band is its buckets' (engine step 2b): the bill's one bucket at `rate`
+        self.st.upsert_measured_breakdown(slot, mpan="m", home_kwh=kwh, home_rate=rate,
+                                          ev_kwh=0.0, ev_rate=None)
+
     def _imported_block(self, slot, kwh, rate=0.323092):
         # an imported SMB slot: settled kWh (imp_kwh_api), schedule-priced provisional (peak here)
         self.st._conn.execute(
@@ -153,6 +158,7 @@ class TestMeasuredHistoryDrain(unittest.TestCase):
         self._live_block(s2, 3.0, api_settled=True)
         self.st.upsert_measured_cost(s2, mpan="m", cost_incl=0.1, cost_excl=0.095,
                                      label="OFF_PEAK", kwh=3.0)
+        self._buckets(s2, 3.0, OFF)
         engine.apply_measured_settled()
         self.assertEqual(self._row(s2)["rate_source"], "settled")
 
@@ -170,12 +176,14 @@ class TestMeasuredHistoryDrain(unittest.TestCase):
         # …but a DCC-settled live block and an imported block are both accepted directly
         s2 = "2026-08-01T04:30:00"
         self._live_block(s2, 3.0, api_settled=True)
+        self._buckets(s2, 3.0, OFF)
         self.assertTrue(engine.apply_measured_to_block(s2, cost_incl=round(3.0 * OFF, 6), label="OFF_PEAK"))
         self.assertEqual(self._row(s2)["rate_source"], "settled")
         s3 = "2026-08-01T05:00:00"
         self._imported_block(s3, 3.0)
         self.st._conn.execute("UPDATE blocks SET imp_kwh_api=NULL, source='imported_api' WHERE block_start=?", (s3,))
         self.st._conn.commit()
+        self._buckets(s3, 3.0, OFF)
         self.assertTrue(engine.apply_measured_to_block(s3, cost_incl=round(3.0 * OFF, 6), label="OFF_PEAK"))
         self.assertEqual(self._row(s3)["rate_source"], "settled")
 
@@ -187,32 +195,30 @@ class TestMeasuredHistoryDrain(unittest.TestCase):
         self._live_block("2026-08-01T06:30:00", 3.0, api_settled=True)    # DCC-settled live
         self.assertEqual(engine._measured_history_backlog(), 1)
 
-    def test_settled_slot_bands_on_settled_kwh_not_stale_cad_kwh(self):
-        # H3 (the 07:00 shape, on a SETTLED block): Octopus settled 0.001 kWh @ peak
-        # (cost 0.000323, label STANDARD_RATE) but the block still holds 0.004 CAD kWh
-        # (pass-2 not yet reconciled). cost / CAD 0.004 = 0.0808 -> nearest is OFF-PEAK (wrong).
-        # The band divisor must be the SETTLED kWh: cost / 0.001 = 0.323 -> PEAK. Cost still
-        # beats the label (see test_cost_beats_label) — only the denominator is fixed.
+    def test_a_cad_kwh_waits_for_the_settled_one(self):
+        """The 07:00 shape: Octopus settled 0.001 kWh at peak, the block still holds 0.004 CAD kWh
+        (PASS 2 not yet reconciled). The cost is kWh × rate now (engine step 2b), so the apply waits
+        rather than price the CAD figure; reconciled, it settles at the bill's band. (Until step 2b
+        the cost was the bill's and only the band's cost ÷ kWh divisor had to be the settled kWh.)"""
         s = "2026-08-01T07:00:00"
         self.st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
             "imp_kwh, imp_kwh_api, imp_rate, imp_cost, rate_source, source) "
             "VALUES (?,?,?,1,?,?,?,?,NULL,NULL)",
-            (s, s, "electricity_main", 0.004, 0.001, 0.323092, 0.000323))
+            (s, s, "electricity_main", 0.004, 0.001, 0.05493, 0.00022))
         self.st._conn.commit()
         self.st.upsert_measured_cost(s, mpan="m", cost_incl=0.000323, cost_excl=0.000308,
-                                     label="STANDARD_RATE", kwh=0.001)     # settled kWh = 0.001
+                                     label="STANDARD_RATE", kwh=0.001)
+        self._buckets(s, 0.001, 0.323092)
+        self.assertFalse(engine.apply_measured_to_block(s, cost_incl=0.000323, label="STANDARD_RATE"))
+        self.assertEqual(engine._APPLY_REFUSAL, engine._REFUSE_CAD_KWH)
+        self.assertIsNone(self._row(s)["rate_source"])
+        self.st._conn.execute("UPDATE blocks SET imp_kwh=0.001 WHERE block_start=?", (s,))
+        self.st._conn.commit()
         self.assertTrue(engine.apply_measured_to_block(s, cost_incl=0.000323, label="STANDARD_RATE"))
         r = self._row(s)
         self.assertEqual(r["rate_source"], "settled")
-        self.assertAlmostEqual(r["imp_rate"], 0.323092, places=5)   # PEAK, not 0.05493
-        # unchanged where CAD and settled agree: an off-peak cost bands off-peak as before
-        s2 = "2026-08-01T07:30:00"
-        self._live_block(s2, 3.0, api_settled=True)
-        self.st.upsert_measured_cost(s2, mpan="m", cost_incl=round(3.0 * OFF, 6),
-                                     cost_excl=0.15, label="OFF_PEAK", kwh=3.0)
-        engine.apply_measured_to_block(s2, cost_incl=round(3.0 * OFF, 6), label="OFF_PEAK")
-        self.assertAlmostEqual(self._row(s2)["imp_rate"], OFF, places=5)
+        self.assertAlmostEqual(r["imp_rate"], 0.323092, places=5)   # PEAK, the bucket's
 
     def test_recent_unbilled_slot_is_left_for_the_live_pass(self):
         from datetime import datetime, timezone
