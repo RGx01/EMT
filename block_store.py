@@ -1922,6 +1922,12 @@ class BlockStore:
             return None
         return {"home_kwh": r[0], "home_rate": r[1], "ev_kwh": r[2], "ev_rate": r[3]}
 
+    def first_dispatch_record(self) -> "str | None":
+        """The earliest half-hour EMT holds a dispatch record for (Octopus keeps only recent ones),
+        or None — before it, EMT's prediction has no dispatch to go on."""
+        r = self._conn.execute("SELECT MIN(slot_start) FROM dispatch_history").fetchone()
+        return r[0] if r else None
+
     def slots_with_bill_split(self, start_iso: str, end_iso: str,
                               direction: str = "CONSUMPTION") -> set:
         """Slot starts in [start_iso, end_iso] for which Octopus's OWN device breakdown is
