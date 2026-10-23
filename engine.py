@@ -12264,7 +12264,9 @@ def settled_band(bs: str, bill_label, breakdown: "dict | None" = None) -> "str |
     day's two rates — not the summary label: on the nights of 27–28 Sep 2026 the label read
     STANDARD_RATE on 16 half-hours inside the night window whose only bucket was at the off-peak 5.493p,
     and Octopus's cost was the off-peak cost (2a's first report, 23 Oct 2026; the 4.5.5 design's "the
-    label reserves OFF_PEAK for smart-charge credits"). Elsewhere, the label."""
+    label reserves OFF_PEAK for smart-charge credits"). So on IOG-SMB a label without the buckets settles
+    nothing (2a's report on dev, 23 Oct 2026: 22 night half-hours of 26 Aug – 2 Sep labelled STANDARD_RATE,
+    no breakdown cached, Octopus's cost the off-peak cost). Elsewhere, the label."""
     from kraken_api_client import label_band
     if breakdown:
         lo, hi = _band_rates(bs)
@@ -12278,6 +12280,8 @@ def settled_band(bs: str, bill_label, breakdown: "dict | None" = None) -> "str |
             return bands.pop()
         if len(bands) == 2:
             return "mixed"
+    elif split_at(bs):
+        return None
     if not bill_label or str(bill_label).upper() == "ZERO":
         return None
     try:
