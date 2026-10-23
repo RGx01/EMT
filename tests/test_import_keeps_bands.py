@@ -100,3 +100,48 @@ class TheImport(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ThePricing(unittest.TestCase):
+    """Engine step 2d (23 Oct 2026): the import prices by the rule — kWh × the schedule's rate for
+    Octopus's band — not Octopus's cost ÷ kWh (`_billed_rate`, which kept the schedule only when it
+    agreed within 0.1p). Octopus's cost stays in the bill cache as its answer."""
+
+    def _run(self, ivs, segs):
+        t = _crp.TestApiImportApply("test_writes_exact_dispatch_aware_blocks")
+        t.setUp()
+        try:
+            engine._kraken_client = _FakeMeasClient(ivs)
+
+            async def _segs(channel):
+                return segs
+            with mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent"), \
+                 mock.patch.object(engine, "_build_channel_rate_segs", _segs):
+                asyncio.run(engine.import_api_history())
+            rows = {r["block_start"]: dict(r) for r in t.store._conn.execute(
+                "SELECT block_start, imp_rate, imp_cost FROM blocks WHERE source='imported_api'")}
+            bills = {r["slot_start"]: r["cost_incl"] for r in t.store._conn.execute(
+                "SELECT slot_start, cost_incl FROM measured_cost")}
+            return rows, bills
+        finally:
+            t.tearDown()
+
+    def _banded(self):
+        from kraken_rates import RateSchedule
+        return [("2024-01-01T00:00:00", None,
+                 RateSchedule([("2024-01-01T00:00:00", None, 7.0),
+                               ("2024-01-01T00:00:00", None, 28.0)]))]
+
+    def test_the_band_s_rate_not_cost_over_kwh(self):
+        # Octopus: 1.0 kWh off-peak at £0.10 — 10p/kWh, 3p off the schedule's 7p
+        rows, bills = self._run([_iv("2024-07-01T00:00:00", 1.0, 0.10)], self._banded())
+        r = rows["2024-07-01T00:00:00"]
+        self.assertEqual((r["imp_rate"], r["imp_cost"]), (0.07, 0.07))
+        self.assertEqual(bills["2024-07-01T00:00:00"], 0.10)          # Octopus's answer, kept
+
+    def test_no_schedule_rate_keeps_octopus_s_figure(self):
+        """GUARD of the edge (the parent took cost ÷ kWh here too): a day the schedule has no
+        rate for is priced at Octopus's own figure rather than left unpriced."""
+        rows, _ = self._run([_iv("2024-07-01T00:00:00", 1.0, 0.10)], [])
+        r = rows["2024-07-01T00:00:00"]
+        self.assertEqual((r["imp_rate"], r["imp_cost"]), (0.1, 0.1))

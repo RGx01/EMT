@@ -471,7 +471,7 @@ def label_band(label) -> Optional[bool]:
     A flat tariff's bare CONSUMPTION label returns None deliberately — it has no band,
     and None lets _tariff_rate_for resolve by time of day rather than forcing the
     day's high rate. STANDARD_RATE must stay False: export slots arrive labelled that
-    way and _billed_rate's published-rate branch depends on False, not None."""
+    way and a published-rate import's schedule lookup depends on False, not None."""
     lab = (label or "").upper()
     if not lab:
         return None

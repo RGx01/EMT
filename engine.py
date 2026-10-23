@@ -7534,79 +7534,6 @@ def _import_label(off_peak) -> str:
     is "mixed", which settles nothing)."""
     return "OFF_PEAK" if off_peak is True else ("STANDARD_RATE" if off_peak is False else "mixed")
 
-
-def _billed_rate(rate_segs, start, off_peak, meas_cost, kwh,
-                 tol: float = 0.001, labelled=None):
-    """£/kWh for an imported slot, choosing the right source of truth by tariff type.
-
-    The rate-source axis is whether the slot carries a time-of-use (OFF_PEAK/
-    STANDARD) label:
-
-    * NO label (off_peak is None) — a CONTINUOUS / published-rate tariff: flat
-      export, Agile (either direction). Here the SCHEDULE is authoritative — it is
-      the exact per-slot published rate. Billed cost÷kWh is only penny-rounding
-      jitter that shatters one flat/Agile rate into dozens of near-identical
-      buckets (the export-fragmentation bug). So we PREFER the schedule, and use
-      billed only as a fallback when the schedule can't cover the slot.
-
-    * WITH a label (off_peak True/False) — a BANDED, dispatch-aware tariff (IOG):
-      Octopus's billed cost is truth. It captures dispatched charging outside the
-      fixed off-peak window, and it avoids the price-cap transition-DAY hazard
-      where day_rate_bounds sees both the old and new rate and would pick the
-      wrong band. We still prefer the clean scheduled rate, but ONLY when it
-      agrees with billed to within `tol` (0.1p); otherwise trust cost÷kWh.
-
-    With no billed cost at all we fall back to the schedule (time/label based).
-    Returns £/kWh or None.
-
-    NOTE the discriminator is NOT the label alone: export slots come back labelled
-    STANDARD_RATE (→ off_peak False, not None), so "no label" would miss them. What
-    actually separates a published-rate slot from a dispatch one is whether the
-    tariff is BANDED that day — a distinct off-peak vs peak rate (IOG) vs a single
-    rate all day (flat export, fixed import). Agile carries no label at all
-    (off_peak None) and is resolved per-slot."""
-    sched = _tariff_rate_for(rate_segs, start, off_peak)
-    # Continuous / UNLABELLED tariff (Agile): _tariff_rate_for used resolve() for the
-    # exact per-slot published rate — always prefer it over billed jitter.
-    #
-    # `off_peak is None` alone is NOT that test. On the 4-bucket IOG-SMB tariff a slot
-    # carrying BOTH home and EV consumption is legitimately band-ambiguous and reports
-    # off_peak None while still being a banded, dispatch-aware slot — and for an
-    # out-of-window dispatch (EV at off-peak while the house pays peak) the blended
-    # truth is cost÷kWh, not the time-of-day schedule rate. So a slot that carried any
-    # TOU label is never treated as continuous. `labelled=None` keeps the historical
-    # behaviour for callers that don't know (the label set is unavailable).
-    if off_peak is None and sched is not None and not labelled:
-        return sched
-    # Labelled slot (IOG import, or flat export tagged STANDARD_RATE). Decide by
-    # whether the tariff is BANDED on this day. A SINGLE rate for the day (flat
-    # export / fixed import) ⇒ the schedule is the published truth and billed
-    # cost÷kWh is only penny-rounding jitter that fragments it — prefer the
-    # schedule. Distinct off-peak/peak rates ⇒ dispatch-aware IOG ⇒ billed stays
-    # truth (out-of-window dispatch + price-cap transition-day safety).
-    if sched is not None:
-        lo = hi = None
-        for vf, vt, s in rate_segs:
-            if s is not None and start >= vf and (vt is None or start < vt):
-                # A FLAT agreement (single rate throughout) is the published truth
-                # even where day_rate_bounds(start) reads (None,None) — the tariff-
-                # transition seam whose early days precede the new tariff's first
-                # published unit rate. Without this, those days fall to the tol
-                # check below and a flat rate fragments into cost÷kWh jitter.
-                if s.flat_rate() is not None:
-                    return sched
-                lo, hi = s.day_rate_bounds(start)
-                break
-        if lo is not None and lo == hi:      # flat tariff that day → schedule is truth
-            return sched
-    if meas_cost is not None and (kwh or 0) > 0:
-        billed = round(meas_cost / kwh, 6)
-        if sched is not None and abs(sched - billed) <= tol:
-            return sched
-        return billed
-    return sched
-
-
 def _agreement_era(channel: str, start: str):
     """(tariff_code, from, to) of the agreement live at `start`, or None.
 
@@ -7968,36 +7895,33 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
                                    if n else meas_standing[d])
 
         priced = off_peak = 0
+        unscheduled = []                   # half-hours the schedule has no rate for
         rows_to_write = []
         for st in imported:
             r = by_start[st]
             kwh = r.get("kwh") or 0.0
             meas_cost = r.get("cost_incl")
             ofp = r.get("off_peak")
-            # Rate: Octopus's billed cost is truth — use cost÷kWh, keeping the clean
-            # scheduled rate only when it agrees (so a mis-dated price-cap change in
-            # the local schedule can't stamp a rate that contradicts the bill).
-            rate = _billed_rate(rate_segs, st, ofp, meas_cost, kwh,
-                                labelled=bool(r.get("buckets")))
-            # Cost: exact billed figure if Measurements gave one; otherwise
-            # reconstruct kWh × tariff-rate (fills the cost-missing half-hours).
-            if meas_cost is not None:
-                cost = meas_cost
-            elif rate is not None and kwh > 0:
-                cost = round(kwh * rate, 6)
-            else:
-                cost = None
-            # BL-23: ex-VAT capture. A measurement slot carries the exact cost_excl;
-            # a tariff-reconstructed slot takes kWh × the exc SCHEDULED rate (same band
-            # as the inc rate, via rate_segs.exc). Only the £ is stored: the rate, the
-            # standing charge's ex-VAT and their provenance are derived where read (5b).
-            if meas_cost is not None:
-                cost_exc = r.get("cost_excl")
-            elif cost is not None and kwh > 0:
+            # The rule (engine step 2d, 23 Oct 2026): kWh × the schedule's rate for Octopus's
+            # band — the label's (OFF_PEAK the day's low rate, STANDARD its high), else the
+            # half-hour's own (a published tariff, Agile, export). Octopus's cost is kept in the
+            # bill cache as its answer (step 2c), not copied here; the apply settles the block
+            # from it. (`_billed_rate` took cost ÷ kWh unless the schedule agreed within 0.1p.)
+            rate = _tariff_rate_for(rate_segs, st, ofp)
+            if rate is not None:
+                cost = round(kwh * rate, 6) if kwh > 0 else 0.0
                 rate_exc = _tariff_rate_for(_exc_segs(rate_segs), st, ofp)
-                cost_exc = round(kwh * rate_exc, 6) if rate_exc is not None else None
+                cost_exc = round(kwh * rate_exc, 6) if (rate_exc is not None and kwh > 0) else (
+                    0.0 if rate_exc is not None else None)
+            elif meas_cost is not None:
+                # No schedule rate for the day: Octopus's own figure rather than an unpriced
+                # block (PASS 2 cannot cost a device at a NULL rate). Counted and logged.
+                cost, cost_exc = meas_cost, r.get("cost_excl")
+                rate = round(meas_cost / kwh, 6) if kwh > 0 else None
+                if kwh > 0:
+                    unscheduled.append(st)
             else:
-                cost_exc = None
+                cost = cost_exc = None
             if cost is not None:
                 priced += 1
             if ofp:
@@ -8010,9 +7934,15 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
                                   "cost": cost, "standing": _standing,
                                   "cost_exc": cost_exc,
                                   "_octopus": meas_cost is not None,
+                                  # Octopus's own figures, for the bill cache (not the block)
+                                  "_oc": meas_cost, "_oce": r.get("cost_excl"),
                                   "_label": _import_label(ofp)})
         # The half-hours left without Octopus's cost (EMT's kWh × rate) and those that have it:
         # the Import bill hatches the first at once — nothing asks for them again (19 Oct 2026).
+        if unscheduled:
+            logger.warning("import [%s]: %d half-hour(s) the tariff schedule has no rate for, "
+                           "priced at Octopus's own figure (first %s)",
+                           channel, len(unscheduled), unscheduled[0])
         _no_band = [r["start"] for r in rows_to_write
                     if not r.get("_octopus") and (r.get("kwh") or 0) > 0] if channel == "import" else []
         if not dry_run and channel == "import" and rows_to_write:
@@ -8025,7 +7955,7 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
         # Octopus's answers kept as band evidence (engine step 2c): each costed Intelligent
         # half-hour's label and cost, in the bill cache, so it settles through the one rule
         # (kWh × the band's rate) as a live half-hour does. In the chunk's own transaction.
-        _bills = ([{"start": r["start"], "cost_incl": r["cost"], "cost_excl": r.get("cost_exc"),
+        _bills = ([{"start": r["start"], "cost_incl": r["_oc"], "cost_excl": r.get("_oce"),
                     "label": r.get("_label"), "kwh": r.get("kwh")}
                    for r in rows_to_write
                    if r.get("_octopus") and (r.get("kwh") or 0) > 0
@@ -8039,6 +7969,8 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
         for _r in rows_to_write:
             _r.pop("_octopus", None)
             _r.pop("_label", None)
+            _r.pop("_oc", None)
+            _r.pop("_oce", None)
         written = 0
         if not dry_run and rows_to_write:
             # One transaction for the whole chunk (not a commit per block) so the

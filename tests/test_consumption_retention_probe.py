@@ -235,8 +235,10 @@ class TestApiImportApply(unittest.TestCase):
             "SELECT imp_kwh, imp_rate, imp_cost, source FROM blocks "
             "WHERE source='imported_api' ORDER BY block_start").fetchall()
         self.assertEqual(len(rows), 4)
-        self.assertAlmostEqual(rows[0]["imp_cost"], 0.007560378, places=7)  # billed cost £
-        self.assertAlmostEqual(rows[0]["imp_rate"], 0.07, places=3)         # cost÷kWh
+        # kWh × the schedule's rate for Octopus's band (engine step 2d, 23 Oct 2026; Octopus's
+        # £0.007560378 was copied until then) — 0.108 × 0.07
+        self.assertAlmostEqual(rows[0]["imp_cost"], 0.00756, places=7)
+        self.assertAlmostEqual(rows[0]["imp_rate"], 0.07, places=6)
 
     def test_bounded_window_fills_without_advancing_import_state(self):
         # import_api_history's bounded mode over [00:00 → 02:00] (the gap fill's, through
@@ -378,7 +380,7 @@ class TestApiImportApply(unittest.TestCase):
             "WHERE source='imported_api' ORDER BY block_start").fetchall()
         self.assertEqual(len(rows), 4)
         self.assertIsNotNone(rows[0]["exp_kwh"])
-        self.assertAlmostEqual(rows[0]["exp_cost"], 0.007560378, places=7)
+        self.assertAlmostEqual(rows[0]["exp_cost"], 0.00756, places=7)    # kWh × the export rate
 
     def test_empty_store_no_longer_refuses(self):
         # Was `test_no_go_live`. A fresh install has no ceiling to tile up to; the
@@ -490,8 +492,9 @@ class TestExportRestFallback(unittest.TestCase):
         self.assertAlmostEqual(rows[0]["exp_kwh"], 0.4, places=6)
         self.assertAlmostEqual(rows[0]["exp_rate"], 0.07, places=4)
         self.assertAlmostEqual(rows[0]["exp_cost"], 0.4 * 0.07, places=5)
-        # Measurements block keeps its exact billed cost
-        self.assertAlmostEqual(rows[2]["exp_cost"], 0.075, places=5)
+        # a Measurements block too: kWh × the export rate (decided 23 Oct 2026, step 2 design
+        # §5 (a)); until engine step 2d it kept Octopus's 0.075 beside a 7p rate
+        self.assertAlmostEqual(rows[2]["exp_cost"], 0.5 * 0.07, places=5)
 
 
 class TestApiImportJob(unittest.TestCase):
