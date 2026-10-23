@@ -12292,7 +12292,7 @@ def settled_band(bs: str, bill_label, breakdown: "dict | None" = None) -> "str |
     return None if b is None else ("off_peak" if b else "peak")
 
 
-def band_note(bs: str, kwh, bill_label, breakdown=None) -> "dict | None":
+def band_note(bs: str, kwh, bill_label, breakdown=None, live: bool = True) -> "dict | None":
     """The detail panel's band evidence for an Intelligent half-hour with Octopus's answer:
     {settled, predicted, disagrees}. Billed wins, so a disagreement is a note, not an issue (the
     user, 23 Oct 2026: the cell stays green). None on a published tariff, or with no kWh."""
@@ -12302,15 +12302,23 @@ def band_note(bs: str, kwh, bill_label, breakdown=None) -> "dict | None":
         return None
     if k <= 1e-9 or tariff_kind_at(bs) != "intelligent":
         return None
-    s, p = settled_band(bs, bill_label, breakdown), predicted_band(bs, k)
+    s, p = settled_band(bs, bill_label, breakdown), predicted_band(bs, k, live)
     return {"settled": s, "predicted": p,
             "disagrees": bool(s in ("off_peak", "peak") and p and s != p)}
 
 
-def predicted_band(bs: str, kwh: float) -> "str | None":
-    """EMT's own band for a half-hour on an Intelligent tariff — the pricing seam's: the clock's
-    rate, moved to off-peak by a recorded dispatch (`_dispatch_overlay_rate`, quietly). None without
-    a schedule. (The 6-hour cap lives in the four buckets once they land; 2a compares the main band.)"""
+def predicted_band(bs: str, kwh: float, live: bool = True) -> "str | None":
+    """EMT's own band for a half-hour on an Intelligent tariff — its two stages, as live pricing
+    applies them: the clock's rate moved to off-peak by a recorded dispatch slot
+    (`_dispatch_overlay_rate`, quietly, at finalise), then on a LIVE half-hour the dispatch's
+    lifecycle (`_reconcile_decision`, as `reconcile_dispatch_overlay` decides it at settlement).
+    None without a schedule. (The 6-hour cap lives in the four buckets once they land; 2a compares
+    the main band.)
+
+    The second stage was missing until 23 Oct 2026 (the user): 16 Aug 2026 13:00 BST has a
+    completed dispatch of 0.23 kWh and no `started` — a bump by EMT's own rules, and under the
+    0.4 kWh "did not materially run" floor — so peak, as Octopus billed it; the first stage alone
+    read off-peak. Imported history is the reconcile's to skip, so the first stage is all it has."""
     sched = _kraken_rate_schedules.get("import")
     lo, hi = _band_rates(bs)
     if sched is None or lo is None:
@@ -12322,7 +12330,46 @@ def predicted_band(bs: str, kwh: float) -> "str | None":
     if base is None:
         return None
     rate = _dispatch_overlay_rate("import", bs, round(base / 100.0, 6), kwh, quiet=True)
-    return "off_peak" if abs(rate - lo) <= abs(rate - hi) else "peak"
+    band = "off_peak" if abs(rate - lo) <= abs(rate - hi) else "peak"
+    if live and abs(round(base / 100.0, 6) - lo) > 1e-6:   # inside the window: nothing to decide
+        band = _lifecycle_band(bs, band) or band
+    return band
+
+
+def _lifecycle_band(bs: str, band: str) -> "str | None":
+    """The reconcile's verdict on a live half-hour's dispatch lifecycle, as a band: 'off_peak' /
+    'peak', or None where it leaves the price as it is ('review', 'ok', no lifecycle, or a
+    not-started slot still inside the settle window, which the reconcile defers). Its inputs as
+    `reconcile_dispatch_overlay` builds them; the settled-block guard is not applied — that guard
+    keeps a stored price for the bill to decide, and here the bill is what this is compared with."""
+    try:
+        drows = _reader().get_dispatch_history_for_slot(bs)
+    except Exception:
+        return None
+    if not drows:
+        return None
+    kinds = {x["kind"] for x in drows}
+    has_started = "started" in kinds
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    settle_cutoff = (now - timedelta(hours=_RECONCILE_SETTLE_HOURS)).isoformat()
+    if not has_started and bs >= settle_cutoff:
+        return None
+    completed_energy = next((x["energy_kwh"] for x in drows
+                             if x["kind"] == "completed" and x["energy_kwh"] is not None), None)
+    _fs = min((x["first_seen"] for x in drows if x["kind"] == "completed" and x["first_seen"]),
+              default=None)
+    contemporaneous = True
+    if _fs:
+        try:
+            contemporaneous = (datetime.fromisoformat(str(_fs).split(".")[0].replace("Z", ""))
+                               - datetime.fromisoformat(bs)) <= timedelta(hours=36)
+        except Exception:
+            contemporaneous = True
+    target, _why = _reconcile_decision(
+        has_started, "completed" in kinds, completed_energy, band == "off_peak",
+        has_planned=("planned" in kinds), was_online=True, contemporaneous=contemporaneous,
+        past_settle=(bs < settle_cutoff))
+    return target if target in ("off_peak", "peak") else None
 
 
 def band_parity_row(f: dict) -> dict:
@@ -12358,7 +12405,8 @@ def band_parity_row(f: dict) -> dict:
         if lo is None:
             out["status"] = "no_rate"
             return out
-        out["predicted"] = predicted_band(bs, kwh)
+        out["predicted"] = predicted_band(bs, kwh,
+                                          live=not str(f.get("source") or "").startswith("imported"))
         bd = None
         if f.get("bill_home_kwh") is not None or f.get("bill_ev_kwh") is not None:
             try:

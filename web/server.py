@@ -4196,7 +4196,8 @@ def _band_note(_eng, d):
            "ev_kwh": d["bill_ev_kwh"], "ev_rate": d["bill_ev_rate"]}
           if d["bill_home_kwh"] is not None or d["bill_ev_kwh"] is not None else None)
     try:
-        return _eng.band_note(d["block_start"], d["imp_kwh"], d["bill_label"], bd)
+        return _eng.band_note(d["block_start"], d["imp_kwh"], d["bill_label"], bd,
+                              not str(d["source"] or "").startswith("imported"))
     except Exception as e:
         logger.debug("api_block_settlement: no band note for %s: %s", d["block_start"], e)
         return None
