@@ -62,14 +62,6 @@ class TheDrain(unittest.TestCase):
         self.assertEqual(sorted(st.import_no_cost_slots()), ["2026-07-21T05:30:00"])
 
 
-class TheLogLine(unittest.TestCase):
-
-    def test_says_the_neighbours_apart(self):
-        with open(os.path.join(_ROOT, "engine.py"), encoding="utf-8") as f:
-            src = f.read()
-        self.assertIn('half-hour(s) from the same fetch (%d already-correct skipped)', src)
-        self.assertIn("_cr - _op, _ck, _op, _sk, _elapsed", src)
-
 
 class TheKeptCounts(unittest.TestCase):
 

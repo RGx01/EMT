@@ -185,31 +185,6 @@ def gap_template_csv(from_iso, to_iso, *, block_minutes=30, tz_name="Europe/Lond
     return buf.getvalue()
 
 
-def slots_template_csv(starts, *, block_minutes=30, tz_name="Europe/London") -> str:
-    """Template pre-filled with Start/End for an ARBITRARY (possibly non-contiguous)
-    set of slots — used by the pricing-health escape hatch to hand the user exactly
-    the half-hours the API couldn't price, ready to fill from their bill and run
-    through the CSV reprice path. `starts` are naive-UTC ISO (the reprice queue's
-    format); timestamps render LOCAL with DST-correct offsets, matching the other
-    templates. Blank/unparseable starts are skipped."""
-    from datetime import datetime, timedelta, timezone
-    from zoneinfo import ZoneInfo
-    tz = ZoneInfo(tz_name or "UTC")
-    step = timedelta(minutes=int(block_minutes or 30))
-    buf = io.StringIO()
-    w = _csv.writer(buf)
-    w.writerow(TEMPLATE_HEADERS)
-    for s in starts or []:
-        try:
-            raw = str(s).replace("Z", "").split("+")[0].replace(" ", "T").split(".")[0]
-            dt = datetime.fromisoformat(raw).replace(tzinfo=timezone.utc)
-        except (ValueError, AttributeError):
-            continue
-        a = dt.astimezone(tz)
-        b = (dt + step).astimezone(tz)
-        w.writerow([a.isoformat(), b.isoformat(), "", "", "", "", "", ""])
-    return buf.getvalue()
-
 
 def blank_template_csv(*, block_minutes=30, rows=4,
                        start_iso="2024-07-01T00:00:00+01:00") -> str:

@@ -399,32 +399,6 @@ class TestGapAwareMigration(unittest.TestCase):
         self.assertTrue(self._has_seg("2026-01-01T00:30:00"))         # free segmented (£0, real)
         self.assertTrue(self._has_seg("2026-01-01T01:00:00"))         # priced segmented
 
-    def test_filling_a_gap_reopens_segmentation(self):
-        G = "2026-02-01T00:00:00"
-        self._ins(G, 2.0, None, None)
-        self.st._conn.commit()
-        self._sweep()
-        self.assertFalse(self._has_seg(G))                            # gap stays unsegmented
-        # fill the price later (the Retry/CSV path uses reprice_imported_block)
-        self.assertTrue(self.st.reprice_imported_block(G, "electricity_main", "import", 0.30, 0.60))
-        self.assertEqual(self.st.count_blocks_needing_reprice(), 1)   # door re-opened
-        asyncio.run(engine.run_reprice_history_sweep_to_done())       # G2: endpoints force this
-        self.assertTrue(self._has_seg(G))                             # now segmented from the fill
-        self.assertAlmostEqual(self._seg_rate(G), 0.30, places=6)
-
-    def test_correcting_a_price_reinvalidates_and_resegments(self):
-        B = "2026-03-01T00:00:00"
-        self._ins(B, 2.0, 0.30, 0.60)
-        self.st._conn.commit()
-        self._sweep()
-        self.assertAlmostEqual(self._seg_rate(B), 0.30, places=6)     # segmented at first price
-        # correct the price → segment invalidated → re-admitted → rebuilt at the new price
-        self.assertTrue(self.st.reprice_imported_block(B, "electricity_main", "import", 0.25, 0.50))
-        self.assertFalse(self._has_seg(B))                            # stale segment invalidated
-        self.assertEqual(self.st.count_blocks_needing_reprice(), 1)
-        asyncio.run(engine.run_reprice_history_sweep_to_done())       # G2: endpoints force this
-        self.assertAlmostEqual(self._seg_rate(B), 0.25, places=6)     # rebuilt at corrected price
-
 
 class TestMigrationGuard(unittest.TestCase):
     """The guard that refuses manual reprice/fill while the first-upgrade sweep is still working."""

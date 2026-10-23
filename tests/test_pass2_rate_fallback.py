@@ -59,26 +59,6 @@ class TestPass2RateFallback(unittest.TestCase):
         imp = b["meters"]["electricity_main"]["channels"]["import"]
         self.assertAlmostEqual(imp["cost_remainder"], 0.18, places=6)
 
-    def test_attribution_still_waits_for_an_active_verify_pass(self):
-        """`_verify_running()` is gone — it existed for one caller, attribution's
-        wait loop, and that loop now asks the coordinator instead. This asserts
-        the BEHAVIOUR it protected rather than the function that provided it:
-        while a verify pass holds the `verify_pricing` member, attribution waits.
-
-        The states the predicate covered (running / waiting / paused) are covered
-        by the claim spanning the whole pass — a pass stopped for API allowance
-        has not finished writing the `imp_rate` attribution reads.
-        """
-        import job_coordinator as C
-        C.reset_for_tests()
-        try:
-            C.claim("verify_pricing", force=True)
-            self.assertEqual(C.admission("attribution"), (C.WAIT, "verify_pricing"))
-            C.mark("verify_pricing", status="done")
-            self.assertEqual(C.admission("attribution"), (C.ADMIT, None))
-        finally:
-            C.reset_for_tests()
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -241,23 +241,6 @@ class TestTemplateGeneration(unittest.TestCase):
         self.assertIsNotNone(b0["cost_exc"])
         self.assertLess(b0["cost_exc"], b0["cost"])   # exc < inc
 
-    def test_slots_template_arbitrary_slots(self):
-        # Non-contiguous slots (the escape hatch): one row per start, blank data,
-        # local DST-correct offsets, round-trips back through the parser to UTC.
-        starts = ["2025-03-05T00:00:00", "2025-03-05T00:30:00", "2025-07-01T13:00:00"]
-        text = ci.slots_template_csv(starts, block_minutes=30, tz_name="Europe/London")
-        lines = text.strip().splitlines()
-        self.assertEqual(len(lines), 1 + len(starts))               # header + 3 rows
-        self.assertTrue(lines[1].endswith(",,,,"))                  # four blank data cols
-        self.assertIn("+00:00", text)                              # GMT (March 5)
-        self.assertIn("+01:00", text)                              # BST (July 1)
-        parsed = ci.parse_octopus_csv(text, "import")
-        self.assertEqual([b["block_start"] for b in parsed["blocks"]], starts)
-
-    def test_slots_template_skips_unparseable(self):
-        text = ci.slots_template_csv(["", None, "not-a-date", "2025-03-05T00:00:00"])
-        self.assertEqual(len(text.strip().splitlines()), 2)         # header + 1 valid
-
 
 if __name__ == "__main__":
     unittest.main()

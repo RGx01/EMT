@@ -106,7 +106,6 @@ class TheImportStart(unittest.TestCase):
             self.imported.append(1)
             return {"ok": True, "done": True, "written": {}}
         self.p = [mock.patch.object(self.srv, "_event_loop", self.loop),
-                  mock.patch.object(self.srv, "_backfill_verify_active", lambda e: False),
                   mock.patch.object(engine, "kraken_available", lambda: True),
                   mock.patch.object(engine, "import_api_history", _import)]
         for x in self.p:

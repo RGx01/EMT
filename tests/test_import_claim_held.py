@@ -31,7 +31,7 @@ sys.path.insert(0, _ROOT)
 import engine                                     # noqa: E402
 import job_coordinator as C                       # noqa: E402
 
-DEPENDANTS = ("reprice_sweep", "carbon_backfill", "measured_drain", "verify_pricing")
+DEPENDANTS = ("reprice_sweep", "carbon_backfill", "measured_drain")
 
 
 class _Run(unittest.TestCase):
@@ -41,10 +41,9 @@ class _Run(unittest.TestCase):
         engine._api_import_job.clear()
         engine._api_import_job["status"] = "idle"
         self.p = [mock.patch.object(engine, "_store", None),
-                  mock.patch.object(engine, "_persist_import_health", lambda j: None),
                   mock.patch.object(engine, "_persist_run_status", lambda j: None),
                   mock.patch.object(engine, "_run_wrote_blocks", lambda j: False),
-                  mock.patch.object(engine, "_reset_pricing_health", lambda: None)]
+                  ]
         for x in self.p:
             x.start()
 
@@ -142,9 +141,7 @@ class TheRateLimitCooldown(_Run):
                  mock.patch.object(engine.asyncio, "sleep", _sleep), \
                  mock.patch.object(engine, "_probe_and_apply_region_periods",
                                    mock.AsyncMock(return_value=None)), \
-                 mock.patch.object(engine, "_finalise_after_import", lambda: None), \
-                 mock.patch.object(engine, "_drain_reprice_queue_after_import",
-                                   mock.AsyncMock(return_value={})):
+                 mock.patch.object(engine, "_finalise_after_import", lambda: None):
                 await engine.run_api_import_job()
         asyncio.run(_go())
         self.assertEqual(len(calls), 2, "the import did not resume after the cooldown")

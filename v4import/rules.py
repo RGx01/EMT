@@ -92,7 +92,6 @@ CARRY_KEYS = {
         "vat_calendar", "settings", "recorder_attribution_runs",
         "export_settlement_expected", "supplier", "carbon_paused",
         "region_probe_clobber_done",       # its pass would overwrite the carried regions
-        "import_cost_coverage",            # what the API import found about this history
     }),
     "kraken_state": frozenset({
         "kraken_account_number", "data_source_mode",
@@ -119,6 +118,9 @@ DROP_KEYS = {
         "stale_iog_split_repair_state", "segment_backfill_state", "export_zero_fill_v1",
         "import_reprice_queue", "region_reconcile_pending", "reprice_history_state",
         "import_pricing_diag", "preimport_sites_applied",
+        # what the API import found about each tariff era's costs — nothing reads it since the
+        # pricing-health card went (engine step 2d, 23 Oct 2026)
+        "import_cost_coverage",
     }),
     "kraken_state": frozenset({
         "last_poll_utc", "last_settlement_sweep_utc", "verify_pricing_cursor",

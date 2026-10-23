@@ -7,14 +7,14 @@ makes the blocker running, calls the member's own entry point, and observes that
 did not get past its admission gate. The blocker's work is not simulated; the
 manifest's edge is what is under test, through the member's own code.
 
-    attribution       depends import, verify_pricing · exclusive delete   (WAIT)
+    attribution       depends import · exclusive delete                   (WAIT)
     reprice_sweep     depends import · exclusive delete, restore          (DEFER)
     carbon_backfill   depends import · exclusive delete, restore          (DEFER)
     measured_drain    depends import · exclusive delete, restore          (DEFER)
     prune_tombstones  exclusive delete                                    (DEFER)
 
-delete → import (PREEMPT) is test_delete_honours_import; verify_pricing → import is
-test_verify_defers_to_import; restore → import is test_restore_window.
+delete → import (PREEMPT) is test_delete_honours_import; restore → import is
+test_restore_window. (verify_pricing → import went with the verify pass, engine step 2d.)
 
 GUARDS, all of them: the edges were already honoured, so these pass on the parent
 tree. They pin it. Each was checked to FAIL with its member's admission() call
@@ -37,7 +37,7 @@ EDGES = {
     "carbon_backfill":  ("import", "delete", "restore"),
     "measured_drain":   ("import", "delete", "restore"),
     "prune_tombstones": ("delete",),
-    "attribution":      ("import", "verify_pricing", "delete"),
+    "attribution":      ("import", "delete"),
 }
 
 

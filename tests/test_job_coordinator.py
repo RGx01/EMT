@@ -34,18 +34,17 @@ class TestDeclaration(unittest.TestCase):
     def test_the_real_membership_is_declared(self):
         import engine                              # noqa: F401
         reg = C.registry()
-        for m in ("live_tick", "import", "attribution", "verify_pricing",
+        for m in ("live_tick", "import", "attribution",
                   "reprice_sweep", "carbon_backfill", "measured_drain"):
             self.assertIn(m, reg)
 
     def test_dependencies_match_the_guards_v4_already_checks(self):
         """Not invented — read off `.build/check_job_guards.py`. Attribution waits
-        on the import AND the verify pass because it reads the pricing both
-        write: "attributing over a not-yet-verified (imp_rate NULL) block used to
-        crash PASS 2 and could cost the device at 0"."""
+        on the import because it reads the pricing the import writes. (It waited on
+        the verify pass too, until engine step 2d removed it, 23 Oct 2026.)"""
         import engine                              # noqa: F401
         att = C.registry()["attribution"]
-        self.assertEqual(set(att["depends_on"]), {"import", "verify_pricing"})
+        self.assertEqual(set(att["depends_on"]), {"import"})
         self.assertEqual(att["on_conflict"], C.WAIT)
 
 
@@ -299,14 +298,13 @@ class TestTheManifestIsMeasuredNotInvented(unittest.TestCase):
         """Each of these was checked by the pre-migration code. Recorded as the
         list so a future addition has to say where it came from."""
         expected = {
-            "attribution": {"import", "verify_pricing", "delete"},
+            "attribution": {"import", "delete"},
             # + restore (#56, 3 Oct 2026): the Pi soak measured the sweep committing
             # through a restore and restarting its safety backup for 3 min 50 s; the
             # carbon backfill and measured drain are the other long-running writers
             "carbon_backfill": {"import", "delete", "restore"},
             "measured_drain": {"import", "delete", "restore"},
             "reprice_sweep": {"import", "delete", "restore"},
-            "verify_pricing": {"import"},
             "restore": {"import"},
             "delete": {"import"},
             # a delete writes its tombstone before removing blocks; the GET-side
@@ -520,54 +518,6 @@ class TestDeleteIsAMember(unittest.TestCase):
         self.assertEqual(C.admission("live_tick"), (C.ADMIT, None))
 
 
-class TestVerifyPricingIsTheThirdMember(unittest.TestCase):
-    """Attribution's second blocker.
-
-    (Restored: an earlier edit here replaced a span of this file by slice and
-    removed this class silently. The suite stayed green, because deleting tests
-    never turns anything red — which is the whole argument for listing what a
-    file covers rather than trusting a diff to be legible.)
-    """
-
-    def setUp(self):
-        C.reset_for_tests()
-
-    def tearDown(self):
-        C.reset_for_tests()
-
-    def test_an_active_verify_blocks_attribution(self):
-        import engine                              # noqa: F401
-        C.claim("verify_pricing", force=True)
-        self.assertEqual(C.admission("attribution"), (C.WAIT, "verify_pricing"))
-
-    def test_it_blocks_nothing_that_did_not_declare_it(self):
-        """The reprice sweep reads what the IMPORT writes, not what the verify
-        pass writes — it declares `import` only. A coordinator blocking everything
-        on everything would be the lock this design rejects."""
-        import engine                              # noqa: F401
-        C.claim("verify_pricing", force=True)
-        self.assertEqual(C.admission("reprice_sweep"), (C.ADMIT, None))
-        self.assertEqual(C.admission("live_tick"), (C.ADMIT, None))
-
-    def test_it_claims_for_the_states_the_old_predicate_covered(self):
-        """`_verify_running()` counted running / waiting / paused, and is now
-        deleted — attribution was its only caller. The claim spans the whole pass,
-        so those states stay covered: a pass stopped for API allowance has not
-        finished writing. Unlike the import, where `api_import_running()` genuinely
-        missed "finalising", there was nothing to correct here."""
-        import ast
-        import os as _os
-        root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
-        with open(_os.path.join(root, "engine.py"), encoding="utf-8") as fh:
-            src = fh.read()
-        self.assertNotIn("def _verify_running(", src)
-        fn = next(n for n in ast.walk(ast.parse(src))
-                  if isinstance(n, ast.AsyncFunctionDef)
-                  and n.name == "run_deferred_verify_pricing")
-        body = "\n".join(src.split("\n")[fn.lineno - 1:fn.end_lineno])
-        self.assertEqual(body.count('_coord.mark("verify_pricing", status="done")'), 2)
-        self.assertEqual(body.count('_coord.claim("verify_pricing"'), 1)
-
 
 class TestImportIsTheSecondMember(unittest.TestCase):
     """The import is the blocker four other members declare, so migrating it is
@@ -586,7 +536,6 @@ class TestImportIsTheSecondMember(unittest.TestCase):
         self.assertEqual(C.admission("reprice_sweep"), (C.DEFER, "import"))
         self.assertEqual(C.admission("carbon_backfill"), (C.DEFER, "import"))
         self.assertEqual(C.admission("measured_drain"), (C.DEFER, "import"))
-        self.assertEqual(C.admission("verify_pricing"), (C.DEFER, "import"))
 
     def test_it_never_blocks_the_live_tick(self):
         import engine                              # noqa: F401
@@ -598,7 +547,7 @@ class TestImportIsTheSecondMember(unittest.TestCase):
 
         `api_import_running()` counts only running/paused/rate_limited — it
         returns False during "finalising". But finalising runs
-        `_probe_and_apply_region_periods`, `_drain_reprice_queue_after_import` and
+        `_probe_and_apply_region_periods` and
         a chart regen: all writes, including repricing. Admitting a job then
         admits it while the import is still rewriting the pricing it reads.
 

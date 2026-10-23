@@ -56,7 +56,7 @@ class TestMembershipRatchet(unittest.TestCase):
         self.assertIn("engine_loop_task", all_members)
 
     def test_the_count_matches_the_design(self):
-        """16 — and the number has moved five times, in both directions, for good
+        """15 — and the number has moved six times, in both directions, for good
         reasons rather than because it was guessed at.
 
         23 first, which missed the three background WORKERS —
@@ -65,8 +65,9 @@ class TestMembershipRatchet(unittest.TestCase):
         category for a thread spawned by a route. They are the members others most
         want to avoid: `delete_in_progress()` is the second most consulted guard in
         the codebase. 17 to 16 on 16 Oct 2026: the settled EV split heal was removed (bill and
-        split paths design §7.3)."""
-        self.assertEqual(self.d["members"], 16)
+        split paths design §7.3). 16 to 15 on 23 Oct 2026: the deferred pricing verify pass
+        (engine step 2d)."""
+        self.assertEqual(self.d["members"], 15)
 
     def test_the_baseline_is_a_countdown_not_a_record(self):
         """If this ever reaches zero the ratchet is finished and acceptance 1 is
@@ -106,7 +107,7 @@ class TestConsumptionNotJustRegistration(unittest.TestCase):
     def test_the_consumers_so_far(self):
         self.assertEqual(sorted(self.d["consuming"]),
                          ["attribution", "carbon_backfill", "measured_drain",
-                          "prune_tombstones", "reprice_sweep", "verify_pricing"])
+                          "prune_tombstones", "reprice_sweep"])
 
     def test_a_declared_dependency_that_is_never_consulted_is_visible(self):
         """Not a failure — `delete` and `restore` declare `import` and do not consult

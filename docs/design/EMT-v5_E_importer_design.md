@@ -256,7 +256,6 @@ carried user data** is a setup fact in effect, and crosses.
 | `region_probe_clobber_done` | meta | v5 still runs the one-time region overwrite (`engine.py:9622`). Re-run on an import, it would overwrite the carried `config_periods` regions from the API. |
 | `billing_source` | — | **dropped since spec v25** (21 Oct 2026): the choice is retired; a v4 `cad` on an API mode re-runs the main meter's half-hours (transform 5) |
 | `carbon_paused` | meta | the user's carbon kill switch (*added in PR 2*) |
-| `import_cost_coverage` | meta | what the API import found about this history, per tariff era (*added in PR 2*) |
 | `pre_live_snapshot_done` | state | v4 already took its one snapshot before the first live DCC write, and the restore has just taken its own safety backup. *Moved from DROP, 10 Oct 2026: re-run, it wrote a third 80 MB copy on the Pi's SD card in the soak.* |
 | `bill_split_wait` (4.5.23) | state | bills held back because they had no EV where the split had the car, and the ones whose 28 days ran out with EMT's split kept. v5's forward code reads it; dropped, a kept slot would be asked about again (*added 12 Oct 2026*) |
 
@@ -269,6 +268,7 @@ record), `emt_schema` (new, §2).
 |---|---|
 | `last_poll_utc` | the DCC poll's first-run window (`backfill_days`), with its re-check overlap |
 | `last_settlement_sweep_utc`, `verify_pricing_cursor`, `verify_pricing_summary`, `import_health_summary`, `import_run_status`, `import_pricing_diag` | runtime state, rebuilt |
+| `import_cost_coverage` | what the API import found about each tariff era's costs. *Moved from CARRY, 23 Oct 2026:* nothing reads it since engine step 2d removed the pricing-health card |
 | `import_gaps_import/export` | recomputed (to verify alongside the `api_import_*` keys) |
 | `export_zero_fill_v1` | fills blank export slots on imported days again; idempotent |
 | `carbon_backfill_state`, `import_reprice_queue`, `region_reconcile_pending`, `reprice_history_state` | spec §6. The whole-history sweep then runs (spec §8). |

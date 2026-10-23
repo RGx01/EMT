@@ -373,14 +373,14 @@ class LogScan(unittest.TestCase):
                  _c("10:00:01", "defer job=reprice_sweep blocker=import edge=depends_on"),
                  _c("10:05:00", "mark job=import key=import status=done was=running"),
                  _c("10:05:30", "admit_after job=reprice_sweep was=defer blocker=import"),
-                 _c("10:05:31", "claim job=verify_pricing key=verify_pricing"))
+                 _c("10:05:31", "claim job=carbon_backfill key=carbon_backfill"))
         report, ok = soak.scan_log(p)
         self.assertTrue(ok, report)
         self.assertIn("reprice_sweep", report)
 
     def test_a_dependant_starting_during_its_dependency_fails(self):
         p = _log(_c("10:00:00", "claim job=import key=import"),
-                 _c("10:00:05", "claim job=verify_pricing key=verify_pricing"))
+                 _c("10:00:05", "claim job=carbon_backfill key=carbon_backfill"))
         report, ok = soak.scan_log(p)
         self.assertFalse(ok)
         self.assertIn("DEPENDENCY VIOLATION", report)
@@ -388,7 +388,7 @@ class LogScan(unittest.TestCase):
     def test_the_dependency_ending_first_is_fine(self):
         p = _log(_c("10:00:00", "claim job=import key=import"),
                  _c("10:00:01", "release job=import key=import"),
-                 _c("10:00:05", "claim job=verify_pricing key=verify_pricing"))
+                 _c("10:00:05", "claim job=carbon_backfill key=carbon_backfill"))
         self.assertTrue(soak.scan_log(p)[1])
 
     def test_a_wait_that_never_ends_is_starvation(self):
@@ -496,7 +496,7 @@ class LogScan(unittest.TestCase):
 
     def test_a_prefixed_supervisor_line_still_parses(self):
         p = _log("\x1b[32m" + _c("10:00:00", "claim job=import key=import"),
-                 "\x1b[32m" + _c("10:00:05", "claim job=verify_pricing key=verify_pricing"))
+                 "\x1b[32m" + _c("10:00:05", "claim job=carbon_backfill key=carbon_backfill"))
         self.assertIn("DEPENDENCY VIOLATION", soak.scan_log(p)[0])
 
 

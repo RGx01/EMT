@@ -37,7 +37,7 @@ class TestEngineInventory(unittest.TestCase):
         """All 17 of them. A §7 q3 closed on this: there is no such thing as a
         long-running READ job in EMT, so B's scope is not reduced by them — it is
         defined by them."""
-        for job in ("run_api_import_job", "run_deferred_verify_pricing",
+        for job in ("run_api_import_job",
                     "_run_historical_reprice_sweep",
                     # The three legacy backfills (_run_historical_{exc,iog_split,segment}
                     # _backfill) were deleted — BL-33, 4 Oct 2026.

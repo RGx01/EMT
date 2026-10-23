@@ -46,7 +46,7 @@ GUARD_SHAPE = re.compile(r"_running$|_in_progress$|_lock$|_busy$|_paused$")
 # "long-running" is a judgement: `run_*` catches helpers, and the property that
 # matters is minutes of batch mutation, which no signature exposes.
 JOBS = [
-    "run_api_import_job", "run_deferred_verify_pricing",
+    "run_api_import_job",
     "_run_historical_reprice_sweep",
     "_run_historical_carbon_backfill", "run_measured_history_drain",
     "run_gap_fill_job", "run_iog_split_carve", "run_attribution_job", "run_device_rate_drift_repair",

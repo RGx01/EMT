@@ -84,7 +84,7 @@ class TheOctopusImport(unittest.TestCase):
             src = f.read()
         fn = src[src.index("async def run_api_import_job("):]
         fn = fn[:fn.index("\nasync def ", 10)]
-        wrote = fn[fn.index("_wrote = _run_wrote_blocks(j)"):fn.index('j["verify_skipped"] = "no_blocks_written"')]
+        wrote = fn[fn.index("_wrote = _run_wrote_blocks(j)"):fn.index('j["status"] = "done"', fn.index("_wrote = _run_wrote_blocks(j)"))]
         self.assertIn("rebuild_devices_after_refill(", wrote)
         self.assertLess(wrote.index("if _wrote:"), wrote.index("rebuild_devices_after_refill("))
 

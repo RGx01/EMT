@@ -4041,9 +4041,6 @@ def api_gap_fill_apply():
                                                   "preview again"}), 409
         if _eng.api_import_running():
             return jsonify({"ok": False, "error": "an import is already running"}), 409
-        if _backfill_verify_active(_eng):
-            return jsonify({"ok": False, "error": "the previous fill's pricing check is still "
-                                                  "finishing"}), 409
         if _restore_job.get("status") == "running":
             return jsonify({"ok": False, "error": "a restore is running"}), 409
         if not (_event_loop and _event_loop.is_running()):
@@ -4514,19 +4511,6 @@ def _gap_end_inclusive(store, frm, to):
         return to
 
 
-def _backfill_verify_active(_eng) -> bool:
-    """True while the deferred pricing-verification pass is running/waiting/paused.
-    A backfill RUN isn't finished until this post-import pass completes, so the
-    start endpoints treat it as 'still busy' — no second run can begin until the
-    current one (import THROUGH verify) is done. Server-enforced so a page refresh
-    or a direct API call can't get round the UI lock."""
-    try:
-        return (_eng.api_verify_pricing_status() or {}).get("status") in (
-            "running", "waiting", "paused")
-    except Exception:
-        return False
-
-
 @app.route("/api/backfill/fill-gap", methods=["POST"])
 def api_backfill_fill_gap():
     """Fill ONE gap window via the supplier API — as a BACKGROUND job, identical in
@@ -4553,10 +4537,6 @@ def api_backfill_fill_gap():
             return jsonify({"ok": False, "reason": "busy",
                             "message": "An import is already running.",
                             "status": _eng.api_import_status()}), 409
-        if _backfill_verify_active(_eng):
-            return jsonify({"ok": False, "reason": "verify_active",
-                            "message": "The previous backfill's pricing-verification pass is still "
-                                       "finishing. Wait for it to complete before starting another."}), 409
         if not (_event_loop and _event_loop.is_running()):
             return jsonify({"ok": False, "reason": "no_loop",
                             "message": "engine loop not running"}), 500
@@ -4707,7 +4687,7 @@ _STATES_YIELD_EVERY = 500
 # says they update when it finishes, and the first request after it counts (22 Oct 2026, the user;
 # staging: a device rebuild after a re-import wrote across 33 months, and the count it set off held
 # the engine loop 14.5 s on the prod box). With no counts yet, they are made anyway.
-_HEALTH_FREEZE_JOBS = ("import", "gap_fill", "attribution", "verify_pricing", "reprice_sweep",
+_HEALTH_FREEZE_JOBS = ("import", "gap_fill", "attribution", "reprice_sweep",
                        "range_refetch", "delete", "restore")
 _health_lock = threading.Lock()
 _health_cache = {"key": None, "views": None, "missing": None, "months": None, "at": 0.0}
@@ -5570,10 +5550,6 @@ def api_historical_api_start():
         body = request.get_json(force=True, silent=True) or {}
         if not body.get("confirmed"):
             return jsonify({"ok": False, "error": "confirmation required"}), 400
-        if _backfill_verify_active(_eng):
-            return jsonify({"ok": False, "reason": "verify_active",
-                            "error": "The previous backfill's pricing-verification pass is still "
-                                     "finishing. Wait for it to complete before starting another."}), 409
         if not (_event_loop and _event_loop.is_running()):
             return jsonify({"ok": False, "error": "engine loop not running"}), 500
         try:
@@ -5644,115 +5620,6 @@ def api_historical_api_gaps():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-@app.route("/api/historical/api-import/health", methods=["GET"])
-def api_historical_api_health():
-    """Post-import health summary (flags raised / auto-recovered / still remaining,
-    plus imported range) for the import page's persistent panel. 'remaining' is read
-    live from the reprice queue. Read-only."""
-    try:
-        import engine as _eng
-        # Read-only demo payloads so the panel's unhappy states can be inspected on a
-        # healthy account (see engine.api_import_health_demo). Never reached unless the
-        # caller asks for it by name.
-        # Operator-only. Silently ignored unless the add-on is running with
-        # `log_level: debug`, so a normal user who lands on a shared URL carrying the
-        # parameter just sees their own real figures rather than an error or a banner.
-        demo = (request.args.get("demo") or "").strip()
-        if demo and _eng.debug_mode():
-            return jsonify(_eng.api_import_health_demo(demo))
-        return jsonify(_eng.api_import_health())
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route("/api/historical/api-import/verify-status", methods=["GET"])
-def api_historical_verify_status():
-    """Live status of the deferred, rate-limit-gated pricing-verification pass that
-    runs after an import (chunk progress, slots corrected, waiting-for-allowance).
-    Read-only."""
-    try:
-        import engine as _eng
-        return jsonify(_eng.api_verify_pricing_status())
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
-@app.route("/api/historical/reprice-repair", methods=["POST"])
-def api_historical_reprice_repair():
-    """Calm, targeted re-price of imported half-hours the bulk import mispriced
-    (Measurements returned kWh but empty cost metaData under load). Re-queries the
-    slots one small window at a time and re-prices in place. Also the root-cause
-    test: the response's recovered/still_missing split says whether a calm re-fetch
-    recovers what the loaded import missed (⇒ load-induced) or not (⇒ real gap).
-
-    Body: {from_date?, to_date?, preview?, include_export?}. YYYY-MM-DD; omit dates
-    to use the reprice queue. `preview` counts the affected blocks WITHOUT running
-    (for a confirm step). Range mode defaults to IMPORT-only; set `include_export`
-    to also reprice export — now that _billed_rate prefers the flat/Agile schedule
-    for a published-rate slot, this COLLAPSES a fragmented export rate back to its
-    clean scheduled value (it no longer fragments it from cost÷kWh)."""
-    try:
-        import engine as _eng
-        if not _eng.kraken_available():
-            return jsonify({"ok": False, "error": "no API connected"}), 400
-        # Guard against a concurrent API pass: the deferred verify-pricing pass
-        # fetches from Octopus on the shared rate-limit allowance. Running a reprice
-        # at the same time would compete for the same budget (and re-check the same
-        # slots), so refuse while verify is live — the UI greys the Retry button to
-        # match, and the verify pass covers these slots anyway.
-        try:
-            _vs = _eng.api_verify_pricing_status() or {}
-        except Exception:
-            _vs = {}
-        if _vs.get("status") in ("running", "waiting", "paused"):
-            return jsonify({"ok": False, "reason": "verify_active",
-                            "error": "A pricing verification pass is running. It shares the "
-                                     "Octopus rate-limit allowance and already re-checks these "
-                                     "slots — please wait for it to finish, then retry if any "
-                                     "still need it."}), 409
-        body = request.get_json(force=True, silent=True) or {}
-        from_date = (body.get("from_date") or "").strip() or None
-        to_date = (body.get("to_date") or "").strip() or None
-        preview = bool(body.get("preview"))
-        # Guard: refuse a real reprice while the first-upgrade migration sweep is still working —
-        # it would race the sweep over the same blocks (and spin up a second one via the post-fill
-        # re-arm). Preview (count-only) is safe and allowed. The UI greys Retry to match.
-        if not preview and _eng.reprice_history_in_progress():
-            return jsonify({"ok": False, "reason": "migrating",
-                            "error": "History is still migrating to the new pricing model. Please "
-                                     "wait for it to finish, then retry any slots that still need "
-                                     "it."}), 409
-        # Date validation: end must not precede start.
-        if from_date and to_date and to_date < from_date:
-            return jsonify({"ok": False,
-                            "error": "The 'to' date can't be before the 'from' date."}), 400
-        # Range mode defaults to import-only (the tool's purpose); queue mode keeps
-        # whatever was flagged. include_export opts back into export re-pricing.
-        if from_date or to_date:
-            channels = ("import", "export") if body.get("include_export") else ("import",)
-        else:
-            channels = ("import", "export")
-        if not preview:
-            _bk, _refuse = _safety_backup_or_refuse("pre-reprice-repair")  # #67
-            if _refuse:
-                return _refuse
-        result = _run_on_engine_loop(
-            _eng.repair_import_pricing(from_date, to_date, channels=channels,
-                                       count_only=preview),
-            timeout=(60.0 if preview else 1800.0))
-        # G2: a real recovery invalidated those blocks' segments (block_store) — re-run the reprice
-        # sweep so the segment surfaces reflect the fill immediately, not just after a restart.
-        if not preview and (result.get("recovered") or 0) > 0:
-            try:
-                _run_on_engine_loop(_eng.run_reprice_history_sweep_to_done(), timeout=1800.0)
-            except Exception as _e:
-                logger.warning("reprice-repair: post-fill re-segment sweep failed: %s", _e)
-        return jsonify(result), (200 if result.get("ok") else 400)
-    except Exception as e:
-        logger.error("api_historical_reprice_repair: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
-
-
 @app.route("/api/historical/retag-imports", methods=["POST"])
 def api_historical_retag_imports():
     """Repair blocks the carbon round-trip bug wiped from 'imported_api' to NULL:
@@ -5790,48 +5657,6 @@ def api_carbon_pause():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-
-@app.route("/api/historical/reprice-from-csv", methods=["POST"])
-def api_historical_reprice_from_csv():
-    """Overlay exact billed cost/rate onto imported blocks from an Octopus CSV
-    export (the billing source of truth) — the only way to price dispatch slots
-    Octopus's Measurements API returns with no cost. Body: {csv, channel?}."""
-    try:
-        store = store_access.store()      # reads only; the write goes through _engine_write
-        data = request.get_json(force=True, silent=True) or {}
-        csv_text = (data.get("csv") or data.get("import_csv") or "").strip()
-        channel = data.get("channel") or "import"
-        if not csv_text:
-            return jsonify({"ok": False, "error": "no CSV supplied"}), 400
-        try:
-            import engine as _eng_g
-            if _eng_g.reprice_history_in_progress():
-                return jsonify({"ok": False, "reason": "migrating",
-                                "error": "History is still migrating to the new pricing model. "
-                                         "Please wait for it to finish, then fill from CSV."}), 409
-        except Exception:
-            pass
-        _bk, _refuse = _safety_backup_or_refuse("pre-csv-reprice")        # #67
-        if _refuse:
-            return _refuse
-        # On the engine thread. This endpoint already blocks the request for up to
-        # 1800s on the sweep below, so the hop adds no new blocking — it just
-        # stops the write going through the shared web connection, which four
-        # waitress threads share.
-        res = _engine_write(
-            lambda st: st.reprice_imported_blocks_from_csv(csv_text, channel=channel),
-            timeout=1800.0)
-        # G2: re-segment the CSV-filled blocks (their stale segments were invalidated in the store).
-        try:
-            import engine as _eng_csv
-            if _eng_csv.kraken_available():
-                _run_on_engine_loop(_eng_csv.run_reprice_history_sweep_to_done(), timeout=1800.0)
-        except Exception as _e:
-            logger.warning("reprice-from-csv: post-fill re-segment sweep failed: %s", _e)
-        return jsonify({"ok": True, **res})
-    except Exception as e:
-        logger.error("api_historical_reprice_from_csv: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/historical-import")
@@ -6129,29 +5954,6 @@ def api_historical_gap_template():
         logger.error("api_historical_gap_template: %s", e)
         return jsonify({"error": str(e)}), 500
 
-
-@app.route("/api/historical/slots-template", methods=["POST"])
-def api_historical_slots_template():
-    """Pre-filled CSV for an ARBITRARY set of slots — the pricing-health escape
-    hatch: hand the user exactly the half-hours the API couldn't price so they can
-    fill them from their bill and run them through the CSV reprice path.
-    Body: {starts: [naive-UTC iso...], channel}."""
-    try:
-        from flask import Response
-        import csv_import as _ci
-        body = request.get_json(silent=True) or {}
-        starts = body.get("starts") or []
-        channel = (body.get("channel") or "import").strip().lower()
-        if not starts:
-            return jsonify({"error": "no slots"}), 400
-        bm, tz = _period_block_minutes_tz(store_access.store(), starts[0])
-        csv_text = _ci.slots_template_csv(starts, block_minutes=bm, tz_name=tz)
-        fname = f"emt-slots-{channel}-{len(starts)}.csv"
-        return Response(csv_text, mimetype="text/csv",
-                        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
-    except Exception as e:
-        logger.error("api_historical_slots_template: %s", e)
-        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/historical/csv-template")
