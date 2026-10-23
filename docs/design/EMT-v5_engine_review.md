@@ -226,6 +226,12 @@ engine working.
 
 ## 6. Decided (22 Oct 2026, the user)
 
+*23 Oct 2026:* §4's "facts and one rule" is sharpened by the user's model of an Intelligent half-hour —
+predicted from CAD and EMT's own dispatch record, tightened by DCC's kWh, settled by Octopus's band — and
+the cost is kWh × the band's rate on every tariff, never Octopus's cost copied. Step 2 is rewritten on it
+(`EMT-v5_engine_step2_import_bills_design.md`); where Octopus's band contradicts its own rules, billed wins,
+flagged.
+
 - **(a) The model** — sources' answers kept as facts, everything else derived by one rule — is what
   EMT is meant to be.
 - **(b) OHME stays.** OHME owners have tested it and report it working; step 1 corrects its
