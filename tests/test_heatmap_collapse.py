@@ -31,7 +31,7 @@ class TheIssueRule(unittest.TestCase):
     def test_anything_not_green_but_csv_history_and_none(self):
         i = _SRC.index("var ISSUE = {"); rule = _SRC[i:_SRC.index("};", i)]
         for s in ("applied_emt_split: 1", "corrected: 1", "estimate_dcc: 1", "estimate_cad: 1",
-                  "known: 1", "overdue: 1", "differs: 1", "flagged: 1", "missing: 1",
+                  "overdue: 1", "differs: 1", "flagged: 1", "missing: 1",
                   "waiting: 1"):
             self.assertIn(s, rule)
         for s in ("applied:", "imported:", "none:", "no_agreement:"):

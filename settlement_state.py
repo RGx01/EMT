@@ -14,9 +14,7 @@ same thing. Pure: facts in (BlockStore.get_settlement_facts), states out.
            (19 Oct 2026, the user: red, hatched)
     export applied | waiting | overdue | imported | no_agreement | none        (design §1.2b, §9.4)
     split  None (no completed dispatch, or not IOG-SMB) | emt | bill | held | kept | missing
-    flags  recost_bl82       — `differs` because the settlement re-run re-costed the bill to
-                                kWh x rate before BL-82's fix (13 Oct 2026): known, not new
-           bill_kwh_differs  — the bill priced a different kWh than the one that settled
+    flags  bill_kwh_differs  — the bill priced a different kWh than the one that settled
            vat_disagrees     — the bill's own VAT is not the calendar's for its day (#505)
            split_missing     — a completed dispatch, energy in the block, and no split at all
                                (the Split view's red; the view went 17 Oct 2026, and the Import
@@ -120,14 +118,10 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
     elif f.get("rate_corrected") or f.get("rate_source") == "corrected":
         bill = "corrected"
     elif bill_cost is not None and f.get("rate_source") == "settled":
-        if cost is not None and abs(cost - bill_cost) <= _EPS_GBP:
-            bill = "applied"
-        else:
-            bill = "differs"
-            rate = _f(f.get("imp_rate"))
-            if (cost is not None and rate is not None
-                    and abs(cost - round(kwh * rate, 6)) <= _EPS_GBP):
-                flags.append("recost_bl82")
+        # Since engine step 2b the settled cost is kWh x Octopus's band rate, so `differs` says
+        # Octopus's own cost is not kWh x its rate — a kWh it priced differently, or an odd rate.
+        # (BL-82's `recost_bl82`, which excused a cost equal to kWh x rate, would excuse every one.)
+        bill = "applied" if cost is not None and abs(cost - bill_cost) <= _EPS_GBP else "differs"
     elif src == "imported_api" and bill_cost is not None:
         # Octopus's bill is cached for it: whatever the import's no-cost record says, the cost is
         # Octopus's (21 Oct 2026, staging: 15 half-hours of 21 Jul read "no cost, no longer asked"
