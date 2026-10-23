@@ -1,170 +1,140 @@
-# EMT v5 — Engine step 2: the import writes Octopus's cost as a bill
+# EMT v5 — Engine step 2: Octopus's band as evidence, the cost as kWh × rate
 
-*Draft, 22 Oct 2026. Step 2 of the engine review (`EMT-v5_engine_review.md` §4.3, §5). Every
-statement below was read in the code at `dev` 2a5462b or measured on a staging copy; a docstring
-is a claim.*
+*Rewritten 23 Oct 2026 (the first draft, 22 Oct, had the import keep Octopus's COST as a bill; the
+user's model, below, replaces it). Step 2 of the engine review (`EMT-v5_engine_review.md` §4, §5).
+Every figure was measured on a staging copy (the support file of 22 Oct 2026, 141k blocks); every
+code fact read at `dev`.*
 
-**What this note decides:** how an imported half-hour gets its cost, band and segments once
-Octopus's own answer for it is kept as a fact (a cached bill) instead of being priced by the
-import's own rules; what that lets go; how it is checked; and in what order it is built.
-
----
-
-## 0. Why
-
-**Two routes price the same kind of half-hour.** A half-hour whose bill the drain or the live
-pass fetches is settled by `apply_measured_to_block` — Octopus's cost, the band nearest
-cost ÷ kWh, the rate snapped to the clean tariff rate, segments, devices re-fitted. A half-hour
-the **import** brings is priced by the import itself: `_billed_rate` (cost ÷ kWh unless the
-schedule agrees within 0.1p), the cost straight into the block, no `rate_source`, segments left to
-the reprice sweep. On staging's copy (support file, 22 Oct 2026): 23,885 imported half-hours, every
-one with `rate_source` NULL, 11,813 with segments.
-
-**And the import's answer is the better one.** It asks Octopus 60 days at a time; on 22 Oct 2026 its
-costs matched the user's March 2025 statement on all 144 half-hours of 5–7 Mar
-(`.build/probe_window_shapes.py`, engine review §2). Yet it is not kept as a bill, so a bill fetched
-later — that day, a wrong one — outranked it.
-
-**Around the import's own pricing sits a repair industry** for the half-hours it came back without
-a cost for: an in-pass recovery, the reprice queue, `repair_import_pricing` (328 lines), the deferred
-verify pass (262 lines, re-checking the whole imported history in 30-day chunks), the pricing-health
-panel and its demo payloads — about 1,090 lines of `engine.py`, three routes and a card on Historical
-Import. Their premise is partly disproved: the verify pass exists because "the bulk import mislabels
-the edges of a smart charge", and the bulk import is what matched the statement.
+**What this note decides:** how every half-hour — live or imported, any tariff — gets its cost: from
+its kWh and its band, the band predicted by EMT and then settled by Octopus's own answer; what Octopus's
+answer is kept as; what that lets go; and the order, with the safeguards of §3a.
 
 ---
 
-## 1. What the import does today (read in the code)
+## 0. Why (23 Oct 2026, the user)
 
-Per channel, newest first, in 60-day chunks (`import_api_history`, `engine.py` 7906–8385):
+> "The dispatch we record for EMT is the prediction before the rates land; we keep the history of
+> dispatches as Octopus throws them away. The finalised EMT bill starts off as a prediction of CAD and
+> any dispatch activity; when the settled kWh lands the prediction gets tighter; when the rates and
+> bands are known the bill is settled. The machinery has got complex because we were trying to use cost
+> as the band identifier, working around quirks that possibly don't exist in the form we thought."
 
-1. **Fetch** Octopus's measurements (cost + label per half-hour); for export, fill what REST
-   consumption returns where measurements has nothing.
-2. **Price each half-hour:** `meas_cost` if Octopus gave one, else kWh × the schedule's rate;
-   `rate` by `_billed_rate`; ex-VAT from the cost or the schedule; the day's standing charge from the
-   schedule (else measurements, extrapolated to a day).
-3. **Record coverage** per agreement (`import_cost_coverage`): slots, costed, banded — the finding
-   "Octopus never costs this product" (three INTELLI agreements, 23 months, on one account).
-4. **The no-cost half-hours:** an in-pass re-fetch (`recover_measurement_costs`), then whatever is
-   left goes on the **reprice queue** and the **import's no-cost record** (`note_import_cost`).
-5. **Write** the chunk in one transaction (`upsert_imported_blocks`).
+**The cost only ever told EMT the band.** On staging's copy:
 
-Then the job's finish: the queue drained by `repair_import_pricing`; the **deferred verify pass**
-over the whole imported span; the **reprice sweep** (segments); the **history drain** asks bills for
-every Intelligent window's half-hours; the device rebuild.
+| measured | result |
+|---|---|
+| half-hours settled from an Octopus bill | 3,265 |
+| … where kWh × a clean tariff rate equals Octopus's cost (≤ 0.05p) | **3,265** — £448.77 either way |
+| … the rates they carry | the tariff's own: 5.493p, 5.2314p, 7p, 9p, 32.309p, 28.124p, 35.816p, 30.771p |
+| IOG-SMB half-hours with home and EV both drawing | 342 |
+| … billed at two different rates | **0** |
 
----
+The bill apply already reads it so: band from cost ÷ kWh, the rate snapped to the clean tariff rate —
+and then stores Octopus's cost anyway.
 
-## 2. The change
-
-**(a) The import keeps Octopus's answer as a bill.** Every import half-hour Octopus costed is also
-written to `measured_cost`: `cost_incl`, `cost_excl`, the carrying bucket's `label`, `kwh`,
-`fetched_at` = now. In the chunk's own transaction, through a new bulk method — `upsert_measured_cost`
-commits per row, which on the Pi's SD card would be ~35,000 commits for two years.
-
-- **Never over a breakdown.** A half-hour with an IOG-SMB breakdown cached keeps it: the bulk answer
-  is cost-only (engine review §2: the breakdown is window-insensitive, and the bulk feed has no
-  split). The import skips those slots' bill rows.
-- **A newer answer replaces an older one** from the same source otherwise — a re-import refreshes the
-  cache (22 Oct 2026: a re-import's correct 7p lost to a cached 25.4p).
-
-**(b) An Intelligent half-hour is settled from its bill, the one way.** The import writes the block's
-kWh, standing charge and a provisional cost; `apply_measured_to_block` then settles it, as it does
-every other billed half-hour (band, clean rate, segments, devices). Run **by the import job, in
-pages** after each chunk's write — coordinator-admitted, yielding between pages — not left to the
-hourly pass, which would meet ~35,000 unapplied bills at once.
-
-**(c) A published-rate half-hour is unchanged.** The apply skips published tariffs
-(`tariff_kind_at`); DCC kWh × rate is their bill, and the import's cost already is that.
-
-**(d) A half-hour with no cost is a half-hour with no bill yet.** It stays on the import's no-cost
-record. Inside an Intelligent agreement, within Octopus's two years, the history drain asks Octopus
-for it by the local day (#269, `_drain_asks`), backing off as any unanswered bill does (hourly 2
-days, daily to 30, then given up); on a published tariff it is priced kWh × rate, which is its bill. The in-pass recovery, the reprice
-queue, `repair_import_pricing` and the deferred verify pass have nothing left to do.
-
-**(e) What goes:** `_billed_rate`, `_reprice_suspect`, `_import_pricing_flag`, the in-pass recovery,
-`repair_import_pricing`, `_drain_reprice_queue_after_import`, the verify pass and its six helpers,
-the import health summary, `api_import_health` and its demo, `debug_mode`; the store's reprice-queue
-methods and `reprice_imported_block` (only the repair calls it); the routes
-`/api/historical/reprice-repair`, `/api/historical/api-import/verify-status`,
-`/api/historical/api-import/health`; Historical Import's pricing-health card, its "Retry N" and the
-queued-slots CSV; the gap fill's calls into the repair and the verify. About 1,100 lines of
-`engine.py` and a third of Historical Import's script.
-
-**(f) What stays:** per-agreement coverage (`import_cost_coverage`, read by the CSV apply's replace
-rule and the import's own skip of known-uncostable spans) — it can later be derived from the bills;
-the import's no-cost record (step 3 merges it with the other ask records); the reprice sweep (step 4
-folds it into `settle()`).
+**EMT's own prediction gets the band right.** All 808 IOG-SMB half-hours with a breakdown (8 Jul – 22 Oct
+2026), EMT's rule against Octopus's buckets: the night window 674/674, outside it with a completed
+dispatch 129/129, with none 4/4 peak, a planned dispatch that never completed 1/1 peak. EV kWh outside
+the night window: 267.5 predicted from completed dispatches, 274.9 billed (2.7%).
 
 ---
 
-## 3. Checks before and while building
+## 1. The model (decided)
 
-1. **Parity on a real database.** For the imported Intelligent half-hours of a staging copy, the
-   block's cost, rate, band and segments after (b) against today's. The cost must be identical (both
-   are Octopus's); the rate and band may move only where `_billed_rate` and the band snap disagree —
-   each such half-hour listed and explained before (b) ships. Needs the tariff schedules, so it runs
-   on staging (a soak step), not offline.
-2. **Throughput of the paged apply** on the Pi and the Wyse: half-hours per second, the loop's lag
-   while it runs; the page size set from that.
-3. **Growth:** `measured_cost` rows for two years of import, and the database's size.
-4. **The heatmap.** An imported half-hour reads `applied` once settled from its bill (green); a no-cost
-   one stays "no cost from Octopus, asking" until the drain answers or gives up.
+**For every half-hour, on every tariff: cost = kWh × the band's rate** — the tariff schedule's rate for
+that half-hour, as the live pricing already uses. Never Octopus's cost copied.
+
+| stage | kWh | band |
+|---|---|---|
+| **predicted** | CAD (live) | the clock, the completed dispatches EMT recorded (kept: Octopus throws them away), the 6-hour cap, Octopus's four-rate rules — the pricing seam (`_reprice_main_import_block`, `_dispatch_overlay_rate`, `_apply_iog_split`, `iog_cap`) |
+| **kWh settled** | DCC | the same prediction |
+| **band settled** | DCC | **Octopus's**: on IOG-SMB the four buckets (band, split and cap fall out of them); on earlier Intelligent tariffs the half-hour's label, asked a local day at a time (#269 — the day matched the March 2025 statement 48/48); on a published tariff the clock, settled with the kWh |
+
+**The split** (House / EV): the buckets' EV kWh on IOG-SMB; otherwise the completed dispatch, clipped to
+the grid (PASS 2).
+
+**Where Octopus's band contradicts its own rules — billed wins** (decided 23 Oct 2026, (a)): EMT shows
+what was billed, flagged "Octopus's rules give peak/off-peak here", until Octopus corrects it and the
+corrected band arrives. The known case: IOG-SMB appearing to bill all EV charging off-peak, an Octopus bug
+the user expects fixed. (None of the 808 above showed it.)
+
+**The prediction is never stored as a second answer;** it is a function of the facts (the dispatch record,
+the tariff, the kWh), so the flag is computed when it is read — as the settlement states are.
 
 ---
 
-## 3a. Safeguards (22 Oct 2026, the user: "if we get to the end of this exercise and it's a disaster
-can we get back to what we had?")
+## 2. What Octopus's answer is kept as
 
-Step 1 changed only code, and it reverts cleanly: reverting its merge (#272) in a scratch worktree
-applied with no conflict and the suite passed (4,644). The state before the review is tagged
-`pre-engine-review` (0d88e68). **Step 2 is the first step that changes stored data** — it writes
-bills and settles imported half-hours — and reverting its code does not unwrite those rows. So:
+`measured_cost`, as it is — no shape change. Per half-hour: the **label** (cost-only answers) or the four
+buckets' **kWh and unit rate** (IOG-SMB), `kwh`, `fetched_at`; the cost columns kept as Octopus's own
+figure, read only to display and to check, never written into the block. The band is read from it in one
+place: the bucket that carries the kWh (`bucket_side`, `label_band`), else the label.
 
-1. **A backup before staging takes it.** Each of 2a–2d is deployed to staging only after a fresh
-   backup of staging's database, named for the PR (`pre-step2a` …), kept until the next step is
-   decided. That backup, restored, is the way back for the data; the merge's revert is the way back
-   for the code.
-2. **Nothing goes until the parity is clean.** No removal (2c, 2d) merges until 2b's parity on staging
-   (§3.1) is clean: the cost identical on every imported half-hour, every rate or band that moved
-   listed and explained, and the user has seen the list.
-3. **Additive first.** 2a–2b add the bills and the apply beside today's pricing; the old path stays
-   until §3.1 says the new one agrees. Each PR reverts on its own (`git revert -m 1 <merge>`), and each
-   says in its description how to undo it, data included.
-4. **v4 is untouched.** The user's production install runs v4; all of this runs on v5 staging.
+**The import keeps Octopus's band too.** Its measurements carry the same label per half-hour; it writes it
+to `measured_cost` in the chunk's own transaction (a bulk write — `upsert_measured_cost` commits per row),
+never over an IOG-SMB breakdown already cached. A half-hour the import got no label for has its band
+unsettled, and the drain asks Octopus for it by the local day (`_drain_asks`), backing off as every ask does.
+
+---
+
+## 3. What it lets go
+
+| goes | why it existed |
+|---|---|
+| copying Octopus's cost into the block (`apply_measured_to_block`'s `imp_cost = cost_incl`, the band from cost ÷ kWh) | the cost was the band identifier |
+| `_billed_rate` and the import's own pricing | the import priced from cost ÷ kWh |
+| the VAT resync (#505) and its hint | copied costs carried Octopus's wrong VAT after 1 Oct 2026 — kWh × the schedule's rate never did |
+| the in-pass recovery, the reprice queue, `repair_import_pricing`, the deferred verify pass, the pricing-health card and its demo, `/api/historical/reprice-repair`, `…/verify-status`, `…/health` | no-cost and "mislabelled" imported half-hours; a missing band is now just an unsettled one, asked |
+| `rate_source`'s authority ladder between costs | one rule, applied the same way every time |
+
+About 1,250 lines of `engine.py` (the repair industry's ~1,090, the VAT resync's 143, the apply's cost copy). **Stays:** the prediction seam, the one bill reader and its windows,
+the hold-back (it is about the split, not the cost), the ask backoff, the cap arithmetic, per-agreement
+coverage.
+
+---
+
+## 3a. Safeguards (22 Oct 2026, the user)
+
+Step 1 changed only code and reverts cleanly (#272's revert tested: no conflict, the suite passed). The
+state before the review is tagged `pre-engine-review` (0d88e68). Step 2 changes stored values, and
+reverting its code does not unwrite them. So:
+
+1. **A backup before staging takes each PR,** named for it (`pre-step2a` …) and kept until the next step is
+   decided — restored, it is the way back for the data; the merge's revert is the way back for the code.
+2. **Nothing goes until the parity is clean** and the user has seen it (§4, 2a).
+3. **Additive first:** the new rule computed beside the old before it writes anything; the old path
+   removed only after.
+4. **v4 is untouched** — production runs v4; all of this runs on v5 staging.
 
 ---
 
 ## 4. Order
 
-| PR | what | changes behaviour |
+| PR | what | writes |
 |---|---|---|
-| 2a | the bulk bill write; the import writes bill rows (skipping breakdown slots) | the hourly apply would start settling imported half-hours — so 2a lands with 2b |
-| 2b | the import job applies its bills in pages; parity (§3.1) and throughput (§3.2) on staging | yes: imported Intelligent half-hours settled from their bill |
-| 2c | the in-pass recovery, the queue, the repair and the verify pass go; their routes and the pricing-health card | yes: no second pass over imported history |
-| 2d | the gap fill's finish follows (it called the repair and the verify) | yes |
+| **2a** | `settled_band(half-hour)` and `predicted_band(half-hour)` from the facts, and a parity report: for every main-meter half-hour, today's stored cost against kWh × rate(band), and the billed band against the predicted — run on staging, every difference listed | nothing |
+| **2b** | the bill apply writes kWh × rate(band) from the settled band; the flag where it contradicts the prediction; the heatmap's "differs" becomes "Octopus's band differs from its rules" | the settled half-hours' cost and rate |
+| **2c** | the import keeps the label as band evidence (bulk); imported half-hours settle through the same rule; no-label ones are asked | imported half-hours |
+| **2d** | the removals of §3, the gap fill's finish with them | — |
+
+**What 2a's report is expected to show**, so a surprise stands out: no cost change on the 3,265 settled
+half-hours; changes only where a cached bill's band was wrong (the 11 evening half-hours of 5–7 Mar 2025,
+£9.01 cached against £2.48 at the off-peak rate — the statement's figure); no VAT change (Octopus restated
+October on 13 Oct 2026: none of the 295 cached October costs carries 5%); and on the imported half-hours, a
+change only where `_billed_rate`'s cost ÷ kWh and the band's rate disagree.
 
 ---
 
 ## 5. For the user
 
-- (a) **Export.** The import gets Octopus's export cost too. Export is settled today as kWh × the
-  export rate, which Octopus's figure equals on a flat export tariff. Keep export as it is for now
-  (proposed), or keep its answers as bills as well?
-- (b) **"Fix a date range"** (`/api/historical/reprice-repair`) goes with the repair. Its job — ask
-  Octopus again for a span — is the heatmap's re-fetch now, which since #269 asks the right window.
+- (a) **Export** fits the model as it is (the band is the clock; the cost kWh × the export rate). No change
+  proposed.
+- (b) **"Fix a date range"** goes with the repair (§3); the heatmap's re-fetch asks Octopus for a span.
   Agreed?
-- (c) **Historical Import's pricing-health card** goes. Its per-half-hour story is on the heatmap
-  (no-cost half-hours hatched, asked until answered or given up). Keep a one-line note in the
-  import's summary instead — "N half-hours came back without a cost; EMT is asking Octopus for them"?
+- (c) **Historical Import's pricing-health card** goes; a one-line note in the import's summary instead —
+  "N half-hours came back without a band; EMT is asking Octopus"?
+- (d) **The other instances.** The figures in §0 are one account (IOG, then IOG-SMB, a Zappi). Run 2a's
+  report on each instance's database before 2b?
 
-- (d) **Before step 2 (to discuss, 23 Oct 2026, the user's question):** why do Intelligent tariffs
-  have to behave differently — priced from Octopus's costs — when every other tariff is rate × kWh?
-  If an Intelligent half-hour's price can be derived from the tariff, the dispatch and the kWh, as a
-  published one's is, much of the bill machinery (the bill fetches, the hold-back, the asks, the
-  apply) is a check rather than the source — which would change what step 2 is for.
-
-**Decided alongside (22 Oct 2026, the user):** of the two per-version backups at start-up
-(engine review §3.5), only the raw pre-migration copy is kept; the second, a zip after the store
-opens, goes — its own small PR.
+**Decided:** billed wins where it contradicts Octopus's rules, flagged (23 Oct 2026); one start-up backup
+per version, the raw pre-migration copy (22 Oct 2026, review §6 (e)).
