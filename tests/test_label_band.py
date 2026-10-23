@@ -116,7 +116,7 @@ class TestParseMeasurementNodeBand(unittest.TestCase):
                                            type_="TOU_BUCKET_COST")))["off_peak"], False)
 
     def test_export_standard_rate_stays_false_not_none(self):
-        # _billed_rate's published-rate branch distinguishes False from None; export
+        # the import's schedule lookup distinguishes False from None; export
         # slots arrive labelled STANDARD_RATE and must not become "unlabelled".
         r = self.parse(node(stat("STANDARD_RATE", 15.0, type_="TOU_BUCKET_COST")))
         self.assertIs(r["off_peak"], False)

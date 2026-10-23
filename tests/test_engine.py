@@ -3441,90 +3441,6 @@ class TestExcTariffRate(unittest.TestCase):
         self.assertAlmostEqual(r, 0.323048, places=6)   # peak exc ÷ 100
 
 
-class TestBilledRate(unittest.TestCase):
-    """Octopus's billed cost is authoritative: the stored rate is cost÷kWh, keeping
-    the clean scheduled value only when it agrees — so a mis-dated price-cap change
-    in the LOCAL schedule can't stamp a rate that contradicts the block's cost."""
-
-    class _Sched:
-        def __init__(self, lo_p, hi_p):
-            self.lo_p, self.hi_p = lo_p, hi_p           # native pence
-
-        def day_rate_bounds(self, ts):
-            return (self.lo_p, self.hi_p)
-
-        def resolve(self, ts):
-            return self.hi_p
-
-        def flat_rate(self, tol=1e-6):
-            return self.lo_p if abs(self.hi_p - self.lo_p) <= tol else None
-
-    def _segs(self, lo_p, hi_p):
-        return [("2000-01-01T00:00:00", None, self._Sched(lo_p, hi_p))]
-
-    def test_prefers_clean_schedule_when_it_agrees(self):
-        # sched off-peak 7.00p; billed 6.9986p (rounding) → keep the tidy 0.0700.
-        r = engine._billed_rate(self._segs(7.0, 28.0),
-                                "2025-10-14T02:00:00", True, 0.069986, 1.0)
-        self.assertEqual(r, 0.07)
-
-    def test_trusts_billed_when_schedule_stale(self):
-        # 31 Mar: the schedule wrongly holds the 1-Apr price-cap rate (5.493p), but
-        # Octopus billed 9p (cost 0.2624 for 2.916 kWh) → rate must be the billed 9p,
-        # NOT the stale scheduled 5.49p.
-        r = engine._billed_rate(self._segs(5.493, 32.3092),
-                                "2026-03-31T02:30:00", True, 0.2624, 2.916)
-        self.assertAlmostEqual(r, round(0.2624 / 2.916, 6))   # ≈ 0.09
-        self.assertGreater(r, 0.08)                           # definitely not 0.0549
-
-    def test_no_billed_cost_uses_schedule(self):
-        r = engine._billed_rate(self._segs(7.0, 28.0),
-                                "2025-10-14T02:00:00", True, None, 1.0)
-        self.assertEqual(r, 0.07)                             # off-peak scheduled rate
-
-    def test_zero_kwh_uses_schedule_no_divide(self):
-        r = engine._billed_rate(self._segs(7.0, 28.0),
-                                "2025-10-14T14:00:00", False, 0.0, 0.0)
-        self.assertEqual(r, 0.28)                             # peak scheduled, no ZeroDiv
-
-    def test_flat_export_labelled_standard_prefers_schedule(self):
-        # THE export bug: Octopus labels export slots STANDARD_RATE, so they parse to
-        # off_peak=False (NOT None). The tariff is flat that day (lo==hi==15p), so the
-        # schedule is truth — a small slot billing to 0.14870 must still snap to the
-        # tidy 0.15, not fragment. (Keying on "no label" missed this — off_peak False.)
-        r = engine._billed_rate(self._segs(15.0, 15.0),
-                                "2025-09-15T14:00:00", False, 0.14870, 1.0)
-        self.assertEqual(r, 0.15)
-
-    def test_flat_export_no_label_also_prefers_schedule(self):
-        # Some export slots carry no bucket at all → off_peak None; still flat → 0.15.
-        r = engine._billed_rate(self._segs(15.0, 15.0),
-                                "2025-09-15T14:00:00", None, 0.14870, 1.0)
-        self.assertEqual(r, 0.15)
-
-    def test_banded_iog_peak_labelled_false_keeps_billed(self):
-        # IOG peak also parses off_peak=False, but the day is BANDED (7p/28p, lo≠hi) →
-        # dispatch-aware → billed stays truth. A stale-schedule 31-Mar-style case: the
-        # schedule holds 28p but Octopus billed 9p → must NOT snap to the flat branch.
-        r = engine._billed_rate(self._segs(7.0, 28.0),
-                                "2026-03-31T14:00:00", False, 0.2624, 2.916)
-        self.assertAlmostEqual(r, round(0.2624 / 2.916, 6))   # ≈ 0.09, the billed rate
-        self.assertLess(r, 0.15)                              # definitely not 0.28
-
-    def test_continuous_agile_prefers_per_slot_resolve(self):
-        # Agile: no label → _tariff_rate_for uses resolve() (per-slot). resolve here
-        # returns the hi_p=17.493p slot rate; billed jitters to 0.17490 → prefer the
-        # clean scheduled 0.17493, not the jittery billed.
-        r = engine._billed_rate(self._segs(9.9, 17.493),
-                                "2025-10-18T14:00:00", None, 0.17490, 1.0)
-        self.assertEqual(r, 0.17493)
-
-    def test_continuous_falls_back_to_billed_when_uncovered(self):
-        # No schedule coverage (empty segs) → sched is None → billed is the fallback,
-        # even for a continuous/unlabelled slot.
-        r = engine._billed_rate([], "2025-09-15T14:00:00", None, 0.15, 1.0)
-        self.assertEqual(r, 0.15)
-
 
 class TestFlatExportTransitionSeam(unittest.TestCase):
     """A flat OUTGOING tariff must stay clean across the tariff-TRANSITION seam:
@@ -3532,7 +3448,8 @@ class TestFlatExportTransitionSeam(unittest.TestCase):
     begin LATER, so the early days are an uncovered sliver. Without back-fill those
     days drop to cost÷kWh and a flat 0.12 fragments into hundreds of near-identical
     rates (the March-2026 export bug). Uses the REAL RateSchedule (the stub can't
-    model an uncovered day)."""
+    model an uncovered day). Since engine step 2d (23 Oct 2026) the import prices from
+    `_tariff_rate_for` alone, so these ask it directly."""
 
     def _segs(self):
         from kraken_rates import RateSchedule
@@ -3555,21 +3472,21 @@ class TestFlatExportTransitionSeam(unittest.TestCase):
         # 0.016 kWh billed 0.0019 → cost÷kWh = 0.11875 (>0.1p from 0.12). Before the
         # fix this fragmented; now it back-fills the flat 0.12 from the new agreement.
         for ofp in (False, None):
-            r = engine._billed_rate(self._segs(), "2026-03-15T05:30:00", ofp, 0.0019, 0.016)
+            r = engine._tariff_rate_for(self._segs(), "2026-03-15T05:30:00", ofp)
             self.assertEqual(r, 0.12, ofp)
 
     def test_march_seam_large_slot_also_clean(self):
         for ofp in (False, None):
-            r = engine._billed_rate(self._segs(), "2026-03-15T11:00:00", ofp, 0.1229, 1.024)
+            r = engine._tariff_rate_for(self._segs(), "2026-03-15T11:00:00", ofp)
             self.assertEqual(r, 0.12, ofp)
 
     def test_feb_still_old_rate(self):
         # Before the transition → old 15p agreement, fully covered → unchanged.
-        r = engine._billed_rate(self._segs(), "2026-02-10T12:00:00", False, 0.30, 2.0)
+        r = engine._tariff_rate_for(self._segs(), "2026-02-10T12:00:00", False)
         self.assertEqual(r, 0.15)
 
     def test_april_covered_unchanged(self):
-        r = engine._billed_rate(self._segs(), "2026-04-10T12:00:00", False, 0.24, 2.0)
+        r = engine._tariff_rate_for(self._segs(), "2026-04-10T12:00:00", False)
         self.assertEqual(r, 0.12)
 
     def test_tariff_rate_for_backfills_uncovered_flat(self):
@@ -3580,15 +3497,12 @@ class TestFlatExportTransitionSeam(unittest.TestCase):
 
     def test_banded_seam_not_backfilled(self):
         # A BANDED agreement across the same seam must NOT back-fill (flat_rate None):
-        # an uncovered banded day stays None → billed cost÷kWh (dispatch-accurate).
+        # an uncovered banded day stays None (the import then keeps Octopus's figure).
         from kraken_rates import RateSchedule
         banded_new = RateSchedule([("2026-04-01T00:00:00", None, 7.0),
                                    ("2026-04-01T00:00:00", None, 30.0)])
         segs = [("2026-03-01T00:00:00", None, banded_new)]
         self.assertIsNone(engine._tariff_rate_for(segs, "2026-03-15T02:00:00", True))
-        # billed wins for the uncovered banded slot
-        r = engine._billed_rate(segs, "2026-03-15T02:00:00", True, 0.09, 1.0)
-        self.assertAlmostEqual(r, 0.09)
 
 
 
