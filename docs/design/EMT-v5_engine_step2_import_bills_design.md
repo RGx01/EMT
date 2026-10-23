@@ -141,6 +141,9 @@ change only where `_billed_rate`'s cost ÷ kWh and the band's rate disagree.
 - **IOG-SMB's band is the carrying bucket's, not the summary label.** The nights of 27–28 Sep 2026:
   16 half-hours inside the night window labelled STANDARD_RATE whose only bucket was at the off-peak
   5.493p, Octopus's cost the off-peak cost. `settled_band` reads the bucket's unit rate (fixed, 23 Oct).
+  **So on IOG-SMB only the buckets settle the band:** dev's report the same day had 22 night half-hours of
+  26 Aug – 2 Sep labelled STANDARD_RATE with no breakdown cached, and read them peak — 2b would have
+  written peak over Octopus's off-peak cost. A label without the buckets now leaves the half-hour unsettled.
 - **Where EMT's prediction and Octopus's band disagree** (166 before EMT's dispatch record began,
   expected; in September after the fix, 6, none changing a penny — billed wins):
   - 5: a **completed** dispatch with EV kWh of 3–82 Wh, billed off-peak; the overlay's 0.1 kWh floor

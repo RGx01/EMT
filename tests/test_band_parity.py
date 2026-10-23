@@ -40,7 +40,8 @@ def _fact(bs="2026-09-06T19:00:00", kwh=3.6, cost=None, rate=None, label=None, b
 class _Base(unittest.TestCase):
     def setUp(self):
         self.p = [mock.patch.object(engine, "_kraken_rate_schedules", {"import": _Sched()}),
-                  mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")]
+                  mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent"),
+                  mock.patch.object(engine, "split_at", lambda bs: False)]
         for x in self.p:
             x.start()
         self.dispatched = set()
@@ -81,6 +82,20 @@ class TheBucketsBand(_Base):
     def test_two_rates_is_mixed(self):
         bd = {"home_kwh": 0.4, "home_rate": round(HI / 100, 6), "ev_kwh": 3.2, "ev_rate": round(LO / 100, 6)}
         self.assertEqual(engine.settled_band("x", "OFF_PEAK", bd), "mixed")
+
+    def test_an_smb_label_without_the_buckets_settles_nothing(self):
+        """2a's report on dev (23 Oct 2026): IOG-SMB night half-hours labelled STANDARD_RATE with no
+        breakdown cached read peak, and the rule would have written peak over Octopus's off-peak cost."""
+        with mock.patch.object(engine, "split_at", lambda bs: True):
+            self.assertIsNone(engine.settled_band("2026-08-27T02:30:00", "STANDARD_RATE", None))
+            bd = {"home_kwh": 2.9, "home_rate": round(LO / 100, 6), "ev_kwh": 0.0, "ev_rate": None}
+            self.assertEqual(engine.settled_band("2026-08-27T02:30:00", "STANDARD_RATE", bd), "off_peak")
+
+    def test_the_row_leaves_it_unsettled(self):
+        with mock.patch.object(engine, "split_at", lambda bs: True):
+            r = engine.band_parity_row(_fact(bs="2026-08-27T02:30:00", kwh=2.898,
+                                             cost=round(2.898 * LO / 100, 6), label="STANDARD_RATE"))
+        self.assertEqual((r["status"], r["settled"]), ("unsettled", None))
 
     def test_no_breakdown_reads_the_label(self):
         """The earlier tariffs' bills carry only the label (fails on the parent only for the new
