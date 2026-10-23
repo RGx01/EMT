@@ -8447,8 +8447,9 @@ async def _gap_fill_window(j, from_ts, to_ts, *, channels, chunk_days, max_chunk
 async def _after_import_settle() -> None:
     """What follows a finished import or gap fill that wrote blocks, once the import claim is
     released (the import job's own finish runs while it holds it): the history reprice sweep,
-    forced, so the new history gets its split, ex-VAT and segments; then the measured drain, so its
-    bills and four-bucket splits are asked now rather than at the next hourly tick. Detached.
+    forced, so the new history gets its split, ex-VAT and segments; the cached bills applied, a
+    page at a time (`_apply_bills_paced`); then the measured drain, so what has no bill yet is asked
+    for now rather than at the next hourly tick. Detached.
 
     Both ran at the end of the deferred verify pass until engine step 2d removed it (23 Oct 2026).
     The drain kick's reason, from there: a fresh install wrote ~35k blocks and the drain is reached
@@ -8467,9 +8468,32 @@ async def _after_import_settle() -> None:
     except Exception as e:
         logger.warning("after import: reprice-history sweep failed (non-fatal): %s", e)
     try:
+        await _apply_bills_paced()
+    except Exception as e:
+        logger.warning("after import: applying the cached bills failed (non-fatal): %s", e)
+    try:
         _maybe_drain_measured_history()
     except Exception as e:
         logger.warning("after import: measured history drain schedule failed: %s", e)
+
+
+_APPLY_PAGE = 200            # bills applied per page by _apply_bills_paced
+_APPLY_PAGE_PAUSE_S = 0.05
+
+
+async def _apply_bills_paced() -> int:
+    """`apply_measured_settled` a page at a time, yielding to the loop between pages, so an import's
+    cached bills reach its blocks now rather than at the next hourly pass (staging, 23 Oct 2026: a
+    re-import's 11,785 waited 52 minutes, read red, and then held the loop 5.6 s in one pass). A
+    cursor, not "until nothing is left": a refused bill stays a candidate. Returns those applied."""
+    after, n = "", 0
+    while True:
+        r = apply_measured_settled(after=after, limit=_APPLY_PAGE) or {}
+        n += r.get("applied") or 0
+        if not r.get("last") or (r.get("candidates") or 0) < _APPLY_PAGE:
+            return n
+        after = r["last"]
+        await asyncio.sleep(_APPLY_PAGE_PAUSE_S)
 
 
 async def _gap_fill_finish(j, channels) -> None:
@@ -11886,7 +11910,7 @@ def _maybe_drain_measured_history() -> None:
         _measured_history_drain_running = False
 
 
-def apply_measured_settled() -> dict:
+def apply_measured_settled(after: str = "", limit: "int | None" = None) -> dict:
     """BL-53 step 3: write Octopus's billed cost as authoritative for EVERY settled IOG
     dispatched block that has a cached measured_cost but isn't yet 'settled'/'corrected'.
     Operates over the whole cached-unapplied set (soak backlog + freshly-cached), so it is
@@ -11909,7 +11933,7 @@ def apply_measured_settled() -> dict:
     if not mpan:
         return {}
     try:
-        rows = store.get_measured_costs_to_apply(mpan, _measured_floor())
+        rows = store.get_measured_costs_to_apply(mpan, _measured_floor(), after=after, limit=limit)
     except Exception as e:
         logger.warning("apply_measured: query failed: %s", e)
         return {}
@@ -11949,6 +11973,7 @@ def apply_measured_settled() -> dict:
         logger.info("apply_measured: applied %d block(s) from the bill (settled = authority)",
                     n_apply)
     return {"applied": n_apply, "candidates": len(rows), "published_rate": n_published,
+            "last": rows[-1]["block_start"] if rows else None,
             "refused": {k: v[0] for k, v in refused.items()}}
 
 

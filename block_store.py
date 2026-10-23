@@ -7701,12 +7701,14 @@ class BlockStore:
         return out
 
     def get_measured_costs_to_apply(self, mpan: str, floor: str,
-                                    meter_id: str = "electricity_main") -> list:
+                                    meter_id: str = "electricity_main", *,
+                                    after: str = "", limit: "int | None" = None) -> list:
         """Settleable blocks with a cached bill that has not been applied yet.
 
         Scoped to the MPAN so a move to a new meter cannot apply the old meter's
         bill, and to `direction = 'CONSUMPTION'` because the same table holds
-        export rows.
+        export rows. `after` / `limit`: a page of them, oldest first, for a caller
+        that yields to the loop between pages (engine._apply_bills_paced).
         """
         rows = self._conn.execute(
             "SELECT b.block_start, b.imp_cost, m.cost_incl, m.cost_excl, m.label "
@@ -7716,9 +7718,10 @@ class BlockStore:
             "WHERE b.meter_id = ? AND b.rate_corrected = 0 "
             "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
             "  AND " + self._SETTLEABLE_SQL + " "
-            "  AND b.block_start >= ? AND m.cost_incl IS NOT NULL AND m.cost_incl > 0 "
-            "ORDER BY b.block_start",
-            (mpan, meter_id, floor)).fetchall()
+            "  AND b.block_start >= ? AND b.block_start > ? "
+            "  AND m.cost_incl IS NOT NULL AND m.cost_incl > 0 "
+            "ORDER BY b.block_start" + (" LIMIT %d" % int(limit) if limit else ""),
+            (mpan, meter_id, floor, after or "")).fetchall()
         return [dict(r) for r in rows]
 
     def get_dispatched_blocks_awaiting_measure(self, floor: str,
