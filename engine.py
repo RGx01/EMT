@@ -12318,16 +12318,25 @@ def settled_band(bs: str, bill_label, breakdown: "dict | None" = None) -> "str |
 def band_note(bs: str, kwh, bill_label, breakdown=None, live: bool = True) -> "dict | None":
     """The detail panel's band evidence for an Intelligent half-hour with Octopus's answer:
     {settled, predicted, disagrees}. Billed wins, so a disagreement is a note, not an issue (the
-    user, 23 Oct 2026: the cell stays green). None on a published tariff, or with no kWh."""
+    user, 23 Oct 2026: the cell stays green). None on a published tariff, or with no kWh.
+
+    Before EMT's dispatch record began there is nothing to predict a dispatch from, so nothing
+    disagrees (`before_record`): imported history's evening charges read "the rules give peak"
+    against Octopus's off-peak once the re-import settled them (staging, 23 Oct 2026: 2,758)."""
     try:
         k = float(kwh or 0.0)
     except (TypeError, ValueError):
         return None
     if k <= 1e-9 or tariff_kind_at(bs) != "intelligent":
         return None
+    try:
+        first = _reader().first_dispatch_record()
+    except Exception:
+        first = None
+    before = first is None or bs < first
     s, p = settled_band(bs, bill_label, breakdown), predicted_band(bs, k, live)
-    return {"settled": s, "predicted": p,
-            "disagrees": bool(s in ("off_peak", "peak") and p and s != p)}
+    return {"settled": s, "predicted": p, "before_record": before,
+            "disagrees": bool(not before and s in ("off_peak", "peak") and p and s != p)}
 
 
 def predicted_band(bs: str, kwh: float, live: bool = True) -> "str | None":
