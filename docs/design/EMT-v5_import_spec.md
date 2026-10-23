@@ -113,7 +113,7 @@ miss its kWh is reported, not changed.*
 agrees with the VAT calendar. **It is conditional on Octopus**: a 4.5.22 database has run the
 mechanism, not necessarily the heal — if Octopus has not restated, its October measured blocks
 still carry 5%. So v5 carries the detection and resync as **forward code** (it re-arms on every VAT
-change and on imported data alike), not as a v4 heal; the floor guarantees only that 4.5.21's heals
+change and on imported data alike), not as a v4 heal (until v26 removed it, 23 Oct 2026); the floor guarantees only that 4.5.21's heals
 ran and that 4.5.22's state marker travels with the data. 4.5.21 and the v5 dev build `4.5.21-a22`
 join the below-floor negatives; v5's own builds now stamp `4.5.22-a23`.*
 
@@ -145,6 +145,16 @@ a bill whose EV is zero where EMT's own split has the car, for up to 28 days —
 forward code. 4.5.22 and the v5 dev build `4.5.22-a23` join the below-floor negatives; v5's own
 builds now stamp `4.5.23-a24`. The 4.5.22 positive fixture (prod-dev, 10 Oct) is below the floor
 now; the fixture is re-taken at 4.5.23.*
+
+*Changes in v26 (23 Oct 2026): **v5 no longer carries the October VAT resync** (engine step 2d-3,
+the user). Since engine step 2b a settled half-hour's cost is kWh × the schedule's rate with the
+VAT calendar's VAT, so Octopus's VAT never reaches a block that settles in v5; and Octopus restated
+October on 13 Oct 2026, so the resync had nothing left to wait for. **The gap, accepted:** a v4
+database taken before 13 Oct 2026 — at the 4.5.23 floor (12 Oct) or a 4.5.22 one — may hold
+October's settled half-hours at 5%, and nothing in v5 re-settles a block that is already settled.
+**Open such a backup in v4 first**, so 4.5.22's resync picks up the restatement, then take a new
+backup. The floor does not move: 4.5.24 carries no heal. `measured_vat_resync` stays on the drop
+list.*
 
 *Changes in v25 (21 Oct 2026): **the settlement source is not carried** (data management design
 §2 (b)). v5 retired the choice: it settles against the supplier wherever the API is on.

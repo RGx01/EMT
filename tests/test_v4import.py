@@ -222,7 +222,12 @@ class TheProvenanceWords(_Dir):
         self.imported()
         st = BlockStore(self.target)
         self.addCleanup(st.close)
-        self.assertEqual([r[0] for r in st.measured_main_costs_since("2026-01-01")], [B1])
+        # what v5 reads as a settled main block (measured_main_costs_since's query, which went with
+        # the VAT resync in engine step 2d-3, 23 Oct 2026)
+        self.assertEqual([r[0] for r in st._conn.execute(
+            "SELECT block_start FROM blocks WHERE meter_id = 'electricity_main' AND "
+            "rate_source = 'settled' AND COALESCE(rate_corrected, 0) = 0 AND block_start >= ? "
+            "ORDER BY block_start", ("2026-01-01",))], [B1])
 
 
 def _blk(i, bs, kwh, rate, source, *, ev=None, flag=0):

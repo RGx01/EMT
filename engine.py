@@ -8008,6 +8008,11 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
     out["done"] = all_done
     return out
 
+# ── API import as a background job (pause / resume / cancel) ──────────────────
+# The import runs as a task on the engine loop, not driven by the browser, so it
+# survives navigating away and can be paused/cancelled. State is in-memory (single
+# add-on process); the per-channel checkpoint in kraken_state means a restart
+# mid-import loses only the job UI, not the progress (re-Start resumes idempotently).
 _api_import_job: dict = {"status": "idle"}
 
 
@@ -9660,12 +9665,6 @@ async def _tick_dispatch_capture() -> None:
             await measure_settled_dispatched_blocks()
         except Exception as e:
             logger.warning("_tick_dispatch_capture: measured-cost fetch failed: %s", e)
-        # v4 4.5.22 (#505): once Octopus restates its post-VAT-change costs for the whole period,
-        # store them and re-apply the measured blocks. Waits indefinitely until then.
-        try:
-            await run_measured_vat_resync()
-        except Exception as e:
-            logger.warning("_tick_dispatch_capture: vat resync failed: %s", e)
         # First-time / bulk SMB history import: drain the imported capped history to Octopus's
         # billed breakdown (the live fetch above is newest-first + bounded). Backlog-gated; no-op
         # once caught up. Runs off the loop as a task.
@@ -10255,7 +10254,7 @@ def emt_ev_reference(segment_ev, cached_bill_ev) -> float:
     known to have charged in a half-hour if EMT's split (its EV segments) OR a bill already cached
     has it — the larger of the two. Bill and split paths design §2 (16 Oct 2026): the four paths
     read it three ways (segments; the cached bill; the larger). Where nothing is cached (the live
-    pass, the drain) this is the segments; where a bill is (the VAT resync, the re-fetch), a later
+    pass, the drain) this is the segments; where a bill is (the re-fetch), a later
     answer that drops the car is the 10 Oct 2026 provisional answer the other way round."""
     def _f(x):
         try:
@@ -10631,7 +10630,6 @@ async def measure_settled_dispatched_blocks() -> dict:
     _emt_ev = emt_ev_at(store, missing)            # the hold-back's one reference (design §2)
 
     n_store = n_absent = n_mixed = n_zero = n_held = 0
-    _fetched_pairs: list = []          # v4 4.5.22 (#505): (slot, cost_incl, cost_excl) for the hint
     # One bill reader (bill and split paths design §1.3): the breakdown for half-hours on the
     # IOG-SMB agreement, the single billed cost for the rest — chosen per half-hour.
     try:
@@ -10666,9 +10664,7 @@ async def measure_settled_dispatched_blocks() -> dict:
         if row["label"] == "mixed":
             n_mixed += 1
         _store_bill(store, slot, mpan, row)
-        _fetched_pairs.append((slot, row["cost_incl"], row["cost_excl"]))
         n_store += 1
-    _vat_resync_note_fetch(store, _fetched_pairs)   # v4 4.5.22 (#505): has Octopus restated?
     # what this pass changed, merged onto what the drain may have saved meanwhile
     _save_changes(store, _wait_before, _wait, lambda: _bill_split_wait(store), _bill_split_wait_save)
     _save_changes(store, _ask_before, _ask, lambda: _bill_ask(store, mpan), _bill_ask_save)
@@ -10684,92 +10680,9 @@ async def measure_settled_dispatched_blocks() -> dict:
             "mixed": n_mixed, "zero": n_zero, "absent": n_absent, "held": n_held}
 
 
-
-# ── Pick up Octopus's restated costs after a VAT change (v4 4.5.22, #505) ─────────────────
-# From 1 Oct 2026 (0% domestic VAT) Octopus's half-hourly measurement costs still carried 5%:
-# costInclTax = costExclTax x 1.05, though its tariff rates and its statement are 0%. A settled
-# block took that cost. EMT never re-asks for a cached slot and never re-applies a measured block,
-# so when Octopus re-runs its costing nothing reaches EMT. This detects the restatement per install
-# and resyncs: (1) a live fetch of new post-change slots that all agree with the VAT calendar is a
-# HINT; (2) the whole period since the change is re-fetched into memory and heals only if EVERY
-# non-zero slot agrees — else nothing is written and it re-verifies a day later; (3) the verified
-# rows are stored and every measured block in the period whose cost differs is re-applied. If
-# Octopus never restates, it waits indefinitely. The calendar only RECOGNISES Octopus's figures; it
-# never overwrites them. Keyed to the change, so it re-arms for the next one. Carried FORWARD in
-# v5, not as a v4 heal: it waits on Octopus, so a database at the 4.5.22 floor may still hold
-# 5% October blocks (import spec v17). A general revision window would subsume it.
-_VAT_RESYNC_STATE_KEY = "measured_vat_resync"    # JSON {change, hint, last_verify, stuck, done}
-_VAT_RESYNC_MIN_AGREE = 3          # agreeing new slots, none disagreeing, for a hint
-_VAT_RESYNC_RETRY_S = 24 * 3600    # between verifications while Octopus is part-way
-_VAT_RESYNC_RATIO_TOL = 0.005      # |inc/exc - (1 + VAT)|: 0% and 5% are 0.05 apart
-_VAT_RESYNC_MIN_EXC = 0.001        # GBP; a pair below 0.1p ex-VAT says nothing about VAT
-
-
-def _vat_resync_change(store) -> "str | None":
-    """The VAT calendar's latest change on or before now, as the naive-UTC instant it starts."""
-    import vat_calendar as _vc
-    now = _dt_now_iso_safe()
-    pts = [p for p in _vc.change_points_utc(store.get_vat_calendar()) if p <= now]
-    return pts[-1] if pts else None
-
-
-def _vat_pair_agrees(store, slot: str, cost_incl, cost_excl) -> "bool | None":
-    """Whether a slot's inc/exc pair implies the calendar's VAT for its UK-local day; None when
-    the pair is too small or incomplete to say."""
-    try:
-        inc, exc = float(cost_incl), float(cost_excl)
-    except (TypeError, ValueError):
-        return None
-    if abs(exc) < _VAT_RESYNC_MIN_EXC:
-        return None
-    return abs(inc / exc - (1.0 + store.vat_rate_at(slot))) <= _VAT_RESYNC_RATIO_TOL
-
-
-def _vat_resync_state(store) -> dict:
-    import json as _json
-    try:
-        return _json.loads(store.get_kraken_state(_VAT_RESYNC_STATE_KEY) or "{}") or {}
-    except (TypeError, ValueError):
-        return {}
-
-
-def _vat_resync_save(store, st: dict) -> None:
-    import json as _json
-    store.set_kraken_state(_VAT_RESYNC_STATE_KEY, _json.dumps(st, sort_keys=True))
-
-
-def _vat_resync_note_fetch(store, pairs) -> None:
-    """The live fetch's hint: its new post-change slots (slot, cost_incl, cost_excl) all agree."""
-    try:
-        key = _vat_resync_change(store)
-        if key is None:
-            return
-        st = _vat_resync_state(store)
-        if st.get("change") == key and (st.get("done") or st.get("hint")):
-            return
-        verdicts = [_vat_pair_agrees(store, s, i, e) for s, i, e in pairs if s >= key]
-        agree = sum(1 for v in verdicts if v is True)
-        if agree >= _VAT_RESYNC_MIN_AGREE and not any(v is False for v in verdicts):
-            _vat_resync_save(store, {"change": key, "hint": _dt_now_iso_safe()})
-            logger.info("vat resync (#505): %d new half-hour(s) since the %s VAT change agree with "
-                        "the VAT calendar — Octopus may have restated its costs; verifying the "
-                        "period", agree, key[:10])
-    except Exception as e:
-        logger.debug("vat resync: hint check failed: %s", e)
-
-
-def _vat_resync_wrong(store, mpan: str, key: str) -> "tuple[list, list]":
-    """(cached slots, measured block starts) since `key` whose VAT disagrees with the calendar."""
-    cached = [s for s, inc, exc in store.measured_costs_since(mpan, key)
-              if _vat_pair_agrees(store, s, inc, exc) is False]
-    blocks = [b for b, inc, exc in store.measured_main_costs_since(key)
-              if _vat_pair_agrees(store, b, inc, exc) is False]
-    return cached, blocks
-
-
 # ── One bill reader (bill and split paths design §1.3, §6 (a)) ───────────────────────────────
 # Every path that asks Octopus for a half-hour's bill — the live settled-cost pass, the history
-# drain, the VAT resync (#505), the range re-fetch — chooses its source with `bill_kind_at`, fetches
+# drain, the range re-fetch — chooses its source with `bill_kind_at`, fetches
 # with `_fetch_bill_nodes` and reads the answer with `parse_bill`. Until 16 Oct 2026 the breakdown
 # was parsed in three copies that disagreed on a zero answer, and the source was chosen three ways.
 
@@ -11489,101 +11402,6 @@ async def run_refetch_apply(token: str) -> dict:
         _jc.mark("range_refetch", status=st.get("status") or "done")
 
 
-async def run_measured_vat_resync() -> dict:
-    """#505: resync measured costs once Octopus restates them after a VAT change (see above)."""
-    store = _store
-    if store is None or _kraken_client is None:
-        return {"ok": True, "skipped": "not applicable"}
-    imp = (_kraken_discovery or {}).get("import") or {}
-    mpan = imp.get("mpan")
-    _tu = (imp.get("tariff_code") or "").upper()
-    if not mpan or ("IOG" not in _tu and "INTELLI" not in _tu):
-        return {"ok": True, "skipped": "not applicable"}
-    key = _vat_resync_change(store)
-    if key is None:
-        return {"ok": True, "skipped": "no VAT change"}
-    st = _vat_resync_state(store)
-    if st.get("change") != key:
-        st = {"change": key}
-    if st.get("done"):
-        return {"ok": True, "skipped": "already done"}
-    bad_cached, bad_blocks = _vat_resync_wrong(store, mpan, key)
-    if not bad_cached and not bad_blocks:
-        st["done"] = _dt_now_iso_safe()
-        _vat_resync_save(store, st)
-        return {"ok": True, "healed": 0}
-    if not st.get("hint"):
-        return {"ok": True, "waiting": len(bad_cached), "blocks": len(bad_blocks)}
-    _last = st.get("last_verify")
-    if _last:
-        try:
-            if (datetime.fromisoformat(_dt_now_iso_safe())
-                    - datetime.fromisoformat(_last)).total_seconds() < _VAT_RESYNC_RETRY_S:
-                return {"ok": True, "waiting": len(bad_cached), "next_verify_after": _last}
-        except ValueError:
-            pass
-    # 2. Verify the WHOLE period — every cached slot since the change, into memory only.
-    slots = [r[0] for r in store.measured_costs_since(mpan, key)]
-    try:
-        fetched = await _fetch_bill_nodes(mpan, slots)
-    except Exception as e:
-        logger.warning("vat resync (#505): verification fetch failed (retrying later): %s", e)
-        st["last_verify"] = _dt_now_iso_safe()
-        _vat_resync_save(store, st)
-        return {"ok": False, "reason": "fetch_failed"}
-    rows, wrong, unverified = {}, [], []
-    _kwh = store.get_imp_kwh(slots)
-    _emt_ev = emt_ev_at(store, slots)              # the hold-back's one reference (design §2)
-    for slot in slots:
-        kind, node = fetched.get(slot, (None, None))
-        row = parse_bill(node, kind, _kwh.get(slot))
-        # v4 4.5.23: a re-fetch that drops the car from a half-hour whose cached bill had it is not
-        # a settled answer either — unverified, so nothing is overwritten (it waits a day).
-        if row is None or (row.get("breakdown") and _bill_drops_ev(
-                _emt_ev.get(slot), row["breakdown"][2])):
-            unverified.append(slot)
-            continue
-        rows[slot] = row
-        if not row.get("zero") and _vat_pair_agrees(store, slot, row["cost_incl"],
-                                                     row["cost_excl"]) is False:
-            wrong.append(slot)
-    st["last_verify"] = _dt_now_iso_safe()
-    if wrong or unverified:
-        st["stuck"] = {"checked": len(slots), "disagree": len(wrong), "unverified": len(unverified),
-                       "first": (wrong or unverified)[0]}
-        _vat_resync_save(store, st)
-        logger.warning("vat resync (#505): Octopus has not restated the whole period since the %s "
-                       "VAT change — %d of %d half-hour(s) still disagree with the VAT calendar, %d "
-                       "not returned. Nothing changed; re-verifying in a day.",
-                       key[:10], len(wrong), len(slots), len(unverified))
-        return {"ok": True, "stuck": st["stuck"]}
-    # 3. Heal: store the verified rows, then re-apply every measured block whose cost differs.
-    for slot, row in rows.items():
-        if row.get("zero"):
-            continue
-        _store_bill(store, slot, mpan, row)
-    reapplied = 0
-    for bs, cost, _cexc in store.measured_main_costs_since(key):
-        row = rows.get(bs)
-        if not row or row.get("zero") or abs(float(cost or 0.0) - float(row["cost_incl"])) <= 1e-6:
-            continue
-        try:
-            if apply_measured_to_block(bs, cost_incl=float(row["cost_incl"]),
-                                       cost_excl=row["cost_excl"], label=row["label"]):
-                reapplied += 1
-        except Exception as e:
-            logger.warning("vat resync (#505): re-apply failed for %s: %s", bs, e)
-    _, still = _vat_resync_wrong(store, mpan, key)
-    st.pop("stuck", None)
-    if not still:
-        st["done"] = _dt_now_iso_safe()
-    _vat_resync_save(store, st)
-    logger.info("vat resync (#505): Octopus restated the period since the %s VAT change — stored "
-                "%d verified half-hour(s), re-applied %d block(s)%s", key[:10], len(rows),
-                reapplied, "" if not still else f"; {len(still)} still wrong, retrying")
-    return {"ok": True, "verified": len(rows), "reapplied": reapplied, "remaining": len(still)}
-
-
 _MEASURED_HISTORY_DRAIN_PACE = 0.4        # seconds between drain batches (test-overridable)
 # ONE settleability predicate, shared by every settlement pass (drain candidates, drain
 # backlog, apply_measured_settled). A block may take Octopus's billed cost as authoritative
@@ -11668,7 +11486,6 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
                 break
             _kwh = store.get_imp_kwh(missing)
             stored = 0
-            _batch_pairs: list = []        # 4.5.22 (#505): (slot, cost_incl, cost_excl) for the hint
             for slot in missing:
                 kind, node = nodes.get(slot, (None, None))
                 row = parse_bill(node, kind, _kwh.get(slot))
@@ -11683,11 +11500,7 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
                 if bd:
                     _bill_split_release(_wait, slot)
                 _store_bill(store, slot, mpan, row)
-                _batch_pairs.append((slot, row["cost_incl"], row["cost_excl"]))
                 stored += 1
-            # 4.5.22 (#505): on IOG-SMB this drain settles every half-hour, dispatched or not, so its
-            # newly fetched slots are a hint source too.
-            _vat_resync_note_fetch(store, _batch_pairs)
             # what this page changed, merged onto what the live pass may have saved meanwhile
             _save_changes(store, _wait_before, _wait, lambda: _bill_split_wait(store),
                           _bill_split_wait_save)
