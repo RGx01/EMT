@@ -109,7 +109,6 @@ class TheRoutes(unittest.TestCase):
                                         st, at, now=NOW, **k)),
                   mock.patch.object(eng, "run_gap_fill_runs", create=True,
                                     side_effect=lambda runs, **k: ("runner", runs, k)),
-                  mock.patch.object(server, "_backfill_verify_active", return_value=False),
                   mock.patch.object(server, "_main_has_export", return_value=False),
                   # the request thread's reader: the test store (an in-memory DB is per connection)
                   mock.patch.object(server.store_access, "store", lambda: self.st)]
@@ -294,7 +293,6 @@ class TheRunner(unittest.TestCase):
         self.calls = []
         self.st = _st([])
         self.p = [mock.patch.object(real_engine, "_store", self.st),
-                  mock.patch.object(real_engine, "_reset_pricing_health", lambda: None),
                   mock.patch.object(real_engine, "_gap_fill_window", self._window),
                   mock.patch.object(real_engine, "_gap_fill_finish", self._finish)]
         for x in self.p:

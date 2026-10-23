@@ -180,7 +180,7 @@ class TestASnapshotMidJobIsRecoverable(unittest.TestCase):
         # The four marker-gated v4 one-offs are gone (v5 carries no v4-era
         # heals — EMT-v5_import_spec §1.1). What remains here are the jobs whose
         # markers make a mid-job backup recoverable.
-        "run_api_import_job", "run_deferred_verify_pricing",
+        "run_api_import_job",
         "run_measured_history_drain",
     )
 

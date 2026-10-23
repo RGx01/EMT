@@ -48,7 +48,7 @@ class TestClassifier(unittest.TestCase):
                              "%s classified %s, expected %s" % (n, self.side[n], side))
 
     def test_obvious_writers(self):
-        self._is("write", "set_meta", "append_block", "reprice_imported_block",
+        self._is("write", "set_meta", "append_block", "upsert_imported_bills",
                  "set_block_segments", "upsert_measured_cost", "add_deleted_range",
                  "prune_dispatch_slots")
 
@@ -58,11 +58,12 @@ class TestClassifier(unittest.TestCase):
                  "count_blocks_needing_reprice", "vat_rate_at")
 
     def test_transitive_write_through_a_helper(self):
-        """`clear_reprice_queue` executes no SQL of its own — it calls `set_meta`.
+        """`note_import_cost` executes no SQL of its own — it calls `set_kraken_state`.
         A classifier that only read each method's own SQL would put it on
-        ReadStore, where it would fail at runtime."""
-        self._is("write", "clear_reprice_queue", "add_reprice_queue")
-        self._is("read", "get_reprice_queue")
+        ReadStore, where it would fail at runtime. (The reprice queue's methods were
+        the example until engine step 2d removed them, 23 Oct 2026.)"""
+        self._is("write", "note_import_cost")
+        self._is("read", "import_no_cost_slots")
 
     def test_sql_assembled_in_a_local_is_still_classified(self):
         """Both of these build their statement in a local and execute the

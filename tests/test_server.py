@@ -1496,21 +1496,6 @@ class TestApiCsvTemplates(unittest.TestCase):
         self.assertIn("text/csv", r.headers.get("Content-Type", ""))
         self.assertIn("Start", r.data.decode())
 
-    def test_slots_template_downloads_named_rows(self):
-        # Escape-hatch template: one row per requested slot, channel in the filename.
-        client = make_client()
-        r = client.post("/api/historical/slots-template",
-                        json={"starts": ["2025-03-05T00:00:00", "2025-03-05T00:30:00"],
-                              "channel": "export"})
-        self.assertEqual(r.status_code, 200)
-        self.assertIn("text/csv", r.headers.get("Content-Type", ""))
-        self.assertIn("slots-export", r.headers.get("Content-Disposition", ""))
-        self.assertEqual(len(r.data.decode().strip().splitlines()), 3)   # header + 2
-
-    def test_slots_template_requires_slots(self):
-        client = make_client()
-        r = client.post("/api/historical/slots-template", json={"starts": []})
-        self.assertEqual(r.status_code, 400)
 
     def test_csv_apply_stashes_region_prompt(self):
         client = make_client()
@@ -6265,106 +6250,6 @@ class TestBackfillReach(unittest.TestCase):
         self.assertEqual(j["up_to"], "2024-07-01T00:00:00")
         self.assertEqual(j["chunk_estimate"], 12)                  # max chunk_count
 
-
-class TestRepriceRepairVerifyGuard(unittest.TestCase):
-    """/api/historical/reprice-repair must refuse while the verify-pricing pass is
-    live — both hit Octopus on the shared rate-limit allowance, so a concurrent
-    manual reprice would compete for the same budget (and re-check the same slots)."""
-
-    def setUp(self):
-        self.client = make_client()
-
-    def _post(self, verify_status):
-        import engine, server
-        engine.kraken_available = lambda: True
-        engine.api_verify_pricing_status = lambda: {"status": verify_status}
-        engine.reprice_history_in_progress = lambda: False   # isolate: test the VERIFY guard only
-        # If the guard DOESN'T fire, the endpoint reaches the engine loop — stub
-        # those so the non-guarded path returns cleanly rather than erroring.
-        engine.repair_import_pricing = lambda *a, **k: "CORO"
-        server._run_on_engine_loop = lambda coro, **k: {"ok": True, "recovered": 0,
-                                                        "still_missing": 0, "checked": 0,
-                                                        "windows": 0, "mode": "queue"}
-        return self.client.post("/api/historical/reprice-repair", json={})
-
-    def test_refused_while_verify_running(self):
-        r = self._post("running")
-        self.assertEqual(r.status_code, 409)
-        j = r.get_json()
-        self.assertFalse(j["ok"])
-        self.assertEqual(j["reason"], "verify_active")
-
-    def test_refused_while_verify_waiting_or_paused(self):
-        for st in ("waiting", "paused"):
-            r = self._post(st)
-            self.assertEqual(r.status_code, 409, st)
-            self.assertEqual(r.get_json()["reason"], "verify_active")
-
-    def test_allowed_when_verify_idle(self):
-        r = self._post("idle")
-        self.assertEqual(r.status_code, 200)
-        self.assertTrue(r.get_json()["ok"])
-
-    def test_allowed_when_verify_done(self):
-        r = self._post("done")
-        self.assertEqual(r.status_code, 200)
-        self.assertTrue(r.get_json()["ok"])
-
-    def test_refused_while_migration_in_progress(self):
-        import engine
-        engine.kraken_available = lambda: True
-        engine.api_verify_pricing_status = lambda: {"status": "idle"}
-        engine.reprice_history_in_progress = lambda: True     # first-upgrade sweep still working
-        r = self.client.post("/api/historical/reprice-repair", json={})
-        self.assertEqual(r.status_code, 409)
-        self.assertEqual(r.get_json()["reason"], "migrating")
-
-    def test_preview_allowed_during_migration(self):
-        import engine, server
-        engine.kraken_available = lambda: True
-        engine.api_verify_pricing_status = lambda: {"status": "idle"}
-        engine.reprice_history_in_progress = lambda: True
-        engine.repair_import_pricing = lambda *a, **k: "CORO"
-        server._run_on_engine_loop = lambda coro, **k: {"ok": True, "affected": 0}
-        r = self.client.post("/api/historical/reprice-repair", json={"preview": True})
-        self.assertEqual(r.status_code, 200)     # count-only is safe during migration
-
-
-class TestStartLockedWhileVerifyActive(unittest.TestCase):
-    """A backfill RUN isn't finished until its post-import verify pass completes, so
-    the start endpoints refuse a new run (409 verify_active) while verify is live —
-    the server half of the picker lock, so a refresh / direct call can't get round it."""
-
-    def setUp(self):
-        self.client = make_client()
-        import engine
-        engine.kraken_available = lambda: True
-        engine.api_import_running = lambda: False       # no import in flight
-
-    def _verify(self, status):
-        import engine
-        engine.api_verify_pricing_status = lambda: {"status": status}
-
-    def test_whole_history_start_refused_during_verify(self):
-        self._verify("running")
-        r = self.client.post("/api/historical/api-import/start", json={"confirmed": True})
-        self.assertEqual(r.status_code, 409)
-        self.assertEqual(r.get_json().get("reason"), "verify_active")
-
-    def test_fill_gap_refused_during_verify(self):
-        self._verify("waiting")
-        r = self.client.post("/api/backfill/fill-gap", json={
-            "from": "2026-03-01T00:00:00", "to": "2026-03-02T00:00:00", "confirmed": True})
-        self.assertEqual(r.status_code, 409)
-        self.assertEqual(r.get_json().get("reason"), "verify_active")
-
-    def test_fill_gap_allowed_when_verify_idle(self):
-        # Past the verify guard it reaches the loop check; with no loop wired in the
-        # test that returns 500 no_loop — the point is it is NOT the 409 verify block.
-        self._verify("idle")
-        r = self.client.post("/api/backfill/fill-gap", json={
-            "from": "2026-03-01T00:00:00", "to": "2026-03-02T00:00:00", "confirmed": True})
-        self.assertNotEqual(r.status_code, 409)
 
 
 class TestBillsBuild(unittest.TestCase):

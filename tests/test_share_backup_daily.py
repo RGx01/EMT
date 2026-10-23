@@ -198,8 +198,8 @@ class EveryIrreversibleRoute(unittest.TestCase):
         "/api/config/history/<int:period_id>": "pre-config-period",
         "/api/region/reconcile/apply": "pre-region-reconcile",
         "/api/corrections/apply": "pre-correction",
-        "/api/historical/reprice-from-csv": "pre-csv-reprice",
-        "/api/historical/reprice-repair": "pre-reprice-repair",
+        # /api/historical/reprice-from-csv and /reprice-repair went with the pricing-health
+        # card (engine step 2d, 23 Oct 2026)
     }
 
     def test_each_takes_a_checked_backup(self):

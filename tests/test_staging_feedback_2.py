@@ -143,14 +143,9 @@ class ThePages(unittest.TestCase):
         hi = _t("historical_import.html")
         self.assertNotIn('id="reprice-csv-file"', hi)
         self.assertNotIn("function repriceFromCsv()", hi)
-        self.assertIn("function applySlotsCsv(", hi)      # the pricing-health slots keep theirs
+        # the pricing-health card's slots CSV went with the card (engine step 2d, 23 Oct 2026)
+        self.assertNotIn("function applySlotsCsv(", hi)
 
-    def test_a_fresh_flow_still_learns_the_verify(self):
-        hi = _t("historical_import.html")
-        fn = hi[hi.index("function loadPricingHealth(){"):]
-        fresh = fn[fn.index("if(_freshFlow){"):fn.index("var vs = document.getElementById('verify-status')")]
-        self.assertIn("/api/historical/api-import/verify-status", fresh)
-        self.assertIn("_verifyChecked = true;", fresh)
 
     def test_the_lock_lifting_restores_preview(self):
         hi = _t("historical_import.html")

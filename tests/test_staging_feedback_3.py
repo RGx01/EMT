@@ -46,8 +46,6 @@ class TheOctopusImport(unittest.TestCase):
         fn = _fn(self.hi, "function planApi(){")
         self.assertNotIn("""'<div style="text-transform:capitalize;">'+chn+': '+_esc(c.note""", fn)
 
-    def test_a_skipped_verify_is_not_waited_for(self):
-        self.assertIn("if(_prevImportActive && !nowActive && !(d && d.verify_skipped)){ _settling = true;", self.hi)
 
     def test_a_run_that_wrote_nothing_says_so(self):
         fn = _fn(self.hi, "function _renderApiStatus(d){")

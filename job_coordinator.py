@@ -18,7 +18,7 @@ WHAT IT IS
     before it starts. The question a member asks is not "is anyone else writing?"
     but "is what I am about to read settled yet?".
 
-      @job("attribution", depends_on=("import", "verify_pricing"),
+      @job("attribution", depends_on=("import",),
                           exclusive_with=("delete",))
 
     `depends_on`     — correctness. I read what that writes; do not start me while
@@ -91,14 +91,13 @@ _MANIFEST: dict = {
     # long-running lists in .build/check_job_membership.py, check_job_guards.py
     # and write_scope.py, whose figures B's doc asserts.
     "prune_tombstones":    ((),                               ("delete",),     DEFER),
-    "verify_pricing":      (("import",),                      (),              DEFER),
     # `restore` (#56, 3 Oct 2026): each of these commits through a restore otherwise —
     # measured for the sweep on the Pi, where it restarted the safety backup for minutes.
     "reprice_sweep":       (("import",),                      ("delete", "restore"), DEFER),
     "reprice_sweep_to_done": ((),                             (),              DEFER),
     "carbon_backfill":     (("import",),                      ("delete", "restore"), DEFER),
     "measured_drain":      (("import",),                      ("delete", "restore"), DEFER),
-    "attribution":         (("import", "verify_pricing"),     ("delete",),     WAIT),
+    "attribution":         (("import",),                      ("delete",),     WAIT),
     "gap_fill":            ((),                               (),              DEFER),
     "iog_split_carve":     ((),                               (),              DEFER),
     # BL-86 (13 Oct 2026): a user-asked re-fetch of a range from Octopus — refused, not queued,

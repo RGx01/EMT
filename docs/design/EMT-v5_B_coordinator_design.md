@@ -5,11 +5,11 @@ and the writer thread-affine, what is left to coordinate is writers.*
 
 **Status:** the coordinator exists, 23 Sep 2026. `job_coordinator.py`
 holds the decision logic and the dependency manifest; `tests/test_job_coordinator.py` covers it.
-Membership stands at **15/16** registered (`.build/check_job_membership.py`): every engine job
+Membership stands at **14/15** registered (`.build/check_job_membership.py`): every engine job
 including the live tick, the three background workers, and (4 Oct 2026) `api_meter_delete_data`,
 which joined `delete` and now holds the delete flag while it works, so the members
 `exclusive_with` "delete" see it. The 1 outstanding is `api_db_vacuum` (which never joins — see
-§4). **6 of the 8** members that declare an edge consult `admission()` (§5, acceptance 1);
+§4). **5 of the 7** members that declare an edge consult `admission()` (§5, acceptance 1);
 `verify_pricing` joined on 4 Oct 2026. The other two, `restore` and `delete`, pre-empt the import
 instead — each cancels a running import and waits, and aborts if it will not stop. (The range delete and the purge, entries
 of `delete`, did neither until 4 Oct 2026; acceptance 3.)
@@ -72,9 +72,9 @@ because that is a *dependency*, not a race.
 
 `.build/write_scope.py`:
 
-> **10 of the 10 live jobs write `blocks`; 7 also write `block_segments`.**
+> **9 of the 9 live jobs write `blocks`; 7 also write `block_segments`.**
 
-*(10 of 10 since 20 Oct 2026. The attribution job always wrote `blocks`, through
+*(9 of 9 since 23 Oct 2026, when engine step 2d removed the deferred pricing verify pass; 10 of 10 from 20 Oct 2026. The attribution job always wrote `blocks`, through
 `append_block_replace`, five calls down — past the tool's depth of 4. Putting a device half-hour
 back from `ha_reads` points it at its sensor with a direct UPDATE three calls down, which the
 tool sees.)*
@@ -237,7 +237,8 @@ What is true today, measured:
 
 ### 4.1 The other 19
 
-**15 further members**, enumerated rather than estimated — **16 members** in all.
+**14 further members**, enumerated rather than estimated — **15 members** in all (16 until engine step 2d removed
+the deferred pricing verify pass, 23 Oct 2026).
 
 *Corrected three times, in both directions. First 23, which missed the three background workers.
 Then 26. Then 20, because **six of the eight route handlers stopped needing membership at all**: once a
@@ -257,9 +258,9 @@ members others most want to avoid: `delete_in_progress()` is the second most con
 codebase. `_delete_worker` and `_purge_worker` are ONE member with two entry points, because that
 is what `delete_in_progress()` already means.
 
-**10 live engine jobs** (`.build/check_job_guards.py`; three further jobs — the legacy exc, segment
+**9 live engine jobs** (`.build/check_job_guards.py`; three further jobs — the legacy exc, segment
 and iog-split backfills — are unreachable and do not come across):
-`run_api_import_job`, `run_deferred_verify_pricing`, `_run_historical_reprice_sweep`,
+`run_api_import_job`, `_run_historical_reprice_sweep`,
 `_run_historical_carbon_backfill`, `run_measured_history_drain`, `run_gap_fill_job`,
 `run_iog_split_carve`, `run_attribution_job`,
 `run_reprice_history_sweep_to_done`, `run_device_rate_drift_repair`.

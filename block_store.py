@@ -3528,25 +3528,6 @@ class BlockStore:
                 written += 1
         return written
 
-    # ── Import re-price repair queue ─────────────────────────────────────────
-    # During the bulk import, some Measurements responses come back with the kWh
-    # but no billed cost / TOU bucket (a degraded/partial response under load),
-    # so those half-hours are priced from the tariff *schedule* (peak if they fall
-    # outside the fixed off-peak window) instead of Octopus's real dispatch-aware
-    # OFF_PEAK cost. We record each such slot here; a calm, targeted re-fetch
-    # (engine.repair_import_pricing) later re-queries just these and re-prices in
-    # place. The Measurements API DOES have the cost — proven by the cost probe —
-    # so a small quiet query reliably returns it.
-    def add_reprice_queue(self, channel: str, starts) -> None:
-        """Queue imported block_starts (for `channel`) that were schedule-priced
-        because Measurements returned no billed cost. Deduped, persisted in meta."""
-        starts = [s for s in (starts or []) if s]
-        if not starts:
-            return
-        q = self.get_meta("import_reprice_queue", None) or {}
-        merged = set(q.get(channel) or []) | set(starts)
-        q[channel] = sorted(merged)
-        self.set_meta("import_reprice_queue", q)
 
     # An API-imported half-hour Octopus gave no cost for (19 Oct 2026, the user): EMT's kWh × rate,
     # and nothing asks for it again, so the Import bill hatches it at once. Recorded here because the
@@ -3640,75 +3621,7 @@ class BlockStore:
                     "ON CONFLICT(key) DO UPDATE SET value = excluded.value", (json.dumps(merged),))
         return {"half_hours": n, "from_utc": a, "to_utc": b}
 
-    def get_reprice_queue(self) -> dict:
-        """{'import': [start,...], 'export': [...]} of slots awaiting re-price."""
-        return self.get_meta("import_reprice_queue", None) or {}
 
-    def reprice_queue_count(self) -> int:
-        q = self.get_reprice_queue()
-        return sum(len(v or []) for v in q.values())
-
-    def clear_reprice_queue(self) -> None:
-        """Empty the whole reprice queue — used when a NEW import starts, so the
-        previous run's flagged slots don't carry over into the fresh run's health."""
-        self.set_meta("import_reprice_queue", {})
-
-    def clear_reprice_queue_slots(self, channel: str, starts) -> None:
-        """Remove `starts` from the channel's queue (they've been re-priced)."""
-        if not starts:
-            return
-        q = self.get_meta("import_reprice_queue", None) or {}
-        if channel not in q:
-            return
-        remaining = sorted(set(q[channel]) - set(starts))
-        if remaining:
-            q[channel] = remaining
-        else:
-            q.pop(channel, None)
-        self.set_meta("import_reprice_queue", q)
-
-    def reprice_imported_block(self, start: str, meter_id: str, channel: str,
-                               rate, cost, cost_exc=None) -> bool:
-        """Update an IMPORTED block's rate + cost in place (source LIKE
-        'imported%' only — never touches live/settled rows), ONLY when the value
-        actually differs (so the returned rowcount = a genuine correction, which
-        the repair pass uses as its 'recovered' signal). Returns True if changed.
-
-        BL-23 (4.2 C3): when a re-fetch supplies the ex-VAT cost too (import channel),
-        correct imp_cost_exc in the same UPDATE, so the repair/settlement
-        reprice keeps the exc figure in step with the billed inc cost.
-
-        "Settled" above meant DCC-settled live rows; `source` alone never covered an IMPORTED
-        block settled from a bill or corrected by the user, which keeps `source='imported_*'`.
-        16 Oct 2026 (bill and split paths design §4): the import cost repair, from the reprice
-        queue and from the deferred verify pass, overwrote those — the bill (or the correction)
-        replaced by the measurements' cost and `_billed_rate`, and the segments deleted, so the
-        bill's split was rebuilt from the dispatch or lost. Now: on import, a block whose
-        `rate_source` is 'settled' or 'corrected', or that carries `rate_corrected`, is left
-        alone; on export, `rate_corrected` (corrections stamp it for an export rate too)."""
-        rcol, ccol = (("imp_rate", "imp_cost") if channel == "import"
-                      else ("exp_rate", "exp_cost"))
-        set_exc, extra = "", []
-        if channel == "import" and cost_exc is not None:
-            set_exc = ", imp_cost_exc = ?"
-            extra = [cost_exc]
-        with self._conn:
-            cur = self._conn.execute(
-                f"UPDATE blocks SET {rcol} = ?, {ccol} = ?{set_exc} "
-                f"WHERE block_start = ? AND meter_id = ? AND source LIKE 'imported%' "
-                f"AND COALESCE(rate_corrected, 0) = 0 "
-                + ("AND COALESCE(rate_source, '') NOT IN ('settled', 'corrected') "
-                   if channel == "import" else "")
-                + f"AND (COALESCE({rcol}, -1) != ? OR COALESCE({ccol}, -1) != ?)",
-                (rate, cost, *extra, start, meter_id, rate, cost))
-            # G2: a real price change (a gap filled or a price corrected) invalidates any stale
-            # segment so the reprice sweep rebuilds it from the corrected column — keeps the block
-            # rewritable at any later date. Import-only (segments are import-only); no-op if none.
-            if cur.rowcount > 0 and channel == "import":
-                self._conn.execute(
-                    "DELETE FROM block_segments WHERE block_start = ? AND meter_id = ? "
-                    "AND channel = 'import'", (start, meter_id))
-        return cur.rowcount > 0
 
     def set_block_carbon(self, block_start: str, meter_id: str,
                          intensity_g, carbon_g) -> bool:
@@ -4041,86 +3954,6 @@ class BlockStore:
         return {"retagged": cur.rowcount, "go_live": go_live}
 
 
-    def reprice_imported_blocks_from_csv(self, csv_text: str,
-                                         meter_id: str = "electricity_main",
-                                         channel: str = "import") -> dict:
-        """Overlay EXACT billed cost + rate onto imported blocks from a filled CSV —
-        the billing source of truth. For dispatch slots Octopus's Measurements API
-        returns with NO cost/label (so they can't be priced via the API, only via
-        the bill), this is the only way to match the bill.
-
-        Shares the SAME name-matched parser as the main CSV import
-        (csv_import.parse_octopus_csv), so this path accepts the exact same
-        template — including the rate-first cost derivation (a Unit Rate column
-        wins over an explicit Cost column). Columns are matched by header name, not
-        position, so column order doesn't matter. The block's rate is then stored as
-        cost ÷ kWh. Only imported blocks are touched, only where the value differs.
-        Returns {checked, changed, from, to}.
-        """
-        import csv_import as _ci
-        rcol, ccol = (("imp_rate", "imp_cost") if channel == "import"
-                      else ("exp_rate", "exp_cost"))
-        parsed = _ci.parse_octopus_csv(csv_text, channel)
-        checked = changed = 0
-        lo = hi = None
-        changed_starts = []
-        with self._conn:
-            for b in (parsed.get("blocks") or []):
-                start = b.get("block_start")
-                kwh = b.get("kwh")
-                cost = b.get("cost")
-                if not start or cost is None:     # a row with neither rate nor cost
-                    continue
-                cost = round(float(cost), 6)
-                rate = round(cost / kwh, 6) if (kwh and kwh > 0) else None
-                checked += 1
-                lo = start if (lo is None or start < lo) else lo
-                hi = start if (hi is None or start > hi) else hi
-                cur = self._conn.execute(
-                    f"UPDATE blocks SET {rcol} = ?, {ccol} = ? "
-                    f"WHERE block_start = ? AND meter_id = ? AND source LIKE 'imported%' "
-                    f"AND (COALESCE({rcol}, -1) != ? OR COALESCE({ccol}, -1) != ?)",
-                    (rate, cost, start, meter_id, rate, cost))
-                if cur.rowcount > 0:
-                    changed += 1
-                    changed_starts.append(start)
-        if changed_starts:
-            self.clear_reprice_queue_slots(channel, changed_starts)
-            # G2: invalidate segments for CSV-filled/corrected import blocks so the sweep rebuilds.
-            if channel == "import":
-                _ph = ",".join("?" * len(changed_starts))
-                with self._conn:
-                    self._conn.execute(
-                        f"DELETE FROM block_segments WHERE channel = 'import' AND meter_id = ? "
-                        f"AND block_start IN ({_ph})", [meter_id] + changed_starts)
-        logger.info("reprice_imported_blocks_from_csv[%s]: %d changed of %d (%s..%s)",
-                    channel, changed, checked, lo, hi)
-        return {"checked": checked, "changed": changed, "from": lo, "to": hi}
-
-    def get_imported_block_starts(self, from_iso: str, to_iso: str,
-                                  meter_id: str = "electricity_main") -> list:
-        """block_starts of IMPORTED blocks in [from, to) for a meter — the target
-        set for a range-based re-price reconcile that runs WITHOUT a re-import."""
-        rows = self._conn.execute(
-            "SELECT block_start FROM blocks WHERE source LIKE 'imported%' "
-            "AND meter_id = ? AND block_start >= ? AND block_start < ? "
-            "ORDER BY block_start", (meter_id, from_iso, to_iso)).fetchall()
-        return [r["block_start"] for r in rows]
-
-    def get_imported_block_pricing(self, from_iso: str, to_iso: str,
-                                   meter_id: str = "electricity_main") -> list:
-        """Per-block CURRENT pricing for IMPORTED blocks in [from, to) — the cheap
-        local read a suspect-only reprice uses to skip already-correct slots without
-        touching the API. Returns dicts: block_start + imp/exp rate, kwh, cost."""
-        rows = self._conn.execute(
-            "SELECT block_start, imp_rate, imp_kwh, imp_cost, exp_rate, exp_kwh, exp_cost "
-            "FROM blocks WHERE source LIKE 'imported%' AND meter_id = ? "
-            "AND block_start >= ? AND block_start < ? ORDER BY block_start",
-            (meter_id, from_iso, to_iso)).fetchall()
-        return [{"start": r["block_start"],
-                 "imp_rate": r["imp_rate"], "imp_kwh": r["imp_kwh"], "imp_cost": r["imp_cost"],
-                 "exp_rate": r["exp_rate"], "exp_kwh": r["exp_kwh"], "exp_cost": r["exp_cost"]}
-                for r in rows]
 
     def apply_csv_import(
         self, channel_csvs: dict, meter_id: str = "electricity_main", *,

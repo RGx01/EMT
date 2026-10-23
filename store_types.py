@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """145 read-only methods of BlockStore, and nothing else.
+    """141 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -180,8 +180,6 @@ class ReadStore:
     get_historical_derivation = _BS.get_historical_derivation
     get_imp_kwh = _BS.get_imp_kwh
     get_import_blocks_missing_exc = _BS.get_import_blocks_missing_exc
-    get_imported_block_pricing = _BS.get_imported_block_pricing
-    get_imported_block_starts = _BS.get_imported_block_starts
     get_kraken_state = _BS.get_kraken_state
     get_last_block = _BS.get_last_block
     get_last_block_before = _BS.get_last_block_before
@@ -201,7 +199,6 @@ class ReadStore:
     get_power_history = _BS.get_power_history
     get_provisional_sub_meter_blocks = _BS.get_provisional_sub_meter_blocks
     get_reconcile_candidates = _BS.get_reconcile_candidates
-    get_reprice_queue = _BS.get_reprice_queue
     get_retired_meters = _BS.get_retired_meters
     get_settings = _BS.get_settings
     get_settleable_blocks = _BS.get_settleable_blocks
@@ -229,7 +226,6 @@ class ReadStore:
     plan_csv_reconciliation = _BS.plan_csv_reconciliation
     plan_pre_import_sites = _BS.plan_pre_import_sites
     plan_region_reconciliation = _BS.plan_region_reconciliation
-    reprice_queue_count = _BS.reprice_queue_count
     site_timezone = _BS.site_timezone
     slots_with_bill_split = _BS.slots_with_bill_split
     stale_deleted_range_ids = _BS.stale_deleted_range_ids
@@ -240,7 +236,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 103 writers.
+    """The full store: every read method, plus the 98 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or

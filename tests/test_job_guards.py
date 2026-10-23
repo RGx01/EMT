@@ -79,10 +79,11 @@ class TestJobGuards(unittest.TestCase):
                 "%s coordinates against %s — worth a look" % (j, sorted(guards)))
 
     def test_the_live_job_count(self):
-        """10 live jobs. The three legacy backfills this once excluded as unreachable
+        """9 live jobs. The three legacy backfills this once excluded as unreachable
         were deleted (BL-33, 4 Oct 2026), so every listed job is now live; the settled EV
-        split heal was removed on 16 Oct 2026 (bill and split paths design §7.3)."""
-        self.assertEqual(self.d["live_jobs"], 10)
+        split heal was removed on 16 Oct 2026 (bill and split paths design §7.3), and the
+        deferred pricing verify pass on 23 Oct 2026 (engine step 2d)."""
+        self.assertEqual(self.d["live_jobs"], 9)
         self.assertTrue(all(j["live"] for j in self.d["jobs"].values()))
 
     def test_run_exclusive_is_still_only_a_barrier(self):
