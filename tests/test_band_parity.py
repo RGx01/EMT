@@ -66,6 +66,28 @@ class TheSettledBand(unittest.TestCase):
         self.assertIsNone(engine.settled_band("x", "ZERO"))
 
 
+class TheBucketsBand(_Base):
+    """2a's first report (23 Oct 2026): on IOG-SMB the summary label is not the band — the nights of
+    27–28 Sep 2026 read STANDARD_RATE on half-hours whose only bucket was at the off-peak rate."""
+
+    def test_the_carrying_bucket_wins_over_the_label(self):
+        bd = {"home_kwh": 2.89, "home_rate": round(LO / 100, 6), "ev_kwh": 0.0, "ev_rate": None}
+        self.assertEqual(engine.settled_band("2026-09-27T01:30:00", "STANDARD_RATE", bd), "off_peak")
+
+    def test_both_sides_at_one_rate_is_that_band(self):
+        bd = {"home_kwh": 0.4, "home_rate": round(HI / 100, 6), "ev_kwh": 3.2, "ev_rate": round(HI / 100, 6)}
+        self.assertEqual(engine.settled_band("x", "OFF_PEAK", bd), "peak")
+
+    def test_two_rates_is_mixed(self):
+        bd = {"home_kwh": 0.4, "home_rate": round(HI / 100, 6), "ev_kwh": 3.2, "ev_rate": round(LO / 100, 6)}
+        self.assertEqual(engine.settled_band("x", "OFF_PEAK", bd), "mixed")
+
+    def test_no_breakdown_reads_the_label(self):
+        """The earlier tariffs' bills carry only the label (fails on the parent only for the new
+        `breakdown` argument)."""
+        self.assertEqual(engine.settled_band("x", "OFF_PEAK", None), "off_peak")
+
+
 class TheRow(_Base):
 
     def test_a_bill_settled_half_hour_is_the_same(self):
@@ -123,8 +145,10 @@ class TheReport(_Base):
         with mock.patch.object(engine, "_store", st), mock.patch.object(engine, "_reader", lambda: st):
             summary = asyncio.run(engine.run_band_parity("2026-09-01T00:00:00", "2026-11-01T00:00:00", out))
         # 19:00 has no dispatch recorded, so EMT predicts peak where Octopus billed off-peak:
-        # billed wins (the cost changes to the off-peak rate) and the half-hour is flagged
-        self.assertEqual(summary["counts"], {"changes · disagrees": 1, "same": 1})
+        # billed wins (the cost changes to the off-peak rate) and the half-hour is flagged — and
+        # with no dispatch record at all, it falls before EMT's record began
+        self.assertEqual(summary["counts"],
+                         {"changes · disagrees before EMT's dispatch record": 1, "same": 1})
         self.assertEqual(sorted(summary["months"]), ["2026-09", "2026-10"])
         with open(os.path.join(out, summary["csv"])) as fh:
             lines = fh.read().strip().splitlines()
@@ -132,6 +156,32 @@ class TheReport(_Base):
         self.assertIn("2026-09-06T19:00:00", lines[1])
         self.assertEqual(engine.band_parity_status()["status"], "done")
         self.assertTrue(any(n.endswith(".json") for n in os.listdir(out)))
+
+
+class TheCsv(_Base):
+
+    def test_a_disagreement_at_the_same_cost_is_listed(self):
+        """The first report's CSV left out 37 of 53 July–October disagreements: their cost was the
+        billed one, so they read `same`."""
+        st = BlockStore(":memory:")
+        st._conn.execute("INSERT INTO config_periods (id, effective_from, billing_day, block_minutes, "
+                         "timezone) VALUES (1,'2020-01-01T00:00:00',1,30,'UTC')")
+        bs = "2026-09-06T19:00:00"
+        st._conn.execute("INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
+                         "imp_kwh, imp_cost, imp_rate) VALUES (?,?,'electricity_main',1,3.6,?,?)",
+                         (bs, bs, round(3.6 * HI / 100, 6), round(HI / 100, 6)))
+        st.upsert_measured_cost(bs, mpan="M", cost_incl=round(3.6 * HI / 100, 6),
+                                label="STANDARD_RATE", kwh=3.6)
+        st.record_dispatch_history("2026-08-01T01:00:00", "completed", provider="Myenergi",
+                                   source="unknown", energy_kwh=-3.0)
+        st._conn.commit()
+        self.dispatched.add(bs)                          # EMT says off-peak; Octopus billed peak
+        out = tempfile.mkdtemp()
+        with mock.patch.object(engine, "_store", st), mock.patch.object(engine, "_reader", lambda: st):
+            summary = asyncio.run(engine.run_band_parity("2026-09-01T00:00:00", "2026-10-01T00:00:00", out))
+        self.assertEqual(summary["counts"], {"same · disagrees": 1})   # after the record began
+        with open(os.path.join(out, summary["csv"])) as fh:
+            self.assertIn(bs, fh.read())
 
 
 class TheOverlayQuiet(unittest.TestCase):

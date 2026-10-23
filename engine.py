@@ -12255,11 +12255,29 @@ def _band_rates(bs: str):
     return round(lo / 100.0, 6), round(hi / 100.0, 6)
 
 
-def settled_band(bs: str, bill_label) -> "str | None":
-    """Octopus's band for a half-hour on an Intelligent tariff: 'off_peak' / 'peak' from its cached
-    bill's label (on IOG-SMB the label is the carrying bucket's), or None — not settled yet, or a ZERO
-    answer, which states no band."""
+def settled_band(bs: str, bill_label, breakdown: "dict | None" = None) -> "str | None":
+    """Octopus's band for a half-hour on an Intelligent tariff: 'off_peak' / 'peak' (or 'mixed', the
+    buckets carrying the kWh at both), or None — not settled yet, or a ZERO answer, which states no
+    band.
+
+    On IOG-SMB the band is the carrying BUCKET's — its unit rate, Octopus's stated price, against the
+    day's two rates — not the summary label: on the nights of 27–28 Sep 2026 the label read
+    STANDARD_RATE on 16 half-hours inside the night window whose only bucket was at the off-peak 5.493p,
+    and Octopus's cost was the off-peak cost (2a's first report, 23 Oct 2026; the 4.5.5 design's "the
+    label reserves OFF_PEAK for smart-charge credits"). Elsewhere, the label."""
     from kraken_api_client import label_band
+    if breakdown:
+        lo, hi = _band_rates(bs)
+        bands = set()
+        for k_kwh, k_rate in (("home_kwh", "home_rate"), ("ev_kwh", "ev_rate")):
+            kw, rt = breakdown.get(k_kwh), breakdown.get(k_rate)
+            if kw is None or float(kw) <= 1e-9 or rt is None or lo is None:
+                continue
+            bands.add("off_peak" if abs(float(rt) - lo) <= abs(float(rt) - hi) else "peak")
+        if len(bands) == 1:
+            return bands.pop()
+        if len(bands) == 2:
+            return "mixed"
     if not bill_label or str(bill_label).upper() == "ZERO":
         return None
     try:
@@ -12289,7 +12307,7 @@ def predicted_band(bs: str, kwh: float) -> "str | None":
 
 def band_parity_row(f: dict) -> dict:
     """One main-meter half-hour (a get_settlement_facts row) under the step 2 rule, beside today's
-    stored cost. `status`: same | changes | unsettled | no_rate | corrected | empty."""
+    stored cost. `status`: same | changes | unsettled | mixed | no_rate | corrected | empty."""
     bs = f["block_start"]
     kwh = float(f.get("imp_kwh") or 0.0)
     stored = f.get("imp_cost")
@@ -12321,7 +12339,16 @@ def band_parity_row(f: dict) -> dict:
             out["status"] = "no_rate"
             return out
         out["predicted"] = predicted_band(bs, kwh)
-        out["settled"] = settled_band(bs, f.get("bill_label"))
+        bd = None
+        if f.get("bill_home_kwh") is not None or f.get("bill_ev_kwh") is not None:
+            try:
+                bd = _reader().get_measured_breakdown(bs)
+            except Exception:
+                bd = None
+        out["settled"] = settled_band(bs, f.get("bill_label"), bd)
+        if out["settled"] == "mixed":
+            out["status"] = "mixed"          # two bands in one half-hour: none seen yet; listed
+            return out
         band = out["settled"] or out["predicted"]
         out["rate"] = lo if band == "off_peak" else hi
         out["disagrees"] = bool(out["settled"] and out["predicted"]
@@ -12359,8 +12386,12 @@ async def run_band_parity(utc_from: str, utc_to: str, out_dir: str) -> dict:
         counts: dict = {}
         months: dict = {}
         tot = {"stored": 0.0, "rule": 0.0, "octopus": 0.0}
-        fields = ["start", "kwh", "status", "disagrees", "settled", "predicted", "label",
-                  "stored_rate", "rate", "stored_cost", "cost", "octopus_cost"]
+        fields = ["start", "kwh", "status", "disagrees", "before_record", "settled", "predicted",
+                  "label", "stored_rate", "rate", "stored_cost", "cost", "octopus_cost"]
+        try:
+            first_record = _reader().first_dispatch_record()
+        except Exception:
+            first_record = None
         a = datetime.fromisoformat(utc_from)
         end = datetime.fromisoformat(utc_to)
         with open(csv_path, "w", newline="") as fh:
@@ -12370,7 +12401,13 @@ async def run_band_parity(utc_from: str, utc_to: str, out_dir: str) -> dict:
                 b = min(end, (a.replace(day=1) + timedelta(days=32)).replace(day=1))
                 for f in _reader().get_settlement_facts(a.isoformat(), b.isoformat()):
                     r = band_parity_row(f)
-                    k = r["status"] + (" · disagrees" if r["disagrees"] else "")
+                    # before EMT recorded any dispatch, its prediction has none to go on: a
+                    # disagreement there is expected, and counted apart
+                    r["before_record"] = bool(r["disagrees"] and (first_record is None
+                                                                 or r["start"] < first_record))
+                    k = r["status"] + ((" · disagrees before EMT's dispatch record"
+                                        if r["before_record"] else " · disagrees")
+                                       if r["disagrees"] else "")
                     counts[k] = counts.get(k, 0) + 1
                     mk = r["start"][:7]
                     m = months.setdefault(mk, {"same": 0, "changes": 0, "unsettled": 0,
@@ -12383,12 +12420,13 @@ async def run_band_parity(utc_from: str, utc_to: str, out_dir: str) -> dict:
                         tot["stored"] += float(r["stored_cost"]); tot["rule"] += r["cost"]
                         if r["octopus_cost"] is not None:
                             tot["octopus"] += float(r["octopus_cost"])
-                    if r["status"] != "same":
-                        w.writerow(r)
+                    if r["status"] != "same" or r["disagrees"]:
+                        w.writerow(r)                # every change, and every disagreement
                 st["done_to"] = b.isoformat()
                 a = b
                 await asyncio.sleep(0)               # one month at a time: the loop breathes
-        summary = {"from": utc_from, "to": utc_to, "counts": counts,
+        summary = {"from": utc_from, "to": utc_to, "first_dispatch_record": first_record,
+                   "counts": counts,
                    "totals_gbp": {k: round(v, 2) for k, v in tot.items()},
                    "months": {k: {kk: (round(vv, 2) if isinstance(vv, float) else vv)
                                   for kk, vv in v.items()} for k, v in sorted(months.items())},

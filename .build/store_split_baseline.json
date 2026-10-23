@@ -143,6 +143,7 @@
     "distinct_segment_rates",
     "emt_recording_continuously",
     "find_block_gaps",
+    "first_dispatch_record",
     "get_all_blocks",
     "get_attribution_runs",
     "get_bill_ev_kwh",

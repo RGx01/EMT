@@ -125,6 +125,30 @@ change only where `_billed_rate`'s cost ÷ kWh and the band's rate disagree.
 
 ---
 
+## 4a. What 2a's first report showed (staging, 23 Oct 2026)
+
+24 Oct 2024 – 23 Oct 2026, every main-meter half-hour:
+
+- **Settled from a bill, the rule is today's cost.** Apr–Aug and Oct 2026: £319.60 stored, £319.60 by
+  the rule. September's 16 "changes" were the report's own error (below); with it fixed, September is
+  628 the same, none changed, and stored = the rule = Octopus's = £53.37.
+- **Imported history is wholly unsettled** (Oct 2024 – Feb 2026, 11,764 half-hours): the import keeps no
+  band yet (2c). Priced by EMT's prediction alone it comes out 2–3× too high — Nov 2024 £187.62 against
+  £68.06 stored — because EMT's dispatch record starts on 7 Jul 2026 and the evening charging before it
+  reads peak. **So 2b writes only half-hours whose band Octopus has settled, and never a
+  prediction-only cost onto history; 2c (the import keeping Octopus's band) is what settles it.**
+- **IOG-SMB's band is the carrying bucket's, not the summary label.** The nights of 27–28 Sep 2026:
+  16 half-hours inside the night window labelled STANDARD_RATE whose only bucket was at the off-peak
+  5.493p, Octopus's cost the off-peak cost. `settled_band` reads the bucket's unit rate (fixed, 23 Oct).
+- **Where EMT's prediction and Octopus's band disagree** (166 before EMT's dispatch record began,
+  expected; in September after the fix, 6, none changing a penny — billed wins):
+  - 5: a **completed** dispatch with EV kWh of 3–82 Wh, billed off-peak; the overlay's 0.1 kWh floor
+    (its "over-report guard") predicted peak. For a completed dispatch Octopus bills any draw off-peak.
+  - 1: a **planned** dispatch that never completed (17 Sep 05:30), billed peak; the overlay trusted the
+    plan. The prediction should rest on the completed record, the plan only until it lands.
+
+  Both are refinements to the prediction seam — for the user (§5 (e)).
+
 ## 5. Decided (23 Oct 2026, the user)
 
 - (a) **Export** stays as it is: its band is the clock, its cost kWh × the export rate.
@@ -132,6 +156,10 @@ change only where `_billed_rate`'s cost ÷ kWh and the band's rate disagree.
 - (c) **Historical Import's pricing-health card** goes; the import's summary says in one line how many
   half-hours came back without a band, and that EMT is asking Octopus for them.
 - (d) **2a's report runs on every instance's database** before 2b is built.
+
+- (e) **Open — the prediction seam's two refinements** (§4a): a completed dispatch off-peak whatever its
+  kWh (the 0.1 kWh floor kept only for a planned slot), and a planned slot that never completed not
+  off-peak once the completed record is due. Live pricing, so for the user to decide.
 
 **Decided:** billed wins where it contradicts Octopus's rules, flagged (23 Oct 2026); one start-up backup
 per version, the raw pre-migration copy (22 Oct 2026, review §6 (e)).
