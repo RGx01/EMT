@@ -1877,6 +1877,26 @@ class BlockStore:
              fetched_at or _utc_now_iso()))
         self._conn.commit()
 
+    def upsert_imported_bills(self, rows: list, *, mpan: str = "",
+                              direction: str = "CONSUMPTION") -> int:
+        """The API import's answers as band evidence (engine step 2c, 23 Oct 2026): one row per
+        half-hour, {start, cost_incl, cost_excl, label, kwh}, in ONE transaction for the chunk
+        (upsert_measured_cost commits per row). A newer answer replaces an older one — Octopus's
+        answer at the time of asking — but never over an IOG-SMB breakdown already cached: the
+        buckets are the band there, and a cost node's label is not. Returns the rows written."""
+        now = _utc_now_iso()
+        cur = self._conn.executemany(
+            "INSERT INTO measured_cost (slot_start, mpan, direction, cost_incl, cost_excl, label, "
+            "kwh, fetched_at) VALUES (?,?,?,?,?,?,?,?) "
+            "ON CONFLICT(slot_start, mpan, direction) DO UPDATE SET "
+            "cost_incl=excluded.cost_incl, cost_excl=excluded.cost_excl, label=excluded.label, "
+            "kwh=excluded.kwh, fetched_at=excluded.fetched_at "
+            "WHERE measured_cost.home_kwh IS NULL AND measured_cost.ev_kwh IS NULL",
+            [(r["start"], mpan or "", direction, r.get("cost_incl"), r.get("cost_excl"),
+              r.get("label"), r.get("kwh"), now) for r in rows])
+        self._conn.commit()
+        return cur.rowcount
+
     def measured_costs_since(self, mpan: str, since: str,
                              direction: str = "CONSUMPTION") -> list:
         """(slot_start, cost_incl, cost_excl) of every cached measured cost at or after `since`,

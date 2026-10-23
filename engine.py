@@ -7533,6 +7533,12 @@ def _maybe_reprice_history() -> None:
 
 
 
+def _import_label(off_peak) -> str:
+    """A measurement's band as the bill cache labels it (parse_bill's: a cost node with no band
+    is "mixed", which settles nothing)."""
+    return "OFF_PEAK" if off_peak is True else ("STANDARD_RATE" if off_peak is False else "mixed")
+
+
 def _billed_rate(rate_segs, start, off_peak, meas_cost, kwh,
                  tol: float = 0.001, labelled=None):
     """£/kWh for an imported slot, choosing the right source of truth by tariff type.
@@ -8202,7 +8208,8 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
             rows_to_write.append({"start": st, "kwh": kwh, "rate": rate,
                                   "cost": cost, "standing": _standing,
                                   "cost_exc": cost_exc,
-                                  "_octopus": meas_cost is not None})
+                                  "_octopus": meas_cost is not None,
+                                  "_label": _import_label(ofp)})
         # Total flagged this chunk BEFORE in-pass recovery reduces it — the "raised"
         # figure the post-import health summary reports.
         flags_raised_ch = fb_material
@@ -8271,6 +8278,7 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
                         row["cost_exc"] = _ce
                     row["_was_off_peak"] = bool(ofp)
                     row["_octopus"] = True
+                    row["_label"] = _import_label(ofp)
                     _healed.append(st)
                 if _healed:
                     _healset = set(_healed)
@@ -8345,8 +8353,23 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
                     costed=[r["start"] for r in rows_to_write if r.get("_octopus")])
             except Exception as _nce:
                 logger.warning("import: no-cost record failed (non-fatal): %s", _nce)
+        # Octopus's answers kept as band evidence (engine step 2c): each costed Intelligent
+        # half-hour's label and cost, in the bill cache, so it settles through the one rule
+        # (kWh × the band's rate) as a live half-hour does. In the chunk's own transaction.
+        _bills = ([{"start": r["start"], "cost_incl": r["cost"], "cost_excl": r.get("cost_exc"),
+                    "label": r.get("_label"), "kwh": r.get("kwh")}
+                   for r in rows_to_write
+                   if r.get("_octopus") and (r.get("kwh") or 0) > 0
+                   and tariff_kind_at(r["start"]) == "intelligent"]
+                  if not dry_run and channel == "import" else [])
+        if _bills:
+            try:
+                _store.upsert_imported_bills(_bills, mpan=mpan)
+            except Exception as _be:
+                logger.warning("import: keeping Octopus's bands failed (non-fatal): %s", _be)
         for _r in rows_to_write:
             _r.pop("_octopus", None)
+            _r.pop("_label", None)
         written = 0
         if not dry_run and rows_to_write:
             # One transaction for the whole chunk (not a commit per block) so the
