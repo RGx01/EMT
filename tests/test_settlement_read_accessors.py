@@ -122,25 +122,6 @@ class CompletedDispatchKwh(unittest.TestCase):
         self.assertAlmostEqual(self.st.completed_dispatch_kwh(S), 3.0)
 
 
-class LatestMeasuredKwh(unittest.TestCase):
-
-    def setUp(self):
-        self.st = _mk_store()
-
-    def test_absent_is_none(self):
-        self.assertIsNone(self.st.latest_measured_kwh(S))
-
-    def test_zero_is_treated_as_absent(self):
-        """A zero denominator cannot decide a band; the caller falls back to
-        imp_kwh."""
-        _measured(self.st, S, kwh=0.0)
-        self.assertIsNone(self.st.latest_measured_kwh(S))
-
-    def test_it_returns_the_value(self):
-        _measured(self.st, S, kwh=4.25)
-        self.assertAlmostEqual(self.st.latest_measured_kwh(S), 4.25)
-
-
 class SettleableBlocks(unittest.TestCase):
     """floor / cursor / cutoff — three bounds, none redundant."""
 
@@ -293,10 +274,9 @@ class MeasuredCostsToApply(unittest.TestCase):
 
 class Surfaces(unittest.TestCase):
 
-    def test_all_seven_are_reads(self):
+    def test_all_six_are_reads(self):
         from store_types import ReadStore
         for name in ("get_block_measured_inputs", "completed_dispatch_kwh",
-                     "latest_measured_kwh",
                      "get_settleable_blocks", "count_settleable_blocks",
                      "get_measured_costs_to_apply",
                      "get_dispatched_blocks_awaiting_measure"):

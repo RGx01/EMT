@@ -1,12 +1,12 @@
 """
-test_measured_apply.py — BL-53 step 3 helper apply_measured_to_block (still inert in prod).
-
-Writes Octopus's billed cost as authoritative: rate keyed on cost/kWh (NOT the label),
-EV+house split summing to the bill exactly, rate_source='settled'.
+test_measured_apply.py — apply_measured_to_block: Octopus's band, the cost kWh × that band's
+clean rate (engine step 2b, 23 Oct 2026; until then the bill's cost was copied and its band read from
+cost ÷ kWh). The band is the carrying bucket's on IOG-SMB, else the label; rate_source='settled'.
 """
 import os
 import sys
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import engine
@@ -95,35 +95,54 @@ class TestMeasuredApply(unittest.TestCase):
         self.assertTrue(ok)
         r = self._row()
         self.assertEqual(r["rate_source"], "settled")
-        self.assertAlmostEqual(r["imp_rate"], round(1.029372/3.186, 6), places=6)
-        self.assertAlmostEqual(r["imp_cost"], 1.029372, places=6)
-        self.assertEqual(r["imp_ev_band"], "peak")       # cost ~0.323 → peak band
+        self.assertAlmostEqual(r["imp_rate"], 0.323092, places=6)    # the clean day rate
+        # kWh × rate (step 2b): 3.186 × 0.323092 = 1.029371 — Octopus's 1.029372 is not copied
+        self.assertAlmostEqual(r["imp_cost"], 1.029371, places=6)
+        self.assertEqual(r["imp_ev_band"], "peak")       # the label: STANDARD_RATE
         self.assertEqual(r["imp_home_band"], "day")
-        # imp_rate_exc dropped (step 5b, 10 Oct 2026): the bill's ex-VAT £ is stored and the
-        # ex-VAT rate derives from the pair.
-        self.assertAlmostEqual(r["imp_cost_exc"], 0.980355, places=6)
-        self.assertAlmostEqual(r["imp_rate"] * r["imp_cost_exc"] / r["imp_cost"],
-                               round(0.980355/3.186, 6), places=6)
+        # ex-VAT: kWh × the clean rate through the VAT calendar (5%)
+        self.assertAlmostEqual(r["imp_cost_exc"], round(3.186 * round(0.323092 / 1.05, 6), 6), places=5)
         segs = [ps.Segment(**x) for x in
                 self.st.get_block_segments(self.SLOT, "electricity_main")]
-        self.assertAlmostEqual(ps.total_cost(segs), 1.029372, places=5)   # sums to the bill
-        self.assertAlmostEqual(ps.attribution_cost(segs, "ev"),
-                               round(2.24 * (1.029372/3.186), 6), places=5)
+        self.assertAlmostEqual(ps.total_cost(segs), r["imp_cost"], places=6)   # the segments' sum
+        self.assertAlmostEqual(ps.attribution_cost(segs, "ev"), round(2.24 * 0.323092, 6), places=5)
 
-    def test_cost_beats_label(self):
-        # label says STANDARD but the COST is the off-peak amount (25/08 23:00 signature).
-        # Band must follow the COST (off_peak), not the label.
+    def test_the_bucket_beats_the_label(self):
+        """GUARD (the cost also read off-peak, so it passes on the parent): IOG-SMB, label STANDARD,
+        the carrying bucket at the off-peak rate (the 25/08 23:00 signature; until step 2b the cost
+        decided it). The bucket's band wins."""
         self._blk(1.0, 0.5, rate=0.05493)
-        # A completed session, so the bill writes an EV segment whose band can be read. (Until
-        # step 5c the imp_ev_band column carried the band even on a house-only bill; with the
-        # split held only as segments, a house-only bill has no EV band to assert.)
         self.st.record_dispatch_history(self.SLOT, "completed", source="unknown", energy_kwh=-0.5)
-        engine.apply_measured_to_block(
-            self.SLOT, cost_incl=0.05493, cost_excl=0.052314, label="STANDARD_RATE")
+        self.st.upsert_measured_cost(self.SLOT, mpan="M", cost_incl=0.05493, label="STANDARD_RATE", kwh=1.0)
+        self.st.upsert_measured_breakdown(self.SLOT, mpan="M", home_kwh=0.5, home_rate=0.05493,
+                                          ev_kwh=0.5, ev_rate=0.05493)
+        with mock.patch.object(engine, "split_at", lambda bs: True):
+            self.assertTrue(engine.apply_measured_to_block(
+                self.SLOT, cost_incl=0.05493, cost_excl=0.052314, label="STANDARD_RATE"))
         r = self._row()
         self.assertEqual(r["imp_ev_band"], "off_peak")
         self.assertEqual(r["imp_home_band"], "off_peak")
         self.assertAlmostEqual(r["imp_rate"], 0.05493, places=6)
+
+    def test_an_smb_label_without_its_buckets_refuses(self):
+        """The same label with no breakdown cached settles nothing: the block keeps EMT's
+        prediction until the buckets arrive (dev's 2a report, 23 Oct 2026)."""
+        self._blk(1.0, 0.5, rate=0.05493)
+        with mock.patch.object(engine, "split_at", lambda bs: True):
+            self.assertFalse(engine.apply_measured_to_block(
+                self.SLOT, cost_incl=0.05493, label="STANDARD_RATE"))
+        self.assertEqual(engine._APPLY_REFUSAL, engine._REFUSE_NO_BAND)
+        self.assertEqual(self._row()["rate_source"], "reconciled")        # untouched
+
+    def test_the_label_bands_an_earlier_tariff(self):
+        """Before IOG-SMB the label is Octopus's band, whatever the cost reads."""
+        self._blk(1.0, None, rate=0.05493)
+        with mock.patch.object(engine, "split_at", lambda bs: False):
+            self.assertTrue(engine.apply_measured_to_block(
+                self.SLOT, cost_incl=0.05493, label="STANDARD_RATE"))
+        r = self._row()
+        self.assertAlmostEqual(r["imp_rate"], 0.323092, places=6)
+        self.assertAlmostEqual(r["imp_cost"], 0.323092, places=6)
 
     def test_mixed_uses_4band_clean_no_rescale(self):
         # A genuine over-cap boundary slot (label='mixed'): keep the true 4-band split at the
@@ -144,8 +163,13 @@ class TestMeasuredApply(unittest.TestCase):
             "segments": _raw, "classification": {"ev": "mixed", "house": "day"}}
         try:
             bill_incl, bill_excl = 0.900, 0.857
-            ok = engine.apply_measured_to_block(
-                self.SLOT, cost_incl=bill_incl, cost_excl=bill_excl, label="mixed")
+            # the buckets at both bands: Octopus's "mixed"
+            self.st.upsert_measured_cost(self.SLOT, mpan="M", cost_incl=bill_incl, label="mixed", kwh=3.0)
+            self.st.upsert_measured_breakdown(self.SLOT, mpan="M", home_kwh=1.0, home_rate=0.323092,
+                                              ev_kwh=2.0, ev_rate=0.05493)
+            with mock.patch.object(engine, "split_at", lambda bs: True):
+                ok = engine.apply_measured_to_block(
+                    self.SLOT, cost_incl=bill_incl, cost_excl=bill_excl, label="mixed")
         finally:
             iog_cap.compute_iog_split = _save
         self.assertTrue(ok)
@@ -158,11 +182,9 @@ class TestMeasuredApply(unittest.TestCase):
             self.assertIn(round(sg.inc_rate, 3), (0.055, 0.323))
         r = self._row()
         self.assertEqual(r["rate_source"], "settled")
-        self.assertAlmostEqual(r["imp_cost"], bill_incl, places=6)   # cost stays the bill
+        # the cost is the legs' kWh × rate (step 2b), not the bill's 0.900
+        self.assertAlmostEqual(r["imp_cost"], round(0.055 + 0.323 + 0.323, 6), places=6)
         self.assertEqual(r["imp_ev_band"], "mixed")
-        # EV cost = clean sum (1x0.055 + 1x0.323); the house absorbs the bill delta. (Its stored
-        # imp_cost_remainder was dropped in step 5, 10 Oct 2026; derived it is imp_cost − the EV segments' £,
-        # which the two assertions here already fix.)
         self.assertAlmostEqual(r["imp_cost_ev"], round(0.055 + 0.323, 6), places=6)
 
     def test_no_kwh_is_noop(self):

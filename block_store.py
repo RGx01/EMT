@@ -7714,21 +7714,6 @@ class BlockStore:
             (slot_start,)).fetchone()
         return float(row[0]) if row and row[0] is not None else 0.0
 
-    def latest_measured_kwh(self, slot_start: str):
-        """The freshest billed kWh for a slot, or None.
-
-        `ORDER BY fetched_at DESC LIMIT 1` is load-bearing: measured_cost can hold
-        more than one row per slot, and the band is decided by cost/kWh, so an
-        older denominator moves the answer.
-        """
-        row = self._conn.execute(
-            "SELECT kwh FROM measured_cost WHERE slot_start = ? "
-            "AND direction = 'CONSUMPTION' ORDER BY fetched_at DESC LIMIT 1",
-            (slot_start,)).fetchone()
-        if row and row["kwh"] is not None and float(row["kwh"]) > 1e-9:
-            return float(row["kwh"])
-        return None
-
     # Off IOG-SMB the drain asks for live history's bill, and for an API-imported half-hour only
     # where the import got no cost from Octopus (`import_no_cost`): the rest already hold Octopus's
     # billed cost (20 Oct 2026, the user: on every Intelligent tariff only Octopus's cost is final).

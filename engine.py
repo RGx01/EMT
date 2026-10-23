@@ -13230,6 +13230,8 @@ def _measured_ev_kwh(store, bs: str, row, kwh: float) -> float:
 # with nothing in the log — the days read amber with no sign why.
 _APPLY_REFUSAL: "str | None" = None
 _REFUSE_NO_RATE = "no off-peak/peak rate for that day in the import schedule"
+_REFUSE_NO_BAND = "Octopus's band for it is not settled yet"
+_REFUSE_CAD_KWH = "its kWh is still the CAD figure, not the settled one"
 
 
 def _refuse(reason: str) -> bool:
@@ -13240,19 +13242,19 @@ def _refuse(reason: str) -> bool:
 
 def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
                             label: str = None, replace_correction: bool = False) -> bool:
-    """BL-53 step 3: for a settled IOG dispatched block,
-    take Octopus's billed COST as authoritative (imp_cost = cost_incl) but SNAP imp_rate to
-    the CLEAN tariff band rate for the block's OWN date (day_rate_bounds on the agreement-
-    stitched schedule) — never a derived cost/kWh.
+    """Settle an Intelligent half-hour from Octopus's answer: **Octopus's band, and the cost
+    kWh × that band's rate** (engine step 2b, EMT-v5_engine_step2_import_bills_design.md §1).
 
-    This preserves the canonical-clean-rate invariant (imp_rate is the actual tariff rate,
-    as everywhere else) while keeping the cost exact to the bill. The BILL decides the BAND
-    (what catches a mis-banded slot — e.g. 2026-08-14 billed peak while EMT had it off-peak);
-    the clean band VALUE is what gets stored. exc mirrors: rate ex-VAT from the clean rate via
-    the VAT calendar, cost ex-VAT from the bill. A genuine over-cap MIXED slot keeps the true
-    4-band split at the schedule's CLEAN rates (no rescale). rate_source='settled'.
-    (rate x kWh can differ from the stored bill cost by a sub-penny sliver — every surface
-    reads the stored cost. Nothing flags a materially-off bill: settled = authority, BL-74.)
+    The band is `settled_band`'s — on IOG-SMB the bucket that carries the kWh, elsewhere the label;
+    the rate is the CLEAN tariff band rate for the half-hour's own date (day_rate_bounds on the
+    agreement-stitched schedule). Octopus's cost is never copied: it only ever told EMT the band
+    (on staging, 23 Oct 2026, all 5,119 bill-settled half-hours had Octopus's cost within a
+    thousandth of a penny of kWh × the clean rate). No settled band — an IOG-SMB label without its
+    buckets, a ZERO or unlabelled answer — refuses: the half-hour stays on EMT's prediction until
+    Octopus's band arrives. ex-VAT from the clean rate via the VAT calendar. A MIXED half-hour (the
+    buckets at both bands, over the 6-hour cap) keeps the 4-band split at the schedule's clean rates,
+    its cost their sum. rate_source='settled'. `cost_incl` / `cost_excl` are Octopus's figures,
+    checked present and kept in `measured_cost` by the callers; neither is written to the block.
     """
     global _APPLY_REFUSAL
     _APPLY_REFUSAL = None
@@ -13271,6 +13273,11 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
     kwh = row["imp_kwh"] or 0.0
     if kwh <= 1e-9:
         return _refuse("no kWh")
+    # The cost is kWh × rate (step 2b), so the kWh must be the settled one: a block still on its CAD
+    # figure after the DCC kWh landed waits for PASS 2 to carry it (the 07:00 shape — 0.004 CAD,
+    # 0.001 settled). Copying Octopus's cost, the apply did not need to.
+    if row["imp_kwh_api"] is not None and abs(kwh - float(row["imp_kwh_api"])) > 0.0005:
+        return _refuse(_REFUSE_CAD_KWH)
     # ── EV quantity: _measured_ev_kwh, the settle's one rule ──────────────────────────
     # On an IOG-SMB agreement with the bill's split cached: the BILL's EV, clipped to kWh —
     # what Octopus billed as EV, even where a concurrent grid load (a battery) landed in its EV
@@ -13285,22 +13292,16 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
     except Exception:
         _exc_f = 1.0 / 1.05
 
-    # Pick the BAND from the bill (cost/kWh nearest the block's OWN-date bounds), then SNAP
-    # imp_rate to that band's CLEAN tariff value — not the derived cost/kWh.
-    # 4.5.12: divide by the SETTLED kWh Octopus computed cost_incl on, not the block's
-    # imp_kwh (CAD until pass-2 reconciles it). Cost still beats the label (the 25/08 23:00
-    # case: label STANDARD, cost off-peak) — only the denominator changes. On a small slot
-    # the CAD/settled mismatch (0.004 vs 0.001) sagged cost/kWh into the wrong band.
-    _band_kwh = None
+    # Octopus's band (step 2b): the carrying bucket on IOG-SMB, else the label. The 25/08 23:00
+    # case (label STANDARD, cost off-peak) that made cost beat the label is IOG-SMB's, where the
+    # bucket decides now (2a's first report).
     try:
-        _band_kwh = store.latest_measured_kwh(bs)
+        _bd = store.get_measured_breakdown(bs)
     except Exception:
-        _band_kwh = None
-    if _band_kwh is None and row["imp_kwh_api"] is not None and float(row["imp_kwh_api"]) > 1e-9:
-        _band_kwh = float(row["imp_kwh_api"])          # DCC-settled kWh
-    if _band_kwh is None:
-        _band_kwh = kwh                                  # imported block: its kWh IS the settled figure
-    _cost_rate = cost_incl / _band_kwh
+        _bd = None
+    band = settled_band(bs, label, _bd)
+    if band is None:
+        return _refuse(_REFUSE_NO_BAND)
     _lo = _hi = None
     if sched is not None:
         try:
@@ -13313,10 +13314,11 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
         # the block on its existing schedule-derived (already-clean) rate is the safe result.
         return _refuse(_REFUSE_NO_RATE)
     _lo, _hi = round(_lo / 100.0, 6), round(_hi / 100.0, 6)
-    if abs(_cost_rate - _lo) <= abs(_cost_rate - _hi):
-        imp_rate, band = _lo, "off_peak"
-    else:
-        imp_rate, band = _hi, "peak"
+    _mixed = band == "mixed"
+    if _mixed:
+        # the cap's split decides each leg; the single-band fallback below takes the peak rate
+        band = "peak"
+    imp_rate = _lo if band == "off_peak" else _hi
     home_band = "off_peak" if band == "off_peak" else "day"
     # Prior band (for the review note only) from the block's CURRENT stored rate vs the
     # same clean bounds — a COST/rate-derived band, never the unreliable OFF_PEAK label.
@@ -13332,7 +13334,7 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
     # MIXED over-cap boundary block: keep the true 4-band split at the schedule's CLEAN
     # rates (NO rescale — clean per-band rates, not cost-derived).
     _capped = capped_at(bs) and _capped_schedules()     # its own agreement (design §4)
-    if label == "mixed" and evk > 1e-9 and _capped and sched is not None:
+    if _mixed and evk > 1e-9 and _capped and sched is not None:
         try:
             import iog_cap as _ic
             _bend = bs
@@ -13364,16 +13366,17 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
         segs = _ps.ev_house_at(kwh, evk, inc_rate=imp_rate, exc_rate=exc_rate,
                                ev_band=ev_band, home_band=home_band)
 
-    # The bill's EV/house split is its segments (step 5c); the cost is the BILL.
-    _cost_exc = (round(cost_excl, 6) if cost_excl is not None
-                 else round(cost_incl * _exc_f, 6))
+    # The cost is kWh × rate, leg by leg (step 2b) — the segments' own sum.
+    _cost = round(sum(sg.kwh * sg.inc_rate for sg in segs), 6)
+    _cost_exc = round(sum(sg.kwh * (sg.exc_rate if sg.exc_rate is not None else sg.inc_rate * _exc_f)
+                          for sg in segs), 6)
     try:
         # BL-79: the segments in one transaction with the columns. If it fails, nothing is
         # stamped, so the block stays a candidate for the next pass instead of being marked
         # 'settled' under stale segments.
         store.apply_measured_to_main(
             bs,
-            rate=imp_rate, cost=round(cost_incl, 6),
+            rate=imp_rate, cost=_cost,
             cost_exc=_cost_exc,
             segments=segs, replace_correction=replace_correction)
     except Exception as e:

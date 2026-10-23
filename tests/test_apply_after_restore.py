@@ -76,6 +76,9 @@ class TheRefusals(unittest.TestCase):
                               (S, S, "electricity_main"))
         self.st.upsert_measured_cost(S, mpan=MPAN, cost_incl=0.156942, cost_excl=0.156942,
                                      label="OFF_PEAK", kwh=3.0)
+        # IOG-SMB: the band is the buckets' (engine step 2b)
+        self.st.upsert_measured_breakdown(S, mpan=MPAN, home_kwh=3.0, home_rate=0.052314,
+                                          ev_kwh=0.0, ev_rate=None)
         self.st._conn.commit()
 
     def tearDown(self):
