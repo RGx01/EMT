@@ -83,6 +83,19 @@ class TheRoute(unittest.TestCase):
         self.assertEqual(d["state"], {"bill": "applied", "export": "none", "split": "bill", "flags": []})
         self.assertEqual(sorted(s["attribution"] for s in d["segments"]), ["ev", "house"])
 
+    def test_the_band_against_the_rules(self):
+        """Engine step 2b: the panel carries Octopus's band against EMT's rules, asked with the
+        bill's label and its buckets."""
+        eng = sys.modules["engine"]
+        seen = []
+        note = {"settled": "off_peak", "predicted": "peak", "disagrees": True}
+        with unittest.mock.patch.object(eng, "band_note", create=True,
+                                        side_effect=lambda *a: seen.append(a) or note):
+            d = json.loads(self._get(S).data)
+        self.assertEqual(d["band"], note)
+        self.assertEqual(seen[0][2], "OFF_PEAK")
+        self.assertEqual(seen[0][3]["ev_kwh"], 2.5714)
+
     def test_no_block_is_404_and_a_bad_start_is_400(self):
         self.assertEqual(self._get("2026-01-01T00:00:00").status_code, 404)
         self.assertEqual(self._get("yesterday").status_code, 400)
@@ -90,6 +103,14 @@ class TheRoute(unittest.TestCase):
 
 class ThePanel(unittest.TestCase):
     PAGE = open(os.path.join(_ROOT, "web", "templates", "heatmap_module.html"), encoding="utf-8").read()
+
+    def test_a_band_against_the_rules_is_a_note(self):
+        """Green with a note (the user, 23 Oct 2026): a row, not the bad style."""
+        i = self.PAGE.index("var bn = d.band")
+        body = self.PAGE[i:i + 400]
+        self.assertIn("if (bn && bn.disagrees)", body)
+        self.assertIn("billed wins until Octopus corrects it');", body)
+        self.assertNotIn("hm-bad", body)
 
     def test_a_cell_knows_its_half_hours_and_a_click_opens_the_panel(self):
         self.assertIn("(c.starts || (c.starts = [])).push(b.block_start)", self.PAGE)

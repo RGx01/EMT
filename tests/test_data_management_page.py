@@ -215,7 +215,7 @@ class TheModule(unittest.TestCase):
     def test_the_flags_the_server_carries_are_settle_values(self):
         srv = open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read()
         sv = self._fn("settleValue")
-        for f in ("bill_kwh_differs", "vat_disagrees", "split_missing", "recost_bl82"):
+        for f in ("bill_kwh_differs", "vat_disagrees", "split_missing"):
             self.assertIn("'" + f + "'", sv)
             self.assertIn('"' + f + '"', srv[srv.index("_HEALTH_BILL_FLAGS ="):][:200])
 

@@ -512,7 +512,8 @@ def _dispatch_overlay_rate(channel_name: str, block_start: str,
     if channel_name != "import" or _store is None or not block_start:
         return base_rate
     try:
-        slot = _store.get_dispatch_slot(_snap_to_slot(block_start))
+        # _reader(): the detail panel asks for a half-hour's predicted band from a request thread
+        slot = _reader().get_dispatch_slot(_snap_to_slot(block_start))
     except Exception:
         return base_rate
     if not slot or not slot.get("off_peak"):
@@ -12289,6 +12290,21 @@ def settled_band(bs: str, bill_label, breakdown: "dict | None" = None) -> "str |
     except Exception:
         b = None
     return None if b is None else ("off_peak" if b else "peak")
+
+
+def band_note(bs: str, kwh, bill_label, breakdown=None) -> "dict | None":
+    """The detail panel's band evidence for an Intelligent half-hour with Octopus's answer:
+    {settled, predicted, disagrees}. Billed wins, so a disagreement is a note, not an issue (the
+    user, 23 Oct 2026: the cell stays green). None on a published tariff, or with no kWh."""
+    try:
+        k = float(kwh or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if k <= 1e-9 or tariff_kind_at(bs) != "intelligent":
+        return None
+    s, p = settled_band(bs, bill_label, breakdown), predicted_band(bs, k)
+    return {"settled": s, "predicted": p,
+            "disagrees": bool(s in ("off_peak", "peak") and p and s != p)}
 
 
 def predicted_band(bs: str, kwh: float) -> "str | None":

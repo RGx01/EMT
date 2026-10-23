@@ -69,7 +69,7 @@ window.EMTHeatmap = (function () {
   var MISSING_TEXT = 'no block for this half-hour \u2014 missing';
   var CAT_RANK = {
     bill:  {none: 0, imported: 0, applied: 1, applied_emt_split: 1, corrected: 1, estimate_dcc: 2,
-            estimate_cad: 2, known: 2, overdue: 3, abandoned: 3, differs: 3, flagged: 3, missing: 3},
+            estimate_cad: 2, overdue: 3, abandoned: 3, differs: 3, flagged: 3, missing: 3},
     export: {none: 0, imported: 0, no_agreement: 0, applied: 1, waiting: 2, overdue: 3, no_data: 3, missing: 3},
     presence: {present: 0, missing: 3}
   };
@@ -83,8 +83,7 @@ window.EMTHeatmap = (function () {
            overdue: 'not final after 7 days — kWh \u00d7 rate',
            abandoned: 'no cost from Octopus, and EMT no longer asks for it — kWh \u00d7 rate. ' +
                       'Re-fetch may still get it; a CSV or PDF bill for the day can supply it',
-           known: 'stored cost re-costed before the BL-82 fix (pennies; known)',
-           differs: 'the stored cost is not the bill', flagged: 'billed — but see below',
+           differs: 'Octopus\u2019s cost isn\u2019t kWh \u00d7 its rate', flagged: 'billed — but see below',
            missing: MISSING_TEXT},
     export: {none: 'no export in this half-hour', imported: 'CSV history',
              applied: 'export kWh settled — kWh \u00d7 rate is final',
@@ -138,7 +137,7 @@ window.EMTHeatmap = (function () {
   // except CSV history and `none` (nothing imported or exported — nothing to settle). One rule for
   // the "To look at" totals and the collapse. On the energy views, only a missing half-hour.
   var ISSUE = {
-    bill: {applied_emt_split: 1, corrected: 1, estimate_dcc: 1, estimate_cad: 1, known: 1,
+    bill: {applied_emt_split: 1, corrected: 1, estimate_dcc: 1, estimate_cad: 1,
            overdue: 1, abandoned: 1, differs: 1, flagged: 1, missing: 1},
     // no_agreement is not an issue (22 Oct 2026, the user): nothing is paid, nothing to fix
     export: {waiting: 1, overdue: 1, no_data: 1, missing: 1},
@@ -159,7 +158,7 @@ window.EMTHeatmap = (function () {
       ? {applied: C.green, waiting: C.amber, overdue: C.red, imported: C.grey, no_agreement: C.grey,
          none: C.grey}
       : {applied: C.green, applied_emt_split: C.teal, estimate_dcc: C.lamber, estimate_cad: C.amber,
-         known: C.amber, overdue: C.red, differs: C.red, flagged: C.red,
+         overdue: C.red, differs: C.red, flagged: C.red,
          corrected: C.blue, imported: C.grey, none: C.grey};
     return by[v] || 'rgba(0,0,0,0)';
   }
@@ -168,12 +167,9 @@ window.EMTHeatmap = (function () {
     if (!st) return null;
     if (m === 'export') return st.export || null;
     var v = st.bill, fl = st.flags || [];
-    // an attention flag outranks "known": the 13 Oct morning's October bills were both a pre-fix
-    // re-cost AND 5% VAT on a 0% day, and the VAT is what needed seeing
     if ((v === 'applied' || v === 'differs') &&
         (fl.indexOf('bill_kwh_differs') >= 0 || fl.indexOf('vat_disagrees') >= 0 ||
          fl.indexOf('split_missing') >= 0)) return 'flagged';
-    if (v === 'differs' && fl.indexOf('recost_bl82') >= 0) return 'known';
     return v;
   }
   var AXIS_LEFT = 30, CELL_MAX = 22, CELL_MIN = 6;
@@ -1508,7 +1504,11 @@ window.EMTHeatmap = (function () {
     row('rate', pence(c.rate),
         esc(Object.keys(bands).join(', ')) + (c.rate_source ? ' · ' + esc(c.rate_source) : '') + (c.corrected ? ' · your correction' : ''));
     (st.flags || []).forEach(function (f) { if (FLAG_TEXT[f]) row('\u26a0', esc(FLAG_TEXT[f]), '', 'hm-bad'); });
-    if ((st.flags || []).indexOf('recost_bl82') >= 0) row('', 'stored cost re-costed before the BL-82 fix', 'pennies; known', 'hm-wait');
+    // Octopus's band against its own rules (engine step 2b): billed wins, so a note, not an issue
+    var bn = d.band, BN = {off_peak: 'off-peak', peak: 'peak'};
+    if (bn && bn.disagrees)
+      row('band', 'billed ' + esc(BN[bn.settled]), 'Octopus\u2019s rules give ' + esc(BN[bn.predicted]) +
+          ' here \u2014 billed wins until Octopus corrects it');
     var x = d.export;
     if (x && (METRICS.export || x.kwh !== null || x.dcc !== null)) {
       var xs = st.export, xv = x.dcc !== null ? x.dcc : x.kwh;

@@ -199,7 +199,33 @@ class TheCsv(_Base):
             self.assertIn(bs, fh.read())
 
 
+class TheBandNote(_Base):
+    """The detail panel's note (engine step 2b, the user 23 Oct 2026): the cell stays green,
+    the panel says where Octopus's band is not its rules'."""
+
+    def test_billed_against_the_rules_is_noted(self):
+        self.dispatched.add("2026-09-06T19:00:00")
+        n = engine.band_note("2026-09-06T19:00:00", 0.17, "STANDARD_RATE")
+        self.assertEqual(n, {"settled": "peak", "predicted": "off_peak", "disagrees": True})
+
+    def test_agreeing_is_not(self):
+        n = engine.band_note("2026-09-06T19:00:00", 0.17, "STANDARD_RATE")
+        self.assertEqual(n["disagrees"], False)
+
+    def test_a_published_tariff_has_none(self):
+        with mock.patch.object(engine, "tariff_kind_at", lambda bs: "published"):
+            self.assertIsNone(engine.band_note("2026-09-06T19:00:00", 0.17, "STANDARD_RATE"))
+
 class TheOverlayQuiet(unittest.TestCase):
+
+    def test_the_seam_reads_through_the_reader(self):
+        """A request thread may not touch the engine's connection (A §5.5): the seam reads the
+        dispatch slot through `_reader()`, for the detail panel's band note."""
+        import inspect
+        src = inspect.getsource(engine._dispatch_overlay_rate)
+        self.assertIn("_reader().get_dispatch_slot(", src)
+        self.assertNotIn("_store.get_dispatch_slot(", src)
+
 
     def test_the_seam_takes_quiet(self):
         import inspect

@@ -4134,7 +4134,8 @@ def api_block_settlement():
     {start, end, state: {bill, split, flags}, kwh: {stored, dcc, settled},
      export: {kwh, dcc, cost, rate}, cost: {stored, stored_exc, rate, rate_source, corrected},
      bill: {cost, cost_exc, kwh, label, fetched_at, home_kwh, home_rate, ev_kwh, ev_rate} | null,
-     segments: [...], dispatch: {completed_kwh, kinds} | null}"""
+     segments: [...], dispatch: {completed_kwh, kinds} | null,
+     band: {settled, predicted, disagrees} | null — Octopus's band against EMT's rules (step 2b)}"""
     from datetime import datetime as _dt, timedelta as _td
     start = (request.args.get("start") or "").strip()
     try:
@@ -4177,6 +4178,7 @@ def api_block_settlement():
                       "ev_kwh": _r(d["bill_ev_kwh"]), "ev_rate": _r(d["bill_ev_rate"])}
                      if d["bill_cost"] is not None else None),
             "segments": store.get_block_segments(start, "electricity_main"),
+            "band": _band_note(_eng_nc, d),
             "dispatch": ({"completed_kwh": (round(abs(float(comp[-1]["energy_kwh"])), 3)
                                             if comp else None),
                           "kinds": sorted({h.get("kind") for h in hist})} if hist else None),
@@ -4184,6 +4186,20 @@ def api_block_settlement():
     except Exception as e:
         logger.warning("api_block_settlement: %s", e)
         return jsonify({"error": str(e)}), 500
+
+
+def _band_note(_eng, d):
+    """The detail panel's band note (engine.band_note), or None — never the panel's failure."""
+    if d["bill_cost"] is None:
+        return None
+    bd = ({"home_kwh": d["bill_home_kwh"], "home_rate": d["bill_home_rate"],
+           "ev_kwh": d["bill_ev_kwh"], "ev_rate": d["bill_ev_rate"]}
+          if d["bill_home_kwh"] is not None or d["bill_ev_kwh"] is not None else None)
+    try:
+        return _eng.band_note(d["block_start"], d["imp_kwh"], d["bill_label"], bd)
+    except Exception as e:
+        logger.debug("api_block_settlement: no band note for %s: %s", d["block_start"], e)
+        return None
 
 
 def _settle_views(_eng) -> list:
@@ -4629,7 +4645,7 @@ def api_backfill_gaps():
 
 # The flags the heatmap folds into a bill cell's value (heatmap_module.html `settleValue`): the
 # health strip's counts carry them, so the page counts with the heatmap's own rule.
-_HEALTH_BILL_FLAGS = ("bill_kwh_differs", "vat_disagrees", "split_missing", "recost_bl82")
+_HEALTH_BILL_FLAGS = ("bill_kwh_differs", "vat_disagrees", "split_missing")
 
 
 def _missing_half_hours(store, tz_name, now=None) -> dict:
@@ -4677,7 +4693,8 @@ _HEALTH_TTL_S = 600
 # 3: an imported half-hour with its bill cached is never `abandoned` (21 Oct 2026).
 # 4: CSV history outside an export agreement stays `imported`; a missing export there is
 #    `no_agreement`, not `no_data` (22 Oct 2026).
-_HEALTH_FILE_V = 4
+# 5: no `recost_bl82` flag — a settled cost is kWh x rate since engine step 2b (23 Oct 2026).
+_HEALTH_FILE_V = 5
 # While the data keeps moving — a refill rebuilding the devices writes for minutes — every page
 # poll found the token moved and counted again, two more waiting behind it to do the same
 # (staging, 21 Oct 2026: three requests in the count, the engine loop held 11.4 s). A request that

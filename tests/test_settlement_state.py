@@ -59,10 +59,11 @@ class TheBill(unittest.TestCase):
         st = _c(_f(**dict(BILLED, imp_cost=round(6 * OFF, 6) + 0.02, imp_rate=OFF + 0.01)))
         self.assertEqual((st["bill"], st["flags"]), ("differs", []))
 
-    def test_a_pre_fix_re_cost_is_known(self):
-        """BL-82: the stored cost is kWh x rate, the bill is not."""
+    def test_octopus_cost_off_its_rate_differs(self):
+        """Engine step 2b: the stored cost is kWh x rate, and Octopus's is not — red, with no
+        BL-82 excuse (until 2b it read amber `recost_bl82`, which would now excuse every one)."""
         st = _c(_f(**dict(BILLED, bill_cost=round(6 * OFF, 6) + 0.0004)))
-        self.assertEqual((st["bill"], st["flags"]), ("differs", ["recost_bl82"]))
+        self.assertEqual((st["bill"], st["flags"]), ("differs", []))
 
     def test_estimate_on_which_kwh_then_overdue(self):
         """§9.3: settled kWh x rate is light amber, a kWh not settled amber; red past the window."""
