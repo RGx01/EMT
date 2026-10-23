@@ -125,16 +125,13 @@ change only where `_billed_rate`'s cost ÷ kWh and the band's rate disagree.
 
 ---
 
-## 5. For the user
+## 5. Decided (23 Oct 2026, the user)
 
-- (a) **Export** fits the model as it is (the band is the clock; the cost kWh × the export rate). No change
-  proposed.
+- (a) **Export** stays as it is: its band is the clock, its cost kWh × the export rate.
 - (b) **"Fix a date range"** goes with the repair (§3); the heatmap's re-fetch asks Octopus for a span.
-  Agreed?
-- (c) **Historical Import's pricing-health card** goes; a one-line note in the import's summary instead —
-  "N half-hours came back without a band; EMT is asking Octopus"?
-- (d) **The other instances.** The figures in §0 are one account (IOG, then IOG-SMB, a Zappi). Run 2a's
-  report on each instance's database before 2b?
+- (c) **Historical Import's pricing-health card** goes; the import's summary says in one line how many
+  half-hours came back without a band, and that EMT is asking Octopus for them.
+- (d) **2a's report runs on every instance's database** before 2b is built.
 
 **Decided:** billed wins where it contradicts Octopus's rules, flagged (23 Oct 2026); one start-up backup
 per version, the raw pre-migration copy (22 Oct 2026, review §6 (e)).
