@@ -216,6 +216,54 @@ class TheBandNote(_Base):
         with mock.patch.object(engine, "tariff_kind_at", lambda bs: "published"):
             self.assertIsNone(engine.band_note("2026-09-06T19:00:00", 0.17, "STANDARD_RATE"))
 
+class TheLifecycle(unittest.TestCase):
+    """The prediction's second stage (23 Oct 2026, the user): on a live half-hour the reconcile's
+    verdict on the dispatch's lifecycle. 16 Aug 2026 13:00 BST: a completed dispatch of 0.23 kWh,
+    no `started` — peak by EMT's rules, as Octopus billed it; the first stage alone read off-peak."""
+
+    BS = "2026-08-16T12:00:00"
+
+    def setUp(self):
+        self.st = BlockStore(":memory:")
+        self.p = [mock.patch.object(engine, "_kraken_rate_schedules", {"import": _Sched()}),
+                  mock.patch.object(engine, "_store", self.st),
+                  mock.patch.object(engine, "_reader", lambda: self.st),
+                  mock.patch.object(engine, "_dispatch_overlay_rate",
+                                    lambda ch, bs, base, kwh, quiet=False: round(LO / 100, 6))]
+        for x in self.p:
+            x.start()
+
+    def tearDown(self):
+        for x in self.p:
+            x.stop()
+
+    def _hist(self, kind, kwh=None, slot=None):
+        self.st.record_dispatch_history(slot or self.BS, kind, provider="Myenergi", source="unknown",
+                                        energy_kwh=kwh)
+
+    def test_a_completed_only_tail_on_a_live_half_hour_is_peak(self):
+        self._hist("completed", -0.23)
+        self.assertEqual(engine.predicted_band(self.BS, 1.557), "peak")
+
+    def test_imported_history_keeps_the_first_stage(self):
+        """The reconcile skips imported history, so the prediction does (fails on the parent only
+        for the new `live` argument)."""
+        self._hist("completed", -0.23)
+        self.assertEqual(engine.predicted_band(self.BS, 1.557, live=False), "off_peak")
+
+    def test_a_started_charge_stays_off_peak(self):
+        """GUARD: a genuine smart charge — planned, started, completed."""
+        for k, e in (("planned", -3.3), ("started", None), ("completed", -3.2)):
+            self._hist(k, e)
+        self.assertEqual(engine.predicted_band(self.BS, 3.4), "off_peak")
+
+    def test_inside_the_night_window_nothing_is_decided(self):
+        """GUARD: the clock's off-peak needs no dispatch (the reconcile skips it too)."""
+        bs = "2026-08-16T01:00:00"
+        self._hist("completed", -0.05, slot=bs)
+        self.assertEqual(engine.predicted_band(bs, 0.3), "off_peak")
+
+
 class TheOverlayQuiet(unittest.TestCase):
 
     def test_the_seam_reads_through_the_reader(self):

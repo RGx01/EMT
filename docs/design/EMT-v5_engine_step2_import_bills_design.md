@@ -174,10 +174,15 @@ none changing a penny:
 
   and a planned slot that never completed was billed peak (4 of 4 with kWh, plus 17 Sep 05:30 on IOG-SMB).
 
-So the earlier tariff often billed a dispatch's last, part-used half-hour at peak, and the prediction
-(the completed record, the plan until it lands) says off-peak there. **The prediction is not changed**
-(§5 (e)): billed wins once Octopus answers, and when Octopus fixes IOG-SMB, this table is what to compare
-its billing with.
+**Corrected the same day (the user): those 24 were the report's, not the prediction's.** `predicted_band`
+read only the prediction's first stage (a dispatch slot moves a half-hour off-peak, at finalise) and not
+its second (`reconcile_dispatch_overlay`'s verdict on the dispatch's lifecycle, at settlement). 16 Aug
+13:00 BST has a completed dispatch of 0.23 kWh and no `started`: by EMT's rules a bump, and under the
+0.4 kWh "did not materially run" floor — peak, as Octopus billed it. With both stages, the earlier
+tariff's disagreements after EMT's dispatch record began are **2, both at 0 kWh**; EMT's rules are
+Octopus's there. On IOG-SMB they are 45, every one billed off-peak where the rules say peak — bumps (the
+Sunday 11:00 completed-only charges) and dispatch tails: the bug of §1. **The prediction is not changed**
+(§5 (e)); billed wins, and when Octopus fixes IOG-SMB its billing should come to agree.
 
 ## 5. Decided (23 Oct 2026, the user)
 
@@ -187,9 +192,10 @@ its billing with.
   half-hours came back without a band, and that EMT is asking Octopus for them.
 - (d) **2a's report runs on every instance's database** before 2b is built.
 
-- (e) **The prediction seam stays as it is** (the user, 23 Oct 2026), the 0.1 kWh floor and the plan
-  included. IOG-SMB's off-peak billing of small draws is Octopus's bug, not a rule to follow; the earlier
-  tariff's peak tails (§4a) are carried by billed-wins. Revisit when Octopus fixes IOG-SMB.
+- (e) **The prediction seam stays as it is** (the user, 23 Oct 2026). IOG-SMB's off-peak billing of
+  bumps and dispatch tails is Octopus's bug, not a rule to follow; on the earlier tariff the prediction's
+  two stages agree with Octopus's bills (§4a). The 2a report and the detail panel's note read both
+  stages.
 
 **Decided:** billed wins where it contradicts Octopus's rules, flagged (23 Oct 2026); one start-up backup
 per version, the raw pre-migration copy (22 Oct 2026, review §6 (e)).
