@@ -94,6 +94,7 @@
     "upsert_carbon_slots",
     "upsert_dispatch_slot",
     "upsert_generation_mix",
+    "upsert_imported_bills",
     "upsert_imported_block",
     "upsert_imported_blocks",
     "upsert_kraken_block",
