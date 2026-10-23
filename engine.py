@@ -489,7 +489,7 @@ _DISPATCH_OVERLAY_MIN_KWH = 0.1
 
 
 def _dispatch_overlay_rate(channel_name: str, block_start: str,
-                           base_rate: float, imp_kwh: float | None):
+                           base_rate: float, imp_kwh: float | None, quiet: bool = False):
     """Dispatch overlay (step 2 piece 2). Given a block's base-resolved import
     rate, decide whether an Intelligent smart-charge dispatch should override it
     to the off-peak rate. Returns the rate to use (£/kWh).
@@ -537,7 +537,7 @@ def _dispatch_overlay_rate(channel_name: str, block_start: str,
     # authoritative at settlement) — a 0.1 kWh noise floor, NOT a dispatch-delta
     # comparison. Below the floor → treat as no real charging (over-report guard).
     if not imp_kwh or imp_kwh < _DISPATCH_OVERLAY_MIN_KWH:
-        logger.info("dispatch-overlay: slot %s active but draw below floor "
+        if not quiet: logger.info("dispatch-overlay: slot %s active but draw below floor "
                     "(%.4f kWh < %.2f) — NOT overriding (over-report guard) [%s]",
                     block_start, imp_kwh or 0.0, _DISPATCH_OVERLAY_MIN_KWH, _fp)
         return base_rate
@@ -551,7 +551,7 @@ def _dispatch_overlay_rate(channel_name: str, block_start: str,
     # Only override if base is meaningfully above off-peak (out-of-window slot).
     if base_rate <= off_peak_rate + 1e-9:
         return base_rate  # already off-peak (in-window) — no-op
-    logger.info("dispatch-overlay: APPLIED %s peak→off-peak %.5f→%.5f "
+    if not quiet: logger.info("dispatch-overlay: APPLIED %s peak→off-peak %.5f→%.5f "
                 "(%.4f kWh) [%s]", block_start, base_rate,
                 off_peak_rate, imp_kwh, _fp)
     return off_peak_rate
@@ -12228,6 +12228,181 @@ async def _fetch_bill_nodes(mpan: str, slots) -> dict:
         if node:
             out[s] = (kinds[s], node)
     return out
+
+
+# ── Engine step 2a: the band, predicted and settled, beside today's cost ─────────────────────
+# EMT-v5_engine_step2_import_bills_design.md (23 Oct 2026, the user's model): every half-hour's cost
+# is kWh × its band's rate; the band predicted from the clock and the dispatches EMT recorded, then
+# settled by Octopus's — the bill's label (the four buckets' band on IOG-SMB), the clock on a
+# published tariff. 2a only REPORTS what that rule gives against what is stored: it writes nothing
+# into the blocks and asks Octopus nothing. Billed wins where it contradicts the prediction (decided);
+# the report counts those apart.
+_BAND_PARITY_GBP = 0.0005          # a cost within 0.05p of today's is the same cost
+_band_parity_state: dict = {"status": "idle"}
+
+
+def _band_rates(bs: str):
+    """(off-peak £, peak £) the import schedule gives the half-hour's day, or (None, None)."""
+    sched = _kraken_rate_schedules.get("import")
+    if sched is None or sched.is_empty():
+        return None, None
+    try:
+        lo, hi = sched.day_rate_bounds(bs)
+    except Exception:
+        return None, None
+    if lo is None or hi is None:
+        return None, None
+    return round(lo / 100.0, 6), round(hi / 100.0, 6)
+
+
+def settled_band(bs: str, bill_label) -> "str | None":
+    """Octopus's band for a half-hour on an Intelligent tariff: 'off_peak' / 'peak' from its cached
+    bill's label (on IOG-SMB the label is the carrying bucket's), or None — not settled yet, or a ZERO
+    answer, which states no band."""
+    from kraken_api_client import label_band
+    if not bill_label or str(bill_label).upper() == "ZERO":
+        return None
+    try:
+        b = label_band(bill_label)
+    except Exception:
+        b = None
+    return None if b is None else ("off_peak" if b else "peak")
+
+
+def predicted_band(bs: str, kwh: float) -> "str | None":
+    """EMT's own band for a half-hour on an Intelligent tariff — the pricing seam's: the clock's
+    rate, moved to off-peak by a recorded dispatch (`_dispatch_overlay_rate`, quietly). None without
+    a schedule. (The 6-hour cap lives in the four buckets once they land; 2a compares the main band.)"""
+    sched = _kraken_rate_schedules.get("import")
+    lo, hi = _band_rates(bs)
+    if sched is None or lo is None:
+        return None
+    try:
+        base = sched.resolve(bs)
+    except Exception:
+        base = None
+    if base is None:
+        return None
+    rate = _dispatch_overlay_rate("import", bs, round(base / 100.0, 6), kwh, quiet=True)
+    return "off_peak" if abs(rate - lo) <= abs(rate - hi) else "peak"
+
+
+def band_parity_row(f: dict) -> dict:
+    """One main-meter half-hour (a get_settlement_facts row) under the step 2 rule, beside today's
+    stored cost. `status`: same | changes | unsettled | no_rate | corrected | empty."""
+    bs = f["block_start"]
+    kwh = float(f.get("imp_kwh") or 0.0)
+    stored = f.get("imp_cost")
+    out = {"start": bs, "kwh": round(kwh, 6), "stored_cost": stored, "stored_rate": f.get("imp_rate"),
+           "octopus_cost": f.get("bill_cost"), "label": f.get("bill_label"),
+           "settled": None, "predicted": None, "rate": None, "cost": None, "status": None,
+           "disagrees": False}
+    if f.get("rate_corrected") or f.get("rate_source") == "corrected":
+        out["status"] = "corrected"           # the user's own figure stands
+        return out
+    if kwh <= 1e-9:
+        out["status"] = "empty"
+        return out
+    kind = tariff_kind_at(bs)
+    if kind != "intelligent":
+        sched = _kraken_rate_schedules.get("import")
+        try:
+            r = sched.resolve(bs) if sched is not None and not sched.is_empty() else None
+        except Exception:
+            r = None
+        if r is None:
+            out["status"] = "no_rate"
+            return out
+        out["settled"] = out["predicted"] = "clock"
+        out["rate"] = round(r / 100.0, 6)
+    else:
+        lo, hi = _band_rates(bs)
+        if lo is None:
+            out["status"] = "no_rate"
+            return out
+        out["predicted"] = predicted_band(bs, kwh)
+        out["settled"] = settled_band(bs, f.get("bill_label"))
+        band = out["settled"] or out["predicted"]
+        out["rate"] = lo if band == "off_peak" else hi
+        out["disagrees"] = bool(out["settled"] and out["predicted"]
+                                and out["settled"] != out["predicted"])
+    out["cost"] = round(kwh * out["rate"], 6)
+    if out["settled"] is None:
+        out["status"] = "unsettled"
+    elif stored is not None and abs(out["cost"] - float(stored)) <= _BAND_PARITY_GBP:
+        out["status"] = "same"
+    else:
+        out["status"] = "changes"
+    return out
+
+
+def band_parity_status() -> dict:
+    return dict(_band_parity_state)
+
+
+async def run_band_parity(utc_from: str, utc_to: str, out_dir: str) -> dict:
+    """The step 2a report over [utc_from, utc_to): every main-meter half-hour under the rule, a
+    month at a time, yielding between months. Writes `band_parity_<ts>.json` (the summary) and
+    `.csv` (every half-hour not `same`) to `out_dir`. Read-only on the blocks; no Octopus call."""
+    import csv as _csv
+    import json as _json
+    st = _band_parity_state
+    st.clear()
+    st.update({"status": "running", "from": utc_from, "to": utc_to, "done_to": utc_from})
+    try:
+        if _store is None:
+            raise RuntimeError("no store")
+        ensure_dir(out_dir)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        csv_path = os.path.join(out_dir, "band_parity_%s.csv" % ts)
+        json_path = os.path.join(out_dir, "band_parity_%s.json" % ts)
+        counts: dict = {}
+        months: dict = {}
+        tot = {"stored": 0.0, "rule": 0.0, "octopus": 0.0}
+        fields = ["start", "kwh", "status", "disagrees", "settled", "predicted", "label",
+                  "stored_rate", "rate", "stored_cost", "cost", "octopus_cost"]
+        a = datetime.fromisoformat(utc_from)
+        end = datetime.fromisoformat(utc_to)
+        with open(csv_path, "w", newline="") as fh:
+            w = _csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
+            w.writeheader()
+            while a < end:
+                b = min(end, (a.replace(day=1) + timedelta(days=32)).replace(day=1))
+                for f in _reader().get_settlement_facts(a.isoformat(), b.isoformat()):
+                    r = band_parity_row(f)
+                    k = r["status"] + (" · disagrees" if r["disagrees"] else "")
+                    counts[k] = counts.get(k, 0) + 1
+                    mk = r["start"][:7]
+                    m = months.setdefault(mk, {"same": 0, "changes": 0, "unsettled": 0,
+                                               "disagrees": 0, "stored": 0.0, "rule": 0.0})
+                    if r["status"] in m:
+                        m[r["status"]] += 1
+                    m["disagrees"] += int(r["disagrees"])
+                    if r["cost"] is not None and r["stored_cost"] is not None:
+                        m["stored"] += float(r["stored_cost"]); m["rule"] += r["cost"]
+                        tot["stored"] += float(r["stored_cost"]); tot["rule"] += r["cost"]
+                        if r["octopus_cost"] is not None:
+                            tot["octopus"] += float(r["octopus_cost"])
+                    if r["status"] != "same":
+                        w.writerow(r)
+                st["done_to"] = b.isoformat()
+                a = b
+                await asyncio.sleep(0)               # one month at a time: the loop breathes
+        summary = {"from": utc_from, "to": utc_to, "counts": counts,
+                   "totals_gbp": {k: round(v, 2) for k, v in tot.items()},
+                   "months": {k: {kk: (round(vv, 2) if isinstance(vv, float) else vv)
+                                  for kk, vv in v.items()} for k, v in sorted(months.items())},
+                   "csv": os.path.basename(csv_path)}
+        with open(json_path, "w") as fh:
+            _json.dump(summary, fh, indent=1)
+        st.update({"status": "done", "summary": summary, "json": json_path, "csv": csv_path})
+        logger.info("band parity: %s..%s — %s; stored £%.2f, the rule £%.2f",
+                    utc_from, utc_to, counts, tot["stored"], tot["rule"])
+        return summary
+    except Exception as e:
+        logger.warning("band parity: failed: %s", e)
+        st.update({"status": "error", "error": str(e)})
+        return {"ok": False, "error": str(e)}
 
 
 # ── Re-fetch a range from Octopus: preview, then apply (ROADMAP BL-86) ─────────────────────
