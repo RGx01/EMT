@@ -55,8 +55,9 @@ the grid (PASS 2).
 
 **Where Octopus's band contradicts its own rules — billed wins** (decided 23 Oct 2026, (a)): EMT shows
 what was billed, flagged "Octopus's rules give peak/off-peak here", until Octopus corrects it and the
-corrected band arrives. The known case: IOG-SMB appearing to bill all EV charging off-peak, an Octopus bug
-the user expects fixed. (None of the 808 above showed it.)
+corrected band arrives. The known case: IOG-SMB bills **all** EV charging off-peak — smart, bump, and eco
+charging from solar with a little grid draw — an Octopus bug the user expects fixed. The 808 above agree
+because EMT predicts off-peak there too; it shows where EMT predicts peak (§4a, the second report).
 
 **The prediction is never stored as a second answer;** it is a function of the facts (the dispatch record,
 the tariff, the kWh), so the flag is computed when it is read — as the settlement states are.
@@ -147,7 +148,33 @@ change only where `_billed_rate`'s cost ÷ kWh and the band's rate disagree.
   - 1: a **planned** dispatch that never completed (17 Sep 05:30), billed peak; the overlay trusted the
     plan. The prediction should rest on the completed record, the plan only until it lands.
 
-  Both are refinements to the prediction seam — for the user (§5 (e)).
+  Both looked like refinements to the prediction seam (§5 (e)); the second report says otherwise.
+
+**The second report, and the paper bill (23 Oct 2026).** 8 Jul – 24 Aug re-fetched a local day at a time
+(#269's windows), 2,304 half-hours: 3 changed cost (14 Jul 22:00–23:00, peak to off-peak — the old narrow
+window's answer), 7 took the bill at EMT's own cost, and the other 2,294 matched what EMT held. 31 disagreements remain after EMT's dispatch record began,
+none changing a penny:
+
+- **IOG-SMB (Sep–Oct), 7:** small completed draws billed off-peak where the 0.1 kWh floor predicts peak.
+  This is the bug of §1, not Octopus's rules — **not evidence for the prediction**.
+- **The earlier Intelligent tariff (Jul–Aug), 24:** Octopus's real answer — asked by the day, and the
+  August statement agrees half-hour for half-hour on 16 Aug (12:30 off-peak, completed; 13:00 peak,
+  completed at 0.23 kWh; 13:30 peak, planned only; 20:30 off-peak; 21:00 peak, completed at 0.26 kWh).
+  By position in a completed dispatch run, outside the night window:
+
+  | position | billed off-peak | billed peak |
+  |---|---|---|
+  | first | 36 | 1 |
+  | middle | 35 | 7 |
+  | **last** | 21 | **24** — mostly 0.2–0.35 kWh, a tail of a few minutes |
+  | alone | 14 | 1 |
+
+  and a planned slot that never completed was billed peak (4 of 4 with kWh, plus 17 Sep 05:30 on IOG-SMB).
+
+So the earlier tariff often billed a dispatch's last, part-used half-hour at peak, and the prediction
+(the completed record, the plan until it lands) says off-peak there. **The prediction is not changed**
+(§5 (e)): billed wins once Octopus answers, and when Octopus fixes IOG-SMB, this table is what to compare
+its billing with.
 
 ## 5. Decided (23 Oct 2026, the user)
 
@@ -157,9 +184,9 @@ change only where `_billed_rate`'s cost ÷ kWh and the band's rate disagree.
   half-hours came back without a band, and that EMT is asking Octopus for them.
 - (d) **2a's report runs on every instance's database** before 2b is built.
 
-- (e) **Open — the prediction seam's two refinements** (§4a): a completed dispatch off-peak whatever its
-  kWh (the 0.1 kWh floor kept only for a planned slot), and a planned slot that never completed not
-  off-peak once the completed record is due. Live pricing, so for the user to decide.
+- (e) **The prediction seam stays as it is** (the user, 23 Oct 2026), the 0.1 kWh floor and the plan
+  included. IOG-SMB's off-peak billing of small draws is Octopus's bug, not a rule to follow; the earlier
+  tariff's peak tails (§4a) are carried by billed-wins. Revisit when Octopus fixes IOG-SMB.
 
 **Decided:** billed wins where it contradicts Octopus's rules, flagged (23 Oct 2026); one start-up backup
 per version, the raw pre-migration copy (22 Oct 2026, review §6 (e)).
