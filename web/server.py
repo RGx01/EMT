@@ -4119,6 +4119,49 @@ def api_band_parity_download():
     return send_file(path, as_attachment=True, download_name=os.path.basename(path))
 
 
+# ── Engine step 3a: the ask dry run (EMT-v5_engine_step3_ask_queue_design.md §5) ──
+# What the one ask selector would ask Octopus for, beside what the live pass and the drain ask today.
+# Read-only, no Octopus call; the report goes to the share's reports folder, as the parity report's.
+@app.route("/api/settlement/ask-dry-run/start", methods=["POST"])
+def api_ask_dry_run_start():
+    try:
+        import engine as _eng
+        import asyncio as _asyncio
+        if (_eng.ask_dry_run_status() or {}).get("status") == "running":
+            return jsonify({"ok": False, "error": "an ask dry run is already running"}), 409
+        if not (_event_loop and _event_loop.is_running()):
+            return jsonify({"ok": False, "error": "engine loop not running"}), 500
+        _eng._ask_dry_run_state.update({"status": "running"})
+        _asyncio.run_coroutine_threadsafe(
+            _eng.run_ask_dry_run(os.path.join(_share_backup_dir(), "reports")), _event_loop)
+        return jsonify({"ok": True, "status": "running"})
+    except Exception as e:
+        logger.error("api_ask_dry_run_start: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/settlement/ask-dry-run/status", methods=["GET"])
+def api_ask_dry_run_status():
+    import engine as _eng
+    st = dict(_eng.ask_dry_run_status() or {})
+    for k in ("json", "csv"):
+        if st.get(k):
+            st[k] = os.path.basename(st[k])
+    return jsonify(st)
+
+
+@app.route("/api/settlement/ask-dry-run/download", methods=["GET"])
+def api_ask_dry_run_download():
+    """?file=json|csv — the last report's."""
+    import engine as _eng
+    st = _eng.ask_dry_run_status() or {}
+    which = "csv" if request.args.get("file") == "csv" else "json"
+    path = st.get(which)
+    if st.get("status") != "done" or not path or not os.path.exists(path):
+        return jsonify({"ok": False, "error": "no report yet"}), 404
+    return send_file(path, as_attachment=True, download_name=os.path.basename(path))
+
+
 @app.route("/api/blocks/settlement", methods=["GET"])
 def api_block_settlement():
     """One main-meter half-hour's three settlement facts with their sources — the detail panel

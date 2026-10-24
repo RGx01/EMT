@@ -10997,6 +10997,192 @@ def band_parity_row(f: dict) -> dict:
     return out
 
 
+# ── Engine step 3a: the ask dry run (EMT-v5_engine_step3_ask_queue_design.md §5) ─────────────────
+# What the one selector (§3) would ask Octopus for, beside what the live pass and the drain ask
+# today, with why each half-hour differs. Read-only: no Octopus call, nothing written but the report.
+_ask_dry_run_state: dict = {"status": "idle"}
+
+
+def ask_dry_run_status() -> dict:
+    return dict(_ask_dry_run_state)
+
+
+def _ask_today(store, mpan: str, now) -> dict:
+    """{slot: set of today's askers that would ask it — "live", "drain", "split"}, from the live
+    pass's and the drain's own selection (their store queries and record filters), uncapped."""
+    from datetime import timedelta as _td
+    out: dict = {}
+    wait = _bill_split_wait(store)
+    kept = {s for s, e in wait.items() if isinstance(e, dict) and e.get("kept")}
+    ask = _bill_ask(store, mpan)
+    gone = _bill_ask_given_up(ask, mark=False) | _bill_ask_resting(ask, now)
+    sask = _split_ask(store)
+    sgone = _bill_ask_given_up(sask, mark=False) | _bill_ask_resting(sask, now)
+    code = ((_kraken_discovery or {}).get("import") or {}).get("tariff_code") or ""
+    if "IOG" in code.upper() or "INTELLI" in code.upper():
+        rows = store.get_dispatched_blocks_awaiting_measure(_ask_floor(_measured_floor()))
+        cand = [r["block_start"] for r in rows if r["block_start"] not in kept
+                and r["block_start"] not in gone]
+        for sl in store.measured_slots_missing(cand, mpan=mpan):
+            out.setdefault(sl, set()).add("live")
+    cut = (now - _td(hours=_RECONCILE_SETTLE_HOURS)).isoformat()
+    for w_from, w_to, w_smb in _intelligent_windows():
+        floor, cutoff = _ask_floor(w_from), min(cut, w_to) if w_to else cut
+        cursor = ""
+        while True:
+            page = store.get_settleable_blocks(floor, cursor, cutoff, 1000, include_imported=w_smb)
+            if not page:
+                break
+            cursor = page[-1]
+            for sl in page:
+                if sl not in kept and sl not in gone:
+                    out.setdefault(sl, set()).add("drain")
+        if w_smb:
+            cursor = ""
+            while True:
+                page = store.get_cost_only_split_slots(floor, cursor, cutoff, 1000)
+                if not page:
+                    break
+                cursor = page[-1]
+                for sl in page:
+                    if sl not in kept and sl not in sgone:
+                        out.setdefault(sl, set()).add("split")
+    return out
+
+
+def _ask_queue(facts: list, store, mpan: str, now) -> dict:
+    """{slot: "bill" | "split"} the one selector (design §3) would ask: settled kWh (DCC, or an
+    imported block's own), not corrected, on an Intelligent agreement of its own, under the 6-hour
+    gate and above Octopus's two years; a bill where none is cached for this MPAN, a split where an
+    IOG-SMB bill is cost-only and a completed dispatch drew; less what is kept, given up or resting.
+    Imported history is asked like any other (decided (b))."""
+    wait = _bill_split_wait(store)
+    kept = {s for s, e in wait.items() if isinstance(e, dict) and e.get("kept")}
+    ask, sask = _bill_ask(store, mpan), _split_ask(store)
+    gone = {"bill": _bill_ask_given_up(ask, mark=False) | _bill_ask_resting(ask, now),
+            "split": _bill_ask_given_up(sask, mark=False) | _bill_ask_resting(sask, now)}
+    out = {}
+    for f in facts:
+        sl = f["block_start"]
+        settled = f["imp_kwh_api"] is not None or str(f["source"] or "").startswith("imported")
+        if (not settled or f["corrected"] or f["rate_source"] == "corrected"
+                or tariff_kind_at(sl) != "intelligent" or sl in kept):
+            continue
+        kind = ("bill" if not f["bill_mpan"]
+                else "split" if (split_at(sl) and f["cost_only"] and f["completed"]) else None)
+        if kind and sl not in gone[kind]:
+            out[sl] = kind
+    return out
+
+
+def _ask_why(f: dict, sl: str, in_queue: bool, today: set, mpan_floor: str, cut: str) -> str:
+    """Why the one selector and today's askers disagree on a half-hour (one reason, the first that
+    holds)."""
+    src = str((f or {}).get("source") or "")
+    if in_queue:
+        if src.startswith("imported"):
+            return "imported history with no bill — asked like any other (decided (b))"
+        if f and f["bill_any"] and not f["bill_mpan"]:
+            return "a bill cached for another MPAN only"
+        if f and f["rate_source"] == "settled":
+            return "settled with no bill cached (the drain skips rate_source='settled')"
+        return "other"
+    if f is None:
+        return "no kWh, or outside the queue's span (two years, 6-hour gate)"
+    if f["corrected"] or f["rate_source"] == "corrected":
+        return "corrected (the drain tests rate_source, not rate_corrected)"
+    if tariff_kind_at(sl) != "intelligent":
+        return "not on an Intelligent agreement (the live pass gates on the current tariff)"
+    if sl >= cut:
+        return "under 6 hours old (the live pass has no settle gate)"
+    if f["imp_kwh_api"] is None and not src.startswith("imported"):
+        return "kWh not settled"
+    if f["bill_mpan"] and "split" not in today:
+        return "a bill cached for this MPAN (the drain tests any MPAN)"
+    return "other"
+
+
+def _ask_query_estimate(slots: dict) -> dict:
+    """About how many Octopus queries the queue's first pass would make: a cost half-hour's local
+    day is one query (`recover_measurement_costs`); IOG-SMB breakdowns go in runs under 12
+    half-hours (`recover_device_breakdown`)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    from zoneinfo import ZoneInfo
+    lon = ZoneInfo("Europe/London")
+    days, bd = set(), []
+    for sl in slots:
+        if bill_kind_at(sl) == "breakdown":
+            bd.append(sl)
+        else:
+            days.add(_dt.fromisoformat(sl).replace(tzinfo=_tz.utc).astimezone(lon).date())
+    runs, first = 0, None
+    for sl in sorted(bd):
+        t = _dt.fromisoformat(sl)
+        if first is None or t - first >= _td(minutes=30 * 12):
+            runs, first = runs + 1, t
+    return {"cost_days": len(days), "breakdown_runs": runs, "queries": len(days) + runs}
+
+
+async def run_ask_dry_run(out_dir: str) -> dict:
+    """The step 3a report: a JSON summary and a CSV of every half-hour the one selector and today's
+    askers disagree on, to `out_dir`. Read-only on the store; no Octopus call."""
+    import csv as _csv
+    import json as _json
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    st = _ask_dry_run_state
+    st.clear()
+    st.update({"status": "running"})
+    try:
+        store = _reader()
+        mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan") or ""
+        now = _dt.now(_tz.utc).replace(tzinfo=None)
+        floor = (now - _td(days=_API_RETENTION_DAYS)).isoformat()
+        cut = (now - _td(hours=_RECONCILE_SETTLE_HOURS)).isoformat()
+        facts = store.ask_candidate_facts(floor, cut, mpan=mpan)
+        await asyncio.sleep(0)
+        queue = _ask_queue(facts, store, mpan, now)
+        await asyncio.sleep(0)
+        today = _ask_today(store, mpan, now)
+        by = {f["block_start"]: f for f in facts}
+        counts: dict = {}
+        rows = []
+        for sl in sorted(set(queue) | set(today)):
+            q, t = sl in queue, today.get(sl, set())
+            if q and t:
+                key = "both"
+            else:
+                key = ("queue only · " if q else "today only · ") + _ask_why(by.get(sl), sl, q, t, floor, cut)
+                rows.append({"start": sl, "queue": queue.get(sl, ""), "today": "+".join(sorted(t)),
+                             "why": key.split(" · ", 1)[1]})
+            counts[key] = counts.get(key, 0) + 1
+        both_asked = sum(1 for v in today.values() if {"live", "drain"} <= v)
+        os.makedirs(out_dir, exist_ok=True)
+        ts = _dt.now(_tz.utc).strftime("%Y%m%dT%H%M%S")
+        csv_path = os.path.join(out_dir, "ask_dry_run_%s.csv" % ts)
+        json_path = os.path.join(out_dir, "ask_dry_run_%s.json" % ts)
+        with open(csv_path, "w", newline="") as fh:
+            w = _csv.DictWriter(fh, fieldnames=["start", "queue", "today", "why"])
+            w.writeheader()
+            w.writerows(rows)
+        summary = {"at": now.isoformat(), "floor": floor, "cutoff": cut,
+                   "queue": {"bill": sum(1 for v in queue.values() if v == "bill"),
+                             "split": sum(1 for v in queue.values() if v == "split"),
+                             "first_pass": _ask_query_estimate(queue)},
+                   "today": {k: sum(1 for v in today.values() if k in v)
+                             for k in ("live", "drain", "split")},
+                   "asked_by_both_live_and_drain": both_asked,
+                   "counts": counts, "csv": os.path.basename(csv_path)}
+        with open(json_path, "w") as fh:
+            _json.dump(summary, fh, indent=1)
+        st.update({"status": "done", "summary": summary, "json": json_path, "csv": csv_path})
+        logger.info("ask dry run: queue %s, today %s — %s", summary["queue"], summary["today"], counts)
+        return summary
+    except Exception as e:
+        logger.warning("ask dry run failed: %s", e)
+        st.update({"status": "error", "error": str(e)})
+        return {"ok": False, "error": str(e)}
+
+
 def band_parity_status() -> dict:
     return dict(_band_parity_state)
 

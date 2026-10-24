@@ -108,6 +108,7 @@
     "_period_starting_at",
     "_resolve_delete_meters",
     "_select_blocks",
+    "ask_candidate_facts",
     "block_span",
     "cap_day_boundary",
     "channel_slots_present",

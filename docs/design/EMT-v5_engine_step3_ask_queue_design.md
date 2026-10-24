@@ -75,6 +75,10 @@ no retry (`recover_device_breakdown`).
   `ZERO` bill everywhere); drops the car → held; none → unanswered; then `_apply_bills_paced`.
   **Checks the rate limit** as the import does, and an API error is **not** an unanswered ask (§2.9).
   Started by the hourly tick and `_after_import_settle` — the live pass and both drain phases go.
+- **A banner while it works through a backlog** (the user, 24 Oct 2026): after an upgrade or an
+  import, the first passes can take hours (decided (b)) — the page says so, with how many half-hours
+  are left and about how long, as the import's banner does, and the "waiting for a bill" counts are
+  read against it.
 - **The re-fetch** stays the user's action, with its preview and diff, but its answers go through the
   same writes and update the record (answered, held, released) — §2.6.
 
