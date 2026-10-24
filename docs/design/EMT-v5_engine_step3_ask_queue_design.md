@@ -1,6 +1,6 @@
 # EMT v5 — Engine step 3: one queue of half-hours waiting for Octopus
 
-*Draft, 24 Oct 2026. Step 3 of the engine review (`EMT-v5_engine_review.md` §4.4, §5). Every code
+*Decided 24 Oct 2026 (§4); drafted the same day. Step 3 of the engine review (`EMT-v5_engine_review.md` §4.4, §5). Every code
 fact read at `dev` 419b701; line numbers are `engine.py` unless named.*
 
 **What this note decides:** how EMT chooses which half-hours to ask Octopus about, how it remembers
@@ -81,19 +81,22 @@ no retry (`recover_device_breakdown`).
 **Kept:** the bill reader, the windows, the hold-back's rule, the 30-day give-up, the 2-day-hourly-
 then-daily backoff, the 28-day keep, the coordinator membership (`measured_drain`).
 
-## 4. Open — for the user
+## 4. Decided (24 Oct 2026, the user)
 
-- (a) **The record's home:** a table of its own (one row per half-hour; queries and counts in SQL;
-  the v4 importer maps `bill_split_wait` into it) or one JSON value in `kraken_state` (as today, three
-  become one; no schema change).
-- (b) **Imported half-hours with no bill.** Today off IOG-SMB the drain asks only those the import
-  recorded as having no cost (`import_no_cost`). Since #282 an imported Intelligent half-hour with a
-  cost has its bill, so "no bill" is the same test — **except history imported before #282**, which has
-  none at all: on an instance that has not re-imported, every one becomes a candidate (two years,
-  ~700 local-day asks). Keep `import_no_cost` as the gate for imported history, or re-import those
-  instances (60-day chunks, far fewer calls) and drop it.
-- (c) **The rate-limit headroom** to stop at — the import's 25% of the allowance, or less for the
-  hourly asks (four instances share one account, `octopus-api-sparing`).
+- (a) **The record is a table of its own** — one row per half-hour asked (`kind`, `first`, `last`,
+  `state`, `reason`); its queries and counts in SQL. The v4 importer maps `bill_split_wait` into it
+  (held → `held`, kept → `kept`), and `bill_ask` / `split_ask` stay on its drop list as runtime
+  state, rebuilt by the asking.
+- (b) **Imported history is asked like any other** — no `import_no_cost` gate. Since #282 a newly
+  imported Intelligent half-hour has its bill; history imported before it, and every v4 database
+  migrated into v5, has none, so each such half-hour is a candidate and the queue asks Octopus for
+  it: about one query per local day of imported Intelligent history, **at most ~730 per instance,
+  once**, newest first, paced, under the headroom of (c). It settles itself over some hours, and the
+  "waiting for a bill" counts read high meanwhile. `import_no_cost` goes. (Rejected: keeping the gate
+  — that history would stay on its copied cost, outside the rule, for good; re-importing — ~70
+  queries, but nothing would cover a v4 migrant who did not.)
+- (c) **The asker stops at 25% of the allowance left**, the import's headroom, and resumes on the next
+  pass; an API error is not an unanswered ask.
 
 ## 5. Order (each its own PR, the §3a safeguards of step 2)
 
