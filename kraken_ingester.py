@@ -54,10 +54,11 @@ _STATE_LAST_POLL = "last_poll_utc"
 _RECHECK_OVERLAP = timedelta(hours=6)
 
 # How far back the poll window may be pulled to backfill an OUTAGE HOLE (a gap with
-# blocks either side). Deliberately short — an outage/re-import hole is recent, and a
-# gap older than this is left for a manual CSV import rather than re-fetching months
-# of DCC every poll. Independent of backfill_days (which can be very large).
-_GAP_RECOVERY = timedelta(days=14)
+# blocks either side). Short — an outage/re-import hole is recent, and a gap older than
+# this is left for a gap fill or a CSV rather than re-fetching months of DCC every poll.
+# Independent of backfill_days (which can be very large). 30 days, as the settlement
+# horizon (24 Oct 2026, the user): a meter off the HAN can wait 21 days for a reconnect.
+_GAP_RECOVERY = timedelta(days=30)
 
 
 def normalise_to_naive_utc(ts: str) -> str:

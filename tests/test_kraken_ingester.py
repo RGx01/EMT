@@ -118,6 +118,38 @@ class TestWindow(_Base):
         frm, _to = ing._compute_window(now)
         self.assertTrue(frm.startswith("2026-04-10"))         # now − 30d, not 2020
 
+    def test_dcc_is_waited_for_thirty_days(self):
+        """24 Oct 2026, the user: a smart meter off the HAN can wait up to 21 days before the
+        supplier asks for a reconnect, and its DCC figures follow it — 14 days gave up on them.
+        The settlement horizon (finalised from CAD after it) and the outage-hole recovery both 30."""
+        import engine
+        import kraken_ingester
+        self.assertEqual(engine._SETTLEMENT_SWEEP_HORIZON_DAYS, 30)
+        self.assertEqual(kraken_ingester._GAP_RECOVERY.days, 30)
+
+    def test_a_block_finalised_from_cad_does_not_anchor_the_window(self):
+        """24 Oct 2026: a half-hour DCC never settled, finalised from CAD past the settlement horizon,
+        pulled every 6-hourly poll back to it (up to the backfill horizon) for good."""
+        self.store.set_kraken_state(_STATE_LAST_POLL, "2026-05-10T00:00:00")
+        self._block("2026-03-01T09:00:00")           # never settled…
+        self.store._conn.execute("UPDATE blocks SET finalised_from_cad = 1 "
+                                 "WHERE block_start = '2026-03-01T09:00:00'")   # …and given up on
+        self.store._conn.commit()
+        ing = KrakenIngester(FakeClient(), self.store,
+                             import_mpan="M", import_serial="S", backfill_days=400)
+        now = datetime(2026, 5, 10, 12, 0, 0, tzinfo=timezone.utc)
+        frm, _to = ing._compute_window(now)
+        self.assertTrue(frm.startswith("2026-05-09T18:00"), frm)   # the cursor's, not 03-01
+
+    def test_the_retry_still_reaches_a_finalised_block(self):
+        """The user's retry still asks for them (fails on the parent only for the new argument)."""
+        self._block("2026-03-01T09:00:00")
+        self.store._conn.execute("UPDATE blocks SET finalised_from_cad = 1")
+        self.store._conn.commit()
+        self.assertIsNone(self.store.get_oldest_unsettled_block_start())
+        self.assertEqual(self.store.get_oldest_unsettled_block_start(include_finalised=True),
+                         "2026-03-01T09:00:00")
+
 
 class TestPoll(_Base):
     def _rows(self, *triples):

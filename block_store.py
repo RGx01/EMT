@@ -4930,17 +4930,25 @@ class BlockStore:
         return cur.rowcount
 
     def get_oldest_unsettled_block_start(
-            self, main_meter_id: str = "electricity_main") -> Optional[str]:
+            self, main_meter_id: str = "electricity_main", *,
+            include_finalised: bool = False) -> Optional[str]:
         """Earliest block_start still awaiting DCC settlement on a channel
         (import or export, #303), or None.
 
-        Bounds the sweep / user-triggered retry re-fetch window
-        (oldest-unsettled → now). Including export here is what lets an
-        export-lagging block stay in the window until its export settles."""
+        Bounds the poll's window and the sweep / user-triggered retry re-fetch
+        window (oldest-unsettled → now). Including export here is what lets an
+        export-lagging block stay in the window until its export settles.
+
+        A block finalised from CAD (past the settlement horizon, DCC no longer
+        expected) is skipped unless `include_finalised` (24 Oct 2026): one
+        half-hour DCC never settles otherwise pulled every 6-hourly poll back
+        to it, up to the backfill horizon, for good. The retry passes it, so a
+        user's retry still reaches them."""
         w = self._unsettled_where(self._export_settlement_expected())
         row = self._conn.execute(
             "SELECT MIN(block_start) AS m FROM blocks "
-            f"WHERE meter_id = ? AND {w}",
+            f"WHERE meter_id = ? AND {w}"
+            + ("" if include_finalised else " AND COALESCE(finalised_from_cad, 0) = 0"),
             (main_meter_id,)).fetchone()
         return row["m"] if row and row["m"] else None
 
