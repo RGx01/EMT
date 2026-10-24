@@ -63,8 +63,8 @@ class TheRule(unittest.TestCase):
 class ThePasses(_Harness):
 
     def _seed(self, first_days, last_hours):
-        self.st.set_kraken_state("bill_ask", json.dumps(
-            {self.slot: {"first": _ago(first_days), "last": _hours_ago(last_hours)}}))
+        self.st.ask_record_save("bill",
+            {self.slot: {"first": _ago(first_days), "last": _hours_ago(last_hours)}})
 
     def test_the_live_pass_rests_it(self):
         self._seed(3, 2)

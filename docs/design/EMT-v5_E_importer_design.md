@@ -257,7 +257,7 @@ carried user data** is a setup fact in effect, and crosses.
 | `billing_source` | — | **dropped since spec v25** (21 Oct 2026): the choice is retired; a v4 `cad` on an API mode re-runs the main meter's half-hours (transform 5) |
 | `carbon_paused` | meta | the user's carbon kill switch (*added in PR 2*) |
 | `pre_live_snapshot_done` | state | v4 already took its one snapshot before the first live DCC write, and the restore has just taken its own safety backup. *Moved from DROP, 10 Oct 2026: re-run, it wrote a third 80 MB copy on the Pi's SD card in the soak.* |
-| `bill_split_wait` (4.5.23) | state | bills held back because they had no EV where the split had the car, and the ones whose 28 days ran out with EMT's split kept. v5's forward code reads it; dropped, a kept slot would be asked about again (*added 12 Oct 2026*) |
+| `bill_split_wait` (4.5.23) | state | bills held back because they had no EV where the split had the car, and the ones whose 28 days ran out with EMT's split kept. v5's forward code reads it; dropped, a kept slot would be asked about again (*added 12 Oct 2026*). *Since engine step 3b (24 Oct 2026) v5 keeps it in its own `octopus_ask` table: the store moves the carried key into it on open.* |
 
 **REGEN**: `written_by` (v5's own version), `db_uuid` (new; the source's goes in the audit
 record), `emt_schema` (new, §2).

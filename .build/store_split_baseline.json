@@ -6,6 +6,7 @@
     "_ensure_schema",
     "_insert_block_rows",
     "_insert_block_rows_replace",
+    "_migrate_ask_records",
     "_renumber_secondaries",
     "_replace_segments",
     "_stamp_region_if_free",
@@ -25,6 +26,7 @@
     "apply_reconcile_verdict",
     "apply_region_periods",
     "apply_region_reconciliation",
+    "ask_record_save",
     "bump_data_epoch",
     "carve_ev_split",
     "checkpoint",
@@ -109,6 +111,7 @@
     "_resolve_delete_meters",
     "_select_blocks",
     "ask_candidate_facts",
+    "ask_record",
     "block_span",
     "cap_day_boundary",
     "channel_slots_present",
@@ -242,6 +245,7 @@
     "vat_rate_lookup"
   ],
   "no_sql": [
+    "_ask_rows",
     "_block_range_where",
     "_delete_range_bounds",
     "_finalised_clause",

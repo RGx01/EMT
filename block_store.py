@@ -505,6 +505,22 @@ CREATE TABLE IF NOT EXISTS measured_cost (
     ev_rate     REAL,
     PRIMARY KEY (slot_start, mpan, direction)
 );
+
+-- Engine step 3b (24 Oct 2026): the half-hours EMT has asked Octopus about and not been answered
+-- for, one row per half-hour and kind — the three kraken_state records it replaces, in one table
+-- (EMT-v5_engine_step3_ask_queue_design.md §3, §4 (a)). kind: 'bill' (no bill yet; was bill_ask),
+-- 'split' (a cost-only IOG-SMB bill, its breakdown asked; was split_ask), 'hold' (the 4.5.23
+-- hold-back; was bill_split_wait). state: waiting | given_up (bill, split) · held | kept (hold);
+-- `since` is when it was given up or kept.
+CREATE TABLE IF NOT EXISTS octopus_ask (
+    slot_start  TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    first       TEXT,
+    last        TEXT,
+    state       TEXT NOT NULL,
+    since       TEXT,
+    PRIMARY KEY (slot_start, kind)
+);
 """
 
 
@@ -1393,6 +1409,7 @@ class BlockStore:
             with self._conn:
                 self._conn.execute("INSERT OR IGNORE INTO store_meta (key, value) VALUES "
                                    "('emt_schema', ?)", (json.dumps(EMT_SCHEMA),))
+        self._migrate_ask_records()
 
         # ── Incremental column additions ──────────────────────────────────────
         # These run on every open so new columns are available immediately,
@@ -4322,6 +4339,69 @@ class BlockStore:
             "SELECT value FROM kraken_state WHERE key = ?", (key,)
         ).fetchone()
         return row["value"] if row else None
+
+    # ── Engine step 3b: the ask record (`octopus_ask`) ──────────────────────────────────────────
+    # Each kind keeps the shape of the kraken_state record it replaces, so the engine's helpers read
+    # and save the same maps: bill / split {slot: {first, last?, gave_up?}}, hold {slot: {first,
+    # kept?}}.
+    _ASK_LEGACY_KEYS = {"bill": "bill_ask", "split": "split_ask", "hold": "bill_split_wait"}
+
+    def _migrate_ask_records(self) -> None:
+        """Move any of the three kraken_state records into `octopus_ask`, once, on open — an
+        existing v5 database's, or a v4 import's carried `bill_split_wait` — then drop the key. A
+        row already in the table is kept over a legacy entry for the same half-hour."""
+        for kind, key in self._ASK_LEGACY_KEYS.items():
+            raw = self.get_kraken_state(key)
+            if raw is None:
+                continue
+            try:
+                d = json.loads(raw or "{}")
+            except (TypeError, ValueError):
+                d = {}
+            with self._conn:
+                self._conn.executemany(
+                    "INSERT OR IGNORE INTO octopus_ask (slot_start, kind, first, last, state, since) "
+                    "VALUES (?,?,?,?,?,?)", self._ask_rows(kind, d if isinstance(d, dict) else {}))
+                self._conn.execute("DELETE FROM kraken_state WHERE key = ?", (key,))
+
+    @staticmethod
+    def _ask_rows(kind: str, d: dict) -> list:
+        rows = []
+        for slot, e in d.items():
+            e = e if isinstance(e, dict) else {}
+            if kind == "hold":
+                rows.append((slot, kind, e.get("first"), None,
+                             "kept" if e.get("kept") else "held", e.get("kept")))
+            else:
+                rows.append((slot, kind, e.get("first"), e.get("last"),
+                             "given_up" if e.get("gave_up") else "waiting", e.get("gave_up")))
+        return rows
+
+    def ask_record(self, kind: str) -> dict:
+        """One kind's half-hours from `octopus_ask`, in the shape its kraken_state record had."""
+        out = {}
+        for r in self._conn.execute(
+                "SELECT slot_start, first, last, state, since FROM octopus_ask WHERE kind = ? "
+                "ORDER BY slot_start", (kind,)):
+            e = {"first": r["first"]}
+            if kind == "hold":
+                if r["state"] == "kept":
+                    e["kept"] = r["since"]
+            else:
+                if r["last"] is not None:
+                    e["last"] = r["last"]
+                if r["state"] == "given_up":
+                    e["gave_up"] = r["since"]
+            out[r["slot_start"]] = e
+        return out
+
+    def ask_record_save(self, kind: str, d: dict) -> None:
+        """Replace one kind's half-hours with `d` (its record's shape), in one transaction."""
+        with self._conn:
+            self._conn.execute("DELETE FROM octopus_ask WHERE kind = ?", (kind,))
+            self._conn.executemany(
+                "INSERT INTO octopus_ask (slot_start, kind, first, last, state, since) "
+                "VALUES (?,?,?,?,?,?)", self._ask_rows(kind, d or {}))
 
     def delete_kraken_state(self, key: str) -> None:
         """Remove a kraken_state marker entirely (used by the disconnect action to

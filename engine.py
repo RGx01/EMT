@@ -10237,7 +10237,8 @@ def _chart_cap_from():
 # cached, not applied, EMT's split kept — and asked for again on later passes. If Octopus still
 # says so 28 days after the half-hour, EMT stops asking and keeps its own split. Forward code: v4's
 # one-off re-fetch of bills cached that way before 4.5.23 is not ported (the 4.5.23 floor).
-_BILL_SPLIT_WAIT_KEY = "bill_split_wait"    # JSON {slot: {"first": iso, "kept": iso?}}
+# Kept in the ask record, kind 'hold' ({slot: {"first": iso, "kept": iso?}}; kraken_state
+# "bill_split_wait" until engine step 3b, 24 Oct 2026).
 _BILL_SPLIT_WAIT_DAYS = 28
 _BILL_SPLIT_EMT_MIN_KWH = 0.05              # EMT's EV split below this is no evidence of a charge
 
@@ -10275,12 +10276,8 @@ def emt_ev_at(store, starts) -> dict:
 
 
 def _bill_split_wait(store) -> dict:
-    import json as _json
-    try:
-        w = _json.loads(store.get_kraken_state(_BILL_SPLIT_WAIT_KEY) or "{}")
-        return w if isinstance(w, dict) else {}
-    except (TypeError, ValueError):
-        return {}
+    """The hold-back's half-hours ({slot: {first, kept?}}), from the ask record (step 3b)."""
+    return store.ask_record("hold")
 
 
 def _snapshot(m: dict) -> dict:
@@ -10309,8 +10306,7 @@ def _save_changes(store, before: dict, after: dict, read, save) -> None:
 
 
 def _bill_split_wait_save(store, w: dict) -> None:
-    import json as _json
-    store.set_kraken_state(_BILL_SPLIT_WAIT_KEY, _json.dumps(w, sort_keys=True))
+    store.ask_record_save("hold", w)
 
 
 def _bill_split_kept(store, w: dict) -> set:
@@ -10488,7 +10484,8 @@ def _bill_split_release(w: dict, slot: str) -> None:
 # dropped from both passes and the backlog. It keeps its estimate (and its cell on the heatmap);
 # the range re-fetch still asks for it. A bill held back for its split (4.5.23) has its own wait.
 # Capped pricing by agreement design §5 (a).
-_BILL_ASK_KEY = "bill_ask"            # JSON {slot: {"first": iso, "last": iso?, "gave_up": iso?}}
+# Kept in the ask record, kind 'bill' ({slot: {"first", "last"?, "gave_up"?}}; kraken_state
+# "bill_ask" until engine step 3b, 24 Oct 2026).
 _BILL_ASK_DAYS = 30
 # The backoff (20 Oct 2026, the user: go easier on the API): an unanswered bill is asked at every
 # pass — hourly — for its first 2 days, then once a day, until the 30 days run out.
@@ -10498,12 +10495,7 @@ _BILL_ASK_DAILY_HOURS = 24
 
 def _bill_ask(store, mpan: str) -> dict:
     """The unanswered half-hours, less any whose bill has since been cached (by a re-fetch)."""
-    import json as _json
-    try:
-        a = _json.loads(store.get_kraken_state(_BILL_ASK_KEY) or "{}")
-        a = a if isinstance(a, dict) else {}
-    except (TypeError, ValueError):
-        a = {}
+    a = store.ask_record("bill")
     if a:
         try:
             still = set(store.measured_slots_missing(sorted(a), mpan=mpan))
@@ -10516,17 +10508,12 @@ def _bill_ask(store, mpan: str) -> dict:
 # The same record for a half-hour whose cached bill is cost-only though the car drew in it
 # (teal): asked for its BREAKDOWN up to 30 days, then left as it is. Its own key, because the
 # bill-ask record forgets any half-hour with a cached bill (`_bill_ask`), and these all have one.
-_SPLIT_ASK_KEY = "split_ask"          # JSON {slot: {"first": iso, "gave_up": iso?}}
+# Kept in the ask record, kind 'split' (the same shape; kraken_state "split_ask" until step 3b).
 
 
 def _split_ask(store) -> dict:
     """The teal half-hours left unanswered, less any whose breakdown has since been cached."""
-    import json as _json
-    try:
-        a = _json.loads(store.get_kraken_state(_SPLIT_ASK_KEY) or "{}")
-        a = a if isinstance(a, dict) else {}
-    except (TypeError, ValueError):
-        a = {}
+    a = store.ask_record("split")
     if a:
         try:
             have = store.get_bill_ev_kwh(sorted(a))
@@ -10537,13 +10524,11 @@ def _split_ask(store) -> dict:
 
 
 def _split_ask_save(store, a: dict) -> None:
-    import json as _json
-    store.set_kraken_state(_SPLIT_ASK_KEY, _json.dumps(a, sort_keys=True))
+    store.ask_record_save("split", a)
 
 
 def _bill_ask_save(store, a: dict) -> None:
-    import json as _json
-    store.set_kraken_state(_BILL_ASK_KEY, _json.dumps(a, sort_keys=True))
+    store.ask_record_save("bill", a)
 
 
 def _bill_ask_given_up(a: dict, *, mark: bool = True) -> set:

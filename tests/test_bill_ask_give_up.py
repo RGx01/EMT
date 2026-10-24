@@ -102,10 +102,10 @@ class _Harness(unittest.TestCase):
     # The record is read and seeded as stored (kraken_state `bill_ask`), so the tests judge the
     # passes' behaviour on the parent too, not the helpers' names.
     def _first_unanswered(self, days_ago):
-        self.st.set_kraken_state("bill_ask", json.dumps({self.slot: {"first": _ago(days_ago)}}))
+        self.st.ask_record_save("bill", {self.slot: {"first": _ago(days_ago)}})
 
     def _record(self):
-        return json.loads(self.st.get_kraken_state("bill_ask") or "{}")
+        return self.st.ask_record("bill")
 
     def _live(self, node=None):
         engine._kraken_client = client = _Client(node)
@@ -188,7 +188,7 @@ class TheRecord(_Harness):
 
     def test_an_unreadable_first_is_not_given_up(self):
         """GUARD: a record with no date never drops a half-hour."""
-        self.st.set_kraken_state("bill_ask", json.dumps({self.slot: {"first": ""}}))
+        self.st.ask_record_save("bill", {self.slot: {"first": ""}})
         self.assertEqual(engine._bill_ask_given_up(engine._bill_ask(self.st, MPAN)), set())
 
 

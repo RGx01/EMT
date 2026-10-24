@@ -77,8 +77,10 @@ DROP_COLUMNS = {
 }
 
 # Spec §5.5: in-flight state the new app forms for itself, and `reads`, which nothing
-# has ever written (spec Q7).
-DROP_TABLES = frozenset({"current_block", "current_reads", "reads"})
+# has ever written (spec Q7). `octopus_ask` (engine step 3b, 24 Oct 2026) is v5's own — a v4
+# database never has one; its records arrive as v4's carried `bill_split_wait`, which the store
+# moves into it on open, and `bill_ask` / `split_ask`, dropped as runtime state the asking rebuilds.
+DROP_TABLES = frozenset({"current_block", "current_reads", "reads", "octopus_ask"})
 
 # Carried key by key, under KEYS below.
 KEYED_TABLES = ("store_meta", "kraken_state")
