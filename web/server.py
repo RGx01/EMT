@@ -5036,7 +5036,7 @@ def _support_summary(store) -> dict:
                  ("config", lambda: load_config()),
                  ("import_audit", lambda: store.get_meta("import_audit")),
                  ("coordinator", lambda: _coord.state()),
-                 ("bill_ask", lambda: json.loads(store.get_kraken_state("bill_ask") or "{}")),
+                 ("bill_ask", lambda: store.ask_record("bill")),
                  ("missing", lambda: _missing_half_hours(store, _config_timezone())),
                  ("host", lambda: __import__("support_file").host_info(
                      DATA_DIR or _eng.DATA_DIR, _supervisor_info())),

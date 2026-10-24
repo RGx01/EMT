@@ -140,9 +140,9 @@ class TheRecovery(_Harness):
     def test_unanswered_is_recorded_and_given_up_after_30_days(self):
         self._teal()
         self._drain()
-        rec = json.loads(self.st.get_kraken_state("split_ask") or "{}")
+        rec = self.st.ask_record("split")
         self.assertIn(self.slot, rec)
-        self.st.set_kraken_state("split_ask", json.dumps({self.slot: {"first": _ago(31)}}))
+        self.st.ask_record_save("split", {self.slot: {"first": _ago(31)}})
         self.assertNotIn(self.slot, self._drain().asked)
         self.assertEqual(engine._measured_history_backlog(), 0)
 

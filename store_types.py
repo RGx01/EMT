@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """140 read-only methods of BlockStore, and nothing else.
+    """141 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -66,6 +66,7 @@ class ReadStore:
     CHECKPOINT_MODES = _BS.CHECKPOINT_MODES
     RECORDER_ATTRIBUTED_SOURCE = _BS.RECORDER_ATTRIBUTED_SOURCE
     _ASKED_OFF_SMB_SQL = _BS._ASKED_OFF_SMB_SQL
+    _ASK_LEGACY_KEYS = _BS._ASK_LEGACY_KEYS
     _ATTRIBUTION_RUNS_KEY = _BS._ATTRIBUTION_RUNS_KEY
     _BUMP_SOURCES = _BS._BUMP_SOURCES
     _CARBON_ELIGIBLE = _BS._CARBON_ELIGIBLE
@@ -82,6 +83,7 @@ class ReadStore:
     dispatch_batch = _BS.dispatch_batch
 
     _apply_pragmas = _BS._apply_pragmas
+    _ask_rows = staticmethod(_BS._ask_rows)
     _block_range_where = _BS._block_range_where
     _count_blocks_and_local_dates = _BS._count_blocks_and_local_dates
     _delete_range_bounds = _BS._delete_range_bounds
@@ -100,6 +102,7 @@ class ReadStore:
     _unsettled_where = _BS._unsettled_where
     _utc_span_bounds = staticmethod(_BS._utc_span_bounds)
     ask_candidate_facts = _BS.ask_candidate_facts
+    ask_record = _BS.ask_record
     batch = _BS.batch
     block_span = _BS.block_span
     cap_day_boundary = _BS.cap_day_boundary
@@ -235,7 +238,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 98 writers.
+    """The full store: every read method, plus the 100 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or

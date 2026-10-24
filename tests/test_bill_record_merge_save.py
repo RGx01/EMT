@@ -106,7 +106,9 @@ class _Harness(unittest.TestCase):
             loop.close()
 
     def _record(self, key):
-        return json.loads(self.st.get_kraken_state(key) or "{}")
+        # the ask record, by the kraken_state key each kind had until engine step 3b
+        return self.st.ask_record({"bill_ask": "bill", "split_ask": "split",
+                                   "bill_split_wait": "hold"}[key])
 
 
 class TheRace(_Harness):

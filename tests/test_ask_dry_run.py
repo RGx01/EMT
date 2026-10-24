@@ -83,8 +83,8 @@ class TheReport(_Base):
     def test_a_given_up_half_hour_is_asked_by_neither(self):
         """The records still hold: the queue keeps today's give-up."""
         self._blk("2026-09-01T14:00:00")
-        self.st.set_kraken_state(engine._BILL_ASK_KEY, json.dumps(
-            {"2026-09-01T14:00:00": {"first": "2026-09-02T00:00:00", "last": "2026-09-02T00:00:00"}}))
+        self.st.ask_record_save("bill",
+            {"2026-09-01T14:00:00": {"first": "2026-09-02T00:00:00", "last": "2026-09-02T00:00:00"}})
         s, _ = self._run()
         self.assertEqual(s["counts"], {})
 
