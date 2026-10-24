@@ -178,6 +178,26 @@ class SplitViewRetired(unittest.TestCase):
         self.assertIn("CAT_TEXT.split[st.split]", _SRC)
 
 
+class AnEpochChangeRedrawsEveryMonth(unittest.TestCase):
+    """24 Oct 2026, Data Management's console: a bulk write (a fill, a re-import, a delete) moves the
+    data epoch, and `fetchMonthNow` dropped every month's grid but fetched only the one it was
+    asked for. The others stayed drawn with no grid, and every hover (`show`) and click (`hitCell`)
+    threw on `p.grid[day]` until the page was reloaded."""
+
+    def _fn(self, name):
+        i = _SRC.index("function " + name + "(")
+        return _SRC[i:_SRC.index("\n  }\n", i)]
+
+    def test_the_other_drawn_months_are_fetched_again(self):
+        body = self._fn("fetchMonthNow")
+        self.assertIn("return k !== key && state.panels[k].drawn;", body)
+        self.assertIn("stale.forEach(function (k) { loadMonth(k); });", body)
+
+    def test_hover_and_click_wait_for_the_grid(self):
+        self.assertIn("if (!p.drawn || !p.chart || !p.grid) { tip.style.display = 'none'; return; }", _SRC)
+        self.assertIn("if (!p.drawn || !p.chart || !p.grid) return null;", self._fn("hitCell"))
+
+
 class ThePageUsesIt(unittest.TestCase):
 
     def test_it_is_included_and_the_iframe_path_is_gone(self):

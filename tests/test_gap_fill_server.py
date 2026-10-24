@@ -4,8 +4,9 @@ Gap fill as an action on the heatmap's selection — the server (gap fill design
 - `engine.gap_fill_plan` counts, from the store, what filling the selection's runs would do:
   missing half-hours, the deleted among them, those too recent (under 48 h: left out, decided (b))
   and too old (beyond Octopus's two years: left out, decided (a)), and the fillable ones as runs.
-- `/api/gaps/fill/preview` answers with that and a token; `/api/gaps/fill/apply` re-counts, takes a
-  REQUIRED safety backup and runs `engine.run_gap_fill_runs` over the fillable runs.
+- `/api/gaps/fill/preview` answers with that and a token; `/api/gaps/fill/apply` re-counts and runs
+  `engine.run_gap_fill_runs` over the fillable runs. (It took a required safety backup until 24 Oct
+  2026, the user: a fill writes only half-hours with no block, so it overwrites nothing.)
 - `run_gap_fill_runs` fills the runs newest first, each lifting its own tombstones, and finishes
   once; `run_gap_fill_job` (the Historical import page's) is unchanged — its window and finish are
   the same code, now apart.
@@ -153,25 +154,24 @@ class TheRoutes(unittest.TestCase):
     def test_bad_runs_are_refused(self):
         self.assertEqual(self._post("/api/gaps/fill/preview", {"runs": [["b", "a"]]})[0], 400)
 
-    def test_apply_without_a_backup_fills_nothing(self):
+    def test_apply_takes_no_backup(self):
+        """24 Oct 2026, the user: a fill writes only half-hours with no block, so no backup."""
         _, d = self._post("/api/gaps/fill/preview", {"runs": self.runs})
         scheduled = []
-        with mock.patch.object(self.server, "_safety_backup", side_effect=RuntimeError("disk")), \
+        with mock.patch.object(self.server, "_safety_backup", side_effect=AssertionError("backup")), \
              mock.patch.object(self.server, "_event_loop", mock.MagicMock()), \
              mock.patch("asyncio.run_coroutine_threadsafe", side_effect=lambda c, l: scheduled.append(c)):
             code, r = self._post("/api/gaps/fill/apply", {"token": d["token"]})
-        self.assertEqual(code, 500)
-        self.assertIn("no safety backup", r["error"])
-        self.assertEqual(scheduled, [])
+        self.assertEqual(code, 200, r)
+        self.assertEqual(len(scheduled), 1)
 
     def test_apply_runs_the_preview_s_fillable_runs(self):
         _, d = self._post("/api/gaps/fill/preview", {"runs": self.runs})
         scheduled = []
-        with mock.patch.object(self.server, "_safety_backup", return_value="pre.zip"), \
-             mock.patch.object(self.server, "_event_loop", mock.MagicMock()), \
+        with mock.patch.object(self.server, "_event_loop", mock.MagicMock()), \
              mock.patch("asyncio.run_coroutine_threadsafe", side_effect=lambda c, l: scheduled.append(c)):
             code, r = self._post("/api/gaps/fill/apply", {"token": d["token"]})
-        self.assertEqual((code, r["backup"], r["runs"]), (200, "pre.zip", 2))
+        self.assertEqual((code, r["runs"]), (200, 2))
         self.assertEqual(scheduled[0][1], d["fill_runs"])
 
     def test_a_changed_selection_is_refused(self):
