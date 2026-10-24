@@ -58,7 +58,9 @@ CLASS = "BlockStore"
 WRITE_VERBS = {"INSERT", "UPDATE", "DELETE", "REPLACE", "CREATE", "DROP",
                "ALTER", "TRUNCATE", "VACUUM", "REINDEX"}
 READ_VERBS = {"SELECT", "WITH", "PRAGMA", "EXPLAIN", "BEGIN", "COMMIT", "ROLLBACK",
-              "ANALYZE", "ATTACH", "DETACH"}
+              "ANALYZE", "ATTACH", "DETACH",
+              # transaction control, as BEGIN / COMMIT: a batch's savepoints (24 Oct 2026)
+              "SAVEPOINT", "RELEASE"}
 
 # PRAGMA is in READ_VERBS because most pragmas interrogate or configure the
 # connection -- `table_info`, `query_only`, `busy_timeout`. A few MUTATE THE

@@ -98,6 +98,8 @@ class EveryPathUsesIt(unittest.TestCase):
         # (the live pass was a third, until the one asker took it in engine step 3c)
         for name in ("run_measured_history_drain", "_refetch_octopus"):
             body = self._fn(name)
+            if name == "run_measured_history_drain":       # it parses in its page writer
+                body += self._fn("_ask_write_page")
             self.assertIn("_fetch_bill_nodes(", body, name)
             self.assertIn("parse_bill(", body, name)
             self.assertNotIn("recover_device_breakdown(", body, name)

@@ -872,9 +872,16 @@ function openSupport(range) {
   document.getElementById(range ? 'ss-range' : 'ss-30d').checked = true;
   var m = document.getElementById('ss-month-val');
   if (!m.value) { var d = new Date(); d.setMonth(d.getMonth() - 1); m.value = d.toISOString().slice(0, 7); }
-  var b = document.getElementById('ss-build'); b.disabled = false; b.textContent = 'Make the file';
+  _ssMake();
   document.getElementById('support-overlay').style.display = 'block';
   supportEstimate();
+}
+// The button back to "Make the file" — its label AND its click: after a file is made it becomes
+// "Download", and reopening the dialog reset only the label, so it downloaded the last file again
+// (24 Oct 2026, staging: "it kept downloading rather than making").
+function _ssMake() {
+  var b = document.getElementById('ss-build');
+  b.disabled = false; b.textContent = 'Make the file'; b.onclick = buildSupport;
 }
 function closeSupport() { document.getElementById('support-overlay').style.display = 'none'; }
 function _ssBody() {
@@ -904,7 +911,10 @@ function supportEstimate() {
   }).catch(function (e) { if (seq === _ssSeq) el.textContent = 'Size unknown: ' + e.message; });
 }
 document.addEventListener('change', function (e) {
-  if (e.target && (e.target.name === 'support-span' || e.target.id === 'ss-month-val')) supportEstimate();
+  // a new span is a new file to make, not the last one to download
+  if (e.target && (e.target.name === 'support-span' || e.target.id === 'ss-month-val')) {
+    _ssMake(); supportEstimate();
+  }
 });
 function buildSupport() {
   var b = document.getElementById('ss-build'), el = document.getElementById('ss-estimate');
@@ -919,10 +929,9 @@ function buildSupport() {
           (s.redacted ? ', ' + s.redacted + ' detail' + (s.redacted === 1 ? '' : 's') + ' hidden' : '') + '.';
         b.disabled = false; b.textContent = '⬇ Download';
         b.onclick = function () { window.location.href = apiUrl('/api/support/download'); };
-      }).catch(function (e) { el.textContent = '✕ ' + e.message; b.disabled = false; b.textContent = 'Make the file';
-                              b.onclick = buildSupport; });
+      }).catch(function (e) { el.textContent = '✕ ' + e.message; _ssMake(); });
     })();
-  }).catch(function (e) { el.textContent = '✕ ' + e.message; b.disabled = false; b.textContent = 'Make the file'; });
+  }).catch(function (e) { el.textContent = '✕ ' + e.message; _ssMake(); });
 }
 
 // Octopus's actions only with the supplier API; the purge only with imported history to delete

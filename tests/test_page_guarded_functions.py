@@ -40,3 +40,23 @@ class TheGuards(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheSupportButton(unittest.TestCase):
+    """24 Oct 2026, staging: after a support file was made the button became "Download", and
+    reopening the dialog reset its label but not its click, so it downloaded the last file again
+    instead of making one. Fails on the parent."""
+
+    SRC = open(os.path.join(_ROOT, "web", "templates", "data_management.html"), encoding="utf-8").read()
+
+    def _fn(self, name):
+        i = self.SRC.index("function " + name + "(")
+        return self.SRC[i:self.SRC.index("\n}\n", i)]
+
+    def test_making_resets_label_and_click_together(self):
+        self.assertIn("b.textContent = 'Make the file'; b.onclick = buildSupport;", self._fn("_ssMake"))
+
+    def test_opening_and_a_new_span_make_a_new_file(self):
+        self.assertIn("_ssMake();", self._fn("openSupport"))
+        i = self.SRC.index("document.addEventListener('change', function (e) {")
+        self.assertIn("_ssMake(); supportEstimate();", self.SRC[i:i + 400])

@@ -8428,7 +8428,11 @@ async def _apply_bills_paced() -> int:
     cursor, not "until nothing is left": a refused bill stays a candidate. Returns those applied."""
     after, n = "", 0
     while True:
-        r = apply_measured_settled(after=after, limit=_APPLY_PAGE) or {}
+        if _store is not None:
+            with _store.batch():                 # the page's applies in one commit
+                r = apply_measured_settled(after=after, limit=_APPLY_PAGE) or {}
+        else:
+            r = apply_measured_settled(after=after, limit=_APPLY_PAGE) or {}
         n += r.get("applied") or 0
         if not r.get("last") or (r.get("candidates") or 0) < _APPLY_PAGE:
             return n
@@ -11599,43 +11603,12 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
                 break
             failed = _bill_fetch_failures
             kwh = store.get_imp_kwh(page)
-            for slot in page:
-                kind = sel[slot]
-                rec = bills if kind == "bill" else splits
-                k, node = nodes.get(slot, (None, None))
-                row = parse_bill(node, k, kwh.get(slot))
-                if row is None or (kind == "split" and not row.get("breakdown")):
-                    if not failed:
-                        _bill_ask_unanswered(rec, slot)
-                    continue
-                _bill_ask_answered(rec, slot)
-                if row.get("zero"):
-                    store.upsert_measured_cost(slot, mpan=mpan, cost_incl=0.0, cost_excl=0.0,
-                                               label="ZERO", kwh=0.0)
-                    continue
-                bd = row.get("breakdown")
-                if bd and _bill_drops_ev(emt_ev.get(slot), bd[2]):
-                    _bill_split_hold(wait, slot)
-                    st["held"] += 1
-                    continue
-                if bd:
-                    _bill_split_release(wait, slot)
-                _store_bill(store, slot, mpan, row)
-                st["stored"] += 1
-                if kind == "split":
-                    # its cost-only bill was applied already, so the paced apply below (unsettled
-                    # blocks only) would not take the split: re-settle it here, as the drain's
-                    # phase 2 did
-                    try:
-                        apply_measured_to_block(slot, cost_incl=row["cost_incl"],
-                                                cost_excl=row["cost_excl"], label=row["label"])
-                    except Exception as e:
-                        logger.warning("octopus asks: re-settle failed for %s: %s", slot, e)
-            # what this page changed, merged onto what anything else saved meanwhile
-            _save_changes(store, wait_before, wait, lambda: _bill_split_wait(store),
-                          _bill_split_wait_save)
-            _save_changes(store, bills_before, bills, lambda: _bill_ask(store, mpan), _bill_ask_save)
-            _save_changes(store, splits_before, splits, lambda: _split_ask(store), _split_ask_save)
+            # the page's writes in one commit: on dev's storage each commit could hold the loop for
+            # seconds, and two a half-hour dropped HA's connection twice in its first pass (24 Oct
+            # 2026, the support file). No await inside the batch.
+            with store.batch():
+                _ask_write_page(store, mpan, page, sel, nodes, kwh, emt_ev, failed, st,
+                                (wait, wait_before), (bills, bills_before), (splits, splits_before))
             st["done"] += len(page)
             await _apply_bills_paced()
             if failed:
@@ -11652,6 +11625,50 @@ async def run_measured_history_drain(max_batches: int = 5000) -> dict:
     finally:
         st["status"] = "idle"
         st["finished"] = _dt_now_iso_safe()
+
+
+def _ask_write_page(store, mpan: str, page: list, sel: dict, nodes: dict, kwh: dict, emt_ev: dict,
+                    failed: int, st: dict, wait_pair, bills_pair, splits_pair) -> None:
+    """One page's answers written, and the records' changes saved — synchronous, for one batch.
+    Each `*_pair` is (the record as this page changed it, as it was read)."""
+    wait, wait_before = wait_pair
+    bills, bills_before = bills_pair
+    splits, splits_before = splits_pair
+    for slot in page:
+        kind = sel[slot]
+        rec = bills if kind == "bill" else splits
+        k, node = nodes.get(slot, (None, None))
+        row = parse_bill(node, k, kwh.get(slot))
+        if row is None or (kind == "split" and not row.get("breakdown")):
+            if not failed:
+                _bill_ask_unanswered(rec, slot)
+            continue
+        _bill_ask_answered(rec, slot)
+        if row.get("zero"):
+            store.upsert_measured_cost(slot, mpan=mpan, cost_incl=0.0, cost_excl=0.0,
+                                       label="ZERO", kwh=0.0)
+            continue
+        bd = row.get("breakdown")
+        if bd and _bill_drops_ev(emt_ev.get(slot), bd[2]):
+            _bill_split_hold(wait, slot)
+            st["held"] += 1
+            continue
+        if bd:
+            _bill_split_release(wait, slot)
+        _store_bill(store, slot, mpan, row)
+        st["stored"] += 1
+        if kind == "split":
+            # its cost-only bill was applied already, so the paced apply (unsettled blocks only)
+            # would not take the split: re-settle it here, as the drain's phase 2 did
+            try:
+                apply_measured_to_block(slot, cost_incl=row["cost_incl"],
+                                        cost_excl=row["cost_excl"], label=row["label"])
+            except Exception as e:
+                logger.warning("octopus asks: re-settle failed for %s: %s", slot, e)
+    # what this page changed, merged onto what anything else saved meanwhile
+    _save_changes(store, wait_before, wait, lambda: _bill_split_wait(store), _bill_split_wait_save)
+    _save_changes(store, bills_before, bills, lambda: _bill_ask(store, mpan), _bill_ask_save)
+    _save_changes(store, splits_before, splits, lambda: _split_ask(store), _split_ask_save)
 
 
 _ASK_PAGE_DAYS = 3            # local days of cost half-hours per page (one query a day)
