@@ -784,6 +784,38 @@ window.EMT = window.EMT || {};
   setInterval(check, 30000);
 })();
 
+/* ── The one asker working through a backlog (engine step 3c; the user, 24 Oct 2026) ─────
+   After an upgrade or an import, EMT asks Octopus for every half-hour with no bill yet — on dev,
+   two years of history, ~650 queries, newest first and paced. Say so while it runs, with how many
+   half-hours are left, so the "waiting for a bill" counts are read against it. Only for a real
+   backlog (more than a day's half-hours): the hourly pass's handful needs no banner. */
+(function () {
+  var ID = 'octopus-asks';
+  var DISMISS_KEY = 'octopusAsksDismissed';
+  var BACKLOG = 48;
+  function check() {
+    fetch(apiUrl('/api/settlement/asking'))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var left = d ? (d.total || 0) - (d.done || 0) : 0;
+        if (!d || d.status !== 'running' || (d.total || 0) <= BACKLOG) { EMT.dismiss(ID); return; }
+        if (sessionStorage.getItem(DISMISS_KEY)) return;
+        EMT.notify({
+          id: ID,
+          level: 'info',
+          dismissible: true,
+          html: '\u23f3 <strong>Asking Octopus for your bills</strong> \u2014 ' + left + ' half-hour' +
+                (left === 1 ? '' : 's') + ' of ' + d.total + ' left, newest first. Until it finishes, ' +
+                'more half-hours read \u201cwaiting for a bill\u201d than will in the end.',
+          onDismiss: function () { sessionStorage.setItem(DISMISS_KEY, '1'); }
+        });
+      })
+      .catch(function () {});
+  }
+  check();
+  setInterval(check, 30000);
+})();
+
 // Sync global theme toggle icon on load
 (function() {
   var theme = document.documentElement.getAttribute('data-theme') || 'dark';

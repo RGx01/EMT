@@ -177,19 +177,10 @@ class SettleableBlocks(unittest.TestCase):
         self.assertEqual(st.get_settleable_blocks("2026-01-01T00:00:00", "",
                                                   "2026-12-01T00:00:00", 10), [])
 
-    def test_the_count_matches_the_page_predicate(self):
-        """The backlog gate and the drain must agree, or the drain is scheduled
-        for work it will not find. Same predicate, no cursor, no limit."""
-        n = self.st.count_settleable_blocks("2026-09-01T00:00:00",
-                                            "2026-09-09T00:00:00")
-        page = self.st.get_settleable_blocks("2026-09-01T00:00:00", "",
-                                             "2026-09-09T00:00:00", 1000)
-        self.assertEqual(n, len(page))
-
 
 class SharedPredicate(unittest.TestCase):
 
-    def test_three_methods_share_one_constant(self):
+    def test_the_methods_share_one_constant(self):
         """Spliced into three queries in engine.py before this — twice by
         concatenation, once by f-string. The classifier learned to resolve class
         SQL constants in A9, which is what makes sharing possible at all."""
@@ -197,8 +188,8 @@ class SharedPredicate(unittest.TestCase):
         self.assertIn("imp_kwh_api", sql)
         self.assertIn("imported", sql)
         import inspect
-        for name in ("get_settleable_blocks", "count_settleable_blocks",
-                     "get_measured_costs_to_apply"):
+        # (count_settleable_blocks was the third, until engine step 3c's one selector)
+        for name in ("get_settleable_blocks", "get_measured_costs_to_apply"):
             src = inspect.getsource(getattr(BlockStore, name))
             self.assertIn("_SETTLEABLE_SQL", src, name)
 
@@ -274,10 +265,10 @@ class MeasuredCostsToApply(unittest.TestCase):
 
 class Surfaces(unittest.TestCase):
 
-    def test_all_six_are_reads(self):
+    def test_all_five_are_reads(self):
         from store_types import ReadStore
         for name in ("get_block_measured_inputs", "completed_dispatch_kwh",
-                     "get_settleable_blocks", "count_settleable_blocks",
+                     "get_settleable_blocks",
                      "get_measured_costs_to_apply",
                      "get_dispatched_blocks_awaiting_measure"):
             self.assertTrue(hasattr(ReadStore, name), name)

@@ -181,8 +181,16 @@ class TestASnapshotMidJobIsRecoverable(unittest.TestCase):
         # heals — EMT-v5_import_spec §1.1). What remains here are the jobs whose
         # markers make a mid-job backup recoverable.
         "run_api_import_job",
-        "run_measured_history_drain",
+        # run_measured_history_drain left this list in engine step 3c (24 Oct 2026): the one
+        # asker keeps no cursor — it re-selects what is still waiting each pass, so a half-hour it
+        # has cached drops out by query (test_the_one_asker_is_idempotent_by_query).
     )
+
+    def test_the_one_asker_is_idempotent_by_query(self):
+        """A backup taken mid-pass is recoverable: the next pass asks only what still has no bill
+        (`ask_candidate_facts`' `bill_mpan`), so nothing is asked twice and nothing is lost."""
+        self.assertIn("_ask_selection(store, now)", self._body("run_measured_history_drain"))
+        self.assertIn('not f["bill_mpan"]', self._body("_ask_queue"))
 
     @classmethod
     def setUpClass(cls):

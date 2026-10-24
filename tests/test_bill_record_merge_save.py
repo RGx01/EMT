@@ -1,4 +1,11 @@
 """
+The ask records are saved as changes, not whole copies (`_save_changes`, 17 Oct 2026).
+
+Engine step 3c (24 Oct 2026): the race these tests reproduced — the live pass and the drain, two
+tasks, each saving a whole copy over the other's — is gone with the live pass; the one asker runs
+behind a running flag. TheMerge keeps the helper's own tests: the asker still saves through it, so
+a re-fetch or a hold-back marked in between is not overwritten. The original account follows.
+
 The live bill pass and the history drain save their changes to the bill records, not whole copies
 (17 Oct 2026).
 
@@ -42,84 +49,6 @@ def _house_only():
             "home_rate_exc": OFF, "ev_rate_exc": None, "home_cost": round(KWH * OFF, 6),
             "ev_cost": 0.0, "home_band": "off_peak", "ev_band": None}
 
-
-class _Gate:
-    """Octopus, holding every caller until two are waiting — so both passes have read their
-    records before either saves."""
-
-    def __init__(self, node=None):
-        self.node, self.waiting = node, 0
-        self.both = None
-
-    async def recover_device_breakdown(self, mpan, slots, **kw):
-        if self.both is None:
-            self.both = asyncio.Event()
-        self.waiting += 1
-        if self.waiting >= 2:
-            self.both.set()
-        await asyncio.wait_for(self.both.wait(), 5)
-        return {s: self.node for s in slots} if self.node else {}
-
-
-class _Harness(unittest.TestCase):
-
-    def setUp(self):
-        self._save = (engine._store, engine._kraken_client, engine._kraken_discovery,
-                      engine._kraken_rate_schedules, engine._kraken_current_agreement_from,
-                      engine._MEASURED_HISTORY_DRAIN_PACE)
-        self.st = BlockStore(":memory:")
-        engine._store = self.st
-        engine._kraken_current_agreement_from = "2026-01-01T00:00:00"
-        engine._MEASURED_HISTORY_DRAIN_PACE = 0
-        engine._kraken_discovery = {"import": {"mpan": MPAN, "tariff_code": "IOG-SMB-FIX-12M"}}
-        engine._kraken_rate_schedules = {}
-        self.st._conn.execute(
-            "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
-            "block_minutes, timezone) VALUES (1,'2020-01-01T00:00:00',1,30,'UTC')")
-        for slot, live in ((LIVE, True), (DRAIN, False)):
-            self.st._conn.execute(
-                "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
-                "imp_kwh_api, imp_rate, imp_cost, rate_source, rate_corrected, source) "
-                "VALUES (?,?,?,1,?,?,?,?,'schedule',0,?)",
-                (slot, slot, "electricity_main", KWH, KWH if live else None, OFF,
-                 round(KWH * OFF, 6), None if live else "imported_api"))
-            self.st.set_block_segments(slot, "electricity_main", [
-                (EV, OFF, OFF, "off_peak", "ev"), (KWH - EV, OFF, OFF, "off_peak", "house")])
-        self.st.upsert_dispatch_slot(LIVE, off_peak=True, source="smart-charge-completed")
-        self.st._conn.commit()
-
-    def tearDown(self):
-        (engine._store, engine._kraken_client, engine._kraken_discovery,
-         engine._kraken_rate_schedules, engine._kraken_current_agreement_from,
-         engine._MEASURED_HISTORY_DRAIN_PACE) = self._save
-
-    def _both(self, node=None):
-        engine._kraken_client = _Gate(node)
-
-        async def go():
-            await asyncio.gather(engine.measure_settled_dispatched_blocks(),
-                                 engine.run_measured_history_drain(max_batches=2))
-        loop = asyncio.new_event_loop()
-        try:
-            loop.run_until_complete(go())
-        finally:
-            loop.close()
-
-    def _record(self, key):
-        # the ask record, by the kraken_state key each kind had until engine step 3b
-        return self.st.ask_record({"bill_ask": "bill", "split_ask": "split",
-                                   "bill_split_wait": "hold"}[key])
-
-
-class TheRace(_Harness):
-
-    def test_both_unanswered_half_hours_are_recorded(self):
-        self._both()
-        self.assertEqual(set(self._record("bill_ask")), {LIVE, DRAIN})
-
-    def test_both_held_bills_are_kept(self):
-        self._both(_house_only())
-        self.assertEqual(set(self._record("bill_split_wait")), {LIVE, DRAIN})
 
 
 class TheMerge(unittest.TestCase):

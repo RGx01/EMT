@@ -95,8 +95,8 @@ class EveryPathUsesIt(unittest.TestCase):
         self.assertNotIn("def _vat_resync_row", self.SRC)
 
     def test_each_path_fetches_and_parses_through_it(self):
-        for name in ("measure_settled_dispatched_blocks", "run_measured_history_drain",
-                     "_refetch_octopus"):
+        # (the live pass was a third, until the one asker took it in engine step 3c)
+        for name in ("run_measured_history_drain", "_refetch_octopus"):
             body = self._fn(name)
             self.assertIn("_fetch_bill_nodes(", body, name)
             self.assertIn("parse_bill(", body, name)

@@ -4370,7 +4370,7 @@ class BlockStore:
         for slot, e in d.items():
             e = e if isinstance(e, dict) else {}
             if kind == "hold":
-                rows.append((slot, kind, e.get("first"), None,
+                rows.append((slot, kind, e.get("first"), e.get("last"),
                              "kept" if e.get("kept") else "held", e.get("kept")))
             else:
                 rows.append((slot, kind, e.get("first"), e.get("last"),
@@ -4385,6 +4385,8 @@ class BlockStore:
                 "ORDER BY slot_start", (kind,)):
             e = {"first": r["first"]}
             if kind == "hold":
+                if r["last"] is not None:
+                    e["last"] = r["last"]          # when last asked (the backoff, engine step 3c)
                 if r["state"] == "kept":
                     e["kept"] = r["since"]
             else:
@@ -7726,34 +7728,6 @@ class BlockStore:
             (floor, before, after, limit)).fetchall()
         return [r[0] for r in rows]
 
-    def count_cost_only_split_slots(self, floor: str, before: str, exclude=()) -> int:
-        """How many `get_cost_only_split_slots` still has (the drain's backlog), less `exclude`."""
-        exclude = sorted(set(exclude or ()))
-        return int(self._conn.execute(
-            "SELECT COUNT(DISTINCT m.slot_start) " + self._COST_ONLY_SPLIT_SQL
-            + (" AND m.slot_start NOT IN (%s)" % ",".join("?" * len(exclude)) if exclude else ""),
-            (floor, before, *exclude)).fetchone()[0])
-
-    def count_settleable_blocks(self, floor: str, before: str,
-                                meter_id: str = "electricity_main", exclude=(), *,
-                                include_imported: bool = True) -> int:
-        """How many blocks `get_settleable_blocks` still has to work through.
-
-        Same predicate, no cursor and no limit -- the backlog gate that decides
-        whether the drain is scheduled at all. `exclude`: block starts that are
-        not backlog however the predicate reads them (a bill held back, v4 4.5.23).
-        """
-        exclude = sorted(set(exclude or ()))
-        return self._conn.execute(
-            "SELECT COUNT(*) FROM blocks b WHERE b.meter_id = ? "
-            "  AND b.imp_kwh > 0 "
-            "  AND " + self._SETTLEABLE_SQL + " "
-            + ("" if include_imported else "  AND " + self._ASKED_OFF_SMB_SQL + " ") +
-            "  AND b.block_start >= ? AND b.block_start < ? "
-            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
-            "  AND NOT EXISTS (SELECT 1 FROM measured_cost mc WHERE mc.slot_start = b.block_start)"
-            + (" AND b.block_start NOT IN (%s)" % ",".join("?" * len(exclude)) if exclude else ""),
-            (meter_id, floor, before, *exclude)).fetchone()[0]
 
     def get_imp_kwh(self, starts, meter_id: str = "electricity_main") -> dict:
         """{block_start: imp_kwh} for the blocks in `starts` (absent where there is no block) —

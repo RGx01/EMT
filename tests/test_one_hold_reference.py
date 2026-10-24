@@ -57,13 +57,13 @@ class EveryPathUsesIt(unittest.TestCase):
         return next(ast.get_source_segment(self.SRC, n) for n in ast.walk(tree)
                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
 
-    def test_the_three_paths(self):
-        """Four until the VAT resync went (engine step 2d, 23 Oct 2026)."""
-        for name in ("measure_settled_dispatched_blocks", "run_measured_history_drain"):
+    def test_the_two_paths(self):
+        """Four until the VAT resync went (engine step 2d, 23 Oct 2026); three until the live pass
+        went into the one asker (step 3c, 24 Oct 2026)."""
+        for name in ("run_measured_history_drain",):
             self.assertIn("emt_ev_at(store,", self._fn(name), name)
         self.assertIn("emt_ev_reference(", self._fn("_refetch_diff"))
-        for name in ("measure_settled_dispatched_blocks", "run_measured_history_drain",
-                     "_refetch_diff"):
+        for name in ("run_measured_history_drain", "_refetch_diff"):
             body = self._fn(name)
             self.assertNotIn("get_ev_split_kwh(", body, name)
             self.assertNotIn('get_measured_breakdown(slot) or {}).get("ev_kwh")', body, name)

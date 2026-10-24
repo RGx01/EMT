@@ -9664,13 +9664,9 @@ async def _tick_dispatch_capture() -> None:
             await run_iog_split_carve()
         except Exception as e:
             logger.warning("_tick_dispatch_capture: iog split carve failed: %s", e)
-        try:
-            await measure_settled_dispatched_blocks()
-        except Exception as e:
-            logger.warning("_tick_dispatch_capture: measured-cost fetch failed: %s", e)
-        # First-time / bulk SMB history import: drain the imported capped history to Octopus's
-        # billed breakdown (the live fetch above is newest-first + bounded). Backlog-gated; no-op
-        # once caught up. Runs off the loop as a task.
+        # The one asker (engine step 3c, 24 Oct 2026): every half-hour waiting for Octopus's bill
+        # or split, newest first, as a task off the loop. Backlog-gated; a no-op when nothing waits.
+        # (It replaces the live bill pass, `measure_settled_dispatched_blocks`, that ran here first.)
         try:
             _maybe_drain_measured_history()
         except Exception as e:
@@ -10463,8 +10459,13 @@ def settlement_awaiting(store, since_iso: str) -> dict:
 
 
 def _bill_split_hold(w: dict, slot: str) -> None:
-    if slot not in w:
-        w[slot] = {"first": _dt_now_iso_safe()}
+    """Hold an answer back (4.5.23), and note when it was asked: a held half-hour follows the same
+    backoff as an unanswered one (engine step 3c — it was asked every pass, hourly, for 28 days)."""
+    if slot in w:
+        if isinstance(w[slot], dict):
+            w[slot]["last"] = _dt_now_iso_safe()
+    else:
+        w[slot] = {"first": _dt_now_iso_safe(), "last": _dt_now_iso_safe()}
         logger.info("bill split: Octopus's breakdown for %s has no EV where EMT's split has the car "
                     "drawing — holding it back and asking again later (up to %d days)",
                     slot, _BILL_SPLIT_WAIT_DAYS)
@@ -10577,97 +10578,6 @@ def _bill_ask_unanswered(a: dict, slot: str) -> None:
 def _bill_ask_answered(a: dict, slot: str) -> None:
     a.pop(slot, None)
 
-
-async def measure_settled_dispatched_blocks() -> dict:
-    """Fetch Octopus's billed per-slot settled cost + Home/EV split for recently-settled IOG
-    dispatched blocks and cache it in measured_cost. On IOG-SMB the source is the authoritative
-    four-bucket getDeviceConsumptionBreakdown — cost, split AND band read from the buckets in
-    ONE small-window fetch (no OFF_PEAK-label forward-ladder; the band is which bucket carried
-    the energy — design §4/§7). Other IOG tariffs keep the single-cost recovery (no buckets to
-    read). Bounded per pass; skips already-cached slots. The RATE is snapped to the tariff
-    agreement at APPLY time (apply_measured_to_block) — never derived from cost/kWh here."""
-    store = _store
-    if store is None or _kraken_client is None:
-        return {}
-    imp = (_kraken_discovery or {}).get("import") or {}
-    tariff = imp.get("tariff_code") or ""
-    mpan = imp.get("mpan")
-    _tu = tariff.upper()
-    if not mpan or ("IOG" not in _tu and "INTELLI" not in _tu):
-        return {}
-    try:
-        rows = store.get_dispatched_blocks_awaiting_measure(_ask_floor(_measured_floor()))
-    except Exception as e:
-        logger.warning("measure_settled: query failed: %s", e)
-        return {}
-    if not rows:
-        return {}
-    by_start = {r["block_start"]: r for r in rows}
-    _wait = _bill_split_wait(store)                # bills held back, still being asked (4.5.23)
-    _wait_before = _snapshot(_wait)
-    _kept = _bill_split_kept(store, _wait)
-    _ask = _bill_ask(store, mpan)                  # never billed in 30 days: not asked (§5 (a))
-    _ask_before = _snapshot(_ask)
-    _gone = _bill_ask_given_up(_ask) | _bill_ask_resting(_ask)     # given up, or resting today
-    missing = store.measured_slots_missing(
-        [s for s in by_start if s not in _kept and s not in _gone],
-        mpan=mpan)[:_MEASURED_MAX_PER_PASS]
-    if not missing:
-        _save_changes(store, _ask_before, _ask, lambda: _bill_ask(store, mpan), _bill_ask_save)
-        return {"candidates": len(rows), "fetched": 0}
-    _emt_ev = emt_ev_at(store, missing)            # the hold-back's one reference (design §2)
-
-    n_store = n_absent = n_mixed = n_zero = n_held = 0
-    # One bill reader (bill and split paths design §1.3): the breakdown for half-hours on the
-    # IOG-SMB agreement, the single billed cost for the rest — chosen per half-hour.
-    try:
-        nodes = await _fetch_bill_nodes(mpan, missing)
-    except Exception as e:
-        logger.warning("measure_settled: bill fetch failed: %s", e)
-        return {}
-    kinds = {k for k, _ in nodes.values()}
-    for slot in missing:
-        kind, node = nodes.get(slot, (None, None))
-        row = parse_bill(node, kind, by_start[slot]["imp_kwh"])
-        if row is None:
-            n_absent += 1                          # no answer, or zero against EMT's kWh: ask again
-            _bill_ask_unanswered(_ask, slot)
-            continue
-        _bill_ask_answered(_ask, slot)
-        if row.get("zero"):
-            # BL-70: nothing was drawn, and EMT's own kWh agrees — a settled fact. Cached, so
-            # the slot is not re-fetched every pass; the breakdown stays NULL (no split to state).
-            store.upsert_measured_cost(slot, mpan=mpan, cost_incl=0.0, cost_excl=0.0,
-                                       label="ZERO", kwh=0.0)
-            n_zero += 1
-            continue
-        bd = row.get("breakdown")
-        if bd and _bill_drops_ev(_emt_ev.get(slot), bd[2]):
-            # v4 4.5.23: the bill has not attributed the car yet — keep EMT's split, ask again.
-            _bill_split_hold(_wait, slot)
-            n_held += 1
-            continue
-        if bd:
-            _bill_split_release(_wait, slot)
-        if row["label"] == "mixed":
-            n_mixed += 1
-        _store_bill(store, slot, mpan, row)
-        n_store += 1
-    # what this pass changed, merged onto what the drain may have saved meanwhile
-    _save_changes(store, _wait_before, _wait, lambda: _bill_split_wait(store), _bill_split_wait_save)
-    _save_changes(store, _ask_before, _ask, lambda: _bill_ask(store, mpan), _bill_ask_save)
-    # BL-70: `zero` and `absent` were one counter, which made the log self-contradictory —
-    # "recovered 11/11" on one line and "absent=11" on the next. They mean opposite things:
-    # zero = the bill stated nothing was drawn; absent = the bill said nothing at all.
-    logger.info("measure_settled: candidates=%d fetched=%d stored=%d mixed=%d zero=%d "
-                "absent=%d held=%d (source=%s)", len(rows), len(missing), n_store,
-                n_mixed, n_zero, n_absent, n_held,
-                "+".join(sorted({"breakdown": "buckets", "cost": "single-cost"}[k] for k in kinds))
-                or "-")
-    return {"candidates": len(rows), "fetched": len(missing), "stored": n_store,
-            "mixed": n_mixed, "zero": n_zero, "absent": n_absent, "held": n_held}
-
-
 # ── One bill reader (bill and split paths design §1.3, §6 (a)) ───────────────────────────────
 # Every path that asks Octopus for a half-hour's bill — the live settled-cost pass, the history
 # drain, the range re-fetch — chooses its source with `bill_kind_at`, fetches
@@ -10754,17 +10664,28 @@ def _store_bill(store, slot: str, mpan: str, row: dict) -> None:
                                         ev_kwh=ek, ev_rate=er)
 
 
+# Windows the last `_fetch_bill_nodes` asked that raised an API error, after the client's retries
+# (engine step 3c): their half-hours were not answered "no bill" — Octopus was not reachable.
+_bill_fetch_failures = 0
+
+
 async def _fetch_bill_nodes(mpan: str, slots) -> dict:
     """{slot: (kind, node)} — the breakdown asked for the half-hours on a breakdown agreement, the
     single billed cost for the rest. A breakdown half-hour the breakdown leaves unanswered is NOT
     asked the billed cost: a cost-only bill there would be cached with no split, and a cached slot
     is not asked again, so the split would freeze at EMT's (16 Oct 2026; #167 had that fallback for
     every half-hour). The window is kraken_api_client's: the local day, then the month."""
+    global _bill_fetch_failures
     kinds = {s: bill_kind_at(s) for s in slots}
     on = [s for s in slots if kinds[s] == "breakdown"]
     rest = [s for s in slots if kinds[s] == "cost"]
+    _bill_fetch_failures = 0
     got = (await _kraken_client.recover_device_breakdown(mpan, on) or {}) if on else {}
+    if on:
+        _bill_fetch_failures += int(getattr(_kraken_client, "last_fetch_failures", 0) or 0)
     cost = (await _kraken_client.recover_measurement_costs(mpan, rest) or {}) if rest else {}
+    if rest:
+        _bill_fetch_failures += int(getattr(_kraken_client, "last_fetch_failures", 0) or 0)
     out = {}
     for s in slots:
         node = got.get(s) if kinds[s] == "breakdown" else cost.get(s)
@@ -11050,6 +10971,8 @@ def _ask_queue(facts: list, store, mpan: str, now, considered: "dict | None" = N
         why[reason] = why.get(reason, 0) + 1
     wait = _bill_split_wait(store)
     kept = {s for s, e in wait.items() if isinstance(e, dict) and e.get("kept")}
+    # a held answer follows the backoff too (engine step 3c; it was asked every pass for 28 days)
+    held_resting = _bill_ask_resting({s: e for s, e in wait.items() if s not in kept}, now)
     ask, sask = _bill_ask(store, mpan), _split_ask(store)
     gone = {"bill": _bill_ask_given_up(ask, mark=False) | _bill_ask_resting(ask, now),
             "split": _bill_ask_given_up(sask, mark=False) | _bill_ask_resting(sask, now)}
@@ -11067,6 +10990,8 @@ def _ask_queue(facts: list, store, mpan: str, now, considered: "dict | None" = N
             _out("not on an Intelligent agreement"); continue
         if sl in kept:
             _out("kept (the hold-back's 28 days ran out)"); continue
+        if sl in held_resting:
+            _out("held, resting"); continue
         kind = ("bill" if not f["bill_mpan"]
                 else "split" if (split_at(sl) and f["cost_only"] and f["completed"]) else None)
         if kind is None:
@@ -11613,196 +11538,192 @@ _measured_history_drain_running = False   # re-entry guard for the scheduled dra
 
 @job("measured_drain", depends_on=("import",), exclusive_with=("delete",))
 async def run_measured_history_drain(max_batches: int = 5000) -> dict:
-    """First-time SMB history fill: settle IMPORTED capped-tariff history to Octopus's own billed
-    four-bucket breakdown, OLDEST-first, skipping the not-yet-billed recent window.
+    """The one asker (engine step 3, EMT-v5_engine_step3_ask_queue_design.md §3): asks Octopus for
+    every half-hour the one selector (`_ask_selection`) picks — a bill where none is cached, a split
+    where an IOG-SMB bill is cost-only and the car drew — newest first, a page at a time (up to
+    `_ASK_PAGE_DAYS` local days of cost half-hours, `_ASK_PAGE_BREAKDOWN` breakdown ones), and
+    handles every answer one way:
 
-    The consumption import brings only kWh; on the capped IOG-SMB tariff the price depends on the
-    dispatch EV/House split + off-peak "freebee", which a first-time user has NO local dispatch for.
-    The live measure_settled pass fetches Octopus's breakdown but is newest-first + bounded (40 per
-    hourly tick), so a bulk history import would trickle in over days and read schedule-provisional
-    (House-only, day/night) meanwhile. This drains the backlog directly: it fetches the device
-    breakdown for the imported capped slots (recover_device_breakdown) and caches it, then
-    apply_measured_settled() writes the authoritative cost / split / band over the whole backlog.
+    - a bill → cached (`_store_bill`); a zero one (EMT's kWh zero too) → cached as ZERO;
+    - one that drops the car where EMT has it (4.5.23) → held, on the same backoff;
+    - none, or a split asked and no breakdown given → unanswered (hourly for 2 days, then daily,
+      given up at 30);
+    - an API error (`_bill_fetch_failures`) → nothing marked; the pass stops, the next one asks again.
 
-    Agreement-aware: every Intelligent agreement's window (`_intelligent_windows`; the four-bucket
-    breakdown on IOG-SMB, the billed cost on the others, 20 Oct 2026), each floored at its
-    valid_from; flat-tariff history prices correctly on the schedule and is left alone. Bounded + paced; a
-    cursor walks the window once per invocation (skipping absent / not-yet-billed slots). Read-only
-    fetch, additive apply — never touches a measured/corrected block."""
-    global _measured_history_drain_running
+    Before each page the allowance: under `_ASK_HEADROOM` of it left, the pass stops (decided (c)).
+    After each page the records are saved and the cached bills applied (`_apply_bills_paced`).
+    Replaces the live pass (`measure_settled_dispatched_blocks`) and the drain's two phases;
+    progress in `_ask_state`, for the banner."""
     store = _store
+    st = _ask_state
     if store is None or _kraken_client is None or not _any_intelligent():
         return {"ok": True, "skipped": "not applicable"}
-    imp = (_kraken_discovery or {}).get("import") or {}
-    mpan = imp.get("mpan")
+    mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan")
     if not mpan:
         return {"ok": True, "skipped": "no mpan"}
-    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-    # Only history Octopus has actually BILLED has a breakdown; the recent tail is left to the
-    # live measure_settled pass (which caches a slot the moment its breakdown lands).
-    now_cut = (_dt.now(_tz.utc).replace(tzinfo=None) - _td(hours=_RECONCILE_SETTLE_HOURS)).isoformat()
-    settled = 0
-    batches = 0
-    # Each IOG-SMB agreement's window, whatever the current tariff (capped pricing by agreement
-    # design §4): after a renewal the earlier one is still capped history, and after leaving
-    # IOG-SMB the drain finishes it — a half-hour is asked for 30 days at most (`_bill_ask`), so it
-    # goes quiet by itself. A half-hour outside every window is not the drain's.
-    # Every Intelligent agreement's window (18 Oct 2026): IOG-SMB for the breakdown, the others
-    # for the billed cost (`bill_kind_at` chooses per half-hour). Off IOG-SMB, imported history
-    # is not asked — an API import already holds Octopus's billed cost — except a half-hour the
-    # import got no cost for (`import_no_cost`; 20 Oct 2026, the user), asked as live history is.
-    for w_from, w_to, w_smb in _intelligent_windows():
-        floor = _ask_floor(w_from)                 # no further back than Octopus keeps
-        cutoff = min(now_cut, w_to) if w_to else now_cut
-        if cutoff <= floor:
-            continue
-        cursor = ""        # local high-water mark; advances past absent slots within this run
-        while batches < max_batches:
-            batches += 1
-            page = store.get_settleable_blocks(floor, cursor, cutoff, _MEASURED_MAX_PER_PASS,
-                                               include_imported=w_smb)
-            if not page:
+    from datetime import datetime as _dt, timezone as _tz
+    now = _dt.now(_tz.utc).replace(tzinfo=None)
+    # mark (and log, once each) what has gone 30 days unanswered: the surfaces read when
+    # ("abandoned", `no_cost_since`), as they did from the live pass
+    for read, save in ((lambda: _bill_ask(store, mpan), _bill_ask_save),
+                       (lambda: _split_ask(store), _split_ask_save)):
+        rec = read()
+        before = _snapshot(rec)
+        _bill_ask_given_up(rec)
+        _save_changes(store, before, rec, read, save)
+    sel = _ask_selection(store, now)
+    pages = _ask_pages(sel)
+    st.clear()
+    st.update({"status": "running", "total": len(sel), "done": 0, "stored": 0, "held": 0,
+               "started": _dt_now_iso_safe(), "reason": None})
+    try:
+        for page in pages[:max_batches]:          # pages, now (the drain's batches until step 3c)
+            if not await _ask_allowance_ok():
+                st["reason"] = "allowance"
+                logger.info("octopus asks: under %d%% of the allowance left — stopping, %d of %d "
+                            "asked; the next pass carries on", int(_ASK_HEADROOM * 100),
+                            st["done"], st["total"])
                 break
-            cursor = page[-1]
-            _wait = _bill_split_wait(store)            # bills held back, still being asked (4.5.23)
-            _wait_before = _snapshot(_wait)
-            _kept = _bill_split_kept(store, _wait)
-            _ask = _bill_ask(store, mpan)              # never billed in 30 days: not asked (§5 (a))
-            _ask_before = _snapshot(_ask)
-            _gone = _bill_ask_given_up(_ask) | _bill_ask_resting(_ask)   # or resting today
-            missing = [s for s in page if s not in _kept and s not in _gone]
-            if not missing:
-                _save_changes(store, _ask_before, _ask, lambda: _bill_ask(store, mpan),
-                              _bill_ask_save)
-                continue
-            _emt_ev = emt_ev_at(store, missing)        # the hold-back's one reference (design §2)
+            wait = _bill_split_wait(store)
+            wait_before = _snapshot(wait)
+            kept = _bill_split_kept(store, wait)
+            bills, splits = _bill_ask(store, mpan), _split_ask(store)
+            bills_before, splits_before = _snapshot(bills), _snapshot(splits)
+            page = [s for s in page if s not in kept]
+            emt_ev = emt_ev_at(store, page)
             try:
-                nodes = await _fetch_bill_nodes(mpan, missing)   # one bill reader (design §1.3)
+                nodes = await _fetch_bill_nodes(mpan, page)
             except Exception as e:
-                logger.warning("measured history drain: bill fetch failed: %s", e)
+                logger.warning("octopus asks: fetch failed: %s", e)
+                st["reason"] = "error"
                 break
-            _kwh = store.get_imp_kwh(missing)
-            stored = 0
-            for slot in missing:
-                kind, node = nodes.get(slot, (None, None))
-                row = parse_bill(node, kind, _kwh.get(slot))
-                if row is None or row.get("zero"):
-                    _bill_ask_unanswered(_ask, slot)           # not billed yet — cursor skips it
+            failed = _bill_fetch_failures
+            kwh = store.get_imp_kwh(page)
+            for slot in page:
+                kind = sel[slot]
+                rec = bills if kind == "bill" else splits
+                k, node = nodes.get(slot, (None, None))
+                row = parse_bill(node, k, kwh.get(slot))
+                if row is None or (kind == "split" and not row.get("breakdown")):
+                    if not failed:
+                        _bill_ask_unanswered(rec, slot)
                     continue
-                _bill_ask_answered(_ask, slot)
+                _bill_ask_answered(rec, slot)
+                if row.get("zero"):
+                    store.upsert_measured_cost(slot, mpan=mpan, cost_incl=0.0, cost_excl=0.0,
+                                               label="ZERO", kwh=0.0)
+                    continue
                 bd = row.get("breakdown")
-                if bd and _bill_drops_ev(_emt_ev.get(slot), bd[2]):
-                    _bill_split_hold(_wait, slot)          # v4 4.5.23: keep EMT's split, ask again
+                if bd and _bill_drops_ev(emt_ev.get(slot), bd[2]):
+                    _bill_split_hold(wait, slot)
+                    st["held"] += 1
                     continue
                 if bd:
-                    _bill_split_release(_wait, slot)
+                    _bill_split_release(wait, slot)
                 _store_bill(store, slot, mpan, row)
-                stored += 1
-            # what this page changed, merged onto what the live pass may have saved meanwhile
-            _save_changes(store, _wait_before, _wait, lambda: _bill_split_wait(store),
-                          _bill_split_wait_save)
-            _save_changes(store, _ask_before, _ask, lambda: _bill_ask(store, mpan),
-                          _bill_ask_save)
-            if stored:
-                settled += stored
-                try:
-                    apply_measured_settled()                   # write the cached backlog authoritatively
-                except Exception as e:
-                    logger.warning("measured history drain: apply failed: %s", e)
-            await asyncio.sleep(_MEASURED_HISTORY_DRAIN_PACE)
-    # The teal half-hours (18 Oct 2026, the user; bill and split paths design §7.2 reversed): on
-    # IOG-SMB, a cached bill that is cost-only though the car drew in the half-hour leaves the
-    # split EMT's. Ask the breakdown; an answer is stored and the half-hour re-settled from it,
-    # so the split is the bill's. The 4.5.23 hold-back judges it as any breakdown; unanswered, it
-    # is asked for up to 30 days (`split_ask`).
-    resplit = 0
-    for w_from, w_to, w_smb in _intelligent_windows():
-        if not w_smb:
-            continue
-        floor = _ask_floor(w_from)
-        cutoff = min(now_cut, w_to) if w_to else now_cut
-        cursor = ""
-        while cutoff > floor and batches < max_batches:
-            batches += 1
-            page = store.get_cost_only_split_slots(floor, cursor, cutoff, _MEASURED_MAX_PER_PASS)
-            if not page:
-                break
-            cursor = page[-1]
-            _wait = _bill_split_wait(store)
-            _wait_before = _snapshot(_wait)
-            _kept = _bill_split_kept(store, _wait)
-            _ask = _split_ask(store)
-            _ask_before = _snapshot(_ask)
-            _gone = _bill_ask_given_up(_ask) | _bill_ask_resting(_ask)   # or resting today
-            ask = [s for s in page if s not in _kept and s not in _gone]
-            if ask:
-                _emt_ev = emt_ev_at(store, ask)
-                try:
-                    nodes = await _fetch_bill_nodes(mpan, ask)   # the breakdown, on IOG-SMB
-                except Exception as e:
-                    logger.warning("measured history drain: breakdown fetch failed: %s", e)
-                    break
-                _kwh = store.get_imp_kwh(ask)
-                for slot in ask:
-                    kind, node = nodes.get(slot, (None, None))
-                    row = parse_bill(node, kind, _kwh.get(slot))
-                    if row is None or row.get("zero") or not row.get("breakdown"):
-                        _bill_ask_unanswered(_ask, slot)
-                        continue
-                    _bill_ask_answered(_ask, slot)
-                    if _bill_drops_ev(_emt_ev.get(slot), row["breakdown"][2]):
-                        _bill_split_hold(_wait, slot)        # v4 4.5.23: keep EMT's split
-                        continue
-                    _bill_split_release(_wait, slot)
-                    _store_bill(store, slot, mpan, row)
+                st["stored"] += 1
+                if kind == "split":
+                    # its cost-only bill was applied already, so the paced apply below (unsettled
+                    # blocks only) would not take the split: re-settle it here, as the drain's
+                    # phase 2 did
                     try:
-                        if apply_measured_to_block(slot, cost_incl=row["cost_incl"],
-                                                   cost_excl=row["cost_excl"], label=row["label"]):
-                            resplit += 1
+                        apply_measured_to_block(slot, cost_incl=row["cost_incl"],
+                                                cost_excl=row["cost_excl"], label=row["label"])
                     except Exception as e:
-                        logger.warning("measured history drain: re-settle failed for %s: %s", slot, e)
-            _save_changes(store, _wait_before, _wait, lambda: _bill_split_wait(store),
+                        logger.warning("octopus asks: re-settle failed for %s: %s", slot, e)
+            # what this page changed, merged onto what anything else saved meanwhile
+            _save_changes(store, wait_before, wait, lambda: _bill_split_wait(store),
                           _bill_split_wait_save)
-            _save_changes(store, _ask_before, _ask, lambda: _split_ask(store), _split_ask_save)
+            _save_changes(store, bills_before, bills, lambda: _bill_ask(store, mpan), _bill_ask_save)
+            _save_changes(store, splits_before, splits, lambda: _split_ask(store), _split_ask_save)
+            st["done"] += len(page)
+            await _apply_bills_paced()
+            if failed:
+                st["reason"] = "error"
+                logger.warning("octopus asks: %d window(s) failed — stopping; the next pass asks "
+                               "again (none counted as unanswered)", failed)
+                break
             await asyncio.sleep(_MEASURED_HISTORY_DRAIN_PACE)
-    if resplit:
-        logger.info("measured history drain: %d half-hour(s) took the bill's House/EV split "
-                    "(their cached bill was cost-only)", resplit)
-    if settled:
-        logger.info("measured history drain: settled %d imported capped slot(s) from the bill", settled)
-    return {"ok": True, "settled": settled, "resplit": resplit}
+        logger.info("octopus asks: %d of %d asked, %d bill(s) cached, %d held%s",
+                    st["done"], st["total"], st["stored"], st["held"],
+                    "" if not st.get("reason") else " — stopped (%s)" % st["reason"])
+        return {"ok": True, "asked": st["done"], "stored": st["stored"], "held": st["held"],
+                "settled": st["stored"], "reason": st.get("reason")}
+    finally:
+        st["status"] = "idle"
+        st["finished"] = _dt_now_iso_safe()
+
+
+_ASK_PAGE_DAYS = 3            # local days of cost half-hours per page (one query a day)
+_ASK_PAGE_BREAKDOWN = 48      # IOG-SMB breakdown half-hours per page (runs under 12 a query)
+_ASK_HEADROOM = 0.25          # stop under this share of the allowance left (decided (c))
+_ask_state: dict = {"status": "idle"}
+
+
+def ask_status() -> dict:
+    """The one asker's progress, for the banner: {status, total, done, stored, held, reason}."""
+    return dict(_ask_state)
+
+
+def _ask_selection(store, now=None) -> dict:
+    """{slot: "bill" | "split"} the one selector picks now (`_ask_queue` over `ask_candidate_facts`)."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    now = now or _dt.now(_tz.utc).replace(tzinfo=None)
+    mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan") or ""
+    floor = (now - _td(days=_API_RETENTION_DAYS)).isoformat()
+    facts = store.ask_candidate_facts(floor, now.isoformat(), mpan=mpan)
+    return _ask_queue(facts, store, mpan, now)
+
+
+def _ask_pages(sel: dict) -> list:
+    """The selection newest first, in pages: up to `_ASK_PAGE_DAYS` local days of cost half-hours,
+    or `_ASK_PAGE_BREAKDOWN` breakdown ones, a page."""
+    from datetime import datetime as _dt, timezone as _tz
+    from zoneinfo import ZoneInfo
+    lon = ZoneInfo("Europe/London")
+    pages, cur, days, n_bd = [], [], set(), 0
+    for sl in sorted(sel, reverse=True):
+        bd = bill_kind_at(sl) == "breakdown"
+        day = None if bd else _dt.fromisoformat(sl).replace(tzinfo=_tz.utc).astimezone(lon).date()
+        if cur and ((day is not None and day not in days and len(days) >= _ASK_PAGE_DAYS)
+                    or (bd and n_bd >= _ASK_PAGE_BREAKDOWN)):
+            pages.append(cur)
+            cur, days, n_bd = [], set(), 0
+        cur.append(sl)
+        if bd:
+            n_bd += 1
+        else:
+            days.add(day)
+    if cur:
+        pages.append(cur)
+    return pages
+
+
+async def _ask_allowance_ok() -> bool:
+    """Whether Octopus's allowance has `_ASK_HEADROOM` or more left. True where the client cannot say."""
+    get = getattr(_kraken_client, "get_rate_limit", None)
+    if get is None:
+        return True
+    try:
+        rl = await get()
+    except Exception:
+        return True
+    if not rl:
+        return True
+    if rl.get("isBlocked"):
+        return False
+    rem, lim = rl.get("remaining"), rl.get("pointsLimit")
+    return not (rem is not None and lim and rem < _ASK_HEADROOM * lim)
 
 
 def _measured_history_backlog() -> int:
-    """Count of imported capped-window slots still needing the billed breakdown (drain work signal)."""
+    """How many half-hours the one asker would ask Octopus about now (`_ask_selection`): its work
+    signal, so it is scheduled only when there is something to ask (engine step 3c)."""
     store = _store
     if store is None or not _any_intelligent():
         return 0
-    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
-    cutoff = (_dt.now(_tz.utc).replace(tzinfo=None) - _td(hours=_RECONCILE_SETTLE_HOURS)).isoformat()
     try:
-        # A bill held back is not backlog: it would reschedule the drain every tick (v4 4.5.23).
-        # The live pass keeps asking for it, and the drain retries it whenever other backlog runs.
-        # Nor is one Octopus has not billed in 30 days of asking: it rescheduled the drain every
-        # hourly tick for good (§5 (a)).
-        _mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan") or ""
-        # Nor, until its day comes round, one resting under the backoff.
-        _a = _bill_ask(store, _mpan)
-        _gone = _bill_ask_given_up(_a, mark=False) | _bill_ask_resting(_a)
-        _ex = set(_bill_split_wait(store)) | _gone
-        # each Intelligent agreement's window, as the drain walks them — and on IOG-SMB the teal
-        # half-hours whose cost-only bill is asked its breakdown (less any given up)
-        _sa = _split_ask(store)
-        _sgone = _bill_ask_given_up(_sa, mark=False) | _bill_ask_resting(_sa)
-        n = 0
-        for vf, vt, smb in _intelligent_windows():
-            lo, hi = _ask_floor(vf), (min(cutoff, vt) if vt else cutoff)
-            if hi <= lo:
-                continue
-            n += int(store.count_settleable_blocks(lo, hi, exclude=_ex, include_imported=smb))
-            if smb:
-                n += int(store.count_cost_only_split_slots(lo, hi, exclude=set(_ex) | _sgone))
-        return n
+        return len(_ask_selection(store))
     except Exception:
         return 0
 
@@ -11844,7 +11765,7 @@ def _maybe_drain_measured_history() -> None:
                 _measured_history_drain_running = False
 
         _measured_history_drain_running = True
-        logger.info("measured history drain: scheduling — %d imported capped slot(s) awaiting the bill",
+        logger.info("octopus asks: scheduling — %d half-hour(s) to ask Octopus about",
                     _measured_history_backlog())
         loop.create_task(_task())
     except Exception as e:

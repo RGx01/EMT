@@ -109,7 +109,7 @@ class _Harness(unittest.TestCase):
 
     def _live(self, node=None):
         engine._kraken_client = client = _Client(node)
-        _run(engine.measure_settled_dispatched_blocks())
+        _run(engine.run_measured_history_drain())
         return client
 
     def _drain(self, node=None):
@@ -129,7 +129,9 @@ class TheLivePass(_Harness):
         self._first_unanswered(29)
         self.assertIn(self.slot, self._live().asked)
 
-    def test_after_30_days_the_live_pass_stops_asking(self):
+    def test_after_30_days_it_stops_asking_and_says_when(self):
+        """The live pass's, until the one asker took it (engine step 3c): `gave_up` is what
+        "abandoned" and the panel's "not asked since" read."""
         self._first_unanswered(31)
         self.assertNotIn(self.slot, self._live().asked)
         self.assertTrue(self._record()[self.slot].get("gave_up"))

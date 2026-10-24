@@ -130,12 +130,13 @@ class TheDrain(_Harness):
         self.assertIn(slot, c.cost)                 # the billed cost, off IOG-SMB
         self.assertNotIn(slot, c.breakdown)
 
-    def test_off_iog_smb_imported_history_is_not_asked(self):
-        """GUARD: an API import already holds Octopus's cost."""
+    def test_off_iog_smb_imported_history_is_asked_too(self):
+        """Decided (b), 24 Oct 2026 (engine step 3): imported history with no bill is asked like any
+        other — until step 3c, off IOG-SMB only where the import recorded no cost."""
         slot = _ago(40)
         self._block(slot, source="imported_api")
         c = self._drain()
-        self.assertNotIn(slot, c.cost + c.breakdown)
+        self.assertIn(slot, c.cost)
 
     def test_on_iog_smb_imported_history_is_still_asked(self):
         """GUARD: its bill carries the House/EV split."""
@@ -144,9 +145,10 @@ class TheDrain(_Harness):
         self.assertIn(slot, self._drain().breakdown)
 
     def test_the_backlog_counts_it(self):
+        """Both: the imported one too since decided (b)."""
         self._block(_ago(40))
         self._block(_ago(41), source="imported_api")
-        self.assertEqual(engine._measured_history_backlog(), 1)
+        self.assertEqual(engine._measured_history_backlog(), 2)
 
 
 class TwoYears(_Harness):
@@ -171,10 +173,10 @@ class TwoYears(_Harness):
         self._block(_ago(800))
         self.assertEqual(engine._measured_history_backlog(), 0)
 
-    def test_the_live_pass_is_bounded_too(self):
+    def test_the_one_selector_is_bounded(self):
+        """The live pass's bound, until step 3c; the one selector reads from the same two years."""
         import inspect
-        self.assertIn("get_dispatched_blocks_awaiting_measure(_ask_floor(_measured_floor()))",
-                      inspect.getsource(engine.measure_settled_dispatched_blocks))
+        self.assertIn("_API_RETENTION_DAYS", inspect.getsource(engine._ask_selection))
 
 
 class ThePill(_Harness):
