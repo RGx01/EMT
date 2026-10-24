@@ -1236,10 +1236,13 @@ class KrakenAPIClient:
             return failed
 
         days = {_day(s) for s in pending}
+        self.last_fetch_failures = 0
         for attempt in range(1, max(1, max_attempts) + 1):
             failed = await _ask(days)
             days = {w for w in failed if any(_day(p) == w for p in pending)}   # only an error again
             if not days or attempt == max(1, max_attempts):
+                # windows that still raised: an error, not "Octopus has no bill" (engine step 3c)
+                self.last_fetch_failures = len(days)
                 break
             if pace_s:
                 await asyncio.sleep(pace_s * attempt)
@@ -1344,6 +1347,7 @@ class KrakenAPIClient:
             cur.append(s)
         if cur:
             chunks.append(cur)
+        self.last_fetch_failures = 0
         for ch in reversed(chunks):                     # newest chunk first
             ws = (_dt.fromisoformat(ch[0]) - _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
             we = (_dt.fromisoformat(ch[-1]) + _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
@@ -1353,6 +1357,7 @@ class KrakenAPIClient:
                     timezone_name=timezone_name, quiet=True)
             except KrakenAPIError:
                 by_start = {}
+                self.last_fetch_failures += 1  # an error, not "no breakdown" (engine step 3c)
             for s in ch:
                 hit = by_start.get(s)
                 if hit is not None:

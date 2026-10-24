@@ -1,4 +1,12 @@
-"""BL-70: a bill that says "nothing was drawn" is an ANSWER, not a gap.
+"""BL-70: a half-hour that drew nothing is not asked again and again.
+
+Engine step 3c (24 Oct 2026): the one asker asks only half-hours with kWh (`ask_candidate_facts`),
+so a dispatched-but-idle half-hour is never asked at all — the end BL-70 reached by caching
+Octopus's zero answer, without the ask. Below, the original account (the live pass); what still
+holds — a zero against EMT's own kWh is not believed, an empty answer is asked again, a real bill
+stores cost and split — is tested on the one asker.
+
+BL-70: a bill that says "nothing was drawn" is an ANSWER, not a gap.
 
 `recover_device_breakdown` returns a parsed node for a dispatched-but-idle half-hour —
 every bucket present, every value zero — and counts it `recovered`. `measure_settled`
@@ -91,62 +99,23 @@ class _Base(unittest.TestCase):
             "FROM measured_cost WHERE slot_start=?", (slot or self.SLOT,)).fetchone()
 
 
-class TestBillSaysZero(_Base):
-    """The block drew nothing and the bill agrees — a settled fact, so cache it."""
+class TestNothingDrawn(_Base):
+    """The block drew nothing: the one asker does not ask (BL-70's re-asks end at the source)."""
 
-    def test_zero_is_stored_not_counted_absent(self):
-        self._block(0.0)
-        engine._kraken_client = _CountingClient(ZERO_NODE)
-        res = _run(engine.measure_settled_dispatched_blocks())
-        self.assertEqual(res["zero"], 1)
-        self.assertEqual(res["absent"], 0)
-        self.assertEqual(res["stored"], 0)
-
-    def test_the_cached_row_records_the_bill_s_actual_answer(self):
-        self._block(0.0)
-        engine._kraken_client = _CountingClient(ZERO_NODE)
-        _run(engine.measure_settled_dispatched_blocks())
-        r = self._mc()
-        self.assertIsNotNone(r, "the bill answered; nothing was written")
-        self.assertEqual(float(r["cost_incl"]), 0.0)
-        self.assertEqual(float(r["cost_excl"]), 0.0)
-        self.assertEqual(float(r["kwh"]), 0.0)
-        self.assertEqual(r["label"], "ZERO")
-
-    def test_breakdown_columns_stay_null(self):
-        """An empty half-hour has no split to state. NULL keeps the row clear of
-        slots_with_bill_split() (and out of the settled split heal, removed 16 Oct 2026)."""
-        self._block(0.0)
-        engine._kraken_client = _CountingClient(ZERO_NODE)
-        _run(engine.measure_settled_dispatched_blocks())
-        r = self._mc()
-        for col in ("home_kwh", "home_rate", "ev_kwh", "ev_rate"):
-            self.assertIsNone(r[col], "%s should stay NULL on a zero slot" % col)
-
-    def test_the_zero_row_is_not_a_bill_stated_split(self):
-        self._block(0.0)
-        engine._kraken_client = _CountingClient(ZERO_NODE)
-        _run(engine.measure_settled_dispatched_blocks())
-        self.assertNotIn(self.SLOT,
-                         self.st.slots_with_bill_split("2026-09-01", "2026-09-30"))
-
-    def test_second_pass_does_not_touch_the_network(self):
-        """THE regression. Before BL-70 this re-fetched every hour, forever."""
+    def test_it_is_never_asked(self):
         self._block(0.0)
         c = _CountingClient(ZERO_NODE)
         engine._kraken_client = c
-        _run(engine.measure_settled_dispatched_blocks())
-        self.assertEqual(c.calls, 1)
-        res = _run(engine.measure_settled_dispatched_blocks())
-        self.assertEqual(c.calls, 1, "the slot was re-fetched after the bill already answered")
-        self.assertEqual(res["fetched"], 0)
+        _run(engine.run_measured_history_drain())
+        _run(engine.run_measured_history_drain())
+        self.assertEqual(c.calls, 0)
+        self.assertIsNone(self._mc())
 
     def test_the_block_is_left_alone(self):
-        """No stamp: imp_kwh=0/imp_cost=0 already agrees with the bill, and
-        apply_measured_to_block rightly refuses an empty half-hour."""
+        """GUARD: imp_kwh=0/imp_cost=0 already agrees with any bill; nothing stamps it."""
         self._block(0.0)
         engine._kraken_client = _CountingClient(ZERO_NODE)
-        _run(engine.measure_settled_dispatched_blocks())
+        _run(engine.run_measured_history_drain())
         engine.apply_measured_settled()
         rs = self.st._conn.execute(
             "SELECT rate_source, imp_cost FROM blocks WHERE block_start=?",
@@ -159,46 +128,35 @@ class TestBillHasNotRunYet(_Base):
     """The block DID draw energy but the bill reports zero — that is a lagging bill,
     not a settled zero. Caching it would be a permanent lie, so keep retrying."""
 
-    def test_zero_against_a_non_empty_block_is_absent_not_zero(self):
+    def test_zero_against_a_non_empty_block_is_unanswered(self):
         self._block(5.276)
         engine._kraken_client = _CountingClient(ZERO_NODE)
-        res = _run(engine.measure_settled_dispatched_blocks())
-        self.assertEqual(res["absent"], 1)
-        self.assertEqual(res["zero"], 0)
-
-    def test_nothing_is_cached(self):
-        self._block(5.276)
-        engine._kraken_client = _CountingClient(ZERO_NODE)
-        _run(engine.measure_settled_dispatched_blocks())
+        _run(engine.run_measured_history_drain())
         self.assertIsNone(self._mc(), "a bill that has not run yet must not be cached")
+        self.assertIn(self.SLOT, self.st.ask_record("bill"))
 
     def test_it_is_retried_on_the_next_pass(self):
+        """GUARD: inside its first two days it is asked every pass."""
         self._block(5.276)
         c = _CountingClient(ZERO_NODE)
         engine._kraken_client = c
-        _run(engine.measure_settled_dispatched_blocks())
-        _run(engine.measure_settled_dispatched_blocks())
+        _run(engine.run_measured_history_drain())
+        _run(engine.run_measured_history_drain())
         self.assertEqual(c.calls, 2)
         self.assertEqual(c.slots_asked[-1], [self.SLOT])
 
 
 class TestGenuinelyAbsent(_Base):
-    """No node at all — the bill said nothing. Unchanged behaviour."""
+    """No node at all — the bill said nothing."""
 
-    def test_missing_node_is_absent_and_uncached(self):
-        self._block(0.0)
-        engine._kraken_client = _CountingClient(None)
-        res = _run(engine.measure_settled_dispatched_blocks())
-        self.assertEqual(res["absent"], 1)
-        self.assertEqual(res["zero"], 0)
-        self.assertIsNone(self._mc())
-
-    def test_missing_node_is_retried(self):
-        self._block(0.0)
+    def test_missing_node_is_unanswered_uncached_and_retried(self):
+        self._block(5.276)
         c = _CountingClient(None)
         engine._kraken_client = c
-        _run(engine.measure_settled_dispatched_blocks())
-        _run(engine.measure_settled_dispatched_blocks())
+        _run(engine.run_measured_history_drain())
+        self.assertIsNone(self._mc())
+        self.assertIn(self.SLOT, self.st.ask_record("bill"))
+        _run(engine.run_measured_history_drain())
         self.assertEqual(c.calls, 2)
 
 
@@ -214,9 +172,8 @@ class TestNormalSlotUnaffected(_Base):
                 "ev_rate_exc": round(OFF * 0.95238, 6),
                 "home_band": "off_peak", "ev_band": "off_peak"}
         engine._kraken_client = _CountingClient(node)
-        res = _run(engine.measure_settled_dispatched_blocks())
+        res = _run(engine.run_measured_history_drain())
         self.assertEqual(res["stored"], 1)
-        self.assertEqual(res["zero"], 0)
         r = self._mc()
         # the stored cost is the sum of the bill's OWN per-bucket figures, each already
         # rounded — not the total re-rounded, which lands a rounding unit away (0.289810

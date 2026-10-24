@@ -132,9 +132,6 @@ class TheDrainAsksOffSmb(unittest.TestCase):
                                                include_imported=False)
         self.assertEqual(got, ["2026-07-21T00:00:00", "2026-07-21T01:00:00"])
 
-    def test_the_backlog_agrees(self):
-        self.assertEqual(self._st().count_settleable_blocks("2026-07-01", "2026-08-01",
-                                                            include_imported=False), 2)
 
     def test_the_panel_does_not_say_not_asked(self):
         st = mock.MagicMock()

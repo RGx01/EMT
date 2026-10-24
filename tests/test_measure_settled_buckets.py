@@ -71,7 +71,7 @@ class TestMeasureSettledBuckets(unittest.TestCase):
                 "home_rate_exc": round(OFF*0.95238, 6), "ev_rate_exc": round(OFF*0.95238, 6),
                 "home_band": "off_peak", "ev_band": "off_peak"}
         engine._kraken_client = _BucketClient(node)
-        res = _run(engine.measure_settled_dispatched_blocks())
+        res = _run(engine.run_measured_history_drain())
         self.assertEqual(res["stored"], 1)
         mc = self.st._conn.execute(
             "SELECT cost_incl FROM measured_cost WHERE slot_start=?", (self.SLOT,)).fetchone()
@@ -86,7 +86,7 @@ class TestMeasureSettledBuckets(unittest.TestCase):
         node = {"cost_incl": round(5.276*OFF, 6), "cost_excl": round(5.276*OFF*0.95238, 6),
                 "off_peak": True, "kwh": 5.276}
         engine._kraken_client = _SingleCostClient(node)
-        res = _run(engine.measure_settled_dispatched_blocks())
+        res = _run(engine.run_measured_history_drain())
         self.assertEqual(res["stored"], 1)
         mc = self.st._conn.execute(
             "SELECT cost_incl, label FROM measured_cost WHERE slot_start=?", (self.SLOT,)).fetchone()

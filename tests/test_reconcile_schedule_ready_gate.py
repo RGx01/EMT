@@ -32,7 +32,7 @@ class TestReconcileReadyGate(unittest.IsolatedAsyncioTestCase):
                       engine._kraken_rate_schedules,
                       engine._capture_dispatch_slots,
                       engine.reconcile_dispatch_overlay,
-                      engine.measure_settled_dispatched_blocks)
+                      engine._maybe_drain_measured_history)
         engine._kraken_client = object()
         engine._kraken_discovery = {"import": {"mpan": "x"}}
         engine._last_dispatch_capture = None
@@ -46,20 +46,20 @@ class TestReconcileReadyGate(unittest.IsolatedAsyncioTestCase):
             self.calls["reconcile"] += 1
             return {"reverted": 0}
 
-        async def _meas():
+        def _meas():
             self.calls["measure"] += 1
             return {}
 
         engine._capture_dispatch_slots = _cap
         engine.reconcile_dispatch_overlay = _rec
-        engine.measure_settled_dispatched_blocks = _meas
+        engine._maybe_drain_measured_history = _meas
 
     def tearDown(self):
         (engine._kraken_client, engine._kraken_discovery,
          engine._last_dispatch_capture, engine._last_reconcile,
          engine._kraken_rate_schedules, engine._capture_dispatch_slots,
          engine.reconcile_dispatch_overlay,
-         engine.measure_settled_dispatched_blocks) = self._save
+         engine._maybe_drain_measured_history) = self._save
 
     async def test_unready_schedule_does_not_consume_slot(self):
         engine._kraken_rate_schedules = {"import": _EmptySched()}

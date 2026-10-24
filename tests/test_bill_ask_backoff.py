@@ -91,8 +91,12 @@ class ThePasses(_Harness):
 class TheTealAsk(unittest.TestCase):
 
     def test_the_breakdown_ask_rests_too(self):
-        src = open(engine.__file__, encoding="utf-8").read()
-        self.assertEqual(src.count("_gone = _bill_ask_given_up(_ask) | _bill_ask_resting(_ask)"), 3)
+        """The one selector rests a split ask as it does a bill ask (three copies of this rule,
+        one per asker, until engine step 3c)."""
+        import inspect
+        src = inspect.getsource(engine._ask_queue)
+        self.assertIn('"split": _bill_ask_given_up(sask, mark=False) | _bill_ask_resting(sask, now)', src)
+        self.assertIn('"bill": _bill_ask_given_up(ask, mark=False) | _bill_ask_resting(ask, now)', src)
 
 
 if __name__ == "__main__":

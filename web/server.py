@@ -4119,6 +4119,14 @@ def api_band_parity_download():
     return send_file(path, as_attachment=True, download_name=os.path.basename(path))
 
 
+@app.route("/api/settlement/asking", methods=["GET"])
+def api_settlement_asking():
+    """The one asker's progress (engine step 3c), for the banner while it works through a backlog:
+    {status, total, done, stored, held, reason, started, finished}."""
+    import engine as _eng
+    return jsonify(_eng.ask_status())
+
+
 # ── Engine step 3a: the ask dry run (EMT-v5_engine_step3_ask_queue_design.md §5) ──
 # What the one ask selector would ask Octopus for, beside what the live pass and the drain ask today.
 # Read-only, no Octopus call; the report goes to the share's reports folder, as the parity report's.

@@ -111,7 +111,7 @@ class TheLivePass(_Harness):
 
     def _pass(self, node):
         engine._kraken_client = client = _Client(node)
-        return _run(engine.measure_settled_dispatched_blocks()), client
+        return _run(engine.run_measured_history_drain()), client
 
     def test_a_bill_with_no_ev_is_held_back(self):
         slot = _slot(1)
@@ -166,13 +166,20 @@ class TheDrain(_Harness):
         self.assertIsNone(self._cached(slot), "the drain cached the house-only bill")
         self.assertIn(slot, engine._bill_split_wait(self.st))
 
-    def test_a_held_slot_is_not_drain_backlog(self):
-        """Otherwise the drain is rescheduled every tick for a slot it cannot settle."""
+    def test_a_held_slot_follows_the_backoff(self):
+        """Engine step 3c (24 Oct 2026): a held half-hour is asked on the same backoff as an
+        unanswered one — hourly for two days, then daily — not every pass for 28 days, and not left
+        out of the backlog altogether (which asked it only when other backlog ran the drain)."""
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        ago = lambda **kw: (now - timedelta(**kw)).isoformat()
         slot = _slot(2)
         self._block(slot)
         self.assertEqual(engine._measured_history_backlog(), 1)
-        engine._bill_split_wait_save(self.st, {slot: {"first": _slot(1)}})
-        self.assertEqual(engine._measured_history_backlog(), 0)
+        engine._bill_split_wait_save(self.st, {slot: {"first": ago(days=3), "last": ago(hours=1)}})
+        self.assertEqual(engine._measured_history_backlog(), 0)            # resting today
+        engine._bill_split_wait_save(self.st, {slot: {"first": ago(days=3), "last": ago(hours=25)}})
+        self.assertEqual(engine._measured_history_backlog(), 1)            # its day has come
 
 
 class TheImport(unittest.TestCase):
