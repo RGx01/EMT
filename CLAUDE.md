@@ -33,7 +33,7 @@ the floor is what makes that safe — so a v4 fix is ported as its forward fix o
 
 **The work now is v5**, in this repo (`RGx01/EMT`). It was seeded from v4 4.5.14 and is being
 deconstructed in the open; the forward fixes from 4.5.15 (#473, #475) and 4.5.16 (#481) were
-ported afterwards, and 4.5.17–4.5.19's VAT forward fixes with them, 4.5.20's gap-fill fix, 4.5.21's four, 4.5.22's VAT resync (as forward code: it waits on Octopus, so the floor alone cannot guarantee it ran), 4.5.23's hold-back, and 4.5.24's stitch cache (EMT #209, found here first). **Each new v4 release:** port its forward fixes, not its heal, and raise the
+ported afterwards, and 4.5.17–4.5.19's VAT forward fixes with them, 4.5.20's gap-fill fix, 4.5.21's four, 4.5.22's VAT resync (as forward code: it waits on Octopus, so the floor alone cannot guarantee it ran; removed in engine step 2d-3, 23 Oct 2026 — a v4 backup from before 13 Oct is opened in v4 first, import spec v26), 4.5.23's hold-back, and 4.5.24's stitch cache (EMT #209, found here first). **Each new v4 release:** port its forward fixes, not its heal, and raise the
 floor if it carries a heal (`v4import/gate.py` `FLOOR_VERSION`, import spec, ROADMAP §E, programme §E, this file).
 Steps: 1 dead code, 2 extract `billing.py`, 3 ReadStore/WriteStore, 4 API consolidated + HTML
 pipeline deleted, 5 schema (11 columns dropped, band moves to `block_segments`; done 10 Oct 2026 in PRs 5a–5c), 6 client +

@@ -6,8 +6,8 @@ One reference for the 4.5.23 hold-back — bill and split paths design §2, cons
 charged. "Known" was read three ways: EMT's EV segments (the live pass, the drain), the cached
 bill's EV (the VAT resync), the larger of the two (the re-fetch). Now `emt_ev_reference` — the
 larger — for all four, through `emt_ev_at`. Where nothing is cached (the live pass, the drain) it is
-the segments, as before; the VAT resync now also holds an answer that drops the car where EMT's split
-has it but the cached bill had no breakdown.
+the segments, as before. (The VAT resync was the fourth, until engine step 2d removed it, 23 Oct
+2026.)
 
 Discriminating (fail on the parent), except the guards named.
 """
@@ -21,7 +21,6 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 import engine                                                    # noqa: E402
 from block_store import BlockStore                               # noqa: E402
-from tests.test_measured_vat_resync import _Base, _zero, OCT, KWH, MPAN, OFF_EXC   # noqa: E402
 
 
 class TheReference(unittest.TestCase):
@@ -48,50 +47,6 @@ class TheReference(unittest.TestCase):
         self.assertEqual(st.get_bill_ev_kwh(["T"]), {"T": 0.0})
 
 
-class _Breakdowns:
-    """recover_device_breakdown stub: every slot answered at `ev` kWh EV, restated to 0% VAT."""
-    def __init__(self, ev):
-        self.ev = ev
-
-    async def recover_device_breakdown(self, mpan, slots, **kw):
-        exc = round(KWH * OFF_EXC, 6)
-        return {s: {"home_kwh": KWH - self.ev, "ev_kwh": self.ev,
-                    "home_cost": round((KWH - self.ev) * OFF_EXC, 6),
-                    "ev_cost": round(self.ev * OFF_EXC, 6),
-                    "home_rate": OFF_EXC, "ev_rate": OFF_EXC if self.ev else None,
-                    "home_rate_exc": OFF_EXC, "ev_rate_exc": OFF_EXC if self.ev else None,
-                    "home_band": "off_peak", "ev_band": "off_peak" if self.ev else None}
-                for s in slots}
-
-    async def recover_measurement_costs(self, mpan, slots, **kw):
-        return {}
-
-
-class TheVatResyncOnIogSmb(_Base):
-    """The resync's cached October bills are cost-only; EMT's split has the car in one half-hour."""
-
-    def setUp(self):
-        super().setUp()
-        engine._kraken_discovery = {"import": {"mpan": MPAN, "tariff_code": "E-1R-IOG-SMB-X-B",
-            "agreements": [{"tariff_code": "E-1R-IOG-SMB-X-B",
-                            "valid_from": "2026-08-01T00:00:00Z", "valid_to": None}]}}
-        self.st.set_block_segments(OCT[0], "electricity_main",
-                                   [(2.5, OFF_EXC, OFF_EXC, "off_peak", "ev"),
-                                    (KWH - 2.5, OFF_EXC, OFF_EXC, "off_peak", "house")])
-        self.st._conn.commit()
-
-    def test_an_answer_dropping_emts_car_is_held_though_no_bill_split_was_cached(self):
-        self._hint()
-        res = self._run(_Breakdowns(ev=0.0))
-        self.assertIn("stuck", res, res)
-        self.assertEqual(res["stuck"]["unverified"], 1)
-
-    def test_an_answer_with_the_car_is_taken(self):
-        """GUARD: the restatement with the car heals as before."""
-        self._hint()
-        res = self._run(_Breakdowns(ev=2.5))
-        self.assertEqual(res.get("reapplied"), len(OCT), res)
-
 
 class EveryPathUsesIt(unittest.TestCase):
 
@@ -102,13 +57,13 @@ class EveryPathUsesIt(unittest.TestCase):
         return next(ast.get_source_segment(self.SRC, n) for n in ast.walk(tree)
                     if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
 
-    def test_the_four_paths(self):
-        for name in ("measure_settled_dispatched_blocks", "run_measured_history_drain",
-                     "run_measured_vat_resync"):
+    def test_the_three_paths(self):
+        """Four until the VAT resync went (engine step 2d, 23 Oct 2026)."""
+        for name in ("measure_settled_dispatched_blocks", "run_measured_history_drain"):
             self.assertIn("emt_ev_at(store,", self._fn(name), name)
         self.assertIn("emt_ev_reference(", self._fn("_refetch_diff"))
         for name in ("measure_settled_dispatched_blocks", "run_measured_history_drain",
-                     "run_measured_vat_resync", "_refetch_diff"):
+                     "_refetch_diff"):
             body = self._fn(name)
             self.assertNotIn("get_ev_split_kwh(", body, name)
             self.assertNotIn('get_measured_breakdown(slot) or {}).get("ev_kwh")', body, name)
