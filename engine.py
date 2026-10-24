@@ -6537,7 +6537,7 @@ async def retry_settlement_for_unsettled(now=None, max_lookback_days=None) -> di
         return {"ok": True, "settled_import": 0, "settled_export": 0,
                 "unsettled_before": 0, "unsettled_after": 0, "window": None}
 
-    oldest = _store.get_oldest_unsettled_block_start()
+    oldest = _store.get_oldest_unsettled_block_start(include_finalised=True)
     if not oldest:
         return {"ok": True, "settled_import": 0, "settled_export": 0,
                 "unsettled_before": before, "unsettled_after": before,
