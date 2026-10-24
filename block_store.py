@@ -7609,6 +7609,34 @@ class BlockStore:
         "              AND d.kind = 'completed' AND d.energy_kwh IS NOT NULL) "
         "  AND m.slot_start >= ? AND m.slot_start < ? ")
 
+    def ask_candidate_facts(self, floor: str, before: str, mpan: str = "",
+                            meter_id: str = "electricity_main") -> list:
+        """Engine step 3a (24 Oct 2026): for each main-meter half-hour with kWh in [floor, before),
+        the facts the one ask selector reads — read-only, one pass. `bill_mpan` a bill cached for
+        `mpan`; `bill_any` for any MPAN; `cost_only` the latest cached bill has a cost and no
+        breakdown; `completed` a completed dispatch with energy; `slot` a dispatch slot the live pass
+        asks for (off-peak, or a completed smart charge)."""
+        rows = self._conn.execute(
+            "SELECT b.block_start, b.source, b.imp_kwh_api, COALESCE(b.rate_corrected, 0) AS corrected, "
+            "  b.rate_source, "
+            "  EXISTS (SELECT 1 FROM measured_cost m WHERE m.slot_start = b.block_start "
+            "          AND m.mpan = ? AND m.direction = 'CONSUMPTION') AS bill_mpan, "
+            "  EXISTS (SELECT 1 FROM measured_cost m WHERE m.slot_start = b.block_start) AS bill_any, "
+            "  EXISTS (SELECT 1 FROM measured_cost m WHERE m.slot_start = b.block_start "
+            "          AND m.direction = 'CONSUMPTION' AND m.cost_incl > 0 "
+            "          AND m.home_kwh IS NULL AND m.ev_kwh IS NULL "
+            "          AND m.fetched_at = (SELECT MAX(m2.fetched_at) FROM measured_cost m2 "
+            "                              WHERE m2.slot_start = m.slot_start "
+            "                              AND m2.direction = m.direction)) AS cost_only, "
+            "  EXISTS (SELECT 1 FROM dispatch_history d WHERE d.slot_start = b.block_start "
+            "          AND d.kind = 'completed' AND d.energy_kwh IS NOT NULL) AS completed, "
+            "  EXISTS (SELECT 1 FROM dispatch_slots s WHERE s.slot_start = b.block_start "
+            "          AND (s.off_peak = 1 OR s.source = 'smart-charge-completed')) AS slot "
+            "FROM blocks b WHERE b.meter_id = ? AND b.imp_kwh > 0 "
+            "  AND b.block_start >= ? AND b.block_start < ? ORDER BY b.block_start",
+            (mpan or "", meter_id, floor, before)).fetchall()
+        return [dict(r) for r in rows]
+
     def get_cost_only_split_slots(self, floor: str, after: str, before: str, limit: int) -> list:
         """One page, oldest first, of the half-hours whose latest cached bill is cost-only though
         the car drew in them (`_COST_ONLY_SPLIT_SQL`) — the history drain asks their breakdown."""
