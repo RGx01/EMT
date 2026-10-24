@@ -3855,9 +3855,9 @@ def _settlement_horizon_floor() -> str:
     from datetime import datetime, timezone, timedelta
     try:
         import engine as _eng
-        days = int(getattr(_eng, "_SETTLEMENT_SWEEP_HORIZON_DAYS", 14))
+        days = int(getattr(_eng, "_SETTLEMENT_SWEEP_HORIZON_DAYS", 30))
     except Exception:
-        days = 14
+        days = 30
     return (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)).isoformat()
 
 

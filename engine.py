@@ -182,8 +182,11 @@ _KRAKEN_SNAPSHOT_DONE_KEY = "pre_live_snapshot_done"
 # out behind the cursor and never be re-requested by the incremental poll. A
 # daily sweep re-fetches oldest-unsettled → now (advance_cursor=False) so those
 # gaps self-heal. Bounded to a horizon: beyond it, DCC settlement is unlikely and
-# the provisional value stands (also caps the sweep window cost).
-_SETTLEMENT_SWEEP_HORIZON_DAYS = 14
+# the provisional value stands (also caps the sweep window cost: 30 days is 1,440
+# half-hours, one 1,500-row REST page a channel).
+# 30 days, not 14 (24 Oct 2026, the user): a smart meter off the HAN can wait up to 21 days
+# before the supplier asks for a reconnect, and its DCC figures follow — 14 gave up on them.
+_SETTLEMENT_SWEEP_HORIZON_DAYS = 30
 _SETTLEMENT_SWEEP_MIN_INTERVAL_S = 24 * 3600   # run at most once per day
 _STATE_LAST_SWEEP = "last_settlement_sweep_utc"
 # Chunk 5: cached rate schedules for reconcile-time rate repair. Built once per
