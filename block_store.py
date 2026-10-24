@@ -1892,7 +1892,7 @@ class BlockStore:
             "label=excluded.label, kwh=excluded.kwh, fetched_at=excluded.fetched_at",
             (slot_start, mpan or "", direction, cost_incl, cost_excl, label, kwh,
              fetched_at or _utc_now_iso()))
-        self._conn.commit()
+        self._commit()
 
     def upsert_imported_bills(self, rows: list, *, mpan: str = "",
                               direction: str = "CONSUMPTION") -> int:
@@ -1930,7 +1930,7 @@ class BlockStore:
             "ev_kwh=excluded.ev_kwh, ev_rate=excluded.ev_rate",
             (slot_start, mpan or "", direction, home_kwh, home_rate, ev_kwh, ev_rate,
              _utc_now_iso()))
-        self._conn.commit()
+        self._commit()
 
     def get_measured_breakdown(self, slot_start: str, direction: str = "CONSUMPTION"):
         """C2: the cached four-bucket split for a slot (any mpan), or None if unset."""
@@ -2286,6 +2286,10 @@ class BlockStore:
         self._in_batch = True
         try:
             with self._conn:
+                # an open transaction, so a writer's SAVEPOINT (`_tx`) nests inside it rather
+                # than starting one its RELEASE would commit
+                if not self._conn.in_transaction:
+                    self._conn.execute("BEGIN")
                 yield
         finally:
             self._in_batch = False
@@ -2294,9 +2298,27 @@ class BlockStore:
     dispatch_batch = batch
 
     def _tx(self):
-        """A batched writer's transaction: the enclosing batch's, or its own."""
-        return contextlib.nullcontext() if getattr(self, "_in_batch", False) \
-            else self._conn
+        """A batched writer's transaction: its own, or — inside a batch — a savepoint in the batch's,
+        so a write that fails rolls back alone and the batch goes on (engine step 3c, 24 Oct 2026:
+        the one asker applies a page of bills in one batch, and a block whose segments fail must not
+        keep its columns — BL-79)."""
+        return self._savepoint() if getattr(self, "_in_batch", False) else self._conn
+
+    @contextlib.contextmanager
+    def _savepoint(self):
+        self._conn.execute("SAVEPOINT emt_tx")
+        try:
+            yield
+        except BaseException:
+            self._conn.execute("ROLLBACK TO emt_tx")
+            self._conn.execute("RELEASE emt_tx")
+            raise
+        self._conn.execute("RELEASE emt_tx")
+
+    def _commit(self) -> None:
+        """Commit, unless inside a batch (which commits once, at its end)."""
+        if not getattr(self, "_in_batch", False):
+            self._conn.commit()
 
     def get_dispatch_history(self, start_iso: str, end_iso: str,
                              kind: str | None = None) -> list:
@@ -4331,7 +4353,7 @@ class BlockStore:
                    updated_at = excluded.updated_at""",
             (key, value, _utc_now_iso()),
         )
-        self._conn.commit()
+        self._commit()
 
     def get_kraken_state(self, key: str) -> Optional[str]:
         """Read an ingester progress marker. None if never set."""
@@ -4399,7 +4421,7 @@ class BlockStore:
 
     def ask_record_save(self, kind: str, d: dict) -> None:
         """Replace one kind's half-hours with `d` (its record's shape), in one transaction."""
-        with self._conn:
+        with self._tx():
             self._conn.execute("DELETE FROM octopus_ask WHERE kind = ?", (kind,))
             self._conn.executemany(
                 "INSERT INTO octopus_ask (slot_start, kind, first, last, state, since) "
@@ -8307,7 +8329,7 @@ class BlockStore:
         the bill replaces the user's Cost Correction, so `rate_corrected` clears in the same
         UPDATE. No automatic pass passes it — they never reach a corrected block.
         """
-        with self._conn:
+        with self._tx():
             cur = self._conn.execute(
                 "UPDATE blocks SET imp_rate = ?, imp_cost = ?, rate_source = 'settled', "
                 "imp_cost_exc = ?" + (", rate_corrected = 0" if replace_correction else "") + " "
@@ -8346,7 +8368,7 @@ class BlockStore:
         safe is `repair_device_rate_drift()`, which detects exactly this
         divergence on every pass -- see `run_device_rate_drift_repair`.
         """
-        with self._conn:
+        with self._tx():
             cur = self._conn.execute(
                 "UPDATE blocks SET imp_rate = ?, "
                 "imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "

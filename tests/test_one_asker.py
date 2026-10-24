@@ -116,6 +116,68 @@ class TheAsker(_Base):
         self.assertEqual(set(self.st.ask_record("bill")), set(DAYS))
 
 
+class TheCommits(_Base):
+    """A page's writes commit once (24 Oct 2026, dev's first pass: a commit for every bill, record
+    and apply — about five a half-hour — held the engine loop up to 41 s and dropped HA's connection
+    twice). Counted with SQLite's trace callback, which sees every COMMIT the connection issues."""
+
+    def _commits(self, client):
+        seen = []
+        self.st._conn.set_trace_callback(lambda sql: seen.append(sql) if sql.strip().upper()
+                                         .startswith(("COMMIT", "RELEASE")) else None)
+        try:
+            with mock.patch.object(engine, "_apply_bills_paced", engine._apply_bills_paced.__wrapped__
+                                   if hasattr(engine._apply_bills_paced, "__wrapped__") else
+                                   self._real_paced):
+                self._run(client)
+        finally:
+            self.st._conn.set_trace_callback(None)
+        return sum(1 for q in seen if q.strip().upper().startswith("COMMIT"))
+
+    def setUp(self):
+        super().setUp()
+        self._real_paced = self.p[-1].temp_original     # the real _apply_bills_paced
+
+        class _Sched:
+            def is_empty(self): return False
+            def day_rate_bounds(self, ts): return (5.493, 32.3092)
+            def resolve(self, ts): return 32.3092
+        self.p2 = [mock.patch.object(engine, "_kraken_rate_schedules", {"import": _Sched()}),
+                   mock.patch.object(engine, "_agreement_priced_ok", lambda bs: True)]
+        for x in self.p2:
+            x.start()
+
+    def tearDown(self):
+        for x in self.p2:
+            x.stop()
+        super().tearDown()
+
+    def test_a_page_commits_once_and_its_applies_once(self):
+        # 7 half-hours in 3 pages: the records' give-up marking (2), then per page the answers (1)
+        # and the applies (1) — not ~5 a half-hour
+        n = self._commits(_Client())
+        self.assertLessEqual(n, 2 + 3 * 2 + 2, n)
+        self.assertEqual(len(self._cached()), 7)
+        settled = self.st._conn.execute(
+            "SELECT COUNT(*) FROM blocks WHERE rate_source = 'settled'").fetchone()[0]
+        self.assertEqual(settled, 7)                                   # the applies did write
+
+    def test_a_block_that_fails_rolls_back_alone(self):
+        """BL-79 in a batch: a write that raises inside `_tx` takes only its own statements back."""
+        with self.st.batch():
+            self.st.upsert_measured_cost(DAYS[0], mpan=MPAN, cost_incl=0.1, label="OFF_PEAK", kwh=1.0)
+            try:
+                with self.st._tx():
+                    self.st._conn.execute("UPDATE blocks SET imp_cost = 9 WHERE block_start = ?",
+                                          (DAYS[1],))
+                    raise RuntimeError("the segments failed")
+            except RuntimeError:
+                pass
+        cost = self.st._conn.execute("SELECT imp_cost FROM blocks WHERE block_start = ?",
+                                     (DAYS[1],)).fetchone()[0]
+        self.assertEqual((cost, self._cached()), (0.3, {DAYS[0]}))
+
+
 class TheBanner(_Base):
 
     def test_its_progress_is_kept(self):
