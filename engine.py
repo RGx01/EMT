@@ -11457,9 +11457,14 @@ def refetch_apply_check(token: str, store=None) -> "str | None":
 @job("range_refetch")
 async def run_refetch_apply(token: str) -> dict:
     """Write the previewed differences: the settled kWh (upsert_kraken_block, which queues the
-    block's re-run), the bill (measured_cost, then apply_measured_to_block), the split with it —
-    except a bill 4.5.23 would hold. Corrected blocks were never fetched. The route has checked
-    the token (refetch_apply_check) and taken the safety backup."""
+    block's re-run), the bill through the asker's own write (`_store_bill`), then
+    apply_measured_to_block, the split with it — except a bill 4.5.23 would hold. A corrected
+    half-hour is fetched too, and its bill replaces the correction (design §5.2). The route has
+    checked the token (refetch_apply_check) and taken the safety backup.
+
+    The ask record follows (engine step 3d, 24 Oct 2026): a half-hour whose bill is written leaves
+    the bill and split asks, a bill with the car releases its hold, and one 4.5.23 holds is held
+    there — as the one asker does. One batch for the whole apply: a month is ~1,500 writes."""
     import job_coordinator as _jc
     global _refetch_preview
     st, p = _refetch_state, _refetch_preview
@@ -11472,50 +11477,8 @@ async def run_refetch_apply(token: str) -> dict:
             raise RuntimeError(why)
         imp = (_kraken_discovery or {}).get("import") or {}
         mpan = imp.get("mpan") or ""
-        for r in p["rows"]:
-            s, o = r["start"], p["octo"][r["start"]]
-            # imported history keeps its own kWh: a difference there is reported, not written
-            # as DCC (it would mark imported history settled and queue it for re-runs)
-            if "kwh" in r and not r["kwh"].get("imported"):
-                _store.upsert_kraken_block(s, "electricity_main", o["kwh"], source="kraken_api",
-                                           billing_source="api")
-                done["kwh"] += 1
-            if "export" in r and not r["export"].get("imported"):
-                _store.upsert_kraken_block(s, "electricity_main", o["exp_kwh"], channel="export",
-                                           source="kraken_api", billing_source="api")
-                done["export"] += 1
-            if "bill" in r:
-                if r["bill"]["held"]:
-                    done["held"] += 1
-                    continue
-                b = o["bill"]
-                _store.upsert_measured_cost(s, mpan=mpan, cost_incl=b["cost_incl"],
-                                            cost_excl=b["cost_excl"], label=b["label"], kwh=b["kwh"])
-                if b.get("breakdown"):
-                    hk, hr, ek, er = b["breakdown"]
-                    _store.upsert_measured_breakdown(s, mpan=mpan, home_kwh=hk, home_rate=hr,
-                                                     ev_kwh=ek, ev_rate=er)
-                # the bill is stored either way; whether the block took it is the applier's call
-                # (it refuses, e.g., with no tariff rate to snap to) — counted apart, not as applied
-                # a corrected half-hour: the bill replaces the user's correction (design §5.2) —
-                # the flag clears in the settle's own UPDATE, so a refusal leaves it as it was
-                corr = bool(r["bill"].get("corrected"))
-                try:
-                    took = apply_measured_to_block(s, cost_incl=float(b["cost_incl"]),
-                                                   cost_excl=b["cost_excl"], label=b["label"],
-                                                   replace_correction=corr)
-                except Exception as e:
-                    logger.warning("range re-fetch: re-apply failed for %s: %s", s, e)
-                    took = False
-                if took:
-                    done["bill"] += 1
-                    if corr:
-                        done["corrections"] += 1
-                        logger.info("range re-fetch: %s — the bill replaced the user's correction", s)
-                else:
-                    done["not_settled"] += 1
-                    logger.warning("range re-fetch: %s — the bill is stored, the block did not "
-                                   "re-settle from it", s)
+        with _store.batch():
+            _refetch_write(p, mpan, done)
         _refetch_preview = {}
         st.update({"status": "done", "phase": "applied", "applied": done, "token": None})
         logger.info("range re-fetch: applied %s..%s — %s", p.get("from"), p.get("to"), done)
@@ -11526,6 +11489,61 @@ async def run_refetch_apply(token: str) -> dict:
         return {"ok": False, "error": str(e)}
     finally:
         _jc.mark("range_refetch", status=st.get("status") or "done")
+
+
+def _refetch_write(p: dict, mpan: str, done: dict) -> None:
+    """The re-fetch's writes and the ask record's changes — synchronous, for one batch."""
+    store = _store
+    wait = _bill_split_wait(store)
+    bills, splits = _bill_ask(store, mpan), _split_ask(store)
+    before = (_snapshot(wait), _snapshot(bills), _snapshot(splits))
+    for r in p["rows"]:
+        s, o = r["start"], p["octo"][r["start"]]
+        # imported history keeps its own kWh: a difference there is reported, not written
+        # as DCC (it would mark imported history settled and queue it for re-runs)
+        if "kwh" in r and not r["kwh"].get("imported"):
+            _store.upsert_kraken_block(s, "electricity_main", o["kwh"], source="kraken_api",
+                                       billing_source="api")
+            done["kwh"] += 1
+        if "export" in r and not r["export"].get("imported"):
+            _store.upsert_kraken_block(s, "electricity_main", o["exp_kwh"], channel="export",
+                                       source="kraken_api", billing_source="api")
+            done["export"] += 1
+        if "bill" in r:
+            if r["bill"]["held"]:
+                _bill_split_hold(wait, s)                  # held, as the asker holds it
+                done["held"] += 1
+                continue
+            b = o["bill"]
+            _store_bill(store, s, mpan, b)
+            _bill_ask_answered(bills, s)
+            if b.get("breakdown"):
+                _bill_ask_answered(splits, s)
+                _bill_split_release(wait, s)
+            # the bill is stored either way; whether the block took it is the applier's call
+            # (it refuses, e.g., with no tariff rate to snap to) — counted apart, not as applied
+            # a corrected half-hour: the bill replaces the user's correction (design §5.2) —
+            # the flag clears in the settle's own UPDATE, so a refusal leaves it as it was
+            corr = bool(r["bill"].get("corrected"))
+            try:
+                took = apply_measured_to_block(s, cost_incl=float(b["cost_incl"]),
+                                               cost_excl=b["cost_excl"], label=b["label"],
+                                               replace_correction=corr)
+            except Exception as e:
+                logger.warning("range re-fetch: re-apply failed for %s: %s", s, e)
+                took = False
+            if took:
+                done["bill"] += 1
+                if corr:
+                    done["corrections"] += 1
+                    logger.info("range re-fetch: %s — the bill replaced the user's correction", s)
+            else:
+                done["not_settled"] += 1
+                logger.warning("range re-fetch: %s — the bill is stored, the block did not "
+                               "re-settle from it", s)
+    _save_changes(store, before[0], wait, lambda: _bill_split_wait(store), _bill_split_wait_save)
+    _save_changes(store, before[1], bills, lambda: _bill_ask(store, mpan), _bill_ask_save)
+    _save_changes(store, before[2], splits, lambda: _split_ask(store), _split_ask_save)
 
 
 _MEASURED_HISTORY_DRAIN_PACE = 0.4        # seconds between drain batches (test-overridable)

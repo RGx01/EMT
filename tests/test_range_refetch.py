@@ -221,6 +221,46 @@ class TheApply(_Harness):
         self.assertIn("no longer held", engine.refetch_apply_check("not-the-token"))
 
 
+class TheAskRecord(_Harness):
+    """Engine step 3d (24 Oct 2026): an applied re-fetch updates the ask record as the one asker
+    does — it read and wrote none of it — and writes the bill through the asker's own write
+    (`_store_bill`). Each fails on the parent."""
+
+    def test_a_bill_written_leaves_the_bill_and_split_asks(self):
+        self._block(bill=False)
+        self.st.ask_record_save("bill", {SLOT: {"first": "2026-09-02T00:00:00"}})
+        self.st.ask_record_save("split", {SLOT: {"first": "2026-09-02T00:00:00"}})
+        st = self._preview(_Octopus(node=_node(3.5416, 3.1304)))
+        self._apply(st["token"])
+        self.assertEqual((self.st.ask_record("bill"), self.st.ask_record("split")), ({}, {}))
+
+    def test_a_held_bill_is_held_in_the_record(self):
+        self._block(ev=3.1, bill=False)
+        self.st.upsert_measured_cost(SLOT, mpan="IM", cost_incl=round(KWH * OFF, 6) + 0.01,
+                                     cost_excl=round(KWH * OFF, 6), label="OFF_PEAK", kwh=KWH)
+        self.st.upsert_measured_breakdown(SLOT, mpan="IM", home_kwh=KWH - 3.1, home_rate=OFF,
+                                          ev_kwh=3.1, ev_rate=OFF)
+        self.st._conn.commit()
+        st = self._preview(_Octopus(node=_node(KWH, 0.0)))
+        self._apply(st["token"])
+        self.assertIn(SLOT, self.st.ask_record("hold"))
+
+    def test_a_bill_with_the_car_releases_its_hold(self):
+        self._block()
+        self.st.ask_record_save("hold", {SLOT: {"first": "2026-09-02T00:00:00"}})
+        st = self._preview(_Octopus(node=_node(3.5416, 3.1304)))
+        self._apply(st["token"])
+        self.assertEqual(self.st.ask_record("hold"), {})
+
+    def test_the_import_no_cost_record_forgets_it(self):
+        """`_store_bill`'s `note_import_cost(costed=…)`: the re-fetch wrote outside it."""
+        self._block(bill=False)
+        self.st.note_import_cost(no_cost=[SLOT])
+        st = self._preview(_Octopus(node=_node(3.5416, 3.1304)))
+        self._apply(st["token"])
+        self.assertNotIn(SLOT, self.st.import_no_cost_slots())
+
+
 class TheApplyReportsHonestly(_Harness):
 
     def test_a_bill_the_block_would_not_take_is_counted_apart(self):
