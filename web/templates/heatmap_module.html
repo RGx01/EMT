@@ -615,7 +615,8 @@ window.EMTHeatmap = (function () {
     var row = p.el.querySelector('.hm-row');
     if (row._hmHover) return; row._hmHover = true;
     function show(ev) {
-      var tip = tipEl(); if (!p.drawn || !p.chart) { tip.style.display = 'none'; return; }
+      // no grid: the month is being reloaded (an epoch change dropped it) — nothing to say yet
+      var tip = tipEl(); if (!p.drawn || !p.chart || !p.grid) { tip.style.display = 'none'; return; }
       var pt = ev.touches ? ev.touches[0] : ev, mm = METRICS[state.metric], v, lab, day;
       var hitTot = !!(p.tot && p.tot.canvas === ev.target);
       var ch = hitTot ? p.tot : p.chart, a = ch.chartArea, r = ch.canvas.getBoundingClientRect();
@@ -727,7 +728,7 @@ window.EMTHeatmap = (function () {
 
   // the cell (or day bar) under a pointer event: {key, day, ci, label, starts, tot}
   function hitCell(p, ev) {
-    if (!p.drawn || !p.chart) return null;
+    if (!p.drawn || !p.chart || !p.grid) return null;
     var tot = !!(p.tot && p.tot.canvas === ev.target), ch = tot ? p.tot : p.chart;
     var a = ch.chartArea, r = ch.canvas.getBoundingClientRect();
     var x = ev.clientX - r.left, y = ev.clientY - r.top;
@@ -1586,13 +1587,18 @@ window.EMTHeatmap = (function () {
     return fetchJSON('/api/energy?resolution=block&kind=month&year=' + y + '&month=' + mo + inc).then(function (r) {
       if (r.error) throw new Error(r.error);
       state.tz = state.tz || r.timezone;
+      var stale = [];
       if (state.epoch !== null && r.fingerprint.epoch !== state.epoch) {   // bulk change: drop the cache
         state.months = {}; Object.keys(state.panels).forEach(function (k) { state.panels[k].grid = null; });
+        // ...and fetch again every other month still on screen: left drawn with no grid, its hover and
+        // click read p.grid[day] from null until the page was reloaded (24 Oct 2026, Data Management)
+        stale = Object.keys(state.panels).filter(function (k) { return k !== key && state.panels[k].drawn; });
       }
       state.epoch = r.fingerprint.epoch;
       state.months[key] = {blocks: r.blocks || [], settle: r.settle || {}, deleted: r.deleted || [],
                            range: r.range || null, fp: JSON.stringify(r.fingerprint.days)};
       if (state.panels[key]) state.panels[key].grid = null;
+      stale.forEach(function (k) { loadMonth(k); });
     });
   }
   function loadMonth(key) {
