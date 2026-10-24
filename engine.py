@@ -11050,12 +11050,19 @@ def _ask_today(store, mpan: str, now) -> dict:
     return out
 
 
-def _ask_queue(facts: list, store, mpan: str, now) -> dict:
+def _ask_queue(facts: list, store, mpan: str, now, considered: "dict | None" = None) -> dict:
     """{slot: "bill" | "split"} the one selector (design §3) would ask: settled kWh (DCC, or an
     imported block's own), not corrected, on an Intelligent agreement of its own, under the 6-hour
     gate and above Octopus's two years; a bill where none is cached for this MPAN, a split where an
     IOG-SMB bill is cost-only and a completed dispatch drew; less what is kept, given up or resting.
-    Imported history is asked like any other (decided (b))."""
+    Imported history is asked like any other (decided (b)). `considered`, if given, is filled with
+    why each half-hour read is left out (the first reason that holds), so a zero says why."""
+    from datetime import timedelta as _td
+    cut = (now - _td(hours=_RECONCILE_SETTLE_HOURS)).isoformat()
+    why = considered if considered is not None else {}
+
+    def _out(reason):
+        why[reason] = why.get(reason, 0) + 1
     wait = _bill_split_wait(store)
     kept = {s for s, e in wait.items() if isinstance(e, dict) and e.get("kept")}
     ask, sask = _bill_ask(store, mpan), _split_ask(store)
@@ -11065,13 +11072,24 @@ def _ask_queue(facts: list, store, mpan: str, now) -> dict:
     for f in facts:
         sl = f["block_start"]
         settled = f["imp_kwh_api"] is not None or str(f["source"] or "").startswith("imported")
-        if (not settled or f["corrected"] or f["rate_source"] == "corrected"
-                or tariff_kind_at(sl) != "intelligent" or sl in kept):
-            continue
+        if sl >= cut:
+            _out("under the 6-hour gate"); continue
+        if not settled:
+            _out("kWh not settled"); continue
+        if f["corrected"] or f["rate_source"] == "corrected":
+            _out("corrected"); continue
+        if tariff_kind_at(sl) != "intelligent":
+            _out("not on an Intelligent agreement"); continue
+        if sl in kept:
+            _out("kept (the hold-back's 28 days ran out)"); continue
         kind = ("bill" if not f["bill_mpan"]
                 else "split" if (split_at(sl) and f["cost_only"] and f["completed"]) else None)
-        if kind and sl not in gone[kind]:
-            out[sl] = kind
+        if kind is None:
+            _out("bill cached"); continue
+        if sl in gone[kind]:
+            _out("given up or resting (" + kind + ")"); continue
+        out[sl] = kind
+        _out("asked (" + kind + ")")
     return out
 
 
@@ -11138,9 +11156,10 @@ async def run_ask_dry_run(out_dir: str) -> dict:
         now = _dt.now(_tz.utc).replace(tzinfo=None)
         floor = (now - _td(days=_API_RETENTION_DAYS)).isoformat()
         cut = (now - _td(hours=_RECONCILE_SETTLE_HOURS)).isoformat()
-        facts = store.ask_candidate_facts(floor, cut, mpan=mpan)
+        facts = store.ask_candidate_facts(floor, now.isoformat(), mpan=mpan)
         await asyncio.sleep(0)
-        queue = _ask_queue(facts, store, mpan, now)
+        considered: dict = {}
+        queue = _ask_queue(facts, store, mpan, now, considered)
         await asyncio.sleep(0)
         today = _ask_today(store, mpan, now)
         by = {f["block_start"]: f for f in facts}
@@ -11171,6 +11190,10 @@ async def run_ask_dry_run(out_dir: str) -> dict:
                    "today": {k: sum(1 for v in today.values() if k in v)
                              for k in ("live", "drain", "split")},
                    "asked_by_both_live_and_drain": both_asked,
+                   # every half-hour with kWh in the two years read, and why each was left out
+                   "considered": {"half_hours": len(facts),
+                                  "intelligent_agreements": len(_intelligent_windows()),
+                                  "by_reason": dict(sorted(considered.items()))},
                    "counts": counts, "csv": os.path.basename(csv_path)}
         with open(json_path, "w") as fh:
             _json.dump(summary, fh, indent=1)

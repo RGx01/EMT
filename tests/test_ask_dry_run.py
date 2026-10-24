@@ -96,6 +96,37 @@ class TheReport(_Base):
         self.assertEqual(engine.ask_dry_run_status()["status"], "done")
 
 
+class TheConsidered(_Base):
+    """Staging's first run (24 Oct 2026) read all zeros, which a missing agreement would read too:
+    the summary says how many half-hours it read and why each was left out."""
+
+    def test_every_half_hour_read_has_its_reason(self):
+        from datetime import datetime, timedelta, timezone
+        recent = (datetime.now(timezone.utc).replace(tzinfo=None)
+                  - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0).isoformat()
+        self._blk("2026-09-01T12:00:00")                         # asked (bill)
+        self._blk("2026-09-01T12:30:00", api=False)              # kWh not settled
+        self._blk("2026-09-01T13:00:00", corrected=1)            # corrected
+        self._blk("2026-09-01T13:30:00")                         # bill cached
+        self.st.upsert_measured_cost("2026-09-01T13:30:00", mpan=MPAN, cost_incl=0.1,
+                                     label="OFF_PEAK", kwh=1.0)
+        self._blk(recent)                                        # under the 6-hour gate
+        s, _ = self._run()
+        c = s["considered"]
+        self.assertEqual((c["half_hours"], c["intelligent_agreements"]), (5, 1))
+        self.assertEqual(c["by_reason"], {"asked (bill)": 1, "bill cached": 1, "corrected": 1,
+                                          "kWh not settled": 1, "under the 6-hour gate": 1})
+
+    def test_no_agreement_says_so(self):
+        """A zero with no Intelligent agreement reads differently from a caught-up zero."""
+        self._blk("2026-09-01T12:00:00")
+        with mock.patch.object(engine, "tariff_kind_at", lambda bs: "published"), \
+             mock.patch.object(engine, "_kraken_discovery", {"import": {"mpan": MPAN}}):
+            s, _ = self._run()
+        self.assertEqual(s["considered"]["intelligent_agreements"], 0)
+        self.assertEqual(s["considered"]["by_reason"], {"not on an Intelligent agreement": 1})
+
+
 class TheEstimate(unittest.TestCase):
 
     def test_a_cost_day_is_one_query_and_breakdowns_go_in_runs(self):
