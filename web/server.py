@@ -4023,8 +4023,9 @@ def api_gap_fill_preview():
 @app.route("/api/gaps/fill/apply", methods=["POST"])
 def api_gap_fill_apply():
     """Fill a preview's runs. Body {token}. Refused if the preview is gone or over an hour old,
-    if the store no longer gives the same fillable runs, or while an import, its verify pass or a
-    restore runs; a safety backup first, and none means no fill."""
+    if the store no longer gives the same fillable runs, or while an import or a restore runs.
+    No safety backup (decided 24 Oct 2026, the user): a fill writes only half-hours EMT has no
+    block for, so it overwrites nothing a backup would be needed to bring back."""
     try:
         import engine as _eng
         import asyncio as _asyncio
@@ -4045,15 +4046,10 @@ def api_gap_fill_apply():
             return jsonify({"ok": False, "error": "a restore is running"}), 409
         if not (_event_loop and _event_loop.is_running()):
             return jsonify({"ok": False, "error": "engine loop not running"}), 500
-        try:
-            backup = _safety_backup("pre-gap-fill")
-        except Exception as be:
-            return jsonify({"ok": False, "error": "no safety backup, so nothing filled: %s" % be}), 500
         _gap_fill_preview.clear()
         _asyncio.run_coroutine_threadsafe(
             _eng.run_gap_fill_runs(p["fill_runs"], channels=p["channels"]), _event_loop)
-        return jsonify({"ok": True, "status": "running", "backup": backup,
-                        "runs": len(p["fill_runs"])})
+        return jsonify({"ok": True, "status": "running", "runs": len(p["fill_runs"])})
     except Exception as e:
         logger.error("api_gap_fill_apply: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500

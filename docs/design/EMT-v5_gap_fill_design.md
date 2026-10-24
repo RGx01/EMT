@@ -56,12 +56,13 @@ per-gap fill does. The preview says how many were deleted, so nothing comes back
 The dialog shows that, and **Apply** or **Cancel**. A selection with nothing fillable says so and
 offers nothing.
 
-## 3. Apply — after a required backup
+## 3. Apply
 
 `POST /api/gaps/fill/apply {token}`, the preview's token (as the re-fetch's: the same runs, a TTL,
 a fingerprint of the range so a change since the preview refuses):
 
-1. **a safety backup, required** — refused without one, as delete and the re-fetch are;
+1. ~~a safety backup, required~~ — **no backup** (decided 24 Oct 2026, the user): a fill writes only
+   half-hours EMT has no block for, so it overwrites nothing a backup would bring back;
 2. **one coordinator job**, `gap_fill`, that runs the preview's runs **newest first, one after
    another** through `run_gap_fill_job` — each lifting its own tombstones and writing first-man-wins;
    pause, resume and cancel as the import's;

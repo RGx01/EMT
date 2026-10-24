@@ -734,6 +734,12 @@ function bfOpenTaskFromUrl() {
 }
 document.addEventListener('DOMContentLoaded', bfOpenTaskFromUrl);
 
+function goStep(s){
+  ["intro","upload","review","done","bills"].forEach(function(k){
+    var el = document.getElementById("step-"+k);
+    if(el) el.style.display = (k===s) ? "block" : "none";
+  });
+}
 // The API panel (#step-intro) is API-only. Show it while an API import is live or has
 // a persisted last-run to display (poll-on-load), or when the user picks the API
 // source; hide it otherwise (fresh load with no API run, or CSV selected).

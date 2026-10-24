@@ -1193,7 +1193,7 @@ window.EMTHeatmap = (function () {
           var z = r.size[ch]; return esc(ch) + ' ' + hh(z.half_hours) + ' (' + z.chunks + ' request' + (z.chunks === 1 ? '' : 's') + ')';
         }).join(', ');
         out.push('<p>Fill ' + hh(t.fillable) + ' — ' + sz + '.</p><p class="hm-note2">Fill writes only half-hours EMT ' +
-                 'has no block for, after a safety backup. Their bills follow from Octopus.</p>');
+                 'has no block for. Their bills follow from Octopus.</p>');
         box(out.join(''), '<button class="hm-btn" data-act="back">Back</button>' +
                           '<button class="hm-btn hm-primary" data-act="apply">Fill</button>');
         el.querySelector('[data-act="back"]').onclick = choose;
@@ -1201,7 +1201,7 @@ window.EMTHeatmap = (function () {
       }).catch(fail);
     }
     function apply(token) {
-      box('<p>Taking a safety backup…</p>');
+      box('<p>Starting the fill…</p>');
       postJSON('/api/gaps/fill/apply', {token: token}).then(function (r) {
         if (!r.ok) throw new Error(r.error || 'the fill did not start');
         return follow();
