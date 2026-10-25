@@ -4119,6 +4119,62 @@ def api_band_parity_download():
     return send_file(path, as_attachment=True, download_name=os.path.basename(path))
 
 
+# ── Engine step 4a: the settle parity report (EMT-v5_engine_step4_settle_design.md §5) ──
+# Every main-meter half-hour under settle() — band, legs, cost, ex-VAT, devices — beside what it holds,
+# every difference with its part, and the counts of what the design's §4 moves. Read-only, no Octopus
+# call; run on the engine loop, a month at a time; the report goes to the share's reports folder.
+@app.route("/api/settlement/settle-parity/start", methods=["POST"])
+def api_settle_parity_start():
+    """Body {from?, to?}: naive-UTC ISO; the whole history by default."""
+    try:
+        import engine as _eng
+        import asyncio as _asyncio
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        if (_eng.settle_parity_status() or {}).get("status") == "running":
+            return jsonify({"ok": False, "error": "a settle parity report is already running"}), 409
+        if not (_event_loop and _event_loop.is_running()):
+            return jsonify({"ok": False, "error": "engine loop not running"}), 500
+        body = request.get_json(force=True, silent=True) or {}
+        first, _last = store_access.store().block_span()
+        utc_from = (body.get("from") or first or "").strip()
+        utc_to = (body.get("to") or (_dt.now(_tz.utc).replace(tzinfo=None)
+                                     + _td(minutes=30)).isoformat()).strip()
+        try:
+            _dt.fromisoformat(utc_from); _dt.fromisoformat(utc_to)
+        except ValueError:
+            return jsonify({"ok": False, "error": "from and to must be ISO date-times"}), 400
+        _eng._settle_parity_state.update({"status": "running", "from": utc_from, "to": utc_to})
+        _asyncio.run_coroutine_threadsafe(
+            _eng.run_settle_parity(utc_from, utc_to, os.path.join(_share_backup_dir(), "reports")),
+            _event_loop)
+        return jsonify({"ok": True, "status": "running", "from": utc_from, "to": utc_to})
+    except Exception as e:
+        logger.error("api_settle_parity_start: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/settlement/settle-parity/status", methods=["GET"])
+def api_settle_parity_status():
+    import engine as _eng
+    st = dict(_eng.settle_parity_status() or {})
+    for k in ("json", "csv"):
+        if st.get(k):
+            st[k] = os.path.basename(st[k])
+    return jsonify(st)
+
+
+@app.route("/api/settlement/settle-parity/download", methods=["GET"])
+def api_settle_parity_download():
+    """?file=json|csv — the last report's."""
+    import engine as _eng
+    st = _eng.settle_parity_status() or {}
+    which = "csv" if request.args.get("file") == "csv" else "json"
+    path = st.get(which)
+    if st.get("status") != "done" or not path or not os.path.exists(path):
+        return jsonify({"ok": False, "error": "no report yet"}), 404
+    return send_file(path, as_attachment=True, download_name=os.path.basename(path))
+
+
 @app.route("/api/settlement/asking", methods=["GET"])
 def api_settlement_asking():
     """The one asker's progress (engine step 3c), for the banner while it works through a backlog:

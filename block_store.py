@@ -4973,6 +4973,44 @@ class BlockStore:
             "ORDER BY b.block_start", (meter_id, utc_start, utc_end)).fetchall()
         return [dict(r) for r in rows]
 
+    def get_settle_inputs(self, utc_start: str, utc_end: str,
+                          meter_id: str = "electricity_main") -> dict:
+        """What the settle parity report (engine step 4a) reads for [utc_start, utc_end), in three
+        queries: `mains` — each main-meter half-hour's figures, provenance, its cached bill's label and
+        buckets, and the live (CAD) reading HA gave it (`cad_kwh`, from ha_reads); `subs` — its
+        sub-meters' rows with each meter's type, keyed by half-hour; `segments` — its stored import
+        segments, keyed by half-hour."""
+        mains = [dict(r) for r in self._conn.execute(
+            "SELECT b.block_start, b.block_end, b.imp_kwh, b.imp_kwh_api, b.imp_cost, b.imp_cost_exc, "
+            "       b.imp_rate, b.rate_source, COALESCE(b.rate_corrected, 0) AS rate_corrected, "
+            "       b.source, COALESCE(b.interpolated, 0) AS interpolated, "
+            "       mc.label AS bill_label, mc.cost_incl AS bill_cost, mc.home_kwh AS bill_home_kwh, "
+            "       mc.ev_kwh AS bill_ev_kwh, "
+            "       (SELECT h.kwh FROM ha_reads h WHERE h.meter_id = b.meter_id "
+            "        AND h.channel = 'import' AND h.origin = 'live' AND h.minutes = 30 "
+            "        AND h.period_start = b.block_start) AS cad_kwh "
+            "FROM blocks b LEFT JOIN measured_cost mc ON mc.rowid = (" + self._LATEST_BILL_SQL + ") "
+            "WHERE b.meter_id = ? AND b.block_start >= ? AND b.block_start < ? "
+            "ORDER BY b.block_start", (meter_id, utc_start, utc_end)).fetchall()]
+        subs: dict = {}
+        for r in self._conn.execute(
+                "SELECT b.block_start, b.meter_id, b.imp_kwh, b.imp_kwh_grid, b.imp_rate, b.imp_cost, "
+                "       m.meter_type "
+                "FROM blocks b JOIN meters m ON m.meter_id = b.meter_id "
+                "     AND m.config_period_id = b.config_period_id "
+                "WHERE m.is_sub_meter = 1 AND m.parent_meter_id = ? "
+                "AND b.block_start >= ? AND b.block_start < ? "
+                "ORDER BY b.block_start, b.meter_id", (meter_id, utc_start, utc_end)):
+            subs.setdefault(r["block_start"], []).append(dict(r))
+        segments: dict = {}
+        for r in self._conn.execute(
+                "SELECT block_start, kwh, inc_rate, exc_rate, band, attribution "
+                "FROM block_segments WHERE meter_id = ? AND channel = 'import' "
+                "AND block_start >= ? AND block_start < ? ORDER BY block_start, seq",
+                (meter_id, utc_start, utc_end)):
+            segments.setdefault(r["block_start"], []).append(dict(r))
+        return {"mains": mains, "subs": subs, "segments": segments}
+
     def get_settlement_detail(self, block_start: str,
                               meter_id: str = "electricity_main") -> "dict | None":
         """One main-meter half-hour's own figures and its cached bill, for the settlement detail

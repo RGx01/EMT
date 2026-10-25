@@ -49,7 +49,9 @@ class OneCappedTest(unittest.TestCase):
         # the BL-34 relabel asks only the agreement (capped pricing by agreement design §5 (b))
         self.assertGreaterEqual(SRC.count("_capped_schedules()"), 3)
         self.assertEqual(SRC.count("capped_at(block_start) and _capped_schedules()"), 1)
-        self.assertEqual(SRC.count("capped_at(bs) and _capped_schedules()"), 1)
+        # the bill apply's mixed rebuild, and settle_facts (engine step 4a); 4b, the bill apply
+        # through settle(), takes it back to one
+        self.assertEqual(SRC.count("capped_at(bs) and _capped_schedules()"), 2)
         self.assertIn("_capped_band = capped_at(bs)", SRC)
 
 
