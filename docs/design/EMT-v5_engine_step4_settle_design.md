@@ -78,7 +78,7 @@ One pure rule, then one write:
 | part | from | rule |
 |---|---|---|
 | **kWh** | DCC if settled, else the live reading; an imported block's own | — |
-| **band** | a bill if Octopus has settled it (`settled_band`: the carrying bucket on IOG-SMB, else the label; an imported bill with neither, Octopus's cost ÷ its own kWh — §6 (e)); else the prediction (`predicted_band`: the dispatch slot, then the lifecycle, as step 2b–2c read it), its thresholds judged on the DCC kWh once there is one (§4 (d)); a published tariff → the clock | billed wins (decided 23 Oct); **never read back from a rate** (§4 (a)) |
+| **band** | a bill if Octopus has settled it (`settled_band`: the carrying bucket on IOG-SMB, else the label; the importer's IMPORTED bill, its cost ÷ its own kWh — §6 (e)); else the prediction (`predicted_band`: the dispatch slot, then the lifecycle, as step 2b–2c read it), its thresholds judged on the DCC kWh once there is one (§4 (d)); a published tariff → the clock | billed wins (decided 23 Oct); **never read back from a rate** (§4 (a)) |
 | **rate** | the tariff schedule for that band, on the half-hour's **own** agreement (the stitched schedule) — one function for live and history; `imp_rate` = cost ÷ kWh (§4 (a)) | — |
 | **split** | on IOG-SMB with the bill's buckets, the bill's EV; else the completed dispatch, clipped to the kWh; capped → `iog_cap.compute_iog_split`'s legs | the hold-back keeps EMT's split where the bill drops the car (unchanged) |
 | **segments** | the legs: EV and house, each at its band's rate | — |
@@ -184,8 +184,8 @@ parity seen first, additive first)
 |---|---|---|
 | **4a** | `settle()` as a pure function, and a **settle parity report**: over every half-hour, today's stored cost, band, segments and devices beside `settle()`'s, every difference with its reason — run on every instance. It counts what §4 moves: half-hours with legs at two rates (and those with a device drawing), and predicted bands the DCC kWh would move. The guard test of §4 (a) | nothing |
 | | *4a as built (25 Oct 2026):* `settle.py` (pure: `Facts` → `Settled`); `engine.settle_facts` reads the facts — the DCC kWh, the tariff, the bill's band and buckets, the prediction on that kWh, the EV (the bill's on IOG-SMB, else the completed dispatch), the cap, the devices from their own reads; `run_settle_parity` → `settle_parity_<ts>.json/.csv` in the share's reports, `POST /api/settlement/settle-parity/start` (`{from?, to?}`), `…/status`, `…/download?file=json\|csv`. A correction is listed, not settled: its rate lives only on the block today, and settle() reads no stored rate | |
-| **4a-2** | imported cost as a bill (§6 (e)): the v4 importer writes a bill row for each imported half-hour without one, from its Octopus cost; `settled_band` bands a bill with no label and no buckets by Octopus's cost ÷ its own kWh; the report's CSV carries the stored and settled EV kWh and each device's own read (§6) | the importer's copy only |
-| | *4a-2 as built (25 Oct 2026):* importer transform 3c `imported_bills` (spec v27) and its gate; `settled_band(…, cost=, bill_kwh=, own_kwh=)` → `_imported_cost_band`: the cost within £0.0005 of kWh × one of the day's two rates and not the other, else no band (a blend matches neither, a tiny kWh both); passed by the bill apply, `band_note` (the detail panel), `band_parity_row` and `settle_facts`. The CSV gains `stored_ev`, `ev`, and each device's read | |
+| **4a-2** | what the import heard as a bill (§6 (e)): the v4 importer writes a bill row, labelled IMPORTED, for each imported half-hour without one, from its stored cost; `settled_band` bands an IMPORTED bill by its cost ÷ its own kWh; the report's CSV carries the stored and settled EV kWh and each device's own read (§6) | the importer's copy only |
+| | *4a-2 as built (25 Oct 2026):* importer transform 3c `imported_bills` (spec v27) and its gate — on dev's 4.5.24 backup 35,860 bills, every gate holding; `settled_band(…, cost=, bill_kwh=, own_kwh=)` → `_imported_cost_band` for the label `IMPORTED` (`engine.IMPORTED_LABEL` = `v4import.transforms.IMPORTED_LABEL`, asserted): the cost within £0.0005 of kWh × one of the day's two rates and not the other, else no band (a blend matches neither; a tiny kWh both — 3,670 of ≤ 0.004 kWh on that backup, 5.38 kWh); passed by the bill apply, `band_note`, `band_parity_row` and `settle_facts`. The CSV gains `stored_ev`, `ev`, and each device's read. *For 4d:* v5's own CSV import writes the same IMPORTED bill | |
 | **4b** | the bill apply and the PASS 2 re-run call `settle()`; `hold_rate` goes; CLAUDE.md's invariant reworded (§4 (d)); a changelog line | settled and re-run half-hours |
 | **4c** | the carve and the reconcile become triggers — the carve's on a completed dispatch that **arrives or changes** (§6: Octopus restates the completed energy, and the carve takes only half-hours with no split yet) | dispatched half-hours |
 | **4d** | the finalise seam, the gap blocks, the imports and the sweep | new and imported half-hours |
@@ -220,21 +220,29 @@ the DCC kWh moves no predicted band. The four decisions change nothing either in
 The 13 dev half-hours inside Octopus's two years sit on rate-change dates (1 Jan, 1 Apr, the 2026
 agreement's start); not yet read against dev's database — the 4a-2 report's columns should say.
 
-**(e) Imported cost is a bill (decided 25 Oct 2026).** v4's API import wrote Octopus's cost into the
-block (`imp_cost`, the rate worked back from it) and **no bill row** (v4 `import_api_history`), so
+**(e) What the import heard is a bill (decided 25 Oct 2026; widened the same day).** v4 wrote no bill
+row for imported history and kept its band only in the stored rate (v4 `import_api_history`), so
 every v4 database brings history in this shape — and the part of it older than Octopus's two years
-when it reaches v5 can never be asked again: its stored cost is the only record of Octopus's band.
-The import heard Octopus's cost, so the import writes it as a bill, as step 2c does for v5's own
-imports:
-1. **the importer** writes a bill row (`measured_cost`: Octopus's cost and ex-VAT, the block's kWh,
-   no label) for each `imported_api` half-hour that has none;
-2. **`settled_band`**, for a bill with no label and no buckets whose kWh is the block's own, bands it
-   by Octopus's cost ÷ that kWh against the day's two rates — Octopus's own price, like a bucket's
-   unit rate (§4 (a)'s table: the one kind of rate a band may be read from).
+when it reaches v5 can never be asked again. dev's 4.5.24 backup shows three kinds, none with a bill:
+
+| imported | half-hours | dates | the stored rate is |
+|---|---|---|---|
+| API, `exc_source = 'measurement'` | 758 | Oct 2025 – Aug 2026 | Octopus's cost ÷ kWh |
+| API, `'tariff'` | 15,454 | Sep 2024 – Jun 2026 | the tariff rate v4 chose by Octopus's off-peak label (`_billed_rate`: with no cost, "time/label based") — Octopus's band at v4's price; 2,299 evening half-hours at the cheap rate |
+| CSV | 19,648 | Jun 2023 – Sep 2024 | the CSV row's cost ÷ kWh |
+
+First decided for the first kind only; the backup showed that would write 758 bills, all inside
+Octopus's two years (the asker would fetch them anyway), and miss the history that matters. So:
+1. **the importer** writes a bill row for each imported half-hour (API or CSV) that has none: its
+   stored cost and ex-VAT, its kWh, label **`IMPORTED`** — the band is the cost ÷ kWh, and the cost is
+   the import's, not necessarily Octopus's. A bill Octopus gives later replaces it (same key);
+2. **`settled_band`**, for an IMPORTED bill whose kWh is the block's own, bands it by cost ÷ that kWh
+   against the day's two rates: within 0.05p of kWh × one and not the other, else no band.
 
 v4 refused cost ÷ kWh in 4.5.7 because the kWh it divided by was CAD and the bill's was settled
-("the CAD/settled mismatch (0.004 vs 0.001) sagged cost/kWh into the wrong band"); here both figures
-are Octopus's, so the division is exact.
+("the CAD/settled mismatch (0.004 vs 0.001) sagged cost/kWh into the wrong band"); here the kWh is the
+import's own.
+
 - *Rejected:* `settle_facts` reads an imported block's stored cost where it has no bill — narrower, but
   it breaks §4 (a)'s guarded rule (no stored rate or cost), and the fact stays where only one reader
   knows to look.

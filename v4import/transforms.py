@@ -11,7 +11,7 @@ importer's copy.
     2  EV segments         from the legacy columns, where a block has none
     3  held-rate refit     segments fitted to a settled kWh
     3b the bill's split    a settled IOG-SMB block takes its cached bill's EV (one-rate blocks)
-    3c imported bills      an imported half-hour's Octopus cost becomes its bill (engine step 4a-2)
+    3c imported bills      an imported half-hour's stored cost becomes its bill, IMPORTED (step 4a-2)
     4  band relabel        not built: BL-81 closed (house off_peak stays in every era)
     5  meta                the allow-listed store_meta / kraken_state keys
     6  device sensors      each configured read a primary; Device History's other sensors
@@ -35,6 +35,8 @@ MAIN = "electricity_main"
 _EPS = 1e-6                      # the spec's tolerance for "segments miss the kWh"
 _ONE_RATE = 1e-5                 # £/kWh (0.001p): within it, a block's segments carry one rate
 HELD = ("corrected", "reconciled", "settled")     # a held rate, v5's words (after 1)
+IMPORTED_LABEL = "IMPORTED"      # transform 3c's bill: the band is its cost ÷ kWh (engine.settled_band)
+IMPORTED_SOURCES = "('imported_api', 'imported_csv')"
 
 
 def _resegmented(conn, block_start, why):
@@ -397,25 +399,26 @@ def bill_split(conn, report):
 
 
 def imported_bills(conn, report):
-    """3c (engine step 4 design §6 (e), 25 Oct 2026): an imported half-hour's Octopus cost becomes
-    its bill. v4's API import kept Octopus's cost on the block (`imp_cost`, the rate worked back from
-    it) and wrote no `measured_cost` row, so history past Octopus's two years when it reaches v5 can
-    never be asked again — the block's cost is the only record of the band Octopus billed, and
-    settle() reads no stored cost. Each main `imported_api` half-hour with kWh, a cost v4 took from
-    Octopus (`exc_source = 'measurement'`; 'tariff' is v4's own kWh × rate, not Octopus's) and no
-    bill gets one: Octopus's cost and ex-VAT, the block's kWh, no label. settled_band bands it by
-    cost ÷ kWh. The MPAN is the source's bills' (the one most of them carry), else the main import
-    channel's; with neither, nothing is written and the report says so.
+    """3c (engine step 4 design §6 (e), 25 Oct 2026): what the import heard becomes a bill. v4 kept an
+    imported half-hour's band only in the rate it stored — and wrote no `measured_cost` row — so
+    history past Octopus's two years when it reaches v5 can never be asked again, and settle() reads
+    no stored rate or cost:
+    - an API import with Octopus's cost (`exc_source = 'measurement'`) stored that cost;
+    - one without (`'tariff'`, 15,454 of 16,212 imported half-hours on dev's 4.5.24 backup) stored
+      kWh × the tariff rate v4 chose by Octopus's off-peak label (`_billed_rate`: "time/label
+      based") — Octopus's band at v4's price;
+    - a CSV import stored the row's own cost.
+    Each main imported half-hour (`source` imported_api or imported_csv) with kWh, a cost and no bill
+    gets one: that cost and its ex-VAT, the block's kWh, label `IMPORTED` — which says the band is the
+    cost ÷ kWh (settled_band) and that the cost is the import's, not necessarily Octopus's. A bill
+    Octopus gives later for the same half-hour replaces it (same key). The MPAN is the source's bills'
+    (the one most carry), else the main import channel's; with neither, nothing is written and the
+    report says so.
 
     The rows are recorded in temp.v4i_bills, so `row_counts` and `carried_exactly` compare every
     other bill exactly, and the `imported_bills` gate checks these against their blocks."""
     from datetime import datetime, timezone
-    have = {r[1] for r in conn.execute("PRAGMA src.table_info(blocks)").fetchall()}
     out = {"written": 0, "skipped": None}
-    if "exc_source" not in have:
-        out["skipped"] = "the source records no cost provenance (exc_source)"
-        report["transforms"]["imported_bills"] = out
-        return
     row = conn.execute("SELECT mpan FROM src.measured_cost WHERE direction = 'CONSUMPTION' "
                        "AND COALESCE(mpan, '') <> '' GROUP BY mpan ORDER BY COUNT(*) DESC "
                        "LIMIT 1").fetchone()
@@ -434,16 +437,16 @@ def imported_bills(conn, report):
     now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
     rows = conn.execute(
         "SELECT b.block_start, b.imp_kwh, b.imp_cost, b.imp_cost_exc FROM main.blocks b "
-        "JOIN src.blocks v ON v.id = b.id "
-        "WHERE b.meter_id = ? AND b.source = 'imported_api' AND COALESCE(b.imp_kwh, 0) > ? "
-        "AND b.imp_cost IS NOT NULL AND v.exc_source = 'measurement' "
+        "WHERE b.meter_id = ? AND b.source IN " + IMPORTED_SOURCES + " "
+        "AND COALESCE(b.imp_kwh, 0) > ? AND b.imp_cost IS NOT NULL "
         "AND NOT EXISTS (SELECT 1 FROM main.measured_cost m WHERE m.slot_start = b.block_start "
         "                AND m.direction = 'CONSUMPTION') "
         "ORDER BY b.block_start", (MAIN, _EPS)).fetchall()
     for r in rows:
         conn.execute("INSERT INTO main.measured_cost (slot_start, mpan, direction, cost_incl, "
-                     "cost_excl, label, kwh, fetched_at) VALUES (?, ?, 'CONSUMPTION', ?, ?, NULL, ?, ?)",
-                     (r["block_start"], mpan, r["imp_cost"], r["imp_cost_exc"], r["imp_kwh"], now))
+                     "cost_excl, label, kwh, fetched_at) VALUES (?, ?, 'CONSUMPTION', ?, ?, ?, ?, ?)",
+                     (r["block_start"], mpan, r["imp_cost"], r["imp_cost_exc"], IMPORTED_LABEL,
+                      r["imp_kwh"], now))
         conn.execute("INSERT OR IGNORE INTO temp.v4i_bills (slot_start) VALUES (?)",
                      (r["block_start"],))
     out["written"] = len(rows)                # the MPAN itself never goes in the audit

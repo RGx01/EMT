@@ -342,8 +342,8 @@ class TheSettledBandIsUnchanged(unittest.TestCase):
 
 
 class TheImportedCostBand(unittest.TestCase):
-    """Engine step 4a-2 (design §6 (e)): an imported bill with no label or buckets is banded by
-    Octopus's cost ÷ its own kWh — dev's 1,084 imported evening smart charges, billed off-peak."""
+    """Engine step 4a-2 (design §6 (e)): the importer's bill, labelled IMPORTED, is banded by its cost ÷
+    its own kWh — dev's 1,084 imported evening smart charges, billed off-peak."""
 
     def setUp(self):
         self.p = [mock.patch.object(engine, "_kraken_rate_schedules", {"import": _Sched()}),
@@ -355,7 +355,7 @@ class TheImportedCostBand(unittest.TestCase):
         for x in self.p:
             x.stop()
 
-    def _b(self, cost, kwh=2.04, own=2.04, label=None, bd=None):
+    def _b(self, cost, kwh=2.04, own=2.04, label="IMPORTED", bd=None):
         return engine.settled_band("2024-07-01T17:30:00", label, bd, cost=cost, bill_kwh=kwh, own_kwh=own)
 
     def test_off_peak_and_peak(self):
@@ -373,10 +373,15 @@ class TheImportedCostBand(unittest.TestCase):
         self.assertIsNone(self._b(round(2.04 * LO, 6), own=2.1))
 
     def test_on_iog_smb_too(self):
-        """A label without buckets settles nothing on IOG-SMB — a cost at one rate does."""
+        """A label without buckets settles nothing on IOG-SMB — an IMPORTED cost at one rate does."""
         with mock.patch.object(engine, "split_at", lambda bs: True):
             self.assertEqual(self._b(round(2.04 * LO, 6)), "off_peak")
             self.assertIsNone(engine.settled_band("x", "STANDARD_RATE", None))
+
+    def test_a_bill_with_no_label_still_settles_nothing(self):
+        """Only the IMPORTED label reads the cost; a label-less bill settles nothing, as before 4a-2 (its
+        first version banded any label-less bill — this fails there)."""
+        self.assertIsNone(self._b(round(2.04 * LO, 6), label=None))
 
     def test_a_label_still_decides(self):
         """GUARD of behaviour (it fails on the parent only for the new keywords): a labelled bill
@@ -386,8 +391,8 @@ class TheImportedCostBand(unittest.TestCase):
 
 
 class TheImportedBillSettles(_Base):
-    """The bill apply settles an imported half-hour from its label-less bill: Octopus's band, kWh ×
-    that band's rate (step 2b's rule), rate_source 'settled'."""
+    """The bill apply settles an imported half-hour from its IMPORTED bill: the band its cost gives,
+    kWh × that band's rate (step 2b's rule), rate_source 'settled'."""
 
     def test_end_to_end(self):
         c = self.st._conn
@@ -395,13 +400,13 @@ class TheImportedBillSettles(_Base):
                   "imp_rate, imp_cost, source) VALUES (?,?,?,1,2.04,0.07,0.1428,'imported_api')",
                   (self.BS, "2026-09-06T19:30:00", "electricity_main"))
         c.execute("INSERT INTO measured_cost (slot_start, mpan, direction, cost_incl, cost_excl, "
-                  "label, kwh, fetched_at) VALUES (?, 'M', 'CONSUMPTION', ?, ?, NULL, 2.04, '2026-10-25')",
+                  "label, kwh, fetched_at) VALUES (?, 'M', 'CONSUMPTION', ?, ?, 'IMPORTED', 2.04, '2026-10-25')",
                   (self.BS, round(2.04 * LO, 6), round(2.04 * LO / 1.05, 6)))
         c.commit()
         with mock.patch.object(engine, "_store", self.st), \
              mock.patch.object(engine, "_kraken_rate_schedules", {"import": _Sched()}):
             self.assertTrue(engine.apply_measured_to_block(self.BS, cost_incl=round(2.04 * LO, 6),
-                                                           cost_excl=None, label=None))
+                                                           cost_excl=None, label="IMPORTED"))
         r = c.execute("SELECT imp_rate, imp_cost, rate_source FROM blocks WHERE block_start = ?",
                       (self.BS,)).fetchone()
         self.assertEqual((r["imp_rate"], r["rate_source"]), (LO, "settled"))

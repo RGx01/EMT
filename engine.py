@@ -10686,14 +10686,14 @@ def settled_band(bs: str, bill_label, breakdown: "dict | None" = None, *, cost=N
     nothing (2a's report on dev, 23 Oct 2026: 22 night half-hours of 26 Aug – 2 Sep labelled STANDARD_RATE,
     no breakdown cached, Octopus's cost the off-peak cost). Elsewhere, the label.
 
-    An imported bill with neither label nor buckets (`cost`, `bill_kwh`, `own_kwh`; engine step 4a-2,
-    design §6 (e)): v4's API import kept Octopus's cost on the block and wrote no bill, and the importer
-    now writes it as one. Its band is Octopus's cost ÷ Octopus's kWh against the day's two rates — both
-    figures Octopus's, so only where the bill's kWh is the block's own (v4 4.5.7 refused cost ÷ kWh
-    because it divided by the CAD kWh). The cost must match one rate and not the other: a blend of two
-    buckets matches neither, and a tiny kWh both."""
+    A bill labelled IMPORTED (`cost`, `bill_kwh`, `own_kwh`; engine step 4a-2, design §6 (e)): the v4
+    importer's, from what v4's import stored — Octopus's cost, or kWh × the tariff rate v4 chose by
+    Octopus's off-peak label, or a CSV row's cost — since v4 wrote no bill and kept the band only in
+    that rate. Its band is the cost ÷ the bill's kWh against the day's two rates, only where that kWh
+    is the block's own (v4 4.5.7 refused cost ÷ kWh because it divided by the CAD kWh). The cost must
+    match one rate and not the other: a blend of two buckets matches neither, and a tiny kWh both."""
     from kraken_api_client import label_band
-    if not breakdown and not bill_label:
+    if str(bill_label or "").upper() == IMPORTED_LABEL:
         return _imported_cost_band(bs, cost, bill_kwh, own_kwh)
     if breakdown:
         bands = set(_bucket_bands(bs, breakdown).values())
@@ -10712,12 +10712,13 @@ def settled_band(bs: str, bill_label, breakdown: "dict | None" = None, *, cost=N
     return None if b is None else ("off_peak" if b else "peak")
 
 
+IMPORTED_LABEL = "IMPORTED"       # v4import.transforms' bill label: banded by its cost ÷ kWh
 _IMPORTED_COST_GBP = 0.0005       # an imported cost within 0.05p of kWh × a rate is at that rate
 
 
 def _imported_cost_band(bs: str, cost, bill_kwh, own_kwh) -> "str | None":
-    """settled_band's imported bill with no label or buckets: the one of the day's two rates
-    Octopus's cost is kWh × of (within _IMPORTED_COST_GBP), or None."""
+    """settled_band's IMPORTED bill: the one of the day's two rates its cost is kWh × of (within
+    _IMPORTED_COST_GBP), or None."""
     try:
         c, k, own = float(cost), float(bill_kwh), float(own_kwh)
     except (TypeError, ValueError):
@@ -12117,8 +12118,8 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
     except Exception:
         _bd = None
     _bk = None
-    if not label and not _bd:
-        # an imported bill with no label (step 4a-2): its band is its cost ÷ its own kWh
+    if str(label or "").upper() == IMPORTED_LABEL:
+        # the v4 importer's bill (step 4a-2): its band is its cost ÷ its own kWh
         try:
             _bk = (store.get_settlement_detail(bs) or {}).get("bill_kwh")
         except Exception:

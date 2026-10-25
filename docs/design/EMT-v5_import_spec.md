@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v27 — revised 25 Oct 2026, an imported half-hour's Octopus cost becomes its bill (transform 3c) (v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v27 — revised 25 Oct 2026, what the import heard becomes a bill (transform 3c) (v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -146,13 +146,13 @@ forward code. 4.5.22 and the v5 dev build `4.5.22-a23` join the below-floor nega
 builds now stamp `4.5.23-a24`. The 4.5.22 positive fixture (prod-dev, 10 Oct) is below the floor
 now; the fixture is re-taken at 4.5.23.*
 
-*Changes in v27 (25 Oct 2026): **an imported half-hour's Octopus cost becomes its bill** (transform
-3c, gate `imported_bills`; engine step 4 design §6 (e)). v4's API import kept Octopus's cost on the
-block and wrote no `measured_cost` row, so history older than Octopus's two years when it reaches v5
-could never be asked again, and v5's settle(), which reads no stored cost, would price it at EMT's
-prediction (dev's settle parity report: 1,084 evening smart charges Octopus billed off-peak read
-peak, +£476.10). The importer writes the bill — Octopus's cost and ex-VAT, the block's kWh, no
-label — and v5 bands a label-less bill by cost ÷ its own kWh (see BILL SPLIT, below). No block
+*Changes in v27 (25 Oct 2026): **what the import heard becomes a bill** (transform 3c, gate
+`imported_bills`; engine step 4 design §6 (e)). v4 kept an imported half-hour's band only in the rate
+it stored and wrote no `measured_cost` row, so history older than Octopus's two years when it
+reaches v5 could never be asked again, and v5's settle(), which reads no stored rate or cost, would
+price it at EMT's prediction (dev's settle parity report: 1,084 evening smart charges Octopus billed
+off-peak read peak, +£476.10). The importer writes each imported half-hour's stored cost as a bill
+labelled `IMPORTED`, and v5 bands it by cost ÷ its own kWh (see IMPORTED BILLS, below). No block
 column moves; the floor does not move.*
 
 *Changes in v26 (23 Oct 2026): **v5 no longer carries the October VAT resync** (engine step 2d-3,
@@ -915,20 +915,30 @@ their split needs Octopus, and the user re-fetches them (they read teal).
 > bill split, 169 moved (EV +12.91 kWh, the same off the house), 0 reported; `imp_cost` total
 > identical, no rate changed, the segments' £ total within £0.000001. 1.6 s on a Mac.
 
-**IMPORTED BILLS — an imported half-hour's Octopus cost becomes its bill** (v27, 25 Oct 2026;
-engine step 4 design §6 (e)). After BILL SPLIT, for each MAIN block where
+**IMPORTED BILLS — what the import heard becomes a bill** (v27, 25 Oct 2026; engine step 4 design
+§6 (e)). v4 stored an imported half-hour's band only in its rate: an API import with Octopus's cost
+(`exc_source = 'measurement'`) stored that cost; one without (`'tariff'`) stored kWh × the tariff rate
+v4 chose by Octopus's off-peak label (`_billed_rate`, "time/label based"); a CSV import stored the
+row's own cost. After BILL SPLIT, for each MAIN block where
 
-    source = 'imported_api' AND imp_kwh > 0 AND imp_cost IS NOT NULL
-    AND the source block's exc_source = 'measurement'     (Octopus's cost; 'tariff' is v4's kWh × rate)
+    source IN ('imported_api', 'imported_csv') AND imp_kwh > 0 AND imp_cost IS NOT NULL
     AND no CONSUMPTION measured_cost row for it
 
 the importer writes a `measured_cost` row: `cost_incl` = `imp_cost`, `cost_excl` = `imp_cost_exc`,
-`kwh` = `imp_kwh`, `label` NULL, `fetched_at` the import's time, `mpan` the MPAN most of the source's
-bills carry, else the main import channel's (`meter_channels` through `meters`). With no MPAN it
-writes none and the report says so. Gate `imported_bills` (§9) checks each row against its block and
-that none was missed; `row_counts` and `carried_exactly` compare every other bill exactly. v5's
-`settled_band` reads a bill with no label and no buckets by Octopus's cost ÷ its kWh, where that kWh
-is the block's own and the cost is kWh × one of the day's two rates and not the other.
+`kwh` = `imp_kwh`, `label` = `IMPORTED` (the band is the cost ÷ kWh, and the cost is the import's, not
+necessarily Octopus's), `fetched_at` the import's time, `mpan` the MPAN most of the source's bills
+carry, else the main import channel's (`meter_channels` through `meters`). With no MPAN it writes
+none and the report says so. A bill Octopus gives later for the half-hour replaces it (same key).
+Gate `imported_bills` (§9) checks each row against its block and that none was missed; `row_counts`
+and `carried_exactly` compare every other bill exactly. v5's `settled_band` reads an IMPORTED bill by
+cost ÷ its kWh, where that kWh is the block's own and the cost is kWh × one of the day's two rates
+(within 0.05p) and not the other.
+
+> Measured 25 Oct 2026, dev's v4 backup (4.5.24): 35,860 bills written — 758 API half-hours with
+> Octopus's cost, 15,454 v4 priced by Octopus's label, 19,648 from a CSV — every gate holding, 2.2 s on
+> a Mac. Against each day's lowest and highest imported rate (a stand-in for the schedule): 2,521
+> evening half-hours band off-peak; 3,670 of 0.004 kWh or less (5.38 kWh in all) match both rates and
+> keep EMT's prediction.
 
 A main block whose segments miss its kWh but whose rate is NOT held is **reported, not refitted**:
 its cause is not this one, and refitting would hide it. The import report counts both — refitted,

@@ -284,27 +284,27 @@ def bill_split(conn, report):
 
 
 def imported_bills(conn, report):
-    """Engine step 4 design §6 (e) (transform 3c): each bill 3c wrote is its block's — an imported
-    main half-hour whose cost v4 took from Octopus (`exc_source = 'measurement'`) — with that cost, its
-    ex-VAT and its kWh, and no label; and it wrote one for every such half-hour that had no bill."""
+    """Engine step 4 design §6 (e) (transform 3c): each bill 3c wrote is its block's — an imported main
+    half-hour — with its cost, ex-VAT and kWh and the label IMPORTED; and it wrote one for every
+    imported half-hour with kWh and a cost that had no bill."""
+    from .transforms import IMPORTED_LABEL, IMPORTED_SOURCES
     t = report["transforms"].get("imported_bills", {"written": 0})
     n = _one(conn, "SELECT COUNT(*) FROM temp.v4i_bills")
     bad = _one(conn,
                "SELECT COUNT(*) FROM temp.v4i_bills t JOIN main.measured_cost m ON m.slot_start = "
                "t.slot_start AND m.direction = 'CONSUMPTION' LEFT JOIN main.blocks b ON "
-               "b.block_start = t.slot_start AND b.meter_id = 'electricity_main' LEFT JOIN src.blocks v "
-               "ON v.id = b.id WHERE b.id IS NULL OR b.source IS NOT 'imported_api' "
-               "OR v.exc_source IS NOT 'measurement' OR m.cost_incl IS NOT b.imp_cost "
-               "OR m.cost_excl IS NOT b.imp_cost_exc OR m.kwh IS NOT b.imp_kwh OR m.label IS NOT NULL")
+               "b.block_start = t.slot_start AND b.meter_id = 'electricity_main' "
+               "WHERE b.id IS NULL OR b.source NOT IN " + IMPORTED_SOURCES + " "
+               "OR m.cost_incl IS NOT b.imp_cost OR m.cost_excl IS NOT b.imp_cost_exc "
+               "OR m.kwh IS NOT b.imp_kwh OR m.label IS NOT ?", IMPORTED_LABEL)
     missed = 0 if t.get("skipped") else _one(
-        conn, "SELECT COUNT(*) FROM main.blocks b JOIN src.blocks v ON v.id = b.id "
-              "WHERE b.meter_id = 'electricity_main' AND b.source = 'imported_api' "
-              "AND COALESCE(b.imp_kwh, 0) > 1e-6 AND b.imp_cost IS NOT NULL "
-              "AND v.exc_source = 'measurement' AND NOT EXISTS (SELECT 1 FROM main.measured_cost m "
+        conn, "SELECT COUNT(*) FROM main.blocks b WHERE b.meter_id = 'electricity_main' "
+              "AND b.source IN " + IMPORTED_SOURCES + " AND COALESCE(b.imp_kwh, 0) > 1e-6 "
+              "AND b.imp_cost IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.measured_cost m "
               "WHERE m.slot_start = b.block_start AND m.direction = 'CONSUMPTION')")
     report["gates"]["imported_bills"].update(written=t["written"], skipped=t.get("skipped"))
     if n != t["written"] or bad or missed:
-        return ("imported bills: %d written, %d recorded, %d not their block's Octopus cost, "
+        return ("imported bills: %d written, %d recorded, %d not their block's cost, "
                 "%d imported half-hour(s) left without one" % (t["written"], n, bad, missed))
     return None
 
