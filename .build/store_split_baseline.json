@@ -211,6 +211,7 @@
     "get_reconcile_candidates",
     "get_retired_meters",
     "get_settings",
+    "get_settle_inputs",
     "get_settled_to",
     "get_settlement_detail",
     "get_settlement_facts",

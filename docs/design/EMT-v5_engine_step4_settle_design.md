@@ -120,9 +120,18 @@ keep the real rates, and the charts already draw from them (the house line from 
   rate slipped past the reconcile's `abs(cur_rate − off_peak) < 1e-6` test and silently disarmed the
   bump revert (BL-62; v4 ROADMAP archive, "the residue that is not solved"). Under `settle()` the band
   comes from the evidence and the rate from the band, never the reverse. **Nothing may band, or match
-  for equality, on `imp_rate` or an ex-VAT rate** — stated here, and guarded by a test in 4a.
-  Before 4a, grep for the band-from-rate reads still in v5 (the drift repair compares devices with
-  `imp_rate`; the reconcile's own band test).
+  for equality, on `imp_rate` or an ex-VAT rate** — stated here, and guarded by a test in 4a
+  (`settle.Facts` holds no stored rate, cost or split, and `settle_facts` reads none).
+  The band-from-rate reads still in v5 (grep, 25 Oct 2026, at 4a's start):
+
+  | where | reads | what happens to it |
+  |---|---|---|
+  | the reconcile's `currently_off_peak` and `_blk_band` | the **stored** `imp_rate`, nearer of the day's two — a decision input | live today: finalise stores the cap's blend and the reconcile does not skip capped half-hours (§2 item 3); goes in 4c |
+  | the bill apply's `_prior_band` | the stored `imp_rate` | the review note only; goes in 4b |
+  | `predicted_band`, `iog_cap._overlay_is_peak` | the overlay's **computed** rate | a clean tariff rate, not stored — safe; `settle()` takes the overlay's decision as a band when the finalise seam goes through it (4d) |
+  | `_bucket_bands` (`settled_band`) | **Octopus's** bucket unit rate | the bill's own price, the one rate a band may be read from |
+  | the drift repair | devices against the main's `imp_rate`, for equality | wrong on a two-rate half-hour under (b); goes in 4e |
+  | `server.py` `_cluster_nearby_rates` | rates, for Insights' tiers | display, not a band |
 
 **(b) A device is priced at the rate of the legs its kWh sits in.** In PASS 2's existing order
 (`_grid_priority`: a `meter_type` `ev`/`ev_charger` meter first):
@@ -174,6 +183,7 @@ parity seen first, additive first)
 | PR | what | writes |
 |---|---|---|
 | **4a** | `settle()` as a pure function, and a **settle parity report**: over every half-hour, today's stored cost, band, segments and devices beside `settle()`'s, every difference with its reason — run on every instance. It counts what §4 moves: half-hours with legs at two rates (and those with a device drawing), and predicted bands the DCC kWh would move. The guard test of §4 (a) | nothing |
+| | *4a as built (25 Oct 2026):* `settle.py` (pure: `Facts` → `Settled`); `engine.settle_facts` reads the facts — the DCC kWh, the tariff, the bill's band and buckets, the prediction on that kWh, the EV (the bill's on IOG-SMB, else the completed dispatch), the cap, the devices from their own reads; `run_settle_parity` → `settle_parity_<ts>.json/.csv` in the share's reports, `POST /api/settlement/settle-parity/start` (`{from?, to?}`), `…/status`, `…/download?file=json\|csv`. A correction is listed, not settled: its rate lives only on the block today, and settle() reads no stored rate | |
 | **4b** | the bill apply and the PASS 2 re-run call `settle()`; `hold_rate` goes; CLAUDE.md's invariant reworded (§4 (d)); a changelog line | settled and re-run half-hours |
 | **4c** | the carve and the reconcile become triggers | dispatched half-hours |
 | **4d** | the finalise seam, the gap blocks, the imports and the sweep | new and imported half-hours |

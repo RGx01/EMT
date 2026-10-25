@@ -10686,13 +10686,7 @@ def settled_band(bs: str, bill_label, breakdown: "dict | None" = None) -> "str |
     no breakdown cached, Octopus's cost the off-peak cost). Elsewhere, the label."""
     from kraken_api_client import label_band
     if breakdown:
-        lo, hi = _band_rates(bs)
-        bands = set()
-        for k_kwh, k_rate in (("home_kwh", "home_rate"), ("ev_kwh", "ev_rate")):
-            kw, rt = breakdown.get(k_kwh), breakdown.get(k_rate)
-            if kw is None or float(kw) <= 1e-9 or rt is None or lo is None:
-                continue
-            bands.add("off_peak" if abs(float(rt) - lo) <= abs(float(rt) - hi) else "peak")
+        bands = set(_bucket_bands(bs, breakdown).values())
         if len(bands) == 1:
             return bands.pop()
         if len(bands) == 2:
@@ -10706,6 +10700,22 @@ def settled_band(bs: str, bill_label, breakdown: "dict | None" = None) -> "str |
     except Exception:
         b = None
     return None if b is None else ("off_peak" if b else "peak")
+
+
+def _bucket_bands(bs: str, breakdown: dict) -> dict:
+    """{'house'|'ev': 'off_peak'|'peak'} — each IOG-SMB bucket that carries kWh, banded by its unit
+    rate (Octopus's stated price) against the day's two rates. Octopus's rate, not EMT's stored one:
+    the one place a band is read from a rate, and the rate is the bill's."""
+    lo, hi = _band_rates(bs)
+    out = {}
+    if lo is None:
+        return out
+    for attr, k_kwh, k_rate in (("house", "home_kwh", "home_rate"), ("ev", "ev_kwh", "ev_rate")):
+        kw, rt = breakdown.get(k_kwh), breakdown.get(k_rate)
+        if kw is None or float(kw) <= 1e-9 or rt is None:
+            continue
+        out[attr] = "off_peak" if abs(float(rt) - lo) <= abs(float(rt) - hi) else "peak"
+    return out
 
 
 def band_note(bs: str, kwh, bill_label, breakdown=None, live: bool = True) -> "dict | None":
@@ -11058,6 +11068,231 @@ async def run_band_parity(utc_from: str, utc_to: str, out_dir: str) -> dict:
         return summary
     except Exception as e:
         logger.warning("band parity: failed: %s", e)
+        st.update({"status": "error", "error": str(e)})
+        return {"ok": False, "error": str(e)}
+
+
+# ── Engine step 4a: settle() and its parity report (EMT-v5_engine_step4_settle_design.md §5) ──────
+# settle.py decides; settle_facts reads what it decides from. The report sets settle()'s answer
+# beside what each half-hour holds today, every difference with its part, and counts what the
+# design's §4 moves. Read-only: nothing is written but the report, and no Octopus call.
+_settle_parity_state: dict = {"status": "idle"}
+_SETTLE_KWH_EPS = 1e-5
+
+
+def settle_facts(m: dict, subs: list, store, vat_cal=None, *, kwh=None):
+    """settle.Facts for one main-meter half-hour (a get_settle_inputs `mains` row, its `subs`), from
+    the facts alone: the kWh (DCC once settled, else the reading; an import's own), the tariff, the
+    bill's band and buckets, EMT's prediction on that kWh, the EV (the bill's on IOG-SMB, else the
+    completed dispatch), the cap, the devices. No stored rate, cost or split is read. `kwh` overrides
+    the kWh (the report's CAD comparison)."""
+    import settle as _st
+    import vat_calendar as _vc
+    bs = m["block_start"]
+    imported = str(m.get("source") or "").startswith("imported")
+    if kwh is None:
+        kwh = float(m["imp_kwh_api"] if m.get("imp_kwh_api") is not None else (m.get("imp_kwh") or 0.0))
+    end = m.get("block_end") or (datetime.fromisoformat(bs) + timedelta(minutes=30)).isoformat()
+    kind = tariff_kind_at(bs)
+    f = _st.Facts(start=bs, end=end, kwh=kwh,
+                  kind=kind if kind in ("intelligent", "published") else "none",
+                  vat=_vc.resolve_vat(bs, vat_cal),
+                  devices=[_st.Device(s["meter_id"], max(float(s["imp_kwh"] or 0.0), 0.0),
+                                      (s.get("meter_type") or "") in _st.EV_METER_TYPES)
+                           for s in (subs or [])],
+                  clamp=bool(m.get("imp_kwh_api") is not None or not m.get("interpolated")))
+    sched = _kraken_rate_schedules.get("import")
+    if f.kind != "intelligent":
+        try:
+            r = sched.resolve(bs) if sched is not None and not sched.is_empty() else None
+        except Exception:
+            r = None
+        f.clock_rate = None if r is None else round(r / 100.0, 6)
+        return f
+    f.lo, f.hi = _band_rates(bs)
+    if f.lo is None:
+        return f
+    bd = None
+    if m.get("bill_home_kwh") is not None or m.get("bill_ev_kwh") is not None:
+        try:
+            bd = store.get_measured_breakdown(bs)
+        except Exception:
+            bd = None
+    f.settled = settled_band(bs, m.get("bill_label"), bd)
+    f.settled_legs = _bucket_bands(bs, bd) if bd else {}
+    f.predicted = predicted_band(bs, kwh, live=not imported)
+    if bd and bd.get("ev_kwh") is not None and split_at(bs):
+        f.ev_kwh = min(max(float(bd["ev_kwh"]), 0.0), kwh)
+    else:
+        f.ev_kwh = dispatch_ev_kwh(bs, kwh, store)
+    f.capped = bool(capped_at(bs) and _capped_schedules())
+    try:
+        f.in_window = sched.is_off_peak(bs) is True
+    except Exception:
+        f.in_window = False
+    if f.capped and f.ev_kwh > 1e-9:
+        try:
+            eo = _kraken_rate_schedules["ev_device_off_peak"].resolve(bs)
+            ep = _kraken_rate_schedules["ev_device_peak"].resolve(bs)
+        except Exception:
+            eo = ep = None
+        f.ev_off = None if eo is None else round(eo / 100.0, 6)
+        f.ev_peak = None if ep is None else round(ep / 100.0, 6)
+        f.is_boost = _iog_slot_is_boost(bs, store)
+        f.boundary = _iog_cap_day_boundary(bs, _iog_site_tz(store), store)
+    return f
+
+
+def settle_parity_row(m: dict, subs: list, segs: list, store, vat_cal=None) -> dict:
+    """One main-meter half-hour: settle()'s answer beside what it holds. `status`: same | differs |
+    corrected | empty | no_rate | no_band; `parts`, for a differs, the parts that differ (kwh, band,
+    split, rate, cost, ex-VAT, segments, devices). `two_rates` and `device_two_rates` count what §4 (a)
+    and (b) decide; `dcc_moves` a predicted band the DCC kWh moves from the CAD reading's (§4 (d))."""
+    import settle as _st
+    bs = m["block_start"]
+    out = {"start": bs, "status": None, "parts": "", "kwh": m.get("imp_kwh"),
+           "kwh_dcc": m.get("imp_kwh_api"), "stored_rate": m.get("imp_rate"),
+           "stored_cost": m.get("imp_cost"), "stored_bands": "", "settle_by": None, "band": None,
+           "rate": None, "cost": None, "two_rates": False, "device_two_rates": False,
+           "dcc_moves": "", "devices": ""}
+    if m.get("rate_corrected") or m.get("rate_source") == "corrected":
+        out["status"] = "corrected"        # the user's own figure: a fact settle() does not hold yet
+        return out
+    f = settle_facts(m, subs, store, vat_cal)
+    s = _st.settle(f)
+    out.update({"settle_by": s.status, "band": s.band, "rate": s.imp_rate, "cost": s.imp_cost,
+                "two_rates": s.two_rates})
+    segs = segs or []
+    out["stored_bands"] = "+".join("%s/%s" % (g["attribution"], g["band"]) for g in segs)
+    # §4 (d): would the CAD reading have predicted another band? Only where no bill settles it.
+    cad = m.get("cad_kwh")
+    if (f.kind == "intelligent" and s.status == "predicted" and m.get("imp_kwh_api") is not None
+            and cad is not None and abs(float(cad) - f.kwh) > _SETTLE_KWH_EPS):
+        p_cad = predicted_band(bs, float(cad), live=not str(m.get("source") or "").startswith("imported"))
+        if p_cad and p_cad != f.predicted:
+            out["dcc_moves"] = "%s→%s" % (p_cad, f.predicted)
+    if s.status in ("empty", "no_rate", "no_band"):
+        out["status"] = s.status
+        return out
+    drawing = {d.meter_id for d in s.devices if d.kwh_grid > _SETTLE_KWH_EPS}
+    out["device_two_rates"] = bool(s.two_rates and drawing)
+    parts = []
+    stored_kwh = float(m.get("imp_kwh") or 0.0)
+    if abs(stored_kwh - f.kwh) > _SETTLE_KWH_EPS:
+        parts.append("kwh")
+    st_ev = sum(float(g["kwh"] or 0.0) for g in segs if g["attribution"] == "ev")
+    if abs(st_ev - s.ev_kwh) > _SETTLE_KWH_EPS:
+        parts.append("split")
+    want = sorted((g.attribution, g.band) for g in s.legs)
+    have = sorted((g["attribution"], g["band"]) for g in segs)
+    if want != have:
+        parts.append("band")
+    if m.get("imp_cost") is None or abs(float(m["imp_cost"]) - s.imp_cost) > _BAND_PARITY_GBP:
+        parts.append("cost")
+    if m.get("imp_rate") is None or abs(float(m["imp_rate"]) - s.imp_rate) > 1e-6:
+        parts.append("rate")
+    if m.get("imp_cost_exc") is None or abs(float(m["imp_cost_exc"]) - s.imp_cost_exc) > _BAND_PARITY_GBP:
+        parts.append("ex-VAT")
+    seg_cost = sum(float(g["kwh"] or 0.0) * float(g["inc_rate"] or 0.0) for g in segs)
+    if not segs or abs(seg_cost - s.imp_cost) > _BAND_PARITY_GBP:
+        parts.append("segments")
+    stored_dev = {x["meter_id"]: x for x in (subs or [])}
+    dev_txt = []
+    for d in s.devices:
+        x = stored_dev.get(d.meter_id) or {}
+        g = float(x.get("imp_kwh_grid") if x.get("imp_kwh_grid") is not None else (x.get("imp_kwh") or 0.0))
+        c = float(x.get("imp_cost") or 0.0)
+        if abs(g - d.kwh_grid) > _SETTLE_KWH_EPS or abs(c - d.cost) > _BAND_PARITY_GBP:
+            dev_txt.append("%s %.4f kWh £%.4f→%.4f kWh £%.4f" % (d.meter_id, g, c, d.kwh_grid, d.cost))
+    if dev_txt:
+        parts.append("devices")
+        out["devices"] = "; ".join(dev_txt)
+    out["parts"] = "+".join(parts)
+    out["status"] = "differs" if parts else "same"
+    return out
+
+
+def settle_parity_status() -> dict:
+    return dict(_settle_parity_state)
+
+
+async def run_settle_parity(utc_from: str, utc_to: str, out_dir: str) -> dict:
+    """Step 4a's report over [utc_from, utc_to): every main-meter half-hour under settle(), a month at
+    a time, yielding between months. Writes `settle_parity_<ts>.json` (the summary: by status, by
+    part, by month, and §4's counts) and `.csv` (every half-hour not `same`, and every one §4 moves)
+    to `out_dir`. Read-only on the store; no Octopus call."""
+    import csv as _csv
+    import json as _json
+    st = _settle_parity_state
+    st.clear()
+    st.update({"status": "running", "from": utc_from, "to": utc_to, "done_to": utc_from})
+    try:
+        if _store is None:
+            raise RuntimeError("no store")
+        ensure_dir(out_dir)
+        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+        csv_path = os.path.join(out_dir, "settle_parity_%s.csv" % ts)
+        json_path = os.path.join(out_dir, "settle_parity_%s.json" % ts)
+        counts: dict = {}
+        by_part: dict = {}
+        months: dict = {}
+        moves = {"two_rates": 0, "device_two_rates": 0, "dcc_moves": 0}
+        tot = {"stored": 0.0, "settle": 0.0}
+        fields = ["start", "status", "parts", "settle_by", "band", "stored_bands", "kwh", "kwh_dcc",
+                  "stored_rate", "rate", "stored_cost", "cost", "two_rates", "device_two_rates",
+                  "dcc_moves", "devices"]
+        store = _reader()
+        try:
+            vat_cal = store.get_vat_calendar()
+        except Exception:
+            vat_cal = None
+        a = datetime.fromisoformat(utc_from)
+        end = datetime.fromisoformat(utc_to)
+        with open(csv_path, "w", newline="") as fh:
+            w = _csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
+            w.writeheader()
+            while a < end:
+                b = min(end, (a.replace(day=1) + timedelta(days=32)).replace(day=1))
+                inp = store.get_settle_inputs(a.isoformat(), b.isoformat())
+                for mrow in inp["mains"]:
+                    bs = mrow["block_start"]
+                    r = settle_parity_row(mrow, inp["subs"].get(bs, []), inp["segments"].get(bs, []),
+                                          store, vat_cal)
+                    counts[r["status"]] = counts.get(r["status"], 0) + 1
+                    for p in filter(None, r["parts"].split("+")):
+                        by_part[p] = by_part.get(p, 0) + 1
+                    mo = months.setdefault(bs[:7], {"same": 0, "differs": 0, "stored": 0.0,
+                                                    "settle": 0.0})
+                    if r["status"] in mo:
+                        mo[r["status"]] += 1
+                    if r["cost"] is not None and r["stored_cost"] is not None:
+                        mo["stored"] += float(r["stored_cost"]); mo["settle"] += r["cost"]
+                        tot["stored"] += float(r["stored_cost"]); tot["settle"] += r["cost"]
+                    moves["two_rates"] += int(r["two_rates"])
+                    moves["device_two_rates"] += int(r["device_two_rates"])
+                    moves["dcc_moves"] += int(bool(r["dcc_moves"]))
+                    if r["status"] != "same" or r["two_rates"] or r["dcc_moves"]:
+                        w.writerow(r)
+                st["done_to"] = b.isoformat()
+                a = b
+                await asyncio.sleep(0)               # one month at a time: the loop breathes
+        summary = {"from": utc_from, "to": utc_to, "counts": counts,
+                   "by_part": dict(sorted(by_part.items(), key=lambda kv: -kv[1])),
+                   # what the design's §4 moves: legs at two rates (a), with a device drawing (b),
+                   # predicted bands the DCC kWh moves from the CAD reading's (d)
+                   "section4": moves,
+                   "totals_gbp": {k: round(v, 2) for k, v in tot.items()},
+                   "months": {k: {kk: (round(vv, 2) if isinstance(vv, float) else vv)
+                                  for kk, vv in v.items()} for k, v in sorted(months.items())},
+                   "csv": os.path.basename(csv_path)}
+        with open(json_path, "w") as fh:
+            _json.dump(summary, fh, indent=1)
+        st.update({"status": "done", "summary": summary, "json": json_path, "csv": csv_path})
+        logger.info("settle parity: %s..%s — %s; parts %s; §4 %s; stored £%.2f, settle £%.2f",
+                    utc_from, utc_to, counts, by_part, moves, tot["stored"], tot["settle"])
+        return summary
+    except Exception as e:
+        logger.warning("settle parity: failed: %s", e)
         st.update({"status": "error", "error": str(e)})
         return {"ok": False, "error": str(e)}
 
