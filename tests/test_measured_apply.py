@@ -32,6 +32,10 @@ class TestMeasuredApply(unittest.TestCase):
         self.st = BlockStore(":memory:")
         engine._store = self.st
         engine._kraken_rate_schedules = {"import": _Sched()}
+        # engine step 4b: settle() asks the tariff kind (the apply never did); no agreement is loaded
+        _tk = mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+        _tk.start()
+        self.addCleanup(_tk.stop)
         self.st._conn.execute(
             "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
             "block_minutes, timezone) VALUES (1,'2020-01-01T00:00:00',1,30,'UTC')")
@@ -151,16 +155,21 @@ class TestMeasuredApply(unittest.TestCase):
         import iog_cap
         self._blk(3.0, 2.0, rate=0.05493)          # 2 kWh EV, 1 kWh house
         self.st.record_dispatch_history(self.SLOT, "completed", source="unknown", energy_kwh=-2.0)
+        class _Ev(_Sched):
+            def resolve(self, ts): return 5.493
         engine._kraken_rate_schedules = {
             "import": _Sched(),
-            "ev_device_off_peak": _Sched(), "ev_device_peak": _Sched()}
+            "ev_device_off_peak": _Ev(), "ev_device_peak": _Ev()}
         # EV 1@off_peak(0.055) + 1@peak(0.323), house 1@day(0.323) — CLEAN rates
         _raw = [(1.0, 0.055, "off_peak", "ev"),
                 (1.0, 0.323, "peak", "ev"),
                 (1.0, 0.323, "day", "house")]
-        _save = iog_cap.compute_iog_split
-        iog_cap.compute_iog_split = lambda *a, **k: {
+        # settle() builds a capped half-hour's legs with iog_cap.price_slot (engine step 4b)
+        _save = iog_cap.price_slot
+        iog_cap.price_slot = lambda *a, **k: {
             "segments": _raw, "classification": {"ev": "mixed", "house": "day"}}
+        _cap = mock.patch.object(engine, "capped_at", lambda bs: True)
+        _cap.start()
         try:
             bill_incl, bill_excl = 0.900, 0.857
             # the buckets at both bands: Octopus's "mixed"
@@ -171,7 +180,8 @@ class TestMeasuredApply(unittest.TestCase):
                 ok = engine.apply_measured_to_block(
                     self.SLOT, cost_incl=bill_incl, cost_excl=bill_excl, label="mixed")
         finally:
-            iog_cap.compute_iog_split = _save
+            iog_cap.price_slot = _save
+            _cap.stop()
         self.assertTrue(ok)
         segs = [ps.Segment(**x) for x in
                 self.st.get_block_segments(self.SLOT, "electricity_main")]
@@ -225,6 +235,10 @@ class TestMeasuredApplyDeviceRecost(unittest.TestCase):
         self.st = BlockStore(":memory:")
         engine._store = self.st
         engine._kraken_rate_schedules = {"import": _Sched()}
+        # engine step 4b: settle() asks the tariff kind (the apply never did); no agreement is loaded
+        _tk = mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+        _tk.start()
+        self.addCleanup(_tk.stop)
         self.st._conn.execute(
             "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
             "block_minutes, timezone) VALUES (1,'2020-01-01T00:00:00',1,30,'UTC')")
@@ -241,7 +255,12 @@ class TestMeasuredApplyDeviceRecost(unittest.TestCase):
     def tearDown(self):
         (engine._store, engine._kraken_rate_schedules) = self._save
 
-    def _device(self, mid, kwh, kwh_grid):
+    def _device(self, mid, kwh, kwh_grid, meter_type=None):
+        # engine step 4b: settle() takes the devices from the meters config (parent, type), as PASS
+        # 2 does; the old re-cost re-priced every non-main row in the slot
+        self.st._conn.execute(
+            "INSERT INTO meters (config_period_id, meter_id, is_sub_meter, parent_meter_id, "
+            "meter_type) VALUES (1, ?, 1, 'electricity_main', ?)", (mid, meter_type))
         self.st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
             "imp_kwh, imp_kwh_grid, imp_rate, imp_cost) VALUES (?,?,?,?,?,?,?,?)",
@@ -260,9 +279,16 @@ class TestMeasuredApplyDeviceRecost(unittest.TestCase):
             "SELECT imp_kwh, imp_kwh_grid, imp_rate, imp_cost, imp_cost_exc "
             "FROM blocks WHERE block_start=? AND meter_id=?", (self.SLOT, mid)).fetchone()
 
+    def _battery_behind_the_car(self):
+        """4 kWh drawn by the battery, only 0.01 of it from the grid: the car (an EV meter, which
+        claims the grid first) took 2.99 of the main's 3.0. Since engine step 4b the grid share is
+        settle()'s clip of these facts, so the 0.01 is made by them, not written in by hand."""
+        self._device("ev_charger", 2.99, 2.99, meter_type="ev")
+        self._device("battery", 4.0, 0.01)
+
     def test_device_cost_uses_grid_attributed_kwh(self):
         """4 kWh drawn, only 0.01 of it from the grid — bill the 0.01."""
-        self._device("battery", 4.0, 0.01)
+        self._battery_behind_the_car()
         self._settle()
         r = self._dev_row("battery")
         self.assertAlmostEqual(r["imp_rate"], self.OFF, places=6)        # rate did move
@@ -270,16 +296,18 @@ class TestMeasuredApplyDeviceRecost(unittest.TestCase):
         # and emphatically NOT the raw-kWh figure the old expression produced
         self.assertNotAlmostEqual(r["imp_cost"], round(4.0 * self.OFF, 6), places=4)
 
-    def test_device_kwh_columns_are_untouched(self):
-        self._device("battery", 4.0, 0.01)
+    def test_the_read_is_untouched_and_the_grid_share_is_the_clips(self):
+        """The device's own read stays; its grid share is settle()'s clip of the facts (engine step
+        4b — until then the column was left as it was)."""
+        self._battery_behind_the_car()
         self._settle()
         r = self._dev_row("battery")
         self.assertEqual(r["imp_kwh"], 4.0)
-        self.assertEqual(r["imp_kwh_grid"], 0.01)
+        self.assertAlmostEqual(r["imp_kwh_grid"], 0.01, places=6)
 
     def test_exc_follows_the_same_quantity(self):
         """inc and exc must derive from the same kWh or the ex-VAT view disagrees."""
-        self._device("battery", 4.0, 0.01)
+        self._battery_behind_the_car()
         self._settle()
         r, m = self._dev_row("battery"), self._dev_row("electricity_main")
         self.assertIsNotNone(r["imp_cost_exc"])
@@ -299,7 +327,9 @@ class TestMeasuredApplyDeviceRecost(unittest.TestCase):
         self._device("nogrid", 0.5, None)
         self._settle()
         r = self._dev_row("nogrid")
-        self.assertIsNone(r["imp_kwh_grid"])
+        # settle() writes the grid share, as PASS 2 does (engine step 4b): the whole 0.5 here, so
+        # the cost is still its raw draw's, and "never clipped" no longer exists
+        self.assertEqual(r["imp_kwh_grid"], 0.5)
         self.assertAlmostEqual(r["imp_cost"], round(0.5 * self.OFF, 6), places=6)
 
     def test_devices_no_longer_exceed_the_main(self):

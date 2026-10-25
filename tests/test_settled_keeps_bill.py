@@ -1,12 +1,14 @@
 """
-BL-82 (13 Oct 2026): a settled block keeps Octopus's bill when its kWh is re-confirmed.
+A settled block re-confirmed by its kWh is kWh × its band's rate (engine step 4b, 25 Oct 2026).
 
-The settlement re-run held a settled block's rate and re-costed it to kWh x rate, replacing the bill
-on every DCC re-confirmation — on 12 Oct's backups 262 and 247 settled blocks no longer carried
-their bill, every one re-costed, none with a different kWh. kWh x rate is the right cost BEFORE the
-bill (and for corrected / reconciled rates); after it, the bill is the cost.
-
-Discriminating: the first three fail on the parent; the last two are guards.
+BL-82 (13 Oct 2026) kept a settled block's cost as Octopus's bill when the settlement re-run fired on a
+DCC re-confirmation: on 12 Oct's backups the re-run had replaced 262 and 247 bills with kWh × rate.
+Engine step 2b (23 Oct 2026) then made the cost kWh × the band's rate on every tariff, never Octopus's
+cost copied (on staging, all 5,119 bill-settled half-hours had Octopus's cost within a thousandth of a
+penny of it), and the bill apply has written that since. The re-run now settles the half-hour with
+settle(): the same rule, so a bill's own rounding (BILL below is kWh × rate + £0.0004) no longer
+survives. REVERSED: the first three asserted the bill was kept; they fail on the parent now, and
+the last two are guards.
 """
 import os
 import sys
@@ -34,25 +36,23 @@ class ASettledBlock(H._Harness):
             "SELECT imp_kwh, imp_cost, imp_cost_exc, rate_source FROM blocks WHERE block_start=? "
             "AND meter_id='electricity_main'", (H.START,)).fetchone()
 
-    def test_a_re_confirmed_kwh_keeps_the_bill(self):
+    def test_a_re_confirmed_kwh_is_kwh_times_the_rate(self):
         self._settled()
         self._settle(dcc=H.MAIN)
-        self.assertAlmostEqual(self._main()["imp_cost"], BILL, places=6,
-                               msg="the bill was re-costed to kWh x rate")
+        self.assertAlmostEqual(self._main()["imp_cost"], round(H.MAIN * H.FLAT, 6), places=6)
 
-    def test_and_its_ex_vat(self):
+    def test_and_its_ex_vat_through_the_calendar(self):
         self._settled()
         self._settle(dcc=H.MAIN)
-        self.assertAlmostEqual(self._main()["imp_cost_exc"], BILL_EXC, places=6)
+        self.assertAlmostEqual(self._main()["imp_cost_exc"],
+                               round(H.MAIN * round(H.FLAT / 1.05, 6), 6), places=6)
 
-    def test_a_settled_kwh_that_differs_keeps_the_bill_and_says_so(self):
+    def test_a_settled_kwh_that_differs_is_re_costed(self):
         self._settled()
-        with self.assertLogs("engine", level="WARNING") as logs:
-            self._settle(dcc=H.MAIN + 0.5)
+        self._settle(dcc=H.MAIN + 0.5)
         r = self._main()
-        self.assertAlmostEqual(r["imp_cost"], BILL, places=6)
-        self.assertAlmostEqual(r["imp_kwh"], H.MAIN + 0.5, places=6)    # the kWh does settle
-        self.assertTrue(any("bill kept" in m for m in logs.output), logs.output)
+        self.assertAlmostEqual(r["imp_kwh"], H.MAIN + 0.5, places=6)
+        self.assertAlmostEqual(r["imp_cost"], round((H.MAIN + 0.5) * H.FLAT, 6), places=6)
 
     def test_a_reconciled_rate_is_still_re_costed(self):
         """GUARD: no bill — kWh x the held rate is its best cost."""

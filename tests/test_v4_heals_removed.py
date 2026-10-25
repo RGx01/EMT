@@ -127,11 +127,12 @@ class WhatMustSurvive(unittest.TestCase):
 
     def test_the_settled_ev_split_heal_is_gone_deliberately(self):
         """Removed 16 Oct 2026 (bill and split paths design §7.3), not by a name-match: the
-        consolidation note records why, and the settle (`_measured_ev_kwh`) stays."""
+        consolidation note records why, and the settle stays (`settle_facts`'s EV since engine step
+        4b, `_measured_ev_kwh` until then)."""
         fns = {n.name for n in ast.walk(_engine_tree())
                if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
         self.assertNotIn("run_settled_ev_split_heal", fns)
-        self.assertIn("_measured_ev_kwh", fns)
+        self.assertIn("settle_facts", fns)
         note = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                  "docs", "design", "EMT-v5_bill_and_split_paths_design.md"),
                     encoding="utf-8").read()

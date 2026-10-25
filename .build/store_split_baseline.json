@@ -60,7 +60,6 @@
     "record_attribution_run",
     "record_dispatch_history",
     "record_recorder_hours",
-    "recost_sub_meters",
     "relabel_segment_bands",
     "remove_attribution_run",
     "repair_device_rate_drift",

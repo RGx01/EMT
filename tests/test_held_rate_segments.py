@@ -73,7 +73,19 @@ class ACorrectedBlock(_Held):
 
 
 class AMeasuredBlockWithAnEv(_Held):
-    """The bill split the half-hour 3.0 EV + 4.058 house; a later settlement revises the kWh."""
+    """The half-hour split 3.0 EV + 4.058 house; a later settlement revises the kWh.
+
+    Since engine step 4b the re-run settles it with settle(), which reads no stored split: the EV is
+    a fact's — here a completed 3.0 kWh dispatch on an Intelligent half-hour, clipped to the settled
+    kWh. (Until then the fixture wrote the EV segment by hand on a published tariff, and the held
+    rate's refit kept it; settle() finds no fact for it there.)"""
+
+    def setUp(self):
+        super().setUp()
+        from unittest import mock
+        _tk = mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+        _tk.start()
+        self.addCleanup(_tk.stop)
 
     def _ev_block(self):
         self._finalise()
@@ -81,6 +93,8 @@ class AMeasuredBlockWithAnEv(_Held):
         self._hold("settled", segs=[
             ps.Segment(3.0, r, round(r / 1.05, 6), "off_peak", "ev"),
             ps.Segment(round(MAIN - 3.0, 6), r, round(r / 1.05, 6), "off_peak", "house")])
+        engine._store.record_dispatch_history(H.START, "completed", provider="Myenergi",
+                                              source="unknown", energy_kwh=-3.0)
 
     def test_the_house_takes_a_rise(self):
         self._ev_block()
@@ -97,12 +111,11 @@ class AMeasuredBlockWithAnEv(_Held):
         self.assertAlmostEqual(self._row()["ev_cost"], round(2.0 * H.FLAT, 6), places=6)
 
 
-class AHeldPredictionKeepsItsBands(_Held):
-    """BL-79 (part 2, 8 Oct 2026): the held PREDICTION path (a schedule block settling) re-ran the
-    seam, and where the seam emitted nothing (no dispatch here) _persist_block_segments rebuilt the
-    segments from the block dict's imp_*_ev copies — get_block_dict_by_start attaches no segments.
-    A two-band block came back as one house segment at the blended rate. Now the stored segments
-    are kept and fitted to the settled kWh. Discriminating: the first two fail on the parent."""
+class APredictedBlockIsSettled(_Held):
+    """BL-79 (part 2, 8 Oct 2026) kept a held PREDICTION's stored bands through a settlement (the
+    #475 hold). Engine step 4b settles it instead (design §4 (d)): the legs are the tariff's for
+    the half-hour's band, on the settled kWh — here the flat tariff's one rate, whatever was stored.
+    REVERSED: the parent kept the stored two bands."""
     OFF, DAY = 0.07, 0.30
 
     def _two_bands(self):
@@ -116,20 +129,19 @@ class AHeldPredictionKeepsItsBands(_Held):
             ps.Segment(3.0, self.OFF, None, "off_peak", "house"),
             ps.Segment(round(MAIN - 3.0, 6), self.DAY, None, "day", "house")])
 
-    def test_its_bands_survive_the_settlement(self):
+    def test_its_legs_are_the_tariffs(self):
         self._two_bands()
         self._settle(dcc=MAIN)
-        self.assertEqual([(s["band"], s["inc_rate"]) for s in self._segs()],
-                         [("off_peak", self.OFF), ("day", self.DAY)])
+        self.assertEqual([(s["band"], s["inc_rate"]) for s in self._segs()], [("standard", H.FLAT)])
 
-    def test_they_are_fitted_to_a_revised_kwh(self):
+    def test_on_the_settled_kwh(self):
         self._two_bands()
         self._settle(dcc=7.5)
-        self.assertEqual([s["band"] for s in self._segs()], ["off_peak", "day"])
         self.assertAlmostEqual(self._total(), 7.5, places=6)
+        self.assertAlmostEqual(self._row()["imp_rate"] * 7.5, round(7.5 * H.FLAT, 6), places=6)
 
     def test_a_block_with_no_segments_is_still_given_them(self):
-        """GUARD: with nothing stored, the rebuild from the columns still runs."""
+        """GUARD: with nothing stored, the half-hour still gets its segments."""
         self._finalise()
         with engine._store._conn as c:
             c.execute("DELETE FROM block_segments WHERE block_start=?", (H.START,))
@@ -140,7 +152,8 @@ class AHeldPredictionKeepsItsBands(_Held):
 class TheGuards(_Held):
 
     def test_a_predicted_band_was_already_refitted(self):
-        """GUARD: the held PREDICTION (4.5.15) re-derived its segments already."""
+        """GUARD: a predicted half-hour's segments follow the settled kWh (the held PREDICTION,
+        4.5.15, did; settle() does since engine step 4b)."""
         self._finalise()
         self._settle(dcc=7.5)
         self.assertAlmostEqual(self._total(), 7.5, places=6)

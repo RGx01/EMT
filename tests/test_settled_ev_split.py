@@ -168,8 +168,9 @@ class TestBeforeTheAgreementTheDispatchStays(_Base):
 class TheSettlesRule(_Base):
 
     def test_the_rule_is_what_the_settle_writes(self):
-        """The settle writes what `_measured_ev_kwh` says — one function. (The split heal that also
-        asked it was removed on 16 Oct 2026, bill and split paths design §7.3.)"""
+        """The settle writes what settle()'s facts say the EV is — one function (`settle_facts`,
+        engine step 4b; `_measured_ev_kwh` until then). (The split heal that also asked it was removed
+        on 16 Oct 2026, bill and split paths design §7.3.)"""
         cases = [  # (block kwargs, bill ev, dispatch kwh or None, expected ev)
             (dict(), 4.5, None, 4.5),                                  # unknown ceiling: the bill
             (dict(kwh=3.0), 4.5, None, 3.0),                           # grid-clipped
@@ -186,8 +187,7 @@ class TheSettlesRule(_Base):
                 self._block(**blk); self._bill(ev_kwh=bill_ev)
                 if disp is not None:
                     self._dispatch(disp)
-                row = engine._store.get_block_measured_inputs(SLOT)
-                predicted = engine._measured_ev_kwh(engine._store, SLOT, row, row["imp_kwh"])
+                predicted = engine._settle_one(engine._store, SLOT)[0].ev_kwh
                 self._apply()
                 self.assertAlmostEqual(predicted, want, places=6)
                 self.assertAlmostEqual(self._ev() or 0.0, want, places=6)

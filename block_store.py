@@ -7828,9 +7828,9 @@ class BlockStore:
         AND A DEVICE INHERITS ITS PARENT'S. A sub-meter's own `rate_source` says
         how its ROW was written (PASS 2, at the parent's rate), not where its
         NUMBER came from: 1,206 device blocks under a settled parent carry
-        `rate_source='schedule'`, because `recost_sub_meters` copies the parent's
-        rate without touching the child's provenance. `bill_applied` therefore
-        comes from the parent row. (An earlier version cited the rate matching
+        `rate_source='schedule'`, because the settle copied the parent's rate without
+        touching the child's provenance (recost_sub_meters until engine step 4b).
+        `bill_applied` therefore comes from the parent row. (An earlier version cited the rate matching
         the parent "1,206 of 1,206, £42.14" as evidence; C §3 withdrew that —
         devices track the parent's rate whatever its state, so the match
         distinguishes nothing. The lifecycle argument is what holds.)
@@ -8232,7 +8232,7 @@ class BlockStore:
         return row["id"] if row else None
 
     def apply_measured_to_main(self, block_start: str, *, rate, cost, cost_exc,
-                               meter_id: str = "electricity_main", segments=None,
+                               meter_id: str = "electricity_main", segments=None, devices=None,
                                replace_correction: bool = False) -> int:
         """Stamp Octopus's billed figure onto a main block. Returns rows changed.
 
@@ -8254,6 +8254,12 @@ class BlockStore:
         `replace_correction` (a user's range re-fetch only, settlement surfaces design §5.2):
         the bill replaces the user's Cost Correction, so `rate_corrected` clears in the same
         UPDATE. No automatic pass passes it — they never reach a corrected block.
+
+        `devices` (engine step 4b, 25 Oct 2026): settle()'s sub-meters, (meter_id, grid kWh, rate, £,
+        ex-VAT £), in the same transaction — each priced at the rate of the legs its kWh sits in
+        (step 4 design §4 (b)). Until then a second, best-effort transaction re-costed them at the
+        main's single rate (`recost_sub_meters`, removed with it), which `repair_device_rate_drift` had
+        to catch.
         """
         with self._tx():
             cur = self._conn.execute(
@@ -8266,41 +8272,11 @@ class BlockStore:
             # the drain — under its pre-bill segments, which every surface reads.
             if cur.rowcount and segments is not None:
                 self._replace_segments(block_start, meter_id, segments)
-        return cur.rowcount
-
-    def recost_sub_meters(self, block_start: str, rate, rate_exc,
-                          main_meter_id: str = "electricity_main") -> int:
-        """Re-cost every physical sub-meter on a slot to a new parent rate.
-
-        PASS 2 costs each sub-meter at its parent's rate, so when settlement moves
-        the main rate the children must follow or the block disagrees with itself
-        -- device == main == bill. The kWh columns are untouched; only the priced
-        rate layer moves.
-
-        Cost derives from `imp_kwh_grid` -- the portion of the draw the GRID
-        supplied, which is what PASS 2 prices -- falling back to raw `imp_kwh` only
-        where PASS 2 never clipped. Pricing raw `imp_kwh` over-costs any device with
-        non-grid supply (a battery on solar), and the bill's
-        `max(0, main - SUM(devices))` clamp then carries that into the bill
-        (v4 #473, 4.5.15; tests/test_device_cost_clip.py).
-
-        `imp_kwh IS NOT NULL` is what excludes an export meter, which has no import
-        to re-cost. No-op on a synthetic-EV account, which has no sub-meter blocks.
-
-        **Best-effort by contract.** Its caller runs this in its own transaction
-        after the main row has already committed, and swallows failures: the
-        bill's figure for the main row is authoritative and must not be rolled
-        back because a derived device cost could not be written. What makes that
-        safe is `repair_device_rate_drift()`, which detects exactly this
-        divergence on every pass -- see `run_device_rate_drift_repair`.
-        """
-        with self._tx():
-            cur = self._conn.execute(
-                "UPDATE blocks SET imp_rate = ?, "
-                "imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
-                "imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6) "
-                "WHERE block_start = ? AND meter_id != ? AND imp_kwh IS NOT NULL",
-                (rate, rate, rate_exc, block_start, main_meter_id))
+            if cur.rowcount and devices:
+                self._conn.executemany(
+                    "UPDATE blocks SET imp_kwh_grid = ?, imp_rate = ?, imp_cost = ?, imp_cost_exc = ? "
+                    "WHERE block_start = ? AND meter_id = ?",
+                    [(k, r, c, ce, block_start, mid) for (mid, k, r, c, ce) in devices])
         return cur.rowcount
 
     def repair_device_rate_drift(self) -> int:
@@ -8312,7 +8288,7 @@ class BlockStore:
         physical device block (ev_charger / battery) must carry the same
         `imp_rate` as the main block for its slot. The kWh columns are never
         touched; only the priced rate layer moves. Cost derives from
-        `COALESCE(imp_kwh_grid, imp_kwh)`, as in `recost_sub_meters` -- v4's body
+        `COALESCE(imp_kwh_grid, imp_kwh)`, as the settle's device re-cost did -- v4's body
         priced raw `imp_kwh`, and running that on every pass would re-apply the
         over-cost indefinitely (v4 #473, 4.5.15).
 
@@ -8353,7 +8329,13 @@ class BlockStore:
                 "WHERE meter_id != 'electricity_main' AND imp_kwh IS NOT NULL "
                 "  AND EXISTS (SELECT 1 FROM blocks m WHERE m.meter_id='electricity_main' "
                 "              AND m.block_start = blocks.block_start AND m.imp_rate IS NOT NULL "
-                "              AND ABS(COALESCE(m.imp_rate,0) - COALESCE(blocks.imp_rate,0)) > 0.0001)")
+                "              AND ABS(COALESCE(m.imp_rate,0) - COALESCE(blocks.imp_rate,0)) > 0.0001) "
+                # engine step 4b (design §4 (b)): on a half-hour whose legs are at more than one
+                # rate a device is priced at its own legs' rate, not the main's blend — the
+                # invariant does not hold there, and settle() writes those devices with the main
+                "  AND (SELECT COUNT(DISTINCT ROUND(s.inc_rate, 6)) FROM block_segments s "
+                "       WHERE s.block_start = blocks.block_start AND s.meter_id = 'electricity_main' "
+                "       AND s.channel = 'import' AND s.kwh > 1e-9) <= 1")
         return cur.rowcount
 
     def relabel_segment_bands(self, block_start: str, ev_band: str,
