@@ -78,7 +78,7 @@ One pure rule, then one write:
 | part | from | rule |
 |---|---|---|
 | **kWh** | DCC if settled, else the live reading; an imported block's own | — |
-| **band** | a bill if Octopus has settled it (`settled_band`: the carrying bucket on IOG-SMB, else the label); else the prediction (`predicted_band`: the dispatch slot, then the lifecycle, as step 2b–2c read it), its thresholds judged on the DCC kWh once there is one (§4 (d)); a published tariff → the clock | billed wins (decided 23 Oct); **never read back from a rate** (§4 (a)) |
+| **band** | a bill if Octopus has settled it (`settled_band`: the carrying bucket on IOG-SMB, else the label; an imported bill with neither, Octopus's cost ÷ its own kWh — §6 (e)); else the prediction (`predicted_band`: the dispatch slot, then the lifecycle, as step 2b–2c read it), its thresholds judged on the DCC kWh once there is one (§4 (d)); a published tariff → the clock | billed wins (decided 23 Oct); **never read back from a rate** (§4 (a)) |
 | **rate** | the tariff schedule for that band, on the half-hour's **own** agreement (the stitched schedule) — one function for live and history; `imp_rate` = cost ÷ kWh (§4 (a)) | — |
 | **split** | on IOG-SMB with the bill's buckets, the bill's EV; else the completed dispatch, clipped to the kWh; capped → `iog_cap.compute_iog_split`'s legs | the hold-back keeps EMT's split where the bill drops the car (unchanged) |
 | **segments** | the legs: EV and house, each at its band's rate | — |
@@ -184,7 +184,61 @@ parity seen first, additive first)
 |---|---|---|
 | **4a** | `settle()` as a pure function, and a **settle parity report**: over every half-hour, today's stored cost, band, segments and devices beside `settle()`'s, every difference with its reason — run on every instance. It counts what §4 moves: half-hours with legs at two rates (and those with a device drawing), and predicted bands the DCC kWh would move. The guard test of §4 (a) | nothing |
 | | *4a as built (25 Oct 2026):* `settle.py` (pure: `Facts` → `Settled`); `engine.settle_facts` reads the facts — the DCC kWh, the tariff, the bill's band and buckets, the prediction on that kWh, the EV (the bill's on IOG-SMB, else the completed dispatch), the cap, the devices from their own reads; `run_settle_parity` → `settle_parity_<ts>.json/.csv` in the share's reports, `POST /api/settlement/settle-parity/start` (`{from?, to?}`), `…/status`, `…/download?file=json\|csv`. A correction is listed, not settled: its rate lives only on the block today, and settle() reads no stored rate | |
+| **4a-2** | imported cost as a bill (§6 (e)): the v4 importer writes a bill row for each imported half-hour without one, from its Octopus cost; `settled_band` bands a bill with no label and no buckets by Octopus's cost ÷ its own kWh; the report's CSV carries the stored and settled EV kWh and each device's own read (§6) | the importer's copy only |
 | **4b** | the bill apply and the PASS 2 re-run call `settle()`; `hold_rate` goes; CLAUDE.md's invariant reworded (§4 (d)); a changelog line | settled and re-run half-hours |
-| **4c** | the carve and the reconcile become triggers | dispatched half-hours |
+| **4c** | the carve and the reconcile become triggers — the carve's on a completed dispatch that **arrives or changes** (§6: Octopus restates the completed energy, and the carve takes only half-hours with no split yet) | dispatched half-hours |
 | **4d** | the finalise seam, the gap blocks, the imports and the sweep | new and imported half-hours |
 | **4e** | the removals (~1,700 lines), and the drift repair once `settle` writes devices with the main | — |
+
+## 6. What 4a's reports found (25 Oct 2026)
+
+The settle parity report on staging (23 Oct 2024 – 25 Oct 2026) and dev (5 Jun 2023 – 25 Oct 2026). §4's
+counts were zero on both: no half-hour has legs at two rates, so none has a device drawing on one, and
+the DCC kWh moves no predicted band. The four decisions change nothing either instance holds.
+
+| | staging | dev |
+|---|---|---|
+| same | 16,822 | 23,864 |
+| differs | 43 | 13,871 |
+| empty (no grid import) | 18,227 | 21,659 |
+| corrected (listed, not settled) | 21 | — |
+| stored £ / settle() £ | 1,589.87 / 1,589.87 | 2,956.80 / 3,432.94 |
+
+**Every difference, by cause:**
+
+| cause | staging | dev | £ | what happens |
+|---|---|---|---|---|
+| **imported history whose band survives only in its stored cost** — evening smart charges Octopus billed off-peak, imported with no bill row; settle() finds no bill, and with no dispatch record from then the prediction is peak | — | 1,084 + 5 at a negligible kWh (Jun–Oct 2024, Jun–Sep 2023; 13 in Jan 2025, Apr 2025 and Mar–Apr 2026) | +476.10 | **decided (e)** below |
+| a published tariff's rate worked back from Octopus's cost (0.089985 for 0.09) — v4's scatter residue | — | 12,720 (Sep 2023 – Jun 2024) | +0.04 in all, ≤ £0.00007 a half-hour | settle() writes the tariff's rate |
+| finalise labels a live half-hour's house leg `standard` until its bill relabels it (the older staging copy: every unsettled half-hour on 23 Oct `standard`, every settled one on 20–22 Oct `day`/`off_peak`) | 33 | 41 | 0 | settle()'s label from 4d |
+| imported half-hours labelled `standard` where settle() reads `off_peak` at the same rate (Jun 2024, 31 Mar 2026); one Oct 2026 label with its ex-VAT — not yet read against the database | — | 12 + 1 | 0 | the 4a-2 report's columns |
+| the importer's bill-split transform (#184) left v4's dispatch-capped EV where the bill's was within 0.0005 kWh (`v4import/transforms.py`, "already the bill's"): of staging's 438 settled IOG-SMB half-hours with an EV bucket, 244 of 244 with the bill > 0.0005 kWh above the dispatch hold the bill, and 8 of 9 within 0.0005 hold the dispatch | 8 | 7 (the same dates) | 0 (one rate) | settle() takes the bill's, when 4d's sweep settles them |
+| the carve never re-carves a half-hour that has a split: 24 Oct 04:00 holds 2.67 kWh EV, the completed dispatch now 2.55 (the slot re-captured at 16:20), the charger 2.65 — most likely Octopus's first figure, restated (the log starts after 05:12's carve, so not proved) | 1 | 1 | 0 (one rate) | 4c's carve triggers on a dispatch that arrives **or changes** |
+| a battery's grid share 0 against settle()'s 0.0001–0.0003 kWh | 2 | — | < 0.0001 | rounding |
+
+The 13 dev half-hours inside Octopus's two years sit on rate-change dates (1 Jan, 1 Apr, the 2026
+agreement's start); not yet read against dev's database — the 4a-2 report's columns should say.
+
+**(e) Imported cost is a bill (decided 25 Oct 2026).** v4's API import wrote Octopus's cost into the
+block (`imp_cost`, the rate worked back from it) and **no bill row** (v4 `import_api_history`), so
+every v4 database brings history in this shape — and the part of it older than Octopus's two years
+when it reaches v5 can never be asked again: its stored cost is the only record of Octopus's band.
+The import heard Octopus's cost, so the import writes it as a bill, as step 2c does for v5's own
+imports:
+1. **the importer** writes a bill row (`measured_cost`: Octopus's cost and ex-VAT, the block's kWh,
+   no label) for each `imported_api` half-hour that has none;
+2. **`settled_band`**, for a bill with no label and no buckets whose kWh is the block's own, bands it
+   by Octopus's cost ÷ that kWh against the day's two rates — Octopus's own price, like a bucket's
+   unit rate (§4 (a)'s table: the one kind of rate a band may be read from).
+
+v4 refused cost ÷ kWh in 4.5.7 because the kWh it divided by was CAD and the bill's was settled
+("the CAD/settled mismatch (0.004 vs 0.001) sagged cost/kWh into the wrong band"); here both figures
+are Octopus's, so the division is exact.
+- *Rejected:* `settle_facts` reads an imported block's stored cost where it has no bill — narrower, but
+  it breaks §4 (a)'s guarded rule (no stored rate or cost), and the fact stays where only one reader
+  knows to look.
+- *Dev:* its history imported before #282 is v5's own and past Octopus's two years, so it cannot be
+  re-fetched; it reads right only if dev is restored again from a v4 backup through the fixed importer.
+  Otherwise its oldest months read the prediction once 4d settles them (dev is dev).
+- *The report's gap:* its CSV said a split or a device differed, not by how much — staging's nine
+  split rows needed the database. 4a-2 adds the stored and settled EV kWh and each device's own read.
