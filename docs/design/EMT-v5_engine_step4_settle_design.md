@@ -1,6 +1,6 @@
 # EMT v5 — Engine step 4: one settle() for every half-hour
 
-*Draft, 25 Oct 2026. Step 4 of the engine review (`EMT-v5_engine_review.md` §4.2, §5). Every code fact
+*Draft, 25 Oct 2026; §4's four decisions made the same day. Step 4 of the engine review (`EMT-v5_engine_review.md` §4.2, §5). Every code fact
 read at `dev` d4c8486; line numbers are `engine.py` unless named. The map was made by reading every
 writer; the claims that decide the design were checked again by hand.*
 
@@ -78,14 +78,14 @@ One pure rule, then one write:
 | part | from | rule |
 |---|---|---|
 | **kWh** | DCC if settled, else the live reading; an imported block's own | — |
-| **band** | a bill if Octopus has settled it (`settled_band`: the carrying bucket on IOG-SMB, else the label); else the prediction (`predicted_band`: the dispatch slot, then the lifecycle, as step 2b–2c read it); a published tariff → the clock | billed wins (decided 23 Oct) |
-| **rate** | the tariff schedule for that band, on the half-hour's **own** agreement (the stitched schedule) — one function for live and history | — |
+| **band** | a bill if Octopus has settled it (`settled_band`: the carrying bucket on IOG-SMB, else the label); else the prediction (`predicted_band`: the dispatch slot, then the lifecycle, as step 2b–2c read it), its thresholds judged on the DCC kWh once there is one (§4 (d)); a published tariff → the clock | billed wins (decided 23 Oct); **never read back from a rate** (§4 (a)) |
+| **rate** | the tariff schedule for that band, on the half-hour's **own** agreement (the stitched schedule) — one function for live and history; `imp_rate` = cost ÷ kWh (§4 (a)) | — |
 | **split** | on IOG-SMB with the bill's buckets, the bill's EV; else the completed dispatch, clipped to the kWh; capped → `iog_cap.compute_iog_split`'s legs | the hold-back keeps EMT's split where the bill drops the car (unchanged) |
 | **segments** | the legs: EV and house, each at its band's rate | — |
-| **cost** | Σ segment kWh × rate | always |
-| **ex-VAT** | each leg's rate through the VAT calendar | one way |
+| **cost** | Σ segment kWh × rate, and `imp_cost = imp_kwh × imp_rate` | always |
+| **ex-VAT** | each leg's rate ÷ (1 + the VAT calendar at the half-hour's UK-local date) (§4 (c)) | one way |
 | **correction** | the user's rate on every leg, and the half-hour reads corrected | a correction outranks everything but a bill re-fetched on purpose (design §5.2) |
-| **devices** | PASS 2's grid clip, priced from the legs (§4 (b)) | — |
+| **devices** | PASS 2's grid clip; each device priced at the rate of the legs its kWh sits in (§4 (b)) | Σ device cost ≤ the main's cost |
 | **provenance** | `rate_source` *written* as what settled it (`settled` / `predicted` / `corrected`), never read to decide whether to write — except `corrected` | — |
 
 **Every writer becomes a trigger:** a fact arrives → `settle(those half-hours)`.
@@ -103,27 +103,78 @@ One pure rule, then one write:
 
 Running `settle` twice gives the same answer; nothing needs an authority ladder or a hold.
 
-## 4. Open — for the user
+## 4. Decided (25 Oct 2026)
 
-- (a) **`imp_rate` on a half-hour with legs at different rates** (capped, or a bill's `mixed`): the
-  blend, cost ÷ kWh (so `imp_cost = imp_kwh × imp_rate` always; the legs keep the real rates), or the
-  main band's rate (today's bill apply: peak)?
-- (b) **A device's price on such a half-hour:** the main's single rate (today), or the rate of the
-  leg its kWh sits in (the EV charger at the EV legs' rate)?
-- (c) **Ex-VAT one way:** the VAT calendar on each rate (as the bill apply does since 2b), rather than
-  the schedule's own exc rates — they differ only by Octopus's rounding.
-- (d) **#475 under settle():** a predicted band is a function of the facts, and the dispatch slot's
-  0.1 kWh floor reads the kWh — so a DCC kWh crossing it would re-band a half-hour not yet billed.
-  Keep #475 (once a half-hour's kWh has settled, its *predicted* band is frozen until a bill or a new
-  dispatch fact arrives), or let the prediction follow the settled kWh?
+Each applies only where a half-hour's legs are at different rates — a capped half-hour, or a bill's
+`mixed` — except (c) and (d), which apply to every half-hour.
+
+**(a) `imp_rate` is the blend, cost ÷ kWh.** So `imp_cost = imp_kwh × imp_rate` holds on every
+half-hour and 4a's parity report reads any break as a defect, with no list of exceptions. The legs
+keep the real rates, and the charts already draw from them (the house line from the house segments,
+`energy_charts.py` 783–786; the EV line from the EV segments). finalise already stores the blend
+(`iog_cap`'s `effective_rate`); the bill apply's peak (11861–11864) goes.
+- *Rejected:* the main band's rate — `imp_cost ≠ imp_kwh × imp_rate` on every such half-hour, and
+  devices priced at peak.
+- *v4's lesson, and the condition it sets.* v4's bill apply snapped to the nearer tariff rate
+  ("never a cost/kWh derivation", 4.5.7), because v4 read the band **back from the rate**: a blended
+  rate slipped past the reconcile's `abs(cur_rate − off_peak) < 1e-6` test and silently disarmed the
+  bump revert (BL-62; v4 ROADMAP archive, "the residue that is not solved"). Under `settle()` the band
+  comes from the evidence and the rate from the band, never the reverse. **Nothing may band, or match
+  for equality, on `imp_rate` or an ex-VAT rate** — stated here, and guarded by a test in 4a.
+  Before 4a, grep for the band-from-rate reads still in v5 (the drift repair compares devices with
+  `imp_rate`; the reconcile's own band test).
+
+**(b) A device is priced at the rate of the legs its kWh sits in.** In PASS 2's existing order
+(`_grid_priority`: a `meter_type` `ev`/`ev_charger` meter first):
+1. the EV charger fills the EV legs and pays their rate; any kWh beyond them (the charger read more
+   than the bill's EV) pays the house legs' rate;
+2. every other device pays the house legs' rate;
+3. where one group of legs has two rates (a capped EV: part off-peak, part peak), the device pays that
+   group's blend — a half-hour read cannot place it more finely.
+
+The devices are clipped to the main's kWh already, so Σ device cost ≤ the main's cost and the house
+never clamps to zero. v4 priced every device at the main's single rate (`claimed × parent_rate`) and
+never by leg; on a single-rate half-hour the two agree. *Latent:* the local staging copy has no
+half-hour with legs at two rates, so none with a device drawing; dev is not yet counted. 4a counts
+both. `recost_sub_meters` and the drift repair assume one rate per half-hour, so `settle()` writes the
+devices with the main and 4e removes them.
+- *Rejected:* the main's rate (the blend after (a)) — right in total, wrong per line: the charger reads
+  too dear, the house's devices too cheap.
+
+**(c) Ex-VAT one way: the VAT calendar on every leg** — inc ÷ (1 + VAT at the half-hour's UK-local
+date), as the bill apply does since 2b. It covers every source (schedule, correction, published
+tariff, imported row), so a rate's ex-VAT never depends on where the rate came from. Since the 0%
+change `RateSchedule.with_vat` rebuilds the schedule's inc from Octopus's exc, rounded to 4 dp, so the
+calendar's figure is within ~0.00005 p/kWh of Octopus's published exc (30.7707 × 1.05 → 32.3092;
+32.3092 ÷ 1.05 = 30.770667). The block's own stored pair — the one way that could be wrong after a VAT
+change — is not read.
+- *Rejected:* the schedule's exc where there is one — exact, but a second way, for corrections.
+
+**(d) The prediction follows the settled kWh.** #475 (v4, 24 Sep) was two instances of one site
+pricing the same half-hour off-peak and peak: the `completed` dispatch lands 45–75 minutes after the
+half-hour closes, and the PASS 2 re-run, on the DCC kWh, re-ran the overlay on whatever it had
+captured by then. The defect was **arrival order**; the freeze (`hold_rate`, "the rate stays where it
+was") was the right fix for a writer that re-decided on what it happened to know. `settle()` is a
+function of the facts, so the order cannot matter — and a freeze would make it read *when* the band
+was frozen, which is #475's dependence in a new place. The DCC kWh reaches the band only through the
+prediction's two thresholds (the overlay's 0.1 kWh floor, the lifecycle's 0.4 kWh "not materially
+run"), which ask a quantity question the DCC figure answers better. A predicted band therefore moves
+**at most once before the bill**, when the DCC kWh crosses one of them; the band note says so
+("predicted, on the settled kWh"). Only a bill settles a band. (#475's own half-hour — 0.156 kWh, a
+`completed` with no `started` — reads peak under the 2c rules either way.)
+- *Rejected:* keep #475's freeze until a bill or a new dispatch fact.
+- *What it reverses:* CLAUDE.md's invariant "a settled kWh … must never re-band" and v4's changelog
+  promise. The invariant is reworded **when 4b ships**, not before (the code freezes until then): a
+  settled kWh may change a prediction only through the prediction's own thresholds, and only a bill
+  settles a band. 4a's report counts the half-hours where it would move; 4b's changelog says so.
 
 ## 5. Order (each its own PR; step 2's §3a safeguards: a backup before staging takes each,
 parity seen first, additive first)
 
 | PR | what | writes |
 |---|---|---|
-| **4a** | `settle()` as a pure function, and a **settle parity report**: over every half-hour, today's stored cost, band, segments and devices beside `settle()`'s, every difference with its reason — run on every instance | nothing |
-| **4b** | the bill apply and the PASS 2 re-run call `settle()` | settled and re-run half-hours |
+| **4a** | `settle()` as a pure function, and a **settle parity report**: over every half-hour, today's stored cost, band, segments and devices beside `settle()`'s, every difference with its reason — run on every instance. It counts what §4 moves: half-hours with legs at two rates (and those with a device drawing), and predicted bands the DCC kWh would move. The guard test of §4 (a) | nothing |
+| **4b** | the bill apply and the PASS 2 re-run call `settle()`; `hold_rate` goes; CLAUDE.md's invariant reworded (§4 (d)); a changelog line | settled and re-run half-hours |
 | **4c** | the carve and the reconcile become triggers | dispatched half-hours |
 | **4d** | the finalise seam, the gap blocks, the imports and the sweep | new and imported half-hours |
 | **4e** | the removals (~1,700 lines), and the drift repair once `settle` writes devices with the main | — |
