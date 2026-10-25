@@ -5,6 +5,7 @@ dispatch window (no battery bucket), so the bill's ev_kwh is capped to the dispa
 dispatch that lands AFTER a block is priced leaves it with no EV segment; the bill split still recovers
 the EV, but never beyond the dispatched session. No dispatch -> house-only."""
 import os, sys, tempfile, unittest
+from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from block_store import BlockStore
 from kraken_rates import RateSchedule
@@ -43,6 +44,10 @@ class TestC2SettledSplit(unittest.TestCase):
         self._prev = (engine._store, engine._kraken_rate_schedules)
         engine._store = self.store
         engine._kraken_rate_schedules = {"import": _sched()}
+        # engine step 4b: settle() asks the tariff kind (the apply never did); no agreement is loaded
+        _tk = mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+        _tk.start()
+        self.addCleanup(_tk.stop)
 
     def tearDown(self):
         engine._store, engine._kraken_rate_schedules = self._prev

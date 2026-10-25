@@ -1,22 +1,15 @@
 """
-The settlement family's writes — A acceptance 5.
+The settlement family's write — A acceptance 5.
 
-Two operations on the path that records what Octopus actually charged:
+    apply_measured_to_main   the bill, onto the main block — and, since engine step 4b, its devices
 
-    apply_measured_to_main   the bill, onto the main block
-    recost_sub_meters        the devices, following the parent rate
-
-THE ASYMMETRY IS THE DESIGN, not an oversight. The main write propagates on
-failure — the caller does not guard it — so a failed apply leaves the block
-UNSETTLED and the drain revisits it. The device re-cost runs afterwards in its own
-transaction inside a `try` that logs and continues, because the bill's figure for
-the main row is authoritative and must not be rolled back for the sake of a
-derived device cost.
-
-What makes that safe is `repair_device_rate_drift()` (A12), which detects exactly
-this divergence on every pass. Before it was reinstated, a failure here left the
-main meter settled and its devices on the pre-settlement rate with
-`rate_source='settled'` already stamped — so nothing would ever look again.
+Until engine step 4b (25 Oct 2026) the devices were re-costed afterwards by `recost_sub_meters`, in a
+transaction of their own inside a `try` that logged and continued, so a failed device write left
+the main settled and its devices on the old rate — what `repair_device_rate_drift()` (A12) was
+reinstated to catch. settle() now prices the devices with the main (at the rate of the legs their
+kWh sits in, design §4 (b)), and the one write takes both: if it fails, nothing is stamped and the
+block stays a candidate. The drift repair stays for the writers not yet through settle() (the
+reconcile and the carve, step 4c).
 """
 import os
 import sqlite3
@@ -118,84 +111,40 @@ class ApplyMeasuredToMain(unittest.TestCase):
             self.st.apply_measured_to_main(S, meter_id="sub_meter_ev", **_BILL), 0)
 
 
-class RecostSubMeters(unittest.TestCase):
+class TheDevicesGoWithTheMain(unittest.TestCase):
+    """Engine step 4b: one transaction. Discriminating — the parent had no `devices`."""
 
-    def setUp(self):
-        self.st = _mk_store()
-        _block(self.st, imp_rate=0.0549)                       # already settled
-        _block(self.st, "sub_meter_ev", imp_kwh=4.0, imp_rate=0.32)
-        _block(self.st, "sub_meter_battery", imp_kwh=2.0, imp_rate=0.32)
-
-    def test_every_physical_sub_meter_follows_the_parent(self):
-        self.assertEqual(self.st.recost_sub_meters(S, 0.0549, 0.0523), 2)
-        for m in ("sub_meter_ev", "sub_meter_battery"):
-            r = _row(self.st, m)
-            self.assertAlmostEqual(r["imp_rate"], 0.0549)
-            # exc_source dropped (step 5b, 10 Oct 2026); the ex-VAT £ follows the parent rate.
-            self.assertAlmostEqual(r["imp_cost_exc"],
-                                   round((4.0 if m == "sub_meter_ev" else 2.0) * 0.0523, 6))
-
-    def test_cost_is_recomputed_from_the_devices_own_kwh(self):
-        self.st.recost_sub_meters(S, 0.0549, 0.0523)
-        self.assertAlmostEqual(_row(self.st, "sub_meter_ev")["imp_cost"],
-                               round(4.0 * 0.0549, 6))
-        self.assertAlmostEqual(_row(self.st, "sub_meter_battery")["imp_cost"],
-                               round(2.0 * 0.0549, 6))
-
-    def test_the_device_kwh_is_never_touched(self):
-        self.st.recost_sub_meters(S, 0.0549, 0.0523)
-        self.assertAlmostEqual(_row(self.st, "sub_meter_ev")["imp_kwh"], 4.0)
-
-    def test_the_main_meter_is_excluded(self):
-        before = _row(self.st)["imp_rate"]
-        self.st.recost_sub_meters(S, 0.99, 0.94)
-        self.assertAlmostEqual(_row(self.st)["imp_rate"], before)
-
-    def test_an_export_meter_is_excluded(self):
-        """`imp_kwh IS NOT NULL` — an export meter has no import to re-cost."""
-        st = _mk_store()
-        _block(st, "sub_meter_export", imp_kwh=None, exp_kwh=3.0)
-        self.assertEqual(st.recost_sub_meters(S, 0.0549, 0.0523), 0)
-
-    def test_a_synthetic_ev_account_is_a_no_op(self):
-        st = _mk_store()
-        _block(st)
-        self.assertEqual(st.recost_sub_meters(S, 0.0549, 0.0523), 0)
-
-
-class TheAsymmetryAndItsNet(unittest.TestCase):
-
-    def test_the_two_writes_are_separate_transactions(self):
-        """Not one. A device failure must not roll back the bill."""
-        st = _mk_store()
-        _block(st, needs_review=1)
-        _block(st, "sub_meter_ev", imp_kwh=4.0, imp_rate=0.32)
-        st.apply_measured_to_main(S, **_BILL)
-        self.assertEqual(_row(st)["rate_source"], "settled")
-        self.assertAlmostEqual(_row(st, "sub_meter_ev")["imp_rate"], 0.32,
-                               msg="the main write must not touch devices")
-
-    def test_a_failed_device_recost_leaves_the_bill_applied(self):
+    def test_the_devices_are_written_with_the_main(self):
         st = _mk_store()
         _block(st)
         _block(st, "sub_meter_ev", imp_kwh=4.0, imp_rate=0.32)
-        st.apply_measured_to_main(S, **_BILL)
-        original = BlockStore.recost_sub_meters
-        try:
-            def _boom(self, *a, **k):
-                raise sqlite3.OperationalError("database is locked")
-            BlockStore.recost_sub_meters = _boom
-            with self.assertRaises(sqlite3.OperationalError):
-                st.recost_sub_meters(S, 0.0549, 0.0523)
-        finally:
-            BlockStore.recost_sub_meters = original
-        self.assertEqual(_row(st)["rate_source"], "settled",
-                         "the authoritative bill must survive a device failure")
+        st.apply_measured_to_main(S, **_BILL, devices=[("sub_meter_ev", 3.5, 0.0549, 0.19215, 0.183)])
+        r = _row(st, "sub_meter_ev")
+        self.assertAlmostEqual(r["imp_rate"], 0.0549)
+        self.assertAlmostEqual(r["imp_cost"], 0.19215)
+        self.assertAlmostEqual(r["imp_cost_exc"], 0.183)
+        self.assertAlmostEqual(r["imp_kwh"], 4.0)              # the device's own read is kept
+
+    def test_a_failed_device_write_stamps_nothing(self):
+        st = _mk_store()
+        _block(st)
+        _block(st, "sub_meter_ev", imp_kwh=4.0, imp_rate=0.32)
+        with self.assertRaises(sqlite3.Error):
+            # a value sqlite cannot bind fails the device UPDATE inside the one transaction
+            st.apply_measured_to_main(S, **_BILL, devices=[("sub_meter_ev", object(), 0.05, 0.1, 0.1)])
+        self.assertNotEqual(_row(st)["rate_source"], "settled")
         self.assertAlmostEqual(_row(st, "sub_meter_ev")["imp_rate"], 0.32)
 
-    def test_and_the_drift_repair_converges_it(self):
-        """The net under the asymmetry. Without A12 this state would persist:
-        rate_source='settled' is already stamped, so the drain never returns."""
+    def test_without_devices_the_main_alone(self):
+        """GUARD: a synthetic-EV account (no sub-meter blocks) writes the main as before."""
+        st = _mk_store()
+        _block(st)
+        st.apply_measured_to_main(S, **_BILL)
+        self.assertEqual(_row(st)["rate_source"], "settled")
+
+    def test_and_the_drift_repair_still_converges_a_device_left_behind(self):
+        """GUARD: a writer not yet through settle() (the reconcile, the carve) can move the main
+        alone; the drift repair still brings a one-rate half-hour's device to the main's rate."""
         st = _mk_store()
         _block(st)
         _block(st, "sub_meter_ev", imp_kwh=4.0, imp_rate=0.32)
@@ -203,12 +152,24 @@ class TheAsymmetryAndItsNet(unittest.TestCase):
         self.assertEqual(st.repair_device_rate_drift(), 1)
         self.assertAlmostEqual(_row(st, "sub_meter_ev")["imp_rate"], 0.0549)
 
+    def test_but_not_on_a_half_hour_with_legs_at_two_rates(self):
+        """Design §4 (b): there the device's rate is its legs', not the main's blend."""
+        import pricing_segments as ps
+        st = _mk_store()
+        _block(st)
+        _block(st, "sub_meter_ev", imp_kwh=1.0, imp_rate=0.0549)
+        st.apply_measured_to_main(S, rate=0.1, cost=0.3, cost_exc=0.28, segments=[
+            ps.Segment(1.0, 0.0549, 0.0523, "off_peak", "ev"),
+            ps.Segment(1.0, 0.3229, 0.3075, "day", "house")])
+        self.assertEqual(st.repair_device_rate_drift(), 0)
+        self.assertAlmostEqual(_row(st, "sub_meter_ev")["imp_rate"], 0.0549)
+
 
 class Surfaces(unittest.TestCase):
 
     def test_both_are_writes(self):
         from store_types import ReadStore, WriteStore
-        for name in ("apply_measured_to_main", "recost_sub_meters"):
+        for name in ("apply_measured_to_main",):
             self.assertTrue(hasattr(WriteStore, name), name)
             self.assertFalse(hasattr(ReadStore, name),
                              "%s on the read surface has no thread guard" % name)

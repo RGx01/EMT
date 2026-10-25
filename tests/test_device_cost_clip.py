@@ -9,7 +9,9 @@ already been healed by v4 and v5 carries no heal of its own.
 PASS 2 costs a sub-meter at `imp_kwh_grid x parent_rate` — the portion of the device's
 draw the GRID actually supplied. Two v5 re-cost sites priced from raw `imp_kwh`:
 
-    WriteStore.recost_sub_meters         settlement's device re-cost
+    WriteStore.recost_sub_meters         settlement's device re-cost (removed in engine
+                                         step 4b: settle() prices the devices from their
+                                         clipped grid share, with the main)
     WriteStore.repair_device_rate_drift  the recurring drift sweep (was v4's
                                          _smb_device_recost_core body)
 
@@ -97,22 +99,6 @@ class _Base(unittest.TestCase):
     def _assert_kwh_untouched(self):
         b = _row(self.st, "sub_meter_battery")
         self.assertEqual((b["imp_kwh"], b["imp_kwh_grid"]), (4.0, 0.01))
-
-
-class RecostSubMetersClips(_Base):
-
-    def setUp(self):
-        super().setUp()
-        self.st.recost_sub_meters(S, NEW, NEW_EXC)
-
-    def test_cost_derives_from_grid_attributed_kwh(self):
-        self._assert_clipped()
-
-    def test_unclipped_device_keeps_costing_from_raw_kwh(self):
-        self._assert_unclipped_falls_back()
-
-    def test_kwh_columns_are_never_touched(self):
-        self._assert_kwh_untouched()
 
 
 class DriftRepairClips(_Base):

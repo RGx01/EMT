@@ -3,6 +3,7 @@ settled slot (both bands), with NO age-gate and NO review-flag. apply_measured_t
 NEVER derives a cost/kWh rate: it snaps to the tariff agreement, or skips the slot.
 (Replaces the retired test_measured_age_gate / test_measured_apply_pass / test_bl53_step2.)"""
 import os, sys, unittest
+from unittest import mock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import engine
 import ev_split
@@ -28,6 +29,10 @@ class TestMeasuredSettledV2(unittest.TestCase):
         self.st = BlockStore(":memory:")
         engine._store = self.st
         engine._kraken_rate_schedules = {"import": _Sched()}
+        # engine step 4b: settle() asks the tariff kind (the apply never did); no agreement is loaded
+        _tk = mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+        _tk.start()
+        self.addCleanup(_tk.stop)
         # an Intelligent tariff (the bill apply takes Intelligent half-hours only, 16 Oct 2026);
         # not IOG-SMB, so these cases keep the dispatch rule they were written for
         engine._kraken_discovery = {"import": {"mpan": "m", "tariff_code": "E-1R-INTELLI-VAR-22-10-14-B"}}
@@ -63,6 +68,9 @@ class TestMeasuredSettledV2(unittest.TestCase):
         # settles the slot off-peak (device == main == bill) — not left at the stale peak.
         slot = "2026-09-08T04:00:00"
         self._blk(slot, 3.0, PK)                              # main provisionally PEAK
+        self.st._conn.execute(                               # settle() reads the meters config
+            "INSERT INTO meters (config_period_id, meter_id, is_sub_meter, parent_meter_id) "
+            "VALUES (1, 'ev_charger', 1, 'electricity_main')")
         self.st._conn.execute(                               # device sub-meter, PASS-2 costed PEAK
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
             "imp_kwh, imp_rate, imp_cost, rate_source, rate_corrected) "

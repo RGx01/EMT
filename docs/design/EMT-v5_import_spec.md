@@ -931,14 +931,14 @@ carry, else the main import channel's (`meter_channels` through `meters`). With 
 none and the report says so. A bill Octopus gives later for the half-hour replaces it (same key).
 Gate `imported_bills` (§9) checks each row against its block and that none was missed; `row_counts`
 and `carried_exactly` compare every other bill exactly. v5's `settled_band` reads an IMPORTED bill by
-cost ÷ its kWh, where that kWh is the block's own and the cost is kWh × one of the day's two rates
-(within 0.05p) and not the other.
+cost ÷ its kWh, where that kWh is the block's own: the nearer of the day's two rates, within 0.05p of
+kWh × it; none where it is near neither (a blend) or equally near both (engine step 4b).
 
 > Measured 25 Oct 2026, dev's v4 backup (4.5.24): 35,860 bills written — 758 API half-hours with
 > Octopus's cost, 15,454 v4 priced by Octopus's label, 19,648 from a CSV — every gate holding, 2.2 s on
 > a Mac. Against each day's lowest and highest imported rate (a stand-in for the schedule): 2,521
-> evening half-hours band off-peak; 3,670 of 0.004 kWh or less (5.38 kWh in all) match both rates and
-> keep EMT's prediction.
+> evening half-hours band off-peak; 3,670 of 0.004 kWh or less (5.38 kWh in all) are within 0.05p of
+> both rates and take the nearer.
 
 A main block whose segments miss its kWh but whose rate is NOT held is **reported, not refitted**:
 its cause is not this one, and refitting would hide it. The import report counts both — refitted,

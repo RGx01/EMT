@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 import iog_cap
+import pricing_segments as _ps
 
 EV_METER_TYPES = ("ev", "ev_charger")     # the config UI writes 'ev'; the derived EV, 'ev_charger'
 _EPS = 1e-9
@@ -99,31 +100,34 @@ def _house_band(band: str) -> str:
     return "off_peak" if band == "off_peak" else "day"
 
 
+def _one_rate_legs(kwh: float, ev: float, rate: float, ev_band: str, home_band: str) -> list:
+    """EV + house at one rate, as (kWh, rate, band, attribution): the one builder's
+    (`pricing_segments.ev_house_at`, bill and split paths design §3.3)."""
+    return [(g.kwh, g.inc_rate, g.band, g.attribution)
+            for g in _ps.ev_house_at(kwh, ev, inc_rate=rate, exc_rate=None, ev_band=ev_band,
+                                     home_band=home_band)]
+
+
 def _single_band_legs(f: Facts, band: str, ev: float) -> list:
     """Every leg on one band: the EV at off-peak/peak, the house at off-peak/day — the bill apply's
     single-band legs (step 2b), at the day's two rates."""
-    r = f.lo if band == "off_peak" else f.hi
-    out = []
-    if ev > _EPS:
-        out.append((ev, r, band, "ev"))
-    if f.kwh - ev > _EPS:
-        out.append((f.kwh - ev, r, _house_band(band), "house"))
-    return out
+    return _one_rate_legs(f.kwh, ev, f.lo if band == "off_peak" else f.hi, band, _house_band(band))
 
 
 def _bucket_legs(f: Facts, ev: float) -> "list | None":
     """A mixed bill off the cap: each leg on its own bucket's band (the bill's two buckets at the two
-    rates). None where the buckets do not name both legs' bands."""
+    rates), each built by the one builder. None where the buckets do not name both legs' bands."""
     eb, hb = f.settled_legs.get("ev"), f.settled_legs.get("house")
     out = []
     if ev > _EPS:
         if eb not in ("off_peak", "peak"):
             return None
-        out.append((ev, f.lo if eb == "off_peak" else f.hi, eb, "ev"))
+        out += _one_rate_legs(ev, ev, f.lo if eb == "off_peak" else f.hi, eb, _house_band(eb))
     if f.kwh - ev > _EPS:
         if hb not in ("off_peak", "peak"):
             return None
-        out.append((f.kwh - ev, f.lo if hb == "off_peak" else f.hi, _house_band(hb), "house"))
+        out += _one_rate_legs(f.kwh - ev, 0.0, f.lo if hb == "off_peak" else f.hi, eb or hb,
+                              _house_band(hb))
     return out
 
 
@@ -201,7 +205,8 @@ def settle(f: Facts) -> Settled:
     if f.kind != "intelligent":
         if f.clock_rate is None:
             return Settled("no_rate")
-        raw, band, status, ev = [(kwh, f.clock_rate, "standard", "house")], "standard", "clock", 0.0
+        raw, band, status, ev = (_one_rate_legs(kwh, 0.0, f.clock_rate, "standard", "standard"),
+                                 "standard", "clock", 0.0)
     else:
         if f.lo is None or f.hi is None:
             return Settled("no_rate")

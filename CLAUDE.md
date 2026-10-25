@@ -103,7 +103,9 @@ import floor. v5 has none of its own.
   `measured_cost` → `rate_source='measured'` (the bill, later or never, says *what it cost*).
   Cost settlement implies kWh settlement; the reverse does not. Reading
   `imp_kwh_api IS NOT NULL` as "settled" has caused at least six defects. A settled kWh may
-  re-**cost** a block and must never re-**band** it (#475, `hold_rate`).
+  re-**cost** a block, and may move EMT's *predicted* band only through the prediction's own
+  thresholds (0.1 kWh, 0.4 kWh); only a bill settles a band. Since engine step 4b `settle()`
+  decides it from the facts, so arrival order cannot (#475's defect; its `hold_rate` freeze is gone).
 - **The round-trip pattern.** `get_block_dict_by_start` → mutate → `append_block_replace`
   (INSERT OR REPLACE) resets any column not explicitly carried. Fixed three times; prefer a
   targeted UPDATE.

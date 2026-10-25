@@ -365,8 +365,16 @@ class TheImportedCostBand(unittest.TestCase):
     def test_a_blend_of_two_buckets_settles_nothing(self):
         self.assertIsNone(self._b(round(1.0 * LO + 1.04 * HI, 6)))
 
-    def test_a_tiny_kwh_that_matches_both_settles_nothing(self):
-        self.assertIsNone(self._b(0.0001, kwh=0.001, own=0.001))
+    def test_a_tiny_kwh_takes_the_nearer_rate(self):
+        """Engine step 4b: within 0.05p of both, the nearer — the two differ by under 0.05p, and
+        refused it stayed a candidate of every bill pass (3,670 on dev's 4.5.24 backup). On #301's
+        rule it settled nothing; this fails there."""
+        self.assertEqual(self._b(0.0001, kwh=0.001, own=0.001), "off_peak")
+        self.assertEqual(self._b(0.0003, kwh=0.001, own=0.001), "peak")
+
+    def test_an_exact_tie_settles_nothing(self):
+        mid = round(0.001 * (LO + HI) / 2, 9)
+        self.assertIsNone(self._b(mid, kwh=0.001, own=0.001))
 
     def test_a_bill_whose_kwh_is_not_the_blocks_settles_nothing(self):
         """v4 4.5.7: cost ÷ a CAD kWh sagged into the wrong band; only Octopus's own kWh divides."""

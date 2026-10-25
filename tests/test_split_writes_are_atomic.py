@@ -308,7 +308,7 @@ class TheSplitTheyRebuildFrom(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(sum(x["kwh"] for x in segs if x["attribution"] == "ev"), 0.6, places=6)
         self.assertEqual({round(x["inc_rate"], 6) for x in segs}, {0.323092})
 
-    def test_measured_settlement_prefers_the_segments_ev(self):
+    def test_measured_settlement_takes_the_dispatch_not_the_stored_split(self):
         h = MA.TestMeasuredApply("test_no_dispatch_stays_house_only")
         h.setUp()
         try:
@@ -320,7 +320,11 @@ class TheSplitTheyRebuildFrom(unittest.IsolatedAsyncioTestCase):
             engine.apply_measured_to_block(h.SLOT, cost_incl=round(3.0 * 0.05493, 6), label="OFF_PEAK")
             ev = sum(x["kwh"] for x in h.st.get_block_segments(h.SLOT, "electricity_main")
                      if x["attribution"] == "ev")
-            self.assertAlmostEqual(ev, 1.0, places=6)          # the stored split, not the dispatch's 2.0
+            # REVERSED by engine step 4b (design §3): settle() reads no stored split — the EV off
+            # IOG-SMB is the completed dispatch, a fact. A stored EV that differs from it was
+            # written by a writer that did not follow a restated dispatch (staging, 24 Oct 2026
+            # 04:00: the carve kept 2.67 kWh, the dispatch now 2.55). Until then the stored 1.0 won.
+            self.assertAlmostEqual(ev, 2.0, places=6)
         finally:
             h.tearDown()
 

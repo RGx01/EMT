@@ -151,7 +151,8 @@ class TheRelabel(_Harness):
 
 class TheMixedBill(_Harness):
     """`apply_measured_to_block` with a 'mixed' bill rebuilds the block's four capped bands from
-    the seam (an over-cap boundary). Only on a capped half-hour."""
+    the cap (an over-cap boundary) — through settle()'s `iog_cap.price_slot` since engine step 4b.
+    Only on a capped half-hour."""
 
     def setUp(self):
         super().setUp()
@@ -166,8 +167,8 @@ class TheMixedBill(_Harness):
     def _apply(self):
         import iog_cap
         calls = []
-        save = iog_cap.compute_iog_split
-        iog_cap.compute_iog_split = lambda *a, **k: calls.append(k) or {
+        save = iog_cap.price_slot
+        iog_cap.price_slot = lambda *a, **k: calls.append(k) or {
             "segments": [(1.0, 0.05, "off_peak", "ev"), (1.0, 0.25, "peak", "ev"),
                          (1.0, 0.30, "day", "house")],
             "classification": {"ev": "mixed", "house": "day"}}
@@ -176,7 +177,7 @@ class TheMixedBill(_Harness):
         try:
             engine.apply_measured_to_block(S, cost_incl=0.60, cost_excl=0.57, label="mixed")
         finally:
-            iog_cap.compute_iog_split = save
+            iog_cap.price_slot = save
         return calls
 
     def test_a_pre_agreement_mixed_bill_is_not_rebuilt_capped(self):

@@ -34,7 +34,7 @@ class OneDispatchEv(unittest.TestCase):
     def test_the_seam_and_the_settle_both_use_it(self):
         self.assertNotIn("def _iog_slot_ev_kwh", SRC)
         self.assertIn("ev_kwh = dispatch_ev_kwh(block_start, chosen_kwh)", SRC)
-        settle = SRC[SRC.index("def _measured_ev_kwh"):SRC.index("def apply_measured_to_block")]
+        settle = SRC[SRC.index("def settle_facts"):SRC.index("def settle_parity_row")]
         self.assertIn("dispatch_ev_kwh(bs, kwh, store)", settle)
         self.assertNotIn("completed_dispatch_kwh(", settle)
 
@@ -49,9 +49,9 @@ class OneCappedTest(unittest.TestCase):
         # the BL-34 relabel asks only the agreement (capped pricing by agreement design §5 (b))
         self.assertGreaterEqual(SRC.count("_capped_schedules()"), 3)
         self.assertEqual(SRC.count("capped_at(block_start) and _capped_schedules()"), 1)
-        # the bill apply's mixed rebuild, and settle_facts (engine step 4a); 4b, the bill apply
-        # through settle(), takes it back to one
-        self.assertEqual(SRC.count("capped_at(bs) and _capped_schedules()"), 2)
+        # settle_facts — the bill apply's mixed rebuild went with engine step 4b (the bill apply
+        # through settle()); 4a had made it two
+        self.assertEqual(SRC.count("capped_at(bs) and _capped_schedules()"), 1)
         self.assertIn("_capped_band = capped_at(bs)", SRC)
 
 
