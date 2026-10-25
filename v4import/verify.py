@@ -27,7 +27,9 @@ REWRITTEN = {"blocks": ("rate_source", "needs_pass2_rerun")}
 # `ev_segments` and `held_fit` where they were written. The id is not compared: a rewritten
 # block's rows are new rows.
 _UNTOUCHED = {"block_segments": "WHERE block_start NOT IN (SELECT block_start FROM "
-                                "temp.v4i_resegmented)"}
+                                "temp.v4i_resegmented)",
+              # transform 3c's bills (temp.v4i_bills) are new rows, checked by `imported_bills`
+              "measured_cost": "WHERE slot_start NOT IN (SELECT slot_start FROM temp.v4i_bills)"}
 _HELD_SRC = ("(rate_source IN ('corrected', 'reconciled', 'measured') OR (rate_reconciled = 1 "
              "AND (rate_source IS NULL OR rate_source = 'schedule')))")
 _SEG = ("(SELECT block_start, SUM(kwh) AS k, SUM(kwh * inc_rate) AS c, "
@@ -281,6 +283,32 @@ def bill_split(conn, report):
     return None
 
 
+def imported_bills(conn, report):
+    """Engine step 4 design §6 (e) (transform 3c): each bill 3c wrote is its block's — an imported main
+    half-hour — with its cost, ex-VAT and kWh and the label IMPORTED; and it wrote one for every
+    imported half-hour with kWh and a cost that had no bill."""
+    from .transforms import IMPORTED_LABEL, IMPORTED_SOURCES
+    t = report["transforms"].get("imported_bills", {"written": 0})
+    n = _one(conn, "SELECT COUNT(*) FROM temp.v4i_bills")
+    bad = _one(conn,
+               "SELECT COUNT(*) FROM temp.v4i_bills t JOIN main.measured_cost m ON m.slot_start = "
+               "t.slot_start AND m.direction = 'CONSUMPTION' LEFT JOIN main.blocks b ON "
+               "b.block_start = t.slot_start AND b.meter_id = 'electricity_main' "
+               "WHERE b.id IS NULL OR b.source NOT IN " + IMPORTED_SOURCES + " "
+               "OR m.cost_incl IS NOT b.imp_cost OR m.cost_excl IS NOT b.imp_cost_exc "
+               "OR m.kwh IS NOT b.imp_kwh OR m.label IS NOT ?", IMPORTED_LABEL)
+    missed = 0 if t.get("skipped") else _one(
+        conn, "SELECT COUNT(*) FROM main.blocks b WHERE b.meter_id = 'electricity_main' "
+              "AND b.source IN " + IMPORTED_SOURCES + " AND COALESCE(b.imp_kwh, 0) > 1e-6 "
+              "AND b.imp_cost IS NOT NULL AND NOT EXISTS (SELECT 1 FROM main.measured_cost m "
+              "WHERE m.slot_start = b.block_start AND m.direction = 'CONSUMPTION')")
+    report["gates"]["imported_bills"].update(written=t["written"], skipped=t.get("skipped"))
+    if n != t["written"] or bad or missed:
+        return ("imported bills: %d written, %d recorded, %d not their block's cost, "
+                "%d imported half-hour(s) left without one" % (t["written"], n, bad, missed))
+    return None
+
+
 def corrections(conn, report):
     """Spec §9.4: every corrected block keeps its corrected rate and cost."""
     n = _one(conn, "SELECT COUNT(*) FROM src.blocks s LEFT JOIN main.blocks m ON m.id = s.id "
@@ -395,7 +423,7 @@ def ha_reads(conn, report):
 GATES = (("row_counts", row_counts), ("carried_exactly", carried_exactly),
          ("cost_parity", cost_parity), ("provenance", provenance),
          ("ev_segments", ev_segments), ("split_reproduced", split_reproduced),
-         ("held_fit", held_fit), ("bill_split", bill_split),
+         ("held_fit", held_fit), ("bill_split", bill_split), ("imported_bills", imported_bills),
          ("corrections", corrections), ("tombstones", tombstones), ("keys", keys),
          ("billing_source", billing_source), ("device_sensors", device_sensors),
          ("ha_reads", ha_reads))

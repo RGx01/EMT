@@ -90,11 +90,13 @@ class TheRoute(unittest.TestCase):
         seen = []
         note = {"settled": "off_peak", "predicted": "peak", "disagrees": True}
         with unittest.mock.patch.object(eng, "band_note", create=True,
-                                        side_effect=lambda *a: seen.append(a) or note):
+                                        side_effect=lambda *a, **k: seen.append((a, k)) or note):
             d = json.loads(self._get(S).data)
         self.assertEqual(d["band"], note)
-        self.assertEqual(seen[0][2], "OFF_PEAK")
-        self.assertEqual(seen[0][3]["ev_kwh"], 2.5714)
+        self.assertEqual(seen[0][0][2], "OFF_PEAK")
+        self.assertEqual(seen[0][0][3]["ev_kwh"], 2.5714)
+        # engine step 4a-2: and the bill's cost and kWh, for an imported bill with no label
+        self.assertEqual(set(seen[0][1]), {"cost", "bill_kwh"})
 
     def test_no_block_is_404_and_a_bad_start_is_400(self):
         self.assertEqual(self._get("2026-01-01T00:00:00").status_code, 404)
