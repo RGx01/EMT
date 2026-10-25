@@ -4650,7 +4650,7 @@ class BlockStore:
             (settled_kwh, source,
              verdict["needs_pass2_rerun"], verdict["block_id"]),
         )
-        self._conn.commit()
+        self._commit()             # one commit for a batch (the re-fetch's)
         return verdict
 
     # ── BL-8: outage backfill ────────────────────────────────────────────────
