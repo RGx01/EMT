@@ -1,7 +1,7 @@
 """
 Engine step 3a (24 Oct 2026): the ask dry run — what the one selector (EMT-v5_engine_step3_ask_queue
-design §3) would ask Octopus for, beside what the live pass and the drain ask today, and why each
-half-hour differs. Read-only; no Octopus call.
+design §3) would ask Octopus for. Read-only; no Octopus call. (Until step 3e it set that beside what
+the live pass and the drain asked; they are gone, and the comparison with them.)
 
 Discriminating: every test here fails on the parent (the report is new).
 """
@@ -58,35 +58,32 @@ class _Base(unittest.TestCase):
 
 
 class TheReport(_Base):
+    """What the one asker would ask now (step 3e: the comparison with the live pass and the drain
+    went with them)."""
 
-    def test_a_live_half_hour_with_no_bill_is_asked_by_both(self):
+    def test_a_live_half_hour_with_no_bill_is_asked(self):
         self._blk("2026-09-01T12:00:00")
         s, rows = self._run()
-        self.assertEqual((s["counts"], s["queue"]["bill"], rows), ({"both": 1}, 1, []))
+        self.assertEqual((s["queue"]["bill"], rows), (1, ["2026-09-01T12:00:00,bill"]))
 
-    def test_imported_history_with_no_bill_is_the_queue_s_only(self):
-        """Decided (b): off IOG-SMB the drain asks imported history only where the import recorded
-        no cost; the queue asks any with no bill."""
+    def test_imported_history_with_no_bill_is_asked(self):
+        """Decided (b)."""
         self._blk("2025-06-01T12:00:00", source="imported_api", api=False)
         s, rows = self._run()
-        self.assertEqual(s["counts"],
-                         {"queue only · imported history with no bill — asked like any other "
-                          "(decided (b))": 1})
-        self.assertIn("2025-06-01T12:00:00,bill,,", rows[0])
+        self.assertEqual(rows, ["2025-06-01T12:00:00,bill"])
 
-    def test_a_correction_the_drain_misses_is_today_s_only(self):
+    def test_a_correction_is_not_asked(self):
         self._blk("2026-09-01T13:00:00", corrected=1)
-        s, _ = self._run()
-        self.assertEqual(s["counts"],
-                         {"today only · corrected (the drain tests rate_source, not rate_corrected)": 1})
+        s, rows = self._run()
+        self.assertEqual((rows, s["considered"]["by_reason"]), ([], {"corrected": 1}))
 
-    def test_a_given_up_half_hour_is_asked_by_neither(self):
-        """The records still hold: the queue keeps today's give-up."""
+    def test_a_given_up_half_hour_is_not_asked(self):
+        """The records still hold: the queue keeps the give-up."""
         self._blk("2026-09-01T14:00:00")
         self.st.ask_record_save("bill",
             {"2026-09-01T14:00:00": {"first": "2026-09-02T00:00:00", "last": "2026-09-02T00:00:00"}})
-        s, _ = self._run()
-        self.assertEqual(s["counts"], {})
+        s, rows = self._run()
+        self.assertEqual((rows, s["considered"]["by_reason"]), ([], {"given up or resting (bill)": 1}))
 
     def test_it_writes_a_summary(self):
         self._blk("2026-09-01T12:00:00")

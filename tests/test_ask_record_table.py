@@ -89,7 +89,7 @@ class TheReaders(unittest.TestCase):
         st = BlockStore(_legacy_db())
         self.addCleanup(st.close)
         with mock.patch.object(engine, "_kraken_discovery", {"import": {"mpan": "M"}}):
-            given_up = engine.bill_no_cost(st)[0]
+            given_up = engine.bill_no_cost(st)
         self.assertIn("2026-08-01T12:00:00", given_up)
 
 

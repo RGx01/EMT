@@ -65,7 +65,7 @@ class TheHealthByMonthCache(unittest.TestCase):
         eng = sys.modules["engine"]
         self.p = [mock.patch.object(server, "_settlement_states", states),
                   mock.patch.object(eng, "bill_split_held", lambda s: (set(), set()), create=True),
-                  mock.patch.object(eng, "bill_no_cost", lambda s: (set(), set(), set()), create=True),
+                  mock.patch.object(eng, "bill_no_cost", lambda s: set(), create=True),
                   mock.patch.object(eng, "_import_is_smb_capped", lambda: False, create=True),
                   mock.patch.object(server, "_health_cache_path",
                                     lambda: os.path.join(self.tmp, "health_counts.json"))]

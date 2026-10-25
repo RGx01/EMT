@@ -104,6 +104,11 @@ then-daily backoff, the 28-day keep, the coordinator membership (`measured_drain
 
 ## 5. Order (each its own PR, the §3a safeguards of step 2)
 
+*Done 24 Oct 2026:* 3a #291 (+ #292, what it read), 3b #293, 3c #294 (+ #295, a page in one commit),
+3d #296, 3e. In 3e the import's no-cost record went too: an imported half-hour with no bill waits as a
+live one does (light amber, red past 9 days, abandoned after 30 unanswered); the dry run stays, as
+what the asker would ask now.
+
 | PR | what | writes |
 |---|---|---|
 | **3a** | a dry run: for each instance, what the one selector would ask against what the live pass and the drain ask today, and why each differs — read-only, no Octopus call | nothing |

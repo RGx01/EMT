@@ -252,14 +252,6 @@ class TheAskRecord(_Harness):
         self._apply(st["token"])
         self.assertEqual(self.st.ask_record("hold"), {})
 
-    def test_the_import_no_cost_record_forgets_it(self):
-        """`_store_bill`'s `note_import_cost(costed=…)`: the re-fetch wrote outside it."""
-        self._block(bill=False)
-        self.st.note_import_cost(no_cost=[SLOT])
-        st = self._preview(_Octopus(node=_node(3.5416, 3.1304)))
-        self._apply(st["token"])
-        self.assertNotIn(SLOT, self.st.import_no_cost_slots())
-
 
 class TheApplyReportsHonestly(_Harness):
 
