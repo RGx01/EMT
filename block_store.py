@@ -3551,36 +3551,6 @@ class BlockStore:
         return written
 
 
-    # An API-imported half-hour Octopus gave no cost for (19 Oct 2026, the user): EMT's kWh × rate,
-    # and nothing asks for it again, so the Import bill hatches it at once. Recorded here because the
-    # block cannot tell — an imported block's cost and rate read the same either way, and the reprice
-    # queue empties at the next import. {slot: first noted, naive UTC}; a slot leaves when an import or
-    # a repair gets Octopus's cost for it.
-    _IMPORT_NO_COST_KEY = "import_no_cost"
-
-    def import_no_cost_slots(self) -> dict:
-        """{slot: first noted} of API-imported import half-hours with no Octopus cost."""
-        try:
-            d = json.loads(self.get_kraken_state(self._IMPORT_NO_COST_KEY) or "{}")
-        except (TypeError, ValueError):
-            d = {}
-        return d if isinstance(d, dict) else {}
-
-    def note_import_cost(self, no_cost=(), costed=()) -> None:
-        """Record half-hours an import left without Octopus's cost, and drop those it, or a repair,
-        got one for. One read and write of the record."""
-        no_cost, costed = set(no_cost or ()), set(costed or ())
-        if not (no_cost or costed):
-            return
-        d = self.import_no_cost_slots()
-        before = dict(d)
-        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
-        for st in no_cost - costed:
-            d.setdefault(st, now)
-        for st in costed:
-            d.pop(st, None)
-        if d != before:
-            self.set_kraken_state(self._IMPORT_NO_COST_KEY, json.dumps(d, sort_keys=True))
 
     # ── Deleting an imported export (soft delete design §4, PR 1, 19 Oct 2026) ───────────────────
     # The export of IMPORTED main-meter history (CSV, PDF, the API import) over whole LOCAL days —
@@ -4372,6 +4342,11 @@ class BlockStore:
         """Move any of the three kraken_state records into `octopus_ask`, once, on open — an
         existing v5 database's, or a v4 import's carried `bill_split_wait` — then drop the key. A
         row already in the table is kept over a legacy entry for the same half-hour."""
+        # the API import's no-cost record (engine step 3e, 24 Oct 2026): the one asker asks imported
+        # history with no bill as it does live history, so nothing reads it
+        if self.get_kraken_state("import_no_cost") is not None:
+            with self._conn:
+                self._conn.execute("DELETE FROM kraken_state WHERE key = 'import_no_cost'")
         for kind, key in self._ASK_LEGACY_KEYS.items():
             raw = self.get_kraken_state(key)
             if raw is None:
@@ -7662,56 +7637,6 @@ class BlockStore:
             (slot_start,)).fetchone()
         return float(row[0]) if row and row[0] is not None else 0.0
 
-    # Off IOG-SMB the drain asks for live history's bill, and for an API-imported half-hour only
-    # where the import got no cost from Octopus (`import_no_cost`): the rest already hold Octopus's
-    # billed cost (20 Oct 2026, the user: on every Intelligent tariff only Octopus's cost is final).
-    _ASKED_OFF_SMB_SQL = (
-        "(b.source IS NULL OR b.source NOT LIKE 'imported%' OR b.block_start IN "
-        "(SELECT j.key FROM kraken_state k, json_each(k.value) j WHERE k.key = 'import_no_cost'))")
-
-    def get_settleable_blocks(self, floor: str, after: str, before: str,
-                              limit: int,
-                              meter_id: str = "electricity_main", *,
-                              include_imported: bool = True) -> list:
-        """One page of settleable blocks with no cached bill yet, oldest first.
-
-        THREE bounds, not two, and they are not redundant: `floor` is fixed for
-        the run, `after` is a cursor that advances past slots Octopus has no
-        answer for WITHIN a run, and `before` is the not-yet-billed cutoff.
-        Collapsing `floor` and `after` loses the paging and the drain re-reads the
-        same page forever.
-
-        `include_imported=False`: off IOG-SMB — live history, and the API-imported half-hours
-        Octopus gave the import no cost for (`_ASKED_OFF_SMB_SQL`); the other imported ones
-        already hold Octopus's billed cost (18 Oct 2026; the no-cost ones, 20 Oct 2026).
-        """
-        rows = self._conn.execute(
-            "SELECT b.block_start FROM blocks b WHERE b.meter_id = ? "
-            "  AND b.imp_kwh > 0 "
-            "  AND " + self._SETTLEABLE_SQL + " "
-            + ("" if include_imported else "  AND " + self._ASKED_OFF_SMB_SQL + " ") +
-            "  AND b.block_start >= ? AND b.block_start > ? AND b.block_start < ? "
-            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
-            "  AND NOT EXISTS (SELECT 1 FROM measured_cost mc WHERE mc.slot_start = b.block_start) "
-            "ORDER BY b.block_start ASC LIMIT ?",
-            (meter_id, floor, after, before, limit)).fetchall()
-        return [r["block_start"] for r in rows]
-
-    # A cost-only cached bill on a half-hour the car drew in — teal on the Import bill, the split
-    # still EMT's (18 Oct 2026, the user: the recovery asks their breakdown, reversing bill and
-    # split paths design §7.2). Main-meter, uncorrected, with a completed dispatch.
-    _COST_ONLY_SPLIT_SQL = (
-        "FROM measured_cost m JOIN blocks b ON b.block_start = m.slot_start "
-        "  AND b.meter_id = 'electricity_main' "
-        "WHERE m.direction = 'CONSUMPTION' AND m.ev_kwh IS NULL AND m.home_kwh IS NULL "
-        "  AND m.cost_incl IS NOT NULL AND m.cost_incl > 0 AND b.imp_kwh > 0 "
-        "  AND COALESCE(b.rate_corrected, 0) = 0 "
-        "  AND (b.rate_source IS NULL OR b.rate_source != 'corrected') "
-        "  AND m.fetched_at = (SELECT MAX(m2.fetched_at) FROM measured_cost m2 "
-        "                      WHERE m2.slot_start = m.slot_start AND m2.direction = m.direction) "
-        "  AND EXISTS (SELECT 1 FROM dispatch_history d WHERE d.slot_start = m.slot_start "
-        "              AND d.kind = 'completed' AND d.energy_kwh IS NOT NULL) "
-        "  AND m.slot_start >= ? AND m.slot_start < ? ")
 
     def ask_candidate_facts(self, floor: str, before: str, mpan: str = "",
                             meter_id: str = "electricity_main") -> list:
@@ -7740,15 +7665,6 @@ class BlockStore:
             "  AND b.block_start >= ? AND b.block_start < ? ORDER BY b.block_start",
             (mpan or "", meter_id, floor, before)).fetchall()
         return [dict(r) for r in rows]
-
-    def get_cost_only_split_slots(self, floor: str, after: str, before: str, limit: int) -> list:
-        """One page, oldest first, of the half-hours whose latest cached bill is cost-only though
-        the car drew in them (`_COST_ONLY_SPLIT_SQL`) — the history drain asks their breakdown."""
-        rows = self._conn.execute(
-            "SELECT DISTINCT m.slot_start " + self._COST_ONLY_SPLIT_SQL +
-            "  AND m.slot_start > ? ORDER BY m.slot_start ASC LIMIT ?",
-            (floor, before, after, limit)).fetchall()
-        return [r[0] for r in rows]
 
 
     def get_imp_kwh(self, starts, meter_id: str = "electricity_main") -> dict:
@@ -7819,34 +7735,6 @@ class BlockStore:
             (mpan, meter_id, floor, after or "")).fetchall()
         return [dict(r) for r in rows]
 
-    def get_dispatched_blocks_awaiting_measure(self, floor: str,
-                                               meter_id: str = "electricity_main") -> list:
-        """DCC-settled dispatched blocks with no bill fetched yet, NEWEST first.
-
-        Newest-first on purpose: this is the live pass, and the most recent
-        settlement is the one a user is looking at. The bulk backfill of old
-        history is `get_settleable_blocks`, which goes oldest-first.
-
-        `imp_kwh_api IS NOT NULL` rather than the shared settleable predicate --
-        imported history is deliberately excluded here and drained separately.
-        The dispatch test accepts `off_peak` OR a `smart-charge-completed`
-        source, because a slot can be dispatched without having been planned
-        off-peak.
-        """
-        rows = self._conn.execute(
-            "SELECT b.block_start, b.imp_kwh, b.imp_rate, b.imp_cost "
-            "FROM blocks b "
-            "WHERE b.meter_id = ? AND b.imp_kwh_api IS NOT NULL "
-            "  AND b.rate_corrected = 0 "
-            "  AND (b.rate_source IS NULL OR b.rate_source NOT IN ('settled','corrected')) "
-            "  AND (b.source IS NULL OR b.source NOT LIKE 'imported%') "
-            "  AND b.block_start >= ? "
-            "  AND EXISTS (SELECT 1 FROM dispatch_slots s "
-            "              WHERE s.slot_start = b.block_start "
-            "                AND (s.off_peak = 1 OR s.source = 'smart-charge-completed')) "
-            "ORDER BY b.block_start DESC",
-            (meter_id, floor)).fetchall()
-        return [dict(r) for r in rows]
 
     def site_timezone(self) -> str:
         """The site's IANA timezone from the newest config period; 'UTC' if there

@@ -102,9 +102,15 @@ class TheBill(unittest.TestCase):
         held only kWh x rate. No tariff or agreement gate enters the colour now."""
         self.assertEqual(_c(_f(block_start="2026-08-09T03:00:00"))["bill"], "overdue")
 
-    def test_an_api_import_holds_octopuss_cost(self):
-        """The API importer stores Octopus's billed cost per half-hour."""
-        self.assertEqual(_c(_f(source="imported_api", imp_kwh_api=None))["bill"], "applied")
+    def test_an_api_import_with_its_bill_holds_octopuss_cost(self):
+        """Its bill cached (since engine step 2c the import keeps Octopus's answer): applied."""
+        self.assertEqual(_c(_f(source="imported_api", imp_kwh_api=None, bill_cost=0.3,
+                               imp_cost=0.3))["bill"], "applied")
+
+    def test_an_api_import_with_no_bill_waits_for_it(self):
+        """Engine step 3e: the one asker asks for it (decided (b)), so it waits as a live one does —
+        it read applied, the copied cost taken for Octopus's bill, until then."""
+        self.assertNotEqual(_c(_f(source="imported_api", imp_kwh_api=None))["bill"], "applied")
 
     def test_a_csv_import_does_not(self):
         self.assertEqual(_c(_f(source="imported_csv", imp_kwh_api=None))["bill"], "imported")
@@ -372,7 +378,7 @@ class TheSurfaces(unittest.TestCase):
                                                       "floor": "2020-01-01T00:00:00"}), \
              unittest.mock.patch.object(eng, "bill_split_held", create=True,
                                         return_value=(set(), set())), \
-             unittest.mock.patch.object(eng, "bill_no_cost", create=True, return_value=(set(), set(), set())), \
+             unittest.mock.patch.object(eng, "bill_no_cost", create=True, return_value=set()), \
              unittest.mock.patch.object(eng, "split_at", create=True, return_value=True), \
              unittest.mock.patch.object(eng, "export_agreement_at", create=True, return_value=None), \
              unittest.mock.patch.object(eng, "tariff_kind_at", create=True,

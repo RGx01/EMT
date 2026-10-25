@@ -7948,13 +7948,6 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
                            channel, len(unscheduled), unscheduled[0])
         _no_band = [r["start"] for r in rows_to_write
                     if not r.get("_octopus") and (r.get("kwh") or 0) > 0] if channel == "import" else []
-        if not dry_run and channel == "import" and rows_to_write:
-            try:
-                _store.note_import_cost(
-                    no_cost=_no_band,
-                    costed=[r["start"] for r in rows_to_write if r.get("_octopus")])
-            except Exception as _nce:
-                logger.warning("import: no-cost record failed (non-fatal): %s", _nce)
         # Octopus's answers kept as band evidence (engine step 2c): each costed Intelligent
         # half-hour's label and cost, in the bill cache, so it settles through the one rule
         # (kWh × the band's rate) as a live half-hour does. In the chunk's own transaction.
@@ -10141,17 +10134,6 @@ def _intelligent_windows() -> list:
                     _import_is_smb_capped()))
     return sorted(out)
 
-
-def _ask_floor(start: str) -> str:
-    """The later of `start` and two years ago: Octopus keeps two years of half-hourly data
-    (`_API_RETENTION_DAYS`, the API import's limit), so a half-hour older than that has no bill to
-    ask for — it would only be asked for 30 days and given up (18 Oct 2026, the user). Bounds the
-    ASKING only; a bill already cached is applied whatever its age."""
-    ret = (datetime.now(timezone.utc).replace(tzinfo=None)
-           - timedelta(days=_API_RETENTION_DAYS)).isoformat()
-    return max(str(start), ret)
-
-
 def _any_intelligent() -> bool:
     """The account has been on an Intelligent tariff: its history is asked for its bills."""
     return bool(_intelligent_windows())
@@ -10358,52 +10340,25 @@ def bill_split_held(store) -> tuple:
     held = {s for s, e in wait.items() if s >= limit and not (isinstance(e, dict) and e.get("kept"))}
     return held, set(wait) - held
 
-
-def _drain_asks(slot: str) -> bool:
-    """Whether the bill drain asks for a no-cost imported half-hour's bill: it lies in an
-    Intelligent window, above the ask floor. On IOG-SMB the drain asks for all imported history;
-    on the others for the half-hours the import got no cost for (`_ASKED_OFF_SMB_SQL`) — so for
-    these, on every Intelligent tariff (20 Oct 2026, the user)."""
-    for vf, vt, _smb in _intelligent_windows():
-        if _ask_floor(vf) <= slot and (vt is None or slot < vt):
-            return True
-    return False
-
-
-def bill_no_cost(store) -> tuple:
-    """(given_up, imported, asked): the half-hours whose bill was asked for 30 days unanswered (no longer
-    asked), and the API-imported ones Octopus gave no cost for at import that nothing asks for
-    again. Both keep EMT's kWh × rate; the Import bill hatches them (19 Oct 2026, the user).
-    An imported one inside an Intelligent window is not among them: the bill drain asks for it,
-    as for a live half-hour, so it waits for its bill until given up (staging, 20 Oct 2026 — 21
-    Jul, deleted and refilled from Octopus, read hatched while the drain was still to ask; every
-    Intelligent tariff, the user, the same day) — `asked` holds those. Read-only — the give-up is not marked here."""
+def bill_no_cost(store) -> set:
+    """The half-hours whose bill was asked for 30 days unanswered, and is no longer asked: they keep
+    EMT's kWh × rate, and the Import bill hatches them (19 Oct 2026, the user). Live or imported
+    alike since engine step 3e (24 Oct 2026) — the one asker asks imported history too (decided
+    (b)), so the import's no-cost record, and its "never asked" imported half-hours, went.
+    Read-only — the give-up is marked by the asker."""
     mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan")
-    given_up = set()
-    if mpan:
-        try:
-            given_up = _bill_ask_given_up(_bill_ask(store, mpan), mark=False)
-        except Exception:
-            given_up = set()
-    imported, asked = set(), set()
+    if not mpan:
+        return set()
     try:
-        for s in store.import_no_cost_slots():
-            (asked if _drain_asks(s) else imported).add(s)
+        return _bill_ask_given_up(_bill_ask(store, mpan), mark=False)
     except Exception:
-        imported, asked = set(), set()
-    return given_up, imported, asked
+        return set()
 
 
 def no_cost_since(store, slot: str):
-    """When EMT stopped asking Octopus for this half-hour's cost (naive UTC), or None: the API
-    import's note, or the 30th day of a bill asked unanswered. For the detail panel."""
+    """When EMT stopped asking Octopus for this half-hour's cost (naive UTC), or None: the 30th
+    day of a bill asked unanswered. For the detail panel."""
     from datetime import datetime as _dt, timedelta as _td
-    try:
-        imp = store.import_no_cost_slots().get(slot)
-        if imp and not _drain_asks(slot):
-            return imp
-    except Exception:
-        pass
     mpan = ((_kraken_discovery or {}).get("import") or {}).get("mpan")
     ent = (_bill_ask(store, mpan) if mpan else {}).get(slot) if mpan else None
     if isinstance(ent, dict):
@@ -10656,12 +10611,6 @@ def _store_bill(store, slot: str, mpan: str, row: dict) -> None:
     """Cache a parsed bill: the cost row, and the breakdown where it has one."""
     store.upsert_measured_cost(slot, mpan=mpan, cost_incl=row["cost_incl"],
                                cost_excl=row["cost_excl"], label=row["label"], kwh=row["kwh"])
-    # the half-hour has Octopus's cost now: off the import's no-cost record (21 Oct 2026 — the
-    # drain cached the bills and the record kept them "no cost, no longer asked")
-    try:
-        store.note_import_cost(costed=[slot])
-    except Exception:
-        pass
     if row.get("breakdown"):
         hk, hr, ek, er = row["breakdown"]
         store.upsert_measured_breakdown(slot, mpan=mpan, home_kwh=hk, home_rate=hr,
@@ -10916,50 +10865,6 @@ _ask_dry_run_state: dict = {"status": "idle"}
 def ask_dry_run_status() -> dict:
     return dict(_ask_dry_run_state)
 
-
-def _ask_today(store, mpan: str, now) -> dict:
-    """{slot: set of today's askers that would ask it — "live", "drain", "split"}, from the live
-    pass's and the drain's own selection (their store queries and record filters), uncapped."""
-    from datetime import timedelta as _td
-    out: dict = {}
-    wait = _bill_split_wait(store)
-    kept = {s for s, e in wait.items() if isinstance(e, dict) and e.get("kept")}
-    ask = _bill_ask(store, mpan)
-    gone = _bill_ask_given_up(ask, mark=False) | _bill_ask_resting(ask, now)
-    sask = _split_ask(store)
-    sgone = _bill_ask_given_up(sask, mark=False) | _bill_ask_resting(sask, now)
-    code = ((_kraken_discovery or {}).get("import") or {}).get("tariff_code") or ""
-    if "IOG" in code.upper() or "INTELLI" in code.upper():
-        rows = store.get_dispatched_blocks_awaiting_measure(_ask_floor(_measured_floor()))
-        cand = [r["block_start"] for r in rows if r["block_start"] not in kept
-                and r["block_start"] not in gone]
-        for sl in store.measured_slots_missing(cand, mpan=mpan):
-            out.setdefault(sl, set()).add("live")
-    cut = (now - _td(hours=_RECONCILE_SETTLE_HOURS)).isoformat()
-    for w_from, w_to, w_smb in _intelligent_windows():
-        floor, cutoff = _ask_floor(w_from), min(cut, w_to) if w_to else cut
-        cursor = ""
-        while True:
-            page = store.get_settleable_blocks(floor, cursor, cutoff, 1000, include_imported=w_smb)
-            if not page:
-                break
-            cursor = page[-1]
-            for sl in page:
-                if sl not in kept and sl not in gone:
-                    out.setdefault(sl, set()).add("drain")
-        if w_smb:
-            cursor = ""
-            while True:
-                page = store.get_cost_only_split_slots(floor, cursor, cutoff, 1000)
-                if not page:
-                    break
-                cursor = page[-1]
-                for sl in page:
-                    if sl not in kept and sl not in sgone:
-                        out.setdefault(sl, set()).add("split")
-    return out
-
-
 def _ask_queue(facts: list, store, mpan: str, now, considered: "dict | None" = None) -> dict:
     """{slot: "bill" | "split"} the one selector (design §3) would ask: settled kWh (DCC, or an
     imported block's own), not corrected, on an Intelligent agreement of its own, under the 6-hour
@@ -11006,34 +10911,6 @@ def _ask_queue(facts: list, store, mpan: str, now, considered: "dict | None" = N
         _out("asked (" + kind + ")")
     return out
 
-
-def _ask_why(f: dict, sl: str, in_queue: bool, today: set, mpan_floor: str, cut: str) -> str:
-    """Why the one selector and today's askers disagree on a half-hour (one reason, the first that
-    holds)."""
-    src = str((f or {}).get("source") or "")
-    if in_queue:
-        if src.startswith("imported"):
-            return "imported history with no bill — asked like any other (decided (b))"
-        if f and f["bill_any"] and not f["bill_mpan"]:
-            return "a bill cached for another MPAN only"
-        if f and f["rate_source"] == "settled":
-            return "settled with no bill cached (the drain skips rate_source='settled')"
-        return "other"
-    if f is None:
-        return "no kWh, or outside the queue's span (two years, 6-hour gate)"
-    if f["corrected"] or f["rate_source"] == "corrected":
-        return "corrected (the drain tests rate_source, not rate_corrected)"
-    if tariff_kind_at(sl) != "intelligent":
-        return "not on an Intelligent agreement (the live pass gates on the current tariff)"
-    if sl >= cut:
-        return "under 6 hours old (the live pass has no settle gate)"
-    if f["imp_kwh_api"] is None and not src.startswith("imported"):
-        return "kWh not settled"
-    if f["bill_mpan"] and "split" not in today:
-        return "a bill cached for this MPAN (the drain tests any MPAN)"
-    return "other"
-
-
 def _ask_query_estimate(slots: dict) -> dict:
     """About how many Octopus queries the queue's first pass would make: a cost half-hour's local
     day is one query (`recover_measurement_costs`); IOG-SMB breakdowns go in runs under 12
@@ -11056,8 +10933,10 @@ def _ask_query_estimate(slots: dict) -> dict:
 
 
 async def run_ask_dry_run(out_dir: str) -> dict:
-    """The step 3a report: a JSON summary and a CSV of every half-hour the one selector and today's
-    askers disagree on, to `out_dir`. Read-only on the store; no Octopus call."""
+    """What the one asker would ask Octopus for now: a JSON summary (how many bills and splits, about
+    how many queries, what it read and why each half-hour was left out) and a CSV of the half-hours,
+    to `out_dir`. Read-only on the store; no Octopus call. (Step 3a's report, comparing the selector
+    with the live pass and the drain; the comparison went with them in step 3e, 24 Oct 2026.)"""
     import csv as _csv
     import json as _json
     from datetime import datetime as _dt, timedelta as _td, timezone as _tz
@@ -11074,45 +10953,28 @@ async def run_ask_dry_run(out_dir: str) -> dict:
         await asyncio.sleep(0)
         considered: dict = {}
         queue = _ask_queue(facts, store, mpan, now, considered)
-        await asyncio.sleep(0)
-        today = _ask_today(store, mpan, now)
-        by = {f["block_start"]: f for f in facts}
-        counts: dict = {}
-        rows = []
-        for sl in sorted(set(queue) | set(today)):
-            q, t = sl in queue, today.get(sl, set())
-            if q and t:
-                key = "both"
-            else:
-                key = ("queue only · " if q else "today only · ") + _ask_why(by.get(sl), sl, q, t, floor, cut)
-                rows.append({"start": sl, "queue": queue.get(sl, ""), "today": "+".join(sorted(t)),
-                             "why": key.split(" · ", 1)[1]})
-            counts[key] = counts.get(key, 0) + 1
-        both_asked = sum(1 for v in today.values() if {"live", "drain"} <= v)
+        rows = [{"start": sl, "kind": queue[sl]} for sl in sorted(queue, reverse=True)]
         os.makedirs(out_dir, exist_ok=True)
         ts = _dt.now(_tz.utc).strftime("%Y%m%dT%H%M%S")
         csv_path = os.path.join(out_dir, "ask_dry_run_%s.csv" % ts)
         json_path = os.path.join(out_dir, "ask_dry_run_%s.json" % ts)
         with open(csv_path, "w", newline="") as fh:
-            w = _csv.DictWriter(fh, fieldnames=["start", "queue", "today", "why"])
+            w = _csv.DictWriter(fh, fieldnames=["start", "kind"])
             w.writeheader()
             w.writerows(rows)
         summary = {"at": now.isoformat(), "floor": floor, "cutoff": cut,
                    "queue": {"bill": sum(1 for v in queue.values() if v == "bill"),
                              "split": sum(1 for v in queue.values() if v == "split"),
                              "first_pass": _ask_query_estimate(queue)},
-                   "today": {k: sum(1 for v in today.values() if k in v)
-                             for k in ("live", "drain", "split")},
-                   "asked_by_both_live_and_drain": both_asked,
                    # every half-hour with kWh in the two years read, and why each was left out
                    "considered": {"half_hours": len(facts),
                                   "intelligent_agreements": len(_intelligent_windows()),
                                   "by_reason": dict(sorted(considered.items()))},
-                   "counts": counts, "csv": os.path.basename(csv_path)}
+                   "csv": os.path.basename(csv_path)}
         with open(json_path, "w") as fh:
             _json.dump(summary, fh, indent=1)
         st.update({"status": "done", "summary": summary, "json": json_path, "csv": csv_path})
-        logger.info("ask dry run: queue %s, today %s — %s", summary["queue"], summary["today"], counts)
+        logger.info("ask dry run: %s — %s", summary["queue"], summary["considered"]["by_reason"])
         return summary
     except Exception as e:
         logger.warning("ask dry run failed: %s", e)

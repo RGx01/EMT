@@ -53,8 +53,7 @@ def _clock(start, now):
 def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozenset(),
              vat_at=None, kind_at=None, split_at=None, export_channel: bool = False,
              export_sensor: bool = True, export_agreement_at=None,
-             given_up=frozenset(), import_no_cost=frozenset(),
-             import_asked=frozenset(), export_deleted=()) -> dict:
+             given_up=frozenset(), export_deleted=()) -> dict:
     """One half-hour's {bill, export, split, flags}. `f` is a get_settlement_facts row. `smb` is
     the install's tariff (engine._import_is_smb_capped); `held` / `kept` are 4.5.23's wait map
     (engine.bill_split_held); `vat_at(start)` the VAT calendar; `kind_at(start)` the half-hour's
@@ -67,10 +66,8 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
     Mini feeds import only) — so it says nothing about what was exported.
     `export_agreement_at(start)`: True / False whether an export agreement covers the half-hour,
     None where it is not known (engine.export_agreement_at); False makes it `no_agreement`.
-    `given_up` / `import_no_cost` (engine.bill_no_cost): half-hours whose cost EMT no longer asks
-    Octopus for — they read `abandoned` where they would otherwise wait for a bill.
-    `import_asked`: API-imported half-hours Octopus gave no cost for, whose bill the drain still
-    asks for (an IOG-SMB window): they wait as a live half-hour does, `abandoned` once given up.
+    `given_up` (engine.bill_no_cost): half-hours whose cost EMT no longer asks Octopus for (30
+    days unanswered) — they read `abandoned` where they would otherwise wait for a bill.
     `export_deleted`: the [from, to) spans the imported-export delete cleared (soft delete design
     §4): an imported half-hour there with no export reads `none`, as decided; elsewhere it is
     `no_data` — Octopus (or the CSV) gave no export figure, a gap.
@@ -127,14 +124,17 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
         # Octopus's (21 Oct 2026, staging: 15 half-hours of 21 Jul read "no cost, no longer asked"
         # with their bills cached and applied — the record was never cleared)
         bill = "applied" if cost is not None and abs(cost - bill_cost) <= _EPS_GBP else "differs"
-    elif src == "imported_api" and start in import_asked:
-        # Octopus gave the importer no cost and the drain asks for its bill (an IOG-SMB window,
-        # engine.bill_no_cost): it waits as a live half-hour does, until the bill or the give-up
-        bill = "abandoned" if start in given_up else estimate()
+    elif src == "imported_api" and kind == "intelligent":
+        # no bill yet: the one asker asks Octopus for it as for a live half-hour (engine step 3,
+        # decided (b), 24 Oct 2026), so it waits as one does — on its settled kWh (the import's) —
+        # until the bill, or the give-up. (Until step 3e an import's no-cost record read
+        # "abandoned" at once, and history imported before engine step 2c read "applied".)
+        if start in given_up:
+            bill = "abandoned"
+        else:
+            bill = "overdue" if _clock(start, now) == "overdue" else "estimate_dcc"
     elif src == "imported_api":
-        # the API importer stored Octopus's own billed cost — unless Octopus gave none, and the
-        # importer reconstructed kWh x rate (recorded since 19 Oct 2026; nothing asks again)
-        bill = "abandoned" if start in import_no_cost else "applied"
+        bill = "applied"              # a published tariff: settled kWh x the published rate
     elif src.startswith("imported"):
         bill = "imported"             # CSV history: a cost not from Octopus's API
     elif kind == "published" and f.get("imp_kwh_api") is not None:

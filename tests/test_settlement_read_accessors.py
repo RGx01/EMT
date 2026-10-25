@@ -122,61 +122,6 @@ class CompletedDispatchKwh(unittest.TestCase):
         self.assertAlmostEqual(self.st.completed_dispatch_kwh(S), 3.0)
 
 
-class SettleableBlocks(unittest.TestCase):
-    """floor / cursor / cutoff — three bounds, none redundant."""
-
-    def setUp(self):
-        self.st = _mk_store()
-        for d in ("01", "02", "03", "04"):
-            _block(self.st, "2026-09-%sT00:00:00" % d, imp_kwh=5.0, imp_kwh_api=4.9)
-
-    def test_a_settleable_block_is_selected(self):
-        out = self.st.get_settleable_blocks("2026-09-01T00:00:00", "",
-                                            "2026-09-09T00:00:00", 10)
-        self.assertEqual(len(out), 4)
-
-    def test_a_live_cad_block_is_never_settleable(self):
-        """No imp_kwh_api and not imported: there is no authoritative kWh, so it
-        must never be stamped 'settled'."""
-        st = _mk_store()
-        _block(st, imp_kwh=5.0)
-        self.assertEqual(st.get_settleable_blocks("2026-01-01T00:00:00", "",
-                                                  "2026-12-01T00:00:00", 10), [])
-
-    def test_imported_history_is_settleable_without_api_kwh(self):
-        st = _mk_store()
-        _block(st, imp_kwh=5.0, source="imported_csv")
-        self.assertEqual(len(st.get_settleable_blocks("2026-01-01T00:00:00", "",
-                                                      "2026-12-01T00:00:00", 10)), 1)
-
-    def test_the_cursor_pages_within_a_run(self):
-        """`after` advances past slots Octopus had no answer for. Collapsing it
-        into `floor` makes the drain re-read the same page forever."""
-        first = self.st.get_settleable_blocks("2026-09-01T00:00:00", "",
-                                              "2026-09-09T00:00:00", 2)
-        self.assertEqual(len(first), 2)
-        nxt = self.st.get_settleable_blocks("2026-09-01T00:00:00", first[-1],
-                                            "2026-09-09T00:00:00", 2)
-        self.assertEqual(len(nxt), 2)
-        self.assertTrue(set(first).isdisjoint(nxt), "the cursor did not advance")
-
-    def test_the_cutoff_excludes_the_not_yet_billed_window(self):
-        out = self.st.get_settleable_blocks("2026-09-01T00:00:00", "",
-                                            "2026-09-03T00:00:00", 10)
-        self.assertEqual(out, ["2026-09-01T00:00:00", "2026-09-02T00:00:00"])
-
-    def test_a_block_with_a_cached_bill_is_done(self):
-        _measured(self.st, "2026-09-01T00:00:00")
-        out = self.st.get_settleable_blocks("2026-09-01T00:00:00", "",
-                                            "2026-09-09T00:00:00", 10)
-        self.assertNotIn("2026-09-01T00:00:00", out)
-
-    def test_already_settled_is_excluded(self):
-        st = _mk_store()
-        _block(st, imp_kwh=5.0, imp_kwh_api=4.9, rate_source="settled")
-        self.assertEqual(st.get_settleable_blocks("2026-01-01T00:00:00", "",
-                                                  "2026-12-01T00:00:00", 10), [])
-
 
 class SharedPredicate(unittest.TestCase):
 
@@ -189,7 +134,9 @@ class SharedPredicate(unittest.TestCase):
         self.assertIn("imported", sql)
         import inspect
         # (count_settleable_blocks was the third, until engine step 3c's one selector)
-        for name in ("get_settleable_blocks", "get_measured_costs_to_apply"):
+        # (get_settleable_blocks and count_settleable_blocks were the others, until the one
+        # selector replaced the drain's queries — engine step 3c / 3e)
+        for name in ("get_measured_costs_to_apply",):
             src = inspect.getsource(getattr(BlockStore, name))
             self.assertIn("_SETTLEABLE_SQL", src, name)
 
@@ -201,40 +148,6 @@ class SharedPredicate(unittest.TestCase):
         self.assertNotIn("_SETTLEABLE_SQL", assigned,
                          "two copies of a predicate is how they drift")
 
-
-class OrderingIsPartOfTheContract(unittest.TestCase):
-
-    def test_the_bulk_drain_is_oldest_first(self):
-        st = _mk_store()
-        for d in ("03", "01", "02"):
-            _block(st, "2026-09-%sT00:00:00" % d, imp_kwh=5.0, imp_kwh_api=4.9)
-        out = st.get_settleable_blocks("2026-09-01T00:00:00", "",
-                                       "2026-09-09T00:00:00", 10)
-        self.assertEqual(out, sorted(out))
-
-    def test_the_live_pass_is_newest_first(self):
-        """Opposite on purpose: the live pass is bounded per tick and the most
-        recent settlement is the one a user is looking at."""
-        st = _mk_store()
-        for d in ("01", "02", "03"):
-            s = "2026-09-%sT00:00:00" % d
-            _block(st, s, imp_kwh=5.0, imp_kwh_api=4.9)
-            st.upsert_dispatch_slot(slot_start=s, off_peak=1, provider="octopus",
-                                    source=None, state=None, energy_planned=None,
-                                    energy_completed=None, raw_start=None, raw_end=None)
-        out = [r["block_start"] for r in
-               st.get_dispatched_blocks_awaiting_measure("2026-09-01T00:00:00")]
-        self.assertEqual(out, sorted(out, reverse=True))
-
-    def test_the_live_pass_excludes_imported_history(self):
-        """Imported blocks are drained separately and deliberately, oldest-first."""
-        st = _mk_store()
-        s = "2026-09-01T00:00:00"
-        _block(st, s, imp_kwh=5.0, imp_kwh_api=4.9, source="imported_csv")
-        st.upsert_dispatch_slot(slot_start=s, off_peak=1, provider="octopus",
-                                source=None, state=None, energy_planned=None,
-                                energy_completed=None, raw_start=None, raw_end=None)
-        self.assertEqual(st.get_dispatched_blocks_awaiting_measure("2026-01-01T00:00:00"), [])
 
 
 class MeasuredCostsToApply(unittest.TestCase):
@@ -265,12 +178,10 @@ class MeasuredCostsToApply(unittest.TestCase):
 
 class Surfaces(unittest.TestCase):
 
-    def test_all_five_are_reads(self):
+    def test_all_four_are_reads(self):
         from store_types import ReadStore
         for name in ("get_block_measured_inputs", "completed_dispatch_kwh",
-                     "get_settleable_blocks",
-                     "get_measured_costs_to_apply",
-                     "get_dispatched_blocks_awaiting_measure"):
+                     "get_measured_costs_to_apply", "ask_candidate_facts"):
             self.assertTrue(hasattr(ReadStore, name), name)
 
 

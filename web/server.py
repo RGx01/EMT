@@ -4291,7 +4291,7 @@ def _settlement_states(store, utc_start, utc_end) -> dict:
     import vat_calendar as _vc
     from datetime import datetime as _dt, timezone as _tz
     held, kept = _eng.bill_split_held(store)
-    given_up, import_no_cost, import_asked = _eng.bill_no_cost(store)
+    given_up = _eng.bill_no_cost(store)
     return _ss.classify_range(
         store.get_settlement_facts(utc_start, utc_end), yield_every=_STATES_YIELD_EVERY,
         smb=bool(_eng._import_is_smb_capped()), now=_dt.now(_tz.utc).replace(tzinfo=None),
@@ -4299,8 +4299,7 @@ def _settlement_states(store, utc_start, utc_end) -> dict:
         kind_at=_eng.tariff_kind_at, split_at=_eng.split_at,
         export_channel=_main_has_export(), export_sensor=_main_has_export_sensor(),
         export_agreement_at=_eng.export_agreement_at,
-        given_up=given_up, import_no_cost=import_no_cost, import_asked=import_asked,
-        export_deleted=_export_deleted(store))
+        given_up=given_up, export_deleted=_export_deleted(store))
 
 
 def _export_deleted(store) -> list:
@@ -4722,7 +4721,8 @@ _HEALTH_TTL_S = 600
 # 4: CSV history outside an export agreement stays `imported`; a missing export there is
 #    `no_agreement`, not `no_data` (22 Oct 2026).
 # 5: no `recost_bl82` flag — a settled cost is kWh x rate since engine step 2b (23 Oct 2026).
-_HEALTH_FILE_V = 5
+# 6: an imported half-hour with no bill waits like a live one; no import no-cost record (step 3e).
+_HEALTH_FILE_V = 6
 # While the data keeps moving — a refill rebuilding the devices writes for minutes — every page
 # poll found the token moved and counted again, two more waiting behind it to do the same
 # (staging, 21 Oct 2026: three requests in the count, the engine loop held 11.4 s). A request that
@@ -4905,8 +4905,8 @@ def _health_views(store, views, first, tz_name):
     days = sorted(fps)
     try:
         held, kept = _eng.bill_split_held(store)
-        given_up, no_cost, asked = _eng.bill_no_cost(store)
-        slots = [sorted(x) for x in (held, kept, given_up, no_cost, asked)]
+        given_up = _eng.bill_no_cost(store)
+        slots = [sorted(x) for x in (held, kept, given_up)]
         ctx = _health_digest([vs, bool(_eng._import_is_smb_capped()),
                               store.get_vat_calendar(), _export_deleted(store)])
     except Exception:

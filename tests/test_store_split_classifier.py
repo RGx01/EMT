@@ -58,12 +58,12 @@ class TestClassifier(unittest.TestCase):
                  "count_blocks_needing_reprice", "vat_rate_at")
 
     def test_transitive_write_through_a_helper(self):
-        """`note_import_cost` executes no SQL of its own — it calls `set_kraken_state`.
+        """`set_vat_calendar` executes no SQL of its own — it calls `set_meta`.
         A classifier that only read each method's own SQL would put it on
-        ReadStore, where it would fail at runtime. (The reprice queue's methods were
-        the example until engine step 2d removed them, 23 Oct 2026.)"""
-        self._is("write", "note_import_cost")
-        self._is("read", "import_no_cost_slots")
+        ReadStore, where it would fail at runtime. (The reprice queue's, then the import
+        no-cost record's, methods were the example until engine steps 2d and 3e removed them.)"""
+        self._is("write", "set_vat_calendar")
+        self._is("read", "get_vat_calendar")
 
     def test_sql_assembled_in_a_local_is_still_classified(self):
         """Both of these build their statement in a local and execute the

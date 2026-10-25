@@ -84,7 +84,7 @@ class TheDrainsSlots(_Base):
 
     def test_only_its_month(self):
         gone = set()
-        with mock.patch.object(self.eng, "bill_no_cost", lambda s: (set(gone), set(), set()), create=True):
+        with mock.patch.object(self.eng, "bill_no_cost", lambda s: set(gone), create=True):
             self.count()
             gone.add(OLD)                              # 2025-03's half-hour given up
             self.count()

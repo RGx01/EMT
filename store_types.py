@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """142 read-only methods of BlockStore, and nothing else.
+    """138 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -65,15 +65,12 @@ class ReadStore:
     BILL_ROW_COLUMNS = _BS.BILL_ROW_COLUMNS
     CHECKPOINT_MODES = _BS.CHECKPOINT_MODES
     RECORDER_ATTRIBUTED_SOURCE = _BS.RECORDER_ATTRIBUTED_SOURCE
-    _ASKED_OFF_SMB_SQL = _BS._ASKED_OFF_SMB_SQL
     _ASK_LEGACY_KEYS = _BS._ASK_LEGACY_KEYS
     _ATTRIBUTION_RUNS_KEY = _BS._ATTRIBUTION_RUNS_KEY
     _BUMP_SOURCES = _BS._BUMP_SOURCES
     _CARBON_ELIGIBLE = _BS._CARBON_ELIGIBLE
-    _COST_ONLY_SPLIT_SQL = _BS._COST_ONLY_SPLIT_SQL
     _EPOCH_KEY = _BS._EPOCH_KEY
     _EXPORT_PRESENT = _BS._EXPORT_PRESENT
-    _IMPORT_NO_COST_KEY = _BS._IMPORT_NO_COST_KEY
     _LATEST_BILL_SQL = _BS._LATEST_BILL_SQL
     _NEEDS_REPRICE_WHERE = _BS._NEEDS_REPRICE_WHERE
     _RECONCILED_SOURCE = _BS._RECONCILED_SOURCE
@@ -162,7 +159,6 @@ class ReadStore:
     get_config_period = _BS.get_config_period
     get_config_period_for_date = _BS.get_config_period_for_date
     get_config_periods = _BS.get_config_periods
-    get_cost_only_split_slots = _BS.get_cost_only_split_slots
     get_cumulative_totals = _BS.get_cumulative_totals
     get_current_config_period_id = _BS.get_current_config_period_id
     get_data_epoch = _BS.get_data_epoch
@@ -174,7 +170,6 @@ class ReadStore:
     get_dispatch_history_for_slot = _BS.get_dispatch_history_for_slot
     get_dispatch_slot = _BS.get_dispatch_slot
     get_dispatch_slots_in_range = _BS.get_dispatch_slots_in_range
-    get_dispatched_blocks_awaiting_measure = _BS.get_dispatched_blocks_awaiting_measure
     get_energy_blocks = _BS.get_energy_blocks
     get_energy_segments = _BS.get_energy_segments
     get_ev_split_kwh = _BS.get_ev_split_kwh
@@ -205,7 +200,6 @@ class ReadStore:
     get_reconcile_candidates = _BS.get_reconcile_candidates
     get_retired_meters = _BS.get_retired_meters
     get_settings = _BS.get_settings
-    get_settleable_blocks = _BS.get_settleable_blocks
     get_settled_to = _BS.get_settled_to
     get_settlement_detail = _BS.get_settlement_detail
     get_settlement_facts = _BS.get_settlement_facts
@@ -216,7 +210,6 @@ class ReadStore:
     ha_reads_for = _BS.ha_reads_for
     has_interpolated_block = _BS.has_interpolated_block
     history_token = _BS.history_token
-    import_no_cost_slots = _BS.import_no_cost_slots
     imported_block_replaceable = _BS.imported_block_replaceable
     is_meter_retired = _BS.is_meter_retired
     is_slot_tombstoned = _BS.is_slot_tombstoned
@@ -238,7 +231,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 100 writers.
+    """The full store: every read method, plus the 99 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or
