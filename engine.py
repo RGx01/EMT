@@ -10672,7 +10672,8 @@ def _band_rates(bs: str):
     return round(lo / 100.0, 6), round(hi / 100.0, 6)
 
 
-def settled_band(bs: str, bill_label, breakdown: "dict | None" = None) -> "str | None":
+def settled_band(bs: str, bill_label, breakdown: "dict | None" = None, *, cost=None, bill_kwh=None,
+                 own_kwh=None) -> "str | None":
     """Octopus's band for a half-hour on an Intelligent tariff: 'off_peak' / 'peak' (or 'mixed', the
     buckets carrying the kWh at both), or None — not settled yet, or a ZERO answer, which states no
     band.
@@ -10683,8 +10684,17 @@ def settled_band(bs: str, bill_label, breakdown: "dict | None" = None) -> "str |
     and Octopus's cost was the off-peak cost (2a's first report, 23 Oct 2026; the 4.5.5 design's "the
     label reserves OFF_PEAK for smart-charge credits"). So on IOG-SMB a label without the buckets settles
     nothing (2a's report on dev, 23 Oct 2026: 22 night half-hours of 26 Aug – 2 Sep labelled STANDARD_RATE,
-    no breakdown cached, Octopus's cost the off-peak cost). Elsewhere, the label."""
+    no breakdown cached, Octopus's cost the off-peak cost). Elsewhere, the label.
+
+    An imported bill with neither label nor buckets (`cost`, `bill_kwh`, `own_kwh`; engine step 4a-2,
+    design §6 (e)): v4's API import kept Octopus's cost on the block and wrote no bill, and the importer
+    now writes it as one. Its band is Octopus's cost ÷ Octopus's kWh against the day's two rates — both
+    figures Octopus's, so only where the bill's kWh is the block's own (v4 4.5.7 refused cost ÷ kWh
+    because it divided by the CAD kWh). The cost must match one rate and not the other: a blend of two
+    buckets matches neither, and a tiny kWh both."""
     from kraken_api_client import label_band
+    if not breakdown and not bill_label:
+        return _imported_cost_band(bs, cost, bill_kwh, own_kwh)
     if breakdown:
         bands = set(_bucket_bands(bs, breakdown).values())
         if len(bands) == 1:
@@ -10700,6 +10710,27 @@ def settled_band(bs: str, bill_label, breakdown: "dict | None" = None) -> "str |
     except Exception:
         b = None
     return None if b is None else ("off_peak" if b else "peak")
+
+
+_IMPORTED_COST_GBP = 0.0005       # an imported cost within 0.05p of kWh × a rate is at that rate
+
+
+def _imported_cost_band(bs: str, cost, bill_kwh, own_kwh) -> "str | None":
+    """settled_band's imported bill with no label or buckets: the one of the day's two rates
+    Octopus's cost is kWh × of (within _IMPORTED_COST_GBP), or None."""
+    try:
+        c, k, own = float(cost), float(bill_kwh), float(own_kwh)
+    except (TypeError, ValueError):
+        return None
+    if k <= 1e-9 or abs(k - own) > 1e-6:
+        return None
+    lo, hi = _band_rates(bs)
+    if lo is None:
+        return None
+    at_lo, at_hi = abs(c - k * lo) <= _IMPORTED_COST_GBP, abs(c - k * hi) <= _IMPORTED_COST_GBP
+    if at_lo == at_hi:
+        return None
+    return "off_peak" if at_lo else "peak"
 
 
 def _bucket_bands(bs: str, breakdown: dict) -> dict:
@@ -10718,7 +10749,8 @@ def _bucket_bands(bs: str, breakdown: dict) -> dict:
     return out
 
 
-def band_note(bs: str, kwh, bill_label, breakdown=None, live: bool = True) -> "dict | None":
+def band_note(bs: str, kwh, bill_label, breakdown=None, live: bool = True, *, cost=None,
+              bill_kwh=None) -> "dict | None":
     """The detail panel's band evidence for an Intelligent half-hour with Octopus's answer:
     {settled, predicted, disagrees}. Billed wins, so a disagreement is a note, not an issue (the
     user, 23 Oct 2026: the cell stays green). None on a published tariff, or with no kWh.
@@ -10737,7 +10769,8 @@ def band_note(bs: str, kwh, bill_label, breakdown=None, live: bool = True) -> "d
     except Exception:
         first = None
     before = first is None or bs < first
-    s, p = settled_band(bs, bill_label, breakdown), predicted_band(bs, k, live)
+    s = settled_band(bs, bill_label, breakdown, cost=cost, bill_kwh=bill_kwh, own_kwh=k)
+    p = predicted_band(bs, k, live)
     return {"settled": s, "predicted": p, "before_record": before,
             "disagrees": bool(not before and s in ("off_peak", "peak") and p and s != p)}
 
@@ -10848,7 +10881,8 @@ def band_parity_row(f: dict) -> dict:
                 bd = _reader().get_measured_breakdown(bs)
             except Exception:
                 bd = None
-        out["settled"] = settled_band(bs, f.get("bill_label"), bd)
+        out["settled"] = settled_band(bs, f.get("bill_label"), bd, cost=f.get("bill_cost"),
+                                      bill_kwh=f.get("bill_kwh"), own_kwh=kwh)
         if out["settled"] == "mixed":
             out["status"] = "mixed"          # two bands in one half-hour: none seen yet; listed
             return out
@@ -11118,7 +11152,8 @@ def settle_facts(m: dict, subs: list, store, vat_cal=None, *, kwh=None):
             bd = store.get_measured_breakdown(bs)
         except Exception:
             bd = None
-    f.settled = settled_band(bs, m.get("bill_label"), bd)
+    f.settled = settled_band(bs, m.get("bill_label"), bd, cost=m.get("bill_cost"),
+                             bill_kwh=m.get("bill_kwh"), own_kwh=m.get("imp_kwh"))
     f.settled_legs = _bucket_bands(bs, bd) if bd else {}
     f.predicted = predicted_band(bs, kwh, live=not imported)
     if bd and bd.get("ev_kwh") is not None and split_at(bs):
@@ -11153,8 +11188,8 @@ def settle_parity_row(m: dict, subs: list, segs: list, store, vat_cal=None) -> d
     out = {"start": bs, "status": None, "parts": "", "kwh": m.get("imp_kwh"),
            "kwh_dcc": m.get("imp_kwh_api"), "stored_rate": m.get("imp_rate"),
            "stored_cost": m.get("imp_cost"), "stored_bands": "", "settle_by": None, "band": None,
-           "rate": None, "cost": None, "two_rates": False, "device_two_rates": False,
-           "dcc_moves": "", "devices": ""}
+           "rate": None, "cost": None, "stored_ev": None, "ev": None, "two_rates": False,
+           "device_two_rates": False, "dcc_moves": "", "devices": ""}
     if m.get("rate_corrected") or m.get("rate_source") == "corrected":
         out["status"] = "corrected"        # the user's own figure: a fact settle() does not hold yet
         return out
@@ -11181,6 +11216,7 @@ def settle_parity_row(m: dict, subs: list, segs: list, store, vat_cal=None) -> d
     if abs(stored_kwh - f.kwh) > _SETTLE_KWH_EPS:
         parts.append("kwh")
     st_ev = sum(float(g["kwh"] or 0.0) for g in segs if g["attribution"] == "ev")
+    out["stored_ev"], out["ev"] = round(st_ev, 6), s.ev_kwh
     if abs(st_ev - s.ev_kwh) > _SETTLE_KWH_EPS:
         parts.append("split")
     want = sorted((g.attribution, g.band) for g in s.legs)
@@ -11203,7 +11239,10 @@ def settle_parity_row(m: dict, subs: list, segs: list, store, vat_cal=None) -> d
         g = float(x.get("imp_kwh_grid") if x.get("imp_kwh_grid") is not None else (x.get("imp_kwh") or 0.0))
         c = float(x.get("imp_cost") or 0.0)
         if abs(g - d.kwh_grid) > _SETTLE_KWH_EPS or abs(c - d.cost) > _BAND_PARITY_GBP:
-            dev_txt.append("%s %.4f kWh £%.4f→%.4f kWh £%.4f" % (d.meter_id, g, c, d.kwh_grid, d.cost))
+            # the device's own read, then its grid share and cost stored → settle()'s (4a-2: staging's
+            # report said a device differed, not from what)
+            dev_txt.append("%s read %.4f: %.4f kWh £%.4f→%.4f kWh £%.4f"
+                           % (d.meter_id, float(x.get("imp_kwh") or 0.0), g, c, d.kwh_grid, d.cost))
     if dev_txt:
         parts.append("devices")
         out["devices"] = "; ".join(dev_txt)
@@ -11239,8 +11278,8 @@ async def run_settle_parity(utc_from: str, utc_to: str, out_dir: str) -> dict:
         moves = {"two_rates": 0, "device_two_rates": 0, "dcc_moves": 0}
         tot = {"stored": 0.0, "settle": 0.0}
         fields = ["start", "status", "parts", "settle_by", "band", "stored_bands", "kwh", "kwh_dcc",
-                  "stored_rate", "rate", "stored_cost", "cost", "two_rates", "device_two_rates",
-                  "dcc_moves", "devices"]
+                  "stored_rate", "rate", "stored_cost", "cost", "stored_ev", "ev", "two_rates",
+                  "device_two_rates", "dcc_moves", "devices"]
         store = _reader()
         try:
             vat_cal = store.get_vat_calendar()
@@ -12077,7 +12116,14 @@ def apply_measured_to_block(bs: str, *, cost_incl: float, cost_excl=None,
         _bd = store.get_measured_breakdown(bs)
     except Exception:
         _bd = None
-    band = settled_band(bs, label, _bd)
+    _bk = None
+    if not label and not _bd:
+        # an imported bill with no label (step 4a-2): its band is its cost ÷ its own kWh
+        try:
+            _bk = (store.get_settlement_detail(bs) or {}).get("bill_kwh")
+        except Exception:
+            _bk = None
+    band = settled_band(bs, label, _bd, cost=cost_incl, bill_kwh=_bk, own_kwh=kwh)
     if band is None:
         return _refuse(_REFUSE_NO_BAND)
     _lo = _hi = None

@@ -740,6 +740,102 @@ class TheGatesBite(_Dir):
                      "keys not carried")
 
 
+
+IMP = ["2024-07-01T17:%02d:00" % m for m in (0, 30)] + ["2024-07-01T18:00:00", "2024-07-01T18:30:00"]
+
+
+def _imported_sql(mpan_bills=True):
+    """v4's API import (engine step 4 design §6 (e)): imported main half-hours with Octopus's cost on
+    the block and no bill row — one Octopus-costed (`exc_source = 'measurement'`), one v4 reconstructed
+    from the tariff ('tariff'), one Octopus-costed that already has a bill, one with no kWh — and a
+    live block with no bill. `mpan_bills=False` drops the source's bills (the MPAN then comes from the
+    main import channel)."""
+    sql = ["INSERT INTO blocks (id, block_start, block_end, meter_id, config_period_id, imp_kwh, "
+           "imp_rate, imp_cost, imp_cost_exc, source, exc_source) VALUES "
+           "(200, '%s', '%s', 'electricity_main', 1, 2.04, 0.0700035, 0.142807, 0.136007, "
+           "'imported_api', 'measurement'), "
+           "(201, '%s', '%s', 'electricity_main', 1, 1.0, 0.24, 0.24, 0.228571, 'imported_api', "
+           "'tariff'), "
+           "(202, '%s', '%s', 'electricity_main', 1, 3.0, 0.07, 0.21, 0.2, 'imported_api', "
+           "'measurement'), "
+           "(203, '%s', '%s', 'electricity_main', 1, 0.0, 0.07, 0.0, 0.0, 'imported_api', "
+           "'measurement'), "
+           "(204, '2026-09-16T12:00:00', '2026-09-16T12:30:00', 'electricity_main', 1, 1.0, 0.24, "
+           "0.24, 0.228571, NULL, 'measurement')"
+           % (IMP[0], IMP[1], IMP[1], IMP[2], IMP[2], IMP[3], IMP[3], "2024-07-01T19:00:00"),
+           "INSERT INTO measured_cost (slot_start, mpan, direction, cost_incl, cost_excl, label, kwh) "
+           "VALUES ('%s', 'M1', 'CONSUMPTION', 0.21, 0.2, 'OFF_PEAK', 3.0)" % IMP[2]]
+    if not mpan_bills:
+        sql += ["DELETE FROM measured_cost",
+                "INSERT INTO meters (id, config_period_id, meter_id) VALUES (7, 1, 'electricity_main')",
+                "INSERT INTO meter_channels (meter_id, channel, mpan) VALUES (7, 'import', 'M9')"]
+    return tuple(sql)
+
+
+class TheImportedBills(_Dir):
+    """Transform 3c (engine step 4 design §6 (e), 25 Oct 2026): an imported half-hour's Octopus cost
+    becomes its bill. v4's API import wrote none, so history past Octopus's two years kept the band it
+    was billed at only in its stored cost (dev's settle parity report: 1,084 evening smart charges
+    reading peak, +£476.10). Discriminating (fail on the parent), except the guards named."""
+
+    def _bill(self, conn, bs):
+        r = conn.execute("SELECT mpan, cost_incl, cost_excl, label, kwh FROM measured_cost "
+                         "WHERE slot_start = ? AND direction = 'CONSUMPTION'", (bs,)).fetchone()
+        return None if r is None else tuple(r)
+
+    def test_an_octopus_cost_becomes_its_bill(self):
+        conn, report = self.imported(extra_sql=_imported_sql())
+        self.assertEqual(self._bill(conn, IMP[0]), ("M1", 0.142807, 0.136007, None, 2.04))
+        self.assertEqual(report["transforms"]["imported_bills"], {"written": 1, "skipped": None})
+
+    def test_a_reconstructed_cost_is_not_a_bill(self):
+        """GUARD (no bill is written on the parent either; with the first test it discriminates):
+        v4's kWh × tariff rate, where Octopus gave no cost, is v4's figure, not Octopus's."""
+        conn, _ = self.imported(extra_sql=_imported_sql())
+        self.assertIsNone(self._bill(conn, IMP[1]))
+
+    def test_a_bill_already_cached_and_a_live_block_are_left(self):
+        """GUARD: the cached bill is carried exactly, and nothing writes a bill for a live block or
+        one with no kWh — true on the parent too."""
+        conn, _ = self.imported(extra_sql=_imported_sql())
+        self.assertEqual(self._bill(conn, IMP[2]), ("M1", 0.21, 0.2, "OFF_PEAK", 3.0))
+        self.assertIsNone(self._bill(conn, "2026-09-16T12:00:00"))
+        self.assertIsNone(self._bill(conn, IMP[3]))
+
+    def test_with_no_bills_the_mpan_is_the_main_import_channels(self):
+        conn, _ = self.imported(extra_sql=_imported_sql(mpan_bills=False))
+        self.assertEqual(self._bill(conn, IMP[0])[0], "M9")
+
+    def test_with_no_mpan_nothing_is_written(self):
+        conn, report = self.imported(extra_sql=_imported_sql(mpan_bills=False)
+                                     + ("DELETE FROM meter_channels",))
+        self.assertIsNone(self._bill(conn, IMP[0]))
+        self.assertIn("no MPAN", report["transforms"]["imported_bills"]["skipped"])
+
+    def test_the_gates_hold(self):
+        _, report = self.imported(extra_sql=_imported_sql())
+        self.assertTrue(all(g["ok"] for g in report["gates"].values()), report["gates"])
+        self.assertEqual(report["gates"]["imported_bills"]["written"], 1)
+
+    def _broken(self, sql, says):
+        real = v4import.transforms.run
+
+        def _run(conn, report):
+            real(conn, report)
+            conn.execute(sql)
+        with mock.patch.object(v4import.transforms, "run", _run):
+            with self.assertRaises(v4import.ImportFailed) as cm:
+                v4import.import_v4(v4_db(os.path.join(self.dir, "src.db"),
+                                         extra_sql=_imported_sql()), self.target)
+        self.assertIn(says, str(cm.exception))
+
+    def test_the_gate_bites_on_a_wrong_cost(self):
+        self._broken("UPDATE main.measured_cost SET cost_incl = 0.5 WHERE slot_start = '%s'" % IMP[0],
+                     "not their block's Octopus cost")
+
+    def test_the_gate_bites_on_a_missed_half_hour(self):
+        self._broken("DELETE FROM main.measured_cost WHERE slot_start = '%s'" % IMP[0], "left without one")
+
 def _server():
     spec = importlib.util.spec_from_file_location("server_v4i", os.path.join(_ROOT, "web", "server.py"))
     srv = importlib.util.module_from_spec(spec)
