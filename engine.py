@@ -7005,84 +7005,50 @@ def _exc_rate_for_block(rate_segs, start, stored_inc_rate):
 
 @job("iog_split_carve")
 async def run_iog_split_carve(max_blocks: int = 2000, starts=None) -> dict:
-    """The dispatch's EV/Home split for every block below the tower's final stage that should
-    carry it and does not (`get_blocks_off_dispatch_split`; bill and split paths design §3.3 2,
-    6b, 16 Oct 2026 — it absorbed `_attribute_missing_ev_split`, the uncapped back-attribution
-    that selected the same blocks from the other end). Originally: recurring PREDICTED EV/Home
-    carve for UNSETTLED dispatched blocks whose completed dispatch arrived AFTER finalise, so the finalise seam left them house-only (imp_kwh_ev
-    NULL, a single 'house' segment). Without this the car's charge sits in House on Billing +
-    Usage Stats until Octopus settles the day (~2 days) — even though EMT already has the
-    dispatch to predict the split. Carves the EV kWh from the completed dispatch (grid-clipped
-    = dispatch-capped, the SAME source as the 4.5.9 settlement cap) and re-splits the block
-    EV/House at its OWN single rate — ADDITIVE: imp_kwh / imp_cost / imp_rate are untouched
-    (Sigma segments == imp_cost), so the bill total stays byte-identical and settlement later
-    overwrites with the authoritative split. A settled block whose IOG-SMB bill states its
-    split is left to the bill; every other block off its dispatch split is carved. No
-    done-marker — it runs after each dispatch capture that sees completed slots, and hourly,
-    and is cheap (only late-dispatch stragglers ever match).
+    """Settle every half-hour whose completed dispatch has arrived or changed since its split was
+    written (`get_blocks_off_dispatch_split`: no EV split yet, or one more than 0.0005 kWh off the
+    dispatch clipped to its kWh) — engine step 4c, EMT-v5_engine_step4_settle_design.md §3. The
+    dispatch is the fact; settle_half_hour decides the band, the legs, the cost and the devices from
+    the facts and writes them together, only where they differ.
+
+    Until 26 Oct 2026 this carved the EV from the dispatch and re-split the block at its OWN single
+    rate, additively (imp_cost untouched), and only for a block with no split — so a dispatch Octopus
+    restated after the carve stayed on its first figure (staging, 24 Oct 2026 04:00: 2.67 kWh carved,
+    2.55 restated). A settled block on an IOG-SMB agreement whose bill states its split is the bill's,
+    and left out.
 
     `starts`: only those block starts. The dispatch capture passes the slots it has just seen
     completed, so a split follows Octopus's completed record within the 5-minute capture rather
     than waiting for the hourly pass (13 Oct 2026: 05:30 BST's charge was recorded at 06:42 and
     still drawn as house at 06:47)."""
-    import pricing_segments as _ps
     if _store is None:
         return {"ok": False, "reason": "no store"}
     isched = _kraken_rate_schedules.get("import")
     if isched is None or isched.is_empty():
         return {"ok": True, "deferred": "schedule not ready"}
-    tz_name = _iog_site_tz()
     rows = _store.get_blocks_off_dispatch_split(max_blocks, starts=starts)
     carved = 0
-    _refit_starts: list = []   # v4 4.5.21: blocks whose EV this wrote, for the device re-fit
     for r in rows:
-        bs = r["block_start"]; kwh = float(r["imp_kwh"] or 0.0); rate = float(r["imp_rate"] or 0.0)
-        if kwh <= 1e-9:
+        bs = r["block_start"]
+        if float(r["imp_kwh"] or 0.0) <= 1e-9:
             continue
         # the final stage is the settle's: a settled block on an IOG-SMB agreement whose bill
         # stated its split carries that split, not the dispatch's (design §6, the tower)
         if r["rate_source"] == "settled" and r["bill_ev"] is not None and split_at(bs):
             continue
-        # Band-aware carve (dispatch-derived EV, grid-clipped) via the shared seam; we take the
-        # kWh + bands from it but re-price the split at the block's OWN single rate for strict
-        # cost-neutrality (scope-1 additive: no inc re-pricing).
-        tmp: dict = {"kwh": kwh, "rate": rate}
+        # Engine step 4c (EMT-v5_engine_step4_settle_design.md §3): the completed dispatch is a fact
+        # that arrived or changed — settle the half-hour. settle() takes the split from it (clipped
+        # to the kWh), prices each leg at its band's rate, and writes the main, segments and devices
+        # together; until then the carve re-split the block at its own single rate and the devices
+        # were re-fitted after (v4 4.5.21), in writes of their own.
         try:
-            _apply_iog_split(tmp, bs, "", kwh, rate, tz_name)
-        except Exception as e:
-            logger.warning("run_iog_split_carve: carve failed (%s): %s", bs, e)
-            continue
-        ev = tmp.get("kwh_ev")
-        if ev is None or float(ev) <= 1e-9:
-            continue                                   # no dispatch EV this slot -> stays house
-        ev = round(float(ev), 6)
-        # The block's ex-VAT rate from its own pair (the column went in 5b), else the VAT
-        # calendar on its day — not a fixed 1.05, which priced a 0%-VAT day at 5%.
-        rexc = r["rate_exc"]
-        if rexc is None:
-            try:
-                rexc = rate / (1.0 + _store.vat_rate_at(bs))
-            except Exception:
-                rexc = rate / 1.05
-        rexc = round(float(rexc), 6)
-        ev_band = tmp.get("ev_band") or "off_peak"
-        home_band = tmp.get("home_band") or ev_band
-        segs = _ps.ev_house_at(kwh, ev, inc_rate=rate, exc_rate=rexc,
-                               ev_band=ev_band, home_band=home_band)
-        try:
-            # A blank is filled under the carve's guard (BL-79: its own transaction; a block carved
-            # since it was selected keeps both). A gap-filled block whose split is off its dispatch
-            # (BL-39) is re-attributed over what it holds — the selection established it is wrong.
-            write = _store.carve_ev_split if r["seg_ev"] is None else _store.replace_ev_split
-            if write(bs, segments=segs):
+            if settle_half_hour(_store, bs)["written"]:
                 carved += 1
-                _refit_starts.append(bs)
         except Exception as e:
-            logger.warning("run_iog_split_carve: persist failed (%s): %s", bs, e)
-    _refit_devices_to_house(_store, _refit_starts)   # v4 4.5.21: the devices re-fit inside the house now the EV is known (dispatch-only accounts)
+            logger.warning("run_iog_split_carve: settle failed (%s): %s", bs, e)
     if carved:
-        logger.info("run_iog_split_carve: carved predicted EV/Home split on %d unsettled "
-                    "dispatched block(s)", carved)
+        logger.info("run_iog_split_carve: settled %d half-hour(s) on a completed dispatch "
+                    "that arrived or changed", carved)
     return {"ok": True, "carved": carved}
 
 
@@ -10778,7 +10744,7 @@ def band_note(bs: str, kwh, bill_label, breakdown=None, live: bool = True, *, co
             "disagrees": bool(not before and s in ("off_peak", "peak") and p and s != p)}
 
 
-def predicted_band(bs: str, kwh: float, live: bool = True) -> "str | None":
+def predicted_band(bs: str, kwh: float, live: bool = True, was_online: bool = True) -> "str | None":
     """EMT's own band for a half-hour on an Intelligent tariff — its two stages, as live pricing
     applies them: the clock's rate moved to off-peak by a recorded dispatch slot
     (`_dispatch_overlay_rate`, quietly, at finalise), then on a LIVE half-hour the dispatch's
@@ -10789,7 +10755,9 @@ def predicted_band(bs: str, kwh: float, live: bool = True) -> "str | None":
     The second stage was missing until 23 Oct 2026 (the user): 16 Aug 2026 13:00 BST has a
     completed dispatch of 0.23 kWh and no `started` — a bump by EMT's own rules, and under the
     0.4 kWh "did not materially run" floor — so peak, as Octopus billed it; the first stage alone
-    read off-peak. Imported history is the reconcile's to skip, so the first stage is all it has."""
+    read off-peak. Imported history is the reconcile's to skip, so the first stage is all it has.
+    `was_online` False (a gap-filled half-hour) tells the lifecycle that a missing `started` may be
+    lost history, as the reconcile told it (engine step 4c)."""
     sched = _kraken_rate_schedules.get("import")
     lo, hi = _band_rates(bs)
     if sched is None or lo is None:
@@ -10803,11 +10771,11 @@ def predicted_band(bs: str, kwh: float, live: bool = True) -> "str | None":
     rate = _dispatch_overlay_rate("import", bs, round(base / 100.0, 6), kwh, quiet=True)
     band = "off_peak" if abs(rate - lo) <= abs(rate - hi) else "peak"
     if live and abs(round(base / 100.0, 6) - lo) > 1e-6:   # inside the window: nothing to decide
-        band = _lifecycle_band(bs, band) or band
+        band = _lifecycle_band(bs, band, was_online) or band
     return band
 
 
-def _lifecycle_band(bs: str, band: str) -> "str | None":
+def _lifecycle_band(bs: str, band: str, was_online: bool = True) -> "str | None":
     """The reconcile's verdict on a live half-hour's dispatch lifecycle, as a band: 'off_peak' /
     'peak', or None where it leaves the price as it is ('review', 'ok', no lifecycle, or a
     not-started slot still inside the settle window, which the reconcile defers). Its inputs as
@@ -10838,7 +10806,7 @@ def _lifecycle_band(bs: str, band: str) -> "str | None":
             contemporaneous = True
     target, _why = _reconcile_decision(
         has_started, "completed" in kinds, completed_energy, band == "off_peak",
-        has_planned=("planned" in kinds), was_online=True, contemporaneous=contemporaneous,
+        has_planned=("planned" in kinds), was_online=was_online, contemporaneous=contemporaneous,
         past_settle=(bs < settle_cutoff))
     return target if target in ("off_peak", "peak") else None
 
@@ -11139,6 +11107,11 @@ def settle_facts(m: dict, subs: list, store, vat_cal=None, *, kwh=None):
                            for s in (subs or [])],
                   clamp=bool(m.get("imp_kwh_api") is not None or not m.get("interpolated")))
     sched = _kraken_rate_schedules.get("import")
+    if not _agreement_priced_ok(bs):
+        # BL-54: a half-hour before the current agreement on a schedule that is not stitched would
+        # be priced at the current tariff — no rate, so a caller keeps what it holds (engine step 4c:
+        # the PASS 2 re-run, through settle() since 4b, was not gated)
+        return f
     if f.kind != "intelligent":
         try:
             r = sched.resolve(bs) if sched is not None and not sched.is_empty() else None
@@ -11158,7 +11131,7 @@ def settle_facts(m: dict, subs: list, store, vat_cal=None, *, kwh=None):
     f.settled = settled_band(bs, m.get("bill_label"), bd, cost=m.get("bill_cost"),
                              bill_kwh=m.get("bill_kwh"), own_kwh=m.get("imp_kwh"))
     f.settled_legs = _bucket_bands(bs, bd) if bd else {}
-    f.predicted = predicted_band(bs, kwh, live=not imported)
+    f.predicted = predicted_band(bs, kwh, live=not imported, was_online=not m.get("interpolated"))
     if bd and bd.get("ev_kwh") is not None and split_at(bs):
         f.ev_kwh = min(max(float(bd["ev_kwh"]), 0.0), kwh)
     else:
@@ -11181,45 +11154,17 @@ def settle_facts(m: dict, subs: list, store, vat_cal=None, *, kwh=None):
     return f
 
 
-def settle_parity_row(m: dict, subs: list, segs: list, store, vat_cal=None) -> dict:
-    """One main-meter half-hour: settle()'s answer beside what it holds. `status`: same | differs |
-    corrected | empty | no_rate | no_band; `parts`, for a differs, the parts that differ (kwh, band,
-    split, rate, cost, ex-VAT, segments, devices). `two_rates` and `device_two_rates` count what §4 (a)
-    and (b) decide; `dcc_moves` a predicted band the DCC kWh moves from the CAD reading's (§4 (d))."""
-    import settle as _st
-    bs = m["block_start"]
-    out = {"start": bs, "status": None, "parts": "", "kwh": m.get("imp_kwh"),
-           "kwh_dcc": m.get("imp_kwh_api"), "stored_rate": m.get("imp_rate"),
-           "stored_cost": m.get("imp_cost"), "stored_bands": "", "settle_by": None, "band": None,
-           "rate": None, "cost": None, "stored_ev": None, "ev": None, "two_rates": False,
-           "device_two_rates": False, "dcc_moves": "", "devices": ""}
-    if m.get("rate_corrected") or m.get("rate_source") == "corrected":
-        out["status"] = "corrected"        # the user's own figure: a fact settle() does not hold yet
-        return out
-    f = settle_facts(m, subs, store, vat_cal)
-    s = _st.settle(f)
-    out.update({"settle_by": s.status, "band": s.band, "rate": s.imp_rate, "cost": s.imp_cost,
-                "two_rates": s.two_rates})
-    segs = segs or []
-    out["stored_bands"] = "+".join("%s/%s" % (g["attribution"], g["band"]) for g in segs)
-    # §4 (d): would the CAD reading have predicted another band? Only where no bill settles it.
-    cad = m.get("cad_kwh")
-    if (f.kind == "intelligent" and s.status == "predicted" and m.get("imp_kwh_api") is not None
-            and cad is not None and abs(float(cad) - f.kwh) > _SETTLE_KWH_EPS):
-        p_cad = predicted_band(bs, float(cad), live=not str(m.get("source") or "").startswith("imported"))
-        if p_cad and p_cad != f.predicted:
-            out["dcc_moves"] = "%s→%s" % (p_cad, f.predicted)
-    if s.status in ("empty", "no_rate", "no_band"):
-        out["status"] = s.status
-        return out
-    drawing = {d.meter_id for d in s.devices if d.kwh_grid > _SETTLE_KWH_EPS}
-    out["device_two_rates"] = bool(s.two_rates and drawing)
+def _settle_parts(m: dict, subs: list, segs: list, f, s):
+    """What of a half-hour settle() would change: (parts, device notes, the stored EV kWh). `parts`
+    names each that differs — kwh, split, band, cost, rate, ex-VAT, segments, devices — empty where
+    the stored half-hour is settle()'s. The settle parity report's comparison, and the writers'
+    test of whether to write (engine step 4c)."""
     parts = []
+    segs = segs or []
     stored_kwh = float(m.get("imp_kwh") or 0.0)
     if abs(stored_kwh - f.kwh) > _SETTLE_KWH_EPS:
         parts.append("kwh")
     st_ev = sum(float(g["kwh"] or 0.0) for g in segs if g["attribution"] == "ev")
-    out["stored_ev"], out["ev"] = round(st_ev, 6), s.ev_kwh
     if abs(st_ev - s.ev_kwh) > _SETTLE_KWH_EPS:
         parts.append("split")
     want = sorted((g.attribution, g.band) for g in s.legs)
@@ -11248,7 +11193,81 @@ def settle_parity_row(m: dict, subs: list, segs: list, store, vat_cal=None) -> d
                            % (d.meter_id, float(x.get("imp_kwh") or 0.0), g, c, d.kwh_grid, d.cost))
     if dev_txt:
         parts.append("devices")
-        out["devices"] = "; ".join(dev_txt)
+    return parts, dev_txt, st_ev
+
+
+def settle_half_hour(store, bs: str) -> dict:
+    """A fact arrived for `bs`: settle it, and write it where it differs from what it holds (engine
+    step 4c — the carve's and the reconcile's trigger). A bill's answer is written as the bill apply
+    writes it (rate_source 'settled'); a prediction or the clock without changing who set it. A
+    correction is the user's, and a half-hour settle() cannot price is left as it is.
+    {status, parts, written}."""
+    try:
+        end = (datetime.fromisoformat(bs) + timedelta(minutes=30)).isoformat()
+    except ValueError:
+        return {"status": "no_block", "parts": [], "written": False}
+    inp = store.get_settle_inputs(bs, end)
+    m = next((x for x in inp["mains"] if x["block_start"] == bs), None)
+    if m is None:
+        return {"status": "no_block", "parts": [], "written": False}
+    if m.get("rate_corrected") or m.get("rate_source") == "corrected":
+        return {"status": "corrected", "parts": [], "written": False}
+    import settle as _st
+    try:
+        cal = store.get_vat_calendar()
+    except Exception:
+        cal = None
+    subs = inp["subs"].get(bs, [])
+    f = settle_facts(m, subs, store, cal)
+    s = _st.settle(f)
+    if s.status not in ("settled", "predicted", "clock"):
+        return {"status": s.status, "parts": [], "written": False}
+    parts, _dev, _ev = _settle_parts(m, subs, inp["segments"].get(bs, []), f, s)
+    if not parts:
+        return {"status": s.status, "parts": [], "written": False}
+    w = store.apply_measured_to_main if s.status == "settled" else store.write_predicted
+    w(bs, rate=s.imp_rate, cost=s.imp_cost, cost_exc=s.imp_cost_exc,
+      segments=_settled_segments(s), devices=_settled_devices(f, s))
+    return {"status": s.status, "parts": parts, "written": True}
+
+
+def settle_parity_row(m: dict, subs: list, segs: list, store, vat_cal=None) -> dict:
+    """One main-meter half-hour: settle()'s answer beside what it holds. `status`: same | differs |
+    corrected | empty | no_rate | no_band; `parts`, for a differs, the parts that differ (kwh, band,
+    split, rate, cost, ex-VAT, segments, devices). `two_rates` and `device_two_rates` count what §4 (a)
+    and (b) decide; `dcc_moves` a predicted band the DCC kWh moves from the CAD reading's (§4 (d))."""
+    import settle as _st
+    bs = m["block_start"]
+    out = {"start": bs, "status": None, "parts": "", "kwh": m.get("imp_kwh"),
+           "kwh_dcc": m.get("imp_kwh_api"), "stored_rate": m.get("imp_rate"),
+           "stored_cost": m.get("imp_cost"), "stored_bands": "", "settle_by": None, "band": None,
+           "rate": None, "cost": None, "stored_ev": None, "ev": None, "two_rates": False,
+           "device_two_rates": False, "dcc_moves": "", "devices": ""}
+    if m.get("rate_corrected") or m.get("rate_source") == "corrected":
+        out["status"] = "corrected"        # the user's own figure: a fact settle() does not hold yet
+        return out
+    f = settle_facts(m, subs, store, vat_cal)
+    s = _st.settle(f)
+    out.update({"settle_by": s.status, "band": s.band, "rate": s.imp_rate, "cost": s.imp_cost,
+                "two_rates": s.two_rates})
+    segs = segs or []
+    out["stored_bands"] = "+".join("%s/%s" % (g["attribution"], g["band"]) for g in segs)
+    # §4 (d): would the CAD reading have predicted another band? Only where no bill settles it.
+    cad = m.get("cad_kwh")
+    if (f.kind == "intelligent" and s.status == "predicted" and m.get("imp_kwh_api") is not None
+            and cad is not None and abs(float(cad) - f.kwh) > _SETTLE_KWH_EPS):
+        p_cad = predicted_band(bs, float(cad), live=not str(m.get("source") or "").startswith("imported"),
+                               was_online=not m.get("interpolated"))
+        if p_cad and p_cad != f.predicted:
+            out["dcc_moves"] = "%s→%s" % (p_cad, f.predicted)
+    if s.status in ("empty", "no_rate", "no_band"):
+        out["status"] = s.status
+        return out
+    drawing = {d.meter_id for d in s.devices if d.kwh_grid > _SETTLE_KWH_EPS}
+    out["device_two_rates"] = bool(s.two_rates and drawing)
+    parts, dev_txt, st_ev = _settle_parts(m, subs, segs, f, s)
+    out["stored_ev"], out["ev"] = round(st_ev, 6), s.ev_kwh
+    out["devices"] = "; ".join(dev_txt)
     out["parts"] = "+".join(parts)
     out["status"] = "differs" if parts else "same"
     return out
@@ -12215,19 +12234,13 @@ def run_prune_stale_tombstones() -> dict:
 
 
 async def reconcile_dispatch_overlay() -> dict:
-    """Settlement-time reconciliation of the dispatch overlay against the
-    accumulated lifecycle (design §12). For each SETTLED, non-user-corrected main
-    block whose slot was a planned smart-charge candidate, decide off-peak/peak
-    from `started` / `completed` — never the meter — and reprice if it disagrees
-    with the current rate. Bidirectional: RESTORES solar slots the meter floor
-    wrongly peaked, REVERTS planned-but-never-charged slots (and completed-without-
-    started slots whose energy is too small to have materially run). A completed-
-    without-started slot with SUBSTANTIAL energy stays genuinely ambiguous — its
-    price is left unchanged and logged (a UI to surface these for review is planned
-    for 3.3.0). Devices follow the main rate; blocks the user manually corrected
-    are skipped. Runs on the engine loop (single store connection); regenerates
-    charts if anything changed.
-    """
+    """Settle each half-hour whose dispatch lifecycle has had time to land (design §12): a main
+    block, not corrected, not bill-settled, not imported, whose slot was a smart-charge candidate
+    (`get_reconcile_candidates`). Engine step 4c: the lifecycle's verdict — restore a slot the meter
+    floor wrongly peaked, revert one planned but never charged, or completed without starting and too
+    small to have materially run — is the prediction's second stage, so `settle_half_hour` decides
+    and writes it, with the devices, only where the stored half-hour differs. Completed-only history
+    rows are first materialised into dispatch slots (design §14). Runs on the engine loop."""
     store = _store
     if store is None:
         return {}
@@ -12258,288 +12271,44 @@ async def reconcile_dispatch_overlay() -> dict:
     # dispatch landed) is the carve's since 16 Oct 2026 — one population, run at every capture
     # and hourly (bill and split paths design §3.3 2, 6b).
     now = datetime.now(timezone.utc).replace(tzinfo=None)
-    # Two gates: a RESTORE can happen as soon as the slot has ended (`started` is
-    # captured in real-time, so it's already known); a REVERT/REVIEW must wait for
-    # `completed` (~hrs) to settle, else we can't tell "neither → peak" from
-    # "completed-but-not-started → review".
     started_cutoff = (now - timedelta(minutes=_RECONCILE_STARTED_GATE_MIN)).isoformat()
-    settle_cutoff = (now - timedelta(hours=_RECONCILE_SETTLE_HOURS)).isoformat()
     try:
-        # The exclusions (BL-53 authority, imported history, the started-gate,
-        # the off-peak slot and planned/completed evidence) now live with the
-        # query in BlockStore.get_reconcile_candidates, each one named.
+        # The exclusions (BL-53 authority, imported history, the started-gate, the off-peak slot
+        # and planned/completed evidence) live with the query in BlockStore.get_reconcile_candidates.
         rows = store.get_reconcile_candidates(started_cutoff)
     except Exception as e:
         logger.warning("reconcile_dispatch_overlay: query failed: %s", e)
         return {}
-    n_restore = n_revert = n_review = n_deferred = n_band = n_boundary = 0
-    n_settled_guard = 0
+    # Engine step 4c (EMT-v5_engine_step4_settle_design.md §3): the lifecycle settling is a fact
+    # arriving — settle each candidate. Its verdict (`_reconcile_decision`) is the prediction's own
+    # second stage (predicted_band), so what decided off-peak or peak here decides it inside
+    # settle(), with the half-hour's DCC kWh and its gap-fill state; settle_half_hour writes only
+    # what differs. Until then this pass re-priced the block itself — restores, reverts, the BL-58b
+    # stale-rated split heal and the BL-34 band relabel, each its own write, the band read back
+    # from the stored rate — and held a DCC-settled block with a completed dispatch at its price
+    # for the bill to decide; the bill decides it anyway (billed wins, 23 Oct 2026).
+    n_settled = n_boundary = 0
     changed = False
-    n_candidates = len(rows)
     for r in rows:
         bs = r["block_start"]
         if not _agreement_priced_ok(bs):
-            # BL-54: block predates the current agreement and the schedule isn't
-            # agreement-stitched — pricing it here would apply the current tariff.
-            n_boundary += 1
+            n_boundary += 1                  # BL-54: settle_facts gives it no rate either
             continue
-        drows = store.get_dispatch_history_for_slot(bs)
-        kinds = {x["kind"] for x in drows}
-        # Octopus's completed energy for the slot (negative = charged); drives the
-        # negligible-completion → peak decision. None if no completed record yet.
-        completed_energy = next(
-            (x["energy_kwh"] for x in drows
-             if x["kind"] == "completed" and x["energy_kwh"] is not None), None)
-        # 4.5.0 fix: a bump verdict needs CONTEMPORANEOUS evidence — the completed
-        # dispatch must have been first seen close to the slot (EMT live AND accumulating
-        # then). A rebuild/re-import re-fetches 'completed' from the API but the locally-
-        # accumulated 'planned'/'started' are gone (Octopus serves neither historically),
-        # so an old genuine smart charge would look completed-only and be mis-flagged a
-        # bump. If the completed was first seen >36h after the slot, treat absence-of-
-        # started as LOST HISTORY, not a bump (§11.3 accumulation principle).
-        _comp_fs = min((x["first_seen"] for x in drows
-                        if x["kind"] == "completed" and x["first_seen"]), default=None)
-        contemporaneous = True
-        if _comp_fs:
-            try:
-                _fs = datetime.fromisoformat(str(_comp_fs).split(".")[0].replace("Z", ""))
-                contemporaneous = (_fs - datetime.fromisoformat(bs)) <= timedelta(hours=36)
-            except Exception:
-                contemporaneous = True
-        has_started = "started" in kinds
-        # A no-started slot's fate (revert vs review) hinges on completed, which
-        # lands late — defer it until it clears the settle gate. A started slot is
-        # still decidable now: it restores immediately (BL-71 keeps that), and its
-        # own revert is gated inside _reconcile_decision by `past_settle` instead,
-        # because deferring it would cost the fast restore this gate exists to give.
-        if not has_started and bs >= settle_cutoff:
-            n_deferred += 1
-            continue
-        op_pence = sched.off_peak_rate_near(bs)
-        base_pence = sched.resolve(bs)
-        if op_pence is None or base_pence is None:
-            continue
-        off_peak = round(op_pence / 100.0, 6)
-        base = round(base_pence / 100.0, 6)
-        # Inside the off-peak WINDOW the base tariff is already the off-peak rate,
-        # so the block's price does not depend on any dispatch — there is nothing
-        # to reconcile (a smart charge here, e.g. under the 6-hour cap, is priced
-        # off-peak by the schedule regardless of whether it 'started'). Reverting
-        # would be a no-op. Skip.
-        if abs(base - off_peak) < 1e-6:
-            continue
-        cur_rate = r["imp_rate"] or 0.0
-        # The block's BAND, from its stored rate: whichever of this date's off-peak and
-        # base prices it is nearer — the BL-58b rule below. Not price EQUALITY (#28,
-        # 3 Oct 2026): `abs(cur_rate - off_peak) < 1e-6` read any change in the tariff's
-        # off-peak PRICE as a band disagreement, so a correctly stored off-peak slot was
-        # "restored" to the new figure — on the Pi soak, five 24 Sep dispatch slots at
-        # 5.493p were re-priced to 5.2314p when Octopus edited its records for 1 Oct's
-        # 0% VAT. An unpriced block (no rate) is never "already off-peak".
-        currently_off_peak = (cur_rate > 0.0
-                              and abs(cur_rate - off_peak) <= abs(cur_rate - base))
-        target, reason = _reconcile_decision(
-            has_started, "completed" in kinds, completed_energy, currently_off_peak,
-            has_planned=("planned" in kinds),
-            was_online=(not bool(r["interpolated"])),
-            contemporaneous=contemporaneous,
-            # BL-71: a STARTED slot deliberately skips the deferral above so the
-            # restore stays fast, so it cannot learn "the settle window has passed"
-            # by being deferred — it has to be told. Same cutoff, passed in rather
-            # than inferred.
-            past_settle=(bs < settle_cutoff))
-        # 4.5.7 SETTLED = TRUTH (via the completed-dispatch proxy). A COMPLETED dispatch
-        # is Octopus's own signal that the slot ran as a smart charge, so the settled
-        # bill priced it OFF-PEAK; once the block is SETTLED (imp_kwh_api present) the
-        # lifecycle heuristic — a PREDICTION for unsettled slots — must not revert it to
-        # peak (the 2026-07-21 16:00 BST case: completed -0.09 kWh tripped the negligible
-        # gate and over-charged a genuinely off-peak bump). A PLANNED-ONLY settled slot
-        # (no `completed`) genuinely never charged, so the bill priced it PEAK and the
-        # heuristic's peak revert AGREES with the bill — that stays correct and is NOT
-        # guarded. Restores toward off-peak also align to the bill and are unaffected.
-        # The over-cap edge (a completed dispatch still billed peak once the daily 6h cap
-        # is spent) is left for the SMB measured CHECK — rare for sub-6h/day users.
-        # 4.5.7: a CONFIDENT out-of-app BUMP (completed-ONLY, substantial energy, EMT was
-        # ONLINE and saw the completed CONTEMPORANEOUSLY, and no 'planned' was ever captured)
-        # is genuinely PEAK even though the block is settled+completed -- the guard's
-        # "completed => smart => off-peak" assumption does not hold for a bump. Price it peak
-        # NOW rather than deferring to the measured pass (the ~6-day rate-settle heal).
-        # Settlement still verifies it and heals DOWN immediately if we misjudged.
-        _confident_bump = (target == "peak" and "completed" in kinds
-                           and not has_started and "planned" not in kinds
-                           and not bool(r["interpolated"]) and contemporaneous
-                           and abs(completed_energy or 0.0) >= _RECONCILE_SMALL_COMPLETED_KWH)
-        if (target == "peak" and r["imp_kwh_api"] is not None
-                and "completed" in kinds and not _confident_bump):
-            n_settled_guard += 1
-            continue
-        if target == "review":
-            # Genuinely ambiguous: the price is left unchanged and nothing is flagged
-            # (BL-74, 4 Oct 2026). Cost settlement decides the block when Octopus
-            # bills it — the user sees what Octopus holds — so a review list asking a
-            # person to decide first was a question the bill answers. Counted and
-            # logged only; `deferred` is one not yet DCC-settled.
-            if r["imp_kwh_api"] is None:
-                n_deferred += 1
-                continue
-            n_review += 1
-            logger.info("reconcile: %s REVIEW — %s (price unchanged)", bs, reason)
-            continue
-        if target == "ok":
-            # BL-58b: derive the split band from the block's ACTUAL rate (nearer off_peak
-            # or base), NOT `currently_off_peak` — a rounding variant of the off-peak rate
-            # flips that flag and would stamp a peak label on an off-peak-rated block.
-            _blk_band = "off_peak" if abs(cur_rate - off_peak) <= abs(cur_rate - base) else "peak"
-            _want_ev = _blk_band
-            _want_home = "off_peak" if _blk_band == "off_peak" else "day"
-            # Heal a STALE-RATED split. An earlier capped revert moved the block to its rate
-            # but (under the old gate, pre-BL-58) left the EV/house SEGMENTS at the prior
-            # band's RATE — the 23/08 bump: block peak 0.32309 but segments still 0.05493, so
-            # Billing (segment-priced) shows EV understated and Direct absorbing the premium.
-            # The label-relabel below only fixes LABELS, not a stale RATE, and the revert
-            # branch won't fire again (rate already correct) — so re-price the split HERE.
-            # Fire ONLY on a genuine BAND FLIP (segment in a different band than the block
-            # rate), not same-band rounding noise — mirrors the measured band-criterion.
-            # Capped-SAFE: only when the block is SINGLE-RATE (one distinct segment rate); a
-            # real multi-band cap block (>=2 rates) is left for step-3. Self-limiting.
-            try:
-                _distinct = store.distinct_segment_rates(bs)
-                _seg_band = None
-                if _distinct:
-                    _sr = _distinct[0]
-                    _seg_band = "off_peak" if abs(_sr - off_peak) <= abs(_sr - base) else "peak"
-                if len(_distinct) == 1 and _seg_band != _blk_band:
-                    import pricing_segments as _ps_ok
-                    _brow = store.get_block_split_columns(bs)
-                    if _brow is not None and (_brow["imp_kwh"] or 0) > 0:
-                        _exc_ok = _brow["rate_exc"]        # derived from the pair (5b)
-                        if _exc_ok is None:
-                            try:
-                                _exc_ok = round(cur_rate / (1.0 + store.vat_rate_at(bs)), 6)
-                            except Exception:
-                                _exc_ok = None
-                        _segs_ok = _ps_ok.ev_house_at(           # BL-79 (3): ev_split's split
-                            float(_brow["imp_kwh"]), _brow["ev_kwh"], inc_rate=cur_rate,
-                            exc_rate=_exc_ok, ev_band=_want_ev, home_band=_want_home)
-                        # The split is the segments (step 5c): re-pricing them is the heal.
-                        store.set_block_segments(bs, "electricity_main", _segs_ok)
-                        n_band += 1
-                        changed = True
-                        logger.info("reconcile: %s split re-price %.5f->%.5f ev=%s home=%s "
-                                    "(stale-rated split heal, BL-58b)",
-                                    bs, _distinct[0], cur_rate, _want_ev, _want_home)
-            except Exception as _sr_e:
-                logger.warning("reconcile: split re-price failed for %s: %s", bs, _sr_e)
-            # BL-34 sweep: a block already at the correct RATE can still carry a stale
-            # segment band from provisional pricing (e.g. a negligible or settled
-            # completed-only slot priced peak but left band='off_peak' — the reverting
-            # code that stamps the band never ran because the rate did not change).
-            # Relabel the band to match the rate so label and rate agree on every
-            # band-keyed display. Uncapped only (a capped block's bands are legitimately
-            # mixed off_peak+peak). Pure label update — kwh/rate/exc/attribution are
-            # untouched, so the reconciliation invariant holds; self-limiting (rewrites
-            # once, then matches and is skipped). Because these blocks stay reconcile
-            # candidates, the hourly pass sweeps all legacy stale bands — no separate
-            # migration needed. Capped by the half-hour's own agreement (capped pricing by
-            # agreement design §5 (b)): an account on IOG-SMB relabels its uncapped
-            # pre-agreement half-hours, and one that has left keeps its capped ones' bands.
-            _capped_band = capped_at(bs)
-            if not _capped_band:
-                _want_ev = "off_peak" if currently_off_peak else "peak"
-                _want_home = "off_peak" if currently_off_peak else "day"
-                try:
-                    _stale = store.count_stale_band_segments(bs, _want_ev, _want_home)
-                    if _stale:
-                        store.relabel_segment_bands(bs, _want_ev, _want_home)
-                        n_band += 1
-                        changed = True
-                        logger.info("reconcile: %s band relabel -> ev=%s home=%s "
-                                    "(rate unchanged; label was stale, BL-34)",
-                                    bs, _want_ev, _want_home)
-                except Exception as _be:
-                    logger.warning("reconcile: band relabel failed for %s: %s", bs, _be)
-                # (The 4.5.0 EV-columns re-stamp that followed went with the columns, step 5c,
-                # 10 Oct 2026: it kept imp_rate_ev in step with the segments, which are now the
-                # only record of the split, so there is nothing left to drift.)
-            continue
-        new_rate = off_peak if target == "off_peak" else base
-        # BL-23/BL-9: re-stamp the ex-VAT columns alongside the inc rate/cost. A
-        # reconcile that rewrites imp_rate WITHOUT this leaves imp_cost_exc
-        # at the OLD band's value — a stale ex-VAT figure (e.g. an off-peak exc rate on
-        # a block reverted to peak), which then shows a wrong rate in the billing
-        # summary's EV/Home split and understates Total (exc). Derive the fresh exc rate
-        # the same way pass-2 does (new_rate × published exc/inc at the slot); when no
-        # exc schedule covers the slot, NULL the exc columns so the view falls back to
-        # inc ÷ (1+VAT) — never leave it stale. Nothing fills them in later (the exc
-        # backfill went with BL-33), so that fallback is the figure the block keeps.
-        _exc_rate = None
-        _isched = _kraken_rate_schedules.get("import")
-        _iexc = getattr(_isched, "exc", None) if _isched is not None else None
-        if _iexc is not None:
-            _inc_p = _isched.resolve(bs)
-            _exc_p = _iexc.resolve(bs)
-            if _exc_p is not None and _inc_p and abs(_inc_p) > 1e-6:
-                _exc_rate = round(new_rate * (_exc_p / _inc_p), 6)
-        # BL-9 / BL-58: the same drift hits the EV/house SPLIT — imp_rate_ev must follow
-        # the rewrite or the split keeps the old band (off-peak EV on a block reverted to
-        # peak) and the home remainder derives a phantom rate above the tariff peak. The
-        # revert puts the WHOLE block on one new_rate, so EV and house share it on CAPPED
-        # tariffs too (the old capped skip left the split frozen off-peak — the 23/08 bump:
-        # EV stuck at 0.05493 while the block went to peak, so Usage Stats spilled the
-        # premium into Direct). Restamp unconditionally; the band LABELS carry the capped
-        # distinction (EV peak / house day). A genuine multi-band cap split is step-3
-        # measured-apply, not this single-rate revert.
-        # Main row, sub-meters and the EV columns in ONE transaction — a partial
-        # verdict leaves sub-meters at the OLD rate while the main row moves, and
-        # sub-meter cost derives from the main rate, so the block would disagree
-        # with itself. BlockStore.apply_reconcile_verdict owns that atomicity.
-        _ev_band_col = "off_peak" if target == "off_peak" else "peak"
-        _home_band_col = "off_peak" if target == "off_peak" else "day"
-        # BL-27 / BL-58: the bill split / Usage Stats / chart price from block_segments
-        # (source of truth), so the reconcile REWRITES THE SEGMENTS too. A revert/restore puts
-        # the whole block on the new rate, so EV and house share it — on capped tariffs as well
-        # (band labels carry EV peak / house day). Build those bands directly at new_rate.
-        # BL-34 (4.5.0): the segment band follows the reconciled RATE, not the stale provisional
-        # label: off-peak restore → off_peak; peak revert → EV 'peak', house 'day'.
-        # BL-79 (8 Oct 2026): built BEFORE the verdict and written in its transaction — they
-        # were written after it commits, on their own, so a failure left the rate moved and the
-        # segments at the old one.
-        _segs_rc = None
         try:
-            import pricing_segments as _ps_rc
-            _mrow = store.get_block_split_columns(bs)
-            if _mrow is not None and (_mrow["imp_kwh"] or 0) > 0:
-                _segs_rc = _ps_rc.ev_house_at(              # BL-79 (3): ev_split's split
-                    float(_mrow["imp_kwh"]), _mrow["ev_kwh"], inc_rate=new_rate,
-                    exc_rate=_exc_rate, ev_band=_ev_band_col, home_band=_home_band_col)
-        except Exception as _rc_e:
-            logger.warning("reconcile: segment build failed for %s: %s", bs, _rc_e)
-            _segs_rc = None
-        try:
-            store.apply_reconcile_verdict(bs, new_rate, _exc_rate, segments=_segs_rc)
-        except Exception as _vd_e:
-            # Nothing was written (one transaction), so the block stays a candidate.
-            logger.warning("reconcile: verdict failed for %s, left for the next pass: %s",
-                           bs, _vd_e)
+            res = settle_half_hour(store, bs)
+        except Exception as e:
+            logger.warning("reconcile: settle failed for %s, left for the next pass: %s", bs, e)
             continue
-        changed = True
-        if target == "off_peak":
-            n_restore += 1
-        else:
-            n_revert += 1
-        logger.info("reconcile: %s %s %.5f→%.5f (%s)",
-                    target, bs, cur_rate, new_rate, reason)
-    # Heartbeat every run (even with no changes) so the pass is observable in the
-    # log — "0 candidates" vs "N candidates, 0 changed" tells very different
-    # stories when a block isn't being corrected.
-    logger.info("reconcile: scanned %d candidate(s) — %d restored, %d reverted, "
-                "%d review, %d deferred, %d band-relabelled, %d agreement-guarded, "
-                "%d settled-guarded (settle=%dh)",
-                n_candidates, n_restore, n_revert, n_review, n_deferred, n_band,
-                n_boundary, n_settled_guard, int(_RECONCILE_SETTLE_HOURS))
-    return {"restored": n_restore, "reverted": n_revert, "review": n_review,
-            "deferred": n_deferred, "band_relabelled": n_band,
-            "agreement_guarded": n_boundary}
+        if res["written"]:
+            n_settled += 1
+            changed = True
+            logger.info("reconcile: %s settled by settle() — %s (%s)",
+                        bs, res["status"], "+".join(res["parts"]))
+    # Heartbeat every run (even with no changes) so the pass is observable in the log.
+    logger.info("reconcile: scanned %d candidate(s) — %d settled by settle(), %d agreement-guarded",
+                len(rows), n_settled, n_boundary)
+    return {"candidates": len(rows), "settled": n_settled, "agreement_guarded": n_boundary,
+            "changed": changed}
 
 
 async def resolve_history_gaps(now=None, meter_id: str = "electricity_main",

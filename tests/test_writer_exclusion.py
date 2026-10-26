@@ -213,22 +213,12 @@ class TestASnapshotMidJobIsRecoverable(unittest.TestCase):
                             "while it runs is no longer recoverable" % job)
 
     def test_the_carve_is_idempotent_by_query_instead(self):
-        """`run_iog_split_carve` is the one job with no marker, deliberately:
-        *"No done-marker — it runs each tick and is cheap (only late-dispatch
-        stragglers ever match)."* It self-selects on `imp_kwh_ev IS NULL`, so a
-        block it has carved stops matching. That is idempotence by query.
-
-        The predicate MOVED (workstream A acceptance 5). It used to sit in a raw
-        SELECT inside this function; it now lives in
-        `BlockStore.get_blocks_off_dispatch_split` (since 16 Oct 2026; it was
-        `get_blocks_awaiting_ev_carve`), and `carve_ev_split` repeats
-        it in the UPDATE's own WHERE. That is strictly stronger than before — the
-        old version could select a block and then write it after something else
-        had carved it, because the check and the write were separate statements.
-
-        So this asserts the PROPERTY at both halves rather than a string in one
-        function body, which is what went stale.
-        """
+        """`run_iog_split_carve` is the one job with no marker, deliberately: it self-selects the
+        half-hours whose split is off their completed dispatch (`get_blocks_off_dispatch_split`),
+        and since engine step 4c settles each with `settle_half_hour`, which writes only what
+        differs from settle()'s answer — so a half-hour it has settled stops matching, and a second
+        pass writes nothing. Idempotence by query, at both halves. (Its guarded write,
+        carve_ev_split, went with 4c: one atomic write from the facts leaves nothing to guard.)"""
         import ast as _ast
         bs_src = open(os.path.join(_ROOT, "block_store.py"), encoding="utf-8").read()
         bs_lines = bs_src.split("\n")
@@ -239,17 +229,13 @@ class TestASnapshotMidJobIsRecoverable(unittest.TestCase):
             f = bs_funcs[name]
             return "\n".join(bs_lines[f.lineno - 1:f.end_lineno])
 
-        # merged with the back-attribution's on 16 Oct 2026 (6b): the no-split arm is the EV
-        # split's own expression, IS NULL
-        self.assertIn('ev + " IS NULL OR (b.interpolated = 1', body("get_blocks_off_dispatch_split"),
+        self.assertIn('ev + " IS NULL OR "', body("get_blocks_off_dispatch_split"),
                       "the carve no longer self-selects un-carved blocks")
-        self.assertIn("imp_kwh_ev IS NULL", body("carve_ev_split"),
-                      "the write lost its own guard — selection and write can "
-                      "now come apart")
-        # And the job still routes through them rather than round them.
         job = self._body("run_iog_split_carve")
         self.assertIn("get_blocks_off_dispatch_split", job)
-        self.assertIn("carve_ev_split", job)
+        self.assertIn("settle_half_hour", job)
+        self.assertIn("if not parts:", self._body("settle_half_hour"),
+                      "the write is no longer gated on a difference")
 
 
 class TestAttributionStartWindow(unittest.TestCase):

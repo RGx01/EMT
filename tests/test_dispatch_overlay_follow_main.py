@@ -509,14 +509,29 @@ if __name__ == "__main__":
 class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
     """§12 settlement reconciliation pass: bidirectional, accumulation-gated,
     correction-safe. Restores solar slots, reverts non-charging slots, and never
-    touches historical (pre-accumulation) or user-corrected blocks."""
+    touches historical (pre-accumulation) or user-corrected blocks.
+
+    Engine step 4c (26 Oct 2026): the pass settles each candidate with settle(), whose prediction
+    carries this verdict (`_reconcile_decision`, the lifecycle stage of predicted_band). The
+    outcomes below are the prediction's; the pass's count is `settled`, and a prediction does not
+    write rate_source ('reconciled' is no longer stamped). Two outcomes are the decided model's, not
+    the old pass's: a DCC-settled tiny completed charge is no longer held for the bill (billed wins
+    when it comes), and the deferral is the lifecycle's alone."""
 
     def _sched(self):
         class S:
             def is_empty(self): return False
             def off_peak_rate_near(self, ts): return 5.493   # £0.05493
+            def day_rate_bounds(self, ts): return (5.493, 32.3092)
             def resolve(self, ts): return 32.3092            # £0.323092
         return S()
+
+    def setUp(self):
+        from unittest import mock
+        import engine
+        _tk = mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+        _tk.start()
+        self.addCleanup(_tk.stop)
 
     def _seed(self, store, slot, imp_rate, kinds, off_peak_slot=True, corrected=0,
               completed_kwh=-3.0, settled=True):
@@ -554,7 +569,7 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         self._seed(st, "2020-01-01T13:30:00", 0.323092,
                    ["planned", "started", "completed"])
         res = await self._run(st)
-        self.assertEqual(res["restored"], 1)
+        self.assertEqual(res["settled"], 1)
         r = st._conn.execute("SELECT imp_rate FROM blocks WHERE block_start=?",
                              ("2020-01-01T13:30:00",)).fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.05493, places=5)
@@ -565,7 +580,7 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         # planned, off-peaked, but never started/completed -> revert to peak
         self._seed(st, "2020-01-01T20:00:00", 0.05493, ["planned"])
         res = await self._run(st)
-        self.assertEqual(res["reverted"], 1)
+        self.assertEqual(res["settled"], 1)
         r = st._conn.execute("SELECT imp_rate FROM blocks WHERE block_start=?",
                              ("2020-01-01T20:00:00",)).fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.323092, places=5)
@@ -575,7 +590,7 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         st = BlockStore(":memory:")
         self._seed(st, "2020-01-01T20:00:00", 0.05493, ["planned"], corrected=1)
         res = await self._run(st)
-        self.assertEqual(res["reverted"], 0)  # skipped
+        self.assertEqual(res["settled"], 0)  # skipped
         r = st._conn.execute("SELECT imp_rate FROM blocks WHERE block_start=?",
                              ("2020-01-01T20:00:00",)).fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.05493, places=5)  # untouched
@@ -603,7 +618,7 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         st.record_dispatch_history("2020-01-01T20:00:00", "planned", provider="Myenergi")
         st._conn.commit()
         res = await self._run(st)
-        self.assertEqual(res["reverted"], 0)                 # imported block untouched
+        self.assertEqual(res["settled"], 0)                 # imported block untouched
         r = st._conn.execute("SELECT imp_rate FROM blocks WHERE block_start=?",
                              ("2020-01-01T20:00:00",)).fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.05493, places=5)  # billed off-peak preserved
@@ -614,8 +629,7 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         # off_peak dispatch_slot but NO dispatch_history (pre-3.1.4) -> not a candidate
         self._seed(st, "2020-01-01T20:00:00", 0.05493, [])  # no history kinds
         res = await self._run(st)
-        self.assertEqual((res["restored"], res["reverted"], res["review"]),
-                         (0, 0, 0))
+        self.assertEqual(res["settled"], 0)
         r = st._conn.execute("SELECT imp_rate FROM blocks WHERE block_start=?",
                              ("2020-01-01T20:00:00",)).fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.05493, places=5)  # untouched
@@ -629,13 +643,11 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         self._seed(st, "2020-01-01T20:00:00", 0.323092, ["completed"],
                    completed_kwh=-3.0)
         res = await self._run(st)
-        self.assertEqual((res["restored"], res["reverted"], res["review"]),
-                         (1, 0, 0))
+        self.assertEqual(res["settled"], 1)
         r = st._conn.execute(
             "SELECT imp_rate, rate_source, needs_review FROM blocks "
             "WHERE block_start=?", ("2020-01-01T20:00:00",)).fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.05493, places=5)   # peak → off-peak
-        self.assertEqual(r["rate_source"], "reconciled")           # recorded as reconciled
         self.assertEqual(r["needs_review"], 0)                     # not flagged
 
     async def test_completed_only_from_history_no_slot_restores_off_peak(self):
@@ -651,8 +663,7 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         # precondition: no billing slot exists — only the history ledger row
         self.assertIsNone(st.get_dispatch_slot("2020-01-01T20:00:00"))
         res = await self._run(st)
-        self.assertEqual((res["restored"], res["reverted"], res["review"]),
-                         (1, 0, 0))
+        self.assertEqual(res["settled"], 1)
         slot = st.get_dispatch_slot("2020-01-01T20:00:00")
         self.assertIsNotNone(slot)                                  # slot materialised
         self.assertEqual(slot["source"], "smart-charge-completed")
@@ -660,7 +671,6 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
             "SELECT imp_rate, rate_source FROM blocks WHERE block_start=?",
             ("2020-01-01T20:00:00",)).fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.05493, places=5)    # peak → off-peak
-        self.assertEqual(r["rate_source"], "reconciled")
 
     async def test_confident_bump_settled_reverts_to_peak(self):
         from block_store import BlockStore
@@ -676,7 +686,7 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
             "'2020-01-01T14:00:00','2020-01-01T14:00:00')")
         st._conn.commit()
         res = await self._run(st)
-        self.assertEqual(res["reverted"], 1)
+        self.assertEqual(res["settled"], 1)
         r = st._conn.execute("SELECT imp_rate FROM blocks WHERE block_start=?",
                              ("2020-01-01T13:30:00",)).fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.323092, places=5)
@@ -689,8 +699,7 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         self._seed(st, "2020-01-01T20:00:00", 0.323092, ["completed"],
                    off_peak_slot=False, completed_kwh=-0.2)
         res = await self._run(st)
-        self.assertEqual((res["restored"], res["reverted"], res["review"]),
-                         (0, 0, 0))
+        self.assertEqual(res["settled"], 0)
         self.assertIsNone(st.get_dispatch_slot("2020-01-01T20:00:00"))
         r = st._conn.execute("SELECT imp_rate FROM blocks WHERE block_start=?",
                              ("2020-01-01T20:00:00",)).fetchone()
@@ -704,9 +713,7 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         # BL-74: no flag is written — cost settlement decides it.
         self._seed(st, "2020-01-01T20:00:00", 0.05493, ["planned", "completed"],
                    completed_kwh=-3.0)
-        res = await self._run(st)
-        self.assertEqual((res["restored"], res["reverted"], res["review"]),
-                         (0, 0, 1))
+        await self._run(st)          # price unchanged: the overlay's off-peak (no verdict)
         r = st._conn.execute(
             "SELECT imp_rate, needs_review FROM blocks WHERE block_start=?",
             ("2020-01-01T20:00:00",)).fetchone()
@@ -725,22 +732,27 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
             "WHERE block_start=?", ("2020-01-01T13:30:00",))
         st._conn.commit()
         res = await self._run(st)
-        self.assertEqual(res["restored"], 1)
+        self.assertEqual(res["settled"], 1)
         r = st._conn.execute(
             "SELECT needs_review, review_reason FROM blocks WHERE block_start=?",
             ("2020-01-01T13:30:00",)).fetchone()
         self.assertEqual((r["needs_review"], r["review_reason"]), (1, "stale"))
 
     async def test_recent_completed_only_deferred_until_settled(self):
-        # A completed-only slot still inside the settle window is DEFERRED — the
-        # completed record lands hours after the charge, so we wait before repricing
-        # rather than act on a half-arrived signal. (A past slot, below, is restored.)
+        # A completed-only slot still inside the settle window is DEFERRED — the completed record
+        # lands hours after the charge, so the lifecycle waits before deciding rather than act on a
+        # half-arrived signal. A tiny completed charge stored off-peak (which past the window
+        # reverts to peak, below) keeps the dispatch slot's off-peak meanwhile. (Engine step 4c:
+        # rewritten — the old fixture stored peak under an off-peak slot, which settle()'s first
+        # stage reads off-peak whatever the lifecycle says.)
         import engine, datetime as _dt
         from block_store import BlockStore
         st = BlockStore(":memory:")
-        recent = (_dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None, second=0, microsecond=0)
-                  - _dt.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:00")
-        self._seed(st, recent, 0.323092, ["planned", "completed"], completed_kwh=-3.0)
+        _t = (_dt.datetime.now(_dt.timezone.utc).replace(tzinfo=None, second=0, microsecond=0)
+              - _dt.timedelta(hours=1))
+        recent = _t.replace(minute=(_t.minute // 30) * 30).strftime("%Y-%m-%dT%H:%M:00")  # a slot
+        self._seed(st, recent, 0.05493, ["planned", "completed"], completed_kwh=-0.26,
+                   settled=False)
         engine._store = st
         engine._RECONCILE_SETTLE_HOURS = 6.0     # a real settle window (not the 0.0 harness)
         engine._kraken_rate_schedules = {"import": self._sched()}
@@ -748,11 +760,9 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
             res = await engine.reconcile_dispatch_overlay()
         finally:
             engine._store = None
-        self.assertEqual(res["deferred"], 1)
-        self.assertEqual((res["restored"], res["reverted"], res["review"]), (0, 0, 0))
         r = st._conn.execute("SELECT imp_rate FROM blocks WHERE block_start=?",
                              (recent,)).fetchone()
-        self.assertAlmostEqual(r["imp_rate"], 0.323092, places=5)  # untouched while deferred
+        self.assertAlmostEqual(r["imp_rate"], 0.05493, places=5)  # not reverted while deferred
 
     async def _run_offpeak_sched(self, store):
         # Reconcile with a schedule whose BASE rate equals the off-peak rate at
@@ -761,6 +771,7 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         class OffPeakSched:
             def is_empty(self): return False
             def off_peak_rate_near(self, ts): return 5.493
+            def day_rate_bounds(self, ts): return (5.493, 32.3092)
             def resolve(self, ts): return 5.493        # base == off-peak
         engine._store = store
         engine._RECONCILE_SETTLE_HOURS = 0.0
@@ -778,8 +789,7 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         # nothing to reconcile, must not be flagged.
         self._seed(st, "2020-01-01T02:00:00", 0.05493, ["planned", "completed"],
                    completed_kwh=-3.0)
-        res = await self._run_offpeak_sched(st)
-        self.assertEqual(res["review"], 0)
+        await self._run_offpeak_sched(st)
         r = st._conn.execute("SELECT needs_review FROM blocks WHERE block_start=?",
                              ("2020-01-01T02:00:00",)).fetchone()
         self.assertEqual(r["needs_review"], 0)
@@ -828,23 +838,26 @@ class TestReconcilePass(unittest.IsolatedAsyncioTestCase):
         self._seed(st, "2020-01-01T20:00:00", 0.05493, ["planned", "completed"],
                    completed_kwh=-0.26, settled=False)
         res = await self._run(st)
-        self.assertEqual(res["reverted"], 1)
+        self.assertEqual(res["settled"], 1)
         r = st._conn.execute("SELECT imp_rate FROM blocks WHERE block_start=?",
                              ("2020-01-01T20:00:00",)).fetchone()
         self.assertAlmostEqual(r["imp_rate"], 0.323092, places=5)  # peak
 
-    async def test_negligible_completed_settled_is_deferred_to_bill(self):
-        # 4.5.6: the SAME tiny-completed/no-started slot, but SETTLED, is NOT reverted —
-        # the bill owns a settled dispatched block's band (bill_resettle_v1 / measured).
+    async def test_negligible_completed_settled_is_predicted_peak_too(self):
+        # REVERSED by engine step 4c. Until then (4.5.6) a DCC-SETTLED tiny-completed/no-started
+        # slot was held at its price for the bill to decide (a tiny completed slot was billed peak
+        # on 10 Jul 17:30 and off-peak on 21 Jul 16:00). The prediction is the 2b–2c rule — 16 Aug
+        # 13:00 BST, completed-only under 0.4 kWh, is peak by EMT's rules — and billed wins when
+        # the bill comes (decided 23 Oct 2026), so nothing is left to hold.
         from block_store import BlockStore
         st = BlockStore(":memory:")
         self._seed(st, "2020-01-01T20:00:00", 0.05493, ["planned", "completed"],
                    completed_kwh=-0.26, settled=True)
         res = await self._run(st)
-        self.assertEqual(res["reverted"], 0)                       # guarded, not reverted
+        self.assertEqual(res["settled"], 1)
         r = st._conn.execute("SELECT imp_rate FROM blocks WHERE block_start=?",
                              ("2020-01-01T20:00:00",)).fetchone()
-        self.assertAlmostEqual(r["imp_rate"], 0.05493, places=5)   # left for the bill
+        self.assertAlmostEqual(r["imp_rate"], 0.323092, places=5)  # peak, until a bill says otherwise
 
 
 class TestBL11RawDispatchBounds(unittest.TestCase):

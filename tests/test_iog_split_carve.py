@@ -12,6 +12,21 @@ import engine
 import ev_split
 from block_store import BlockStore
 
+
+# engine step 4c: the carve settles through settle(), which asks the tariff kind (the carve never
+# did); these fixtures load no agreement, and the carve only ever acts on an Intelligent dispatch
+from unittest import mock as _mock
+_TK = _mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+
+
+def setUpModule():
+    _TK.start()
+
+
+def tearDownModule():
+    _TK.stop()
+
+
 OFF = 0.05493
 
 

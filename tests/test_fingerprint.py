@@ -125,7 +125,7 @@ class ItCoversEverythingDisplayed(_Base):
         carve writes them onto a block that had none."""
         self.blk("2026-09-09T00:00:00", imp_kwh=2.0, imp_cost=0.14)
         before = self.fp()["2026-09-09"]
-        self.st.carve_ev_split("2026-09-09T00:00:00", segments=[
+        self.st.set_block_segments("2026-09-09T00:00:00", "electricity_main", [
             (1.2, 0.07, None, "off_peak", "ev"), (0.8, 0.07, None, "off_peak", "house")])
         self.assertNotEqual(before, self.fp()["2026-09-09"])
 

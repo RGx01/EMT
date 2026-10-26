@@ -15,7 +15,8 @@ draw the GRID actually supplied. Two v5 re-cost sites priced from raw `imp_kwh`:
     WriteStore.repair_device_rate_drift  the recurring drift sweep (was v4's
                                          _smb_device_recost_core body)
 
-`apply_reconcile_verdict` already priced its sub-meters from `imp_kwh_grid`.
+`apply_reconcile_verdict` already priced its sub-meters from `imp_kwh_grid` (it went with engine
+step 4c: the reconcile settles, and settle() prices devices from their clipped grid share).
 
 WHY IT REACHES THE BILL. The day total is `max(0, main - SUM(devices)) + SUM(devices)`,
 algebraically `main` until the clamp fires — which it does once devices exceed the main.

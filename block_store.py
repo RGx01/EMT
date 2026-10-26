@@ -8261,11 +8261,33 @@ class BlockStore:
         main's single rate (`recost_sub_meters`, removed with it), which `repair_device_rate_drift` had
         to catch.
         """
+        return self._write_half_hour(block_start, rate=rate, cost=cost, cost_exc=cost_exc,
+                                     meter_id=meter_id, segments=segments, devices=devices,
+                                     stamp="settled", replace_correction=replace_correction)
+
+    def write_predicted(self, block_start: str, *, rate, cost, cost_exc,
+                        meter_id: str = "electricity_main", segments=None, devices=None) -> int:
+        """settle()'s answer for a half-hour no bill has settled — EMT's prediction, or a published
+        tariff's clock — written as `apply_measured_to_main` writes a bill's: the main, its segments
+        and its devices in one transaction (engine step 4c: the carve's and the reconcile's write).
+        `rate_source` is not touched: who set the rate is not what a prediction decides. A
+        corrected block is never written (its correction is the user's)."""
+        return self._write_half_hour(block_start, rate=rate, cost=cost, cost_exc=cost_exc,
+                                     meter_id=meter_id, segments=segments, devices=devices,
+                                     stamp=None, skip_corrected=True)
+
+    def _write_half_hour(self, block_start, *, rate, cost, cost_exc, meter_id, segments, devices,
+                         stamp, replace_correction=False, skip_corrected=False) -> int:
+        """The one write of a settled half-hour: the main row, then its segments and devices, in one
+        transaction. `stamp` sets rate_source; None leaves it."""
         with self._tx():
             cur = self._conn.execute(
-                "UPDATE blocks SET imp_rate = ?, imp_cost = ?, rate_source = 'settled', "
-                "imp_cost_exc = ?" + (", rate_corrected = 0" if replace_correction else "") + " "
-                "WHERE block_start = ? AND meter_id = ?",
+                "UPDATE blocks SET imp_rate = ?, imp_cost = ?, imp_cost_exc = ?"
+                + (", rate_source = '%s'" % stamp if stamp else "")
+                + (", rate_corrected = 0" if replace_correction else "") + " "
+                "WHERE block_start = ? AND meter_id = ?"
+                + (" AND COALESCE(rate_corrected, 0) = 0 AND COALESCE(rate_source, '') <> 'corrected'"
+                   if skip_corrected else ""),
                 (rate, cost, cost_exc, block_start, meter_id))
             # BL-79 (8 Oct 2026): the bill's segments in the same transaction. Written after,
             # a failed segment write left the block stamped 'settled' — never revisited by
@@ -8338,68 +8360,10 @@ class BlockStore:
                 "       AND s.channel = 'import' AND s.kwh > 1e-9) <= 1")
         return cur.rowcount
 
-    def relabel_segment_bands(self, block_start: str, ev_band: str,
-                              home_band: str,
-                              meter_id: str = "electricity_main") -> int:
-        """Point each segment's band at the band its attribution should carry.
-
-        BL-34: a block already at the correct RATE can still hold a stale band
-        from provisional pricing, because the code that stamps the band only runs
-        when the rate changes. A pure LABEL update -- kwh, rate, exc and
-        attribution are untouched -- so the reconciliation invariant holds and it
-        is self-limiting: rewrites once, then matches.
-        """
-        with self._conn:
-            cur = self._conn.execute(
-                "UPDATE block_segments SET band = CASE attribution "
-                "WHEN 'ev' THEN ? WHEN 'house' THEN ? ELSE band END "
-                "WHERE block_start = ? AND meter_id = ? "
-                "AND ((attribution = 'ev' AND band != ?) "
-                "     OR (attribution = 'house' AND band != ?))",
-                (ev_band, home_band, block_start, meter_id, ev_band, home_band))
-        return cur.rowcount
 
     _RECONCILED_SOURCE = ("rate_source = CASE WHEN rate_source IN ('settled', 'corrected') "
                           "THEN rate_source ELSE 'reconciled' END")
 
-    def apply_reconcile_verdict(self, block_start: str, rate: float, rate_exc,
-                                meter_id: str = "electricity_main", segments=None) -> dict:
-        """Apply a dispatch-overlay verdict to a block: main row, its sub-meters
-        and its segments, in ONE transaction. Returns rows changed per part.
-
-        The atomicity is load-bearing and is why this is one method rather than
-        three. A partial verdict leaves sub-meters priced at the OLD rate while
-        the main row moves -- the sub-meter costs are derived from the main rate,
-        so the block would disagree with itself until something else happened to
-        rewrite it.
-
-        Sub-meters bill on `COALESCE(imp_kwh_grid, imp_kwh)` -- the GRID portion,
-        not the meter's own total, which for a battery or V2X device differ.
-        `rate_corrected = 0` keeps a user's manual correction out of it.
-        """
-        with self._conn:
-            # Step 5 (8 Oct 2026): the verdict is recorded in rate_source, the provenance
-            # model, not the second flag rate_reconciled (dropped, step 5). A settled or
-            # corrected row keeps its word: either outranks a reconciliation.
-            main = self._conn.execute(
-                "UPDATE blocks SET imp_rate = ?, " + self._RECONCILED_SOURCE + ", "
-                "imp_cost = ROUND(COALESCE(imp_kwh, 0) * ?, 6), "
-                "imp_cost_exc = ROUND(COALESCE(imp_kwh, 0) * ?, 6) "
-                "WHERE block_start = ? AND meter_id = ?",
-                (rate, rate, rate_exc, block_start, meter_id)).rowcount
-            subs = self._conn.execute(
-                "UPDATE blocks SET imp_rate = ?, " + self._RECONCILED_SOURCE + ", "
-                "imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6), "
-                "imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * ?, 6) "
-                "WHERE block_start = ? AND rate_corrected = 0 AND meter_id IN "
-                "(SELECT meter_id FROM meters WHERE is_sub_meter = 1)",
-                (rate, rate, rate_exc, block_start)).rowcount
-            # BL-79 (8 Oct 2026): the re-priced segments in the same transaction; they were
-            # written after it, on their own. They ARE the EV split (step 5c): the EV columns
-            # this used to restamp alongside are gone.
-            if main and segments is not None:
-                self._replace_segments(block_start, meter_id, segments)
-        return {"main": main, "sub_meters": subs}
 
     def get_reconcile_candidates(self, before_iso: str,
                                  meter_id: str = "electricity_main") -> list:
@@ -8443,140 +8407,17 @@ class BlockStore:
             (meter_id, before_iso)).fetchall()
         return [dict(r) for r in rows]
 
-    def get_block_split_columns(self, block_start: str,
-                                meter_id: str = "electricity_main") -> Optional[dict]:
-        """One block's EV/house split columns, or None if there is no such block.
-
-        Three sites in `reconcile_dispatch_overlay` each selected an overlapping
-        subset of these -- the split re-price, the EV-column re-stamp and the
-        post-verdict segment rebuild. One projection serves all three; the cost
-        of the extra columns is nil and the cost of three near-identical SELECTs
-        drifting apart is not.
-
-        NOTE for the caller that used to filter `AND imp_kwh_ev IS NOT NULL` in
-        SQL: that is no longer part of the query, so a block with no split comes
-        back as a row with `imp_kwh_ev` None rather than as None. Test the
-        COLUMN, not the row.
-
-        BL-79 (3): `ev_kwh` is ev_split's split (the EV segments) — what a caller rebuilding the
-        segments reads (the EV columns went in step 5c). `rate_exc`
-        is DERIVED, the block's ex-VAT rate from its own pair (imp_rate × imp_cost_exc /
-        imp_cost; NULL with no ex-VAT £): the column went in step 5b, 10 Oct 2026.
-        """
-        row = self._conn.execute(
-            "SELECT b.imp_kwh, " + _evsplit.sql_kwh("b") + " AS ev_kwh, b.imp_rate, "
-            "b.imp_rate * b.imp_cost_exc / NULLIF(b.imp_cost, 0) AS rate_exc "
-            "FROM blocks b WHERE b.block_start = ? AND b.meter_id = ?",
-            (block_start, meter_id)).fetchone()
-        return dict(row) if row else None
-
-    def distinct_segment_rates(self, block_start: str,
-                               meter_id: str = "electricity_main") -> list:
-        """The distinct inc-VAT rates across a block's segments, rounded to 6dp.
-
-        The count is the question: exactly one means a SINGLE-RATE block, which
-        is the only shape the stale-rated-split heal touches. A genuine
-        multi-band capped block has two or more and is left for the measured
-        apply.
-        """
-        rows = self._conn.execute(
-            "SELECT DISTINCT ROUND(inc_rate, 6) AS rate FROM block_segments "
-            "WHERE block_start = ? AND meter_id = ?",
-            (block_start, meter_id)).fetchall()
-        return [r["rate"] for r in rows if r["rate"] is not None]
-
-    def count_stale_band_segments(self, block_start: str, ev_band: str,
-                                  home_band: str,
-                                  meter_id: str = "electricity_main") -> int:
-        """How many of a block's segments carry a band that disagrees with the
-        band its attribution should have.
-
-        BL-34: a block at the correct RATE can still carry a stale band from
-        provisional pricing, because the code that stamps the band only runs when
-        the rate changes. Asking first keeps the relabel self-limiting -- it
-        rewrites once and then matches.
-        """
-        return self._conn.execute(
-            "SELECT COUNT(*) FROM block_segments "
-            "WHERE block_start = ? AND meter_id = ? "
-            "AND ((attribution = 'ev' AND band != ?) "
-            "     OR (attribution = 'house' AND band != ?))",
-            (block_start, meter_id, ev_band, home_band)).fetchone()[0]
-
-    def replace_ev_split(self, block_start: str, meter_id: str = "electricity_main",
-                         segments=None) -> int:
-        """Write an EV/house split OVER whatever is there. Returns rows changed (0 or 1).
-
-        The counterpart to `carve_ev_split`, and the difference is the whole
-        point of having two methods rather than one with a flag:
-
-          carve_ev_split    fills a BLANK. Guarded by "no EV split yet", and it keeps
-                            the house band already recorded, so it cannot overwrite an
-                            answer something better-informed already gave.
-          replace_ev_split  is the RE-ATTRIBUTION path. Its caller has already
-                            established that what is stored is absent or wrong
-                            (priced before the completed dispatch landed, or a
-                            gap fill that guessed), so overwriting is the job.
-
-        The caller's selection is what makes this safe -- imported history and
-        `rate_corrected` blocks are excluded there. A single method with an
-        `overwrite=` argument would put that distinction one boolean away from
-        being got wrong at a call site, which is how a manual correction gets
-        stomped.
-
-        Step 5c (10 Oct 2026): the split IS the segments, so this writes them, for a block that
-        exists. The EV columns it used to write alongside them are gone.
-        """
-        with self._conn:
-            if segments is None or self._conn.execute(
-                    "SELECT 1 FROM blocks WHERE block_start = ? AND meter_id = ?",
-                    (block_start, meter_id)).fetchone() is None:
-                return 0
-            self._replace_segments(block_start, meter_id, segments)
-        return 1
-
-    def carve_ev_split(self, block_start: str, meter_id: str = "electricity_main",
-                       segments=None) -> int:
-        """Write a PREDICTED EV/house split onto an un-carved block. Returns the
-        number of rows changed (0 or 1).
-
-        Two guards, both part of the operation rather than caller hygiene:
-
-          * "no EV split yet" -- the sweep selects un-carved blocks and then writes
-            them one at a time, so the block can have been carved in between.
-            Re-writing it would double-count. Checking in the write's own
-            transaction means the check and the write cannot come apart.
-          * the house band already recorded -- by the block's existing (house-only)
-            segments, when they share one -- was determined by something with better
-            information (settlement, a user correction). A predicted carve fills a
-            blank; it does not overwrite an answer. (Until step 5c, 10 Oct 2026, both
-            lived in the imp_*_ev columns: `imp_kwh_ev IS NULL` and
-            `COALESCE(imp_home_band, ?)`. Under the guard the block has no EV segment, so
-            only the house band has a recorded answer to keep.)
-
-        `segments`: the carve's (kwh, inc_rate, exc_rate, band, attribution) rows.
-        """
-        with self._conn:
-            row = self._conn.execute(
-                "SELECT " + _evsplit.sql_kwh("b") + " IS NULL AS open, "
-                + _evsplit.sql_band("b", "house") + " AS house_band "
-                "FROM blocks b WHERE b.meter_id = ? AND b.block_start = ?",
-                (meter_id, block_start)).fetchone()
-            if row is None or not row["open"] or segments is None:
-                return 0
-            hb = row["house_band"] if row["house_band"] not in (None, "mixed") else None
-            self._replace_segments(block_start, meter_id, [
-                (k, i, x, (hb if a == "house" else None) or b, a) for k, i, x, b, a in segments])
-        return 1
 
     def get_blocks_off_dispatch_split(self, limit: int, meter_id: str = "electricity_main",
-                                      starts=None, tolerance: float = 0.1) -> list:
+                                      starts=None, tolerance: float = 0.0005) -> list:
         """Main blocks whose split should be the completed dispatch's and is not — the one
         population for the stages below the final (bill and split paths design §3.3 2, 6b,
         16 Oct 2026): not corrected, with kWh and a completed dispatch with energy, and either
-        no EV split yet, or a GAP-FILLED block (`interpolated = 1`) whose EV differs from the
-        dispatch clipped to its kWh by more than `tolerance` (BL-39: a gap fill can stamp a
-        wrong split from a stale or planned fragment). The caller leaves out a block at the
+        no EV split yet, or an EV that differs from the dispatch clipped to its kWh by more than
+        `tolerance`. Until engine step 4c (26 Oct 2026) only a GAP-FILLED block's split was
+        compared (BL-39: a gap fill can stamp a wrong split from a stale or planned fragment), by
+        0.1 kWh; a dispatch Octopus restates after the carve (staging, 24 Oct 2026 04:00: carved at
+        2.67 kWh, restated to 2.55) left any other block on the first figure. The caller leaves out a block at the
         final stage (settled, on an IOG-SMB agreement, with a bill split cached — the settle's).
 
         It replaced two queries that selected this from opposite ends: the carve's (no split,
@@ -8600,8 +8441,8 @@ class BlockStore:
             "FROM blocks b WHERE b.meter_id = ? AND COALESCE(b.imp_kwh, 0) > 0 "
             "  AND COALESCE(b.rate_corrected, 0) = 0 AND COALESCE(b.rate_source, '') <> 'corrected' "
             "  AND COALESCE(" + disp + ", 0) > 1e-9 "
-            "  AND (" + ev + " IS NULL OR (b.interpolated = 1 AND "
-            "       ABS(MIN(" + disp + ", b.imp_kwh) - COALESCE(" + ev + ", 0)) > ?)) "
+            "  AND (" + ev + " IS NULL OR "
+            "       ABS(MIN(" + disp + ", b.imp_kwh) - COALESCE(" + ev + ", 0)) > ?) "
             + ("  AND b.block_start IN (%s) " % ",".join("?" * len(starts)) if starts else "")
             + "ORDER BY b.block_start LIMIT ?",
             (meter_id, tolerance, *(starts or ()), int(limit))).fetchall()

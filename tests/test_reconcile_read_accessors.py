@@ -122,104 +122,13 @@ class ReconcileCandidates(unittest.TestCase):
         self.assertEqual(self.st.get_reconcile_candidates("2026-01-01T00:00:00"), [])
 
 
-class BlockSplitColumns(unittest.TestCase):
-
-    def setUp(self):
-        self.st = _mk_store()
-
-    def test_missing_block_is_none(self):
-        self.assertIsNone(self.st.get_block_split_columns(S))
-
-    def test_it_carries_every_column_the_three_sites_wanted(self):
-        # imp_rate_exc dropped (step 5b, 10 Oct 2026): the read derives `rate_exc` from the
-        # block's pair, imp_rate × imp_cost_exc / imp_cost = 0.25 × 1.19 / 1.25.
-        # Step 5c (10 Oct 2026): the EV columns went; `ev_kwh` is the EV segments' kWh, and
-        # the EV rate / bands the sites wanted are read from the segments themselves.
-        import pricing_segments as ps
-        _block(self.st, imp_cost=1.25, imp_cost_exc=1.19)
-        self.st.set_block_segments(S, "electricity_main", [
-            ps.Segment(2.0, 0.25, 0.238, "off_peak", "ev"),
-            ps.Segment(3.0, 0.25, 0.238, "day", "house")])
-        r = self.st.get_block_split_columns(S)
-        for col in ("imp_kwh", "ev_kwh", "imp_rate", "rate_exc"):
-            self.assertIn(col, r)
-        self.assertAlmostEqual(r["ev_kwh"], 2.0)
-        self.assertAlmostEqual(r["rate_exc"], 0.238, places=6)
-
-    def test_an_unsplit_block_is_a_row_with_a_null_column(self):
-        """The behaviour change to be aware of. One caller used to filter
-        `AND imp_kwh_ev IS NOT NULL` in SQL and test the ROW for None; it now
-        tests the COLUMN (`ev_kwh`, from the EV segments). A row comes back either way."""
-        _block(self.st)
-        r = self.st.get_block_split_columns(S)
-        self.assertIsNotNone(r, "the block exists, so there is a row")
-        self.assertIsNone(r["ev_kwh"], "but it has no split")
-
-    def test_it_is_meter_scoped(self):
-        _block(self.st)
-        self.assertIsNone(self.st.get_block_split_columns(S, meter_id="sub_meter_ev"))
-
-
-class DistinctSegmentRates(unittest.TestCase):
-
-    def setUp(self):
-        self.st = _mk_store()
-
-    def _segs(self, *rates):
-        import pricing_segments as ps
-        self.st.set_block_segments(
-            S, "electricity_main",
-            [ps.Segment(1.0, r, None, "off_peak", "house") for r in rates])
-
-    def test_none_is_empty(self):
-        self.assertEqual(self.st.distinct_segment_rates(S), [])
-
-    def test_a_single_rate_block_reports_one(self):
-        self._segs(0.25, 0.25)
-        self.assertEqual(len(self.st.distinct_segment_rates(S)), 1)
-
-    def test_a_multi_rate_block_reports_more(self):
-        """The count is the question: >= 2 means a genuine multi-band capped
-        block, which the stale-rated heal must leave alone."""
-        self._segs(0.05493, 0.32309)
-        self.assertEqual(len(self.st.distinct_segment_rates(S)), 2)
-
-    def test_rates_are_rounded_to_six_places(self):
-        self._segs(0.2500001, 0.2500002)
-        self.assertEqual(len(self.st.distinct_segment_rates(S)), 1,
-                         "rounding noise must not read as two bands")
-
-
-class StaleBandSegments(unittest.TestCase):
-
-    def setUp(self):
-        self.st = _mk_store()
-
-    def _seg(self, band, attribution):
-        import pricing_segments as ps
-        self.st.set_block_segments(
-            S, "electricity_main", [ps.Segment(1.0, 0.25, None, band, attribution)])
-
-    def test_agreement_counts_zero(self):
-        self._seg("off_peak", "ev")
-        self.assertEqual(self.st.count_stale_band_segments(S, "off_peak", "day"), 0)
-
-    def test_a_stale_ev_band_is_counted(self):
-        self._seg("off_peak", "ev")
-        self.assertEqual(self.st.count_stale_band_segments(S, "peak", "day"), 1)
-
-    def test_a_stale_house_band_is_counted(self):
-        self._seg("off_peak", "house")
-        self.assertEqual(self.st.count_stale_band_segments(S, "peak", "day"), 1)
-
 
 class Surfaces(unittest.TestCase):
 
-    def test_all_four_are_reads(self):
+    def test_the_candidates_are_a_read(self):
+        """(The three reads only the reconcile's own verdict used went with it, engine step 4c.)"""
         from store_types import ReadStore
-        for name in ("get_reconcile_candidates", "get_block_split_columns",
-                     "distinct_segment_rates", "count_stale_band_segments"):
-            self.assertTrue(hasattr(ReadStore, name), name)
+        self.assertTrue(hasattr(ReadStore, "get_reconcile_candidates"))
 
 
 class NoPositionalRowAccessLeft(unittest.TestCase):

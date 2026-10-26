@@ -13,8 +13,8 @@ only rewrites blocks that already have a split.
 Two methods, and the interesting design point is that there are TWO write methods
 for what looks like one operation:
 
-    carve_ev_split      fills a BLANK   (guarded "no EV segment yet", keeps the house band)
-    replace_ev_split    OVERWRITES      (the re-attribution path)
+    (carve_ev_split and replace_ev_split, the carve's two writes, went with engine step 4c:
+    the carve settles each half-hour with settle())
 
 A single method with an `overwrite=` flag would put "never stomp a manual
 correction" one boolean away from being got wrong at a call site. Separate names
@@ -150,16 +150,24 @@ class GapFilledDisagreement(unittest.TestCase):
         self.assertEqual(len(self._got()), 1)
 
     def test_agreement_within_tolerance_is_left_alone(self):
+        """The tolerance is 0.0005 kWh since engine step 4c (0.1 until then)."""
         _block(self.st, S, interpolated=1, ev=3.0)
-        _completed(self.st, S, kwh=3.02)
+        _completed(self.st, S, kwh=3.0004)
         self.assertEqual(self._got(), [])
 
-    def test_a_normally_captured_block_is_not_reselected_on_disagreement(self):
-        """The BL-39 arm is scoped to gap-filled blocks. A finalised block that
-        disagrees is settlement's business, not this job's."""
+    def test_a_restated_dispatch_is_reselected(self):
+        """REVERSED by engine step 4c: 3.02 against 3.0 was within the old 0.1 kWh, and stayed."""
+        _block(self.st, S, interpolated=1, ev=3.0)
+        _completed(self.st, S, kwh=3.02)
+        self.assertEqual(len(self._got()), 1)
+
+    def test_a_normally_captured_block_is_reselected_on_disagreement(self):
+        """REVERSED by engine step 4c: the BL-39 arm was scoped to gap-filled blocks, so a dispatch
+        Octopus restated after the carve left a normally captured block on its first figure
+        (staging, 24 Oct 2026 04:00). A completed dispatch that changes is a fact, for any block."""
         _block(self.st, S, interpolated=0, ev=0.5)
         _completed(self.st, S, kwh=3.0)
-        self.assertEqual(self._got(), [])
+        self.assertEqual(len(self._got()), 1)
 
     def test_the_dispatch_is_grid_clipped_before_comparing(self):
         """A dispatch larger than the block's own import is clipped to it, so it cannot
@@ -169,47 +177,14 @@ class GapFilledDisagreement(unittest.TestCase):
         self.assertEqual(self._got(), [])
 
 
-class ReplaceVersusCarve(unittest.TestCase):
-
-    def setUp(self):
-        self.st = _mk_store()
-        _block(self.st, S)
-
-    def _row(self):
-        return self.st._conn.execute(
-            "SELECT " + ev_split.sql_kwh("b") + " AS ev_kwh, " + ev_split.sql_band("b", "ev")
-            + " AS ev_band FROM blocks b WHERE block_start=?", (S,)).fetchone()
-
-    def test_replace_overwrites_where_carve_refuses(self):
-        """The two methods on the same already-split block, side by side."""
-        self.st.replace_ev_split(S, segments=_segs(2.0, 3.0, "off_peak", "day"))
-        self.assertEqual(self.st.carve_ev_split(S, segments=_segs(4.9, 0.1, "peak", "night")), 0)
-        self.assertAlmostEqual(self._row()["ev_kwh"], 2.0)
-        self.assertEqual(self.st.replace_ev_split(S, segments=_segs(4.0, 1.0, "peak", "night")), 1)
-        self.assertAlmostEqual(self._row()["ev_kwh"], 4.0)
-
-    def test_replace_sets_bands_outright(self):
-        """carve keeps a recorded house band; replace does not — its caller has already
-        established that what is stored is wrong."""
-        self.st.replace_ev_split(S, segments=_segs(2.0, 3.0, "off_peak", "day"))
-        self.assertEqual(self._row()["ev_band"], "off_peak")
-        self.st.replace_ev_split(S, segments=_segs(2.0, 3.0, "peak", "night"))
-        self.assertEqual(self._row()["ev_band"], "peak")
-
-    def test_it_is_meter_scoped(self):
-        self.assertEqual(
-            self.st.replace_ev_split(S, meter_id="sub_meter_ev",
-                                     segments=_segs(2.0, 3.0, "off_peak", "day")), 0)
-
 
 class Surfaces(unittest.TestCase):
 
     def test_the_read_reads_and_the_write_writes(self):
         from store_types import ReadStore, WriteStore
         self.assertTrue(hasattr(ReadStore, "get_blocks_off_dispatch_split"))
-        self.assertTrue(hasattr(WriteStore, "replace_ev_split"))
-        self.assertFalse(hasattr(ReadStore, "replace_ev_split"),
-                         "a write on the read surface has no thread guard")
+        # replace_ev_split and carve_ev_split went with engine step 4c (the carve settles)
+        self.assertFalse(hasattr(WriteStore, "replace_ev_split"))
 
 
 if __name__ == "__main__":

@@ -143,10 +143,12 @@ class TheRelabel(_Harness):
         self._account(BEFORE)
         self.assertEqual(self._bands(), {("ev", "off_peak"), ("house", "off_peak")})
 
-    def test_a_half_hour_on_the_agreement_keeps_its_bands(self):
-        """GUARD: capped bands mix legitimately."""
+    def test_a_half_hour_on_the_agreement_takes_the_caps_legs(self):
+        """REVERSED by engine step 4c: the relabel kept a capped half-hour's mixed labels (EV peak,
+        house day on segments priced at 7p). The reconcile settles it with settle(): a started
+        smart charge within the cap is off-peak, EV and house, at the off-peak rate."""
         self._account(AFTER)
-        self.assertEqual(self._bands(), {("ev", "peak"), ("house", "day")})
+        self.assertEqual(self._bands(), {("ev", "off_peak"), ("house", "off_peak")})
 
 
 class TheMixedBill(_Harness):

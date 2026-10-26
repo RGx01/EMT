@@ -1,10 +1,11 @@
-"""4.5.6 — reconcile must not REVERT a SETTLED, completed-dispatch block to peak.
+"""4.5.6 — reconcile must not REVERT a SETTLED, completed-dispatch block to peak (until engine step 4c).
 
 Models the 2026-07-21 16:00 BST case: a genuine off-peak dispatched bump (planned +
 completed, small energy, EMT never captured 'started') that the pre-4.5.6 overlay
-wrongly reverted to peak. Octopus billed it off-peak; a completed dispatch is Octopus's
-own off-peak signal, so once the block is settled the overlay must leave it to the bill.
-A planned-only slot (never completed = never charged) is still correctly reverted.
+wrongly reverted to peak. Octopus billed it off-peak; the guard left a settled block to the bill.
+Engine step 4c (26 Oct 2026) settles the reconcile's candidates with settle(), whose prediction is
+the 2b–2c rule with no guard: billed wins, so the bill moves it back when it comes. The first test
+is reversed; a planned-only slot and an unsettled tiny charge revert as before.
 """
 import os
 import sys
@@ -25,12 +26,22 @@ class _Sched:
     def off_peak_rate_near(self, ts):
         return OFF_INC
 
+    def day_rate_bounds(self, ts):
+        return (OFF_INC, PEAK_INC)
+
     def resolve(self, ts):
         return PEAK_INC
 
 
 class TestSettledGuard(unittest.IsolatedAsyncioTestCase):
     SLOT = "2026-07-21T15:00:00"   # 16:00 BST — daytime, off-peak dispatched bump
+
+    def setUp(self):
+        from unittest import mock
+        # engine step 4c: the reconcile settles through settle(), which asks the tariff kind
+        _tk = mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+        _tk.start()
+        self.addCleanup(_tk.stop)
 
     def _seed(self, st, *, settled, completed=True):
         st._conn.execute(
@@ -65,18 +76,22 @@ class TestSettledGuard(unittest.IsolatedAsyncioTestCase):
         return st._conn.execute(
             "SELECT imp_rate FROM blocks WHERE block_start=?", (self.SLOT,)).fetchone()[0]
 
-    async def test_settled_completed_dispatch_is_not_reverted(self):
+    async def test_a_settled_completed_dispatch_is_predicted_peak(self):
+        """REVERSED by engine step 4c: the guard held a DCC-settled completed-dispatch block at its
+        price for the bill to decide. The prediction is the 2b–2c rule — a completed charge with no
+        `started`, under 0.4 kWh, is peak by EMT's rules (16 Aug 2026 13:00 BST) — and billed wins
+        when the bill comes (21 Jul 2026 16:00 BST was billed off-peak: its bill settles it)."""
         st = BlockStore(":memory:")
         self._seed(st, settled=True, completed=True)
         res = await self._run(st)
-        self.assertEqual(res.get("reverted", 0), 0)                 # guard blocked it
-        self.assertAlmostEqual(self._rate(st), OFF_INC / 100.0, places=5)  # stays off-peak
+        self.assertEqual(res["settled"], 1)
+        self.assertAlmostEqual(self._rate(st), PEAK_INC / 100.0, places=5)
 
     async def test_unsettled_completed_dispatch_still_reverts(self):
         st = BlockStore(":memory:")
         self._seed(st, settled=False, completed=True)
         res = await self._run(st)
-        self.assertEqual(res.get("reverted", 0), 1)                 # pre-settlement: allowed
+        self.assertEqual(res["settled"], 1)                         # pre-settlement: allowed
         self.assertAlmostEqual(self._rate(st), PEAK_INC / 100.0, places=5)
 
     async def test_settled_planned_only_is_still_reverted(self):
@@ -84,7 +99,7 @@ class TestSettledGuard(unittest.IsolatedAsyncioTestCase):
         st = BlockStore(":memory:")
         self._seed(st, settled=True, completed=False)
         res = await self._run(st)
-        self.assertEqual(res.get("reverted", 0), 1)
+        self.assertEqual(res["settled"], 1)
         self.assertAlmostEqual(self._rate(st), PEAK_INC / 100.0, places=5)
 
 

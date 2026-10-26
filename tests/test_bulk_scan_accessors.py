@@ -51,58 +51,16 @@ def _carve_segs(ev_kwh=2.0, house_kwh=3.0, rate=0.25, ev_band="off_peak",
     return [(ev_kwh, rate, None, ev_band, "ev"), (house_kwh, rate, None, home_band, "house")]
 
 
-class CarveWrite(unittest.TestCase):
-
-    def setUp(self):
-        self.st = _mk_store()
-        _block(self.st, "2026-09-01T00:00:00", imp_kwh=5.0, imp_rate=0.25)
-
-    def _segs(self):
-        return {s["attribution"]: s for s in
-                self.st.get_block_segments("2026-09-01T00:00:00", "electricity_main")}
-
-    def test_it_writes_and_reports_one_row(self):
-        n = self.st.carve_ev_split("2026-09-01T00:00:00", segments=_carve_segs())
-        self.assertEqual(n, 1)
-        r = self._segs()
-        self.assertAlmostEqual(r["ev"]["kwh"], 2.0)
-        self.assertEqual(r["ev"]["band"], "off_peak")
-
-    def test_a_second_carve_is_refused(self):
-        """The "no EV segment yet" guard is checked in the write's own
-        transaction, so selection and write cannot come apart -- a block carved
-        in between is not carved twice."""
-        self.st.carve_ev_split("2026-09-01T00:00:00", segments=_carve_segs())
-        n = self.st.carve_ev_split("2026-09-01T00:00:00", segments=_carve_segs(
-            9.9, 9.9, 9.9, "peak", "night"))
-        self.assertEqual(n, 0, "a second carve must change nothing")
-        self.assertAlmostEqual(self._segs()["ev"]["kwh"], 2.0)
-
-    def test_an_existing_band_is_not_overwritten(self):
-        """A band already recorded was decided by something with better
-        information. A prediction fills a blank; it does not argue. Under the
-        guard the block has no EV segment, so the recorded answer is the house
-        segments' band (step 5c; it was COALESCE on the band columns)."""
-        self.st.set_block_segments("2026-09-01T00:00:00", "electricity_main",
-                                   [(5.0, 0.25, None, "peak", "house")])
-        self.st.carve_ev_split("2026-09-01T00:00:00", segments=_carve_segs())
-        r = self._segs()
-        self.assertEqual(r["house"]["band"], "peak", "existing band was clobbered")
-        self.assertEqual(r["ev"]["band"], "off_peak", "blank band should fill")
-
-    def test_it_is_meter_scoped(self):
-        n = self.st.carve_ev_split("2026-09-01T00:00:00", meter_id="sub_meter_ev",
-                                   segments=_carve_segs())
-        self.assertEqual(n, 0)
-
 
 class Surfaces(unittest.TestCase):
 
     def test_reads_read_write_writes(self):
         from store_types import ReadStore, WriteStore
         self.assertTrue(hasattr(ReadStore, "get_blocks_off_dispatch_split"))
-        self.assertTrue(hasattr(WriteStore, "carve_ev_split"))
-        self.assertFalse(hasattr(ReadStore, "carve_ev_split"),
+        # the carve's own write (carve_ev_split) went with engine step 4c: it settles each
+        # half-hour, through write_predicted / apply_measured_to_main
+        self.assertTrue(hasattr(WriteStore, "write_predicted"))
+        self.assertFalse(hasattr(ReadStore, "write_predicted"),
                          "a write on the read surface has no thread guard")
 
 

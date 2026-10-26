@@ -28,6 +28,21 @@ import ev_split
 import pricing_segments as ps
 from block_store import BlockStore
 
+
+# engine step 4c: the carve settles through settle(), which asks the tariff kind (the carve never
+# did); these fixtures load no agreement, and the carve only ever acts on an Intelligent dispatch
+from unittest import mock as _mock
+_TK = _mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+
+
+def setUpModule():
+    _TK.start()
+
+
+def tearDownModule():
+    _TK.stop()
+
+
 OFF = 0.05493
 
 
@@ -37,6 +52,9 @@ class _Sched:
 
     def off_peak_rate_near(self, ts):
         return 5.493
+
+    def day_rate_bounds(self, ts):              # settle() prices from the day's two rates (4c)
+        return (5.493, 32.3092)
 
     def resolve(self, ts):
         return 5.493
@@ -120,11 +138,20 @@ class TestEvBackAttribution(unittest.TestCase):
         self.assertEqual(self._carve(), 0)
         self.assertIsNone(self._row()["imp_kwh_ev"])
 
-    def test_leaves_already_attributed(self):
+    def test_an_attribution_off_the_dispatch_follows_it(self):
+        """REVERSED by engine step 4c: an attributed block was left as it was. A completed dispatch
+        that arrives or changes is a fact, so a split off it is settled to it (staging, 24 Oct 2026
+        04:00: carved 2.67 kWh, the dispatch restated to 2.55)."""
         self._block(imp_kwh=3.0, ev=1.0)
         self._completed(energy=-2.0)
+        self.assertEqual(self._carve(), 1)
+        self.assertAlmostEqual(self._row()["imp_kwh_ev"], 2.0, places=5)
+
+    def test_an_attribution_on_the_dispatch_is_left(self):
+        """GUARD: already the dispatch's — nothing to write."""
+        self._block(imp_kwh=3.0, ev=2.0)
+        self._completed(energy=-2.0)
         self.assertEqual(self._carve(), 0)
-        self.assertAlmostEqual(self._row()["imp_kwh_ev"], 1.0, places=5)
 
     def test_imported_history_is_carved_too(self):
         """GUARD (the carve already took it; passes on the parent). Changed for the merged
