@@ -63,11 +63,6 @@ class EvSegments(unittest.TestCase):
         """The carve's and the back-attribution's queries, merged 16 Oct 2026 (6b)."""
         self.assertEqual(_starts(_store(segs=EV_SEGS).get_blocks_off_dispatch_split(10)), [])
 
-    def test_the_carve_guard_refuses_it(self):
-        st = _store(segs=EV_SEGS)
-        self.assertEqual(st.carve_ev_split(BS, segments=HOUSE_SEGS), 0)
-        self.assertEqual([s["attribution"] for s in st.get_block_segments(BS, "electricity_main")],
-                         ["ev", "house"])
 
     def test_the_sweep_guard_refuses_it(self):
         st = _store(segs=EV_SEGS)

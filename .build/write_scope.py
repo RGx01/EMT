@@ -87,17 +87,26 @@ def method_tables():
     lines = src.split("\n")
     cls = next(n for n in ast.parse(src).body
                if isinstance(n, ast.ClassDef) and n.name == "BlockStore")
-    out = {}
-    for m in cls.body:
-        if not isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
-        if m.name not in writers:
-            continue
+    out, calls = {}, {}
+    methods = {m.name: m for m in cls.body if isinstance(m, (ast.FunctionDef, ast.AsyncFunctionDef))}
+    for name, m in methods.items():
         text = code_only(m, lines) + " " + " ".join(W._locals(m).values())
-        t = _tables(text)
-        if t:
-            out[m.name] = sorted(t)
-    return out
+        out[name] = _tables(text)
+        # the store's own helpers it calls (self.<method>): a writer whose SQL lives in a shared
+        # private helper writes what the helper writes (engine step 4c: apply_measured_to_main and
+        # write_predicted both write through _write_half_hour)
+        calls[name] = {x.attr for x in ast.walk(m) if isinstance(x, ast.Attribute)
+                       and isinstance(x.value, ast.Name) and x.value.id == "self"
+                       and x.attr in methods}
+    changed = True
+    while changed:                                  # to a fixed point
+        changed = False
+        for name in methods:
+            for c in calls[name]:
+                if not out[c] <= out[name]:
+                    out[name] |= out[c]
+                    changed = True
+    return {n: sorted(t) for n, t in out.items() if n in writers and t}
 
 
 def analyse():

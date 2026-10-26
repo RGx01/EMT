@@ -63,11 +63,12 @@ class NoHandWrittenPairs(unittest.TestCase):
     def test_the_engine_builds_none_by_hand(self):
         src = open(os.path.join(_ROOT, "engine.py"), encoding="utf-8").read()
         self.assertEqual(re.findall(r'append\(\(?[^\n]*"ev"\)\)', src), [])
-        # engine step 4b: the settle's single-band legs moved into settle.py (settle()), which builds
-        # them with the one builder too, and writes no pair by hand
+        # engine steps 4b–4c: the four writers that built EV + house by hand — the carve, the settle's
+        # single-band fallback, the reconcile's stale-rated split heal and its verdict — are settle()
+        # now, which builds every one-rate leg pair with the one builder and none by hand
         st = open(os.path.join(_ROOT, "settle.py"), encoding="utf-8").read()
         self.assertEqual(re.findall(r'append\(\(?[^\n]*"ev"\)\)', st), [])
-        self.assertGreaterEqual(src.count("ev_house_at(") + st.count("ev_house_at("), 4)
+        self.assertGreaterEqual(st.count("ev_house_at("), 1)
 
 
 if __name__ == "__main__":

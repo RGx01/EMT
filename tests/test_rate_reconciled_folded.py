@@ -18,8 +18,13 @@ The re-run cases use CAD billing (`billing_source='cad'`), where only a correcti
 reconciliation or a bill holds the rate — on the DCC path every predicted band is held anyway
 (4.5.15), so the flag never decided anything there.
 
-Discriminating (fail on the parent of the fold): the verdict records rate_source='reconciled'; a
-CAD re-run holds a block whose rate_source alone says reconciled.
+Discriminating (fail on the parent of the fold): a CAD re-run holds a block whose rate_source
+alone says reconciled.
+
+Engine step 4c (26 Oct 2026): the reconcile settles its candidates with settle(), which does not
+stamp who set a prediction — so 'reconciled' is no longer written, and the verdict's two tests
+went with `apply_reconcile_verdict`. The word is still read (an imported v4 row's, and the CAD
+re-run's hold below), and still written by the importer's fold.
 """
 import os
 import sys
@@ -39,24 +44,6 @@ class TheVerdict(H._Harness):
             "SELECT imp_rate, rate_source FROM blocks WHERE block_start=? "
             "AND meter_id=?", (H.START, meter)).fetchone()
 
-    def test_it_is_recorded_in_rate_source(self):
-        self._finalise()
-        engine._store.apply_reconcile_verdict(H.START, OFF, round(OFF / 1.05, 6))
-        for meter in ("electricity_main", "house_battery", "ev_charger"):
-            with self.subTest(meter=meter):
-                r = self._row(meter)
-                self.assertEqual(r["rate_source"], "reconciled")
-
-    def test_a_measured_or_corrected_row_keeps_its_word(self):
-        self._finalise()
-        for word in ("settled", "corrected"):
-            with self.subTest(rate_source=word):
-                with engine._store._conn:
-                    engine._store._conn.execute(
-                        "UPDATE blocks SET rate_source=? WHERE block_start=? "
-                        "AND meter_id='electricity_main'", (word, H.START))
-                engine._store.apply_reconcile_verdict(H.START, OFF, None)
-                self.assertEqual(self._row()["rate_source"], word)
 
     def test_measured_settlement_is_recorded_in_rate_source(self):
         self._finalise()

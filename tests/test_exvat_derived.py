@@ -103,6 +103,11 @@ class TheCarve(unittest.TestCase):
         engine._store = self.st
         engine._kraken_rate_schedules = {"import": _Sched(), "ev_device_off_peak": _Ev(5.493),
                                          "ev_device_peak": _Ev(32.3092)}
+        # engine step 4c: the carve settles through settle(), which asks the tariff kind
+        from unittest import mock
+        _tk = mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+        _tk.start()
+        self.addCleanup(_tk.stop)
         self.st._conn.execute(
             "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
             "block_minutes, timezone) VALUES (1,'2020-01-01T00:00:00',1,30,'UTC')")
@@ -130,10 +135,11 @@ class TheCarve(unittest.TestCase):
         """No ex-VAT £ on a 0% day (from 1 Oct 2026): the calendar's rate, not / 1.05."""
         self.assertAlmostEqual(self._carved_ev_exc("2026-10-05T02:00:00"), OFF, places=6)
 
-    def test_the_pair_prices_the_carve(self):
-        """With an ex-VAT £ the block's own ratio speaks."""
+    def test_the_calendar_prices_the_carve_not_the_pair(self):
+        """REVERSED by engine step 4c (design §4 (c)): the block's own stored ex-VAT pair spoke; now
+        each leg's rate goes through the VAT calendar, one way — 5% on 10 Sep 2026."""
         exc = self._carved_ev_exc("2026-09-10T02:00:00", cost_exc=round(3.45 * OFF * 0.8, 6))
-        self.assertAlmostEqual(exc, round(OFF * 0.8, 6), places=6)
+        self.assertAlmostEqual(exc, round(OFF / 1.05, 6), places=6)
 
 
 if __name__ == "__main__":

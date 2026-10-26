@@ -30,6 +30,19 @@ import test_reconcile_exc_restamp as RC          # noqa: E402
 import ev_split                                  # noqa: E402
 engine = BA.engine
 
+# engine step 4c: the carve and the reconcile settle through settle(), which asks the tariff kind;
+# the harnesses borrowed here load no agreement (their own modules stub it only when they run)
+from unittest import mock as _mock                # noqa: E402
+_TK = _mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+
+
+def setUpModule():
+    _TK.start()
+
+
+def tearDownModule():
+    _TK.stop()
+
 
 def _segments_fail(store):
     """Make every segment write on `store` raise, on this tree and the parent."""
@@ -192,61 +205,9 @@ class TheReconcileVerdict(unittest.IsolatedAsyncioTestCase):
                           st.get_block_segments(self.SLOT, "electricity_main")}, {0.323092})
 
 
-class TheStaleRatedSplitHeal(unittest.IsolatedAsyncioTestCase):
-    """The reconcile's stale-rated split heal (a block already at peak whose split is still
-    priced off-peak) wrote the re-priced segments, then restamped the columns on their own: if
-    the restamp failed, the segments had moved and the columns had not. Then restamp_ev_columns
-    wrote both; since step 5c (10 Oct 2026) the split is the segments and the heal writes only
-    them, so the failed-restamp case went with restamp_ev_columns. The guard remains."""
-    SLOT = RC.TestReconcileRestampsExc.SLOT
-
-    def _seed(self):
-        import pricing_segments as ps
-        st = BA.BlockStore(":memory:")
-        st._conn.execute(
-            "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
-            "block_minutes, timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, 'UTC')")
-        st._conn.execute(
-            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, imp_cost_exc, "
-            "rate_corrected, rate_source, imp_kwh_api) VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?)",
-            (self.SLOT, self.SLOT, "electricity_main", 1, 3.186, 0.323092,
-             round(3.186 * 0.323092, 6), round(3.186 * 0.323092 / 1.05, 6),
-             0, "reconciled", 3.186))
-        st.set_block_segments(self.SLOT, "electricity_main", [
-            ps.Segment(2.24, 0.05493, 0.052314, "off_peak", "ev"),
-            ps.Segment(0.946, 0.05493, 0.052314, "off_peak", "house")])
-        st.upsert_dispatch_slot(self.SLOT, off_peak=True, provider="Myenergi",
-                                source="smart-charge-completed", state="completed")
-        st.record_dispatch_history(self.SLOT, "completed", provider="Myenergi")
-        st._conn.commit()
-        return st
-
-    async def _reconcile(self, st):
-        engine._store = st
-        engine._RECONCILE_SETTLE_HOURS = 0.0
-        engine._kraken_rate_schedules = {"import": RC._Sched(True),
-                                         "ev_device_off_peak": RC._Sched(True),
-                                         "ev_device_peak": RC._Sched(True)}
-        try:
-            await engine.reconcile_dispatch_overlay()
-        finally:
-            engine._store = None
-
-    def _seg_rates(self, st):
-        return {round(s["inc_rate"], 6) for s in st.get_block_segments(self.SLOT, "electricity_main")}
-
-    async def test_it_still_heals_both(self):
-        """GUARD: the split's segments move to peak, the EV kept."""
-        st = self._seed()
-        await self._reconcile(st)
-        self.assertEqual(self._seg_rates(st), {0.323092})
-        ev_kwh, ev_cost = st._conn.execute(
-            "SELECT " + ev_split.sql_kwh("b") + ", " + ev_split.sql_cost("b") + " FROM blocks b "
-            "WHERE block_start=?", (self.SLOT,)).fetchone()
-        self.assertAlmostEqual(ev_kwh, 2.24, places=6)
-        self.assertAlmostEqual(ev_cost / ev_kwh, 0.323092, places=5)
+# TheStaleRatedSplitHeal went with the heal (engine step 4c, 26 Oct 2026): the reconcile settles its
+# candidates with settle(), which rebuilds the legs from the facts in one write, so a stale-rated
+# split cannot survive — test_reconcile_exc_restamp.test_a_stale_rated_split_does_not_survive.
 
 
 class TheCorrectionsRoute(unittest.TestCase):
@@ -298,14 +259,17 @@ class TheSplitTheyRebuildFrom(unittest.IsolatedAsyncioTestCase):
     _seed_stale = RC.TestReconcileRestampsExc._seed_stale
     _run = RC.TestReconcileRestampsExc._run
 
-    async def test_a_revert_keeps_the_segments_ev(self):
+    async def test_a_revert_takes_the_ev_from_the_dispatch(self):
+        """REVERSED by engine step 4c: the revert kept the segments' EV. settle() reads no stored
+        split, and a planned dispatch that never completed never charged — so no EV, on the new
+        rate (test_reconcile_exc_restamp.test_a_planned_only_revert_has_no_ev)."""
         st = BA.BlockStore(":memory:")
         self._seed_stale(st)                                   # 1.0 kWh, off-peak, reverts to peak
         st.set_block_segments(self.SLOT, "electricity_main", [
             (0.6, 0.05493, 0.052314, "off_peak", "ev"), (0.4, 0.05493, 0.052314, "off_peak", "house")])
         await self._run(st)
         segs = st.get_block_segments(self.SLOT, "electricity_main")
-        self.assertAlmostEqual(sum(x["kwh"] for x in segs if x["attribution"] == "ev"), 0.6, places=6)
+        self.assertEqual(sum(x["kwh"] for x in segs if x["attribution"] == "ev"), 0)
         self.assertEqual({round(x["inc_rate"], 6) for x in segs}, {0.323092})
 
     def test_measured_settlement_takes_the_dispatch_not_the_stored_split(self):

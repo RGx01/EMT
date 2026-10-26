@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """139 read-only methods of BlockStore, and nothing else.
+    """136 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -123,13 +123,11 @@ class ReadStore:
     count_meter_rows = _BS.count_meter_rows
     count_mix_history = _BS.count_mix_history
     count_recorder_attributed = _BS.count_recorder_attributed
-    count_stale_band_segments = _BS.count_stale_band_segments
     count_unsettled_blocks = _BS.count_unsettled_blocks
     day_fingerprints = _BS.day_fingerprints
     delete_span_preview = _BS.delete_span_preview
     device_stitch_sensors = _BS.device_stitch_sensors
     dispatch_house_candidates = _BS.dispatch_house_candidates
-    distinct_segment_rates = _BS.distinct_segment_rates
     emt_recording_continuously = _BS.emt_recording_continuously
     find_block_gaps = _BS.find_block_gaps
     first_dispatch_record = _BS.first_dispatch_record
@@ -145,7 +143,6 @@ class ReadStore:
     get_block_measured_inputs = _BS.get_block_measured_inputs
     get_block_rate_authority = _BS.get_block_rate_authority
     get_block_segments = _BS.get_block_segments
-    get_block_split_columns = _BS.get_block_split_columns
     get_block_starts_in_range = _BS.get_block_starts_in_range
     get_block_starts_missing_carbon = _BS.get_block_starts_missing_carbon
     get_block_starts_missing_carbon_in_range = _BS.get_block_starts_missing_carbon_in_range
@@ -232,7 +229,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 98 writers.
+    """The full store: every read method, plus the 96 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or

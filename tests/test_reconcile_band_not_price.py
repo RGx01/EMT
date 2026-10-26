@@ -33,12 +33,22 @@ class _Sched:
     def off_peak_rate_near(self, ts):
         return self.off
 
+    def day_rate_bounds(self, ts):
+        return (self.off, PEAK)
+
     def resolve(self, ts):
         return PEAK
 
 
 class TheBandNotThePrice(unittest.IsolatedAsyncioTestCase):
     SLOT = "2026-09-24T12:00:00"          # 13:00 BST: a daytime smart charge
+
+    def setUp(self):
+        from unittest import mock
+        # engine step 4c: the reconcile settles through settle(), which asks the tariff kind
+        _tk = mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+        _tk.start()
+        self.addCleanup(_tk.stop)
 
     def _store(self, rate):
         st = BlockStore(":memory:")
@@ -72,24 +82,30 @@ class TheBandNotThePrice(unittest.IsolatedAsyncioTestCase):
         return st._conn.execute("SELECT imp_rate FROM blocks WHERE block_start=?",
                                 (self.SLOT,)).fetchone()[0]
 
-    async def test_a_new_off_peak_price_leaves_an_off_peak_slot_alone(self):
+    async def test_the_band_is_the_dispatchs_and_the_price_the_schedules(self):
+        """Engine step 4c: settle() never reads a band from the stored price, so #28 cannot recur;
+        the started smart charge is off-peak and priced at the schedule's off-peak for its date.
+        (The schedule is restated per date since 4.5.17 — `RateSchedule.with_vat` — so a real one
+        reads September's 5% figure; this stub's 0% price stands in for whatever it says.) REWRITTEN:
+        it asserted the stored 5.493p was kept."""
         st = self._store(OFF_STORED)
-        res = await self._run(st, OFF_NOW)
-        self.assertEqual(res.get("restored", 0), 0)
-        self.assertAlmostEqual(self._rate(st), OFF_STORED / 100.0, places=6)
+        await self._run(st, OFF_NOW)
+        self.assertAlmostEqual(self._rate(st), OFF_NOW / 100.0, places=6)
+        self.assertEqual({x["band"] for x in st.get_block_segments(self.SLOT, "electricity_main")},
+                         {"off_peak"})
 
     async def test_a_peak_slot_that_charged_is_still_restored(self):
         """GUARD: a started smart charge priced at peak is a real band disagreement."""
         st = self._store(PEAK)
         res = await self._run(st, OFF_NOW)
-        self.assertEqual(res.get("restored", 0), 1)
+        self.assertEqual(res["settled"], 1)
         self.assertAlmostEqual(self._rate(st), OFF_NOW / 100.0, places=6)
 
     async def test_an_unpriced_slot_is_not_already_off_peak(self):
         """GUARD: rate 0 is nearer off-peak than peak, but it is not priced."""
         st = self._store(None)
         res = await self._run(st, OFF_NOW)
-        self.assertEqual(res.get("restored", 0), 1)
+        self.assertEqual(res["settled"], 1)
         self.assertAlmostEqual(self._rate(st), OFF_NOW / 100.0, places=6)
 
 

@@ -1,13 +1,17 @@
 """
-test_reconcile_exc_restamp.py — BL-23/BL-9 root-cause fix.
+test_reconcile_exc_restamp.py — BL-23/BL-9, BL-58, BL-58b: a reconcile revert's ex-VAT and split.
 
-The settlement reconciliation pass rewrites imp_rate/imp_cost when it reverts or
-restores a slot, but historically LEFT imp_rate_exc/imp_cost_exc at the OLD band's
-value. That stale ex-VAT figure (e.g. an off-peak exc rate on a block reverted to
-peak) then showed a wrong rate in the billing summary's EV/Home split and understated
-Total (exc). The reconcile now re-stamps the exc columns from the new rate — or NULLs
-them (fall back to inc÷VAT) when no exc schedule covers the slot — so exc is never
-left inconsistent with the inc rate it was rewritten to.
+The settlement reconciliation pass rewrote imp_rate/imp_cost on a revert or restore and once LEFT the
+ex-VAT figure and the EV split at the OLD band (BL-23/BL-9: a stale off-peak ex-VAT on a peak block;
+BL-58: the split frozen off-peak on a capped revert; BL-58b: a split left at the old rate by an
+earlier revert). Each was fixed by a re-stamp of its own.
+
+Engine step 4c (26 Oct 2026): the pass settles each candidate with settle(), which writes the main,
+its legs and its devices together from the facts — so none of those can be left behind, and the
+re-stamps went. ex-VAT is each leg's rate through the VAT calendar (design §4 (c)), so with no
+ex-VAT schedule it is the calendar's, not NULL (REVERSED from BL-23). The EV is the completed
+dispatch's: a planned-only slot never charged and has none. A genuine two-rate capped half-hour is
+settle()'s cap legs (tests/test_settle.py, TheRate).
 """
 
 import os
@@ -39,6 +43,9 @@ class _Sched:
     def off_peak_rate_near(self, ts):
         return 5.493
 
+    def day_rate_bounds(self, ts):
+        return (5.493, PEAK_INC)
+
     def resolve(self, ts):
         return PEAK_INC
 
@@ -47,9 +54,16 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
 
     SLOT = "2020-01-01T20:00:00"
 
-    def _seed_stale(self, st):
-        # Block currently off-peak with a STALE off-peak exc, planned-only dispatch
-        # (no started/completed) → reconcile reverts it to peak.
+    def setUp(self):
+        from unittest import mock
+        # engine step 4c: the reconcile settles through settle(), which asks the tariff kind
+        _tk = mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+        _tk.start()
+        self.addCleanup(_tk.stop)
+
+    def _seed_stale(self, st, *, completed_kwh=None, ev_seg=None):
+        # Block currently off-peak with a STALE off-peak exc and a planned dispatch (completed only
+        # if `completed_kwh`, no started) → the prediction reverts it to peak.
         st._conn.execute(
             "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
             "block_minutes, timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, 'UTC')")
@@ -62,14 +76,27 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
         st.upsert_dispatch_slot(self.SLOT, off_peak=True, provider="Myenergi",
                                 source="smart-charge", state="planned")
         st.record_dispatch_history(self.SLOT, "planned", provider="Myenergi")
+        if completed_kwh is not None:
+            st.record_dispatch_history(self.SLOT, "completed", provider="Myenergi",
+                                       energy_kwh=-abs(completed_kwh))
+        if ev_seg is not None:                      # a stale off-peak split, as segments
+            import pricing_segments as ps
+            st.set_block_segments(self.SLOT, "electricity_main", [
+                ps.Segment(ev_seg, 0.05493, 0.052314, "off_peak", "ev"),
+                ps.Segment(round(1.0 - ev_seg, 6), 0.05493, 0.052314, "off_peak", "house")])
         st._conn.commit()
 
-    async def _run(self, st, with_exc=True):
+    async def _run(self, st, with_exc=True, capped=False):
+        from unittest import mock
         engine._store = st
         engine._RECONCILE_SETTLE_HOURS = 0.0
         engine._kraken_rate_schedules = {"import": _Sched(with_exc)}
+        if capped:
+            engine._kraken_rate_schedules.update(ev_device_off_peak=_Sched(with_exc),
+                                                 ev_device_peak=_Sched(with_exc))
         try:
-            return await engine.reconcile_dispatch_overlay()
+            with mock.patch.object(engine, "capped_at", lambda bs: capped):
+                return await engine.reconcile_dispatch_overlay()
         finally:
             engine._store = None
 
@@ -80,213 +107,86 @@ class TestReconcileRestampsExc(unittest.IsolatedAsyncioTestCase):
             "SELECT imp_rate, imp_cost, imp_cost_exc FROM blocks WHERE block_start=?",
             (self.SLOT,)).fetchone()
 
+    def _segs(self, st):
+        import pricing_segments as ps
+        return [ps.Segment(**x) for x in st.get_block_segments(self.SLOT, "electricity_main")]
+
     async def test_revert_restamps_exc_to_new_band(self):
         st = BlockStore(":memory:")
         self._seed_stale(st)
         res = await self._run(st, with_exc=True)
-        self.assertEqual(res["reverted"], 1)
+        self.assertEqual(res["settled"], 1)
         r = self._row(st)
         self.assertAlmostEqual(r["imp_rate"], 0.323092, places=5)          # peak inc
-        # exc re-stamped to the PEAK exc — NOT left at the stale off-peak 0.052314
+        # exc follows the PEAK rate — NOT left at the stale off-peak 0.052314
         self.assertAlmostEqual(r["imp_cost_exc"], 1.0 * 0.323092 / 1.05, places=5)
         self.assertAlmostEqual(r["imp_rate"] * r["imp_cost_exc"] / r["imp_cost"],
                                0.323092 / 1.05, places=5)
 
-    async def test_revert_nulls_exc_when_no_exc_schedule(self):
+    async def test_with_no_exc_schedule_the_calendar_gives_the_exc(self):
+        """REVERSED (design §4 (c)): BL-23 NULLed ex-VAT where no exc schedule covered the slot;
+        settle() takes it through the VAT calendar, one way, whatever the schedule carries."""
         st = BlockStore(":memory:")
         self._seed_stale(st)
-        res = await self._run(st, with_exc=False)
-        self.assertEqual(res["reverted"], 1)
+        await self._run(st, with_exc=False)
         r = self._row(st)
         self.assertAlmostEqual(r["imp_rate"], 0.323092, places=5)
-        # no exc schedule → stale exc NULLed (falls back to inc÷VAT), never left wrong
-        self.assertIsNone(r["imp_cost_exc"])
+        self.assertAlmostEqual(r["imp_cost_exc"], round(0.323092 / 1.05, 6), places=6)
 
-    async def test_revert_puts_ev_split_on_new_rate_via_segments(self):
-        # BL-27: the revert no longer re-stamps the imp_*_ev COLUMNS (retired); it rewrites
-        # the SEGMENTS to the new band. The EV segment carries the reverted peak rate, so
-        # every segment-reading surface follows the block — no phantom off-peak row — and
-        # the segments still reconcile to imp_cost (the bill total, which IS re-stamped).
-        import pricing_segments as ps
+    async def test_a_planned_only_revert_has_no_ev(self):
+        """The revert's legs carry the new rate and sum to the cost. A planned dispatch that never
+        completed never charged, so a stale EV split goes (engine step 4c: settle() reads no stored
+        split)."""
         st = BlockStore(":memory:")
-        self._seed_stale(st)
-        # the stale off-peak EV split, as segments (step 5c: they ARE the split)
-        st.set_block_segments(self.SLOT, "electricity_main", [
-            ps.Segment(0.23, 0.05493, 0.052314, "off_peak", "ev"),
-            ps.Segment(0.77, 0.05493, 0.052314, "off_peak", "house")])
-        res = await self._run(st, with_exc=True)         # uncapped (no ev_device scheds)
-        self.assertEqual(res["reverted"], 1)
-        segs = [ps.Segment(**x) for x in
-                st.get_block_segments(self.SLOT, "electricity_main")]
-        _ev = [x for x in segs if x.attribution == "ev"]
-        self.assertTrue(_ev and abs(_ev[0].inc_rate - 0.323092) < 1e-5)   # EV on the new rate
-        self.assertAlmostEqual(ps.attribution_cost(segs, "ev"),
-                               round(0.23 * 0.323092, 6), places=6)
-        row = st._conn.execute("SELECT imp_cost FROM blocks WHERE block_start=?",
-                               (self.SLOT,)).fetchone()
-        self.assertAlmostEqual(ps.total_cost(segs), row["imp_cost"], places=6)  # bill total
+        self._seed_stale(st, ev_seg=0.23)
+        await self._run(st, with_exc=True)
+        segs = self._segs(st)
+        self.assertEqual([(x.attribution, x.band) for x in segs], [("house", "day")])
+        self.assertAlmostEqual(sum(x.kwh * x.inc_rate for x in segs), self._row(st)["imp_cost"],
+                               places=6)
 
     async def test_revert_restamps_split_on_capped(self):
-        # BL-58: on a CAPPED tariff the single-rate revert used to SKIP the split restamp,
-        # leaving EV frozen off-peak on a reverted-to-peak block (the 23/08 bump — EV stuck
-        # at 0.05493 while the block went peak, so Usage Stats spilled the premium into
-        # Direct). The revert puts the whole block on one rate, so EV+house both follow it;
-        # the band LABELS carry the capped distinction (EV peak / house day).
+        """BL-58: a capped revert left the EV frozen off-peak on a peak block (the 23/08 bump).
+        settle() prices a capped half-hour's legs by the cap: a completed charge under 0.4 kWh with
+        no `started` is a bump, so the EV is peak and the house day, at the peak rate."""
+        st = BlockStore(":memory:")
+        self._seed_stale(st, completed_kwh=0.23, ev_seg=0.23)
+        await self._run(st, with_exc=True, capped=True)
+        segs = self._segs(st)
+        ev = [x for x in segs if x.attribution == "ev"]
+        ho = [x for x in segs if x.attribution == "house"]
+        self.assertTrue(ev and abs(ev[0].inc_rate - 0.323092) < 1e-5 and ev[0].band == "peak")
+        self.assertAlmostEqual(sum(x.kwh for x in ev), 0.23, places=6)
+        self.assertTrue(ho and ho[0].band == "day")
+        self.assertAlmostEqual(sum(x.kwh * x.inc_rate for x in segs), self._row(st)["imp_cost"],
+                               places=6)
+
+    async def test_a_stale_rated_split_does_not_survive(self):
+        """BL-58b: a block already at peak whose split was left at the old off-peak rate. settle()
+        rebuilds the legs from the facts, so they carry the block's band and rate."""
+        st = BlockStore(":memory:")
+        self._seed_stale(st, completed_kwh=0.23, ev_seg=0.23)
+        st._conn.execute("UPDATE blocks SET imp_rate=0.323092, imp_cost=0.323092 "
+                         "WHERE block_start=?", (self.SLOT,))
+        st._conn.commit()
+        await self._run(st, with_exc=True)
+        self.assertEqual({round(x.inc_rate, 6) for x in self._segs(st)}, {0.323092})
+
+    async def test_same_band_rounding_is_not_rewritten(self):
+        """GUARD: segments a rounding unit off the rate, in the same band, are within the write's
+        tolerance — nothing is rewritten (BL-58b's refinement)."""
         import pricing_segments as ps
         st = BlockStore(":memory:")
         self._seed_stale(st)
-        # the stale off-peak EV split, as segments (step 5c: they ARE the split)
+        st._conn.execute("UPDATE blocks SET imp_rate=0.323092, imp_cost=0.323092, "
+                         "imp_cost_exc=? WHERE block_start=?",
+                         (round(0.323092 / 1.05, 6), self.SLOT))
         st.set_block_segments(self.SLOT, "electricity_main", [
-            ps.Segment(0.23, 0.05493, 0.052314, "off_peak", "ev"),
-            ps.Segment(0.77, 0.05493, 0.052314, "off_peak", "house")])
-        engine._store = st
-        engine._RECONCILE_SETTLE_HOURS = 0.0
-        engine._kraken_rate_schedules = {"import": _Sched(True),
-                                         "ev_device_off_peak": _Sched(True),
-                                         "ev_device_peak": _Sched(True)}
-        try:
-            res = await engine.reconcile_dispatch_overlay()
-        finally:
-            engine._store = None
-        self.assertEqual(res["reverted"], 1)
-        r = st._conn.execute(
-            "SELECT imp_rate, imp_cost FROM blocks WHERE block_start=?",
-            (self.SLOT,)).fetchone()
-        # segments restamped: EV peak + house day, both at the new rate (EV was 0.05493),
-        # summing to the bill (step 5c: the EV columns asserted here went; segments are the split)
-        segs = [ps.Segment(**x) for x in
-                st.get_block_segments(self.SLOT, "electricity_main")]
-        _ev = [x for x in segs if x.attribution == "ev"]
-        _ho = [x for x in segs if x.attribution == "house"]
-        self.assertTrue(_ev and abs(_ev[0].inc_rate - 0.323092) < 1e-5)
-        self.assertEqual(_ev[0].band, "peak")
-        self.assertAlmostEqual(ps.attribution_cost(segs, "ev"),
-                               round(0.23 * 0.323092, 6), places=6)
-        self.assertTrue(_ho and _ho[0].band == "day")
-        self.assertAlmostEqual(ps.total_cost(segs), r["imp_cost"], places=6)  # ev+house=bill
-
-
-    async def test_ok_reprices_stale_rated_split_on_capped(self):
-        # BL-58b: the 23/08 signature — a completed bump ALREADY reverted to peak
-        # (rate correct, target=="ok"), but its SEGMENTS were left at the old off-peak
-        # RATE by the pre-BL-58 capped skip. The revert branch won't fire again; the
-        # target=="ok" self-heal must re-price the single-rate split to the block rate.
-        import pricing_segments as ps
-        st = BlockStore(":memory:")
-        st._conn.execute(
-            "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
-            "block_minutes, timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, 'UTC')")
-        # block already PEAK + reconciled; segments (the EV split) stale OFF-PEAK
-        st._conn.execute(
-            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, imp_cost_exc, "
-            "rate_corrected, rate_source, imp_kwh_api) VALUES "
-            "(?,?,?,?,?,?,?,?,?,?,?)",
-            (self.SLOT, self.SLOT, "electricity_main", 1, 3.186, 0.323092,
-             round(3.186*0.323092, 6), round(3.186*0.323092/1.05, 6),
-             0, "reconciled", 3.186))
-        st.set_block_segments(self.SLOT, "electricity_main", [
-            ps.Segment(2.24, 0.05493, 0.052314, "off_peak", "ev"),
-            ps.Segment(0.946, 0.05493, 0.052314, "off_peak", "house")])
-        # dispatched completed bump (no planned/started) → decision "ok" (already peak)
-        st.upsert_dispatch_slot(self.SLOT, off_peak=True, provider="Myenergi",
-                                source="smart-charge-completed", state="completed")
-        st.record_dispatch_history(self.SLOT, "completed", provider="Myenergi")
-        st._conn.commit()
-        engine._store = st
-        engine._RECONCILE_SETTLE_HOURS = 0.0
-        engine._kraken_rate_schedules = {"import": _Sched(True),
-                                         "ev_device_off_peak": _Sched(True),
-                                         "ev_device_peak": _Sched(True)}
-        try:
-            await engine.reconcile_dispatch_overlay()
-        finally:
-            engine._store = None
-        # segments re-priced to peak with capped band labels, summing to the bill
-        segs = [ps.Segment(**x) for x in
-                st.get_block_segments(self.SLOT, "electricity_main")]
-        _ev = [x for x in segs if x.attribution == "ev"]
-        _ho = [x for x in segs if x.attribution == "house"]
-        self.assertTrue(_ev and abs(_ev[0].inc_rate - 0.323092) < 1e-5)
-        self.assertEqual(_ev[0].band, "peak")
-        self.assertTrue(_ho and abs(_ho[0].inc_rate - 0.323092) < 1e-5 and _ho[0].band == "day")
-        row = st._conn.execute(
-            "SELECT imp_cost FROM blocks WHERE block_start=?", (self.SLOT,)).fetchone()
-        self.assertAlmostEqual(ps.total_cost(segs), row["imp_cost"], places=6)   # ev+house=bill
-        self.assertAlmostEqual(ps.attribution_cost(segs, "ev"),                  # EV healed
-                               round(2.24*0.323092, 6), places=6)
-
-    async def test_ok_leaves_genuine_multiband_capped_split(self):
-        # Safety: a REAL multi-band cap block (EV peak + house day, two distinct segment
-        # rates) must NOT be collapsed by the single-rate heal.
-        import pricing_segments as ps
-        st = BlockStore(":memory:")
-        st._conn.execute(
-            "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
-            "block_minutes, timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, 'UTC')")
-        st._conn.execute(
-            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, rate_corrected, rate_source, imp_kwh_api) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (self.SLOT, self.SLOT, "electricity_main", 1, 2.0, 0.30, 0.60, 0, "reconciled", 2.0))
-        st.set_block_segments(self.SLOT, "electricity_main", [
-            ps.Segment(1.0, 0.28, 0.2667, "peak", "ev"),        # distinct rates → multi-band
-            ps.Segment(1.0, 0.32, 0.3048, "day", "house")])
-        st.upsert_dispatch_slot(self.SLOT, off_peak=True, provider="Myenergi",
-                                source="smart-charge-completed", state="completed")
-        st.record_dispatch_history(self.SLOT, "completed", provider="Myenergi")
-        st._conn.commit()
-        engine._store = st
-        engine._RECONCILE_SETTLE_HOURS = 0.0
-        engine._kraken_rate_schedules = {"import": _Sched(True),
-                                         "ev_device_off_peak": _Sched(True),
-                                         "ev_device_peak": _Sched(True)}
-        try:
-            await engine.reconcile_dispatch_overlay()
-        finally:
-            engine._store = None
-        segs = [ps.Segment(**x) for x in
-                st.get_block_segments(self.SLOT, "electricity_main")]
-        rates = sorted(round(x.inc_rate, 5) for x in segs)
-        self.assertEqual(rates, [0.28, 0.32])   # untouched — two distinct rates preserved
-
-
-    async def test_ok_ignores_same_band_rounding(self):
-        # BL-58b refinement: a segment rate that differs from the block rate only by
-        # rounding but is in the SAME band must NOT be re-priced (no noise, no mislabel).
-        import pricing_segments as ps
-        st = BlockStore(":memory:")
-        st._conn.execute(
-            "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
-            "block_minutes, timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, 'UTC')")
-        # block PEAK 0.323092; segments PEAK but 0.32300 (rounding drift, same band)
-        st._conn.execute(
-            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
-            "imp_kwh, imp_rate, imp_cost, rate_corrected, rate_source, imp_kwh_api) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (self.SLOT, self.SLOT, "electricity_main", 1, 2.0, 0.323092,
-             round(2.0*0.323092, 6), 0, "reconciled", 2.0))
-        st.set_block_segments(self.SLOT, "electricity_main", [
-            ps.Segment(1.0, 0.32300, 0.30762, "peak", "ev"),
             ps.Segment(1.0, 0.32300, 0.30762, "day", "house")])
-        st.upsert_dispatch_slot(self.SLOT, off_peak=True, provider="Myenergi",
-                                source="smart-charge-completed", state="completed")
-        st.record_dispatch_history(self.SLOT, "completed", provider="Myenergi")
         st._conn.commit()
-        engine._store = st
-        engine._RECONCILE_SETTLE_HOURS = 0.0
-        engine._kraken_rate_schedules = {"import": _Sched(True),
-                                         "ev_device_off_peak": _Sched(True),
-                                         "ev_device_peak": _Sched(True)}
-        try:
-            await engine.reconcile_dispatch_overlay()
-        finally:
-            engine._store = None
-        segs = [ps.Segment(**x) for x in
-                st.get_block_segments(self.SLOT, "electricity_main")]
-        # untouched: still 0.32300, not rewritten to 0.323092 (same band → no re-price)
-        self.assertTrue(all(abs(x.inc_rate - 0.32300) < 1e-9 for x in segs))
-
+        res = await self._run(st, with_exc=True)
+        self.assertEqual(res["settled"], 0)
+        self.assertTrue(all(abs(x.inc_rate - 0.32300) < 1e-9 for x in self._segs(st)))
 
 if __name__ == "__main__":
     unittest.main()

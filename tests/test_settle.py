@@ -211,7 +211,8 @@ class _Base(unittest.TestCase):
                   mock.patch.object(engine, "split_at", lambda bs: False),
                   mock.patch.object(engine, "capped_at", lambda bs: False),
                   mock.patch.object(engine, "predicted_band",
-                                    lambda bs, kwh, live=True: self.pred.get(round(kwh, 3), "peak"))]
+                                    lambda bs, kwh, live=True, was_online=True:
+                                    self.pred.get(round(kwh, 3), "peak"))]
         for x in self.p:
             x.start()
 
