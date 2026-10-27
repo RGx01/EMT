@@ -9,8 +9,10 @@ rates reach back past the agreement — and the BL-34 band relabel skipped it. `
 asks the half-hour's own agreement (`split_at`'s question); the seam and the mixed rebuild price
 capped only where it says so AND the EV rates are loaded; the relabel skips only where it says so.
 
-Discriminating (fail on the parent): test_a_pre_agreement_half_hour_is_priced_uncapped,
-test_a_pre_agreement_half_hour_is_relabelled, test_a_pre_agreement_mixed_bill_is_not_rebuilt_capped.
+Discriminating (fail on the parent): test_a_pre_agreement_half_hour_is_relabelled,
+test_a_pre_agreement_mixed_bill_is_not_rebuilt_capped. The seam's own tests (TheSeam, with
+test_a_pre_agreement_half_hour_is_priced_uncapped) went with `_apply_iog_split` in engine step 4e;
+settle_facts carries the same rule, `capped_at(bs) and _capped_schedules()` (test_one_ev_rule).
 The rest are guards (test_capped_at_is_split_at fails on the parent only by name: new code).
 """
 import asyncio
@@ -79,41 +81,6 @@ class _Harness(unittest.TestCase):
             "first_seen, last_seen, raw_start, raw_end) VALUES (?,?,?,?,?,?,?,?,?)",
             (S, kind, "test", None, energy, S, S, S, E))
         self.st._conn.commit()
-
-
-class TheSeam(_Harness):
-    """`_apply_iog_split`: a smart charge at 13:00, within the cap. Capped, the house takes the
-    off-peak "freebie" and the EV its device rate (2 x 0.05 + 1 x 0.07 = 0.17); uncapped, the
-    block keeps the overlay's 3 x 0.30 = 0.90."""
-
-    def _apply(self):
-        self._history("completed", 2.0)
-        imp = {"kwh": 3.0, "rate": 0.30, "cost": 0.90}
-        engine._apply_iog_split(imp, S, E, 3.0, 0.30, "UTC")
-        return imp
-
-    def test_a_pre_agreement_half_hour_is_priced_uncapped(self):
-        self._account(BEFORE)
-        imp = self._apply()
-        self.assertAlmostEqual(imp["cost"], 0.90)
-        self.assertAlmostEqual(imp["cost_ev"], 0.60)        # carved at the overlay rate
-
-    def test_a_half_hour_on_the_agreement_is_priced_capped(self):
-        """GUARD: the capped pricing itself."""
-        self._account(AFTER)
-        self.assertAlmostEqual(self._apply()["cost"], 0.17)
-
-    def test_no_agreements_known_falls_back_to_the_current_tariff(self):
-        """GUARD: before discovery has run, as `split_at`."""
-        engine._kraken_discovery = {"import": {"tariff_code": "E-1R-IOG-SMB-FIX-12M-26-03-17-H"}}
-        self.assertAlmostEqual(self._apply()["cost"], 0.17)
-
-    def test_no_ev_rates_no_capped_pricing(self):
-        """GUARD: capped by agreement, but the EV-device rates are not loaded (design §5 (c),
-        PR 2) — the overlay stays, as before."""
-        self._account(AFTER)
-        del engine._kraken_rate_schedules["ev_device_peak"]
-        self.assertAlmostEqual(self._apply()["cost"], 0.90)
 
 
 class TheRelabel(_Harness):

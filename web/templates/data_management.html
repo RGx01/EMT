@@ -747,7 +747,7 @@ function dmShowView(view) {
   document.getElementById('dm-heatmap-card').scrollIntoView({behavior: 'smooth', block: 'start'});
 }
 var _HEALTH_JOB = {'import': 'the import', gap_fill: 'the gap fill', attribution: 'the device rebuild',
-                   verify_pricing: 'the pricing check', reprice_sweep: 'the re-pricing',
+                   verify_pricing: 'the pricing check', settle_sweep: 'the re-pricing',
                    range_refetch: 'the re-fetch', 'delete': 'the delete', restore: 'the restore'};
 function loadHealthSoon() {               // the poll: a hidden tab waits for the next one
   if (document.hidden) { loadHealth._t = setTimeout(loadHealthSoon, 60000); return; }

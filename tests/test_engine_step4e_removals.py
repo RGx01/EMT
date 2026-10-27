@@ -9,7 +9,11 @@ Engine step 4e, first part (27 Oct 2026): the removals settle() made possible.
   follows every block write (4d). What is left is the fallback for a half-hour settle() cannot
   price — kWh × the stored (sensor or schedule) rate, its segments at that rate.
 
-Discriminating: every test here fails on the parent, but those labelled GUARD.
+4e-2 (the same day): the history reprice sweep, and what only it reached — `_reprice_history_block(s)`,
+`_apply_iog_split`, `iog_cap.compute_iog_split`, the dispatch-only house refit — go. The settle sweep
+covers the history, and what settle() declines keeps its price with segments and ex-VAT from it.
+
+Discriminating: every test here fails on its own parent, but those labelled GUARD.
 """
 import ast
 import os
@@ -85,6 +89,97 @@ class TheReRunsFallback(H._Harness):
     def test_GUARD_a_settled_block_keeps_its_bill(self):
         imp = self._rerun("settled", 0.0549, 0.123456)
         self.assertAlmostEqual(imp["cost"], 0.123456)
+
+
+# ── Engine step 4e-2 (27 Oct 2026): the history reprice sweep goes; the settle sweep covers it ──
+
+class _Store:
+    @staticmethod
+    def make():
+        from block_store import BlockStore
+        st = BlockStore(":memory:")
+        st._conn.execute("INSERT INTO config_periods (id, effective_from, billing_day, "
+                         "block_minutes, timezone) VALUES (1,'2020-01-01T00:00:00',1,30,'UTC')")
+        st._conn.commit()
+        return st
+
+    @staticmethod
+    def main(st, bs, *, kwh=2.0, cost=0.6, rate=0.3, source="imported_api", exc=None):
+        st._conn.execute(
+            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
+            "imp_cost, imp_rate, imp_cost_exc, source) VALUES (?,?,'electricity_main',1,?,?,?,?,?)",
+            (bs, bs, kwh, cost, rate, exc, source))
+        st._conn.commit()
+
+
+class TheFallback(unittest.TestCase):
+    """What settle() declines (no rate, no band) keeps its price; the settle sweep gives it the
+    segments and ex-VAT the history reprice sweep used to."""
+
+    BS = "2025-03-01T19:00:00"
+
+    def setUp(self):
+        from unittest import mock
+        self.st = _Store.make()
+        self.p = mock.patch.object(engine, "_settle_write", lambda *a, **k: {
+            "status": "no_band", "parts": [], "written": False})
+        self.p.start()
+
+    def tearDown(self):
+        self.p.stop()
+
+    def _segs(self):
+        return [(g["kwh"], g["inc_rate"], g["attribution"])
+                for g in self.st.get_block_segments(self.BS, "electricity_main")]
+
+    def test_a_declined_half_hour_gets_its_segments_and_ex_vat(self):
+        _Store.main(self.st, self.BS)
+        r = engine.settle_range(self.st, "2025-03-01T00:00:00", "2025-03-02T00:00:00")
+        self.assertEqual((r["written"], r["parts"]), (1, {"fallback": 1}))
+        self.assertEqual(self._segs(), [(2.0, 0.3, "house")])
+        exc = self.st._conn.execute("SELECT imp_cost_exc FROM blocks").fetchone()[0]
+        self.assertAlmostEqual(exc, round(0.6 / (1 + self.st.vat_rate_at(self.BS)), 6))
+
+    def test_GUARD_one_with_segments_is_left(self):
+        _Store.main(self.st, self.BS, exc=0.57)
+        self.st.set_block_segments(self.BS, "electricity_main", [(2.0, 0.3, None, "day", "house")])
+        r = engine.settle_range(self.st, "2025-03-01T00:00:00", "2025-03-02T00:00:00")
+        self.assertEqual(r["written"], 0)
+
+    def test_GUARD_a_gap_stays_unsegmented(self):
+        _Store.main(self.st, self.BS, cost=None)
+        engine.settle_range(self.st, "2025-03-01T00:00:00", "2025-03-02T00:00:00")
+        self.assertEqual(self._segs(), [])
+
+
+class TheSettleSweepInItsPlace(unittest.TestCase):
+
+    def test_the_reprice_sweep_is_gone(self):
+        for name in ("_run_historical_reprice_sweep", "run_reprice_history_sweep_to_done",
+                     "reprice_history_in_progress", "_maybe_reprice_history",
+                     "_reprice_history_block", "_apply_iog_split", "_refit_devices_to_house"):
+            self.assertFalse(hasattr(engine, name), name)
+        import iog_cap
+        self.assertFalse(hasattr(iog_cap, "compute_iog_split"))
+        self.assertNotIn('@app.route("/api/reprice-history-status")', _src("web/server.py"))
+
+    def test_the_settle_sweep_is_the_member(self):
+        import job_coordinator as C
+        self.assertEqual(getattr(engine._run_settle_history_sweep, "_job_name", None),
+                         "settle_sweep")
+        self.assertNotIn("reprice_sweep", C.registry())
+        self.assertIn('@app.route("/api/settle-history-status")', _src("web/server.py"))
+
+    def test_startup_schedules_it(self):
+        self.assertIn("_maybe_settle_history", _calls("_engine_startup_impl"))
+
+    def test_without_a_schedule_it_is_not_in_progress(self):
+        """A rate-sensor account: the sweep never runs, so the daily copy must not wait on it."""
+        from unittest import mock
+        with mock.patch.object(engine, "_store", _Store.make()), \
+             mock.patch.object(engine, "_settle_history_running", False), \
+             mock.patch.object(engine, "_kraken_rate_schedules", {}):
+            self.assertFalse(engine.settle_history_in_progress())
 
 
 if __name__ == "__main__":

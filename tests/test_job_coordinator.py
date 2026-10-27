@@ -35,7 +35,7 @@ class TestDeclaration(unittest.TestCase):
         import engine                              # noqa: F401
         reg = C.registry()
         for m in ("live_tick", "import", "attribution",
-                  "reprice_sweep", "carbon_backfill", "measured_drain"):
+                  "settle_sweep", "carbon_backfill", "measured_drain"):
             self.assertIn(m, reg)
 
     def test_dependencies_match_the_guards_v4_already_checks(self):
@@ -68,7 +68,7 @@ class TestAdmission(unittest.TestCase):
         offering only admit/refuse would force it to fail instead."""
         import engine                              # noqa: F401
         C.claim("import")
-        self.assertEqual(C.admission("reprice_sweep"), (C.DEFER, "import"))
+        self.assertEqual(C.admission("settle_sweep"), (C.DEFER, "import"))
 
     def test_the_live_tick_is_never_blocked(self):
         """Member 23. Its input is a meter register, which moves whether or not
@@ -304,7 +304,7 @@ class TestTheManifestIsMeasuredNotInvented(unittest.TestCase):
             # carbon backfill and measured drain are the other long-running writers
             "carbon_backfill": {"import", "delete", "restore"},
             "measured_drain": {"import", "delete", "restore"},
-            "reprice_sweep": {"import", "delete", "restore"},
+            "settle_sweep": {"import", "delete", "restore"},
             "restore": {"import"},
             "delete": {"import"},
             # a delete writes its tombstone before removing blocks; the GET-side
@@ -357,7 +357,7 @@ class TestRunExclusiveDoesNotComeAcross(unittest.TestCase):
         import ast
         funcs = {n.name: n for n in ast.walk(ast.parse(self.src))
                  if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))}
-        for job in ("run_api_import_job", "_run_historical_reprice_sweep",
+        for job in ("run_api_import_job", "_run_settle_history_sweep",
                     "run_measured_history_drain", "run_attribution_job",
                     "run_gap_fill_job"):
             fn = funcs[job]
@@ -514,7 +514,7 @@ class TestDeleteIsAMember(unittest.TestCase):
         import server                              # noqa: F401
         engine.set_delete_active(True)
         self.assertEqual(C.admission("attribution"), (C.WAIT, "delete"))
-        self.assertEqual(C.admission("reprice_sweep"), (C.DEFER, "delete"))
+        self.assertEqual(C.admission("settle_sweep"), (C.DEFER, "delete"))
         self.assertEqual(C.admission("live_tick"), (C.ADMIT, None))
 
 
@@ -533,7 +533,7 @@ class TestImportIsTheSecondMember(unittest.TestCase):
         import engine                              # noqa: F401
         C.claim("import", force=True)
         self.assertEqual(C.admission("attribution"), (C.WAIT, "import"))
-        self.assertEqual(C.admission("reprice_sweep"), (C.DEFER, "import"))
+        self.assertEqual(C.admission("settle_sweep"), (C.DEFER, "import"))
         self.assertEqual(C.admission("carbon_backfill"), (C.DEFER, "import"))
         self.assertEqual(C.admission("measured_drain"), (C.DEFER, "import"))
 

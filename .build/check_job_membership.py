@@ -53,10 +53,9 @@ DECORATOR = "job"
 ENGINE_JOBS = [
     "engine_loop_task",                     # member 23 — the live tick. Never deferred.
     "run_api_import_job",
-    "_run_historical_reprice_sweep", "_run_historical_carbon_backfill",
+    "_run_settle_history_sweep", "_run_historical_carbon_backfill",
     "run_measured_history_drain", "run_gap_fill_job", "run_iog_split_carve",
     "run_attribution_job",
-    "run_reprice_history_sweep_to_done",
 ]
 # Background WORKERS: threads spawned by a route, writing from neither the engine
 # loop nor a request thread. Missed by the first enumeration, which was built from

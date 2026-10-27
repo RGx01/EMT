@@ -38,7 +38,8 @@ class TestEngineInventory(unittest.TestCase):
         long-running READ job in EMT, so B's scope is not reduced by them — it is
         defined by them."""
         for job in ("run_api_import_job",
-                    "_run_historical_reprice_sweep",
+                    "_run_settle_history_sweep",
+                    # (the history reprice sweep and its run-to-done went in engine step 4e)
                     # The three legacy backfills (_run_historical_{exc,iog_split,segment}
                     # _backfill) were deleted — BL-33, 4 Oct 2026.
                     "_run_historical_carbon_backfill", "run_measured_history_drain",
@@ -47,14 +48,15 @@ class TestEngineInventory(unittest.TestCase):
                     # (run_smb_rate_repair, run_smb_device_recost,
                     # run_band_rate_snap, run_smb_ev_resplit) were removed for
                     # v5 — see tests/test_v4_heals_removed.py.
-                    "run_reprice_history_sweep_to_done"):
+                    ):
             self.assertIn(job, self.write, "%s must be coordinated" % job)
 
     def test_pricing_computation_is_separated_from_persistence(self):
-        """`_apply_iog_split` mutates the channel dict; `_persist_block_segments`
+        """`_sanitise_inc_units` mutates the channel dict; `_persist_block_segments`
         is what touches the database. If the first ever becomes a writer, that
-        separation has been lost."""
-        self.assertNotIn("_apply_iog_split", self.write)
+        separation has been lost. (`_apply_iog_split` was the example until engine
+        step 4e removed it.)"""
+        self.assertNotIn("_sanitise_inc_units", self.write)
         self.assertIn("_persist_block_segments", self.write)
         self.assertIn("_reprice_main_import_block", self.write)
 

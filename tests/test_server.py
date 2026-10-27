@@ -335,8 +335,8 @@ class TestRouteRegistration(unittest.TestCase):
     def test_api_billing_source_get_registered(self):
         self.assertTrue(self._registered("api_billing_source_get"))
 
-    def test_api_reprice_history_status_registered(self):
-        self.assertTrue(self._registered("api_reprice_history_status"))
+    def test_api_settle_history_status_registered(self):
+        self.assertTrue(self._registered("api_settle_history_status"))
 
     def test_api_kraken_config_get_registered(self):
         self.assertTrue(self._registered("api_kraken_config_get"))

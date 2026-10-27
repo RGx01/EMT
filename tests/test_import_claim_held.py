@@ -31,7 +31,7 @@ sys.path.insert(0, _ROOT)
 import engine                                     # noqa: E402
 import job_coordinator as C                       # noqa: E402
 
-DEPENDANTS = ("reprice_sweep", "carbon_backfill", "measured_drain")
+DEPENDANTS = ("settle_sweep", "carbon_backfill", "measured_drain")
 
 
 class _Run(unittest.TestCase):

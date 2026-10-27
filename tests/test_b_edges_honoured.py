@@ -8,7 +8,7 @@ did not get past its admission gate. The blocker's work is not simulated; the
 manifest's edge is what is under test, through the member's own code.
 
     attribution       depends import · exclusive delete                   (WAIT)
-    reprice_sweep     depends import · exclusive delete, restore          (DEFER)
+    settle_sweep      depends import · exclusive delete, restore          (DEFER)
     carbon_backfill   depends import · exclusive delete, restore          (DEFER)
     measured_drain    depends import · exclusive delete, restore          (DEFER)
     prune_tombstones  exclusive delete                                    (DEFER)
@@ -33,7 +33,7 @@ import engine                                     # noqa: E402
 import job_coordinator as C                       # noqa: E402
 
 EDGES = {
-    "reprice_sweep":    ("import", "delete", "restore"),
+    "settle_sweep":     ("import", "delete", "restore"),
     "carbon_backfill":  ("import", "delete", "restore"),
     "measured_drain":   ("import", "delete", "restore"),
     "prune_tombstones": ("delete",),
@@ -113,15 +113,16 @@ class _Gate(unittest.TestCase):
                         " — the test is not observing the gate")
 
 
-class TheRepriceSweep(_Gate):
-    MEMBER = "reprice_sweep"
+class TheSettleSweep(_Gate):
+    """The settle sweep's scheduler (the history reprice sweep's, until engine step 4e)."""
+    MEMBER = "settle_sweep"
 
     def run_entry(self):
-        with mock.patch.object(engine, "_reprice_history_running", False):
-            engine._maybe_reprice_history()
+        with mock.patch.object(engine, "_settle_history_scheduled", False):
+            engine._maybe_settle_history()
 
     def passed_the_gate(self):
-        return ("get_meta", engine._REPRICE_HISTORY_MARKER) in self.st.reached
+        return ("get_meta", engine._SETTLE_HISTORY_MARKER) in self.st.reached
 
     def test_each_edge(self):
         self._check_edges()

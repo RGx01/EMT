@@ -1,6 +1,5 @@
 {
   "live_unguarded": [
-    "run_iog_split_carve",
-    "run_reprice_history_sweep_to_done"
+    "run_iog_split_carve"
   ]
 }

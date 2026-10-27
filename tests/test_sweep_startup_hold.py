@@ -107,17 +107,16 @@ class TheSweepTask(unittest.TestCase):
             return 0
 
         st = mock.MagicMock()
-        st.get_meta.side_effect = lambda key, default=None: (
-            {"done": True} if order.count("pass") else {})
+        st.get_meta.side_effect = lambda key, default=None: {}
 
         async def _go():
             with mock.patch.object(engine, "_store", st), \
                  mock.patch.object(engine, "kraken_available", lambda: True), \
-                 mock.patch.object(engine, "_reprice_history_running", False), \
+                 mock.patch.object(engine, "_settle_history_scheduled", False), \
                  mock.patch.object(engine, "_hold_sweep_after_startup", _hold), \
-                 mock.patch.object(engine, "_run_historical_reprice_sweep", _sweep), \
+                 mock.patch.object(engine, "_settle_history_to_done", _sweep), \
                  mock.patch.object(engine._coord, "admission", lambda name: (engine.ADMIT, None)):
-                engine._maybe_reprice_history()
+                engine._maybe_settle_history()
                 for _ in range(50):
                     await asyncio.sleep(0)
                     if "pass" in order:

@@ -165,8 +165,8 @@ class TestASnapshotMidJobIsRecoverable(unittest.TestCase):
     """Why a backup does not need to EXCLUDE writers, only be consistent.
 
     The online backup gives a transactionally valid snapshot, but a valid snapshot
-    can still catch a long job half-done — the reprice sweep with some blocks
-    swept and some not. That only matters if such a state cannot be recovered
+    can still catch a long job half-done — the settle sweep with some days
+    settled and some not. That only matters if such a state cannot be recovered
     from, so: every live long-running write job is either cursor/marker resumable
     or idempotent by query.
 
@@ -176,7 +176,7 @@ class TestASnapshotMidJobIsRecoverable(unittest.TestCase):
     """
 
     JOBS_WITH_MARKERS = (
-        "_run_historical_carbon_backfill", "_run_historical_reprice_sweep",
+        "_run_historical_carbon_backfill", "_run_settle_history_sweep",
         # The four marker-gated v4 one-offs are gone (v5 carries no v4-era
         # heals — EMT-v5_import_spec §1.1). What remains here are the jobs whose
         # markers make a mid-job backup recoverable.

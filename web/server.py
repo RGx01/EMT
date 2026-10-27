@@ -4735,7 +4735,7 @@ _STATES_YIELD_EVERY = 500
 # says they update when it finishes, and the first request after it counts (22 Oct 2026, the user;
 # staging: a device rebuild after a re-import wrote across 33 months, and the count it set off held
 # the engine loop 14.5 s on the prod box). With no counts yet, they are made anyway.
-_HEALTH_FREEZE_JOBS = ("import", "gap_fill", "attribution", "reprice_sweep",
+_HEALTH_FREEZE_JOBS = ("import", "gap_fill", "attribution", "settle_sweep",
                        "range_refetch", "delete", "restore")
 _health_lock = threading.Lock()
 _health_cache = {"key": None, "views": None, "missing": None, "months": None, "at": 0.0}
@@ -6046,17 +6046,17 @@ def api_historical_csv_template():
         return jsonify({"error": str(e)}), 500
 
 
-_REPRICE_CAUSE_WINDOW_H = 12.0   # an import finishing this recently owns the sweep
+_SETTLE_CAUSE_WINDOW_H = 12.0   # an import finishing this recently owns the sweep
 
 
-def _reprice_sweep_cause(store) -> str:
-    """Why is history being re-priced — 'import' or 'upgrade'?
+def _settle_sweep_cause(store) -> str:
+    """Why is history being settled — 'import' or 'upgrade'?
 
     The sweep has two triggers and the banner used to name only one, so a FRESH INSTALL
     that imported its history was told EMT was "finishing your upgrade" — on a box that
     had never run a previous version, and had just been asked to do exactly this work.
-    The verify pass runs the sweep forced after every import and gap-fill (P3.3d), so a
-    live or recently-finished run is the cause; only in its absence is this an upgrade.
+    An import (or a gap fill) runs the sweep from the start, so a live or recently-finished
+    one is the cause; only in its absence is this an upgrade.
     Read-only and fail-safe: anything unexpected reads as 'upgrade', the old wording."""
     try:
         import engine as _eng
@@ -6069,37 +6069,43 @@ def _reprice_sweep_cause(store) -> str:
         fin = snap.get("finished_at")
         if fin:
             age = _dt.utcnow() - _dt.fromisoformat(str(fin)[:19])
-            if age < _td(hours=_REPRICE_CAUSE_WINDOW_H):
+            if age < _td(hours=_SETTLE_CAUSE_WINDOW_H):
                 return "import"
     except Exception:
         pass
     return "upgrade"
 
 
-@app.route("/api/reprice-history-status")
-def api_reprice_history_status():
-    """Read-only: is the historical re-price sweep still working through a backlog? Drives the
-    re-pricing banner. `in_progress` = not done AND blocks still need re-pricing. `cause` says
-    whether an import or an upgrade armed it, so the banner can stop calling a fresh install's
-    own import an upgrade. Fails safe to not-in-progress so a hiccup never nags."""
+@app.route("/api/settle-history-status")
+def api_settle_history_status():
+    """Read-only: is the settle sweep still walking the history? Drives the re-pricing banner
+    (engine step 4e: it replaced the history reprice sweep and its /api/reprice-history-status).
+    `read` / `written`: half-hours so far; `days_left`: from the sweep's cursor to the newest block.
+    `cause` says whether an import or an upgrade armed it. Fails safe to not-in-progress so a
+    hiccup never nags."""
     try:
         import engine as _eng
+        from datetime import datetime as _dt
         store = store_access.store()
-        m = store.get_meta(_eng._REPRICE_HISTORY_MARKER, {}) or {}
-        remaining = int(store.count_blocks_needing_reprice())
-        done = bool(m.get("done"))
-        _ip = (not done) and remaining > 0
+        m = store.get_meta(_eng._SETTLE_HISTORY_MARKER, {}) or {}
+        _ip = bool(_eng.settle_history_in_progress())
+        days_left = None
+        if _ip:
+            first, last = store.block_span("electricity_main")
+            cur = m.get("cursor") or first
+            if cur and last:
+                days_left = max(0, (_dt.fromisoformat(last[:10]) - _dt.fromisoformat(cur[:10])).days + 1)
         return jsonify({
-            "done": done,
-            "remaining": remaining,
-            "swept": int(m.get("swept") or 0),
-            "stalled": int(m.get("stalled") or 0),
+            "done": bool(m.get("done")),
+            "read": int(m.get("read") or 0),
+            "written": int(m.get("written") or 0),
+            "days_left": days_left,
             "in_progress": _ip,
-            "cause": _reprice_sweep_cause(store) if _ip else None,
+            "cause": _settle_sweep_cause(store) if _ip else None,
         })
     except Exception as e:
-        logger.debug("api_reprice_history_status: %s", e)
-        return jsonify({"in_progress": False, "remaining": 0, "done": True, "cause": None})
+        logger.debug("api_settle_history_status: %s", e)
+        return jsonify({"in_progress": False, "days_left": 0, "done": True, "cause": None})
 
 def _resolve_period(kind, store, cfg, tz, args):
     """Turn a period request into `(utc_start, utc_end, meta)`.

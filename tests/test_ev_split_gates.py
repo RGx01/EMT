@@ -64,14 +64,6 @@ class EvSegments(unittest.TestCase):
         self.assertEqual(_starts(_store(segs=EV_SEGS).get_blocks_off_dispatch_split(10)), [])
 
 
-    def test_the_sweep_guard_refuses_it(self):
-        st = _store(segs=EV_SEGS)
-        self.assertEqual(st.set_blocks_iog_split([(BS, "electricity_main", HOUSE_SEGS, 0)]), 0)
-
-    def test_the_dispatch_only_refit_takes_it(self):
-        st = _store(segs=EV_SEGS, device=True)
-        self.assertEqual(st.dispatch_house_candidates(), [BS])
-
 
 class HouseOnlySegments(unittest.TestCase):
     """An older writer left imp_kwh_ev over these; the segments say no split."""

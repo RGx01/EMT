@@ -66,16 +66,16 @@ class Refusals(_Base):
         C.claim("import")
         def run():
             for _ in range(5):
-                C.admission("reprice_sweep")
+                C.admission("settle_sweep")
         self.assertEqual(self._lines(run), [
-            "coord: defer job=reprice_sweep blocker=import edge=depends_on"])
+            "coord: defer job=settle_sweep blocker=import edge=depends_on"])
 
     def test_clearing_is_logged_so_a_wait_has_an_end(self):
         C.claim("import")
-        C.admission("reprice_sweep")
+        C.admission("settle_sweep")
         C.mark("import", status="done")
-        lines = self._lines(lambda: C.admission("reprice_sweep"))
-        self.assertEqual(lines, ["coord: admit_after job=reprice_sweep was=defer "
+        lines = self._lines(lambda: C.admission("settle_sweep"))
+        self.assertEqual(lines, ["coord: admit_after job=settle_sweep was=defer "
                                  "blocker=import"])
 
     def test_an_exclusion_is_labelled_as_one(self):

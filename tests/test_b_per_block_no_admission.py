@@ -28,7 +28,8 @@ BLOCK_WRITERS = [
     "_write_device_into_block",      # attribution
     "_apply_pass2",                  # every remainder re-derivation
     "apply_measured_to_block",       # measured drain / settlement
-    "_reprice_history_blocks",       # the re-price sweep's per-block body
+    "_settle_write",                 # settle()'s write, per half-hour (the sweeps, every block write)
+    "_settle_fallback",              # what settle() declines, from its own price (engine step 4e)
     "_persist_block_segments",
     "_persist_block_carbon",
     "_attribute_block_carbon",       # carbon recovery / gap fill
@@ -106,7 +107,7 @@ class TheCheckCatchesItsTarget(unittest.TestCase):
         return _Tree(src[:j] + "    " + line + "\n" + src[j:])
 
     def test_an_admission_call_in_a_block_write_is_caught(self):
-        t = self._mutated('_coord.admission("reprice_sweep")')
+        t = self._mutated('_coord.admission("settle_sweep")')
         self.assertIn("_coord.admission", t.coordinator_calls("_apply_pass2"))
         self.assertIn("_apply_pass2", t.walk("_write_device_into_block"))
 

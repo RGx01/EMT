@@ -3713,38 +3713,6 @@ class BlockStore:
                 changed += cur.rowcount
         return changed
 
-    # ── BL-9 IOG house/EV split historical backfill ─────────────────────────
-    # The seam (_apply_iog_split) only runs when a block is finalised or repriced
-    # at settlement, so blocks priced BEFORE the split shipped — the whole existing
-    # dispatch history, plus any block already DCC-settled — never got the EV/Home
-    # columns. These three mirror the ex-VAT backfill trio so a one-shot startup pass
-    # can carve the split onto that history without a re-import.
-
-    def set_blocks_iog_split(self, updates) -> int:
-        """The history sweep's EV/Home split writer: many blocks in ONE transaction (one fsync
-        per chunk, not per block). `updates` = iterable of
-        (block_start, meter_id, segments, needs_segments).
-        ADDITIVE ONLY — fills a split only where the block has none (idempotent; never
-        re-carves) and NEVER touches imp_rate/imp_cost, so the settled inc bill stays
-        byte-identical. Returns the number of splits filled.
-
-        Step 5c (10 Oct 2026): the split IS the segments, so filling it is writing them. A
-        block that already has an EV split keeps its segments unless `needs_segments` says it
-        had none at all (then it gets them, as before)."""
-        changed = 0
-        with self._tx():
-            for bs, mid, segs, needs in updates:
-                row = self._conn.execute(
-                    "SELECT " + _evsplit.sql_kwh("blocks") + " IS NULL AS open FROM blocks "
-                    "WHERE block_start = ? AND meter_id = ?", (bs, mid)).fetchone()
-                if row is None or segs is None:
-                    continue
-                if row["open"]:
-                    changed += 1
-                if row["open"] or needs:
-                    self._replace_segments(bs, mid, segs)
-        return changed
-
     # ── BL-27 priced segments — the block's grid import as priced slices ─────────────
 
     def set_block_segments(self, block_start: str, meter_id: str, segments,
@@ -3821,48 +3789,6 @@ class BlockStore:
             "AND NOT EXISTS (SELECT 1 FROM block_segments s "
             "                WHERE s.block_start = b.block_start AND s.meter_id = b.meter_id "
             "                AND s.channel = 'import')").fetchone()
-        return int(row["n"]) if row else 0
-
-    # ── P3.3c: unified "needs reprice" coverage — a true SUPERSET of the three legacy backfills ──
-    _NEEDS_REPRICE_WHERE = (
-        "b.imp_kwh IS NOT NULL AND b.imp_kwh > 0 "
-        # G1: only PRICED blocks are segmentable. A gap (imp_cost NULL = unknown price) is left
-        # honestly unsegmented — never faked at £0, never stalls the sweep. A genuine free slot
-        # (imp_cost 0, not NULL) is still included. Filling a gap flips imp_cost non-NULL, which
-        # re-admits the block here so the sweep segments it from the real price (the fill-later door).
-        "AND b.imp_cost IS NOT NULL "
-        "AND b.meter_id NOT IN (SELECT meter_id FROM meters WHERE is_sub_meter = 1) "
-        "AND ("
-        "  NOT EXISTS (SELECT 1 FROM block_segments s WHERE s.block_start = b.block_start "
-        "              AND s.meter_id = b.meter_id AND s.channel = 'import') "
-        "  OR (b.imp_cost_exc IS NULL AND (b.source LIKE 'imported%' OR b.imp_kwh_api IS NOT NULL))"
-        ")")
-
-    def get_blocks_needing_reprice(self, limit: int = 2000,
-                                   after_start: str | None = None) -> list:
-        """Page MAIN-meter import blocks that need ANY derived field the sweep owns: missing
-        priced segments, OR (imported/DCC-settled) missing ex-VAT. This is the SUPERSET the
-        unified sweep walks so it fully covers the retired segment/iog_split/exc backfills.
-        Each row carries `needs_segments` (1 = no segments yet) so the driver only (re)writes
-        segments when they are ABSENT — split/exc use fill-null-only writers and are always safe."""
-        sql = ("SELECT b.block_start, b.meter_id, b.imp_kwh, b.imp_cost, b.imp_rate, "
-               "b.source, b.imp_kwh_api, "
-               "(NOT EXISTS (SELECT 1 FROM block_segments s WHERE s.block_start = b.block_start "
-               "             AND s.meter_id = b.meter_id AND s.channel = 'import')) AS needs_segments "
-               "FROM blocks b WHERE " + self._NEEDS_REPRICE_WHERE)
-        params: list = []
-        if after_start is not None:
-            sql += " AND b.block_start > ?"
-            params.append(after_start)
-        sql += " ORDER BY b.block_start LIMIT ?"
-        params.append(int(limit))
-        return [dict(r) for r in self._conn.execute(sql, params).fetchall()]
-
-    def count_blocks_needing_reprice(self) -> int:
-        """Remaining-work signal for the unified sweep (superset: missing segments OR
-        imported/settled missing exc)."""
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM blocks b WHERE " + self._NEEDS_REPRICE_WHERE).fetchone()
         return int(row["n"]) if row else 0
 
     def get_vat_calendar(self) -> list:
@@ -7510,54 +7436,6 @@ class BlockStore:
         )
 
     # ── UTC-based query methods ───────────────────────────────────────────────
-
-    def dispatch_house_candidates(self, starts=None) -> list:
-        """Block starts on a DISPATCH-ONLY account whose devices must fit inside the house: the
-        main carries a dispatch EV (imp_kwh_ev > 0) and there is at least one device. Empty for an
-        account with an EV meter (the meter is the EV) and for one with no dispatches, so for
-        nearly every account this is one query that finds nothing. `starts` narrows it.
-        v4 4.5.21 forward fix (engine._refit_devices_to_house)."""
-        c = self._conn
-        if c.execute("SELECT 1 FROM meters WHERE is_sub_meter = 1 "
-                     "AND meter_type IN ('ev', 'ev_charger') LIMIT 1").fetchone():
-            return []
-        sql = ("SELECT m.block_start FROM blocks m WHERE m.meter_id = 'electricity_main' "
-               "AND " + _evsplit.sql_kwh("m") + " > 0 "      # BL-79 (3): ev_split's split
-               "AND EXISTS (SELECT 1 FROM blocks o "
-               "    WHERE o.block_start = m.block_start AND o.meter_id IN "
-               "          (SELECT meter_id FROM meters WHERE is_sub_meter = 1))")
-        if starts is None:
-            return [r[0] for r in c.execute(sql + " ORDER BY m.block_start")]
-        want = sorted(set(starts))
-        out = []
-        for i in range(0, len(want), 500):
-            chunk = want[i:i + 500]
-            out += [r[0] for r in c.execute(
-                sql + " AND m.block_start IN (%s)" % ",".join("?" * len(chunk)), chunk)]
-        return out
-
-    def write_resplit(self, device_updates) -> None:
-        """Write a re-split back with targeted UPDATEs (never the round-trip): per device its grid
-        share and the £ priced from it at the row's OWN stored rate. v4 4.5.21 forward fix.
-        device_updates: (grid_kwh, grid_kwh, grid_kwh, block_start, meter_id).
-        (The main's stored remainder went with its columns, step 5, 10 Oct 2026: the house is
-        derived where read, max(0, main − Σ grid shares).)"""
-        if not device_updates:
-            return
-        with self._tx():
-            self._conn.executemany(
-                "UPDATE blocks SET imp_kwh_grid = ?, "
-                "  imp_cost = CASE WHEN imp_rate IS NOT NULL "
-                "       THEN ROUND(? * imp_rate, 6) ELSE imp_cost END, "
-                # The ex-VAT £ keeps the row's own exc/inc ratio (imp_cost_exc / imp_cost: the
-                # rate column went in step 5b). SET reads the OLD row, so both are the stored
-                # pair. A row with no £ to take the ratio from keeps its ex-VAT as it is: no
-                # v5 surface reads a device's ex-VAT (import spec §5.2, v15).
-                "  imp_cost_exc = CASE WHEN imp_cost_exc IS NOT NULL AND imp_rate IS NOT NULL "
-                "       AND imp_cost IS NOT NULL AND imp_cost != 0 "
-                "       THEN ROUND(? * imp_rate * imp_cost_exc / imp_cost, 6) "
-                "       ELSE imp_cost_exc END "
-                "WHERE block_start = ? AND meter_id = ?", device_updates)
 
     def get_block_dict_by_start(self, block_start: str) -> Optional[dict]:
         """Return the fully-reconstructed (joined) block dict for a single

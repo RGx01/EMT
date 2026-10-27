@@ -1,6 +1,6 @@
 """
-Migration validation across TARIFF types — proves the reprice sweep segments non-IOG tariffs
-faithfully, with special attention to Agile (per-slot prices, incl. PLUNGE / negative rates).
+Migration validation across TARIFF types — proves the settle sweep (the reprice sweep until
+engine step 4e) segments non-IOG tariffs faithfully, with special attention to Agile (per-slot prices, incl. PLUNGE / negative rates).
 
 Until engine step 4d (27 Oct 2026) the sweep ran in INHERIT mode (`_reprice_history_block`): it read
 each block's STORED imp_rate/imp_cost and never re-resolved from a schedule, so the schedule here
@@ -84,10 +84,22 @@ class _Base(unittest.TestCase):
             "'imported_api', ?)", (start, start, self._cp, kwh, rate, cost, kwh))
 
     def _run_sweep(self):
-        for _ in range(30):
-            asyncio.run(engine._run_historical_reprice_sweep(batch=100))
-            if (self.st.get_meta(engine._REPRICE_HISTORY_MARKER, {}) or {}).get("done"):
-                break
+        # the settle sweep (engine step 4d), which replaced the history reprice sweep in 4e
+        saved = engine._SETTLE_HISTORY_PACE_S
+        engine._SETTLE_HISTORY_PACE_S = 0
+        try:
+            asyncio.run(engine._run_settle_history_sweep(force=True))
+        finally:
+            engine._SETTLE_HISTORY_PACE_S = saved
+
+    def _unsegmented(self):
+        """Priced main half-hours with import but no segments (the reprice sweep's own count
+        until engine step 4e)."""
+        return self.st._conn.execute(
+            "SELECT COUNT(*) FROM blocks b WHERE b.meter_id='electricity_main' AND b.imp_kwh > 0 "
+            "AND b.imp_cost IS NOT NULL AND NOT EXISTS (SELECT 1 FROM block_segments s "
+            "WHERE s.block_start=b.block_start AND s.meter_id=b.meter_id AND s.channel='import')"
+        ).fetchone()[0]
 
     def _segs(self, start):
         return self.st._conn.execute(
@@ -121,9 +133,9 @@ class TestAgileWithPlunge(_Base):
         for s, k, r in self.SLOTS:
             self._blk(s, k, r)
         self.st._conn.commit()
-        self.assertEqual(self.st.count_blocks_needing_reprice(), len(self.SLOTS))
+        self.assertEqual(self._unsegmented(), len(self.SLOTS))
         self._run_sweep()
-        self.assertEqual(self.st.count_blocks_needing_reprice(), 0, "sweep left Agile blocks unpriced")
+        self.assertEqual(self._unsegmented(), 0, "sweep left Agile blocks unpriced")
         for s, k, r in self.SLOTS:
             self._assert_block_faithful(s, k, r)
 
@@ -154,7 +166,7 @@ class TestFlatAndEconomy7(_Base):
             self._blk("2025-02-01T0%d:00:00" % i, 1.0 + i, 0.2700)
         self.st._conn.commit()
         self._run_sweep()
-        self.assertEqual(self.st.count_blocks_needing_reprice(), 0)
+        self.assertEqual(self._unsegmented(), 0)
         for i in range(4):
             self._assert_block_faithful("2025-02-01T0%d:00:00" % i, 1.0 + i, 0.2700)
 
@@ -164,7 +176,7 @@ class TestFlatAndEconomy7(_Base):
         self._blk("2025-02-02T18:00:00", 1.2, day)     # day slot
         self.st._conn.commit()
         self._run_sweep()
-        self.assertEqual(self.st.count_blocks_needing_reprice(), 0)
+        self.assertEqual(self._unsegmented(), 0)
         self._assert_block_faithful("2025-02-02T02:00:00", 3.0, night)
         self._assert_block_faithful("2025-02-02T18:00:00", 1.2, day)
 
@@ -183,7 +195,7 @@ class TestCosy(_Base):
         for s, k, r in self.SLOTS: self._blk(s, k, r)
         self.st._conn.commit()
         self._run_sweep()
-        self.assertEqual(self.st.count_blocks_needing_reprice(), 0)
+        self.assertEqual(self._unsegmented(), 0)
         for s, k, r in self.SLOTS: self._assert_block_faithful(s, k, r)
 
 
@@ -196,7 +208,7 @@ class TestOctopusGo(_Base):
         self._blk("2025-03-02T19:00:00", 1.0, 0.4000)   # day
         self.st._conn.commit()
         self._run_sweep()
-        self.assertEqual(self.st.count_blocks_needing_reprice(), 0)
+        self.assertEqual(self._unsegmented(), 0)
         self._assert_block_faithful("2025-03-02T01:00:00", 6.0, 0.0850)
         self._assert_block_faithful("2025-03-02T19:00:00", 1.0, 0.4000)
 
@@ -211,7 +223,7 @@ class TestTracker(_Base):
             self._blk("2025-04-0%dT12:00:00" % i, 2.0, r)
         self.st._conn.commit()
         self._run_sweep()
-        self.assertEqual(self.st.count_blocks_needing_reprice(), 0)
+        self.assertEqual(self._unsegmented(), 0)
         for i, r in enumerate(self.RATES, start=1):
             self._assert_block_faithful("2025-04-0%dT12:00:00" % i, 2.0, r)
 
@@ -227,7 +239,7 @@ class TestNoAccidentalSplitCrossTariff(_Base):
         for s, k, r in rows: self._blk(s, k, r)
         self.st._conn.commit()
         self._run_sweep()
-        self.assertEqual(self.st.count_blocks_needing_reprice(), 0)
+        self.assertEqual(self._unsegmented(), 0)
         allsegs = self.st._conn.execute(
             "SELECT attribution, COUNT(*) n FROM block_segments WHERE channel='import' "
             "GROUP BY attribution").fetchall()

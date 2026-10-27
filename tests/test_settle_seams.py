@@ -5,7 +5,8 @@ Engine step 4d: the finalise seam, the gap blocks, the imports and the sweep thr
 - every block write (finalise, a gap block, a provisional amendment, a device rebuild) is followed by
   settle() on its main half-hour, written only where it differs — finalise's live `standard` label
   was staging's last band difference;
-- the history reprice sweep settles a main half-hour through settle() before its own derivation;
+- the history reprice sweep settled a main half-hour through settle() before its own derivation (it
+  went in engine step 4e: the settle sweep covers it, with a fallback for what settle() declines);
 - a settle sweep walks the whole history once per version, and again after an import;
 - v5's CSV import writes the IMPORTED bill the v4 importer's transform 3c writes.
 
@@ -163,28 +164,6 @@ class TheSweep(_Base):
             self.assertEqual(asyncio.run(engine._run_settle_history_sweep()), -1)
             asyncio.run(engine._settle_history_to_done())                      # returns at once
         self.assertFalse(self._state().get("done"))
-
-
-class TheRepriceChunk(_Base):
-
-    def test_a_main_half_hour_is_settled_not_derived(self):
-        self._main()
-        with mock.patch.object(engine, "_reprice_history_block",
-                               side_effect=AssertionError("derived")):
-            engine._reprice_history_blocks([{"block_start": BS, "meter_id": "electricity_main"}],
-                                           "UTC", None)
-        self.assertEqual(self._bands(), [("house", "day")])
-
-    def test_GUARD_what_settle_cannot_price_is_derived(self):
-        self._main()
-        seen = []
-        with mock.patch.object(engine, "_kraken_rate_schedules", {}), \
-             mock.patch.object(engine, "_band_rates", lambda bs: (None, None)), \
-             mock.patch.object(engine, "_reprice_history_block",
-                               lambda row, tz, segs: seen.append(row) or {"_start": BS}):
-            engine._reprice_history_blocks([{"block_start": BS, "meter_id": "electricity_main"}],
-                                           "UTC", None)
-        self.assertEqual(len(seen), 1)
 
 
 class TheCsvImportWritesABill(unittest.TestCase):

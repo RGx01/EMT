@@ -94,10 +94,16 @@ class EngineAccessorsFromARequestThread(_EngineOnThisThread):
     def test_db_account(self):
         self.assertEqual(self.on_web(engine.get_db_account), "A-TEST0001")
 
-    def test_reprice_history_in_progress_reads_the_database(self):
-        """No segments on five priced-less blocks → nothing needing reprice; the
-        point is that it answers from the database rather than raising."""
-        self.assertIs(self.on_web(engine.reprice_history_in_progress), False)
+    def test_settle_history_in_progress_reads_the_database(self):
+        """The settle sweep (the history reprice sweep until engine step 4e) has a schedule to
+        price from and has not walked the history; the point is that it answers from the
+        database rather than raising."""
+        from unittest import mock
+
+        class _S:
+            def is_empty(self): return False
+        with mock.patch.object(engine, "_kraken_rate_schedules", {"import": _S()}):
+            self.assertIs(self.on_web(engine.settle_history_in_progress), True)
 
     def test_import_gaps_does_not_write_from_a_request_thread(self):
         import json
