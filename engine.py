@@ -2790,27 +2790,30 @@ def _commit_provisional_as_final(ha: HAClient, full_block: dict,
         return
 
 
+def _carbon_of(meter_block: dict, intensity: float) -> float:
+    """A meter's carbon for one half-hour (gCO2) at a grid intensity (gCO2/kWh) — the one formula
+    (engine step 5b, 27 Oct 2026: finalise, the startup gap fill and the recompute each had a copy).
+
+    Measured inputs only (step 5 design §1.3, decided as v4): a device's carbon is its OWN read
+    × intensity — the gross figure, whatever supplied it; EMT does not measure a device's source,
+    and PASS 2's grid clip is its allocation. The main meter's is (`kwh_total` — the whole grid
+    draw before the devices — − export) × intensity, net of what it exported."""
+    meta = meter_block.get("meta", {}) or {}
+    imp_ch = (meter_block.get("channels") or {}).get("import") or {}
+    exp_ch = (meter_block.get("channels") or {}).get("export") or {}
+    if meta.get("sub_meter", False):
+        return round(float(imp_ch.get("kwh", 0.0) or 0.0) * intensity, 4)
+    imp_kwh = float(imp_ch.get("kwh_total", imp_ch.get("kwh", 0.0)) or 0.0)
+    exp_kwh = float(exp_ch.get("kwh", 0.0) or 0.0)
+    return round((imp_kwh - exp_kwh) * intensity, 4)
+
+
 def _apply_intensity_to_block(block: dict, intensity: float) -> None:
     """Attribute carbon_g + carbon_intensity_g to every meter in *block* using a
-    known grid intensity (gCO2/kWh).
-
-    Shared by the live CI-table attribution (_attribute_block_carbon) and the
-    historical backfill (_run_historical_carbon_backfill), so both produce
-    identical per-meter carbon: sub-meters bill their gross import; the main
-    meter nets export against import."""
+    known grid intensity (gCO2/kWh): the CI-table attribution (_attribute_block_carbon —
+    finalise, the gap blocks, the recovery) and the historical backfill."""
     for meter_name, meter_block in block.get("meters", {}).items():
-        meta   = meter_block.get("meta", {}) or {}
-        imp_ch = (meter_block.get("channels") or {}).get("import")
-        exp_ch = (meter_block.get("channels") or {}).get("export")
-        if meta.get("sub_meter", False):
-            imp_kwh  = float((imp_ch or {}).get("kwh", 0.0) or 0.0)
-            carbon_g = round(imp_kwh * intensity, 4)
-        else:
-            imp_kwh  = float((imp_ch or {}).get("kwh_total",
-                       (imp_ch or {}).get("kwh", 0.0)) or 0.0)
-            exp_kwh  = float((exp_ch or {}).get("kwh", 0.0) or 0.0)
-            carbon_g = round((imp_kwh - exp_kwh) * intensity, 4)
-        meter_block["carbon_g"] = carbon_g
+        meter_block["carbon_g"] = _carbon_of(meter_block, intensity)
         meter_block["carbon_intensity_g"] = intensity
 
 
@@ -2935,7 +2938,7 @@ def _recompute_block_carbon(block: dict) -> None:
     """Recompute carbon_g for every meter in *block* using the intensity
     persisted on the block (carbon_intensity_g), NOT a fresh CI-table lookup.
 
-    Mirrors finalise_block PASS 3b exactly, but sources intensity from the
+    The same formula as finalise_block PASS 3b (_carbon_of), but sources intensity from the
     stored value so a DCC re-run weeks later (after the 4-day CI prune) still
     produces the correct figure. If a meter has no stored intensity, carbon_g
     is left unchanged (we cannot recompute without it, and reverse-deriving
@@ -2945,17 +2948,7 @@ def _recompute_block_carbon(block: dict) -> None:
         intensity = meter_block.get("carbon_intensity_g")
         if intensity is None:
             continue
-        meta   = meter_block.get("meta", {}) or {}
-        imp_ch = (meter_block.get("channels") or {}).get("import")
-        exp_ch = (meter_block.get("channels") or {}).get("export")
-        if meta.get("sub_meter"):
-            imp_kwh  = float((imp_ch or {}).get("kwh", 0.0) or 0.0)
-            meter_block["carbon_g"] = round(imp_kwh * intensity, 4)
-        else:
-            imp_kwh = float((imp_ch or {}).get("kwh_total",
-                       (imp_ch or {}).get("kwh", 0.0)) or 0.0)
-            exp_kwh = float((exp_ch or {}).get("kwh", 0.0) or 0.0)
-            meter_block["carbon_g"] = round((imp_kwh - exp_kwh) * intensity, 4)
+        meter_block["carbon_g"] = _carbon_of(meter_block, intensity)
 
 
 def _resolve_block_rate(channel: dict, block_start: str, channel_name: str,
@@ -4420,40 +4413,15 @@ def finalise_block(ha: HAClient, block_data: dict | None = None, interpolated: b
                 block["totals"]["export_cost"] += channel["cost"]
 
     # ── PASS 3b — carbon footprint ───────────────────────────────────────
-    # Join to nearest carbon_intensity row and compute carbon_g for every meter.
+    # The nearest carbon-intensity slot, within 60 minutes, onto every meter (and the intensity
+    # kept on each, so a later re-run recomputes without the 4-day table). Until engine step 5b
+    # (27 Oct 2026) this was its own copy, with no distance bound: a stalled CI fetch would give a
+    # closing block a far-off slot's intensity.
+    postcode = None
     try:
         postcode = _get_postcode()
         if postcode:
-            ci_row = _store.get_nearest_carbon_intensity(start, postcode)
-            if ci_row:
-                intensity = ci_row["intensity"]
-                for meter_name, meter_block in block["meters"].items():
-                    meta       = meter_block.get("meta", {}) or {}
-                    imp_ch     = meter_block.get("channels", {}).get("import")
-                    exp_ch     = meter_block.get("channels", {}).get("export")
-                    is_sub     = meta.get("sub_meter", False)
-                    if is_sub:
-                        # Sub-meter: gross import consumption only
-                        imp_kwh  = float((imp_ch or {}).get("kwh", 0.0) or 0.0)
-                        carbon_g = round(imp_kwh * intensity, 4)
-                    else:
-                        # Main meter: use kwh_total (full grid draw before sub-meter
-                        # subtraction) minus export. This is the actual carbon produced
-                        # by grid generation on our behalf regardless of how it was
-                        # distributed to sub-meters.
-                        imp_kwh  = float((imp_ch or {}).get("kwh_total",
-                                   (imp_ch or {}).get("kwh", 0.0)) or 0.0)
-                        exp_kwh  = float((exp_ch or {}).get("kwh", 0.0) or 0.0)
-                        carbon_g = round((imp_kwh - exp_kwh) * intensity, 4)
-                    meter_block["carbon_g"] = carbon_g
-                    # 3.0.0: persist the intensity used, so a later PASS 2+3b
-                    # re-run (DCC settlement) can recompute carbon_g without
-                    # re-querying the carbon_intensity table (pruned to 4 days).
-                    meter_block["carbon_intensity_g"] = intensity
-                    logger.debug(
-                        "finalise_block: %s carbon_g=%.2f gCO2 (intensity=%.1f gCO2/kWh)",
-                        meter_name, carbon_g, intensity
-                    )
+            _attribute_block_carbon(block, start, postcode=postcode)
     except Exception as e:
         logger.warning("finalise_block: carbon_g computation failed: %s", e)
 
@@ -12598,8 +12566,8 @@ async def _engine_startup_impl(ha: HAClient):
                         last_rates, config,
                         last_standing_charge=_startup_sc
                     )
-                    # Add CI to gap blocks from the carbon_intensity table
-                    _postcode = _get_postcode()
+                    # (build_gap_blocks has attributed their carbon — within 60 minutes — or left
+                    # it for the recovery sweep; the unbounded copy here went in engine step 5b)
                     for _gb in _startup_gap_blocks:
                         # Skip if an interpolated block already exists for this
                         # window — prevents a double gap-fill when engine_startup
@@ -12615,28 +12583,6 @@ async def _engine_startup_impl(ha: HAClient):
                                     "(interpolated) — skipping", _gb_start
                                 )
                                 continue
-                        try:
-                            if _postcode:
-                                _ci = _store.get_nearest_carbon_intensity(
-                                    _gb["start"], _postcode
-                                )
-                                if _ci:
-                                    _intensity = _ci["intensity"]
-                                    for _mn, _mb in (_gb.get("meters") or {}).items():
-                                        _imp_ch = (_mb.get("channels") or {}).get("import")
-                                        _exp_ch = (_mb.get("channels") or {}).get("export")
-                                        _is_sub = (_mb.get("meta") or {}).get("sub_meter", False)
-                                        if _is_sub:
-                                            _imp_kwh = float((_imp_ch or {}).get("kwh", 0.0) or 0.0)
-                                            _mb["carbon_g"] = round(_imp_kwh * _intensity, 4)
-                                        else:
-                                            _imp_kwh = float((_imp_ch or {}).get("kwh_total",
-                                                       (_imp_ch or {}).get("kwh", 0.0)) or 0.0)
-                                            _exp_kwh = float((_exp_ch or {}).get("kwh", 0.0) or 0.0)
-                                            _mb["carbon_g"] = round((_imp_kwh - _exp_kwh) * _intensity, 4)
-                                        _mb["carbon_intensity_g"] = _intensity
-                        except Exception:
-                            pass
                         append_block_replace(_gb)
                     logger.info("engine_startup: %d gap blocks filled at startup", len(_startup_gap_blocks))
                     # No gap marker needed — gap already filled
