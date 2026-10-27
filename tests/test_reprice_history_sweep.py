@@ -28,6 +28,25 @@ class _Sched:
     def flat_rate(self): return self._inc
     def is_empty(self): return False
 
+# Engine step 4d (27 Oct 2026): the sweep settles a main half-hour through settle() first, and this
+# derivation is what it falls back to where settle() cannot price (no tariff schedule, no band). These
+# tests are of that derivation, so settle() prices nothing here; settle()'s own path through the sweep
+# is tests/test_settle_seams.py and tests/test_sweep_commits.py.
+_NO_SETTLE = None
+
+
+def setUpModule():
+    global _NO_SETTLE
+    from unittest import mock
+    _NO_SETTLE = mock.patch.object(engine, "settle_half_hour",
+                                   lambda store, bs: {"status": "no_rate", "parts": [], "written": False})
+    _NO_SETTLE.start()
+
+
+def tearDownModule():
+    _NO_SETTLE.stop()
+
+
 # full-history rate segments: one open-ended agreement covering everything
 _RATE_SEGS = [("2000-01-01T00:00:00", None, _Sched(0.30, round(0.30 / 1.05, 8)))]
 _EXC = round(0.30 / 1.05, 6)   # what _exc_rate_for_block yields for a 0.30 inc block

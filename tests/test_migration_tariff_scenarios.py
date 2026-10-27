@@ -2,10 +2,12 @@
 Migration validation across TARIFF types — proves the reprice sweep segments non-IOG tariffs
 faithfully, with special attention to Agile (per-slot prices, incl. PLUNGE / negative rates).
 
-The sweep runs in INHERIT mode (`_reprice_history_block`): it reads each block's STORED
-imp_rate/imp_cost and never re-resolves from a schedule, so per-slot Agile prices survive and
-`segments_from_legacy` derives each segment rate from cost÷kWh (sign-agnostic). These tests
-assert that end to end: every block segmented, one house segment per non-IOG block, the two
+Until engine step 4d (27 Oct 2026) the sweep ran in INHERIT mode (`_reprice_history_block`): it read
+each block's STORED imp_rate/imp_cost and never re-resolved from a schedule, so the schedule here
+was a flat placeholder. Since 4d a main half-hour is settle()'s, and on a published tariff that is
+the clock — the schedule's rate for the slot — so the schedule here answers each slot's own rate,
+in pence as kraken_rates.RateSchedule does, and the per-slot Agile prices (plunges included) must
+come through it unchanged. These tests assert that end to end: every block segmented, one house segment per non-IOG block, the two
 core invariants (Σ kwh == grid, Σ kwh×inc_rate == imp_cost), exc = inc×ratio incl. negatives,
 and that the §4a unit guard has enough headroom to never mistake a legit Agile price for pence.
 """
@@ -31,6 +33,13 @@ class _Sched:
     def flat_rate(self): return self._inc
     def is_empty(self): return False
 
+class _SlotSched:
+    """The live import schedule: each slot's own inc rate, in pence/kWh."""
+    def __init__(self, rates): self.rates = rates
+    def resolve(self, ts): return None if ts not in self.rates else round(self.rates[ts] * 100, 6)
+    def flat_rate(self): return None
+    def is_empty(self): return False
+
 # full-history rate segs — constant VAT ratio (Agile/flat/E7 all just VAT on inc)
 _RATE_SEGS = [("2000-01-01T00:00:00", None, _Sched(0.30))]
 
@@ -53,7 +62,8 @@ class _Base(unittest.TestCase):
         self._s = engine._kraken_rate_schedules
         self._st_saved = engine._store
         self._bcs = engine._build_channel_rate_segs
-        engine._kraken_rate_schedules = {"import": _Sched(0.30)}
+        self.rates = {}
+        engine._kraken_rate_schedules = {"import": _SlotSched(self.rates)}
         async def _fake(ch): return _RATE_SEGS
         engine._build_channel_rate_segs = _fake
         self.st, self._cp = _mk_store()
@@ -67,6 +77,7 @@ class _Base(unittest.TestCase):
 
     def _blk(self, start, kwh, rate):
         cost = round(kwh * rate, 6)
+        self.rates[start] = rate
         self.st._conn.execute(
             "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
             "imp_rate, imp_cost, source, imp_kwh_api) VALUES (?,?, 'electricity_main', ?, ?, ?, ?, "

@@ -106,6 +106,11 @@ class TestFollowMainDeviceOverlay(unittest.TestCase):
             ("2026-06-07T04:30:00", "2026-06-07T22:30:00", 32.3092)])}
         engine._store.upsert_dispatch_slot(
             SLOT, off_peak=True, provider="MYENERGI_V2", source="smart-charge")
+        # an Intelligent tariff, as a dispatch implies: settle() prices a published one by the clock
+        # (engine step 4d settles every finalised half-hour; the overlay never asked the tariff)
+        self._disc = patch.object(engine, "_kraken_discovery",
+                                  {"import": {"tariff_code": "E-1R-INTELLI-VAR-22-10-14-C"}})
+        self._disc.start()
 
     def tearDown(self):
         self._lj.stop()
@@ -113,6 +118,7 @@ class TestFollowMainDeviceOverlay(unittest.TestCase):
         engine._kraken_rate_schedules = self._orig_sched
         shutil.rmtree(self._cfg_dir, ignore_errors=True)
         engine.CONFIG_PATH = self._orig_cfg_path
+        self._disc.stop()
 
     def _finalise(self, start, end, main, batt, ev):
         """Finalise one block with given import deltas (kWh) per meter."""
@@ -222,7 +228,13 @@ class TestFollowMainDeviceOverlay(unittest.TestCase):
             msg="EV is above the floor -> off-peak regardless of order")
 
 
-    def test_settled_kwh_holds_band_and_device_follows_held_rate(self):
+    def test_REVERSED_settled_kwh_crosses_the_floor_and_device_follows(self):
+        # REVERSED by engine step 4b's decision (d) — a predicted band moves once, when the DCC kWh
+        # crosses the prediction's 0.1 kWh floor — seen once this harness names an Intelligent
+        # tariff (4d; before, settle() priced a 'published' one by the clock and the "hold" held by
+        # accident). The device contract stands: the EV pays the rate of the legs its kWh sits in.
+        # The 4.5.15 text follows, for the history.
+        #
         # The device-follows-main COST contract, re-anchored on #475.
         #
         # Original form asserted that a DCC kWh settlement raising the main above the
@@ -239,17 +251,15 @@ class TestFollowMainDeviceOverlay(unittest.TestCase):
         # sub-floor at finalise -> main (and its follower EV) on peak, correctly
         self.assertAlmostEqual(self._rate(SLOT, "electricity_main"), PEAK, places=5)
         self._settle(SLOT, dcc_main_kwh=3.0)
+        self.assertAlmostEqual(self._rate(SLOT, "electricity_main"), OFF_PEAK, places=5,
+                               msg="3.0 kWh in a smart-charge slot crosses the floor: off-peak")
         self.assertAlmostEqual(
-            self._rate(SLOT, "electricity_main"), PEAK, places=5,
-            msg="#475: a settled kWh re-costs but must not re-band — the supplier "
-                "has not priced this slot yet")
+            self._cost(SLOT, "electricity_main"), round(3.0 * OFF_PEAK, 6), places=5,
+            msg="main cost from the settled kWh at settle()'s band")
+        # THE DEVICE CONTRACT: the EV's grid import is costed at the rate of the main's legs
+        # it sits in — not at a stale or independently-resolved rate.
         self.assertAlmostEqual(
-            self._cost(SLOT, "electricity_main"), round(3.0 * PEAK, 6), places=5,
-            msg="main cost re-derived from the settled kWh at the held band rate")
-        # THE DEVICE CONTRACT: the EV's grid import is costed at the main's effective
-        # rate, whatever that is — not at a stale or independently-resolved rate.
-        self.assertAlmostEqual(
-            self._cost(SLOT, "ev_charger"), round(0.05 * PEAK, 6), places=5,
+            self._cost(SLOT, "ev_charger"), round(0.05 * OFF_PEAK, 6), places=5,
             msg="device grid import must follow the main's effective rate "
                 "(regression: PASS 2 read a stale rate instead of the main's)")
 

@@ -72,15 +72,17 @@ def inc_rate(tariff, utc):
 
 class _Exc:
     def __init__(self, tariff): self.t = tariff
-    def resolve(self, ts): return exc_rate(self.t, _naive(ts))
-    def flat_rate(self): return exc_rate(self.t, _naive(FROM))
+    def resolve(self, ts): return round(exc_rate(self.t, _naive(ts)) * 100, 6)
+    def flat_rate(self): return round(exc_rate(self.t, _naive(FROM)) * 100, 6)
 
 
 class Schedule:
-    """The rate-schedule interface the sweep reads: inc via resolve(), exc via .exc."""
+    """The rate-schedule interface the sweep reads: inc via resolve(), exc via .exc — in pence/kWh,
+    as kraken_rates.RateSchedule answers. It was £ until engine step 4d (27 Oct 2026): the old sweep
+    read only the exc/inc ratio, which is the same in either unit; settle() prices from the rate."""
     def __init__(self, tariff): self.t = tariff; self.exc = _Exc(tariff)
-    def resolve(self, ts): return inc_rate(self.t, _naive(ts))
-    def flat_rate(self): return inc_rate(self.t, _naive(FROM))
+    def resolve(self, ts): return round(inc_rate(self.t, _naive(ts)) * 100, 6)
+    def flat_rate(self): return round(inc_rate(self.t, _naive(FROM)) * 100, 6)
     def is_empty(self): return False
 
 

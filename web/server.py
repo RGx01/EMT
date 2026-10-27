@@ -5353,6 +5353,23 @@ def _rebuild_devices_after_csv(result) -> None:
         logger.warning("csv apply: device rebuild not started: %s", e)
 
 
+def _settle_after_csv(result) -> None:
+    """A CSV import wrote blocks: what follows an API import or a gap fill follows it too — the
+    history sweeps (settle() over every half-hour, engine step 4d), the cached bills, the ask.
+    Started on the engine loop, not waited for. Never raises."""
+    if not ((result or {}).get("blocks_written") or (result or {}).get("blocks_replaced")):
+        return
+    try:
+        import engine as _eng
+
+        async def _start():
+            import asyncio as _asyncio
+            _asyncio.create_task(_eng._after_import_settle())
+        _run_on_engine_loop(_start(), timeout=10.0)
+    except Exception as e:
+        logger.warning("csv apply: the settle after it was not started: %s", e)
+
+
 def _device_sensor_list(meter_id: str):
     """A device's sensors in Device History's stitch order: its primary, then its history
     sensors (device sensors design §2). [] when it has none."""
@@ -5951,12 +5968,19 @@ def api_historical_csv_apply():
         # a pre-import backup before it gets here, so it is a long request either
         # way; the hop only stops the write going through the connection four
         # waitress threads share.
+        # the MPAN the import's IMPORTED bills are cached under (engine step 4d): the account's
+        try:
+            import engine as _eng
+            bill_mpan = (((_eng._kraken_discovery or {}).get("import") or {}).get("mpan")) or ""
+        except Exception:
+            bill_mpan = ""
         result = _engine_write(
             lambda st: st.apply_csv_import(
                 texts, meter_id=meter_id, overrides=overrides,
-                replace_ranges=replace_ranges),
+                replace_ranges=replace_ranges, bill_mpan=bill_mpan),
             timeout=1800.0)
         _rebuild_devices_after_csv(result)
+        _settle_after_csv(result)
         if result.get("blocks_replaced"):
             logger.info("csv apply: replaced %d block(s) inside %d uncostable tariff "
                         "period(s); %d protected (live or user-corrected)",

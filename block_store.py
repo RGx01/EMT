@@ -107,6 +107,7 @@ IMPORTED_SOURCE_CSV     = "imported_csv"        # from a supplied CSV (rate-from
 IMPORTED_SOURCE_BLENDED = "imported_blended"    # go-live period straddling live capture
 IMPORTED_SOURCES        = (IMPORTED_SOURCE_API, IMPORTED_SOURCE_CSV, IMPORTED_SOURCE_BLENDED)
 IMPORTED_SOURCE_PREFIX  = "imported"            # blocks.source LIKE 'imported%'
+IMPORTED_BILL_LABEL     = "IMPORTED"            # an import's own cost as a bill (engine step 4a-2/4d)
 
 _DDL = """
 -- Schema version tracking
@@ -3950,7 +3951,7 @@ class BlockStore:
     def apply_csv_import(
         self, channel_csvs: dict, meter_id: str = "electricity_main", *,
         periods_by_channel: dict | None = None, overrides: dict | None = None,
-        replace_ranges: list | None = None,
+        replace_ranges: list | None = None, bill_mpan: str = "",
     ) -> dict:
         """Parse Octopus per-channel CSV(s), derive rates (rate-from-cost), and
         write reconstructed `imported_csv` blocks + one `rate` derivation per
@@ -3970,12 +3971,18 @@ class BlockStore:
         and inside them live/settled readings and user corrections are still protected
         (see imported_block_replaceable).
 
+        Each import half-hour written with a cost gets a bill from it — label `IMPORTED`, its cost
+        and ex-VAT, its kWh, under `bill_mpan` — where it has none (engine step 4d, design §6 (e):
+        what the import heard is a bill, as the v4 importer's transform 3c writes). settle() bands
+        it by its cost ÷ kWh; a bill Octopus gives later replaces it as the latest.
+
         Import is written before export so both settle onto the shared row.
         Returns a per-channel summary with blocks written, period rate derivations,
         and the re-price-vs-CSV-cost reconciliation."""
         import csv_import as _ci
         periods_by_channel = periods_by_channel or {}
         overrides = overrides or {}
+        bills: list = []                # the import's IMPORTED bills (engine step 4d)
         out: dict = {"ok": True, "meter_id": meter_id, "channels": {},
                      "blocks_written": 0, "blocks_skipped": 0,
                      "blocks_replaced": 0, "blocks_protected": 0,
@@ -4070,6 +4077,10 @@ class BlockStore:
                     standing=day_standing.get(b["block_start"][:10]),
                     derivation_id=did, overwrite=_may_replace,
                     cost_exc=b.get("cost_exc"))
+                if wrote and channel == "import" and b.get("cost") is not None \
+                        and float(b.get("kwh") or 0.0) > 0.0:
+                    bills.append((b["block_start"], bill_mpan or "", b["cost"], b.get("cost_exc"),
+                                  b["kwh"], b["block_start"]))
                 if wrote:
                     if _may_replace:
                         replaced += 1
@@ -4093,6 +4104,20 @@ class BlockStore:
             out["blocks_skipped"] += skipped
             out["blocks_replaced"] += replaced
             out["blocks_protected"] += protected
+        if bills:
+            # transform 3c's rule: only where the half-hour has no bill (an IMPORTED one written by an
+            # earlier import of the same CSV, or Octopus's own, is kept)
+            now = _utc_now_iso()
+            cur = self._conn.executemany(
+                "INSERT INTO measured_cost (slot_start, mpan, direction, cost_incl, cost_excl, "
+                "label, kwh, fetched_at) SELECT ?, ?, 'CONSUMPTION', ?, ?, ?, ?, ? "
+                "WHERE NOT EXISTS (SELECT 1 FROM measured_cost m "
+                "WHERE m.slot_start = ? AND m.direction = 'CONSUMPTION')",
+                [(bs, mp, c, cx, IMPORTED_BILL_LABEL, k, now, bs2) for bs, mp, c, cx, k, bs2 in bills])
+            self._commit()
+            out["bills_written"] = max(cur.rowcount, 0)
+        else:
+            out["bills_written"] = 0
         if out["blocks_written"]:
             # Freshly-imported history carries NULL carbon_intensity. The historical
             # carbon backfill sets a "done" marker once it has swept the then-known

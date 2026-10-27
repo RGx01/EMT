@@ -234,7 +234,10 @@ class TestASnapshotMidJobIsRecoverable(unittest.TestCase):
         job = self._body("run_iog_split_carve")
         self.assertIn("get_blocks_off_dispatch_split", job)
         self.assertIn("settle_half_hour", job)
-        self.assertIn("if not parts:", self._body("settle_half_hour"),
+        # the settle-and-write is settle_half_hour's `_settle_write` since engine step 4d (the
+        # settle sweep shares it)
+        self.assertIn("_settle_write(", self._body("settle_half_hour"))
+        self.assertIn("if not parts:", self._body("_settle_write"),
                       "the write is no longer gated on a difference")
 
 

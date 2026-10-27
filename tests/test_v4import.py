@@ -831,6 +831,11 @@ class TheImportedBills(_Dir):
         val = next(n.value.value for n in tree.body if isinstance(n, ast.Assign)
                    and any(getattr(t, "id", None) == "IMPORTED_LABEL" for t in n.targets))
         self.assertEqual(val, v4import.transforms.IMPORTED_LABEL)
+        # and v5's own CSV import's (engine step 4d)
+        tree = ast.parse(open(os.path.join(_ROOT, "block_store.py"), encoding="utf-8").read())
+        val = next(n.value.value for n in tree.body if isinstance(n, ast.Assign)
+                   and any(getattr(t, "id", None) == "IMPORTED_BILL_LABEL" for t in n.targets))
+        self.assertEqual(val, v4import.transforms.IMPORTED_LABEL)
 
     def _broken(self, sql, says):
         real = v4import.transforms.run
