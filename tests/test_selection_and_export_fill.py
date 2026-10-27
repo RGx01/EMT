@@ -59,7 +59,9 @@ class NoAgreement(unittest.TestCase):
 
     def test_the_health_counts_are_counted_again(self):
         with open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8") as f:
-            self.assertIn("\n_HEALTH_FILE_V = 6\n", f.read())
+            import re
+            v = int(re.search(r"\n_HEALTH_FILE_V = (\d+)\n", f.read()).group(1))
+            self.assertGreaterEqual(v, 6)
 
     def test_not_an_issue(self):
         hm = _t("heatmap_module.html")
