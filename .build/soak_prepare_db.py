@@ -10,16 +10,17 @@ WHAT IT DOES, to a copy (the source is opened read-only and never modified):
      captured consistently.
   2. Snapshots every IMPORT `block_segments` row on non-sub-meter blocks to
      OUT_DIR/segments_before.db.
-  3. Deletes those rows from the copy and clears the `reprice_history_state` marker.
+  3. Deletes those rows from the copy and clears the `settle_history_state` marker.
 
-On the next start the engine's unified historical re-price sweep finds every priced
-block missing its segments and rebuilds them, through the writer, across all history.
+On the next start the engine's settle sweep (engine step 4d; it replaced the history
+re-price sweep in 4e) walks the whole history, finds every priced half-hour's segments
+differ from settle()'s — they are gone — and writes them, through the writer, day by day.
 
 WHY THIS AND NOT A ROUTE. Every route that re-prices history re-fetches from Octopus
 (`/api/historical/reprice-repair` re-queries Measurements window by window). This
 sweep does not: it fetches one rate schedule per tariff agreement per channel, then
 re-prices from the database. It is also ONE-SHOT by construction: it marks itself
-done when nothing is left, so it cannot repeat within a soak.
+done when it reaches the newest block, so it cannot repeat within a soak.
 
 After the soak, `soak.py --compare-segments` diffs the rebuilt segments against
 segments_before.db. A difference is a finding to read, not automatically a failure:
@@ -32,11 +33,11 @@ import os
 import sqlite3
 import sys
 
-MARKER = "reprice_history_state"      # engine._REPRICE_HISTORY_MARKER
+MARKER = "settle_history_state"       # engine._SETTLE_HISTORY_MARKER
 
-# The sweep's own predicate for "this block needs segments" (block_store
-# _NEEDS_REPRICE_WHERE, segments half). Only these rows are removed, so exactly the
-# blocks the sweep will pick up lose their segments — no more, no fewer.
+# Priced main-meter half-hours: settle() writes their segments (or, where it declines one,
+# the fallback does from its own price — engine._settle_fallback). Only these rows are
+# removed, so the sweep rebuilds exactly what lost its segments — no more, no fewer.
 _MAIN_PRICED = ("b.imp_kwh IS NOT NULL AND b.imp_kwh > 0 AND b.imp_cost IS NOT NULL "
                 "AND b.meter_id NOT IN (SELECT meter_id FROM meters WHERE is_sub_meter = 1)")
 _SEG_WHERE = ("s.channel = 'import' AND EXISTS (SELECT 1 FROM blocks b WHERE "

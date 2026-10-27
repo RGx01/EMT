@@ -43,19 +43,19 @@ class TheDailyCopy(unittest.TestCase):
         self.started = []
         self._saved = (engine._backup_to_share, engine._iog_site_tz, engine.SHARE_BACKUP_DIR,
                        engine._share_backup_tried_day, engine._backup_in_progress,
-                       engine._reprice_history_running, engine._delete_active)
+                       engine._settle_history_running, engine._delete_active)
         engine._backup_to_share = lambda: self.started.append(1)
         engine._iog_site_tz = lambda store=None: "Europe/London"
         engine.SHARE_BACKUP_DIR = self.dir
         engine._share_backup_tried_day = None
         engine._backup_in_progress = False
-        engine._reprice_history_running = False
+        engine._settle_history_running = False
         engine._delete_active = False
 
     def tearDown(self):
         (engine._backup_to_share, engine._iog_site_tz, engine.SHARE_BACKUP_DIR,
          engine._share_backup_tried_day, engine._backup_in_progress,
-         engine._reprice_history_running, engine._delete_active) = self._saved
+         engine._settle_history_running, engine._delete_active) = self._saved
         C.reset_for_tests()
 
     def _due(self, when):
@@ -82,7 +82,7 @@ class TheDailyCopy(unittest.TestCase):
         self.assertEqual(self.started, [])
 
     def test_it_waits_for_heavy_jobs(self):
-        with mock.patch.object(engine, "reprice_history_in_progress", lambda: True):
+        with mock.patch.object(engine, "settle_history_in_progress", lambda: True):
             self.assertFalse(self._due(BST_0316), "the sweep")
         engine._delete_active = True
         self.assertFalse(self._due(BST_0316), "a delete")

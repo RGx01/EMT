@@ -12,9 +12,10 @@ only, so it needs nothing installed.
 
 WHAT `run` DOES
   Drives every database-backed GET route at a capped rate while the engine writes,
-  and records every status code and latency. The heavy write is the historical
-  re-price sweep, which .build/soak_prepare_db.py arranges to rebuild segments for
-  all history on startup. Phases follow /api/reprice-history-status:
+  and records every status code and latency. The heavy write is the settle sweep
+  (engine step 4d; the historical re-price sweep until 4e), which
+  .build/soak_prepare_db.py arranges to rebuild segments for all history on startup.
+  Phases follow /api/settle-history-status:
 
       sweep   the sweep is in progress — reads racing a whole-history write
       settle  the sweep has finished; NO requests until the WAL is back under
@@ -93,9 +94,9 @@ DENY = {
     "/api/historical/site-plan": "discovers sites from Home Assistant history",
     "/api/carbon": "calls carbonintensity.org.uk on every request, uncached",
     "/api/update-check": "calls GitHub",
-    "/api/reprice-history-status": "polled by the phase tracker instead",
+    "/api/settle-history-status": "polled by the phase tracker instead",
 }
-STATUS = "/api/reprice-history-status"
+STATUS = "/api/settle-history-status"
 STORAGE = "/api/storage-info"            # wal_mb: a file-size read, cheap
 WAL_STARVED_MB = 64.0                    # a quiet-phase WAL above this is reported as starved
 POLL_S = 15.0            # sweep-status poll interval
@@ -329,7 +330,7 @@ def cmd_run(a):
     # Every poll is printed (5 Oct 2026). This loop used to swallow a failed poll and
     # keep the last answer: soak 14 started before its restore, the sweep then ran for
     # nine minutes, and the loop never saw in_progress — with nothing to say whether its
-    # polls failed or the route answered its fail-safe (no 'swept' key).
+    # polls failed or the route answered its fail-safe (no 'read' key).
     while not st.get("in_progress") and time.monotonic() < deadline:
         time.sleep(POLL_S)
         stamp = time.strftime("%H:%M:%S")
@@ -339,7 +340,7 @@ def cmd_run(a):
             print("%s  waiting for the sweep — poll failed: %r" % (stamp, e), flush=True)
             continue
         st = got
-        note = "" if "swept" in got else "  (fail-safe answer: the status route raised)"
+        note = "" if "read" in got else "  (fail-safe answer: the status route raised)"
         print("%s  waiting for the sweep — %s%s" % (stamp, got, note), flush=True)
     if st.get("in_progress"):
         print("sweep in progress:", st)
@@ -371,9 +372,9 @@ def cmd_run(a):
             with lock:
                 if state["phase"] == "sweep" and not s.get("in_progress"):
                     state["phase"], state["settle_since"] = "settle", time.monotonic()
-                    print("\nsweep finished (swept=%s) — settling: no requests until the "
+                    print("\nsweep finished (written=%s) — settling: no requests until the "
                           "WAL is under %.0f MB (at most %d s)"
-                          % (s.get("swept"), a.settle_wal_mb, a.settle_max_s))
+                          % (s.get("written"), a.settle_wal_mb, a.settle_max_s))
                 out.write(json.dumps({"t": time.time(), "status_poll": s}) + "\n")
                 phase = state["phase"]
             if phase in ("settle", "quiet"):

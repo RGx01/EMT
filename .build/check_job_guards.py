@@ -13,7 +13,7 @@ WHAT IT MEASURES
     and predicate functions whose names end `_running`, `_in_progress`, `_lock`,
     `_busy`, `_paused`. Then, for each long-running write job, whether the job or
     any DIRECT CALLER consults one. Callers matter because v4 sets the re-entry
-    flags in the scheduler wrappers (`_maybe_reprice_history`), not in the job —
+    flags in the scheduler wrappers (`_maybe_settle_history`), not in the job —
     measuring the job body alone reports five guarded jobs as unguarded, which it
     did on the first pass here.
 
@@ -47,10 +47,9 @@ GUARD_SHAPE = re.compile(r"_running$|_in_progress$|_lock$|_busy$|_paused$")
 # matters is minutes of batch mutation, which no signature exposes.
 JOBS = [
     "run_api_import_job",
-    "_run_historical_reprice_sweep",
+    "_run_settle_history_sweep",
     "_run_historical_carbon_backfill", "run_measured_history_drain",
     "run_gap_fill_job", "run_iog_split_carve", "run_attribution_job",
-    "run_reprice_history_sweep_to_done",
 ]
 
 

@@ -55,7 +55,7 @@ class TestClassifier(unittest.TestCase):
     def test_obvious_readers(self):
         self._is("read", "get_meta", "get_blocks_for_range", "get_settings",
                  "get_block_segments", "get_measured_cost", "tombstoned_slots_in",
-                 "count_blocks_needing_reprice", "vat_rate_at")
+                 "count_blocks_missing_segments", "vat_rate_at")
 
     def test_transitive_write_through_a_helper(self):
         """`set_vat_calendar` executes no SQL of its own — it calls `set_meta`.
@@ -69,8 +69,7 @@ class TestClassifier(unittest.TestCase):
         """Both of these build their statement in a local and execute the
         variable. Reading only the execute() argument sees a bare Name; 16 public
         readers landed in UNDECIDED that way on the first run."""
-        self._is("read", "get_blocks_needing_reprice",
-                 "get_import_blocks_missing_exc", "get_block_starts_missing_carbon")
+        self._is("read", "get_import_blocks_missing_exc", "get_block_starts_missing_carbon")
         self._is("write", "_insert_block_rows", "upsert_imported_blocks")
 
     def test_fragments_do_not_win_over_the_verb(self):

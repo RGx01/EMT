@@ -238,7 +238,8 @@ def price_slot(block_start: str, block_end: str, chosen_kwh: float, ev_kwh: floa
                ev_offpeak_rate: Optional[float] = None,
                ev_peak_rate: Optional[float] = None) -> dict:
     """One-call IOG per-slot pricing: `classify_slot` + `price_import_split`. The
-    single entry point the reconcile seam uses. Pure.
+    single entry point: settle()'s capped legs (settle.py; the engine's `compute_iog_split`
+    seam wrapped it until engine step 4e). Pure.
 
     `chosen_kwh` is the slot's grid import; `ev_kwh` the grid-clipped dispatch EV
     (0 when none, so `house = chosen − ev`). Returns the fields to write on the
@@ -318,67 +319,3 @@ def _slot_segments(classification: dict, *, ev_kwh: float, house_kwh: float,
         if k_day > 1e-9:
             out.append((round(k_day, 6), house_day_rate, "day", "house"))
     return out
-
-
-def compute_iog_split(block_start: str, block_end: str, *, chosen_kwh: float,
-                      ev_kwh: float, overlay_rate: float, is_boost: bool,
-                      capped: bool, boundary=None,
-                      import_sched, ev_off_sched=None, ev_peak_sched=None):
-    """Reconcile-seam entry: resolve the four rate bands and price one slot's
-    house/EV split. Takes the RateSchedule objects (duck-typed — no import of
-    RateSchedule here), so it stays testable and the engine just passes its cached
-    schedules. Returns the `price_slot` dict, or None when there's no usable house
-    schedule (not a priced IOG tariff → leave existing pricing alone).
-
-    - **Capped** (ev_device schedules present + covering this slot): house on
-      day/night (`day_rate_bounds`), EV on `ev_device_off_peak`/`ev_device_peak`,
-      cap-day `boundary_utc`, guaranteed-window from `is_off_peak`.
-    - **Uncapped** (or capped but an ev_device rate is missing this slot): the whole
-      dispatched slot stays on the already-resolved `overlay_rate`, so the total is
-      byte-identical to today; the EV slice is still carved for the display."""
-    if import_sched is None or import_sched.is_empty():
-        return None
-    if capped and ev_off_sched is not None and ev_peak_sched is not None:
-        op, day = import_sched.day_rate_bounds(block_start)
-        ev_off = ev_off_sched.resolve(block_start)
-        ev_peak = ev_peak_sched.resolve(block_start)
-        if None not in (op, day, ev_off, ev_peak):
-            # UNIT FIX (watch #12 origin): these come from the pence-valued RateSchedules
-            # (Octopus API native pence; RateSchedule/from_api_records keep it raw), but
-            # price_slot wants £/kWh. Convert here, exactly as every other consumer does
-            # (_kraken_rate_resolver, _dispatch_overlay_rate → pence/100). Without it the capped
-            # 4-rate split priced in PENCE — the 2026-08-18 imp_rate_ev=6.9 break, otherwise only
-            # caught downstream by the §4a unit guard. Specified-rate/IOG only; Agile never caps
-            # (no ev_device schedules → capped=False → the £ overlay fall-through below).
-            op = round(op / 100.0, 6); day = round(day / 100.0, 6)
-            ev_off = round(ev_off / 100.0, 6); ev_peak = round(ev_peak / 100.0, 6)
-            return price_slot(
-                block_start, block_end, chosen_kwh, ev_kwh,
-                in_off_peak_window=(import_sched.is_off_peak(block_start) is True),
-                is_boost=is_boost, boundary=boundary,
-                house_offpeak_rate=op, house_day_rate=day,
-                ev_offpeak_rate=ev_off, ev_peak_rate=ev_peak)
-        # fall through: an ev_device rate is missing for this slot
-    # Uncapped IOG: whole slot on the resolved overlay rate → totals unchanged. The legs are
-    # LABELLED from that rate — off-peak where it is nearer the day's off-peak rate, else EV peak
-    # and house day (BL-58b's rule). Every leg read off_peak before (17 Oct 2026), so a dispatch
-    # billed at the peak rate (a bump outside the window) was stored as off-peak at the peak price.
-    _peak = _overlay_is_peak(import_sched, block_start, overlay_rate)
-    return price_slot(block_start, block_end, chosen_kwh, ev_kwh,
-                      in_off_peak_window=not _peak, is_boost=_peak, boundary=None,
-                      house_offpeak_rate=overlay_rate, house_day_rate=overlay_rate,
-                      ev_offpeak_rate=overlay_rate, ev_peak_rate=overlay_rate)
-
-
-def _overlay_is_peak(import_sched, block_start: str, overlay_rate: float) -> bool:
-    """Whether the uncapped seam's single rate (£/kWh) is the day's peak rather than its off-peak:
-    nearer the higher of the day's two rates (`day_rate_bounds`, pence). False where the day has
-    no two rates to tell apart, which keeps the off-peak labels as before."""
-    try:
-        lo, hi = import_sched.day_rate_bounds(block_start)
-    except Exception:
-        return False
-    if lo is None or hi is None or abs(hi - lo) <= 1e-9 or overlay_rate is None:
-        return False
-    r = float(overlay_rate) * 100.0
-    return abs(r - hi) < abs(r - lo)

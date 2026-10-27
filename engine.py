@@ -641,68 +641,6 @@ def _iog_site_tz(store=None) -> str:
         return "UTC"
 
 
-def _apply_iog_split(imp_ch: dict, block_start: str, block_end: str,
-                     chosen_kwh: float, overlay_rate: float,
-                     tz_name: "str | None") -> None:
-    """Compute + apply the IOG house/EV billing split onto `imp_ch` IN PLACE.
-
-    Sets `kwh_ev`/`cost_ev`/`rate_ev` for any dispatched IOG slot (all IOG tariffs
-    — the billing-summary primer). On the CAPPED tariff it also re-prices the block
-    (`rate`/`cost` → the blended 4-rate values); on UNCAPPED IOG it leaves
-    `rate`/`cost` exactly as the overlay set them (byte-identical), carving the EV
-    slice at that same rate. No-op when there's no import schedule or no EV this
-    slot — so non-IOG and non-dispatched slots are untouched.
-
-    Until engine step 4b (25 Oct 2026) a `hold_rate` mode priced every leg at the caller's rate for
-    the PASS 2 re-run of an uncosted block (4.5.15, v4 #475: two instances re-banded one half-hour
-    differently by arrival order). The re-run now settles the half-hour with settle(), a function
-    of its facts, so the mode and its three corrections to this function's output went with it."""
-    import iog_cap
-    import_sched = _kraken_rate_schedules.get("import")
-    if import_sched is None or import_sched.is_empty():
-        return
-    ev_kwh = dispatch_ev_kwh(block_start, chosen_kwh)
-    if ev_kwh <= 1e-9:
-        return
-    if tz_name is None:
-        tz_name = _iog_site_tz()
-    if not block_end:
-        try:
-            block_end = (datetime.fromisoformat(
-                str(block_start).replace("Z", "").split("+")[0])
-                + timedelta(minutes=30)).isoformat()
-        except Exception:
-            return
-    # capped by the half-hour's OWN agreement, and only where the EV-device rates are loaded
-    # (capped pricing by agreement design §4): a pre-agreement half-hour on an account now on
-    # IOG-SMB was uncapped, and the current product's EV rates reach back past the agreement
-    capped = capped_at(block_start) and _capped_schedules()
-    boundary = _iog_cap_day_boundary(block_start, tz_name) if capped else None
-    res = iog_cap.compute_iog_split(
-        block_start, block_end, chosen_kwh=chosen_kwh, ev_kwh=ev_kwh,
-        overlay_rate=overlay_rate, is_boost=_iog_slot_is_boost(block_start),
-        capped=capped, boundary=boundary, import_sched=import_sched,
-        ev_off_sched=_kraken_rate_schedules.get("ev_device_off_peak"),
-        ev_peak_sched=_kraken_rate_schedules.get("ev_device_peak"))
-    if res is None:
-        return
-    imp_ch["kwh_ev"] = res["imp_kwh_ev"]
-    imp_ch["cost_ev"] = res["imp_cost_ev"]
-    imp_ch["rate_ev"] = res["imp_rate_ev"]
-    # The EV/Home rate bands (off_peak|peak|mixed / off_peak|day|mixed) so the
-    # billing summary can show clean bands + one collapsed transition row.
-    _cls = res.get("classification") or {}
-    imp_ch["ev_band"] = _cls.get("ev")
-    imp_ch["home_band"] = _cls.get("house")
-    # BL-27: carry the seam's full-fidelity band segments so the persist step stores them
-    # directly (a boundary block keeps all four bands) instead of re-deriving the collapsed
-    # 1–2 from the columns. None on a non-dispatched slot → persist falls back to columns.
-    imp_ch["segments"] = res.get("segments")
-    if capped:                              # capped tariff RE-PRICES the block
-        imp_ch["rate"] = res["imp_rate"]
-        imp_ch["cost"] = res["imp_cost"]
-
-
 # The channel key pricing leaves a main import's segments on for the block write to commit in
 # its own transaction (step 5c). Must equal block_store.STAGED_SEGMENTS, which reads it (a
 # literal here because tests stub block_store before engine imports; test_segments_one_write
@@ -1532,7 +1470,7 @@ def _maybe_daily_share_backup(now_utc=None) -> bool:
             return False
     except Exception:
         pass
-    if reprice_history_in_progress() or delete_in_progress() or any(
+    if settle_history_in_progress() or delete_in_progress() or any(
             _coord.running(j) for j in ("import", "delete", "restore")):
         return False
     _share_backup_tried_day = today
@@ -3092,50 +3030,6 @@ def _recompute_pass3_totals(block: dict) -> None:
             elif channel_name == "export":
                 block["totals"]["export_kwh"]  += channel.get("kwh") or 0.0
                 block["totals"]["export_cost"] += channel.get("cost") or 0.0
-
-
-def _refit_devices_to_house(store, starts) -> dict:
-    """v4 4.5.21 forward fix: re-fit a dispatch-only account's devices inside the house once its
-    dispatch EV is known or changes. Every writer of `imp_kwh_ev` after a block's close calls
-    this with the blocks it wrote — before, none re-ran the split, so the devices stayed fitted
-    against the whole main for good. A no-op for any block that is not a candidate
-    (`BlockStore.dispatch_house_candidates`). Re-runs the split on the rebuilt block and writes
-    back only what moves (`BlockStore.write_resplit`)."""
-    global _pass2_quiet
-    out = {"checked": 0, "refit_blocks": 0, "kwh_moved": 0.0}
-    if store is None or not starts:
-        return out
-    cands = store.dispatch_house_candidates(starts)
-    if not cands:
-        return out
-    dev_u = []
-    _prev = _pass2_quiet
-    _pass2_quiet = True
-    try:
-        for bs in cands:
-            blk = store.get_block_dict_by_start(bs)
-            if not blk:
-                continue
-            out["checked"] += 1
-            before = {mid: ((mb.get("channels") or {}).get("import") or {}).get("kwh_grid")
-                      for mid, mb in (blk.get("meters") or {}).items()
-                      if (mb.get("meta") or {}).get("sub_meter")}
-            _apply_pass2(blk)
-            moved = False
-            for mid, old in before.items():
-                new = ((blk["meters"][mid].get("channels") or {}).get("import") or {}).get("kwh_grid")
-                if new is None or old is None or abs(new - old) <= 0.0005:
-                    continue
-                dev_u.append((new, new, new, bs, mid))
-                out["kwh_moved"] += abs(new - old)
-                moved = True
-            if moved:
-                out["refit_blocks"] += 1
-    finally:
-        _pass2_quiet = _prev
-    store.write_resplit(dev_u)
-    out["kwh_moved"] = round(out["kwh_moved"], 3)
-    return out
 
 
 def recompute_remainders_for_window(parent_meter_id: str, utc_start: str,
@@ -6872,39 +6766,6 @@ def _exc_segs(segs):
             if getattr(s, "exc", None) is not None]
 
 
-def _exc_rate_for_block(rate_segs, start, stored_inc_rate):
-    """£/kWh EX-VAT for a stored import slot (4.2 exc historical backfill).
-
-    Scales the block's stored AUTHORITATIVE inc rate by the tariff's published
-    exc/inc ratio at that slot, so the result lands on the published ex-VAT figure
-    (correctly rounded per band) rather than a blind inc÷1.05. Robust across tariff
-    shapes without needing a stored OFF_PEAK label:
-      * Agile / flat — resolve() gives the exact per-slot inc & exc, ratio ≈ 1/(1+VAT),
-        and stored_inc == inc so the result IS the published exc.
-      * IOG in-window — resolve() gives the band's inc & exc; ratio maps the stored
-        band rate onto its published exc sibling.
-      * IOG dispatch out-of-window — resolve() gives the standard band, but VAT is a
-        flat multiplier so the standard-band ratio applied to the stored off-peak rate
-        still lands within per-band rounding of the off-peak exc.
-    None when no exc schedule covers the slot — the caller leaves imp_cost_exc NULL and
-    the view falls back to inc÷1.05 (shown as an approximation)."""
-    for vf, vt, sched in (rate_segs or []):
-        if start >= vf and (vt is None or start < vt):
-            exc = getattr(sched, "exc", None)
-            if exc is None:
-                return None
-            inc_r = sched.resolve(start)
-            if inc_r is None:
-                inc_r = sched.flat_rate()
-            exc_r = exc.resolve(start)
-            if exc_r is None:
-                exc_r = exc.flat_rate()
-            if exc_r is None:
-                return None
-            if stored_inc_rate is not None and inc_r is not None and abs(inc_r) > 1e-6:
-                return round(stored_inc_rate * (exc_r / inc_r), 6)
-            return round(exc_r / 100.0, 6)   # pence → £, when no usable stored inc
-    return None
 
 @job("iog_split_carve")
 async def run_iog_split_carve(max_blocks: int = 2000, starts=None) -> dict:
@@ -6955,384 +6816,13 @@ async def run_iog_split_carve(max_blocks: int = 2000, starts=None) -> dict:
     return {"ok": True, "carved": carved}
 
 
-def _reprice_history_block(row, tz_name: "str | None", rate_segs):
-    """P3.3a (Phase 3 / Option A) — the UNIFIED historical re-price for one import block.
-
-    Derives the EV/house split, ex-VAT, and priced segments in ONE pass via the forward seam
-    (`_apply_iog_split` → `_apply_import_exc`), in INHERIT mode: it never re-resolves the
-    dispatch overlay over history (design §3d) — it carves from the block's stored inc rate.
-    This is the single derivation that replaces the three separate historical backfills
-    (`_run_historical_{exc,iog_split,segment}_backfill`); carbon stays its own axis.
-
-    Faithful to `_reprice_main_import_block`, so imported/history blocks end up priced by the
-    SAME model as finalise/settlement. Conformance:
-      * uncapped / non-IOG — BYTE-IDENTICAL to the legacy backfills (no split; exc = inc×ratio;
-        single house segment via the same `segments_from_legacy` fallback).
-      * capped / dispatched — aligns history to the forward model (full-fidelity seam segments,
-        exc off the POST-split rate) — intentionally supersedes the lossy legacy derivation.
-
-    Pure of persistence: returns `imp_ch` (the derived channel) for the driver to persist.
-    """
-    def _g(r, k, d=0.0):
-        try:
-            v = r[k]
-        except (KeyError, IndexError, TypeError):
-            v = None
-        return d if v is None else v
-    start = _g(row, "block_start", None) or _g(row, "start", None)
-    meter_id = _g(row, "meter_id", "electricity_main")
-    kwh  = float(_g(row, "imp_kwh", _g(row, "kwh", 0.0)) or 0.0)
-    rate = float(_g(row, "imp_rate", _g(row, "rate", 0.0)) or 0.0)
-    cost = float(_g(row, "imp_cost", _g(row, "cost", 0.0)) or 0.0)
-    imp_ch = {"kwh": kwh, "rate": rate, "cost": cost}
-    # The unit guard (§4a): an inc rate in pence is normalised to £ before any derivation, so
-    # split, exc and segments are built in £. Healthy blocks are byte-identical. The sweep no
-    # longer force-repairs a legacy pence block's stored COLUMNS (the 4.3.0 cap bug): v5 admits no
-    # such database (import spec §9, the units gate), so the guard firing here means one got past
-    # it — its UNIT-GUARD warning is the signal (BL-33, 4 Oct 2026).
-    if _sanitise_inc_units(imp_ch, start):
-        rate = imp_ch["rate"]; cost = imp_ch["cost"]
-    if rate:
-        try:
-            _apply_iog_split(imp_ch, start, "", kwh, rate, tz_name)   # split cols + seam segments
-        except Exception as e:
-            logger.warning("_reprice_history_block: split failed (%s): %s", start, e)
-    # ex-VAT: derived the SAME way as the exc backfill — the block's stored inc rate scaled by the
-    # tariff's published exc/inc ratio over the FULL agreement history (`rate_segs`), NOT the
-    # current-only live schedule. Computed for ANY covered slot, INCLUDING a ZERO-rate Agile free
-    # slot (exc of 0 = 0) and PLUNGE / negative slots (exc scales with sign). It must NOT be gated
-    # behind `if rate:`: a £0.00 slot would then never get exc, stay 'needing reprice' forever, and
-    # the sweep could never reach 0 (it would re-arm indefinitely). PERSISTENCE (`set_blocks_exc`)
-    # keeps the imported/settled coverage + a fill-null-only SQL guard, so this never overwrites an
-    # existing exc or writes a provisional block. `rate_segs=None` (hermetic tests) → exc skipped.
-    if rate_segs is not None:
-        try:
-            _rexc = _exc_rate_for_block(rate_segs, start, rate)
-        except Exception as e:
-            logger.warning("_reprice_history_block: exc failed (%s): %s", start, e)
-            _rexc = None
-        if _rexc is not None:
-            imp_ch["rate_exc"] = _rexc
-            imp_ch["cost_exc"] = round(kwh * _rexc, 6)
-    imp_ch["_start"] = start
-    imp_ch["_meter_id"] = meter_id
-    imp_ch["_needs_segments"] = _g(row, "needs_segments", 1)
-    return imp_ch
-
-
-def _reprice_history_blocks(rows, tz_name: "str | None", rate_segs) -> dict:
-    """Persist the unified derivation for a batch of import blocks (P3.3a driver). Reuses the
-    forward path's own persistence: split columns (`set_blocks_iog_split`), exc columns
-    (`set_blocks_exc`), and `_persist_block_segments` (seam segments, else the legacy fallback —
-    so uncapped blocks stay byte-identical to the segment backfill). Returns per-aspect counts.
-
-    The sole historical derivation since P3.3c; the three legacy backfills it replaced are
-    deleted (BL-33)."""
-    if _store is None:
-        return {"split": 0, "exc": 0, "segments": 0}
-    split_updates, exc_updates = [], []
-    seg_n = 0
-    for row in rows:
-        if dict(row).get("meter_id", "electricity_main") == "electricity_main":
-            # engine step 4d: the half-hour is settle()'s — its segments and ex-VAT with it. The
-            # derivation below stays for what settle() cannot price (no tariff schedule, no band)
-            # and for a correction, which is the user's.
-            try:
-                if settle_half_hour(_store, row["block_start"])["status"] in (
-                        "settled", "predicted", "clock"):
-                    seg_n += 1
-                    continue
-            except Exception as e:
-                logger.warning("_reprice_history_blocks: settle failed (%s), derived instead: %s",
-                               row.get("block_start"), e)
-        ch = _reprice_history_block(row, tz_name, rate_segs)
-        start, meter_id = ch.get("_start"), ch.get("_meter_id")
-        if ch.get("rate_exc") is not None:
-            exc_updates.append((start, meter_id, ch.get("cost_exc")))
-        # Segments are written by REPLACE (delete+insert), so only (re)build them when the block
-        # LACKS them — never overwrite an existing set — or when this pass fills its EV split
-        # (BL-79): then the split's segments go with its columns, in set_blocks_iog_split's
-        # transaction. `needs_segments` defaults to 1 (missing-segments rows).
-        _needs_seg = ch.get("_needs_segments", 1)
-        if ch.get("kwh_ev") is not None:
-            try:
-                _segs = _build_block_segments(start, ch)
-            except Exception as e:
-                logger.warning("_reprice_history_blocks: segments failed (%s): %s", start, e)
-                continue
-            split_updates.append((start, meter_id, _segs, _needs_seg))
-            if _needs_seg:
-                seg_n += 1
-        elif _needs_seg:
-            try:
-                _persist_block_segments(start, meter_id, ch)
-                seg_n += 1
-            except Exception as e:
-                logger.warning("_reprice_history_blocks: segment persist failed (%s): %s", start, e)
-    split_n = _store.set_blocks_iog_split(split_updates) if split_updates else 0
-    if split_updates:
-        _refit_devices_to_house(_store, [u[0] for u in split_updates])   # v4 4.5.21: the devices re-fit inside the house now the EV is known (dispatch-only accounts)
-    exc_n = _store.set_blocks_exc(exc_updates) if exc_updates else 0
-    return {"split": split_n, "exc": exc_n, "segments": seg_n}
-
-
-_REPRICE_HISTORY_MARKER = "reprice_history_state"   # store_meta key (P3.3b)
-_REPRICE_HISTORY_SCOPE = 2   # 1=segments-only; 2=P3.3c exc superset
-_REPRICE_HISTORY_PASS_PACE = 1.0
-# Longest the unified sweep may hold the engine loop in one chunk, and where it starts.
-_SWEEP_SLICE_S = 0.25
-_SWEEP_FIRST_CHUNK = 25
-
-
-def _next_sweep_chunk(limit: int, elapsed_s: float, ceiling: int) -> int:
-    """Next chunk size for a time-budgeted sweep: shrink in proportion when the last
-    chunk overran `_SWEEP_SLICE_S`, double when it used under half, else keep."""
-    if elapsed_s > _SWEEP_SLICE_S:
-        return max(1, int(limit * _SWEEP_SLICE_S / elapsed_s))
-    if elapsed_s < _SWEEP_SLICE_S / 2:
-        return min(ceiling, limit * 2)
-    return limit
-_reprice_history_running = False
-
-
-def _write_reprice_report(*, verdict: str, swept: int, skipped: int,
-                          stalled: int, remaining: int, scope: int) -> None:
-    """Q3: write a single-file JSON summary of the reprice-history sweep to the share dir at
-    completion, so a user who suspects a bad upgrade can send ONE file. Overwrites in place
-    (`reprice_history_report.json`) so the latest is always at a stable path. Best-effort —
-    never fatal, never blocks the sweep."""
-    import datetime as _dtm
-    try:
-        import json as _json
-        _now = _dtm.datetime.now(_dtm.timezone.utc).replace(tzinfo=None).isoformat()
-        rpt = {
-            "kind": "reprice_history_report",
-            "generated_at": _now,
-            "verdict": verdict,                       # "complete" | "stalled"
-            "blocks_swept": int(swept),
-            "chunks_skipped": int(skipped),           # transient chunk failures over the run
-            "blocks_unpriced_stalled": int(stalled),  # could not be priced (verdict=stalled)
-            "blocks_remaining": int(remaining),
-            "scope": int(scope),
-            "summary": (
-                ("Re-pricing complete" if verdict == "complete" else "Re-pricing STALLED")
-                + f": {int(swept)} block(s) processed"
-                + (f"; {int(skipped)} chunk(s) transiently skipped" if skipped else "")
-                + (f"; {int(stalled)} could NOT be priced — please send this file to support"
-                   if stalled else "")
-                + "."),
-        }
-        ensure_dir(SHARE_BACKUP_DIR)
-        with open(f"{SHARE_BACKUP_DIR}/reprice_history_report.json", "w") as _fh:
-            _json.dump(rpt, _fh, indent=2)
-        logger.info("reprice-history report written to %s/reprice_history_report.json",
-                    SHARE_BACKUP_DIR)
-    except Exception as e:
-        logger.debug("_write_reprice_report: %s", e)
-
-
-@job("reprice_sweep", depends_on=("import",), exclusive_with=("delete",))
-async def _run_historical_reprice_sweep(max_blocks: int = 20000, batch: int = 500,
-                                        pace_s: float = 0.02, *, force: bool = False) -> int:
-    """P3.3b — the UNIFIED historical re-price sweep (Phase 3 / Option A). Walks blocks that
-    still lack priced segments and re-derives split + exc + segments in ONE pass via
-    `_reprice_history_blocks` (the forward seam, inherit mode), so imported/history blocks end
-    up priced by the SAME model as finalise/settlement — replacing the three separate
-    `_run_historical_{exc,iog_split,segment}_backfill` sweeps.
-
-    The sole historical derivation; the three legacy backfills it replaced are deleted (BL-33).
-    Deferred until the import rate schedule is ready (the seam no-ops without it),
-    idempotent (only blocks missing segments), resumable (persistent cursor), cooperative (one
-    transaction per chunk, yields between batches). Conformance is byte-identical to the legacy
-    backfills on uncapped/non-IOG and realigns capped history to the forward model (design §10a).
-    Returns blocks swept this invocation."""
-    global _store
-    import asyncio as _aio
-    from datetime import datetime as _dt, timezone as _tz
-    if _store is None:
-        return 0
-    state = _store.get_meta(_REPRICE_HISTORY_MARKER, {}) or {}
-    if delete_in_progress():
-        return 0
-    # Coverage scope widened (P3.3c: segments-only → exc superset)? A prior run that completed at a
-    # narrower scope must RE-ARM so it revisits the newly-covered blocks (settled blocks missing exc)
-    # — drop done + cursor, keep the swept tally. Mirrors the legacy backfills' scope versioning.
-    if state and int(state.get("scope") or 1) < _REPRICE_HISTORY_SCOPE:
-        logger.info("reprice-history sweep: coverage scope widened to %d — re-arming",
-                    _REPRICE_HISTORY_SCOPE)
-        state = {"swept": int(state.get("swept") or 0)}
-    # `force` = self-heal past a prior `done` marker (post-import / gap-fill: new blocks may be
-    # missing derivation). Startup goes via _maybe_reprice_history, which honours `done`; the
-    # cheap count_blocks_needing_reprice()==0 check below re-sets done when there's nothing left.
-    if state.get("done") and not force:
-        return 0
-    # The seam needs the import rate schedule (populates async at startup); without it
-    # _apply_iog_split/_apply_import_exc no-op, so defer (no done marker) until it's ready.
-    _isched = _kraken_rate_schedules.get("import")
-    if _isched is None or _isched.is_empty():
-        logger.info("reprice-history sweep: import schedule not ready — deferring")
-        return 0
-
-    _remaining_before = _store.count_blocks_needing_reprice()
-    if _remaining_before == 0:
-        _store.set_meta(_REPRICE_HISTORY_MARKER,
-                        {"done": True, "scope": _REPRICE_HISTORY_SCOPE,
-                         "swept": int(state.get("swept") or 0),
-                         "completed_at": _dt.now(_tz.utc).replace(tzinfo=None).isoformat()})
-        return 0
-
-    _now_iso = lambda: _dt.now(_tz.utc).replace(tzinfo=None).isoformat()
-    tz_name = _iog_site_tz()
-    # Build the FULL historical import rate segments once (same source the exc backfill uses),
-    # so exc prices correctly across prior tariff agreements — not just the current one.
-    rate_segs = _hist_rate_segs_cache.get("import")
-    if rate_segs is None:
-        try:
-            rate_segs = await _build_channel_rate_segs("import")
-            if rate_segs is not None:
-                _hist_rate_segs_cache["import"] = rate_segs   # cache for the conformance route
-        except Exception as _rse:
-            logger.warning("reprice-history sweep: rate-seg build failed (exc will be skipped): %s", _rse)
-            rate_segs = None
-    swept = 0
-    skipped = 0
-    scanned = 0
-    cursor = state.get("cursor")
-    total = int(state.get("swept") or 0)
-    total_skipped = int(state.get("skipped") or 0)
-    reached_end = False
-    # Chunks are sized by TIME, not count: `batch` is only the ceiling. A fixed 500 held
-    # the engine loop ~14 s per chunk on a Pi (first soak, 29 Sep 2026: 37,103 blocks in
-    # ~17 min), and every loop hop waited behind it — GET /api/config went from 0.02 s to
-    # 15 s, and the live tick and the HA WebSocket wait the same way. Still one
-    # synchronous chunk between yields: admission never happens per block (B §3.4).
-    limit = min(batch, _SWEEP_FIRST_CHUNK)
-    while scanned < max_blocks:
-        # #56: re-check between chunks, not only at schedule time. A restore (or a delete)
-        # that starts mid-sweep now stops it at the next chunk boundary — before, the sweep
-        # committed through the whole restore, and every commit restarted the safety
-        # backup. The cursor is persisted, so the next pass resumes here.
-        if _store is None or _coord.admission("reprice_sweep")[0] != ADMIT:
-            logger.info("reprice-history sweep: standing aside at cursor %s (resumes next pass)",
-                        cursor)
-            break
-        _t0 = time.monotonic()
-        rows = _store.get_blocks_needing_reprice(limit=limit, after_start=cursor)
-        if not rows:
-            reached_end = True
-            break
-        # ONE transaction per chunk (ROADMAP §A.1, 5 Oct 2026): the chunk's segments,
-        # split, exc and its cursor commit together. Each block's segment write used to
-        # commit on its own — one fsync per block on the Pi's SD card, and every one held
-        # the engine loop (soak 15: 85 of 97 slow commits were set_block_segments). The
-        # chunk is synchronous, so the batch never spans an await.
-        with _store.batch():
-            try:
-                _reprice_history_blocks(rows, tz_name, rate_segs)   # split + exc + segments
-                swept += len(rows)
-            except Exception as e:
-                skipped += len(rows)
-                logger.warning("REPRICE-SWEEP-CHUNK-FAIL: cursor=%s size=%d (skipped this pass: %d): %s",
-                               cursor, len(rows), skipped, e)
-            cursor = rows[-1]["block_start"]
-            scanned += len(rows)
-            _store.set_meta(_REPRICE_HISTORY_MARKER,
-                            {"cursor": cursor, "scope": _REPRICE_HISTORY_SCOPE,
-                             "swept": total + swept,
-                             "skipped": total_skipped + skipped})
-        if len(rows) < limit:
-            reached_end = True
-            break
-        limit = _next_sweep_chunk(limit, time.monotonic() - _t0, batch)
-        await _aio.sleep(pace_s)
-    total += swept
-    total_skipped += skipped
-    # HARDENING (watch #10 — ROOT CAUSE): the old code marked 'done' on reaching the end of the
-    # page cursor. But a chunk that THREW was skipped PAST the cursor (cursor advances in the loop
-    # regardless of failure), so 'done' could be set with blocks still unpriced — hiding them
-    # forever, and (via the all-or-nothing presentation gate) dropping segment pricing for any
-    # range containing them. Now reconcile against the REAL remaining-work count before declaring
-    # done, and re-arm the cursor to heal transient skips.
-    _remaining = _store.count_blocks_needing_reprice() if reached_end else -1
-    if reached_end and _remaining == 0:
-        _store.set_meta(_REPRICE_HISTORY_MARKER,
-                        {"done": True, "scope": _REPRICE_HISTORY_SCOPE, "swept": total,
-                         "skipped": total_skipped,
-                         "completed_at": _now_iso()})
-        logger.info("reprice-history sweep: swept %d block(s) this pass — complete", swept)
-        _write_reprice_report(verdict="complete", swept=total,
-                              skipped=total_skipped, stalled=0, remaining=0,
-                              scope=_REPRICE_HISTORY_SCOPE)
-    elif reached_end and _remaining < _remaining_before:
-        # Reached the end but blocks remain, AND the remaining COUNT fell this pass → real progress
-        # (a transient chunk was skipped; the rest cleared). Re-arm the cursor so the next pass
-        # re-sweeps the still-needing set (segmented+exc'd blocks are excluded by the query, so it
-        # only revisits the holes) and heals them. NB: progress is measured by the count dropping,
-        # NOT by `swept` — a block can be 'swept' (segment written) yet still fail the coverage
-        # gate (e.g. missing exc), which would otherwise re-arm forever.
-        _store.set_meta(_REPRICE_HISTORY_MARKER,
-                        {"cursor": None, "scope": _REPRICE_HISTORY_SCOPE, "swept": total})
-        logger.warning("REPRICE-SWEEP-REARM: reached end with %d block(s) still unpriced "
-                       "(%d skipped this pass) — re-arming cursor to re-sweep", _remaining, skipped)
-    elif reached_end:
-        # Reached the end, blocks remain, and the count did NOT fall this pass → those blocks
-        # cannot be cleared (persistent chunk errors, or a block that is swept yet still fails the
-        # coverage gate). Mark done (so we don't busy-spin re-arming) but LOUDLY.
-        _store.set_meta(_REPRICE_HISTORY_MARKER,
-                        {"done": True, "scope": _REPRICE_HISTORY_SCOPE, "swept": total,
-                         "skipped": total_skipped,
-                         "stalled": _remaining, "completed_at": _now_iso()})
-        logger.error("REPRICE-SWEEP-STALLED: %d block(s) could not be repriced after a full sweep "
-                     "(persistent errors — see REPRICE-SWEEP-CHUNK-FAIL). Segment pricing is "
-                     "degraded for ranges containing them until resolved.", _remaining)
-        _write_reprice_report(verdict="stalled", swept=total,
-                              skipped=total_skipped, stalled=_remaining, remaining=_remaining,
-                              scope=_REPRICE_HISTORY_SCOPE)
-    else:
-        logger.info("reprice-history sweep: swept %d block(s) this pass (resuming next pass)", swept)
-    return swept
-
-
-def reprice_history_in_progress() -> bool:
-    """True while the first-upgrade reprice sweep is still working through the backlog — a pass is
-    executing now, OR blocks still need repricing and it hasn't marked done. Used to refuse manual
-    reprice / gap-fill actions during migration so they can't race the sweep (or spin up a second,
-    concurrent one). Once the sweep marks done (even if it stalled on a bad block), this is False
-    and manual recovery is allowed again."""
-    if _store is None:
-        return False
-    if _reprice_history_running:
-        return True
-    m = _reader().get_meta(_REPRICE_HISTORY_MARKER, {}) or {}
-    if m.get("done"):
-        return False
-    try:
-        return _reader().count_blocks_needing_reprice() > 0
-    except Exception:
-        return False
-
-
-@job("reprice_sweep_to_done")
-async def run_reprice_history_sweep_to_done(max_passes: int = 500) -> None:
-    """G2: run the reprice-history sweep FORCED until it marks done — for use right after a manual
-    gap-fill (Retry / CSV). A filled or corrected block has had its stale segment invalidated
-    (block_store), so it re-enters the sweep's queue and gets (re)segmented from the real price.
-    Best-effort; the startup sweep would catch it anyway, this just makes it immediate."""
-    for _ in range(max_passes):
-        try:
-            await _run_historical_reprice_sweep(force=True)
-        except Exception as e:
-            logger.warning("run_reprice_history_sweep_to_done: %s", e)
-            return
-        if (_store.get_meta(_REPRICE_HISTORY_MARKER, {}) or {}).get("done"):
-            return
-
-
 _SETTLE_HISTORY_MARKER = "settle_history_state"    # store_meta key (engine step 4d)
 _SETTLE_HISTORY_VERSION = 1   # raise to settle every half-hour again (settle()'s rules changed)
 _SETTLE_HISTORY_DAY = timedelta(days=1)
 _SETTLE_HISTORY_PACE_S = 0.02
+_SETTLE_HISTORY_PASS_PACE = 1.0
 _settle_history_running = False
+_settle_history_scheduled = False   # startup's task is holding or walking
 _settle_history_rearm = False     # an import or a gap fill asked for the whole history again
 
 
@@ -7348,7 +6838,10 @@ def settle_range(store, utc_start: str, utc_end: str) -> dict:
     out = {"read": 0, "written": 0, "statuses": {}, "parts": {}}
     for m in inp["mains"]:
         bs = m["block_start"]
-        r = _settle_write(store, m, inp["subs"].get(bs, []), inp["segments"].get(bs, []), cal)
+        segs = inp["segments"].get(bs, [])
+        r = _settle_write(store, m, inp["subs"].get(bs, []), segs, cal)
+        if r["status"] in ("no_rate", "no_band") and _settle_fallback(store, m, segs):
+            r = dict(r, written=True, parts=["fallback"])
         out["read"] += 1
         out["statuses"][r["status"]] = out["statuses"].get(r["status"], 0) + 1
         if r["written"]:
@@ -7356,6 +6849,36 @@ def settle_range(store, utc_start: str, utc_end: str) -> dict:
             for p in r["parts"]:
                 out["parts"][p] = out["parts"].get(p, 0) + 1
     return out
+
+
+def _settle_fallback(store, m: dict, segs: list) -> bool:
+    """What settle() declines (no rate, no band) keeps the price it holds — the one small fallback
+    (engine step 4e, decided 27 Oct 2026). Where such a half-hour has no segments, they are written
+    from it — one house segment at its own rate — and an imported or kWh-settled one with no ex-VAT
+    gets it from the VAT calendar: what the history reprice sweep did for every half-hour until 4e.
+    A gap (no cost) is left unsegmented, as before. Returns whether anything was written."""
+    import pricing_segments as _ps
+    bs = m["block_start"]
+    kwh, cost = float(m.get("imp_kwh") or 0.0), m.get("imp_cost")
+    if kwh <= 1e-9 or cost is None:
+        return False
+    try:
+        vat = float(store.vat_rate_at(bs) or 0.0)
+    except Exception:
+        vat = 0.0
+    wrote = False
+    exc = m.get("imp_cost_exc")
+    if exc is None and (str(m.get("source") or "").startswith("imported")
+                        or m.get("imp_kwh_api") is not None):
+        exc = round(float(cost) / (1.0 + vat), 6)
+        wrote = bool(store.set_blocks_exc([(bs, "electricity_main", exc)])) or wrote
+    if not segs:
+        ratio = (float(exc) / float(cost)) if (exc is not None and cost) else 1.0 / (1.0 + vat)
+        store.set_block_segments(bs, "electricity_main", _ps.segments_from_legacy(
+            imp_kwh=kwh, imp_cost=float(cost), imp_rate=float(m.get("imp_rate") or 0.0),
+            exc_ratio=ratio))
+        wrote = True
+    return wrote
 
 
 def _settle_history_done() -> bool:
@@ -7382,9 +6905,24 @@ async def _settle_history_to_done(*, force: bool = False, wait_for_schedule: boo
                 return                      # no schedule yet: the next startup or import retries
             if _store is None or (_settle_history_done() and not _settle_history_rearm):
                 return
-            await asyncio.sleep(_REPRICE_HISTORY_PASS_PACE)
+            await asyncio.sleep(_SETTLE_HISTORY_PASS_PACE)
     finally:
         _settle_history_running = False
+
+
+def settle_history_in_progress() -> bool:
+    """The settle sweep is walking the history, or has history still to walk with a schedule to
+    price it from (without one — a rate-sensor account — it never runs, and is not in progress).
+    The daily share copy waits for it, and the banner says so."""
+    if _store is None:
+        return False
+    if _settle_history_running:
+        return True
+    _isched = _kraken_rate_schedules.get("import")
+    if _isched is None or _isched.is_empty():
+        return False
+    m = _reader().get_meta(_SETTLE_HISTORY_MARKER, {}) or {}        # a request thread asks too
+    return not (m.get("done") and int(m.get("version") or 0) >= _SETTLE_HISTORY_VERSION)
 
 
 def _settle_history_restart(state: dict) -> dict:
@@ -7394,6 +6932,7 @@ def _settle_history_restart(state: dict) -> dict:
     return {}
 
 
+@job("settle_sweep", depends_on=("import",), exclusive_with=("delete",))
 async def _run_settle_history_sweep(*, force: bool = False, max_days: int = 100000) -> int:
     """settle() over the whole history, a day at a time (engine step 4d): what was priced before
     settle() decided it — finalise's live label, history imported before 4a-2, the importer's
@@ -7440,7 +6979,7 @@ async def _run_settle_history_sweep(*, force: bool = False, max_days: int = 1000
             tally = {"read": 0, "written": 0, "parts": {}}
         if day >= stop:
             break
-        if _store is None or _coord.admission("reprice_sweep")[0] != ADMIT:
+        if _store is None or _coord.admission("settle_sweep")[0] != ADMIT:
             logger.info("settle sweep: standing aside at %s (resumes next pass)", day.isoformat())
             return written
         nxt = day + _SETTLE_HISTORY_DAY
@@ -7489,72 +7028,55 @@ async def _hold_sweep_after_startup() -> None:
         if (not _startup_lock.locked() and not poll_in_progress()
                 and seconds_since_startup() >= _SWEEP_STARTUP_HOLD_S):
             if held:
-                logger.info("reprice-history sweep: startup's writes have settled — starting "
+                logger.info("settle sweep: startup's writes have settled — starting "
                             "after %.0f s", time.monotonic() - t0)
             return
         if not held:
-            logger.info("reprice-history sweep: holding until startup's own writes settle")
+            logger.info("settle sweep: holding until startup's own writes settle")
             held = True
         await _aio.sleep(_SWEEP_STARTUP_HOLD_POLL_S)
-    logger.info("reprice-history sweep: held %.0f s — starting anyway",
+    logger.info("settle sweep: held %.0f s — starting anyway",
                 _SWEEP_STARTUP_HOLD_MAX_S)
 
 
-def _maybe_reprice_history() -> None:
-    """Schedule the P3.3b unified reprice-history sweep as a loop task — the sole historical
-    derivation (the three legacy backfills it replaced are deleted, BL-33). No-op once done,
-    without kraken, or during import/delete."""
-    global _reprice_history_running
+def _maybe_settle_history() -> None:
+    """Schedule startup's settle sweep as a loop task, after startup's own writes (engine step 4e:
+    it replaced the history reprice sweep, which ran first). No-op once done, without Kraken, or
+    while an import, a delete or a restore holds the history."""
+    global _settle_history_scheduled
     try:
-        if _store is None or _reprice_history_running:
+        if _store is None or _settle_history_scheduled or not kraken_available():
             return
-        if not kraken_available():
-            return
-        _decision, _blocker = _coord.admission("reprice_sweep")
+        _decision, _blocker = _coord.admission("settle_sweep")
         if _decision != ADMIT:
-            logger.info("_maybe_reprice_history: %s active — deferring", _blocker)
+            logger.info("_maybe_settle_history: %s active — deferring", _blocker)
             return
-        _m = _store.get_meta(_REPRICE_HISTORY_MARKER, {}) or {}
-        if _m.get("done") and int(_m.get("scope") or 1) >= _REPRICE_HISTORY_SCOPE \
-                and _settle_history_done():
+        if _settle_history_done():
             return
         import asyncio as _aio
         try:
             loop = _aio.get_running_loop()
         except RuntimeError:
-            loop = None
-        if loop is None:
             return
 
         async def _task():
-            global _reprice_history_running
-            import asyncio as _aio2
+            global _settle_history_scheduled
             try:
                 await _hold_sweep_after_startup()
-                for _ in range(500):
-                    await _run_historical_reprice_sweep()
-                    # #57: a restore closes the engine store (`_store = None`) and the
-                    # restore's own startup reschedules the sweep — stop, don't raise.
-                    if _store is None:
-                        break
-                    if (_store.get_meta(_REPRICE_HISTORY_MARKER, {}) or {}).get("done"):
-                        break
-                    await _aio2.sleep(_REPRICE_HISTORY_PASS_PACE)
+                # #57: a restore closes the engine store and its own startup reschedules
                 if _store is not None:
                     await _settle_history_to_done(wait_for_schedule=True)
             except Exception as e:
-                logger.warning("_maybe_reprice_history: worker failed: %s", e)
+                logger.warning("_maybe_settle_history: worker failed: %s", e)
             finally:
-                _reprice_history_running = False
+                _settle_history_scheduled = False
 
-        _reprice_history_running = True
-        logger.info("reprice-history sweep: scheduling unified historical re-price pass")
+        _settle_history_scheduled = True
+        logger.info("settle sweep: scheduling the pass over the history")
         loop.create_task(_task())
     except Exception as e:
-        logger.warning("_maybe_reprice_history: schedule failed: %s", e)
-        _reprice_history_running = False
-
-
+        logger.warning("_maybe_settle_history: schedule failed: %s", e)
+        _settle_history_scheduled = False
 
 
 def _import_label(off_peak) -> str:
@@ -8404,10 +7926,11 @@ async def _gap_fill_window(j, from_ts, to_ts, *, channels, chunk_days, max_chunk
 
 async def _after_import_settle() -> None:
     """What follows a finished import or gap fill that wrote blocks, once the import claim is
-    released (the import job's own finish runs while it holds it): the history reprice sweep,
-    forced, so the new history gets its split, ex-VAT and segments; the cached bills applied, a
-    page at a time (`_apply_bills_paced`); then the measured drain, so what has no bill yet is asked
-    for now rather than at the next hourly tick. Detached.
+    released (the import job's own finish runs while it holds it): the settle sweep, from the
+    start, so the new history gets settle()'s band, legs, ex-VAT and devices (engine step 4d; the
+    history reprice sweep that ran before it went in 4e); the cached bills applied, a page at a
+    time (`_apply_bills_paced`); then the measured drain, so what has no bill yet is asked for now
+    rather than at the next hourly tick. Detached.
 
     Both ran at the end of the deferred verify pass until engine step 2d removed it (23 Oct 2026).
     The drain kick's reason, from there: a fresh install wrote ~35k blocks and the drain is reached
@@ -8418,13 +7941,8 @@ async def _after_import_settle() -> None:
             if not _coord.running("import"):
                 break
             await asyncio.sleep(1.0)
-        for _ in range(500):
-            await _run_historical_reprice_sweep(force=True)
-            if (_store.get_meta(_REPRICE_HISTORY_MARKER, {}) or {}).get("done"):
-                break
-            await asyncio.sleep(_REPRICE_HISTORY_PASS_PACE)
     except Exception as e:
-        logger.warning("after import: reprice-history sweep failed (non-fatal): %s", e)
+        logger.warning("after import: waiting for the import claim failed (non-fatal): %s", e)
     try:
         await _settle_history_to_done(force=True)       # engine step 4d
     except Exception as e:
@@ -13315,18 +12833,13 @@ async def _engine_startup_impl(ha: HAClient):
     except Exception as _kd_e:
         logger.warning("engine_startup: kraken discovery skipped: %s", _kd_e)
 
-    # P3.3c (Phase 3 / Option A): the UNIFIED reprice-history sweep is now the SOLE historical
-    # derivation for imported/history blocks — split + exc + segments in one pass via the forward
-    # seam, over the SUPERSET of the retired backfills' coverage (missing segments OR
-    # imported/settled missing exc). The three legacy backfills it replaced
-    # (_run_historical_{exc,iog_split,segment}_backfill and their _maybe_* schedulers) were kept as a
-    # dormant net and deleted in v5 (BL-33, 4 Oct 2026). Structural safety:
-    # the sweep only ever fills nulls (split/exc writers are fill-null-only) and only (re)writes
-    # segments where absent, so it can never regress a value the old backfills set (see design §10a).
+    # The settle sweep (engine step 4d) settles the history once per _SETTLE_HISTORY_VERSION, and
+    # gives what settle() declines its segments from its own price (4e). It replaced the history
+    # reprice sweep, which replaced the three legacy backfills (BL-33).
     try:
-        _maybe_reprice_history()
+        _maybe_settle_history()
     except Exception as _rh_e:
-        logger.warning("engine_startup: reprice-history sweep schedule failed: %s", _rh_e)
+        logger.warning("engine_startup: settle sweep schedule failed: %s", _rh_e)
 
 
     # ── One-time region-timeline reconciliation (historical-carbon foundation) ──

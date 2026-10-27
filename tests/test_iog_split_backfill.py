@@ -5,9 +5,10 @@ The split seam only fires on finalise/settlement, so blocks priced before it shi
 (existing dispatch history + already-settled blocks) carry no EV/Home columns and the
 billing summary shows no split. The re-price sweep now carves it (the one-shot backfill,
 _run_historical_iog_split_backfill, and its runner tests were deleted — BL-33, 4 Oct
-2026). Guarantees checked here, on the store side the sweep shares:
-  * the batch writer is additive + idempotent (never touches imp_rate/imp_cost);
+2026). Guarantees checked here, on the store side:
   * the lightweight fetch surfaces the split, and omits it when null.
+(The sweep's batch split writer, `set_blocks_iog_split`, went with the history reprice sweep in
+engine step 4e: settle() writes the split as the EV segments, with the main.)
 
 Step 5c (10 Oct 2026): the imp_*_ev columns are gone and the split is the EV segments. The
 paging pair (get/count_blocks_missing_iog_split) went with them, and their tests here; the
@@ -82,28 +83,11 @@ class TestIogSplitBackfill(unittest.TestCase):
             "imp_rate, imp_cost FROM blocks b WHERE block_start=? AND meter_id=?",
             (start, meter)).fetchone()
 
-    # ── batch writer: additive + idempotent ─────────────────────────────────
-    def test_writer_additive_and_idempotent(self):
-        n = self.st.set_blocks_iog_split([
-            ("2026-01-01T13:00:00", "electricity_main", SPLIT, 0)])
-        self.assertEqual(n, 1)
-        r = self._row()
-        self.assertEqual(r["imp_kwh_ev"], 2.0)
-        self.assertAlmostEqual(r["imp_cost"], 0.15)     # inc untouched
-        self.assertAlmostEqual(r["imp_rate"], 0.05)
-        # Second write is a no-op (no-split-only guard) — never re-carves.
-        n2 = self.st.set_blocks_iog_split([
-            ("2026-01-01T13:00:00", "electricity_main",
-             [(3.0, 9.9, None, "x", "ev")], 0)])
-        self.assertEqual(n2, 0)
-        self.assertEqual(self._row()["imp_kwh_ev"], 2.0)
-
     # ── runner ───────────────────────────────────────────────────────────────
     # ── the render read-path surfaces the split (regression: the lightweight chart
     #    fetch omitted the columns, so 'Import — total grid' fell back to plain rows) ──
     def test_lightweight_fetch_surfaces_split(self):
-        self.st.set_blocks_iog_split([
-            ("2026-01-01T13:00:00", "electricity_main", SPLIT, 0)])
+        self.st.set_block_segments("2026-01-01T13:00:00", "electricity_main", SPLIT)
         blks = self.st.get_blocks_lightweight(
             "2026-01-01T00:00:00", "2026-01-02T00:00:00")
         imp = blks[0]["meters"]["electricity_main"]["channels"]["import"]

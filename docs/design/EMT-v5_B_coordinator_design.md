@@ -5,7 +5,7 @@ and the writer thread-affine, what is left to coordinate is writers.*
 
 **Status:** the coordinator exists, 23 Sep 2026. `job_coordinator.py`
 holds the decision logic and the dependency manifest; `tests/test_job_coordinator.py` covers it.
-Membership stands at **13/14** registered (`.build/check_job_membership.py`): every engine job
+Membership stands at **12/13** registered (`.build/check_job_membership.py`): every engine job
 including the live tick, the three background workers, and (4 Oct 2026) `api_meter_delete_data`,
 which joined `delete` and now holds the delete flag while it works, so the members
 `exclusive_with` "delete" see it. The 1 outstanding is `api_db_vacuum` (which never joins — see
@@ -72,9 +72,9 @@ because that is a *dependency*, not a race.
 
 `.build/write_scope.py`:
 
-> **8 of the 8 live jobs write `blocks`; 7 also write `block_segments`.**
+> **7 of the 7 live jobs write `blocks`; 4 also write `block_segments`.**
 
-*(8 of 8 since 27 Oct 2026, when engine step 4e removed the device rate drift repair; 9 of 9 from 23 Oct 2026, when engine step 2d removed the deferred pricing verify pass; 10 of 10 from 20 Oct 2026. The attribution job always wrote `blocks`, through
+*(7 of 7, 4 with segments, since 27 Oct 2026, when engine step 4e-2 replaced the history reprice sweep and its run-to-done with the settle sweep; 8 of 8 earlier that day, when 4e removed the device rate drift repair; 9 of 9 from 23 Oct 2026, when engine step 2d removed the deferred pricing verify pass; 10 of 10 from 20 Oct 2026. The attribution job always wrote `blocks`, through
 `append_block_replace`, five calls down — past the tool's depth of 4. Putting a device half-hour
 back from `ha_reads` points it at its sensor with a direct UPDATE three calls down, which the
 tool sees.)*
@@ -94,11 +94,10 @@ declare a scope:
 | `run_gap_fill_job` | `from_ts, to_ts, channels, meter_id` | **yes** |
 | `run_attribution_job` | `device_meter_id, sensor_ids` (and, since 20 Oct 2026, `window`) | **yes — a meter** |
 | `run_api_import_job` | `requested_from, chunk_days, max_chunks` | a start, no end |
-| `_run_historical_reprice_sweep` | `max_blocks, batch, pace_s, force` | no — a budget |
+| `_run_settle_history_sweep` | `force, max_days` | no — a budget |
 | `run_measured_history_drain` | `max_batches` | no — a budget |
 | `_run_historical_carbon_backfill` | `window_days, max_windows` | no — a budget |
 | `run_iog_split_carve` | `max_blocks` | no — a budget |
-| `run_reprice_history_sweep_to_done` | `max_passes` | no — a budget |
 
 `max_blocks`, `limit`, `batch`, `force` say **how much**, not **which**. The sweeps operate over
 "whatever currently matches a predicate", and the predicate lives inside the SQL, not the signature.
@@ -132,7 +131,7 @@ Today's graph, measured from the guard checks (`.build/check_job_guards.py`):
 | attribution | import, verify_pricing, delete | all three checked in `run_attribution_job` |
 | carbon backfill | import, delete | both checked in `_maybe_backfill_historical_carbon` |
 | measured drain | import, delete | both checked in `_maybe_drain_measured_history` |
-| reprice sweep | import, delete | both checked in `_maybe_reprice_history` |
+| settle sweep (the reprice sweep until engine step 4e) | import, delete | both checked in `_maybe_settle_history` |
 | verify_pricing | import | `api_import_running()` in the deferred pass |
 | restore | import | `_restore_worker` drains a running import |
 | **the other ten** | **nothing** | — and §6 q2 asks whether that is examined or merely unexamined |
@@ -237,8 +236,9 @@ What is true today, measured:
 
 ### 4.1 The other 19
 
-**13 further members**, enumerated rather than estimated — **14 members** in all (15 until engine step 4e removed
-the device rate drift repair, 27 Oct 2026; 16 until engine step 2d removed the deferred pricing verify pass,
+**12 further members**, enumerated rather than estimated — **13 members** in all (14 until engine step 4e-2 put the
+settle sweep in place of the history reprice sweep and its run-to-done, and 15 until 4e removed the device rate
+drift repair, both 27 Oct 2026; 16 until engine step 2d removed the deferred pricing verify pass,
 23 Oct 2026).
 
 *Corrected three times, in both directions. First 23, which missed the three background workers.
@@ -259,14 +259,15 @@ members others most want to avoid: `delete_in_progress()` is the second most con
 codebase. `_delete_worker` and `_purge_worker` are ONE member with two entry points, because that
 is what `delete_in_progress()` already means.
 
-**8 live engine jobs** (`.build/check_job_guards.py`; three further jobs — the legacy exc, segment
+**7 live engine jobs** (`.build/check_job_guards.py`; three further jobs — the legacy exc, segment
 and iog-split backfills — are unreachable and do not come across):
-`run_api_import_job`, `_run_historical_reprice_sweep`,
+`run_api_import_job`, `_run_settle_history_sweep`,
 `_run_historical_carbon_backfill`, `run_measured_history_drain`, `run_gap_fill_job`,
-`run_iog_split_carve`, `run_attribution_job`,
-`run_reprice_history_sweep_to_done`.
+`run_iog_split_carve`, `run_attribution_job`.
 
-*`run_device_rate_drift_repair` went on 27 Oct 2026 (engine step 4e): every settle() write takes the
+*`_run_historical_reprice_sweep` and `run_reprice_history_sweep_to_done` went on 27 Oct 2026 (engine step 4e-2):
+the settle sweep walks the whole history and gives what settle() declines its segments, so they had
+nothing left. `run_device_rate_drift_repair` went the same day (engine step 4e): every settle() write takes the
 devices with the main, so nothing is left to drift. Was 14, then 10, then 11, now 10 again: `run_settled_ev_split_heal` was removed on 16 Oct 2026
 (bill and split paths design §7.3) — once v5's settle took the bill's split (#180) and the importer
 gave imported history it (#184), the heal had nothing left but rewriting history at runtime. The four v4 one-off heals — `run_smb_rate_repair`, `run_smb_device_recost`,

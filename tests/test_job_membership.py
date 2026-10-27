@@ -66,8 +66,9 @@ class TestMembershipRatchet(unittest.TestCase):
         want to avoid: `delete_in_progress()` is the second most consulted guard in
         the codebase. 17 to 16 on 16 Oct 2026: the settled EV split heal was removed (bill and
         split paths design §7.3). 16 to 15 on 23 Oct 2026: the deferred pricing verify pass
-        (engine step 2d). 15 to 14 on 27 Oct 2026: the device rate drift repair (engine step 4e)."""
-        self.assertEqual(self.d["members"], 14)
+        (engine step 2d). 15 to 14 on 27 Oct 2026: the device rate drift repair (engine step 4e);
+        14 to 13 the same day: the history reprice sweep and its run-to-done, for the settle sweep."""
+        self.assertEqual(self.d["members"], 13)
 
     def test_the_baseline_is_a_countdown_not_a_record(self):
         """If this ever reaches zero the ratchet is finished and acceptance 1 is
@@ -107,7 +108,7 @@ class TestConsumptionNotJustRegistration(unittest.TestCase):
     def test_the_consumers_so_far(self):
         self.assertEqual(sorted(self.d["consuming"]),
                          ["attribution", "carbon_backfill", "measured_drain",
-                          "prune_tombstones", "reprice_sweep"])
+                          "prune_tombstones", "settle_sweep"])
 
     def test_a_declared_dependency_that_is_never_consulted_is_visible(self):
         """Not a failure — `delete` and `restore` declare `import` and do not consult

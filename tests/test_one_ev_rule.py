@@ -31,9 +31,9 @@ class OneDispatchEv(unittest.TestCase):
         self.assertAlmostEqual(engine.dispatch_ev_kwh("2026-09-01T02:00:00", 0.809, st), 0.809)
         self.assertEqual(engine.dispatch_ev_kwh("2026-09-01T02:30:00", 5.0, st), 0.0)
 
-    def test_the_seam_and_the_settle_both_use_it(self):
+    def test_settle_uses_it(self):
+        """The seam (`_apply_iog_split`) used it too, until engine step 4e removed the seam."""
         self.assertNotIn("def _iog_slot_ev_kwh", SRC)
-        self.assertIn("ev_kwh = dispatch_ev_kwh(block_start, chosen_kwh)", SRC)
         settle = SRC[SRC.index("def settle_facts"):SRC.index("def settle_parity_row")]
         self.assertIn("dispatch_ev_kwh(bs, kwh, store)", settle)
         self.assertNotIn("completed_dispatch_kwh(", settle)
@@ -45,11 +45,11 @@ class OneCappedTest(unittest.TestCase):
         both = re.findall(r'"ev_device_off_peak" in _kraken_rate_schedules\s*\n?\s*and '
                           r'"ev_device_peak" in _kraken_rate_schedules', SRC)
         self.assertEqual(len(both), 1, "the capped-schedules test is written more than once")
-        # the definition, the seam and settle_facts — each AND the half-hour's own agreement. (The
-        # BL-34 relabel, which asked only the agreement — `_capped_band = capped_at(bs)` — went with
-        # the reconcile's own repricing, engine step 4c.)
-        self.assertGreaterEqual(SRC.count("_capped_schedules()"), 3)
-        self.assertEqual(SRC.count("capped_at(block_start) and _capped_schedules()"), 1)
+        # the definition and settle_facts — AND the half-hour's own agreement. (The BL-34 relabel,
+        # which asked only the agreement — `_capped_band = capped_at(bs)` — went with the
+        # reconcile's own repricing, engine step 4c; the seam's, with the seam in 4e.)
+        self.assertGreaterEqual(SRC.count("_capped_schedules()"), 2)
+        self.assertEqual(SRC.count("capped_at(block_start) and _capped_schedules()"), 0)
         # settle_facts — the bill apply's mixed rebuild went with engine step 4b (the bill apply
         # through settle()); 4a had made it two
         self.assertEqual(SRC.count("capped_at(bs) and _capped_schedules()"), 1)

@@ -39,11 +39,12 @@ class TestJobGuards(unittest.TestCase):
                          "a job has lost its coordination:\n" + r.stdout)
 
     def test_callers_are_searched_not_just_job_bodies(self):
-        """v4 sets the re-entry flags in the scheduler wrapper
-        (`_maybe_reprice_history`), never in the job. Measuring the job body alone
-        reported five guarded jobs as unguarded on the first pass."""
-        self.assertIn("_reprice_history_running",
-                      self.d["jobs"]["_run_historical_reprice_sweep"]["guards"])
+        """v4 sets the re-entry flags in the scheduler wrapper, never in the job.
+        Measuring the job body alone reported five guarded jobs as unguarded on the
+        first pass. (The settle sweep's flag is in `_settle_history_to_done`; the
+        history reprice sweep's, `_maybe_reprice_history`, until engine step 4e.)"""
+        self.assertIn("_settle_history_running",
+                      self.d["jobs"]["_run_settle_history_sweep"]["guards"])
 
     def test_old_style_coordination_only_ever_meant_those_two(self):
         """v4's starting position: every job that coordinated at all checked
@@ -79,12 +80,13 @@ class TestJobGuards(unittest.TestCase):
                 "%s coordinates against %s — worth a look" % (j, sorted(guards)))
 
     def test_the_live_job_count(self):
-        """8 live jobs. The three legacy backfills this once excluded as unreachable
+        """7 live jobs. The three legacy backfills this once excluded as unreachable
         were deleted (BL-33, 4 Oct 2026), so every listed job is now live; the settled EV
         split heal was removed on 16 Oct 2026 (bill and split paths design §7.3), the
-        deferred pricing verify pass on 23 Oct 2026 (engine step 2d), and the device rate drift
-        repair on 27 Oct 2026 (engine step 4e)."""
-        self.assertEqual(self.d["live_jobs"], 8)
+        deferred pricing verify pass on 23 Oct 2026 (engine step 2d), the device rate drift
+        repair on 27 Oct 2026 (engine step 4e), and the same day the history reprice sweep and its
+        run-to-done, for the settle sweep (4e-2)."""
+        self.assertEqual(self.d["live_jobs"], 7)
         self.assertTrue(all(j["live"] for j in self.d["jobs"].values()))
 
     def test_run_exclusive_is_still_only_a_barrier(self):

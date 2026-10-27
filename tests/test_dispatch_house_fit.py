@@ -14,9 +14,10 @@ bill on the main untouched. With an EV meter the meter is the EV and nothing cha
 imp_kwh − the devices' grid shares, which is how these tests read it.)
 
 Ported from v4 4.5.21 without its heal (`dispatch_house_refit_done`); the 4.5.21 import floor means
-a database arrives already re-fitted. v5's store owns the SQL: `dispatch_house_candidates` (read)
-and `write_resplit` (write). The re-fit's bulk re-split is quiet: the routine clip warnings are
-silenced under `_pass2_quiet` (v4 4.5.21, c89b6c9).
+a database arrives already re-fitted. Engine step 4e (27 Oct 2026): the re-fit on the EV's arrival
+(`_refit_devices_to_house`, `dispatch_house_candidates`, `write_resplit`) went — the arrival is a
+completed dispatch, the carve settles the half-hour, and settle() reserves the main's EV before the
+devices as PASS 2 does (test_settle.py); its tests went with it.
 
 No local database is a dispatch-only account with devices, so these fixtures are synthetic.
 Discriminating: test_the_car_is_reserved_before_the_devices fails on 4.5.20; the re-fit tests
@@ -138,39 +139,6 @@ class TheRefit(H._Harness):
         self._close_then_arrive()
         self.assertAlmostEqual(self._row("house_battery")["imp_kwh_grid"], BATT, places=4)
 
-    def test_the_arrival_refits_the_battery_inside_the_house(self):
-        self._close_then_arrive()
-        res = engine._refit_devices_to_house(engine._store, [H.START])
-        self.assertEqual(res["refit_blocks"], 1)
-        batt, main = self._row("house_battery"), self._row("electricity_main")
-        self.assertAlmostEqual(batt["imp_kwh_grid"], MAIN - EV, places=4)
-        self.assertAlmostEqual(batt["imp_cost"], round((MAIN - EV) * batt["imp_rate"], 6), places=6)
-        self.assertAlmostEqual(main["imp_kwh"] - batt["imp_kwh_grid"], EV, places=4)  # derived house
-        self.assertAlmostEqual(batt["imp_kwh"], BATT, places=4)          # the reading is kept
-
-    def test_a_measured_block_keeps_its_bill(self):
-        """GUARD (step 5, 10 Oct 2026): this kept the bill-set £ remainder, a column now dropped.
-        What survives is that the re-fit writes only the devices — the measured main's bill and its
-        provenance are left as they were, and the derived house still holds the EV."""
-        self._close_then_arrive(measured=True)
-        engine._refit_devices_to_house(engine._store, [H.START])
-        main, batt = self._row("electricity_main"), self._row("house_battery")
-        self.assertAlmostEqual(main["imp_cost"], 1.2345, places=6)
-        self.assertEqual(main["rate_source"], "settled")
-        self.assertAlmostEqual(batt["imp_kwh_grid"], MAIN - EV, places=4)
-        self.assertAlmostEqual(main["imp_kwh"] - batt["imp_kwh_grid"], EV, places=4)
-
-    def test_it_is_idempotent(self):
-        self._close_then_arrive()
-        engine._refit_devices_to_house(engine._store, [H.START])
-        self.assertEqual(engine._refit_devices_to_house(engine._store, [H.START])["refit_blocks"], 0)
-
-    def test_the_refit_does_not_relog_every_clip(self):
-        """A bulk re-split under _pass2_quiet logs no routine clip WARNING (v4 4.5.21 c89b6c9)."""
-        self._close_then_arrive()
-        with self.assertNoLogs("engine", level="WARNING"):
-            engine._refit_devices_to_house(engine._store, [H.START])
-
     def test_a_normal_split_still_warns_of_a_clip(self):
         """GUARD: outside a bulk pass the clip is still logged."""
         blk = _block(ev_kwh=None)
@@ -178,20 +146,6 @@ class TheRefit(H._Harness):
         with self.assertLogs("engine", level="WARNING") as cm:
             engine._apply_pass2(blk)
         self.assertTrue(any("clipped" in m or "EXCEEDS" in m for m in cm.output))
-
-
-class AnAccountWithAnEvMeter(H._Harness):
-    """GUARD: the meter is the EV — no dispatch-only candidates, nothing re-fitted."""
-
-    def test_no_candidates(self):
-        self._finalise()
-        for (bs, r, k) in engine._store._conn.execute(
-                "SELECT block_start, imp_rate, imp_kwh FROM blocks "
-                "WHERE meter_id = 'electricity_main'").fetchall():
-            engine._store.set_block_segments(bs, "electricity_main", [
-                (2.0, r, None, "off_peak", "ev"),
-                (round(max(0.0, (k or 0.0) - 2.0), 6), r, None, "off_peak", "house")])
-        self.assertEqual(engine._store.dispatch_house_candidates(), [])
 
 
 if __name__ == "__main__":

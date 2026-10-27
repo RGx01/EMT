@@ -92,8 +92,8 @@ _MANIFEST: dict = {
     "prune_tombstones":    ((),                               ("delete",),     DEFER),
     # `restore` (#56, 3 Oct 2026): each of these commits through a restore otherwise —
     # measured for the sweep on the Pi, where it restarted the safety backup for minutes.
-    "reprice_sweep":       (("import",),                      ("delete", "restore"), DEFER),
-    "reprice_sweep_to_done": ((),                             (),              DEFER),
+    # the settle sweep (engine step 4d; it replaced the history reprice sweep in 4e)
+    "settle_sweep":        (("import",),                      ("delete", "restore"), DEFER),
     "carbon_backfill":     (("import",),                      ("delete", "restore"), DEFER),
     "measured_drain":      (("import",),                      ("delete", "restore"), DEFER),
     "attribution":         (("import",),                      ("delete",),     WAIT),

@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """136 read-only methods of BlockStore, and nothing else.
+    """133 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -72,7 +72,6 @@ class ReadStore:
     _EPOCH_KEY = _BS._EPOCH_KEY
     _EXPORT_PRESENT = _BS._EXPORT_PRESENT
     _LATEST_BILL_SQL = _BS._LATEST_BILL_SQL
-    _NEEDS_REPRICE_WHERE = _BS._NEEDS_REPRICE_WHERE
     _SETTLEABLE_SQL = _BS._SETTLEABLE_SQL
     _UNSETTLED_WHERE = _BS._UNSETTLED_WHERE
     _UNSETTLED_WHERE_IMPORT_ONLY = _BS._UNSETTLED_WHERE_IMPORT_ONLY
@@ -115,7 +114,6 @@ class ReadStore:
     count_blocks = _BS.count_blocks
     count_blocks_for_date_range = _BS.count_blocks_for_date_range
     count_blocks_missing_segments = _BS.count_blocks_missing_segments
-    count_blocks_needing_reprice = _BS.count_blocks_needing_reprice
     count_import_blocks_missing_exc = _BS.count_import_blocks_missing_exc
     count_imported_export = _BS.count_imported_export
     count_imported_history = _BS.count_imported_history
@@ -126,7 +124,6 @@ class ReadStore:
     day_fingerprints = _BS.day_fingerprints
     delete_span_preview = _BS.delete_span_preview
     device_stitch_sensors = _BS.device_stitch_sensors
-    dispatch_house_candidates = _BS.dispatch_house_candidates
     emt_recording_continuously = _BS.emt_recording_continuously
     find_block_gaps = _BS.find_block_gaps
     first_dispatch_record = _BS.first_dispatch_record
@@ -150,7 +147,6 @@ class ReadStore:
     get_blocks_lightweight = _BS.get_blocks_lightweight
     get_blocks_missing_segments = _BS.get_blocks_missing_segments
     get_blocks_needing_pass2_rerun = _BS.get_blocks_needing_pass2_rerun
-    get_blocks_needing_reprice = _BS.get_blocks_needing_reprice
     get_blocks_off_dispatch_split = _BS.get_blocks_off_dispatch_split
     get_config_period = _BS.get_config_period
     get_config_period_for_date = _BS.get_config_period_for_date
@@ -228,7 +224,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 95 writers.
+    """The full store: every read method, plus the 93 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or

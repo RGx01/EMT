@@ -97,14 +97,14 @@ class TheImportFinish(unittest.TestCase):
     def test_after_an_import_the_bills_are_applied_before_the_drain(self):
         calls = []
 
-        async def _sweep(force=False):
+        async def _sweep(force=False, wait_for_schedule=False):
             calls.append("sweep")
 
         async def _apply():
             calls.append("apply")
             return 0
 
-        with mock.patch.object(engine, "_run_historical_reprice_sweep", _sweep), \
+        with mock.patch.object(engine, "_settle_history_to_done", _sweep), \
              mock.patch.object(engine, "_apply_bills_paced", _apply), \
              mock.patch.object(engine, "_maybe_drain_measured_history", lambda: calls.append("drain")), \
              mock.patch.object(engine, "_store", mock.MagicMock(get_meta=lambda k, d=None: {"done": True})), \

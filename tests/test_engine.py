@@ -4660,34 +4660,6 @@ class TestGapMarkerDoesNotFreezeSettlement(unittest.TestCase):
         self.assertNotIn("current_block", src)
         self.assertNotIn("_gap_marker", src)
 
-class TestExcRateForBlock(unittest.TestCase):
-    """The ex-VAT rate the re-price sweep derives for a block: the tariff's published exc
-    rate scaled to the stored inc. (Its other caller, the 4.2 ex-VAT historical backfill,
-    and that backfill's tests were deleted with it — BL-33, 4 Oct 2026.)"""
-
-    def _flat_segs(self, inc_p=21.0, exc_p=20.0):
-        from kraken_rates import RateSchedule
-        sched = RateSchedule([("2000-01-01T00:00:00", None, inc_p)],
-                             exc_periods=[("2000-01-01T00:00:00", None, exc_p)])
-        return [("2000-01-01T00:00:00", None, sched)]
-
-    def test_exc_rate_for_block_scales_from_stored_inc(self):
-        segs = self._flat_segs(inc_p=21.0, exc_p=20.0)
-        # stored inc 0.21 £/kWh → exc = 0.21 × (20/21) = 0.20
-        self.assertAlmostEqual(
-            engine._exc_rate_for_block(segs, "2026-03-01T00:00:00", 0.21), 0.20, places=6)
-        # uncovered slot (before the segment window) → None
-        self.assertIsNone(
-            engine._exc_rate_for_block(segs, "1999-01-01T00:00:00", 0.21))
-
-    def test_exc_rate_none_when_no_exc_sibling(self):
-        from kraken_rates import RateSchedule
-        sched = RateSchedule([("2000-01-01T00:00:00", None, 21.0)])   # no exc_periods
-        segs = [("2000-01-01T00:00:00", None, sched)]
-        self.assertIsNone(
-            engine._exc_rate_for_block(segs, "2026-03-01T00:00:00", 0.21))
-
-
 class TestVatCalendarLearning(unittest.TestCase):
     """The VAT calendar self-maintains from the tariff's inc/exc rates."""
 

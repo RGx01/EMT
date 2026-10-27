@@ -524,7 +524,7 @@ def _make_db(path):
     st._conn.execute("INSERT INTO block_segments (block_start, meter_id, channel, seq, kwh, "
                      "inc_rate, band, attribution) VALUES ('2026-09-01T00:00:00', 'ev', "
                      "'import', 0, 0.4, 0.3, 'day', 'ev')")
-    st.set_meta("reprice_history_state", {"done": True, "scope": 2})
+    st.set_meta("settle_history_state", {"done": True, "version": 1})
     st.set_meta("written_by", "4.5.16")
     st._conn.commit()
     return st
@@ -553,7 +553,7 @@ class PrepareDb(unittest.TestCase):
     def test_the_source_is_untouched(self):
         self.assertEqual(self._q(self.src, "SELECT COUNT(*) FROM block_segments")[0][0], 5)
         self.assertTrue(self._q(self.src, "SELECT value FROM store_meta "
-                                          "WHERE key='reprice_history_state'"))
+                                          "WHERE key='settle_history_state'"))
 
     def test_only_the_sweeps_segments_are_removed_and_snapshotted(self):
         out_db = os.path.join(self.out, "blocks.db")
@@ -567,8 +567,13 @@ class PrepareDb(unittest.TestCase):
         from block_store import BlockStore
         st = BlockStore(os.path.join(self.out, "blocks.db"))
         try:
-            self.assertIsNone(st.get_meta("reprice_history_state", None))
-            self.assertEqual(st.count_blocks_needing_reprice(), 3)
+            self.assertIsNone(st.get_meta("settle_history_state", None))
+            # the priced main half-hours with import and no segments: what the sweep rebuilds
+            self.assertEqual(st._conn.execute(
+                "SELECT COUNT(*) FROM blocks b WHERE b.meter_id = 'electricity_main' "
+                "AND b.imp_kwh > 0 AND b.imp_cost IS NOT NULL AND NOT EXISTS (SELECT 1 FROM "
+                "block_segments s WHERE s.block_start = b.block_start AND s.meter_id = "
+                "b.meter_id AND s.channel = 'import')").fetchone()[0], 3)
         finally:
             st._conn.close()
 

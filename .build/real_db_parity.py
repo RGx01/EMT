@@ -8,10 +8,11 @@ non-IOG account, whose own API key we do not have. It:
 
   1. copies the database (the source is never written), and opens the copy with v5's store,
      which adds the tables and columns it lacks;
-  2. builds segments and ex-VAT with v5's own historical re-price sweep, from a rate schedule
-     REBUILT FROM THE STORED RATES: each half-hour's inc rate is the one the block already holds
-     (on Agile, the real published price), its ex-VAT the inc divided by 1 + VAT on its local day
-     (vat_calendar's seed);
+  2. settles every half-hour with v5's own settle() (engine.settle_range — the settle sweep's
+     pass, since engine step 4e replaced the history re-price sweep), from a rate schedule REBUILT
+     FROM THE STORED RATES: each half-hour's inc rate is the one the block already holds (on Agile,
+     the real published price); with no Octopus discovery the tariff reads as published, so each
+     half-hour is kWh × that rate, its ex-VAT through the VAT calendar;
   3. records what every data surface answers, as SHA-256s (and, with --dump, in full).
 
 Run it before and after a change and compare. Nothing it reads or writes belongs in the repo:
@@ -21,13 +22,12 @@ point --out at a scratch directory. Real customer figures stay out of commits an
     python3 .build/real_db_parity.py SOURCE.db --out DIR --compare  # what moved since
 """
 import argparse
-import asyncio
 import json
 import os
 import shutil
 import sys
 import tempfile
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -42,7 +42,8 @@ class _StoredExc:
 
 
 class StoredSchedule:
-    """The sweep's rate-schedule interface, answered from the blocks' own stored inc rates."""
+    """The rate-schedule interface settle() reads (pence/kWh, as kraken_rates.RateSchedule answers),
+    answered from the blocks' own stored inc rates (£/kWh)."""
     def __init__(self, conn):
         import vat_calendar
         self.inc = {r[0]: float(r[1]) for r in conn.execute(
@@ -60,7 +61,19 @@ class StoredSchedule:
         return d.replace(minute=0 if d.minute < 30 else 30, second=0, microsecond=0).isoformat()
 
     def resolve(self, ts):
-        return self.inc.get(self._key(ts), 0.0)
+        return self.inc.get(self._key(ts), 0.0) * 100.0
+
+    def day_rate_bounds(self, ts):
+        day = self._key(ts)[:10]
+        rates = [r for k, r in self.inc.items() if k.startswith(day)] or [0.0]
+        return (min(rates) * 100.0, max(rates) * 100.0)
+
+    def off_peak_rate_near(self, ts):
+        return self.day_rate_bounds(ts)[0]
+
+    def is_off_peak(self, ts):
+        lo, hi = self.day_rate_bounds(ts)
+        return hi > lo and abs(self.resolve(ts) - lo) < 1e-9
 
     def exc_at(self, ts):
         k = self._key(ts)
@@ -83,19 +96,15 @@ def prepare(source, workdir):
     st = BlockStore(path)
     sched = StoredSchedule(st._conn)
 
-    async def _segs(ch):
-        return [("2000-01-01T00:00:00", None, sched)]
     job_coordinator.reset_for_tests()
+    first, last = st.block_span("electricity_main")
     with mock.patch.object(engine, "_store", st), \
          mock.patch.object(engine, "_kraken_rate_schedules", {"import": sched}), \
-         mock.patch.object(engine, "_build_channel_rate_segs", _segs), \
-         mock.patch.object(engine, "_hist_rate_segs_cache", {}), \
-         mock.patch.object(engine, "_write_reprice_report", lambda **k: None):
-        st.set_meta(engine._REPRICE_HISTORY_MARKER, {})
-        for _ in range(500):
-            asyncio.run(engine._run_historical_reprice_sweep(batch=500, pace_s=0, force=True))
-            if (st.get_meta(engine._REPRICE_HISTORY_MARKER, {}) or {}).get("done"):
-                break
+         mock.patch.object(engine, "_kraken_discovery", {}):
+        if first:
+            with st.batch():                  # the half-hour after the newest block is the end
+                engine.settle_range(st, first, (datetime.fromisoformat(last)
+                                                + timedelta(minutes=30)).isoformat())
     job_coordinator.reset_for_tests()
     last = st._conn.execute("SELECT MAX(block_start) FROM blocks").fetchone()[0]
     st.close()

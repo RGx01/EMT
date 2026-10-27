@@ -1,8 +1,9 @@
 """
 BL-68: the re-pricing banner must not call a fresh install's own import an upgrade.
 
-`_run_historical_reprice_sweep` has TWO triggers — the first run after an upgrade, and the
-forced pass the verify stage runs after every import / gap-fill (P3.3d) — but the banner
+The history sweep (`_run_historical_reprice_sweep`; the settle sweep since engine step 4e) has TWO
+triggers — the first run after an upgrade, and the pass from the start after every import / gap
+fill — but the banner
 named only the first. A brand-new install that imported its history was therefore told
 "Finishing your upgrade", on a box that had never run a previous version and had just been
 asked to do exactly this work. The advice attached to it ("avoid restarting or rebuilding")
@@ -21,16 +22,16 @@ sys.path.insert(0, _HERE)
 
 
 def _cause_fn():
-    """Lift _reprice_sweep_cause out of web/server.py without importing Flask."""
+    """Lift _settle_sweep_cause out of web/server.py without importing Flask."""
     src = open(os.path.join(_HERE, "web", "server.py")).read()
     ns = {}
     for n in ast.parse(src).body:
-        if isinstance(n, ast.FunctionDef) and n.name == "_reprice_sweep_cause":
+        if isinstance(n, ast.FunctionDef) and n.name == "_settle_sweep_cause":
             exec(compile(ast.Module([n], []), "<s>", "exec"), ns)
         elif isinstance(n, ast.Assign) and getattr(
-                n.targets[0], "id", "") == "_REPRICE_CAUSE_WINDOW_H":
+                n.targets[0], "id", "") == "_SETTLE_CAUSE_WINDOW_H":
             exec(compile(ast.Module([n], []), "<s>", "exec"), ns)
-    return ns["_reprice_sweep_cause"], ns
+    return ns["_settle_sweep_cause"], ns
 
 
 class _Store:
@@ -85,7 +86,7 @@ class TestRepriceSweepCause(unittest.TestCase):
         self.assertEqual(self._run(_Store(None)), "upgrade")
 
     def test_window_boundary(self):
-        w = self.ns["_REPRICE_CAUSE_WINDOW_H"]
+        w = self.ns["_SETTLE_CAUSE_WINDOW_H"]
         just_in = (datetime.utcnow() - timedelta(hours=w - 1)).isoformat()
         just_out = (datetime.utcnow() - timedelta(hours=w + 1)).isoformat()
         self.assertEqual(self._run(_Store(just_in)), "import")

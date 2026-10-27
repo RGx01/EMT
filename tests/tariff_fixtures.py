@@ -217,21 +217,15 @@ def build(path, tariff, devices=False):
 
 
 def _sweep(st, tariff):
+    """The history settled as an upgrade or an import leaves it: the settle sweep (engine step 4d;
+    the history reprice sweep until 4e), priced from the fixture's schedule."""
     import engine
     import job_coordinator
     sched = Schedule(tariff)
-
-    async def _segs(ch):
-        return [("2000-01-01T00:00:00", None, sched)]
     job_coordinator.reset_for_tests()
     with mock.patch.object(engine, "_store", st), \
          mock.patch.object(engine, "_kraken_rate_schedules", {"import": sched}), \
-         mock.patch.object(engine, "_build_channel_rate_segs", _segs), \
-         mock.patch.object(engine, "_hist_rate_segs_cache", {}), \
-         mock.patch.object(engine, "_write_reprice_report", lambda **k: None), \
+         mock.patch.object(engine, "_SETTLE_HISTORY_PACE_S", 0), \
          mock.patch.object(engine, "_iog_site_tz", lambda store=None: "Europe/London"):
-        for _ in range(50):
-            asyncio.run(engine._run_historical_reprice_sweep(batch=500, pace_s=0))
-            if (st.get_meta(engine._REPRICE_HISTORY_MARKER, {}) or {}).get("done"):
-                break
+        asyncio.run(engine._run_settle_history_sweep(force=True))
     job_coordinator.reset_for_tests()

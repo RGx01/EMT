@@ -48,7 +48,7 @@ class TheDeviceDelete(unittest.TestCase):
             # What the rest of the system sees while the device delete does its work.
             self.seen["flag"] = engine.delete_in_progress()
             self.seen["delete_running"] = C.running("delete")
-            self.seen["sweep"] = C.admission("reprice_sweep")[0]
+            self.seen["sweep"] = C.admission("settle_sweep")[0]
             return {"blocks": 0}
         self.p = [mock.patch.object(self.srv, "_get_store", lambda: self.st),
                   mock.patch.object(self.srv, "_safety_backup", lambda label: label + ".zip"),
