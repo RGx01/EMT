@@ -3798,6 +3798,11 @@ class TestDispatchOverlayAtFinalise(unittest.TestCase):
         engine._store.upsert_dispatch_slot(
             "2026-06-07T15:00:00", off_peak=True, provider="MYENERGI_V2",
             source="smart-charge")
+        # an Intelligent tariff, as a dispatch implies: settle() prices a published one by the clock
+        # (engine step 4d settles every finalised half-hour; the overlay never asked the tariff)
+        self._disc = patch.object(engine, "_kraken_discovery",
+                                  {"import": {"tariff_code": "E-1R-INTELLI-VAR-22-10-14-C"}})
+        self._disc.start()
 
     def tearDown(self):
         import shutil
@@ -3805,6 +3810,7 @@ class TestDispatchOverlayAtFinalise(unittest.TestCase):
         engine._kraken_rate_schedules = {}
         engine.DATA_DIR, engine.CONFIG_PATH = self._orig_data_dir, self._orig_config
         shutil.rmtree(self._tmp, ignore_errors=True)
+        self._disc.stop()
 
     def _finalise(self, start, end):
         blk = engine.create_block(datetime.fromisoformat(start),

@@ -1434,12 +1434,33 @@ def _reader():
 
 def append_block(block: dict):
     """finalise_block's write: every meter's channels as HA reported them go to `ha_reads` with
-    the block (soft delete design §2) — now, before settlement can put Octopus's kWh on it."""
+    the block (soft delete design §2) — now, before settlement can put Octopus's kWh on it. Then
+    the half-hour is settle()'s (engine step 4d)."""
     get_store().append_block(block, ha_meters=list(block.get("meters") or {}))
+    _settle_written(block)
 
 
 def append_block_replace(block: dict, **kw):
     get_store().append_block_replace(block, **kw)
+    _settle_written(block)
+
+
+def _settle_written(block: dict) -> None:
+    """A block was written — finalise, a gap block, a provisional amendment, a device rebuild, the
+    PASS 2 re-run: its main half-hour is settle()'s from the facts it now holds, written only where
+    it differs (engine step 4d). The writer's own pricing stands where settle() cannot price it (no
+    tariff schedule: a rate-sensor account) or the half-hour is corrected. Never raises."""
+    if "electricity_main" not in (block.get("meters") or {}) or not block.get("start"):
+        return
+    try:
+        r = settle_half_hour(get_store(), block["start"])
+    except Exception as e:
+        logger.warning("settle failed for %s after its write (the writer's figures stand): %s",
+                       block.get("start"), e)
+        return
+    if r.get("written"):
+        logger.debug("settle: %s %s after its write — %s", block["start"], r["status"],
+                     ", ".join(r["parts"]))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -7130,6 +7151,18 @@ def _reprice_history_blocks(rows, tz_name: "str | None", rate_segs) -> dict:
     split_updates, exc_updates = [], []
     seg_n = 0
     for row in rows:
+        if dict(row).get("meter_id", "electricity_main") == "electricity_main":
+            # engine step 4d: the half-hour is settle()'s — its segments and ex-VAT with it. The
+            # derivation below stays for what settle() cannot price (no tariff schedule, no band)
+            # and for a correction, which is the user's.
+            try:
+                if settle_half_hour(_store, row["block_start"])["status"] in (
+                        "settled", "predicted", "clock"):
+                    seg_n += 1
+                    continue
+            except Exception as e:
+                logger.warning("_reprice_history_blocks: settle failed (%s), derived instead: %s",
+                               row.get("block_start"), e)
         ch = _reprice_history_block(row, tz_name, rate_segs)
         start, meter_id = ch.get("_start"), ch.get("_meter_id")
         if ch.get("rate_exc") is not None:
@@ -7413,6 +7446,148 @@ async def run_reprice_history_sweep_to_done(max_passes: int = 500) -> None:
             return
 
 
+_SETTLE_HISTORY_MARKER = "settle_history_state"    # store_meta key (engine step 4d)
+_SETTLE_HISTORY_VERSION = 1   # raise to settle every half-hour again (settle()'s rules changed)
+_SETTLE_HISTORY_DAY = timedelta(days=1)
+_SETTLE_HISTORY_PACE_S = 0.02
+_settle_history_running = False
+_settle_history_rearm = False     # an import or a gap fill asked for the whole history again
+
+
+def settle_range(store, utc_start: str, utc_end: str) -> dict:
+    """settle() over every main-meter half-hour in [utc_start, utc_end), each written only where it
+    differs from what it holds (`_settle_write`), from one get_settle_inputs read. Returns
+    {read, written, statuses: {status: n}, parts: {part: n}}."""
+    inp = store.get_settle_inputs(utc_start, utc_end)
+    try:
+        cal = store.get_vat_calendar()
+    except Exception:
+        cal = None
+    out = {"read": 0, "written": 0, "statuses": {}, "parts": {}}
+    for m in inp["mains"]:
+        bs = m["block_start"]
+        r = _settle_write(store, m, inp["subs"].get(bs, []), inp["segments"].get(bs, []), cal)
+        out["read"] += 1
+        out["statuses"][r["status"]] = out["statuses"].get(r["status"], 0) + 1
+        if r["written"]:
+            out["written"] += 1
+            for p in r["parts"]:
+                out["parts"][p] = out["parts"].get(p, 0) + 1
+    return out
+
+
+def _settle_history_done() -> bool:
+    """The settle sweep has walked the history at this _SETTLE_HISTORY_VERSION."""
+    m = (_store.get_meta(_SETTLE_HISTORY_MARKER, {}) or {}) if _store is not None else {}
+    return bool(m.get("done")) and int(m.get("version") or 0) >= _SETTLE_HISTORY_VERSION
+
+
+async def _settle_history_to_done(*, force: bool = False, wait_for_schedule: bool = False,
+                                  max_passes: int = 500) -> None:
+    """The settle sweep's passes until it is done — `force` restarts it from the history's start
+    (after an import or a gap fill). A pass that stands aside resumes at its cursor. With no import
+    schedule yet it stops, unless `wait_for_schedule` (startup, where the schedule is built after
+    the sweep is scheduled)."""
+    global _settle_history_running, _settle_history_rearm
+    if force:
+        _settle_history_rearm = True
+    if _settle_history_running:
+        return                              # the running sweep restarts at its next day
+    _settle_history_running = True
+    try:
+        for _ in range(max_passes):
+            if await _run_settle_history_sweep() < 0 and not wait_for_schedule:
+                return                      # no schedule yet: the next startup or import retries
+            if _store is None or (_settle_history_done() and not _settle_history_rearm):
+                return
+            await asyncio.sleep(_REPRICE_HISTORY_PASS_PACE)
+    finally:
+        _settle_history_running = False
+
+
+def _settle_history_restart(state: dict) -> dict:
+    """A walk from the history's start: the rearm taken, the state cleared."""
+    global _settle_history_rearm
+    _settle_history_rearm = False
+    return {}
+
+
+async def _run_settle_history_sweep(*, force: bool = False, max_days: int = 100000) -> int:
+    """settle() over the whole history, a day at a time (engine step 4d): what was priced before
+    settle() decided it — finalise's live label, history imported before 4a-2, the importer's
+    bill-split skip — becomes settle()'s, written only where it differs. Once per
+    _SETTLE_HISTORY_VERSION; `force` (after an import or a gap fill) walks it again from the start.
+    One transaction a day, the loop yielded between; stands aside for an import, a delete or a
+    restore, and resumes from its cursor. Returns the half-hours written this pass; -1 where there
+    is no import schedule to price from yet."""
+    import asyncio as _aio
+    if _store is None or delete_in_progress():
+        return 0
+    state = _store.get_meta(_SETTLE_HISTORY_MARKER, {}) or {}
+    if force or _settle_history_rearm or int(state.get("version") or 0) < _SETTLE_HISTORY_VERSION:
+        state = _settle_history_restart(state)
+    if state.get("done"):
+        return 0
+    _isched = _kraken_rate_schedules.get("import")
+    if _isched is None or _isched.is_empty():
+        # settle() prices from the schedule; without one (populated after startup, or a
+        # rate-sensor account) it would price nothing and mark the history done
+        logger.info("settle sweep: import schedule not ready — deferring")
+        return -1
+    first, last = _store.block_span("electricity_main")
+    if not first:
+        _store.set_meta(_SETTLE_HISTORY_MARKER, {"version": _SETTLE_HISTORY_VERSION, "done": True})
+        return 0
+    try:
+        day = datetime.fromisoformat(state.get("cursor") or first[:10] + "T00:00:00")
+        stop = datetime.fromisoformat(last) + timedelta(minutes=30)
+    except ValueError:
+        return 0
+    tally = {k: state.get(k) or (0 if k in ("read", "written") else {})
+             for k in ("read", "written", "parts")}
+    written = 0
+    for _ in range(max_days):
+        if _settle_history_rearm:
+            # an import or a gap fill asked for the whole history again while this pass walked it
+            _settle_history_restart(state)
+            first, last = _store.block_span("electricity_main")
+            if not first:
+                break
+            day = datetime.fromisoformat(first[:10] + "T00:00:00")
+            stop = datetime.fromisoformat(last) + timedelta(minutes=30)
+            tally = {"read": 0, "written": 0, "parts": {}}
+        if day >= stop:
+            break
+        if _store is None or _coord.admission("reprice_sweep")[0] != ADMIT:
+            logger.info("settle sweep: standing aside at %s (resumes next pass)", day.isoformat())
+            return written
+        nxt = day + _SETTLE_HISTORY_DAY
+        with _store.batch():
+            try:
+                r = settle_range(_store, day.isoformat(), nxt.isoformat())
+            except Exception as e:
+                logger.warning("settle sweep: %s failed (skipped): %s", day.date(), e)
+                r = {"read": 0, "written": 0, "parts": {}}
+            written += r["written"]
+            tally["read"] += r["read"]
+            tally["written"] += r["written"]
+            for p, n in r["parts"].items():
+                tally["parts"][p] = tally["parts"].get(p, 0) + n
+            _store.set_meta(_SETTLE_HISTORY_MARKER, dict(tally, version=_SETTLE_HISTORY_VERSION,
+                                                         cursor=nxt.isoformat()))
+        day = nxt
+        await _aio.sleep(_SETTLE_HISTORY_PACE_S)
+    if _store is None or day < stop:
+        return written
+    _store.set_meta(_SETTLE_HISTORY_MARKER, dict(
+        tally, version=_SETTLE_HISTORY_VERSION, done=True,
+        completed_at=datetime.now(timezone.utc).replace(tzinfo=None).isoformat()))
+    logger.info("settle sweep: complete — %d half-hour(s) read, %d written (%s)",
+                tally["read"], tally["written"],
+                ", ".join("%s %d" % kv for kv in sorted(tally["parts"].items())) or "nothing differed")
+    return written
+
+
 # The sweep waits for startup's own writes before its first pass (ROADMAP §A.1, 5 Oct 2026).
 # Startup schedules it from inside itself, so it began while startup was still writing, the
 # first Kraken poll (with its BL-8 outage backfill) and the carbon backfill alongside it —
@@ -7458,7 +7633,8 @@ def _maybe_reprice_history() -> None:
             logger.info("_maybe_reprice_history: %s active — deferring", _blocker)
             return
         _m = _store.get_meta(_REPRICE_HISTORY_MARKER, {}) or {}
-        if _m.get("done") and int(_m.get("scope") or 1) >= _REPRICE_HISTORY_SCOPE:
+        if _m.get("done") and int(_m.get("scope") or 1) >= _REPRICE_HISTORY_SCOPE \
+                and _settle_history_done():
             return
         import asyncio as _aio
         try:
@@ -7482,6 +7658,8 @@ def _maybe_reprice_history() -> None:
                     if (_store.get_meta(_REPRICE_HISTORY_MARKER, {}) or {}).get("done"):
                         break
                     await _aio2.sleep(_REPRICE_HISTORY_PASS_PACE)
+                if _store is not None:
+                    await _settle_history_to_done(wait_for_schedule=True)
             except Exception as e:
                 logger.warning("_maybe_reprice_history: worker failed: %s", e)
             finally:
@@ -8365,6 +8543,10 @@ async def _after_import_settle() -> None:
             await asyncio.sleep(_REPRICE_HISTORY_PASS_PACE)
     except Exception as e:
         logger.warning("after import: reprice-history sweep failed (non-fatal): %s", e)
+    try:
+        await _settle_history_to_done(force=True)       # engine step 4d
+    except Exception as e:
+        logger.warning("after import: the settle sweep failed (non-fatal): %s", e)
     try:
         await _apply_bills_paced()
     except Exception as e:
@@ -11210,19 +11392,25 @@ def settle_half_hour(store, bs: str) -> dict:
     m = next((x for x in inp["mains"] if x["block_start"] == bs), None)
     if m is None:
         return {"status": "no_block", "parts": [], "written": False}
-    if m.get("rate_corrected") or m.get("rate_source") == "corrected":
-        return {"status": "corrected", "parts": [], "written": False}
-    import settle as _st
     try:
         cal = store.get_vat_calendar()
     except Exception:
         cal = None
-    subs = inp["subs"].get(bs, [])
+    return _settle_write(store, m, inp["subs"].get(bs, []), inp["segments"].get(bs, []), cal)
+
+
+def _settle_write(store, m: dict, subs: list, segs: list, cal) -> dict:
+    """settle_half_hour's settle-and-write for one get_settle_inputs `mains` row with its devices
+    and segments — the sweep's too, over a day's rows read at once (engine step 4d)."""
+    bs = m["block_start"]
+    if m.get("rate_corrected") or m.get("rate_source") == "corrected":
+        return {"status": "corrected", "parts": [], "written": False}
+    import settle as _st
     f = settle_facts(m, subs, store, cal)
     s = _st.settle(f)
     if s.status not in ("settled", "predicted", "clock"):
         return {"status": s.status, "parts": [], "written": False}
-    parts, _dev, _ev = _settle_parts(m, subs, inp["segments"].get(bs, []), f, s)
+    parts, _dev, _ev = _settle_parts(m, subs, segs, f, s)
     if not parts:
         return {"status": s.status, "parts": [], "written": False}
     w = store.apply_measured_to_main if s.status == "settled" else store.write_predicted

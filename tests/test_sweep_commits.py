@@ -70,7 +70,9 @@ class OneSweepPass(unittest.TestCase):
         async def _segs(ch):
             return _RATE_SEGS
         self.p = [mock.patch.object(engine, "_store", self.st),
-                  mock.patch.object(engine, "_kraken_rate_schedules", {"import": _Sched(0.30, _EXC)}),
+                  # pence, as kraken_rates.RateSchedule answers: settle() prices from it (step 4d)
+                  mock.patch.object(engine, "_kraken_rate_schedules",
+                                    {"import": _Sched(30.0, round(30.0 / 1.05, 6))}),
                   mock.patch.object(engine, "_build_channel_rate_segs", _segs),
                   mock.patch.object(engine, "_hist_rate_segs_cache", {}),
                   mock.patch.object(engine, "_write_reprice_report", lambda **k: None)]

@@ -106,6 +106,11 @@ class TestExportOnlySettlementScope(unittest.TestCase):
             "ev_device_off_peak": RateSchedule([(_day[0], _day[1], 5.493)]),
             "ev_device_peak": RateSchedule([(_day[0], _day[1], 32.3092)]),
         }
+        # an Intelligent tariff, as a dispatch implies: settle() prices a published one by the clock
+        # (engine step 4d settles every finalised half-hour; the overlay never asked the tariff)
+        self._disc = patch.object(engine, "_kraken_discovery",
+                                  {"import": {"tariff_code": "E-1R-INTELLI-VAR-22-10-14-C"}})
+        self._disc.start()
 
     def tearDown(self):
         self._lj.stop()
@@ -113,6 +118,7 @@ class TestExportOnlySettlementScope(unittest.TestCase):
         engine._kraken_rate_schedules = self._orig_sched
         shutil.rmtree(self._cfg_dir, ignore_errors=True)
         engine.CONFIG_PATH = self._orig_cfg_path
+        self._disc.stop()
 
     # ── helpers ──────────────────────────────────────────────────────────────
     def _finalise(self, start, end, imp, exp):
@@ -171,15 +177,20 @@ class TestExportOnlySettlementScope(unittest.TestCase):
         self.assertAlmostEqual(kwh, 0.012, places=6,
                                msg="import kWh untouched — nothing settled it")
 
-    def test_export_only_settlement_leaves_above_floor_import_rate(self):
-        """The rule is not about the floor: no import settlement => no import re-price."""
+    def test_REVERSED_a_completed_dispatch_rebands_whatever_write_follows(self):
+        """REVERSED by engine step 4d (27 Oct 2026; it asserted "no import settlement => no import
+        re-price"). An export settlement still carries nothing about import pricing — but the
+        completed dispatch that landed is a fact, and every write is now followed by settle(),
+        which reads the facts, not what triggered the write (the 4c carve settles it on arrival
+        anyway). Above the 0.1 kWh floor the prediction is off-peak. It passed after 4b only
+        because this harness named no tariff: settle() priced a 'published' one by the clock.
+        The sub-floor prod case (0.012 kWh) above still holds peak, by the floor."""
         self._finalise(BIG, BIG_END, imp=4.0, exp=0.5)
-        self.assertAlmostEqual(self._row(BIG, "imp_rate")[0], PEAK, places=6)
         self._late_dispatch(BIG, 3.5)
         self._settle(BIG, exp_api=0.5)
-        self.assertAlmostEqual(
-            self._row(BIG, "imp_rate")[0], PEAK, places=6,
-            msg="an export settlement carries no information about import pricing")
+        rate, kwh = self._row(BIG, "imp_rate", "imp_kwh")
+        self.assertAlmostEqual(rate, OFF_PEAK, places=6)
+        self.assertAlmostEqual(kwh, 4.0, places=6, msg="import kWh untouched — nothing settled it")
 
     def test_export_only_settlement_still_settles_export(self):
         """The drain's actual purpose survives: export IS re-costed to its DCC figure."""
@@ -191,8 +202,13 @@ class TestExportOnlySettlementScope(unittest.TestCase):
         self.assertAlmostEqual(exp_cost, round(0.9 * 0.12, 6), places=6,
                                msg="export cost re-derived from the settled kWh")
 
-    def test_import_kwh_settlement_holds_band_and_recosts(self):
-        """#475: a settled kWh re-costs and re-splits, but must NOT re-band.
+    def test_REVERSED_import_kwh_settlement_follows_the_dispatch_and_recosts(self):
+        """REVERSED by engine step 4b's decision (d) (#475's freeze is gone; this passed after 4b
+        only because the harness named no tariff, so settle() priced by the clock): the half-hour
+        is settle()'s from its facts — the late completed dispatch predicts off-peak, and the
+        settled kWh is costed at that band. What follows is the 4.5.15 text, kept for the history.
+
+        #475: a settled kWh re-costs and re-splits, but must NOT re-band.
 
         Supersedes `test_import_settlement_still_reprices` (4.5.13/BL-62 model), which
         asserted that a settled import kWh re-resolved the overlay to off-peak. That is
@@ -206,15 +222,13 @@ class TestExportOnlySettlementScope(unittest.TestCase):
         self._late_dispatch(BIG, 3.5)
         self._settle(BIG, imp_api=4.5)
         rate, kwh, cost = self._row(BIG, "imp_rate", "imp_kwh", "imp_cost")
-        self.assertAlmostEqual(
-            rate, PEAK, places=6,
-            msg="settled kWh must not move the band — no supplier price has arrived")
+        self.assertAlmostEqual(rate, OFF_PEAK, places=6,
+                               msg="the late completed dispatch predicts off-peak")
         self.assertAlmostEqual(
             kwh, 4.5, places=6,
             msg="the settled QUANTITY is authoritative and is taken")
-        self.assertAlmostEqual(
-            cost, round(4.5 * PEAK, 6), places=6,
-            msg="cost re-derived from the settled kWh at the HELD band rate")
+        self.assertAlmostEqual(cost, round(4.5 * OFF_PEAK, 6), places=6,
+                               msg="cost from the settled kWh at settle()'s band")
 
     # ── #475: the settled-kWh band hold, in detail ───────────────────────────
     def _segments(self, start, meter="electricity_main"):
@@ -223,8 +237,13 @@ class TestExportOnlySettlementScope(unittest.TestCase):
             "FROM block_segments WHERE block_start=? AND meter_id=? AND channel='import' "
             "ORDER BY seq", (start, meter)).fetchall()
 
-    def test_settled_kwh_holds_exc_vat_rate_too(self):
-        """The hold applies to the ex-VAT rate as well as the inc-VAT one.
+    def test_REVERSED_settled_kwh_exc_vat_follows_the_band_too(self):
+        """REVERSED by engine step 4b's decision (d), seen once the harness names an Intelligent
+        tariff (4d): the ex-VAT rate follows settle()'s band, off-peak here, through the VAT
+        calendar (§4 (c)). The discriminating half below — inc and ex-VAT describe the same band —
+        is unchanged. The 4.5.15 text follows.
+
+        The hold applies to the ex-VAT rate as well as the inc-VAT one.
 
         The ex-VAT rate is derived from the block's own pair, `imp_rate x imp_cost_exc /
         imp_cost` (its stored column `imp_rate_exc` was dropped in step 5b, 10 Oct 2026). A
@@ -247,9 +266,8 @@ class TestExportOnlySettlementScope(unittest.TestCase):
         self._settle(BIG, imp_api=4.5)
         rate_inc, cost, cost_exc = self._row(BIG, "imp_rate", "imp_cost", "imp_cost_exc")
         rate_exc = rate_inc * cost_exc / cost
-        self.assertAlmostEqual(
-            rate_exc, peak_exc, places=6,
-            msg="the ex-VAT rate must be held on the peak band")
+        self.assertAlmostEqual(rate_exc, round(OFF_PEAK / 1.05, 6), places=6,
+                               msg="the ex-VAT rate is settle()'s band's")
         # The discriminating assertion: inc and exc must describe the SAME band. The
         # pre-fix code moved imp_rate to off-peak and left the ex-VAT figure on the peak
         # value, so the two disagreed about what this block cost — checking only that
@@ -349,28 +367,26 @@ class TestImportOnlyAccountUnaffected(TestExportOnlySettlementScope):
     def test_export_only_settlement_still_settles_export(self):
         self.skipTest("no export channel on this account")
 
-    def test_import_only_kwh_settlement_holds_band(self):
-        """#475 on an export-less account: the hold is channel-config-agnostic."""
+    def test_REVERSED_import_only_kwh_settlement_follows_the_dispatch(self):
+        """REVERSED with the parent class's (engine step 4b (d), seen in 4d): an export-less account
+        settles the same way — the late completed dispatch predicts off-peak."""
         self._finalise(BIG, BIG_END, imp=4.0, exp=0.0)
         self.assertAlmostEqual(self._row(BIG, "imp_rate")[0], PEAK, places=6)
         self._late_dispatch(BIG, 3.5)
         self._settle(BIG, imp_api=4.5)
         rate, kwh, cost = self._row(BIG, "imp_rate", "imp_kwh", "imp_cost")
-        self.assertAlmostEqual(
-            rate, PEAK, places=6,
-            msg="no export channel must not change the settled-kWh band hold")
+        self.assertAlmostEqual(rate, OFF_PEAK, places=6)
         self.assertAlmostEqual(kwh, 4.5, places=6)
-        self.assertAlmostEqual(cost, round(4.5 * PEAK, 6), places=6)
+        self.assertAlmostEqual(cost, round(4.5 * OFF_PEAK, 6), places=6)
 
-    def test_import_only_unsettled_rerun_preserves_rate(self):
-        """A re-run raised by something OTHER than settlement (billing-source switch,
-        Mini import, BL-19 grid sweep) on an unsettled import block: preserve."""
+    def test_REVERSED_import_only_unsettled_rerun_reads_the_dispatch(self):
+        """REVERSED by engine step 4d (it asserted "no settled import figure -> keep the finalised
+        rate"): a re-run raised by something other than settlement still writes the block, and the
+        write is settle()'s from the facts — the late completed dispatch predicts off-peak."""
         self._finalise(BIG, BIG_END, imp=4.0, exp=0.0)
         self._late_dispatch(BIG, 3.5)
         self._settle(BIG)                       # nothing settled at all
-        self.assertAlmostEqual(
-            self._row(BIG, "imp_rate")[0], PEAK, places=6,
-            msg="no settled import figure -> keep the finalised rate")
+        self.assertAlmostEqual(self._row(BIG, "imp_rate")[0], OFF_PEAK, places=6)
 
 
 if __name__ == "__main__":
