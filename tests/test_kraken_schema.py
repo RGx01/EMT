@@ -1254,16 +1254,6 @@ class TestKrakenPollTask(_StoreBase):
         self.engine._kraken_discovery = None
         self._run(self.engine.kraken_poll_task(None))
 
-    def test_pre_live_snapshot_idempotent_and_gated(self):
-        # No blocks → snapshot is a safe no-op that marks done and allows writes.
-        ok = self.engine._kraken_pre_live_snapshot()
-        self.assertTrue(ok)
-        marker = self.store.get_kraken_state(self.engine._KRAKEN_SNAPSHOT_DONE_KEY)
-        self.assertIsNotNone(marker)
-        # Second call sees the marker and returns True without redoing work.
-        ok2 = self.engine._kraken_pre_live_snapshot()
-        self.assertTrue(ok2)
-
 
 class TestBillingSourceToggle(unittest.TestCase):
     """Global cad/dcc toggle: re-run honours source both ways."""

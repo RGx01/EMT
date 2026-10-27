@@ -2,7 +2,8 @@
 A backup does not need a checkpoint first — the measurement behind a §4a removal.
 
 Two sites in `engine.py` ran `PRAGMA wal_checkpoint(PASSIVE)` immediately before
-`_store.backup(...)`: the pre-Kraken-live snapshot and the pre-upgrade backup.
+`_store.backup(...)`: the pre-Kraken-live snapshot and the pre-upgrade backup. (Both went in engine
+step 5a, 27 Oct 2026, with their site tests; the measurement stands for every online backup.)
 Neither did anything. SQLite's online backup reads the source through a normal
 connection, so committed transactions still sitting in the write-ahead log are
 already part of what it copies.
@@ -84,29 +85,8 @@ class BackupIsCompleteWithoutACheckpoint(unittest.TestCase):
 
 
 class TheEngineNoLongerCheckpointsBeforeABackup(unittest.TestCase):
-    """AST over the two functions, not a text search — the replacement comments
-    mention `wal_checkpoint` by name, which is exactly what a grep would match.
-    The same trap `test_writer_exclusion.py` had to solve for `_create_backup_zip`.
-    """
-
-    def _calls_in(self, fn_name):
-        import ast
-        tree = ast.parse(open(os.path.join(_ROOT, "engine.py")).read())
-        for n in ast.walk(tree):
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == fn_name:
-                out = []
-                for c in ast.walk(n):
-                    if isinstance(c, ast.Call) and c.args:
-                        a = c.args[0]
-                        if isinstance(a, ast.Constant) and isinstance(a.value, str):
-                            out.append(a.value)
-                return out
-        self.fail("function %s not found" % fn_name)
-
-    def test_pre_kraken_snapshot_has_no_checkpoint(self):
-        self.assertFalse(
-            [s for s in self._calls_in("_kraken_pre_live_snapshot")
-             if "wal_checkpoint" in s])
+    """The two sites went in engine step 5a; what is left is the startup checkpoint, which is not
+    a backup's."""
 
     def test_startup_keeps_its_own_checkpoint(self):
         """The startup TRUNCATE is NOT part of this removal. It bounds the WAL

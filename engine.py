@@ -171,11 +171,10 @@ _detected_integrations: dict | None = None
 _kraken_ingester = None         # KrakenIngester | None
 _KRAKEN_POLL_INTERVAL_S = 6 * 3600
 # 4b-iii: LIVE. The poll writes DCC settlement into blocks (imp_kwh_api / exp_kwh_api +
-# needs_pass2_rerun), which the engine drain re-runs into billing. A one-time blocks.db
-# snapshot is taken before the first live write as a rollback point (see
-# _kraken_pre_live_snapshot); a cycle that cannot take it runs as a dry run.
+# needs_pass2_rerun), which the engine drain re-runs into billing. (v4's one-time snapshot before
+# the first live write, `pre_live_snapshot_done`, went in engine step 5a, 27 Oct 2026: every version
+# starts from the pre-migration copy, and the share copy runs nightly.)
 _KRAKEN_BACKFILL_CAP_DAYS = 400
-_KRAKEN_SNAPSHOT_DONE_KEY = "pre_live_snapshot_done"
 # Auto settlement sweep: the 6h incremental poll only re-checks a sliding window
 # (last-seen − 6h → now). When DCC settles intervals out of order or later than
 # that overlap (export commonly lags import by days), an earlier interval can age
@@ -5737,14 +5736,14 @@ async def disconnect_kraken() -> dict:
         # 2. Remove the credentials file (the actual disconnect).
         save_kraken_credentials(None, None)
         # 3. Wipe API-derived progress markers so a future reconnect starts clean
-        #    (fresh backfill, re-takes the pre-live rollback snapshot). Mode and
+        #    (fresh backfill). Mode and
         #    billing source also live in kraken_state but are NOT progress markers
         #    — they are set / preserved explicitly, never blanket-deleted.
         try:
             from kraken_ingester import _STATE_LAST_POLL as _LAST_POLL_KEY
         except Exception:
             _LAST_POLL_KEY = "last_poll_utc"
-        for k in (_LAST_POLL_KEY, _STATE_LAST_SWEEP, _KRAKEN_SNAPSHOT_DONE_KEY):
+        for k in (_LAST_POLL_KEY, _STATE_LAST_SWEEP):
             try:
                 _store.delete_kraken_state(k)
             except Exception:
@@ -8318,58 +8317,6 @@ async def _maybe_run_settlement_sweep() -> None:
                         finalised, _SETTLEMENT_SWEEP_HORIZON_DAYS)
     except Exception as e:
         logger.warning("settlement_sweep: failed (non-fatal): %s", e)
-
-
-def _kraken_pre_live_snapshot() -> bool:
-    """Take a one-time blocks.db snapshot before the first live DCC write.
-
-    Idempotent: gated on the kraken_state marker _KRAKEN_SNAPSHOT_DONE_KEY, so
-    it fires once ever (across restarts) and is a no-op thereafter. Mirrors the
-    upgrade-backup mechanism: an online SQLite backup zipped into the share
-    backups dir. Returns True if it is safe to proceed with live writes (either
-    the snapshot was taken now, already taken before, or there are no blocks to
-    risk); returns False only if the snapshot was attempted and failed, in
-    which case the caller must NOT write.
-    """
-    try:
-        if _store.get_kraken_state(_KRAKEN_SNAPSHOT_DONE_KEY):
-            return True  # already snapshotted on a prior run
-    except Exception:
-        pass
-    try:
-        if _store.count_blocks() == 0:
-            # Nothing to protect; mark done so we don't re-check forever.
-            _store.set_kraken_state(_KRAKEN_SNAPSHOT_DONE_KEY,
-                                    _dt_now_iso_safe())
-            return True
-        import zipfile as _zf, glob as _gl
-        bk_dir = f"{SHARE_BACKUP_DIR}/backups"
-        ensure_dir(bk_dir)
-        ts = datetime.utcnow().strftime("%Y%m%dT%H%M%S")
-        bk_path = f"{bk_dir}/{ts}_pre_kraken_live.zip"
-        # NO wal_checkpoint before the backup. SQLite's online backup reads the
-        # database through a normal connection, so committed transactions still
-        # sitting in the WAL are already included — measured in
-        # tests/test_backup_needs_no_checkpoint.py. The same reasoning is
-        # recorded at _create_backup_zip in web/server.py and pinned by
-        # tests/test_writer_exclusion.py; it was never applied to the engine's
-        # own two copies.
-        with _zf.ZipFile(bk_path, "w", _zf.ZIP_DEFLATED) as bkz:
-            _store.backup(BLOCKS_DB_PATH + ".kraken_bak")
-            bkz.write(BLOCKS_DB_PATH + ".kraken_bak", "blocks.db")
-            os.remove(BLOCKS_DB_PATH + ".kraken_bak")
-        _store.set_kraken_state(_KRAKEN_SNAPSHOT_DONE_KEY, ts)
-        logger.info("=" * 60)
-        logger.info("kraken_pre_live_snapshot: blocks.db snapshotted before "
-                    "first live DCC write → %s", os.path.basename(bk_path))
-        logger.info("  Rollback: stop add-on, unzip this over "
-                    "%s, restart.", BLOCKS_DB_PATH)
-        logger.info("=" * 60)
-        return True
-    except Exception as e:
-        logger.error("kraken_pre_live_snapshot: FAILED (%s) — refusing to write "
-                     "live until a snapshot succeeds", e)
-        return False
 
 
 def _dt_now_iso_safe() -> str:
@@ -11816,20 +11763,12 @@ async def kraken_poll_task(ha: HAClient):
             # tariffs return ~1 record). The sync drain reads these via
             # _kraken_rate_resolver to repair zero/missing rates at reconcile.
             await _refresh_kraken_rate_schedules()
-            # Before the first LIVE write, ensure the rollback snapshot exists.
-            # If it can't be taken, downgrade THIS cycle to dry-run rather than
-            # mutate blocks without a backup.
-            effective_dry_run = False
-            if not _kraken_pre_live_snapshot():
-                logger.warning("kraken_poll_task: snapshot unavailable — "
-                               "running this cycle as dry-run (no writes)")
-                effective_dry_run = True
-            summary = await ingester.poll(dry_run=effective_dry_run)
+            summary = await ingester.poll()
             logger.info(
                 "kraken_poll_task: %s window=%s..%s import_rows=%d "
                 "store_import=%d export_rows=%d store_export=%d "
                 "skip=%d drifted=%d (interpolated=%d) errors=%d",
-                "DRY-RUN" if effective_dry_run else "LIVE",
+                "LIVE",
                 summary["window"][0], summary["window"][1],
                 summary["import_rows"], summary["stored"],
                 summary["export_rows"], summary["export_stored"],
@@ -11916,11 +11855,15 @@ def _read_config_version() -> str:
     return "unknown"
 
 
+_BACKUP_KEEP = 20          # zips kept in the share's backups folder
+
+
 def _pre_upgrade_backup_if_needed() -> None:
     """BL-53: take a **pre-migration** safety snapshot on a version upgrade — a raw
     copy of blocks.db (+ WAL/SHM sidecars) taken BEFORE the store opens and runs
     its schema migration, so it's a true pre-upgrade rollback point. Once per
-    version (keyed on a marker file). Best-effort; never blocks startup."""
+    version (keyed on a marker file); the one start-up backup since engine step 5a, so it
+    trims the folder to _BACKUP_KEEP. Best-effort; never blocks startup."""
     import zipfile as _zf
     from datetime import datetime as _dt2
     _cur_ver = _read_config_version()
@@ -11959,6 +11902,14 @@ def _pre_upgrade_backup_if_needed() -> None:
         _cfg = os.path.join(DATA_DIR, "meters_config.json")
         if os.path.exists(_cfg):
             _z.write(_cfg, "meters_config.json")
+    # Keep only the 20 most recent zips — the trim the post-open upgrade backup did until engine
+    # step 5a (Data Management's own backups trim the same way)
+    import glob as _gl
+    for _old_zip in sorted(_gl.glob(f"{_bk_dir}/*.zip"))[:-_BACKUP_KEEP]:
+        try:
+            os.remove(_old_zip)
+        except Exception:
+            pass
     try:
         ensure_dir(DATA_DIR)
         with open(_marker, "w") as _mf:
@@ -12397,73 +12348,9 @@ async def _engine_startup_impl(ha: HAClient):
     except Exception as _e:
         logger.warning("engine_startup: could not write meters_config.json export: %s", _e)
 
-    # ── Upgrade backup (once per version) ────────────────────────────────────
-    # In versions prior to 2.4.0, backups could miss recent blocks due to the
-    # WAL not being checkpointed. On first startup of a new version we create a
-    # safety backup so users have a complete snapshot before any new data is
-    # written. Runs once per version — not on every restart.
-    try:
-        import zipfile as _zf, glob as _gl
-        from datetime import datetime as _dt2
-
-        # Read current app version from config.yaml
-        _ver_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.yaml")
-        _cur_ver  = "unknown"
-        if os.path.exists(_ver_path):
-            with open(_ver_path) as _vf:
-                for _vl in _vf:
-                    if _vl.strip().startswith("version:"):
-                        _cur_ver = _vl.split(":", 1)[1].strip().strip('"')
-                        break
-
-        # Check what version last created a startup backup
-        _ver_file = os.path.join(DATA_DIR, ".last_startup_backup_version")
-        _last_ver = ""
-        if os.path.exists(_ver_file):
-            with open(_ver_file) as _vff:
-                _last_ver = _vff.read().strip()
-
-        if _cur_ver != _last_ver:
-            _bk_dir = f"{SHARE_BACKUP_DIR}/backups"
-            ensure_dir(_bk_dir)
-            _bk_ts   = _dt2.utcnow().strftime("%Y%m%dT%H%M%S")
-            _bk_path = f"{_bk_dir}/{_bk_ts}_upgrade_{_cur_ver}.zip"
-            # Skip backup on a fresh install with no blocks — nothing to back up,
-            # and the SQLite backup API can hang on a newly-created WAL database.
-            if _store.count_blocks() == 0:
-                logger.info("engine_startup: skipping upgrade backup — no blocks (fresh install)")
-                with open(_ver_file, "w") as _vfw:
-                    _vfw.write(_cur_ver)
-            else:
-              with _zf.ZipFile(_bk_path, "w", _zf.ZIP_DEFLATED) as _bkz:
-                # The line removed here said "Commit any pending transactions
-                # before backup to avoid WAL lock" and ran a PASSIVE checkpoint.
-                # A checkpoint is not a commit, and there is no lock to avoid:
-                # the online backup reads through a normal connection and so
-                # already includes committed transactions still in the WAL
-                # (measured — tests/test_backup_needs_no_checkpoint.py).
-                _store.backup(BLOCKS_DB_PATH + ".upgrade_bak")
-                _bkz.write(BLOCKS_DB_PATH + ".upgrade_bak", "blocks.db")
-                os.remove(BLOCKS_DB_PATH + ".upgrade_bak")
-                _cfg_src = os.path.join(DATA_DIR, "meters_config.json")
-                if os.path.exists(_cfg_src):
-                    _bkz.write(_cfg_src, "meters_config.json")
-              # Keep only the 20 most recent zips
-              _all_zips = sorted(_gl.glob(f"{_bk_dir}/*.zip"))
-              for _old_zip in _all_zips[:-20]:
-                  try: os.remove(_old_zip)
-                  except Exception: pass
-              # Record this version so we don't backup again until next upgrade
-              with open(_ver_file, "w") as _vfw:
-                  _vfw.write(_cur_ver)
-              logger.info(
-                  "engine_startup: upgrade backup created for v%s: %s",
-                  _cur_ver, os.path.basename(_bk_path)
-              )
-        else:
-            logger.info("engine_startup: no upgrade detected (v%s), skipping upgrade backup", _cur_ver)
-    except Exception as _sbe:
-        logger.warning("engine_startup: upgrade backup failed: %s", _sbe)
+    # The upgrade backup taken here, after the store opened and migrated, went in engine step 5a
+    # (27 Oct 2026, decided 22 Oct): the pre-migration copy (`_pre_upgrade_backup_if_needed`) is the
+    # one per version, and it trims the folder now.
 
     # Migrate full_config_json → normalised tables (2.0→2.1 one-time upgrade)
     try:
