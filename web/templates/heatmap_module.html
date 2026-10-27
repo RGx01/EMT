@@ -47,7 +47,7 @@ window.EMTHeatmap = (function () {
                  'settled yet · red: not final after 7 days, the stored cost is not the bill, or a ' +
                  'completed dispatch with no House/EV split · red, hatched yellow: no cost from Octopus, ' +
                  'and EMT no longer asks — kWh \u00d7 rate · blue: ' +
-                 'your correction · grey: nothing imported, or CSV history · black hatched: no block (missing)'},
+                 'your correction · grey: nothing imported, or imported history · black hatched: no block (missing)'},
     export: {label: 'Export bill', title: 'Export bill — is each half-hour\u2019s export cost final?', unit: '',
             dp: 0, tot: 'To look at', settle: 'export',
             sub: 'EMT fetches no export bill: kWh \u00d7 the export rate is final once the export kWh ' +
@@ -74,7 +74,7 @@ window.EMTHeatmap = (function () {
     presence: {present: 0, missing: 3}
   };
   var CAT_TEXT = {
-    bill: {none: 'nothing imported in this half-hour', imported: 'CSV history — not Octopus\u2019s cost',
+    bill: {none: 'nothing imported in this half-hour', imported: 'imported history, or no bill past Octopus\u2019s two years — not Octopus\u2019s cost',
            applied: 'final — Octopus\u2019s cost, or the settled kWh \u00d7 a published rate',
            applied_emt_split: 'Octopus\u2019s cost — the House/EV split is still EMT\u2019s',
            corrected: 'your rate correction',

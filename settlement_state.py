@@ -9,6 +9,8 @@ same thing. Pure: facts in (BlockStore.get_settlement_facts), states out.
 
     bill   applied | applied_emt_split | estimate_dcc | estimate_cad | overdue | differs |
            corrected | imported | abandoned | none                           (design §9.3)
+           imported  — not Octopus's cost, and final: CSV history, an import's own cost as a bill
+           (label IMPORTED), or no bill past Octopus's two years (27 Oct 2026, the user)
            abandoned — EMT's kWh x rate, and EMT no longer asks Octopus for the cost: a bill
            asked 30 days unanswered, or an API-imported half-hour Octopus gave no cost for
            (19 Oct 2026, the user: red, hatched)
@@ -27,6 +29,10 @@ from datetime import datetime, timedelta
 # so it is measured from the half-hour, plus the kWh's own ~2-day lag.
 BILL_OVERDUE_DAYS = 7
 KWH_LAG_DAYS = 2
+# Octopus's two years (engine._API_RETENTION_DAYS): the asker asks nothing older.
+API_RETENTION_DAYS = 730
+# A bill holding an import's own cost (block_store.IMPORTED_BILL_LABEL, v4import.transforms).
+IMPORTED_LABEL = "IMPORTED"
 
 _EPS_GBP = 1e-5          # a thousandth of a penny: below it is float and rounding noise
 _EPS_KWH = 0.0005
@@ -39,6 +45,11 @@ def _f(x):
         return float(x)
     except (TypeError, ValueError):
         return None
+
+
+def _beyond(now) -> str:
+    """The half-hour start before which Octopus no longer serves a half-hour (naive UTC ISO)."""
+    return (now - timedelta(days=API_RETENTION_DAYS)).isoformat()
 
 
 def _clock(start, now):
@@ -114,6 +125,15 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
         bill = "none"
     elif f.get("rate_corrected") or f.get("rate_source") == "corrected":
         bill = "corrected"
+    elif bill_cost is not None and str(f.get("bill_label") or "").upper() == IMPORTED_LABEL:
+        # the import's own cost as a bill (v4import transform 3c, the CSV import): settle() prices
+        # it, so it reads as settled, but the cost is the import's — v4's tariff price on most API
+        # history — not Octopus's (27 Oct 2026, the user: imported, not applied)
+        bill = "imported"
+    elif bill_cost is None and start < _beyond(now):
+        # no bill, and past Octopus's two years: nothing will ask for it, so it would wait for good
+        # (dev, 27 Oct 2026: 1,242 API-imported half-hours red) — final at EMT's kWh x rate
+        bill = "imported"
     elif bill_cost is not None and f.get("rate_source") == "settled":
         # Since engine step 2b the settled cost is kWh x Octopus's band rate, so `differs` says
         # Octopus's own cost is not kWh x its rate — a kWh it priced differently, or an odd rate.

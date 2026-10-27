@@ -4779,7 +4779,8 @@ _HEALTH_TTL_S = 600
 #    `no_agreement`, not `no_data` (22 Oct 2026).
 # 5: no `recost_bl82` flag — a settled cost is kWh x rate since engine step 2b (23 Oct 2026).
 # 6: an imported half-hour with no bill waits like a live one; no import no-cost record (step 3e).
-_HEALTH_FILE_V = 6
+# 7: an IMPORTED bill, or no bill past Octopus's two years, is `imported` (27 Oct 2026).
+_HEALTH_FILE_V = 7
 # While the data keeps moving — a refill rebuilding the devices writes for minutes — every page
 # poll found the token moved and counted again, two more waiting behind it to do the same
 # (staging, 21 Oct 2026: three requests in the count, the engine loop held 11.4 s). A request that
@@ -4943,8 +4944,9 @@ def _health_views(store, views, first, tz_name):
       counted again when it has);
     - the bill drain's slots in it move — held, kept, given up, no cost, asked (until 22 Oct 2026
       these were shared too, so a drain giving up one half-hour counted the whole history again);
-    - it is within the age window (BILL_OVERDUE_DAYS + KWH_LAG_DAYS, rounded up) and ten minutes
-      have passed, since its states can turn with age alone.
+    - it is within the age window (BILL_OVERDUE_DAYS + KWH_LAG_DAYS, rounded up), or holds the
+      line of Octopus's two years, and ten minutes have passed, since its states can turn with age
+      alone (a month the line has just left is counted again too: its mark loses the window).
     Contiguous months to count go in one pass."""
     import bisect, time as _time
     import engine as _eng
@@ -4971,6 +4973,7 @@ def _health_views(store, views, first, tz_name):
     agr = _health_agreements(_eng)
     window = int(_time.time() // _HEALTH_TTL_S)
     young = (now - _td(days=_ss.BILL_OVERDUE_DAYS + _ss.KWH_LAG_DAYS + 1)).isoformat()
+    beyond = _ss._beyond(now)              # an unbilled half-hour past it turns `imported` with age
     if "per" not in _health_cache:
         _health_cache["per"] = _health_load_per()
     per = _health_cache["per"]
@@ -4983,7 +4986,7 @@ def _health_views(store, views, first, tz_name):
         mine = [x[bisect.bisect_left(x, lo):bisect.bisect_left(x, up)] for x in slots]
         mark = {"fp": _health_digest([[d, fps[d]] for d in days[a:b]]),
                 "ctx": None if ctx is None else _health_digest([ctx, mine]),
-                "win": window if up > young else None}
+                "win": window if up > young or lo <= beyond < up else None}
         e = per.get(k) or {}
         em = e.get("mark") or {}
         same = (ctx is not None and all(em.get(x) == mark[x] for x in ("fp", "ctx", "win"))

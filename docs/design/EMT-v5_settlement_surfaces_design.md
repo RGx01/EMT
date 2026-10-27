@@ -70,7 +70,7 @@ soak: grid used all day, all grey).
 | `overdue` | kWh × rate, past the window | red |
 | `differs` | a bill is held and the stored cost is not it (BL-82) | red — §7 (c) |
 | `corrected` | the user set the rate (Corrections) | blue |
-| `imported` | a cost not from Octopus's API: **CSV** history | grey |
+| `imported` | a cost not from Octopus's API: **CSV** history, an import's own cost held as a bill (label `IMPORTED`), or no bill past Octopus's two years (27 Oct 2026) | grey |
 | `none` | no cost to settle: no import kWh in the half-hour | grey |
 
 - **The window** is §7 (a)'s: 7 days after the kWh, measured from the half-hour + the kWh's
@@ -383,7 +383,7 @@ than Octopus keeps — two years, the API import's `_API_RETENTION_DAYS` (`_ask_
 already cached is applied whatever its age.
 | `differs` | a bill is held and the stored cost is not it (flags as §1.4) | the same, where a bill is held (an API import's, or one fetched before this rule) | red |
 | `corrected` | the user's rate correction | the same | blue |
-| `imported` | CSV history — a cost not from Octopus's API | the same | grey |
+| `imported` | a cost not from Octopus's API, and final: CSV history, an `IMPORTED` bill (v4import transform 3c, the CSV import), or no bill past Octopus's two years, where nothing asks for one (27 Oct 2026, the user) | the same | grey |
 | `none` | nothing imported in the half-hour | the same | grey |
 
 - **The window** stays §7 (a)'s: 7 days after the kWh, counted from the half-hour + the kWh's
