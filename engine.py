@@ -6585,93 +6585,36 @@ async def _cached_data_floor(channel: str, info: dict, *, restart: bool = False)
     return _hist_floor_cache[channel]
 
 
-# Per-run cache of (valid_from, valid_to, RateSchedule) segments per channel, so
-# the tariff rates are fetched once per import (not per slice). Cleared on restart.
-_hist_rate_segs_cache: dict = {}
+async def _agreement_segs(channel: str, kind: str) -> list:
+    """[(valid_from, valid_to, RateSchedule)] for each of `channel`'s agreements — through
+    kraken_rates.agreement_schedules, the one fetch the refresh's import stitch shares (engine step
+    5c, 27 Oct 2026: until then the import fetched every agreement again for itself, and again after
+    a restart). VAT as the channel's (`_vat_context`); an open start reads 0000-01-01."""
+    from kraken_api_client import KrakenAPIClient
+    from kraken_rates import agreement_schedules
+    info = (_kraken_discovery or {}).get(channel) or {}
+    segs = await agreement_schedules(_kraken_client, info.get("agreements") or [], kind=kind,
+                                     product_of=KrakenAPIClient._tariff_to_product_code)
+    vat = _vat_context(channel)
+    return [(vf or "0000-01-01T00:00:00", vt, sched.with_vat(vat)) for vf, vt, sched in segs]
 
 
 async def _build_channel_rate_segs(channel: str):
     """Per-agreement rate schedules for a channel, from the discovered agreement
     history. Used to give imported blocks a CLEAN tariff rate (and to price the
     half-hours where Measurements returned kWh but no cost)."""
-    import api_import as _ai
-    from kraken_api_client import KrakenAPIClient
-    from kraken_rates import build_rate_schedule
-    info = (_kraken_discovery or {}).get(channel) or {}
-    segs = []
-    for a in (info.get("agreements") or []):
-        tariff = a.get("tariff_code")
-        vf, vt = a.get("valid_from"), a.get("valid_to")
-        if not tariff:
-            continue
-        product = KrakenAPIClient._tariff_to_product_code(tariff)
-        if not product:
-            continue
-        nvf = _ai._iso(_ai._naive_utc(vf)) if vf else "0000-01-01T00:00:00"
-        nvt = _ai._iso(_ai._naive_utc(vt)) if vt else None
-        # Skip a degenerate agreement window (valid_from >= valid_to): the REST
-        # rate API rejects it with HTTP 400 "period_from must not be greater than
-        # period_to", and a zero/negative span can price nothing anyway. Octopus
-        # emits these for superseded/back-to-back old agreements.
-        if nvt is not None and nvf >= nvt:
-            logger.info("_build_channel_rate_segs: skipping %s (%s) — empty "
-                        "agreement window %s..%s", tariff, channel, nvf, nvt)
-            continue
-        try:
-            rs = await build_rate_schedule(_kraken_client, product, tariff,
-                                           vat=_vat_context(channel),
-                                           period_from=vf, period_to=vt)
-        except Exception as e:
-            logger.warning("_build_channel_rate_segs: %s %s failed: %s",
-                           channel, tariff, e)
-            continue
-        if not rs.is_empty():
-            segs.append((nvf, nvt, rs))
-    return segs
-
-
-# Per-run cache of per-agreement standing-charge schedules per channel.
-_hist_standing_segs_cache: dict = {}
+    return await _agreement_segs(channel, "rate")
 
 
 async def _build_channel_standing_segs(channel: str):
-    """Per-agreement STANDING-CHARGE schedules for a channel — the authoritative,
-    complete source for the daily standing charge. Measurements' STANDING_CHARGE_COST
-    is patchy (whole stretches come back with none), so imported days are priced
-    from this schedule and only fall back to the Measurements figure where the
-    schedule doesn't cover the date."""
-    import api_import as _ai
-    from kraken_api_client import KrakenAPIClient
-    from kraken_rates import build_standing_charge_schedule
-    info = (_kraken_discovery or {}).get(channel) or {}
-    segs = []
-    for a in (info.get("agreements") or []):
-        tariff = a.get("tariff_code")
-        vf, vt = a.get("valid_from"), a.get("valid_to")
-        if not tariff:
-            continue
-        product = KrakenAPIClient._tariff_to_product_code(tariff)
-        if not product:
-            continue
-        nvf = _ai._iso(_ai._naive_utc(vf)) if vf else "0000-01-01T00:00:00"
-        nvt = _ai._iso(_ai._naive_utc(vt)) if vt else None
-        # Skip a degenerate agreement window (valid_from >= valid_to) — same HTTP
-        # 400 guard as the rate builder (see _build_channel_rate_segs).
-        if nvt is not None and nvf >= nvt:
-            logger.info("_build_channel_standing_segs: skipping %s (%s) — empty "
-                        "agreement window %s..%s", tariff, channel, nvf, nvt)
-            continue
-        try:
-            sc = await build_standing_charge_schedule(
-                _kraken_client, product, tariff, vat=_vat_context(channel),
-                period_from=vf, period_to=vt)
-        except Exception as e:
-            logger.warning("_build_channel_standing_segs: %s %s failed: %s",
-                           channel, tariff, e)
-            continue
-        if not sc.is_empty():
-            segs.append((nvf, nvt, sc))
-    return segs
+    """Per-agreement STANDING-CHARGE schedules — the authoritative, complete source for the daily
+    standing charge. Measurements' STANDING_CHARGE_COST is patchy (whole stretches come back with
+    none), so imported days are priced from this schedule and only fall back to the Measurements
+    figure where the schedule doesn't cover the date. Import only: a standing charge is the import
+    tariff's (engine step 5c — the import asked for export's too)."""
+    if channel != "import":
+        return []
+    return await _agreement_segs(channel, "standing")
 
 
 def _standing_for(standing_segs, day_iso):
@@ -7259,20 +7202,12 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
             continue
         direction = "GENERATION" if channel == "export" else "CONSUMPTION"
 
-        # Tariff rate schedules (fetched once per run, cached; cleared on restart)
-        # → clean display rate + a price for half-hours Measurements returns
-        # without cost.
-        if restart and not dry_run:
-            _hist_rate_segs_cache.pop(channel, None)
-            _hist_standing_segs_cache.pop(channel, None)
-        if channel not in _hist_rate_segs_cache:
-            _hist_rate_segs_cache[channel] = await _build_channel_rate_segs(channel)
-        rate_segs = _hist_rate_segs_cache[channel]
-        # Standing-charge schedule (authoritative, complete) — see _standing_for.
-        if channel not in _hist_standing_segs_cache:
-            _hist_standing_segs_cache[channel] = \
-                await _build_channel_standing_segs(channel)
-        standing_segs = _hist_standing_segs_cache[channel]
+        # Tariff rate schedules → clean display rate + a price for half-hours Measurements
+        # returns without cost; the standing charge (authoritative, complete — see
+        # _standing_for). Through the one per-agreement fetch: closed agreements are cached for
+        # the process, the running one fetched each run (engine step 5c).
+        rate_segs = await _build_channel_rate_segs(channel)
+        standing_segs = await _build_channel_standing_segs(channel)
 
         floor = requested_from or await _cached_data_floor(channel, info,
                                                             restart=restart)

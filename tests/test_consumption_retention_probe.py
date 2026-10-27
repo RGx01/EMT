@@ -200,8 +200,7 @@ class TestApiImportApply(unittest.TestCase):
             ("2024-07-01T02:00:00", "2024-07-01T02:30:00", "electricity_main", cp))
         self.store._conn.commit()
         engine._store = self.store
-        engine._hist_rate_segs_cache.clear()
-        engine._hist_standing_segs_cache.clear()
+        __import__("kraken_rates")._AGREEMENT_SCHED_CACHE.clear()   # the one per-agreement cache
         engine._hist_floor_cache.clear()
         engine._kraken_discovery = {"import": {
             "mpan": "IM", "serial": "IS",
@@ -212,8 +211,7 @@ class TestApiImportApply(unittest.TestCase):
         (engine._kraken_client, engine._kraken_discovery,
          engine._store) = self._c, self._d, self._s
         engine._API_RETENTION_DAYS = self._ret
-        engine._hist_rate_segs_cache.clear()
-        engine._hist_standing_segs_cache.clear()
+        __import__("kraken_rates")._AGREEMENT_SCHED_CACHE.clear()   # the one per-agreement cache
         engine._hist_floor_cache.clear()
 
     def _contig(self):
@@ -446,8 +444,7 @@ class TestExportRestFallback(unittest.TestCase):
             ("2024-07-01T02:00:00", "2024-07-01T02:30:00", "electricity_main", cp))
         self.store._conn.commit()
         engine._store = self.store
-        engine._hist_rate_segs_cache.clear()
-        engine._hist_standing_segs_cache.clear()
+        __import__("kraken_rates")._AGREEMENT_SCHED_CACHE.clear()   # the one per-agreement cache
         engine._hist_floor_cache.clear()
         engine._kraken_discovery = {"export": {
             "mpan": "EX", "serial": "ES",
@@ -459,8 +456,7 @@ class TestExportRestFallback(unittest.TestCase):
         (engine._kraken_client, engine._kraken_discovery,
          engine._store) = self._c, self._d, self._s
         engine._API_RETENTION_DAYS = self._ret
-        engine._hist_rate_segs_cache.clear()
-        engine._hist_standing_segs_cache.clear()
+        __import__("kraken_rates")._AGREEMENT_SCHED_CACHE.clear()   # the one per-agreement cache
         engine._hist_floor_cache.clear()
 
     def test_rest_fills_below_measurements(self):
@@ -517,8 +513,7 @@ class TestApiImportJob(unittest.TestCase):
         self.store._conn.commit()
         engine._store = self.store
         engine._api_import_job = {"status": "idle"}
-        engine._hist_rate_segs_cache.clear()
-        engine._hist_standing_segs_cache.clear()
+        __import__("kraken_rates")._AGREEMENT_SCHED_CACHE.clear()   # the one per-agreement cache
         engine._hist_floor_cache.clear()
         engine._kraken_discovery = {"import": {
             "mpan": "IM", "serial": "IS",
@@ -530,8 +525,7 @@ class TestApiImportJob(unittest.TestCase):
          engine._store) = self._c, self._d, self._s
         engine._api_import_job = self._job
         engine._API_RETENTION_DAYS = self._ret
-        engine._hist_rate_segs_cache.clear()
-        engine._hist_standing_segs_cache.clear()
+        __import__("kraken_rates")._AGREEMENT_SCHED_CACHE.clear()   # the one per-agreement cache
         engine._hist_floor_cache.clear()
 
     def _contig(self):

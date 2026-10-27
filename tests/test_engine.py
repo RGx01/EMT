@@ -3530,6 +3530,9 @@ class TestBuildChannelRateSegsDegenerateWindow(unittest.TestCase):
             def is_empty(self):
                 return False
 
+            def with_vat(self, vat):
+                return self
+
         async def _fake(client, product, tariff, *, period_from=None,
                         period_to=None, **kw):
             called.append(tariff)
@@ -3556,16 +3559,16 @@ class TestBuildChannelRateSegsDegenerateWindow(unittest.TestCase):
         self.assertEqual(len(segs), 1)
 
     def test_standing_builder_skips_degenerate_window(self):
-        engine._kraken_discovery = {"export": {"agreements": [
-            {"tariff_code": "E-1R-OUTGOING-FIX-12M-19-05-13-B",   # from >= to → skip
-             "valid_from": "2019-05-13T00:00:00Z", "valid_to": "2019-05-13T00:00:00Z"},
-            {"tariff_code": "E-1R-OUTGOING-VAR-24-10-26-B",       # valid → fetched
-             "valid_from": "2024-10-26T00:00:00Z", "valid_to": None},
+        engine._kraken_discovery = {"import": {"agreements": [
+            {"tariff_code": "E-1R-VAR-22-11-01-B",                # from >= to → skip
+             "valid_from": "2022-11-01T00:00:00Z", "valid_to": "2022-11-01T00:00:00Z"},
+            {"tariff_code": "E-1R-INTELLI-FIX-12M-26-03-17-B",   # valid → fetched
+             "valid_from": "2026-03-17T00:00:00Z", "valid_to": None},
         ]}}
         called, segs = self._run_with_fake_builder(
             "build_standing_charge_schedule",
-            lambda: engine._build_channel_standing_segs("export"))
-        self.assertEqual(called, ["E-1R-OUTGOING-VAR-24-10-26-B"])
+            lambda: engine._build_channel_standing_segs("import"))
+        self.assertEqual(called, ["E-1R-INTELLI-FIX-12M-26-03-17-B"])
         self.assertEqual(len(segs), 1)
 
 

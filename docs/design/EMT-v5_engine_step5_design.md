@@ -143,5 +143,14 @@ from the export agreements, through the same cache. No stored figure changes; Oc
    delete recomputes the main's carbon from import alone inside its own transaction (`imp_kwh` is the
    main's whole grid draw, as `kwh_total`). Insights clamps the house's carbon at zero, Usage Stats
    does not — the display question of §1.3.
-3. **5c, the schedules** — one fetch; standing from import only. Checked against the tariff goldens and a
+3. **5c, the schedules** — one fetch; standing from import only.
+   *As built (27 Oct 2026):* `kraken_rates.agreement_schedules(client, agreements, kind=)` is the
+   one per-agreement fetch — each schedule as published, closed agreements cached for the process
+   (by (tariff, from, to), `('standing', …)` for standing charges), the running one fetched every
+   call, a degenerate window skipped. `build_agreement_stitched_schedule` stitches from it; the
+   import's `_build_channel_rate_segs` / `_build_channel_standing_segs` read it through
+   `engine._agreement_segs` (VAT applied after, as the stitch does — `with_vat` restates from the
+   published schedule), and their per-run caches went. Standing charges: import only. The live
+   refresh is unchanged; the API import no longer refetches a closed agreement the refresh holds,
+   nor one it fetched in an earlier run. The tariff goldens are unchanged. Checked against the tariff goldens and a
    fresh API import on staging (its stored rates and standing charges beside today's).
