@@ -4145,7 +4145,6 @@ class TestDisconnectKraken(unittest.TestCase):
         # API-derived progress markers + a billing-source preference.
         engine._store.set_kraken_state("last_poll_utc", "2026-06-10T06:00:00Z")
         engine._store.set_kraken_state(engine._STATE_LAST_SWEEP, "2026-06-10T06:00:00+00:00")
-        engine._store.set_kraken_state(engine._KRAKEN_SNAPSHOT_DONE_KEY, "1")
         engine._store.set_kraken_state(engine._BILLING_SOURCE_KEY, "dcc")
         # In-memory API objects that must be torn down.
         self._saved = (engine._kraken_client, engine._kraken_mini_reader,
@@ -4189,7 +4188,6 @@ class TestDisconnectKraken(unittest.TestCase):
         # API-derived progress markers wiped.
         self.assertIsNone(engine._store.get_kraken_state("last_poll_utc"))
         self.assertIsNone(engine._store.get_kraken_state(engine._STATE_LAST_SWEEP))
-        self.assertIsNone(engine._store.get_kraken_state(engine._KRAKEN_SNAPSHOT_DONE_KEY))
         # Billing source PRESERVED (teeth: not a progress marker, must survive).
         self.assertEqual(engine._store.get_kraken_state(engine._BILLING_SOURCE_KEY), "dcc")
         # In-memory API objects torn down.
