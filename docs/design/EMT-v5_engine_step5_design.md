@@ -135,5 +135,13 @@ from the export agreements, through the same cache. No stored figure changes; Oc
    are gone. The importer still carries `pre_live_snapshot_done` (nothing reads it), so the import
    spec stands.
 2. **5b, carbon** — one formula, one bounded lookup; the rule unchanged.
+   *As built (27 Oct 2026):* `_carbon_of(meter_block, intensity)` is the one formula —
+   `_apply_intensity_to_block` and `_recompute_block_carbon` call it; finalise's PASS 3b goes through
+   `_attribute_block_carbon` (the 60-minute bound); a fourth copy, in startup's gap fill, went —
+   `build_gap_blocks` had already attributed those blocks, so it could only overwrite a refused
+   lookup with a far-off slot's intensity. One SQL form stays in the store: the imported-export
+   delete recomputes the main's carbon from import alone inside its own transaction (`imp_kwh` is the
+   main's whole grid draw, as `kwh_total`). Insights clamps the house's carbon at zero, Usage Stats
+   does not — the display question of §1.3.
 3. **5c, the schedules** — one fetch; standing from import only. Checked against the tariff goldens and a
    fresh API import on staging (its stored rates and standing charges beside today's).
