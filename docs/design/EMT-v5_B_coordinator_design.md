@@ -5,7 +5,7 @@ and the writer thread-affine, what is left to coordinate is writers.*
 
 **Status:** the coordinator exists, 23 Sep 2026. `job_coordinator.py`
 holds the decision logic and the dependency manifest; `tests/test_job_coordinator.py` covers it.
-Membership stands at **14/15** registered (`.build/check_job_membership.py`): every engine job
+Membership stands at **13/14** registered (`.build/check_job_membership.py`): every engine job
 including the live tick, the three background workers, and (4 Oct 2026) `api_meter_delete_data`,
 which joined `delete` and now holds the delete flag while it works, so the members
 `exclusive_with` "delete" see it. The 1 outstanding is `api_db_vacuum` (which never joins — see
@@ -72,9 +72,9 @@ because that is a *dependency*, not a race.
 
 `.build/write_scope.py`:
 
-> **9 of the 9 live jobs write `blocks`; 7 also write `block_segments`.**
+> **8 of the 8 live jobs write `blocks`; 7 also write `block_segments`.**
 
-*(9 of 9 since 23 Oct 2026, when engine step 2d removed the deferred pricing verify pass; 10 of 10 from 20 Oct 2026. The attribution job always wrote `blocks`, through
+*(8 of 8 since 27 Oct 2026, when engine step 4e removed the device rate drift repair; 9 of 9 from 23 Oct 2026, when engine step 2d removed the deferred pricing verify pass; 10 of 10 from 20 Oct 2026. The attribution job always wrote `blocks`, through
 `append_block_replace`, five calls down — past the tool's depth of 4. Putting a device half-hour
 back from `ha_reads` points it at its sensor with a direct UPDATE three calls down, which the
 tool sees.)*
@@ -237,8 +237,9 @@ What is true today, measured:
 
 ### 4.1 The other 19
 
-**14 further members**, enumerated rather than estimated — **15 members** in all (16 until engine step 2d removed
-the deferred pricing verify pass, 23 Oct 2026).
+**13 further members**, enumerated rather than estimated — **14 members** in all (15 until engine step 4e removed
+the device rate drift repair, 27 Oct 2026; 16 until engine step 2d removed the deferred pricing verify pass,
+23 Oct 2026).
 
 *Corrected three times, in both directions. First 23, which missed the three background workers.
 Then 26. Then 20, because **six of the eight route handlers stopped needing membership at all**: once a
@@ -258,14 +259,15 @@ members others most want to avoid: `delete_in_progress()` is the second most con
 codebase. `_delete_worker` and `_purge_worker` are ONE member with two entry points, because that
 is what `delete_in_progress()` already means.
 
-**9 live engine jobs** (`.build/check_job_guards.py`; three further jobs — the legacy exc, segment
+**8 live engine jobs** (`.build/check_job_guards.py`; three further jobs — the legacy exc, segment
 and iog-split backfills — are unreachable and do not come across):
 `run_api_import_job`, `_run_historical_reprice_sweep`,
 `_run_historical_carbon_backfill`, `run_measured_history_drain`, `run_gap_fill_job`,
 `run_iog_split_carve`, `run_attribution_job`,
-`run_reprice_history_sweep_to_done`, `run_device_rate_drift_repair`.
+`run_reprice_history_sweep_to_done`.
 
-*Was 14, then 10, then 11, now 10 again: `run_settled_ev_split_heal` was removed on 16 Oct 2026
+*`run_device_rate_drift_repair` went on 27 Oct 2026 (engine step 4e): every settle() write takes the
+devices with the main, so nothing is left to drift. Was 14, then 10, then 11, now 10 again: `run_settled_ev_split_heal` was removed on 16 Oct 2026
 (bill and split paths design §7.3) — once v5's settle took the bill's split (#180) and the importer
 gave imported history it (#184), the heal had nothing left but rewriting history at runtime. The four v4 one-off heals — `run_smb_rate_repair`, `run_smb_device_recost`,
 `run_band_rate_snap`, `run_smb_ev_resplit` — retired with v4: each was marker-gated and

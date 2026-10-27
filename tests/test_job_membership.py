@@ -66,8 +66,8 @@ class TestMembershipRatchet(unittest.TestCase):
         want to avoid: `delete_in_progress()` is the second most consulted guard in
         the codebase. 17 to 16 on 16 Oct 2026: the settled EV split heal was removed (bill and
         split paths design §7.3). 16 to 15 on 23 Oct 2026: the deferred pricing verify pass
-        (engine step 2d)."""
-        self.assertEqual(self.d["members"], 15)
+        (engine step 2d). 15 to 14 on 27 Oct 2026: the device rate drift repair (engine step 4e)."""
+        self.assertEqual(self.d["members"], 14)
 
     def test_the_baseline_is_a_countdown_not_a_record(self):
         """If this ever reaches zero the ratchet is finished and acceptance 1 is

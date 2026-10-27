@@ -8283,8 +8283,8 @@ class BlockStore:
         `devices` (engine step 4b, 25 Oct 2026): settle()'s sub-meters, (meter_id, grid kWh, rate, £,
         ex-VAT £), in the same transaction — each priced at the rate of the legs its kWh sits in
         (step 4 design §4 (b)). Until then a second, best-effort transaction re-costed them at the
-        main's single rate (`recost_sub_meters`, removed with it), which `repair_device_rate_drift` had
-        to catch.
+        main's single rate (`recost_sub_meters`, removed with it), which a recurring drift repair had
+        to catch (removed in engine step 4e: every settle() write takes the devices with the main).
         """
         return self._write_half_hour(block_start, rate=rate, cost=cost, cost_exc=cost_exc,
                                      meter_id=meter_id, segments=segments, devices=devices,
@@ -8325,70 +8325,6 @@ class BlockStore:
                     "WHERE block_start = ? AND meter_id = ?",
                     [(k, r, c, ce, block_start, mid) for (mid, k, r, c, ce) in devices])
         return cur.rowcount
-
-    def repair_device_rate_drift(self) -> int:
-        """Re-cost any sub-meter block whose priced rate has DRIFTED from its
-        parent main block. Returns rows changed. Idempotent: matches only rows
-        that differ, so a second call changes nothing.
-
-        THE INVARIANT: PASS 2 costs every sub-meter at the parent's rate, so a
-        physical device block (ev_charger / battery) must carry the same
-        `imp_rate` as the main block for its slot. The kWh columns are never
-        touched; only the priced rate layer moves. Cost derives from
-        `COALESCE(imp_kwh_grid, imp_kwh)`, as the settle's device re-cost did -- v4's body
-        priced raw `imp_kwh`, and running that on every pass would re-apply the
-        over-cost indefinitely (v4 #473, 4.5.15).
-
-        This exists because settlement moves the parent and the children can be
-        left behind. `apply_measured_to_block` flips the main row to the settled
-        band and then re-costs the devices in a SECOND, best-effort transaction:
-        the main write propagates on failure, the device write logs and
-        continues. A block can therefore end up settled on the main meter while
-        its devices hold the pre-settlement (often peak) rate, which shows up as
-        the EV or battery priced at peak on Billing and Usage Stats while the
-        bill says off-peak.
-
-        RECOVERED FROM A DELETION, which is why the reasoning is written out
-        here. This predicate was the body of v4's `_smb_device_recost_core`, a
-        marker-gated one-off whose wrapper said "retires in v5.0.0" -- and the
-        wrapper was correctly retired, because the FLOOR argument disposes of
-        history (EMT-v5_import_spec §1.1). The body is not historical: there is
-        no era filter, no date range and no tariff gate. It enforces a live
-        invariant, and reading the docstring instead of the WHERE clause is how
-        it nearly went with the wrapper.
-
-        Ungated and recurring is STRICTER than v4, which ran it once ever and
-        then left the invariant unenforced for the life of the install.
-        """
-        with self._conn:
-            cur = self._conn.execute(
-                "UPDATE blocks SET "
-                "  imp_rate = (SELECT m.imp_rate FROM blocks m "
-                "              WHERE m.meter_id='electricity_main' AND m.block_start=blocks.block_start), "
-                "  imp_cost = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * (SELECT m.imp_rate FROM blocks m "
-                "              WHERE m.meter_id='electricity_main' AND m.block_start=blocks.block_start), 6), "
-                # the main's ex-VAT rate, derived from its own pair (step 5b: rate × exc/inc);
-                # NULL where the main has no ex-VAT £, as before
-                "  imp_cost_exc = ROUND(COALESCE(imp_kwh_grid, imp_kwh, 0) * (SELECT m.imp_rate * "
-                "              m.imp_cost_exc / NULLIF(m.imp_cost, 0) FROM blocks m "
-                "              WHERE m.meter_id='electricity_main' AND m.block_start=blocks.block_start), 6) "
-                # sub-meters only; an export meter has no imp_kwh
-                "WHERE meter_id != 'electricity_main' AND imp_kwh IS NOT NULL "
-                "  AND EXISTS (SELECT 1 FROM blocks m WHERE m.meter_id='electricity_main' "
-                "              AND m.block_start = blocks.block_start AND m.imp_rate IS NOT NULL "
-                "              AND ABS(COALESCE(m.imp_rate,0) - COALESCE(blocks.imp_rate,0)) > 0.0001) "
-                # engine step 4b (design §4 (b)): on a half-hour whose legs are at more than one
-                # rate a device is priced at its own legs' rate, not the main's blend — the
-                # invariant does not hold there, and settle() writes those devices with the main
-                "  AND (SELECT COUNT(DISTINCT ROUND(s.inc_rate, 6)) FROM block_segments s "
-                "       WHERE s.block_start = blocks.block_start AND s.meter_id = 'electricity_main' "
-                "       AND s.channel = 'import' AND s.kwh > 1e-9) <= 1")
-        return cur.rowcount
-
-
-    _RECONCILED_SOURCE = ("rate_source = CASE WHEN rate_source IN ('settled', 'corrected') "
-                          "THEN rate_source ELSE 'reconciled' END")
-
 
     def get_reconcile_candidates(self, before_iso: str,
                                  meter_id: str = "electricity_main") -> list:

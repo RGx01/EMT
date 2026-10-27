@@ -60,7 +60,6 @@
     "record_dispatch_history",
     "record_recorder_hours",
     "remove_attribution_run",
-    "repair_device_rate_drift",
     "retag_untagged_imports",
     "retire_meter",
     "save_current_block",

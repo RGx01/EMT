@@ -23,8 +23,9 @@ alone says reconciled.
 
 Engine step 4c (26 Oct 2026): the reconcile settles its candidates with settle(), which does not
 stamp who set a prediction — so 'reconciled' is no longer written, and the verdict's two tests
-went with `apply_reconcile_verdict`. The word is still read (an imported v4 row's, and the CAD
-re-run's hold below), and still written by the importer's fold.
+went with `apply_reconcile_verdict`. Engine step 4e (27 Oct 2026): the settlement re-run keeps the
+stored rate of every half-hour settle() does not price, whatever its provenance, so the word decides
+nothing and its re-run tests went too. The importer's fold still writes it, as v4's provenance.
 """
 import os
 import sys
@@ -50,34 +51,6 @@ class TheVerdict(H._Harness):
         engine._store.apply_measured_to_main(
             H.START, rate=OFF, cost=round(H.MAIN * OFF, 6), cost_exc=None)
         self.assertEqual(self._row()["rate_source"], "settled")
-
-
-class TheReRun(H._Harness):
-    """Whether the settlement re-run HOLDS a block's rate (its "rate preserved" decision, logged)
-    rather than re-deriving it. In CAD billing only a correction, a reconciliation or a bill holds
-    it. (The rate itself can't show it here: a CAD re-run keeps any sane stored rate either way —
-    it only repairs a missing one — so the decision is what is asserted.)"""
-
-    def _holds(self, rate_source):
-        self._finalise()
-        with engine._store._conn:
-            engine._store._conn.execute(
-                "UPDATE blocks SET imp_rate=?, imp_cost=ROUND(imp_kwh*?, 6), rate_source=? "
-                "WHERE block_start=? AND meter_id='electricity_main'",
-                (OFF, OFF, rate_source, H.START))
-        blk = engine._store.get_block_dict_by_start(H.START)
-        with self.assertLogs("engine", level="INFO") as cm:
-            engine.logger.info("probe")          # assertLogs needs at least one record
-            engine._rerun_pass2_for_settled_block(blk, billing_source="cad",
-                                                  standing_resolver=None)
-        return any("rate preserved" in m for m in cm.output)
-
-    def test_rate_source_alone_holds_a_reconciled_rate(self):
-        self.assertTrue(self._holds("reconciled"))
-
-    def test_an_unheld_schedule_row_is_not_held(self):
-        """GUARD: the case is real — a plain schedule row is re-derived, not held, in CAD."""
-        self.assertFalse(self._holds("schedule"))
 
 
 if __name__ == "__main__":
