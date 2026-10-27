@@ -73,7 +73,6 @@ class ReadStore:
     _EXPORT_PRESENT = _BS._EXPORT_PRESENT
     _LATEST_BILL_SQL = _BS._LATEST_BILL_SQL
     _NEEDS_REPRICE_WHERE = _BS._NEEDS_REPRICE_WHERE
-    _RECONCILED_SOURCE = _BS._RECONCILED_SOURCE
     _SETTLEABLE_SQL = _BS._SETTLEABLE_SQL
     _UNSETTLED_WHERE = _BS._UNSETTLED_WHERE
     _UNSETTLED_WHERE_IMPORT_ONLY = _BS._UNSETTLED_WHERE_IMPORT_ONLY
@@ -229,7 +228,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 96 writers.
+    """The full store: every read method, plus the 95 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or

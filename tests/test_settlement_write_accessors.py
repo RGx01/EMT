@@ -5,11 +5,11 @@ The settlement family's write — A acceptance 5.
 
 Until engine step 4b (25 Oct 2026) the devices were re-costed afterwards by `recost_sub_meters`, in a
 transaction of their own inside a `try` that logged and continued, so a failed device write left
-the main settled and its devices on the old rate — what `repair_device_rate_drift()` (A12) was
+the main settled and its devices on the old rate — what a recurring drift repair (A12) was
 reinstated to catch. settle() now prices the devices with the main (at the rate of the legs their
 kWh sits in, design §4 (b)), and the one write takes both: if it fails, nothing is stamped and the
-block stays a candidate. The drift repair stays for the writers not yet through settle() (the
-reconcile and the carve, step 4c).
+block stays a candidate. With every writer through settle() (step 4c, 4d) the drift repair went in
+engine step 4e.
 """
 import os
 import sqlite3
@@ -141,28 +141,6 @@ class TheDevicesGoWithTheMain(unittest.TestCase):
         _block(st)
         st.apply_measured_to_main(S, **_BILL)
         self.assertEqual(_row(st)["rate_source"], "settled")
-
-    def test_and_the_drift_repair_still_converges_a_device_left_behind(self):
-        """GUARD: a writer not yet through settle() (the reconcile, the carve) can move the main
-        alone; the drift repair still brings a one-rate half-hour's device to the main's rate."""
-        st = _mk_store()
-        _block(st)
-        _block(st, "sub_meter_ev", imp_kwh=4.0, imp_rate=0.32)
-        st.apply_measured_to_main(S, **_BILL)
-        self.assertEqual(st.repair_device_rate_drift(), 1)
-        self.assertAlmostEqual(_row(st, "sub_meter_ev")["imp_rate"], 0.0549)
-
-    def test_but_not_on_a_half_hour_with_legs_at_two_rates(self):
-        """Design §4 (b): there the device's rate is its legs', not the main's blend."""
-        import pricing_segments as ps
-        st = _mk_store()
-        _block(st)
-        _block(st, "sub_meter_ev", imp_kwh=1.0, imp_rate=0.0549)
-        st.apply_measured_to_main(S, rate=0.1, cost=0.3, cost_exc=0.28, segments=[
-            ps.Segment(1.0, 0.0549, 0.0523, "off_peak", "ev"),
-            ps.Segment(1.0, 0.3229, 0.3075, "day", "house")])
-        self.assertEqual(st.repair_device_rate_drift(), 0)
-        self.assertAlmostEqual(_row(st, "sub_meter_ev")["imp_rate"], 0.0549)
 
 
 class Surfaces(unittest.TestCase):

@@ -783,7 +783,7 @@ def _persist_block_segments(block_start: str, meter_id: str, imp_ch: dict, *,
 
 def _exc_ratio(imp_ch: dict, block_start: str, *, vat_fallback: bool = True):
     """A main import channel's ex-VAT / inc-VAT ratio: the ex-VAT rate this pricing run derived
-    (`rate_exc`, set by _apply_import_exc), else the block's OWN stored pair (`cost_exc` /
+    (`rate_exc`, where a pricing run set one), else the block's OWN stored pair (`cost_exc` /
     `cost`), else 1 / (1 + VAT on its day). None when none can be had.
 
     Step 5b (10 Oct 2026): `imp_rate_exc` is no longer stored or loaded, so on a channel read
@@ -808,8 +808,8 @@ def _carry_exc_to_cost(imp_ch: dict, ratio) -> None:
     """Keep a re-costed channel's ex-VAT with its new inc figure, at `ratio` (the block's own,
     taken BEFORE the re-cost). The settlement re-run moves kWh and £ to the settled figure; with
     no ex-VAT tariff to re-derive from, the loaded `cost_exc` was written back unchanged — stale
-    against the new cost, hidden while `imp_rate_exc` was stored. A tariff, if one covers the
-    slot, still overrides this (_apply_import_exc runs after)."""
+    against the new cost, hidden while `imp_rate_exc` was stored. On an account with a tariff
+    schedule settle() then writes the VAT calendar's figure (engine step 4d, 4e)."""
     if ratio is None or imp_ch.get("cost") is None:
         return
     imp_ch["cost_exc"] = round(float(imp_ch["cost"]) * ratio, 6)
@@ -843,27 +843,6 @@ def _build_block_segments(block_start: str, imp_ch: dict) -> list:
     return segs
 
 
-def _apply_import_exc(imp_ch: dict, start: str) -> bool:
-    """The ONE ex-VAT computation (design 4.4.0 §4): derive rate_exc/cost_exc from the
-    POST-split inc rate x the tariff's exc/inc ratio at this slot — computed alongside inc,
-    from the same knowledge, so exc can never go stale versus the split. Returns True when a
-    tariff exc was applied; a no-op when no
-    ex-VAT tariff covers the slot (the view then falls back to inc / (1+VAT))."""
-    _isched = _kraken_rate_schedules.get("import")
-    _iexc = getattr(_isched, "exc", None) if _isched is not None else None
-    rate = imp_ch.get("rate")
-    if _iexc is None or not rate:
-        return False
-    _inc_p = _isched.resolve(start)
-    _exc_p = _iexc.resolve(start)
-    if _exc_p is None or not _inc_p or abs(_inc_p) <= 1e-6:
-        return False
-    _exc_rate = rate * (_exc_p / _inc_p)
-    imp_ch["rate_exc"] = round(_exc_rate, 6)
-    imp_ch["cost_exc"] = round((imp_ch.get("kwh") or 0.0) * _exc_rate, 6)
-    return True
-
-
 _UNIT_SANITY_MAX_RATE_GBP = 3.0   # £/kWh ceiling — above this an INC rate is pence-not-pounds
 
 
@@ -894,37 +873,17 @@ def _sanitise_inc_units(imp_ch: dict, start: str) -> bool:
 
 
 def _reprice_main_import_block(result: dict, start: str, meter_name: str,
-                               meter: "dict | None" = None, *,
-                               apply_overlay: bool = True, persist: bool = True,
+                               meter: "dict | None" = None, *, persist: bool = True,
                                stage: bool = False) -> None:
-    """The single per-block re-price for a MAIN import channel (design 4.4.0 §4): (optionally)
-    apply the dispatch off-peak overlay (the finalise-time started-gate), carve the IOG
-    EV/house split, derive ex-VAT from the post-split rate, and persist the segments — ALL
-    derived fields together, one path, so nothing (exc especially) can drift. No-op for
-    non-IOG / no-dispatch.
+    """What a MAIN import channel carries when its block is written: the rate it was priced at
+    (the rate sensor, or the live schedule), its units checked, and its segments built from it.
 
-    `apply_overlay=False` — INHERIT the stored rate, don't re-resolve the overlay (design §3d:
-    never re-derive the overlay over history). Used by the reconcile back-attribution, which
-    re-derives only the split from a late completed dispatch and keeps the finalised rate.
-    `persist=False` — compute in place, let the caller persist (so it can gate on the split)."""
-    _base = result.get("rate", 0.0) or 0.0
-    if _base:
-        if apply_overlay:
-            _ov = _dispatch_overlay_rate("import", start, _base, result.get("kwh"))
-            if _ov != _base:
-                result["rate"] = _ov
-                result["cost"] = round((result.get("kwh") or 0.0) * _ov, 6)
-        # IOG house/EV split — carve the dispatched EV portion (all IOG) and, on the capped
-        # tariff, re-price live; settlement re-applies it when the DCC kWh re-materialises.
-        _apply_iog_split(result, start, "", result.get("kwh"), result.get("rate") or _base,
-                         _iog_site_tz())
-        # ex-VAT from the POST-split rate — one place, in the same breath as inc. Only when the
-        # rate was (re)resolved here; the inherit path keeps the finalised rate AND its exc.
-        if apply_overlay:
-            _apply_import_exc(result, start)
-    # SAFETY GUARD (§4a) — INC must be £, never pence. One chokepoint for every main-import
-    # write (finalise, reconcile back-attribution, reprice sweep); PASS 2 devices then inherit
-    # the corrected £ rate. Byte-identical on healthy blocks.
+    Engine step 4e (27 Oct 2026): the dispatch overlay, the IOG split and the tariff's ex-VAT went
+    from here. Every block write is settled after it (4d), and settle() writes the band, the legs,
+    the ex-VAT and the devices from the facts; what is left is the fallback for a half-hour
+    settle() cannot price — an account with no tariff schedule (a rate sensor), whose figures stand
+    as written: kWh × that rate, one house segment."""
+    # SAFETY GUARD (§4a) — INC must be £, never pence. PASS 2 devices then inherit the £ rate.
     _sanitise_inc_units(result, start)
     if persist:
         _persist_block_segments(start, meter_name, result, stage=stage)
@@ -3968,118 +3927,47 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
             logger.info("_rerun_pass2: %s settled by settle() — %s, %s at %.5f",
                         block.get("start", ""), _ss.status, _ss.band, _ss.imp_rate)
         elif chosen is not None:
-            # Preserve a deliberate rate override — a user correction
-            # (rate_corrected) or a dispatch reconciliation (rate_source). If
-            # PASS 2 re-runs after one of those (e.g. a re-settlement), it must NOT
-            # re-resolve the overlay over the override; keep the stored rate and
-            # only re-cost it against the settled kWh. (Ordering normally puts
-            # reconcile after settlement, so this is belt-and-braces.)
-            _override_rate = None
-            _held_bill = False          # BL-82: the block's cost IS Octopus's bill
-            _override_why = "user correction / reconciled / measured"
+            # settle() did not price it: a correction (the user's), a CAD-billing install, an
+            # import kWh not settled yet (an export-only settlement), or what settle() cannot
+            # price (no tariff schedule — a rate-sensor account). The stored rate stands and is
+            # re-costed to the chosen kWh; a settled block keeps its bill (BL-82). Engine step 4e
+            # (27 Oct 2026): the overlay and IOG-split re-resolve that ran here went — on an
+            # account with a schedule, settle() follows this write (4d).
+            _held_bill = False
             try:
-                if _store is not None:
-                    _mrow = _store.get_block_rate_authority(
-                        block.get("start", ""), main_meter_id)
-                    # BL-53: preserve a measured (Octopus-billed) rate too, so a
-                    # settlement re-cost can't re-resolve the overlay over the bill.
-                    # Read by NAME — this was four positional indexes off a
-                    # four-column SELECT.
-                    # Step 5: held by provenance — rate_source says who set the rate. The
-                    # rate_reconciled flag went with its column (10 Oct 2026); the importer
-                    # folds a v4 row it flagged while leaving 'schedule' into 'reconciled'.
-                    if (_mrow and (_mrow["rate_corrected"]
-                                   or _mrow["rate_source"] in ("reconciled", "settled", "corrected"))
-                            and _mrow["imp_rate"] is not None):
-                        _override_rate = _mrow["imp_rate"]
-                        _held_bill = (_mrow["rate_source"] == "settled"
-                                      and not _mrow["rate_corrected"])
-                    elif use_dcc and _mrow and _mrow["imp_rate"]:
-                        # settle() could not price it (above): keep the stored rate and re-cost
-                        # it to the settled kWh. Until engine step 4b this held a PREDICTED band
-                        # (4.5.15, v4 #475, hold_rate) for every account.
-                        _override_rate = _mrow["imp_rate"]
-                        _override_why = "settle() could not price it — stored rate kept"
+                _mrow = (_store.get_block_rate_authority(block.get("start", ""), main_meter_id)
+                         if _store is not None else None)
+                _held_bill = bool(_mrow and _mrow["rate_source"] == "settled"
+                                  and not _mrow["rate_corrected"])
             except Exception:
-                _override_rate = None
-            # BL-62: an EXPORT-only settlement must not re-price IMPORT. `needs_pass2_rerun`
-            # is a BLOCK-level flag with no channel (upsert_kraken_block picks imp/exp_kwh_api
-            # to decide whether the figure CHANGED, then raises one shared flag), so a poll
-            # that settles only export queues the block and the drain re-runs every channel.
-            # For import that is a no-op by construction: `chosen` falls back to `cad_kwh`,
-            # which IS the already-stored kWh — there is nothing to re-cost. Yet the else-branch
-            # below re-resolves the dispatch overlay and re-runs the IOG split, which CAN move a
-            # historical rate. The 2026-09-13 12:00 BST case: export settled on a restart-forced
-            # Kraken poll ~30 h after the slot; the overlay itself refused (0.012 kWh < the 0.10
-            # over-report floor, logged) but `_apply_iog_split` carries no floor, so the capped
-            # seam repriced the slot peak -> off-peak (0.323092 -> 0.054917) on a block whose
-            # import had never settled. No settled import figure => keep the finalised rate.
-            # Only a genuine import settlement (or an explicit CAD switch) may re-resolve it.
-            # A missing/zero stored rate still falls through, so `_resolve_block_rate`'s
-            # zero/missing-rate REPAIR — the reason that branch exists — is untouched.
-            if _override_rate is None and use_dcc and dcc_kwh is None:
-                _stored_rate = imp_ch.get("rate")
-                if _stored_rate:
-                    _override_rate = float(_stored_rate)
-                    _override_why = "import not settled (export-only settlement)"
-            if _override_rate is not None:
-                # user correction / dispatch reconciliation / unsettled import — keep the
-                # stored rate, only re-cost to the chosen kWh; no overlay/split/persist so the
-                # rate is never stomped. ex-VAT is still derived (from that same rate).
-                rate = _override_rate
-                _own_ratio = _exc_ratio(imp_ch, block.get("start", ""), vat_fallback=False)
-                _billed_kwh = imp_ch.get("kwh")
-                imp_ch["rate"] = rate
-                imp_ch["kwh"] = chosen
-                imp_ch["kwh_total"] = chosen
-                if _held_bill:
-                    # BL-82 (13 Oct 2026): a settled block's cost and ex-VAT ARE Octopus's bill —
-                    # kept, not re-costed to kWh x rate. The re-run fired on every DCC
-                    # re-confirmation; on 12 Oct's backups it had replaced 262 and 247 bills
-                    # with kWh x rate, none with a different kWh. A settled kWh that does differ
-                    # from the kWh the bill priced is a question for Octopus (ROADMAP BL-86),
-                    # not a figure to invent: logged, and the bill kept.
-                    if (_billed_kwh is not None
-                            and abs(float(_billed_kwh) - float(chosen)) > 0.0005):
-                        logger.warning(
-                            "_rerun_pass2: %s settled kWh %.3f differs from the %.3f the bill "
-                            "priced — bill kept (£%.4f); re-fetch to reconcile",
-                            block.get("start", ""), float(chosen), float(_billed_kwh),
-                            float(imp_ch.get("cost") or 0.0))
-                    logger.info("_rerun_pass2: %s settled — the bill is kept (rate %.5f)",
-                                block.get("start", ""), rate)
-                else:
-                    logger.info("_rerun_pass2: %s rate preserved (%.5f) — %s; re-costed to "
-                                "chosen kWh (not re-resolved)",
-                                block.get("start", ""), rate, _override_why)
-                    imp_ch["cost"] = round(chosen * rate, 6)
-                    _carry_exc_to_cost(imp_ch, _own_ratio)
-                    _apply_import_exc(imp_ch, block.get("start", ""))
-                # BL-79 (8 Oct 2026): a corrected, reconciled or measured rate is held, so
-                # nothing here re-derives the segments — and they stayed at the old kWh
-                # while imp_kwh moved to the settled figure (11–12 measured blocks per real
-                # install). The bill's EV/Home rows and every EV surface read the segments,
-                # so they no longer added up to the block. Fit them to the settled kWh at
-                # the rates they carry: the house takes the change, the EV only if the house
-                # is gone. A block with no segments keeps none.
-                _refit_held_segments(imp_ch, block.get("start", ""), main_meter_id, chosen,
-                                     rate, stage=True)
+                _held_bill = False
+            _own_ratio = _exc_ratio(imp_ch, block.get("start", ""), vat_fallback=False)
+            # a missing or zero stored rate is repaired from the resolver where one helps
+            rate, rep = _resolve_block_rate(imp_ch, block.get("start", ""), "import",
+                                            rate_resolver)
+            _rate_repaired = _rate_repaired or rep
+            _billed_kwh = imp_ch.get("kwh")
+            imp_ch["rate"] = rate
+            imp_ch["kwh"] = chosen
+            imp_ch["kwh_total"] = chosen
+            if _held_bill:
+                # BL-82 (13 Oct 2026): a settled block's cost and ex-VAT ARE Octopus's bill —
+                # kept, not re-costed to kWh x rate. A settled kWh that differs from the kWh the
+                # bill priced is a question for Octopus (ROADMAP BL-86): logged, the bill kept.
+                if _billed_kwh is not None and abs(float(_billed_kwh) - float(chosen)) > 0.0005:
+                    logger.warning(
+                        "_rerun_pass2: %s settled kWh %.3f differs from the %.3f the bill "
+                        "priced — bill kept (£%.4f); re-fetch to reconcile",
+                        block.get("start", ""), float(chosen), float(_billed_kwh),
+                        float(imp_ch.get("cost") or 0.0))
             else:
-                _own_ratio = _exc_ratio(imp_ch, block.get("start", ""), vat_fallback=False)
-                rate, rep = _resolve_block_rate(imp_ch, block.get("start", ""),
-                                                "import", rate_resolver)
-                _rate_repaired = _rate_repaired or rep
-                imp_ch["rate"] = rate                       # resolved (pre-overlay)
-                imp_ch["kwh"] = chosen
-                imp_ch["kwh_total"] = chosen
                 imp_ch["cost"] = round(chosen * rate, 6)
                 _carry_exc_to_cost(imp_ch, _own_ratio)
-                # 4.4.0 §4: the ONE per-block re-price — overlay + IOG split + ex-VAT
-                # (from the POST-split rate) + persist, all together. Replaces the inline
-                # overlay/split/exc/persist whose exc came from the pre-split rate (a
-                # latent capped mismatch). Byte-identical on uncapped (rates equal).
-                _reprice_main_import_block(imp_ch, block.get("start", ""),
-                                           main_meter_id, main, stage=True)
+            # BL-79 (8 Oct 2026): the stored segments follow the settled kWh at the rates they
+            # carry — the house takes the change, the EV only if the house is gone. A block with
+            # none keeps none, as before.
+            _refit_held_segments(imp_ch, block.get("start", ""), main_meter_id, chosen, rate,
+                                 stage=True)
 
     exp_ch = (main.get("channels") or {}).get("export")
     if exp_ch is None and main.get("exp_kwh_api") is not None:
@@ -4592,16 +4480,10 @@ def finalise_block(ha: HAClient, block_data: dict | None = None, interpolated: b
 
             meter_block["channels"][channel_name] = result
 
-            # Dispatch overlay (A) — at FINALISE, for the main import channel.
-            # This is the finalise-time rate adjustment that BCD's rate sensor
-            # would supply if installed; EMT computes the equivalent itself for
-            # users without BCD. An out-of-window smart-charge slot with real
-            # draw is repriced to off-peak here, the moment the block forms —
-            # consistent with how CAD/BCD rates are applied at finalise. Gated by
-            # the computed import kWh (meter validation). Settlement re-applies it
-            # when the DCC kWh re-materialises (so it isn't clobbered).
+            # The main import's rate and segments as finalise read them (the rate sensor, or the
+            # live schedule). settle() follows the block write (engine step 4d) with the band, the
+            # legs and the ex-VAT from the facts; the dispatch overlay that ran here went in 4e.
             if not is_sub and channel_name == "import":
-                # 4.4.0 §4: one per-block re-price entry (overlay + split + exc + persist).
                 _reprice_main_import_block(result, start, meter_name, meter_block, stage=True)
 
             # NOTE: sub-meter (device) import is NOT priced here. Devices always
@@ -9819,14 +9701,6 @@ async def _tick_dispatch_capture() -> None:
             apply_measured_settled()
         except Exception as e:
             logger.warning("_tick_dispatch_capture: measured apply failed: %s", e)
-        # LAST, because the settled apply above is what can break the invariant it
-        # enforces: that apply re-costs sub-meters in a separate, best-effort
-        # transaction, so a failure there leaves devices on the pre-settlement rate.
-        # Self-limiting — zero rows in the steady state.
-        try:
-            run_device_rate_drift_repair()
-        except Exception as e:
-            logger.warning("_tick_dispatch_capture: device rate drift repair failed: %s", e)
         try:
             run_prune_stale_tombstones()
         except Exception as e:
@@ -10794,15 +10668,13 @@ async def _fetch_bill_nodes(mpan: str, slots) -> dict:
     return out
 
 
-# ── Engine step 2a: the band, predicted and settled, beside today's cost ─────────────────────
+# ── The band, predicted and settled (engine step 2) ──────────────────────────────────────────
 # EMT-v5_engine_step2_import_bills_design.md (23 Oct 2026, the user's model): every half-hour's cost
 # is kWh × its band's rate; the band predicted from the clock and the dispatches EMT recorded, then
 # settled by Octopus's — the bill's label (the four buckets' band on IOG-SMB), the clock on a
-# published tariff. 2a only REPORTS what that rule gives against what is stored: it writes nothing
-# into the blocks and asks Octopus nothing. Billed wins where it contradicts the prediction (decided);
-# the report counts those apart.
+# published tariff. Billed wins where it contradicts the prediction (decided). Step 2a's report of
+# this rule went in engine step 4e; the settle parity report (step 4a) compares every part.
 _BAND_PARITY_GBP = 0.0005          # a cost within 0.05p of today's is the same cost
-_band_parity_state: dict = {"status": "idle"}
 
 
 def _band_rates(bs: str):
@@ -10993,66 +10865,6 @@ def _lifecycle_band(bs: str, band: str, was_online: bool = True) -> "str | None"
     return target if target in ("off_peak", "peak") else None
 
 
-def band_parity_row(f: dict) -> dict:
-    """One main-meter half-hour (a get_settlement_facts row) under the step 2 rule, beside today's
-    stored cost. `status`: same | changes | unsettled | mixed | no_rate | corrected | empty."""
-    bs = f["block_start"]
-    kwh = float(f.get("imp_kwh") or 0.0)
-    stored = f.get("imp_cost")
-    out = {"start": bs, "kwh": round(kwh, 6), "stored_cost": stored, "stored_rate": f.get("imp_rate"),
-           "octopus_cost": f.get("bill_cost"), "label": f.get("bill_label"),
-           "settled": None, "predicted": None, "rate": None, "cost": None, "status": None,
-           "disagrees": False}
-    if f.get("rate_corrected") or f.get("rate_source") == "corrected":
-        out["status"] = "corrected"           # the user's own figure stands
-        return out
-    if kwh <= 1e-9:
-        out["status"] = "empty"
-        return out
-    kind = tariff_kind_at(bs)
-    if kind != "intelligent":
-        sched = _kraken_rate_schedules.get("import")
-        try:
-            r = sched.resolve(bs) if sched is not None and not sched.is_empty() else None
-        except Exception:
-            r = None
-        if r is None:
-            out["status"] = "no_rate"
-            return out
-        out["settled"] = out["predicted"] = "clock"
-        out["rate"] = round(r / 100.0, 6)
-    else:
-        lo, hi = _band_rates(bs)
-        if lo is None:
-            out["status"] = "no_rate"
-            return out
-        out["predicted"] = predicted_band(bs, kwh,
-                                          live=not str(f.get("source") or "").startswith("imported"))
-        bd = None
-        if f.get("bill_home_kwh") is not None or f.get("bill_ev_kwh") is not None:
-            try:
-                bd = _reader().get_measured_breakdown(bs)
-            except Exception:
-                bd = None
-        out["settled"] = settled_band(bs, f.get("bill_label"), bd, cost=f.get("bill_cost"),
-                                      bill_kwh=f.get("bill_kwh"), own_kwh=kwh)
-        if out["settled"] == "mixed":
-            out["status"] = "mixed"          # two bands in one half-hour: none seen yet; listed
-            return out
-        band = out["settled"] or out["predicted"]
-        out["rate"] = lo if band == "off_peak" else hi
-        out["disagrees"] = bool(out["settled"] and out["predicted"]
-                                and out["settled"] != out["predicted"])
-    out["cost"] = round(kwh * out["rate"], 6)
-    if out["settled"] is None:
-        out["status"] = "unsettled"
-    elif stored is not None and abs(out["cost"] - float(stored)) <= _BAND_PARITY_GBP:
-        out["status"] = "same"
-    else:
-        out["status"] = "changes"
-    return out
-
-
 # ── Engine step 3a: the ask dry run (EMT-v5_engine_step3_ask_queue_design.md §5) ─────────────────
 # What the one selector (§3) would ask Octopus for, beside what the live pass and the drain ask
 # today, with why each half-hour differs. Read-only: no Octopus call, nothing written but the report.
@@ -11175,86 +10987,6 @@ async def run_ask_dry_run(out_dir: str) -> dict:
         return summary
     except Exception as e:
         logger.warning("ask dry run failed: %s", e)
-        st.update({"status": "error", "error": str(e)})
-        return {"ok": False, "error": str(e)}
-
-
-def band_parity_status() -> dict:
-    return dict(_band_parity_state)
-
-
-async def run_band_parity(utc_from: str, utc_to: str, out_dir: str) -> dict:
-    """The step 2a report over [utc_from, utc_to): every main-meter half-hour under the rule, a
-    month at a time, yielding between months. Writes `band_parity_<ts>.json` (the summary) and
-    `.csv` (every half-hour not `same`) to `out_dir`. Read-only on the blocks; no Octopus call."""
-    import csv as _csv
-    import json as _json
-    st = _band_parity_state
-    st.clear()
-    st.update({"status": "running", "from": utc_from, "to": utc_to, "done_to": utc_from})
-    try:
-        if _store is None:
-            raise RuntimeError("no store")
-        ensure_dir(out_dir)
-        ts = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        csv_path = os.path.join(out_dir, "band_parity_%s.csv" % ts)
-        json_path = os.path.join(out_dir, "band_parity_%s.json" % ts)
-        counts: dict = {}
-        months: dict = {}
-        tot = {"stored": 0.0, "rule": 0.0, "octopus": 0.0}
-        fields = ["start", "kwh", "status", "disagrees", "before_record", "settled", "predicted",
-                  "label", "stored_rate", "rate", "stored_cost", "cost", "octopus_cost"]
-        try:
-            first_record = _reader().first_dispatch_record()
-        except Exception:
-            first_record = None
-        a = datetime.fromisoformat(utc_from)
-        end = datetime.fromisoformat(utc_to)
-        with open(csv_path, "w", newline="") as fh:
-            w = _csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
-            w.writeheader()
-            while a < end:
-                b = min(end, (a.replace(day=1) + timedelta(days=32)).replace(day=1))
-                for f in _reader().get_settlement_facts(a.isoformat(), b.isoformat()):
-                    r = band_parity_row(f)
-                    # before EMT recorded any dispatch, its prediction has none to go on: a
-                    # disagreement there is expected, and counted apart
-                    r["before_record"] = bool(r["disagrees"] and (first_record is None
-                                                                 or r["start"] < first_record))
-                    k = r["status"] + ((" · disagrees before EMT's dispatch record"
-                                        if r["before_record"] else " · disagrees")
-                                       if r["disagrees"] else "")
-                    counts[k] = counts.get(k, 0) + 1
-                    mk = r["start"][:7]
-                    m = months.setdefault(mk, {"same": 0, "changes": 0, "unsettled": 0,
-                                               "disagrees": 0, "stored": 0.0, "rule": 0.0})
-                    if r["status"] in m:
-                        m[r["status"]] += 1
-                    m["disagrees"] += int(r["disagrees"])
-                    if r["cost"] is not None and r["stored_cost"] is not None:
-                        m["stored"] += float(r["stored_cost"]); m["rule"] += r["cost"]
-                        tot["stored"] += float(r["stored_cost"]); tot["rule"] += r["cost"]
-                        if r["octopus_cost"] is not None:
-                            tot["octopus"] += float(r["octopus_cost"])
-                    if r["status"] != "same" or r["disagrees"]:
-                        w.writerow(r)                # every change, and every disagreement
-                st["done_to"] = b.isoformat()
-                a = b
-                await asyncio.sleep(0)               # one month at a time: the loop breathes
-        summary = {"from": utc_from, "to": utc_to, "first_dispatch_record": first_record,
-                   "counts": counts,
-                   "totals_gbp": {k: round(v, 2) for k, v in tot.items()},
-                   "months": {k: {kk: (round(vv, 2) if isinstance(vv, float) else vv)
-                                  for kk, vv in v.items()} for k, v in sorted(months.items())},
-                   "csv": os.path.basename(csv_path)}
-        with open(json_path, "w") as fh:
-            _json.dump(summary, fh, indent=1)
-        st.update({"status": "done", "summary": summary, "json": json_path, "csv": csv_path})
-        logger.info("band parity: %s..%s — %s; stored £%.2f, the rule £%.2f",
-                    utc_from, utc_to, counts, tot["stored"], tot["rule"])
-        return summary
-    except Exception as e:
-        logger.warning("band parity: failed: %s", e)
         st.update({"status": "error", "error": str(e)})
         return {"ok": False, "error": str(e)}
 
@@ -12355,39 +12087,6 @@ def _stored_band(store, bs: str) -> "str | None":
         if b:
             return {"day": "peak"}.get(b, b)
     return None
-
-
-@job("device_rate_drift")
-def run_device_rate_drift_repair() -> dict:
-    """Re-cost sub-meter blocks whose rate has drifted from their parent main block.
-
-    NOT a one-off heal, and not gated. A physical device (ev_charger / battery) is
-    costed by PASS 2 at the parent's rate, so device rate == main rate is an
-    invariant of the data model. Settlement can break it: `apply_measured_to_block`
-    flips the main row to the settled band in one transaction and re-costs the
-    devices in a SECOND, best-effort one, so a failure there leaves the devices on
-    the pre-settlement (often peak) rate with nothing to notice.
-
-    This is the notice. Self-limiting -- the predicate matches only rows that
-    differ, so the steady state is zero rows and the statement is a no-op. Runs on
-    the hourly reconcile slot, alongside the other recurring repairs.
-
-    Recovered from A11, which deleted it. The predicate was the body of v4's
-    marker-gated `_smb_device_recost_core`: the wrapper was a genuine one-off and
-    retired correctly, the body enforces a live invariant and should never have
-    gone with it. Ungated is stricter than v4 -- that ran once ever.
-    """
-    if _store is None:
-        return {"ok": False, "reason": "no store"}
-    try:
-        n = _store.repair_device_rate_drift()
-    except Exception as e:
-        logger.warning("device rate drift repair: failed: %s", e)
-        return {"ok": False, "reason": str(e)}
-    if n:
-        logger.info("device rate drift repair: re-costed %d sub-meter block(s) to the "
-                    "parent rate (device == main == bill)", n)
-    return {"ok": True, "re_costed": n}
 
 
 @job("prune_tombstones")

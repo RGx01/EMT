@@ -56,7 +56,7 @@ NOISE = {"set", "values", "where", "from"}
 JOBS = ["run_api_import_job",
         "_run_historical_reprice_sweep", "_run_historical_carbon_backfill",
         "run_measured_history_drain", "run_gap_fill_job", "run_iog_split_carve",
-        "run_attribution_job", "run_device_rate_drift_repair",
+        "run_attribution_job",
         "run_reprice_history_sweep_to_done"]
 
 

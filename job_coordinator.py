@@ -81,7 +81,6 @@ _MANIFEST: dict = {
     # Whether it SHOULD defer to a delete is a real question; it is open in §6,
     # not settled here.
     "import":              ((),                               (),              DEFER),
-    "device_rate_drift":   ((),                               (),              DEFER),
     # A delete writes its tombstone and then removes blocks, on its own worker
     # connection. A prune in between sees the range still fully populated and
     # deletes the tombstone it just wrote. Measured, not invented: that window

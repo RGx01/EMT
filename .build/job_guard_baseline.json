@@ -1,6 +1,5 @@
 {
   "live_unguarded": [
-    "run_device_rate_drift_repair",
     "run_iog_split_carve",
     "run_reprice_history_sweep_to_done"
   ]
