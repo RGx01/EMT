@@ -269,6 +269,21 @@ CREATE TABLE IF NOT EXISTS ha_reads (
     PRIMARY KEY (meter_id, channel, origin, period_start)
 );
 
+-- v4's live rate (sensor rate fact design, 28 Oct 2026): the rate the import channel's rate sensor
+-- showed as a live half-hour closed, in a v4 database's sensor era — before it was connected to
+-- Octopus's API, the one trace of the rate Octopus's own sensor gave (it goes off-peak during an
+-- Intelligent dispatch). Written by the v4 import only (transform 3d, from v4's stored rate);
+-- `settle_facts` bands a half-hour by it where Octopus has given no bill. A delete of blocks leaves
+-- it, as it leaves `ha_reads`.
+CREATE TABLE IF NOT EXISTS sensor_rates (
+    meter_id     TEXT    NOT NULL,
+    channel      TEXT    NOT NULL,
+    block_start  TEXT    NOT NULL,
+    rate         REAL    NOT NULL,
+    origin       TEXT    NOT NULL,
+    PRIMARY KEY (meter_id, channel, block_start)
+);
+
 CREATE INDEX IF NOT EXISTS idx_blocks_start     ON blocks (block_start);
 
 CREATE INDEX IF NOT EXISTS idx_blocks_meter     ON blocks (meter_id);
@@ -4928,7 +4943,8 @@ class BlockStore:
                           meter_id: str = "electricity_main") -> dict:
         """What the settle parity report (engine step 4a) reads for [utc_start, utc_end), in three
         queries: `mains` — each main-meter half-hour's figures, provenance, its cached bill's label and
-        buckets, and the live (CAD) reading HA gave it (`cad_kwh`, from ha_reads); `subs` — its
+        buckets, the live (CAD) reading HA gave it (`cad_kwh`, from ha_reads) and v4's recorded sensor
+        rate (`sensor_rate`, from sensor_rates); `subs` — its
         sub-meters' rows with each meter's type, keyed by half-hour; `segments` — its stored import
         segments, keyed by half-hour."""
         mains = [dict(r) for r in self._conn.execute(
@@ -4939,7 +4955,9 @@ class BlockStore:
             "       mc.home_kwh AS bill_home_kwh, mc.ev_kwh AS bill_ev_kwh, "
             "       (SELECT h.kwh FROM ha_reads h WHERE h.meter_id = b.meter_id "
             "        AND h.channel = 'import' AND h.origin = 'live' AND h.minutes = 30 "
-            "        AND h.period_start = b.block_start) AS cad_kwh "
+            "        AND h.period_start = b.block_start) AS cad_kwh, "
+            "       (SELECT r.rate FROM sensor_rates r WHERE r.meter_id = b.meter_id "
+            "        AND r.channel = 'import' AND r.block_start = b.block_start) AS sensor_rate "
             "FROM blocks b LEFT JOIN measured_cost mc ON mc.rowid = (" + self._LATEST_BILL_SQL + ") "
             "WHERE b.meter_id = ? AND b.block_start >= ? AND b.block_start < ? "
             "ORDER BY b.block_start", (meter_id, utc_start, utc_end)).fetchall()]

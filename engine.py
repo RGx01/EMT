@@ -10125,6 +10125,22 @@ IMPORTED_LABEL = "IMPORTED"       # v4import.transforms' bill label: banded by i
 _IMPORTED_COST_GBP = 0.0005       # an imported cost within 0.05p of kWh × a rate is at that rate
 
 
+def _sensor_band(bs: str, rate) -> "str | None":
+    """The band of a rate a sensor showed (£/kWh, `sensor_rates`): the nearer of the day's two rates,
+    within 0.05p of it; None where it is near neither, equally near both, or the day has no two."""
+    try:
+        r = float(rate)
+    except (TypeError, ValueError):
+        return None
+    lo, hi = _band_rates(bs)
+    if lo is None or hi is None:
+        return None
+    d_lo, d_hi = abs(r - lo), abs(r - hi)
+    if min(d_lo, d_hi) > _IMPORTED_COST_GBP or abs(d_lo - d_hi) <= 1e-9:
+        return None
+    return "off_peak" if d_lo < d_hi else "peak"
+
+
 def _imported_cost_band(bs: str, cost, bill_kwh, own_kwh) -> "str | None":
     """settled_band's IMPORTED bill: the nearer of the day's two rates its cost is kWh × of, within
     _IMPORTED_COST_GBP; None where it is near neither (a blend) or equally near both."""
@@ -10436,6 +10452,12 @@ def settle_facts(m: dict, subs: list, store, vat_cal=None, *, kwh=None):
                              bill_kwh=m.get("bill_kwh"), own_kwh=m.get("imp_kwh"))
     f.settled_legs = _bucket_bands(bs, bd) if bd else {}
     f.predicted = predicted_band(bs, kwh, live=not imported, was_online=not m.get("interpolated"))
+    # v4's sensor era (sensor rate fact design §3): the rate Octopus's own sensor showed as the
+    # half-hour closed, recorded by v4 before it had Octopus's API or any dispatch record — Octopus's
+    # live view, so it outranks EMT's rules where there is no bill (a bill still settles the band)
+    _sb = _sensor_band(bs, m.get("sensor_rate"))
+    if _sb is not None:
+        f.predicted = _sb
     if bd and bd.get("ev_kwh") is not None and split_at(bs):
         f.ev_kwh = min(max(float(bd["ev_kwh"]), 0.0), kwh)
     else:
