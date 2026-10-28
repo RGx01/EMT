@@ -147,6 +147,12 @@ _kraken_account_mismatch = None
 # a renewal, an export tariff starting or ending, a move off IOG-SMB — until it restarted.
 _kraken_discovered_at: "float | None" = None
 _REDISCOVERY_INTERVAL_S = 24 * 3600
+# Start-up discovery asked again while it has not answered (G1 design §5): the settle sweep is
+# scheduled only once discovery has answered, so a failure at start-up — the API down after a restore
+# — left the history unsettled until the next engine start.
+_DISCOVERY_RETRY_S = 3600
+_discovery_retry_at: "float | None" = None
+_discovery_retry_running = False
 _REDISCOVERY_RETRY_S = 3600              # after a failed re-discovery
 # Reference to the running HAClient + poll-task handle, captured when the engine
 # loop starts. Lets connect_kraken_now() (the in-app credential-save path)
@@ -5417,6 +5423,9 @@ async def _engine_tick(ha: HAClient):
     except Exception as _dce:
         logger.warning("_engine_tick: dispatch capture raised: %s", _dce)
 
+    # Discovery asked again while it has not answered (G1 design §5), off the tick
+    _start_discovery_retry()
+
     # Block lifecycle
     updated_block = ensure_correct_block(ha, current_block, now, last_known_rates=_post_gap_rates)
     block_changed = updated_block.get("start") != current_block.get("start")
@@ -5980,6 +5989,66 @@ async def _maybe_rediscover(now: "float | None" = None) -> bool:
     _keep_agreements(disc)
     _store_export_settlement_expected(disc)
     return changed
+
+
+async def _maybe_retry_discovery(now: "float | None" = None) -> bool:
+    """Start-up discovery again, at most hourly, while an API mode has credentials and discovery has
+    not answered (G1 design §5: the settle sweep waits for it). The first tick after start-up only
+    sets the clock. A refused account (a mismatch) is not retried: it needs a reconnect. On an answer
+    the agreements are stored (G1a), the poll task started and the settle sweep scheduled. Returns
+    whether discovery answered. Never raises."""
+    global _discovery_retry_at
+    t = time.monotonic() if now is None else now
+    try:
+        if (_kraken_discovery or _kraken_account_mismatch or not mode_uses_api()
+                or not _kraken_env().get("api_key")):
+            return False
+    except Exception:
+        return False
+    if _discovery_retry_at is None or t < _discovery_retry_at:
+        if _discovery_retry_at is None:
+            _discovery_retry_at = t + _DISCOVERY_RETRY_S
+        return False
+    _discovery_retry_at = t + _DISCOVERY_RETRY_S
+    try:
+        await _kraken_startup_discovery()
+    except Exception as e:
+        logger.warning("kraken_discovery: retry failed (%s) — again in an hour", e)
+        return False
+    if not _kraken_discovery:
+        logger.info("kraken_discovery: retry had no answer — again in an hour")
+        return False
+    logger.info("kraken_discovery: answered on retry — scheduling the settle sweep")
+    try:
+        if _engine_ha is not None and _kraken_client is not None and mode_uses_api():
+            _ensure_kraken_poll_task_running()
+        _maybe_settle_history()
+    except Exception as e:
+        logger.warning("kraken_discovery: after the retry: %s", e)
+    return True
+
+
+def _start_discovery_retry() -> None:
+    """`_maybe_retry_discovery` as a loop task, one at a time, so a retry against an API that is down
+    never holds the engine tick."""
+    global _discovery_retry_running
+    if (_discovery_retry_running or _kraken_discovery
+            or (_discovery_retry_at is not None and time.monotonic() < _discovery_retry_at)):
+        return
+    import asyncio as _aio
+    try:
+        loop = _aio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _go():
+        global _discovery_retry_running
+        try:
+            await _maybe_retry_discovery()
+        finally:
+            _discovery_retry_running = False
+    _discovery_retry_running = True
+    loop.create_task(_go())
 
 
 def _teardown_mini_if_no_api() -> bool:
