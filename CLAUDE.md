@@ -66,6 +66,7 @@ since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-man
 | `docs/design/EMT-v5_soft_delete_design.md` | BL-90: HA's reads kept in a table of their own (a recorder hour as the hour), whole half-hours deleted from the heatmap, a refill rebuilding the devices; and the one per-channel delete kept, an imported export (draft) |
 | `docs/design/EMT-v5_data_management_design.md` | Data Management rebuilt around the data heatmap: a health strip, the tools on a selection, a Whole history card, one Backups & storage card, a support file; Charts read-only; corrections on the Billing tab, CAD-only; the sub-pages retired; 7 PRs (decided) |
 | `docs/design/EMT-v5_published_tariff_final_design.md` | a published tariff's half-hour final by its own agreement's rate, checked, at any age; CSV grey on any tariff (decided) |
+| `docs/design/EMT-v5_G_tariff_agreements_design.md` | ROADMAP §G's first half: the account's agreements stored, read before discovery, fetched in the restore's phase 2 before a v4 import settles; `no_agreement` for another supplier's or a gap's half-hours (decided) |
 | `docs/design/EMT-v5_A1_writer_thread_design.md` | ROADMAP §A.1: why commits stall the loop on the SD card, and the writer thread |
 | `docs/ROADMAP.md` | open backlog, priority ordered — nothing in it has shipped |
 | `docs/CONTRIBUTING.md`, `docs/DEVELOPMENT.md` | branch model, PR flow, what a change must carry |
