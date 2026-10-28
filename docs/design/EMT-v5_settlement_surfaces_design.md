@@ -193,6 +193,12 @@ their sources and, where EMT stores one, a time. *EMT does not record when a hal
 arrived* — only the bill's `fetched_at` — so the kWh line says settled or not, with no time.
 Read-only.
 
+*28 Oct 2026, the user:* an imported half-hour says where its facts came from (the route's `origin`,
+`server._origins`). Its kWh reads "Octopus's, from the API import" or "from the CSV import", not
+"DCC settled"; an `IMPORTED` bill reads "the API import's cost, imported …" or "the CSV import's cost,
+imported …", stamped with the import's time, not "Octopus, fetched …". A bill Octopus has since sent
+for imported history (step 3 §4 (d)) reads as Octopus's.
+
 ---
 
 ## 5. Acting on it (BL-85 part 3 — BL-86's front end)

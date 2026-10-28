@@ -4205,7 +4205,8 @@ def api_block_settlement():
                               if _state.get("bill") == "abandoned" else None),
             "kwh": {"stored": _r(d["imp_kwh"]), "dcc": _r(d["imp_kwh_api"]),
                     "settled": d["imp_kwh_api"] is not None
-                               or (d["source"] or "").startswith("imported")},
+                               or (d["source"] or "").startswith("imported"),
+                    "origin": _origins(d)["kwh"]},
             # always, figures or not: the panel shows import and export side by side, whichever
             # view it was opened from (22 Oct 2026, the user: the Export bill's panel gave the
             # import rate alone)
@@ -4216,7 +4217,7 @@ def api_block_settlement():
                      "corrected": bool(d["rate_corrected"])},
             "bill": ({"cost": _r(d["bill_cost"]), "cost_exc": _r(d["bill_cost_exc"]),
                       "kwh": _r(d["bill_kwh"]), "label": d["bill_label"],
-                      "fetched_at": d["bill_fetched_at"],
+                      "fetched_at": d["bill_fetched_at"], "origin": _origins(d)["bill"],
                       "home_kwh": _r(d["bill_home_kwh"]), "home_rate": _r(d["bill_home_rate"]),
                       "ev_kwh": _r(d["bill_ev_kwh"]), "ev_rate": _r(d["bill_ev_rate"])}
                      if d["bill_cost"] is not None else None),
@@ -4229,6 +4230,16 @@ def api_block_settlement():
     except Exception as e:
         logger.warning("api_block_settlement: %s", e)
         return jsonify({"error": str(e)}), 500
+
+
+def _origins(d) -> dict:
+    """Where the panel's kWh and bill came from (28 Oct 2026, the user): an imported half-hour's
+    kWh is the import's, not a DCC read, and an IMPORTED bill is the import's cost, stamped when
+    it was imported, not one fetched from Octopus.
+    kwh: 'dcc' | 'api_import' | 'csv_import' | 'live'; bill: 'octopus' | 'api_import' | 'csv_import' | 'import'."""
+    imp = {"imported_api": "api_import", "imported_csv": "csv_import"}.get(d["source"] or "")
+    return {"kwh": "dcc" if d["imp_kwh_api"] is not None else (imp or "live"),
+            "bill": (imp or "import") if d["bill_label"] == "IMPORTED" else "octopus"}
 
 
 def _band_note(_eng, d):
