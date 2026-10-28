@@ -148,8 +148,8 @@ now; the fixture is re-taken at 4.5.23.*
 
 *Changes in v29 (28 Oct 2026): **`tariff_agreements` is v5's, and the import leaves it empty** (G1
 design §5). A v4 database does not hold the agreement history, so nothing is carried; discovery writes
-it — at start-up after the import today, and in the restore's phase 2 before the import settles once
-G1b lands.*
+it at start-up after the import, before the settle sweep, which waits for discovery (G1b retries it
+hourly until it answers).*
 
 *Changes in v28 (28 Oct 2026): **v4's sensor-era rate becomes a fact** (transform 3d, gate
 `sensor_rates`; sensor rate fact design). Before it was connected to Octopus's API, v4 priced a live
