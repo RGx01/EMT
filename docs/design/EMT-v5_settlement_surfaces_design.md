@@ -398,6 +398,7 @@ already cached is applied whatever its age.
 | `differs` | a bill is held and the stored cost is not it (flags as §1.4) | the same, where a bill is held (an API import's, or one fetched before this rule) | red |
 | `corrected` | the user's rate correction | the same | blue |
 | `imported` | a cost not from Octopus's API, and final: CSV history, an `IMPORTED` bill (v4import transform 3c, the CSV import), or no bill past Octopus's two years, where nothing asks for one (27 Oct 2026, the user). An API import's `IMPORTED` bill inside the two years is asked for Octopus's, last; it stays grey where Octopus has no cost (28 Oct 2026, the user; step 3 §4 (d)) | the same | grey |
+| `no_agreement` | not on an Octopus agreement: another supplier's period (the config period's label), or no agreement covers it where agreements are known — never asked, EMT's price at the configured rate; CSV history keeps `imported` (G1 design §6, 28 Oct 2026) | the same | grey |
 | `none` | nothing imported in the half-hour | the same | grey |
 
 - **The window** stays §7 (a)'s: 7 days after the kWh, counted from the half-hour + the kWh's

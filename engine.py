@@ -7119,7 +7119,25 @@ def _keep_agreements(disc) -> "dict | None":
         logger.info("tariff agreements: stored — %d added, %d superseded, %d kept",
                     len(diff["added"]), len(diff["superseded"]), len(diff["kept"]))
     _load_stored_agreements()
+    _log_label_mismatch()
     return diff
+
+
+def _log_label_mismatch() -> None:
+    """A config period labelled Octopus with half-hours no Octopus agreement covers (G1 design §6):
+    the agreement wins — they read `no_agreement` — and it is logged, at most daily (each discovery
+    answer stored). Never raises."""
+    try:
+        wins = [(vf, vt) for _c, vf, vt in _agreement_windows("import") if vf]
+        if not wins:
+            return
+        r = _reader().octopus_labelled_outside(wins)
+        if r["n"]:
+            logger.warning("tariff agreements: %d half-hour(s) of a period labelled Octopus are on no "
+                           "Octopus agreement (%s to %s) — read as not on an agreement; check the "
+                           "period's supplier", r["n"], r["first"], r["last"])
+    except Exception as e:
+        logger.debug("tariff agreements: label check skipped (%s)", e)
 
 
 def _load_stored_agreements() -> None:
@@ -7202,10 +7220,16 @@ def tariff_kind_at(start: str) -> str:
     """'intelligent' | 'published' for the import tariff live at `start` (settlement surfaces
     design §9.1). On a published-rate tariff the settled kWh x the half-hour's published rate is
     the bill; on an Intelligent one a dispatch can re-band a half-hour, so only Octopus's cost is
-    final. From the agreements discovery holds (`_agreement_era`); where none covers `start`,
-    the current tariff's kind."""
+    final. From the agreements discovery holds (`_agreement_era`). Where agreements are known and
+    none covers `start`, 'none': not on an Octopus agreement — another supplier's, or a gap (G1 design
+    §3, §6). The current tariff's kind only where no agreement is known at all."""
     era = _agreement_era("import", start)
-    code = era[0] if era else _agreement_info("import").get("tariff_code")
+    if era:
+        code = era[0]
+    elif _agreement_windows("import"):
+        return "none"
+    else:
+        code = _agreement_info("import").get("tariff_code")
     return "intelligent" if _is_intelligent_code(code) else "published"
 
 
@@ -10440,6 +10464,12 @@ _ask_dry_run_state: dict = {"status": "idle"}
 def ask_dry_run_status() -> dict:
     return dict(_ask_dry_run_state)
 
+def _ss_other_supplier(supplier) -> bool:
+    """settlement_state.other_supplier: a config period labelled with another supplier (G1 design §6)."""
+    import settlement_state as _ss
+    return _ss.other_supplier(supplier)
+
+
 def _ask_queue(facts: list, store, mpan: str, now, considered: "dict | None" = None) -> dict:
     """{slot: "bill" | "split"} the one selector (design §3) would ask: settled kWh (DCC, or an
     imported block's own), not corrected, on an Intelligent agreement of its own, under the 6-hour
@@ -10471,6 +10501,8 @@ def _ask_queue(facts: list, store, mpan: str, now, considered: "dict | None" = N
             _out("kWh not settled"); continue
         if f["corrected"] or f["rate_source"] == "corrected":
             _out("corrected"); continue
+        if _ss_other_supplier(f.get("supplier")):
+            _out("another supplier's"); continue
         if tariff_kind_at(sl) != "intelligent":
             _out("not on an Intelligent agreement"); continue
         if sl in kept:

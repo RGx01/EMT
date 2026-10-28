@@ -47,7 +47,8 @@ window.EMTHeatmap = (function () {
                  'settled yet · red: not final after 7 days, the stored cost is not the bill, or a ' +
                  'completed dispatch with no House/EV split · red, hatched yellow: no cost from Octopus, ' +
                  'and EMT no longer asks — kWh \u00d7 rate · blue: ' +
-                 'your correction · grey: nothing imported, or imported history · black hatched: no block (missing)'},
+                 'your correction · grey: nothing imported, imported history, or not on an Octopus agreement · ' +
+                 'black hatched: no block (missing)'},
     export: {label: 'Export bill', title: 'Export bill — is each half-hour\u2019s export cost final?', unit: '',
             dp: 0, tot: 'To look at', settle: 'export',
             sub: 'EMT fetches no export bill: kWh \u00d7 the export rate is final once the export kWh ' +
@@ -68,7 +69,7 @@ window.EMTHeatmap = (function () {
   // black and diagonally hatched on every view, an issue on the bills (rank 3, as red).
   var MISSING_TEXT = 'no block for this half-hour \u2014 missing';
   var CAT_RANK = {
-    bill:  {none: 0, imported: 0, applied: 1, applied_emt_split: 1, corrected: 1, estimate_dcc: 2,
+    bill:  {none: 0, imported: 0, no_agreement: 0, applied: 1, applied_emt_split: 1, corrected: 1, estimate_dcc: 2,
             estimate_cad: 2, overdue: 3, abandoned: 3, differs: 3, flagged: 3, missing: 3},
     export: {none: 0, imported: 0, no_agreement: 0, applied: 1, waiting: 2, overdue: 3, no_data: 3, missing: 3},
     presence: {present: 0, missing: 3}
@@ -84,6 +85,8 @@ window.EMTHeatmap = (function () {
            abandoned: 'no cost from Octopus, and EMT no longer asks for it — kWh \u00d7 rate. ' +
                       'Re-fetch may still get it; a CSV or PDF bill for the day can supply it',
            differs: 'Octopus\u2019s cost isn\u2019t kWh \u00d7 its rate', flagged: 'billed — but see below',
+           no_agreement: 'not on an Octopus agreement \u2014 another supplier\u2019s, or between agreements. ' +
+                         'EMT\u2019s price, kWh \u00d7 your configured rate; nothing to ask Octopus for',
            missing: MISSING_TEXT},
     export: {none: 'no export in this half-hour', imported: 'CSV history',
              applied: 'export kWh settled — kWh \u00d7 rate is final',
@@ -159,7 +162,7 @@ window.EMTHeatmap = (function () {
          none: C.grey}
       : {applied: C.green, applied_emt_split: C.teal, estimate_dcc: C.lamber, estimate_cad: C.amber,
          overdue: C.red, differs: C.red, flagged: C.red,
-         corrected: C.blue, imported: C.grey, none: C.grey};
+         corrected: C.blue, imported: C.grey, no_agreement: C.grey, none: C.grey};
     return by[v] || 'rgba(0,0,0,0)';
   }
   // the cell value for a view: the state, with the attention flags folded in (§1.4)
