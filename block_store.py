@@ -7602,13 +7602,17 @@ class BlockStore:
         """Engine step 3a (24 Oct 2026): for each main-meter half-hour with kWh in [floor, before),
         the facts the one ask selector reads — read-only, one pass. `bill_mpan` a bill cached for
         `mpan`; `bill_any` for any MPAN; `cost_only` the latest cached bill has a cost and no
-        breakdown; `completed` a completed dispatch with energy; `slot` a dispatch slot the live pass
-        asks for (off-peak, or a completed smart charge)."""
+        breakdown; `bill_imported` the bill cached for `mpan` is the import's own (label IMPORTED);
+        `completed` a completed dispatch with energy; `slot` a dispatch slot the live pass asks for
+        (off-peak, or a completed smart charge)."""
         rows = self._conn.execute(
             "SELECT b.block_start, b.source, b.imp_kwh_api, COALESCE(b.rate_corrected, 0) AS corrected, "
             "  b.rate_source, "
             "  EXISTS (SELECT 1 FROM measured_cost m WHERE m.slot_start = b.block_start "
             "          AND m.mpan = ? AND m.direction = 'CONSUMPTION') AS bill_mpan, "
+            "  EXISTS (SELECT 1 FROM measured_cost m WHERE m.slot_start = b.block_start "
+            "          AND m.mpan = ? AND m.direction = 'CONSUMPTION' AND m.label = 'IMPORTED') "
+            "          AS bill_imported, "
             "  EXISTS (SELECT 1 FROM measured_cost m WHERE m.slot_start = b.block_start) AS bill_any, "
             "  EXISTS (SELECT 1 FROM measured_cost m WHERE m.slot_start = b.block_start "
             "          AND m.direction = 'CONSUMPTION' AND m.cost_incl > 0 "
@@ -7622,7 +7626,7 @@ class BlockStore:
             "          AND (s.off_peak = 1 OR s.source = 'smart-charge-completed')) AS slot "
             "FROM blocks b WHERE b.meter_id = ? AND b.imp_kwh > 0 "
             "  AND b.block_start >= ? AND b.block_start < ? ORDER BY b.block_start",
-            (mpan or "", meter_id, floor, before)).fetchall()
+            (mpan or "", mpan or "", meter_id, floor, before)).fetchall()
         return [dict(r) for r in rows]
 
 

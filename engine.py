@@ -10300,6 +10300,7 @@ def _ask_queue(facts: list, store, mpan: str, now, considered: "dict | None" = N
     ask, sask = _bill_ask(store, mpan), _split_ask(store)
     gone = {"bill": _bill_ask_given_up(ask, mark=False) | _bill_ask_resting(ask, now),
             "split": _bill_ask_given_up(sask, mark=False) | _bill_ask_resting(sask, now)}
+    gone["imported"] = gone["bill"]           # asked as a bill, on the bill's record
     out = {}
     for f in facts:
         sl = f["block_start"]
@@ -10316,7 +10317,12 @@ def _ask_queue(facts: list, store, mpan: str, now, considered: "dict | None" = N
             _out("kept (the hold-back's 28 days ran out)"); continue
         if sl in held_resting:
             _out("held, resting"); continue
+        # an API import's half-hour whose only bill is the import's own (IMPORTED: v4's stored cost —
+        # its price at Octopus's label, on most of it): asked for Octopus's, after everything else
+        # (28 Oct 2026, the user). Octopus's replaces it; where Octopus has no cost it stays, grey.
+        # A CSV's is its own bill, and older history is under the floor.
         kind = ("bill" if not f["bill_mpan"]
+                else "imported" if (f.get("bill_imported") and f["source"] == "imported_api")
                 else "split" if (split_at(sl) and f["cost_only"] and f["completed"]) else None)
         if kind is None:
             _out("bill cached"); continue
@@ -10380,6 +10386,7 @@ async def run_ask_dry_run(out_dir: str) -> dict:
         summary = {"at": now.isoformat(), "floor": floor, "cutoff": cut,
                    "queue": {"bill": sum(1 for v in queue.values() if v == "bill"),
                              "split": sum(1 for v in queue.values() if v == "split"),
+                             "imported": sum(1 for v in queue.values() if v == "imported"),
                              "first_pass": _ask_query_estimate(queue)},
                    # every half-hour with kWh in the two years read, and why each was left out
                    "considered": {"half_hours": len(facts),
@@ -11144,7 +11151,7 @@ def _ask_write_page(store, mpan: str, page: list, sel: dict, nodes: dict, kwh: d
     splits, splits_before = splits_pair
     for slot in page:
         kind = sel[slot]
-        rec = bills if kind == "bill" else splits
+        rec = splits if kind == "split" else bills
         k, node = nodes.get(slot, (None, None))
         row = parse_bill(node, k, kwh.get(slot))
         if row is None or (kind == "split" and not row.get("breakdown")):
@@ -11165,6 +11172,13 @@ def _ask_write_page(store, mpan: str, page: list, sel: dict, nodes: dict, kwh: d
             _bill_split_release(wait, slot)
         _store_bill(store, slot, mpan, row)
         st["stored"] += 1
+        if kind == "imported":
+            # it was settled by the import's bill, so the paced apply (unsettled blocks only) would
+            # not take Octopus's: settle it here
+            try:
+                settle_half_hour(store, slot)
+            except Exception as e:
+                logger.warning("octopus asks: settle failed for %s: %s", slot, e)
         if kind == "split":
             # its cost-only bill was applied already, so the paced apply (unsettled blocks only)
             # would not take the split: re-settle it here, as the drain's phase 2 did
@@ -11201,13 +11215,14 @@ def _ask_selection(store, now=None) -> dict:
 
 
 def _ask_pages(sel: dict) -> list:
-    """The selection newest first, in pages: up to `_ASK_PAGE_DAYS` local days of cost half-hours,
-    or `_ASK_PAGE_BREAKDOWN` breakdown ones, a page."""
+    """The selection newest first — an imported half-hour's after every other — in pages: up to
+    `_ASK_PAGE_DAYS` local days of cost half-hours, or `_ASK_PAGE_BREAKDOWN` breakdown ones, a page."""
     from datetime import datetime as _dt, timezone as _tz
     from zoneinfo import ZoneInfo
     lon = ZoneInfo("Europe/London")
     pages, cur, days, n_bd = [], [], set(), 0
-    for sl in sorted(sel, reverse=True):
+    # an imported half-hour's (it has the import's bill) after every other, each newest first
+    for sl in sorted(sel, key=lambda s: (sel[s] != "imported", s), reverse=True):
         bd = bill_kind_at(sl) == "breakdown"
         day = None if bd else _dt.fromisoformat(sl).replace(tzinfo=_tz.utc).astimezone(lon).date()
         if cur and ((day is not None and day not in days and len(days) >= _ASK_PAGE_DAYS)
