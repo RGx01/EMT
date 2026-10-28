@@ -58,6 +58,11 @@ def identifiers(conn) -> dict:
             add("MPAN", mpan)
         else:
             add("MPAN", v)
+    # the stored agreements (G1): an export MPAN may be held nowhere else
+    for (v,) in rows("SELECT DISTINCT mpan FROM tariff_agreements WHERE mpan IS NOT NULL"):
+        add("MPAN", v)
+    for (v,) in rows("SELECT DISTINCT account FROM tariff_agreements WHERE account IS NOT NULL"):
+        add("ACCOUNT", v)
     for (v,) in rows("SELECT value FROM kraken_state WHERE key = 'kraken_account_number'"):
         try:
             v = json.loads(v)
