@@ -6911,9 +6911,18 @@ def settle_history_in_progress() -> bool:
 
 
 def _settle_history_restart(state: dict) -> dict:
-    """A walk from the history's start: the rearm taken, the state cleared."""
+    """A walk from the history's start: the rearm taken, the state cleared — and the re-settle spans a
+    change of agreements queued before it, which the walk covers (staging, 28 Oct 2026: a restore
+    queued the whole history as the first answer stored, the sweep then walked it, and the queue
+    would have walked it again). Spans queued during the walk stay: its cursor may have passed them."""
     global _settle_history_rearm
     _settle_history_rearm = False
+    try:
+        if _store is not None and _store.get_meta(_SETTLE_SPANS_KEY, []):
+            _store.set_meta(_SETTLE_SPANS_KEY, [])
+            logger.info("settle spans: cleared — the walk from the history's start covers them")
+    except Exception as e:
+        logger.debug("settle spans: not cleared (%s)", e)
     return {}
 
 

@@ -119,6 +119,22 @@ class TheQueue(R._Harness):
                    else engine._run_settle_history_sweep())
         self.assertEqual(seen, [1])
 
+    def test_a_walk_from_the_start_clears_the_spans_queued_before_it(self):
+        """Staging, 28 Oct 2026: a restore stored the first answer (the whole history queued), the
+        sweep walked the history, and the queue was left to walk it again."""
+        self.st.set_meta(engine._SETTLE_SPANS_KEY, [["2023-06-05T23:00:00", "2026-10-28T21:30:00"]])
+        engine._settle_history_restart({})
+        self.assertEqual(self.st.get_meta(engine._SETTLE_SPANS_KEY), [])
+
+    def test_GUARD_a_walk_resumed_at_its_cursor_keeps_them(self):
+        """Spans queued during a walk stay: a pass resuming at its cursor does not restart it."""
+        self.st.set_meta(engine._SETTLE_HISTORY_MARKER, {"version": engine._SETTLE_HISTORY_VERSION,
+                                                        "cursor": "2025-06-02T00:00:00"})
+        self.st.set_meta(engine._SETTLE_SPANS_KEY, [["2025-06-01T00:00:00", "2025-06-01T01:00:00"]])
+        with mock.patch.object(engine, "_kraken_rate_schedules", {}):
+            R._run(engine._run_settle_history_sweep())          # no schedule: defers, at its cursor
+        self.assertEqual(len(self.st.get_meta(engine._SETTLE_SPANS_KEY)), 1)
+
     def test_pending_spans_schedule_the_sweep_when_the_history_is_done(self):
         self.st.set_meta(engine._SETTLE_HISTORY_MARKER, {"version": engine._SETTLE_HISTORY_VERSION,
                                                         "done": True})
