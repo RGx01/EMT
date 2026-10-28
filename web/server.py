@@ -6104,6 +6104,34 @@ def _settle_sweep_cause(store) -> str:
     return "upgrade"
 
 
+@app.route("/api/tariff-agreements/changed", methods=["GET"])
+def api_tariff_agreements_changed():
+    """Octopus's answer that changed past agreements, which EMT did not take (G1 design §2): {changed:
+    {at, odd, old, new} | null}, each agreement [direction, tariff, from, to]. Read-only."""
+    try:
+        import engine as _eng
+        return jsonify({"changed": _eng.refused_agreements()})
+    except Exception as e:
+        logger.debug("api_tariff_agreements_changed: %s", e)
+        return jsonify({"changed": None})
+
+
+@app.route("/api/tariff-agreements/accept", methods=["POST"])
+def api_tariff_agreements_accept():
+    """Accept Octopus's changed agreements: stored as any answer, the history they move re-settled
+    (G1 design §2). On the engine loop. {ok, added, superseded} or {ok: false, error}."""
+    try:
+        import engine as _eng
+
+        async def _accept():
+            return _eng.accept_refused_agreements()
+        out = _run_on_engine_loop(_accept())
+        return jsonify(out), (200 if out.get("ok") else 409)
+    except Exception as e:
+        logger.warning("api_tariff_agreements_accept: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/settle-history-status")
 def api_settle_history_status():
     """Read-only: is the settle sweep still walking the history? Drives the re-pricing banner

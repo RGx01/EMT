@@ -7133,7 +7133,15 @@ def _keep_agreements(disc) -> "dict | None":
                        "started and ended over %d days ago (%s) — not taken, the last good copy is "
                        "kept; an API change is the likely cause", len(odd), _AGREEMENT_CHANGE_DAYS,
                        "; ".join("%s %s %s..%s" % (d, c, vf, vt or "open") for d, c, vf, vt in odd[:5]))
+        _remember_refused(acct, rows, odd)
         return None
+    return _store_agreements(acct, rows)
+
+
+def _store_agreements(acct: str, rows: list) -> "dict | None":
+    """Write an answer into `tariff_agreements` (G1 design §2) — discovery's, taken, or one the
+    user accepted — reload the stored copy, check the labels, queue the re-settle of what it moved,
+    and forget a refused answer. The diff, or None. Never raises."""
     try:
         diff = _store.replace_tariff_agreements(acct, rows, datetime.utcnow().replace(microsecond=0).isoformat())
     except Exception as e:
@@ -7144,6 +7152,7 @@ def _keep_agreements(disc) -> "dict | None":
                     len(diff["added"]), len(diff["superseded"]), len(diff["kept"]))
     _load_stored_agreements()
     _log_label_mismatch()
+    _forget_refused()
     if diff["added"] or diff["superseded"]:
         try:
             first, last = _store.block_span("electricity_main")
@@ -7152,6 +7161,59 @@ def _keep_agreements(disc) -> "dict | None":
         except Exception as e:
             logger.warning("tariff agreements: the re-settle was not queued (%s)", e)
     return diff
+
+
+# An answer the guard did not take (G1 design §2), kept for the user to accept from the page: a
+# real correction of an old agreement and a lasting API change look the same to code.
+_REFUSED_AGREEMENTS_KEY = "agreements_refused"
+
+
+def _remember_refused(acct: str, rows: list, odd: list) -> None:
+    try:
+        _store.set_meta(_REFUSED_AGREEMENTS_KEY, {
+            "at": datetime.utcnow().replace(microsecond=0).isoformat(), "account": acct,
+            "rows": rows, "odd": [list(x) for x in odd]})
+    except Exception as e:
+        logger.debug("tariff agreements: the refused answer was not kept (%s)", e)
+
+
+def _forget_refused() -> None:
+    try:
+        if _store.get_meta(_REFUSED_AGREEMENTS_KEY):
+            _store.set_meta(_REFUSED_AGREEMENTS_KEY, None)
+    except Exception:
+        pass
+
+
+def refused_agreements() -> "dict | None":
+    """The answer the guard did not take, for the page (G1 design §2): {at, odd, old, new} —
+    each [(direction, tariff_code, valid_from, valid_to)], no MPAN — or None."""
+    try:
+        m = _reader().get_meta(_REFUSED_AGREEMENTS_KEY)
+        if not m or m.get("account") != get_db_account():
+            return None
+        row = lambda r: [r["direction"], r["tariff_code"], r["valid_from"], r.get("valid_to")]
+        return {"at": m["at"], "odd": m["odd"],
+                "old": [row(r) for r in _reader().get_tariff_agreements(m["account"])],
+                "new": [row(r) for r in m["rows"]]}
+    except Exception:
+        return None
+
+
+def accept_refused_agreements() -> dict:
+    """The user accepts Octopus's answer the guard did not take: stored as any answer is, its moved
+    history re-settled. Engine thread. {ok, added, superseded} or {ok: False, error}."""
+    m = _store.get_meta(_REFUSED_AGREEMENTS_KEY) if _store is not None else None
+    if not m or m.get("account") != get_db_account():
+        return {"ok": False, "error": "no changed agreements are waiting"}
+    diff = _store_agreements(m["account"], m["rows"])
+    if diff is None:
+        return {"ok": False, "error": "the agreements could not be stored"}
+    logger.info("tariff agreements: Octopus's answer of %s accepted by the user — %d added, "
+                "%d superseded", m["at"], len(diff["added"]), len(diff["superseded"]))
+    return {"ok": True, "added": len(diff["added"]), "superseded": len(diff["superseded"])}
+
+
 
 
 # A customer can change only recent agreements — 14 days' cooling-off, a switch reversed — so an answer
