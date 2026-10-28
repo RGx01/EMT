@@ -133,6 +133,19 @@ class TheCard(unittest.TestCase):
         self.assertEqual(c["rows"][-1]["value"], "£23.29")
         self.assertEqual(c["total"], "£23.29")
 
+    def test_an_agile_exports_average_row_is_its_total(self):
+        """A user on Agile export (28 Oct 2026): the folded rate row and the Total differed by
+        pence. The row summed each rate's credit rounded to the penny; the Total is the half-hours'
+        credit rounded once. Ten rates of 0.4p each: the row read 0.00 against a Total of (0.04)."""
+        ch = {round(0.10 + i / 100, 2): {"kwh": 0.04, "cost": -0.004} for i in range(10)}
+        c = bc.card(_summary(meters={**_summary()["meters"], EXP: ch},
+                             totals={**_summary()["totals"],
+                                     EXP: {"kwh": 0.4, "cost": -0.04, "is_submeter": False,
+                                           "read_start": None, "read_end": None}}))
+        avg, total = c["rows"][2], c["rows"][3]
+        self.assertEqual((avg["note"], avg["cost"], avg["kwh"]), ({"avg": 10}, "(0.04)", "0.400"))
+        self.assertEqual((total["cost"], total["kwh"]), ("(0.04)", "0.400"))
+
     def test_standing_is_grouped_by_rate_and_folded_into_the_import(self):
         c = bc.card(_summary())
         st = [r for r in c["rows"] if r.get("cls") == "standing"]
