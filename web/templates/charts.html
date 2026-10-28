@@ -415,7 +415,7 @@
 //   * The fingerprint's days are UTC dates; the rows are local days — a moved UTC date D
 //     re-fetches local D−1..D+1, whatever the offset.
 //   * Anything before `since` changing (a re-price sweep), the bulk epoch (an import,
-//     delete or restore) or the config token (billing periods, meters, bill rounding) means
+//     delete or restore) or the config token (billing periods, meters) means
 //     a whole re-fetch, as does a recent window grown past RECENT_MAX days (which moves
 //     `since` on).
 //   * One request at a time: Spiral and Usage Stats asking together share it.
@@ -2894,7 +2894,7 @@ function _restoreChartScroll(s) {
   if (bw && s.bar) bw.scrollTop = s.bar;
 }
 // Lightweight change token — /api/energy's global fingerprint (blocks, segments,
-// billing periods, meters, bill rounding, bulk epoch); null on failure.
+// billing periods, meters, bulk epoch); null on failure.
 async function _fetchDataVersion() {
   try {
     var r = await fetch(apiUrl('/api/energy?fields=fingerprint'));

@@ -853,8 +853,7 @@ window.EMTBilling = (function () {
   }
   // Called when the data has moved (charts.html's data-version poll) and on a
   // dashboard card's timer. Everything cached is dropped, not only the current
-  // period: a billing-day change re-cuts every period, the bill-rounding option
-  // changes every card and day, and a re-price can touch any month. Each is one
+  // period: a billing-day change re-cuts every period, and a re-price can touch any month. Each is one
   // small request again when next shown; the scroll position is kept.
   function refresh() {
     if (!state.inited) return;

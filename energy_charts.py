@@ -1225,7 +1225,7 @@ def billing_context(cfg, store, blocks, has_exc=None):
       * the per-slot EV map for that. Every rule in it is per SLOT, so building it from
         one period's blocks gives the same entries as building it from all of history;
       * meter colours (EV dispatch purple when the map has entries);
-      * BL-24 bill rounding: the opt-in setting, gated on EMT holding a captured ex-VAT
+      * BL-24 bill rounding: the statement's method, gated on EMT holding a captured ex-VAT
         figure ANYWHERE — not merely in these blocks. `has_exc` lets a caller holding
         one period answer that for the whole store (the API asks SQL); omitted, it is
         read from `blocks`, which is all of history for the pre-render;
@@ -1259,16 +1259,17 @@ def billing_context(cfg, store, blocks, has_exc=None):
     # had before), synthetic or recorded — not the synthetic purple — so it stays distinct
     # from the blue house line (accessibility — see roadmap BL-29).
 
-    # BL-24 (opt-in): show the bill summary with Octopus's rounding method. Read once;
-    # default off ⇒ nothing injected ⇒ the summary is byte-identical to today.
-    _bill_rounding = False
+    # BL-24: the bill summary uses Octopus's statement method — ex-VAT summed raw, rounded at the
+    # subtotal, VAT on top — wherever EMT holds ex-VAT figures. It was an opt-in until 28 Oct 2026
+    # (the user: on by default, then the switch removed): since engine step 4 a half-hour with kWh
+    # has an ex-VAT figure (staging, 28 Oct 2026: all but 1 of 37,869).
+    _bill_rounding = True
     _vat_learned = []
     try:
         if store is not None:
-            _bill_rounding = bool((store.get_settings() or {}).get("bill_rounding_summary"))
             _vat_learned = store.get_vat_calendar()
     except Exception:
-        _bill_rounding = False
+        pass
     # Gate on capability: ex-VAT is only meaningful where EMT can capture a real exc
     # figure (API/tariff). A CAD/cost-sensor-only user has no exc source at all, so we
     # never show it — the fallback would only ever be inc ÷ (1+VAT), a bare assumption.

@@ -5286,21 +5286,20 @@ class TestChargeSessionsAPI(unittest.TestCase):
 
 
 class TestBillRoundingPage(unittest.TestCase):
-    """BL-24.2: the Bill Rounding settings page + the bill_rounding_summary setting."""
+    """BL-24.2's Bill Rounding page and its setting are retired (28 Oct 2026, the user): the bill
+    summary always uses the statement's method where EMT holds ex-VAT figures."""
 
-    def test_page_renders(self):
+    def test_the_old_address_goes_to_the_billing_tab(self):
         client = make_client(store=_make_test_store([]))
         r = client.get("/bill-rounding")
-        self.assertEqual(r.status_code, 200)
-        self.assertIn(b"Guy Lipman", r.data)
-        self.assertIn(b"Bill-style rounding", r.data)
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("tab=daily", r.headers["Location"])
 
-    def test_setting_roundtrips_and_defaults_off(self):
+    def test_the_setting_is_gone(self):
         client = make_client(store=_make_test_store([]))
-        self.assertFalse(client.get("/api/settings").get_json()["bill_rounding_summary"])  # default off
-        self.assertTrue(client.post("/api/settings",
-                                    json={"bill_rounding_summary": True}).get_json()["ok"])
-        self.assertTrue(client.get("/api/settings").get_json()["bill_rounding_summary"])
+        self.assertNotIn("bill_rounding_summary", client.get("/api/settings").get_json())
+        client.post("/api/settings", json={"bill_rounding_summary": False})
+        self.assertNotIn("bill_rounding_summary", client.get("/api/settings").get_json())
 
 
 class TestResponseCompression(unittest.TestCase):
@@ -6471,15 +6470,6 @@ class TestBlocksDataVersion(unittest.TestCase):
         before = server._blocks_data_version(st)
         st._conn.execute("UPDATE config_periods SET billing_day = 15")
         st._conn.commit()
-        self.assertNotEqual(before, server._blocks_data_version(st))
-
-    def test_the_bill_rounding_option_moves_token(self):
-        """REGRESSION (C, 30 Sep 2026): the option changes every card and day; it moved
-        the token through a regen, and must now move it directly."""
-        import server
-        st = self._real_store()
-        before = server._blocks_data_version(st)
-        st.save_settings({**(st.get_settings() or {}), "bill_rounding_summary": True})
         self.assertNotEqual(before, server._blocks_data_version(st))
 
     def test_the_epoch_moves_token(self):
