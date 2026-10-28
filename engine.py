@@ -6994,16 +6994,25 @@ def _import_label(off_peak) -> str:
     is "mixed", which settles nothing)."""
     return "OFF_PEAK" if off_peak is True else ("STANDARD_RATE" if off_peak is False else "mixed")
 
-def _agreement_era(channel: str, start: str):
-    """(tariff_code, from, to) of the agreement live at `start`, or None.
+# {channel: (agreements list, [(tariff_code, from, to)], len)} — each agreement's window parsed once
+# per discovery. The list is held, so its id cannot be reused by another while it is cached.
+_AGREEMENT_WINDOWS: dict = {}
 
-    Coverage is judged PER AGREEMENT because that is the unit Octopus configures product
-    rates against — a raw whole-import count mixes a blank tariff era in with healthy ones
-    and hides both.
-    """
+
+def _agreement_windows(channel: str) -> list:
+    """[(tariff_code, from, to)] of `channel`'s agreements, naive-UTC ISO, in discovery order.
+
+    Parsed once per discovery (28 Oct 2026): `_agreement_era` is asked for every half-hour the ask
+    selection reads — `tariff_kind_at`, `split_at`, `bill_kind_at` — and parsing every agreement's
+    dates on each call held dev's engine loop for up to 26 s every hour, long enough to drop HA's
+    WebSocket, whose reconnect re-ran startup under the running ask."""
     import api_import as _ai
-    info = (_kraken_discovery or {}).get(channel) or {}
-    for a in (info.get("agreements") or []):
+    ags = ((_kraken_discovery or {}).get(channel) or {}).get("agreements") or []
+    hit = _AGREEMENT_WINDOWS.get(channel)
+    if hit is not None and hit[0] is ags and hit[2] == len(ags):
+        return hit[1]
+    out = []
+    for a in ags:
         code = a.get("tariff_code")
         if not code:
             continue
@@ -7012,6 +7021,19 @@ def _agreement_era(channel: str, start: str):
             vt = _ai._iso(_ai._naive_utc(a.get("valid_to"))) if a.get("valid_to") else None
         except Exception:
             continue
+        out.append((code, vf, vt))
+    _AGREEMENT_WINDOWS[channel] = (ags, out, len(ags))
+    return out
+
+
+def _agreement_era(channel: str, start: str):
+    """(tariff_code, from, to) of the agreement live at `start`, or None.
+
+    Coverage is judged PER AGREEMENT because that is the unit Octopus configures product
+    rates against — a raw whole-import count mixes a blank tariff era in with healthy ones
+    and hides both.
+    """
+    for code, vf, vt in _agreement_windows(channel):
         if vf and start >= vf and (vt is None or start < vt):
             return (code, vf, vt)
     return None

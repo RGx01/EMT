@@ -512,6 +512,7 @@ class KrakenAPIClient:
         self._timeout = aiohttp.ClientTimeout(total=timeout)
         self._session = session
         self._owns_session = session is None
+        self._closed = False               # set by close(); a closed client opens no new session
         # GraphQL token cache (obtained lazily, refreshed before exp).
         self._gql_token: Optional[str] = None
         self._gql_token_exp: Optional[float] = None
@@ -557,6 +558,7 @@ class KrakenAPIClient:
 
     # ── session lifecycle ────────────────────────────────────────────────
     async def __aenter__(self) -> "KrakenAPIClient":
+        self._closed = False
         if self._session is None:
             # NB: do NOT set session-level auth. The REST surface uses Basic
             # auth (API key as username) applied PER-REQUEST; GraphQL uses a JWT.
@@ -570,11 +572,17 @@ class KrakenAPIClient:
         await self.close()
 
     async def close(self) -> None:
+        # A closed client stays closed (28 Oct 2026): a task still holding it — the ask, when a
+        # restart replaced the engine's client under it — had `_ensure_session` open a NEW
+        # session on it, which nothing ever closed ("Unclosed client session", dev, ~hourly).
+        self._closed = True
         if self._session is not None and self._owns_session:
             await self._session.close()
             self._session = None
 
     def _ensure_session(self) -> aiohttp.ClientSession:
+        if self._closed:
+            raise KrakenAPIError("Kraken client closed (replaced by a reconnect or a restart)")
         if self._session is None:
             # Lazily create even outside the context manager. No session-level
             # auth — REST applies Basic auth per-request (see _rest_auth).
