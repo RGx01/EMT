@@ -58,6 +58,14 @@ being the likely cause. A new agreement is always taken; so is a reversal of a r
 predecessor's end reopened), and a new meter point's. Every reader — the rate stitch and the
 per-agreement fetch among them — reads the stored copy, so an answer not taken is not priced either.
 
+**The user decides what the guard refuses** (28 Oct 2026, the user). A real correction of an old agreement
+— Octopus re-dating it after a dispute — and a lasting API change look the same to code, and the guard
+alone would refuse the correction every day with a log line only. So the refused answer is kept
+(`agreements_refused` in store_meta), and every page shows a warning naming the agreements it drops or
+moves, with **Accept Octopus's agreements**: it shows what EMT holds against what Octopus now says, asks
+to confirm, then stores the answer as any answer is, its moved history re-settled (§4). A later answer
+that is taken forgets it.
+
 ## 3. Writing and reading
 
 - **Written by discovery** — start-up, the daily re-discovery, and the restore's phase 2 (§5) — and only

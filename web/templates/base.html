@@ -816,6 +816,57 @@ window.EMT = window.EMT || {};
   setInterval(check, 30000);
 })();
 
+/* ── Octopus changed past agreements, and EMT kept its last copy (G1 design §2) ──────────────────
+   A real correction of an old agreement and an API change look the same to code, so the user
+   decides: accepting stores Octopus's answer and re-settles the history it moves. */
+(function () {
+  var ID = 'agreements-changed';
+  function fmt(a) {
+    return a[1] + ' ' + String(a[2]).slice(0, 10) + ' → ' + (a[3] ? String(a[3]).slice(0, 10) : 'open');
+  }
+  function esc(s) {
+    return String(s).replace(/[&<>"]/g, function (x) {
+      return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[x]; });
+  }
+  function check() {
+    fetch(apiUrl('/api/tariff-agreements/changed'))
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        var c = d && d.changed;
+        if (!c) { EMT.dismiss(ID); return; }
+        EMT.notify({
+          id: ID,
+          level: 'warn',
+          html: '⚠ <strong>Octopus’s agreements have changed in the past</strong> — its answer ' +
+                'drops or moves ' + c.odd.length + ' agreement' + (c.odd.length === 1 ? '' : 's') +
+                ' that ended over 30 days ago (' + esc(c.odd.map(fmt).join('; ')) + '). EMT kept its last ' +
+                'copy: this is more often an API change than a correction. If Octopus has corrected your ' +
+                'agreements, accept its version and the history they cover is re-settled. ' +
+                '<button data-act="accept-agreements">Accept Octopus’s agreements</button>'
+        });
+        var b = document.querySelector('[data-notif-id="' + ID + '"] [data-act="accept-agreements"]');
+        if (b) b.onclick = function () {
+          var ask = 'EMT has:\n  ' + c.old.map(fmt).join('\n  ') + '\n\nOctopus now says:\n  ' +
+                    c.new.map(fmt).join('\n  ') + '\n\nAccept Octopus’s agreements and re-settle?';
+          if (!window.confirm(ask)) return;
+          b.disabled = true;
+          fetch(apiUrl('/api/tariff-agreements/accept'), {method: 'POST'})
+            .then(function (r) { return r.json(); })
+            .then(function (res) {
+              EMT.dismiss(ID);
+              EMT.notify({id: ID + '-done', level: res.ok ? 'info' : 'warn', transient: true,
+                          html: res.ok ? 'Octopus’s agreements accepted — re-settling the history they move.'
+                                       : esc(res.error || 'Not accepted')});
+            })
+            .catch(function () { b.disabled = false; });
+        };
+      })
+      .catch(function () {});
+  }
+  check();
+  setInterval(check, 600000);
+})();
+
 // Sync global theme toggle icon on load
 (function() {
   var theme = document.documentElement.getAttribute('data-theme') || 'dark';
