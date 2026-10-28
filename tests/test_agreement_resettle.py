@@ -8,12 +8,17 @@ health strip's month counts read discovery's agreements only — none before it 
   clipped to the history and merged; the first answer stored is the whole history;
 - they are queued in store_meta, and the settle sweep's job works them off a day at a time once the
   history walk is done, after the rate refresh that builds the new agreements' rates;
-- the health strip's agreements digest reads the stored agreements too, and the same for both forms.
+- the health strip's agreements digest reads the stored agreements too, and the same for both forms;
+- the guard (the user: "if there's any api/graphql deprecations we don't get in a mess"): an answer
+  that drops or moves an agreement that started and ended over 30 days ago is not taken — a customer
+  can change only recent ones (14 days' cooling-off) — and the readers, the rate stitch among them,
+  keep the last good copy.
 
 Discriminating: every test here fails on the parent, but those labelled GUARD.
 """
 import inspect
 import os
+from datetime import datetime, timedelta
 import sys
 import unittest
 from unittest import mock
@@ -81,7 +86,9 @@ class TheQueue(R._Harness):
     def test_a_change_queues_its_span(self):
         engine._keep_agreements(self._disc())
         self.st.set_meta(engine._SETTLE_SPANS_KEY, [])
-        engine._keep_agreements(self._disc(vt="2025-06-03T00:00:00Z"))
+        # a 2025 window moved: the guard would refuse it (TheGuard); here, what a taken change queues
+        with mock.patch.object(engine, "_AGREEMENT_CHANGE_DAYS", 100000):
+            engine._keep_agreements(self._disc(vt="2025-06-03T00:00:00Z"))
         self.assertEqual(self.st.get_meta(engine._SETTLE_SPANS_KEY),
                          [["2025-06-02T00:00:00", "2025-06-03T12:30:00"]])
 
@@ -124,6 +131,73 @@ class TheQueue(R._Harness):
         src = inspect.getsource(engine)
         i = src.index("            await _refresh_kraken_rate_schedules()\n            # a change of agreements")
         self.assertIn("_maybe_settle_history()", src[i:i + 300])
+
+
+class TheGuard(R._Harness):
+
+    def setUp(self):
+        super().setUp()
+        self._saved = engine._stored_agreements
+        engine._AGREEMENT_WINDOWS.clear()
+        self.st.set_kraken_state(engine._ACCOUNT_KEY, "A-1")
+        self.now = datetime.utcnow().replace(microsecond=0)
+
+    def tearDown(self):
+        engine._stored_agreements = self._saved
+        engine._AGREEMENT_WINDOWS.clear()
+        super().tearDown()
+
+    def _ago(self, days):
+        return (self.now - timedelta(days=days)).isoformat() + "Z"
+
+    def _disc(self, ags, mpan="M1"):
+        return {"import": {"mpan": mpan, "tariff_code": ags[-1]["tariff_code"], "agreements": ags}}
+
+    def _codes(self):
+        return [r["tariff_code"] for r in self.st.get_tariff_agreements("A-1")]
+
+    def test_an_old_agreement_dropped_is_not_taken(self):
+        engine._keep_agreements(self._disc([
+            {"tariff_code": AGILE, "valid_from": self._ago(700), "valid_to": self._ago(400)},
+            {"tariff_code": IOG, "valid_from": self._ago(400), "valid_to": None}]))
+        # an API change: only the current agreement comes back
+        self.assertIsNone(engine._keep_agreements(self._disc([
+            {"tariff_code": IOG, "valid_from": self._ago(400), "valid_to": None}])))
+        self.assertEqual(self._codes(), [AGILE, IOG])
+        engine._AGREEMENT_WINDOWS.clear()
+        engine._kraken_discovery = self._disc([{"tariff_code": IOG, "valid_from": self._ago(400),
+                                                "valid_to": None}])
+        self.assertEqual(engine.tariff_kind_at(self._ago(500)[:-1]), "published")   # the last good copy
+
+    def test_an_old_window_moved_is_not_taken(self):
+        engine._keep_agreements(self._disc([{"tariff_code": IOG, "valid_from": self._ago(400), "valid_to": None}]))
+        self.assertIsNone(engine._keep_agreements(self._disc([
+            {"tariff_code": IOG, "valid_from": self._ago(399), "valid_to": None}])))
+
+    def test_GUARD_a_cooling_off_reversal_is_taken(self):
+        engine._keep_agreements(self._disc([
+            {"tariff_code": IOG, "valid_from": self._ago(400), "valid_to": self._ago(10)},
+            {"tariff_code": AGILE, "valid_from": self._ago(10), "valid_to": None}]))
+        diff = engine._keep_agreements(self._disc([
+            {"tariff_code": IOG, "valid_from": self._ago(400), "valid_to": None}]))
+        self.assertIsNotNone(diff)
+        self.assertEqual(self._codes(), [IOG])
+
+    def test_GUARD_a_new_agreement_is_taken(self):
+        engine._keep_agreements(self._disc([{"tariff_code": IOG, "valid_from": self._ago(400), "valid_to": None}]))
+        self.assertIsNotNone(engine._keep_agreements(self._disc([
+            {"tariff_code": IOG, "valid_from": self._ago(400), "valid_to": None},
+            {"tariff_code": AGILE, "valid_from": self._ago(900), "valid_to": self._ago(400)}])))
+
+    def test_GUARD_a_new_meter_points_agreements_are_taken(self):
+        engine._keep_agreements(self._disc([{"tariff_code": IOG, "valid_from": self._ago(400), "valid_to": None}]))
+        self.assertIsNotNone(engine._keep_agreements(self._disc(
+            [{"tariff_code": IOG, "valid_from": self._ago(5), "valid_to": None}], mpan="M2")))
+
+    def test_the_rate_stitch_reads_the_stored_copy(self):
+        src = inspect.getsource(engine._refresh_kraken_rate_schedules)
+        self.assertIn('_imp_info = _agreement_info("import")', src)
+        self.assertIn("info = _agreement_info(channel)", inspect.getsource(engine._agreement_segs))
 
 
 class TheHealthDigest(unittest.TestCase):

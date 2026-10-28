@@ -142,12 +142,14 @@ class TheEngine(R._Harness):
         self.assertIsNone(engine._keep_agreements(_disc(ags=[])))
         self.assertEqual(self.st.get_tariff_agreements("A-1"), [])
 
-    def test_discoverys_answer_wins_over_the_stored(self):
+    def test_the_stored_copy_is_read_once_discovery_has_answered(self):
+        """Every answer taken is stored first; an answer not taken (G1d's guard) leaves the last good
+        copy read, not discovery's in memory."""
         engine._keep_agreements(_disc())
         engine._kraken_discovery = _disc(ags=[{"tariff_code": AGILE, "valid_from": "2020-01-01T00:00:00Z",
                                                "valid_to": None}])
         engine._AGREEMENT_WINDOWS.clear()
-        self.assertEqual(engine.tariff_kind_at("2025-06-01T12:00:00"), "published")
+        self.assertEqual(engine.tariff_kind_at("2025-06-01T12:00:00"), "intelligent")
 
     def test_startup_loads_them_before_discovery(self):
         import inspect

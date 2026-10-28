@@ -6598,7 +6598,7 @@ async def _agreement_segs(channel: str, kind: str) -> list:
     a restart). VAT as the channel's (`_vat_context`); an open start reads 0000-01-01."""
     from kraken_api_client import KrakenAPIClient
     from kraken_rates import agreement_schedules
-    info = (_kraken_discovery or {}).get(channel) or {}
+    info = _agreement_info(channel)          # the stored agreements: a refused answer is not priced
     segs = await agreement_schedules(_kraken_client, info.get("agreements") or [], kind=kind,
                                      product_of=KrakenAPIClient._tariff_to_product_code)
     vat = _vat_context(channel)
@@ -7007,10 +7007,12 @@ _AGREEMENT_WINDOWS: dict = {}
 
 
 def _agreement_info(channel: str) -> dict:
-    """`channel`'s meter point as the agreement readers see it (G1 design §3): discovery's answer
-    once it has answered, else the agreements stored from the last one; {} with neither. (An
-    account mismatch leaves discovery `{}`, not answered: the stored are this database's own.)"""
-    src = _kraken_discovery if "import" in (_kraken_discovery or {}) else _stored_agreements
+    """`channel`'s meter point as the agreement readers see it (G1 design §3): the stored agreements
+    — every answer discovery takes is stored first, so they are its answer — else discovery's, where
+    none is stored yet; {} with neither. An answer the guard did not take (`_unexpected_drops`)
+    leaves the last good copy read. (An account mismatch leaves discovery `{}`: the stored are this
+    database's own.)"""
+    src = _stored_agreements or _kraken_discovery
     return (src or {}).get(channel) or {}
 
 
@@ -7043,6 +7045,18 @@ def _keep_agreements(disc) -> "dict | None":
     if _store is None or not acct or not any(r["direction"] == "import" for r in rows):
         return None
     try:
+        odd = _unexpected_drops(_reader().get_tariff_agreements(acct), rows, datetime.utcnow())
+    except Exception:
+        odd = []
+    if odd:
+        # not a change a customer can make: an API change, more likely (G1 design §2, the user,
+        # 28 Oct 2026: "if there's any api/graphql deprecations we don't get in a mess")
+        logger.warning("tariff agreements: Octopus's answer drops or moves %d agreement(s) that "
+                       "started and ended over %d days ago (%s) — not taken, the last good copy is "
+                       "kept; an API change is the likely cause", len(odd), _AGREEMENT_CHANGE_DAYS,
+                       "; ".join("%s %s %s..%s" % (d, c, vf, vt or "open") for d, c, vf, vt in odd[:5]))
+        return None
+    try:
         diff = _store.replace_tariff_agreements(acct, rows, datetime.utcnow().replace(microsecond=0).isoformat())
     except Exception as e:
         logger.warning("tariff agreements: not stored (%s)", e)
@@ -7060,6 +7074,31 @@ def _keep_agreements(disc) -> "dict | None":
         except Exception as e:
             logger.warning("tariff agreements: the re-settle was not queued (%s)", e)
     return diff
+
+
+# A customer can change only recent agreements — 14 days' cooling-off, a switch reversed — so an answer
+# that drops or moves one that started and ended longer ago than this is not taken (G1 design §2).
+_AGREEMENT_CHANGE_DAYS = 30
+
+
+def _unexpected_drops(current, rows, now) -> list:
+    """The stored agreements an answer would drop or move that no customer change explains: started
+    and ended over `_AGREEMENT_CHANGE_DAYS` ago, on a meter point the answer still has. A new
+    agreement is always taken; so is a reversal of a recent one (its predecessor's end reopened),
+    and a new meter point's (another MPAN is not an edit of this one's history).
+    [(direction, tariff_code, valid_from, valid_to)]."""
+    cutoff = (now - timedelta(days=_AGREEMENT_CHANGE_DAYS)).isoformat()
+    key = lambda r: (r["mpan"], r["direction"], r["tariff_code"], r["valid_from"], r.get("valid_to"))
+    new = {key(r) for r in rows}
+    mpans = {(r["mpan"], r["direction"]) for r in rows}
+    out = []
+    for r in current or []:
+        if key(r) in new or (r["mpan"], r["direction"]) not in mpans:
+            continue
+        if r["valid_from"] >= cutoff or (r.get("valid_to") and r["valid_to"] >= cutoff):
+            continue
+        out.append((r["direction"], r["tariff_code"], r["valid_from"], r.get("valid_to")))
+    return out
 
 
 # The spans a change of agreements re-settles (G1 design §4), worked off by the settle sweep's job
@@ -8540,7 +8579,7 @@ async def _refresh_kraken_rate_schedules() -> None:
     # prices on the tariff that applied on its date, not the current one. Records the
     # current agreement's valid_from and whether history is covered (for the guard).
     global _import_schedule_covers_history, _kraken_current_agreement_from
-    _imp_info = _kraken_discovery.get("import") or {}
+    _imp_info = _agreement_info("import")     # the stored agreements (G1 design §3)
     _ags = _imp_info.get("agreements") or []
     _kraken_current_agreement_from = None
     try:

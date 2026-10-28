@@ -49,6 +49,14 @@ still holds stays as it is; one it no longer holds gets `superseded_at`; a new o
 superseded rows are history (an agreement withdrawn in cooling-off, a window Octopus edited), never read
 for pricing. `account` is the stamp; rows for another account are never read.
 
+**The guard** (28 Oct 2026, the user: "if there's any api/graphql deprecations we don't get in a mess").
+A customer can change only recent agreements — 14 days' cooling-off, a switch reversed — so an answer
+that would drop or move an agreement that started *and* ended over 30 days ago, on a meter point it
+still has, is not taken: the last good copy is kept and a warning names the agreements, an API change
+being the likely cause. A new agreement is always taken; so is a reversal of a recent one (its
+predecessor's end reopened), and a new meter point's. Every reader — the rate stitch and the
+per-agreement fetch among them — reads the stored copy, so an answer not taken is not priced either.
+
 ## 3. Writing and reading
 
 - **Written by discovery** — start-up, the daily re-discovery, and the restore's phase 2 (§5) — and only
