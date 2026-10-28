@@ -12,6 +12,8 @@ importer's copy.
     3  held-rate refit     segments fitted to a settled kWh
     3b the bill's split    a settled IOG-SMB block takes its cached bill's EV (one-rate blocks)
     3c imported bills      an imported half-hour's stored cost becomes its bill, IMPORTED (step 4a-2)
+    3d the sensor's rate   a live half-hour of v4's sensor era: its stored rate kept as the fact
+                           `sensor_rates` (sensor rate fact design, 28 Oct 2026)
     4  band relabel        not built: BL-81 closed (house off_peak stays in every era)
     5  meta                the allow-listed store_meta / kraken_state keys
     6  device sensors      each configured read a primary; Device History's other sensors
@@ -453,6 +455,70 @@ def imported_bills(conn, report):
     report["transforms"]["imported_bills"] = out
 
 
+def _go_live(conn):
+    """When the source first wrote Octopus's data into its blocks — `pre_live_snapshot_done`, which
+    v4 stamps then (YYYYMMDDTHHMMSS, or an ISO time where it had no blocks to snapshot) — as a
+    naive-UTC ISO string, or None where it never went live or the stamp cannot be read."""
+    from datetime import datetime, timezone
+    row = conn.execute("SELECT value FROM src.kraken_state WHERE key = 'pre_live_snapshot_done'"
+                       ).fetchone()
+    raw = str(row[0]).strip().strip('"') if row and row[0] is not None else ""
+    if not raw:
+        return None
+    for fmt in ("%Y%m%dT%H%M%S",):
+        try:
+            return datetime.strptime(raw, fmt).isoformat()
+        except ValueError:
+            pass
+    try:
+        d = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if d.tzinfo is not None:
+        d = d.astimezone(timezone.utc).replace(tzinfo=None)
+    return d.replace(microsecond=0).isoformat()
+
+
+SENSOR_ORIGIN = "v4"
+
+
+def sensor_rates(conn, report):
+    """3d (sensor rate fact design §3, import spec v28): v4 priced a live half-hour at the last
+    reading of the import channel's rate sensor — Octopus's live rate, off-peak during an Intelligent
+    dispatch — until it was connected to Octopus's API, when (with `rate_source = 'api'`) the tariff
+    schedule replaced it. Its stored rate is then the only trace of what the sensor said, and v5's
+    settle() reads no stored rate; so for each live main half-hour of the sensor era it becomes the
+    fact `sensor_rates` (origin 'v4'). The era is each database's own, per config period:
+    - the period's main import channel names a rate sensor;
+    - with `rate_source = 'api'`, the half-hour is before the source's API go-live (`_go_live`); with
+      no go-live stamp there is no telling, and nothing is written for that period;
+    - otherwise (the sensor kept, or the account never went live) every live half-hour.
+    A live half-hour is one with no `source` (an imported one has its IMPORTED bill, 3c), kWh and a
+    rate, and not the user's correction. No bill is written, so the asker still asks Octopus."""
+    live = _go_live(conn)
+    out = {"written": 0, "go_live": live, "periods": {}}
+    for pid, sensor, rs in conn.execute(
+            "SELECT m.config_period_id, mc.rate_sensor, mc.rate_source FROM src.meters m "
+            "JOIN src.meter_channels mc ON mc.meter_id = m.id WHERE m.meter_id = ? "
+            "AND mc.channel = 'import'", (MAIN,)).fetchall():
+        if not (sensor or "").strip():
+            continue
+        if (rs or "") == "api" and live is None:
+            out["periods"][str(pid)] = "no go-live stamp: not written"
+            continue
+        upto = live if (rs or "") == "api" else None
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO main.sensor_rates (meter_id, channel, block_start, rate, origin) "
+            "SELECT b.meter_id, 'import', b.block_start, b.imp_rate, ? FROM main.blocks b "
+            "WHERE b.meter_id = ? AND b.config_period_id = ? AND b.source IS NULL "
+            "AND b.imp_rate IS NOT NULL AND COALESCE(b.imp_kwh, 0) > ? "
+            "AND COALESCE(b.rate_corrected, 0) = 0 AND COALESCE(b.rate_source, '') <> 'corrected' "
+            "AND (? IS NULL OR b.block_start < ?)", (SENSOR_ORIGIN, MAIN, pid, _EPS, upto, upto))
+        out["periods"][str(pid)] = cur.rowcount
+        out["written"] += cur.rowcount
+    report["transforms"]["sensor_rates"] = out
+
+
 def run(conn, report):
     conn.execute("CREATE TEMP TABLE IF NOT EXISTS v4i_resegmented "
                  "(block_start TEXT, why TEXT, PRIMARY KEY (block_start, why))")
@@ -467,6 +533,7 @@ def run(conn, report):
     refit_held(conn, report)
     bill_split(conn, report)
     imported_bills(conn, report)
+    sensor_rates(conn, report)
     carry_keys(conn, report)
     device_sensors(conn, report)
     ha_reads(conn, report)

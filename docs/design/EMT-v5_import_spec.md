@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v27 — revised 25 Oct 2026, what the import heard becomes a bill (transform 3c) (v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v28 — revised 28 Oct 2026, v4's live rate from its sensor era kept as a fact (transform 3d) (v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -145,6 +145,15 @@ a bill whose EV is zero where EMT's own split has the car, for up to 28 days —
 forward code. 4.5.22 and the v5 dev build `4.5.22-a23` join the below-floor negatives; v5's own
 builds now stamp `4.5.23-a24`. The 4.5.22 positive fixture (prod-dev, 10 Oct) is below the floor
 now; the fixture is re-taken at 4.5.23.*
+
+*Changes in v28 (28 Oct 2026): **v4's sensor-era rate becomes a fact** (transform 3d, gate
+`sensor_rates`; sensor rate fact design). Before it was connected to Octopus's API, v4 priced a live
+half-hour at the last reading of the import channel's rate sensor — Octopus's live rate, off-peak
+during an Intelligent dispatch — and kept no reading, only the rate. v5's settle() reads no stored
+rate, and before v4 recorded dispatches the prediction can only be the clock, so where Octopus gives
+no bill a smart charge outside the night window read peak. The importer keeps each such half-hour's
+stored rate in `sensor_rates`, the era dated by each database's own go-live stamp, and v5 bands by it
+below a bill (see SENSOR RATES, below). No bill is written; the asker still asks Octopus.*
 
 *Changes in v27 (25 Oct 2026): **what the import heard becomes a bill** (transform 3c, gate
 `imported_bills`; engine step 4 design §6 (e)). v4 kept an imported half-hour's band only in the rate
@@ -939,6 +948,26 @@ kWh × it; none where it is near neither (a blend) or equally near both (engine 
 > a Mac. Against each day's lowest and highest imported rate (a stand-in for the schedule): 2,521
 > evening half-hours band off-peak; 3,670 of 0.004 kWh or less (5.38 kWh in all) are within 0.05p of
 > both rates and take the nearer.
+
+**SENSOR RATES — v4's live rate, from its sensor era** (v28, 28 Oct 2026; sensor rate fact design).
+For each config period of the source whose MAIN import channel names a rate sensor
+(`meter_channels.rate_sensor`), and each MAIN block of it where
+
+    source IS NULL AND imp_rate IS NOT NULL AND imp_kwh > 0 AND not corrected
+    AND (rate_source <> 'api' OR block_start < the source's go-live)
+
+the importer writes a `sensor_rates` row (`meter_id`, `channel` 'import', `block_start`, `rate` =
+`imp_rate`, `origin` 'v4'). The go-live is `kraken_state.pre_live_snapshot_done`, the time v4 first
+wrote Octopus's data into blocks (`YYYYMMDDTHHMMSS`, or ISO); a period whose channel says `'api'`
+with no such stamp gets none. Nothing is hard-coded: each database dates its own era. Gate
+`sensor_rates` (§9) checks every row against its live source block, in its era. v5's `settle_facts`
+bands a half-hour by its sensor rate — the nearer of the day's two rates, within 0.05p — in place of
+the prediction, where no bill settles it.
+
+> Measured 28 Oct 2026, staging's v4 database (4.5.24): 2,481 rows, 3 Mar – 26 Jun 2026 (go-live
+> 26 Jun 23:24), every gate holding, 3.7 s on a Mac. Before v4 recorded any dispatch, its rate matched
+> Octopus's later bills on all 185 live half-hours outside the night window that have one; the three
+> of 31 Mar – 5 Apr Octopus no longer answers for (a smart charge past 05:30) now band off-peak.
 
 A main block whose segments miss its kWh but whose rate is NOT held is **reported, not refitted**:
 its cause is not this one, and refitting would hide it. The import report counts both — refitted,

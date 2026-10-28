@@ -309,6 +309,28 @@ def imported_bills(conn, report):
     return None
 
 
+def sensor_rates(conn, report):
+    """Transform 3d: every `sensor_rates` row is a live main half-hour's — no source, not corrected —
+    at that block's stored rate, in a config period whose import channel names a rate sensor, and
+    before the go-live where that channel's rate_source is 'api'; and as many as 3d wrote."""
+    t = report["transforms"].get("sensor_rates", {"written": 0})
+    report["gates"]["sensor_rates"].update(written=t.get("written", 0), go_live=t.get("go_live"))
+    n = _one(conn, "SELECT COUNT(*) FROM main.sensor_rates")
+    bad = _one(conn,
+               "SELECT COUNT(*) FROM main.sensor_rates r LEFT JOIN src.blocks b ON "
+               "b.block_start = r.block_start AND b.meter_id = r.meter_id "
+               "LEFT JOIN src.meters m ON m.meter_id = b.meter_id AND m.config_period_id = b.config_period_id "
+               "LEFT JOIN src.meter_channels mc ON mc.meter_id = m.id AND mc.channel = 'import' "
+               "WHERE b.id IS NULL OR b.source IS NOT NULL OR r.rate IS NOT b.imp_rate "
+               "OR COALESCE(b.rate_corrected, 0) <> 0 OR COALESCE(mc.rate_sensor, '') = '' "
+               "OR (mc.rate_source = 'api' AND (? IS NULL OR r.block_start >= ?))",
+               t.get("go_live"), t.get("go_live"))
+    if n != t.get("written", 0) or bad:
+        return ("sensor rates: %d written, %d held, %d not a live sensor-era half-hour's rate"
+                % (t.get("written", 0), n, bad))
+    return None
+
+
 def corrections(conn, report):
     """Spec §9.4: every corrected block keeps its corrected rate and cost."""
     n = _one(conn, "SELECT COUNT(*) FROM src.blocks s LEFT JOIN main.blocks m ON m.id = s.id "
@@ -424,6 +446,7 @@ GATES = (("row_counts", row_counts), ("carried_exactly", carried_exactly),
          ("cost_parity", cost_parity), ("provenance", provenance),
          ("ev_segments", ev_segments), ("split_reproduced", split_reproduced),
          ("held_fit", held_fit), ("bill_split", bill_split), ("imported_bills", imported_bills),
+         ("sensor_rates", sensor_rates),
          ("corrections", corrections), ("tombstones", tombstones), ("keys", keys),
          ("billing_source", billing_source), ("device_sensors", device_sensors),
          ("ha_reads", ha_reads))
