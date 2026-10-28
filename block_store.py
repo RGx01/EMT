@@ -284,6 +284,25 @@ CREATE TABLE IF NOT EXISTS sensor_rates (
     PRIMARY KEY (meter_id, channel, block_start)
 );
 
+-- The account's tariff agreements (G1 design, 28 Oct 2026): Octopus's answer from discovery, kept so a
+-- restart with the API down still knows them, and every reader judged by agreement has them. Each
+-- answer replaces the current rows (superseded_at NULL) wholesale: a row it still holds stays, one it no
+-- longer holds is superseded — kept as history, never read for pricing — and a new one is inserted.
+-- Naive-UTC times; valid_to NULL is open-ended. Rows of another account are never read.
+CREATE TABLE IF NOT EXISTS tariff_agreements (
+    account        TEXT    NOT NULL,
+    mpan           TEXT    NOT NULL,
+    direction      TEXT    NOT NULL,
+    tariff_code    TEXT    NOT NULL,
+    product_code   TEXT,
+    valid_from     TEXT    NOT NULL,
+    valid_to       TEXT,
+    fetched_at     TEXT    NOT NULL,
+    superseded_at  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tariff_agreements_current
+    ON tariff_agreements (account, superseded_at);
+
 CREATE INDEX IF NOT EXISTS idx_blocks_start     ON blocks (block_start);
 
 CREATE INDEX IF NOT EXISTS idx_blocks_meter     ON blocks (meter_id);
@@ -3824,6 +3843,50 @@ class BlockStore:
         """Persist the learned VAT boundaries (list of (date, rate))."""
         self.set_meta("vat_calendar",
                       [[str(d)[:10], float(r)] for d, r in (entries or [])])
+
+    def get_tariff_agreements(self, account: str) -> list:
+        """The account's current agreements (G1 design §2), [{mpan, direction, tariff_code,
+        product_code, valid_from, valid_to, fetched_at}], import first, oldest first. Empty for
+        no account, or none stored."""
+        if not account:
+            return []
+        return [dict(r) for r in self._conn.execute(
+            "SELECT mpan, direction, tariff_code, product_code, valid_from, valid_to, fetched_at "
+            "FROM tariff_agreements WHERE account = ? AND superseded_at IS NULL "
+            "ORDER BY direction DESC, valid_from", (account,))]
+
+    def replace_tariff_agreements(self, account: str, rows, fetched_at: str) -> dict:
+        """Discovery's answer replaces the account's current agreements wholesale, in one
+        transaction (G1 design §2): a row the answer still holds — the same MPAN, direction,
+        tariff and window — stays; one it no longer holds is superseded at `fetched_at`; a new one
+        is inserted. `rows`: [{mpan, direction, tariff_code, product_code, valid_from, valid_to}].
+        {added, superseded, kept}: [(direction, tariff_code, valid_from, valid_to)] each."""
+        key = lambda r: (r["mpan"], r["direction"], r["tariff_code"], r["valid_from"], r.get("valid_to"))
+        new = {key(r): r for r in rows or [] if r.get("mpan") and r.get("tariff_code") and r.get("valid_from")}
+        cur = {}
+        for r in self._conn.execute(
+                "SELECT rowid AS id, mpan, direction, tariff_code, valid_from, valid_to "
+                "FROM tariff_agreements WHERE account = ? AND superseded_at IS NULL", (account,)):
+            cur[key(dict(r))] = r["id"]
+        out = {"added": [], "superseded": [], "kept": []}
+        with self._conn:
+            for k, rid in cur.items():
+                if k in new:
+                    out["kept"].append(k[1:])
+                else:
+                    self._conn.execute("UPDATE tariff_agreements SET superseded_at = ? WHERE rowid = ?",
+                                       (fetched_at, rid))
+                    out["superseded"].append(k[1:])
+            for k, r in new.items():
+                if k in cur:
+                    continue
+                self._conn.execute(
+                    "INSERT INTO tariff_agreements (account, mpan, direction, tariff_code, "
+                    "product_code, valid_from, valid_to, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (account, r["mpan"], r["direction"], r["tariff_code"], r.get("product_code"),
+                     r["valid_from"], r.get("valid_to"), fetched_at))
+                out["added"].append(k[1:])
+        return out
 
     def vat_rate_lookup(self):
         """`vat_rate_at` as a function of the date, with the calendar read once — for a

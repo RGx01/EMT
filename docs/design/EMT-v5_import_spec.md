@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v28 — revised 28 Oct 2026, v4's live rate from its sensor era kept as a fact (transform 3d) (v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v29 — revised 28 Oct 2026, the agreements table left empty by the import (G1) (v28: v4's live rate from its sensor era kept as a fact, transform 3d; v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -145,6 +145,11 @@ a bill whose EV is zero where EMT's own split has the car, for up to 28 days —
 forward code. 4.5.22 and the v5 dev build `4.5.22-a23` join the below-floor negatives; v5's own
 builds now stamp `4.5.23-a24`. The 4.5.22 positive fixture (prod-dev, 10 Oct) is below the floor
 now; the fixture is re-taken at 4.5.23.*
+
+*Changes in v29 (28 Oct 2026): **`tariff_agreements` is v5's, and the import leaves it empty** (G1
+design §5). A v4 database does not hold the agreement history, so nothing is carried; discovery writes
+it — at start-up after the import today, and in the restore's phase 2 before the import settles once
+G1b lands.*
 
 *Changes in v28 (28 Oct 2026): **v4's sensor-era rate becomes a fact** (transform 3d, gate
 `sensor_rates`; sensor rate fact design). Before it was connected to Octopus's API, v4 priced a live

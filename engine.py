@@ -133,6 +133,10 @@ _meter_reset_detected:     bool            = False   # set when post-gap read < 
 # None/empty until then; the presence of _kraken_client gates all API work.
 _kraken_client = None          # KrakenAPIClient | None
 _kraken_discovery: dict | None = None
+# The account's agreements as stored (G1 design §3), in discovery's shape — {channel: {mpan,
+# tariff_code, agreements}} — loaded at start-up before discovery runs, so a restart with the API down
+# still knows them. `_agreement_info` reads discovery's answer once it has one, these until then.
+_stored_agreements: dict | None = None
 _kraken_account_number: str | None = None
 # (db_account, creds_account) when the loaded DB is stamped to a different Octopus
 # account than the current credentials → API auto-activation is suppressed (#357).
@@ -5855,6 +5859,7 @@ async def _kraken_startup_discovery(force: bool = False) -> None:
         disc = await _kraken_client.auto_discover(acct)
         _kraken_discovery = disc
         _kraken_discovered_at = time.monotonic()
+        _keep_agreements(disc)
 
         imp = disc.get("import") or {}
         exp = disc.get("export") or {}
@@ -5972,6 +5977,7 @@ async def _maybe_rediscover(now: "float | None" = None) -> bool:
                     (_kraken_discovery.get("export") or {}).get("tariff_code"),
                     (disc.get("export") or {}).get("tariff_code"))
     _kraken_discovery = disc
+    _keep_agreements(disc)
     _store_export_settlement_expected(disc)
     return changed
 
@@ -6999,6 +7005,74 @@ def _import_label(off_peak) -> str:
 _AGREEMENT_WINDOWS: dict = {}
 
 
+def _agreement_info(channel: str) -> dict:
+    """`channel`'s meter point as the agreement readers see it (G1 design §3): discovery's answer
+    once it has answered, else the agreements stored from the last one; {} with neither. (An
+    account mismatch leaves discovery `{}`, not answered: the stored are this database's own.)"""
+    src = _kraken_discovery if "import" in (_kraken_discovery or {}) else _stored_agreements
+    return (src or {}).get(channel) or {}
+
+
+def _agreement_rows(disc) -> list:
+    """Discovery's agreements as `tariff_agreements` rows, naive-UTC ISO (unparseable dates skipped)."""
+    import api_import as _ai
+    out = []
+    for ch in ("import", "export"):
+        info = (disc or {}).get(ch) or {}
+        for a in info.get("agreements") or []:
+            try:
+                vf = _ai._naive_utc(a.get("valid_from"))
+                vt = _ai._naive_utc(a.get("valid_to")) if a.get("valid_to") else None
+            except Exception:
+                continue
+            if not (info.get("mpan") and a.get("tariff_code") and vf):
+                continue
+            out.append({"mpan": info["mpan"], "direction": ch, "tariff_code": a["tariff_code"],
+                        "product_code": a.get("product_code"), "valid_from": _ai._iso(vf),
+                        "valid_to": _ai._iso(vt) if vt else None})
+    return out
+
+
+def _keep_agreements(disc) -> "dict | None":
+    """Write an answer discovery took into `tariff_agreements` (G1 design §2) and reload the stored
+    copy. The caller has taken it — the same meter points, not a failure. An answer with no import
+    agreement writes nothing. The diff ({added, superseded, kept}), or None. Never raises."""
+    acct = _kraken_account_number or get_db_account()
+    rows = _agreement_rows(disc)
+    if _store is None or not acct or not any(r["direction"] == "import" for r in rows):
+        return None
+    try:
+        diff = _store.replace_tariff_agreements(acct, rows, datetime.utcnow().replace(microsecond=0).isoformat())
+    except Exception as e:
+        logger.warning("tariff agreements: not stored (%s)", e)
+        return None
+    if diff["added"] or diff["superseded"]:
+        logger.info("tariff agreements: stored — %d added, %d superseded, %d kept",
+                    len(diff["added"]), len(diff["superseded"]), len(diff["kept"]))
+    _load_stored_agreements()
+    return diff
+
+
+def _load_stored_agreements() -> None:
+    """The stored agreements of the account this database is stamped to, into `_stored_agreements`
+    (G1 design §3). Run at start-up before discovery, and after each write."""
+    global _stored_agreements
+    try:
+        rows = _reader().get_tariff_agreements(get_db_account())
+    except Exception as e:
+        logger.debug("tariff agreements: none loaded (%s)", e)
+        rows = []
+    out = {}
+    now = datetime.utcnow().isoformat()
+    for r in rows:
+        info = out.setdefault(r["direction"], {"mpan": r["mpan"], "tariff_code": None, "agreements": []})
+        info["agreements"].append({"tariff_code": r["tariff_code"], "valid_from": r["valid_from"],
+                                   "valid_to": r["valid_to"]})
+        if r["valid_from"] <= now and (r["valid_to"] is None or now < r["valid_to"]):
+            info["tariff_code"] = r["tariff_code"]          # the one live now, as discovery's
+    _stored_agreements = out or None
+
+
 def _agreement_windows(channel: str) -> list:
     """[(tariff_code, from, to)] of `channel`'s agreements, naive-UTC ISO, in discovery order.
 
@@ -7007,7 +7081,7 @@ def _agreement_windows(channel: str) -> list:
     dates on each call held dev's engine loop for up to 26 s every hour, long enough to drop HA's
     WebSocket, whose reconnect re-ran startup under the running ask."""
     import api_import as _ai
-    ags = ((_kraken_discovery or {}).get(channel) or {}).get("agreements") or []
+    ags = _agreement_info(channel).get("agreements") or []
     hit = _AGREEMENT_WINDOWS.get(channel)
     if hit is not None and hit[0] is ags and hit[2] == len(ags):
         return hit[1]
@@ -7049,7 +7123,7 @@ def export_agreement_at(start: str):
     holds the export MPAN (its agreements, `_agreement_era`; an MPAN with none is False — the
     FIT-like case), None where it holds no export MPAN or has not run. With no agreement there is
     no export rate: nothing is paid, and the Export bill has nothing to settle (17 Oct 2026)."""
-    info = (_kraken_discovery or {}).get("export") or {}
+    info = _agreement_info("export")
     if not info.get("mpan"):
         return None
     return _agreement_era("export", start) is not None
@@ -7062,7 +7136,7 @@ def tariff_kind_at(start: str) -> str:
     final. From the agreements discovery holds (`_agreement_era`); where none covers `start`,
     the current tariff's kind."""
     era = _agreement_era("import", start)
-    code = era[0] if era else ((_kraken_discovery or {}).get("import") or {}).get("tariff_code")
+    code = era[0] if era else _agreement_info("import").get("tariff_code")
     return "intelligent" if _is_intelligent_code(code) else "published"
 
 
@@ -9520,7 +9594,7 @@ def _smb_windows() -> list:
     Empty on an account that has never been on IOG-SMB. Capped pricing by agreement design §4:
     the account-level gates ask "any IOG-SMB agreement", not "the current one"."""
     import api_import as _ai
-    info = (_kraken_discovery or {}).get("import") or {}
+    info = _agreement_info("import")
     out = []
     for a in (info.get("agreements") or []):
         if "IOG-SMB" not in (a.get("tariff_code") or "").upper() or not a.get("valid_from"):
@@ -9545,7 +9619,7 @@ def _intelligent_windows() -> list:
     EMT must ask for it — settlement surfaces design §9.3). `is_smb`: the window is IOG-SMB,
     where imported history is asked too (its bill carries the House/EV split)."""
     import api_import as _ai
-    info = (_kraken_discovery or {}).get("import") or {}
+    info = _agreement_info("import")
     out = []
     for a in (info.get("agreements") or []):
         code = a.get("tariff_code") or ""
@@ -12672,6 +12746,8 @@ async def _engine_startup_impl(ha: HAClient):
     # Runs BEFORE the (potentially slow) startup chart render so the supplier API
     # is activated first — chart generation on a large history can take tens of
     # seconds and must not gate API discovery / polling behind it.
+    # The agreements as stored first (G1 design §3): a restart with the API down still knows them.
+    _load_stored_agreements()
     try:
         await _kraken_startup_discovery()
     except Exception as _kd_e:

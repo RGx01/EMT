@@ -7,7 +7,8 @@ added here once.
 
 # v5-only, by the change that added it
 V5_ONLY_TABLES = ("device_sensors", "ha_reads",                       # device sensors design §2; soft delete §2
-                  "sensor_rates")                                      # sensor rate fact design §3
+                  "sensor_rates",                                      # sensor rate fact design §3
+                  "tariff_agreements")                                 # G1 design §2
 V5_ONLY_COLUMNS = (("blocks", "imp_sensor_id"), ("blocks", "exp_sensor_id"))   # ... §7
 
 
