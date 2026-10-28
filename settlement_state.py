@@ -35,6 +35,7 @@ API_RETENTION_DAYS = 730
 IMPORTED_LABEL = "IMPORTED"
 
 _EPS_GBP = 1e-5          # a thousandth of a penny: below it is float and rounding noise
+_EPS_PUBLISHED = 5e-5    # kWh x a published rate against a stored cost: an import's 4-dp rounding
 _EPS_KWH = 0.0005
 _VAT_TOL = 0.005          # |inc/exc - (1 + VAT)|; 0% and 5% are 0.05 apart
 _MIN_EXC = 0.001          # GBP; a pair below 0.1p ex-VAT says nothing about VAT
@@ -45,6 +46,26 @@ def _f(x):
         return float(x)
     except (TypeError, ValueError):
         return None
+
+
+def _published(f, src, bill_cost, published_rate_at):
+    """True / False whether the stored cost is the settled kWh x the half-hour's published rate, or
+    None where the published rule does not decide it: no published agreement known for it, CSV
+    history (grey on any tariff), no settled kWh, or an Octopus bill (it decides, as before)."""
+    if published_rate_at is None or src == "imported_csv":
+        return None
+    if bill_cost is not None and str(f.get("bill_label") or "").upper() != IMPORTED_LABEL:
+        return None
+    settled = _f(f.get("imp_kwh_api"))
+    if settled is None and src == "imported_api":
+        settled = _f(f.get("imp_kwh"))
+    if settled is None:
+        return None
+    rate = published_rate_at(f["block_start"])
+    if rate is None:
+        return None
+    cost = _f(f.get("imp_cost"))
+    return cost is not None and abs(cost - settled * rate) <= _EPS_PUBLISHED
 
 
 def _beyond(now) -> str:
@@ -64,7 +85,7 @@ def _clock(start, now):
 def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozenset(),
              vat_at=None, kind_at=None, split_at=None, export_channel: bool = False,
              export_sensor: bool = True, export_agreement_at=None,
-             given_up=frozenset(), export_deleted=()) -> dict:
+             given_up=frozenset(), export_deleted=(), published_rate_at=None) -> dict:
     """One half-hour's {bill, export, split, flags}. `f` is a get_settlement_facts row. `smb` is
     the install's tariff (engine._import_is_smb_capped); `held` / `kept` are 4.5.23's wait map
     (engine.bill_split_held); `vat_at(start)` the VAT calendar; `kind_at(start)` the half-hour's
@@ -79,6 +100,9 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
     None where it is not known (engine.export_agreement_at); False makes it `no_agreement`.
     `given_up` (engine.bill_no_cost): half-hours whose cost EMT no longer asks Octopus for (30
     days unanswered) — they read `abandoned` where they would otherwise wait for a bill.
+    `published_rate_at(start)` (engine.published_rate_at): the published rate of the half-hour's
+    own agreement where it is known and published, else None — the settled kWh x it is the bill, at
+    any age (published tariff final design §2).
     `export_deleted`: the [from, to) spans the imported-export delete cleared (soft delete design
     §4): an imported half-hour there with no export reads `none`, as decided; elsewhere it is
     `no_data` — Octopus (or the CSV) gave no export figure, a gap.
@@ -125,6 +149,10 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
         bill = "none"
     elif f.get("rate_corrected") or f.get("rate_source") == "corrected":
         bill = "corrected"
+    elif _published(f, src, bill_cost, published_rate_at) is not None:
+        # a published tariff by the half-hour's own agreement: the settled kWh x its published rate is
+        # the bill, at any age, a v4 API import's too (28 Oct 2026, the user); checked, not assumed
+        bill = "applied" if _published(f, src, bill_cost, published_rate_at) else "differs"
     elif bill_cost is not None and str(f.get("bill_label") or "").upper() == IMPORTED_LABEL:
         # the import's own cost as a bill (v4import transform 3c, the CSV import): settle() prices
         # it, so it reads as settled, but the cost is the import's — v4's tariff price on most API

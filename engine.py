@@ -7066,6 +7066,23 @@ def tariff_kind_at(start: str) -> str:
     return "intelligent" if _is_intelligent_code(code) else "published"
 
 
+def published_rate_at(start: str):
+    """The published rate (£/kWh inc VAT) of the half-hour's own import agreement, where that
+    agreement is known and published and the stitched schedule prices it; None otherwise —
+    Intelligent, no agreement covering it (no fallback to the current tariff, unlike
+    `tariff_kind_at`), or no rate there. On a published tariff the settled kWh x this rate is the
+    bill, at any age (published tariff final design §2)."""
+    era = _agreement_era("import", start)
+    if not era or _is_intelligent_code(era[0]) or not _agreement_priced_ok(start):
+        return None
+    sched = _kraken_rate_schedules.get("import")
+    try:
+        r = sched.resolve(start) if sched is not None and not sched.is_empty() else None
+    except Exception:
+        r = None
+    return None if r is None else round(r / 100.0, 6)
+
+
 def split_at(start: str) -> bool:
     """Whether the import agreement live at `start` is one Octopus serves a House/EV split for
     (IOG-SMB's device buckets). Before it EMT's split is the only one there will be, so it is

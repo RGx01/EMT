@@ -93,7 +93,7 @@ class TheScreens(unittest.TestCase):
         self.assertIn("'not asked since ' + esc(localTime(d.no_cost_since))", self._SRC)
         srv = open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read()
         self.assertIn('"no_cost_since": (_eng_nc.no_cost_since(store, d["block_start"])', srv)
-        self.assertIn("given_up=given_up, export_deleted=_export_deleted(store))", srv)
+        self.assertIn("given_up=given_up, export_deleted=_export_deleted(store),", srv)
 
 
 if __name__ == "__main__":

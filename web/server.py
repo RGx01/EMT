@@ -4319,7 +4319,8 @@ def _settlement_states(store, utc_start, utc_end) -> dict:
         kind_at=_eng.tariff_kind_at, split_at=_eng.split_at,
         export_channel=_main_has_export(), export_sensor=_main_has_export_sensor(),
         export_agreement_at=_eng.export_agreement_at,
-        given_up=given_up, export_deleted=_export_deleted(store))
+        given_up=given_up, export_deleted=_export_deleted(store),
+        published_rate_at=_eng.published_rate_at)
 
 
 def _export_deleted(store) -> list:
@@ -4743,7 +4744,8 @@ _HEALTH_TTL_S = 600
 # 5: no `recost_bl82` flag — a settled cost is kWh x rate since engine step 2b (23 Oct 2026).
 # 6: an imported half-hour with no bill waits like a live one; no import no-cost record (step 3e).
 # 7: an IMPORTED bill, or no bill past Octopus's two years, is `imported` (27 Oct 2026).
-_HEALTH_FILE_V = 7
+# 8: a published tariff's half-hour is final by its agreement's rate, at any age (28 Oct 2026).
+_HEALTH_FILE_V = 8
 # While the data keeps moving — a refill rebuilding the devices writes for minutes — every page
 # poll found the token moved and counted again, two more waiting behind it to do the same
 # (staging, 21 Oct 2026: three requests in the count, the engine loop held 11.4 s). A request that

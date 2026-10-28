@@ -152,6 +152,7 @@ eng.attribution_control = lambda a, meter_id=None: {"status": "idle", "control":
 eng.backout_recorder_attribution = lambda **kw: {"ok": True, "deleted": 0, "parents": [], "recomputed": 0}
 eng.backout_running = lambda: False
 eng.api_backout_status = lambda: {"status": "idle"}
+eng.published_rate_at = lambda start: None   # no discovery here: no published agreement known
 
 def _load_power_converter_into(mod):
     import re as _re
