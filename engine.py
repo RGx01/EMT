@@ -6667,7 +6667,7 @@ async def _agreement_segs(channel: str, kind: str) -> list:
     a restart). VAT as the channel's (`_vat_context`); an open start reads 0000-01-01."""
     from kraken_api_client import KrakenAPIClient
     from kraken_rates import agreement_schedules
-    info = (_kraken_discovery or {}).get(channel) or {}
+    info = _agreement_info(channel)          # the stored agreements: a refused answer is not priced
     segs = await agreement_schedules(_kraken_client, info.get("agreements") or [], kind=kind,
                                      product_of=KrakenAPIClient._tariff_to_product_code)
     vat = _vat_context(channel)
@@ -6933,7 +6933,8 @@ async def _run_settle_history_sweep(*, force: bool = False, max_days: int = 1000
     if force or _settle_history_rearm or int(state.get("version") or 0) < _SETTLE_HISTORY_VERSION:
         state = _settle_history_restart(state)
     if state.get("done"):
-        return 0
+        # the history walked: what a change of agreements queued (G1 design §4)
+        return await _settle_spans_pass(max_days) if _settle_spans_pending() else 0
     _isched = _kraken_rate_schedules.get("import")
     if _isched is None or _isched.is_empty():
         # settle() prices from the schedule; without one (populated after startup, or a
@@ -7036,7 +7037,7 @@ def _maybe_settle_history() -> None:
         if _decision != ADMIT:
             logger.info("_maybe_settle_history: %s active — deferring", _blocker)
             return
-        if _settle_history_done():
+        if _settle_history_done() and not _settle_spans_pending():
             return
         import asyncio as _aio
         try:
@@ -7075,10 +7076,12 @@ _AGREEMENT_WINDOWS: dict = {}
 
 
 def _agreement_info(channel: str) -> dict:
-    """`channel`'s meter point as the agreement readers see it (G1 design §3): discovery's answer
-    once it has answered, else the agreements stored from the last one; {} with neither. (An
-    account mismatch leaves discovery `{}`, not answered: the stored are this database's own.)"""
-    src = _kraken_discovery if "import" in (_kraken_discovery or {}) else _stored_agreements
+    """`channel`'s meter point as the agreement readers see it (G1 design §3): the stored agreements
+    — every answer discovery takes is stored first, so they are its answer — else discovery's, where
+    none is stored yet; {} with neither. An answer the guard did not take (`_unexpected_drops`)
+    leaves the last good copy read. (An account mismatch leaves discovery `{}`: the stored are this
+    database's own.)"""
+    src = _stored_agreements or _kraken_discovery
     return (src or {}).get(channel) or {}
 
 
@@ -7111,6 +7114,18 @@ def _keep_agreements(disc) -> "dict | None":
     if _store is None or not acct or not any(r["direction"] == "import" for r in rows):
         return None
     try:
+        odd = _unexpected_drops(_reader().get_tariff_agreements(acct), rows, datetime.utcnow())
+    except Exception:
+        odd = []
+    if odd:
+        # not a change a customer can make: an API change, more likely (G1 design §2, the user,
+        # 28 Oct 2026: "if there's any api/graphql deprecations we don't get in a mess")
+        logger.warning("tariff agreements: Octopus's answer drops or moves %d agreement(s) that "
+                       "started and ended over %d days ago (%s) — not taken, the last good copy is "
+                       "kept; an API change is the likely cause", len(odd), _AGREEMENT_CHANGE_DAYS,
+                       "; ".join("%s %s %s..%s" % (d, c, vf, vt or "open") for d, c, vf, vt in odd[:5]))
+        return None
+    try:
         diff = _store.replace_tariff_agreements(acct, rows, datetime.utcnow().replace(microsecond=0).isoformat())
     except Exception as e:
         logger.warning("tariff agreements: not stored (%s)", e)
@@ -7120,7 +7135,114 @@ def _keep_agreements(disc) -> "dict | None":
                     len(diff["added"]), len(diff["superseded"]), len(diff["kept"]))
     _load_stored_agreements()
     _log_label_mismatch()
+    if diff["added"] or diff["superseded"]:
+        try:
+            first, last = _store.block_span("electricity_main")
+            end = ((datetime.fromisoformat(last) + timedelta(minutes=30)).isoformat() if last else None)
+            _queue_settle_spans(_agreement_change_spans(diff, first, end))
+        except Exception as e:
+            logger.warning("tariff agreements: the re-settle was not queued (%s)", e)
     return diff
+
+
+# A customer can change only recent agreements — 14 days' cooling-off, a switch reversed — so an answer
+# that drops or moves one that started and ended longer ago than this is not taken (G1 design §2).
+_AGREEMENT_CHANGE_DAYS = 30
+
+
+def _unexpected_drops(current, rows, now) -> list:
+    """The stored agreements an answer would drop or move that no customer change explains: started
+    and ended over `_AGREEMENT_CHANGE_DAYS` ago, on a meter point the answer still has. A new
+    agreement is always taken; so is a reversal of a recent one (its predecessor's end reopened),
+    and a new meter point's (another MPAN is not an edit of this one's history).
+    [(direction, tariff_code, valid_from, valid_to)]."""
+    cutoff = (now - timedelta(days=_AGREEMENT_CHANGE_DAYS)).isoformat()
+    key = lambda r: (r["mpan"], r["direction"], r["tariff_code"], r["valid_from"], r.get("valid_to"))
+    new = {key(r) for r in rows}
+    mpans = {(r["mpan"], r["direction"]) for r in rows}
+    out = []
+    for r in current or []:
+        if key(r) in new or (r["mpan"], r["direction"]) not in mpans:
+            continue
+        if r["valid_from"] >= cutoff or (r.get("valid_to") and r["valid_to"] >= cutoff):
+            continue
+        out.append((r["direction"], r["tariff_code"], r["valid_from"], r.get("valid_to")))
+    return out
+
+
+# The spans a change of agreements re-settles (G1 design §4), worked off by the settle sweep's job
+# once the history walk is done: [[from, to], …] naive UTC, in store_meta so a restart resumes them.
+_SETTLE_SPANS_KEY = "settle_agreement_spans"
+
+
+def _merge_spans(spans) -> list:
+    out = []
+    for lo, hi in sorted([list(x) for x in spans if x[0] < x[1]]):
+        if out and lo <= out[-1][1]:
+            out[-1][1] = max(out[-1][1], hi)
+        else:
+            out.append([lo, hi])
+    return out
+
+
+def _agreement_change_spans(diff, first, end) -> list:
+    """The history a change of agreements moves (G1 design §4): each added or superseded agreement's
+    window — a moved window is both, its old and new — clipped to [first, end) and merged. No
+    agreements before to some now (the first answer stored) is the whole history."""
+    if not first or not end or not (diff.get("added") or diff.get("superseded")):
+        return []
+    if not diff.get("kept") and not diff.get("superseded"):
+        return [[first, end]]
+    out = []
+    for _direction, _code, vf, vt in list(diff.get("added") or []) + list(diff.get("superseded") or []):
+        lo, hi = max(vf, first), min(vt or end, end)
+        if lo < hi:
+            out.append([lo, hi])
+    return _merge_spans(out)
+
+
+def _queue_settle_spans(spans) -> None:
+    """Add `spans` to the re-settle queue, merged, and have the sweep's job take them."""
+    if not spans or _store is None:
+        return
+    cur = _store.get_meta(_SETTLE_SPANS_KEY, []) or []
+    q = _merge_spans(list(cur) + list(spans))
+    _store.set_meta(_SETTLE_SPANS_KEY, q)
+    logger.info("tariff agreements: changed — %d span(s) queued to re-settle (%s to %s)",
+                len(q), q[0][0], q[-1][1])
+
+
+def _settle_spans_pending() -> bool:
+    try:
+        return bool((_store.get_meta(_SETTLE_SPANS_KEY, []) or []) if _store is not None else [])
+    except Exception:
+        return False
+
+
+async def _settle_spans_pass(max_days: int = 100000) -> int:
+    """settle() over the queued spans, a UTC day at a time, each a transaction, the loop
+    yielded between; stands aside as the sweep does. Returns the half-hours written."""
+    import asyncio as _aio
+    written = 0
+    for _ in range(max_days):
+        spans = (_store.get_meta(_SETTLE_SPANS_KEY, []) or []) if _store is not None else []
+        if not spans:
+            break
+        if _store is None or _coord.admission("settle_sweep")[0] != ADMIT:
+            logger.info("settle spans: standing aside (resumes next pass)")
+            return written
+        lo, hi = spans[0]
+        nxt = min((datetime.fromisoformat(lo[:10] + "T00:00:00") + _SETTLE_HISTORY_DAY).isoformat(), hi)
+        with _store.batch():
+            try:
+                written += settle_range(_store, lo, nxt)["written"]
+            except Exception as e:
+                logger.warning("settle spans: %s to %s failed (skipped): %s", lo, nxt, e)
+            _store.set_meta(_SETTLE_SPANS_KEY, ([[nxt, hi]] if nxt < hi else []) + list(spans[1:]))
+        if nxt >= hi and len(spans) == 1:
+            logger.info("settle spans: the changed agreements' history re-settled")
+        await _aio.sleep(_SETTLE_HISTORY_PACE_S)
+    return written
 
 
 def _log_label_mismatch() -> None:
@@ -8526,7 +8648,7 @@ async def _refresh_kraken_rate_schedules() -> None:
     # prices on the tariff that applied on its date, not the current one. Records the
     # current agreement's valid_from and whether history is covered (for the guard).
     global _import_schedule_covers_history, _kraken_current_agreement_from
-    _imp_info = _kraken_discovery.get("import") or {}
+    _imp_info = _agreement_info("import")     # the stored agreements (G1 design §3)
     _ags = _imp_info.get("agreements") or []
     _kraken_current_agreement_from = None
     try:
@@ -11917,6 +12039,8 @@ async def kraken_poll_task(ha: HAClient):
             # tariffs return ~1 record). The sync drain reads these via
             # _kraken_rate_resolver to repair zero/missing rates at reconcile.
             await _refresh_kraken_rate_schedules()
+            # a change of agreements re-settles its history on the rates just built (G1 design §4)
+            _maybe_settle_history()
             summary = await ingester.poll()
             logger.info(
                 "kraken_poll_task: %s window=%s..%s import_rows=%d "
