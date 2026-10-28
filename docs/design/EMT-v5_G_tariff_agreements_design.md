@@ -1,7 +1,8 @@
 # EMT v5 — G1: tariff agreements, stored
 
 *Decided 28 Oct 2026 (the user: agreements first, with history, read before discovery, the re-settle
-and recount on a change; discovery in the restore's phase 2 on both routes; an Octopus backup with no
+and recount on a change; agreements before a v4 import settles, on both routes — the settle sweep
+waiting for discovery, chosen over discovery in the restore's phase 2; an Octopus backup with no
 credentials imports unconnected; `no_agreement` with no asks; a non-Octopus period excluded before
 discovery). The first half of ROADMAP §G; the rates are G2. Code facts read at `dev` after #319.*
 
@@ -72,20 +73,25 @@ a change over the whole history. Settled half-hours keep their bills, as the swe
 
 ## 5. A v4 import gets them first
 
-A v4 database holds no agreements (E design: "A v4 database does not hold the agreement history"). Both routes into an import go through the restore's
-phase 2, so discovery runs there, before the import worker settles anything:
+A v4 database holds no agreements (E design: "A v4 database does not hold the agreement history").
+**The settle sweep waits for discovery** (decided 28 Oct 2026, the user, over discovery in the restore's
+phase 2 — less plumbing, the guarantee where it is needed, before the first settle):
 
-- **A fresh install (the welcome page):** the key typed for the backup is tested against its stamp
-  (today's phase 2); on a match, the same client runs discovery and its agreements are written into
-  `import_target.db` before the swap.
-- **An existing install (Data Management):** the key on disk, checked against the backup's stamp the
-  same way, then discovery, then the import.
-- **A v5 backup** carries its rows; discovery refreshes them before the swap, through §4's diff.
+- **It already did.** After a restore, start-up runs discovery and only then schedules the sweep, and
+  the sweep is scheduled only where discovery has answered (`kraken_available`). With G1a that answer is
+  stored first, on both routes — the welcome page saves the key typed in phase 2 on a match, and an
+  existing install has its key on disk. A refused account (a mismatch) leaves discovery `{}`: no sweep.
+- **What was missing: the retry.** A start-up discovery that failed — the API down after the restore —
+  was never asked again (re-discovery and the poll task both need an answer first), so the history
+  stayed unsettled until the next engine start. G1b asks again hourly (`_maybe_retry_discovery`, off the
+  engine tick) while an API mode has credentials and discovery has not answered; on an answer it starts
+  the poll task and schedules the sweep. A mismatch is not retried: it needs a reconnect.
+- **A v5 backup** carries its rows; start-up discovery refreshes them, through §4's diff.
 - **No credentials** (the skip, or `accept_mismatch`): the import goes ahead unconnected with no
   agreements, and reads as today. The first discovery answer after connecting is §4's whole-history
   change.
 
-One discovery call a restore; the key test already opens the account.
+Until the sweep runs, the imported history keeps the costs the import gave it.
 
 ## 6. Outside every agreement: another supplier, or a gap
 
@@ -117,12 +123,12 @@ The rates (G2: a rates table, offline pricing, a changed rate record re-pricing 
 | PR | what |
 |---|---|
 | G1a | the table; discovery writes it (start-up, daily); `_agreement_windows` reads it, loaded before discovery; import spec notes the table (v4 has none) |
-| G1b | the restore's phase 2 runs discovery on both routes and writes the import target's agreements before the swap |
+| G1b | the sweep's wait made whole: start-up discovery retried hourly until it answers, then the sweep scheduled (§5) |
 | G1c | `no_agreement` on the Import bill; the asker and `tariff_kind_at` without the fallback once agreements are known; the config period's supplier; the label mismatch log |
 | G1d | §4: the change's spans re-settled by the sweep, the health counts made again |
 
 **Tests:** a restart with discovery failing still answers `tariff_kind_at` from the table; a wholesale
 replace supersedes a withdrawn agreement and keeps the rest; changed meter points write nothing; each
-route writes the agreements before the import settles; an unconnected import, then a first answer,
+failed start-up discovery is retried hourly and schedules the sweep when it answers; an unconnected import, then a first answer,
 re-settles the whole history; a half-hour before the first agreement is `no_agreement` and not asked; a
 non-Octopus config period is excluded with no discovery; a moved `valid_to` re-settles only its span.
