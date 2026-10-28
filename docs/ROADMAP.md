@@ -838,7 +838,8 @@ redacted fixtures, and a redaction check that fails loudly; v5 already pins pypd
 
 ## G. Local tariff store
 
-*Proposed 4 Oct 2026. Not designed yet — this records the problem, the shape agreed in
+*Proposed 4 Oct 2026. The agreements half is designed: G1, `docs/design/EMT-v5_G_tariff_agreements_design.md`
+(28 Oct 2026). The rates (G2) are not designed yet — this records the problem, the shape agreed in
 conversation, and what it must handle.*
 
 **The problem.** EMT holds no copy of the tariff. Unit rates and standing charges are fetched from
