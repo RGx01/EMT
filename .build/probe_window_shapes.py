@@ -9,6 +9,20 @@ One day with the default ladder is about 19 queries; --dry-run says how many bef
 
     KRAKEN_API_KEY=... python3 .build/probe_window_shapes.py DB --breakdown --day 2026-07-14 [...]
 
+    KRAKEN_API_KEY=... python3 .build/probe_window_shapes.py DB --costs --day 2026-04-01 [...]
+
+--costs is for half-hours EMT asks about and Octopus answers without a cost (dev, 24 Oct 2026: 121
+half-hours on 1 Jan 2025, 1 Apr 2025, 31 Mar and 1, 5, 9, 24 Apr 2026, asked by the day and the
+month since step 3e, never costed — while staging had costs for 118 of them from the old narrow
+windows and the import's 60-day ones). No statement: it asks which shapes give a cost at all, for
+the --day's main-meter half-hours with consumption and no bill in DB —
+  ladder    the narrow rungs ([slot-30m, slot+2h), then +3h) for up to --ladder-max of them a day
+  day       the local day, 00:00-24:00 Europe/London
+  day+pad   EMT's day: [local midnight - 30m, next local midnight + 3h)
+  month     the local month, paged (shared by the days in it)
+  60-day    one window per cluster of days, 30 days either side, as EMT's import asks
+and prints, per half-hour, each shape's cost and label or "no cost".
+
 --breakdown is for IOG-SMB days, where EMT reads the four-bucket Home/EV breakdown
 (recover_device_breakdown) and there is no half-hourly statement to compare with. It asks the
 same day three ways and compares Octopus with itself, half-hour by half-hour — Home kWh, EV kWh
@@ -312,6 +326,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("db")
     ap.add_argument("--statement", help="the Octopus PDF statement covering the days")
+    ap.add_argument("--costs", action="store_true",
+                    help="half-hours with no bill in DB: which window shapes give a cost (no statement)")
     ap.add_argument("--breakdown", action="store_true",
                     help="IOG-SMB days: compare the Home/EV breakdown across windows (no statement)")
     ap.add_argument("--day", action="append", required=True, help="local day, YYYY-MM-DD")
@@ -324,6 +340,8 @@ def main():
     days = sorted(date.fromisoformat(d) for d in a.day)
     if a.breakdown:
         return breakdown_main(a, days)
+    if a.costs:
+        return costs_main(a, days)
     if not a.statement:
         sys.exit("--statement is needed (or --breakdown for IOG-SMB days)")
     stmt, stmt_mpan = statement_slots(a.statement, days)
@@ -395,6 +413,121 @@ def main():
     for s, r in compare(stmt, answers).items():
         print("%-9s  %4d of %-4d             %8.2f  %8.2f      %4d     %4d" % (
             s, r["match"], r["n"], r["gbp"], r["want"], r["stripped"], r["absent"]))
+    print("\n%d quer%s to Octopus." % (o.queries, "y" if o.queries == 1 else "ies"))
+
+
+# ── --costs: which shapes give a cost for the half-hours EMT has no bill for ──
+COST_SHAPES = ("ladder", "day", "day+pad", "month", "60-day")
+
+
+def unbilled(path, days):
+    """{day: [naive-UTC starts]} — the main meter's half-hours with consumption on each local day
+    and no CONSUMPTION bill in the database: what EMT's asker keeps asking about."""
+    c = _db(path)
+    out = {}
+    try:
+        for d in days:
+            a, b = local_day(d)
+            out[d] = [r[0] for r in c.execute(
+                "SELECT b.block_start FROM blocks b WHERE b.meter_id = 'electricity_main' "
+                "AND b.block_start >= ? AND b.block_start < ? AND COALESCE(b.imp_kwh, 0) > 0.0005 "
+                "AND NOT EXISTS (SELECT 1 FROM measured_cost m WHERE m.slot_start = b.block_start "
+                "AND m.direction = 'CONSUMPTION') ORDER BY b.block_start",
+                (a.isoformat(), b.isoformat()))]
+    finally:
+        c.close()
+    return out
+
+
+def clusters(days, gap=45):
+    """Days grouped where each is within `gap` days of the last — one 60-day window a group."""
+    out = []
+    for d in sorted(days):
+        if out and (d - out[-1][-1]).days <= gap:
+            out[-1].append(d)
+        else:
+            out.append([d])
+    return out
+
+
+def costs_plan(days, want, ladder_max):
+    out = []
+    for d in days:
+        ks = want.get(d) or []
+        pick = ks if len(ks) <= ladder_max else sorted(
+            {ks[round(i * (len(ks) - 1) / max(1, ladder_max - 1))] for i in range(ladder_max)})
+        for s in pick:
+            for a, b in rungs(s):
+                out.append(("ladder", s, a, b, 100))
+        a, b = local_day(d)
+        out.append(("day", d, a, b, 500))
+        out.append(("day+pad", d, a - timedelta(minutes=30), b + timedelta(hours=3), 500))
+    for ma, mb in sorted({local_month(d) for d in days}):
+        out.append(("month", ma.date(), ma, mb, 500))
+    for g in clusters(days):
+        a, b = wide(g)
+        out.append(("60-day", g[0], a, b, 500))
+    return out
+
+
+def costs_main(a, days):
+    acct, mpan = from_db(a.db)
+    want = unbilled(a.db, days)
+    windows = costs_plan(days, want, a.ladder_max)
+    print("%d day(s), %d half-hour(s) with no bill; %d window(s), about %d quer%s"
+          % (len(days), sum(len(v) for v in want.values()), len(windows), queries_for(windows),
+             "y" if queries_for(windows) == 1 else "ies"))
+    for d in days:
+        print("  %s  %d unbilled" % (d, len(want.get(d) or [])))
+    for shape, what, ws, we, n in windows:
+        print("  %-8s %-19s %s .. %s  first=%d" % (shape, what, z(ws), z(we), n))
+    if a.dry_run:
+        print("(dry run: nothing asked)")
+        return
+    if not (acct and mpan):
+        sys.exit("no account stamp or MPAN in that database — a support file's are redacted; "
+                 "use a backup's blocks.db")
+    key = os.environ.get("KRAKEN_API_KEY", "").strip()
+    if not key:
+        sys.exit("set KRAKEN_API_KEY in the environment")
+    o = Octopus(key, acct, mpan, a.pace)
+    slots = {s for v in want.values() for s in v}
+    got = {sh: {} for sh in COST_SHAPES}
+    rung_answers = {}
+    for shape, what, ws, we, n in windows:
+        nodes, pages, errs = o.window(ws, we, n)
+        if errs:
+            print("  %s %s: ERRORS %s" % (shape, what, errs))
+        if shape == "ladder":
+            node = nodes.get(what)
+            rung_answers.setdefault(what, []).append(read_node(node) if node else None)
+            continue
+        for k in slots & set(nodes):
+            got[shape].setdefault(k, read_node(nodes[k]))
+        print("  %-8s %-10s %d page(s), %d node(s)" % (shape, what, pages, len(nodes)))
+    for s, rs in rung_answers.items():
+        got["ladder"][s] = ladder_pick(rs) or next((r for r in rs if r), None)
+    print("\nhalf-hour (local)    kWh    " + "  ".join("%-22s" % sh for sh in COST_SHAPES))
+    tally = {sh: [0, 0] for sh in COST_SHAPES}
+    for k in sorted(slots):
+        loc = datetime.fromisoformat(k).replace(tzinfo=timezone.utc).astimezone(LONDON)
+        cells, kwh = [], None
+        for sh in COST_SHAPES:
+            x = got[sh].get(k)
+            if x is None:
+                cells.append("%-22s" % ("" if sh == "ladder" else "absent")); continue
+            kwh = x[0] if kwh is None else kwh
+            tally[sh][1] += 1
+            if x[1] is None or (x[1] == 0 and x[0] > 0.0005 and not x[2]):
+                cells.append("%-22s" % "no cost")
+            else:
+                tally[sh][0] += 1
+                cells.append("%-22s" % ("£%.4f %s" % (x[1], (x[2] or "")[:12])))
+        print("%s  %s  %s" % (loc.strftime("%Y-%m-%d %H:%M"),
+                              ("%5.3f" % kwh) if kwh is not None else "  -  ", "  ".join(cells)))
+    print("\nshape      costed / answered")
+    for sh in COST_SHAPES:
+        print("%-9s  %4d / %d" % (sh, tally[sh][0], tally[sh][1]))
     print("\n%d quer%s to Octopus." % (o.queries, "y" if o.queries == 1 else "ies"))
 
 
