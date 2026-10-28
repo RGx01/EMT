@@ -101,6 +101,13 @@ then-daily backoff, the 28-day keep, the coordinator membership (`measured_drain
   queries, but nothing would cover a v4 migrant who did not.)
 - (c) **The asker stops at 25% of the allowance left**, the import's headroom, and resumes on the next
   pass; an API error is not an unanswered ask.
+- (d) *28 Oct 2026, the user:* **an API import's IMPORTED bill is asked for Octopus's, inside the two
+  years, after everything else.** The v4 import gives every imported half-hour an IMPORTED bill (3c) —
+  on most API history v4's price at Octopus's label — and a bill stopped the queue, so history Octopus
+  still holds never got Octopus's cost (staging: 11,628 half-hours, about 490 day queries, once). Kind
+  `imported`, on the bill's record; Octopus's bill replaces the IMPORTED one and settles the half-hour.
+  With no cost it keeps the IMPORTED bill and reads grey `imported`, asked, unanswered or given up. A
+  CSV's IMPORTED bill is its own and is not asked.
 
 ## 5. Order (each its own PR, the §3a safeguards of step 2)
 
