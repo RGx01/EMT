@@ -1581,7 +1581,8 @@ function barVal(meterAgg, mid, isExport) {
   if (!m) return 0;
   if (barMetric === 'kwh')  return isExport ? m.exp_kwh  : m.imp_kwh;
   if (barMetric === 'cost') return isExport ? m.exp_cost : m.imp_cost;
-  // co2 totals mode: main meter shows remainder (carbon_g), sub-meters show gross
+  // co2 totals mode: main meter shows remainder (carbon_g), sub-meters their GRID carbon
+  // (their stored carbon scaled to their grid share, usage_view — 28 Oct 2026; it was gross)
   // carbon_g_imp/exp are only used for the export-offset dataset below zero
   if (isExport) return m.carbon_g_exp != null ? m.carbon_g_exp : 0;
   return m.carbon_g != null ? m.carbon_g : 0;
@@ -2545,7 +2546,8 @@ function barBuildTable() {
       // Each meter's import-side carbon contribution:
       //   main meter -> carbon_g is the DIRECT remainder (import carbon minus
       //                 the sub-meters that draw through it)
-      //   sub-meters -> carbon_g is their gross import carbon (no export)
+      //   sub-meters -> carbon_g is their GRID carbon: the stored carbon scaled to the
+      //                 grid share their kWh bar shows (28 Oct 2026; it was gross)
       // carbon_g_imp is the main's *un-subtracted* gross import and must NOT be
       // used here — it already contains the sub carbon, so reading it would
       // double-count the subs against the Direct column (and inflate the row
