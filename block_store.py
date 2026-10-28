@@ -3855,6 +3855,20 @@ class BlockStore:
             "FROM tariff_agreements WHERE account = ? AND superseded_at IS NULL "
             "ORDER BY direction DESC, valid_from", (account,))]
 
+    def octopus_labelled_outside(self, windows, meter_id: str = "electricity_main") -> dict:
+        """Main-meter half-hours with kWh in a config period labelled Octopus (or unlabelled) that no
+        window in `windows` [(from, to | None)] covers (G1 design §6: the label and the agreements
+        disagree). {n, first, last}."""
+        cond = " OR ".join("(b.block_start >= ? AND (? IS NULL OR b.block_start < ?))" for _ in windows)
+        args = [x for vf, vt in windows for x in (vf, vt, vt)]
+        r = self._conn.execute(
+            "SELECT COUNT(*) AS n, MIN(b.block_start) AS first, MAX(b.block_start) AS last "
+            "FROM blocks b JOIN config_periods p ON p.id = b.config_period_id "
+            "WHERE b.meter_id = ? AND b.imp_kwh > 0 "
+            "  AND (p.supplier IS NULL OR p.supplier = '' OR lower(p.supplier) LIKE '%octopus%')"
+            + (" AND NOT (" + cond + ")" if windows else ""), [meter_id] + args).fetchone()
+        return {"n": int(r["n"] or 0), "first": r["first"], "last": r["last"]}
+
     def replace_tariff_agreements(self, account: str, rows, fetched_at: str) -> dict:
         """Discovery's answer replaces the account's current agreements wholesale, in one
         transaction (G1 design §2): a row the answer still holds — the same MPAN, direction,
@@ -4990,6 +5004,7 @@ class BlockStore:
             "SELECT b.block_start, b.imp_kwh, b.imp_kwh_api, b.imp_cost, b.imp_rate, "
             "       b.exp_kwh, b.exp_kwh_api, "
             "       b.rate_source, COALESCE(b.rate_corrected, 0) AS rate_corrected, b.source, "
+            "       (SELECT p.supplier FROM config_periods p WHERE p.id = b.config_period_id) AS supplier, "
             "       mc.cost_incl AS bill_cost, mc.cost_excl AS bill_cost_exc, mc.kwh AS bill_kwh, "
             "       mc.ev_kwh AS bill_ev_kwh, mc.home_kwh AS bill_home_kwh, mc.label AS bill_label, "
             "       " + _evsplit.sql_kwh("b") + " AS ev_kwh, "
@@ -7670,7 +7685,8 @@ class BlockStore:
         (off-peak, or a completed smart charge)."""
         rows = self._conn.execute(
             "SELECT b.block_start, b.source, b.imp_kwh_api, COALESCE(b.rate_corrected, 0) AS corrected, "
-            "  b.rate_source, "
+            "  b.rate_source, (SELECT p.supplier FROM config_periods p WHERE p.id = b.config_period_id) "
+            "  AS supplier, "
             "  EXISTS (SELECT 1 FROM measured_cost m WHERE m.slot_start = b.block_start "
             "          AND m.mpan = ? AND m.direction = 'CONSUMPTION') AS bill_mpan, "
             "  EXISTS (SELECT 1 FROM measured_cost m WHERE m.slot_start = b.block_start "

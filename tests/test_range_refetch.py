@@ -572,7 +572,8 @@ class TheTariffKind(_Harness):
                  "valid_to": None}]}}
         self.assertEqual(engine.tariff_kind_at("2026-07-01T02:00:00"), "published")
         self.assertEqual(engine.tariff_kind_at("2026-09-01T02:00:00"), "intelligent")
-        self.assertEqual(engine.tariff_kind_at("2020-01-01T02:00:00"), "intelligent")  # none: current
+        # before every agreement: not on an Octopus agreement (G1c), no longer the current tariff
+        self.assertEqual(engine.tariff_kind_at("2020-01-01T02:00:00"), "none")
         self.assertFalse(engine.split_at("2026-07-01T02:00:00"))       # Agile: no split
         self.assertTrue(engine.split_at("2026-09-01T02:00:00"))        # IOG-SMB
 

@@ -48,6 +48,13 @@ def _f(x):
         return None
 
 
+def other_supplier(supplier) -> bool:
+    """A config period labelled with a supplier that is not Octopus (G1 design §6): its half-hours
+    are not on an Octopus agreement, discovery or not. Unlabelled is not known: False."""
+    s = str(supplier or "").strip().lower()
+    return bool(s) and "octopus" not in s
+
+
 def _published(f, src, bill_cost, published_rate_at):
     """True / False whether the stored cost is the settled kWh x the half-hour's published rate, or
     None where the published rule does not decide it: no published agreement known for it, CSV
@@ -89,7 +96,8 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
     """One half-hour's {bill, export, split, flags}. `f` is a get_settlement_facts row. `smb` is
     the install's tariff (engine._import_is_smb_capped); `held` / `kept` are 4.5.23's wait map
     (engine.bill_split_held); `vat_at(start)` the VAT calendar; `kind_at(start)` the half-hour's
-    tariff kind, 'intelligent' | 'published' (engine.tariff_kind_at; Intelligent when absent);
+    tariff kind, 'intelligent' | 'published' | 'none' — no Octopus agreement covers it, where
+    agreements are known (engine.tariff_kind_at; Intelligent when absent);
     `split_at(start)` whether its agreement has a split from the bill (engine.split_at; `smb`
     when absent). `export_channel`: the main meter has an export channel, so a half-hour whose
     export kWh has not settled is waiting for it, whatever EMT read live.
@@ -149,6 +157,10 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
         bill = "none"
     elif f.get("rate_corrected") or f.get("rate_source") == "corrected":
         bill = "corrected"
+    elif src != "imported_csv" and (kind == "none" or other_supplier(f.get("supplier"))):
+        # not on an Octopus agreement (G1 design §6): another supplier's, or a gap between
+        # agreements — never asked, priced at EMT's configured rate. CSV history keeps `imported`.
+        bill = "no_agreement"
     elif _published(f, src, bill_cost, published_rate_at) is not None:
         # a published tariff by the half-hour's own agreement: the settled kWh x its published rate is
         # the bill, at any age, a v4 API import's too (28 Oct 2026, the user); checked, not assumed
