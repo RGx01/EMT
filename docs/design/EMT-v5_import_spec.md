@@ -1108,7 +1108,7 @@ suppresses a pass that should run. Default is **DROP**; carry only by explicit a
 **CARRY:**
 
 - `vat_calendar` — irreplaceable local calendar (`[["2023-06-02", 0.05]]` in the reference DB).
-- `settings` — user preferences (e.g. `{"bill_rounding_summary": true}`).
+- `settings` — user preferences (e.g. `{"distance_unit": "km"}`; a carried `bill_rounding_summary` is ignored, the option retired 28 Oct 2026).
 - `recorder_attribution_runs` — the attribution back-out ledger; pairs with `historical_derivation`.
   Carried as it is, and read by transform 6 (v23), which makes its sensors the devices' secondaries.
 - `export_settlement_expected` — whether the account has an outgoing agreement.

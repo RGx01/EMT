@@ -568,11 +568,6 @@ SETTINGS_DEFAULTS = {
     "hp_cop":                         3.0, # seasonal COP (SCOP) — override with manufacturer spec
     "gas_co2_g_per_kwh":            203.0, # BEIS/DESNZ 2023 GHG conversion factors
     "gas_boiler_efficiency":         0.90, # typical modern condensing boiler
-    # ── Bill rounding (BL-24) ──────────────────────────────────────────────
-    # Opt-in: show the Billing-tab bill summary with Octopus's bill-rounding
-    # method (Guy Lipman ladder) on the stored ex-VAT figures. Default off ⇒ the
-    # summary is byte-identical to today.
-    "bill_rounding_summary":        False,  # bool
 }
 
 SETTINGS_NUMERIC = {
@@ -2074,10 +2069,12 @@ def billing_history_page():
     return render_template("billing_history.html", active="settings")
 
 
+# Retired 28 Oct 2026 (the user): the bill summary always uses the statement's method (BL-24) where
+# EMT holds ex-VAT figures, so its switch is gone; the old address goes to the Billing tab.
 @app.route("/bill-rounding")
 def bill_rounding_page():
-    # BL-24: opt-in bill-style rounding for the Billing summary.
-    return render_template("bill_rounding.html", active="settings")
+    from flask import redirect
+    return redirect(url_for("charts_page", tab="daily"))
 
 
 # Retired 21 Oct 2026 (data management design §1 (7), PR 7); the old addresses go where their
@@ -2137,9 +2134,9 @@ def lovelace_heatmap():
 
 def _config_token(store) -> str:
     """What a page shows beyond the blocks that a write can change: the billing periods
-    (a billing-day change or an added/removed meter re-cuts them) and the bill-rounding
-    option (bill method vs inc-VAT). Part of `_blocks_data_version`, and `/api/energy`'s
-    `fingerprint.config` — the per-day fingerprint cannot see either."""
+    (a billing-day change or an added/removed meter re-cuts them). Part of
+    `_blocks_data_version`, and `/api/energy`'s `fingerprint.config` — the per-day fingerprint
+    cannot see it. (The bill-rounding option was here until it was retired, 28 Oct 2026.)"""
     try:
         _cp = store._conn.execute(
             "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS mx, "
@@ -2150,11 +2147,7 @@ def _config_token(store) -> str:
         _cfgf = "%s/%s/%d/%d" % (_cp["n"], _cp["mx"], _zlib.crc32(_cp["bd"].encode()), _mc["n"])
     except Exception:
         _cfgf = "0"
-    try:
-        _br = "1" if (store.get_settings() or {}).get("bill_rounding_summary") else "0"
-    except Exception:
-        _br = "0"
-    return _cfgf + "|" + _br
+    return _cfgf
 
 
 def _blocks_data_version(store) -> str:
@@ -2214,12 +2207,12 @@ def _blocks_data_version(store) -> str:
     except Exception:
         _bf = "0"
     # What the Billing tab shows beyond the blocks: the billing periods (a billing-day
-    # change or an added/removed meter re-cuts them), the bulk epoch (an import, delete
-    # or restore — C §2a), and the bill-rounding option (bill method vs inc-VAT).
+    # change or an added/removed meter re-cuts them) and the bulk epoch (an import, delete
+    # or restore — C §2a). (The bill-rounding option was here until it was retired, 28 Oct 2026.)
     # This was the pre-rendered files' mtimes until C deleted them (30 Sep 2026): every
     # such change scheduled a regen that rewrote the file, and its mtime moved the
     # token. Those changes are now asked about directly.
-    _cfgf, _br = _config_token(store).split("|")
+    _cfgf = _config_token(store)
     try:
         _epoch = store.get_data_epoch()
     except Exception:
@@ -2249,7 +2242,7 @@ def _blocks_data_version(store) -> str:
     return (f"{row['c']}:{row['m'] or ''}:"
             f"{row['ik']}:{row['ic']}:{row['ek']}:{row['ec']}:{row['cg']}:"
             f"{row['xx']}:{row['xg']}:{row['xs']}:"
-            f"{_cfgf}:{_epoch}:{_br}:{_sf}:{_bf}")
+            f"{_cfgf}:{_epoch}:{_sf}:{_bf}")
 
 
 def _all_history_utc(store, tz_name):
