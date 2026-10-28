@@ -1482,7 +1482,15 @@ window.EMTHeatmap = (function () {
               : 'not settled yet — EMT\u2019s own reading';
     head('Import');
     row('kWh', esc(kwh(k.stored)), kNote, k.settled ? '' : 'hm-wait');
-    if (b) {
+    if (b && b.origin === 'api_import') {
+      // v4's price, not Octopus's cost: Octopus never sent one for it (28 Oct 2026, the user). The
+      // stored cost is this bill, so no check mark.
+      row('bill', esc(gbp(b.cost)), 'v4\u2019s price, ' + esc(kwh(b.kwh)) + ' \u00d7 ' + pence(c.rate) +
+          ' at Octopus\u2019s band \u2014 ' + (d.reachable ? 'until Octopus sends its own cost'
+                                               : 'past Octopus\u2019s two years, so it can\u2019t be checked'));
+      if (b.cost_exc) row('', esc(gbp(b.cost_exc)) + ' ex-VAT',
+          'VAT ' + (b.cost_exc > 0.001 ? ((b.cost / b.cost_exc - 1) * 100).toFixed(1) + '%' : '—'));
+    } else if (b) {
       var same = c.stored !== null && Math.abs(c.stored - b.cost) <= 0.00001;
       row('bill', esc(gbp(b.cost)), (ORIGIN[b.origin] ? ORIGIN[b.origin] + '\u2019s cost, imported '
                                      : 'Octopus, fetched ') + esc(localTime(b.fetched_at)) + ' · stored ' +
@@ -1507,8 +1515,10 @@ window.EMTHeatmap = (function () {
       if (b && b.ev_kwh !== null) row('', 'bill: EV ' + (+b.ev_kwh).toFixed(3) + ' / House ' + (+b.home_kwh).toFixed(3), '');
     }
     var bands = {}; (d.segments || []).forEach(function (sg) { bands[sg.band] = 1; });
+    // v4's price, not a rate settled from Octopus's cost
+    var rsrc = b && b.origin === 'api_import' ? 'v4\u2019s price' : c.rate_source ? esc(c.rate_source) : '';
     row('rate', pence(c.rate),
-        esc(Object.keys(bands).join(', ')) + (c.rate_source ? ' · ' + esc(c.rate_source) : '') + (c.corrected ? ' · your correction' : ''));
+        esc(Object.keys(bands).join(', ')) + (rsrc ? ' · ' + rsrc : '') + (c.corrected ? ' · your correction' : ''));
     (st.flags || []).forEach(function (f) { if (FLAG_TEXT[f]) row('\u26a0', esc(FLAG_TEXT[f]), '', 'hm-bad'); });
     // Octopus's band against its own rules (engine step 2b): billed wins, so a note, not an issue
     var bn = d.band, BN = {off_peak: 'off-peak', peak: 'peak'};
@@ -1531,8 +1541,10 @@ window.EMTHeatmap = (function () {
       (more ? '<div class="hm-note2">' + esc(more) + '</div>' : '') +
       (!isData() ? '<div class="hm-actions"><button class="hm-btn" data-close="1">Close</button>' +
                    '<a class="hm-btn hm-primary" href="' + dmUrl(localParts(d.start).day) + '">Open in Data Management</a></div>'
-       : state.canRefetch ? '<div class="hm-actions"><button class="hm-btn" data-act="refetch">Re-fetch from Octopus</button>' +
-                          '<button class="hm-btn" data-close="1">Close</button></div>' : '') + '</div>';
+       : state.canRefetch ? '<div class="hm-actions">' +
+                            // past Octopus's two years there is nothing to re-fetch (28 Oct 2026)
+                            (d.reachable === false ? '' : '<button class="hm-btn" data-act="refetch">Re-fetch from Octopus</button>') +
+                            '<button class="hm-btn" data-close="1">Close</button></div>' : '') + '</div>';
     el.style.display = 'flex';
     var rb = el.querySelector('[data-act="refetch"]');
     if (rb) rb.onclick = function () { openRefetch(d.start, d.end, label); };
