@@ -148,7 +148,13 @@ def _aggregate_tuples(rows, bucket_of, standing_scope="bucket", billing_day_fall
             _s["exp_kwh"]  += _exp
             _s["exp_cost"] += _cost_exp
             if _cg is not None:
-                _s["carbon_g"] = (_s["carbon_g"] or 0.0) + _cg
+                # The device's GRID carbon: its stored carbon (its own read × the half-hour's
+                # intensity) scaled to its grid share — the kWh it is shown and priced on, and
+                # what the house's remainder subtracts (27 Oct 2026, the user). What it drew from
+                # the battery or solar carries no grid carbon here; Insights' device cards keep
+                # the gross figure. Scaling keeps whatever the row stored (an import's decision).
+                _s["carbon_g"] = (_s["carbon_g"] or 0.0) + (
+                    _cg * (_sub_imp / _imp) if _imp > 1e-9 else 0.0)
             _sr = _dd["main"]["_sub_by_rate"].get(_rate)
             if _sr is None:
                 _sr = _dd["main"]["_sub_by_rate"][_rate] = {"kwh": 0.0, "cost": 0.0}
@@ -189,6 +195,10 @@ def _bucket_to_row_values(_dd):
     _m = _dd["main"]
     _avg_intensity = (round(_m["ci_abs_carbon"] / _m["ci_abs_net_kwh"], 1)
                       if _m["ci_abs_net_kwh"] > 0 else None)
+    # the house: the main's import carbon less the devices' GRID carbon (their grid shares), so
+    # it cannot go below zero on a half-hour the devices drew from the battery or solar, and
+    # house + devices is the grid's import carbon, as their kWh and £ are the grid's (27 Oct 2026;
+    # until then the devices' gross carbon was subtracted — staging: 340 half-hours below zero)
     _sub_carbon_for_remainder = sum(
         float(st["carbon_g"]) for st in _dd["subs"].values()
         if st["carbon_g"] is not None and st["carbon_g"] != 0.0)

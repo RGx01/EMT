@@ -69,6 +69,18 @@ changes only who writes it.
   half-hours (10.85 kg in all), where the devices drew more than the grid gave; the house's kWh
   subtracts grid shares and does not. Clamp it, or show the difference as behind-meter — not
   step 5's.
+  *Decided 28 Oct 2026 (the user), outside step 5:* the house's carbon is on the devices' grid
+  shares. Usage Stats and Charts show each device's carbon at its stored carbon scaled to its grid
+  share — the kWh its bar shows — and the house subtracts that, so house + devices is the grid's
+  import carbon; Insights' house kWh and carbon are each half-hour's main less its devices' grid
+  shares, floored at zero (`direct_import`'s rule — it now equals the bill's Direct import on every
+  fixture, where `e7_over` and `e7_gap` read 1.82 kWh against 119.84), and each device's card keeps
+  its gross carbon. Stored carbon is unchanged: a stored figure is the writer's decision (the 496
+  dev half-hours of Aug 2024, likely from paper bills, hold 0 where a recompute would give an export
+  offset), and computing per row costs one multiplication. No credit is lost: the EV's
+  behind-meter credit, the battery's saving and the export offset read none of these. The worst
+  staging half-hour, 14 Oct 2026 05:30 BST, was an inverter firmware update that left the battery's
+  sensor counting at its charging rate (the user); its kWh and £ were already right.
 
 ## 2. The rate schedules
 

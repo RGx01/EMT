@@ -6684,7 +6684,7 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
 
     # Lightweight direct query — only columns needed for carbon insights
     rows = store._conn.execute(
-        """SELECT b.meter_id, b.imp_kwh, b.exp_kwh, b.carbon_g,
+        """SELECT b.block_start, b.meter_id, b.imp_kwh, b.imp_kwh_grid, b.exp_kwh, b.carbon_g,
                   COALESCE(m.is_sub_meter, 0) as is_sub_meter
            FROM blocks b
            LEFT JOIN meters m ON m.meter_id = b.meter_id
@@ -6709,6 +6709,9 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
     ci_blocks = 0
 
     sub_totals = {}
+    # per half-hour: [main kWh, main kWh with carbon data, main import carbon, {device: [grid
+    # kWh, grid kWh with carbon data, grid carbon]}] — the house is direct_import's rule on each
+    _per_block = {}
 
     for row in rows:
         mid        = row["meter_id"]
@@ -6731,11 +6734,19 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
                 }
             sub_totals[mid]["imp_kwh"]      += b_imp
             sub_totals[mid]["total_blocks"] += 1
+            # the half-hour's grid share, and its grid carbon (the stored carbon scaled to it):
+            # what the house subtracts, per half-hour (27 Oct 2026); the card keeps the gross
+            b_grid = float(row["imp_kwh_grid"]) if row["imp_kwh_grid"] is not None else b_imp
+            _pb_devs = _per_block.setdefault(row["block_start"], [0.0, 0.0, 0.0, {}])[3]
+            _pb_dev = _pb_devs.setdefault(mid, [0.0, 0.0, 0.0])
+            _pb_dev[0] += b_grid
             if cg is not None:
                 cg_f = float(cg)
                 sub_totals[mid]["carbon_g"]   += cg_f
                 sub_totals[mid]["ci_blocks"]  += 1
                 sub_totals[mid]["ci_imp_kwh"] += b_imp
+                _pb_dev[1] += b_grid
+                _pb_dev[2] += cg_f * (b_grid / b_imp) if b_imp > 1e-9 else 0.0
                 if b_imp > 0.001:
                     b_intensity = abs(cg_f / b_imp)
                     sub_totals[mid]["ci_kwh_weighted"] += b_intensity * b_imp
@@ -6746,9 +6757,12 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
         total_blocks += 1
         main_imp_kwh += b_imp
         main_exp_kwh += b_exp
+        _pb = _per_block.setdefault(row["block_start"], [0.0, 0.0, 0.0, {}])
+        _pb[0] += b_imp
 
         if cg is None:
             continue
+        _pb[1] += b_imp
 
         cg_f = float(cg)
         has_carbon = True
@@ -6760,6 +6774,7 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
         if b_net != 0:
             b_intensity = abs(cg_f / b_net)
             cg_imp += b_imp * b_intensity
+            _pb[2] += b_imp * b_intensity
             cg_exp += b_exp * b_intensity
             ci_kwh_weighted += b_intensity * block_minutes
             ci_duration     += block_minutes
@@ -6767,6 +6782,7 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
             eff_kwh    += abs(b_net)
         elif b_imp > 0:
             cg_imp += abs(cg_f)
+            _pb[2] += abs(cg_f)
         else:
             cg_exp += abs(cg_f)
 
@@ -6834,6 +6850,7 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
     # EV GRID carbon/kWh from the house remainder (the behind-meter saving never crossed the grid, so
     # it is NOT subtracted), and keep non-EV sub-meters. Non-IOG (no dispatch) ⇒ byte-identical.
     _rec_ev_kwh = _rec_ev_carbon = _rec_ev_ci_kwh = 0.0
+    _rec_ev_grid_kwh = _rec_ev_grid_carbon = _rec_ev_grid_ci_kwh = 0.0   # what the house subtracts
     if ev_carbon_block:
         # H4 HYBRID: before dropping the physical EV sub-meter, fold in its PRE-SEAM portion
         # (blocks with no dispatch split — ev_split's NULL) so a window straddling the seam
@@ -6846,7 +6863,12 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
                 _pr = store._conn.execute(
                     "SELECT COALESCE(SUM(sub.imp_kwh),0.0) k, "
                     "       COALESCE(SUM(sub.carbon_g),0.0) g, "
-                    "       COALESCE(SUM(CASE WHEN sub.carbon_g IS NOT NULL THEN sub.imp_kwh ELSE 0 END),0.0) ck "
+                    "       COALESCE(SUM(CASE WHEN sub.carbon_g IS NOT NULL THEN sub.imp_kwh ELSE 0 END),0.0) ck, "
+                    "       COALESCE(SUM(COALESCE(sub.imp_kwh_grid, sub.imp_kwh)),0.0) gk, "
+                    "       COALESCE(SUM(CASE WHEN sub.imp_kwh > 1e-9 THEN sub.carbon_g "
+                    "           * COALESCE(sub.imp_kwh_grid, sub.imp_kwh) / sub.imp_kwh ELSE 0 END),0.0) gg, "
+                    "       COALESCE(SUM(CASE WHEN sub.carbon_g IS NOT NULL "
+                    "           THEN COALESCE(sub.imp_kwh_grid, sub.imp_kwh) ELSE 0 END),0.0) gck "
                     "FROM blocks sub JOIN blocks main "
                     "  ON main.block_start=sub.block_start AND main.meter_id='electricity_main' "
                     "  AND main.config_period_id=sub.config_period_id "
@@ -6856,14 +6878,15 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
                 _rec_ev_kwh    = float(_pr["k"]  or 0.0)
                 _rec_ev_carbon = float(_pr["g"]  or 0.0)
                 _rec_ev_ci_kwh = float(_pr["ck"] or 0.0)
+                _rec_ev_grid_kwh    = float(_pr["gk"]  or 0.0)
+                _rec_ev_grid_carbon = float(_pr["gg"]  or 0.0)
+                _rec_ev_grid_ci_kwh = float(_pr["gck"] or 0.0)
             except Exception:
                 logger.debug("insights: recorded pre-seam EV carbon unavailable", exc_info=True)
         for _m in [mid for mid, st in list(sub_totals.items())
                    if (st.get("meter_type") or "") in ("ev", "ev_charger")
                    or any(k in mid.lower() for k in ("ev", "charger"))]:
             sub_totals.pop(_m, None)
-    total_sub_imp_kwh  = sum(st["imp_kwh"]   for st in sub_totals.values())
-    total_sub_carbon_g = sum(st["carbon_g"]  for st in sub_totals.values())
     _syn_ev_kwh    = ev_carbon_block["clipped_kwh"] if ev_carbon_block else 0.0
     _syn_ev_carbon = ev_carbon_block["grid_g"]      if ev_carbon_block else 0.0
     _ev_kwh_total    = _syn_ev_kwh + _rec_ev_kwh          # hybrid EV axis (synthetic + recorded)
@@ -6873,10 +6896,24 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
         ev_carbon_block["recorded_g"]   = round(_rec_ev_carbon, 1)
         ev_carbon_block["ev_kwh_total"] = round(_ev_kwh_total, 3)
         ev_carbon_block["grid_g_total"] = round(_ev_carbon_total, 1)
-    house_imp_kwh    = max(0.0, main_imp_kwh - total_sub_imp_kwh - _ev_kwh_total)
-    house_ci_imp_kwh = max(0.0, main_ci_imp_kwh - sum(
-        st.get("ci_imp_kwh", 0.0) for st in sub_totals.values()) - _syn_ev_kwh - _rec_ev_ci_kwh)
-    house_carbon_g   = max(0.0, cg_imp - total_sub_carbon_g - _ev_carbon_total) if has_carbon else None
+    # The house: each half-hour's main less its devices' GRID shares and grid carbon, floored at
+    # zero — direct_import's rule, as the bill's Direct import (27 Oct 2026, the user). What a
+    # device drew from the battery or solar never crossed the grid meter, so it is not the house's
+    # to lose. Until then the devices' own reads were subtracted over the whole period, and the
+    # house clamped at zero wherever they out-read the grid. The devices kept are those still in
+    # the breakdown (a physical EV superseded by the synthetic one is not); the EV axis — grid-
+    # clipped synthetic, and the recorded EV's grid share before the seam — comes off the period.
+    import direct_import as _direct
+    house_imp_kwh = house_ci_imp_kwh = house_carbon_tot = 0.0
+    for _mk, _mck, _mcg, _devs in _per_block.values():
+        _d = [v for m_, v in _devs.items() if m_ in sub_totals]
+        house_imp_kwh    += _direct.direct(_mk, 0.0, sum(v[0] for v in _d), 0.0)[0]
+        house_ci_imp_kwh += max(0.0, _mck - sum(v[1] for v in _d))
+        house_carbon_tot += max(0.0, _mcg - sum(v[2] for v in _d))
+    house_imp_kwh    = max(0.0, house_imp_kwh - _syn_ev_kwh - _rec_ev_grid_kwh)
+    house_ci_imp_kwh = max(0.0, house_ci_imp_kwh - _syn_ev_kwh - _rec_ev_grid_ci_kwh)
+    house_carbon_g   = (max(0.0, house_carbon_tot - _syn_ev_carbon - _rec_ev_grid_carbon)
+                        if has_carbon else None)
     house_avg_intensity = round(house_carbon_g / house_ci_imp_kwh, 1) \
         if house_carbon_g and house_ci_imp_kwh > 0 else None
 
