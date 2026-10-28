@@ -375,7 +375,7 @@ part to the half-hour's own tariff kind.
 
 | state | Intelligent half-hour | published-rate half-hour | colour |
 |---|---|---|---|
-| `applied` | Octopus's cost is held (a bill applied, or an API import's cost) | the kWh is settled — kWh × rate is final; or a bill / API import | green |
+| `applied` | Octopus's cost is held (a bill applied, or an API import's cost) | the kWh is settled — kWh × rate is final; or a bill / API import. By the half-hour's own agreement, at any age, a v4 API import's too, where the stored cost is the settled kWh × its published rate (`differs` where not); CSV stays `imported` (published tariff final design, 28 Oct 2026) | green |
 | `applied_emt_split` | Octopus's cost, but the split is still EMT's: a completed dispatch whose split is `emt`, `held` or `kept` (§1.3) | — (no split) | teal (the Split view's colour for EMT's split) |
 | `estimate_dcc` | settled kWh × rate, Octopus's cost not in yet, inside the window | — (settled kWh is final: green) | light amber |
 | `estimate_cad` | kWh not settled (CAD / HA reading) × rate, inside the window | the same | amber |
