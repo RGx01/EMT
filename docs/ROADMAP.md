@@ -839,8 +839,28 @@ redacted fixtures, and a redaction check that fails loudly; v5 already pins pypd
 ## G. Local tariff store
 
 *Proposed 4 Oct 2026. The agreements half is designed: G1, `docs/design/EMT-v5_G_tariff_agreements_design.md`
-(28 Oct 2026). The rates are G2, drafted in `docs/design/EMT-v5_G2_tariff_rates_design.md` (28 Oct 2026) — this
-records the problem, the shape agreed in conversation, and what it must handle.*
+(28 Oct 2026). **The rates (G2) are dropped** (28 Oct 2026, the user) — see "G2, dropped" below; the rest of
+this section records the problem and the shape first agreed, kept for the reasoning.*
+
+**G2, dropped (28 Oct 2026, the user: "not sure what adding an additional complication is worth on an
+unproven issue").** G2 would have stored Octopus's published rate records per tariff — not EMT's built
+schedules — and re-settled what a changed past rate priced. Dropped because:
+
+- **The change it guards against is unproven.** What Octopus has changed after the fact is the carve and
+  the bill — the 10 Oct 2026 EV split, the April 2026 costs it withdrew, the bump/boost labels — not the
+  rates. The one rate edit seen, the 1 Oct 2026 VAT restatement, does not reach v5: EMT prices VAT from its
+  own calendar, not from Octopus's restated records, and a bill outranks the rate.
+- **The cost is real.** On Agile every half-hour's rate would be stored twice — the published record and
+  the block's priced rate — with a table, a diff and a guard to keep.
+
+Two smaller things G2 would have given, should either be needed — neither needs a rates table:
+
+- **A rate fallback with the API down at a restart** (non-Agile tariffs): keep the last good *built*
+  schedule — a handful of periods — and price from it until a fetch answers.
+- **Agile's fetch cost:** a running agreement's rates are fetched in full every 6-hour cycle (v4 #513) —
+  on two years of Agile about 24 calls at 1,500 records a page. The process can keep the running
+  agreement's earlier records in memory and fetch only the last few days each cycle; worth it only if an
+  Agile account meets the rate limit.
 
 **The problem.** EMT holds no copy of the tariff. Unit rates and standing charges are fetched from
 the Octopus REST products API and kept **in memory only** (`_kraken_rate_schedules`, refreshed each
