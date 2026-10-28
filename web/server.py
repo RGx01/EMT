@@ -4221,6 +4221,8 @@ def api_block_settlement():
                       "home_kwh": _r(d["bill_home_kwh"]), "home_rate": _r(d["bill_home_rate"]),
                       "ev_kwh": _r(d["bill_ev_kwh"]), "ev_rate": _r(d["bill_ev_rate"])}
                      if d["bill_cost"] is not None else None),
+            # inside Octopus's two years, so Octopus can still be asked for it (28 Oct 2026)
+            "reachable": d["block_start"] >= _reach_floor(),
             "segments": store.get_block_segments(start, "electricity_main"),
             "band": _band_note(_eng_nc, d),
             "dispatch": ({"completed_kwh": (round(abs(float(comp[-1]["energy_kwh"])), 3)
@@ -4230,6 +4232,13 @@ def api_block_settlement():
     except Exception as e:
         logger.warning("api_block_settlement: %s", e)
         return jsonify({"error": str(e)}), 500
+
+
+def _reach_floor() -> str:
+    """The half-hour start before which Octopus serves nothing (settlement_state's two years)."""
+    from datetime import datetime as _dt
+    import settlement_state as _ss
+    return _ss._beyond(_dt.utcnow())
 
 
 def _origins(d) -> dict:

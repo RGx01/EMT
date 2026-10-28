@@ -199,6 +199,14 @@ Read-only.
 imported …", stamped with the import's time, not "Octopus, fetched …". A bill Octopus has since sent
 for imported history (step 3 §4 (d)) reads as Octopus's.
 
+*Later that day, the user:* an API import's `IMPORTED` bill is v4's arithmetic — Octopus's kWh × the
+tariff's rate at Octopus's band — and Octopus never sent a cost for it. Its note reads "v4's price,
+<kWh> × <rate> at Octopus's band", then "until Octopus sends its own cost" inside Octopus's two years or
+"past Octopus's two years, so it can't be checked" (the route's `reachable`); no ✓, the stored cost
+being that bill; the rate line says "v4's price", not "settled"; and past the two years there is no
+Re-fetch. It stays grey: on staging the method matched Octopus's own cost on all 11,600 half-hours the
+asker fetched, but that is an inference for the rest, not Octopus's record. The CSV wording is unchanged.
+
 ---
 
 ## 5. Acting on it (BL-85 part 3 — BL-86's front end)
