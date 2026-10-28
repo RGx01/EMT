@@ -198,7 +198,8 @@ def card(summary, currency="£", site_name=None):
         rows.append({"type": "title", "text": "Export", "mpan": meta.get("mpan") or None,
                      "reads": _reads(totals.get("read_start"), totals.get("read_end")), "indent": False})
         rows.append({"type": "header", "rate": f"Rate ({currency}/kWh)", "cost": f"Cost ({currency})", "indent": False})
-        rows += rate_rows(summary["meters"][meter_name])[0]
+        # the folded row is the Total, as the import's (28 Oct 2026: an Agile export's differed by pence)
+        rows += rate_rows(summary["meters"][meter_name], totals or None)[0]
         rows.append(total_row(totals["kwh"], totals["cost"]))
 
     # BL-24: with "Bill Rounding" on, the import charge is shown EX-VAT (the bill method)
