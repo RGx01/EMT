@@ -138,7 +138,7 @@ class TestPass2GridInvariantBL19(unittest.TestCase):
         ev = self._imp(block, "ev_charger")
         self.assertAlmostEqual(ev["kwh_grid"], 0.157, places=3,
                                msg="EV grid must clamp to the settled main import")
-        self.assertAlmostEqual(ev["kwh_battery"], 2.053 - 0.157, places=3,
+        self.assertAlmostEqual(ev["kwh"] - ev["kwh_grid"], 2.053 - 0.157, places=3,
                                msg="overflow spills to self-consumption")
 
     def test_unsettled_gap_block_preserved_as_is(self):
@@ -151,7 +151,7 @@ class TestPass2GridInvariantBL19(unittest.TestCase):
         ev = self._imp(block, "ev_charger")
         self.assertAlmostEqual(ev["kwh_grid"], 2.053, places=3,
                                msg="unsettled gap block keeps as-is attribution")
-        self.assertAlmostEqual(ev["kwh_battery"], 0.0, places=3)
+        self.assertAlmostEqual(ev["kwh"] - ev["kwh_grid"], 0.0, places=3)
 
     def test_live_overflow_block_always_clamps(self):
         # A live (non-interpolated) block always clamps — unchanged behaviour,

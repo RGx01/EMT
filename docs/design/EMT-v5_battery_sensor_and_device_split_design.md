@@ -62,6 +62,12 @@ order-independent rule.
 **History** is re-split by the settle sweep (a new `_SETTLE_HISTORY_VERSION`): it reads each device's
 stored reading and the main's kWh, nothing else.
 
+*As built (PR 1, 29 Oct 2026):* `settle.device_grid_shares`, shared **in whole watt-hours** by largest
+remainder — the meters read to 1 Wh, so the shares add up to exactly what is left, never past the main,
+and every surface sums the same figures (shares with more decimals made Usage Stats and the Bill card
+differ in the third decimal). `_SETTLE_HISTORY_VERSION` 2. Goldens: only `e7_over` moved — its devices'
+shares; the Total Bill unchanged.
+
 ## 3. A battery sensor that counts solar is removed
 
 **The evidence** — only where it is conclusive, so a sensor is never removed on a guess. A half-hour
