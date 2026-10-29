@@ -8588,7 +8588,10 @@ async def _maybe_run_settlement_sweep() -> None:
         # Finalise blocks that aged past the horizon still unsettled — DCC isn't
         # coming, so mark them finalised-from-CAD (distinct from a real
         # settlement; imp_kwh_api stays NULL) so the unsettled count can reach
-        # zero. Reversible: a later settlement clears the flag in the store.
+        # zero and the poll stops reaching back for them. EMT stops asking; it
+        # does not call them settled — the heatmap still shows them red, and its
+        # range re-fetch recovers one (BL-75 (d)). Reversible: a later settlement
+        # clears the flag in the store.
         cutoff = (now.replace(tzinfo=None)
                   - timedelta(days=_SETTLEMENT_SWEEP_HORIZON_DAYS)).isoformat()
         finalised = _store.finalise_past_horizon_blocks(cutoff)
