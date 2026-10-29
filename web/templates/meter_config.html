@@ -149,7 +149,7 @@
           <input type="text" id="ad-read-sensor" placeholder="Search or type entity ID..." autocomplete="off" class="ad-entity" data-field="read">
           <div id="ad-read-sensor_drop" class="entity-drop"></div>
         </div>
-        <small style="color:var(--muted);">Cumulative import kWh from your device integration or CT clamp via PowerCalc.</small>
+        <small id="ad-read-hint" style="color:var(--muted);">Cumulative import kWh from your device integration or CT clamp via PowerCalc.</small>
       </div>
 
       <div style="display:flex;gap:12px;justify-content:flex-end;">
@@ -481,6 +481,8 @@
 
 <script>
 let config   = {{ config | tojson }};
+// batteries whose sensor is found counting solar (battery sensor design §3) — {meter_id: flag}
+let batteryFlagged = {};
 // Snapshot of server config for detecting billing-significant changes
 var _serverConfig = JSON.parse(JSON.stringify(config));
 let entities = [];
@@ -555,6 +557,7 @@ document.addEventListener('DOMContentLoaded', function() {
   // and nothing commits until it's finished and saved — so no confirm dialog
   // (a native confirm() also clashed with the app's modal style).
   if (_csBtn) _csBtn.addEventListener('click', startWizard);
+  loadBatteryFlags();
   loadEntities().then(function() {
     renderAll();
     // Auto-launch wizard if no meters configured
@@ -837,6 +840,51 @@ function ohmeEvNote() {
          '</div>';
 }
 
+// What a battery's sensor must be (battery sensor design §3) — the add-device form and the wizard.
+// A clamp meter on the battery inverter's cable reads what it draws from the house wiring, grid or
+// solar alike, so it counts solar wherever the panels feed that wiring (an AC-coupled install).
+var BATTERY_CLAMP_NOTE = 'A clamp meter (a CT, e.g. a Shelly EM) on the battery\'s cable will not do where your ' +
+  'solar feeds the house wiring: it counts the solar the battery takes as well as the grid.';
+var BATTERY_SENSOR_HINT = 'Cumulative kWh the battery charged <strong>from the grid</strong> only — not its total ' +
+  'charge. Many inverters report the total, solar included, which makes the device breakdown wrong; EMT can ' +
+  'only tell in sunny months, and warns you if it finds it. If your inverter has no grid-charge sensor, ' +
+  'leave the battery out: its charge then counts in the house. ' + BATTERY_CLAMP_NOTE;
+
+function loadBatteryFlags() {
+  return fetch(apiUrl('/api/battery-sensor/flagged')).then(function (r) { return r.json(); }).then(function (d) {
+    var had = Object.keys(batteryFlagged).length;
+    batteryFlagged = {};
+    ((d && d.flagged) || []).forEach(function (b) { batteryFlagged[b.meter_id] = b; });
+    if (had || Object.keys(batteryFlagged).length) renderAll();
+  }).catch(function () {});
+}
+
+// A flagged battery's card: why, what it gets wrong, how to fix it — or, once the user has said the
+// sensor is right, a quiet note with the way back.
+function batteryFlagNote(meterId, b) {
+  var ex = b.example || [];
+  if (b.confirmed_at) {
+    return '<div style="padding:8px 0;font-size:12px;color:var(--muted);">' +
+      'EMT found this sensor reading more than the house imported, on ' + (+b.days || 0) + ' days; you confirmed ' +
+      'on ' + esc(String(b.confirmed_at).slice(0, 10)) + ' that it reports grid charge only. ' +
+      '<button class="btn btn-sm js-battery-confirm" data-meter="' + esc(meterId) + '" data-confirmed="0" ' +
+      'style="font-size:11px;">Show the warning again</button></div>';
+  }
+  return '<div class="info-box" style="border-left:3px solid #e0a020;">' +
+    '<strong>⚠ This sensor counts solar charging, not only grid charging</strong><br>' +
+    'It read more than the whole house imported from the grid in ' + (+b.half_hours || 0) + ' half-hours on ' +
+    (+b.days || 0) + ' days' + (ex[0] ? ' — on ' + esc(String(ex[0]).slice(0, 10)) + ', ' + (+ex[1]).toFixed(2) +
+    ' kWh against ' + (+ex[2]).toFixed(2) + ' kWh' : '') + '. A grid-only charge cannot do that.<br><br>' +
+    '<strong>What it gets wrong:</strong> the battery is given grid it did not take, so its cost reads too high ' +
+    'and the rest of the house\'s too low. Your bill total is not affected.<br>' +
+    '<strong>To fix it:</strong> choose the sensor that reports the battery\'s charge <strong>from the grid</strong> ' +
+    'only, and save; the half-hours already recorded keep this sensor\'s readings. If your inverter has none, ' +
+    'remove the battery: its charge then counts in the house. ' + BATTERY_CLAMP_NOTE + '<br><br>' +
+    '<button class="btn btn-sm js-battery-confirm" data-meter="' + esc(meterId) + '" data-confirmed="1" ' +
+    'style="font-size:12px;">This sensor reports grid charge only</button>' +
+    '</div>';
+}
+
 function buildSubCard(meterId, meter) {
   var meta     = meter.meta || {};
   var channels = meter.channels || {};
@@ -891,12 +939,18 @@ function buildSubCard(meterId, meter) {
       '</div>'
     ) : '') +
 
+    (batteryFlagged[meterId] ? batteryFlagNote(meterId, batteryFlagged[meterId]) : '') +
+
     (!meta.retired_at ? '<div class="info-box">' +
       '<strong>Device sensor requirements</strong>' +
       '<ul>' +
         '<li>The <strong>read sensor</strong> must be <strong>cumulative kWh (import only)</strong> — not net, not export, not watts</li>' +
         (isBattery
-          ? '<li>Battery integrations (GivEnergy, Powerwall, Solax) report kWh directly — use the consumption sensor</li>' +
+          ? '<li>A battery\'s sensor must be its charge <strong>from the grid</strong> only. Many inverters (GivEnergy, ' +
+            'Powerwall, Solax) also offer a total charge, solar included — that one makes the device breakdown wrong. ' +
+            'EMT can only tell in sunny months, when the battery charges more than the house imports, and warns you ' +
+            'if it finds it. No grid-charge sensor? Leave the battery out: its charge then counts in the house.</li>' +
+            '<li>' + BATTERY_CLAMP_NOTE + '</li>' +
             '<li>Add the SoC and inverter power sensors below to enable the Live Power battery card</li>'
           : isEV
           ? '<li>EV charger integrations (Zappi, Ohme, Wallbox) report session kWh — use the total energy sensor</li>' +
@@ -1426,6 +1480,14 @@ function onContainerClick(e) {
     }
     return;
   }
+  if (el.classList.contains('js-battery-confirm')) {
+    el.disabled = true;
+    fetch(apiUrl('/api/battery-sensor/confirm'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({meter_id: el.dataset.meter, confirmed: el.dataset.confirmed === '1'})})
+      .then(function () { loadBatteryFlags(); EMT.dismiss('battery-flagged-' + el.dataset.meter); })
+      .catch(function () { el.disabled = false; });
+    return;
+  }
   if (el.classList.contains('js-retire-meter')) {
     openRetireModal(el.dataset.meter);
     return;
@@ -1856,6 +1918,8 @@ function addDevice(type) {
 
   // Show/hide type-specific fields
   document.getElementById('ad-battery-fields').style.display = type === 'battery'   ? '' : 'none';
+  document.getElementById('ad-read-hint').innerHTML = type === 'battery' ? BATTERY_SENSOR_HINT
+    : 'Cumulative import kWh from your device integration or CT clamp via PowerCalc.';
   document.getElementById('ad-ev-fields').style.display      = type === 'ev'        ? '' : 'none';
   document.getElementById('ad-hp-fields').style.display      = type === 'heat_pump' ? '' : 'none';
 
@@ -2811,7 +2875,7 @@ function wizStepSubSensors() {
   var deviceLabels = { ev: 'EV Charger', battery: 'Battery', solar: 'Solar', heat: 'Heat Pump' };
   var deviceHints  = {
     ev:      'Cumulative kWh consumed (import only, not net) — from your charger integration (e.g. Zappi, Ohme)',
-    battery: 'Cumulative kWh imported to battery (import only, not net) — from inverter integration',
+    battery: BATTERY_SENSOR_HINT,
     heat:    'Cumulative kWh consumed (import only, not net) — from your heat pump integration',
   };
   var mainId  = wiz.data.mainId || 'electricity_main';

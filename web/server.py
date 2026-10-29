@@ -5071,6 +5071,8 @@ def _support_summary(store) -> dict:
                  ("bill_ask", lambda: store.ask_record("bill")),
                  # a battery sensor's evidence of counting solar (battery sensor design §3)
                  ("battery_sensor_evidence", lambda: store.get_meta("battery_sensor_evidence")),
+                 ("battery_sensor_flagged", lambda: store.get_meta("battery_sensor_flagged")),
+                 ("battery_sensor_confirmed", lambda: store.get_meta("battery_sensor_confirmed")),
                  ("missing", lambda: _missing_half_hours(store, _config_timezone())),
                  ("host", lambda: __import__("support_file").host_info(
                      DATA_DIR or _eng.DATA_DIR, _supervisor_info())),
@@ -6097,6 +6099,38 @@ def _settle_sweep_cause(store) -> str:
     except Exception:
         pass
     return "upgrade"
+
+
+@app.route("/api/battery-sensor/flagged", methods=["GET"])
+def api_battery_sensor_flagged():
+    """The batteries whose sensor is found counting solar (battery sensor and device split design §3):
+    {flagged: [{meter_id, device, conclusive_on, half_hours, days, example [half-hour, battery kWh,
+    grid kWh], confirmed_at}]}. Read-only."""
+    try:
+        import engine as _eng
+        meters = (load_config().get("meters") or {})
+        out = [dict(r, meter_id=m, device=((meters.get(m) or {}).get("meta") or {}).get("device") or m)
+               for m, r in sorted(_eng.battery_sensor_flags().items())]
+        return jsonify({"flagged": out})
+    except Exception as e:
+        logger.debug("api_battery_sensor_flagged: %s", e)
+        return jsonify({"flagged": []})
+
+
+@app.route("/api/battery-sensor/confirm", methods=["POST"])
+def api_battery_sensor_confirm():
+    """The user's word on a flagged battery sensor: {meter_id, confirmed: true} — it reports grid
+    charge only — or false to take that back. → {ok}."""
+    body = request.get_json(silent=True) or {}
+    mid = (body.get("meter_id") or "").strip()
+    yes = body.get("confirmed", True) is not False
+    try:
+        import engine as _eng
+        ok = bool(mid) and _engine_write(lambda st: _eng.confirm_battery_sensor(mid, yes))
+        return jsonify({"ok": bool(ok)}), (200 if ok else 404)
+    except Exception as e:
+        logger.warning("api_battery_sensor_confirm: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.route("/api/tariff-agreements/changed", methods=["GET"])

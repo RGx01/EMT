@@ -5,8 +5,9 @@ The battery sensor check, recorded only (battery sensor and device split design 
 A battery must report its charge from the grid. One that reports its total charge, solar included,
 reads more than the house imported — which a grid-only charge cannot. Evidence counts only where it is
 conclusive: more than 1.5 × the half-hour's whole grid import AND more than 0.25 kWh above it (staging's
-trickles and its 14 Oct 2026 firmware over-reads stay below), on five days within 30. This step records
-it in store_meta, shows it in the support file and logs once; nothing is removed.
+trickles and its 14 Oct 2026 firmware over-reads stay below), on five days within 30. It is recorded in
+store_meta, shown in the support file and logged once; since PR 3 a conclusive sensor is flagged on the
+page (tests/test_battery_sensor_warning.py). Nothing in the data changes.
 
 On real data: staging's battery (grid import) has 5 such half-hours, all on 14 Oct 2026 — kept; the
 Agile-export user's (total charge) 634 on 96 days, conclusive on 4 Jul 2026.
@@ -104,15 +105,15 @@ class TheCheck(_Store):
         with self.assertNoLogs("engine", level="WARNING"):
             out = engine.check_battery_sensors()
         self.assertEqual((out["house_battery"]["half_hours"], out["house_battery"]["days"],
-                          out["house_battery"]["would_remove_on"]), (5, 1, None))
+                          out["house_battery"]["conclusive_on"]), (5, 1, None))
 
     def test_five_days_are_conclusive_and_logged_once(self):
         for d in ("2026-06-23", "2026-06-28", "2026-07-01", "2026-07-03", "2026-07-04"):
             self.blk(d + "T12:00:00", 0.1, 1.8)
         with self.assertLogs("engine", level="WARNING") as log:
             out = engine.check_battery_sensors()
-        self.assertEqual(out["house_battery"]["would_remove_on"], "2026-07-04")
-        self.assertIn("nothing is removed yet", log.output[0])
+        self.assertEqual(out["house_battery"]["conclusive_on"], "2026-07-04")
+        self.assertIn("the device split is wrong", log.output[0])
         with self.assertNoLogs("engine", level="WARNING"):
             engine.check_battery_sensors()
         self.assertEqual(self.st.get_meta(engine._BATTERY_EVIDENCE_KEY)["house_battery"]["days"], 5)

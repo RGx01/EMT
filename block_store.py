@@ -6316,18 +6316,20 @@ class BlockStore:
             "WHERE m.is_sub_meter = 1 AND m.meter_type = 'battery' ORDER BY m.meter_id")]
 
     def battery_evidence_rows(self, meter_id: str, sensor_id, *, ratio: float, floor_kwh: float,
-                              main_id: str = "electricity_main") -> list:
+                              main_id: str = "electricity_main", unnamed: bool = True) -> list:
         """[(block_start, battery kWh, grid kWh)] where the battery read more than `ratio` × the
         half-hour's whole grid import and more than `floor_kwh` above it — what a grid-only charge
         cannot do (battery sensor and device split design §3). Rows that name `sensor_id`, or none
-        (imported or rebuilt history, the device's sensor of the day); not another sensor's."""
+        (imported or rebuilt history, the device's sensor of the day) unless `unnamed` is False — a
+        battery whose flagged sensor was replaced; never another sensor's."""
         return [tuple(r) for r in self._conn.execute(
             "SELECT d.block_start, d.imp_kwh, MAX(COALESCE(m.imp_kwh, 0), 0) AS g FROM blocks d "
             "JOIN blocks m ON m.block_start = d.block_start AND m.meter_id = ? "
-            "WHERE d.meter_id = ? AND (d.imp_sensor_id IS NULL OR d.imp_sensor_id IS ?) "
+            "WHERE d.meter_id = ? AND ((? AND d.imp_sensor_id IS NULL) OR d.imp_sensor_id IS ?) "
             "  AND d.imp_kwh > ? * MAX(COALESCE(m.imp_kwh, 0), 0) "
             "  AND d.imp_kwh - MAX(COALESCE(m.imp_kwh, 0), 0) > ? "
-            "ORDER BY d.block_start", (main_id, meter_id, sensor_id, ratio, floor_kwh))]
+            "ORDER BY d.block_start", (main_id, meter_id, 1 if unnamed else 0, sensor_id, ratio,
+                                       floor_kwh))]
 
     def ha_read_devices(self, lo: str, hi: str) -> list:
         """The sub-meters with `ha_reads` in [lo, hi) — a refill's devices to rebuild. An hour

@@ -12162,12 +12162,16 @@ _last_startup_complete_ts = 0.0  # monotonic time the last startup finished (rec
 # A battery must report its grid charge; one that reports its total charge, solar included, reads
 # more than the house imported. Evidence only where it is conclusive: more than 1.5 × the half-hour's
 # whole grid import and more than 0.25 kWh above it (staging's trickles and its 14 Oct 2026 firmware
-# over-reads stay below), on five days within 30. This step records and logs it; nothing is removed.
+# over-reads stay below), on five days within 30. EMT changes nothing in the data on it (the user,
+# 29 Oct 2026: a wrong verdict must not cost history): it says so loudly, on every page, until the
+# sensor is changed or the user confirms it reports grid charge only.
 _BATTERY_RATIO = 1.5
 _BATTERY_FLOOR_KWH = 0.25
 _BATTERY_DAYS = 5
 _BATTERY_WINDOW_DAYS = 30
 _BATTERY_EVIDENCE_KEY = "battery_sensor_evidence"     # store_meta: {meter_id: the evidence}
+_BATTERY_FLAGGED_KEY = "battery_sensor_flagged"       # store_meta: {meter_id: [sensor ids found counting solar]}
+_BATTERY_CONFIRMED_KEY = "battery_sensor_confirmed"   # store_meta: {meter_id: {sensor_id, at}} — the user's word
 _BATTERY_CHECK_S = 3600
 _battery_check_at: "float | None" = None
 
@@ -12185,34 +12189,83 @@ def battery_sensor_verdict(days) -> "str | None":
 
 def check_battery_sensors() -> dict:
     """Each battery's evidence against its sensor, over its whole history, into store_meta
-    (`_BATTERY_EVIDENCE_KEY`): {meter_id: {sensor_id, half_hours, days, first, last, would_remove_on,
-    recent}}. Logs once, a warning, the first time a sensor's evidence becomes conclusive. Records
-    only (design §4, PR 2). Never raises."""
+    (`_BATTERY_EVIDENCE_KEY`): {meter_id: {sensor_id, half_hours, days, first, last, conclusive_on,
+    recent}}. A sensor whose evidence is conclusive is flagged (`_BATTERY_FLAGGED_KEY`) and warned of
+    once — unless the user has confirmed it (`_BATTERY_CONFIRMED_KEY`). Nothing in the blocks changes.
+    A battery whose flagged sensor was replaced counts only the rows naming its new sensor: the
+    unnamed rows (imported, rebuilt) are the old sensor's. Never raises."""
     if _store is None:
         return {}
     try:
         old = _store.get_meta(_BATTERY_EVIDENCE_KEY, {}) or {}
+        flagged = _store.get_meta(_BATTERY_FLAGGED_KEY, {}) or {}
+        confirmed = _store.get_meta(_BATTERY_CONFIRMED_KEY, {}) or {}
         out = {}
         for mid, sid in _store.battery_devices():
-            rows = _store.battery_evidence_rows(mid, sid, ratio=_BATTERY_RATIO, floor_kwh=_BATTERY_FLOOR_KWH)
+            replaced = any(f != sid for f in flagged.get(mid) or [])
+            rows = _store.battery_evidence_rows(mid, sid, ratio=_BATTERY_RATIO, floor_kwh=_BATTERY_FLOOR_KWH,
+                                                unnamed=not replaced)
             days = sorted({r[0][:10] for r in rows})
             verdict = battery_sensor_verdict(days)
             out[mid] = {"sensor_id": sid, "half_hours": len(rows), "days": len(days),
                         "first": rows[0][0] if rows else None, "last": rows[-1][0] if rows else None,
-                        "would_remove_on": verdict,
+                        "conclusive_on": verdict,
                         "recent": [[bs, round(k, 3), round(g, 3)] for bs, k, g in rows[-10:]]}
-            prev = old.get(mid) or {}
-            if verdict and not (prev.get("would_remove_on") and prev.get("sensor_id") == sid):
-                logger.warning(
-                    "battery sensor: %s's sensor reads more than the house imported — %d half-hour(s) "
-                    "on %d day(s), over %.1f× the grid import and %.2f kWh above it, conclusive on %s: "
-                    "it counts solar charging, not only grid (recorded only; nothing is removed yet)",
-                    mid, len(rows), len(days), _BATTERY_RATIO, _BATTERY_FLOOR_KWH, verdict)
+            if not verdict or sid in (flagged.get(mid) or []):
+                continue
+            flagged.setdefault(mid, []).append(sid)
+            if (confirmed.get(mid) or {}).get("sensor_id") == sid:
+                continue
+            logger.warning(
+                "battery sensor: %s's sensor reads more than the house imported — %d half-hour(s) "
+                "on %d day(s), over %.1f× the grid import and %.2f kWh above it, conclusive on %s: "
+                "it counts solar charging, not only grid, so the device split is wrong (the bill is "
+                "not); choose the battery's grid-charge sensor", mid, len(rows), len(days),
+                _BATTERY_RATIO, _BATTERY_FLOOR_KWH, verdict)
         _store.set_meta(_BATTERY_EVIDENCE_KEY, out)
+        _store.set_meta(_BATTERY_FLAGGED_KEY, flagged)
         return out
     except Exception as e:
         logger.warning("battery sensor: the check failed (%s)", e)
         return {}
+
+
+def battery_sensor_flags() -> dict:
+    """The batteries whose sensor is found counting solar, for the page: {meter_id: {conclusive_on,
+    half_hours, days, example [half-hour, battery kWh, grid kWh], confirmed_at}} — only while the
+    sensor judged is still the battery's primary (a new one is judged afresh at the next check).
+    `confirmed_at` is set where the user has said it reports grid charge only."""
+    rd = _reader()
+    ev = rd.get_meta(_BATTERY_EVIDENCE_KEY, {}) or {}
+    confirmed = rd.get_meta(_BATTERY_CONFIRMED_KEY, {}) or {}
+    out = {}
+    for mid, sid in rd.battery_devices():
+        e = ev.get(mid) or {}
+        if not e.get("conclusive_on") or e.get("sensor_id") != sid:
+            continue
+        c = confirmed.get(mid) or {}
+        out[mid] = {"conclusive_on": e["conclusive_on"], "half_hours": e.get("half_hours"),
+                    "days": e.get("days"),
+                    "example": max(reversed(e.get("recent") or [[None, 0, 0]]), key=lambda r: r[1] - r[2]),
+                    "confirmed_at": c.get("at") if c.get("sensor_id") == sid else None}
+    return out
+
+
+def confirm_battery_sensor(meter_id: str, confirmed: bool = True) -> bool:
+    """The user's word on a flagged battery sensor: it reports grid charge only (`confirmed`), so it
+    is no longer shown as wrong — or, False, take that back. Held for the sensor confirmed; a new
+    sensor is judged afresh. False when the battery has no primary sensor."""
+    sid = dict(_store.battery_devices()).get(meter_id)
+    if sid is None:
+        return False
+    rec = _store.get_meta(_BATTERY_CONFIRMED_KEY, {}) or {}
+    if confirmed:
+        rec[meter_id] = {"sensor_id": sid, "at": datetime.utcnow().replace(microsecond=0).isoformat()}
+        logger.info("battery sensor: %s's sensor confirmed by the user as grid charge only", meter_id)
+    else:
+        rec.pop(meter_id, None)
+    _store.set_meta(_BATTERY_CONFIRMED_KEY, rec)
+    return True
 
 
 def _maybe_check_battery_sensors(now: "float | None" = None) -> None:
