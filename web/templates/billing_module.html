@@ -397,6 +397,9 @@ window.EMTBilling = (function () {
         (rate ? '<div class="emt-corr-row"><span><input type="checkbox" class="emt-corr-recalc" checked> ' +
                 'recalculate the cost (kWh \u00d7 the new rate)</span></div>' : '') +
         '<div class="emt-corr-prev"></div>' +
+        // BL-75 (e): no automatic pass touches a corrected half-hour, so say what replaces it.
+        '<div class="emt-corr-keep">Your correction stays until Octopus\u2019s bill replaces it: nothing ' +
+          'replaces it automatically. With the supplier API, <em>Re-fetch</em> on the data heatmap does.</div>' +
         '<div class="emt-corr-foot"><span class="emt-corr-note">A pre-correction backup is taken before anything is written.</span>' +
           '<button type="button" class="emt-corr-btn emt-corr-pv">Preview</button>' +
           '<button type="button" class="emt-corr-btn emt-corr-go" disabled>Apply</button></div>' +
@@ -418,7 +421,7 @@ window.EMTBilling = (function () {
     function err(t) { prev.innerHTML = '<div class="emt-corr-err">' + esc(t) + '</div>'; }
     // the half-hour as it stands: the preview with no value
     postJSON('/api/corrections/preview', body(null)).then(function (j) {
-      if (j.error) { $('emt-corr-cur').textContent = j.error; return; }
+      if (j.error) { $('emt-corr-cur').textContent = j.message || j.error; go.disabled = true; $('emt-corr-pv').disabled = true; return; }
       if (rate) {
         var main = (j.blocks || []).filter(function (b) { return !b.device; })[0];
         if (!main) { $('emt-corr-cur').textContent = 'No half-hour is stored here.'; go.disabled = true; $('emt-corr-pv').disabled = true; return; }
@@ -452,7 +455,7 @@ window.EMTBilling = (function () {
       go.disabled = true; prev.innerHTML = '<div class="emt-corr-muted">Checking\u2026</div>';
       postJSON('/api/corrections/preview', body(v)).then(function (j) {
         if (my !== seq) return;
-        if (j.error) { err(j.error); return; }
+        if (j.error) { err(j.message || j.error); return; }
         if (rate) {
           // The meter's cost is the bill's; a device's is its share of it, so only the meter's is totalled.
           var recalc = $('emt-corr-recalc').checked, before = 0, after = 0;
@@ -488,7 +491,7 @@ window.EMTBilling = (function () {
           prev.appendChild(ok);
           return;
         }
-        if (j.error || !j.ok) { err(j.error || 'The correction was not applied.'); go.disabled = false; return; }
+        if (j.error || !j.ok) { err(j.message || j.error || 'The correction was not applied.'); go.disabled = false; return; }
         close();
         refresh();                       // the day, its panel and the bill card all move
       }, function (e) { $('emt-corr-pv').disabled = false; go.disabled = false; err(e.message); });
@@ -1034,6 +1037,7 @@ window.EMTBilling = (function () {
   .emt-corr-muted { color: var(--muted); }
   .emt-corr-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .emt-corr-note { flex: 1 1 200px; font-size: 11px; color: var(--muted); }
+  .emt-corr-keep { font-size: 11px; color: var(--muted); margin: 6px 0 0; }
   .emt-corr-btn { font-size: 12px; padding: 5px 14px; border: 1px solid var(--accent); border-radius: 4px; background: var(--surface);
     color: var(--accent); cursor: pointer; }
   .emt-corr-btn:disabled { opacity: 0.45; cursor: default; }

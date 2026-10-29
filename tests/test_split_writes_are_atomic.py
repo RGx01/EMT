@@ -181,12 +181,12 @@ class TheCorrectionsRoute(unittest.TestCase):
     def _correct(self, st):
         import test_correction_device_exc as CD
         client = CD.TS.make_client(store=st)
-        with patch.object(CD.TS.server, "_corrections_api_gate_active", return_value=True):
-            return client.post("/api/corrections/apply", json={
-                "type": "rate", "channel": "import", "value": CD.OFF, "recalc_cost": True,
-                "from_date": "2026-07-21", "to_date": "2026-07-21",
-                "from_time": "04:30", "to_time": "05:00", "meter_id": "all",
-                "confirm_multiband": True})
+        # a CAD account: corrections are refused with the supplier API (BL-75 (e))
+        return client.post("/api/corrections/apply", json={
+            "type": "rate", "channel": "import", "value": CD.OFF, "recalc_cost": True,
+            "from_date": "2026-07-21", "to_date": "2026-07-21",
+            "from_time": "04:30", "to_time": "05:00", "meter_id": "all",
+            "confirm_multiband": True})
 
     def _main_rate(self, st):
         import test_correction_device_exc as CD

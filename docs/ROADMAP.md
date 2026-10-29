@@ -21,7 +21,7 @@ deconstruct it. v4 is at **4.5.24**; the import floor is **4.5.23** (E).
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | ✅ closed 5 Oct 2026 — queries asserted in CI (#102), time on the Pi (#64) |
 | E | Importer | A–D | 🔨 built 10 Oct 2026 (#122–#128, step 5 done), spec v29, floor 4.5.23 (positive fixture taken 12 Oct) — open: the Pi timing |
-| F | Carried from v4's backlog | — | 📋 open: BL-47, BL-64, BL-63's rounding residue, BL-75 (e)'s warning in the corrections tool; the rest done (§F) |
+| F | Carried from v4's backlog | — | 📋 open: BL-47, BL-64, BL-63's rounding residue; the rest done (§F) |
 | G | Local tariff store | A, B | ✅ G1, the agreements, done 28 Oct 2026 (#320–#325, #327); G2, the rates, dropped (#326) |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
 
@@ -740,7 +740,7 @@ number. Order is the agreed one — deletions first, while they are cheapest.*
 | 4 | **BL-74** — retire the `needs_review` writes nothing displays | deletion + fix | ✅ **done 4 Oct 2026** — all of it, and the review list with it (below) |
 | 5 | **BL-61 (5)** — rename `rate_source` `'measured'` → `'settled'` | schema | ✅ **done 10 Oct 2026** — schema 2 (205a973); the importer maps the value |
 | 6 | **BL-76** — proportional device grid split | correctness | ✅ **the split built 29 Oct 2026** — proportional after the EV, in whole watt-hours, one rule (`settle.device_grid_shares`) for PASS 2 and settle() (#331); a battery sensor counting solar flagged on every page, its data unchanged, and the setup text (the evidence #333; the flag #334; `EMT-v5_battery_sensor_and_device_split_design.md`) |
-| 7 | **BL-75** — settlement visibility | correctness | ✅ mostly done (below) — open: (e)'s warning in the corrections tool; (d) closed, not built (29 Oct 2026) |
+| 7 | **BL-75** — settlement visibility | correctness | ✅ done (below) — (e) the corrections refused with the supplier API, and the modal's note (29 Oct 2026); (d) closed, not built |
 | 8 | **BL-47** — auto-attribution after a gap fill | feature | 📋 **open** in its v4 form; a refill now rebuilds its devices from HA's kept reads (#231, BL-90) |
 | 9 | **BL-60** — block inspector | feature | ✅ **closed 29 Oct 2026** (the user) — the heatmap's detail panel (#154) is it |
 | 10 | **BL-64** — bill-parser fixtures + a pypdf bump gate | tooling | 📋 **open** — needs real bills |
@@ -835,14 +835,26 @@ same change.
 **BL-75 — settlement visibility.** *Status, 29 Oct 2026:* (a) done — the pill names its stages (#150);
 (b) decided — only an Intelligent agreement's half-hours are asked, a published tariff's being final by
 its own rate (#319); (c) done — the ask record, its backoff and the 30-day give-up (engine step 3,
-#293–#296; `abandoned`, #227); (e) in part — a range re-fetch replaces a correction with the bill (#163);
+#293–#296; `abandoned`, #227); (e) done — a range re-fetch replaces a correction with the bill (#163), and the corrections are
+CAD-only on the server as on the page (below);
 (f) done differently — a re-fetch from the heatmap's selection (#156), not from the pill; (d) closed, not
-built (below). **Open:** (e)'s warning at the point of use. Split into: (b) widen the cost fetch beyond IOG/INTELLI (still
+built (below). Split into: (b) widen the cost fetch beyond IOG/INTELLI (still
 gated at `measure_settled_dispatched_blocks`) and keep the agreement floor; (c) a per-slot attempt
 count with backoff and a terminal state; (a) the pill reporting both frontiers; (e)/(f) the
 corrections tool as last resort and retry from the pill. *(e) in part, 14 Oct 2026: a range
 re-fetch can now replace a correction with the bill, so a correction no longer locks the bill
-out for good — the corrections tool's own warning at the point of use is still open.)* **(d) closed, not built (29 Oct 2026, the user):** the
+out for good — the corrections tool's own warning at the point of use is still open.)* **(e) done
+(29 Oct 2026):** v4's worry was a correction shutting the bill out of a half-hour for good, so the tool was
+to be the last resort, with a warning. v5 offers it only without the supplier API (data management design
+§1 (3)), where no bill comes to be shut out, and the range re-fetch replaces a correction. The routes
+held the rule only on the page: `/api/corrections/preview` and `/apply` now answer 409 `supplier_api`
+in any API mode, and the API-settled gate they kept for an API account (`api_settled_only`,
+`_corrections_unreconciled_count`) is gone with it. The modal says what replaces a correction: nothing
+automatically; with the supplier API, *Re-fetch* on the data heatmap. On real data staging (an API
+account) carries 35 corrections from v4, 30 Jun – 11 Sep 2026, all with DCC kWh and one with a bill
+cached (agreeing); the other 34 have never been asked, as no automatic pass reaches a corrected
+half-hour — left for *Re-fetch*, as the design decided for migrated corrections. A count of them on
+the health strip would be a new feature (BL-88–90). **(d) closed, not built (29 Oct 2026, the user):** the
 proposal was to stop stamping `finalised_from_cad` automatically past the horizon
 (`finalise_past_horizon_blocks`) and stamp it only on the user's acceptance that the usage is
 unrecoverable. In v4 the flag made a half-hour look final; in v5 it means only that EMT stops asking.
