@@ -4,15 +4,15 @@
 [design/EMT-v5_architecture.md](design/EMT-v5_architecture.md); the reasoning behind the ordering is
 in [design/EMT-v5_programme.md](design/EMT-v5_programme.md) — this file tracks state only.*
 
-**Nothing here has shipped.** EMT is pre-release.
+**No release has shipped** — EMT is pre-release. ✅ marks work done on `dev`; each names the PR or commit that did it.
 
 **How this gets built** ([architecture §6](design/EMT-v5_architecture.md)): v4 shipped **4.5.14** and
 is frozen to **critical fixes only** (data loss, crash-on-start, a pricing error), each ported here as
 its forward fix. This repository was seeded with a verbatim copy of 4.5.14 (suite **2,764** green at
-the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below deconstruct it. v4 is at
-**4.5.23**; the import floor is **4.5.23** (E).
+the seed, 21 Sep 2026; **3,605** on 4 Oct 2026; **4,552** on 28 Oct 2026) and the workstreams below
+deconstruct it. v4 is at **4.5.24**; the import floor is **4.5.23** (E).
 
-*Refreshed 12 Oct 2026.*
+*Refreshed 29 Oct 2026 — every item's status checked against the code and the merged PRs.*
 
 | # | Workstream | Depends on | State |
 |---|---|---|---|
@@ -20,9 +20,9 @@ the seed, 21 Sep 2026; **3,605** on 4 Oct 2026) and the workstreams below decons
 | B | Job coordinator (v4 BL-50) | A | ✅ all six acceptances met — 6 on the Pi, 5 Oct 2026 |
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | ✅ closed 5 Oct 2026 — queries asserted in CI (#102), time on the Pi (#64) |
-| E | Importer | A–D | 🔨 built 10 Oct 2026 (#122–#128, step 5 done), spec v21, floor 4.5.23 (positive fixture taken 12 Oct) — open: the Pi timing |
-| F | Carried from v4's backlog | — | 📋 9 items open, 1 done (BL-50 = B) |
-| G | Local tariff store | A, B | 📝 proposed 4 Oct 2026 |
+| E | Importer | A–D | 🔨 built 10 Oct 2026 (#122–#128, step 5 done), spec v29, floor 4.5.23 (positive fixture taken 12 Oct) — open: the Pi timing |
+| F | Carried from v4's backlog | — | 📋 open: BL-47, BL-64, BL-76, BL-63's rounding residue, BL-75 (d) and part of (e); the rest done (§F) |
+| G | Local tariff store | A, B | ✅ G1, the agreements, done 28 Oct 2026 (#320–#325, #327); G2, the rates, dropped (#326) |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
 
 ---
@@ -476,12 +476,15 @@ half-hours still arrive at 5%. No resync hint has fired (`measured_vat_resync` a
 0% only where BL-82's re-run re-costed them.
 
 **BL-84 — a heatmap of half-hours missing their House/EV split, on IOG tariffs.** Proposed 12 Oct
-2026; **folded into BL-85 the same day**, as its split layer. On 10 Oct Octopus's first breakdown
+2026; **folded into BL-85 the same day**, as its split layer — done with it (the split states on the Import
+bill, #196). On 10 Oct Octopus's first breakdown
 put a night's charging on the house, and nothing on any surface showed it (v4 4.5.23, #510). On the 12
 Oct production copy, 7 of 707 completed dispatches since 7 Jul had no split: 10 Oct's six, and one the
 hourly carve had not reached.
 
-**BL-85 — surfaces that say what has settled, and what needs attention.** Proposed 12 Oct 2026 (the
+**BL-85 — surfaces that say what has settled, and what needs attention.** ✅ *Parts 1–3 done 13–17 Oct
+2026: the pill (#150), the views by settlement state (#153; the Split view folded into the Import bill,
+#196), the detail panel (#154) and acting on a selection (#156, #162). Part 4 not checked.* Proposed 12 Oct 2026 (the
 user), from BL-82's model. *Design: [EMT-v5_settlement_surfaces_design.md](design/EMT-v5_settlement_surfaces_design.md) (parts 2–3 and BL-86, draft 13 Oct 2026).* Three parts; the detail needs refining before it is built.
 
 1. **The chart pill tells the truth.** *Done 13 Oct 2026: it names the stages — "⏳ 63 awaiting kWh · … awaiting bill · … awaiting split" — from `/api/billing-source`'s `awaiting`; the dev backup of that morning read 63 / 0 / 0.* The Charts pill reads "N blocks awaiting **cost** settlement",
@@ -510,7 +513,8 @@ user), from BL-82's model. *Design: [EMT-v5_settlement_surfaces_design.md](desig
    as 4.5.23's bug returning. The line, the bar and the cost should tell one story, or the half-hour
    should be marked provisional.
 
-**BL-86 — re-fetch Octopus's figures for a range without deleting it.** Proposed 12 Oct 2026 (the
+**BL-86 — re-fetch Octopus's figures for a range without deleting it.** ✅ *Done 13–14 Oct 2026: the
+engine (#155), the UI (#156), and its fixes (#159, #162, #163, #167, #170, #171).* Proposed 12 Oct 2026 (the
 user). *Engine built 13 Oct 2026 (settlement surfaces PR 3): preview into memory, then apply only
 what differs; the UI is PR 4.* Octopus restates history: #505's October VAT (not yet seen to happen) and 10 Oct's split
 (seen, two days later). EMT asks once and keeps the answer, so a restatement only reaches it through a
@@ -522,7 +526,9 @@ range, compared against what is stored, applied only where it differs, leaving d
 that did not change and every user correction alone. The general form of 4.5.22's resync and 4.5.23's
 re-fetch; BL-85's context menus are its front end.
 
-**BL-87 — apply recorder history automatically on a historical API import.** Proposed 12 Oct 2026 (the
+**BL-87 — apply recorder history automatically on a historical API import.** *In part, 21 Oct 2026: an API
+import rebuilds its devices from HA's kept reads (#253), as a refill does — but it does not fetch the
+recorder's statistics itself, which a first install's import needs. Open.* Proposed 12 Oct 2026 (the
 user). A historical import from Octopus brings the main meter's half-hours, but not the devices'
 attribution. The recorder's long-term statistics (hourly) are applied only by a separate manual
 run — `/api/historical/attribute/start`, one device at a time with the sensors the user picks, from the
@@ -533,18 +539,23 @@ the one the recorder kept, and what the import says when the recorder has none. 
 because it is worth having on its own — a first install's history is imported this way — and because
 BL-86's whole point is not to need it.
 
-**BL-88 — one data-tools surface, driven by the selection.** Proposed 15 Oct 2026 (the user, from
+**BL-88 — one data-tools surface, driven by the selection.** ✅ *Done 17–22 Oct 2026, through the Data
+Management rework (data management design, #239): gap fill on the heatmap (#213), Delete… on it (#232),
+the page rebuilt round it (#241), the selection's actions (#262); the sub-pages retired.* Proposed 15 Oct 2026 (the user, from
 the PR 5 Pi check). Delete Blocks, Gap fill, Historical import, Corrections and the re-fetch each have
 their own page and range inputs, so fixing an issue means remembering a date from a chart and typing it
 again. Wanted: every tool an action on a heatmap selection, in one shape — preview, a required backup,
 apply. Gap fill's long-period engine is kept. Draft: `docs/design/EMT-v5_data_tools_design.md` §1.
 
-**BL-89 — a data-quality strip on Usage Stats.** Proposed 15 Oct 2026 (the user). A thin strip by the
+**BL-89 — a data-quality strip on Usage Stats.** ✅ *Done differently, 21 Oct 2026: the strip is Data
+Management's health strip (#241, #248, #254), not one on Usage Stats (data management design).* Proposed 15 Oct 2026 (the user). A thin strip by the
 date axis, one cell per bar, coloured by the worst settlement state; clicking it opens the heatmap at
 that day or month, selected. Needs a heatmap deep link (none exists) and a per-bar settlement summary.
 Draft: same note §2.
 
-**BL-90 — soft delete.** Proposed 15 Oct 2026 (the user). A delete today removes the half-hours recorded
+**BL-90 — soft delete.** ✅ *Done 19–21 Oct 2026 (soft delete design): HA's reads kept apart (#229, #230), a
+refill rebuilding its devices from them (#231), whole half-hours deleted from the heatmap (#232, #253),
+an imported export deleted on its own (#228).* Proposed 15 Oct 2026 (the user). A delete today removes the half-hours recorded
 live from HA — the blocks and HA's registers at their edges — and they cannot be got back (HA's
 recorder keeps detail ~10 days; `reads`, once thought lost with them, has never been written). Wanted:
 *Delete* hides and keeps the rows, *Restore* brings them back, *Delete permanently* runs today's delete.
@@ -720,19 +731,19 @@ settled cost still at 5% VAT), not the sweep.
 critical fixes only, so everything below is v5 work; the v4 entries point here. Each keeps its v4
 number. Order is the agreed one — deletions first, while they are cheapest.*
 
-| # | Item | Kind | State in v5 (checked 4 Oct 2026) |
+| # | Item | Kind | State in v5 (checked 29 Oct 2026) |
 |---|---|---|---|
 | — | **BL-50** — unify user-job mutual exclusion | architecture | ✅ **is workstream B** |
 | 1 | **BL-33** — remove the one-time legacy migrations | deletion | ✅ **done 4 Oct 2026** — #78 (below) |
 | 2 | **BL-61 (1)** — remove the SMB rate-repair migration | deletion | ✅ **already done, 28 Sep 2026** (1156508; guarded by `tests/test_v4_heals_removed.py`) — §F's first draft said otherwise without checking |
 | 3 | **BL-63** — two pricing models: adopt the live one | deletion | ✅ **deletion done 4 Oct 2026** — the rounding residue is still open (below) |
 | 4 | **BL-74** — retire the `needs_review` writes nothing displays | deletion + fix | ✅ **done 4 Oct 2026** — all of it, and the review list with it (below) |
-| 5 | **BL-61 (5)** — rename `rate_source` `'measured'` → `'settled'` | schema | with step 5; the importer maps the value |
-| 6 | **BL-76** — proportional device grid split | correctness | forward rule; history re-derived by the importer |
-| 7 | **BL-75** — settlement visibility | correctness | all six parts apply; split it |
-| 8 | **BL-47** — auto-attribution after a gap fill | feature | attribution is a coordinator member now |
-| 9 | **BL-60** — block inspector | feature | a per-block endpoint on C's API |
-| 10 | **BL-64** — bill-parser fixtures + a pypdf bump gate | tooling | ports as is |
+| 5 | **BL-61 (5)** — rename `rate_source` `'measured'` → `'settled'` | schema | ✅ **done 10 Oct 2026** — schema 2 (205a973); the importer maps the value |
+| 6 | **BL-76** — proportional device grid split | correctness | 📋 **open** — `_apply_pass2` still draws greedily by rank (checked 29 Oct 2026) |
+| 7 | **BL-75** — settlement visibility | correctness | ✅ mostly done (below) — open: (d), and (e)'s warning in the corrections tool |
+| 8 | **BL-47** — auto-attribution after a gap fill | feature | 📋 **open** in its v4 form; a refill now rebuilds its devices from HA's kept reads (#231, BL-90) |
+| 9 | **BL-60** — block inspector | feature | ✅ **closed 29 Oct 2026** (the user) — the heatmap's detail panel (#154) is it |
+| 10 | **BL-64** — bill-parser fixtures + a pypdf bump gate | tooling | 📋 **open** — needs real bills |
 
 **Deletions (1–4).** The floor (E) is what makes them safe: every database v5 admits was opened by
 4.5.19, so every one-time migration and heal in that range has already run. They go under the
@@ -821,7 +832,12 @@ as a heal becomes the importer re-deriving `imp_kwh_grid` from stored `imp_kwh` 
 change. Delete the dead `unprotected` branch and decide on `kwh_battery` (computed, discarded) in the
 same change.
 
-**BL-75 — settlement visibility.** Split into: (b) widen the cost fetch beyond IOG/INTELLI (still
+**BL-75 — settlement visibility.** *Status, 29 Oct 2026:* (a) done — the pill names its stages (#150);
+(b) decided — only an Intelligent agreement's half-hours are asked, a published tariff's being final by
+its own rate (#319); (c) done — the ask record, its backoff and the 30-day give-up (engine step 3,
+#293–#296; `abandoned`, #227); (e) in part — a range re-fetch replaces a correction with the bill (#163);
+(f) done differently — a re-fetch from the heatmap's selection (#156), not from the pill. **Open:** (d), and (e)'s warning at the point
+of use. Split into: (b) widen the cost fetch beyond IOG/INTELLI (still
 gated at `measure_settled_dispatched_blocks`) and keep the agreement floor; (c) a per-slot attempt
 count with backoff and a terminal state; (a) the pill reporting both frontiers; (e)/(f) the
 corrections tool as last resort and retry from the pill. *(e) in part, 14 Oct 2026: a range
@@ -830,7 +846,7 @@ out for good — the corrections tool's own warning at the point of use is still
 `finalised_from_cad` automatically past the horizon (`finalise_past_horizon_blocks`), and stamp it only
 on the user's acceptance that the usage is unrecoverable.
 
-**BL-47, BL-60, BL-64** — as time allows. BL-60's design is in the v4 repository
+**BL-47, BL-64** — as time allows. (BL-60, the block inspector, closed 29 Oct 2026: the heatmap's detail panel, #154, is it.) BL-60's design was in the v4 repository
 (`docs/design/EMT-BL60_block_inspector_pre_post_settlement.md`). BL-64 needs real bills to build the
 redacted fixtures, and a redaction check that fails loudly; v5 already pins pypdf 6.18.0.
 

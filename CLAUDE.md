@@ -68,7 +68,7 @@ since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-man
 | `docs/design/EMT-v5_published_tariff_final_design.md` | a published tariff's half-hour final by its own agreement's rate, checked, at any age; CSV grey on any tariff (decided) |
 | `docs/design/EMT-v5_G_tariff_agreements_design.md` | ROADMAP §G's first half: the account's agreements stored, read before discovery, fetched in the restore's phase 2 before a v4 import settles; `no_agreement` for another supplier's or a gap's half-hours (decided) |
 | `docs/design/EMT-v5_A1_writer_thread_design.md` | ROADMAP §A.1: why commits stall the loop on the SD card, and the writer thread |
-| `docs/ROADMAP.md` | open backlog, priority ordered — nothing in it has shipped |
+| `docs/ROADMAP.md` | the open backlog and each item's status — ✅ done on `dev` with its PR (no release has shipped) |
 | `docs/CONTRIBUTING.md`, `docs/DEVELOPMENT.md` | branch model, PR flow, what a change must carry |
 | `CHANGELOG.md` | user-facing history in the project's voice |
 
