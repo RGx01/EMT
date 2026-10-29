@@ -6730,16 +6730,28 @@ def _collapse_rate_tiers(tiers_list):
     bill_card.rate_rows / energy_charts._collapse_rate_kwh apply to Agile's ~48 rates a
     day, so Usage Insights and Billing fold identically (#371). The average rate is
     Σcost / Σkwh, so a net plunge-credit period reads NEGATIVE (sign preserved).
-    `collapsed` + `n_rates` let the renderer label it 'avg of N rates'."""
+    `collapsed` + `n_rates` let the renderer label it 'avg of N rates'. Rates within
+    bill_card.RATE_MERGE_EPS are one tier first, as on the Billing view; N counts the rates."""
     import energy_charts as _ec
+    import bill_card as _bc
+    n_rates, whole = len(tiers_list), tiers_list
+    to = _bc.merge_near_rates({t["rate"]: t["kwh"] for t in tiers_list})
+    merged = {}
+    for t in tiers_list:
+        m = merged.setdefault(to[t["rate"]], {"rate": to[t["rate"]], "kwh": 0.0, "cost": 0.0, "blocks": 0})
+        m["kwh"] += t["kwh"]
+        m["cost"] += t["cost"]
+        m["blocks"] += t.get("blocks", 0)
+    tiers_list = sorted(({**m, "kwh": round(m["kwh"], 3), "cost": round(m["cost"], 4)}
+                         for m in merged.values()), key=lambda x: x["rate"])
     if len(tiers_list) <= _ec._MAX_RATE_ROWS:
         return tiers_list
-    tot_kwh  = round(sum(t["kwh"]  for t in tiers_list), 3)
-    tot_cost = round(sum(t["cost"] for t in tiers_list), 4)
-    tot_blk  = sum(t.get("blocks", 0) for t in tiers_list)
+    tot_kwh  = round(sum(t["kwh"]  for t in whole), 3)
+    tot_cost = round(sum(t["cost"] for t in whole), 4)
+    tot_blk  = sum(t.get("blocks", 0) for t in whole)
     avg = round(tot_cost / tot_kwh, 6) if tot_kwh else 0.0
     return [{"rate": avg, "kwh": tot_kwh, "cost": tot_cost, "blocks": tot_blk,
-             "collapsed": True, "n_rates": len(tiers_list)}]
+             "collapsed": True, "n_rates": n_rates}]
 
 
 def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:

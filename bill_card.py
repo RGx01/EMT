@@ -34,6 +34,30 @@ MAX_RATE_ROWS = 5
 # block is a separate 'mixed' bucket, never grouped by rate at all.
 SPLIT_BAND_EPS = 0.0015
 
+# Rates within this (£/kWh) are one row: a unit of the 4-dp rate the rows print, so a member's own
+# label is at most one in the last place from its row's (BL-63's rounding residue, 29 Oct 2026).
+# Within, not nearer than: the bill card's rates arrive keyed at 4 dp (billing.py), so 0.290227 and
+# 0.290286 come as 0.2902 and 0.2903, a unit apart. v4's history holds
+# one band at two precisions — Octopus's published inc rate (0.323092) and exc × 1.05 (0.32309235)
+# — and blends worked back from a rounded cost (0.290211, 0.290227, …); counted apart they pushed
+# an IOG month past MAX_RATE_ROWS into one "avg of N rates" row. Not chained, unlike
+# SPLIT_BAND_EPS: a member is within this of its row's rate, so Agile's real rates stay apart.
+RATE_MERGE_EPS = 1e-4
+
+
+def merge_near_rates(weights):
+    """{rate: weight} → {rate: the rate of its row}. Heaviest first, a rate joins the first row
+    whose rate is within RATE_MERGE_EPS of it, else starts its own; a row keeps its heaviest rate.
+    The caller sums its figures by the returned rate, so no total moves."""
+    reps, out = [], {}
+    for r in sorted(weights, key=lambda x: (-abs(weights[x]), x)):
+        to = next((p for p in reps if abs(r - p) <= RATE_MERGE_EPS + 1e-12), None)
+        if to is None:
+            reps.append(r)
+            to = r
+        out[r] = to
+    return out
+
 
 def paren(v, n):
     """A negative figure in parentheses, as a bill prints it."""
@@ -50,7 +74,20 @@ def rate_rows(channels, totals=None):
     {kwh, cost} for it), when given (6 Oct 2026). Summed from hundreds of per-rate figures each
     rounded to the penny, it drifted: an Agile battery's September read £16.08 on the bill
     against £16.10 on the Overview and Usage Stats. With the rate rows shown, the Total stays
-    their sum, so the rows on the page add up."""
+    their sum, so the rows on the page add up.
+
+    A rate of 0 kWh and £0 (half-hours with no rate, keyed 0.0; a device's rate with no grid share)
+    is not a row — the day panel drops it too — and rates within RATE_MERGE_EPS are one row. The
+    fold's "avg of N" still counts the rates themselves, merged or not."""
+    channels = {r: d for r, d in channels.items() if round(d["kwh"], 3) or round(d["cost"], 2)}
+    n_rates = len(channels)
+    to = merge_near_rates({r: d["kwh"] for r, d in channels.items()})
+    merged = {}
+    for r, d in channels.items():
+        m = merged.setdefault(to[r], {"kwh": 0.0, "cost": 0.0})
+        m["kwh"] += d["kwh"]
+        m["cost"] += d["cost"]
+    channels = merged
     rates = sorted(channels)
     total_kwh = 0.0
     total_cost = 0.0
@@ -62,7 +99,7 @@ def rate_rows(channels, totals=None):
                 total_kwh  += round(channels[rate]["kwh"],  3)
                 total_cost += round(channels[rate]["cost"], 2)
         avg = (total_cost / total_kwh) if total_kwh else 0.0
-        rows = [{"type": "rate", "rate": f"{avg:.4f}", "note": {"avg": len(rates)},
+        rows = [{"type": "rate", "rate": f"{avg:.4f}", "note": {"avg": n_rates},
                  "kwh": f"{total_kwh:.3f}", "cost": paren(total_cost, 2)}]
         return rows, round(total_kwh, 3), round(total_cost, 2)
     rows = []

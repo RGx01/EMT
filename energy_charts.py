@@ -142,12 +142,18 @@ def _collapse_rate_kwh(rate_kwh):
     Direct-import and per-device lines fold the same way on Agile. Weighting is by
     kWh (Σ rate·kwh ÷ Σ kwh) since only kWh is available here; that equals cost ÷ kWh
     when cost = rate·kwh, so it agrees with the summary's cost-weighted average. Only
-    rates with kwh > 0.0001 are counted (matching the renderers' own filter)."""
-    items = [(k, r) for r, k in sorted(rate_kwh.items()) if k > 0.0001]
+    rates with kwh > 0.0001 are counted (matching the renderers' own filter), and rates within
+    bill_card.RATE_MERGE_EPS are one line; n counts the rates themselves."""
+    kept = {r: k for r, k in rate_kwh.items() if k > 0.0001}
+    to = _bc.merge_near_rates(kept)
+    merged = defaultdict(float)
+    for r, k in kept.items():
+        merged[to[r]] += k
+    items = [(k, r) for r, k in sorted(merged.items())]
     if len(items) > _MAX_RATE_ROWS:
         tot_kwh = sum(k for k, _ in items)
         avg = (sum(r * k for k, r in items) / tot_kwh) if tot_kwh else 0.0
-        return [(tot_kwh, avg, len(items))]
+        return [(tot_kwh, avg, len(kept))]
     return [(k, r, None) for k, r in items]
 
 

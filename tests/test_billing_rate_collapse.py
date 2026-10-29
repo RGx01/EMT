@@ -35,14 +35,14 @@ class TestBillRateRowsCollapse(unittest.TestCase):
         self.assertEqual(len(rows), 5)
 
     def test_collapsed_average_is_kwh_weighted(self):
-        # 5 kWh @ 0.10 + 1 kWh @ 0.40 over 6 rates → avg = 0.90 / 6 = 0.15
+        # 5 kWh @ 0.10 + 0.2 kWh at each of 0.40–0.44 → avg = (0.50 + 0.42) / 6.0 = 0.1533. (It was
+        # padded with rates of 0 kWh, £0 — not rows since BL-63's residue, 29 Oct 2026.)
         chans = {round(0.10, 4): {"kwh": 5.0, "cost": 0.50}}
-        for i in range(1, 6):
-            chans[round(0.40 + 0.001 * i, 4)] = {"kwh": 0.0, "cost": 0.0}
-        chans[round(0.40, 4)] = {"kwh": 1.0, "cost": 0.40}
+        for i in range(5):
+            chans[round(0.40 + 0.01 * i, 4)] = {"kwh": 0.2, "cost": round(0.2 * (0.40 + 0.01 * i), 4)}
         rows, tk, tc = bc.rate_rows(chans)
-        self.assertEqual(rows[0]["note"], {"avg": 7})
-        self.assertEqual(rows[0]["rate"], "0.1500")  # 0.90 / 6.0
+        self.assertEqual(rows[0]["note"], {"avg": 6})
+        self.assertEqual(rows[0]["rate"], "0.1533")  # 0.92 / 6.0
 
 
 class TestBillMethodCollapse(unittest.TestCase):
