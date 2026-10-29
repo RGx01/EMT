@@ -21,7 +21,7 @@ deconstruct it. v4 is at **4.5.24**; the import floor is **4.5.23** (E).
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | ✅ closed 5 Oct 2026 — queries asserted in CI (#102), time on the Pi (#64) |
 | E | Importer | A–D | 🔨 built 10 Oct 2026 (#122–#128, step 5 done), spec v29, floor 4.5.23 (positive fixture taken 12 Oct) — open: the Pi timing |
-| F | Carried from v4's backlog | — | 📋 open: BL-47, BL-60, BL-64, BL-76, BL-63's rounding residue, BL-75 (d) and part of (e); the rest done (§F) |
+| F | Carried from v4's backlog | — | 📋 open: BL-47, BL-64, BL-76, BL-63's rounding residue, BL-75 (d) and part of (e); the rest done (§F) |
 | G | Local tariff store | A, B | ✅ G1, the agreements, done 28 Oct 2026 (#320–#325, #327); G2, the rates, dropped (#326) |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
 
@@ -742,7 +742,7 @@ number. Order is the agreed one — deletions first, while they are cheapest.*
 | 6 | **BL-76** — proportional device grid split | correctness | 📋 **open** — `_apply_pass2` still draws greedily by rank (checked 29 Oct 2026) |
 | 7 | **BL-75** — settlement visibility | correctness | ✅ mostly done (below) — open: (d), and (e)'s warning in the corrections tool |
 | 8 | **BL-47** — auto-attribution after a gap fill | feature | 📋 **open** in its v4 form; a refill now rebuilds its devices from HA's kept reads (#231, BL-90) |
-| 9 | **BL-60** — block inspector | feature | 📋 **to decide** — the heatmap's detail panel (#154) covers most of it |
+| 9 | **BL-60** — block inspector | feature | ✅ **closed 29 Oct 2026** (the user) — the heatmap's detail panel (#154) is it |
 | 10 | **BL-64** — bill-parser fixtures + a pypdf bump gate | tooling | 📋 **open** — needs real bills |
 
 **Deletions (1–4).** The floor (E) is what makes them safe: every database v5 admits was opened by
@@ -846,7 +846,7 @@ out for good — the corrections tool's own warning at the point of use is still
 `finalised_from_cad` automatically past the horizon (`finalise_past_horizon_blocks`), and stamp it only
 on the user's acceptance that the usage is unrecoverable.
 
-**BL-47, BL-60, BL-64** — as time allows. BL-60's design is in the v4 repository
+**BL-47, BL-64** — as time allows. (BL-60, the block inspector, closed 29 Oct 2026: the heatmap's detail panel, #154, is it.) BL-60's design was in the v4 repository
 (`docs/design/EMT-BL60_block_inspector_pre_post_settlement.md`). BL-64 needs real bills to build the
 redacted fixtures, and a redaction check that fails loudly; v5 already pins pypdf 6.18.0.
 
