@@ -144,13 +144,58 @@ def _cap_legs(f: Facts, ev: float, *, boost: bool) -> "list | None":
     return [(k, r, b, a) for (k, r, b, a) in segs] if segs else None
 
 
-def _devices(f: Facts, legs: list) -> list:
-    """PASS 2's grid clip (`engine._apply_pass2`), each device priced by leg (§4 (b)).
+def device_grid_shares(grid: float, devices, *, ev_kwh: float = 0.0, has_ev_meter: bool = False,
+                       clamp: bool = True) -> list:
+    """Each device's share of a half-hour's grid import — the one split rule, called by PASS 2
+    (`engine._apply_pass2`) and by `_devices` (BL-76; battery sensor and device split design §2).
 
-    The clip: an EV meter claims grid first, then every other device, largest first; with no EV meter
-    the main's EV is reserved, so the devices fit inside the house. A device past what the grid has
-    left keeps the rest as non-grid supply — unless the main is an unsettled gap block (`clamp` off),
-    where the main is itself an estimate and the device is recorded as read.
+    `devices`: [(kWh read, is an EV meter)], in any order; the shares come back in that order.
+    The EV first: an EV meter claims what it read; with no EV meter the main's dispatch EV (`ev_kwh`)
+    is reserved, so the devices fit inside the house. Every other device then shares what is left in
+    proportion to its reading — `left × kWh / Σ kWh` where they read more than is left, else each its
+    reading. Bounded, order-independent, no cliff (it was largest first, the smallest taking the whole
+    shortfall). A device's reading past its share is its non-grid supply. With `clamp` off — an
+    unsettled gap block, whose main is itself an estimate — a device reading more than the whole
+    grid is recorded as read."""
+    grid = max(float(grid or 0.0), 0.0)
+    kwh = [max(float(k or 0.0), 0.0) for k, _ev in devices]
+    left = grid if has_ev_meter else max(grid - min(max(float(ev_kwh or 0.0), 0.0), grid), 0.0)
+    shares = [0.0] * len(kwh)
+    evs = sorted((i for i, (_k, ev) in enumerate(devices) if ev and kwh[i] > _EPS), key=lambda i: -kwh[i])
+    for i in evs:
+        shares[i] = kwh[i] if (not clamp and kwh[i] > grid) else min(kwh[i], left)
+        left = max(left - shares[i], 0.0)
+    rest = [i for i, (_k, ev) in enumerate(devices) if not ev and kwh[i] > _EPS]
+    for i in [i for i in rest if not clamp and kwh[i] > grid]:
+        shares[i] = kwh[i]                        # recorded as read: the main is an estimate
+        left = max(left - kwh[i], 0.0)
+    rest = [i for i in rest if clamp or kwh[i] <= grid]
+    total = sum(kwh[i] for i in rest)
+    if total <= left + _EPS:
+        for i in rest:
+            shares[i] = kwh[i]
+        return shares
+    # Shared in whole watt-hours, as the meters read: each its proportion rounded down, the watt-hours
+    # left over to the largest remainders — so the shares add up to exactly what is left (never past
+    # the main), every surface sums the same figures, and none passes its own reading.
+    left_wh = int(left * 1000.0 + 1e-6)
+    exact = {i: left_wh * kwh[i] / total for i in rest}
+    wh = {i: int(exact[i]) for i in rest}
+    for i in sorted(rest, key=lambda i: (-(exact[i] - wh[i]), -kwh[i], i))[:left_wh - sum(wh.values())]:
+        wh[i] += 1
+    for i in rest:
+        shares[i] = min(wh[i] / 1000.0, kwh[i])
+    return shares
+
+
+def _devices(f: Facts, legs: list) -> list:
+    """PASS 2's grid clip (`device_grid_shares`, the one rule), each device priced by leg (§4 (b)).
+
+    The clip: an EV meter claims grid first, then every other device shares what is left in
+    proportion to its reading (BL-76); with no EV meter the main's EV is reserved, so the devices fit
+    inside the house. A device past its share keeps the rest as non-grid supply — unless the main is
+    an unsettled gap block (`clamp` off), where the main is itself an estimate and the device is
+    recorded as read.
 
     The price: the legs are two pools, the EV legs and the house legs. A device draws from its own
     pool first (the EV meter the EV legs, every other device the house legs) and then from the other,
@@ -163,14 +208,14 @@ def _devices(f: Facts, legs: list) -> list:
         p[1] += k * r
     blend = {a: (p[1] / p[0] if p[0] > _EPS else None) for a, p in pools.items()}
     fallback = next((b for b in (blend["house"], blend["ev"]) if b is not None), 0.0)
-    has_ev_meter = any(d.is_ev for d in f.devices)
-    grid = max(f.kwh, 0.0)
-    left = grid if has_ev_meter else max(grid - min(max(f.ev_kwh, 0.0), grid), 0.0)
+    shares = device_grid_shares(f.kwh, [(d.kwh, d.is_ev) for d in f.devices], ev_kwh=f.ev_kwh,
+                                has_ev_meter=any(d.is_ev for d in f.devices), clamp=f.clamp)
+    share = {d.meter_id: s for d, s in zip(f.devices, shares)}
+    # priced in a fixed order — the EV first, then by reading — so a pool that runs dry is met the same way
     order = sorted((d for d in f.devices if d.kwh > _EPS), key=lambda d: (0 if d.is_ev else 1, -d.kwh))
     out = {}
     for d in order:
-        claimed = d.kwh if (not f.clamp and d.kwh > grid) else min(d.kwh, left)
-        left = max(left - claimed, 0.0)
+        claimed = share[d.meter_id]
         cost, need = 0.0, claimed
         for a in (("ev", "house") if d.is_ev else ("house", "ev")):
             p = pools[a]

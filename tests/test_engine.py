@@ -1310,8 +1310,8 @@ class TestPass2SubMeterExceedsParent(unittest.TestCase):
 
     def test_the_clip_keeps_the_ha_reading(self):
         """GUARD (6 Oct 2026): clipping cuts the device's GRID share only. Its own reading from
-        Home Assistant — kwh, and the register reads it came from — is kept as recorded, and the
-        part the grid did not supply is kwh_battery, so grid + battery is still the reading."""
+        Home Assistant — kwh, and the register reads it came from — is kept as recorded; the part
+        the grid did not supply is kwh − kwh_grid (BL-76: no longer stored as kwh_battery)."""
         block = self._make_block(main_kwh=3.659, sub_kwh=5.01, interpolated=False)
         imp = block["meters"]["ev_charger"]["channels"]["import"]
         imp["read_start"], imp["read_end"] = 1200.0, 1205.01
@@ -1320,7 +1320,7 @@ class TestPass2SubMeterExceedsParent(unittest.TestCase):
         self.assertEqual(imp["kwh"], 5.01)
         self.assertEqual((imp["read_start"], imp["read_end"]), (1200.0, 1205.01))
         self.assertAlmostEqual(imp["kwh_grid"], 3.659, places=4)
-        self.assertAlmostEqual(imp["kwh_grid"] + imp["kwh_battery"], 5.01, places=6)
+        self.assertNotIn("kwh_battery", imp)
 
     def test_gap_block_energy_preserved(self):
         """Gap (interpolated) block: sub-meter exceeding grid is preserved as-is."""

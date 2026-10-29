@@ -2460,8 +2460,9 @@ def _import_rate_or_fallback(block_start: str, meter_id: str, imp_ch: dict) -> f
 def _apply_pass2(block: dict) -> None:
     """
     PASS 2 — grid-authoritative sub-meter distribution.
-    Clips each sub-meter's import to what the parent grid import can supply,
-    sets kwh_grid and kwh_battery on each sub-meter channel.
+    Clips each sub-meter's import to what the parent grid import can supply, and sets kwh_grid
+    on each sub-meter channel — the share `settle.device_grid_shares` gives it (BL-76). Its
+    reading past that share is its non-grid supply, `kwh − kwh_grid`.
     Called from both finalise_block and build_gap_blocks.
     """
     # v4 #493: the main meter's rogue-total backstop at the shared write point. The
@@ -2524,7 +2525,6 @@ def _apply_pass2(block: dict) -> None:
         if parent_rate is None:
             parent_rate = _import_rate_or_fallback(block.get("start", ""),
                                                    parent_meter_name, parent_import)
-        grid_remaining = grid_kwh
         # BL-19: is the main's grid import authoritative? A DCC-settled main
         # (imp_kwh_api present) is the true grid boundary for the block, so the
         # sub-meter invariant (Σ sub kwh_grid ≤ main grid import) MUST be
@@ -2568,7 +2568,6 @@ def _apply_pass2(block: dict) -> None:
                     sub_import["read_start"] = _re
                 sub_import["kwh"] = 0.0
                 sub_import["kwh_grid"] = 0.0
-                sub_import["kwh_battery"] = 0.0
                 sub_import["cost"] = 0.0
                 continue
             if delta < 0:
@@ -2592,7 +2591,6 @@ def _apply_pass2(block: dict) -> None:
                 sub_import["rate"]        = parent_rate
                 sub_import["cost"]        = 0.0
                 sub_import["kwh_grid"]    = 0.0
-                sub_import["kwh_battery"] = 0.0
                 continue
             entry = {
                 "meter_name": meter_name, "meter_block": meter_block,
@@ -2600,33 +2598,23 @@ def _apply_pass2(block: dict) -> None:
             }
             protected.append(entry)  # all sub-meters are protected (inverter_possible removed)
 
-        # Grid-attribution priority: the EV claims grid import FIRST, then every
-        # other device (batteries, heat pump) clips to whatever grid remains.
-        # EV charging is grid-charging by design — on IOG/smart-charge the supplier
-        # is deliberately pulling cheap grid for the car — so the car's import must
-        # land on the grid, not get squeezed out. The old order (biggest draw first)
-        # handed the whole grid pool to a simultaneously-charging battery and
-        # labelled the car's grid charge as battery-sourced, so the car vanished
-        # from the grid view until the battery filled (issue #212). Whatever the
-        # battery then can't source from grid is its own non-grid (solar) charge.
-        def _grid_priority(e):
-            is_ev = ((e["meter_block"].get("meta", {}) or {}).get("meter_type")
-                     == "ev")
-            return (0 if is_ev else 1, -e["kwh"])   # EVs first, then desc by kWh
-        # v4 4.5.21 forward fix: on a DISPATCH-ONLY account (the main carries Octopus's dispatch
-        # EV, `kwh_ev`, and no device is an EV meter) the car's grid is reserved before the
-        # devices are fitted, so they fit inside the house = grid − EV. Without it a battery
-        # charging alongside the car kept grid the car used, the EV then had nothing left to sit
-        # in, and the devices were never re-fitted once the completed dispatch arrived. With an
-        # EV meter the meter IS the EV and claims first (above), so this does nothing there. The
-        # remainder keeps its shape: grid − devices, the EV inside it — it simply can no longer
-        # be smaller than the EV.
+        # Grid attribution (BL-76, the battery sensor and device split design §2): the EV claims grid
+        # import FIRST, then every other device shares what remains in proportion to its reading.
+        # EV charging is grid-charging by design — on IOG/smart-charge the supplier is deliberately
+        # pulling cheap grid for the car — so the car's import must land on the grid, not get
+        # squeezed out: biggest-draw-first handed the whole grid pool to a simultaneously-charging
+        # battery and the car vanished from the grid view until the battery filled (issue #212).
+        # The rest shared largest first until BL-76 — the smaller device absorbed the whole shortfall.
+        # v4 4.5.21 forward fix: on a DISPATCH-ONLY account (no device is an EV meter) the main's
+        # dispatch EV (`kwh_ev`) is reserved before the devices are fitted, so they fit inside the
+        # house = grid − EV; with an EV meter the meter IS the EV. One rule, shared with settle().
+        import settle as _st
+        _is_ev = lambda e: ((e["meter_block"].get("meta", {}) or {}).get("meter_type")
+                            in _st.EV_METER_TYPES)
+        _has_ev_meter = any(_is_ev(e) for e in protected)
         _dispatch_ev = 0.0
-        if not any(((e["meter_block"].get("meta", {}) or {}).get("meter_type") in ("ev", "ev_charger"))
-                   for e in protected):
+        if not _has_ev_meter:
             _dispatch_ev = min(max(float(parent_import.get("kwh_ev") or 0.0), 0.0), max(grid_kwh, 0.0))
-            grid_remaining = max(grid_kwh - _dispatch_ev, 0.0)
-        protected.sort(key=_grid_priority)
 
         is_interpolated = block.get("interpolated", False)
         # BL-19: enforce the sub-meter grid invariant unless this is an UNSETTLED
@@ -2639,36 +2627,23 @@ def _apply_pass2(block: dict) -> None:
         # (e.g. overnight) grid draw into free self-consumption and under-bill.
         # Settlement re-runs PASS 2 (imp_kwh_api set), so those self-correct then.
         clamp_overflow = parent_settled or not is_interpolated
-        for entry in protected:
-            claimed = min(entry["kwh"], grid_remaining)
-            if entry["kwh"] > grid_kwh:
-                if not clamp_overflow:
-                    # Unsettled gap block — preserve energy attribution even if it
-                    # exceeds grid import (the main is also an estimate here).
-                    if not _pass2_quiet: logger.warning(
-                        "PASS 2: %s sub-meter %.4f kWh EXCEEDS parent grid import %.4f kWh — "
-                        "unsettled gap block, recording as-is (settlement will re-clamp).",
-                        entry["meter_name"], entry["kwh"], grid_kwh,
-                    )
-                    claimed = entry["kwh"]
-                else:
-                    # Authoritative main (live or DCC-settled) — clip to grid
-                    # import; the sub-meter cannot exceed what the house imported.
-                    if not _pass2_quiet: logger.warning(
-                        "PASS 2: %s sub-meter %.4f kWh EXCEEDS parent grid import %.4f kWh — "
-                        "clipping to grid import (%s).",
-                        entry["meter_name"], entry["kwh"], grid_kwh,
-                        "settled" if parent_settled else "live",
-                    )
-                    claimed = grid_remaining  # already set to min above
-            elif claimed < entry["kwh"]:
-                if not _pass2_quiet: logger.warning(
+        _shares = _st.device_grid_shares(grid_kwh, [(e["kwh"], _is_ev(e)) for e in protected],
+                                         ev_kwh=_dispatch_ev, has_ev_meter=_has_ev_meter,
+                                         clamp=clamp_overflow)
+        for entry, claimed in zip(protected, _shares):
+            if entry["kwh"] > grid_kwh and not _pass2_quiet:
+                logger.warning(
+                    "PASS 2: %s sub-meter %.4f kWh EXCEEDS parent grid import %.4f kWh — %s.",
+                    entry["meter_name"], entry["kwh"], grid_kwh,
+                    "clipping to its grid share (%s)" % ("settled" if parent_settled else "live")
+                    if clamp_overflow else
+                    "unsettled gap block, recording as-is (settlement will re-clamp)")
+            elif claimed < entry["kwh"] - 1e-9 and not _pass2_quiet:
+                logger.warning(
                     "PASS 2: %s protected load %.4f kWh clipped to %.4f kWh",
                     entry["meter_name"], entry["kwh"], claimed,
                 )
-            grid_remaining = max(grid_remaining - claimed, 0.0)
             entry["sub_import"]["kwh_grid"]    = claimed
-            entry["sub_import"]["kwh_battery"] = entry["kwh"] - claimed
             # Devices always follow the main meter's EFFECTIVE import rate (base
             # tariff + dispatch overlay): grid import is a portion of the main's
             # metered supply, billed at the main's rate, so per-device costs sum
@@ -2679,9 +2654,10 @@ def _apply_pass2(block: dict) -> None:
             entry["sub_import"]["rate"]        = parent_rate
             entry["sub_import"]["cost"]        = round(claimed * parent_rate, 6)
             if not _pass2_quiet: logger.info(
-                "PASS 2: %s protected  grid=%.4f  battery=%.4f",
-                entry["meter_name"], claimed, entry["sub_import"]["kwh_battery"],
+                "PASS 2: %s protected  grid=%.4f  other=%.4f",
+                entry["meter_name"], claimed, entry["kwh"] - claimed,
             )
+        grid_remaining = max(grid_kwh - _dispatch_ev - sum(_shares), 0.0)
 
         remainder_kwh  = max(grid_remaining, 0.0) + _dispatch_ev
 
@@ -3925,7 +3901,6 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
             if sub is None:
                 continue
             sub["kwh_grid"] = d.kwh_grid
-            sub["kwh_battery"] = d.kwh_other
             sub["rate"] = d.rate
             sub["cost"] = d.cost
             sub["cost_exc"] = round(d.cost / (1.0 + (_sf.vat or 0.0)), 6)
@@ -6802,7 +6777,9 @@ async def run_iog_split_carve(max_blocks: int = 2000, starts=None) -> dict:
 
 
 _SETTLE_HISTORY_MARKER = "settle_history_state"    # store_meta key (engine step 4d)
-_SETTLE_HISTORY_VERSION = 1   # raise to settle every half-hour again (settle()'s rules changed)
+# raise to settle every half-hour again (settle()'s rules changed) — 2: the device grid split
+# proportional after the EV (BL-76, 29 Oct 2026)
+_SETTLE_HISTORY_VERSION = 2
 _SETTLE_HISTORY_DAY = timedelta(days=1)
 _SETTLE_HISTORY_PACE_S = 0.02
 _SETTLE_HISTORY_PASS_PACE = 1.0
