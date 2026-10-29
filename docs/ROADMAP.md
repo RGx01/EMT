@@ -21,7 +21,7 @@ deconstruct it. v4 is at **4.5.24**; the import floor is **4.5.23** (E).
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | ✅ closed 5 Oct 2026 — queries asserted in CI (#102), time on the Pi (#64) |
 | E | Importer | A–D | 🔨 built 10 Oct 2026 (#122–#128, step 5 done), spec v29, floor 4.5.23 (positive fixture taken 12 Oct) — open: the Pi timing |
-| F | Carried from v4's backlog | — | 📋 open: BL-47, BL-64, BL-63's rounding residue; the rest done (§F) |
+| F | Carried from v4's backlog | — | 📋 open: BL-47, BL-64; the rest done (§F) |
 | G | Local tariff store | A, B | ✅ G1, the agreements, done 28 Oct 2026 (#320–#325, #327); G2, the rates, dropped (#326) |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
 
@@ -736,7 +736,7 @@ number. Order is the agreed one — deletions first, while they are cheapest.*
 | — | **BL-50** — unify user-job mutual exclusion | architecture | ✅ **is workstream B** |
 | 1 | **BL-33** — remove the one-time legacy migrations | deletion | ✅ **done 4 Oct 2026** — #78 (below) |
 | 2 | **BL-61 (1)** — remove the SMB rate-repair migration | deletion | ✅ **already done, 28 Sep 2026** (1156508; guarded by `tests/test_v4_heals_removed.py`) — §F's first draft said otherwise without checking |
-| 3 | **BL-63** — two pricing models: adopt the live one | deletion | ✅ **deletion done 4 Oct 2026** — the rounding residue is still open (below) |
+| 3 | **BL-63** — two pricing models: adopt the live one | deletion | ✅ **deletion done 4 Oct 2026**; the rounding residue done 29 Oct 2026 (below) |
 | 4 | **BL-74** — retire the `needs_review` writes nothing displays | deletion + fix | ✅ **done 4 Oct 2026** — all of it, and the review list with it (below) |
 | 5 | **BL-61 (5)** — rename `rate_source` `'measured'` → `'settled'` | schema | ✅ **done 10 Oct 2026** — schema 2 (205a973); the importer maps the value |
 | 6 | **BL-76** — proportional device grid split | correctness | ✅ **the split built 29 Oct 2026** — proportional after the EV, in whole watt-hours, one rule (`settle.device_grid_shares`) for PASS 2 and settle() (#331); a battery sensor counting solar flagged on every page, its data unchanged, and the setup text (the evidence #333; the flag #334; `EMT-v5_battery_sensor_and_device_split_design.md`) |
@@ -754,9 +754,9 @@ deletion protocol ([architecture §4a](design/EMT-v5_architecture.md)), and two 
   may share code with the live sweep.
 - **Reachability, re-run.** BL-63's first count ("9 of 11 `pricing_segments` functions dead") was
   wrong in the direction that deletes working code — 8 are live. Trace from real entry points,
-  over-approximating, not by grep. Part of BL-63's rounding residue is already fixed: the
-  reconcile now compares bands by nearness, not price equality (#60); other exact-equality
-  comparisons against a canonical rate may remain.
+  over-approximating, not by grep. BL-63's rounding residue is done (29 Oct 2026): the
+  reconcile compares bands by nearness (#60), and no other exact-equality comparison against a
+  canonical rate remains (below).
 
 **BL-33 — done, 4 Oct 2026 (#78).** Three removals, one commit each, each with its evidence:
 
@@ -786,10 +786,25 @@ judge option 1 and a fixture generated through `reprice_block`); `carbon_from_re
 `house_carbon`; and `pricing_segments`' three unreachable builders, **moved** to
 `tests/segment_helpers.py` rather than deleted, because tests of the eight live projections build
 their segments with them. **`ev_carbon` is live** (`period_ev_saving` calls it) — the architecture's
-module table had listed it for deletion; corrected. **Still open — the rounding residue:** derived
-rates are back-computed from a 6-dp rounded cost rather than carrying the canonical band rate, so an
-exact-equality comparison against a canonical rate can be defeated. #60 fixed the one that caused
-BL-62 (the reconcile's band test); a sweep for the others remains.
+module table had listed it for deletion; corrected. **The rounding residue — done 29 Oct 2026.** The
+worry: derived rates back-computed from a 6-dp rounded cost rather than carrying the canonical band
+rate, so an exact-equality comparison against a canonical rate could be defeated. #60 fixed the one
+that caused BL-62 (the reconcile's band test). The sweep found none left in pricing: settle() and the
+API import take the schedule's rate at 6 dp (`_band_rates`, `_tariff_rate_for`), a single-rate
+half-hour storing it exactly and a blend computed from the unrounded sum; cost ÷ kWh is only a
+fallback; `_sensor_band`, `_imported_cost_band`, `is_off_peak` and the published-tariff check all
+compare with a tolerance against the schedule. v5's own rows (staging from 1 Oct 2026) carry one rate
+per band. What remained was v4's history on the rate-keyed displays: one band at two precisions
+(Octopus's published 0.323092 and exc × 1.05, 0.32309235) and blends worked back from a rounded cost
+(0.290211, 0.290227, …). The bill card keys rates at 4 dp and folds above 5 rows, so the
+Agile-export user's import for Nov 2024 – Jan 2025 read one "avg of 6–8 rates" row. Now rates within
+`bill_card.RATE_MERGE_EPS` (1e-4 £, a unit of the 4-dp rate shown; not chained) are one row on the
+bill card, the day panel and Insights' tiers, and a rate row of 0 kWh and £0 is not shown or counted
+(the day panel already dropped it); the fold's "avg of N" counts the rates themselves. On the Agile
+copy those three months show their four or five real rates. Insights' main tiers were already right
+there — rebuilt from the segments (P4.2) — so only its device tiers (staging's battery, Mar 2026) and
+a period with a half-hour lacking segments change. The goldens moved only by the dropped empty rows
+and the fold's N (187 answers, 0 otherwise).
 
 **BL-74 — done 4 Oct 2026, wider than v4 scoped it.** Nothing in v5 sets or clears `needs_review`
 now: the rogue-block clamps stop flagging (the clamps and warnings stay); settlement reports drift
