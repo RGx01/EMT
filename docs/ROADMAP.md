@@ -21,7 +21,7 @@ deconstruct it. v4 is at **4.5.24**; the import floor is **4.5.23** (E).
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | ✅ closed 5 Oct 2026 — queries asserted in CI (#102), time on the Pi (#64) |
 | E | Importer | A–D | 🔨 built 10 Oct 2026 (#122–#128, step 5 done), spec v29, floor 4.5.23 (positive fixture taken 12 Oct) — open: the Pi timing |
-| F | Carried from v4's backlog | — | 📋 open: BL-47, BL-64; the rest done (§F) |
+| F | Carried from v4's backlog | — | 📋 open: BL-64; the rest done (§F) |
 | G | Local tariff store | A, B | ✅ G1, the agreements, done 28 Oct 2026 (#320–#325, #327); G2, the rates, dropped (#326) |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
 
@@ -741,9 +741,9 @@ number. Order is the agreed one — deletions first, while they are cheapest.*
 | 5 | **BL-61 (5)** — rename `rate_source` `'measured'` → `'settled'` | schema | ✅ **done 10 Oct 2026** — schema 2 (205a973); the importer maps the value |
 | 6 | **BL-76** — proportional device grid split | correctness | ✅ **the split built 29 Oct 2026** — proportional after the EV, in whole watt-hours, one rule (`settle.device_grid_shares`) for PASS 2 and settle() (#331); a battery sensor counting solar flagged on every page, its data unchanged, and the setup text (the evidence #333; the flag #334; `EMT-v5_battery_sensor_and_device_split_design.md`) |
 | 7 | **BL-75** — settlement visibility | correctness | ✅ done (below) — (e) the corrections refused with the supplier API, and the modal's note (29 Oct 2026); (d) closed, not built |
-| 8 | **BL-47** — auto-attribution after a gap fill | feature | 📋 **open** in its v4 form; a refill now rebuilds its devices from HA's kept reads (#231, BL-90) |
+| 8 | **BL-47** — auto-attribution after a gap fill | feature | ✅ **closed 29 Oct 2026** (the user) — a refill rebuilds its devices from HA's kept reads (#231, BL-90); an outage's has nothing to rebuild from (below) |
 | 9 | **BL-60** — block inspector | feature | ✅ **closed 29 Oct 2026** (the user) — the heatmap's detail panel (#154) is it |
-| 10 | **BL-64** — bill-parser fixtures + a pypdf bump gate | tooling | 📋 **open** — needs real bills |
+| 10 | **BL-64** — a pypdf bump gate | tooling | 📋 **open** — the gate only, run against bills kept outside the repo (below) |
 
 **Deletions (1–4).** The floor (E) is what makes them safe: every database v5 admits was opened by
 4.5.19, so every one-time migration and heal in that range has already run. They go under the
@@ -883,9 +883,23 @@ Agile-export user's imported database has a half-hour flagged, or one of its own
 without DCC kWh. Should a red half-hour ever need accepting as final, that is a new feature (as
 `abandoned` is for a bill), not this flag.
 
-**BL-47, BL-64** — as time allows. (BL-60, the block inspector, closed 29 Oct 2026: the heatmap's detail panel, #154, is it.) BL-60's design was in the v4 repository
-(`docs/design/EMT-BL60_block_inspector_pre_post_settlement.md`). BL-64 needs real bills to build the
-redacted fixtures, and a redaction check that fails loudly; v5 already pins pypdf 6.18.0.
+**BL-47 — closed 29 Oct 2026** (the user). Every refill but one rebuilds its devices or never loses
+them: EMT down 12 hours or less, the startup gap fill (`build_gap_blocks`) spreads each device's register
+delta over the gap; a refill over half-hours EMT recorded rebuilds them from `ha_reads` (#231). The one
+left is an outage past the 12-hour limit, which the DCC poll backfills (`create_backfill_block`, "NO
+sub-meter split") — and there HA's recorder has nothing to give: EMT is an add-on on HA's own box, so
+the box was off. On real data it has not happened: neither staging nor the Agile-export user's database
+holds a backfilled half-hour (`interpolated = 2`), and every main half-hour on a day the devices recorded
+has its device rows, but for the day each install's devices began beside a CSV import. *If it is ever
+wanted:* a device whose sensor is its own lifetime counter (a Zappi's, a battery's) still knows its
+energy over the outage — the register delta — which could be spread over the backfilled half-hours by
+the house's shape. A sensor HA integrates from power stops with the box and has no delta. BL-87's
+open half is not this: a first install's history was recorded with the box on.
+
+**BL-64** — as time allows. (BL-60, the block inspector, closed 29 Oct 2026: the heatmap's detail panel, #154, is it.) BL-60's design was in the v4 repository
+(`docs/design/EMT-BL60_block_inspector_pre_post_settlement.md`). BL-64 is the pypdf bump gate only (29 Oct
+2026, the user): bills and their snapshots stay outside the repo, and no bill's text is committed, redacted
+or not; v5 already pins pypdf 6.18.0.
 
 ---
 
