@@ -8707,7 +8707,7 @@ def _corrections_half_hour(data, tz_name, block_minutes=30):
 
 def _corrections_build_where(corr_type, from_date, to_date, channel,
                               from_time_utc, to_time_utc, meter_id, tz_name,
-                              api_settled_only=False, utc_span=None):
+                              utc_span=None):
     """
     Build WHERE clause and params for corrections queries.
 
@@ -8770,48 +8770,28 @@ def _corrections_build_where(corr_type, from_date, to_date, channel,
     if col:
         clauses.append(f"{col} IS NOT NULL")
 
-    if api_settled_only and corr_type == "rate":
-        # API+ gate: only DCC-settled blocks (imp_kwh_api/exp_kwh_api populated)
-        # may have their rate corrected. An unsettled block's kWh — and its
-        # overlay-derived rate — are still going to be rewritten at settlement,
-        # which would clobber the correction.
-        settled_col = "imp_kwh_api" if channel == "import" else "exp_kwh_api"
-        clauses.append(f"{settled_col} IS NOT NULL")
-
     return " AND ".join(clauses), params, col
 
 
-def _corrections_api_gate_active() -> bool:
-    """True when the data-source mode uses the DCC API, so rate corrections must
-    be gated to settled blocks. Pure CAD (no API) has no DCC reconciliation to
-    clobber a correction, so it returns False and corrections apply immediately.
+def _corrections_refused():
+    """A 409 when the data-source mode uses the supplier API, else None (BL-75 (e)).
+
+    Corrections are CAD-only (data management design §1 (3)): with the supplier API Octopus's bill,
+    or the settled kWh × a published rate, is the answer, and a correction would only stand in its
+    way, since no automatic pass touches a corrected half-hour; Re-fetch on the data heatmap is the
+    tool. The Billing tab offers corrections only without the API; this holds the rule on the server.
     """
     try:
         import engine as _eng
-        return bool(_eng.mode_uses_api(_eng.get_data_source_mode()))
+        uses_api = bool(_eng.mode_uses_api(_eng.get_data_source_mode()))
     except Exception:
-        return False
-
-
-def _corrections_unreconciled_count(store, from_date, to_date, channel,
-                                    from_time_utc, to_time_utc, meter_id,
-                                    tz_name, utc_span=None) -> int:
-    """Count in-window rate blocks NOT yet DCC-settled — the ones a gated rate
-    correction will skip — so the UI can tell the user to retry after settlement.
-    """
-    settled_col = "imp_kwh_api" if channel == "import" else "exp_kwh_api"
-    where, params, _ = _corrections_build_where(
-        "rate", from_date, to_date, channel,
-        from_time_utc, to_time_utc, meter_id, tz_name, api_settled_only=False,
-        utc_span=utc_span)
-    # Only MAIN-meter blocks settle via DCC (imp_kwh_api). Device rows never get
-    # imp_kwh_api — they follow the main — so counting them here produced a
-    # spurious "N blocks await settlement" warning (issue #254c).
-    row = store._conn.execute(
-        f"SELECT COUNT(*) AS n FROM blocks WHERE {where} AND {settled_col} IS NULL "
-        f"AND meter_id IN (SELECT meter_id FROM meters WHERE is_sub_meter = 0)",
-        params).fetchone()
-    return int((row["n"] if row else 0) or 0)
+        uses_api = False
+    if not uses_api:
+        return None
+    return jsonify({"error": "supplier_api",
+                    "message": ("Corrections are for accounts without the supplier API. With it, "
+                                "Octopus\u2019s bill is the settled figure: use Re-fetch on the data "
+                                "heatmap.")}), 409
 
 
 _CHARGE_SESSION_BRIDGE_MIN = 180  # minutes; merge bursts within one plug-in period
@@ -9303,6 +9283,9 @@ def api_corrections_preview():
     Returns for rate:     { blocks: [{block_start, meter_id, current_rate,
                                        new_rate, kwh, current_cost, new_cost}] }
     """
+    _refused = _corrections_refused()
+    if _refused:
+        return _refused
     try:
         data       = request.get_json(force=True) or {}
         corr_type  = data.get("type")
@@ -9340,20 +9323,6 @@ def api_corrections_preview():
             corr_type, from_date, to_date, channel,
             from_time_utc, to_time_utc, meter_id, tz_name, utc_span=utc_span
         )
-
-        # API+ gate: rate corrections only touch DCC-settled blocks (see
-        # _corrections_build_where). Pure CAD applies immediately.
-        gate = corr_type == "rate" and _corrections_api_gate_active()
-        skipped = 0
-        if gate:
-            where, params, col = _corrections_build_where(
-                corr_type, from_date, to_date, channel,
-                from_time_utc, to_time_utc, meter_id, tz_name,
-                api_settled_only=True, utc_span=utc_span
-            )
-            skipped = _corrections_unreconciled_count(
-                store, from_date, to_date, channel,
-                from_time_utc, to_time_utc, meter_id, tz_name, utc_span=utc_span)
 
         if corr_type == "standing":
             cur = store._conn.execute(
@@ -9395,7 +9364,7 @@ def api_corrections_preview():
                         "current_cost": round(float(cur_cost or 0), 6), "new_cost": nc}
 
             blocks_out = []
-            # MAIN blocks (settled gate applied in `where`) — cost basis = imp_kwh. Main only
+            # MAIN blocks — cost basis = imp_kwh. Main only
             # under `meter_id = 'all'`, which matches the device rows too: they are listed below
             # at their grid kWh, and were listed twice, the first time at their raw kWh.
             _all = not meter_id or meter_id == "all"
@@ -9428,9 +9397,7 @@ def api_corrections_preview():
                                            r["current_rate"], r["kwh"], r["current_cost"], device=True))
 
             blocks_out.sort(key=lambda b: (b["block_start"], b["meter_id"]))
-            return jsonify({"blocks": blocks_out,
-                            "skipped_unreconciled": skipped,
-                            "api_gated": gate})
+            return jsonify({"blocks": blocks_out})
 
     except Exception as e:
         logger.error("api_corrections_preview: %s", e)
@@ -9482,6 +9449,9 @@ def api_corrections_apply():
     }
     Returns: { updated_blocks: int }
     """
+    _refused = _corrections_refused()
+    if _refused:
+        return _refused
     try:
         data        = request.get_json(force=True) or {}
         corr_type   = data.get("type")
@@ -9542,21 +9512,6 @@ def api_corrections_apply():
                                 "EV / house peak / off-peak breakdown \u2014 let settlement "
                                 "price these, or re-submit with confirmation to override."),
                 }), 409
-
-        # API+ gate: a rate correction only touches DCC-settled blocks; unsettled
-        # ones would be clobbered at settlement, so skip + report them. Pure CAD
-        # applies immediately.
-        gate = corr_type == "rate" and _corrections_api_gate_active()
-        skipped = 0
-        if gate:
-            where, params, col = _corrections_build_where(
-                corr_type, from_date, to_date, channel,
-                from_time_utc, to_time_utc, meter_id, tz_name,
-                api_settled_only=True, utc_span=utc_span
-            )
-            skipped = _corrections_unreconciled_count(
-                store, from_date, to_date, channel,
-                from_time_utc, to_time_utc, meter_id, tz_name, utc_span=utc_span)
 
         # The whole correction runs on the ENGINE thread as ONE unit.
         #
@@ -9629,11 +9584,10 @@ def api_corrections_apply():
                     updated = cur.rowcount
 
                     # Devices follow the main meter's rate, so propagate the corrected
-                    # IMPORT rate onto device rows for the same blocks (issue #254b). The
-                    # settled gate above only matches the main meter — device rows never
-                    # carry imp_kwh_api — so without this the correction silently skipped
-                    # them. Device cost = grid-attributed kWh × rate, exactly what PASS 2
-                    # computes at finalise.
+                    # IMPORT rate onto device rows for the same blocks (issue #254b): a
+                    # correction for one meter, or one the old API-settled gate narrowed to the
+                    # main, skipped them. Device cost = grid-attributed kWh × rate, exactly what
+                    # PASS 2 computes at finalise.
                     if channel == "import" and updated:
                         bs_list = [r["block_start"] for r in st._conn.execute(
                             f"SELECT DISTINCT block_start FROM blocks WHERE {where}", params)]
@@ -9715,8 +9669,7 @@ def api_corrections_apply():
             return _refuse
         updated = _engine_write(_apply_correction, timeout=600.0)
 
-        return jsonify({"ok": True, "updated_blocks": updated,
-                        "skipped_unreconciled": skipped, "api_gated": gate})
+        return jsonify({"ok": True, "updated_blocks": updated})
     except Exception as e:
         logger.error("api_corrections_apply: %s", e)
         return jsonify({"error": str(e)}), 500

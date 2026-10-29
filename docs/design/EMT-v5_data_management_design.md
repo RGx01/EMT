@@ -95,7 +95,9 @@ one rate over the whole half-hour (`imp_cost = imp_kwh × rate`, the segments re
 which cannot express IOG-SMB's EV and house rates. CSV history and bills that never come could use
 it, but not without SMB, and that is not worth building. Usage Stats may take the same modal later.
 **Migrated corrections** are left for the user to fix with *Re-fetch*, which already replaces a
-correction Octopus's bill differs from or agrees with (`confirms`, 15 Oct 2026).
+correction Octopus's bill differs from or agrees with (`confirms`, 15 Oct 2026). The routes hold the rule too:
+with the supplier API `/api/corrections/preview` and `/apply` answer 409 `supplier_api` (BL-75 (e),
+29 Oct 2026).
 
 **(4) The Whole history card** — the jobs that are not a selection, each opening Historical
 Import's flow as a modal (as *Fill this gap…* does), its forms used, not copied:

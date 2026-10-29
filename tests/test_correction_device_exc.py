@@ -2,20 +2,20 @@
 v4 4.5.21 forward fix, ported — a manual rate correction carries the corrected ex-VAT rate onto the
 devices.
 
-On an API account the corrections route only updates the MAIN's settled row with its full
-rewrite (rate, cost, and the ex-VAT rescale of BL-57); devices are carried along afterwards
+On an API account (where v4 found it) the corrections route updated only the MAIN's settled row
+with its full rewrite (rate, cost, and the ex-VAT rescale of BL-57); devices are carried along afterwards
 (#254b), and that step set only their inc rate and cost. Their `imp_rate_exc` / `imp_cost_exc`
 kept the pre-correction band, so a battery or EV on a half-hour corrected to off-peak still read
 peak in every ex-VAT view (prod-dev, 7 Oct 2026: 21 Jul 05:30 and 16:00).
 
 Drives the real route. Discriminating: test_the_devices_take_the_corrected_exc_rate and
 test_reapplying_repairs_a_stale_device fail on the parent. v4's heal for blocks corrected before the
-fix (`corrected_device_exc_done`) is not ported — the 4.5.21 import floor covers it.
+fix (`corrected_device_exc_done`) is not ported — the 4.5.21 import floor covers it. Since BL-75 (e) (29 Oct 2026) the route is CAD-only and no
+longer narrows to settled rows; the devices are still carried, so these run on a CAD account.
 """
 import os
 import sys
 import unittest
-from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(__file__))
 import test_server as TS                       # noqa: E402  (stubs + make_client)
@@ -50,16 +50,16 @@ def _store(device_exc=PEAK_EXC, device_rate=PEAK):
     return st
 
 
-class ACorrectionOnAnApiAccount(unittest.TestCase):
+class ACorrection(unittest.TestCase):
 
     def _correct(self, st):
         client = TS.make_client(store=st)
-        with patch.object(TS.server, "_corrections_api_gate_active", return_value=True):
-            r = client.post("/api/corrections/apply", json={
-                "type": "rate", "channel": "import", "value": OFF, "recalc_cost": True,
-                "from_date": "2026-07-21", "to_date": "2026-07-21",
-                "from_time": "04:30", "to_time": "05:00", "meter_id": "all",
-                "confirm_multiband": True})
+        # a CAD account: corrections are refused with the supplier API (BL-75 (e))
+        r = client.post("/api/corrections/apply", json={
+            "type": "rate", "channel": "import", "value": OFF, "recalc_cost": True,
+            "from_date": "2026-07-21", "to_date": "2026-07-21",
+            "from_time": "04:30", "to_time": "05:00", "meter_id": "all",
+            "confirm_multiband": True})
         self.assertEqual(r.status_code, 200, r.data)
 
     def _row(self, st, meter):

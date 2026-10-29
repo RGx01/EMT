@@ -1313,36 +1313,14 @@ class TestApiCorrections(unittest.TestCase):
                                    msg=f"Cost not recalculated: {row['imp_cost']} != {expected_cost}")
 
 
-class TestCorrectionsApiGate(unittest.TestCase):
-    """API+ gate: rate corrections only touch DCC-settled blocks (imp_kwh_api /
-    exp_kwh_api NOT NULL). Pure CAD (no API) applies immediately. Unsettled
-    blocks would be clobbered at settlement, so they're skipped + reported."""
+class TestCorrectionsAreCadOnly(unittest.TestCase):
+    """BL-75 (e), 29 Oct 2026: corrections are CAD-only (data management design §1 (3)). The routes
+    refuse with the supplier API — no automatic pass touches a corrected half-hour, so a correction
+    there only keeps Octopus's bill out; Re-fetch on the heatmap is the tool. Before, an API account
+    was corrected on its DCC-settled rows. Discriminating: the API case and the modal's fail on the parent
+    (it corrected the settled row and answered 200)."""
 
-    def test_build_where_rate_import_settled_only(self):
-        where, _, _ = server._corrections_build_where(
-            "rate", "2026-01-01", "2026-12-31", "import", "", "", "all",
-            "UTC", api_settled_only=True)
-        self.assertIn("imp_kwh_api IS NOT NULL", where)
-
-    def test_build_where_rate_export_settled_only(self):
-        where, _, _ = server._corrections_build_where(
-            "rate", "2026-01-01", "2026-12-31", "export", "", "", "all",
-            "UTC", api_settled_only=True)
-        self.assertIn("exp_kwh_api IS NOT NULL", where)
-
-    def test_build_where_no_gate_when_flag_off(self):
-        where, _, _ = server._corrections_build_where(
-            "rate", "2026-01-01", "2026-12-31", "import", "", "", "all",
-            "UTC", api_settled_only=False)
-        self.assertNotIn("kwh_api", where)
-
-    def test_build_where_standing_never_gated(self):
-        where, _, _ = server._corrections_build_where(
-            "standing", "2026-01-01", "2026-12-31", "import", "", "", "all",
-            "UTC", api_settled_only=True)
-        self.assertNotIn("kwh_api", where)
-
-    def _store_settled_and_unsettled(self):
+    def _store(self):
         cfg = {"meters": {"electricity_main": {"meta": {
             "billing_day": 1, "block_minutes": 30, "timezone": "Europe/London",
             "currency_symbol": "£", "currency_code": "GBP", "postcode_prefix": "DE1",
@@ -1359,71 +1337,51 @@ class TestCorrectionsApiGate(unittest.TestCase):
                 "config_period_id, interpolated, imp_kwh, imp_rate, imp_cost, "
                 "imp_kwh_api) VALUES (?,?,?,?,0,?,?,?,?)",
                 (bs, be, "electricity_main", cp, 3.5, 0.323092, 1.13, kwh_api))
-        ins("2026-04-14T11:00:00", "2026-04-14T11:30:00", 3.5)   # settled
-        ins("2026-04-14T11:30:00", "2026-04-14T12:00:00", None)  # unsettled
+        ins("2026-04-14T11:00:00", "2026-04-14T11:30:00", 3.5)   # DCC kWh
+        ins("2026-04-14T11:30:00", "2026-04-14T12:00:00", None)  # none yet
         store._conn.commit()
-        return store, cfg
-
-    def _apply(self, client, value=0.05493):
-        return client.post("/api/corrections/apply", json={
-            "type": "rate", "channel": "import",
-            "from_date": "2026-04-14", "to_date": "2026-04-14",
-            "value": value, "recalc_cost": True,
-        }, content_type="application/json")
-
-    def test_api_mode_skips_unsettled(self):
-        store, cfg = self._store_settled_and_unsettled()
         eio.load_json = lambda path, default=None: cfg if "meters_config" in path else default
-        client = make_client(store=store)
-        orig = server._corrections_api_gate_active
-        server._corrections_api_gate_active = lambda: True
-        try:
-            d = json.loads(self._apply(client).data)
-            self.assertTrue(d["api_gated"])
-            self.assertEqual(d["updated_blocks"], 1)        # settled only
-            self.assertEqual(d["skipped_unreconciled"], 1)  # unsettled reported
-            rows = store._conn.execute(
-                "SELECT imp_rate FROM blocks ORDER BY block_start").fetchall()
-            self.assertAlmostEqual(rows[0]["imp_rate"], 0.05493, places=5)
-            self.assertAlmostEqual(rows[1]["imp_rate"], 0.323092, places=5)  # teeth: untouched
-        finally:
-            server._corrections_api_gate_active = orig
+        return store
 
-    def test_cad_mode_applies_to_all(self):
-        store, cfg = self._store_settled_and_unsettled()
-        eio.load_json = lambda path, default=None: cfg if "meters_config" in path else default
+    def _post(self, mode, route, store):
         client = make_client(store=store)
-        orig = server._corrections_api_gate_active
-        server._corrections_api_gate_active = lambda: False
-        try:
-            d = json.loads(self._apply(client).data)
-            self.assertFalse(d["api_gated"])
-            self.assertEqual(d["updated_blocks"], 2)        # both
-            self.assertEqual(d["skipped_unreconciled"], 0)
-            rows = store._conn.execute(
-                "SELECT imp_rate FROM blocks ORDER BY block_start").fetchall()
-            self.assertAlmostEqual(rows[0]["imp_rate"], 0.05493, places=5)
-            self.assertAlmostEqual(rows[1]["imp_rate"], 0.05493, places=5)
-        finally:
-            server._corrections_api_gate_active = orig
-
-    def test_preview_reports_skip_in_api_mode(self):
-        store, cfg = self._store_settled_and_unsettled()
-        eio.load_json = lambda path, default=None: cfg if "meters_config" in path else default
-        client = make_client(store=store)
-        orig = server._corrections_api_gate_active
-        server._corrections_api_gate_active = lambda: True
-        try:
-            r = client.post("/api/corrections/preview", json={
+        with patch.object(sys.modules["engine"], "get_data_source_mode", lambda: mode, create=True), \
+             patch.object(sys.modules["engine"], "mode_uses_api", lambda m=None: "api" in (m or mode),
+                          create=True):
+            return client.post("/api/corrections/" + route, json={
                 "type": "rate", "channel": "import",
-                "from_date": "2026-04-14", "to_date": "2026-04-14", "value": 0.05493,
+                "from_date": "2026-04-14", "to_date": "2026-04-14",
+                "value": 0.05493, "recalc_cost": True,
             }, content_type="application/json")
-            d = json.loads(r.data)
-            self.assertTrue(d["api_gated"])
-            self.assertEqual(len(d["blocks"]), 1)            # only settled previewed
-            self.assertEqual(d["skipped_unreconciled"], 1)
-        finally:
-            server._corrections_api_gate_active = orig
+
+    def _rates(self, store):
+        return [r["imp_rate"] for r in store._conn.execute(
+            "SELECT imp_rate FROM blocks ORDER BY block_start").fetchall()]
+
+    def test_the_supplier_api_is_refused(self):
+        for mode in ("api", "cad+api", "api+mini"):
+            store = self._store()
+            for route in ("preview", "apply"):
+                r = self._post(mode, route, store)
+                self.assertEqual((r.status_code, json.loads(r.data)["error"]), (409, "supplier_api"),
+                                 (mode, route))
+            self.assertEqual(self._rates(store), [0.323092, 0.323092])     # nothing written
+
+    def test_cad_corrects_every_half_hour(self):
+        """GUARD: CAD was never gated; it still corrects a half-hour with no DCC kWh."""
+        store = self._store()
+        d = json.loads(self._post("cad", "preview", store).data)
+        self.assertEqual(len(d["blocks"]), 2)
+        d = json.loads(self._post("cad", "apply", store).data)
+        self.assertEqual(d["updated_blocks"], 2)
+        for rate in self._rates(store):
+            self.assertAlmostEqual(rate, 0.05493, places=5)
+
+    def test_the_modal_says_what_replaces_a_correction(self):
+        src = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                "web", "templates", "billing_module.html"), encoding="utf-8").read()
+        self.assertIn("nothing ' +\n          'replaces it automatically", src)
+        self.assertIn("j.message || j.error", src)
 
 
 class TestApiConfigHistoryPostcode(unittest.TestCase):
