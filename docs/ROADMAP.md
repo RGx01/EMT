@@ -526,18 +526,24 @@ range, compared against what is stored, applied only where it differs, leaving d
 that did not change and every user correction alone. The general form of 4.5.22's resync and 4.5.23's
 re-fetch; BL-85's context menus are its front end.
 
-**BL-87 — apply recorder history automatically on a historical API import.** *In part, 21 Oct 2026: an API
-import rebuilds its devices from HA's kept reads (#253), as a refill does — but it does not fetch the
-recorder's statistics itself, which a first install's import needs. Open.* Proposed 12 Oct 2026 (the
-user). A historical import from Octopus brings the main meter's half-hours, but not the devices'
-attribution. The recorder's long-term statistics (hourly) are applied only by a separate manual
-run — `/api/historical/attribute/start`, one device at a time with the sensors the user picks, from the
-recorder-probe page off Fill History; nothing else calls `run_attribution_job`. Wanted: the import
-runs it itself for each configured device whose sensor the recorder holds statistics for, so imported
-history has device splits without a second visit. *To refine:* a device whose configured sensor is not
-the one the recorder kept, and what the import says when the recorder has none. A separate item from BL-86
-because it is worth having on its own — a first install's history is imported this way — and because
-BL-86's whole point is not to need it.
+**BL-87 — apply recorder history automatically on a historical API import.** ✅ *Closed 29 Oct 2026
+(the user), not built as asked: a first install already gets it.* Proposed 12 Oct 2026 (the user). A
+historical import from Octopus brings the main meter's half-hours, not the devices'. Three pieces, each
+built for another reason, give a first install its device history in either order:
+
+- **Devices set up before the import.** A new device's save offers *Rebuild this device's history
+  from Home Assistant now*, ticked by default (device sensors design §4). With no house history its
+  sanity check passes — `attribution_preflight` compares only against a house with kWh — and the run
+  keeps the recorder's hours in `ha_reads` (`record_recorder_hours`), writing no device row, as a
+  device row needs a house half-hour (`_write_device_into_block`). The import's finish then rebuilds
+  each device with hours kept in its span (#253), from those alone, by the house's shape.
+- **The import first.** The same offer rebuilds the devices straight onto the imported history.
+
+The one miss is *Later* on the offer: nothing is kept, and the device waits for *Rebuild history* on its
+card — the user's choice, undone where it was made. A fetch from the import itself, as first asked, is not
+built: it would skip the sanity check the offer runs (the wrong sensor, a Wh/kWh mix-up), and write two
+years of a device's history unasked on a guess. `tests/test_first_install_device_history.py` pins the
+chain (GUARDs: they pass today; a run kept from keeping its hours fails two of them).
 
 **BL-88 — one data-tools surface, driven by the selection.** ✅ *Done 17–22 Oct 2026, through the Data
 Management rework (data management design, #239): gap fill on the heatmap (#213), Delete… on it (#232),
@@ -893,8 +899,8 @@ holds a backfilled half-hour (`interpolated = 2`), and every main half-hour on a
 has its device rows, but for the day each install's devices began beside a CSV import. *If it is ever
 wanted:* a device whose sensor is its own lifetime counter (a Zappi's, a battery's) still knows its
 energy over the outage — the register delta — which could be spread over the backfilled half-hours by
-the house's shape. A sensor HA integrates from power stops with the box and has no delta. BL-87's
-open half is not this: a first install's history was recorded with the box on.
+the house's shape. A sensor HA integrates from power stops with the box and has no delta. BL-87 is not
+this: a first install's history was recorded with the box on (closed the same day, §C).
 
 **BL-64** — as time allows. (BL-60, the block inspector, closed 29 Oct 2026: the heatmap's detail panel, #154, is it.) BL-60's design was in the v4 repository
 (`docs/design/EMT-BL60_block_inspector_pre_post_settlement.md`). BL-64 is the pypdf bump gate only (29 Oct

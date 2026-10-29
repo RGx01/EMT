@@ -23,7 +23,7 @@ design §5) showed the other way: select on the grid, act from a menu, preview, 
 | **CSV import** | Historical import | the file's span (+ an overlay "to" date) | an engine write, not a job | taken, continues if it fails | `imported_csv` blocks; lifts tombstones over the span |
 | **Corrections** | `/corrections` | date inputs + optional times, local; meter fixed to *all* | an engine write, not a job | yes, refuses without | UPDATEs `blocks`, device rows, `block_segments`; sets `rate_corrected` |
 | **Re-fetch** | Heatmaps | select on the grid (cell, drag, day, range), or the detail panel | `@job("range_refetch")` | yes, refuses without | the differing half-hours only; 31-day chunks |
-| **Recorder attribution** | Historical import | per device, a range | `@job("attribution")` | — | device rows from HA's long-term statistics (hourly); BL-87 would run it with the API import |
+| **Recorder attribution** | Historical import | per device, a range | `@job("attribution")` | — | device rows from HA's long-term statistics (hourly); a first install's import rebuilds from the hours it kept (BL-87, closed) |
 
 Nothing opens a page at a given day: the Charts tab comes from `localStorage`, the heatmap has
 `loadMonth(key)` but no URL calls it, and no tool reads URL parameters.
