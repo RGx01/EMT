@@ -93,6 +93,15 @@ incident:
 | staging (reports grid import) | 20 half-hours, 12 days | 5 half-hours, 1 day — 14 Oct | kept |
 | the Agile user (reports total charge) | 1,361 half-hours, 129 days | 634 half-hours, 96 days | removed on 4 Jul 2026 |
 
+*As built (PR 2, 29 Oct 2026):* `engine.check_battery_sensors`, at start-up and hourly from the engine
+tick (a whole-history query, cheap — not each half-hour as it closes), records each battery's evidence in
+store_meta (`battery_sensor_evidence`: its half-hours and days, the first and last, the day it is
+conclusive, the ten most recent) and shows it in the support file; it warns once when a sensor's
+evidence becomes conclusive. Rows count that name the battery's primary sensor, or none — imported and
+rebuilt history names none, so it is the device's sensor of the day; resetting the evidence when the
+user changes the sensor comes with the removal (PR 3). On real data: staging 5 half-hours, all 14 Oct
+2026 — kept; the Agile user, imported, 634 on 96 days — conclusive 4 Jul 2026.
+
 **What removal does** (the user: "remove it and recalculate everything and tell the user why"):
 
 - the sensor is taken off the battery (`device_sensors`), so no new reading is taken from it; its

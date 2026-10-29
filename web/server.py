@@ -5069,6 +5069,8 @@ def _support_summary(store) -> dict:
                  ("import_audit", lambda: store.get_meta("import_audit")),
                  ("coordinator", lambda: _coord.state()),
                  ("bill_ask", lambda: store.ask_record("bill")),
+                 # a battery sensor's evidence of counting solar (battery sensor design §3)
+                 ("battery_sensor_evidence", lambda: store.get_meta("battery_sensor_evidence")),
                  ("missing", lambda: _missing_half_hours(store, _config_timezone())),
                  ("host", lambda: __import__("support_file").host_info(
                      DATA_DIR or _eng.DATA_DIR, _supervisor_info())),
