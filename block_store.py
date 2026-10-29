@@ -6307,6 +6307,28 @@ class BlockStore:
             "(role = 'primary' OR position IS NOT NULL) ORDER BY role = 'secondary', position",
             (meter_id, channel))]
 
+    def battery_devices(self) -> list:
+        """[(meter_id, primary import sensor's device_sensors id or None)] of the sub-meters whose
+        type is a battery, in any config period — the battery sensor check's devices."""
+        return [(r[0], r[1]) for r in self._conn.execute(
+            "SELECT DISTINCT m.meter_id, (SELECT d.id FROM device_sensors d WHERE d.meter_id = m.meter_id "
+            "AND d.channel = 'import' AND d.role = 'primary') FROM meters m "
+            "WHERE m.is_sub_meter = 1 AND m.meter_type = 'battery' ORDER BY m.meter_id")]
+
+    def battery_evidence_rows(self, meter_id: str, sensor_id, *, ratio: float, floor_kwh: float,
+                              main_id: str = "electricity_main") -> list:
+        """[(block_start, battery kWh, grid kWh)] where the battery read more than `ratio` × the
+        half-hour's whole grid import and more than `floor_kwh` above it — what a grid-only charge
+        cannot do (battery sensor and device split design §3). Rows that name `sensor_id`, or none
+        (imported or rebuilt history, the device's sensor of the day); not another sensor's."""
+        return [tuple(r) for r in self._conn.execute(
+            "SELECT d.block_start, d.imp_kwh, MAX(COALESCE(m.imp_kwh, 0), 0) AS g FROM blocks d "
+            "JOIN blocks m ON m.block_start = d.block_start AND m.meter_id = ? "
+            "WHERE d.meter_id = ? AND (d.imp_sensor_id IS NULL OR d.imp_sensor_id IS ?) "
+            "  AND d.imp_kwh > ? * MAX(COALESCE(m.imp_kwh, 0), 0) "
+            "  AND d.imp_kwh - MAX(COALESCE(m.imp_kwh, 0), 0) > ? "
+            "ORDER BY d.block_start", (main_id, meter_id, sensor_id, ratio, floor_kwh))]
+
     def ha_read_devices(self, lo: str, hi: str) -> list:
         """The sub-meters with `ha_reads` in [lo, hi) — a refill's devices to rebuild. An hour
         row is counted from its start: one starting before `lo` is not."""

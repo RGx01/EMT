@@ -109,6 +109,8 @@
     "ask_candidate_facts",
     "ask_record",
     "batch",
+    "battery_devices",
+    "battery_evidence_rows",
     "block_span",
     "cap_day_boundary",
     "channel_slots_present",

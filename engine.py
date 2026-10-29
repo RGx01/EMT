@@ -5400,6 +5400,8 @@ async def _engine_tick(ha: HAClient):
 
     # Discovery asked again while it has not answered (G1 design §5), off the tick
     _start_discovery_retry()
+    # A battery sensor that counts solar: its evidence, hourly (battery sensor design §3)
+    _maybe_check_battery_sensors()
 
     # Block lifecycle
     updated_block = ensure_correct_block(ha, current_block, now, last_known_rates=_post_gap_rates)
@@ -12154,6 +12156,73 @@ def _clear_stale_inprogress_reads(cb_for_gap, cold_start: bool) -> bool:
 _startup_lock = asyncio.Lock()   # serialises engine_startup (see wrapper below)
 _startup_pending = False         # a startup was requested while one was running
 _last_startup_complete_ts = 0.0  # monotonic time the last startup finished (reconnect debounce)
+
+
+# ── A battery sensor that counts solar (battery sensor and device split design §3) ──────────────
+# A battery must report its grid charge; one that reports its total charge, solar included, reads
+# more than the house imported. Evidence only where it is conclusive: more than 1.5 × the half-hour's
+# whole grid import and more than 0.25 kWh above it (staging's trickles and its 14 Oct 2026 firmware
+# over-reads stay below), on five days within 30. This step records and logs it; nothing is removed.
+_BATTERY_RATIO = 1.5
+_BATTERY_FLOOR_KWH = 0.25
+_BATTERY_DAYS = 5
+_BATTERY_WINDOW_DAYS = 30
+_BATTERY_EVIDENCE_KEY = "battery_sensor_evidence"     # store_meta: {meter_id: the evidence}
+_BATTERY_CHECK_S = 3600
+_battery_check_at: "float | None" = None
+
+
+def battery_sensor_verdict(days) -> "str | None":
+    """The day the evidence becomes conclusive — the fifth of five distinct days within 30 — or None.
+    `days`: ISO dates (YYYY-MM-DD), any order."""
+    from datetime import date as _date
+    ds = sorted({_date.fromisoformat(str(d)[:10]) for d in days or []})
+    for i in range(len(ds) - _BATTERY_DAYS + 1):
+        if (ds[i + _BATTERY_DAYS - 1] - ds[i]).days < _BATTERY_WINDOW_DAYS:
+            return ds[i + _BATTERY_DAYS - 1].isoformat()
+    return None
+
+
+def check_battery_sensors() -> dict:
+    """Each battery's evidence against its sensor, over its whole history, into store_meta
+    (`_BATTERY_EVIDENCE_KEY`): {meter_id: {sensor_id, half_hours, days, first, last, would_remove_on,
+    recent}}. Logs once, a warning, the first time a sensor's evidence becomes conclusive. Records
+    only (design §4, PR 2). Never raises."""
+    if _store is None:
+        return {}
+    try:
+        old = _store.get_meta(_BATTERY_EVIDENCE_KEY, {}) or {}
+        out = {}
+        for mid, sid in _store.battery_devices():
+            rows = _store.battery_evidence_rows(mid, sid, ratio=_BATTERY_RATIO, floor_kwh=_BATTERY_FLOOR_KWH)
+            days = sorted({r[0][:10] for r in rows})
+            verdict = battery_sensor_verdict(days)
+            out[mid] = {"sensor_id": sid, "half_hours": len(rows), "days": len(days),
+                        "first": rows[0][0] if rows else None, "last": rows[-1][0] if rows else None,
+                        "would_remove_on": verdict,
+                        "recent": [[bs, round(k, 3), round(g, 3)] for bs, k, g in rows[-10:]]}
+            prev = old.get(mid) or {}
+            if verdict and not (prev.get("would_remove_on") and prev.get("sensor_id") == sid):
+                logger.warning(
+                    "battery sensor: %s's sensor reads more than the house imported — %d half-hour(s) "
+                    "on %d day(s), over %.1f× the grid import and %.2f kWh above it, conclusive on %s: "
+                    "it counts solar charging, not only grid (recorded only; nothing is removed yet)",
+                    mid, len(rows), len(days), _BATTERY_RATIO, _BATTERY_FLOOR_KWH, verdict)
+        _store.set_meta(_BATTERY_EVIDENCE_KEY, out)
+        return out
+    except Exception as e:
+        logger.warning("battery sensor: the check failed (%s)", e)
+        return {}
+
+
+def _maybe_check_battery_sensors(now: "float | None" = None) -> None:
+    """The battery sensor check at most hourly, from the engine tick (and at start-up)."""
+    global _battery_check_at
+    t = time.monotonic() if now is None else now
+    if _battery_check_at is not None and t - _battery_check_at < _BATTERY_CHECK_S:
+        return
+    _battery_check_at = t
+    check_battery_sensors()
 
 
 def seconds_since_startup() -> float:

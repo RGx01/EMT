@@ -23,7 +23,11 @@ BILL = {"2026-09-01T12:00:00": {"first": "2026-09-02T00:00:00", "last": "2026-09
         "2026-08-01T12:00:00": {"first": "2026-08-02T00:00:00", "last": "2026-08-20T00:00:00",
                                 "gave_up": "2026-09-02T01:00:00"}}
 SPLIT = {"2026-09-05T02:00:00": {"first": "2026-09-06T00:00:00"}}
-HOLD = {"2026-10-01T03:00:00": {"first": "2026-10-02T00:00:00"},
+# a split still held back: two days ago, so the 28-day wait has not run out on any date the suite runs
+# (fixed at 1 Oct 2026, it turned "kept" on 29 Oct 2026 and the test with it)
+from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+RECENT = (_dt.now(_tz.utc).replace(tzinfo=None) - _td(days=2)).strftime("%Y-%m-%dT03:00:00")
+HOLD = {RECENT: {"first": RECENT[:10] + "T04:00:00"},
         "2026-09-01T03:00:00": {"first": "2026-09-02T00:00:00", "kept": "2026-09-30T00:00:00"}}
 
 
@@ -56,7 +60,7 @@ class TheMove(unittest.TestCase):
             "SELECT slot_start, kind, state FROM octopus_ask")}
         self.assertEqual(rows[("2026-09-01T12:00:00", "bill")], "waiting")
         self.assertEqual(rows[("2026-08-01T12:00:00", "bill")], "given_up")
-        self.assertEqual(rows[("2026-10-01T03:00:00", "hold")], "held")
+        self.assertEqual(rows[(RECENT, "hold")], "held")
         self.assertEqual(rows[("2026-09-01T03:00:00", "hold")], "kept")
 
     def test_a_row_already_in_the_table_is_kept(self):
@@ -83,7 +87,7 @@ class TheReaders(unittest.TestCase):
         st = BlockStore(_legacy_db())
         self.addCleanup(st.close)
         self.assertEqual(engine.bill_split_held(st),
-                         ({"2026-10-01T03:00:00"}, {"2026-09-01T03:00:00"}))
+                         ({RECENT}, {"2026-09-01T03:00:00"}))
 
     def test_given_up(self):
         st = BlockStore(_legacy_db())
