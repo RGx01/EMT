@@ -72,16 +72,26 @@ shares; the Total Bill unchanged.
 
 **The evidence** — only where it is conclusive, so a sensor is never removed on a guess. A half-hour
 counts against a battery's sensor when the battery reads **more than 1.5 × the half-hour's whole grid
-import** (+ 0.02 kWh for rounding): a grid-only charge cannot exceed the grid import. The threshold is
-what keeps out rounding and timing (on the user's history, 796 half-hours just over the import, none
-counted). **Export is not required** (the user, 29 Oct 2026): it adds nothing past the threshold, and
-would miss an export-limited site, an install with no live export reading (API-only, until it
-settles), and solar charging the battery while the house still imports.
+import, and more than 0.25 kWh above it**: a grid-only charge cannot exceed the grid import. **Export is
+not required** (the user, 29 Oct 2026): it adds nothing past the threshold, and would miss an
+export-limited site, an install with no live export reading (API-only, until it settles), and solar
+charging the battery while the house still imports.
 
-The sensor is removed when such half-hours fall on **at least two days**. Silence proves nothing — a
-total-charge sensor passes all winter — so the check runs on every closed half-hour, and once over
-history at start-up (a v4 import, an upgrade). On the user's history: 1,359 such half-hours on 129 days,
-caught on 21 and 22 Jun 2026.
+The sensor is removed when such half-hours fall on **at least five days within 30**. Silence proves
+nothing — a total-charge sensor passes all winter — so the check runs on every closed half-hour, and
+once over history at start-up (a v4 import, an upgrade).
+
+**Why the floor and the five days** (the user, 29 Oct 2026: staging's battery must not be judged wrong
+for its firmware's over-reads). Staging's battery reports grid import, as it should, yet on the ratio
+alone it would have been removed: 18 half-hours on 10 days — trickles of 0.035–0.18 kWh against almost no
+import (the inverter's small flows, or timing), and on 14 Oct 2026 five half-hours of a firmware update
+that left the sensor counting. The floor keeps out the trickles; five days within a month keeps out an
+incident:
+
+| | over 1.5 × import | and over 0.25 kWh above it | verdict |
+|---|---|---|---|
+| staging (reports grid import) | 20 half-hours, 12 days | 5 half-hours, 1 day — 14 Oct | kept |
+| the Agile user (reports total charge) | 1,361 half-hours, 129 days | 634 half-hours, 96 days | removed on 4 Jul 2026 |
 
 **What removal does** (the user: "remove it and recalculate everything and tell the user why"):
 
@@ -118,6 +128,5 @@ normal, not evidence.
 | 4 | the setup text |
 
 Tests: a contested half-hour shared in proportion and the EV still first, the same from both callers;
-a half-hour over 1.5 × the import counts, exporting or not, and a near-1 night one does not; one day does not remove, two
-do; removal keeps `ha_reads` and the device, drops its rows, re-settles, and the notice names the
+a half-hour over 1.5 × the import and 0.25 kWh above it counts, exporting or not, and a trickle or a near-1 night one does not; four days in a month do not remove, five do — staging's 14 Oct firmware over-reads are one day; removal keeps `ha_reads` and the device, drops its rows, re-settles, and the notice names the
 evidence; a heat pump is never judged.
