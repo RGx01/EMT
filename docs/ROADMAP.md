@@ -739,7 +739,7 @@ number. Order is the agreed one — deletions first, while they are cheapest.*
 | 3 | **BL-63** — two pricing models: adopt the live one | deletion | ✅ **deletion done 4 Oct 2026** — the rounding residue is still open (below) |
 | 4 | **BL-74** — retire the `needs_review` writes nothing displays | deletion + fix | ✅ **done 4 Oct 2026** — all of it, and the review list with it (below) |
 | 5 | **BL-61 (5)** — rename `rate_source` `'measured'` → `'settled'` | schema | ✅ **done 10 Oct 2026** — schema 2 (205a973); the importer maps the value |
-| 6 | **BL-76** — proportional device grid split | correctness | ✅ **the split built 29 Oct 2026** — proportional after the EV, in whole watt-hours, one rule (`settle.device_grid_shares`) for PASS 2 and settle(); the battery sensor check to follow (`EMT-v5_battery_sensor_and_device_split_design.md`) |
+| 6 | **BL-76** — proportional device grid split | correctness | ✅ **the split built 29 Oct 2026** — proportional after the EV, in whole watt-hours, one rule (`settle.device_grid_shares`) for PASS 2 and settle() (#331); a battery sensor counting solar flagged on every page, its data unchanged, and the setup text (the evidence #333; the flag, PR 3; `EMT-v5_battery_sensor_and_device_split_design.md`) |
 | 7 | **BL-75** — settlement visibility | correctness | ✅ mostly done (below) — open: (d), and (e)'s warning in the corrections tool |
 | 8 | **BL-47** — auto-attribution after a gap fill | feature | 📋 **open** in its v4 form; a refill now rebuilds its devices from HA's kept reads (#231, BL-90) |
 | 9 | **BL-60** — block inspector | feature | ✅ **closed 29 Oct 2026** (the user) — the heatmap's detail panel (#154) is it |
