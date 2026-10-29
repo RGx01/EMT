@@ -841,10 +841,14 @@ function ohmeEvNote() {
 }
 
 // What a battery's sensor must be (battery sensor design §3) — the add-device form and the wizard.
+// A clamp meter on the battery inverter's cable reads what it draws from the house wiring, grid or
+// solar alike, so it counts solar wherever the panels feed that wiring (an AC-coupled install).
+var BATTERY_CLAMP_NOTE = 'A clamp meter (a CT, e.g. a Shelly EM) on the battery\'s cable will not do where your ' +
+  'solar feeds the house wiring: it counts the solar the battery takes as well as the grid.';
 var BATTERY_SENSOR_HINT = 'Cumulative kWh the battery charged <strong>from the grid</strong> only — not its total ' +
   'charge. Many inverters report the total, solar included, which makes the device breakdown wrong; EMT can ' +
   'only tell in sunny months, and warns you if it finds it. If your inverter has no grid-charge sensor, ' +
-  'leave the battery out: its charge then counts in the house.';
+  'leave the battery out: its charge then counts in the house. ' + BATTERY_CLAMP_NOTE;
 
 function loadBatteryFlags() {
   return fetch(apiUrl('/api/battery-sensor/flagged')).then(function (r) { return r.json(); }).then(function (d) {
@@ -875,7 +879,7 @@ function batteryFlagNote(meterId, b) {
     'and the rest of the house\'s too low. Your bill total is not affected.<br>' +
     '<strong>To fix it:</strong> choose the sensor that reports the battery\'s charge <strong>from the grid</strong> ' +
     'only, and save; the half-hours already recorded keep this sensor\'s readings. If your inverter has none, ' +
-    'remove the battery: its charge then counts in the house.<br><br>' +
+    'remove the battery: its charge then counts in the house. ' + BATTERY_CLAMP_NOTE + '<br><br>' +
     '<button class="btn btn-sm js-battery-confirm" data-meter="' + esc(meterId) + '" data-confirmed="1" ' +
     'style="font-size:12px;">This sensor reports grid charge only</button>' +
     '</div>';
@@ -946,6 +950,7 @@ function buildSubCard(meterId, meter) {
             'Powerwall, Solax) also offer a total charge, solar included — that one makes the device breakdown wrong. ' +
             'EMT can only tell in sunny months, when the battery charges more than the house imports, and warns you ' +
             'if it finds it. No grid-charge sensor? Leave the battery out: its charge then counts in the house.</li>' +
+            '<li>' + BATTERY_CLAMP_NOTE + '</li>' +
             '<li>Add the SoC and inverter power sensors below to enable the Live Power battery card</li>'
           : isEV
           ? '<li>EV charger integrations (Zappi, Ohme, Wallbox) report session kWh — use the total energy sensor</li>' +

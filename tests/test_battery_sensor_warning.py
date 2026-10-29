@@ -157,6 +157,12 @@ class ThePage(unittest.TestCase):
         self.assertIn("battery: BATTERY_SENSOR_HINT,", m)
         self.assertIn("type === 'battery' ? BATTERY_SENSOR_HINT", m)
 
+    def test_setup_says_a_clamp_on_the_batterys_cable_counts_solar(self):
+        """The Agile-export user's battery is read by a clamp meter on its cable."""
+        m = _t("meter_config.html")
+        self.assertIn("counts the solar the battery takes as well as the grid", m)
+        self.assertEqual(m.count("BATTERY_CLAMP_NOTE"), 4)      # defined; the hint, the card, the requirements
+
 
 if __name__ == "__main__":
     unittest.main()

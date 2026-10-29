@@ -144,7 +144,9 @@ add-device form and the setup wizard, and in the card's sensor requirements (whi
 consumption sensor"): the cumulative kWh the battery charged **from the grid** only, not its total
 charge; many inverters report the total, solar included, which makes the device breakdown wrong; EMT
 can only tell in sunny months, and warns if it finds it; with no grid-charge sensor, leave the
-battery out and its charge counts in the house.
+battery out and its charge counts in the house. And a clamp meter on the battery's cable will not do where the solar
+feeds the house wiring: it counts the solar the battery takes as well as the grid. (The Agile-export
+user's battery is read that way — a clamp meter's energy-returned total on the inverter's cable.)
 
 **Battery only** (the user): a heat pump or EV charger reports energy used; non-grid energy on it is
 normal, not evidence.
