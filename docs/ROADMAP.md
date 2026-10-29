@@ -21,7 +21,7 @@ deconstruct it. v4 is at **4.5.24**; the import floor is **4.5.23** (E).
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | ✅ closed 5 Oct 2026 — queries asserted in CI (#102), time on the Pi (#64) |
 | E | Importer | A–D | 🔨 built 10 Oct 2026 (#122–#128, step 5 done), spec v29, floor 4.5.23 (positive fixture taken 12 Oct) — open: the Pi timing |
-| F | Carried from v4's backlog | — | 📋 open: BL-47, BL-64, BL-76, BL-63's rounding residue, BL-75 (d) and part of (e); the rest done (§F) |
+| F | Carried from v4's backlog | — | 📋 open: BL-47, BL-64, BL-63's rounding residue, BL-75 (e)'s warning in the corrections tool; the rest done (§F) |
 | G | Local tariff store | A, B | ✅ G1, the agreements, done 28 Oct 2026 (#320–#325, #327); G2, the rates, dropped (#326) |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
 
@@ -739,8 +739,8 @@ number. Order is the agreed one — deletions first, while they are cheapest.*
 | 3 | **BL-63** — two pricing models: adopt the live one | deletion | ✅ **deletion done 4 Oct 2026** — the rounding residue is still open (below) |
 | 4 | **BL-74** — retire the `needs_review` writes nothing displays | deletion + fix | ✅ **done 4 Oct 2026** — all of it, and the review list with it (below) |
 | 5 | **BL-61 (5)** — rename `rate_source` `'measured'` → `'settled'` | schema | ✅ **done 10 Oct 2026** — schema 2 (205a973); the importer maps the value |
-| 6 | **BL-76** — proportional device grid split | correctness | ✅ **the split built 29 Oct 2026** — proportional after the EV, in whole watt-hours, one rule (`settle.device_grid_shares`) for PASS 2 and settle() (#331); a battery sensor counting solar flagged on every page, its data unchanged, and the setup text (the evidence #333; the flag, PR 3; `EMT-v5_battery_sensor_and_device_split_design.md`) |
-| 7 | **BL-75** — settlement visibility | correctness | ✅ mostly done (below) — open: (d), and (e)'s warning in the corrections tool |
+| 6 | **BL-76** — proportional device grid split | correctness | ✅ **the split built 29 Oct 2026** — proportional after the EV, in whole watt-hours, one rule (`settle.device_grid_shares`) for PASS 2 and settle() (#331); a battery sensor counting solar flagged on every page, its data unchanged, and the setup text (the evidence #333; the flag #334; `EMT-v5_battery_sensor_and_device_split_design.md`) |
+| 7 | **BL-75** — settlement visibility | correctness | ✅ mostly done (below) — open: (e)'s warning in the corrections tool; (d) closed, not built (29 Oct 2026) |
 | 8 | **BL-47** — auto-attribution after a gap fill | feature | 📋 **open** in its v4 form; a refill now rebuilds its devices from HA's kept reads (#231, BL-90) |
 | 9 | **BL-60** — block inspector | feature | ✅ **closed 29 Oct 2026** (the user) — the heatmap's detail panel (#154) is it |
 | 10 | **BL-64** — bill-parser fixtures + a pypdf bump gate | tooling | 📋 **open** — needs real bills |
@@ -836,15 +836,25 @@ same change.
 (b) decided — only an Intelligent agreement's half-hours are asked, a published tariff's being final by
 its own rate (#319); (c) done — the ask record, its backoff and the 30-day give-up (engine step 3,
 #293–#296; `abandoned`, #227); (e) in part — a range re-fetch replaces a correction with the bill (#163);
-(f) done differently — a re-fetch from the heatmap's selection (#156), not from the pill. **Open:** (d), and (e)'s warning at the point
-of use. Split into: (b) widen the cost fetch beyond IOG/INTELLI (still
+(f) done differently — a re-fetch from the heatmap's selection (#156), not from the pill; (d) closed, not
+built (below). **Open:** (e)'s warning at the point of use. Split into: (b) widen the cost fetch beyond IOG/INTELLI (still
 gated at `measure_settled_dispatched_blocks`) and keep the agreement floor; (c) a per-slot attempt
 count with backoff and a terminal state; (a) the pill reporting both frontiers; (e)/(f) the
 corrections tool as last resort and retry from the pill. *(e) in part, 14 Oct 2026: a range
 re-fetch can now replace a correction with the bill, so a correction no longer locks the bill
-out for good — the corrections tool's own warning at the point of use is still open.)* **(d) needs a decision:** stop stamping
-`finalised_from_cad` automatically past the horizon (`finalise_past_horizon_blocks`), and stamp it only
-on the user's acceptance that the usage is unrecoverable.
+out for good — the corrections tool's own warning at the point of use is still open.)* **(d) closed, not built (29 Oct 2026, the user):** the
+proposal was to stop stamping `finalised_from_cad` automatically past the horizon
+(`finalise_past_horizon_blocks`) and stamp it only on the user's acceptance that the usage is
+unrecoverable. In v4 the flag made a half-hour look final; in v5 it means only that EMT stops asking.
+It is read by the poll's window (`get_oldest_unsettled_block_start`, the 24 Oct 2026 fix: one half-hour
+that never settles had held every poll back to it), the sweep's early return and the unsettled count —
+whose pill already floors at the 30-day horizon — and by no surface: `settlement_state` never reads it,
+so the heatmap and detail panel still show the half-hour as EMT's estimate, red once overdue, and the
+heatmap's range re-fetch (#156) asks Octopus directly and clears the flag on a settled answer. Nothing
+is hidden, so there is nothing for an acceptance to gate. On real data neither staging nor the
+Agile-export user's imported database has a half-hour flagged, or one of its own past the horizon
+without DCC kWh. Should a red half-hour ever need accepting as final, that is a new feature (as
+`abandoned` is for a bill), not this flag.
 
 **BL-47, BL-64** — as time allows. (BL-60, the block inspector, closed 29 Oct 2026: the heatmap's detail panel, #154, is it.) BL-60's design was in the v4 repository
 (`docs/design/EMT-BL60_block_inspector_pre_post_settlement.md`). BL-64 needs real bills to build the

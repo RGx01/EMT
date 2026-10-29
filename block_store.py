@@ -5083,7 +5083,11 @@ class BlockStore:
         so the unsettled count can reach zero once DCC is no longer expected.
         This is DISTINCT from a real settlement — the *_api columns stay NULL —
         and reversible: a later DCC settlement clears the flag (see
-        upsert_kraken_block). Returns the number of blocks newly flagged."""
+        upsert_kraken_block). It means only that EMT stops asking: the poll
+        window, the sweep and the unsettled count read it, and no surface
+        does — the heatmap still shows the half-hour as EMT's estimate, red
+        once overdue (ROADMAP BL-75 (d), closed 29 Oct 2026). Returns the number
+        of blocks newly flagged."""
         w = self._unsettled_where(self._export_settlement_expected())
         cur = self._conn.execute(
             "UPDATE blocks SET finalised_from_cad = 1 "
@@ -5099,15 +5103,17 @@ class BlockStore:
         """Earliest block_start still awaiting DCC settlement on a channel
         (import or export, #303), or None.
 
-        Bounds the poll's window and the sweep / user-triggered retry re-fetch
-        window (oldest-unsettled → now). Including export here is what lets an
+        Bounds the poll's window and the daily sweep's re-fetch window
+        (oldest-unsettled → now). Including export here is what lets an
         export-lagging block stay in the window until its export settles.
 
         A block finalised from CAD (past the settlement horizon, DCC no longer
         expected) is skipped unless `include_finalised` (24 Oct 2026): one
         half-hour DCC never settles otherwise pulled every 6-hourly poll back
-        to it, up to the backfill horizon, for good. The retry passes it, so a
-        user's retry still reaches them."""
+        to it, up to the backfill horizon, for good. The sweep's retry passes
+        it, but asks no further back than its 30-day look-back, so it does not
+        reach them either; a user recovers one with the heatmap's range
+        re-fetch, which asks Octopus directly (ROADMAP BL-75 (d))."""
         w = self._unsettled_where(self._export_settlement_expected())
         row = self._conn.execute(
             "SELECT MIN(block_start) AS m FROM blocks "
