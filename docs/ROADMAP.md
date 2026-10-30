@@ -484,7 +484,8 @@ hourly carve had not reached.
 
 **BL-85 — surfaces that say what has settled, and what needs attention.** ✅ *Parts 1–3 done 13–17 Oct
 2026: the pill (#150), the views by settlement state (#153; the Split view folded into the Import bill,
-#196), the detail panel (#154) and acting on a selection (#156, #162). Part 4 not checked.* Proposed 12 Oct 2026 (the
+#196), the detail panel (#154) and acting on a selection (#156, #162). Part 4 closed 30 Oct 2026: it no
+longer happens (below).* Proposed 12 Oct 2026 (the
 user), from BL-82's model. *Design: [EMT-v5_settlement_surfaces_design.md](design/EMT-v5_settlement_surfaces_design.md) (parts 2–3 and BL-86, draft 13 Oct 2026).* Three parts; the detail needs refining before it is built.
 
 1. **The chart pill tells the truth.** *Done 13 Oct 2026: it names the stages — "⏳ 63 awaiting kWh · … awaiting bill · … awaiting split" — from `/api/billing-source`'s `awaiting`; the dev backup of that morning read 63 / 0 / 0.* The Charts pill reads "N blocks awaiting **cost** settlement",
@@ -512,6 +513,14 @@ user), from BL-82's model. *Design: [EMT-v5_settlement_surfaces_design.md](desig
    minutes of the completed record since #148; up to an hour before), the two disagree, which read
    as 4.5.23's bug returning. The line, the bar and the cost should tell one story, or the half-hour
    should be marked provisional.
+   *Closed 30 Oct 2026: they tell one story now, so nothing is marked.* Before the completed record,
+   `settle()` (engine step 4) prices the half-hour on its predicted band with no EV share: one house
+   leg at the low rate, banded `off_peak`. The chart's house line takes a band the leg names
+   (`chart_emit.day_rate_series`), and the devices are priced from that leg, so every line sits on
+   its bar. Checked on the staging copy: 13 Oct 05:30 BST re-priced that way drew every meter's line
+   at its bar's rate; the same leg with no band drew the house line at peak over a low-rate bar — the
+   symptom, so it is the band the line needed. The capped days 26 Aug – 28 Oct (1,824 half-hours
+   with energy) had no line off its bar, and every main-meter leg written 20–28 Oct carries a band.
 
 **BL-86 — re-fetch Octopus's figures for a range without deleting it.** ✅ *Done 13–14 Oct 2026: the
 engine (#155), the UI (#156), and its fixes (#159, #162, #163, #167, #170, #171).* Proposed 12 Oct 2026 (the
