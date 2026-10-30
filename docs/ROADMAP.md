@@ -21,7 +21,7 @@ deconstruct it. v4 is at **4.5.24**; the import floor is **4.5.23** (E).
 | C | One API for every surface | A | ✅ acceptance rows 1–8 met (C design §0) |
 | D | Surfacing performance | A, C | ✅ closed 5 Oct 2026 — queries asserted in CI (#102), time on the Pi (#64) |
 | E | Importer | A–D | 🔨 built 10 Oct 2026 (#122–#128, step 5 done), spec v29, floor 4.5.23 (positive fixture taken 12 Oct) — open: the Pi timing |
-| F | Carried from v4's backlog | — | 📋 open: BL-64; the rest done (§F) |
+| F | Carried from v4's backlog | — | ✅ all done or closed — BL-64, the last, 30 Oct 2026 (§F) |
 | G | Local tariff store | A, B | ✅ G1, the agreements, done 28 Oct 2026 (#320–#325, #327); G2, the rates, dropped (#326) |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
 
@@ -758,7 +758,7 @@ number. Order is the agreed one — deletions first, while they are cheapest.*
 | 7 | **BL-75** — settlement visibility | correctness | ✅ done (below) — (e) the corrections refused with the supplier API, and the modal's note (29 Oct 2026); (d) closed, not built |
 | 8 | **BL-47** — auto-attribution after a gap fill | feature | ✅ **closed 29 Oct 2026** (the user) — a refill rebuilds its devices from HA's kept reads (#231, BL-90); an outage's has nothing to rebuild from (below) |
 | 9 | **BL-60** — block inspector | feature | ✅ **closed 29 Oct 2026** (the user) — the heatmap's detail panel (#154) is it |
-| 10 | **BL-64** — a pypdf bump gate | tooling | 📋 **open** — the gate only, run against bills kept outside the repo (below) |
+| 10 | **BL-64** — a pypdf bump gate | tooling | ✅ **done 30 Oct 2026** — `.build/pypdf_gate.py`, run against bills kept outside the repo; pypdf bumps on their own PR (below) |
 
 **Deletions (1–4).** The floor (E) is what makes them safe: every database v5 admits was opened by
 4.5.19, so every one-time migration and heal in that range has already run. They go under the
@@ -911,10 +911,15 @@ energy over the outage — the register delta — which could be spread over the
 the house's shape. A sensor HA integrates from power stops with the box and has no delta. BL-87 is not
 this: a first install's history was recorded with the box on (closed the same day, §C).
 
-**BL-64** — as time allows. (BL-60, the block inspector, closed 29 Oct 2026: the heatmap's detail panel, #154, is it.) BL-60's design was in the v4 repository
+**BL-64 — done 30 Oct 2026.** (BL-60, the block inspector, closed 29 Oct 2026: the heatmap's detail panel, #154, is it.) BL-60's design was in the v4 repository
 (`docs/design/EMT-BL60_block_inspector_pre_post_settlement.md`). BL-64 is the pypdf bump gate only (29 Oct
 2026, the user): bills and their snapshots stay outside the repo, and no bill's text is committed, redacted
-or not; v5 already pins pypdf 6.18.0.
+or not; v5 pins pypdf 6.18.0. `.build/pypdf_gate.py` snapshots each bill's parse (the parsed bill and its
+CSV rows) with the pinned pypdf, into the bills' own folder, and compares a candidate's against it; a bill
+is named by a hash and a difference by its field, never a value, and a folder inside the repo is refused.
+Dependabot raises pypdf on its own PR (excluded from the weekly group), merged once the gate passes —
+[DEVELOPMENT.md](DEVELOPMENT.md) "A pypdf bump". The gate's logic is tested on stand-in bills
+(`tests/test_pypdf_gate.py`); its first real run is the next bump.
 
 ---
 
