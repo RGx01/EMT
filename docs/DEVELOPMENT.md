@@ -74,6 +74,21 @@ actually true today.
 2. Merge, then tag on `main`: `git tag 2026.10.0 && git push --tags`.
 3. CalVer — `YYYY.M.PATCH`. The month is the release month, not the sprint.
 
+## A pypdf bump
+
+`bill_parser` reads a PDF bill's text through pypdf and parses it with regular expressions, so a
+pypdf release can change a parsed figure without an error, and the parser's tests (placeholder
+text) cannot see it. Dependabot raises pypdf on its own PR; merge it only once the bill gate passes,
+run against bills kept **outside the repo** — no bill, redacted or not, and no snapshot is committed:
+
+```bash
+python3 .build/pypdf_gate.py snapshot ~/bills                         # with the pinned pypdf
+python3 .build/pypdf_gate.py compare ~/bills --against <pinned>       # in a venv outside the repo, candidate installed
+```
+
+`compare` exits 1 if any bill parses differently, naming each by a hash and each difference by its
+field — never a value. The snapshots live in `<bills>/.pypdf-snapshots/`.
+
 ## Before opening a PR
 
 - The full test suite passes on the **Pi**, not only on a development machine. ARM and SD-card I/O

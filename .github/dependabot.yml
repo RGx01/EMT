@@ -14,3 +14,7 @@ updates:
       python-deps:
         patterns:
           - "*"
+        # pypdf comes on its own: a bump is merged only after the bill gate passes
+        # (.build/pypdf_gate.py, docs/DEVELOPMENT.md "A pypdf bump").
+        exclude-patterns:
+          - "pypdf"
