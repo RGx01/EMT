@@ -807,10 +807,6 @@ window.EMTSpiral=(function(){
         <button class="bar-seg-btn"        onclick="barSetMetric('cost',this)" id="bar-cost-btn">Cost</button>
         <button class="bar-seg-btn"        onclick="barSetMetric('co2',this)"  id="bar-co2-btn"  style="display:none">CO₂</button>
       </div>
-      <div class="bar-seg" id="bar-view-seg">
-        <button class="bar-seg-btn active" onclick="barSetView('totals',this)">Totals</button>
-        <button class="bar-seg-btn"        onclick="barSetView('net',this)">Net</button>
-      </div>
       <div class="bar-seg" id="bar-order-seg" style="display:none;" title="Order monthly bars by calendar date, or grouped by month across years">
         <button class="bar-seg-btn active" onclick="barSetOrder('date',this)">Date</button>
         <button class="bar-seg-btn"        onclick="barSetOrder('month',this)">Month</button>
@@ -818,6 +814,11 @@ window.EMTSpiral=(function(){
       <label id="bar-standing-wrap" style="display:none; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer;">
         <input type="checkbox" id="bar-standing-cb" onchange="barSaveState(); barRender();" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
         Inc. standing charge
+      </label>
+      <label id="bar-net-wrap" style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer;"
+             title="Draw import minus export as a line over the bars">
+        <input type="checkbox" id="bar-net-cb" onchange="barSaveState(); barRender();" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
+        Net
       </label>
     </div>
     <div class="bar-toolbar-right">
@@ -1382,7 +1383,6 @@ var barSortDesc = (localStorage.getItem(EMT.lsKey('emt_bar_sort_desc')) !== 'fal
 var barCurrency = '£';
 var barPeriod = 'daily';
 var barMetric = 'kwh';
-var barView = 'totals';
 var barMonthOrder = 'date';  // monthly bar ordering: 'date' (chronological) or 'month' (month-first, then year)
 var barCalendar = false;   // false = billing periods, true = calendar periods
 var barBillingDay = 1;
@@ -1412,13 +1412,19 @@ function barIncStanding() {
   return cb ? cb.checked : false;
 }
 
+// The Net line over the bars (31 Oct 2026; Net was a view of its own, a bar per period).
+function barShowNet() {
+  var cb = document.getElementById('bar-net-cb');
+  return cb ? cb.checked : false;
+}
+
 function barSaveState() {
   try {
     var cb = document.getElementById('bar-standing-cb');
     localStorage.setItem(EMT.lsKey('emt_bar_state'), JSON.stringify({
       period:   barPeriod,
       metric:   barMetric,
-      view:     barView,
+      net:      barShowNet(),
       order:    barMonthOrder,
       calendar: barCalendar,
       hhDate:   barHHDate,
@@ -1436,7 +1442,6 @@ function barLoadState(availableYears) {
     var st = JSON.parse(raw);
     if (['daily','monthly','yearly','hh'].indexOf(st.period) !== -1) barPeriod = st.period;
     if (['kwh','cost','co2'].indexOf(st.metric) !== -1)       barMetric = st.metric;
-    if (['totals','net'].indexOf(st.view) !== -1)              barView   = st.view;
     if (['date','month'].indexOf(st.order) !== -1)             barMonthOrder = st.order;
     if (typeof st.calendar === 'boolean')                      barCalendar = st.calendar;
     // HH day: restore, but never a future day (default today).
@@ -1456,6 +1461,9 @@ function barLoadState(availableYears) {
     // Restore standing charge checkbox
     var cb = document.getElementById('bar-standing-cb');
     if (cb && typeof st.standing === 'boolean') cb.checked = st.standing;
+    // The Net line; a state saved under the old Net view (st.view === 'net') turns it on
+    var nc = document.getElementById('bar-net-cb');
+    if (nc) nc.checked = st.net === true || (st.net === undefined && st.view === 'net');
   } catch(e) {}
 }
 
@@ -1557,9 +1565,6 @@ function barSyncUI() {
   document.querySelectorAll('#bar-metric-seg .bar-seg-btn').forEach(function(b){
     b.classList.toggle('active', b.getAttribute('onclick') && b.getAttribute('onclick').indexOf("'"+barMetric+"'") !== -1);
   });
-  document.querySelectorAll('#bar-view-seg .bar-seg-btn').forEach(function(b){
-    b.classList.toggle('active', b.getAttribute('onclick') && b.getAttribute('onclick').indexOf("'"+barView+"'") !== -1);
-  });
   // Order toggle — only meaningful for the monthly view
   var orderSeg = document.getElementById('bar-order-seg');
   if (orderSeg) orderSeg.style.display = (barPeriod === 'monthly') ? 'inline-flex' : 'none';
@@ -1593,33 +1598,24 @@ function barStandingVal(agg) {
   return agg.standing || 0;
 }
 
-function barGetDatasets(labels, aggList) {
-  if (barView === 'net') {
-    return [{
-      label: 'Net',
-      data: aggList.map(function(agg) {
-        if (barMetric === 'co2') {
-          var v = agg.carbon_g_net;
-          return v != null ? Math.round(v * 100) / 100 : null;
-        }
-        var imp = barMetric === 'kwh' ? agg.imp_kwh  : (agg.imp_cost + barStandingVal(agg));
-        var exp = barMetric === 'kwh' ? agg.exp_kwh  :  agg.exp_cost;
-        return Math.round((imp - exp) * 1000) / 1000;
-      }),
-      backgroundColor: aggList.map(function(agg) {
-        if (barMetric === 'co2') {
-          var v = agg.carbon_g_net;
-          return (v == null || v >= 0) ? (barMeters[0] && barMeters[0].color || '#1f77b4') : barExportColor;
-        }
-        var imp = barMetric === 'kwh' ? agg.imp_kwh : (agg.imp_cost + barStandingVal(agg));
-        var exp = barMetric === 'kwh' ? agg.exp_kwh : agg.exp_cost;
-        return imp >= exp ? (barMeters[0] && barMeters[0].color || '#1f77b4') : barExportColor;
-      }),
-      borderRadius: 3
-    }];
+// Import minus export for one period: + the standing charge when it is shown; for CO₂ the net
+// carbon. The Net line draws it; the tooltip's footer and the table's Total say the same.
+function barNetVal(agg) {
+  if (barMetric === 'co2') {
+    var v = agg.carbon_g_net;
+    return v != null ? Math.round(v * 100) / 100 : null;
   }
+  var imp = barMetric === 'kwh' ? agg.imp_kwh : (agg.imp_cost + barStandingVal(agg));
+  var exp = barMetric === 'kwh' ? agg.exp_kwh : agg.exp_cost;
+  return Math.round((imp - exp) * 1000) / 1000;
+}
 
-  // Totals — import meters stacked above axis, export below, all in same stack
+function barNetColor() {
+  return barGetTheme().tooltipTitle;      // the chart's text colour: apart from every meter's
+}
+
+function barGetDatasets(labels, aggList) {
+  // Import meters stacked above axis, export below, all in same stack
   var datasets = [];
 
   barMeters.forEach(function(meter) {
@@ -1676,6 +1672,17 @@ function barGetDatasets(labels, aggList) {
         stack: 'main'
       });
     }
+  }
+
+  if (barShowNet()) {
+    datasets.push({
+      type: 'line', label: 'Net', _net: true,
+      data: aggList.map(barNetVal),
+      borderColor: barNetColor(), backgroundColor: barNetColor(),
+      borderWidth: 2, pointRadius: 3, pointHoverRadius: 5, fill: false, tension: 0,
+      stack: 'net',           // its own stack: the line is the net, not stacked on the bars
+      order: -1               // drawn over the bars
+    });
   }
 
   return datasets;
@@ -2012,7 +2019,6 @@ function barRender() {
             var agg = barGetDataForPeriod().aggList[idx];
             if (!agg) return '';
             if (barMetric === 'co2') {
-              if (barView === 'net') return '';
               var net = agg.carbon_g_net; var tot = agg.carbon_g_total;
               return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nNet: ' + barCo2Fmt(net) + '  Total: ' + barCo2Fmt(tot);
             }
@@ -2025,7 +2031,6 @@ function barRender() {
             var netStr = (net < 0 ? '-' : '') + sym + Math.abs(net).toFixed(dp) + unit;
             var impStr = sym + imp.toFixed(dp) + unit;
             var expStr = sym + exp.toFixed(dp) + unit;
-            if (barView === 'net') return '';
             return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nImport: ' + impStr + '  Export: ' + expStr + '\nNet: ' + netStr;
           }
         }}
@@ -2049,22 +2054,19 @@ function barBuildLegend() {
   function dot(color, label) {
     return '<span style="display:flex;align-items:center;gap:5px;"><span class="bar-legend-dot" style="background:' + color + '"></span>' + label + '</span>';
   }
-  if (barView === 'net') {
-    if (barMetric === 'co2') {
-      el.innerHTML = dot(barMeters[0]&&barMeters[0].color||'#1f77b4','Net emitting') + dot(barExportColor,'Net offsetting');
-    } else {
-      el.innerHTML = dot(barMeters[0]&&barMeters[0].color||'#1f77b4','Net import') + dot(barExportColor,'Net export');
-    }
-    return;
+  function line(color, label) {
+    return '<span style="display:flex;align-items:center;gap:5px;"><span style="display:inline-block;width:16px;height:2px;' +
+      'background:' + color + ';"></span>' + label + '</span>';
   }
+  var net = barShowNet() ? line(barNetColor(), 'Net') : '';
   if (barMetric === 'co2') {
     barMeters.forEach(function(m) { el.innerHTML += dot(m.color, m.label + ' carbon'); });
-    el.innerHTML += dot(barExportColor, 'Export offset');
+    el.innerHTML += dot(barExportColor, 'Export offset') + net;
     return;
   }
   barMeters.forEach(function(m) { el.innerHTML += dot(m.color, m.label + ' import'); });
   if (barMetric === 'cost' && barIncStanding()) { el.innerHTML += dot('#4b5563', 'Standing charge'); }
-  el.innerHTML += dot(barExportColor, 'Export');
+  el.innerHTML += dot(barExportColor, 'Export') + net;
 }
 
 // ── Year gradient (month-ordered monthly view) ──────────────────────────────
@@ -2093,9 +2095,10 @@ function barApplyYearGradient(datasets, years) {
   var minY = uniq[0], maxY = uniq[uniq.length-1];
   var span = Math.max(1, maxY - minY);
   datasets.forEach(function(ds) {
+    if (ds._net) return;                              // the Net line is one colour across the years
     var base = ds.backgroundColor;
     ds.backgroundColor = years.map(function(y, i) {
-      var c = Array.isArray(base) ? base[i] : base;   // preserve per-point colours (e.g. Net view)
+      var c = Array.isArray(base) ? base[i] : base;   // preserve per-point colours
       var t = ((maxY - y) / span) * 0.6;              // oldest year lightened up to 60% toward white
       return barMixWhite(c, t);
     });
@@ -2480,21 +2483,22 @@ function barBuildTable() {
   var labels  = pd.labels;
 
   // Build column headers
+  // Each meter's import, then — when there are devices — the whole import (the meter's figure, not
+  // a sum of the columns beside it: the Total is built from it, and a day whose devices are priced
+  // apart from the bill shows as such), standing charge, export. `inTotal: false`: the Import
+  // column is already in the row's Total through the meters' columns.
   var cols = []; // [{key, label}]
-  if (barView === 'net') {
-    cols.push({key:'net_imp', label: barMetric==='co2' ? 'Import CO₂' : 'Import'});
-    cols.push({key:'net_exp', label: barMetric==='co2' ? 'Export offset' : 'Export', color: barExportColor});
-    if (barMetric === 'co2') cols.push({key:'avg_intensity', label:'Avg intensity'});
+  var hasDevices = barMeters.some(function(m) { return m.is_sub; });
+  if (barMetric === 'co2') {
+    barMeters.forEach(function(m) { cols.push({key:'co2_imp_'+m.id, label: m.label + ' carbon', mid: m.id, color: m.color}); });
+    if (hasDevices) cols.push({key:'net_imp', label:'Import CO₂', inTotal: false});
+    cols.push({key:'co2_exp', label:'Export offset', color: barExportColor});
+    cols.push({key:'avg_intensity', label:'Avg intensity'});
   } else {
-    if (barMetric === 'co2') {
-      barMeters.forEach(function(m) { cols.push({key:'co2_imp_'+m.id, label: m.label + ' carbon', mid: m.id, color: m.color}); });
-      cols.push({key:'co2_exp', label:'Export offset', color: barExportColor});
-      cols.push({key:'avg_intensity', label:'Avg intensity'});
-    } else {
-      barMeters.forEach(function(m) { cols.push({key:'imp_'+m.id, label: m.label + ' import', mid: m.id, dir:'imp', color: m.color}); });
-      if (barMetric === 'cost' && barIncStanding()) cols.push({key:'standing', label:'Standing charge', color:'#4b5563'});
-      cols.push({key:'exp', label:'Export', dir:'exp', color: barExportColor});
-    }
+    barMeters.forEach(function(m) { cols.push({key:'imp_'+m.id, label: m.label + ' import', mid: m.id, dir:'imp', color: m.color}); });
+    if (hasDevices) cols.push({key:'imp_total', label:'Import', inTotal: false});
+    if (barMetric === 'cost' && barIncStanding()) cols.push({key:'standing', label:'Standing charge', color:'#4b5563'});
+    cols.push({key:'exp', label:'Export', dir:'exp', color: barExportColor});
   }
 
   var sym = barMetric === 'cost' ? barCurrency : '';
@@ -2508,23 +2512,13 @@ function barBuildTable() {
       return imp - exp;
     }
     if (col.key === 'net_imp') {
-      // Net view = gross import vs gross export, netting to Total (carbon_g_net),
-      // identical in shape to the kWh/£ Net columns. For CO2 the gross import
-      // carbon is the main meter's carbon_g_imp (sub-meters draw through it and
-      // carry no carbon_g_imp, so the sum collapses to the main's figure).
-      // Using the net-positive split here was the bug: it forced import to 0 on
-      // any net-offsetting day and to the net (not gross) value otherwise.
-      if (barMetric === 'co2') {
-        return Object.values(agg.meters||{}).reduce(function(s,m){ return s+(m.carbon_g_imp||0); }, 0);
-      }
-      return barMetric === 'kwh' ? (agg.imp_kwh || 0) : ((agg.imp_cost || 0) + barStandingVal(agg));
+      // The CO₂ Import column: the gross import carbon, the main meter's carbon_g_imp (sub-meters
+      // draw through it and carry no carbon_g_imp, so the sum collapses to the main's figure).
+      // Using the net-positive split here was a bug once: it forced import to 0 on any
+      // net-offsetting day and to the net (not gross) value otherwise.
+      return Object.values(agg.meters||{}).reduce(function(s,m){ return s+(m.carbon_g_imp||0); }, 0);
     }
-    if (col.key === 'net_exp') {
-      if (barMetric === 'co2') {
-        return Object.values(agg.meters||{}).reduce(function(s,m){ return s+(m.carbon_g_exp||0); }, 0);
-      }
-      return barMetric === 'kwh' ? (agg.exp_kwh || 0) : (agg.exp_cost || 0);
-    }
+    if (col.key === 'imp_total') return barMetric === 'kwh' ? (agg.imp_kwh || 0) : (agg.imp_cost || 0);
     if (col.key === 'co2_total') return agg.carbon_g_total != null ? agg.carbon_g_total : null;
     if (col.key === 'avg_intensity') return agg.avg_intensity != null ? agg.avg_intensity : null;
     if (col.key === 'standing') return barStandingVal(agg);
@@ -2597,9 +2591,7 @@ function barBuildTable() {
                  : barMetric === 'kwh'  ? (Math.round(v * 1000)  / 1000)
                  : v;
           colTotals[c.key] = (colTotals[c.key] || 0) + vr;
-          if (c.key === 'net_imp') rowTotal += vr;
-          else if (c.key === 'net_exp') rowTotal -= vr;
-          else if (c.key !== 'avg_intensity') rowTotal += vr;
+          if (c.inTotal !== false && c.key !== 'avg_intensity') rowTotal += vr;
           _rowHasVal = true;
         }
         fmtd = v != null ? barFmt(v) : '—';
@@ -2751,7 +2743,6 @@ function barToggleTheme() {
 function barSetActive(segId, el) { document.querySelectorAll('#'+segId+' .bar-seg-btn').forEach(b=>b.classList.remove('active')); el.classList.add('active'); }
 function barSetPeriod(v, el) { barPeriod = v; barSetActive('bar-period-seg', el); barSaveState(); barRender(); }
 function barSetMetric(v, el) { barMetric = v; barSetActive('bar-metric-seg', el); barSaveState(); barRender(); }
-function barSetView(v, el)   { barView = v;   barSetActive('bar-view-seg', el);   barSaveState(); barRender(); }
 function barSetOrder(v, el)  { barMonthOrder = v; barSetActive('bar-order-seg', el); barSaveState(); barRender(); }
 function barSetCalendar(v, el) { barCalendar = v; barSetActive('bar-cal-seg', el); barSaveState(); barRender(); }
 
