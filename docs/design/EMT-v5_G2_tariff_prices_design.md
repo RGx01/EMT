@@ -1,6 +1,6 @@
 # EMT v5 — G2: tariff prices, stored for display
 
-*Draft, 31 Oct 2026. The second half of ROADMAP §G, re-scoped. G2 as first proposed — a store of
+*Draft, 31 Oct 2026; display only, and the timeline's minor ticks, decided the same day (§8). The second half of ROADMAP §G, re-scoped. G2 as first proposed — a store of
 Octopus's published rate records that pricing reads, with a diff that re-prices — was dropped on
 28 Oct 2026 (#326). The user brought it back on 31 Oct 2026, narrower: the tariff's standing charge
 and unit rates, for the Usage Stats tariff overlay's hover (#353, #354), **Agile's unit rates left
@@ -160,6 +160,24 @@ For Agile and Tracker the unit-rate line reads "Unit rates: half-hourly" or "Uni
 Monthly by Date, Daily and HH all show it. On Monthly, the hovered date is the date under the pointer
 within its bar.
 
+**Minor ticks on the timeline** (the user, 31 Oct 2026). Each band already has a tick at a change of
+agreement. It gains a **minor tick** — shorter and lighter — at each price change inside an
+agreement:
+
+- **What ticks:** a change of the standing charge, and a change of any unit rate (each band of
+  Go and Intelligent, the flat rate, the export rate).
+- **Agile, Tracker and anything else `dynamic`:** standing-charge changes only, since the table
+  stores no unit rates for them.
+- **Where:** at the price period's start, placed by date as the agreement ticks are. A minor tick
+  that falls on an agreement tick is not drawn: the agreement tick already marks it.
+- **Which price:** as shown, inc VAT, so a VAT change (1 Oct 2026) ticks too, although the stored
+  ex-VAT price does not change.
+- **The import and export bands each carry their own.** The standing charge is import's: it ticks
+  on the import band.
+
+On Monthly several changes can fall in one bar. They are drawn at their dates, and two closer than
+2 px are drawn once.
+
 ## 6. Not in this step
 
 - **Pricing from the store.** The restart fallback that §G keeps as an option (price from the
@@ -176,12 +194,19 @@ within its bar.
 |---|---|
 | G2a | the table; the summary (records → price periods, the `dynamic` rule, the 50-period guard), written where `agreement_schedules` builds; a log line of each agreement's period counts, which measures §2's open question on the real records |
 | G2b | the one-off fetches: closed agreements' standing charges and export rates, capped and paced |
-| G2c | the route's price periods (VAT from the calendar); the hover's prices at the hovered date |
+| G2c | the route's price periods (VAT from the calendar); the hover's prices at the hovered date; the minor ticks at each price change |
 
-## 8. To decide
+## 8. Decided, and to decide
 
-1. **Display only** (as here), or also the restart fallback (§6)?
-2. **The hover:** the prices at the hovered date (as here), or every price period in the
-   agreement?
-3. **The `dynamic` rule:** the AGILE / SILVER / TRACKER families plus the 50-period guard, or the
+**Decided** (the user, 31 Oct 2026):
+
+- **Display only.** The restart fallback (§6) is not part of G2.
+- **The timeline:** a minor tick at each standing-charge and unit-rate change; on Agile, standing
+  charges only, since no Agile rates are stored (§5).
+
+**To decide:**
+
+1. **The hover:** the prices at the hovered date (as here), or every price period in the
+   agreement? The minor ticks show where each period starts, which suits the first.
+2. **The `dynamic` rule:** the AGILE / SILVER / TRACKER families plus the 50-period guard, or the
    guard alone?
