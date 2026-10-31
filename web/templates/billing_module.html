@@ -252,7 +252,7 @@ window.EMTBilling = (function () {
            backgroundColor: m.bar_color, barPercentage: 0.7, categoryPercentage: 1, yAxisID: 'y', stack: 'kwh', _meter: m, order: 2});
       if (m.has_rate) ds.push({type: 'line', label: m.nice_name + ' rate', yAxisID: 'y2', stepped: 'before',
         data: m.rate_x.map(function (x, j) { return {x: x, y: m.rate[j]}; }), borderColor: m.line_color, borderWidth: 2,
-        borderDash: m.is_export ? [6, 4] : [], pointRadius: 0, pointHitRadius: 0, fill: false, _meter: m, _rate: true, order: 1});
+        borderDash: m.rate_dashed ? [6, 4] : [], pointRadius: 0, pointHitRadius: 0, fill: false, _meter: m, _rate: true, order: 1});
     });
     // A label every half-hour at full width (the page's tickStep); thinned so rotated
     // labels never overlap on a narrow chart (the page's mobile skip, by width here).

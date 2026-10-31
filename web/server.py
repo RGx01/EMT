@@ -264,6 +264,7 @@ import sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(__file__)))
 
 import store_access                 # workstream A: store() / writer()
+import chart_style as _chart_style   # a meter's bar colour and rate line (Settings)
 from job_coordinator import job     # workstream B: coordinator membership
 from block_store import BlockStore, open_block_store
 _store: BlockStore | None = None
@@ -2134,17 +2135,28 @@ def lovelace_heatmap():
 
 def _config_token(store) -> str:
     """What a page shows beyond the blocks that a write can change: the billing periods
-    (a billing-day change or an added/removed meter re-cuts them). Part of
-    `_blocks_data_version`, and `/api/energy`'s `fingerprint.config` — the per-day fingerprint
-    cannot see it. (The bill-rounding option was here until it was retired, 28 Oct 2026.)"""
+    (a billing-day change or an added/removed meter re-cuts them), and each channel's chart
+    style (a colour or rate line chosen on Settings: the Charts page keeps its rows, colours
+    with them, until this moves). Part of `_blocks_data_version`, and `/api/energy`'s
+    `fingerprint.config` — the per-day fingerprint cannot see it. (The bill-rounding option was
+    here until it was retired, 28 Oct 2026.)"""
     try:
         _cp = store._conn.execute(
             "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS mx, "
             "COALESCE(GROUP_CONCAT(billing_day || '@' || effective_from, ','), '') AS bd "
             "FROM config_periods").fetchone()
         _mc = store._conn.execute("SELECT COUNT(*) AS n FROM meters").fetchone()
+        _st = store._conn.execute(
+            "SELECT COALESCE(GROUP_CONCAT(s, ','), '') AS s FROM ("
+            "  SELECT m.meter_id || '.' || mc.channel || '=' || COALESCE(mc.bar_color, '') || '/' "
+            "         || COALESCE(mc.rate_line, '') AS s "
+            "  FROM meter_channels mc JOIN meters m ON m.id = mc.meter_id "
+            "  WHERE mc.bar_color IS NOT NULL OR mc.rate_line IS NOT NULL "
+            "  ORDER BY m.config_period_id, m.meter_id, mc.channel)").fetchone()
         import zlib as _zlib
         _cfgf = "%s/%s/%d/%d" % (_cp["n"], _cp["mx"], _zlib.crc32(_cp["bd"].encode()), _mc["n"])
+        if _st["s"]:                            # unchanged for a config with no style set
+            _cfgf += "/%d" % _zlib.crc32(_st["s"].encode())
     except Exception:
         _cfgf = "0"
     return _cfgf
@@ -3500,7 +3512,9 @@ def settings_page():
         has_data=has_data,
         data_source_mode=_ds_mode,
         has_credentials=_has_creds,
-        ohme_detection=_ohme_detection()
+        ohme_detection=_ohme_detection(),
+        chart_palette=_chart_style.PALETTE,
+        chart_rate_mix=_chart_style.RATE_MIX,
     )
 
 
