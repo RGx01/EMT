@@ -142,11 +142,12 @@ def _local_bounds(vf, vt, tz):
     return a.isoformat(), end.isoformat()
 
 
-def for_display(rows, *, vat_dates, tz_name: str = "Europe/London") -> list:
+def for_display(rows, *, vat_dates, tz_name: str = "Europe/London", vat: bool = True) -> list:
     """Stored price periods (one agreement's) as the overlay shows them: [{kind, band, window, from,
     to, exc, inc}], local dates with `to` exclusive (None open), inc VAT from EMT's calendar
     (`vat_dates`: vat_calendar's merged [(YYYY-MM-DD, rate)]). A period across a VAT change is shown
-    as two, so the change has its tick; `dynamic` carries no value."""
+    as two, so the change has its tick; `dynamic` carries no value. `vat` False (an export
+    agreement: no VAT on what Octopus pays) — inc is exc and no period is split."""
     import bisect
     from zoneinfo import ZoneInfo
     tz = ZoneInfo(tz_name)
@@ -160,11 +161,11 @@ def for_display(rows, *, vat_dates, tz_name: str = "Europe/London") -> list:
     out = []
     for r in rows:
         f, t = _local_bounds(r["valid_from"], r.get("valid_to"), tz)
-        cuts = [f] + [d for d in days if f < d and (t is None or d < t)] + [t]
+        cuts = [f] + ([d for d in days if f < d and (t is None or d < t)] if vat else []) + [t]
         for a, b in zip(cuts, cuts[1:]):
             exc = r.get("value_exc")
             out.append({"kind": r["kind"], "band": r["band"], "window": r.get("window"),
                         "from": a, "to": b, "exc": exc,
-                        "inc": None if exc is None else round(exc * (1 + rate_on(a)), 4)})
+                        "inc": None if exc is None else round(exc * (1 + (rate_on(a) if vat else 0)), 4)})
     out.sort(key=lambda p: (p["from"], p["kind"], p["band"]))
     return out

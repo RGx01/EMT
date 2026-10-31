@@ -6188,7 +6188,8 @@ def api_tariff_agreements():
                 "name": _tn.tariff_name(r["tariff_code"]),
                 "from": _local(r["valid_from"]), "to": _local(r["valid_to"]),
                 "prices": _tp.for_display(prices.get((r["tariff_code"], r["valid_from"][:19]), []),
-                                          vat_dates=vat_dates, tz_name=tz)}
+                                          vat_dates=vat_dates, tz_name=tz,
+                                          vat=r["direction"] != "export")}
                for r in rows if r["valid_to"] is None or r["valid_to"] > r["valid_from"]]
         return jsonify({"agreements": out})
     except Exception as e:
