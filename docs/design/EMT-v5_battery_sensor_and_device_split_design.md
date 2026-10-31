@@ -122,10 +122,14 @@ A wrong warning costs the user a look at their setup. So EMT changes nothing in 
   choose the battery's grid-charge sensor, or remove the battery if the inverter has none;
 - **the battery's card** says the same, with the half-hours and days, and that the half-hours already
   recorded keep the old sensor's readings (Device History never overwrites a row);
-- **"This sensor reports grid charge only"** on the card: the user's word, for the noisy sensor. It
-  clears the banner for that sensor only (a new sensor is judged afresh), shows a quiet note on the
-  card with "Show the warning again", and stops the warning in the log. Not a plain dismiss: a dismiss
-  hides a real problem and is forgotten; a confirmation is a statement about the sensor.
+- **"Keep this sensor anyway"** on the card: the user's choice, for the noisy sensor or for one they
+  know counts solar and keep regardless. It clears the banner for that sensor only (a new sensor is
+  judged afresh), shows a quiet note on the card with "Show the warning again", and stops the warning
+  in the log. Not a plain dismiss: a dismiss hides a real problem and is forgotten; this is recorded
+  against the sensor, and the card says it was kept. *Reworded 31 Oct 2026* (was "This sensor reports
+  grid charge only"): a user who keeps a total-charge sensor on purpose had to click a statement they
+  knew was false, and the card and the log then repeated it. The button claims nothing about the
+  sensor; the stored key and route are unchanged.
 - **a new sensor** is judged on the rows that name it: the unnamed rows (imported, rebuilt) are the
   old sensor's, and would flag the new one at once.
 

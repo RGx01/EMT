@@ -868,8 +868,8 @@ window.EMT = window.EMT || {};
 })();
 
 /* ── A battery sensor that counts solar (battery sensor design §3) ──────────────────────────────
-   Not dismissible: it goes when the sensor is changed, or when the user confirms on the battery's
-   card that it reports grid charge only. EMT changes nothing in the data on it. */
+   Not dismissible: it goes when the sensor is changed, or when the user chooses on the battery's
+   card to keep this sensor anyway. EMT changes nothing in the data on it. */
 (function () {
   function esc(s) {
     return String(s).replace(/[&<>"]/g, function (x) {

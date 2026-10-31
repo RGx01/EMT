@@ -12167,7 +12167,7 @@ _last_startup_complete_ts = 0.0  # monotonic time the last startup finished (rec
 # whole grid import and more than 0.25 kWh above it (staging's trickles and its 14 Oct 2026 firmware
 # over-reads stay below), on five days within 30. EMT changes nothing in the data on it (the user,
 # 29 Oct 2026: a wrong verdict must not cost history): it says so loudly, on every page, until the
-# sensor is changed or the user confirms it reports grid charge only.
+# sensor is changed or the user chooses to keep it anyway.
 _BATTERY_RATIO = 1.5
 _BATTERY_FLOOR_KWH = 0.25
 _BATTERY_DAYS = 5
@@ -12237,7 +12237,7 @@ def battery_sensor_flags() -> dict:
     """The batteries whose sensor is found counting solar, for the page: {meter_id: {conclusive_on,
     half_hours, days, example [half-hour, battery kWh, grid kWh], confirmed_at}} — only while the
     sensor judged is still the battery's primary (a new one is judged afresh at the next check).
-    `confirmed_at` is set where the user has said it reports grid charge only."""
+    `confirmed_at` is set where the user has chosen to keep the sensor anyway."""
     rd = _reader()
     ev = rd.get_meta(_BATTERY_EVIDENCE_KEY, {}) or {}
     confirmed = rd.get_meta(_BATTERY_CONFIRMED_KEY, {}) or {}
@@ -12255,8 +12255,8 @@ def battery_sensor_flags() -> dict:
 
 
 def confirm_battery_sensor(meter_id: str, confirmed: bool = True) -> bool:
-    """The user's word on a flagged battery sensor: it reports grid charge only (`confirmed`), so it
-    is no longer shown as wrong — or, False, take that back. Held for the sensor confirmed; a new
+    """The user's choice on a flagged battery sensor: keep it anyway (`confirmed`), so it is no
+    longer shown as wrong — or, False, take that back. Held for the sensor confirmed; a new
     sensor is judged afresh. False when the battery has no primary sensor."""
     sid = dict(_store.battery_devices()).get(meter_id)
     if sid is None:
@@ -12264,7 +12264,7 @@ def confirm_battery_sensor(meter_id: str, confirmed: bool = True) -> bool:
     rec = _store.get_meta(_BATTERY_CONFIRMED_KEY, {}) or {}
     if confirmed:
         rec[meter_id] = {"sensor_id": sid, "at": datetime.utcnow().replace(microsecond=0).isoformat()}
-        logger.info("battery sensor: %s's sensor confirmed by the user as grid charge only", meter_id)
+        logger.info("battery sensor: %s's flagged sensor kept by the user", meter_id)
     else:
         rec.pop(meter_id, None)
     _store.set_meta(_BATTERY_CONFIRMED_KEY, rec)
