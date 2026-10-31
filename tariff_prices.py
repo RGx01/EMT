@@ -44,6 +44,12 @@ def _mins(hhmm):
     return int(hhmm[:2]) * 60 + int(hhmm[3:])
 
 
+def _length(w):
+    """A local window's minutes, wrapping past midnight."""
+    a, b = _mins(w[0]), _mins(w[1])
+    return (b - a) if b > a else (b + 1440 - a)
+
+
 def _within(part, whole):
     """A local window (start, end) inside another, either may wrap past midnight."""
     def span(w):
@@ -97,17 +103,22 @@ def summarise(periods, *, kind: str, tariff_code: str, tz_name: str = "Europe/Lo
         keyed.append(((a.strftime("%H:%M"), b.strftime("%H:%M")), (vf, vt, v)))
         day = a.date()
         per_day[day] = per_day.get(day, 0) + 1
-    # A window seen once is a fragment — a record clipped at the agreement's edge (00:00-05:30 of a
-    # 23:30-05:30 night) — and goes to the recurring window that holds it.
+    # A window inside a larger recurring one, wrapping past midnight, is a piece of it and goes to it:
+    # a record clipped at the agreement's edge (00:00-05:30 of a 23:30-05:30 night), and the halves
+    # Octopus splits a night into where the price changes at local midnight (23:30-00:00 at the old
+    # price, 00:00-05:30 at the new) — which recur, one pair a price change, so a count alone does not
+    # tell them (31 Oct 2026, the Pi: Intelligent Go's hover showed 00:00-05:30 as a band of its own).
     seen = {}
     for w, _ in keyed:
         seen[w] = seen.get(w, 0) + 1
-    full = [w for w, n in seen.items() if n > 1]
+    recurring = [w for w, n in seen.items() if n > 1]
+
+    def home(w):
+        holders = [f for f in recurring if f != w and _within(w, f)]
+        return max(holders, key=_length) if holders else w
     windowed = {}
     for w, r in keyed:
-        if seen[w] == 1:
-            w = next((f for f in full if _within(w, f)), w)
-        windowed.setdefault("%s-%s" % w, []).append(r)
+        windowed.setdefault("%s-%s" % home(w), []).append(r)
     if per_day and max(per_day.values()) > MAX_WINDOWS_A_DAY:
         return dynamic()
 
