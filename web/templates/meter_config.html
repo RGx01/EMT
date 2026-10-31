@@ -859,14 +859,14 @@ function loadBatteryFlags() {
   }).catch(function () {});
 }
 
-// A flagged battery's card: why, what it gets wrong, how to fix it — or, once the user has said the
-// sensor is right, a quiet note with the way back.
+// A flagged battery's card: why, what it gets wrong, how to fix it — or, once the user has chosen to
+// keep the sensor, a quiet note with the way back.
 function batteryFlagNote(meterId, b) {
   var ex = b.example || [];
   if (b.confirmed_at) {
     return '<div style="padding:8px 0;font-size:12px;color:var(--muted);">' +
-      'EMT found this sensor reading more than the house imported, on ' + (+b.days || 0) + ' days; you confirmed ' +
-      'on ' + esc(String(b.confirmed_at).slice(0, 10)) + ' that it reports grid charge only. ' +
+      'EMT found this sensor reading more than the house imported, on ' + (+b.days || 0) + ' days; you chose to ' +
+      'keep it on ' + esc(String(b.confirmed_at).slice(0, 10)) + '. ' +
       '<button class="btn btn-sm js-battery-confirm" data-meter="' + esc(meterId) + '" data-confirmed="0" ' +
       'style="font-size:11px;">Show the warning again</button></div>';
   }
@@ -881,7 +881,7 @@ function batteryFlagNote(meterId, b) {
     'only, and save; the half-hours already recorded keep this sensor\'s readings. If your inverter has none, ' +
     'remove the battery: its charge then counts in the house. ' + BATTERY_CLAMP_NOTE + '<br><br>' +
     '<button class="btn btn-sm js-battery-confirm" data-meter="' + esc(meterId) + '" data-confirmed="1" ' +
-    'style="font-size:12px;">This sensor reports grid charge only</button>' +
+    'style="font-size:12px;">Keep this sensor anyway</button>' +
     '</div>';
 }
 

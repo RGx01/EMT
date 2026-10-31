@@ -4,8 +4,8 @@ A battery sensor that counts solar, flagged (battery sensor and device split des
 import's first start, must not cost history).
 
 When the evidence is conclusive the sensor is flagged and warned of once; nothing in the blocks changes.
-The flag shows on every page until the sensor is changed or the user confirms it reports grid charge
-only. A replacement sensor is judged on the rows that name it: the unnamed rows are the old sensor's.
+The flag shows on every page until the sensor is changed or the user chooses to keep it
+anyway. A replacement sensor is judged on the rows that name it: the unnamed rows are the old sensor's.
 
 Discriminating: every test here fails on the parent (the flag, the confirmation and the routes are new).
 """
@@ -147,7 +147,9 @@ class ThePage(unittest.TestCase):
     def test_the_card_says_how_to_fix_it_and_offers_the_confirmation(self):
         m = _t("meter_config.html")
         note = m[m.index("function batteryFlagNote"):][:2500]
-        self.assertIn("This sensor reports grid charge only", note)
+        self.assertIn("Keep this sensor anyway", note)
+        self.assertIn("you chose to", note)
+        self.assertNotIn("grid charge only", note)      # the button claims nothing about the sensor
         self.assertIn("Show the warning again", note)
         self.assertIn("batteryFlagged[meterId] ? batteryFlagNote(", m)
 
