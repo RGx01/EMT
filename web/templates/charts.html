@@ -1805,7 +1805,8 @@ function barTariffX(chart, ranges, iso) {
 // The bands' segments, each {a, x0, x1, y0, y1}
 function barTariffSegments(chart, ranges, lanes) {
   var ca = chart.chartArea, out = [];
-  var ys = { imp: ca.top + 2, exp: ca.bottom - BAR_TARIFF_LANE - 2 };
+  // 8 px in from the chart's edge: room for the minor ticks above import's band and below export's
+  var ys = { imp: ca.top + 8, exp: ca.bottom - BAR_TARIFF_LANE - 8 };
   barTariffs.forEach(function(a) {
     var lane = a.direction === 'export' ? 'exp' : 'imp';
     if (!lanes[lane]) return;
@@ -1852,9 +1853,10 @@ function barTariffPlugin(ranges, lanes) {
         drawn.push(t);
         c.beginPath(); c.moveTo(t.x, t.y0 - 3); c.lineTo(t.x, t.y1 + 3); c.stroke();
       });
-      // G2c: a minor tick — shorter, lighter — at each price change inside an agreement (a standing
-      // charge or a unit rate; Agile's standing charges only, as its rates are not kept). One that
-      // falls on an agreement tick, or on another minor one, is drawn once.
+      // G2c: a minor tick — short, lighter — at each price change inside an agreement (a standing
+      // charge or a unit rate; Agile's standing charges only, as its rates are not kept), just
+      // outside the band: above import's, below export's. One that falls on an agreement tick, or
+      // on another minor one, is drawn once.
       c.globalAlpha = 0.55; c.lineWidth = 1;
       segs.forEach(function(sg) {
         barTariffPriceStarts(sg.a).forEach(function(iso) {
@@ -1862,7 +1864,11 @@ function barTariffPlugin(ranges, lanes) {
           if (x <= sg.x0 + 1 || x >= sg.x1 - 1) return;
           if (drawn.some(function(d) { return d.y0 === sg.y0 && Math.abs(d.x - x) < 2; })) return;
           drawn.push({ x: x, y0: sg.y0 });
-          c.beginPath(); c.moveTo(x, sg.y0 + 3); c.lineTo(x, sg.y1 - 3); c.stroke();
+          var exp = sg.a.direction === 'export';
+          c.beginPath();
+          c.moveTo(x, exp ? sg.y1 + 1 : sg.y0 - 1);
+          c.lineTo(x, exp ? sg.y1 + 6 : sg.y0 - 6);
+          c.stroke();
         });
       });
       c.restore();
@@ -1902,7 +1908,15 @@ function barTariffPricesAt(a, iso) {
   var starts = [a.from].concat(barTariffPriceStarts(a));
   var from = starts.filter(function(d) { return d <= iso; }).pop() || a.from;
   var next = starts.filter(function(d) { return d > iso; })[0] || a.to;
-  var rows = (a.prices || []).filter(function(p) { return p.from <= from && (!p.to || p.to > from); });
+  // one per kind and band — the latest to start: a price that changed other than at local midnight
+  // leaves its period and the next sharing that day
+  var latest = {};
+  (a.prices || []).forEach(function(p) {
+    if (p.from > from || (p.to && p.to <= from)) return;
+    var k = p.kind + '|' + p.band + '|' + (p.window || '');
+    if (!latest[k] || p.from > latest[k].from) latest[k] = p;
+  });
+  var rows = Object.keys(latest).map(function(k) { return latest[k]; });
   return { from: from, to: next, rows: rows };
 }
 
@@ -1973,7 +1987,7 @@ function barTariffShow(a, ev, iso) {
       span.style.cssText = 'margin-top:4px;color:var(--muted);font-size:11px;';
       var last = at.to ? new Date(Date.parse(at.to + 'T00:00:00Z') - 864e5).toISOString().slice(0, 10) : null;
       span.textContent = 'Prices ' + barFmtDate(at.from) + (last ? ' \u2013 ' + barFmtDate(last) : ' onwards')
-        + ', inc VAT';
+        + (a.direction === 'export' ? ' (no VAT on export)' : ', inc VAT');
       tip.appendChild(span);
       lines.forEach(function(l) { var d = document.createElement('div'); d.textContent = l; tip.appendChild(d); });
     }

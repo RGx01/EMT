@@ -66,6 +66,14 @@ class TheDisplayPeriods(unittest.TestCase):
         self.assertEqual([(p["from"], p["to"], p["inc"]) for p in got],
                          [("2026-08-26", "2026-10-01", 50.4), ("2026-10-01", None, 48.0)])
 
+    def test_export_has_no_vat_and_no_vat_split(self):
+        """No VAT on what Octopus pays for export (the user, 31 Oct 2026): inc is the published price,
+        and a VAT change neither moves it nor ticks."""
+        import tariff_prices
+        got = tariff_prices.for_display([_row("unit", "", None, 15.0, "2025-07-13T23:00:00", None)],
+                                        vat_dates=VAT, tz_name="Europe/London", vat=False)
+        self.assertEqual([(p["from"], p["to"], p["inc"]) for p in got], [("2025-07-14", None, 15.0)])
+
     def test_dynamic_has_no_value(self):
         (p,) = self.fd([_row("unit", "dynamic", None, None, "2024-01-01T00:00:00", "2024-06-01T00:00:00")])
         self.assertEqual((p["band"], p["exc"], p["inc"]), ("dynamic", None, None))
@@ -100,6 +108,8 @@ class TheRoute(unittest.TestCase):
         d = json.loads(raw)
         self.assertEqual([len(a["prices"]) for a in d["agreements"]], [1, 0])
         self.assertEqual(d["agreements"][0]["prices"][0]["inc"], 42.0)
+        self.assertIn('vat=r["direction"] != "export")', open(os.path.join(_ROOT, "web", "server.py"),
+                                                              encoding="utf-8").read())
         for ident in ("2600000000001", "A-0000ABC7", "mpan"):
             self.assertNotIn(ident, raw.decode())
 
@@ -112,6 +122,11 @@ class ThePage(unittest.TestCase):
         plug = _fn("barTariffPlugin")
         self.assertIn("barTariffPriceStarts(sg.a).forEach(function(iso) {", plug)
         self.assertIn("c.globalAlpha = 0.55; c.lineWidth = 1;", plug)
+        # just outside the band: above import's, below export's (the user, 31 Oct 2026)
+        self.assertIn("c.moveTo(x, exp ? sg.y1 + 1 : sg.y0 - 1);", plug)
+        self.assertIn("c.lineTo(x, exp ? sg.y1 + 6 : sg.y0 - 6);", plug)
+        self.assertIn("var ys = { imp: ca.top + 8, exp: ca.bottom - BAR_TARIFF_LANE - 8 };",
+                      _fn("barTariffSegments"))
         self.assertIn("if (drawn.some(function(d) { return d.y0 === sg.y0 && Math.abs(d.x - x) < 2; })) return;", plug)
 
     def test_the_hover_shows_the_tick_period_under_the_pointer(self):
@@ -119,9 +134,11 @@ class ThePage(unittest.TestCase):
         at = _fn("barTariffPricesAt")
         self.assertIn("var from = starts.filter(function(d) { return d <= iso; }).pop() || a.from;", at)
         self.assertIn("var next = starts.filter(function(d) { return d > iso; })[0] || a.to;", at)
+        self.assertIn("if (!latest[k] || p.from > latest[k].from) latest[k] = p;", at)   # one per band
         lines = _fn("barTariffPriceLines")
         for part in ("'Unit rates: half-hourly'", "'Off-peak ' + p2(p.inc)", "'Standing charge ' + p2(p.inc) + '/day'"):
             self.assertIn(part, lines)
+        self.assertIn("(a.direction === 'export' ? ' (no VAT on export)' : ', inc VAT')", _fn("barTariffShow"))
 
 
 if __name__ == "__main__":

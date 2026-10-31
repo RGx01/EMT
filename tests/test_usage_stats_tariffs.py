@@ -161,7 +161,7 @@ class ThePage(unittest.TestCase):
 
     def test_import_above_export_below(self):
         segs = _fn("barTariffSegments")
-        self.assertIn("var ys = { imp: ca.top + 2, exp: ca.bottom - BAR_TARIFF_LANE - 2 };", segs)
+        self.assertIn("var ys = { imp: ca.top + 8, exp: ca.bottom - BAR_TARIFF_LANE - 8 };", segs)
         room = _fn("barTariffRoom")
         self.assertIn("return [max + (lanes && lanes.imp ? span * 0.12 : 0), min - (lanes && lanes.exp ? span * 0.12 : 0)];", room)
         self.assertIn("var r = barTariffRoom(sc.max, sc.min, lanes);", _fn("barTariffHeadroom"))
