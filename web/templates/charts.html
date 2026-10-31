@@ -2060,9 +2060,7 @@ function barRender() {
     if (!barCalendar) {
       // Billing mode: barDailyMonth must be a string bKey
       var _allBKeys = [...new Set(barData.map(function(r){ return barBillingKey(r).bKey; }))].sort();
-      if (!barDailyMonth || typeof barDailyMonth !== 'string' || _allBKeys.indexOf(barDailyMonth) < 0) {
-        barDailyMonth = _allBKeys.length > 0 ? _allBKeys[_allBKeys.length - 1] : null;
-      }
+      barDailyMonth = barBillingKeyFor(barDailyMonth, _allBKeys);
     } else {
       // Calendar mode: barDailyMonth must be an object {year, month}
       if (!barDailyMonth || typeof barDailyMonth !== 'object') {
@@ -2370,6 +2368,24 @@ async function barLoadHH() {
     document.getElementById('chart-bar').appendChild(_errDiv);
   }
 }
+// The billing period for barDailyMonth in Billing mode. A Calendar month ({year, month}, from the
+// Calendar toggle) goes back to the billing period that starts in it, the reverse of Billing ->
+// Calendar, which takes a period's start month; failing that, the one running on the month's 1st
+// (the first, for a month before the data). Only with nothing usable, the latest. It went to the latest whenever the month came
+// back, so a past period chosen in Billing was lost after a trip through Calendar.
+function barBillingKeyFor(dm, keys) {
+  if (!keys.length) return null;
+  if (typeof dm === 'string' && keys.indexOf(dm) >= 0) return dm;
+  if (dm && typeof dm === 'object') {
+    var ym = dm.year + '-' + String(dm.month).padStart(2, '0');
+    var starts = keys.filter(function(k) { return k.slice(0, 7) === ym; });
+    if (starts.length) return starts[0];
+    var before = keys.filter(function(k) { return k <= ym + '-01'; });
+    return before.length ? before[before.length - 1] : keys[0];    // a month before the data: its first
+  }
+  return keys[keys.length - 1];
+}
+
 // Sorted list of billing-period keys present in the data.
 function barDailyKeys() {
   return [...new Set(barData.map(function(r){ return barBillingKey(r).bKey; }))].sort();
@@ -2501,10 +2517,7 @@ function barBuildSubBar() {
     if (!barCalendar) {
       // Billing mode: navigate between bKey values (billing period start dates)
       var allBKeys = [...new Set(barData.map(function(r){ return barBillingKey(r).bKey; }))].sort();
-      // barDailyMonth may be an object (from calendar mode) or a string not in allBKeys — reset if so
-      if (!barDailyMonth || typeof barDailyMonth !== 'string' || allBKeys.indexOf(barDailyMonth) < 0) {
-        barDailyMonth = allBKeys.length > 0 ? allBKeys[allBKeys.length - 1] : null;
-      }
+      barDailyMonth = barBillingKeyFor(barDailyMonth, allBKeys);
       var curIdx = allBKeys.indexOf(barDailyMonth);
 
       var prev = document.createElement('button'); prev.className = 'bar-nav-btn'; prev.textContent = '\u2190';
