@@ -5,7 +5,9 @@ charged, for the whole meter, the house and each device.
 `usage_view.rate_brackets` reads the main's import slices (`block_segments`) at their own rates and
 each device's grid kWh at its stored rate and £; the house is the meter less the devices in each
 bracket, per half-hour, clipped at 0. `/api/energy?fields=brackets` serves it per local day or per
-half-hour. Every test fails on the parent tree, where none of it existed.
+half-hour. The first ten failed on #364's tree, where none of it existed. Of the three added with
+the export (on #366's tree), the export's fails there; the two marked GUARD pass there, pinning what
+was already right.
 """
 import importlib.util
 import os
@@ -39,14 +41,17 @@ def _store():
     return st
 
 
-def _block(st, bs, mid, kwh, rate, cost=None, grid=None, slices=()):
-    """A block, and for the main its import slices [(kWh, rate, attribution)]."""
+def _block(st, bs, mid, kwh, rate, cost=None, grid=None, slices=(), exp=None):
+    """A block, and for the main its import slices [(kWh, rate, attribution)]; `exp` (kWh, rate)
+    its export."""
     be = (datetime.fromisoformat(bs) + timedelta(minutes=30)).isoformat()
     cost = round(kwh * rate, 6) if cost is None else cost
+    ek, er = exp or (None, None)
     st._conn.execute(
         "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, is_provisional, "
-        "interpolated, imp_kwh, imp_kwh_grid, imp_rate, imp_cost) VALUES (?, ?, ?, 1, 0, 0, ?, ?, ?, ?)",
-        (bs, be, mid, kwh, grid, rate, cost))
+        "interpolated, imp_kwh, imp_kwh_grid, imp_rate, imp_cost, exp_kwh, exp_rate, exp_cost) "
+        "VALUES (?, ?, ?, 1, 0, 0, ?, ?, ?, ?, ?, ?, ?)",
+        (bs, be, mid, kwh, grid, rate, cost, ek, er, None if ek is None else round(ek * er, 6)))
     for seq, (k, r, att) in enumerate(slices):
         st._conn.execute(
             "INSERT INTO block_segments (block_start, meter_id, channel, seq, kwh, inc_rate, exc_rate, "
@@ -54,10 +59,10 @@ def _block(st, bs, mid, kwh, rate, cost=None, grid=None, slices=()):
             (bs, mid, seq, k, r, att))
 
 
-def _main(st, bs, slices):
+def _main(st, bs, slices, exp=None):
     k = sum(s[0] for s in slices)
     c = sum(s[0] * s[1] for s in slices)
-    _block(st, bs, "electricity_main", k, c / k, cost=c, slices=slices)
+    _block(st, bs, "electricity_main", k, c / k, cost=c, slices=slices, exp=exp)
 
 
 def _totals(rows):
@@ -154,6 +159,41 @@ class TheSeries(unittest.TestCase):
         one = rows["2026-09-10T01:30:00"]["electricity_main"]
         self.assertAlmostEqual(one[2][0], 0.3)
         self.assertAlmostEqual(one[2][1], 0.021)
+
+    def test_a_plunge_keeps_its_sign(self):
+        # GUARD (passes on #365's tree too): nothing in the read clipped a negative price; this
+        # pins it, as staging has never been on Agile. Agile at −3.2p: the meter, the house and a device all earn a credit, below 0p
+        bs = "2026-09-10T13:00:00"
+        _main(self.st, bs, [(2.0, -0.032, "house")])
+        _block(self.st, bs, "heat_pump", 0.5, -0.032)
+        t = _totals(uv.slot_brackets(self.st, *ALL)["rows"])
+        self.assertEqual(sorted(t["meter"]), [-2])                    # −5 to −2.5p
+        self.assertAlmostEqual(t["meter"][-2][1], -0.064)
+        self.assertAlmostEqual(t["heat_pump"][-2][1], -0.016)
+        self.assertAlmostEqual(t["electricity_main"][-2][0], 1.5)
+        self.assertAlmostEqual(t["electricity_main"][-2][1], -0.048, msg="the house keeps its credit")
+
+    def test_a_zero_rate_is_not_a_missing_one(self):
+        # GUARD: a device priced at exactly 0p with no £ lands in bracket 0. Its rate used to be read
+        # as missing (`if r`), and £ ÷ kWh gave the same 0; now it is read as a rate
+        bs = "2026-09-10T13:30:00"
+        _main(self.st, bs, [(1.0, 0.0, "house")])
+        _block(self.st, bs, "heat_pump", 0.4, 0.0, cost=0.0)
+        t = _totals(uv.slot_brackets(self.st, *ALL)["rows"])
+        self.assertEqual(sorted(t["heat_pump"]), [0])
+
+    def test_export_at_its_own_rate(self):
+        _main(self.st, "2026-09-10T12:00:00", [(0.2, 0.28, "house")], exp=(1.5, 0.15))
+        _main(self.st, "2026-09-10T12:30:00", [(0.2, 0.28, "house")], exp=(0.8, 0.041))   # Agile Outgoing
+        _main(self.st, "2026-09-10T13:00:00", [(0.2, 0.28, "house")])                     # none
+        r = uv.day_brackets(self.st, TZ, *ALL)
+        self.assertEqual(r["export_series"], "export")
+        t = _totals(r["rows"])
+        self.assertEqual(sorted(t["export"]), [1, 6])
+        self.assertAlmostEqual(t["export"][6][0], 1.5)
+        self.assertAlmostEqual(t["export"][6][1], 0.225)
+        self.assertAlmostEqual(t["export"][1][1], 0.0328)
+        self.assertNotIn("export", t["meter"], "export is a series of its own, not the meter's")
 
     def test_a_half_hour_goes_to_its_local_day(self):
         # 23:30 UTC on 9 Sep is 00:30 BST on 10 Sep

@@ -876,10 +876,12 @@ def slot_stats(store, cfg, tz_name, utc_start, utc_end) -> dict:
 # Where grid import fell by the price it was charged: 2.5p brackets of the inc-VAT rate, for the
 # whole meter, the house and each device. One rule for every tariff — the rate already carries
 # IOG's dispatches and cap, a time-of-use window and Agile's price; the stored band label is set
-# only on Intelligent (design §2). Grid import only: no export, standing charge or non-grid use.
+# only on Intelligent (design §2). Import, and the main's export as a series of its own (§3a); no
+# standing charge or non-grid use. A negative price (an Agile plunge) has brackets below 0p.
 
 RATE_BRACKET_P = 2.5            # pence; the bracket for rate r is [2.5·n, 2.5·(n+1))
 METER_SERIES = "meter"          # the whole main meter; the house is "electricity_main" (Direct)
+EXPORT_SERIES = "export"        # the main's export: kWh at its export rate, £ the credit
 
 
 def rate_bracket(rate: float) -> int:
@@ -907,7 +909,10 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
     - a device: its grid kWh (`COALESCE(imp_kwh_grid, imp_kwh)`) at its stored rate, with its
       stored £, so its brackets sum to its device cost;
     - `electricity_main` (the house, Direct): per half-hour, the meter's bracket less the devices'
-      in it, clipped at 0 where a device's one rate sits beside the meter's two."""
+      in it, clipped at 0 where a device's one rate sits beside the meter's two;
+    - `export`: the main's export kWh at its export rate, with its stored £ (the credit).
+
+    A negative rate keeps its sign through all of it: an Agile plunge's kWh earn a negative £."""
     c = store._conn
     act = c.execute(_ACTIVE_PERIOD).fetchone()
     subs = [r[0] for r in c.execute(
@@ -923,6 +928,16 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
         if k <= 0.0:
             continue
         _add(main.setdefault(bs, {}), rate_bracket(r), k, k * float(r))
+    exp: dict = {}
+    for bs, k, r, cost in c.execute(
+            "SELECT block_start, exp_kwh, exp_rate, exp_cost FROM blocks "
+            "WHERE meter_id = 'electricity_main' AND exp_kwh > 0 "
+            "AND block_start >= ? AND block_start < ? ORDER BY block_start",
+            (utc_start, utc_end)):
+        k = float(k)
+        cost = float(cost or 0.0)
+        rate = float(r) if r is not None else cost / k
+        _add(exp.setdefault(bs, {}), rate_bracket(rate), k, cost)
     devs: dict = {}
     if subs:
         for bs, mid, k, r, cost in c.execute(
@@ -934,10 +949,10 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
             if k <= 0.0:
                 continue
             cost = float(cost or 0.0)
-            rate = float(r) if r else cost / k
+            rate = float(r) if r is not None else cost / k
             _add(devs.setdefault(bs, {}).setdefault(mid, {}), rate_bracket(rate), k, cost)
     out: dict = {}
-    for bs in sorted(set(main) | set(devs)):
+    for bs in sorted(set(main) | set(devs) | set(exp)):
         b = out.setdefault(bucket_of(bs), {})
         m = main.get(bs) or {}
         d = devs.get(bs) or {}
@@ -950,6 +965,8 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
         for mid, nb in d.items():
             for n, (k, cost) in nb.items():
                 _add(b.setdefault(mid, {}), n, k, cost)
+        for n, (k, cost) in (exp.get(bs) or {}).items():
+            _add(b.setdefault(EXPORT_SERIES, {}), n, k, cost)
     return out
 
 
@@ -964,7 +981,7 @@ def day_brackets(store, tz_name, utc_start, utc_end) -> dict:
     page sums days into months and years without per-day rounding."""
     data = _rate_brackets(store, utc_start, utc_end,
                           _local_day_of(utc_start, utc_end, ZoneInfo(tz_name)))
-    return {"width_p": RATE_BRACKET_P, "meter_series": METER_SERIES,
+    return {"width_p": RATE_BRACKET_P, "meter_series": METER_SERIES, "export_series": EXPORT_SERIES,
             "rows": [{"day": d, "b": _bracket_values(data[d])} for d in sorted(data)]}
 
 
@@ -972,5 +989,5 @@ def slot_brackets(store, utc_start, utc_end) -> dict:
     """The rate brackets per half-hour in [utc_start, utc_end), keyed by its naive-UTC start
     (`slot`, as slot_stats). Only half-hours with grid import appear."""
     data = _rate_brackets(store, utc_start, utc_end, lambda bs: bs)
-    return {"width_p": RATE_BRACKET_P, "meter_series": METER_SERIES,
+    return {"width_p": RATE_BRACKET_P, "meter_series": METER_SERIES, "export_series": EXPORT_SERIES,
             "rows": [{"slot": s, "b": _bracket_values(data[s])} for s in sorted(data)]}

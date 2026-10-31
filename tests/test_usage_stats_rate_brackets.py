@@ -22,7 +22,8 @@ house and battery series; % summing to 100 per bar; Cost; Daily (31 bars); HH (4
 brackets); back to Devices with the Net box and the period table restored; dark and light; 375 px
 with no sideways scroll; the tariff overlay drawn over the brackets.
 
-Discriminating: every test fails on the parent tree, where none of it existed.
+Discriminating: every test fails on the parent tree, where none of it existed (#366's tree for the
+export and the share of kWh).
 """
 import os
 import unittest
@@ -86,15 +87,15 @@ class TheChart(unittest.TestCase):
     def test_the_bars_are_the_brackets(self):
         self.assertIn("if (barBrackets()) return barBrDatasets(aggList);", _fn("barGetDatasets"))
         ds = _fn("barBrDatasets")
-        self.assertIn("var ns = barBrNs(aggList);", ds)
-        self.assertIn("if (barBrPct) return totals[i] > 0 ? Math.round(x / totals[i] * 10000) / 100 : 0;", ds)
+        self.assertIn("var ns = barBrNs(aggList), sg = barBrSign();", ds)
+        self.assertIn("if (barBrPct) return kwh[i] > 0 ? sg * Math.round(v[0] / kwh[i] * 10000) / 100 : 0;", ds)
         self.assertIn("backgroundColor: barBrColor(n, ns)", ds)
 
     def test_kwh_or_cost_follows_the_metric(self):
         self.assertIn("function barBrVal(v) { return barMetric === 'cost' ? v[1] : v[0]; }", PAGE)
 
     def test_a_bracket_is_named_by_its_pence(self):
-        self.assertIn("return barBrPence(n * barBrWidth) + '\u2013' + barBrPence((n + 1) * barBrWidth) + 'p';",
+        self.assertIn("return barBrPence(n * barBrWidth) + (n < 0 ? ' to ' : '\u2013') + barBrPence((n + 1) * barBrWidth) + 'p';",
                       _fn("barBrLabel"))
 
     def test_cheap_to_dear_by_price_neighbours_apart(self):
@@ -103,8 +104,31 @@ class TheChart(unittest.TestCase):
         self.assertIn("var i = ns.indexOf(n), alt = i % 2 ? (dark ? 14 : 13) : 0;", c)
         self.assertIn("if (n < 0) return 'hsl(215, 70%, '", c)
 
-    def test_share_is_out_of_a_hundred(self):
-        self.assertIn("barBrackets() && barBrPct ? { min: 0, max: 100, grace: 0 } : {}", _fn("barRender"))
+    def test_share_is_of_the_kwh_out_of_a_hundred(self):
+        # of kWh in Cost too: a plunge's credit takes from a bar's £, and a share of it passed 100%
+        ds = _fn("barBrDatasets")
+        self.assertIn("return Object.keys(b).reduce(function(s, n) { return s + b[n][0]; }, 0);", ds)
+        self.assertIn("barBrackets() && barBrPct ? (barBrSign() < 0 ? { min: -100, max: 0, grace: 0 } "
+                      ": { min: 0, max: 100, grace: 0 }) : {}", _fn("barRender"))
+
+
+class TheExport(unittest.TestCase):
+
+    def test_a_choice_when_there_is_export(self):
+        self.assertIn("if (have.export) out.push({ id: 'export', label: 'Export' });", _fn("barBrSeriesList"))
+
+    def test_below_the_axis_its_figures_positive(self):
+        self.assertIn("function barBrSign() { return barBrSeries === 'export' ? -1 : 1; }", PAGE)
+        self.assertIn("return sg * Math.round(barBrVal(v) * 1000) / 1000;", _fn("barBrDatasets"))
+        self.assertIn("v *= barBrSign();", _fn("barRender"))
+
+    def test_the_best_paid_bracket_is_green(self):
+        self.assertIn("if (barBrSign() < 0) t = 1 - t;", _fn("barBrColor"))
+
+    def test_its_table_and_line_speak_of_credit(self):
+        t = _fn("barBrBuildTable")
+        self.assertIn("(ex ? 'Credit' : 'Cost')", t)
+        self.assertIn("ex ? 'Export earned ' + mine.toFixed(1) + 'p/kWh on average'", _fn("barBrNote"))
 
 
 class TheTable(unittest.TestCase):
@@ -112,7 +136,8 @@ class TheTable(unittest.TestCase):
     def test_down_the_brackets(self):
         self.assertIn("if (barBrackets()) { barBrBuildTable(tbl, aggList); return; }", _fn("barBuildTable"))
         t = _fn("barBrBuildTable")
-        self.assertIn("<th>Rate bracket</th><th>kWh</th><th>Cost</th><th>Avg p/kWh</th><th>Share of kWh</th>", t)
+        self.assertIn("<th>Rate bracket</th><th>kWh</th><th>' + (ex ? 'Credit' : 'Cost')", t)
+        self.assertIn("</th><th>Avg p/kWh</th><th>Share of kWh</th></tr>", t)
         self.assertIn("var ns = barBrNs(aggList);", t)          # the chart's brackets: the colours agree
 
     def test_the_average_is_cost_over_kwh(self):

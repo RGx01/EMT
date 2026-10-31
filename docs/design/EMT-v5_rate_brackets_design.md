@@ -51,10 +51,21 @@ So the view groups by **price**, with one rule for every tariff. It never asks w
   staging copy. The clip at 0 is a display rule only, and the table's total row is the meter's own.
 - **Not-yet-billed half-hours count the same as billed ones** (the user). Their rate is EMT's
   prediction until the bill arrives, as on every other chart.
-- **Not counted:** export, the standing charge (it is not a unit price) and usage that did not come
-  from the grid (`imp_kwh − imp_kwh_grid`, the user: not needed).
-- **No new storage, writers or Octopus calls.** It is one read over `block_segments` and the device
+- **Not counted:** the standing charge (it is not a unit price) and usage that did not come from the
+  grid (`imp_kwh − imp_kwh_grid`, the user: not needed).
+- **No new storage, writers or Octopus calls.** It is one read over `block_segments` and the
   blocks.
+
+### 3a. Export and plunge pricing (added 31 Oct 2026, the user)
+
+- **Export is a series of its own** (`export`): the main's `exp_kwh` at its `exp_rate`, with its
+  stored `exp_cost` as the credit. On the staging copy every exporting half-hour's cost is its kWh ×
+  rate, and the series sums to the stored export. It matters most on Agile Outgoing, whose price
+  moves by the half-hour; on a flat export tariff it is one bracket.
+- **A plunge keeps its sign** throughout: a negative rate's kWh earn a negative £ on the meter, the
+  house and a device, below 0p. Nothing in the read clipped one before export was added; a test now
+  pins it, as the staging copy has never been on Agile.
+- **A rate of exactly 0p** is a rate, not a missing one: £ ÷ kWh is used only when the rate is NULL.
 
 ## 4. The brackets
 
@@ -80,7 +91,11 @@ resizable table.
 - **A Show switch: Devices | Rate brackets.** Devices is today's chart. Rate brackets adds a picker:
   whole meter, house, or one device. One series at a time keeps the stack readable.
 - **The chart:** a stacked bar per bucket, one segment per bracket. kWh or £ follows the metric
-  switch, and a **%** option shows each bracket's share of the bucket. Brackets are coloured green
+  switch, and a **%** option shows each bracket's share of the bucket's **kWh**, in Cost too: a
+  plunge's credit takes from a bar's £, so a share of £ could pass 100% beside it. Export is drawn
+  below the axis, as on the Devices view, its figures positive in the hover and table (Credit), and
+  its colour ramp reversed, the best-paid bracket green. A negative bracket is named "−5 to −2.5p".
+  Brackets are coloured green
   through amber to red by price across the brackets in view, and neighbours alternately lighter and
   darker; a negative price is blue. *As built:* a fixed 0–40p scale made 5–7.5p and 7.5–10p the same
   green on the staging copy, and spreading the colours by position made 22.5p read as cheap. The
@@ -105,7 +120,8 @@ resizable table.
 - **Brackets on every tariff, no band labels.** That covers IOG, the cap, the time-of-use tariffs and
   Agile with one rule.
 - **Not yet billed is treated as billed**, as on the other charts.
-- **Grid import only.** No not-from-grid bucket.
+- **Grid import only** at first; **export added** the same day as a series of its own (§3a). No
+  not-from-grid bucket.
 - **2.5p brackets.**
 
 ## 7. Open
@@ -120,6 +136,7 @@ resizable table.
 |---|---|
 | 1 | **built (PR 1):** `usage_view.day_brackets` / `slot_brackets` — two reads (the main's import slices, the devices' grid kWh, rate and £) over the range, bracketed per half-hour, the house and its clip, summed per local day or half-hour as `{series: {n: [kWh, £]}}` at 4 dp; the page sums days into its buckets and the range, as it does the stats. `/api/energy?fields=brackets` at `day` or `block`, asked for on its own, so the stats payload is unchanged. On the staging copy, all history: 0.37 s, and house + devices equals the meter in kWh and £ |
 | 2 | **built (PR 2):** the Show switch, the series picker, the stacked chart, the % option, the table and the average line in `charts.html`; the day's brackets summed into each bucket in `barAggRows`, as the meters are, so Monthly, Daily, Yearly and Billing / Calendar need nothing of their own |
+| 3 | **built:** export as a series (§3a), drawn below the axis with its ramp reversed; % of kWh; a plunge's sign pinned by a test; a 0p rate read as a rate |
 
 Tests:
 - a rate on a bracket edge lands in the upper bracket;
