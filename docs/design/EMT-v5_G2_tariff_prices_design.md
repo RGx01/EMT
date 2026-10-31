@@ -131,6 +131,19 @@ On the staging copy that is **about 7 calls, once**: 6 closed import agreements'
 `agreement_schedules` already skips. The calls are capped and paced as EMT's other new Octopus calls
 are, since four instances share an account's rate limit.
 
+**As built (G2b, 31 Oct 2026):** `engine._fetch_closed_agreement_prices`, in each poll cycle after the
+rate refresh:
+
+- at most **4 agreement-kinds a cycle**, 2 s apart, each logged;
+- the same REST tariff pages `agreement_schedules` reads (`standing-charges`,
+  `standard-unit-rates`); not GraphQL, and not EMT's own store, whose rates mix bills and corrections
+  with the tariff;
+- a fetch that brings nothing back is tried again after a day, three times at most, counted in
+  kraken_state (`tariff_prices_tried`) so a restart does not reset it;
+- an Agile agreement's unit rates are never fetched: its `dynamic` row is written from its window.
+
+Worst case on staging: 7 agreement-kinds, two cycles, once ever.
+
 **Without the API (CAD, local billing, another supplier):** no agreements, so no prices. The hover
 shows what it shows now.
 
