@@ -29,6 +29,20 @@ corrections on a supplier-API account.
 On that install these are the only device rows off their meter's rate. The other install checked
 has dozens of corrected half-hours and none of this.
 
+**Two faults compound in the battery's rows.** The device whose raw reading is far above its grid
+share is a battery whose sensor counts solar charging, and EMT's battery check flags it (battery
+sensor and device split design §3). Pricing on the raw reading is v4's #473 fault, fixed in 4.5.15
+with a one-off heal. It charges such a sensor for its solar too, so it overcharged this battery most.
+The rows date from v4 4.5.13 or earlier. The heal would have repaired them as they now stand, so a
+later write re-priced them after it ran. v4's correction route has carried the rate to devices since
+3.1.1, so the correction did not leave them on peak. Without the install's v4 history from before the
+import, that later write cannot be named.
+
+- **What a re-fetch fixes:** the pricing, each device on its grid share at the half-hour's rate.
+- **What it can't fix:** the share itself. A solar-counting sensor still claims grid it did not take
+  in the device split. The battery sensor warning is the remedy for that, and it stays the user's
+  choice whether to replace the sensor.
+
 ## 2. The rule
 
 `settlement_state.devices_exceed(f)`: a **settled** half-hour where
