@@ -30,6 +30,11 @@ and a label carries the decimals it needs; the 📅 opens a panel of the page's 
 on 20, 26, 28 and 31 Oct in kWh and cost: every tick of the two axes on the same pixel; the panel's
 Cancel, outside click and Escape leave the day, Go loads the new one, Today goes to today and greys.
 
+Then (31 Oct 2026, a fourth change): HH's table Total in cost is the half-hours' unrounded nets,
+summed and then rounded; the hover drops the half-hour's Net; the checkbox reads "Running total" on
+HH. Checked in the preview, staging copy, on 20, 26 and 28 Oct with and without the standing
+charge: the table's Total, the Running total's last point and the Daily view's net agree.
+
 Checked in the local preview on 31 Oct 2026, on a scratch copy of staging, on 28 Oct: the HH line's
 last point equals the Daily view's net for the day in cost (with the standing charge) and CO₂, and to
 within the server's 1 Wh rounding in kWh; the two axes' zeros fall on the same pixel; the sidebar's
@@ -42,7 +47,7 @@ the meters' columns on every row in kWh, and so does the Total. The net line equ
 
 Structural, as the page's other Usage Stats tests are (no JavaScript runtime here). Discriminating:
 every test fails on its parent (the first change's on #345's tree, the second's on #347's, the
-third's on #348's).
+third's on #348's, the fourth's on #349's).
 """
 import os
 import unittest
@@ -152,6 +157,37 @@ class TheHalfHourView(unittest.TestCase):
     def test_it_is_named_so(self):
         self.assertIn("return barPeriod === 'hh' ? 'Running total' : 'Net';", _fn("barNetLabel"))
         self.assertIn("'\\nRunning total: '", _fn("barRender"))
+
+    def test_the_checkbox_is_named_so(self):
+        self.assertIn('<span id="bar-net-text">Net</span>', PAGE)
+        self.assertIn("if (_nt) _nt.textContent = barNetLabel();", _fn("barRender"))
+
+    def test_the_hover_has_no_half_hours_net(self):
+        """HH's hover: Import, Export and the running total; no Net. And the running total once — not
+        in the footer when the line's own row already says it."""
+        render = _fn("barRender")
+        i = render.index("if (barPeriod === 'hh') {\n              var run = ")
+        hh = render[i:render.index("}", i)]
+        self.assertNotIn("Net: ", hh)
+        self.assertIn("(onLine ? '' : '\\nRunning total: '", hh)
+        self.assertIn("var onLine = items.some(function(it) { return it.dataset._net; });", render)
+
+
+class TheHalfHourTable(unittest.TestCase):
+    """HH in cost: the table's Total summed 48 half-hours' net_cost, each rounded to the penny on the
+    server, and overstated the day by pennies (staging, 20 Oct: £2.00 for a £1.86 day; the Running
+    total and the Daily view said £1.86)."""
+
+    def test_a_row_is_its_own_unrounded_net(self):
+        t = _fn("barBuildTable")
+        self.assertIn("var rowTotalFmt = barMetric === 'cost' && pd.isHH ? barNetRaw(agg)", t)
+
+    def test_the_total_rounds_the_sum_not_the_rows(self):
+        t = _fn("barBuildTable")
+        self.assertIn("if (barMetric === 'cost' && pd.isHH) {\n    grandTotalFmt = Math.round(grandTotal * 100) / 100;", t)
+
+    def test_a_value_shown_as_zero_has_no_sign(self):
+        self.assertIn("return (v < 0 && Number(shown) !== 0 ? '-' : '') + sym + shown + unit;", _fn("barFmt"))
 
 
 class TheDayNavigator(unittest.TestCase):
