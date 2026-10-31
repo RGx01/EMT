@@ -6637,6 +6637,50 @@ async def _cached_data_floor(channel: str, info: dict, *, restart: bool = False)
     return _hist_floor_cache[channel]
 
 
+def _keep_tariff_prices(tariff_code, valid_from_raw, kind, sched, valid_to_raw=None) -> None:
+    """G2 (tariff prices design §4): an agreement's schedule as Octopus published it, summarised to
+    price periods (tariff_prices.summarise) and stored for the tariff overlay — only when it differs
+    from what is stored. Ex-VAT, from the schedule's published ex-VAT series; a schedule without one
+    is not kept. Display only: nothing that prices reads it. A log line gives each band's periods."""
+    import tariff_prices as _tp
+    from kraken_ingester import normalise_to_naive_utc
+    exc = getattr(sched, "exc", None)
+    src = getattr(sched, "raw", None) or sched          # with_vat() keeps the published one in .raw
+    exc = getattr(src, "exc", None) or exc
+    if exc is None or exc.is_empty():
+        logger.info("tariff prices: %s %s — no ex-VAT series, not kept", tariff_code, kind)
+        return
+    try:
+        ag_from = normalise_to_naive_utc(valid_from_raw) if valid_from_raw else "0000-01-01T00:00:00"
+        ag_to = normalise_to_naive_utc(valid_to_raw) if valid_to_raw else None
+    except ValueError:
+        return
+    from kraken_rates import _clip_periods
+    pk = "standing" if kind == "standing" else "unit"
+    # the agreement's own span: the refresh's current-tariff fetch is the tariff's whole history
+    rows = _tp.summarise(_clip_periods(exc._periods, ag_from, ag_to), kind=pk,
+                         tariff_code=tariff_code, tz_name=_iog_site_tz())
+    if _store is not None and _store.replace_tariff_prices(
+            tariff_code, ag_from, pk, rows, datetime.now(timezone.utc).replace(tzinfo=None).isoformat()):
+        logger.info("tariff prices: %s from %s, %s — %s", tariff_code, ag_from[:10], pk,
+                    ", ".join("%s %d" % kv for kv in sorted(_tp.counts(rows).items())))
+
+
+def _keep_current_tariff_prices(channel, tariff_code, kind, sched) -> None:
+    """The refresh's current-tariff schedule kept as the running agreement's prices (G2 §4): with a
+    single agreement the stitch is skipped, and export's and the standing charge's agreements are
+    fetched only here. The agreement is the stored one live now with this tariff."""
+    try:
+        from kraken_api_client import KrakenAPIClient
+        ags = [a for a in (_agreement_info(channel).get("agreements") or [])
+               if a.get("tariff_code") == tariff_code]
+        cur = KrakenAPIClient._current_agreement(ags) if ags else None
+        if cur:
+            _keep_tariff_prices(tariff_code, cur.get("valid_from"), kind, sched, cur.get("valid_to"))
+    except Exception as e:
+        logger.warning("tariff prices: %s %s current not kept (%s)", channel, kind, e)
+
+
 async def _agreement_segs(channel: str, kind: str) -> list:
     """[(valid_from, valid_to, RateSchedule)] for each of `channel`'s agreements — through
     kraken_rates.agreement_schedules, the one fetch the refresh's import stitch shares (engine step
@@ -6646,7 +6690,8 @@ async def _agreement_segs(channel: str, kind: str) -> list:
     from kraken_rates import agreement_schedules
     info = _agreement_info(channel)          # the stored agreements: a refused answer is not priced
     segs = await agreement_schedules(_kraken_client, info.get("agreements") or [], kind=kind,
-                                     product_of=KrakenAPIClient._tariff_to_product_code)
+                                     product_of=KrakenAPIClient._tariff_to_product_code,
+                                     on_built=_keep_tariff_prices)
     vat = _vat_context(channel)
     return [(vf or "0000-01-01T00:00:00", vt, sched.with_vat(vat)) for vf, vt, sched in segs]
 
@@ -8707,6 +8752,7 @@ async def _refresh_kraken_rate_schedules() -> None:
             import_determined = True
         if not sched.is_empty():
             new_cache[ch] = sched
+            _keep_current_tariff_prices(ch, tariff, "rate", sched)
         elif ch == "import":
             # Fetch SUCCEEDED but the tariff genuinely returns no standard AND no
             # day/night rates — the signature of the new time-of-use Intelligent
@@ -8745,7 +8791,7 @@ async def _refresh_kraken_rate_schedules() -> None:
         try:
             from kraken_rates import build_agreement_stitched_schedule
             _stitched = await build_agreement_stitched_schedule(
-                _kraken_client, _ags, vat=_vat_context("import"))
+                _kraken_client, _ags, vat=_vat_context("import"), on_built=_keep_tariff_prices)
             if not _stitched.is_empty():
                 new_cache["import"] = _stitched
                 _import_schedule_covers_history = True
@@ -8820,6 +8866,7 @@ async def _refresh_kraken_rate_schedules() -> None:
                 vat=_vat_context("import"))
             if not sc.is_empty():
                 _kraken_standing_schedule = sc
+                _keep_current_tariff_prices("import", imp["tariff_code"], "standing", sc)
                 logger.info("_refresh_kraken_rate_schedules: standing_charge=%d periods",
                             len(sc))
         except Exception as e:

@@ -1,6 +1,6 @@
 # EMT v5 — G2: tariff prices, stored for display
 
-*Decided, 31 Oct 2026 (§8): display only; the timeline's minor ticks; the hover's prices at the hovered date; the families plus the guard. The second half of ROADMAP §G, re-scoped. G2 as first proposed — a store of
+*Decided, 31 Oct 2026 (§8): display only; the timeline's minor ticks; the hover's prices for the tick period under the pointer; only what changes by the half-hour left out. The second half of ROADMAP §G, re-scoped. G2 as first proposed — a store of
 Octopus's published rate records that pricing reads, with a diff that re-prices — was dropped on
 28 Oct 2026 (#326). The user brought it back on 31 Oct 2026, narrower: the tariff's standing charge
 and unit rates, for the Usage Stats tariff overlay's hover (#353, #354), **Agile's unit rates left
@@ -89,11 +89,14 @@ tariff_prices(tariff_code, agreement_from,      -- the agreement (G1's tariff_ag
   no rewrite, and the store never carries Octopus's restated VAT.
 - **Replaced per agreement, per kind.** A new summary for an agreement replaces its rows in one
   transaction. Nothing is kept as history, and no diff is made: this is a display cache.
-- **`dynamic`.** One row with no value, for:
-  - **Agile** (the AGILE family);
-  - **Tracker** (SILVER and TRACKER, a daily price: ~365 rows a year);
-  - **any agreement that summarises to more than 50 unit-rate periods.** This guard is for a dynamic
-    product not on the list. Its standing charge is still stored.
+- **`dynamic`: a tariff whose unit rate changes by the half-hour.** One row with no value, and its
+  standing charge still stored. That is:
+  - **Agile** and Agile Outgoing (the AGILE family);
+  - **any agreement whose records hold more than 8 windows in a local day**, for such a product
+    not named. Agile has 48; Go and Intelligent have 2, and Flux and Cosy a handful.
+
+  **Tracker is stored.** Its price changes daily, one rate for the whole day, so it summarises to
+  about 365 periods a year (the user, 31 Oct 2026: only what changes per half-hour is left out).
 
 ## 4. How the prices arrive
 
@@ -155,10 +158,11 @@ It still carries no MPAN and no account number.
 
 (the figures are illustrative)
 
-For Agile and Tracker the unit-rate line reads "Unit rates: half-hourly" or "Unit rate: daily".
+For Agile the unit-rate line reads "Unit rates: half-hourly".
 
 Monthly by Date, Daily and HH all show it. On Monthly, the hovered date is the date under the pointer
-within its bar.
+within its bar. **Between two ticks, the hover shows that tick period's prices** (the user, 31 Oct
+2026): the prices in force from the tick before the pointer to the one after it.
 
 **Minor ticks on the timeline** (the user, 31 Oct 2026). Each band already has a tick at a change of
 agreement. It gains a **minor tick** — shorter and lighter — at each price change inside an
@@ -166,8 +170,8 @@ agreement:
 
 - **What ticks:** a change of the standing charge, and a change of any unit rate (each band of
   Go and Intelligent, the flat rate, the export rate).
-- **Agile, Tracker and anything else `dynamic`:** standing-charge changes only, since the table
-  stores no unit rates for them.
+- **Agile and anything else `dynamic`:** standing-charge changes only, since the table stores no
+  unit rates for them. Tracker ticks daily.
 - **Where:** at the price period's start, placed by date as the agreement ticks are. A minor tick
   that falls on an agreement tick is not drawn: the agreement tick already marks it.
 - **Which price:** as shown, inc VAT, so a VAT change (1 Oct 2026) ticks too, although the stored
@@ -192,7 +196,7 @@ On Monthly several changes can fall in one bar. They are drawn at their dates, a
 
 | PR | what |
 |---|---|
-| G2a | the table; the summary (records → price periods, the `dynamic` rule, the 50-period guard), written where `agreement_schedules` builds; a log line of each agreement's period counts, which measures §2's open question on the real records |
+| G2a | the table; the summary (records → price periods, the `dynamic` rule), written where `agreement_schedules` builds and from the refresh's current schedules; a log line of each agreement's period counts, which measures §2's open question on the real records |
 | G2b | the one-off fetches: closed agreements' standing charges and export rates, capped and paced |
 | G2c | the route's price periods (VAT from the calendar); the hover's prices at the hovered date; the minor ticks at each price change |
 
@@ -205,5 +209,7 @@ On Monthly several changes can fall in one bar. They are drawn at their dates, a
   charges only, since no Agile rates are stored (§5).
 - **The hover:** the prices in force at the hovered date (§5). The minor ticks show where each price
   period starts.
-- **The `dynamic` rule:** the AGILE, SILVER and TRACKER families, plus the 50-period guard for a
-  dynamic product not on the list (§3).
+- **The `dynamic` rule:** only what changes by the half-hour — the AGILE family, and any agreement
+  with more than 8 windows in a day (§3). Tracker, a daily price, is stored. The 50-period guard is
+  dropped (the user: too much).
+- **The hover between ticks:** that tick period's prices (§5).

@@ -61,6 +61,7 @@
     "record_recorder_hours",
     "remove_attribution_run",
     "replace_tariff_agreements",
+    "replace_tariff_prices",
     "retag_untagged_imports",
     "retire_meter",
     "save_current_block",
