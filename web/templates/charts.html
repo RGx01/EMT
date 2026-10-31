@@ -50,7 +50,8 @@
     /* Hide subtitle — saves vertical space */
     .topbar .sub { display: none; }
     /* Compact topbar */
-    .topbar { padding: 8px 12px; gap: 6px; flex-wrap: nowrap; align-items: center; }
+    /* Wraps: the settle note goes last, onto its own row when there is no room (see .dcc-settle-note) */
+    .topbar { padding: 8px 12px; gap: 6px; row-gap: 6px; flex-wrap: wrap; align-items: center; }
     /* Icon-only tab buttons — small and square */
     .chart-tabs { gap: 4px; }
     .topbar .chart-tab { padding: 6px 8px; font-size: 20px; min-width: 44px; justify-content: center; }
@@ -95,6 +96,13 @@
   .dcc-settle-note { display:inline-flex; align-items:center; gap:5px; margin-left:10px; padding:5px 10px; border-radius:14px; font-size:12px; font-weight:600; background:rgba(130,140,150,0.14); color:var(--muted); border:1px solid rgba(130,140,150,0.30); white-space:nowrap; cursor:default; }
   .dcc-settle-note.amber { background:rgba(230,160,30,0.14); color:#e0a020; border-color:rgba(230,160,30,0.35); }
   @media (max-width:768px){ .dcc-settle-note { margin-left:6px; padding:4px 8px; font-size:11px; } }
+  /* A phone: the note goes last in the wrapping topbar, onto a row of its own under the title, tabs
+     and PDF, and may wrap there. On one nowrap row the note and PDF ran past a phone's width (410 px:
+     the header 506 px wide) and the whole page scrolled sideways. Wider, it all fits one row, in
+     its own order. */
+  @media (max-width: 560px) {
+    .topbar .dcc-settle-note { order: 3; margin-left: 0; max-width: 100%; white-space: normal; }
+  }
 
   /* Usage Stats floating toolbar — matches billing chart period-nav style */
   /* position:sticky works because .content is the scroll container */
