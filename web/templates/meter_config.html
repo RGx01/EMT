@@ -17,19 +17,6 @@
 
 {% block subbar %}
 <div class="settings-subbar">
-  <div style="position:relative;display:inline-block;">
-    <button class="btn btn-secondary" id="btn-add-device" onclick="toggleAddDeviceMenu(event)">+ Add Device ▾</button>
-    <div id="add-device-menu" style="display:none;position:absolute;top:calc(100% + 4px);left:0;z-index:200;
-         background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);
-         box-shadow:0 4px 16px rgba(0,0,0,0.5);min-width:180px;overflow:hidden;">
-      <button class="btn" style="display:block;width:100%;text-align:left;padding:10px 16px;border:none;border-radius:0;background:transparent;color:var(--fg);cursor:pointer;"
-              onmousedown="event.stopPropagation();addDevice('battery')">🔋 House Battery</button>
-      <button class="btn" style="display:block;width:100%;text-align:left;padding:10px 16px;border:none;border-radius:0;background:transparent;color:var(--fg);cursor:pointer;"
-              onmousedown="event.stopPropagation();addDevice('ev')">🚗 EV Charger</button>
-      <button class="btn" style="display:block;width:100%;text-align:left;padding:10px 16px;border:none;border-radius:0;background:transparent;color:var(--fg);cursor:pointer;"
-              onmousedown="event.stopPropagation();addDevice('heat_pump')">♨️ Heat Pump</button>
-    </div>
-  </div>
   <button class="btn btn-secondary" id="btn-refresh">↺ Refresh Entities</button>
   <button class="btn btn-secondary" id="btn-change-setup">⚙ Change Setup</button>
   <a href="{{ url_for('billing_history_page') }}" class="btn btn-secondary">🕓 Billing History</a>
@@ -43,14 +30,17 @@
 <div id="alert-success" hidden>✓ Configuration saved. The engine will pick up changes within 10 seconds.</div>
 <div id="alert-error" hidden></div>
 
-<!-- ── Main Meter ─────────────────────────────────────────────────────────── -->
-<div style="margin-bottom:8px;display:flex;align-items:center;justify-content:space-between;">
-  <div style="font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);">Main Meter</div>
-</div>
+<!-- ── Tabs: Site, Main meter, one per device, Add device ─────────────────────
+     Every panel is rendered by renderAll() and only the chosen one shows, so an edit on one tab
+     survives switching to another and Save Config still saves the lot. The tab is the URL's hash
+     (#site, #main, #device-<meter id>, #add), so a link can land on a device. -->
+<div id="cfg-tabs" class="cfg-tabs" role="tablist"></div>
 
-<div id="main-meter-container"></div>
+<div id="site-container" data-panel="site"></div>
 
-<div id="no-main-meter" style="display:none;">
+<div id="main-meter-container" data-panel="main"></div>
+
+<div id="no-main-meter" data-panel="site" style="display:none;">
   <div class="card" style="border-style:dashed;text-align:center;padding:32px;">
     <div style="font-size:32px;margin-bottom:12px;">⚡</div>
     <div style="font-size:15px;font-weight:600;margin-bottom:6px;">No main meter configured</div>
@@ -61,19 +51,25 @@
   </div>
 </div>
 
-<!-- ── Devices ───────────────────────────────────────────────────────────── -->
-<div id="sub-meter-container" style="margin-top:16px;"></div>
+<!-- ── Devices: each card is its own panel (data-panel="device-<meter id>") ──────────────── -->
+<div id="sub-meter-container"></div>
 
-<!-- ── Add Device Modal ──────────────────────────────────────────────────── -->
-<div id="add-device-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;overflow-y:auto;">
-  <div style="max-width:560px;margin:60px auto;padding:0 16px 60px;">
-    <div class="card" style="padding:32px;">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;">
-        <div>
-          <div id="add-device-title" style="font-size:18px;font-weight:700;"></div>
-          <div id="add-device-subtitle" style="font-size:13px;color:var(--muted);margin-top:4px;"></div>
-        </div>
-        <button onclick="closeAddDevice()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;padding:0;">✕</button>
+<!-- ── Add device: pick a type, then its form ────────────────────────────── -->
+<div id="add-device-panel" data-panel="add">
+  <div class="card">
+    <div style="font-size:13px;font-weight:600;margin-bottom:4px;">Add a device</div>
+    <div style="font-size:12px;color:var(--muted);margin-bottom:14px;">A device is metered inside the house: EMT splits the house's grid import between its devices and prices each share.</div>
+    <div class="ad-types">
+      <button class="ad-type" data-type="battery" onclick="addDevice('battery')">🔋<span>House Battery</span></button>
+      <button class="ad-type" data-type="ev" onclick="addDevice('ev')">🚗<span>EV Charger</span></button>
+      <button class="ad-type" data-type="heat_pump" onclick="addDevice('heat_pump')">♨️<span>Heat Pump</span></button>
+    </div>
+  </div>
+  <div id="add-device-form" style="display:none;">
+    <div class="card" style="padding:24px;">
+      <div style="margin-bottom:20px;">
+        <div id="add-device-title" style="font-size:16px;font-weight:700;"></div>
+        <div id="add-device-subtitle" style="font-size:13px;color:var(--muted);margin-top:4px;"></div>
       </div>
 
       <!-- Device name -->
@@ -367,6 +363,48 @@
 
 {% block scripts %}
 <style>
+/* The Settings tabs: an underlined row, apart from the Meter Config / Carbon pills above it. */
+.cfg-tabs {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  white-space: nowrap;
+  border-bottom: 1px solid var(--border);
+  margin: 0 0 16px;
+  position: sticky;
+  top: -16px;
+  z-index: 5;
+  background: var(--bg);
+  padding-top: 4px;
+}
+.cfg-tab {
+  flex: none;
+  padding: 8px 14px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--muted);
+  font-size: 13px;
+  font-family: var(--sans);
+  cursor: pointer;
+}
+.cfg-tab:hover { color: var(--text); }
+.cfg-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+.cfg-tab.archived { opacity: 0.6; }
+.cfg-tab.add { color: var(--accent); }
+.cfg-tab-note { font-size: 10px; text-transform: uppercase; letter-spacing: 0.06em; }
+.cfg-tab-flag { color: #e0a020; }
+.cfg-off { display: none !important; }
+.ad-types { display: flex; gap: 10px; flex-wrap: wrap; }
+.ad-type {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  min-width: 130px; padding: 16px 12px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  background: var(--bg); color: var(--text); font-size: 24px; font-family: var(--sans); cursor: pointer;
+}
+.ad-type span { font-size: 13px; }
+.ad-type:hover { border-color: var(--accent); }
+.ad-type.active { border-color: var(--accent); background: rgba(0,212,170,0.08); }
 .info-box {
   background: rgba(0,212,170,0.06);
   border: 1px solid rgba(0,212,170,0.25);
@@ -622,14 +660,20 @@ function renderAll() {
   var subIds  = Object.keys(meters).filter(function(id) { return !!meters[id].meta.sub_meter; });
 
   // Main meter
+  var stc = document.getElementById('site-container');
   var mc = document.getElementById('main-meter-container');
   var nm = document.getElementById('no-main-meter');
+  stc.innerHTML = '';
   mc.innerHTML = '';
   if (mainIds.length === 0) {
     nm.style.display = 'block';
   } else {
     nm.style.display = 'none';
-    mainIds.forEach(function(id) { mc.appendChild(buildMainCard(id, meters[id])); });
+    mainIds.forEach(function(id) {
+      var cards = buildMainCards(id, meters[id]);
+      stc.appendChild(cards.site);
+      mc.appendChild(cards.meter);
+    });
   }
 
   // Devices (sub-meters)
@@ -640,10 +684,75 @@ function renderAll() {
   attachListeners();
   applySourceToggles();
   _renderHistoryState();
+  renderTabs();
+  showTab(_cfgTab);
 }
 
-// ── Main meter card ───────────────────────────────────────────────────────────
-function buildMainCard(meterId, meter) {
+// ── Tabs ──────────────────────────────────────────────────────────────────────
+// Site, Main meter, the devices (archived ones last), Add device. A tab that no longer exists (a
+// removed device, a reset) falls back to Site. The old one-page anchor (#sub-meter-container, the
+// battery banner's link before the tabs) opens the first device.
+var _cfgTab = (location.hash || '').slice(1) || 'site';
+
+function _cfgTabList() {
+  var meters  = config.meters || {};
+  var hasMain = Object.keys(meters).some(function(id) { return !meters[id].meta.sub_meter; });
+  var subs    = Object.keys(meters).filter(function(id) { return !!meters[id].meta.sub_meter; });
+  var live    = subs.filter(function(id) { return !meters[id].meta.retired_at; });
+  var gone    = subs.filter(function(id) { return !!meters[id].meta.retired_at; });
+  var tabs = [{key: 'site', label: '🏠 Site'}];
+  if (!hasMain) return tabs;
+  tabs.push({key: 'main', label: '⚡ Main meter'});
+  live.concat(gone).forEach(function(id) {
+    var meta = meters[id].meta || {}, t = meta.meter_type;
+    var flag = batteryFlagged[id] && !batteryFlagged[id].confirmed_at;
+    tabs.push({key: 'device-' + id, archived: !!meta.retired_at, flag: !!flag,
+               label: (t === 'battery' ? '🔋' : t === 'ev' ? '🚗' : t === 'heat_pump' ? '♨️' : '⚡') + ' ' +
+                      (meta.device || 'Device')});
+  });
+  tabs.push({key: 'add', label: '+ Add device'});
+  return tabs;
+}
+
+function renderTabs() {
+  var row = document.getElementById('cfg-tabs');
+  row.innerHTML = _cfgTabList().map(function(t) {
+    return '<button type="button" role="tab" class="cfg-tab' + (t.archived ? ' archived' : '') +
+      (t.key === 'add' ? ' add' : '') + '" data-tab="' + esc(t.key) + '"' +
+      (t.archived ? ' title="Archived"' : '') + '>' + esc(t.label) +
+      (t.archived ? ' <span class="cfg-tab-note">archived</span>' : '') +
+      (t.flag ? ' <span class="cfg-tab-flag" title="This battery\'s sensor counts solar charging">⚠</span>' : '') +
+      '</button>';
+  }).join('');
+}
+
+function showTab(key) {
+  var keys = _cfgTabList().map(function(t) { return t.key; });
+  if (key === 'sub-meter-container') key = keys.filter(function(k) { return k.indexOf('device-') === 0; })[0];
+  if (keys.indexOf(key) === -1) key = 'site';
+  _cfgTab = key;
+  document.querySelectorAll('[data-panel]').forEach(function(el) {
+    el.classList.toggle('cfg-off', el.dataset.panel !== key);
+  });
+  document.querySelectorAll('#cfg-tabs .cfg-tab').forEach(function(b) {
+    var on = b.dataset.tab === key;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  if ((location.hash || '').slice(1) !== key) history.replaceState(null, '', '#' + key);
+}
+
+document.getElementById('cfg-tabs').addEventListener('click', function(e) {
+  var b = e.target.closest('.cfg-tab');
+  if (b) showTab(b.dataset.tab);
+});
+window.addEventListener('hashchange', function() { showTab((location.hash || '').slice(1)); });
+
+// ── Main meter: the Site card and the Main meter card ─────────────────────────
+// One main meter's settings in two tabs: what holds for the whole site (its name, billing day,
+// block size, timezone, postcode, and the supplier connection) and what is the meter itself (its
+// power sensor and its import and export channels). Both write the same meter's config.
+function buildMainCards(meterId, meter) {
   var meta     = meter.meta || {};
   var channels = meter.channels || {};
   var imp      = channels.import || {};
@@ -677,17 +786,15 @@ function buildMainCard(meterId, meter) {
     ? ' <span style="color:var(--muted);font-weight:400;">(optional — supplied by ' + esc(supLabel) + '\u2019s rate schedule if left blank)</span>'
     : '';
 
-  var div = document.createElement('div');
-  div.className = 'card';
-  div.dataset.meter = meterId;
+  var site = document.createElement('div');
+  site.className = 'card';
+  site.dataset.meter = meterId;
+  site.dataset.panel = 'site';
 
-  div.innerHTML =
+  site.innerHTML =
     '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">' +
-      '<div style="display:flex;align-items:center;gap:10px;">' +
-        '<span style="font-size:13px;font-weight:600;color:var(--fg);">⚡ ' +
-        esc(((meta.site || meta.site_name || 'Main Meter')).toUpperCase()) + '</span>' +
-      '</div>' +
-      '<button class="btn btn-danger btn-sm js-remove-meter" data-meter="' + meterId + '">✕ Remove</button>' +
+      '<span style="font-size:13px;font-weight:600;color:var(--fg);">🏠 ' +
+      esc(((meta.site || meta.site_name || 'Site')).toUpperCase()) + '</span>' +
     '</div>' +
 
     '<div class="info-box">' +
@@ -756,6 +863,29 @@ function buildMainCard(meterId, meter) {
         buildTzSelectForMeter(meterId, meta.timezone||'UTC') + '</div>' +
       '<div style="font-size:11px;color:var(--muted);margin-top:-8px;margin-bottom:8px;">Used to assign blocks to the correct local day. UK: Europe/London</div>' +
 
+      '<div class="form-group" style="grid-column:1/-1;"><label>Postcode Prefix <span style="color:var(--muted);font-weight:400;">(optional — enables Carbon Intensity forecast)</span></label>' +
+        '<input type="text" class="js-meta" data-meter="' + meterId + '" data-key="postcode_prefix" value="' + esc(meta.postcode_prefix||'') + '" placeholder="e.g. DE, SW1, M" style="max-width:200px;">' +
+        '<small style="color:var(--muted);">🇬🇧 UK only — first part of your postcode (e.g. DE1, not just DE). Enables the 48-hour carbon intensity forecast on the Summary page via the National Grid API.</small></div>' +
+
+    '</div>';
+
+  var div = document.createElement('div');
+  div.className = 'card';
+  div.dataset.meter = meterId;
+  div.dataset.panel = 'main';
+
+  div.innerHTML =
+    '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">' +
+      '<span style="font-size:13px;font-weight:600;color:var(--fg);">⚡ MAIN METER</span>' +
+      '<button class="btn btn-danger btn-sm js-remove-meter" data-meter="' + meterId + '">✕ Remove</button>' +
+    '</div>' +
+
+    (noLocal
+      ? '<div class="info-box">Import readings come from ' + esc(supLabel) + ' settlement, so this meter needs ' +
+        'no local read sensor. The data source is set on the <a href="#site" style="color:var(--accent);">Site</a> tab.</div>'
+      : '') +
+
+    '<div class="grid-2">' +
       '<div class="form-group" style="grid-column:1/-1;"><label>Power Sensor <span style="color:var(--muted);font-weight:400;">(optional — enables Live Summary page)</span></label>' +
         buildEntityInput(meterId + '__power__power_sensor', meta.power_sensor||'', meterId, 'power', 'power_sensor', true) +
         '<div class="checkbox-row" style="margin-top:8px;">' +
@@ -769,10 +899,6 @@ function buildMainCard(meterId, meter) {
             '<option value="kW"' + (meta.power_unit==='kW' ? ' selected' : '') + '>Force kilowatts (kW)</option>' +
           '</select></div>' +
         '<small style="color:var(--muted);">Live power in watts (W) or kW — enables the live power gauge on the Summary page.</small></div>' +
-      '<div class="form-group" style="grid-column:1/-1;"><label>Postcode Prefix <span style="color:var(--muted);font-weight:400;">(optional — enables Carbon Intensity forecast)</span></label>' +
-        '<input type="text" class="js-meta" data-meter="' + meterId + '" data-key="postcode_prefix" value="' + esc(meta.postcode_prefix||'') + '" placeholder="e.g. DE, SW1, M" style="max-width:200px;">' +
-        '<small style="color:var(--muted);">🇬🇧 UK only — first part of your postcode (e.g. DE1, not just DE). Enables the 48-hour carbon intensity forecast on the Summary page via the National Grid API.</small></div>' +
-
     '</div>' +
 
     (noLocal ? '' :
@@ -803,7 +929,7 @@ function buildMainCard(meterId, meter) {
         buildAdvanced(meterId, 'export', exp) +
       '</div>');
 
-  return div;
+  return {site: site, meter: div};
 }
 
 // ── Sub-meter card ────────────────────────────────────────────────────────────
@@ -914,6 +1040,7 @@ function buildSubCard(meterId, meter) {
   var div = document.createElement('div');
   div.className = 'card';
   div.dataset.meter = meterId;
+  div.dataset.panel = 'device-' + meterId;
 
   div.innerHTML =
     '<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">' +
@@ -1358,7 +1485,7 @@ function applySourceToggles() {
 
 // ── Event delegation ──────────────────────────────────────────────────────────
 function attachListeners() {
-  ['main-meter-container','sub-meter-container'].forEach(function(cid) {
+  ['site-container','main-meter-container','sub-meter-container'].forEach(function(cid) {
     var c = document.getElementById(cid);
     c.removeEventListener('change', onContainerChange);
     c.removeEventListener('click',  onContainerClick);
@@ -1416,6 +1543,7 @@ function onContainerChange(e) {
     }
     el.style.borderColor = nameErr ? 'var(--danger)' : '';
     el.title = nameErr || '';
+    if (el.dataset.key === 'device') { renderTabs(); showTab(_cfgTab); }
   }
   else if (el.classList.contains('js-ch-field')) {
     var ch = el.dataset.channel, f = el.dataset.field;
@@ -1875,23 +2003,10 @@ function executeDelete() {
     });
 }
 
-function toggleAddDeviceMenu(e) {
-  e.stopPropagation();
-  var menu = document.getElementById('add-device-menu');
-  menu.style.display = menu.style.display === 'none' ? 'block' : 'none';
-  function closeMenu(evt) {
-    if (!document.getElementById('btn-add-device').contains(evt.target) &&
-        !document.getElementById('add-device-menu').contains(evt.target)) {
-      menu.style.display = 'none';
-      document.removeEventListener('mousedown', closeMenu);
-    }
-  }
-  if (menu.style.display === 'block') document.addEventListener('mousedown', closeMenu);
-}
-
 function addDevice(type) {
-  document.getElementById('add-device-menu').style.display = 'none';
   _addDeviceType = type;
+  showTab('add');
+  document.querySelectorAll('.ad-type').forEach(function(b) { b.classList.toggle('active', b.dataset.type === type); });
 
   var titles    = { battery: '🔋 Add House Battery', ev: '🚗 Add EV Charger', heat_pump: '♨️ Add Heat Pump' };
   var subtitles = {
@@ -1924,12 +2039,13 @@ function addDevice(type) {
   document.getElementById('ad-hp-fields').style.display      = type === 'heat_pump' ? '' : 'none';
 
   setupAdEntityDropdowns();
-  document.getElementById('add-device-overlay').style.display = 'block';
+  document.getElementById('add-device-form').style.display = 'block';
   setTimeout(function() { document.getElementById('ad-device-name').focus(); }, 100);
 }
 
 function closeAddDevice() {
-  document.getElementById('add-device-overlay').style.display = 'none';
+  document.getElementById('add-device-form').style.display = 'none';
+  document.querySelectorAll('.ad-type').forEach(function(b) { b.classList.remove('active'); });
   _addDeviceType = null;
 }
 
@@ -1989,13 +2105,9 @@ function confirmAddDevice() {
   };
 
   closeAddDevice();
+  _cfgTab = 'device-' + id;
   renderAll();
   saveConfig();
-
-  setTimeout(function() {
-    var cards = document.querySelectorAll('#sub-meter-container .card');
-    if (cards.length) cards[cards.length - 1].scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }, 200);
 }
 
 function setupAdEntityDropdowns() {

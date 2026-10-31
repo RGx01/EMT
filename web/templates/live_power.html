@@ -822,7 +822,7 @@
 {% elif not has_power_sensor %}
 <div class="card" id="power-hint" style="display:flex;align-items:center;gap:10px;padding:10px 14px;margin-bottom:12px;font-size:13px;">
   <span style="font-size:16px;">💡</span>
-  <span style="flex:1;color:var(--muted);">Add a power sensor in <a href="{{ url_for('settings_page') }}" style="color:var(--accent);">Meter Config</a> to show a live power gauge here.</span>
+  <span style="flex:1;color:var(--muted);">Add a power sensor in <a href="{{ url_for('settings_page') }}#main" style="color:var(--accent);">Meter Config</a> to show a live power gauge here.</span>
   <button onclick="dismissPowerHint()" aria-label="Dismiss" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:18px;line-height:1;padding:0 4px;">&times;</button>
 </div>
 <script>
@@ -980,7 +980,7 @@ function setMiniSource(enabled){
       <div class="carbon-time-labels" id="carbon-time-labels"></div>
     </div>
     <div id="carbon-error" style="display:none;color:var(--muted);font-size:13px;">
-      Could not load forecast. Check your postcode prefix in <a href="{{ url_for('settings_page') }}" style="color:var(--accent);">Meter Config</a>.
+      Could not load forecast. Check your postcode prefix in <a href="{{ url_for('settings_page') }}#site" style="color:var(--accent);">Meter Config</a>.
     </div>
   </div>
   {% endif %}
