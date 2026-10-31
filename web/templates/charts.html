@@ -835,6 +835,18 @@ window.EMTSpiral=(function(){
         <button class="bar-seg-btn"        onclick="barSetMetric('cost',this)" id="bar-cost-btn">Cost</button>
         <button class="bar-seg-btn"        onclick="barSetMetric('co2',this)"  id="bar-co2-btn"  style="display:none">CO₂</button>
       </div>
+      <div class="bar-seg" id="bar-show-seg" title="The devices' import and export, or grid import by the price it was charged">
+        <button class="bar-seg-btn active" onclick="barSetShow('devices',this)">Devices</button>
+        <button class="bar-seg-btn"        onclick="barSetShow('brackets',this)">Rate brackets</button>
+      </div>
+      <span id="bar-br-wrap" style="display:none; align-items:center; gap:8px; font-size:12px; color:var(--muted);">
+        <select id="bar-br-series" onchange="barSetBrSeries(this.value)" aria-label="Whose import"
+                style="font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;"></select>
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;" title="Each bracket's share of the bar">
+          <input type="checkbox" id="bar-br-pct" onchange="barSetBrPct(this.checked)" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
+          %
+        </label>
+      </span>
       <div class="bar-seg" id="bar-order-seg" style="display:none;" title="Order monthly bars by calendar date, or grouped by month across years">
         <button class="bar-seg-btn active" onclick="barSetOrder('date',this)">Date</button>
         <button class="bar-seg-btn"        onclick="barSetOrder('month',this)">Month</button>
@@ -878,6 +890,7 @@ window.EMTSpiral=(function(){
        aria-label="Resize the chart" title="Drag to resize the chart · double-click to reset"></div>
 
   <!-- Tabular view -->
+  <div id="bar-br-note" style="display:none; margin-top:12px; padding: 0 24px; font-size:12px; color:var(--muted); flex-shrink:0;"></div>
   <div style="display:flex; align-items:center; justify-content:space-between; margin-top:12px; margin-bottom:8px; padding: 0 24px; flex-shrink:0;">
     <span style="font-size:12px; font-weight:500; color:var(--muted); text-transform:uppercase; letter-spacing:0.06em;">Data table</span>
     <button class="btn btn-secondary btn-sm" onclick="barCopyTable()" id="bar-copy-btn">⎘ Copy to clipboard</button>
@@ -1441,6 +1454,7 @@ var _refreshInFlight = false;
 var barBlockMinutes = 30;    // populated from the /api/energy fields=stats response
 var barMeters = [];       // [{id, label, color, is_sub}]
 var barExportColor = '#ff7f0e';
+var barHasPostcode = false;
 
 var MONTHS_SHORT = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 
@@ -1451,6 +1465,7 @@ function barIncStanding() {
 
 // The Net line over the bars (31 Oct 2026; Net was a view of its own, a bar per period).
 function barShowNet() {
+  if (barBrackets()) return false;          // the brackets are import's price, not the bill
   var cb = document.getElementById('bar-net-cb');
   return cb ? cb.checked : false;
 }
@@ -1469,6 +1484,9 @@ function barSaveState() {
       years:    barActiveYears ? [...barActiveYears] : [],
       standing: cb ? cb.checked : false,
       tariffs:  !!(document.getElementById('bar-tariff-cb') || {}).checked,
+      show:     barShow,
+      brSeries: barBrSeries,
+      brPct:    barBrPct,
     }));
   } catch(e) {}
 }
@@ -1504,6 +1522,10 @@ function barLoadState(availableYears) {
     if (nc) nc.checked = st.net === true || (st.net === undefined && st.view === 'net');
     var tc = document.getElementById('bar-tariff-cb');
     if (tc) tc.checked = st.tariffs === true;
+    if (['devices','brackets'].indexOf(st.show) !== -1) barShow = st.show;
+    if (typeof st.brSeries === 'string') barBrSeries = st.brSeries;
+    barBrPct = st.brPct === true;
+    if (barShow === 'brackets' && barMetric === 'co2') barMetric = 'kwh';
   } catch(e) {}
 }
 
@@ -1517,6 +1539,7 @@ function _applyBarJson(json) {
   var costBtn = document.getElementById('bar-cost-btn');
   if (costBtn) costBtn.textContent = barCurrency + ' Cost';
   var co2Btn = document.getElementById('bar-co2-btn');
+  barHasPostcode = !!json.has_postcode;
   if (co2Btn) co2Btn.style.display = json.has_postcode ? '' : 'none';
   if (barMetric === 'co2' && !json.has_postcode) barMetric = 'kwh';
   var years = [...new Set(barData.map(r => r.year))].sort();
@@ -1612,6 +1635,10 @@ function barSyncUI() {
   document.querySelectorAll('#bar-order-seg .bar-seg-btn').forEach(function(b){
     b.classList.toggle('active', b.getAttribute('onclick') && b.getAttribute('onclick').indexOf("'"+barMonthOrder+"'") !== -1);
   });
+  document.querySelectorAll('#bar-show-seg .bar-seg-btn').forEach(function(b){
+    b.classList.toggle('active', b.getAttribute('onclick').indexOf("'" + barShow + "'") !== -1);
+  });
+  barBrSyncUI();
   // Sync sort button label
   var sortBtn = document.getElementById('bar-sort-btn');
   if (sortBtn) sortBtn.textContent = barSortDesc ? '↓ Latest first' : '↑ Oldest first';
@@ -2080,7 +2107,232 @@ function barInitSplit() {
   });
 }
 
+// ── Rate brackets (BL-93, rate brackets design) ───────────────────────────────────────────────
+// Where grid import fell by the price it was charged: 2.5p brackets of the inc-VAT rate, for the
+// whole meter, the house or one device (`/api/energy?fields=brackets`). One rule for every tariff;
+// grid import only, so no export, standing charge, Net line or carbon in this view.
+var barShow = 'devices';          // 'devices' | 'brackets'
+var barBrSeries = 'meter';        // 'meter' (the whole meter) | 'electricity_main' (the house) | a device id
+var barBrPct = false;             // each bracket's share of the bucket
+var barBrWidth = 2.5;             // pence; the server's width_p
+var barBrDays = null;             // {YYYY-MM-DD: {series: {n: [kWh, £]}}}
+var barBrToken = null;            // the data version barBrDays was read at
+var barBrHH = null;               // {slot: {series: …}} for barBrHHDate
+var barBrHHKey = null;            // date + version barBrHH was read at
+var barBrError = null;
+
+function barBrackets() { return barShow === 'brackets'; }
+
+function barBrDayKey(r) {
+  return r.year + '-' + String(r.month).padStart(2, '0') + '-' + String(r.day).padStart(2, '0');
+}
+
+async function barBrFetch(q) {
+  var r = await fetch(apiUrl('/api/energy?fields=brackets&' + q));
+  var j = await r.json();
+  if (j.error) throw new Error(j.error);
+  var b = j.brackets || {};
+  if (b.width_p) barBrWidth = b.width_p;
+  var out = {};
+  (b.rows || []).forEach(function(row) { out[row.day || row.slot] = row.b || {}; });
+  return out;
+}
+
+// The brackets the view needs, read once per data version (and per HH day). Returns true when
+// they are in hand; otherwise starts the read, which renders again when it lands.
+function barBrReady() {
+  if (barBrError) return true;
+  var tok = _lastDataVersion || '';
+  if (barPeriod === 'hh') {
+    var key = barHHDate + '|' + tok;
+    if (barBrHHKey === key) return true;
+    _setBarLoading(true);
+    barBrFetch('resolution=block&kind=day&date=' + encodeURIComponent(barHHDate)).then(function(m) {
+      barBrHH = m; barBrHHKey = key; barRender();
+    }).catch(barBrFailed);
+    return false;
+  }
+  if (barBrDays && barBrToken === tok) return true;
+  _setBarLoading(true);
+  barBrFetch('resolution=day&kind=all').then(function(m) {
+    barBrDays = m; barBrToken = tok; barRender();
+  }).catch(barBrFailed);
+  return false;
+}
+
+function barBrFailed(e) {
+  barBrError = e && e.message || String(e);
+  barRender();
+}
+
+function barBrOf(agg) { return ((agg && agg.br) || {})[barBrSeries] || {}; }
+
+// The brackets with usage across the buckets, cheapest first.
+function barBrNs(aggList) {
+  var seen = {};
+  aggList.forEach(function(agg) { Object.keys(barBrOf(agg)).forEach(function(n) { seen[n] = true; }); });
+  return Object.keys(seen).map(Number).sort(function(a, b) { return a - b; });
+}
+
+function barBrPence(v) {
+  var t = (Math.round(v * 100) / 100).toString();
+  return (v < 0 ? '−' : '') + t.replace('-', '');
+}
+
+function barBrLabel(n) {
+  return barBrPence(n * barBrWidth) + '–' + barBrPence((n + 1) * barBrWidth) + 'p';
+}
+
+// Cheap to dear, green through amber to red by price across the brackets in view (`ns`), and
+// neighbours alternately lighter and darker so they can be told apart: on one 0-40p scale 5-7.5p and
+// 7.5-10p were the same green, and spread by position a 22.5p bracket read as cheap. The colour
+// carries the order; the legend and hover name the bracket. A negative price is blue.
+function barBrColor(n, ns) {
+  var dark = document.documentElement.getAttribute('data-theme') !== 'light';   // as barGetTheme
+  var i = ns.indexOf(n), alt = i % 2 ? (dark ? 14 : 13) : 0;
+  if (n < 0) return 'hsl(215, 70%, ' + ((dark ? 50 : 40) + alt) + '%)';
+  var pos = ns.filter(function(x) { return x >= 0; });
+  var lo = pos[0], hi = pos[pos.length - 1];
+  var t = hi > lo ? (n - lo) / (hi - lo) : 0;
+  return 'hsl(' + Math.round(130 * (1 - t)) + ', ' + (dark ? 62 : 68) + '%, ' + ((dark ? 48 : 40) + alt) + '%)';
+}
+
+function barBrVal(v) { return barMetric === 'cost' ? v[1] : v[0]; }
+
+function barBrDatasets(aggList) {
+  var ns = barBrNs(aggList);
+  var totals = aggList.map(function(agg) {
+    var b = barBrOf(agg);
+    return Object.keys(b).reduce(function(s, n) { return s + barBrVal(b[n]); }, 0);
+  });
+  return ns.map(function(n) {
+    return {
+      label: barBrLabel(n), _bracket: n,
+      data: aggList.map(function(agg, i) {
+        var v = barBrOf(agg)[n];
+        if (!v) return 0;
+        var x = barBrVal(v);
+        if (barBrPct) return totals[i] > 0 ? Math.round(x / totals[i] * 10000) / 100 : 0;
+        return Math.round(x * 1000) / 1000;
+      }),
+      backgroundColor: barBrColor(n, ns), borderRadius: 0, stack: 'main'
+    };
+  });
+}
+
+// The series picker's choices: the whole meter, the house when there are devices, each device.
+function barBrSeriesList() {
+  var have = {};
+  var src = barPeriod === 'hh' ? barBrHH : barBrDays;
+  Object.values(src || {}).forEach(function(b) { Object.keys(b).forEach(function(s) { have[s] = true; }); });
+  var out = [{ id: 'meter', label: 'Whole meter' }];
+  var devs = barMeters.filter(function(m) { return m.is_sub && have[m.id]; });
+  if (devs.length) {
+    var main = barMeters.find(function(m) { return m.id === 'electricity_main'; });
+    out.push({ id: 'electricity_main', label: (main ? main.label : 'Direct') + ' (house)' });
+  }
+  devs.forEach(function(m) { out.push({ id: m.id, label: m.label }); });
+  return out;
+}
+
+function barBrSyncPicker() {
+  var sel = document.getElementById('bar-br-series');
+  if (!sel) return;
+  var list = barBrSeriesList();
+  if (!list.some(function(o) { return o.id === barBrSeries; })) barBrSeries = 'meter';
+  sel.innerHTML = list.map(function(o) {
+    return '<option value="' + o.id + '"' + (o.id === barBrSeries ? ' selected' : '') + '>'
+      + o.label.replace(/</g, '&lt;') + '</option>';
+  }).join('');
+}
+
+function barBrSeriesLabel(id) {
+  var o = barBrSeriesList().find(function(x) { return x.id === id; });
+  return o ? o.label : id;
+}
+
+// One bracket summary over the buckets: {n: [kWh, £]} for a series.
+function barBrSum(aggList, series) {
+  var out = {};
+  aggList.forEach(function(agg) {
+    var b = ((agg && agg.br) || {})[series] || {};
+    Object.keys(b).forEach(function(n) {
+      var a = out[n] || (out[n] = [0, 0]);
+      a[0] += b[n][0]; a[1] += b[n][1];
+    });
+  });
+  return out;
+}
+
+function barBrAvg(sum) {
+  var k = 0, c = 0;
+  Object.values(sum).forEach(function(v) { k += v[0]; c += v[1]; });
+  return k > 0 ? c / k * 100 : null;          // p/kWh: £ ÷ kWh, so it matches the bill
+}
+
+function barBrNote(aggList) {
+  var el = document.getElementById('bar-br-note');
+  if (!el) return;
+  if (!barBrackets()) { el.style.display = 'none'; return; }
+  if (barBrError) { el.textContent = "Couldn't read the rate brackets: " + barBrError; el.style.display = ''; return; }
+  var mine = barBrAvg(barBrSum(aggList, barBrSeries));
+  var all = barBrAvg(barBrSum(aggList, 'meter'));
+  var txt = mine == null ? 'No grid import in this range.'
+    : barBrSeriesLabel(barBrSeries) + ' paid ' + mine.toFixed(1) + 'p/kWh on average';
+  if (mine != null && barBrSeries !== 'meter' && all != null) txt += ', the whole meter ' + all.toFixed(1) + 'p/kWh';
+  el.textContent = txt + '.';
+  el.style.display = '';
+}
+
+function barBrBuildTable(tbl, aggList) {
+  var sum = barBrSum(aggList, barBrSeries);
+  var ns = barBrNs(aggList);                  // the chart's brackets, so the colours agree
+  var tk = 0, tc = 0;
+  ns.forEach(function(n) { tk += sum[n][0]; tc += sum[n][1]; });
+  function money(v) { var a = Math.abs(v).toFixed(2); return (v < 0 && Number(a) !== 0 ? '-' : '') + barCurrency + a; }
+  function avg(k, c) { return k > 0 ? (c / k * 100).toFixed(2) + 'p' : '—'; }
+  function share(k) { return tk > 0 ? (k / tk * 100).toFixed(1) + '%' : '—'; }
+  var html = '<thead><tr><th>Rate bracket</th><th>kWh</th><th>Cost</th><th>Avg p/kWh</th><th>Share of kWh</th></tr>';
+  html += '<tr class="totals-row"><td style="font-weight:600;">Totals</td><td>' + tk.toFixed(3) + ' kWh</td><td>'
+    + money(tc) + '</td><td>' + avg(tk, tc) + '</td><td>' + (tk > 0 ? '100.0%' : '—') + '</td></tr></thead><tbody>';
+  ns.forEach(function(n) {
+    var v = sum[n];
+    html += '<tr><td><span class="bar-legend-dot" style="background:' + barBrColor(n, ns) + ';margin-right:5px;"></span>'
+      + barBrLabel(n) + '</td><td>' + v[0].toFixed(3) + ' kWh</td><td>' + money(v[1]) + '</td><td>'
+      + avg(v[0], v[1]) + '</td><td>' + share(v[0]) + '</td></tr>';
+  });
+  if (!ns.length) html += '<tr><td colspan="5" style="color:var(--muted);">No grid import in this range.</td></tr>';
+  tbl.innerHTML = html + '</tbody>';
+}
+
+function barSetShow(v, el) {
+  barShow = v;
+  barBrError = null;
+  if (v === 'brackets' && barMetric === 'co2') barMetric = 'kwh';   // brackets carry no carbon
+  barSetActive('bar-show-seg', el);
+  barSaveState(); barSyncUI(); barRender();
+}
+function barSetBrSeries(v) { barBrSeries = v; barSaveState(); barRender(); }
+function barSetBrPct(on) { barBrPct = !!on; barSaveState(); barRender(); }
+
+// What the view shows and hides: the series picker and % in Rate brackets; the Net line, the
+// standing charge, CO₂ and the period sort only with the devices.
+function barBrSyncUI() {
+  var on = barBrackets();
+  function vis(id, show, how) { var e = document.getElementById(id); if (e) e.style.display = show ? (how || '') : 'none'; }
+  vis('bar-br-wrap', on, 'flex');
+  vis('bar-net-wrap', !on, 'flex');
+  vis('bar-sort-btn', !on);
+  var co2 = document.getElementById('bar-co2-btn');
+  if (co2 && on) co2.style.display = 'none';
+  else if (co2 && barHasPostcode) co2.style.display = '';
+  var pc = document.getElementById('bar-br-pct');
+  if (pc) pc.checked = barBrPct;
+  if (on) barBrSyncPicker();
+}
+
 function barGetDatasets(labels, aggList, isHH) {
+  if (barBrackets()) return barBrDatasets(aggList);
   // Import meters stacked above axis, export below, all in same stack
   var datasets = [];
 
@@ -2178,6 +2430,18 @@ function barAggRows(filterFn) {
       var _tp = (row.imp_kwh || 0) + (row.exp_kwh || 0);
       if (_tp > 0) { _aiNum += row.avg_intensity * _tp; _aiTp += _tp; _aiHasData = true; }
     }
+    // The day's rate brackets (BL-93), summed as the meters are
+    var _b = barBrDays && barBrDays[barBrDayKey(row)];
+    if (_b) {
+      if (!result.br) result.br = {};
+      Object.keys(_b).forEach(function(sr) {
+        var _o = result.br[sr] || (result.br[sr] = {});
+        Object.keys(_b[sr]).forEach(function(n) {
+          var _a = _o[n] || (_o[n] = [0, 0]);
+          _a[0] += _b[sr][n][0]; _a[1] += _b[sr][n][1];
+        });
+      });
+    }
     Object.keys(row.meters || {}).forEach(function(mid) {
       if (!result.meters[mid]) result.meters[mid] = {imp_kwh:0,imp_cost:0,exp_kwh:0,exp_cost:0,carbon_g:null,carbon_g_imp:null,carbon_g_exp:null};
       var m = row.meters[mid];
@@ -2228,6 +2492,9 @@ function barGetDataForPeriod() {
     // 48 (or n) half-hour slots for one local day. Rows come pre-aggregated from
     // /api/energy (resolution=block, fields=stats) in exactly the barAggRows shape, so no re-aggregation.
     var rows = barHHRows || [];
+    if (barBrackets() && barBrHH) {
+      rows = rows.map(function(r) { return Object.assign({}, r, { br: barBrHH[r.slot] || {} }); });
+    }
     // Every half-hour's dates are the day's: agreements change at local midnight, so a day is
     // inside one agreement and a band spans it
     var _hhTo = barAddDay(barHHDate);
@@ -2409,12 +2676,14 @@ function barRender() {
   } else if (_calSeg) {
     _calSeg.style.display = '';
   }
+  if (barBrackets() && !barBrReady()) return;     // the brackets' read renders again when it lands
+  barBrSyncUI();
   // Order toggle (Date/Month) is only meaningful for the monthly view
   var _orderSeg = document.getElementById('bar-order-seg');
   if (_orderSeg) _orderSeg.style.display = (barPeriod === 'monthly') ? 'inline-flex' : 'none';
   // Show/hide standing charge toggle (cost mode only)
   var sw = document.getElementById('bar-standing-wrap');
-  if (sw) sw.style.display = barMetric === 'cost' ? 'flex' : 'none';
+  if (sw) sw.style.display = barMetric === 'cost' && !barBrackets() ? 'flex' : 'none';
   // The Net box names what it draws: on HH a running total of the day's net
   var _nt = document.getElementById('bar-net-text'), _nw = document.getElementById('bar-net-wrap');
   if (_nt) _nt.textContent = barNetLabel();
@@ -2502,6 +2771,10 @@ function barRender() {
           callbacks: {
           label: function(c) {
             var v = c.raw;
+            if (barBrackets()) {
+              if (!v) return null;
+              return ' ' + c.dataset.label + ': ' + (barBrPct ? v.toFixed(1) + '%' : barFmt(v));
+            }
             if (barMetric === 'co2') return ' ' + c.dataset.label + ': ' + barCo2Fmt(v);
             var sym = barMetric==='cost' ? barCurrency : '';
             var unit = barMetric==='kwh' ? ' kWh' : '';
@@ -2513,6 +2786,13 @@ function barRender() {
             var onLine = items.some(function(it) { return it.dataset._net; });
             var agg = barGetDataForPeriod().aggList[idx];
             if (!agg) return '';
+            if (barBrackets()) {
+              var _bs = barBrSum([agg], barBrSeries), _bk = 0, _bc = 0;
+              Object.values(_bs).forEach(function(v) { _bk += v[0]; _bc += v[1]; });
+              return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\n' + barBrSeriesLabel(barBrSeries) + ': '
+                + _bk.toFixed(3) + ' kWh  ' + (_bc < 0 ? '-' : '') + barCurrency + Math.abs(_bc).toFixed(2)
+                + (_bk > 0 ? '\nAverage: ' + (_bc / _bk * 100).toFixed(1) + 'p/kWh' : '');
+            }
             if (barMetric === 'co2') {
               var net = agg.carbon_g_net; var tot = agg.carbon_g_total;
               // HH: no Net (the half-hour's own net), and the running total only where the line's
@@ -2547,8 +2827,10 @@ function barRender() {
              // with the two HH axes, barAlignZero has made the room already
              afterDataLimits: tariffLanes && !axes ? function(sc) { barTariffHeadroom(sc, tariffLanes); } : undefined,
              ticks: Object.assign({ font:{size:11}, color:barGetTheme().axisC, callback: barYLabel, maxTicksLimit: 8 },
-                                  axes ? { stepSize: axes.y.step } : {}),
-             grace: '2%' }, axes ? { min: axes.y.min, max: axes.y.max, grace: 0 } : {}),
+                                  axes ? { stepSize: axes.y.step } : {},
+                                  barBrackets() && barBrPct ? { callback: function(v) { return v + '%'; } } : {}),
+             grace: '2%' }, axes ? { min: axes.y.min, max: axes.y.max, grace: 0 } : {},
+             barBrackets() && barBrPct ? { min: 0, max: 100, grace: 0 } : {}),
         yNet: Object.assign({ display: netAxis, position: 'right', stacked: false,
              grid: { display: false },
              title: { display: netAxis, text: 'Running total', color: barGetTheme().axisC, font: {size:11} },
@@ -2574,6 +2856,12 @@ function barBuildLegend() {
       'background:' + color + ';"></span>' + label + '</span>';
   }
   var net = barShowNet() ? line(barNetColor(), barNetLabel()) : '';
+  if (barBrackets()) {
+    // The brackets with usage in view, cheapest first
+    var _ds = barChartInstance ? barChartInstance.data.datasets : [];
+    _ds.forEach(function(d) { if (d._bracket != null) el.innerHTML += dot(d.backgroundColor, d.label); });
+    return;
+  }
   if (barMetric === 'co2') {
     barMeters.forEach(function(m) { el.innerHTML += dot(m.color, m.label + ' carbon'); });
     el.innerHTML += dot(barExportColor, 'Export offset') + net;
@@ -3048,6 +3336,8 @@ function barBuildTable() {
   var pd = barGetDataForPeriod();
   var aggList = pd.aggList;
   var labels  = pd.labels;
+  barBrNote(aggList);
+  if (barBrackets()) { barBrBuildTable(tbl, aggList); return; }
 
   // Build column headers
   // Each meter's import, the standing charge, then — when there are devices — the whole import (the
