@@ -156,6 +156,19 @@
     font-family: var(--sans);
   }
   .bar-nav-btn:hover { background: rgba(255,255,255,0.05); color: var(--text); }
+  .bar-nav-btn:disabled { opacity: 0.4; cursor: default; }
+  .bar-nav-btn:disabled:hover { background: transparent; color: var(--muted); }
+  .bar-hh-datepanel {
+    position: absolute; top: calc(100% + 6px); left: 0; z-index: 20;
+    display: flex; gap: 6px; align-items: center; padding: 8px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    box-shadow: 0 6px 18px rgba(0,0,0,0.25);
+  }
+  .bar-hh-datepanel input[type=date] {
+    background: var(--bg); color: var(--text); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 3px 6px; font-family: var(--sans); font-size: 13px;
+    color-scheme: light dark;
+  }
   .bar-period-label {
     font-size: 13px;
     font-weight: 500;
@@ -1632,8 +1645,19 @@ function barNetLabel() {
   return barPeriod === 'hh' ? 'Running total' : 'Net';
 }
 
-// The HH view's two axes, their zeros level: the bars' on the left, the running net's on the
-// right. Both take the larger share below zero of the two, so each still fits its data.
+// The HH view's two axes on one set of gridlines: the same number of intervals, split the same
+// way about zero, so the zeros and every gridline are level. Each axis steps by a round number
+// (1, 2, 2.5 or 5 × a power of ten), so every label is one; the split and the count (4–7) are
+// the ones that leave the least empty space on the two together. With bounds at the data's own
+// ends (as first built) Chart.js labelled those ends — 7 kWh beside 6 — and the right's labels
+// fell between the left's gridlines.
+function barNiceStep(x) {
+  if (!(x > 0)) return 0;
+  var e = Math.pow(10, Math.floor(Math.log10(x))), f = x / e;
+  var m = [1, 2, 2.5, 5, 10].find(function(k) { return f <= k * (1 + 1e-9); });
+  return m * e;
+}
+
 function barAlignZero(datasets) {
   var pos = 0, neg = 0, lmax = 0, lmin = 0, n = 0;
   datasets.forEach(function(ds) { n = Math.max(n, ds.data.length); });
@@ -1647,16 +1671,27 @@ function barAlignZero(datasets) {
     });
     pos = Math.max(pos, p); neg = Math.min(neg, q);
   }
-  function share(mx, mn) { return mx - mn > 0 ? -mn / (mx - mn) : 0; }
-  var f = Math.max(share(pos, neg), share(lmax, lmin));
-  function range(mx, mn) {
-    // grace 0: the 2% headroom is in the bounds, and grace would move one zero off the other's
-    if (f >= 1) return { min: mn * 1.02, max: 0, grace: 0 };
-    if (mx > 0) return { min: -f * mx / (1 - f) * 1.02, max: mx * 1.02, grace: 0 };
-    if (mn < 0) return { min: mn * 1.02, max: -mn * (1 - f) / f * 1.02, grace: 0 };
-    return {};
+  var head = 1.02;                         // a point on the top line is not cut in half
+  var axes = [[pos * head, -neg * head], [lmax * head, -lmin * head]];
+  var best = null;
+  for (var T = 4; T <= 7; T++) {
+    for (var d = 0; d <= T; d++) {
+      var ok = true, steps = [], fill = 0;
+      axes.forEach(function(a) {
+        var up = a[0], dn = a[1];
+        if ((d === 0 && dn > 0) || (d === T && up > 0)) { ok = false; return; }
+        var st = barNiceStep(Math.max(d < T ? up / (T - d) : 0, d > 0 ? dn / d : 0));
+        steps.push(st);
+        fill += st ? (up + dn) / (T * st) : 1;     // an empty axis fits anything
+      });
+      if (ok && (!best || fill > best.fill + 1e-9)) best = { fill: fill, T: T, d: d, steps: steps };
+    }
   }
-  return { y: range(pos, neg), yNet: range(lmax, lmin) };
+  function range(st) {
+    st = st || 1;
+    return { min: -best.d * st, max: (best.T - best.d) * st, grace: 0, step: st };
+  }
+  return { y: range(best.steps[0]), yNet: range(best.steps[1]) };
 }
 
 function barNetColor() {
@@ -1957,9 +1992,12 @@ function barYLabel(v) {
   if (barMetric === 'co2') return barCo2Fmt(v);
   var sym  = barMetric === 'cost' ? barCurrency : '';
   var unit = barMetric === 'kwh'  ? ' kWh' : '';
-  // Use 1 decimal for cost so Chart.js half-unit ticks don't duplicate
-  // e.g. -1.0 and -1.5 both showing as "-£1"
+  // As many decimals as the tick needs, up to 2 (a 2.5 kWh or £0.25 step must not read "3" or
+  // "£0.3"); cost at least 1, so -1.0 and -1.5 never both read "-£1". The tick is rounded first:
+  // Chart.js steps by adding, and 0 can arrive as -3e-17, which read "-£0.0".
+  v = Math.round(v * 1e6) / 1e6;
   var dp = barMetric === 'cost' ? 1 : 0;
+  while (dp < 2 && Math.abs(v * Math.pow(10, dp) - Math.round(v * Math.pow(10, dp))) > 1e-6) dp++;
   return (v < 0 ? '-' : '') + sym + Math.abs(v).toFixed(dp) + unit;
 }
 
@@ -2097,13 +2135,15 @@ function barRender() {
       scales: {
         x: { stacked: true, grid: { display: false }, ticks: { font:{size:11}, color:barGetTheme().axisC, autoSkip: true, maxRotation: 45 } },
         y: Object.assign({ stacked: true, grid: { color:barGetTheme().gridC },
-             ticks: { font:{size:11}, color:barGetTheme().axisC, callback: barYLabel, maxTicksLimit: 8 },
-             grace: '2%' }, axes ? axes.y : {}),
+             ticks: Object.assign({ font:{size:11}, color:barGetTheme().axisC, callback: barYLabel, maxTicksLimit: 8 },
+                                  axes ? { stepSize: axes.y.step } : {}),
+             grace: '2%' }, axes ? { min: axes.y.min, max: axes.y.max, grace: 0 } : {}),
         yNet: Object.assign({ display: netAxis, position: 'right', stacked: false,
              grid: { display: false },
              title: { display: netAxis, text: 'Running total', color: barGetTheme().axisC, font: {size:11} },
-             ticks: { font:{size:11}, color:barGetTheme().axisC, callback: barYLabel, maxTicksLimit: 8 } },
-             axes ? axes.yNet : {})
+             ticks: Object.assign({ font:{size:11}, color:barGetTheme().axisC, callback: barYLabel, maxTicksLimit: 8 },
+                                  axes ? { stepSize: axes.yNet.step } : {}) },
+             axes ? { min: axes.yNet.min, max: axes.yNet.max, grace: 0 } : {})
       }
     }
   });
@@ -2237,6 +2277,47 @@ function barHHGetPeriods() {
 function barHHSelect(v) { if (v && v !== barHHDate) { barHHDate = v; barSaveState(); barLoadHH(); } }
 function barMakeHHRolodex(lbl) { PeriodSpinner.attach(lbl, { getPeriods: barHHGetPeriods, onSelect: barHHSelect }); }
 // Step the HH day by ±delta days (clamped so we never view a future day).
+// The HH view's date panel, under the 📅 button: Go (or Enter) loads the day, Cancel, Escape or a
+// click outside closes it. A second click on the button closes it too.
+function barHHDatePanel(anchor, today) {
+  var open = document.getElementById('bar-hh-datepanel');
+  if (open) { open._close(); return; }
+  var pnl = document.createElement('div');
+  pnl.id = 'bar-hh-datepanel';
+  pnl.className = 'bar-hh-datepanel';
+  var inp = document.createElement('input');
+  inp.type = 'date'; inp.value = barHHDate; inp.max = today;
+  var go = document.createElement('button');
+  go.className = 'bar-nav-btn'; go.textContent = 'Go';
+  var cancel = document.createElement('button');
+  cancel.className = 'bar-nav-btn'; cancel.textContent = 'Cancel';
+  pnl.appendChild(inp); pnl.appendChild(go); pnl.appendChild(cancel);
+  function outside(e) { if (!anchor.contains(e.target)) close(); }
+  function key(e) { if (e.key === 'Escape') close(); }
+  function close() {
+    document.removeEventListener('mousedown', outside, true);
+    document.removeEventListener('keydown', key, true);
+    if (pnl.parentNode) pnl.parentNode.removeChild(pnl);
+  }
+  pnl._close = close;
+  function pick() {
+    var v = inp.value;
+    close();
+    if (v) barHHSelect(v > today ? today : v);
+  }
+  go.onclick = pick;
+  cancel.onclick = close;
+  inp.onkeydown = function(e) { if (e.key === 'Enter') pick(); };
+  document.addEventListener('mousedown', outside, true);
+  document.addEventListener('keydown', key, true);
+  anchor.appendChild(pnl);
+  // Under the button, moved left as far as a narrow screen needs to keep it on the screen.
+  var r = pnl.getBoundingClientRect(), vw = document.documentElement.clientWidth;
+  var shift = Math.max(Math.min(0, vw - 8 - r.right), 8 - r.left);
+  if (shift) pnl.style.left = shift + 'px';
+  inp.focus({ preventScroll: true });
+}
+
 function barStepHH(delta) {
   if (!delta) return;
   var d = new Date(barHHDate + 'T00:00:00');
@@ -2378,29 +2459,25 @@ function barBuildSubBar() {
     next.disabled = (barHHDate >= today);
     next.onclick = function() { barStepHH(1); };
 
-    // Calendar jump: a small button that opens the native date picker for
-    // arbitrary dates (scrolling day-by-day through months would be tedious).
+    // Calendar jump: a small panel of the page's own, a date field with Go and Cancel. The browser's
+    // picker (showPicker) was opened straight from the button, and some browsers give it no way
+    // out but picking a day. Escape or a click outside closes the panel, the day unchanged.
     var calWrap = document.createElement('span');
     calWrap.style.cssText = 'position:relative;display:inline-flex;';
     var calBtn = document.createElement('button');
     calBtn.className = 'bar-nav-btn'; calBtn.textContent = '📅';
     calBtn.title = 'Jump to a date';
-    var calInp = document.createElement('input');
-    calInp.type = 'date'; calInp.value = barHHDate; calInp.max = today;
-    calInp.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;opacity:0;pointer-events:none;';
-    calBtn.onclick = function() {
-      calInp.value = barHHDate;
-      if (calInp.showPicker) { try { calInp.showPicker(); return; } catch(e) {} }
-      calInp.style.pointerEvents = 'auto'; calInp.focus(); calInp.click();
-    };
-    calInp.onchange = function() {
-      if (!calInp.value) return;
-      barHHDate = calInp.value > today ? today : calInp.value;
-      barSaveState(); barLoadHH();
-    };
-    calWrap.appendChild(calBtn); calWrap.appendChild(calInp);
+    calBtn.onclick = function() { barHHDatePanel(calWrap, today); };
+    calWrap.appendChild(calBtn);
+
+    var todayBtn = document.createElement('button');
+    todayBtn.className = 'bar-nav-btn'; todayBtn.id = 'bar-hh-today'; todayBtn.textContent = 'Today';
+    todayBtn.title = 'Go to today';
+    todayBtn.disabled = (barHHDate === today);
+    todayBtn.onclick = function() { barHHSelect(barTodayStr()); };
 
     bar.appendChild(prev); bar.appendChild(lbl); bar.appendChild(next); bar.appendChild(calWrap);
+    bar.appendChild(todayBtn);
     return;
   }
   if (barPeriod === 'daily') {
