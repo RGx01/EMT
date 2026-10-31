@@ -6669,9 +6669,20 @@ async def _build_channel_standing_segs(channel: str):
     return await _agreement_segs(channel, "standing")
 
 
+def _local_date_of_utc(utc_iso: str, tz_name: str) -> str:
+    """The local date of a naive-UTC time (block_store.utc_to_local_date; UTC on any error)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return (datetime.fromisoformat(str(utc_iso)[:19]).replace(tzinfo=timezone.utc)
+                .astimezone(ZoneInfo(tz_name)).date().isoformat())
+    except Exception:
+        return str(utc_iso)[:10]
+
+
 def _standing_for(standing_segs, day_iso):
-    """Daily standing charge £/day for a date (YYYY-MM-DD) from the schedule, or
-    None if uncovered. Resolve at midday to avoid midnight/DST boundary edges.
+    """Daily standing charge £/day for a local date (YYYY-MM-DD) from the schedule, or
+    None if uncovered. Resolve at midday to avoid midnight/DST boundary edges (noon UTC is
+    inside the UK local day either side of the clocks changing).
     Native pence/day → £/day."""
     ts = day_iso + "T12:00:00"
     for vf, vt, sched in standing_segs:
@@ -7698,17 +7709,34 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
         # figure where the schedule doesn't cover the date. Measurements'
         # STANDING_CHARGE_COST is patchy (whole stretches return none → £0/day),
         # which was silently under-billing the reconstructed range.
+        # By LOCAL day (31 Oct 2026, ROADMAP BL-92): by the UTC date, a summer local day's first
+        # half-hour (23:00 UTC the day before) carried the day before's charge — the one the
+        # readers take — so a summer price change showed a day late.
+        _sc_tz = _iog_site_tz()
+
+        def _sc_day(st):
+            return _local_date_of_utc(st, _sc_tz)
         meas_standing: dict = {}
         meas_count: dict = {}
         for st in imported:
-            d = st[:10]
+            d = _sc_day(st)
             meas_standing[d] = (meas_standing.get(d, 0.0)
                                 + (by_start[st].get("standing_incl") or 0.0))
             meas_count[d] = meas_count.get(d, 0) + 1
         try:
-            _slots_per_day = int(round(24 * 60 / max(1, int(get_block_minutes()))))
+            _block_min = max(1, int(get_block_minutes()))
         except Exception:
-            _slots_per_day = 48
+            _block_min = 30
+
+        def _slots_in(d):
+            # a local day's half-hours: 46 or 50 on a clock-change day
+            try:
+                import block_store as _bs
+                a, b = _bs.local_date_to_utc_bounds(d, _sc_tz)
+                return int(round((datetime.fromisoformat(b) - datetime.fromisoformat(a))
+                                 .total_seconds() / 60 / _block_min))
+            except Exception:
+                return int(round(24 * 60 / _block_min))
         day_standing: dict = {}
         for d in meas_standing:
             sc = _standing_for(standing_segs, d)
@@ -7721,7 +7749,7 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
                 # pay the full standing charge regardless of how many half-hours
                 # have data — extrapolate the present intervals back to a whole day.
                 n = meas_count.get(d, 0)
-                day_standing[d] = (round(meas_standing[d] / n * _slots_per_day, 6)
+                day_standing[d] = (round(meas_standing[d] / n * _slots_in(d), 6)
                                    if n else meas_standing[d])
 
         priced = off_peak = 0
@@ -7759,7 +7787,7 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
             # Standing charge is an IMPORT-meter charge on the shared block row —
             # the export channel must not write it (it would clobber the import's
             # value with 0, since OUTGOING tariffs have no standing charge).
-            _standing = day_standing.get(st[:10]) if channel == "import" else None
+            _standing = day_standing.get(_sc_day(st)) if channel == "import" else None
             rows_to_write.append({"start": st, "kwh": kwh, "rate": rate,
                                   "cost": cost, "standing": _standing,
                                   "cost_exc": cost_exc,

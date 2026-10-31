@@ -723,6 +723,16 @@ def local_datetime_to_utc(local_date: str, local_time: str, tz_name: str) -> str
     return dt.astimezone(ZoneInfo("UTC")).replace(tzinfo=None).isoformat()
 
 
+def utc_to_local_date(utc_iso: str, tz_name: str) -> str:
+    """The local date (YYYY-MM-DD) a naive-UTC ISO time falls on, DST-correct: in BST a local day
+    starts at 23:00 UTC the day before. Falls back to the UTC date on any error."""
+    try:
+        dt = datetime.fromisoformat(str(utc_iso)[:19]).replace(tzinfo=ZoneInfo("UTC"))
+        return dt.astimezone(ZoneInfo(tz_name)).date().isoformat()
+    except Exception:
+        return str(utc_iso)[:10]
+
+
 def utc_to_local_label(utc_iso: str, tz_name: str, with_date: bool = True) -> str:
     """Format a naive-UTC ISO string as local wall-clock time for display (the gap
     list / deleted-ranges list). Returns 'YYYY-MM-DD HH:MM' (or 'HH:MM' when
@@ -4056,11 +4066,17 @@ class BlockStore:
                         return d, ov
                 return (period_meta[-1][2], period_meta[-1][3]) if period_meta else (None, {})
 
-            # Standing charge is per-day (sum the per-interval apportioned column).
+            # Standing charge is per LOCAL day: the column added up over the local day's rows, so
+            # a file that gives it once (on the day's first row) and one that spreads it across the
+            # rows both give the day's charge, written on every block of that day. Added up by the
+            # UTC date until 31 Oct 2026: in summer a local day's first row is 23:00 UTC the day
+            # before, so the spring Sunday's date held two days' charges and the autumn Sunday's
+            # none (ROADMAP BL-92).
             day_standing: dict = {}
+            _tzc: dict = {}
             for b in blocks:
-                day_standing[b["block_start"][:10]] = (
-                    day_standing.get(b["block_start"][:10], 0.0) + (b.get("standing") or 0.0))
+                ld = self._local_date_of(b["block_start"], _tzc)
+                day_standing[ld] = day_standing.get(ld, 0.0) + (b.get("standing") or 0.0)
 
             written = 0
             skipped = 0                 # first-man-wins: slot already held data
@@ -4098,7 +4114,7 @@ class BlockStore:
                 bid, wrote = self.upsert_imported_block(
                     b["block_start"], meter_id, channel,
                     kwh=b["kwh"], rate=rate, cost=b.get("cost"),
-                    standing=day_standing.get(b["block_start"][:10]),
+                    standing=day_standing.get(self._local_date_of(b["block_start"], _tzc)),
                     derivation_id=did, overwrite=_may_replace,
                     cost_exc=b.get("cost_exc"))
                 if wrote and channel == "import" and b.get("cost") is not None \
@@ -5618,6 +5634,19 @@ class BlockStore:
             "export_cost": round(float(row["export_cost"]), 6),
         }
 
+
+    def _local_date_of(self, block_start: str, cache: dict) -> str:
+        """The local date of a naive-UTC block start, in the timezone of the config period then in
+        force (the latest where none covers it). `cache`: the caller's, by UTC date, for one pass."""
+        d = block_start[:10]
+        tz = cache.get(d)
+        if tz is None:
+            cp = self.get_config_period_for_date(d)
+            if not cp:
+                cp = self._conn.execute("SELECT timezone FROM config_periods "
+                                        "ORDER BY effective_from DESC LIMIT 1").fetchone()
+            tz = cache[d] = ((cp["timezone"] if cp else None) or "UTC")
+        return utc_to_local_date(block_start, tz)
 
     def get_config_period_for_date(self, date_iso: str) -> Optional[dict]:
         """
