@@ -840,9 +840,9 @@ window.EMTSpiral=(function(){
         <button class="bar-seg-btn"        onclick="barSetShow('brackets',this)">Rate brackets</button>
       </div>
       <span id="bar-br-wrap" style="display:none; align-items:center; gap:8px; font-size:12px; color:var(--muted);">
-        <select id="bar-br-series" onchange="barSetBrSeries(this.value)" aria-label="Whose import"
+        <select id="bar-br-series" onchange="barSetBrSeries(this.value)" aria-label="Whose import, or the export"
                 style="font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;"></select>
-        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;" title="Each bracket's share of the bar">
+        <label style="display:flex; align-items:center; gap:6px; cursor:pointer;" title="Each bracket's share of the bar's kWh">
           <input type="checkbox" id="bar-br-pct" onchange="barSetBrPct(this.checked)" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
           %
         </label>
@@ -2109,11 +2109,12 @@ function barInitSplit() {
 
 // ── Rate brackets (BL-93, rate brackets design) ───────────────────────────────────────────────
 // Where grid import fell by the price it was charged: 2.5p brackets of the inc-VAT rate, for the
-// whole meter, the house or one device (`/api/energy?fields=brackets`). One rule for every tariff;
-// grid import only, so no export, standing charge, Net line or carbon in this view.
+// whole meter, the house or one device, or the export (`/api/energy?fields=brackets`). One rule for
+// every tariff; no standing charge, Net line or carbon in this view. A negative price (an Agile
+// plunge) has brackets below 0p, and its £ is a credit, below the axis.
 var barShow = 'devices';          // 'devices' | 'brackets'
-var barBrSeries = 'meter';        // 'meter' (the whole meter) | 'electricity_main' (the house) | a device id
-var barBrPct = false;             // each bracket's share of the bucket
+var barBrSeries = 'meter';        // 'meter' (the whole meter) | 'electricity_main' (the house) | a device id | 'export'
+var barBrPct = false;             // each bracket's share of the bucket's kWh
 var barBrWidth = 2.5;             // pence; the server's width_p
 var barBrDays = null;             // {YYYY-MM-DD: {series: {n: [kWh, £]}}}
 var barBrToken = null;            // the data version barBrDays was read at
@@ -2179,14 +2180,16 @@ function barBrPence(v) {
   return (v < 0 ? '−' : '') + t.replace('-', '');
 }
 
+// "5–7.5p"; below zero "−5 to −2.5p", which a dash between two minus signs would not read as
 function barBrLabel(n) {
-  return barBrPence(n * barBrWidth) + '–' + barBrPence((n + 1) * barBrWidth) + 'p';
+  return barBrPence(n * barBrWidth) + (n < 0 ? ' to ' : '–') + barBrPence((n + 1) * barBrWidth) + 'p';
 }
 
 // Cheap to dear, green through amber to red by price across the brackets in view (`ns`), and
 // neighbours alternately lighter and darker so they can be told apart: on one 0-40p scale 5-7.5p and
 // 7.5-10p were the same green, and spread by position a 22.5p bracket read as cheap. The colour
-// carries the order; the legend and hover name the bracket. A negative price is blue.
+// carries the order; the legend and hover name the bracket. A negative price is blue. On export
+// the ramp runs the other way: the best-paid bracket is green.
 function barBrColor(n, ns) {
   var dark = document.documentElement.getAttribute('data-theme') !== 'light';   // as barGetTheme
   var i = ns.indexOf(n), alt = i % 2 ? (dark ? 14 : 13) : 0;
@@ -2194,16 +2197,22 @@ function barBrColor(n, ns) {
   var pos = ns.filter(function(x) { return x >= 0; });
   var lo = pos[0], hi = pos[pos.length - 1];
   var t = hi > lo ? (n - lo) / (hi - lo) : 0;
+  if (barBrSign() < 0) t = 1 - t;       // on export a higher price is the better one: green
   return 'hsl(' + Math.round(130 * (1 - t)) + ', ' + (dark ? 62 : 68) + '%, ' + ((dark ? 48 : 40) + alt) + '%)';
 }
 
 function barBrVal(v) { return barMetric === 'cost' ? v[1] : v[0]; }
 
+// Export is drawn below the axis, as on the Devices view
+function barBrSign() { return barBrSeries === 'export' ? -1 : 1; }
+
 function barBrDatasets(aggList) {
-  var ns = barBrNs(aggList);
-  var totals = aggList.map(function(agg) {
+  var ns = barBrNs(aggList), sg = barBrSign();
+  // % is each bracket's share of the bar's kWh, in kWh and Cost alike: a plunge's credit takes
+  // from a bar's £, so a share of £ could pass 100% beside it, and below 0 means nothing
+  var kwh = aggList.map(function(agg) {
     var b = barBrOf(agg);
-    return Object.keys(b).reduce(function(s, n) { return s + barBrVal(b[n]); }, 0);
+    return Object.keys(b).reduce(function(s, n) { return s + b[n][0]; }, 0);
   });
   return ns.map(function(n) {
     return {
@@ -2211,9 +2220,8 @@ function barBrDatasets(aggList) {
       data: aggList.map(function(agg, i) {
         var v = barBrOf(agg)[n];
         if (!v) return 0;
-        var x = barBrVal(v);
-        if (barBrPct) return totals[i] > 0 ? Math.round(x / totals[i] * 10000) / 100 : 0;
-        return Math.round(x * 1000) / 1000;
+        if (barBrPct) return kwh[i] > 0 ? sg * Math.round(v[0] / kwh[i] * 10000) / 100 : 0;
+        return sg * Math.round(barBrVal(v) * 1000) / 1000;
       }),
       backgroundColor: barBrColor(n, ns), borderRadius: 0, stack: 'main'
     };
@@ -2232,6 +2240,7 @@ function barBrSeriesList() {
     out.push({ id: 'electricity_main', label: (main ? main.label : 'Direct') + ' (house)' });
   }
   devs.forEach(function(m) { out.push({ id: m.id, label: m.label }); });
+  if (have.export) out.push({ id: 'export', label: 'Export' });
   return out;
 }
 
@@ -2277,9 +2286,11 @@ function barBrNote(aggList) {
   if (barBrError) { el.textContent = "Couldn't read the rate brackets: " + barBrError; el.style.display = ''; return; }
   var mine = barBrAvg(barBrSum(aggList, barBrSeries));
   var all = barBrAvg(barBrSum(aggList, 'meter'));
-  var txt = mine == null ? 'No grid import in this range.'
+  var ex = barBrSeries === 'export';
+  var txt = mine == null ? (ex ? 'No export in this range.' : 'No grid import in this range.')
+    : ex ? 'Export earned ' + mine.toFixed(1) + 'p/kWh on average'
     : barBrSeriesLabel(barBrSeries) + ' paid ' + mine.toFixed(1) + 'p/kWh on average';
-  if (mine != null && barBrSeries !== 'meter' && all != null) txt += ', the whole meter ' + all.toFixed(1) + 'p/kWh';
+  if (mine != null && !ex && barBrSeries !== 'meter' && all != null) txt += ', the whole meter ' + all.toFixed(1) + 'p/kWh';
   el.textContent = txt + '.';
   el.style.display = '';
 }
@@ -2292,7 +2303,9 @@ function barBrBuildTable(tbl, aggList) {
   function money(v) { var a = Math.abs(v).toFixed(2); return (v < 0 && Number(a) !== 0 ? '-' : '') + barCurrency + a; }
   function avg(k, c) { return k > 0 ? (c / k * 100).toFixed(2) + 'p' : '—'; }
   function share(k) { return tk > 0 ? (k / tk * 100).toFixed(1) + '%' : '—'; }
-  var html = '<thead><tr><th>Rate bracket</th><th>kWh</th><th>Cost</th><th>Avg p/kWh</th><th>Share of kWh</th></tr>';
+  var ex = barBrSeries === 'export';
+  var html = '<thead><tr><th>Rate bracket</th><th>kWh</th><th>' + (ex ? 'Credit' : 'Cost')
+    + '</th><th>Avg p/kWh</th><th>Share of kWh</th></tr>';
   html += '<tr class="totals-row"><td style="font-weight:600;">Totals</td><td>' + tk.toFixed(3) + ' kWh</td><td>'
     + money(tc) + '</td><td>' + avg(tk, tc) + '</td><td>' + (tk > 0 ? '100.0%' : '—') + '</td></tr></thead><tbody>';
   ns.forEach(function(n) {
@@ -2301,7 +2314,8 @@ function barBrBuildTable(tbl, aggList) {
       + barBrLabel(n) + '</td><td>' + v[0].toFixed(3) + ' kWh</td><td>' + money(v[1]) + '</td><td>'
       + avg(v[0], v[1]) + '</td><td>' + share(v[0]) + '</td></tr>';
   });
-  if (!ns.length) html += '<tr><td colspan="5" style="color:var(--muted);">No grid import in this range.</td></tr>';
+  if (!ns.length) html += '<tr><td colspan="5" style="color:var(--muted);">' + (ex ? 'No export' : 'No grid import')
+    + ' in this range.</td></tr>';
   tbl.innerHTML = html + '</tbody>';
 }
 
@@ -2773,6 +2787,7 @@ function barRender() {
             var v = c.raw;
             if (barBrackets()) {
               if (!v) return null;
+              v *= barBrSign();                       // export is drawn below the axis; its figures are not negative
               return ' ' + c.dataset.label + ': ' + (barBrPct ? v.toFixed(1) + '%' : barFmt(v));
             }
             if (barMetric === 'co2') return ' ' + c.dataset.label + ': ' + barCo2Fmt(v);
@@ -2828,9 +2843,9 @@ function barRender() {
              afterDataLimits: tariffLanes && !axes ? function(sc) { barTariffHeadroom(sc, tariffLanes); } : undefined,
              ticks: Object.assign({ font:{size:11}, color:barGetTheme().axisC, callback: barYLabel, maxTicksLimit: 8 },
                                   axes ? { stepSize: axes.y.step } : {},
-                                  barBrackets() && barBrPct ? { callback: function(v) { return v + '%'; } } : {}),
+                                  barBrackets() && barBrPct ? { callback: function(v) { return Math.abs(v) + '%'; } } : {}),
              grace: '2%' }, axes ? { min: axes.y.min, max: axes.y.max, grace: 0 } : {},
-             barBrackets() && barBrPct ? { min: 0, max: 100, grace: 0 } : {}),
+             barBrackets() && barBrPct ? (barBrSign() < 0 ? { min: -100, max: 0, grace: 0 } : { min: 0, max: 100, grace: 0 }) : {}),
         yNet: Object.assign({ display: netAxis, position: 'right', stacked: false,
              grid: { display: false },
              title: { display: netAxis, text: 'Running total', color: barGetTheme().axisC, font: {size:11} },
