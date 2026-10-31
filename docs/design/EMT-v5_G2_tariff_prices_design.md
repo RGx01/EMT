@@ -1,6 +1,6 @@
 # EMT v5 — G2: tariff prices, stored for display
 
-*Draft, 31 Oct 2026; display only, and the timeline's minor ticks, decided the same day (§8). The second half of ROADMAP §G, re-scoped. G2 as first proposed — a store of
+*Decided, 31 Oct 2026 (§8): display only; the timeline's minor ticks; the hover's prices at the hovered date; the families plus the guard. The second half of ROADMAP §G, re-scoped. G2 as first proposed — a store of
 Octopus's published rate records that pricing reads, with a diff that re-prices — was dropped on
 28 Oct 2026 (#326). The user brought it back on 31 Oct 2026, narrower: the tariff's standing charge
 and unit rates, for the Usage Stats tariff overlay's hover (#353, #354), **Agile's unit rates left
@@ -196,17 +196,14 @@ On Monthly several changes can fall in one bar. They are drawn at their dates, a
 | G2b | the one-off fetches: closed agreements' standing charges and export rates, capped and paced |
 | G2c | the route's price periods (VAT from the calendar); the hover's prices at the hovered date; the minor ticks at each price change |
 
-## 8. Decided, and to decide
+## 8. Decided
 
 **Decided** (the user, 31 Oct 2026):
 
 - **Display only.** The restart fallback (§6) is not part of G2.
 - **The timeline:** a minor tick at each standing-charge and unit-rate change; on Agile, standing
   charges only, since no Agile rates are stored (§5).
-
-**To decide:**
-
-1. **The hover:** the prices at the hovered date (as here), or every price period in the
-   agreement? The minor ticks show where each period starts, which suits the first.
-2. **The `dynamic` rule:** the AGILE / SILVER / TRACKER families plus the 50-period guard, or the
-   guard alone?
+- **The hover:** the prices in force at the hovered date (§5). The minor ticks show where each price
+  period starts.
+- **The `dynamic` rule:** the AGILE, SILVER and TRACKER families, plus the 50-period guard for a
+  dynamic product not on the list (§3).
