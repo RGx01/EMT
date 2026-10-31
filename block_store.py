@@ -306,6 +306,25 @@ CREATE TABLE IF NOT EXISTS tariff_agreements (
 CREATE INDEX IF NOT EXISTS idx_tariff_agreements_current
     ON tariff_agreements (account, superseded_at);
 
+-- Each agreement's prices as dated price periods (G2 design, 31 Oct 2026), for the Usage Stats tariff
+-- overlay only: no pricing path reads them. Pence, ex-VAT as published; inc VAT is made at read time
+-- from the VAT calendar. Replaced per (tariff, agreement start, kind) when a fetch gives a different
+-- summary; no history. band '' (flat) | 'off_peak' | 'peak' | 'dynamic' (half-hourly: no value);
+-- window 'HH:MM-HH:MM' local for a windowed band. Naive-UTC times; valid_to NULL is open.
+CREATE TABLE IF NOT EXISTS tariff_prices (
+    tariff_code     TEXT    NOT NULL,
+    agreement_from  TEXT    NOT NULL,
+    kind            TEXT    NOT NULL,
+    band            TEXT    NOT NULL DEFAULT '',
+    window          TEXT,
+    value_exc       REAL,
+    valid_from      TEXT    NOT NULL,
+    valid_to        TEXT,
+    fetched_at      TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tariff_prices_agreement
+    ON tariff_prices (tariff_code, agreement_from, kind);
+
 CREATE INDEX IF NOT EXISTS idx_blocks_start     ON blocks (block_start);
 
 CREATE INDEX IF NOT EXISTS idx_blocks_meter     ON blocks (meter_id);
@@ -3917,6 +3936,30 @@ class BlockStore:
                      r["valid_from"], r.get("valid_to"), fetched_at))
                 out["added"].append(k[1:])
         return out
+
+    def replace_tariff_prices(self, tariff_code: str, agreement_from: str, kind: str, rows,
+                              fetched_at: str) -> bool:
+        """An agreement's price periods of one kind ('standing' | 'unit') replaced in one transaction
+        — only when they differ from what is stored, so an unchanged refresh writes nothing (G2
+        design §3). `rows`: tariff_prices.summarise's. True when it wrote."""
+        key = lambda r: (r["band"] or "", r.get("window"), None if r.get("value_exc") is None
+                         else round(float(r["value_exc"]), 9), r["valid_from"], r.get("valid_to"))
+        new = sorted(key(r) for r in rows or [])
+        cur = sorted(key(dict(r)) for r in self._conn.execute(
+            "SELECT band, window, value_exc, valid_from, valid_to FROM tariff_prices "
+            "WHERE tariff_code = ? AND agreement_from = ? AND kind = ?",
+            (tariff_code, agreement_from, kind)))
+        if new == cur:
+            return False
+        with self._conn:
+            self._conn.execute("DELETE FROM tariff_prices WHERE tariff_code = ? AND agreement_from = ? "
+                               "AND kind = ?", (tariff_code, agreement_from, kind))
+            self._conn.executemany(
+                "INSERT INTO tariff_prices (tariff_code, agreement_from, kind, band, window, value_exc, "
+                "valid_from, valid_to, fetched_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                [(tariff_code, agreement_from, kind, b, w, v, vf, vt, fetched_at)
+                 for b, w, v, vf, vt in new])
+        return True
 
     def vat_rate_lookup(self):
         """`vat_rate_at` as a function of the date, with the calendar read once — for a

@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v31 — revised 31 Oct 2026, an imported block's standing charge is its local day's (v30: the import reports devices that cost more than the meter; v29: the agreements table left empty by the import (G1); v28: v4's live rate from its sensor era kept as a fact, transform 3d; v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v32 — revised 31 Oct 2026, the tariff prices table is v5's and the import leaves it empty (v31: an imported block's standing charge is its local day's; v30: the import reports devices that cost more than the meter; v29: the agreements table left empty by the import (G1); v28: v4's live rate from its sensor era kept as a fact, transform 3d; v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -159,6 +159,10 @@ rate, and before v4 recorded dispatches the prediction can only be the clock, so
 no bill a smart charge outside the night window read peak. The importer keeps each such half-hour's
 stored rate in `sensor_rates`, the era dated by each database's own go-live stamp, and v5 bands by it
 below a bill (see SENSOR RATES, below). No bill is written; the asker still asks Octopus.*
+
+*Changes in v32 (31 Oct 2026): **`tariff_prices` is v5's, and the import leaves it empty** (G2 tariff
+prices design §3). v4 has no such table. It fills on the first rate refresh after discovery has stored
+the agreements, and it is display only, so nothing the import settles waits for it.*
 
 *Changes in v31 (31 Oct 2026): **an imported block's standing charge is its local day's** (transform 3e,
 gate `standing_by_day`; E design §4a). v4's API and CSV imports filed the charge by UTC date: in summer a

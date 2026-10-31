@@ -445,7 +445,8 @@ def _clip_periods(periods, ag_vf, ag_vt):
     return out
 
 
-async def agreement_schedules(client, agreements, *, kind: str = "rate", product_of=None) -> list:
+async def agreement_schedules(client, agreements, *, kind: str = "rate", product_of=None,
+                              on_built=None) -> list:
     """Each agreement's schedule AS PUBLISHED (no VAT applied), in agreement order — the one place
     an agreement's rates are fetched (engine step 5c, 27 Oct 2026: the API import fetched every
     agreement again for itself). [(valid_from, valid_to, RateSchedule)], naive UTC, None where open.
@@ -457,7 +458,9 @@ async def agreement_schedules(client, agreements, *, kind: str = "rate", product
     IOG-SMB's synthesised windows reach only now + 2 days). A degenerate window (from >= to) is
     skipped — the REST API rejects it with HTTP 400, and it can price nothing. An agreement whose
     fetch fails or comes back empty is left out. `product_of(tariff_code)`: the product code;
-    the client's own lookup by default."""
+    the client's own lookup by default. `on_built(tariff_code, valid_from_raw, kind, sched, valid_to_raw)`: told of
+    each schedule fetched this call (not a cached one) — G2's price periods are summarised from it;
+    its failure is logged and never stops the fetch."""
     if not agreements:
         return []
     ttp = product_of or getattr(client, "_tariff_to_product_code", None)
@@ -502,18 +505,23 @@ async def agreement_schedules(client, agreements, *, kind: str = "rate", product
                 continue
             if not is_open and not sched.is_empty():
                 _AGREEMENT_SCHED_CACHE[ckey] = sched
+            if on_built is not None and not sched.is_empty():
+                try:
+                    on_built(tc, vf_raw, kind, sched, vt_raw)
+                except Exception as e:
+                    logger.warning("agreement_schedules: %s %s prices not kept (%s)", kind, tc, e)
         if not sched.is_empty():
             out.append((ag_vf, ag_vt, sched))
     return out
 
 
-async def build_agreement_stitched_schedule(client, agreements, *, vat) -> "RateSchedule":
+async def build_agreement_stitched_schedule(client, agreements, *, vat, on_built=None) -> "RateSchedule":
     """Stitch a single import RateSchedule across ALL agreements so resolve(ts)
     prices ts on the tariff that applied then: each agreement's rates
     (agreement_schedules — closed ones cached by (tariff, from, to)) clipped to its window.
     On total failure returns an empty schedule (caller keeps its last-known). Each agreement is
     built (and cached) as published; `vat` is applied once, to the stitch."""
-    segs = await agreement_schedules(client, agreements, kind="rate")
+    segs = await agreement_schedules(client, agreements, kind="rate", on_built=on_built)
     inc, exc = [], []
     for ag_vf, ag_vt, ag_sched in segs:
         inc.extend(_clip_periods(ag_sched._periods, ag_vf, ag_vt))
