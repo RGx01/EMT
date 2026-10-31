@@ -6159,7 +6159,8 @@ def api_battery_sensor_confirm():
 @app.route("/api/tariff-agreements", methods=["GET"])
 def api_tariff_agreements():
     """The account's stored agreements, for Usage Stats' tariff overlay: {agreements: [{direction,
-    tariff_code, name, from, to}]}, import first, oldest first. `from` / `to` are local dates (the
+    tariff_code, name, from, to, prices}]}, import first, oldest first; `prices` the agreement's price
+    periods (G2c: tariff_prices.for_display — kind, band, window, from, to, exc, inc). `from` / `to` are local dates (the
     config period's timezone; `to` null for the open one). An agreement that ends where it starts is
     left out — Octopus lists such blips. No MPAN or account: the page needs neither. Read-only, from
     the store (no Octopus call); empty with no account or none stored."""
@@ -6176,9 +6177,18 @@ def api_tariff_agreements():
         def _local(iso):
             return (_dt.fromisoformat(iso).replace(tzinfo=_tz.utc).astimezone(zone).date().isoformat()
                     if iso else None)
+        # G2c: each agreement's price periods (tariff prices design §5), inc VAT from EMT's calendar
+        import tariff_prices as _tp
+        import vat_calendar as _vc
+        vat_dates = _vc._merged(store.get_vat_calendar())
+        prices = {}
+        for p in store.get_tariff_prices():
+            prices.setdefault((p["tariff_code"], p["agreement_from"]), []).append(p)
         out = [{"direction": r["direction"], "tariff_code": r["tariff_code"],
                 "name": _tn.tariff_name(r["tariff_code"]),
-                "from": _local(r["valid_from"]), "to": _local(r["valid_to"])}
+                "from": _local(r["valid_from"]), "to": _local(r["valid_to"]),
+                "prices": _tp.for_display(prices.get((r["tariff_code"], r["valid_from"][:19]), []),
+                                          vat_dates=vat_dates, tz_name=tz)}
                for r in rows if r["valid_to"] is None or r["valid_to"] > r["valid_from"]]
         return jsonify({"agreements": out})
     except Exception as e:

@@ -1852,6 +1852,19 @@ function barTariffPlugin(ranges, lanes) {
         drawn.push(t);
         c.beginPath(); c.moveTo(t.x, t.y0 - 3); c.lineTo(t.x, t.y1 + 3); c.stroke();
       });
+      // G2c: a minor tick — shorter, lighter — at each price change inside an agreement (a standing
+      // charge or a unit rate; Agile's standing charges only, as its rates are not kept). One that
+      // falls on an agreement tick, or on another minor one, is drawn once.
+      c.globalAlpha = 0.55; c.lineWidth = 1;
+      segs.forEach(function(sg) {
+        barTariffPriceStarts(sg.a).forEach(function(iso) {
+          var x = barTariffX(chart, ranges, iso);
+          if (x <= sg.x0 + 1 || x >= sg.x1 - 1) return;
+          if (drawn.some(function(d) { return d.y0 === sg.y0 && Math.abs(d.x - x) < 2; })) return;
+          drawn.push({ x: x, y0: sg.y0 });
+          c.beginPath(); c.moveTo(x, sg.y0 + 3); c.lineTo(x, sg.y1 - 3); c.stroke();
+        });
+      });
       c.restore();
     },
     beforeEvent: function(chart, args) {
@@ -1861,10 +1874,57 @@ function barTariffPlugin(ranges, lanes) {
       var hit = segs.find(function(sg) { return e.x >= sg.x0 && e.x < sg.x1 && e.y >= sg.y0 - 3 && e.y <= sg.y1 + 3; });
       if (!hit) { barTariffHide(); return; }
       if (chart.tooltip) chart.tooltip.setActiveElements([], { x: e.x, y: e.y });
-      barTariffShow(hit.a, e.native);
+      barTariffShow(hit.a, e.native, barTariffDateAt(chart, ranges, e.x));
       return false;                    // the band's own hover, not the bars' under it
     }
   };
+}
+
+// The dates an agreement's prices change on, inside it: the minor ticks
+function barTariffPriceStarts(a) {
+  var seen = {};
+  (a.prices || []).forEach(function(p) { if (p.from > a.from) seen[p.from] = true; });
+  return Object.keys(seen).sort();
+}
+
+// The date under x on the bars, the inverse of barTariffX: across a bar's slot by its dates
+function barTariffDateAt(chart, ranges, x) {
+  var xs = chart.scales.x, n = ranges.length;
+  var w = n > 1 ? xs.getPixelForValue(1) - xs.getPixelForValue(0) : xs.right - xs.left;
+  var i = Math.max(0, Math.min(n - 1, Math.floor((x - (xs.getPixelForValue(0) - w / 2)) / w)));
+  var f = Math.max(0, Math.min(0.999, (x - (xs.getPixelForValue(i) - w / 2)) / w));
+  var a = barDayNo(ranges[i].from), b = barDayNo(ranges[i].to);
+  return new Date((a + Math.floor(f * (b - a))) * 864e5).toISOString().slice(0, 10);
+}
+
+// The prices in force on `iso` and the tick period they hold for: {from, to, rows}
+function barTariffPricesAt(a, iso) {
+  var starts = [a.from].concat(barTariffPriceStarts(a));
+  var from = starts.filter(function(d) { return d <= iso; }).pop() || a.from;
+  var next = starts.filter(function(d) { return d > iso; })[0] || a.to;
+  var rows = (a.prices || []).filter(function(p) { return p.from <= from && (!p.to || p.to > from); });
+  return { from: from, to: next, rows: rows };
+}
+
+function barTariffPriceLines(a, rows) {
+  var p2 = function(v) { return (Math.round(v * 100) / 100).toFixed(2) + 'p'; };
+  var win = function(w) { return w ? ' (' + w.replace('-', '\u2013') + ')' : ''; };
+  var order = { off_peak: 0, peak: 1, '': 2, dynamic: 3 };
+  var units = rows.filter(function(p) { return p.kind === 'unit'; })
+                  .sort(function(x, y) { return (order[x.band] - order[y.band]) || String(x.window).localeCompare(String(y.window)); });
+  var lines = [];
+  var parts = units.map(function(p) {
+    if (p.band === 'dynamic') return 'Unit rates: half-hourly';
+    if (p.band === 'off_peak') return 'Off-peak ' + p2(p.inc) + '/kWh' + win(p.window);
+    if (p.band === 'peak') return 'Peak ' + p2(p.inc) + '/kWh';
+    if (p.window) return p.window.replace('-', '\u2013') + ' ' + p2(p.inc) + '/kWh';
+    return (a.direction === 'export' ? 'Export rate ' : 'Unit rate ') + p2(p.inc) + '/kWh';
+  });
+  if (parts.length) lines.push(parts.join(' \u00b7 '));
+  rows.filter(function(p) { return p.kind === 'standing'; }).forEach(function(p) {
+    lines.push('Standing charge ' + p2(p.inc) + '/day');
+  });
+  return lines;
 }
 
 function barFmtDate(iso) {
@@ -1884,7 +1944,7 @@ function barTariffWhen(a) {
   return barFmtDate(a.from) + ' \u2013 ' + barFmtDate(end) + ' \u00b7 ' + len;
 }
 
-function barTariffShow(a, ev) {
+function barTariffShow(a, ev, iso) {
   var tip = document.getElementById('bar-tariff-tip');
   if (!tip) {
     tip = document.createElement('div');
@@ -1904,6 +1964,20 @@ function barTariffShow(a, ev) {
   var when = document.createElement('div');
   when.textContent = barTariffWhen(a);
   tip.appendChild(head); tip.appendChild(code); tip.appendChild(when);
+  // G2c: the prices of the tick period under the pointer, inc VAT
+  if (iso && a.prices && a.prices.length) {
+    var at = barTariffPricesAt(a, iso < a.from ? a.from : iso);
+    var lines = barTariffPriceLines(a, at.rows);
+    if (lines.length) {
+      var span = document.createElement('div');
+      span.style.cssText = 'margin-top:4px;color:var(--muted);font-size:11px;';
+      var last = at.to ? new Date(Date.parse(at.to + 'T00:00:00Z') - 864e5).toISOString().slice(0, 10) : null;
+      span.textContent = 'Prices ' + barFmtDate(at.from) + (last ? ' \u2013 ' + barFmtDate(last) : ' onwards')
+        + ', inc VAT';
+      tip.appendChild(span);
+      lines.forEach(function(l) { var d = document.createElement('div'); d.textContent = l; tip.appendChild(d); });
+    }
+  }
   tip.style.display = 'block';
   var x = ev.clientX + 12, y = ev.clientY + 12, r = tip.getBoundingClientRect();
   if (x + r.width > window.innerWidth - 8) x = ev.clientX - r.width - 12;

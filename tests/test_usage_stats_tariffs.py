@@ -97,6 +97,12 @@ class TheRoute(unittest.TestCase):
             def get_tariff_agreements(_s, account):
                 asked.append(account)
                 return self.ROWS
+
+            def get_tariff_prices(_s):
+                return []
+
+            def get_vat_calendar(_s):
+                return []
         with mock.patch.object(eng, "get_db_account", lambda: "A-0000ABC7", create=True), \
              mock.patch.object(srv.store_access, "store", lambda: _Store()), \
              mock.patch.object(srv, "_period_block_minutes_tz", lambda st, f: (30, "Europe/London")):
@@ -107,7 +113,8 @@ class TheRoute(unittest.TestCase):
         d, _, asked = self._get()
         self.assertEqual(asked, ["A-0000ABC7"])
         self.assertEqual(d["agreements"][0], {"direction": "import", "tariff_code": "E-1R-GO-VAR-22-10-14-A",
-                                              "name": "Go", "from": "2023-09-21", "to": "2024-06-12"})
+                                              "name": "Go", "from": "2023-09-21", "to": "2024-06-12",
+                                              "prices": []})
         self.assertEqual(d["agreements"][-1]["to"], None)
 
     def test_a_blip_is_left_out(self):
@@ -161,7 +168,7 @@ class ThePage(unittest.TestCase):
 
     def test_the_bands_hover_in_place_of_the_bars(self):
         plug = _fn("barTariffPlugin")
-        self.assertIn("barTariffShow(hit.a, e.native);", plug)
+        self.assertIn("barTariffShow(hit.a, e.native, barTariffDateAt(chart, ranges, e.x));", plug)
         self.assertIn("return false;", plug)
 
     def test_the_hover_names_its_dates(self):

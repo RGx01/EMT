@@ -129,3 +129,42 @@ def counts(rows) -> dict:
         key = r["band"] or (r["window"] or "flat")
         out[key] = out.get(key, 0) + 1
     return out
+
+
+def _local_bounds(vf, vt, tz):
+    """A period's local dates, [from, to): `to` exclusive — a period ending at 23:30 local is in force
+    that day, one ending at midnight is not."""
+    a = _local(vf, tz).date()
+    if vt is None:
+        return a.isoformat(), None
+    b = _local(vt, tz)
+    end = b.date() if (b.hour, b.minute) == (0, 0) else b.date() + timedelta(days=1)
+    return a.isoformat(), end.isoformat()
+
+
+def for_display(rows, *, vat_dates, tz_name: str = "Europe/London") -> list:
+    """Stored price periods (one agreement's) as the overlay shows them: [{kind, band, window, from,
+    to, exc, inc}], local dates with `to` exclusive (None open), inc VAT from EMT's calendar
+    (`vat_dates`: vat_calendar's merged [(YYYY-MM-DD, rate)]). A period across a VAT change is shown
+    as two, so the change has its tick; `dynamic` carries no value."""
+    import bisect
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(tz_name)
+    days = [d for d, _r in vat_dates]
+    rates = [r for _d, r in vat_dates]
+
+    def rate_on(day):
+        i = bisect.bisect_right(days, day)
+        return rates[i - 1] if i else 0.05
+
+    out = []
+    for r in rows:
+        f, t = _local_bounds(r["valid_from"], r.get("valid_to"), tz)
+        cuts = [f] + [d for d in days if f < d and (t is None or d < t)] + [t]
+        for a, b in zip(cuts, cuts[1:]):
+            exc = r.get("value_exc")
+            out.append({"kind": r["kind"], "band": r["band"], "window": r.get("window"),
+                        "from": a, "to": b, "exc": exc,
+                        "inc": None if exc is None else round(exc * (1 + rate_on(a)), 4)})
+    out.sort(key=lambda p: (p["from"], p["kind"], p["band"]))
+    return out
