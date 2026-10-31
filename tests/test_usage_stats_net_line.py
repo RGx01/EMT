@@ -33,7 +33,10 @@ Cancel, outside click and Escape leave the day, Go loads the new one, Today goes
 Then (31 Oct 2026, a fourth change): HH's table Total in cost is the half-hours' unrounded nets,
 summed and then rounded; the hover drops the half-hour's Net; the checkbox reads "Running total" on
 HH. Checked in the preview, staging copy, on 20, 26 and 28 Oct with and without the standing
-charge: the table's Total, the Running total's last point and the Daily view's net agree.
+charge: the table's Total, the Running total's last point and the Daily view's net agree. And in
+cost a day or longer's Net line and hover are the bill's net (per-day rounded, summed), as the table
+and the Billing tab: every point, hover and table row agreed in Daily, Monthly and Yearly, with and
+without the standing charge.
 
 Checked in the local preview on 31 Oct 2026, on a scratch copy of staging, on 28 Oct: the HH line's
 last point equals the Daily view's net for the day in cost (with the standing charge) and CO₂, and to
@@ -188,6 +191,21 @@ class TheHalfHourTable(unittest.TestCase):
 
     def test_a_value_shown_as_zero_has_no_sign(self):
         self.assertIn("return (v < 0 && Number(shown) !== 0 ? '-' : '') + sym + shown + unit;", _fn("barFmt"))
+
+
+class TheBillsNet(unittest.TestCase):
+    """In cost, a day or longer's Net line and hover are the bill's net: each day rounded to the penny,
+    then summed (billing.bill_net_from_day_rollups), as the table, the Billing tab, Insights and the
+    spiral say it. Summing the unrounded pounds put the line a penny or so off them (staging, the
+    period from 3 Oct: £9.16 on the line, £9.15 everywhere else)."""
+
+    def test_the_line_is_the_bills_net(self):
+        raw = _fn("barNetRaw")
+        self.assertIn("if (barMetric === 'cost' && barPeriod !== 'hh' && agg.net_cost != null)", raw)
+        self.assertIn("return Math.round((agg.net_cost - (barIncStanding() ? 0 : (agg.standing || 0))) * 100) / 100;", raw)
+
+    def test_the_hover_says_the_lines_figure(self):
+        self.assertIn("var net = barNetVal(agg);", _fn("barRender"))
 
 
 class TheDayNavigator(unittest.TestCase):

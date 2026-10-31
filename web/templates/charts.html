@@ -1619,8 +1619,15 @@ function barNetVal(agg) {
   return barMetric === 'co2' ? Math.round(v * 100) / 100 : Math.round(v * 1000) / 1000;
 }
 
+// In cost, a day or longer is the bill's net: each day's rounded to the penny, then summed
+// (billing.bill_net_from_day_rollups), as the table, the Billing tab, Insights and the spiral say
+// it. Summing the unrounded pounds put the Net line a penny or so off them over a period. A
+// half-hour has no bill rule (its net_cost is rounded to the penny, and 48 of those overstate the
+// day), so HH stays unrounded and the day's sum rounds to the same penny.
 function barNetRaw(agg) {
   if (barMetric === 'co2') return agg.carbon_g_net != null ? agg.carbon_g_net : null;
+  if (barMetric === 'cost' && barPeriod !== 'hh' && agg.net_cost != null)   // to the penny, as the table
+    return Math.round((agg.net_cost - (barIncStanding() ? 0 : (agg.standing || 0))) * 100) / 100;
   var imp = barMetric === 'kwh' ? agg.imp_kwh : (agg.imp_cost + barStandingVal(agg));
   var exp = barMetric === 'kwh' ? agg.exp_kwh : agg.exp_cost;
   return imp - exp;
@@ -2128,7 +2135,7 @@ function barRender() {
             var unit = barMetric==='kwh' ? ' kWh' : '';
             var imp = barMetric === 'kwh' ? agg.imp_kwh : (agg.imp_cost + barStandingVal(agg));
             var exp = barMetric === 'kwh' ? agg.exp_kwh : agg.exp_cost;
-            var net = imp - exp;
+            var net = barNetVal(agg);           // the line's figure: the bill's net in cost
             var dp = barMetric === 'cost' ? 2 : 3;
             var netStr = (net < 0 ? '-' : '') + sym + Math.abs(net).toFixed(dp) + unit;
             var impStr = sym + imp.toFixed(dp) + unit;
