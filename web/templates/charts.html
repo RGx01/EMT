@@ -1601,20 +1601,69 @@ function barStandingVal(agg) {
 // Import minus export for one period: + the standing charge when it is shown; for CO₂ the net
 // carbon. The Net line draws it; the tooltip's footer and the table's Total say the same.
 function barNetVal(agg) {
-  if (barMetric === 'co2') {
-    var v = agg.carbon_g_net;
-    return v != null ? Math.round(v * 100) / 100 : null;
-  }
+  var v = barNetRaw(agg);
+  if (v == null) return null;
+  return barMetric === 'co2' ? Math.round(v * 100) / 100 : Math.round(v * 1000) / 1000;
+}
+
+function barNetRaw(agg) {
+  if (barMetric === 'co2') return agg.carbon_g_net != null ? agg.carbon_g_net : null;
   var imp = barMetric === 'kwh' ? agg.imp_kwh : (agg.imp_cost + barStandingVal(agg));
   var exp = barMetric === 'kwh' ? agg.exp_kwh : agg.exp_cost;
-  return Math.round((imp - exp) * 1000) / 1000;
+  return imp - exp;
+}
+
+// The Net line's points. In the HH view it is a running total, each point the day's net so far:
+// every half-hour from midnight to this one, so the last point is the day's net (the standing
+// charge, when shown, sits on the day's first slot and so counts from there). A CO₂ slot with no carbon adds
+// nothing; until one has, the point is empty. Elsewhere each period's own net. The sum is of the
+// unrounded half-hours, rounded as it is drawn: rounding each first drifts over 48.
+function barNetSeries(aggList, isHH) {
+  if (!isHH) return aggList.map(barNetVal);
+  var run = null, dp = barMetric === 'co2' ? 100 : 1000;
+  return aggList.map(function(agg) {
+    var v = barNetRaw(agg);
+    if (v != null) run = (run || 0) + v;
+    return run == null ? null : Math.round(run * dp) / dp;
+  });
+}
+
+function barNetLabel() {
+  return barPeriod === 'hh' ? 'Running total' : 'Net';
+}
+
+// The HH view's two axes, their zeros level: the bars' on the left, the running net's on the
+// right. Both take the larger share below zero of the two, so each still fits its data.
+function barAlignZero(datasets) {
+  var pos = 0, neg = 0, lmax = 0, lmin = 0, n = 0;
+  datasets.forEach(function(ds) { n = Math.max(n, ds.data.length); });
+  for (var i = 0; i < n; i++) {
+    var p = 0, q = 0;
+    datasets.forEach(function(ds) {
+      var v = ds.data[i];
+      if (v == null) return;
+      if (ds._net) { lmax = Math.max(lmax, v); lmin = Math.min(lmin, v); }
+      else if (v > 0) p += v; else q += v;
+    });
+    pos = Math.max(pos, p); neg = Math.min(neg, q);
+  }
+  function share(mx, mn) { return mx - mn > 0 ? -mn / (mx - mn) : 0; }
+  var f = Math.max(share(pos, neg), share(lmax, lmin));
+  function range(mx, mn) {
+    // grace 0: the 2% headroom is in the bounds, and grace would move one zero off the other's
+    if (f >= 1) return { min: mn * 1.02, max: 0, grace: 0 };
+    if (mx > 0) return { min: -f * mx / (1 - f) * 1.02, max: mx * 1.02, grace: 0 };
+    if (mn < 0) return { min: mn * 1.02, max: -mn * (1 - f) / f * 1.02, grace: 0 };
+    return {};
+  }
+  return { y: range(pos, neg), yNet: range(lmax, lmin) };
 }
 
 function barNetColor() {
   return barGetTheme().tooltipTitle;      // the chart's text colour: apart from every meter's
 }
 
-function barGetDatasets(labels, aggList) {
+function barGetDatasets(labels, aggList, isHH) {
   // Import meters stacked above axis, export below, all in same stack
   var datasets = [];
 
@@ -1676,8 +1725,9 @@ function barGetDatasets(labels, aggList) {
 
   if (barShowNet()) {
     datasets.push({
-      type: 'line', label: 'Net', _net: true,
-      data: aggList.map(barNetVal),
+      type: 'line', label: barNetLabel(), _net: true,
+      data: barNetSeries(aggList, isHH),
+      yAxisID: isHH ? 'yNet' : 'y',
       borderColor: barNetColor(), backgroundColor: barNetColor(),
       borderWidth: 2, pointRadius: 3, pointHoverRadius: 5, fill: false, tension: 0,
       stack: 'net',           // its own stack: the line is the net, not stacked on the bars
@@ -1980,7 +2030,9 @@ function barRender() {
   var pd = barGetDataForPeriod();
   // Set consistent CO2 unit for this render before building datasets or labels
   if (barMetric === 'co2') barCo2SetUnit(pd.aggList);
-  var datasets = barGetDatasets(pd.labels, pd.aggList);
+  var datasets = barGetDatasets(pd.labels, pd.aggList, pd.isHH);
+  var netAxis = !!pd.isHH && barShowNet();   // a boolean: Chart.js shows an axis whose display is undefined
+  var axes = netAxis ? barAlignZero(datasets) : null;
   // Month order: shade each bar by its year (older lighter → newer darker) so
   // adjacent same-month bars from different years are distinguishable. No legend
   // is needed — the x-axis already carries the month and year.
@@ -2020,7 +2072,9 @@ function barRender() {
             if (!agg) return '';
             if (barMetric === 'co2') {
               var net = agg.carbon_g_net; var tot = agg.carbon_g_total;
-              return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nNet: ' + barCo2Fmt(net) + '  Total: ' + barCo2Fmt(tot);
+              var co2SoFar = barPeriod === 'hh'
+                ? '\nRunning total: ' + barCo2Fmt(barNetSeries(barGetDataForPeriod().aggList, true)[idx]) : '';
+              return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nNet: ' + barCo2Fmt(net) + '  Total: ' + barCo2Fmt(tot) + co2SoFar;
             }
             var sym = barMetric==='cost' ? barCurrency : '';
             var unit = barMetric==='kwh' ? ' kWh' : '';
@@ -2031,15 +2085,25 @@ function barRender() {
             var netStr = (net < 0 ? '-' : '') + sym + Math.abs(net).toFixed(dp) + unit;
             var impStr = sym + imp.toFixed(dp) + unit;
             var expStr = sym + exp.toFixed(dp) + unit;
-            return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nImport: ' + impStr + '  Export: ' + expStr + '\nNet: ' + netStr;
+            var soFar = '';
+            if (barPeriod === 'hh') {
+              var run = barNetSeries(barGetDataForPeriod().aggList, true)[idx] || 0;
+              soFar = '\nRunning total: ' + (run < 0 ? '-' : '') + sym + Math.abs(run).toFixed(dp) + unit;
+            }
+            return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nImport: ' + impStr + '  Export: ' + expStr + '\nNet: ' + netStr + soFar;
           }
         }}
       },
       scales: {
         x: { stacked: true, grid: { display: false }, ticks: { font:{size:11}, color:barGetTheme().axisC, autoSkip: true, maxRotation: 45 } },
-        y: { stacked: true, grid: { color:barGetTheme().gridC },
+        y: Object.assign({ stacked: true, grid: { color:barGetTheme().gridC },
              ticks: { font:{size:11}, color:barGetTheme().axisC, callback: barYLabel, maxTicksLimit: 8 },
-             grace: '2%' }
+             grace: '2%' }, axes ? axes.y : {}),
+        yNet: Object.assign({ display: netAxis, position: 'right', stacked: false,
+             grid: { display: false },
+             title: { display: netAxis, text: 'Running total', color: barGetTheme().axisC, font: {size:11} },
+             ticks: { font:{size:11}, color:barGetTheme().axisC, callback: barYLabel, maxTicksLimit: 8 } },
+             axes ? axes.yNet : {})
       }
     }
   });
@@ -2058,7 +2122,7 @@ function barBuildLegend() {
     return '<span style="display:flex;align-items:center;gap:5px;"><span style="display:inline-block;width:16px;height:2px;' +
       'background:' + color + ';"></span>' + label + '</span>';
   }
-  var net = barShowNet() ? line(barNetColor(), 'Net') : '';
+  var net = barShowNet() ? line(barNetColor(), barNetLabel()) : '';
   if (barMetric === 'co2') {
     barMeters.forEach(function(m) { el.innerHTML += dot(m.color, m.label + ' carbon'); });
     el.innerHTML += dot(barExportColor, 'Export offset') + net;
@@ -2483,9 +2547,9 @@ function barBuildTable() {
   var labels  = pd.labels;
 
   // Build column headers
-  // Each meter's import, then — when there are devices — the whole import (the meter's figure, not
-  // a sum of the columns beside it: the Total is built from it, and a day whose devices are priced
-  // apart from the bill shows as such), standing charge, export. `inTotal: false`: the Import
+  // Each meter's import, the standing charge, then — when there are devices — the whole import (the
+  // meter's figure, not a sum of the columns beside it: the Total is built from it, and a day whose
+  // devices are priced apart from the bill shows as such), then export. `inTotal: false`: the Import
   // column is already in the row's Total through the meters' columns.
   var cols = []; // [{key, label}]
   var hasDevices = barMeters.some(function(m) { return m.is_sub; });
@@ -2496,8 +2560,8 @@ function barBuildTable() {
     cols.push({key:'avg_intensity', label:'Avg intensity'});
   } else {
     barMeters.forEach(function(m) { cols.push({key:'imp_'+m.id, label: m.label + ' import', mid: m.id, dir:'imp', color: m.color}); });
-    if (hasDevices) cols.push({key:'imp_total', label:'Import', inTotal: false});
     if (barMetric === 'cost' && barIncStanding()) cols.push({key:'standing', label:'Standing charge', color:'#4b5563'});
+    if (hasDevices) cols.push({key:'imp_total', label:'Import', inTotal: false});
     cols.push({key:'exp', label:'Export', dir:'exp', color: barExportColor});
   }
 
@@ -2737,8 +2801,17 @@ function barToggleTheme() {
     document.documentElement.setAttribute('data-theme', next);
     localStorage.setItem('emt_chart_theme', next);
   }
-  if (barInited && barData && window.Chart) barRender();
 }
+
+// Redraw Usage Stats when the theme flips, whichever control flipped it. The sidebar's toggle
+// (base.html applyTheme) tells only iframes, and this chart is drawn in the page, so its colours —
+// the Net line's, the axes', the tooltip's — stayed the old theme's until something else redrew it.
+new MutationObserver(function(muts) {
+  var flipped = muts.some(function(m) {
+    return m.oldValue !== document.documentElement.getAttribute('data-theme');
+  });
+  if (flipped && barInited && barData && window.Chart) barRender();
+}).observe(document.documentElement, { attributes: true, attributeFilter: ['data-theme'], attributeOldValue: true });
 
 function barSetActive(segId, el) { document.querySelectorAll('#'+segId+' .bar-seg-btn').forEach(b=>b.classList.remove('active')); el.classList.add('active'); }
 function barSetPeriod(v, el) { barPeriod = v; barSetActive('bar-period-seg', el); barSaveState(); barRender(); }
