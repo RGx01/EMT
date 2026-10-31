@@ -2188,16 +2188,19 @@ function barBrLabel(n) {
 // Cheap to dear, green through amber to red by price across the brackets in view (`ns`), and
 // neighbours alternately lighter and darker so they can be told apart: on one 0-40p scale 5-7.5p and
 // 7.5-10p were the same green, and spread by position a 22.5p bracket read as cheap. The colour
-// carries the order; the legend and hover name the bracket. A negative price is blue. On export
-// the ramp runs the other way: the best-paid bracket is green.
+// carries the order; the legend and hover name the bracket. Blue to purple is money in, green to red
+// money out: an import plunge is blue; export, earned, runs blue to purple, the best-paid bracket the
+// deepest purple; a negative export price, paid to export, is red.
 function barBrColor(n, ns) {
   var dark = document.documentElement.getAttribute('data-theme') !== 'light';   // as barGetTheme
   var i = ns.indexOf(n), alt = i % 2 ? (dark ? 14 : 13) : 0;
-  if (n < 0) return 'hsl(215, 70%, ' + ((dark ? 50 : 40) + alt) + '%)';
+  var ex = barBrSign() < 0;
+  if (n < 0) return ex ? 'hsl(0, ' + (dark ? 62 : 68) + '%, ' + ((dark ? 48 : 40) + alt) + '%)'
+                       : 'hsl(215, 70%, ' + ((dark ? 50 : 40) + alt) + '%)';
   var pos = ns.filter(function(x) { return x >= 0; });
   var lo = pos[0], hi = pos[pos.length - 1];
   var t = hi > lo ? (n - lo) / (hi - lo) : 0;
-  if (barBrSign() < 0) t = 1 - t;       // on export a higher price is the better one: green
+  if (ex) return 'hsl(' + Math.round(205 + 70 * t) + ', 62%, ' + ((dark ? 54 : 46) + alt - 8 * t) + '%)';
   return 'hsl(' + Math.round(130 * (1 - t)) + ', ' + (dark ? 62 : 68) + '%, ' + ((dark ? 48 : 40) + alt) + '%)';
 }
 

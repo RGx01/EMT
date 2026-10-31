@@ -93,8 +93,11 @@ resizable table.
 - **The chart:** a stacked bar per bucket, one segment per bracket. kWh or £ follows the metric
   switch, and a **%** option shows each bracket's share of the bucket's **kWh**, in Cost too: a
   plunge's credit takes from a bar's £, so a share of £ could pass 100% beside it. Export is drawn
-  below the axis, as on the Devices view, its figures positive in the hover and table (Credit), and
-  its colour ramp reversed, the best-paid bracket green. A negative bracket is named "−5 to −2.5p".
+  below the axis, as on the Devices view, its figures positive in the hover and table (Credit). A
+  negative bracket is named "−5 to −2.5p". *Colour by direction of money (the user, 31 Oct 2026):*
+  green to red is money out, blue to purple money in. Import runs green to red, a plunge blue;
+  export runs blue to purple, the best-paid bracket the deepest purple, and a negative export price
+  (paid to export) is red.
   Brackets are coloured green
   through amber to red by price across the brackets in view, and neighbours alternately lighter and
   darker; a negative price is blue. *As built:* a fixed 0–40p scale made 5–7.5p and 7.5–10p the same
@@ -136,7 +139,7 @@ resizable table.
 |---|---|
 | 1 | **built (PR 1):** `usage_view.day_brackets` / `slot_brackets` — two reads (the main's import slices, the devices' grid kWh, rate and £) over the range, bracketed per half-hour, the house and its clip, summed per local day or half-hour as `{series: {n: [kWh, £]}}` at 4 dp; the page sums days into its buckets and the range, as it does the stats. `/api/energy?fields=brackets` at `day` or `block`, asked for on its own, so the stats payload is unchanged. On the staging copy, all history: 0.37 s, and house + devices equals the meter in kWh and £ |
 | 2 | **built (PR 2):** the Show switch, the series picker, the stacked chart, the % option, the table and the average line in `charts.html`; the day's brackets summed into each bucket in `barAggRows`, as the meters are, so Monthly, Daily, Yearly and Billing / Calendar need nothing of their own |
-| 3 | **built:** export as a series (§3a), drawn below the axis with its ramp reversed; % of kWh; a plunge's sign pinned by a test; a 0p rate read as a rate |
+| 3 | **built:** export as a series (§3a), drawn below the axis, blue to purple and red below 0p (§5); % of kWh; a plunge's sign pinned by a test; a 0p rate read as a rate |
 
 Tests:
 - a rate on a bracket edge lands in the upper bracket;
