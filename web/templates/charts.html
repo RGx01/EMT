@@ -841,6 +841,11 @@ window.EMTSpiral=(function(){
         <input type="checkbox" id="bar-net-cb" onchange="barSaveState(); barRender();" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
         <span id="bar-net-text">Net</span>
       </label>
+      <label id="bar-tariff-wrap" style="display:none; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer;"
+             title="The account's tariffs along the bars: import above the axis, export below; hover one for its details">
+        <input type="checkbox" id="bar-tariff-cb" onchange="barSaveState(); barRender();" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
+        Tariffs
+      </label>
     </div>
     <div class="bar-toolbar-right">
       <button class="bar-seg-btn" id="bar-sort-btn" onclick="barToggleSort()" style="font-size:11px;">↑ Oldest first</button>
@@ -1452,6 +1457,7 @@ function barSaveState() {
       bKey:     typeof barDailyMonth === 'string' ? barDailyMonth : (barDailyMonth ? (barDailyMonth.year + '-' + String(barDailyMonth.month).padStart(2,'0') + '-01') : null),
       years:    barActiveYears ? [...barActiveYears] : [],
       standing: cb ? cb.checked : false,
+      tariffs:  !!(document.getElementById('bar-tariff-cb') || {}).checked,
     }));
   } catch(e) {}
 }
@@ -1485,6 +1491,8 @@ function barLoadState(availableYears) {
     // The Net line; a state saved under the old Net view (st.view === 'net') turns it on
     var nc = document.getElementById('bar-net-cb');
     if (nc) nc.checked = st.net === true || (st.net === undefined && st.view === 'net');
+    var tc = document.getElementById('bar-tariff-cb');
+    if (tc) tc.checked = st.tariffs === true;
   } catch(e) {}
 }
 
@@ -1713,6 +1721,187 @@ function barNetColor() {
   return barGetTheme().tooltipTitle;      // the chart's text colour: apart from every meter's
 }
 
+// ── Tariff overlay (Monthly, by date) ────────────────────────────────────────
+// The account's stored agreements along the bars: import in a band at the top of the chart, above
+// the axis, export at the bottom, below it; a short tick at each change of tariff, placed by its
+// date within its month or billing period — approximate, as a bar is a month. Hover a band for the
+// tariff's name, code, dates and length. From /api/tariff-agreements (the store; no Octopus call).
+var barTariffs = null;                 // [{direction, tariff_code, name, from, to}] once read; [] none
+var _barTariffsAsked = false;
+var BAR_TARIFF_LANE = 14;              // px, each band's height
+
+function barLoadTariffs() {
+  if (_barTariffsAsked) return;
+  _barTariffsAsked = true;
+  fetch(apiUrl('/api/tariff-agreements')).then(function(r) { return r.json(); }).then(function(j) {
+    barTariffs = j.agreements || [];
+    if (barTariffs.length && barInited && barData) barRender();
+  }).catch(function() { barTariffs = []; });
+}
+
+function barTariffsAvailable() {
+  return barPeriod === 'monthly' && barMonthOrder === 'date' && !!barTariffs && barTariffs.length > 0;
+}
+
+function barShowTariffs() {
+  var cb = document.getElementById('bar-tariff-cb');
+  return barTariffsAvailable() && !!cb && cb.checked;
+}
+
+function barAddMonth(iso) {
+  var y = +iso.slice(0, 4), m = +iso.slice(5, 7), d = +iso.slice(8, 10);
+  return new Date(Date.UTC(y, m, d)).toISOString().slice(0, 10);   // m is next month, 0-based
+}
+
+function barDayNo(iso) { return Date.parse(iso + 'T00:00:00Z') / 864e5; }
+
+// Which bands have an agreement inside the bars' dates: {imp, exp}
+function barTariffLanes(ranges) {
+  var lo = ranges[0].from, hi = ranges[ranges.length - 1].to, lanes = { imp: false, exp: false };
+  barTariffs.forEach(function(a) {
+    if (a.from < hi && (!a.to || a.to > lo)) lanes[a.direction === 'export' ? 'exp' : 'imp'] = true;
+  });
+  return lanes;
+}
+
+// Room for the bands: the axis reaches a little past the bars, so a band does not sit on them
+function barTariffHeadroom(sc, lanes) {
+  var span = (sc.max - sc.min) || 1;
+  if (lanes.imp) sc.max += span * 0.12;
+  if (lanes.exp) sc.min -= span * 0.12;
+}
+
+// A date's x on the bars: across its own bar's slot by its day in the period; in a gap between
+// bars (a year toggled off, a month with no data), at the next bar's left edge
+function barTariffX(chart, ranges, iso) {
+  var xs = chart.scales.x, n = ranges.length;
+  var w = n > 1 ? xs.getPixelForValue(1) - xs.getPixelForValue(0) : xs.right - xs.left;
+  function left(i) { return xs.getPixelForValue(i) - w / 2; }
+  if (!iso) return left(n - 1) + w;
+  for (var i = 0; i < n; i++) {
+    if (iso < ranges[i].from) return left(i);
+    if (iso < ranges[i].to) {
+      var f = (barDayNo(iso) - barDayNo(ranges[i].from)) / (barDayNo(ranges[i].to) - barDayNo(ranges[i].from));
+      return left(i) + f * w;
+    }
+  }
+  return left(n - 1) + w;
+}
+
+// The bands' segments, each {a, x0, x1, y0, y1}
+function barTariffSegments(chart, ranges, lanes) {
+  var ca = chart.chartArea, out = [];
+  var ys = { imp: ca.top + 2, exp: ca.bottom - BAR_TARIFF_LANE - 2 };
+  barTariffs.forEach(function(a) {
+    var lane = a.direction === 'export' ? 'exp' : 'imp';
+    if (!lanes[lane]) return;
+    var x0 = barTariffX(chart, ranges, a.from), x1 = barTariffX(chart, ranges, a.to);
+    if (x1 - x0 < 0.5) return;                       // wholly outside the bars' dates
+    out.push({ a: a, x0: x0, x1: x1, y0: ys[lane], y1: ys[lane] + BAR_TARIFF_LANE });
+  });
+  return out;
+}
+
+function barTariffPlugin(ranges, lanes) {
+  return {
+    id: 'emtTariffs',
+    afterDatasetsDraw: function(chart) {
+      var c = chart.ctx, th = barGetTheme(), dark = document.documentElement.getAttribute('data-theme') !== 'light';
+      var segs = barTariffSegments(chart, ranges, lanes);
+      chart._emtTariffSegs = segs;
+      var fills = dark ? ['rgba(255,255,255,0.13)', 'rgba(255,255,255,0.22)']
+                       : ['rgba(0,0,0,0.08)', 'rgba(0,0,0,0.15)'];
+      var n = { imp: 0, exp: 0 }, ticks = [];
+      c.save();
+      c.font = '10px ' + (getComputedStyle(document.body).fontFamily || 'sans-serif');
+      c.textBaseline = 'middle';
+      segs.forEach(function(sg) {
+        var lane = sg.a.direction === 'export' ? 'exp' : 'imp';
+        c.fillStyle = fills[n[lane]++ % 2];
+        c.fillRect(sg.x0, sg.y0, sg.x1 - sg.x0, sg.y1 - sg.y0);
+        var room = sg.x1 - sg.x0 - 8, label = sg.a.name;
+        while (label.length > 3 && c.measureText(label).width > room) label = label.slice(0, -2) + '\u2026';
+        if (c.measureText(label).width <= room && room > 20) {
+          c.fillStyle = th.tooltipTitle;
+          c.fillText(label, sg.x0 + 4, (sg.y0 + sg.y1) / 2);
+        }
+        ticks.push({ x: sg.x0, y0: sg.y0, y1: sg.y1 });
+        if (!sg.a.to) return;
+        ticks.push({ x: sg.x1, y0: sg.y0, y1: sg.y1 });
+      });
+      // the transitions: a short tick at each change, once where two agreements meet
+      c.strokeStyle = th.tooltipTitle; c.lineWidth = 1.5;
+      var drawn = [];
+      ticks.forEach(function(t) {
+        if (t.x <= chart.chartArea.left + 1 || t.x >= chart.chartArea.right - 1) return;
+        if (drawn.some(function(d) { return d.y0 === t.y0 && Math.abs(d.x - t.x) < 2; })) return;
+        drawn.push(t);
+        c.beginPath(); c.moveTo(t.x, t.y0 - 3); c.lineTo(t.x, t.y1 + 3); c.stroke();
+      });
+      c.restore();
+    },
+    beforeEvent: function(chart, args) {
+      var e = args.event, segs = chart._emtTariffSegs || [];
+      if (e.type === 'mouseout') { barTariffHide(); return; }
+      if (e.type !== 'mousemove' && e.type !== 'click') return;
+      var hit = segs.find(function(sg) { return e.x >= sg.x0 && e.x < sg.x1 && e.y >= sg.y0 - 3 && e.y <= sg.y1 + 3; });
+      if (!hit) { barTariffHide(); return; }
+      if (chart.tooltip) chart.tooltip.setActiveElements([], { x: e.x, y: e.y });
+      barTariffShow(hit.a, e.native);
+      return false;                    // the band's own hover, not the bars' under it
+    }
+  };
+}
+
+function barFmtDate(iso) {
+  return +iso.slice(8, 10) + ' ' + MONTHS_SHORT[+iso.slice(5, 7) - 1] + ' ' + iso.slice(0, 4);
+}
+
+// "3 Jun 2023 – 20 Sep 2023 · 3.5 months": `to` is the day after the last
+function barTariffWhen(a) {
+  var today = new Date().toISOString().slice(0, 10);
+  var end = a.to ? new Date(Date.parse(a.to + 'T00:00:00Z') - 864e5).toISOString().slice(0, 10) : null;
+  var days = Math.round(barDayNo(a.to || today) - barDayNo(a.from));
+  var len = days < 62 ? days + (days === 1 ? ' day' : ' days')
+          : (Math.round(days / 30.44 * 10) / 10) + ' months';
+  if (!a.to || a.to > today) {
+    return 'since ' + barFmtDate(a.from) + (a.to ? ', until ' + barFmtDate(end) : '') + ' \u00b7 current';
+  }
+  return barFmtDate(a.from) + ' \u2013 ' + barFmtDate(end) + ' \u00b7 ' + len;
+}
+
+function barTariffShow(a, ev) {
+  var tip = document.getElementById('bar-tariff-tip');
+  if (!tip) {
+    tip = document.createElement('div');
+    tip.id = 'bar-tariff-tip';
+    tip.style.cssText = 'position:fixed;z-index:30;pointer-events:none;padding:6px 9px;font-size:12px;'
+      + 'border-radius:6px;border:1px solid var(--border);background:var(--surface);color:var(--text);'
+      + 'box-shadow:0 4px 14px rgba(0,0,0,0.25);max-width:280px;';
+    document.body.appendChild(tip);
+  }
+  tip.innerHTML = '';
+  var head = document.createElement('div');
+  head.style.fontWeight = '600';
+  head.textContent = (a.direction === 'export' ? 'Export: ' : 'Import: ') + a.name;
+  var code = document.createElement('div');
+  code.style.cssText = 'color:var(--muted);font-family:var(--mono, monospace);font-size:11px;';
+  code.textContent = a.tariff_code;
+  var when = document.createElement('div');
+  when.textContent = barTariffWhen(a);
+  tip.appendChild(head); tip.appendChild(code); tip.appendChild(when);
+  tip.style.display = 'block';
+  var x = ev.clientX + 12, y = ev.clientY + 12, r = tip.getBoundingClientRect();
+  if (x + r.width > window.innerWidth - 8) x = ev.clientX - r.width - 12;
+  if (y + r.height > window.innerHeight - 8) y = ev.clientY - r.height - 12;
+  tip.style.left = Math.max(8, x) + 'px'; tip.style.top = Math.max(8, y) + 'px';
+}
+
+function barTariffHide() {
+  var tip = document.getElementById('bar-tariff-tip');
+  if (tip) tip.style.display = 'none';
+}
+
 function barGetDatasets(labels, aggList, isHH) {
   // Import meters stacked above axis, export below, all in same stack
   var datasets = [];
@@ -1920,6 +2109,10 @@ function barGetDataForPeriod() {
         labels:  buckets.map(function(b){ return MONTHS_SHORT[b.m-1]+(showYear?' '+b.y:''); }),
         aggList: buckets.map(function(b){ return barAggRows(function(r){ return r.year===b.y && r.month===b.m; }); }),
         bucketYears: buckets.map(function(b){ return b.y; }),
+        bucketRanges: buckets.map(function(b){
+          var from = b.y + '-' + String(b.m).padStart(2,'0') + '-01';
+          return { from: from, to: barAddMonth(from) };
+        }),
         monthOrder: monthFirst
       };
     } else {
@@ -1948,6 +2141,7 @@ function barGetDataForPeriod() {
           return barAggRows(function(r){ return barBillingKey(r).bKey===bk; });
         }),
         bucketYears: keys.map(function(bk){ return +bk.slice(0,4); }),
+        bucketRanges: keys.map(function(bk){ return { from: bk, to: barAddMonth(bk) }; }),
         monthOrder: monthFirst
       };
     }
@@ -2087,6 +2281,11 @@ function barRender() {
   // Set consistent CO2 unit for this render before building datasets or labels
   if (barMetric === 'co2') barCo2SetUnit(pd.aggList);
   var datasets = barGetDatasets(pd.labels, pd.aggList, pd.isHH);
+  barLoadTariffs();
+  var _tw = document.getElementById('bar-tariff-wrap');
+  if (_tw) _tw.style.display = barTariffsAvailable() ? 'flex' : 'none';
+  var tariffLanes = barShowTariffs() && pd.bucketRanges ? barTariffLanes(pd.bucketRanges) : null;
+  barTariffHide();
   var netAxis = !!pd.isHH && barShowNet();   // a boolean: Chart.js shows an axis whose display is undefined
   var axes = netAxis ? barAlignZero(datasets) : null;
   // Month order: shade each bar by its year (older lighter → newer darker) so
@@ -2102,6 +2301,7 @@ function barRender() {
   barChartInstance = new Chart(ctx, {
     type: 'bar',
     data: { labels: pd.labels, datasets: datasets },
+    plugins: tariffLanes ? [barTariffPlugin(pd.bucketRanges, tariffLanes)] : [],
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
@@ -2158,6 +2358,7 @@ function barRender() {
       scales: {
         x: { stacked: true, grid: { display: false }, ticks: { font:{size:11}, color:barGetTheme().axisC, autoSkip: true, maxRotation: 45 } },
         y: Object.assign({ stacked: true, grid: { color:barGetTheme().gridC },
+             afterDataLimits: tariffLanes ? function(sc) { barTariffHeadroom(sc, tariffLanes); } : undefined,
              ticks: Object.assign({ font:{size:11}, color:barGetTheme().axisC, callback: barYLabel, maxTicksLimit: 8 },
                                   axes ? { stepSize: axes.y.step } : {}),
              grace: '2%' }, axes ? { min: axes.y.min, max: axes.y.max, grace: 0 } : {}),
