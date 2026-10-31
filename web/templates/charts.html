@@ -831,7 +831,7 @@ window.EMTSpiral=(function(){
       <label id="bar-net-wrap" style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer;"
              title="Draw import minus export as a line over the bars">
         <input type="checkbox" id="bar-net-cb" onchange="barSaveState(); barRender();" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
-        Net
+        <span id="bar-net-text">Net</span>
       </label>
     </div>
     <div class="bar-toolbar-right">
@@ -1619,8 +1619,15 @@ function barNetVal(agg) {
   return barMetric === 'co2' ? Math.round(v * 100) / 100 : Math.round(v * 1000) / 1000;
 }
 
+// In cost, a day or longer is the bill's net: each day's rounded to the penny, then summed
+// (billing.bill_net_from_day_rollups), as the table, the Billing tab, Insights and the spiral say
+// it. Summing the unrounded pounds put the Net line a penny or so off them over a period. A
+// half-hour has no bill rule (its net_cost is rounded to the penny, and 48 of those overstate the
+// day), so HH stays unrounded and the day's sum rounds to the same penny.
 function barNetRaw(agg) {
   if (barMetric === 'co2') return agg.carbon_g_net != null ? agg.carbon_g_net : null;
+  if (barMetric === 'cost' && barPeriod !== 'hh' && agg.net_cost != null)   // to the penny, as the table
+    return Math.round((agg.net_cost - (barIncStanding() ? 0 : (agg.standing || 0))) * 100) / 100;
   var imp = barMetric === 'kwh' ? agg.imp_kwh : (agg.imp_cost + barStandingVal(agg));
   var exp = barMetric === 'kwh' ? agg.exp_kwh : agg.exp_cost;
   return imp - exp;
@@ -2020,6 +2027,11 @@ function barRender() {
   // Show/hide standing charge toggle (cost mode only)
   var sw = document.getElementById('bar-standing-wrap');
   if (sw) sw.style.display = barMetric === 'cost' ? 'flex' : 'none';
+  // The Net box names what it draws: on HH a running total of the day's net
+  var _nt = document.getElementById('bar-net-text'), _nw = document.getElementById('bar-net-wrap');
+  if (_nt) _nt.textContent = barNetLabel();
+  if (_nw) _nw.title = barPeriod === 'hh' ? "Draw the day's net so far (import minus export) as a line over the bars"
+                                          : 'Draw import minus export as a line over the bars';
 
   // CO2 null notice — shown when CO2 selected but no data yet
   var _co2Notice = document.getElementById('bar-co2-notice');
@@ -2106,29 +2118,34 @@ function barRender() {
           footer: function(items) {
             if (items.length === 0) return '';
             var idx = items[0].dataIndex;
+            var onLine = items.some(function(it) { return it.dataset._net; });
             var agg = barGetDataForPeriod().aggList[idx];
             if (!agg) return '';
             if (barMetric === 'co2') {
               var net = agg.carbon_g_net; var tot = agg.carbon_g_total;
-              var co2SoFar = barPeriod === 'hh'
-                ? '\nRunning total: ' + barCo2Fmt(barNetSeries(barGetDataForPeriod().aggList, true)[idx]) : '';
-              return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nNet: ' + barCo2Fmt(net) + '  Total: ' + barCo2Fmt(tot) + co2SoFar;
+              // HH: no Net (the half-hour's own net), and the running total only where the line's
+              // own row does not already say it
+              if (barPeriod === 'hh') {
+                return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nTotal: ' + barCo2Fmt(tot)
+                  + (onLine ? '' : '\nRunning total: ' + barCo2Fmt(barNetSeries(barGetDataForPeriod().aggList, true)[idx]));
+              }
+              return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nNet: ' + barCo2Fmt(net) + '  Total: ' + barCo2Fmt(tot);
             }
             var sym = barMetric==='cost' ? barCurrency : '';
             var unit = barMetric==='kwh' ? ' kWh' : '';
             var imp = barMetric === 'kwh' ? agg.imp_kwh : (agg.imp_cost + barStandingVal(agg));
             var exp = barMetric === 'kwh' ? agg.exp_kwh : agg.exp_cost;
-            var net = imp - exp;
+            var net = barNetVal(agg);           // the line's figure: the bill's net in cost
             var dp = barMetric === 'cost' ? 2 : 3;
             var netStr = (net < 0 ? '-' : '') + sym + Math.abs(net).toFixed(dp) + unit;
             var impStr = sym + imp.toFixed(dp) + unit;
             var expStr = sym + exp.toFixed(dp) + unit;
-            var soFar = '';
             if (barPeriod === 'hh') {
               var run = barNetSeries(barGetDataForPeriod().aggList, true)[idx] || 0;
-              soFar = '\nRunning total: ' + (run < 0 ? '-' : '') + sym + Math.abs(run).toFixed(dp) + unit;
+              return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nImport: ' + impStr + '  Export: ' + expStr
+                + (onLine ? '' : '\nRunning total: ' + (run < 0 ? '-' : '') + sym + Math.abs(run).toFixed(dp) + unit);
             }
-            return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nImport: ' + impStr + '  Export: ' + expStr + '\nNet: ' + netStr + soFar;
+            return '\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\nImport: ' + impStr + '  Export: ' + expStr + '\nNet: ' + netStr;
           }
         }}
       },
@@ -2587,9 +2604,9 @@ function barFmt(v, forCopy) {
   if (barMetric === 'co2') return barCo2Fmt(v, forCopy);
   var sym = barMetric === 'cost' ? barCurrency : '';
   var unit = barMetric === 'kwh' ? ' kWh' : '';
-  var abs = Math.abs(v);
-  var str = sym + abs.toFixed(barMetric==='cost'?2:3) + unit;
-  return (v < 0 ? '-' : '') + str;
+  var shown = Math.abs(v).toFixed(barMetric==='cost'?2:3);
+  // no sign on a value that shows as zero: a half-hour's -£0.0001 read "-£0.00"
+  return (v < 0 && Number(shown) !== 0 ? '-' : '') + sym + shown + unit;
 }
 
 function barPeriodLabel(lbl, idx, pd) {
@@ -2745,8 +2762,12 @@ function barBuildTable() {
     // net_cost bakes in the standing charge (server: imp + standing − exp), so
     // when "Inc. standing charge" is unchecked we subtract it back out — otherwise
     // the Total/grand-total ignored the toggle (issue #255).
+    // HH is the exception: a half-hour's net_cost is rounded to the penny too, and 48 of them summed
+    // overstated the day by pennies (staging, 20 Oct: £2.00 for a £1.86 day), so there the row is
+    // its own unrounded net, as the Running total line sums it, and is rounded only to be shown.
     var _sc = barMetric === 'cost' && !barIncStanding() ? (agg.standing || 0) : 0;
-    var rowTotalFmt = barMetric === 'cost'
+    var rowTotalFmt = barMetric === 'cost' && pd.isHH ? barNetRaw(agg)
+      : barMetric === 'cost'
       ? (agg.net_cost != null ? Math.round((agg.net_cost - _sc) * 100) / 100 : Math.round(rowTotal * 100) / 100)
       : barMetric === 'kwh' ? (Math.round(rowTotal * 1000) / 1000)
       : rowTotal;
@@ -2792,7 +2813,9 @@ function barBuildTable() {
   // In cost mode, use sum of per-bucket net_cost values for grand total.
   // net_cost per bucket = sum of daily net_cost values (pre-rounded per day).
   // This ensures: parts sum to daily total, daily totals sum to period total.
-  if (barMetric === 'cost') {
+  if (barMetric === 'cost' && pd.isHH) {
+    grandTotalFmt = Math.round(grandTotal * 100) / 100;
+  } else if (barMetric === 'cost') {
     var _netSum = 0;
     var _incSc = barIncStanding();
     aggList.forEach(function(agg) {
