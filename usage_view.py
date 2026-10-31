@@ -870,3 +870,107 @@ def slot_stats(store, cfg, tz_name, utc_start, utc_end) -> dict:
     _apply_ev(store, cfg, raw, rows, meta["meters"], utc_start, utc_end, lambda bs: bs,
               key_fn=lambda r: r.get("slot"), per_slot=True)
     return dict(meta, rows=rows)
+
+
+# ── Rate brackets (rate brackets design, BL-93) ───────────────────────────────────────────────
+# Where grid import fell by the price it was charged: 2.5p brackets of the inc-VAT rate, for the
+# whole meter, the house and each device. One rule for every tariff — the rate already carries
+# IOG's dispatches and cap, a time-of-use window and Agile's price; the stored band label is set
+# only on Intelligent (design §2). Grid import only: no export, standing charge or non-grid use.
+
+RATE_BRACKET_P = 2.5            # pence; the bracket for rate r is [2.5·n, 2.5·(n+1))
+METER_SERIES = "meter"          # the whole main meter; the house is "electricity_main" (Direct)
+
+
+def rate_bracket(rate: float) -> int:
+    """The bracket index `n` of a rate in £/kWh: [2.5·n, 2.5·(n+1)) pence. Rounded to 4 dp of a
+    penny first, so a rate on an edge is not put in the bracket below by a float's last bit
+    (0.575 × 100 is 57.49999999999999)."""
+    import math
+    return math.floor(round(float(rate) * 100.0, 4) / RATE_BRACKET_P)
+
+
+def _add(acc, n, k, c):
+    v = acc.get(n)
+    if v is None:
+        acc[n] = [k, c]
+    else:
+        v[0] += k
+        v[1] += c
+
+
+def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
+    """{bucket: {series: {n: [kWh, £]}}} over [utc_start, utc_end) (design §3):
+
+    - `meter`: each of the main's import slices (`block_segments`) at its own rate — on IOG-SMB
+      the car's and the house's rates in one half-hour stay apart;
+    - a device: its grid kWh (`COALESCE(imp_kwh_grid, imp_kwh)`) at its stored rate, with its
+      stored £, so its brackets sum to its device cost;
+    - `electricity_main` (the house, Direct): per half-hour, the meter's bracket less the devices'
+      in it, clipped at 0 where a device's one rate sits beside the meter's two."""
+    c = store._conn
+    act = c.execute(_ACTIVE_PERIOD).fetchone()
+    subs = [r[0] for r in c.execute(
+        "SELECT meter_id FROM meters WHERE config_period_id = ? AND is_sub_meter",
+        (act[0] if act else None,))]
+    main: dict = {}
+    for bs, k, r in c.execute(
+            "SELECT block_start, kwh, inc_rate FROM block_segments "
+            "WHERE meter_id = 'electricity_main' AND channel = 'import' "
+            "AND block_start >= ? AND block_start < ? ORDER BY block_start, seq",
+            (utc_start, utc_end)):
+        k = float(k or 0.0)
+        if k <= 0.0:
+            continue
+        _add(main.setdefault(bs, {}), rate_bracket(r), k, k * float(r))
+    devs: dict = {}
+    if subs:
+        for bs, mid, k, r, cost in c.execute(
+                "SELECT block_start, meter_id, COALESCE(imp_kwh_grid, imp_kwh), imp_rate, imp_cost "
+                "FROM blocks WHERE meter_id IN (%s) AND block_start >= ? AND block_start < ? "
+                "ORDER BY block_start, id" % ",".join("?" * len(subs)),
+                list(subs) + [utc_start, utc_end]):
+            k = float(k or 0.0)
+            if k <= 0.0:
+                continue
+            cost = float(cost or 0.0)
+            rate = float(r) if r else cost / k
+            _add(devs.setdefault(bs, {}).setdefault(mid, {}), rate_bracket(rate), k, cost)
+    out: dict = {}
+    for bs in sorted(set(main) | set(devs)):
+        b = out.setdefault(bucket_of(bs), {})
+        m = main.get(bs) or {}
+        d = devs.get(bs) or {}
+        for n, (k, cost) in m.items():
+            _add(b.setdefault(METER_SERIES, {}), n, k, cost)
+            dk = sum(x[n][0] for x in d.values() if n in x)
+            dc = sum(x[n][1] for x in d.values() if n in x)
+            if k - dk > 1e-9:
+                _add(b.setdefault("electricity_main", {}), n, k - dk, cost - dc)
+        for mid, nb in d.items():
+            for n, (k, cost) in nb.items():
+                _add(b.setdefault(mid, {}), n, k, cost)
+    return out
+
+
+def _bracket_values(b):
+    return {s: {str(n): [round(v[0], 4), round(v[1], 4)] for n, v in sorted(nb.items())}
+            for s, nb in b.items()}
+
+
+def day_brackets(store, tz_name, utc_start, utc_end) -> dict:
+    """The rate brackets per LOCAL day in [utc_start, utc_end): `rows` [{day, b: {series:
+    {n: [kWh, £]}}}], `n` the bracket index (`width_p` × n pence and up). Kept at 4 dp so the
+    page sums days into months and years without per-day rounding."""
+    data = _rate_brackets(store, utc_start, utc_end,
+                          _local_day_of(utc_start, utc_end, ZoneInfo(tz_name)))
+    return {"width_p": RATE_BRACKET_P, "meter_series": METER_SERIES,
+            "rows": [{"day": d, "b": _bracket_values(data[d])} for d in sorted(data)]}
+
+
+def slot_brackets(store, utc_start, utc_end) -> dict:
+    """The rate brackets per half-hour in [utc_start, utc_end), keyed by its naive-UTC start
+    (`slot`, as slot_stats). Only half-hours with grid import appear."""
+    data = _rate_brackets(store, utc_start, utc_end, lambda bs: bs)
+    return {"width_p": RATE_BRACKET_P, "meter_series": METER_SERIES,
+            "rows": [{"slot": s, "b": _bracket_values(data[s])} for s in sorted(data)]}

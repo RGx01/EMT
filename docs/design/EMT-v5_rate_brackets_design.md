@@ -1,6 +1,6 @@
 # EMT v5 — rate brackets: where a device's usage fell by price
 
-*Status: draft, 31 Oct 2026 (ROADMAP BL-93). What it is: a view in Usage Stats that shows, for the
+*Status: draft, 31 Oct 2026 (ROADMAP BL-93); PR 1, the read, built. What it is: a view in Usage Stats that shows, for the
 whole meter, the house or one device, how much grid import fell in each 2.5p price bracket, per day,
 month and year. Decided with the user the same day (§6): brackets for every tariff and no band
 labels; billed and not-yet-billed half-hours alike; grid import only; 2.5p brackets. Code facts read
@@ -113,7 +113,7 @@ resizable table.
 
 | PR | what |
 |---|---|
-| 1 | the store read (one query: the main's slices, the devices' grid kWh and rate, per half-hour in the range) and `usage_view.rate_brackets(...)`: the bracketing, the house remainder and its clip, the per-bucket and per-range totals; `/api/energy` (Usage Stats' route) gains the field, only when asked for (`view=brackets`), so the Devices view's payload is unchanged |
+| 1 | **built (PR 1):** `usage_view.day_brackets` / `slot_brackets` — two reads (the main's import slices, the devices' grid kWh, rate and £) over the range, bracketed per half-hour, the house and its clip, summed per local day or half-hour as `{series: {n: [kWh, £]}}` at 4 dp; the page sums days into its buckets and the range, as it does the stats. `/api/energy?fields=brackets` at `day` or `block`, asked for on its own, so the stats payload is unchanged. On the staging copy, all history: 0.37 s, and house + devices equals the meter in kWh and £ |
 | 2 | the Show switch, the series picker, the stacked chart, the % option, the table and the average line in `charts.html` |
 
 Tests:

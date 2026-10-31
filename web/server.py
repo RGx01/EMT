@@ -6439,7 +6439,7 @@ def api_energy():
     **`fields=`** asks for one part and nothing else: `fingerprint` (the change poll's
     global token), `days` (per-day fingerprints, with `since=` a `history` token for
     everything before), `stats` (the Usage Stats / Spiral rows, at `day` or `block`;
-    #47, 2 Oct 2026).
+    #47, 2 Oct 2026), `brackets` (grid import by rate bracket, at `day` or `block`; BL-93).
 
     It replaced six routes: `/api/{usage,insights}/{billing-period,calendar-month,
     calendar-year}`, deleted with C step 2 (1 Oct 2026) once Insights read this.
@@ -6469,6 +6469,8 @@ def api_energy():
         fields = request.args.get("fields") or ""
         if ("stats" in include or fields == "stats") and resolution == "period":
             return jsonify({"error": "stats are served at resolution=day|block"}), 400
+        if fields == "brackets" and resolution == "period":
+            return jsonify({"error": "brackets are served at resolution=day|block"}), 400
         if resolution == "block" and kind == "all":
             # A year of blocks is ~15 MB raw (C §7.1): blocks are fetched for a viewport.
             return jsonify({"error": "resolution=block takes a viewport: kind=day|month"}), 400
@@ -6512,6 +6514,17 @@ def api_energy():
                                       if resolution == "day"
                                       else usage_view.slot_stats(store, cfg, tz_name,
                                                                  utc_start, utc_end))})
+        if fields == "brackets":
+            # The rate brackets (BL-93, rate brackets design): grid import by the 2.5p bracket of
+            # the rate it was charged, per local day (`day`) or half-hour (`block`), for the whole
+            # meter, the house and each device. Asked for on its own, so the stats payload is
+            # unchanged.
+            import usage_view
+            return jsonify({"resolution": resolution, "timezone": tz_name, "period": meta,
+                            "range": {"start_utc": utc_start, "end_utc": utc_end},
+                            "brackets": (usage_view.day_brackets(store, tz_name, utc_start, utc_end)
+                                         if resolution == "day"
+                                         else usage_view.slot_brackets(store, utc_start, utc_end))})
         if fields == "days":
             # Which days moved, and nothing else — for a client that keeps rows by day and
             # re-fetches only those (C, 2 Oct 2026). With `since=YYYY-MM-DD` (a local day):
