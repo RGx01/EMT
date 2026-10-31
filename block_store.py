@@ -3937,6 +3937,13 @@ class BlockStore:
                 out["added"].append(k[1:])
         return out
 
+    def has_tariff_prices(self, tariff_code: str, agreement_from: str, kind: str) -> bool:
+        """Whether an agreement's price periods of one kind are stored (G2b: a closed agreement's are
+        fetched once, until they are)."""
+        return self._conn.execute(
+            "SELECT 1 FROM tariff_prices WHERE tariff_code = ? AND agreement_from = ? AND kind = ? "
+            "LIMIT 1", (tariff_code, agreement_from, kind)).fetchone() is not None
+
     def replace_tariff_prices(self, tariff_code: str, agreement_from: str, kind: str, rows,
                               fetched_at: str) -> bool:
         """An agreement's price periods of one kind ('standing' | 'unit') replaced in one transaction

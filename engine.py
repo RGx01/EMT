@@ -6681,6 +6681,97 @@ def _keep_current_tariff_prices(channel, tariff_code, kind, sched) -> None:
         logger.warning("tariff prices: %s %s current not kept (%s)", channel, kind, e)
 
 
+# G2b (tariff prices design §4): the closed agreements' prices the refresh does not fetch — import's
+# standing charges and export's rates (and import's rates where the stitch did not keep them).
+_CLOSED_PRICES_PER_CYCLE = 4          # agreement-kinds fetched per poll cycle (each one request, or a few pages)
+_CLOSED_PRICES_PACE_S = 2.0           # seconds between them (test-overridable)
+_CLOSED_PRICES_RETRY_S = 24 * 3600    # a failed or empty one is tried again after a day…
+_CLOSED_PRICES_TRIES = 3              # …and not after the third
+_CLOSED_PRICES_KEY = "tariff_prices_tried"
+
+
+def _closed_price_wants() -> list:
+    """[(channel, kind, agreement)] of the closed agreements whose prices are not stored: import's
+    'rate' and 'standing', export's 'rate'. A degenerate window prices nothing and is left out."""
+    from kraken_rates import _agreement_ended
+    from kraken_ingester import normalise_to_naive_utc
+    out = []
+    for channel, kinds in (("import", ("standing", "rate")), ("export", ("rate",))):
+        for ag in _agreement_info(channel).get("agreements") or []:
+            tc, vf, vt = ag.get("tariff_code"), ag.get("valid_from"), ag.get("valid_to")
+            if not tc or not vf or not vt:
+                continue
+            try:
+                vf_n, vt_n = normalise_to_naive_utc(vf), normalise_to_naive_utc(vt)
+            except ValueError:
+                continue
+            if vf_n >= vt_n or not _agreement_ended(vt_n):
+                continue
+            for kind in kinds:
+                if not _store.has_tariff_prices(tc, vf_n, "standing" if kind == "standing" else "unit"):
+                    out.append((channel, kind, ag))
+    return out
+
+
+async def _fetch_closed_agreement_prices() -> int:
+    """G2b: fetch, a few a cycle, the closed agreements' prices not stored yet (§4). A closed
+    agreement's prices cannot change, so each is fetched once ever: once stored, never again. A fetch
+    that fails or comes back empty is tried again after a day, three times at most — the count kept in
+    kraken_state, so a restart does not reset it. A half-hourly (Agile) agreement's unit rates are not
+    fetched: its `dynamic` row is written from the agreement's window. Each request is logged.
+    Returns the agreement-kinds fetched."""
+    import json
+    import kraken_rates as _kr
+    import tariff_prices as _tp
+    from kraken_api_client import KrakenAPIClient
+    from kraken_ingester import normalise_to_naive_utc
+    if _kraken_client is None or _store is None:
+        return 0
+    try:
+        tried = json.loads(_store.get_kraken_state(_CLOSED_PRICES_KEY) or "{}")
+    except Exception:
+        tried = {}
+    now = time.time()
+    done = 0
+    for channel, kind, ag in _closed_price_wants():
+        tc, vf, vt = ag["tariff_code"], ag["valid_from"], ag.get("valid_to")
+        key = "%s|%s|%s" % (tc, normalise_to_naive_utc(vf), kind)
+        t = tried.get(key) or {}
+        if t.get("n", 0) >= _CLOSED_PRICES_TRIES or now - t.get("at", 0) < _CLOSED_PRICES_RETRY_S:
+            continue
+        if kind == "rate" and _tp.is_dynamic_code(tc):
+            vf_n = normalise_to_naive_utc(vf)
+            _store.replace_tariff_prices(tc, vf_n, "unit", [
+                {"band": "dynamic", "window": None, "value_exc": None, "valid_from": vf_n,
+                 "valid_to": normalise_to_naive_utc(vt)}], datetime.now(timezone.utc).replace(tzinfo=None).isoformat())
+            continue                                      # no call: Agile's rates are not kept
+        if done >= _CLOSED_PRICES_PER_CYCLE:
+            break
+        if done:
+            await asyncio.sleep(_CLOSED_PRICES_PACE_S)
+        logger.info("tariff prices: fetching %s %s of %s, %s – %s (G2b)", channel, kind, tc,
+                    str(vf)[:10], str(vt)[:10])
+        # kept from what comes back, not on_built: a schedule the process has cached (the API import
+        # fetched it) is returned without being built again
+        segs = await _kr.agreement_schedules(_kraken_client, [ag], kind=kind,
+                                             product_of=KrakenAPIClient._tariff_to_product_code)
+        for _vf, _vt, sched in segs:
+            _keep_tariff_prices(tc, vf, kind, sched, vt)
+        done += 1
+        if not segs or not _store.has_tariff_prices(tc, normalise_to_naive_utc(vf),
+                                                    "standing" if kind == "standing" else "unit"):
+            tried[key] = {"n": t.get("n", 0) + 1, "at": now}
+            logger.warning("tariff prices: %s %s of %s — nothing kept (try %d of %d)", channel, kind,
+                           tc, tried[key]["n"], _CLOSED_PRICES_TRIES)
+        else:
+            tried.pop(key, None)
+    if tried:
+        _store.set_kraken_state(_CLOSED_PRICES_KEY, json.dumps(tried, sort_keys=True))
+    elif _store.get_kraken_state(_CLOSED_PRICES_KEY):
+        _store.set_kraken_state(_CLOSED_PRICES_KEY, "")
+    return done
+
+
 async def _agreement_segs(channel: str, kind: str) -> list:
     """[(valid_from, valid_to, RateSchedule)] for each of `channel`'s agreements — through
     kraken_rates.agreement_schedules, the one fetch the refresh's import stitch shares (engine step
@@ -12175,6 +12266,8 @@ async def kraken_poll_task(ha: HAClient):
             await _refresh_kraken_rate_schedules()
             # a change of agreements re-settles its history on the rates just built (G1 design §4)
             _maybe_settle_history()
+            # G2b: a closed agreement's prices not kept yet, a few a cycle, once ever
+            await _fetch_closed_agreement_prices()
             summary = await ingester.poll()
             logger.info(
                 "kraken_poll_task: %s window=%s..%s import_rows=%d "

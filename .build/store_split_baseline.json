@@ -215,6 +215,7 @@
     "ha_read_devices",
     "ha_reads_for",
     "has_interpolated_block",
+    "has_tariff_prices",
     "history_token",
     "imported_block_replaceable",
     "is_meter_retired",
