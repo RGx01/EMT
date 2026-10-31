@@ -579,6 +579,17 @@ A schema change and a reader audit. Draft: same note §3. 18 Oct 2026: with dele
 except deleting an imported export; on 20 Oct the shelf (18–19 Oct) dropped for HA's reads kept in a
 table of their own, removed only with the device, a recorder hour kept as the hour; a live block points at its sensor's `device_sensors` entry (device sensors design §7).
 
+**BL-91 — devices that cost more than the meter.** ✅ *Done 31 Oct 2026 (device cost check design).*
+Found through Usage Stats' Import column (#346). On one install, three half-hours on 14 Sep 2026 had
+been corrected by hand in v4 to the rate the bill agreed with. Their devices kept the peak rate × their
+raw reading, and v4's 4.5.21 heal carried only their ex-VAT side. The bill total was right and the
+device breakdown too high. Nothing repaired it, since every automatic pass skips a corrected
+half-hour. Now:
+- a settled half-hour whose devices cost more than the meter, by more than a thousandth of a penny,
+  is flagged red on the data heatmap (`devices_exceed`);
+- Re-fetch lists it, and its apply prices the devices again;
+- the v4 importer reports what it carries of the kind, and writes nothing.
+
 ## D. Surfacing performance
 
 *Measure before optimising.* Target hardware is a Raspberry Pi 4 class box on SD storage.

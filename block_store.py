@@ -5004,8 +5004,10 @@ class BlockStore:
                              meter_id: str = "electricity_main") -> list:
         """What `settlement_state.classify` needs for each main-meter half-hour in
         [utc_start, utc_end): the block's own figures and provenance, its cached bill (cost, ex-VAT,
-        the kWh it priced, its EV share), its EV split (the EV segments), and whether it had a
-        completed dispatch or an off-peak dispatch slot. One query, for the settlement views."""
+        the kWh it priced, its EV share), its EV split (the EV segments), whether it had a
+        completed dispatch or an off-peak dispatch slot, and what its devices cost between them
+        (`devices_cost`, NULL with none — the device cost check). One query, for the settlement
+        views."""
         rows = self._conn.execute(
             "SELECT b.block_start, b.imp_kwh, b.imp_kwh_api, b.imp_cost, b.imp_rate, "
             "       b.exp_kwh, b.exp_kwh_api, "
@@ -5017,7 +5019,9 @@ class BlockStore:
             "       EXISTS (SELECT 1 FROM dispatch_history d WHERE d.slot_start = b.block_start "
             "               AND d.kind = 'completed' AND d.energy_kwh IS NOT NULL) AS completed, "
             "       EXISTS (SELECT 1 FROM dispatch_slots s WHERE s.slot_start = b.block_start "
-            "               AND (s.off_peak = 1 OR s.source = 'smart-charge-completed')) AS dispatched "
+            "               AND (s.off_peak = 1 OR s.source = 'smart-charge-completed')) AS dispatched, "
+            "       (SELECT SUM(d.imp_cost) FROM blocks d WHERE d.block_start = b.block_start "
+            "        AND d.meter_id IN (SELECT meter_id FROM meters WHERE is_sub_meter = 1)) AS devices_cost "
             "FROM blocks b LEFT JOIN measured_cost mc ON mc.rowid = (" + self._LATEST_BILL_SQL + ") "
             "WHERE b.meter_id = ? AND b.block_start >= ? AND b.block_start < ? "
             "ORDER BY b.block_start", (meter_id, utc_start, utc_end)).fetchall()

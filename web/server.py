@@ -3099,6 +3099,11 @@ def _prepare_restore_db(candidate, step=None, checked=False):
                 ", ".join("%s %d" % (t, c["out"]) for t, c in report["tables"].items()
                           if c["out"]),
                 sum(len(k["carried"]) for k in report["keys"].values()))
+    _dc = (report["transforms"].get("device_costs") or {}).get("reported") or []
+    if _dc:
+        logger.warning("restore: %d half-hour(s) from v4 whose devices cost more than the meter "
+                       "(first %s) — flagged on Data Management's heatmap; a re-fetch prices their "
+                       "devices again", len(_dc), _dc[0])
     return target, report
 
 

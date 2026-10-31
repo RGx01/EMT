@@ -102,7 +102,10 @@ window.EMTHeatmap = (function () {
   };
   var FLAG_TEXT = {bill_kwh_differs: 'the bill priced a different kWh than settled',
                    vat_disagrees: 'the bill\u2019s VAT is not the calendar\u2019s',
-                   split_missing: 'a completed dispatch, and no House/EV split at all'};
+                   split_missing: 'a completed dispatch, and no House/EV split at all',
+                   devices_exceed: 'the devices cost more than the meter \u2014 the device breakdown reads too high ' +
+                                   'and the house\u2019s too low (the bill is not affected). Re-fetch it to price ' +
+                                   'the devices again'};
   // the missing cells' hatch: black, with grey diagonals so it is neither a colour of the scale
   // nor the dark theme's near-black background (§6 (b))
   var _hatch = null;
@@ -170,6 +173,9 @@ window.EMTHeatmap = (function () {
     if (!st) return null;
     if (m === 'export') return st.export || null;
     var v = st.bill, fl = st.flags || [];
+    // devices costing more than the meter is wrong whatever the cost's state — your correction
+    // included, the case it was found in (device cost check design §2)
+    if (fl.indexOf('devices_exceed') >= 0 && v !== 'none' && v !== 'missing') return 'flagged';
     if ((v === 'applied' || v === 'differs') &&
         (fl.indexOf('bill_kwh_differs') >= 0 || fl.indexOf('vat_disagrees') >= 0 ||
          fl.indexOf('split_missing') >= 0)) return 'flagged';
@@ -965,6 +971,8 @@ window.EMTHeatmap = (function () {
                        : r.bill.unapplied ? ' <span class="hm-note2">(stored \u2014 the bill not applied)</span>'
                        : r.bill.stored_is_bill ? '' : ' <span class="hm-note2">(EMT\u2019s cost)</span>') +
                        ' \u2192 ' + g(r.bill.octopus) : '';
+      if (r.bill && r.bill.devices) b += ' <span class="hm-note2">(the devices cost more than the meter \u2014 ' +
+                                      'priced again)</span>';
       // imported history keeps its own kWh: the difference is shown, not written
       if ((r.kwh && r.kwh.imported) || (r.export && r.export.imported))
         k += ' <span class="hm-note2">imported \u2014 kept</span>';
@@ -1029,6 +1037,8 @@ window.EMTHeatmap = (function () {
             '<p class="hm-note2">Apply writes only these, after a safety backup. ' +
             (sm.corrected ? '<b>' + sm.corrected + ' of them replace' + (sm.corrected === 1 ? 's' : '') +
              ' your own correction with Octopus\u2019s bill</b> \u2014 a correction cannot be put back. ' : '') +
+            (sm.devices ? sm.devices + ' price' + (sm.devices === 1 ? 's its' : ' their') +
+             ' devices again, on their share of the meter\u2019s kWh. ' : '') +
             'Device readings are not touched.</p>',
             '<button class="hm-btn hm-primary" data-act="apply">Apply</button>' +
             (chunks.length > 1 ? '<button class="hm-btn" data-act="skip">Skip</button>' : '') +
