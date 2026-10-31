@@ -22,7 +22,7 @@ deconstruct it. v4 is at **4.5.24**; the import floor is **4.5.23** (E).
 | D | Surfacing performance | A, C | ✅ closed 5 Oct 2026 — queries asserted in CI (#102), time on the Pi (#64) |
 | E | Importer | A–D | 🔨 built 10 Oct 2026 (#122–#128, step 5 done), spec v29, floor 4.5.23 (positive fixture taken 12 Oct) — open: the Pi timing |
 | F | Carried from v4's backlog | — | ✅ all done or closed — BL-64, the last, 30 Oct 2026 (§F) |
-| G | Local tariff store | A, B | ✅ G1, the agreements, done 28 Oct 2026 (#320–#325, #327); G2, the rates, dropped (#326) |
+| G | Local tariff store | A, B | ✅ G1, the agreements, done 28 Oct 2026 (#320–#325, #327); G2, the rates as a pricing store, dropped (#326); G2 re-scoped as prices for display, designed 31 Oct 2026 |
 | H | Before going public | — | 📋 1 item (BL-77), deferred until EMT goes to `main` |
 
 ---
@@ -947,7 +947,11 @@ Dependabot raises pypdf on its own PR (excluded from the weekly group), merged o
 
 *Proposed 4 Oct 2026. The agreements half is designed: G1, `docs/design/EMT-v5_G_tariff_agreements_design.md`
 (28 Oct 2026). **The rates (G2) are dropped** (28 Oct 2026, the user) — see "G2, dropped" below; the rest of
-this section records the problem and the shape first agreed, kept for the reasoning.*
+this section records the problem and the shape first agreed, kept for the reasoning. **G2 is back, re-scoped**
+(31 Oct 2026, the user): each agreement's standing charge and unit rates as dated price periods, for the
+Usage Stats tariff overlay's hover only, Agile's unit rates left out —
+`docs/design/EMT-v5_G2_tariff_prices_design.md` (decided 31 Oct 2026). No pricing path reads it, so the reasons below do
+not apply to it.*
 
 **G2, dropped (28 Oct 2026, the user: "not sure what adding an additional complication is worth on an
 unproven issue").** G2 would have stored Octopus's published rate records per tariff — not EMT's built
