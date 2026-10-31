@@ -363,6 +363,18 @@
 
 {% block scripts %}
 <style>
+/* A meter's chart style: a preview, the palette swatches, any colour, the rate line. */
+.chart-style { border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 10px; }
+.cs-head { font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+.cs-body { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; }
+.cs-preview { flex: none; background: var(--bg); border-radius: 4px; }
+.cs-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+.cs-swatch { width: 20px; height: 20px; border-radius: 4px; border: 2px solid transparent; padding: 0; cursor: pointer; }
+.cs-swatch.on { border-color: var(--text); }
+.cs-pick { width: 32px; height: 24px; padding: 0; border: 1px solid var(--border); background: transparent; cursor: pointer; }
+.cs-note { font-size: 11px; color: var(--muted); }
+.cs-radio { font-size: 12px; display: inline-flex; align-items: center; gap: 4px; margin-right: 8px; }
+
 /* The Settings tabs: an underlined row, apart from the Meter Config / Carbon pills above it. */
 .cfg-tabs {
   display: flex;
@@ -537,6 +549,10 @@ var HAS_CREDENTIALS = {{ has_credentials | tojson }};
 // has its own #357 flow).
 var CONN_MISMATCH = false;
 var OHME_DETECTION = {{ ohme_detection | tojson }};
+// A meter's chart style (chart_style.py): the palette a meter falls back to by position, and how
+// far its rate line moves from its bar.
+var CHART_PALETTE = {{ chart_palette | tojson }};
+var CHART_RATE_MIX = {{ chart_rate_mix | tojson }};
 // Timezone select HTML — rendered server-side to avoid JS string escaping issues
 var TZ_SELECT_HTML = {{ tz_select_html | tojson }};
 function buildTzSelect(id, currentTz) {
@@ -927,9 +943,126 @@ function buildMainCards(meterId, meter) {
           (usesApi ? buildSourceToggle(meterId, 'export', 'rate', mainApiChecked(exp, 'rate'), meterId+'__export__rate') : '') +
           buildEntityInput(meterId+'__export__rate', exp.rate||'', meterId, 'export', 'rate') + '</div>' +
         buildAdvanced(meterId, 'export', exp) +
-      '</div>');
+      '</div>') +
+
+    '<hr>' +
+    '<div class="section-divider">Chart style</div>' +
+    buildChartStyle(meterId, 'import', 'Direct import (the house)') +
+    buildChartStyle(meterId, 'export', 'Export');
 
   return {site: site, meter: div};
+}
+
+// ── Chart style: a channel's bar colour and rate line (chart_style.py) ─────────
+// Held on the channel (channels.<import|export>.bar_color / rate_line) and saved with the config.
+// Unset, a meter keeps its palette colour by position — the order energy_charts uses: the house,
+// the devices in config order, export last — and its rate line keeps its old style (export
+// dashed). The rate line's colour follows the bar (rateLineColor, as chart_style.rate_line_color).
+function _chartKey(meterId, ch) {
+  var meta = ((config.meters || {})[meterId] || {}).meta || {};
+  if (meta.sub_meter) return meterId;
+  return ch === 'export' ? 'electricity_main_export' : 'electricity_main';
+}
+
+function _chartDefaults() {
+  var meters = config.meters || {}, keys = ['electricity_main'], hasExport = false;
+  Object.keys(meters).forEach(function(id) {
+    var m = meters[id];
+    if ((m.meta || {}).sub_meter) keys.push(id);
+    else if ('export' in (m.channels || {})) hasExport = true;
+  });
+  if (hasExport) keys.push('electricity_main_export');
+  var out = {};
+  keys.forEach(function(k, i) { out[k] = CHART_PALETTE[i % CHART_PALETTE.length]; });
+  return out;
+}
+
+function rateLineColor(bar) {
+  var c = /^#[0-9a-f]{6}$/i.test(bar || '') ? bar : '#333333';
+  var rgb = [1, 3, 5].map(function(i) { return parseInt(c.slice(i, i + 2), 16); });
+  var target = (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255 < 0.5 ? 255 : 0;
+  return '#' + rgb.map(function(x) {
+    return ('0' + Math.floor(x + (target - x) * CHART_RATE_MIX + 0.5).toString(16)).slice(-2);
+  }).join('');
+}
+
+// Every drawn meter's style now: {key: {bar, chosen, dashed, label}}.
+function _chartStyles() {
+  var defaults = _chartDefaults(), out = {}, meters = config.meters || {};
+  Object.keys(meters).forEach(function(id) {
+    var m = meters[id], meta = m.meta || {};
+    var chans = meta.sub_meter ? ['import'] : ['import', 'export'];
+    chans.forEach(function(ch) {
+      var key = _chartKey(id, ch);
+      if (!(key in defaults) || key in out) return;
+      var c = (m.channels || {})[ch] || {};
+      var chosen = /^#[0-9a-f]{6}$/i.test(c.bar_color || '') ? c.bar_color.toLowerCase() : '';
+      var line = c.rate_line === 'solid' || c.rate_line === 'dashed' ? c.rate_line
+               : (key === 'electricity_main_export' ? 'dashed' : 'solid');
+      out[key] = {bar: chosen || defaults[key], chosen: !!chosen, dashed: line === 'dashed',
+                  label: meta.sub_meter ? (meta.device || id) : (ch === 'export' ? 'Export' : 'Direct import')};
+    });
+  });
+  return out;
+}
+
+function buildChartStyle(meterId, ch, label) {
+  var all = _chartStyles(), key = _chartKey(meterId, ch);
+  var st = all[key] || {bar: _chartDefaults()[key] || CHART_PALETTE[0], chosen: false,
+                        dashed: key === 'electricity_main_export', label: label};
+  var line = rateLineColor(st.bar), radio = 'rl-' + meterId + '-' + ch;
+  var same = Object.keys(all).filter(function(k) { return k !== key && all[k].bar === st.bar; })
+                             .map(function(k) { return all[k].label; });
+  return '<div class="chart-style" data-cs-meter="' + esc(meterId) + '" data-cs-channel="' + esc(ch) + '" ' +
+      'data-cs-label="' + esc(label) + '">' +
+    '<div class="cs-head">' + esc(label) + '</div>' +
+    '<div class="cs-body">' +
+      '<svg class="cs-preview" viewBox="0 0 120 44" width="120" height="44" aria-hidden="true">' +
+        [[6, 30], [26, 18], [46, 24], [66, 10], [86, 22]].map(function(b) {
+          return '<rect x="' + b[0] + '" y="' + b[1] + '" width="14" height="' + (40 - b[1]) + '" fill="' + st.bar + '"/>';
+        }).join('') +
+        '<polyline points="2,26 40,26 40,14 80,14 80,20 118,20" fill="none" stroke="' + line + '" stroke-width="2"' +
+          (st.dashed ? ' stroke-dasharray="6 4"' : '') + '/>' +
+      '</svg>' +
+      '<div>' +
+        '<div class="cs-row">' +
+          CHART_PALETTE.map(function(c) {
+            return '<button type="button" class="cs-swatch' + (c === st.bar ? ' on' : '') + '" style="background:' + c + ';" ' +
+              'title="' + c + '" aria-label="Bar colour ' + c + '" onclick="setChartStyle(this, \'bar_color\', \'' + c + '\')"></button>';
+          }).join('') +
+          '<input type="color" class="cs-pick" value="' + st.bar + '" title="Any colour" ' +
+            'onchange="setChartStyle(this, \'bar_color\', this.value)">' +
+          (st.chosen
+            ? '<button type="button" class="btn btn-sm" onclick="setChartStyle(this, \'bar_color\', \'\')">Reset to default</button>'
+            : '<span class="cs-note">default</span>') +
+        '</div>' +
+        '<div class="cs-row">' +
+          '<span class="cs-note">Rate line</span>' +
+          ['solid', 'dashed'].map(function(v) {
+            return '<label class="cs-radio"><input type="radio" name="' + esc(radio) + '" value="' + v + '"' +
+              ((v === 'dashed') === st.dashed ? ' checked' : '') +
+              ' onchange="setChartStyle(this, \'rate_line\', \'' + v + '\')"> ' + (v === 'solid' ? 'Solid' : 'Dashed') + '</label>';
+          }).join('') +
+        '</div>' +
+        (same.length
+          ? '<div class="cs-note">Same colour as ' + same.map(esc).join(', ') + ' — the charts will not tell them apart.</div>'
+          : '') +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function setChartStyle(el, key, val) {
+  var box = el.closest('.chart-style'), m = box.dataset.csMeter, ch = box.dataset.csChannel;
+  var meter = config.meters[m];
+  if (!meter) return;
+  var chans = meter.channels || (meter.channels = {});
+  var c = chans[ch] || (chans[ch] = {});
+  if (val) c[key] = val.toLowerCase(); else delete c[key];
+  // every style on the page: a colour taken or freed changes the others' "same colour" note
+  document.querySelectorAll('.chart-style').forEach(function(b) {
+    b.outerHTML = buildChartStyle(b.dataset.csMeter, b.dataset.csChannel, b.dataset.csLabel);
+  });
 }
 
 // ── Sub-meter card ────────────────────────────────────────────────────────────
@@ -1180,6 +1313,8 @@ function buildSubCard(meterId, meter) {
         buildEntityInput(meterId+'__import__read', imp.read||'', meterId, 'import', 'read') + '</div>' +
       buildHistoryList(meterId, imp) +
     '</div>' : '') +  // end of !meta.retired_at conditional
+    '<div class="section-divider">Chart style</div>' +
+    buildChartStyle(meterId, 'import', meta.device || 'Device') +
     buildHistorySection(meterId, !!meta.retired_at);
 
   return div;

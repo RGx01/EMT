@@ -254,7 +254,7 @@ def day_billing(store, cfg, tz_name, utc_start, utc_end):
             bill_rounding=ctx["bill_rounding"], fallback_vat=_ec.vat_at(ctx, day),
             ev_fold_meter=ev_phys, ev_label=("EV" if ev_phys else None),
             cap_from=cap_from, import_schedule=import_schedule, store=store,
-            timezone_name=tz_name)
+            timezone_name=tz_name, rate_dashed=ctx["meter_rate_dashed"])
         out.append({"day": day, "chart": d["chart"], "panel": d["panel"],
                     "panel_lines": _card.panel_lines(d["panel"], currency)})
     return {"days": out,

@@ -31,6 +31,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import chart_style as _chart_style
 import direct_import as _direct
 import ev_split as _evsplit
 
@@ -177,6 +178,8 @@ CREATE TABLE IF NOT EXISTS meter_channels (
     standing_charge_sensor  TEXT,              -- HA entity_id (optional)
     mpan                    TEXT,              -- meter point reference number
     tariff                  TEXT,              -- tariff name / code
+    bar_color               TEXT,              -- chart bar colour '#rrggbb' (NULL = palette by position)
+    rate_line               TEXT,              -- chart rate line 'solid' | 'dashed' (NULL = default)
     FOREIGN KEY (meter_id) REFERENCES meters(id),
     UNIQUE (meter_id, channel)
 );
@@ -1485,6 +1488,9 @@ class BlockStore:
             # ── 3.0.0 per-channel rate/standing-charge source (API vs sensor) ─
             ("rate_source",            "meter_channels",  "TEXT",        _mc_cols),
             ("standing_charge_source", "meter_channels",  "TEXT",        _mc_cols),
+            # ── a channel's chart style, set on Settings (chart_style.py, 31 Oct 2026)
+            ("bar_color",              "meter_channels",  "TEXT",        _mc_cols),
+            ("rate_line",              "meter_channels",  "TEXT",        _mc_cols),
             ("carbon_g",         "blocks",          "REAL",              _b_cols),
             ("imp_provisional",  "blocks",          "INTEGER NOT NULL DEFAULT 0", _b_cols),
             # ── 3.0.0 Kraken API integration columns (upgrade path) ──────────
@@ -6178,8 +6184,8 @@ class BlockStore:
                     """INSERT INTO meter_channels
                            (meter_id, channel, read_sensor, rate_sensor,
                             standing_charge_sensor, mpan, tariff,
-                            rate_source, standing_charge_source)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            rate_source, standing_charge_source, bar_color, rate_line)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                        ON CONFLICT(meter_id, channel) DO UPDATE SET
                            read_sensor            = excluded.read_sensor,
                            rate_sensor            = excluded.rate_sensor,
@@ -6187,7 +6193,9 @@ class BlockStore:
                            mpan                   = excluded.mpan,
                            tariff                 = excluded.tariff,
                            rate_source            = excluded.rate_source,
-                           standing_charge_source = excluded.standing_charge_source""",
+                           standing_charge_source = excluded.standing_charge_source,
+                           bar_color              = excluded.bar_color,
+                           rate_line              = excluded.rate_line""",
                     (
                         meter_row_id, channel,
                         ch_cfg.get("read"),
@@ -6197,6 +6205,9 @@ class BlockStore:
                         ch_meta.get("tariff"),
                         ch_cfg.get("rate_source"),
                         ch_cfg.get("standing_charge_source"),
+                        # the chart style: exactly #rrggbb / solid|dashed, or nothing (it reaches HTML)
+                        _chart_style.clean_color(ch_cfg.get("bar_color")),
+                        _chart_style.clean_rate_line(ch_cfg.get("rate_line")),
                     )
                 )
                 # A device's old live sensor is kept for history on a rename unless the save says
@@ -6518,6 +6529,10 @@ class BlockStore:
                         ch_dict["rate_source"] = ch["rate_source"]
                     if ch["standing_charge_source"]:
                         ch_dict["standing_charge_source"] = ch["standing_charge_source"]
+                    if ch["bar_color"]:
+                        ch_dict["bar_color"] = ch["bar_color"]
+                    if ch["rate_line"]:
+                        ch_dict["rate_line"] = ch["rate_line"]
                 except (KeyError, IndexError):
                     pass
                 # mpan / tariff as channel meta dict (preserves engine-expected shape)

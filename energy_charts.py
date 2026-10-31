@@ -2,6 +2,8 @@ from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import logging
 
+import chart_style as _chart_style
+
 logger = logging.getLogger("energy_charts")
 
 
@@ -33,34 +35,12 @@ from billing import (                                     # noqa: F401
 # Colour helpers
 # ─────────────────────────────────────────────────────────────
 
-def adjust_color(hex_color, factor=0.85):
-    try:
-        h = hex_color.lstrip('#')
-        if len(h) == 3:
-            h = ''.join(c*2 for c in h)
-        r = max(0, min(255, int(int(h[0:2], 16) * factor)))
-        g = max(0, min(255, int(int(h[2:4], 16) * factor)))
-        b = max(0, min(255, int(int(h[4:6], 16) * factor)))
-        return f'#{r:02x}{g:02x}{b:02x}'
-    except Exception:
-        return '#333333'
-
 
 # ─────────────────────────────────────────────────────────────
 # Meter colour palette
 # ─────────────────────────────────────────────────────────────
 
-COLOR_PALETTE = [
-    "#1f77b4",  # blue       → main electricity meter
-    "#e377c2",  # pink       → first sub-meter
-    "#ff7f0e",  # orange     → second sub-meter
-    "#7f7f7f",  # grey
-    "#8c564b",  # brown
-    "#bcbd22",  # lime
-    "#d62728",  # red
-    "#9467bd",  # purple
-    "#17becf",  # cyan
-]
+COLOR_PALETTE = _chart_style.PALETTE
 
 
 def build_meter_colors(blocks):
@@ -80,7 +60,38 @@ def build_meter_colors(blocks):
     return {m: COLOR_PALETTE[i % len(COLOR_PALETTE)] for i, m in enumerate(all_meters)}
 
 
+def build_meter_styles(cfg: dict) -> dict:
+    """{meter: {"bar": colour, "rate": rate line colour, "dashed": bool}} for every meter that
+    draws: electricity_main (the main meter's import), each sub-meter, and
+    electricity_main_export. A channel's chosen style (chart_style.py) wins; unset, the bar is the
+    palette colour by position (`build_meter_colors_from_config`'s order) and the rate line is
+    dashed for export only."""
+    palette = _palette_by_position(cfg)
+    chans = {}
+    for meter_id, meter_cfg in (cfg.get("meters") or {}).items():
+        ch = meter_cfg.get("channels") or {}
+        if (meter_cfg.get("meta") or {}).get("sub_meter"):
+            chans[meter_id] = ch.get("import") or {}
+        elif "electricity_main" not in chans:
+            chans["electricity_main"] = ch.get("import") or {}
+            chans["electricity_main_export"] = ch.get("export") or {}
+    out = {}
+    for m, default in palette.items():
+        c = chans.get(m) or {}
+        bar = _chart_style.clean_color(c.get("bar_color")) or default
+        line = _chart_style.clean_rate_line(c.get("rate_line")) or (
+            "dashed" if m == "electricity_main_export" else "solid")
+        out[m] = {"bar": bar, "rate": _chart_style.rate_line_color(bar), "dashed": line == "dashed"}
+    return out
+
+
 def build_meter_colors_from_config(cfg: dict) -> dict:
+    """{meter: bar colour} — `build_meter_styles`' bars: the colour the user chose on Settings,
+    or the palette colour by position."""
+    return {m: st["bar"] for m, st in build_meter_styles(cfg).items()}
+
+
+def _palette_by_position(cfg: dict) -> dict:
     """
     Build meter colour map from the config dict rather than from blocks.
     This ensures all configured sub-meters get a colour even if they were
@@ -706,7 +717,7 @@ def _is_capped_day(day, cap_from) -> bool:
     return bool(cap_from) and str(day) >= str(cap_from)
 
 
-def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, timezone_name, block_minutes=30, currency='£', ev_slot_map=None, bill_rounding=False, fallback_vat=0.05, ev_fold_meter=None, ev_label=None, store=None):
+def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, timezone_name, block_minutes=30, currency='£', ev_slot_map=None, bill_rounding=False, fallback_vat=0.05, ev_fold_meter=None, ev_label=None, store=None, rate_dashed=None):
     """Everything one day's billing chart shows, as DATA — no markup.
 
     Returns {"chart": ..., "panel": ...}. `chart` is exactly the JSON the pre-rendered
@@ -1104,14 +1115,14 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
     # ── Side panel, as data ──
     # The breakdown lists the house remainder then each sub-meter, each only above
     # 0.0001 kWh, and only when the day has sub-meters at all. Colours travel with it:
-    # rate rows are drawn in the meter colour darkened by adjust_color(…, 0.75).
+    # rate rows are drawn in the meter's rate line colour (chart_style.rate_line_color).
     breakdown = []
     if sub_meter_names:
         if house_kwh > 0.0001:
             breakdown.append({"meter": "electricity_main",
                               "label": meter_display_name.get("electricity_main", "Direct import"),
                               "kwh": house_kwh, "cost": house_cost, "color": main_color,
-                              "rate_color": adjust_color(main_color, 0.75),
+                              "rate_color": _chart_style.rate_line_color(main_color),
                               "rates": _rates("electricity_main")})
         for meter_name in sub_meter_names:
             sub_kwh  = summary_kwh.get(meter_name, 0.0)
@@ -1121,7 +1132,7 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
                 breakdown.append({"meter": meter_name,
                                   "label": meter_display_name.get(meter_name, meter_name.replace("_", " ").title()),
                                   "kwh": sub_kwh, "cost": sub_cost, "color": sub_color,
-                                  "rate_color": adjust_color(sub_color, 0.75),
+                                  "rate_color": _chart_style.rate_line_color(sub_color),
                                   "rates": _rates(meter_name)})
     panel = {
         "total_import":    total_import,
@@ -1139,7 +1150,7 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
     meters_data = {}
     for meter in sorted(meter_kwh.keys()):
         bar_color  = meter_colors.get(meter, "#333333")
-        line_color = adjust_color(bar_color, 0.8)
+        line_color = _chart_style.rate_line_color(bar_color)
         if meter == "electricity_main_export":
             nice_name = meter_display_name.get(meter, "Grid Export")
         else:
@@ -1166,6 +1177,7 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
             "has_rate":     any(v != 0.0 for v in raw_rates),
             "bar_color":    bar_color,
             "line_color":   line_color,
+            "rate_dashed":  (rate_dashed or {}).get(meter, meter.endswith("_export")),
             "nice_name":    nice_name,
             "is_export":    meter.endswith("_export"),
         }
@@ -1237,7 +1249,10 @@ def billing_context(cfg, store, blocks, has_exc=None):
         read from `blocks`, which is all of history for the pre-render;
       * the learned VAT calendar (vat_at).
     """
-    meter_colors = build_meter_colors_from_config(cfg) if cfg else build_meter_colors(blocks)
+    _styles = build_meter_styles(cfg) if cfg else None
+    meter_colors = ({m: st["bar"] for m, st in _styles.items()} if _styles
+                    else build_meter_colors(blocks))
+    meter_rate_dashed = {m: st["dashed"] for m, st in (_styles or {}).items()}
 
     # Derived-EV split (display-only; BL-22): no-op unless this is a no-sub-meter
     # account with completed dispatches. Gives the Billing tab an "EV (from dispatch)"
@@ -1289,7 +1304,8 @@ def billing_context(cfg, store, blocks, has_exc=None):
         if not has_exc:
             _bill_rounding = False
 
-    return {"meter_colors": meter_colors, "ev_phys_id": _ev_phys_id,
+    return {"meter_colors": meter_colors, "meter_rate_dashed": meter_rate_dashed,
+            "ev_phys_id": _ev_phys_id,
             "ev_slot_map": _ev_slot_map, "ev_fold_devices": _ev_fold_devices,
             "ev_label": _ev_label, "ev_day_map": _ev_day_map,
             "bill_rounding": _bill_rounding, "vat_learned": _vat_learned}
