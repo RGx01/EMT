@@ -159,11 +159,76 @@ in this order, on the target:
 | 3b | **The bill's split** (bill and split paths design §7.1; built 16 Oct 2026, spec §5.2 v22, gate `bill_split`): a settled, uncorrected main block in the SMB era (from the earliest four-bucket `measured_cost` row) with a bill split cached, whose EV segments differ from the bill's EV clipped to kWh and **whose segments carry one rate**, gets EV + house at that rate (`pricing_segments.ev_house_at`). Cost, rate and totals unchanged; a multi-rate block (rates more than 0.001p/kWh apart), or a bill with no EV where EMT's split has the car (4.5.23), is **reported**, not moved. The house leg takes the residual, so the segments cost exactly what they did. | §5.2 v22 | After 1 (selects `'settled'`) and 3 (fits first, so 3b moves kWh within the block's own total). v4 settled IOG-SMB history under 4.5.9's dispatch cap; v5's settle (#180) takes the bill's split — this brings imported history to it once, in the importer's copy, instead of a runtime heal. |
 | 3c | **Imported bills** (engine step 4 design §6 (e); built 25 Oct 2026, spec v27, gate `imported_bills`): each main `imported_api` or `imported_csv` block with kWh and a cost and no bill gets a `measured_cost` row — its cost and ex-VAT, its kWh, label `IMPORTED`; the MPAN the source's bills', else the main import channel's; none without one. | §5.2 v27 | After 3b, which reads the bills the source carried. v4 wrote no bill for imported history and kept its band only in the stored rate — Octopus's cost, the tariff rate v4 chose by Octopus's label, or a CSV row's — and settle() reads no stored rate or cost. |
 | 3d | **The sensor's rate** (sensor rate fact design; built 28 Oct 2026, spec v28, gate `sensor_rates`): each live main block (no `source`, kWh, a rate, not corrected) in a config period whose import channel names a rate sensor — and, where that channel's `rate_source` is `'api'`, before the source's go-live (`pre_live_snapshot_done`) — gets a `sensor_rates` row at its stored rate, origin 'v4'. | §5.2 v28 | After 3c. Before its API go-live v4 priced a live half-hour at the rate sensor's last reading (Octopus's live, dispatch-aware rate) and kept only the rate; settle() reads no stored rate, and before dispatches were recorded its prediction is the clock. Each database dates its own era. |
+| 3e | **The standing charge by local day** (§4a; built 31 Oct 2026, spec v31, gate `standing_by_day`): each main imported block gets its local day's standing charge. v4's API and CSV imports filed it by UTC date: a summer local day's first half-hour read the day before's charge, and a CSV run's spring Sunday held two days' charges. A CSV run without the once-a-day signature is **reported**, not moved. | §5.2 v31 | After 3d; a block rewrite that reads nothing the others write. Before 4 only by convention. |
 | 4 | **Band relabel**: house `off_peak` → `night` inside the SMB era (§5). | §5.2 | Last of the block rewrites, so it sees every house segment 2 and 3 wrote. |
 | 5 | **Meta.** Carry the allow-listed keys (§7). Leave `written_by` and `db_uuid` out: the restore re-runs `engine_startup`, which stamps v5's version and mints a native `db_uuid` (spec §6 REGEN by v5's own mechanism). `emt_schema` comes with the target (§2). The audit record (`store_meta.import_audit`) is written after verify. | §6, §9.9 | After verify has passed, so the audit record holds its results. |
 | 6 | **Device sensors** (device sensors design §6; built 19 Oct 2026, spec v23, gate `device_sensors`): each current channel's `read_sensor` becomes its primary in `device_sensors`; a sub-meter's Device History sensors (`recorder_attribution_runs`) that are not its primary become its secondaries, latest run first. | §6 v23 | After 5, which carries the ledger it reads. Moves the sensors v4 held only in the ledger onto the device, once, in the importer's copy. |
 | 7 | **HA's reads** (soft delete design §2; built 20 Oct 2026, spec v24, gate `ha_reads`): a live block's channels with both registers become `ha_reads` half-hours — the block's kWh, or the registers' difference where Octopus settled it — naming the channel's primary, inferred; Device History's half-hours give back their hour. | §6 v24 | After 6, whose primaries the live rows name. Takes what HA reported out of the blocks, once, so a later delete of blocks does not lose it. |
 | 8 | **Device costs, reported** (device cost check design §4; built 31 Oct 2026, spec v30): the half-hours the import carries whose devices cost more than the meter, by `settlement_state.devices_exceed`, listed in the report. **Writes nothing.** | §6 v30 | Last: it judges what the import carries, every rewrite done. The heatmap flags them and a re-fetch prices their devices again. |
+
+### 4a. The standing charge by local day (transform 3e)
+
+*31 Oct 2026, from the staging copy's 31 Mar 2024. The user: v5 needs no repair, since a re-import from
+v4 brings the history through this transform. v5's own writers are fixed in the same change.*
+
+**The rule:** a half-hour's standing charge is its local day's (the config period's timezone). The
+readers take a local day's first non-zero half-hour, so a day whose blocks disagree reads whichever
+comes first.
+
+**What v4 wrote.** Both imports filed the charge by the UTC date (`block_start[:10]`); every block of a
+UTC date holds one value.
+
+- **The API import** looked the charge up at noon UTC on that date, which is local day D's charge.
+  In summer local D starts at 23:00 UTC on D − 1, so its first half-hour carries D − 1's charge.
+  At a summer price change, the first new day reads the old charge (four times on staging,
+  pennies each way).
+- **The CSV import** added up the file's standing column by UTC date. Octopus's and EMT's CSVs give a
+  local day's charge once, on its first row, so each local day's charge sits on the UTC date its local
+  midnight falls on: its own date in winter, the day before in summer. So:
+  - every summer day reads its own charge, from its first half-hour;
+  - the spring Sunday's UTC date holds the Sunday's charge and the Monday's added together, and both
+    local days read the total (staging: one day's charge too many on the period);
+  - the autumn Sunday's UTC date holds none (0), which the readers do not see.
+
+**What the transform writes**, on main blocks with `source` `imported_api` or `imported_csv`, a local
+day at a time. Each block of local day L takes SC(L), its stored value K is replaced, and every other
+block is left as it is:
+
+- **`imported_api`:** SC(L) = K of UTC date L's `imported_api` blocks. With none on that date (a run's
+  edge), L is left and counted.
+- **`imported_csv`,** within a **run** (consecutive UTC dates with `imported_csv` blocks):
+  - SC(L) = K of the UTC date L's local midnight falls on (L in winter, L − 1 in summer).
+  - The spring Sunday and the Monday after are split from the Sunday's date. With a = Saturday's
+    charge and b = Tuesday's:
+    - K = 2a: both are a;
+    - K = a + b: the Sunday is a and the Monday b;
+    - K = 2b: both are b.
+  - A local day whose source date has no charge in the run is left and counted.
+  - **A run is moved only with the once-a-day signature:** every clock change inside it shows it (an
+    autumn Sunday's date at 0, a spring Sunday's matching one of the three).
+  - **A run wholly in winter is already right**, since each UTC date is its own local day.
+  - **Any other run is reported, untouched**: a summer-only run, or one that does not match (a file
+    that spread the charge across its rows, or two price changes in four days). This keeps to flag,
+    don't act: the arithmetic proves the case or nothing moves.
+
+**Measured, 31 Oct 2026**, on two real 4.5.24 databases, every gate holding:
+
+- **staging's:** one CSV run (Jun 2023 – Aug 2024), with an autumn Sunday at 0 and a spring Sunday
+  at a + b, moved: 96 CSV blocks, and 8 API blocks (the four summer price changes, two half-hours
+  each). Every local day then reads its own charge, one value across its blocks.
+- **another install's:** two CSV runs either side of a four-week gap that holds the spring Sunday.
+  The winter one is already right; the summer one is reported, untouched. 20 API blocks moved.
+
+**The gate** (`standing_by_day`):
+
+- every block the transform did not touch carries the source's standing charge exactly;
+- every local day it touched holds one value across its imported blocks.
+
+`standing_charge` joins `REWRITTEN` for "carried exactly", which the gate replaces for this column.
+
+**v5's writers** (the same change): the CSV import adds up by the block's local day, so both a
+once-a-day file and a spread one give the day's charge; the API import looks the charge up at the local
+day's noon. Each writes it on every block of the local day.
 
 Each transform is one function, reads only the target, and adds a count to the report, so the audit
 record says how many rows each rule touched. **None is a heal**: there is no marker, no version

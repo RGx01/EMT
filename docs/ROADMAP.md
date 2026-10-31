@@ -590,6 +590,15 @@ half-hour. Now:
 - Re-fetch lists it, and its apply prices the devices again;
 - the v4 importer reports what it carries of the kind, and writes nothing.
 
+**BL-92 — an imported day's standing charge on the wrong day.** *31 Oct 2026, found with G2's draft
+(E design §4a).* The staging copy's 31 Mar 2024 (a spring Sunday, CSV-imported) held that day's standing
+charge and the next day's, and both local days read the total; its autumn Sunday held none. v4's CSV and
+API imports filed the charge by UTC date, so in summer a local day's first half-hour (23:00 UTC the day
+before) carried another day's. The API import's shows only at a summer price change, a day late.
+- v5's CSV and API imports write each local day's charge on its own blocks;
+- the v4 importer repairs imported history (transform 3e), and reports a CSV run it cannot prove;
+- v5 needs no repair (the user): re-importing from v4 brings the history through the transform.
+
 ## D. Surfacing performance
 
 *Measure before optimising.* Target hardware is a Raspberry Pi 4 class box on SD storage.
