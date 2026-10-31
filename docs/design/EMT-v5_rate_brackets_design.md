@@ -1,6 +1,6 @@
 # EMT v5 — rate brackets: where a device's usage fell by price
 
-*Status: draft, 31 Oct 2026 (ROADMAP BL-93); PR 1, the read, built. What it is: a view in Usage Stats that shows, for the
+*Status: built, 31 Oct 2026 (ROADMAP BL-93): PR 1, the read, and PR 2, the view. What it is: a view in Usage Stats that shows, for the
 whole meter, the house or one device, how much grid import fell in each 2.5p price bracket, per day,
 month and year. Decided with the user the same day (§6): brackets for every tariff and no band
 labels; billed and not-yet-billed half-hours alike; grid import only; 2.5p brackets. Code facts read
@@ -80,10 +80,12 @@ resizable table.
 - **A Show switch: Devices | Rate brackets.** Devices is today's chart. Rate brackets adds a picker:
   whole meter, house, or one device. One series at a time keeps the stack readable.
 - **The chart:** a stacked bar per bucket, one segment per bracket. kWh or £ follows the metric
-  switch, and a **%** option shows each bracket's share of the bucket. Brackets are coloured on a
-  sequential ramp from cheap to dear, with negative brackets in a distinct hue. The legend is the ramp
-  with its end labels, and the hover names the bracket. 30 bracket colours could not be told apart
-  by identity anyway.
+  switch, and a **%** option shows each bracket's share of the bucket. Brackets are coloured green
+  through amber to red by price across the brackets in view, and neighbours alternately lighter and
+  darker; a negative price is blue. *As built:* a fixed 0–40p scale made 5–7.5p and 7.5–10p the same
+  green on the staging copy, and spreading the colours by position made 22.5p read as cheap. The
+  legend names each bracket in view, as do the hover and the table, so the colour need carry only
+  the order.
 - **HH:** a half-hour usually falls in one bracket, so each bar is one colour.
 - **The table:** one row per bracket for the selected range, cheapest first. Columns: kWh, £,
   average p/kWh (£ ÷ kWh, which matches the bill rather than the bracket's midpoint) and share of
@@ -92,8 +94,11 @@ resizable table.
 - **One line above the table:** the series' average p/kWh against the whole meter's for the range
   (illustrative: "EV charger 7.4p/kWh, whole meter 14.9p/kWh"). It says whether the device chased
   the cheap half-hours, on any tariff.
-- **Running total, Net and Standing charge** are hidden in this view. They are about the bill, not
-  the price.
+- **Running total, Net, Standing charge, CO₂ and the period sort** are hidden in this view. They are
+  about the bill, carbon or the period table, not the price. The tariff overlay stays.
+- **When it is read** *(as built)*: only while the view is shown; all history's days once per data
+  version, and an HH day's half-hours once per day and version. A new half-hour moves the version, so
+  a page left on the view reads the days again: 0.37 s on the staging copy on the Mac.
 
 ## 6. Decided (the user, 31 Oct 2026)
 
@@ -114,7 +119,7 @@ resizable table.
 | PR | what |
 |---|---|
 | 1 | **built (PR 1):** `usage_view.day_brackets` / `slot_brackets` — two reads (the main's import slices, the devices' grid kWh, rate and £) over the range, bracketed per half-hour, the house and its clip, summed per local day or half-hour as `{series: {n: [kWh, £]}}` at 4 dp; the page sums days into its buckets and the range, as it does the stats. `/api/energy?fields=brackets` at `day` or `block`, asked for on its own, so the stats payload is unchanged. On the staging copy, all history: 0.37 s, and house + devices equals the meter in kWh and £ |
-| 2 | the Show switch, the series picker, the stacked chart, the % option, the table and the average line in `charts.html` |
+| 2 | **built (PR 2):** the Show switch, the series picker, the stacked chart, the % option, the table and the average line in `charts.html`; the day's brackets summed into each bucket in `barAggRows`, as the meters are, so Monthly, Daily, Yearly and Billing / Calendar need nothing of their own |
 
 Tests:
 - a rate on a bracket edge lands in the upper bracket;

@@ -599,8 +599,8 @@ before) carried another day's. The API import's shows only at a summer price cha
 - the v4 importer repairs imported history (transform 3e), and reports a CSV run it cannot prove;
 - v5 needs no repair (the user): re-importing from v4 brings the history through the transform.
 
-**BL-93 — rate brackets: where a device's usage fell by price.** *31 Oct 2026, draft (rate brackets
-design); the read built (`/api/energy?fields=brackets`), the chart to come.* A Usage Stats view: the whole meter's, the house's or one device's grid import in 2.5p
+**BL-93 — rate brackets: where a device's usage fell by price.** ✅ *Done 31 Oct 2026 (rate brackets
+design): the read (`/api/energy?fields=brackets`), and the view in Usage Stats.* A Usage Stats view: the whole meter's, the house's or one device's grid import in 2.5p
 brackets of the rate it was charged (inc VAT), per day, month and year, with each bracket's kWh, £ and
 average p/kWh. One rule for every tariff: the rate already carries IOG's dispatches and cap, the
 time-of-use windows and Agile's price, and the stored band label is set only on Intelligent. No new
