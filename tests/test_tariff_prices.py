@@ -81,6 +81,20 @@ class TheSummary(unittest.TestCase):
         self.assertEqual(sorted({r["window"] for r in rows}), ["05:30-23:30", "23:30-05:30"])
         self.assertEqual({r["band"] for r in rows}, {"off_peak", "peak"})
 
+    def test_a_night_split_at_a_midnight_price_change_is_still_the_night(self):
+        """31 Oct 2026, the Pi: Octopus splits the night where the price changes at local midnight
+        (23:30-00:00 old, 00:00-05:30 new); with two changes the pieces recur, and the hover showed
+        00:00-05:30 as a band of its own. Each piece goes to the 23:30-05:30 night it is part of."""
+        def split_night(day, old, new):
+            nd = (datetime.fromisoformat(day) + timedelta(days=1)).date().isoformat()
+            return [(_utc(day, "23:30"), _utc(nd, "00:00"), old), (_utc(nd, "00:00"), _utc(nd, "05:30"), new)]
+        recs = [r for r in go_records("2025-07-01", 120, 7.0, 27.0) if r[0] not in
+                (_utc("2025-08-31", "23:30"), _utc("2025-09-30", "23:30"))]
+        recs += split_night("2025-08-31", 7.0, 7.5) + split_night("2025-09-30", 7.5, 8.0)
+        rows = self.tp.summarise(recs, kind="unit", tariff_code=GO)
+        self.assertEqual(sorted({r["window"] for r in rows}), ["05:30-23:30", "23:30-05:30"])
+        self.assertEqual({r["band"] for r in rows}, {"off_peak", "peak"})
+
     def test_a_clock_change_is_not_a_new_window(self):
         rows = self.tp.summarise(go_records("2024-03-28", 7, 8.0, 28.0), kind="unit", tariff_code=GO)
         self.assertEqual(len(rows), 2)
