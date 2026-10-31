@@ -132,7 +132,7 @@ class TheHalfHourView(unittest.TestCase):
         self.assertIn("yAxisID: isHH ? 'yNet' : 'y',", _fn("barGetDatasets"))
         render = _fn("barRender")
         self.assertIn("var netAxis = !!pd.isHH && barShowNet();", render)
-        self.assertIn("var axes = netAxis ? barAlignZero(datasets) : null;", render)
+        self.assertIn("var axes = netAxis ? barAlignZero(datasets, tariffLanes) : null;", render)
         self.assertIn("yNet: Object.assign({ display: netAxis, position: 'right'", render)
         align = _fn("barAlignZero")
         self.assertIn("return { y: range(best.steps[0]), yNet: range(best.steps[1]) };", align)

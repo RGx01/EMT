@@ -3,8 +3,9 @@ Usage Stats' tariff overlay (31 Oct 2026): the account's tariffs along the Month
 
 Import agreements in a band at the top of the chart, above the axis; export at the bottom, below it;
 a short tick at each change of tariff, placed by its date within its month or billing period; hover
-a band for the tariff's name, code, dates and length. Offered only in Monthly, ordered by Date, and
-only where agreements are stored.
+a band for the tariff's name, code, dates and length. Offered where a bar is one stretch of time —
+Monthly by Date, and since a second change the same day Daily and HH — and only where agreements are
+stored. On HH a day is inside one agreement (they change at local midnight), so one band spans it.
 
 What they pin:
 
@@ -20,9 +21,12 @@ What they pin:
 Checked in the local preview on 31 Oct 2026, on a scratch copy of staging (seven import agreements,
 two export, one blip): the bands in the right months, the ticks at the changes, the hover's dates
 the agreements' local days (21 Sep 2023 – 11 Jun 2024 · 8.7 months), Billing and Calendar both, dark
-and light; no box in Daily, HH, Yearly or Monthly by Month.
+and light; no box in Yearly or Monthly by Month. Daily and HH: the band split at 26 Aug's left edge
+in the period from 3 Aug; HH on 26 Aug one band each way across the day, the running total's axes
+still level (every tick on the same pixel).
 
-Discriminating: every test fails on the parent (the module, route and overlay are new).
+Discriminating: every test fails on its parent (the module, route and overlay on #352's tree; Daily
+and HH on #353's).
 """
 import json
 import os
@@ -119,15 +123,29 @@ class TheRoute(unittest.TestCase):
 
 class ThePage(unittest.TestCase):
 
-    def test_only_monthly_by_date_with_agreements(self):
-        self.assertIn("return barPeriod === 'monthly' && barMonthOrder === 'date' && !!barTariffs && barTariffs.length > 0;",
-                      _fn("barTariffsAvailable"))
+    def test_where_a_bar_is_one_stretch_of_time_with_agreements(self):
+        avail = _fn("barTariffsAvailable")
+        self.assertIn("var view = (barPeriod === 'monthly' && barMonthOrder === 'date') || barPeriod === 'daily' || barPeriod === 'hh';",
+                      avail)
+        self.assertIn("return view && !!barTariffs && barTariffs.length > 0;", avail)
         self.assertIn("if (_tw) _tw.style.display = barTariffsAvailable() ? 'flex' : 'none';", _fn("barRender"))
 
     def test_each_bar_carries_its_dates(self):
         data = _fn("barGetDataForPeriod")
         self.assertIn("bucketRanges: keys.map(function(bk){ return { from: bk, to: barAddMonth(bk) }; }),", data)
         self.assertIn("return { from: from, to: barAddMonth(from) };", data)
+        self.assertIn("return { from: from, to: barAddDay(from) };", data)                        # Daily
+        self.assertIn("bucketRanges: rows.map(function(){ return { from: barHHDate, to: _hhTo }; })", data)   # HH
+
+    def test_hh_keeps_its_two_zeros_level_with_the_bands(self):
+        """HH's bars and running total share gridlines (#349); the bands' room goes into that choice,
+        not after it, or the two zeros part."""
+        align = _fn("barAlignZero")
+        self.assertIn("var rb = barTariffRoom(pos, neg, lanes), rl = barTariffRoom(lmax, lmin, lanes);", align)
+        self.assertLess(align.index("barTariffRoom("), align.index("var axes = [[pos * head"))
+        render = _fn("barRender")
+        self.assertIn("var axes = netAxis ? barAlignZero(datasets, tariffLanes) : null;", render)
+        self.assertIn("afterDataLimits: tariffLanes && !axes ? function(sc)", render)
 
     def test_a_date_lands_across_its_own_bar(self):
         x = _fn("barTariffX")
@@ -137,9 +155,9 @@ class ThePage(unittest.TestCase):
     def test_import_above_export_below(self):
         segs = _fn("barTariffSegments")
         self.assertIn("var ys = { imp: ca.top + 2, exp: ca.bottom - BAR_TARIFF_LANE - 2 };", segs)
-        room = _fn("barTariffHeadroom")
-        self.assertIn("if (lanes.imp) sc.max += span * 0.12;", room)
-        self.assertIn("if (lanes.exp) sc.min -= span * 0.12;", room)
+        room = _fn("barTariffRoom")
+        self.assertIn("return [max + (lanes && lanes.imp ? span * 0.12 : 0), min - (lanes && lanes.exp ? span * 0.12 : 0)];", room)
+        self.assertIn("var r = barTariffRoom(sc.max, sc.min, lanes);", _fn("barTariffHeadroom"))
 
     def test_the_bands_hover_in_place_of_the_bars(self):
         plug = _fn("barTariffPlugin")
