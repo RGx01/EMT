@@ -6152,6 +6152,36 @@ def api_battery_sensor_confirm():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/tariff-agreements", methods=["GET"])
+def api_tariff_agreements():
+    """The account's stored agreements, for Usage Stats' tariff overlay: {agreements: [{direction,
+    tariff_code, name, from, to}]}, import first, oldest first. `from` / `to` are local dates (the
+    config period's timezone; `to` null for the open one). An agreement that ends where it starts is
+    left out — Octopus lists such blips. No MPAN or account: the page needs neither. Read-only, from
+    the store (no Octopus call); empty with no account or none stored."""
+    try:
+        import engine as _eng
+        import tariff_names as _tn
+        from zoneinfo import ZoneInfo
+        from datetime import datetime as _dt, timezone as _tz
+        store = store_access.store()
+        rows = store.get_tariff_agreements(_eng.get_db_account())
+        _, tz = _period_block_minutes_tz(store, None)
+        zone = ZoneInfo(tz)
+
+        def _local(iso):
+            return (_dt.fromisoformat(iso).replace(tzinfo=_tz.utc).astimezone(zone).date().isoformat()
+                    if iso else None)
+        out = [{"direction": r["direction"], "tariff_code": r["tariff_code"],
+                "name": _tn.tariff_name(r["tariff_code"]),
+                "from": _local(r["valid_from"]), "to": _local(r["valid_to"])}
+               for r in rows if r["valid_to"] is None or r["valid_to"] > r["valid_from"]]
+        return jsonify({"agreements": out})
+    except Exception as e:
+        logger.debug("api_tariff_agreements: %s", e)
+        return jsonify({"agreements": []})
+
+
 @app.route("/api/tariff-agreements/changed", methods=["GET"])
 def api_tariff_agreements_changed():
     """Octopus's answer that changed past agreements, which EMT did not take (G1 design §2): {changed:

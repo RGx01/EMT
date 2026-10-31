@@ -73,7 +73,8 @@ class TestRouteStoreUse(unittest.TestCase):
         # −2: /api/unsettled-blocks, /api/blocks/deleted-ranges, with the sub-pages (21 Oct 2026).
         # +1: /data-management, which reads whether there is imported history (21 Oct 2026).
         # +1: /api/battery-sensor/flagged, a battery sensor found counting solar (29 Oct 2026).
-        self.assertEqual(len(self.d["get_on_companion"]), 35)
+        # +1: /api/tariff-agreements, Usage Stats' tariff overlay (31 Oct 2026).
+        self.assertEqual(len(self.d["get_on_companion"]), 36)
 
     def test_adoption_is_total(self):
         """Measured at 0% before the port: v4 credited one route with the read
