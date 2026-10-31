@@ -136,8 +136,17 @@ class ThePage(unittest.TestCase):
         self.assertIn("var next = starts.filter(function(d) { return d > iso; })[0] || a.to;", at)
         self.assertIn("if (!latest[k] || p.from > latest[k].from) latest[k] = p;", at)   # one per band
         lines = _fn("barTariffPriceLines")
-        for part in ("'Unit rates: half-hourly'", "'Off-peak ' + p2(p.inc)", "'Standing charge ' + p2(p.inc) + '/day'"):
+        for part in ("'Unit rates: half-hourly'", "'Standing charge ' + p2(p.inc) + '/day'"):
             self.assertIn(part, lines)
+
+    def test_one_row_per_time_window_in_time_order(self):
+        """The user, 31 Oct 2026: one row per time period, for Cosy's seven windows and Intelligent's
+        two alike — no off-peak / peak names, no windows joined on a line."""
+        lines = _fn("barTariffPriceLines")
+        self.assertIn("return String(x.window || '').localeCompare(String(y.window || ''));", lines)
+        self.assertIn("if (p.window) return p.window.replace('-', '\\u2013') + ' ' + p2(p.inc) + '/kWh';", lines)
+        self.assertNotIn("'Off-peak '", lines)
+        self.assertNotIn("parts.join(", lines)
         self.assertIn("(a.direction === 'export' ? ' (no VAT on export)' : ', inc VAT')", _fn("barTariffShow"))
 
 

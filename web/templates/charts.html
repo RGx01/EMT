@@ -1920,21 +1920,18 @@ function barTariffPricesAt(a, iso) {
   return { from: from, to: next, rows: rows };
 }
 
+// The hover's price lines: one row per time window, in time order from midnight (Go and Intelligent
+// two, Cosy seven — the user, 31 Oct 2026), else the flat rate; Agile's "half-hourly"; then the
+// standing charge.
 function barTariffPriceLines(a, rows) {
   var p2 = function(v) { return (Math.round(v * 100) / 100).toFixed(2) + 'p'; };
-  var win = function(w) { return w ? ' (' + w.replace('-', '\u2013') + ')' : ''; };
-  var order = { off_peak: 0, peak: 1, '': 2, dynamic: 3 };
   var units = rows.filter(function(p) { return p.kind === 'unit'; })
-                  .sort(function(x, y) { return (order[x.band] - order[y.band]) || String(x.window).localeCompare(String(y.window)); });
-  var lines = [];
-  var parts = units.map(function(p) {
+                  .sort(function(x, y) { return String(x.window || '').localeCompare(String(y.window || '')); });
+  var lines = units.map(function(p) {
     if (p.band === 'dynamic') return 'Unit rates: half-hourly';
-    if (p.band === 'off_peak') return 'Off-peak ' + p2(p.inc) + '/kWh' + win(p.window);
-    if (p.band === 'peak') return 'Peak ' + p2(p.inc) + '/kWh';
     if (p.window) return p.window.replace('-', '\u2013') + ' ' + p2(p.inc) + '/kWh';
     return (a.direction === 'export' ? 'Export rate ' : 'Unit rate ') + p2(p.inc) + '/kWh';
   });
-  if (parts.length) lines.push(parts.join(' \u00b7 '));
   rows.filter(function(p) { return p.kind === 'standing'; }).forEach(function(p) {
     lines.push('Standing charge ' + p2(p.inc) + '/day');
   });
