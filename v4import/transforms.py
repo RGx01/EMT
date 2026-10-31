@@ -519,6 +519,150 @@ def sensor_rates(conn, report):
     report["transforms"]["sensor_rates"] = out
 
 
+def _local_day_info(tz_name, day):
+    """(UTC date of the local day's midnight, its UTC offset in hours, the next day's) for a local
+    date in tz_name — a spring Sunday's offset rises over the day, an autumn Sunday's falls."""
+    from datetime import datetime, timedelta, timezone
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(tz_name)
+    y, m, d = map(int, day.split("-"))
+    a = datetime(y, m, d, tzinfo=tz)
+    nd = datetime(y, m, d) + timedelta(days=1)
+    b = datetime(nd.year, nd.month, nd.day, tzinfo=tz)
+    return (a.astimezone(timezone.utc).date().isoformat(), a.utcoffset(), b.utcoffset())
+
+
+def _day(iso, delta):
+    from datetime import date, timedelta
+    return (date.fromisoformat(iso) + timedelta(days=delta)).isoformat()
+
+
+def standing_by_day(conn, report):
+    """3e (E design §4a, 31 Oct 2026; spec v31): each main imported block gets its LOCAL day's
+    standing charge. v4's imports filed it by the UTC date — every block of a UTC date one value, K —
+    and in summer a local day starts at 23:00 UTC the day before, so the readers (a local day's first
+    non-zero half-hour) took another day's:
+
+    - `imported_api`: K(D) was the schedule at noon UTC on D, local day D's. A local day L takes K(L).
+    - `imported_csv`: K(D) added up the file's standing column by D. The file gives a local day's
+      charge once, on its first row, so K(D) holds the charge of each local day whose midnight is on
+      D: winter days their own date, summer days the day before. The spring Sunday's date holds the
+      Sunday's and the Monday's, split by a (Saturday's) and b (Tuesday's): 2a → a, a; a + b → a, b;
+      2b → b, b. The autumn Sunday's date holds none.
+      A run (consecutive UTC dates) is moved only if it crosses a clock change and every one it
+      crosses shows that signature; a run wholly in winter is already right (each UTC date is its own
+      local day); any other is reported untouched — a file that spread the charge, a summer-only run,
+      or two price changes in four days is not guessed at (flag, don't act).
+
+    A local day with no source value is left. The blocks of every local day moved are recorded in
+    temp.v4i_standing for the `standing_by_day` gate. Real figures never go in the report."""
+    tzs = {}
+    rows = conn.execute(
+        "SELECT b.block_start, b.source, b.standing_charge, COALESCE(p.timezone, 'UTC') AS tz "
+        "FROM main.blocks b LEFT JOIN main.config_periods p ON p.id = b.config_period_id "
+        "WHERE b.meter_id = ? AND b.source IN " + IMPORTED_SOURCES + " ORDER BY b.block_start",
+        (MAIN,)).fetchall()
+    K = {"imported_api": {}, "imported_csv": {}}      # source → UTC date → value (None: not one)
+    days = {"imported_api": {}, "imported_csv": {}}   # source → local day → [block_start]
+    tz_of_day = {}
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    for r in rows:
+        src, d, v = r["source"], r["block_start"][:10], r["standing_charge"]
+        k = K[src]
+        if d not in k:
+            k[d] = v
+        elif k[d] is not None and (v is None or abs(v - k[d]) > 1e-9):
+            k[d] = None                              # a UTC date with two values: not v4's shape
+        z = tzs.setdefault(r["tz"], ZoneInfo(r["tz"]))
+        ld = (datetime.fromisoformat(r["block_start"][:19]).replace(tzinfo=timezone.utc)
+              .astimezone(z).date().isoformat())
+        days[src].setdefault(ld, []).append(r["block_start"])
+        tz_of_day.setdefault(ld, r["tz"])
+
+    target = {}                                      # (source, local day) → value
+    out = {"api": {"days": 0, "blocks": 0, "left": 0},
+           "csv": {"runs_moved": 0, "runs_right": 0, "runs_reported": [], "days": 0, "blocks": 0,
+                   "left": 0}}
+    # imported_api
+    for ld in days["imported_api"]:
+        v = K["imported_api"].get(ld)
+        if v is None:
+            out["api"]["left"] += 1
+        else:
+            target[("imported_api", ld)] = v
+
+    # imported_csv, a run at a time
+    kc = K["imported_csv"]
+    dates = sorted(kc)
+    runs, cur = [], []
+    for d in dates:
+        if cur and d != _day(cur[-1], 1):
+            runs.append(cur); cur = []
+        cur.append(d)
+    if cur:
+        runs.append(cur)
+    for run in runs:
+        rset = set(run)
+        lds = sorted({ld for ld in days["imported_csv"]
+                      if _local_day_info(tz_of_day[ld], ld)[0] in rset or ld in rset})
+        split, why = {}, None
+        crossings = 0
+        for ld in lds:
+            _, o0, o1 = _local_day_info(tz_of_day[ld], ld)
+            if o1 == o0:
+                continue
+            crossings += 1
+            if o1 < o0:                               # autumn: its own UTC date holds nothing
+                if ld in rset and kc.get(ld) not in (0, 0.0):
+                    why = "autumn %s's date is not empty" % ld
+            else:                                     # spring: Sunday + Monday on the Sunday's date
+                a, b, t = kc.get(_day(ld, -1)), kc.get(_day(ld, 1)), kc.get(ld)
+                if None in (a, b, t):
+                    why = "spring %s: a neighbour missing" % ld
+                elif abs(t - 2 * a) < 1e-6:
+                    split = {ld: a, _day(ld, 1): a}
+                elif abs(t - (a + b)) < 1e-6:
+                    split = {ld: a, _day(ld, 1): b}
+                elif abs(t - 2 * b) < 1e-6:
+                    split = {ld: b, _day(ld, 1): b}
+                else:
+                    why = "spring %s's date matches no split" % ld
+            if why:
+                break
+        if not crossings and all(_local_day_info(tz_of_day[ld], ld)[0] == ld for ld in lds):
+            out["csv"]["runs_right"] += 1             # winter only: each date is its own local day
+            continue
+        if not crossings:
+            why = "summer only: no clock change to prove the file's shape"
+        if why:
+            out["csv"]["runs_reported"].append({"from": run[0], "to": run[-1], "why": why})
+            continue
+        out["csv"]["runs_moved"] += 1
+        for ld in lds:
+            v = split.get(ld)
+            if v is None:
+                src_date = _local_day_info(tz_of_day[ld], ld)[0]
+                v = kc.get(src_date) if src_date in rset else None
+            if v is None:
+                out["csv"]["left"] += 1
+            else:
+                target[("imported_csv", ld)] = v
+
+    conn.execute("CREATE TEMP TABLE IF NOT EXISTS v4i_standing (block_start TEXT PRIMARY KEY)")
+    conn.execute("DELETE FROM temp.v4i_standing")
+    for (src, ld), v in target.items():
+        key = "api" if src == "imported_api" else "csv"
+        out[key]["days"] += 1
+        for bs in days[src][ld]:
+            n = conn.execute("UPDATE main.blocks SET standing_charge = ? WHERE block_start = ? "
+                             "AND meter_id = ? AND source = ? AND standing_charge IS NOT ?",
+                             (v, bs, MAIN, src, v)).rowcount
+            out[key]["blocks"] += n
+            conn.execute("INSERT OR IGNORE INTO temp.v4i_standing (block_start) VALUES (?)", (bs,))
+    report["transforms"]["standing_by_day"] = out
+
+
 def device_costs(conn, report):
     """Report only (device cost check design §4): the half-hours v4 left with devices that cost more
     than the meter — v4's corrections on an API account did not always carry the rate to the devices,
@@ -550,6 +694,7 @@ def run(conn, report):
     bill_split(conn, report)
     imported_bills(conn, report)
     sensor_rates(conn, report)
+    standing_by_day(conn, report)
     carry_keys(conn, report)
     device_sensors(conn, report)
     ha_reads(conn, report)

@@ -100,6 +100,7 @@
     "_count_blocks_and_local_dates",
     "_export_settlement_expected",
     "_imported_config_period_id",
+    "_local_date_of",
     "_needs_split_at",
     "_period_starting_at",
     "_resolve_delete_meters",

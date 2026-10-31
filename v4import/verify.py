@@ -19,8 +19,9 @@ from . import rules
 # Columns a transform rewrites, by table: excluded from "carried exactly" and checked by
 # their own gate instead.
 # rate_source: transform 1, checked by `provenance`; needs_pass2_rerun: transform 5's settlement
-# source (spec v25), checked by `billing_source`.
-REWRITTEN = {"blocks": ("rate_source", "needs_pass2_rerun")}
+# source (spec v25), checked by `billing_source`; standing_charge: transform 3e (spec v31), checked
+# by `standing_by_day`.
+REWRITTEN = {"blocks": ("rate_source", "needs_pass2_rerun", "standing_charge")}
 
 # Rows a transform replaces wholesale: the segments of the blocks transforms 2 and 3 wrote
 # (temp.v4i_resegmented). Counted and compared exactly everywhere else; checked by
@@ -442,11 +443,43 @@ def ha_reads(conn, report):
     return None
 
 
+def standing_by_day(conn, report):
+    """E design §4a (transform 3e): every block the transform did not move carries the source's
+    standing charge exactly, and every local day it moved holds one value per source."""
+    from datetime import datetime, timezone
+    from zoneinfo import ZoneInfo
+    from .transforms import MAIN
+    untouched = _one(conn,
+                     "SELECT COUNT(*) FROM src.blocks s JOIN main.blocks m ON m.id = s.id "
+                     "WHERE NOT (m.meter_id = ? AND m.block_start IN (SELECT block_start FROM "
+                     "temp.v4i_standing)) AND m.standing_charge IS NOT s.standing_charge", MAIN)
+    seen, split = {}, 0
+    for r in conn.execute("SELECT b.block_start, b.source, b.standing_charge, "
+                          "COALESCE(p.timezone, 'UTC') AS tz FROM temp.v4i_standing t "
+                          "JOIN main.blocks b ON b.block_start = t.block_start AND b.meter_id = ? "
+                          "LEFT JOIN main.config_periods p ON p.id = b.config_period_id", (MAIN,)):
+        ld = (datetime.fromisoformat(r["block_start"][:19]).replace(tzinfo=timezone.utc)
+              .astimezone(ZoneInfo(r["tz"])).date().isoformat())
+        key = (r["source"], ld)
+        if key in seen and seen[key] != r["standing_charge"]:
+            split += 1
+        seen.setdefault(key, r["standing_charge"])
+    t = report["transforms"].get("standing_by_day") or {}
+    report["gates"]["standing_by_day"].update(
+        moved_blocks=_one(conn, "SELECT COUNT(*) FROM temp.v4i_standing"),
+        api=(t.get("api") or {}).get("blocks", 0), csv=(t.get("csv") or {}).get("blocks", 0),
+        csv_runs_reported=len((t.get("csv") or {}).get("runs_reported") or []))
+    if untouched or split:
+        return ("standing charge: %d unmoved block(s) not the source's, %d moved block(s) whose local "
+                "day holds two values" % (untouched, split))
+    return None
+
+
 GATES = (("row_counts", row_counts), ("carried_exactly", carried_exactly),
          ("cost_parity", cost_parity), ("provenance", provenance),
          ("ev_segments", ev_segments), ("split_reproduced", split_reproduced),
          ("held_fit", held_fit), ("bill_split", bill_split), ("imported_bills", imported_bills),
-         ("sensor_rates", sensor_rates),
+         ("sensor_rates", sensor_rates), ("standing_by_day", standing_by_day),
          ("corrections", corrections), ("tombstones", tombstones), ("keys", keys),
          ("billing_source", billing_source), ("device_sensors", device_sensors),
          ("ha_reads", ha_reads))
