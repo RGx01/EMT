@@ -102,7 +102,7 @@ class TheChart(unittest.TestCase):
         c = _fn("barBrColor")
         self.assertIn("var t = hi > lo ? (n - lo) / (hi - lo) : 0;", c)
         self.assertIn("var i = ns.indexOf(n), alt = i % 2 ? (dark ? 14 : 13) : 0;", c)
-        self.assertIn("if (n < 0) return 'hsl(215, 70%, '", c)
+        self.assertIn(": 'hsl(215, 70%, '", c)
 
     def test_share_is_of_the_kwh_out_of_a_hundred(self):
         # of kWh in Cost too: a plunge's credit takes from a bar's £, and a share of it passed 100%
@@ -122,8 +122,14 @@ class TheExport(unittest.TestCase):
         self.assertIn("return sg * Math.round(barBrVal(v) * 1000) / 1000;", _fn("barBrDatasets"))
         self.assertIn("v *= barBrSign();", _fn("barRender"))
 
-    def test_the_best_paid_bracket_is_green(self):
-        self.assertIn("if (barBrSign() < 0) t = 1 - t;", _fn("barBrColor"))
+    def test_earnings_run_blue_to_purple(self):
+        # money in, as an import plunge's blue; the green-to-red ramp is money out
+        c = _fn("barBrColor")
+        self.assertIn("if (ex) return 'hsl(' + Math.round(205 + 70 * t) + ', 62%, '", c)
+        self.assertNotIn("t = 1 - t", c)
+
+    def test_paying_to_export_is_red(self):
+        self.assertIn("if (n < 0) return ex ? 'hsl(0, '", _fn("barBrColor"))
 
     def test_its_table_and_line_speak_of_credit(self):
         t = _fn("barBrBuildTable")
