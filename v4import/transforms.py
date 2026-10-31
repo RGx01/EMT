@@ -519,6 +519,22 @@ def sensor_rates(conn, report):
     report["transforms"]["sensor_rates"] = out
 
 
+def device_costs(conn, report):
+    """Report only (device cost check design §4): the half-hours v4 left with devices that cost more
+    than the meter — v4's corrections on an API account did not always carry the rate to the devices,
+    and its 4.5.21 heal carried only the ex-VAT side (one install, 14 Sep 2026). Nothing is written:
+    the heatmap flags each one (settlement_state.devices_exceed, the same rule) and a re-fetch prices
+    its devices again. Run last, on what the import carries."""
+    import settlement_state as ss
+    rows = conn.execute(
+        "SELECT b.block_start, b.imp_cost, b.imp_kwh_api, b.source, "
+        "  (SELECT SUM(d.imp_cost) FROM main.blocks d WHERE d.block_start = b.block_start "
+        "   AND d.meter_id IN (SELECT meter_id FROM main.meters WHERE is_sub_meter = 1)) AS devices_cost "
+        "FROM main.blocks b WHERE b.meter_id = ? ORDER BY b.block_start", (MAIN,)).fetchall()
+    found = [r["block_start"] for r in rows if ss.devices_exceed(dict(r))]
+    report["transforms"]["device_costs"] = {"reported": found}
+
+
 def run(conn, report):
     conn.execute("CREATE TEMP TABLE IF NOT EXISTS v4i_resegmented "
                  "(block_start TEXT, why TEXT, PRIMARY KEY (block_start, why))")
@@ -537,3 +553,4 @@ def run(conn, report):
     carry_keys(conn, report)
     device_sensors(conn, report)
     ha_reads(conn, report)
+    device_costs(conn, report)

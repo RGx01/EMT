@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v29 — revised 28 Oct 2026, the agreements table left empty by the import (G1) (v28: v4's live rate from its sensor era kept as a fact, transform 3d; v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v30 — revised 31 Oct 2026, the import reports devices that cost more than the meter (v29: the agreements table left empty by the import (G1); v28: v4's live rate from its sensor era kept as a fact, transform 3d; v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -159,6 +159,12 @@ rate, and before v4 recorded dispatches the prediction can only be the clock, so
 no bill a smart charge outside the night window read peak. The importer keeps each such half-hour's
 stored rate in `sensor_rates`, the era dated by each database's own go-live stamp, and v5 bands by it
 below a bill (see SENSOR RATES, below). No bill is written; the asker still asks Octopus.*
+
+*Changes in v30 (31 Oct 2026): **the import reports devices that cost more than the meter** (device cost
+check design §4). Report only, the last step: the half-hours the import carries whose devices cost more,
+between them, than the meter (`settlement_state.devices_exceed`), under
+`transforms.device_costs.reported`, and a restore warning. Nothing is written; the heatmap flags them and
+a re-fetch prices their devices again.*
 
 *Changes in v27 (25 Oct 2026): **what the import heard becomes a bill** (transform 3c, gate
 `imported_bills`; engine step 4 design §6 (e)). v4 kept an imported half-hour's band only in the rate

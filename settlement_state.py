@@ -21,6 +21,11 @@ same thing. Pure: facts in (BlockStore.get_settlement_facts), states out.
            split_missing     — a completed dispatch, energy in the block, and no split at all
                                (the Split view's red; the view went 17 Oct 2026, and the Import
                                bill carries it as attention)
+           devices_exceed    — a settled half-hour whose devices cost more than the meter
+                               (device cost check design, 31 Oct 2026): each device is priced on
+                               its grid share of the meter's kWh at the meter's rates, so they can
+                               only exceed it by rounding. The bill is not affected; the device
+                               breakdown is. A re-fetch re-prices them.
 """
 from datetime import datetime, timedelta
 
@@ -46,6 +51,21 @@ def _f(x):
         return float(x)
     except (TypeError, ValueError):
         return None
+
+
+def devices_exceed(f) -> bool:
+    """A settled half-hour whose devices cost more, between them, than the meter (`f`: a
+    get_settlement_facts row). Settled: its kWh is DCC's or an import's — an unsettled live
+    half-hour can be over until settlement re-clips it. Compared as magnitudes, so a negative
+    (plunge) price reads the right way round. The tolerance is the module's rounding bound, a
+    thousandth of a penny: each device's cost is its grid share x its rate, stored to 6 dp, and the
+    shares sum to the meter's kWh, so a sound half-hour can only be over by rounding (the 6 dp of
+    the meter's own cost and its devices': 2e-6 on real databases, 31 Oct 2026)."""
+    dc, cost = _f(f.get("devices_cost")), _f(f.get("imp_cost"))
+    if dc is None or cost is None:
+        return False
+    settled = f.get("imp_kwh_api") is not None or str(f.get("source") or "").startswith("imported")
+    return settled and abs(dc) > abs(cost) + _EPS_GBP
 
 
 def other_supplier(supplier) -> bool:
@@ -250,6 +270,9 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
 
     if split == "missing":
         flags.append("split_missing")
+
+    if devices_exceed(f):
+        flags.append("devices_exceed")
 
     return {"bill": bill, "export": export, "split": split, "flags": flags}
 

@@ -11182,6 +11182,7 @@ def _refetch_diff(facts: dict, octo: dict) -> list:
     - a row where nothing would change is dropped: a bill 4.5.23 would hold whose cost agrees
       changes nothing either way. The bill's split arriving on a cost-only cached bill is a change, even
       at the same figures, on a completed dispatch or where the bill has the car."""
+    import settlement_state as _ss
     def _f(x):
         try:
             return float(x)
@@ -11248,13 +11249,17 @@ def _refetch_diff(facts: dict, octo: dict) -> list:
                          and abs(block_cost - float(b["cost_incl"])) > _REFETCH_GBP_EPS)
             if unapplied and not cost_diff:
                 cost_now = block_cost                    # what the block holds is what changes
-            if cost_diff or ev_diff or arrives or new_bill or confirms or unapplied:
+            # the devices cost more than the meter (device cost check design §3): a change even
+            # where Octopus agrees with the meter — the apply settles the half-hour again, and
+            # settle() prices the devices on their grid shares at its rates
+            devices = not held and _ss.devices_exceed(f)
+            if cost_diff or ev_diff or arrives or new_bill or confirms or unapplied or devices:
                 r["bill"] = {"stored": cost_now, "unapplied": unapplied,
                              "stored_is_bill": have is not None and not corrected and not unapplied,
                              "corrected": corrected, "new_bill": new_bill,
                              "octopus": b["cost_incl"], "stored_ev": ev_stored,
                              "stored_ev_is_bill": ev_is_bill,
-                             "octopus_ev": ev_new, "held": held}
+                             "octopus_ev": ev_new, "held": held, "devices": devices}
         if len(r) > 1:
             rows.append(r)
     return rows
@@ -11289,6 +11294,7 @@ async def run_refetch_preview(utc_from: str, utc_to: str, parts=_REFETCH_PARTS) 
                    "held": sum(bool(r.get("bill", {}).get("held")) for r in rows),
                    "corrected": sum(bool(r.get("bill", {}).get("corrected"))
                                     and not r["bill"].get("held") for r in rows),
+                   "devices": sum(bool(r.get("bill", {}).get("devices")) for r in rows),
                    "no_bill": len(no_bill)}
         st.update({"status": "done", "phase": "preview", "token": token, "summary": summary,
                    "rows": rows[:500]})
