@@ -3937,6 +3937,14 @@ class BlockStore:
                 out["added"].append(k[1:])
         return out
 
+    def get_tariff_prices(self) -> list:
+        """Every stored price period (G2 design §3), [{tariff_code, agreement_from, kind, band, window,
+        value_exc, valid_from, valid_to}], oldest first — a small table, read whole by the overlay's
+        route."""
+        return [dict(r) for r in self._conn.execute(
+            "SELECT tariff_code, agreement_from, kind, band, window, value_exc, valid_from, valid_to "
+            "FROM tariff_prices ORDER BY tariff_code, agreement_from, kind, valid_from, band")]
+
     def has_tariff_prices(self, tariff_code: str, agreement_from: str, kind: str) -> bool:
         """Whether an agreement's price periods of one kind are stored (G2b: a closed agreement's are
         fetched once, until they are)."""

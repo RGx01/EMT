@@ -210,6 +210,7 @@
     "get_settlement_facts",
     "get_sub_meter_history",
     "get_tariff_agreements",
+    "get_tariff_prices",
     "get_timed_out_provisionals",
     "get_vat_calendar",
     "ha_read_devices",

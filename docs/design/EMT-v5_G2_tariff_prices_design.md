@@ -1,6 +1,6 @@
 # EMT v5 — G2: tariff prices, stored for display
 
-*Decided, 31 Oct 2026 (§8): display only; the timeline's minor ticks; the hover's prices for the tick period under the pointer; only what changes by the half-hour left out. The second half of ROADMAP §G, re-scoped. G2 as first proposed — a store of
+*Built, 31 Oct 2026: G2a #357, G2b #358, G2c (the route, the hover, the minor ticks). Decided the same day (§8): display only; the timeline's minor ticks; the hover's prices for the tick period under the pointer; only what changes by the half-hour left out. The second half of ROADMAP §G, re-scoped. G2 as first proposed — a store of
 Octopus's published rate records that pricing reads, with a diff that re-prices — was dropped on
 28 Oct 2026 (#326). The user brought it back on 31 Oct 2026, narrower: the tariff's standing charge
 and unit rates, for the Usage Stats tariff overlay's hover (#353, #354), **Agile's unit rates left
