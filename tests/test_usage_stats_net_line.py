@@ -24,6 +24,12 @@ Then (31 Oct 2026, a second change):
 - **A theme flip redraws the chart**, whichever toggle flipped it: the sidebar's tells only iframes, so
   the Net line (the chart's text colour) stayed near-white on a light page.
 
+Then (31 Oct 2026, a third change): HH's two axes share one set of gridlines, each on a round step,
+and a label carries the decimals it needs; the 📅 opens a panel of the page's own with Go and Cancel
+(Escape and a click outside close it too), and a Today button. Checked in the preview, staging copy,
+on 20, 26, 28 and 31 Oct in kWh and cost: every tick of the two axes on the same pixel; the panel's
+Cancel, outside click and Escape leave the day, Go loads the new one, Today goes to today and greys.
+
 Checked in the local preview on 31 Oct 2026, on a scratch copy of staging, on 28 Oct: the HH line's
 last point equals the Daily view's net for the day in cost (with the standing charge) and CO₂, and to
 within the server's 1 Wh rounding in kWh; the two axes' zeros fall on the same pixel; the sidebar's
@@ -35,7 +41,8 @@ the meters' columns on every row in kWh, and so does the Total. The net line equ
 (cost: + the standing charge when it is shown; CO₂: the net carbon).
 
 Structural, as the page's other Usage Stats tests are (no JavaScript runtime here). Discriminating:
-every test fails on its parent (the first change's on #345's tree, the second's on #347's).
+every test fails on its parent (the first change's on #345's tree, the second's on #347's, the
+third's on #348's).
 """
 import os
 import unittest
@@ -120,12 +127,56 @@ class TheHalfHourView(unittest.TestCase):
         self.assertIn("var axes = netAxis ? barAlignZero(datasets) : null;", render)
         self.assertIn("yNet: Object.assign({ display: netAxis, position: 'right'", render)
         align = _fn("barAlignZero")
-        self.assertIn("var f = Math.max(share(pos, neg), share(lmax, lmin));", align)
-        self.assertIn("return { y: range(pos, neg), yNet: range(lmax, lmin) };", align)
+        self.assertIn("return { y: range(best.steps[0]), yNet: range(best.steps[1]) };", align)
+
+    def test_the_two_axes_share_their_gridlines(self):
+        """Bounds at the data's ends gave Chart.js odd end labels (7 kWh beside 6) and put the right's
+        labels between the left's gridlines. Now: one count of intervals and one split about zero for
+        both, each axis on a round step."""
+        align = _fn("barAlignZero")
+        self.assertIn("for (var T = 4; T <= 7; T++) {", align)
+        self.assertIn("for (var d = 0; d <= T; d++) {", align)
+        self.assertIn("return { min: -best.d * st, max: (best.T - best.d) * st, grace: 0, step: st };", align)
+        self.assertIn("var m = [1, 2, 2.5, 5, 10].find(", _fn("barNiceStep"))
+        render = _fn("barRender")
+        self.assertIn("axes ? { stepSize: axes.y.step } : {}", render)
+        self.assertIn("axes ? { stepSize: axes.yNet.step } : {}", render)
+
+    def test_a_label_has_the_decimals_it_needs(self):
+        """A 2.5 kWh step read "3 kWh" (0 dp), £0.25 read "£0.3", and a zero that arrived as -3e-17
+        read "-£0.0"."""
+        lab = _fn("barYLabel")
+        self.assertIn("v = Math.round(v * 1e6) / 1e6;", lab)
+        self.assertIn("while (dp < 2 && Math.abs(v * Math.pow(10, dp) - Math.round(v * Math.pow(10, dp))) > 1e-6) dp++;", lab)
 
     def test_it_is_named_so(self):
         self.assertIn("return barPeriod === 'hh' ? 'Running total' : 'Net';", _fn("barNetLabel"))
         self.assertIn("'\\nRunning total: '", _fn("barRender"))
+
+
+class TheDayNavigator(unittest.TestCase):
+    """HH's 📅 opens a panel of the page's own; the browser's picker, opened straight from the button,
+    had no way out on some browsers but picking a day. And a Today button."""
+
+    def test_the_browsers_picker_is_not_opened_from_the_button(self):
+        sub = _fn("barBuildSubBar")
+        self.assertNotIn("calInp.showPicker()", PAGE)
+        self.assertIn("calBtn.onclick = function() { barHHDatePanel(calWrap, today); };", sub)
+
+    def test_the_panel_can_be_left_without_a_day(self):
+        pnl = _fn("barHHDatePanel")
+        self.assertIn("cancel.onclick = close;", pnl)
+        self.assertIn("function key(e) { if (e.key === 'Escape') close(); }", pnl)
+        self.assertIn("function outside(e) { if (!anchor.contains(e.target)) close(); }", pnl)
+        self.assertIn("if (open) { open._close(); return; }", pnl)          # the button again
+        self.assertIn("go.onclick = pick;", pnl)
+        self.assertIn("if (v) barHHSelect(v > today ? today : v);", pnl)
+
+    def test_today_is_a_button_greyed_on_today(self):
+        sub = _fn("barBuildSubBar")
+        self.assertIn("todayBtn.disabled = (barHHDate === today);", sub)
+        self.assertIn("todayBtn.onclick = function() { barHHSelect(barTodayStr()); };", sub)
+        self.assertIn("bar.appendChild(todayBtn);", sub)
 
 
 class TheTheme(unittest.TestCase):
