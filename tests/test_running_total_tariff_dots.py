@@ -64,7 +64,7 @@ class TheDots(unittest.TestCase):
               "var document = {getElementById: function (id) { return {checked: id === 'bar-tariff-cb' ? %s : false}; }};\n") % (
             json.dumps(mode), json.dumps(view), json.dumps(TARIFFS), "true" if on else "false") + _kinds() + \
             "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts",
-                                       "barTariffChangeDays", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
+                                       "barTariffChangeDays", "barTariffVatOnly", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
                                        "barAccYearOf", "barAccDoy", "barAccShowEras", "barAccShowTariffs", "barAccTariffDays",
                                        "barAccOverlays")) + \
             "\nconsole.log(JSON.stringify(barAccOverlays(%s, %s)));" % (json.dumps(list(years)), json.dumps(series))

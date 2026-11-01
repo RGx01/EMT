@@ -2127,6 +2127,12 @@ function barTariffShow(a, ev, iso) {
       span.textContent = 'Prices ' + barFmtDate(at.from) + (last ? ' \u2013 ' + barFmtDate(last) : ' onwards')
         + (a.direction === 'export' ? ' (no VAT on export)' : ', inc VAT');
       tip.appendChild(span);
+      if (at.from !== a.from && barTariffVatOnly(a, at.from)) {
+        var vat = document.createElement('div');
+        vat.style.cssText = 'color:var(--muted);font-size:11px;';
+        vat.textContent = 'VAT change \u2014 the same prices before VAT';
+        tip.appendChild(vat);
+      }
       lines.forEach(function(l) { var d = document.createElement('div'); d.textContent = l; tip.appendChild(d); });
     }
   }
@@ -3470,7 +3476,8 @@ function barAccStartChoices() {
       barTariffChangeDays(a, today).reverse()
         .forEach(function(d) {
           if (out.some(function(o) { return o.id === 'tariff:' + d; })) return;
-          out.push({id: 'tariff:' + d, label: '\u00a0\u00a0\u00a0' + a.name + ' \u2014 price change ' + barAccDateLabel(d),
+          out.push({id: 'tariff:' + d, label: '\u00a0\u00a0\u00a0' + a.name + ' \u2014 ' + (barTariffVatOnly(a, d) ? 'VAT' : 'price') +
+                    ' change ' + barAccDateLabel(d),
                     m: +d.slice(5, 7), d: +d.slice(8, 10), group: 'Tariffs'});
         });
     });
@@ -3486,6 +3493,18 @@ function barAccStartChoices() {
 // to today — a change Octopus has scheduled is not one that has happened
 function barTariffChangeDays(a, today) {
   return barTariffPriceStarts(a).filter(function(d) { return (!a.to || d < a.to) && d <= today; });
+}
+// Whether `iso`'s change is VAT's alone (1 Nov 2026, the user: the fixed tariff's 1 Oct 2026, 0% VAT): every
+// period starting that day has the ex-VAT value of the one of its kind, band and window ending there.
+// for_display splits a period at a VAT change, so the day is a tick with no new price.
+function barTariffVatOnly(a, iso) {
+  var ps = a.prices || [], starts = ps.filter(function(p) { return p.from === iso; });
+  return starts.length > 0 && starts.every(function(p) {
+    var prev = ps.filter(function(q) {
+      return q.to === iso && q.kind === p.kind && q.band === p.band && (q.window || '') === (p.window || '');
+    })[0];
+    return !!prev && prev.exc === p.exc;
+  });
 }
 // The picker's options, an <optgroup> a run of one group
 function barAccStartOptions(starts, cur) {

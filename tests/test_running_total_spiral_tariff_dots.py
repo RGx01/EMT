@@ -53,7 +53,7 @@ class TheDots(unittest.TestCase):
         js = ("var barAccStart = 'jan', barData = [], barBillingDay = 1, barEras = [], BAR_ACC_YC = ['#a', '#b'],"
               " BAR_ACC_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n"
               "var barTariffs = %s;\n") % json.dumps(TARIFFS) + \
-            "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "barTariffPriceStarts", "barTariffChangeDays",
+            "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly",
                                        "barAccDateLabel", "barAccAnchor", "barAccStartMs", "barAccYearOf",
                                        "barAccTariffDays", "barAccSpiralDots")) + \
             "\nfunction erasGroups() { return []; }\n" \

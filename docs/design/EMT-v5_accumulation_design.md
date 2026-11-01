@@ -38,7 +38,8 @@ Usage Stats already has the period buttons, the metric switch (kWh, £, CO₂), 
   The picker groups them: the year's own two, the tariffs newest first, then the eras as the eras
   modal lists them — by kind, Solar and Battery first, newest first in each (1 Nov 2026).
   Under each tariff, indented and newest first, the days its prices changed inside it (the bars'
-  minor ticks), up to today: *Intelligent Go — price change 1 Oct 2025*.
+  minor ticks), up to today: *Intelligent Go — price change 1 Oct 2025*; a day only VAT changed (every
+  price the same before VAT, as a fixed tariff on 1 Oct 2026) is a *VAT change*, and its tip says so.
 - **Years:** Usage Stats' own year chips.
 - **Hidden in this view:** the period buttons and Billing / Calendar (a running total is by day),
   Net, the period sort.
