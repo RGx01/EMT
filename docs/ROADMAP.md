@@ -659,8 +659,13 @@ estimate), red when over; any part at peak, by price, with its reason (a bump ch
 hours); and the EV's charging outside any smart charge. "saved" is gone (the user). The modal groups
 the charges by cap-day, and a gap a session bridged is drawn as one.
 
-**BL-100 — Overview: an Agile card.** Import and export prices, the 48-hour history card's style and
-size.
+**BL-100 — Overview: an Agile card.** ✅ *Done 1 Nov 2026.* Where the import or export tariff is
+dynamic, Overview shows its half-hourly prices in the 48-hour history card's style and size: 24 h back
+to as far ahead as Octopus has published, import a bar a half-hour (green to red, blue below 0p),
+export a line, now dashed; above it the price now and the cheapest hour to come. From the schedules
+the poll's rate refresh holds (`engine.agile_prices`), no Octopus call of its own — so tomorrow's
+prices, published about 4pm, appear at the poll after. *Open:* an extra rate refresh soon after 4pm
+on an Agile account, if the wait matters.
 
 **BL-101 — home eras.** A timeline of the home's changes: *Added solar*, *More storage*, *Added
 ASHP*, *Added A2A*. Each a label, a kind, a start, an optional end, and optional manufacturer, kW, kWh

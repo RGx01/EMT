@@ -8804,6 +8804,33 @@ def _vat_context(channel: str):
     return _store.get_vat_calendar() if _store is not None else []
 
 
+def agile_prices(now=None, back_hours: int = 24, ahead_hours: int = 24) -> dict:
+    """BL-100 (1 Nov 2026): the half-hourly prices of a dynamic (Agile) tariff, import and export,
+    for the Overview's card: {channel: {"tariff", "prices": [[slot, pence]]}} from `back_hours`
+    before now to the last published half-hour within `ahead_hours`. From the schedules the poll's
+    rate refresh already holds — no Octopus call of its own (import inc VAT, export as published).
+    A channel not on a dynamic tariff, or with no schedule, is left out."""
+    import tariff_prices as _tp
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    now = now or _dt.now(_tz.utc).replace(tzinfo=None)
+    t0 = (now - _td(hours=back_hours)).replace(minute=0 if now.minute < 30 else 30, second=0, microsecond=0)
+    out = {}
+    for ch in ("import", "export"):
+        tc = (((_kraken_discovery or {}).get(ch) or {}).get("tariff_code") or "")
+        sch = (_kraken_rate_schedules or {}).get(ch)
+        if not tc or sch is None or not _tp.is_dynamic_code(tc):
+            continue
+        prices, t = [], t0
+        while t < now + _td(hours=ahead_hours):
+            r = sch.resolve(t.isoformat())
+            if r is not None:
+                prices.append([t.isoformat(), round(float(r), 4)])
+            t += _td(minutes=30)
+        if prices:
+            out[ch] = {"tariff": tc, "prices": prices}
+    return out
+
+
 async def _refresh_kraken_rate_schedules() -> None:
     """Build/refresh the cached rate schedules for import and export from the
     discovered tariffs. Cheap (fixed tariffs ≈ 1 record). Failures leave the
