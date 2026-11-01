@@ -631,7 +631,7 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
         <span id="bar-net-text">Net</span>
       </label>
       <label id="bar-tariff-wrap" style="display:none; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer;"
-             title="The account's tariffs along the bars: import above the axis, export below; hover one for its details">
+             title="The account's tariffs: along the bars, import above the axis and export below; on Running total a band on Lifetime, dots on Year by year; hover one for its details">
         <input type="checkbox" id="bar-tariff-cb" onchange="barSaveState(); barRender();" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
         Tariffs
       </label>
@@ -3467,7 +3467,7 @@ function barAccStartChoices() {
     .forEach(function(a) {
       out.push({id: 'tariff:' + a.from, label: 'Tariff: ' + a.name + ' (' + barAccDateLabel(a.from) + ')',
                 m: +a.from.slice(5, 7), d: +a.from.slice(8, 10), group: 'Tariffs'});
-      barTariffPriceStarts(a).filter(function(d) { return (!a.to || d < a.to) && d <= today; }).reverse()
+      barTariffChangeDays(a, today).reverse()
         .forEach(function(d) {
           if (out.some(function(o) { return o.id === 'tariff:' + d; })) return;
           out.push({id: 'tariff:' + d, label: '\u00a0\u00a0\u00a0' + a.name + ' \u2014 price change ' + barAccDateLabel(d),
@@ -3481,6 +3481,11 @@ function barAccStartChoices() {
     });
   });
   return out;
+}
+// The days an agreement's prices changed inside it, oldest first: after its start, before its end, up
+// to today — a change Octopus has scheduled is not one that has happened
+function barTariffChangeDays(a, today) {
+  return barTariffPriceStarts(a).filter(function(d) { return (!a.to || d < a.to) && d <= today; });
 }
 // The picker's options, an <optgroup> a run of one group
 function barAccStartOptions(starts, cur) {
@@ -3597,7 +3602,7 @@ function barAccSyncUI() {
    'bar-sort-btn', 'bar-br-wrap', 'bar-br-note'].forEach(function(id) { vis(id, false); });
   // PR 4: the eras on every drawing; the tariffs along the Lifetime line
   vis('bar-eras-wrap', !!(barEras && barEras.length), 'flex');
-  vis('bar-tariff-wrap', !!(barTariffs && barTariffs.length) && barAccView === 'line' && barAccMode === 'lifetime', 'flex');
+  vis('bar-tariff-wrap', !!(barTariffs && barTariffs.length) && barAccView === 'line', 'flex');
   vis('bar-acc-standing-wrap', barAccSeries === 'net', 'flex');
   var cb = document.getElementById('bar-acc-standing'); if (cb) cb.checked = barAccIncStanding;
   document.querySelectorAll('#bar-acc-mode .bar-seg-btn').forEach(function(b) {
@@ -3659,11 +3664,11 @@ function barAccRender() {
           return {label: barAccYearLabel(y), data: s.years[y] || [], borderColor: c, backgroundColor: c, borderWidth: 2, pointRadius: 0};
         });
     var monthStarts = barAccMonthOffsets();     // the first of each month, days from the year's start
-    var ov = barAccOverlays(yearsShown);
+    var ov = barAccOverlays(yearsShown, s);
     barAccCharts.push(new Chart(document.getElementById('bar-acc-c-' + i).getContext('2d'), {
       type: 'line',
       data: {datasets: datasets},
-      plugins: ov.tariffs || ov.eras.length ? [barAccOverlayPlugin(ov)] : [],
+      plugins: ov.tariffs || ov.eras.length || ov.dots.length ? [barAccOverlayPlugin(ov)] : [],
       options: {
         responsive: true, maintainAspectRatio: false, parsing: false, normalized: true,
         layout: {padding: {top: (ov.tariffs ? BAR_TARIFF_LANE + 4 : 0) + (ov.eras.length ? BAR_ERA_CHIP + 4 : 0)}},
@@ -3733,13 +3738,32 @@ function barAccShowEras() {
 }
 function barAccShowTariffs() {
   var cb = document.getElementById('bar-tariff-cb');
-  return !!(barTariffs && barTariffs.length) && !!cb && cb.checked && barAccMode === 'lifetime';
+  return !!(barTariffs && barTariffs.length) && !!cb && cb.checked && barAccView === 'line';
 }
-// What a line chart draws: {tariffs: [agreements] | null, eras: [{e, x, end, color}]} in the x axis'
-// own values (ms on Lifetime, days of the year on Year by year)
-function barAccOverlays(years) {
-  var out = {tariffs: null, eras: []};
-  if (barAccShowTariffs()) out.tariffs = barTariffs.filter(function(a) { return a.direction !== 'export' && a.from; });
+// What a line chart draws: {tariffs: [agreements] | null, eras: [{e, x, end, color}], dots: [{a, iso, x,
+// y, change, color}]} in the x axis' own values (ms on Lifetime, days of the year on Year by year). On
+// Year by year the import tariffs are dots on the lines (1 Nov 2026, the user): one at each agreement's
+// start, a smaller hollow one at each price change inside it (barTariffChangeDays), on its year's line at
+// that day's total; none where the year has no point on or before it. `s` is the chart's series.
+function barAccOverlays(years, s) {
+  var out = {tariffs: null, eras: [], dots: []};
+  if (barAccShowTariffs()) {
+    var imp = barTariffs.filter(function(a) { return a.direction !== 'export' && a.from; });
+    if (barAccMode === 'lifetime') out.tariffs = imp;
+    else if (s) {
+      var today = new Date().toISOString().slice(0, 10);
+      imp.forEach(function(a) {
+        [[a.from, false]].concat(barTariffChangeDays(a, today).map(function(d) { return [d, true]; })).forEach(function(c) {
+          var r = {year: +c[0].slice(0, 4), month: +c[0].slice(5, 7), day: +c[0].slice(8, 10)};
+          var y = barAccYearOf(r), yi = years.indexOf(y), x = barAccDoy(r);
+          var pts = yi >= 0 ? s.years[y] || [] : [], pt = null;
+          pts.forEach(function(p) { if (p.x <= x) pt = p; });
+          if (!pt || pts[pts.length - 1].x < x) return;      // before the year's data, or after it
+          out.dots.push({a: a, iso: c[0], x: x, y: pt.y, change: c[1], color: BAR_ACC_YC[yi % BAR_ACC_YC.length]});
+        });
+      });
+    }
+  }
   if (!barAccShowEras()) return out;
   barEras.forEach(function(e) {
     var r = {year: +e.start.slice(0, 4), month: +e.start.slice(5, 7), day: +e.start.slice(8, 10)};
@@ -3790,7 +3814,17 @@ function barAccOverlayPlugin(ov) {
         c.fillStyle = th.tooltipTitle; c.textAlign = 'center'; c.fillText(k.icon, x, cy + 0.5); c.textAlign = 'start';
         marks.push({e: m.e, x: x, cy: cy});
       });
-      chart._emtAccMarks = marks; chart._emtAccBands = bands;
+      var ys = chart.scales.y, dots = [];
+      (ov.dots || []).forEach(function(d) {
+        var x = xs.getPixelForValue(d.x), y = ys.getPixelForValue(d.y), r = d.change ? 3 : 4.5;
+        if (x < ca.left - 1 || x > ca.right + 1) return;
+        c.beginPath(); c.arc(x, y, r, 0, 2 * Math.PI);
+        c.lineWidth = 1.5; c.strokeStyle = d.change ? d.color : (dark ? '#1a1d27' : '#ffffff');
+        c.fillStyle = d.change ? (dark ? '#1a1d27' : '#ffffff') : d.color;
+        c.fill(); c.stroke();
+        dots.push({d: d, x: x, y: y});
+      });
+      chart._emtAccMarks = marks; chart._emtAccBands = bands; chart._emtAccDots = dots;
       c.restore();
     },
     beforeEvent: function(chart, args) {
@@ -3800,6 +3834,11 @@ function barAccOverlayPlugin(ov) {
       var r = BAR_ERA_CHIP / 2 + 2;
       var m = (chart._emtAccMarks || []).find(function(q) { return Math.abs(e.x - q.x) <= r && Math.abs(e.y - q.cy) <= r; });
       if (m) { barEraShow(m.e, e.native); return false; }
+      var dt = (chart._emtAccDots || []).find(function(q) { return Math.abs(e.x - q.x) <= 6 && Math.abs(e.y - q.y) <= 6; });
+      if (dt) {
+        if (chart.tooltip) chart.tooltip.setActiveElements([], {x: e.x, y: e.y});
+        barTariffShow(dt.d.a, e.native, dt.d.iso); return false;
+      }
       var b = (chart._emtAccBands || []).find(function(q) { return e.x >= q.x0 && e.x < q.x1 && e.y >= q.y0 && e.y <= q.y1; });
       if (b) { barTariffShow(b.a, e.native, null); return false; }
       barTariffHide();

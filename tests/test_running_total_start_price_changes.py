@@ -60,7 +60,7 @@ class TheChanges(unittest.TestCase):
               "var barTariffs = %s, barEras = [], barAccStart = %s;\n") % (
             json.dumps(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]),
             json.dumps(tariffs), json.dumps(start)) + _kinds() + \
-            "\n".join(_fn(n) for n in ("barAccMs", "barAccDateLabel", "erasGroups", "barTariffPriceStarts",
+            "\n".join(_fn(n) for n in ("barAccMs", "barAccDateLabel", "erasGroups", "barTariffPriceStarts", "barTariffChangeDays",
                                        "barAccStartChoices", "barAccAnchor")) + \
             "\nconsole.log(JSON.stringify(" + expr + "));"
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
