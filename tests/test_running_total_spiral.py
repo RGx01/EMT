@@ -37,8 +37,12 @@ def _fn(name):
 class TheScale(unittest.TestCase):
 
     def _run(self, expr):
-        js = "var barCurrency = '£';\n" + "\n".join(
-            _fn(n) for n in ("barAccMs", "barAccDoy", "_spFrac", "_spNice", "_spUnit", "_spLbl", "barAccFmt")) + \
+        # PR 3: the year's start, 1 January here
+        js = ("var barCurrency = '£', barAccStart = 'jan', barTariffs = [], barEras = [], barData = [], barBillingDay = 1, "
+              "BAR_ACC_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n") + "\n".join(
+            _fn(n) for n in ("barAccMs", "barAccStartChoices", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
+                             "barAccYearOf", "barAccYearDays", "barAccDoy", "_spFrac", "_spNice", "_spUnit", "_spLbl",
+                             "barAccFmt")) + \
             "\nconsole.log(JSON.stringify(" + expr + "));"
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
             fh.write(js)
