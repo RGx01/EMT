@@ -707,6 +707,22 @@ standing charges), Lifetime or Year by year, with a table a year (total, change,
   tariff's, an era's); **PR 4 ✅** eras and tariffs on it; **PR 5 ✅** the Spiral tab retired — a remembered one, or `?tab=spiral`, opens the Running total's
   spiral with its saved view carried over.
 
+**BL-105 — the help: fixing the data heatmap, and red days Octopus has not costed.** *Noted 1 Nov 2026 (the
+user).* Data Management's help page (`help/data_management.html`) says what the heatmap is, not what to do
+about it. It should say:
+- **How to fix each state**: the action on a selection for each colour of the Import bill and Export bill
+  views (a re-fetch, a gap fill, a correction), and which states have none.
+- **What a red day uncosted by the supplier means.** Several users' instances have long stretches with no
+  cost from Octopus: EMT prices them kWh × rate, which is an estimate, not the bill. Octopus has to supply
+  the cost, and EMT cannot.
+- **A costed half-hour turning red on a re-fetch.** The user has seen half-hours that Octopus had costed turn
+  red after a re-fetch. The help is to say this is outside EMT's control. *Before writing it*, trace what a
+  re-fetch stores when Octopus's answer for an already-costed half-hour is empty or different (does EMT keep
+  the cost it had, or replace it?), so the help says what EMT does and not only what Octopus does.
+- **Colour swatches on the key.** The Import bill and Export bill keys (`SETTLE_METRICS[*].sub` in
+  `heatmap_module.html`) are one sentence of colour names. Add a swatch beside each state, with the hatched
+  ones drawn hatched, and use the same swatches on the help page.
+
 ## D. Surfacing performance
 
 *Measure before optimising.* Target hardware is a Raspberry Pi 4 class box on SD storage.
