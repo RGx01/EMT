@@ -322,6 +322,15 @@
                     border:1px solid var(--border); border-radius:5px; }
   .era-error { color:#e05252; font-size:12px; grid-column:1 / -1; }
   @media (max-width:480px) { .era-form { grid-template-columns:1fr; } }
+  /* BL-104: the Running total view's cards */
+  .bar-acc { display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:12px; height:100%; overflow:auto; }
+  .bar-acc-card { border:1px solid var(--border); border-radius:var(--radius, 8px); padding:8px 10px; display:flex; flex-direction:column;
+                  min-height:200px; background:var(--surface); }
+  .bar-acc-head { display:flex; justify-content:space-between; align-items:baseline; gap:8px; }
+  .bar-acc-title { font-family:var(--mono); font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
+  .bar-acc-val { font-size:15px; font-weight:600; color:var(--text); }
+  .bar-acc-sub { font-size:11px; color:var(--muted); }
+  .bar-acc-plot { position:relative; flex:1; min-height:150px; }
   /* BL-101 PR 4: the bar colours modal */
   .col-row { padding:10px 0; border-top:1px solid var(--border); }
   .col-head { display:flex; align-items:center; gap:8px; font-weight:600; margin-bottom:6px; }
@@ -908,7 +917,20 @@ window.EMTSpiral=(function(){
       <div class="bar-seg" id="bar-show-seg" title="The devices' import and export, or grid import by the price it was charged">
         <button class="bar-seg-btn active" onclick="barSetShow('devices',this)">Devices</button>
         <button class="bar-seg-btn"        onclick="barSetShow('brackets',this)">Rate brackets</button>
+        <button class="bar-seg-btn"        onclick="barSetShow('running',this)">Running total</button>
       </div>
+      <span id="bar-acc-wrap" style="display:none; align-items:center; gap:8px; font-size:12px; color:var(--muted); flex-wrap:wrap;">
+        <select id="bar-acc-series" onchange="barSetAccSeries(this.value)" aria-label="Which running total"
+                style="font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;"></select>
+        <span class="bar-seg" id="bar-acc-mode" title="One line from the first day, or each year from nought, overlaid">
+          <button class="bar-seg-btn active" onclick="barSetAccMode('lifetime',this)">Lifetime</button>
+          <button class="bar-seg-btn"        onclick="barSetAccMode('year',this)">Year by year</button>
+        </span>
+        <label id="bar-acc-standing-wrap" style="display:none; align-items:center; gap:6px; cursor:pointer;" title="The standing charge in the net cost">
+          <input type="checkbox" id="bar-acc-standing" onchange="barSetAccStanding(this.checked)" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
+          Inc. standing charge
+        </label>
+      </span>
       <span id="bar-br-wrap" style="display:none; align-items:center; gap:8px; font-size:12px; color:var(--muted);">
         <select id="bar-br-series" onchange="barSetBrSeries(this.value)" aria-label="Whose import, or the export"
                 style="font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;"></select>
@@ -955,6 +977,8 @@ window.EMTSpiral=(function(){
   <!-- Chart canvas -->
   <div id="bar-chart-wrap" style="position:relative; width:100%; max-width:100%; overflow:hidden; padding: 0 24px; box-sizing:border-box; flex-shrink:0;">
     <canvas id="barChart" style="max-width:100%;"></canvas>
+    <!-- BL-104: the Running total view — a card a measure, as the spiral had (accumulation design) -->
+    <div id="bar-acc" class="bar-acc" style="display:none;"></div>
     <!-- Shown while the first fetch/build runs (no cached data to paint) — matches the
          "Loading chart..." placeholder the daily/heatmap/spiral tabs use. -->
     <div id="bar-loading" style="position:absolute; inset:0; display:none; align-items:center; justify-content:center; color:var(--muted); font-size:14px; background:var(--surface);">Loading chart…</div>
@@ -1428,6 +1452,9 @@ function barPdfSettings() {
     var pct = document.getElementById('bar-br-pct');
     add('Series', sel.options[sel.selectedIndex].text + (pct && pct.checked ? ', % of kWh' : ''));
   }
+  var acc = document.getElementById('bar-acc-series');
+  if (shown(acc) && acc.selectedIndex >= 0) add('Series', acc.options[acc.selectedIndex].text);
+  add('Winding', seg('bar-acc-mode'));
   add('Order', seg('bar-order-seg'));
   var lbl = document.querySelector('#bar-sub-bar .bar-period-label');
   add(lbl ? 'Range' : 'Years', lbl ? lbl.textContent.trim()
@@ -1673,11 +1700,22 @@ function _doPdfExport(win, iconSrc) {
     // on its next frame, and read straight after barRender() the canvas was blank, or its bars at 0
     // where the animation starts. The legend is read light too (the Net line's).
     var _anim = Chart.defaults.animation, _dpr = Chart.defaults.devicePixelRatio;
+    var accShots = null;
     barPdfLight = true; Chart.defaults.animation = false; Chart.defaults.devicePixelRatio = 2;
     try {
       barRender();
       var ch = barChartInstance;
-      if (ch && canvas && typeof canvas.toDataURL === 'function') {
+      if (barRunning()) {
+        // BL-104: the Running total view's cards, each its title, figure and chart
+        accShots = barAccCharts.map(function(c, i) {
+          c.resize(); c.draw();
+          var card = c.canvas.closest('.bar-acc-card');
+          return {title: card ? card.querySelector('.bar-acc-title').textContent : '',
+                  val: card ? card.querySelector('.bar-acc-val').textContent : '',
+                  sub: card ? card.querySelector('.bar-acc-sub').textContent : '',
+                  url: c.canvas.toDataURL('image/png')};
+        });
+      } else if (ch && canvas && typeof canvas.toDataURL === 'function') {
         ch.resize(); ch.draw();
         imgData = canvas.toDataURL('image/png');
       }
@@ -1708,7 +1746,15 @@ function _doPdfExport(win, iconSrc) {
       '.pdf-legend>*{display:inline-flex;align-items:center;gap:4px;}' +
       '.pdf-note{font-size:12px;color:#555;margin:4px 0 10px;}';
 
-    var chartSection = imgData
+    var chartSection = accShots
+      ? '<div style="display:grid;grid-template-columns:repeat(' + Math.min(3, accShots.length) + ',1fr);gap:10px;margin-bottom:12px;">' +
+        accShots.map(function(a) {
+          return '<div style="border:1px solid #eee;border-radius:6px;padding:6px 8px;"><div style="font-size:11px;color:#555;' +
+            'text-transform:uppercase;letter-spacing:.1em;">' + a.title + '</div><div style="font-size:14px;font-weight:600;">' + a.val +
+            ' <span style="font-size:11px;font-weight:400;color:#777;">' + a.sub + '</span></div>' +
+            '<img src="' + a.url + '" style="width:100%;height:auto;display:block;"></div>';
+        }).join('') + '</div>'
+      : imgData
       ? '<img src="' + imgData + '" style="width:100%;height:auto;display:block;margin-bottom:12px;border:1px solid #eee;border-radius:6px;">'
       : '<p style="color:#888;">Chart image not available.</p>';
 
@@ -1821,6 +1867,9 @@ function barSaveState() {
       show:     barShow,
       brSeries: barBrSeries,
       brPct:    barBrPct,
+      accSeries:   barAccSeries,
+      accMode:     barAccMode,
+      accStanding: barAccIncStanding,
     }));
   } catch(e) {}
 }
@@ -1868,7 +1917,10 @@ function barLoadState(availableYears) {
     if (tc) tc.checked = st.tariffs === true;
     var ec = document.getElementById('bar-eras-cb');
     if (ec) ec.checked = st.eras !== false;              // on until turned off: an era is there to be seen
-    if (['devices','brackets'].indexOf(st.show) !== -1) barShow = st.show;
+    if (['devices','brackets','running'].indexOf(st.show) !== -1) barShow = st.show;
+    if (typeof st.accSeries === 'string') barAccSeries = st.accSeries;
+    if (st.accMode === 'lifetime' || st.accMode === 'year') barAccMode = st.accMode;
+    barAccIncStanding = st.accStanding === true;
     if (typeof st.brSeries === 'string') barBrSeries = st.brSeries;
     barBrPct = st.brPct === true;
     if (barShow === 'brackets' && barMetric === 'co2') barMetric = 'kwh';
@@ -2575,7 +2627,12 @@ function barInitSplit() {
 // whole meter, the house or one device, or the export (`/api/energy?fields=brackets`). One rule for
 // every tariff; no standing charge, Net line or carbon in this view. A negative price (an Agile
 // plunge) has brackets below 0p, and its £ is a credit, below the axis.
-var barShow = 'devices';          // 'devices' | 'brackets'
+var barShow = 'devices';          // 'devices' | 'brackets' | 'running'
+// BL-104: the Running total view — which running total, wound how, and the standing charge in net
+var barAccSeries = 'net';         // 'net' | 'import' | 'export' | a device id | 'standing'
+var barAccMode = 'lifetime';      // 'lifetime' | 'year'
+var barAccIncStanding = false;
+var barAccCharts = [];
 var barBrSeries = 'meter';        // 'meter' (the whole meter) | 'electricity_main' (the house) | a device id | 'export'
 var barBrPct = false;             // each bracket's share of the bucket's kWh
 var barBrWidth = 2.5;             // pence; the server's width_p
@@ -2793,6 +2850,9 @@ function barSetShow(v, el) {
   barSaveState(); barSyncUI(); barRender();
 }
 function barSetBrSeries(v) { barBrSeries = v; barSaveState(); barRender(); }
+function barSetAccSeries(v) { barAccSeries = v; barSaveState(); barRender(); }
+function barSetAccMode(v, el) { barAccMode = v; barSetActive('bar-acc-mode', el); barSaveState(); barRender(); }
+function barSetAccStanding(on) { barAccIncStanding = !!on; barSaveState(); barRender(); }
 function barSetBrPct(on) { barBrPct = !!on; barSaveState(); barRender(); }
 
 // What the view shows and hides: the series picker and % in Rate brackets; the Net line, the
@@ -3146,6 +3206,8 @@ function barYLabel(v) {
 function barRender() {
   if (!barData) return;
   _setBarLoading(false);   // data's here — clear any "Loading…" overlay
+  barAccSyncUI();
+  if (barRunning()) { barAccRender(); return; }      // BL-104: the Running total view
   // HH (single-day) view: Billing/Calendar toggle is irrelevant — hide it. If the
   // cached day doesn't match the selected day, fetch it first (async), then this
   // function is re-entered with data ready.
@@ -3639,10 +3701,194 @@ function barMakeRolodex(lbl) {
   PeriodSpinner.attach(lbl, { getPeriods: barGetPeriods, onSelect: barSelectPeriod });
 }
 
+// ── The Running total view (BL-104, accumulation design) ─────────────────────────────────────────
+// The spirals' running totals, in Usage Stats: a card a measure, side by side as the spiral had them
+// (the user) — Cost, Usage, and Carbon where there is any — for one series (Net, Import, Export, a
+// device, or the standing charges, the Cost card alone). Lifetime is one line from the first day;
+// Year by year each year from nought on one year's axis. The table is a row a year: its total, its
+// change on the year before, and its total to the same day of the year as the latest day, like for
+// like. A line here (PR 1); the spiral, the year's start and the overlays follow.
+var BAR_ACC_YC = ['#00d4aa', '#7c6af7', '#f9a825', '#38bdf8', '#ef4444', '#fb7185'];   // the spiral's year colours
+var BAR_ACC_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+function barRunning() { return barShow === 'running'; }
+function barAccSeriesList() {
+  var out = [{id: 'net', label: 'Net (import − export)'}, {id: 'import', label: 'Import'}];
+  if ((barData || []).some(function(r) { return (r.exp_kwh || 0) > 0; })) out.push({id: 'export', label: 'Export'});
+  barMeters.filter(function(m) { return m.is_sub; }).forEach(function(m) { out.push({id: m.id, label: m.label}); });
+  out.push({id: 'standing', label: 'Standing charges'});
+  return out;
+}
+function barAccKinds() {
+  if (barAccSeries === 'standing') return [{kind: 'standing', unit: '£', title: 'Standing charges'}];
+  var k = [{kind: 'cost', unit: '£', title: 'Cost'}, {kind: 'usage', unit: 'kWh', title: 'Usage'}];
+  if (barHasPostcode || (barData || []).some(function(r) { return r.carbon_g_net != null; }))
+    k.push({kind: 'carbon', unit: 'kg', title: 'Carbon'});
+  return k;
+}
+// A day's increment, the spiral's rule (EMTSpiral incValue): Net is import − export in kWh, £ and kg alike
+function barAccInc(row, kind) {
+  var M = row.meters || {}, main = M.electricity_main || {}, g = barAccSeries, dev = M[g];
+  if (kind === 'standing') return row.standing || 0;
+  if (kind === 'cost') {
+    if (dev && g !== 'electricity_main') return dev.imp_cost || 0;
+    if (g === 'net') return (row.net_cost || 0) - (barAccIncStanding ? 0 : (row.standing || 0));
+    if (g === 'import') return row.imp_cost || 0;
+    if (g === 'export') return row.exp_cost || 0;
+    return 0;
+  }
+  if (kind === 'usage') {
+    if (dev && g !== 'electricity_main') return dev.imp_kwh || 0;
+    if (g === 'net') return (row.imp_kwh || 0) - (row.exp_kwh || 0);
+    if (g === 'import') return row.imp_kwh || 0;
+    if (g === 'export') return row.exp_kwh || 0;
+    return 0;
+  }
+  if (dev && g !== 'electricity_main') return (dev.carbon_g || 0) / 1000;
+  if (g === 'net') return ((main.carbon_g_imp || 0) - (main.carbon_g_exp || 0)) / 1000;
+  if (g === 'import') return (main.carbon_g_imp || 0) / 1000;
+  if (g === 'export') return (main.carbon_g_exp || 0) / 1000;
+  return 0;
+}
+function barAccMs(r) { return Date.UTC(r.year, r.month - 1, r.day); }
+// The day of its year, 0 for 1 January
+function barAccDoy(r) { return Math.round((barAccMs(r) - Date.UTC(r.year, 0, 1)) / 864e5); }
+// The rows of the years shown, oldest first
+function barAccRows() {
+  return (barData || []).filter(function(r) { return !barActiveYears || barActiveYears.has(r.year); })
+    .slice().sort(function(a, b) { return barAccMs(a) - barAccMs(b); });
+}
+// One measure's running totals: lifetime points, each year's points, totals and the like-for-like
+function barAccSeriesOf(rows, kind) {
+  var life = 0, years = {}, totals = {}, toDate = {}, pts = [];
+  var last = rows.length ? barAccDoy(rows[rows.length - 1]) : 365;
+  rows.forEach(function(r) {
+    var v = barAccInc(r, kind), y = r.year;
+    life += v;
+    totals[y] = (totals[y] || 0) + v;
+    if (barAccDoy(r) <= last) toDate[y] = (toDate[y] || 0) + v;
+    pts.push({x: barAccMs(r), y: Math.round(life * 1000) / 1000});
+    (years[y] || (years[y] = [])).push({x: barAccDoy(r), y: Math.round(totals[y] * 1000) / 1000});
+  });
+  return {life: pts, years: years, totals: totals, toDate: toDate, lastDoy: last};
+}
+function barAccFmt(v, unit) {
+  if (unit === '£') return (v < 0 ? '−' : '') + barCurrency + Math.abs(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  var a = Math.abs(v), d = a >= 100 ? 0 : 1;
+  return v.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: d}) + ' ' + unit;
+}
+// What the view shows and hides: the series and winding, not the period, metric or overlays
+function barAccSyncUI() {
+  var on = barRunning();
+  function vis(id, show, how) { var e = document.getElementById(id); if (e) e.style.display = show ? (how || '') : 'none'; }
+  vis('bar-acc-wrap', on, 'flex');
+  vis('bar-period-seg', !on, '');
+  vis('bar-metric-seg', !on, '');
+  vis('bar-legend', !on, 'flex');
+  vis('barChart', !on, '');
+  vis('bar-acc', on, 'grid');
+  if (!on) return;
+  ['bar-cal-seg', 'bar-order-seg', 'bar-standing-wrap', 'bar-net-wrap', 'bar-tariff-wrap', 'bar-eras-wrap',
+   'bar-sort-btn', 'bar-br-wrap', 'bar-br-note'].forEach(function(id) { vis(id, false); });
+  vis('bar-acc-standing-wrap', barAccSeries === 'net', 'flex');
+  var cb = document.getElementById('bar-acc-standing'); if (cb) cb.checked = barAccIncStanding;
+  document.querySelectorAll('#bar-acc-mode .bar-seg-btn').forEach(function(b) {
+    b.classList.toggle('active', (b.getAttribute('onclick') || '').indexOf("'" + barAccMode + "'") !== -1);
+  });
+  var sel = document.getElementById('bar-acc-series'), list = barAccSeriesList();
+  if (!list.some(function(o) { return o.id === barAccSeries; })) barAccSeries = 'net';
+  if (sel) {
+    sel.innerHTML = list.map(function(o) {
+      return '<option value="' + o.id + '"' + (o.id === barAccSeries ? ' selected' : '') + '>' + o.label.replace(/</g, '&lt;') + '</option>';
+    }).join('');
+  }
+}
+function barAccRender() {
+  barBuildSubBar();
+  barAccCharts.forEach(function(c) { try { c.destroy(); } catch (e) {} });
+  barAccCharts = [];
+  var box = document.getElementById('bar-acc'), rows = barAccRows(), th = barGetTheme();
+  var kinds = barAccKinds(), yearsShown = Array.from(new Set(rows.map(function(r) { return r.year; }))).sort();
+  box.innerHTML = kinds.map(function(k, i) {
+    return '<div class="bar-acc-card"><div class="bar-acc-head"><span class="bar-acc-title">' + k.title + '</span>' +
+      '<span class="bar-acc-val" id="bar-acc-val-' + i + '"></span></div><div class="bar-acc-sub" id="bar-acc-sub-' + i + '"></div>' +
+      '<div class="bar-acc-plot"><canvas id="bar-acc-c-' + i + '"></canvas></div></div>';
+  }).join('');
+  var all = {};
+  kinds.forEach(function(k, i) {
+    var s = barAccSeriesOf(rows, k.kind);
+    all[k.kind] = s;
+    var latestY = yearsShown[yearsShown.length - 1];
+    var head = barAccMode === 'lifetime' ? (s.life.length ? s.life[s.life.length - 1].y : 0) : (s.totals[latestY] || 0);
+    document.getElementById('bar-acc-val-' + i).textContent = barAccFmt(head, k.unit);
+    document.getElementById('bar-acc-sub-' + i).textContent = barAccMode === 'lifetime' ? 'total to date' : latestY ? String(latestY) + ' so far' : '';
+    var datasets = barAccMode === 'lifetime'
+      ? [{label: k.title, data: s.life, borderColor: BAR_ACC_YC[0], backgroundColor: BAR_ACC_YC[0], borderWidth: 2, pointRadius: 0}]
+      : yearsShown.map(function(y, yi) {
+          var c = BAR_ACC_YC[yi % BAR_ACC_YC.length];
+          return {label: String(y), data: s.years[y] || [], borderColor: c, backgroundColor: c, borderWidth: 2, pointRadius: 0};
+        });
+    var monthStarts = [0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334];
+    barAccCharts.push(new Chart(document.getElementById('bar-acc-c-' + i).getContext('2d'), {
+      type: 'line',
+      data: {datasets: datasets},
+      options: {
+        responsive: true, maintainAspectRatio: false, parsing: false, normalized: true,
+        interaction: {mode: 'nearest', axis: 'x', intersect: false},
+        plugins: {
+          legend: {display: barAccMode === 'year', labels: {color: th.axisC, boxWidth: 10, font: {size: 10}}},
+          tooltip: {backgroundColor: th.tooltipBg, borderColor: th.tooltipBorder, borderWidth: 1,
+                    titleColor: th.tooltipTitle, bodyColor: th.tooltipBody,
+                    callbacks: {
+                      title: function(it) {
+                        if (!it.length) return '';
+                        var x = it[0].raw.x;
+                        if (barAccMode === 'lifetime') return new Date(x).toISOString().slice(0, 10);
+                        var d = new Date(Date.UTC(2001, 0, 1) + x * 864e5);
+                        return d.getUTCDate() + ' ' + BAR_ACC_MON[d.getUTCMonth()];
+                      },
+                      label: function(it) { return it.dataset.label + ': ' + barAccFmt(it.raw.y, k.unit); }}}
+        },
+        scales: {
+          x: barAccMode === 'lifetime'
+            ? {type: 'linear', grid: {display: false},
+               ticks: {color: th.axisC, maxTicksLimit: 6, font: {size: 10},
+                       callback: function(v) { var d = new Date(v); return BAR_ACC_MON[d.getUTCMonth()] + " '" + String(d.getUTCFullYear()).slice(2); }}}
+            : {type: 'linear', min: 0, max: 365, grid: {display: false},
+               afterBuildTicks: function(sc) { sc.ticks = monthStarts.filter(function(m, mi) { return mi % 2 === 0; }).map(function(v) { return {value: v}; }); },
+               ticks: {color: th.axisC, font: {size: 10}, callback: function(v) { return BAR_ACC_MON[monthStarts.indexOf(v)] || ''; }}},
+          y: {grid: {color: th.gridC}, ticks: {color: th.axisC, font: {size: 10}, maxTicksLimit: 6,
+                                              callback: function(v) { return barAccFmt(v, k.unit); }}}
+        }
+      }
+    }));
+  });
+  barAccBuildTable(kinds, all, yearsShown);
+}
+// A row a year: each measure's total, its change on the year before, and to the same day of the year
+function barAccBuildTable(kinds, all, years) {
+  var tbl = document.getElementById('bar-table');
+  if (!tbl) return;
+  var last = kinds.length ? all[kinds[0].kind].lastDoy : 0;
+  var d = new Date(Date.UTC(2001, 0, 1) + last * 864e5), upto = d.getUTCDate() + ' ' + BAR_ACC_MON[d.getUTCMonth()];
+  var html = '<thead><tr><th>Year</th>' + kinds.map(function(k) {
+    return '<th>' + k.title + '</th><th>vs year before</th><th>To ' + upto + '</th>';
+  }).join('') + '</tr></thead><tbody>';
+  years.slice().reverse().forEach(function(y) {
+    html += '<tr><td>' + y + '</td>' + kinds.map(function(k) {
+      // the change as an amount: a net that crosses nought makes a percentage meaningless
+      var s = all[k.kind], t = s.totals[y] || 0, p = s.totals[y - 1];
+      var ch = p != null ? t - p : null;
+      return '<td>' + barAccFmt(t, k.unit) + '</td><td>' + (ch == null ? '—' : (ch > 0 ? '+' : '') + barAccFmt(ch, k.unit)) +
+             '</td><td>' + barAccFmt(s.toDate[y] || 0, k.unit) + '</td>';
+    }).join('') + '</tr>';
+  });
+  tbl.innerHTML = html + '</tbody>';
+}
+
 function barBuildSubBar() {
   var bar = document.getElementById('bar-sub-bar');
   bar.innerHTML = '';
-  if (barPeriod === 'hh') {
+  if (barPeriod === 'hh' && !barRunning()) {
     // Day navigator using the SAME shared rolodex (PeriodSpinner) as the other
     // periods — so hover-scroll shows the ±4-day preview and scrolls in the same
     // direction. Arrows step a day; a calendar button jumps to any date.
@@ -3684,7 +3930,7 @@ function barBuildSubBar() {
     bar.appendChild(todayBtn);
     return;
   }
-  if (barPeriod === 'daily') {
+  if (barPeriod === 'daily' && !barRunning()) {
     if (!barCalendar) {
       // Billing mode: navigate between bKey values (billing period start dates)
       var allBKeys = [...new Set(barData.map(function(r){ return barBillingKey(r).bKey; }))].sort();

@@ -691,10 +691,13 @@ or a known code) and one new public fetch a day soon after 4pm, kept across rest
 Octopus API rule (capped, paced, persisted). It answers "would Agile have been cheaper", so it may
 want a comparison with the account's own cost.
 
-**BL-104 — the spirals into Usage Stats as an accumulation chart.** *The user, 1 Nov 2026.* A running
-total, viewed as a line or a spiral, beside Devices and Rate brackets; the Spiral tab goes. The year's
-start — 1 January, the billing anniversary, a tariff's or an era's start — comes with it (home eras
-design §3.2). Design first.
+**BL-104 — the spirals into Usage Stats as an accumulation chart.** *The user, 1 Nov 2026; decided
+(accumulation design).* *Running total* beside Devices and Rate brackets: a card a measure (Cost,
+Usage, Carbon) side by side as the spiral had them, for a series (Net, Import, Export, a device, the
+standing charges), Lifetime or Year by year, with a table a year (total, change, to the same day).
+- **PR 1 ✅** the line;
+- **PR 2** the spiral in the view; **PR 3** the year's start (1 January, the billing anniversary, a
+  tariff's, an era's); **PR 4** eras and tariffs on it; **PR 5** the Spiral tab retired.
 
 ## D. Surfacing performance
 
