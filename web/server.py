@@ -1037,9 +1037,20 @@ def live_power_page():
     except Exception:
         has_dispatch_data = False
 
+    # BL-100: the Agile card where the import or export tariff is dynamic (no gap when not)
+    has_agile = False
+    try:
+        import engine as _eng_ag
+        import tariff_prices as _tp_ag
+        has_agile = any(_tp_ag.is_dynamic_code(((_eng_ag._kraken_discovery or {}).get(ch) or {})
+                                               .get("tariff_code") or "") for ch in ("import", "export"))
+    except Exception:
+        has_agile = False
+
     return render_template(
         "live_power.html",
         has_dispatch_data=has_dispatch_data,
+        has_agile=has_agile,
         active="live_power",
         currency=currency,
         today_total=today_total,
@@ -9339,6 +9350,20 @@ def _build_upcoming_dispatches(history, rates, day_peak, now_iso,
             "fill": fill,
         })
     return out   # soonest-first
+
+
+@app.route("/api/agile-prices", methods=["GET"])
+def api_agile_prices():
+    """BL-100: an Agile account's half-hourly import and export prices, 24 h back and as far ahead
+    as Octopus has published (up to 24 h), for the Overview's card — {import?, export?, now}, pence,
+    import inc VAT. From the rate schedules the poll holds; no Octopus call."""
+    from datetime import datetime as _d, timezone as _tzu
+    import engine as _eng
+    try:
+        return jsonify(dict(_eng.agile_prices(), now=_d.now(_tzu.utc).replace(tzinfo=None).isoformat()))
+    except Exception as e:
+        logger.error("api_agile_prices: %s", e)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/charge-sessions", methods=["GET"])

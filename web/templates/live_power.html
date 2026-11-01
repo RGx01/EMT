@@ -1023,6 +1023,28 @@ function setMiniSource(enabled){
   {% endif %}
 
 </div><!-- /.wide-row -->
+
+{% if has_agile %}
+<!-- ── BL-100: Agile prices — the 48-hour history card's style and size: 24 h back, and as far ahead
+     as Octopus has published. Emitted only where the import or export tariff is dynamic. ── -->
+<div class="wide-row">
+  <div class="card power-history-card" id="agile-card-wrap">
+    <div class="card-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
+      <span>⚡ Agile Prices</span>
+      <span id="agile-now" style="font-size:12px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--muted);"></span>
+    </div>
+    <div class="power-history-wrap">
+      <canvas id="agile-canvas"></canvas>
+      <div class="ph-tooltip" id="agile-tooltip"></div>
+    </div>
+    <div class="power-history-legend">
+      <span id="agile-legend-import"><i style="background:linear-gradient(to right,#22c55e,#f59e0b,#ff6b6b);"></i>Import, inc VAT</span>
+      <span id="agile-legend-export"><i style="background:#a78bfa;"></i>Export</span>
+      <span id="agile-status" style="margin-left:auto;font-size:11px;color:var(--muted);"></span>
+    </div>
+  </div>
+</div>
+{% endif %}
 </div><!-- /.live-power-page -->
 
 <!-- ── Billing Summary ── -->
@@ -1313,6 +1335,132 @@ function loadChargeSessions(){
     .catch(function(){ card.style.display='none'; });
 }
 document.addEventListener('DOMContentLoaded', loadChargeSessions);
+
+// ── BL-100 (1 Nov 2026): Agile prices, drawn as the 48-hour history is ──────────────────────────
+// Import a bar a half-hour, green to red by price across the day shown, blue below 0p; export a line.
+// Now is a dashed line; the time not yet published is left empty, with when it comes.
+var _agile = null;
+function _agileColor(p, lo, hi){
+  if (p < 0) return '#3b82f6';
+  var t = hi > lo ? Math.max(0, Math.min(1, (p - Math.max(lo, 0)) / (hi - Math.max(lo, 0)))) : 0;
+  return 'hsl(' + Math.round(130 * (1 - t)) + ', 65%, 48%)';
+}
+function _agileMs(iso){ return new Date(iso + (iso.slice(-1) === 'Z' ? '' : 'Z')).getTime(); }
+function _agileHHMM(ms){ var d = new Date(ms); return ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2); }
+function _agileDraw(){
+  var cv = document.getElementById('agile-canvas'); if (!cv || !_agile) return;
+  var dpr = window.devicePixelRatio || 1, rect = cv.getBoundingClientRect();
+  var W = rect.width || 600, H = rect.height || 120;
+  cv.width = W * dpr; cv.height = H * dpr;
+  var ctx = cv.getContext('2d'); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, W, H);
+  var dark = document.documentElement.getAttribute('data-theme') !== 'light';
+  var txt = dark ? '#6b7080' : '#555566', grid = dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.08)';
+  var imp = (_agile.import || {}).prices || [], exp = (_agile.export || {}).prices || [];
+  var now = _agileMs(_agile.now), t0 = now - 24 * 3600000, span = 48 * 3600000;
+  var PAD_L = 42, PAD_T = 12, PAD_B = 24, CW = W - PAD_L, CH = H - PAD_T - PAD_B;
+  var all = imp.concat(exp).map(function(x){ return x[1]; });
+  if (!all.length) { ctx.fillStyle = txt; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
+                     ctx.fillText('No prices yet — EMT fetches them at its next poll', W / 2, H / 2); return; }
+  var vmax = Math.max(5, Math.max.apply(null, all)), vmin = Math.min(0, Math.min.apply(null, all));
+  function x(ms){ return PAD_L + (ms - t0) / span * CW; }
+  function y(v){ return PAD_T + (vmax - v) / (vmax - vmin) * CH; }
+  // grid and axis: 5, 10, 20 or 50p, the smallest giving four lines or fewer; 0p stronger
+  var step = [5, 10, 20, 50].filter(function(s){ return (vmax - vmin) / s <= 4; })[0] || 100;
+  ctx.font = '10px sans-serif'; ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (var v = Math.ceil(vmin / step) * step; v <= vmax; v += step) {
+    ctx.strokeStyle = v === 0 ? (dark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.25)') : grid;
+    ctx.lineWidth = v === 0 ? 1 : 0.5;
+    ctx.beginPath(); ctx.moveTo(PAD_L, y(v)); ctx.lineTo(W, y(v)); ctx.stroke();
+    ctx.fillStyle = txt; ctx.fillText(v + 'p', PAD_L - 4, y(v));
+  }
+  // the day's import, a bar a half-hour
+  var ilo = Math.min.apply(null, imp.map(function(p){ return p[1]; }).concat([0]));
+  var ihi = Math.max.apply(null, imp.map(function(p){ return p[1]; }).concat([1]));
+  var bw = Math.max(1, CW / 96 - 1);
+  imp.forEach(function(p){
+    var ms = _agileMs(p[0]), top = Math.min(y(p[1]), y(0)), h = Math.abs(y(p[1]) - y(0));
+    ctx.globalAlpha = ms + 1800000 <= now ? 0.45 : 1;          // the past fainter
+    ctx.fillStyle = _agileColor(p[1], ilo, ihi);
+    ctx.fillRect(x(ms) + 0.5, top, bw, Math.max(1, h));
+  });
+  ctx.globalAlpha = 1;
+  // export, a stepped line
+  if (exp.length) {
+    ctx.strokeStyle = '#a78bfa'; ctx.lineWidth = 1.5; ctx.beginPath();
+    exp.forEach(function(p, i){
+      var ms = _agileMs(p[0]);
+      if (i) ctx.lineTo(x(ms), y(p[1])); else ctx.moveTo(x(ms), y(p[1]));
+      ctx.lineTo(x(ms + 1800000), y(p[1]));
+    });
+    ctx.stroke();
+  }
+  // now
+  ctx.strokeStyle = txt; ctx.setLineDash([3, 3]); ctx.beginPath();
+  ctx.moveTo(x(now), PAD_T); ctx.lineTo(x(now), PAD_T + CH); ctx.stroke(); ctx.setLineDash([]);
+  // time ticks every 6 hours
+  ctx.textAlign = 'center'; ctx.textBaseline = 'alphabetic'; ctx.fillStyle = txt;
+  for (var tk = Math.ceil(t0 / 21600000) * 21600000; tk <= t0 + span; tk += 21600000) {
+    ctx.fillText(_agileHHMM(tk), x(tk), H - 6);
+  }
+}
+function _agileAt(list, ms){
+  for (var i = 0; i < list.length; i++) { var s = _agileMs(list[i][0]); if (ms >= s && ms < s + 1800000) return list[i][1]; }
+  return null;
+}
+// The cheapest upcoming hour's start (two half-hours together), from the import published
+function _agileCheapest(imp, now){
+  var best = null;
+  for (var i = 0; i + 1 < imp.length; i++) {
+    var a = _agileMs(imp[i][0]); if (a < now - 1800000 + 1) continue;
+    if (_agileMs(imp[i + 1][0]) !== a + 1800000) continue;
+    var avg = (imp[i][1] + imp[i + 1][1]) / 2;
+    if (!best || avg < best.avg) best = {ms: a, avg: avg};
+  }
+  return best;
+}
+function _agileSummary(){
+  var imp = (_agile.import || {}).prices || [], exp = (_agile.export || {}).prices || [];
+  var now = _agileMs(_agile.now), out = [];
+  var pi = _agileAt(imp, now), pe = _agileAt(exp, now);
+  if (pi != null) out.push('Now ' + pi.toFixed(1) + 'p import');
+  if (pe != null) out.push(pe.toFixed(1) + 'p export');
+  var c = _agileCheapest(imp, now);
+  if (c) out.push('cheapest hour ' + _agileHHMM(c.ms) + ', ' + c.avg.toFixed(1) + 'p');
+  document.getElementById('agile-now').textContent = out.join(' · ');
+  var last = imp.length ? _agileMs(imp[imp.length - 1][0]) + 1800000 : null;
+  document.getElementById('agile-status').textContent = last
+    ? ('Published to ' + _agileHHMM(last) + (last < now + 24 * 3600000 ? ' · tomorrow’s from about 4pm' : '')) : '';
+  document.getElementById('agile-legend-import').style.display = imp.length ? '' : 'none';
+  document.getElementById('agile-legend-export').style.display = exp.length ? '' : 'none';
+}
+function loadAgilePrices(){
+  if (!document.getElementById('agile-card-wrap')) return;
+  fetch(apiUrl('/api/agile-prices')).then(function(r){ return r.json(); }).then(function(d){
+    if (!d || d.error) return;
+    _agile = d; _agileSummary(); _agileDraw();
+  }).catch(function(){});
+}
+(function(){
+  var cv = document.getElementById('agile-canvas'), tip = document.getElementById('agile-tooltip');
+  if (!cv) return;
+  cv.addEventListener('mousemove', function(e){
+    if (!_agile) return;
+    var r = cv.getBoundingClientRect(), now = _agileMs(_agile.now), t0 = now - 24 * 3600000;
+    var ms = t0 + (e.clientX - r.left - 42) / (r.width - 42) * 48 * 3600000;
+    var pi = _agileAt((_agile.import || {}).prices || [], ms), pe = _agileAt((_agile.export || {}).prices || [], ms);
+    if (pi == null && pe == null) { tip.style.display = 'none'; return; }
+    var s = Math.floor(ms / 1800000) * 1800000;
+    tip.innerHTML = _agileHHMM(s) + '–' + _agileHHMM(s + 1800000) +
+      (pi != null ? '<br>Import ' + pi.toFixed(2) + 'p' : '') + (pe != null ? '<br>Export ' + pe.toFixed(2) + 'p' : '');
+    tip.style.display = 'block';
+    tip.style.left = Math.min(e.clientX - r.left + 10, r.width - 120) + 'px'; tip.style.top = '8px';
+  });
+  cv.addEventListener('mouseleave', function(){ tip.style.display = 'none'; });
+  window.addEventListener('resize', _agileDraw);
+})();
+document.addEventListener('DOMContentLoaded', loadAgilePrices);
+// the prices move at the poll's rate refresh; every 10 minutes keeps "now" moving
+setInterval(loadAgilePrices, 600000);
 // Auto-refresh so a revised IOG plan (or a newly-completed charge) shows without a
 // page reload — dispatches poll ~5-minutely, so a 60s card refresh is ample.
 setInterval(loadChargeSessions, 60000);
