@@ -3520,10 +3520,22 @@ function barAccSeriesOf(rows, kind) {
     life += v;
     totals[y] = (totals[y] || 0) + v;
     if (barAccDoy(r) <= last) toDate[y] = (toDate[y] || 0) + v;
-    pts.push({x: barAccMs(r), y: Math.round(life * 1000) / 1000});
+    pts.push({x: barAccMs(r), y: Math.round(life * 1000) / 1000, yr: y});
     (years[y] || (years[y] = [])).push({x: barAccDoy(r), y: Math.round(totals[y] * 1000) / 1000});
   });
   return {life: pts, years: years, totals: totals, toDate: toDate, lastDoy: last};
+}
+// The Lifetime line a stretch a year, in the spiral's year colours (1 Nov 2026, the user): each year's
+// points, joined to the year before at its last point, so the line stays one line
+function barAccLifeYears(life, years) {
+  return years.map(function(y, yi) {
+    var data = [], prev = null;
+    life.forEach(function(p) {
+      if (p.yr === y) { if (!data.length && prev) data.push(prev); data.push(p); }
+      else if (!data.length) prev = p;
+    });
+    return {y: y, color: BAR_ACC_YC[yi % BAR_ACC_YC.length], data: data};
+  }).filter(function(d) { return d.data.length; });
 }
 function barAccFmt(v, unit) {
   if (unit === '£') return (v < 0 ? '−' : '') + barCurrency + Math.abs(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
@@ -3601,7 +3613,10 @@ function barAccRender() {
     document.getElementById('bar-acc-val-' + i).textContent = barAccFmt(head, k.unit);
     document.getElementById('bar-acc-sub-' + i).textContent = barAccMode === 'lifetime' ? 'total to date' : latestY ? barAccYearLabel(latestY) + ' so far' : '';
     var datasets = barAccMode === 'lifetime'
-      ? [{label: k.title, data: s.life, borderColor: BAR_ACC_YC[0], backgroundColor: BAR_ACC_YC[0], borderWidth: 2, pointRadius: 0}]
+      ? barAccLifeYears(s.life, yearsShown).map(function(d) {
+          return {label: barAccYearLabel(d.y), data: d.data, borderColor: d.color, backgroundColor: d.color,
+                  borderWidth: 2, pointRadius: 0};
+        })
       : yearsShown.map(function(y, yi) {
           var c = BAR_ACC_YC[yi % BAR_ACC_YC.length];
           return {label: barAccYearLabel(y), data: s.years[y] || [], borderColor: c, backgroundColor: c, borderWidth: 2, pointRadius: 0};
@@ -3617,7 +3632,7 @@ function barAccRender() {
         layout: {padding: {top: (ov.tariffs ? BAR_TARIFF_LANE + 4 : 0) + (ov.eras.length ? BAR_ERA_CHIP + 4 : 0)}},
         interaction: {mode: 'nearest', axis: 'x', intersect: false},
         plugins: {
-          legend: {display: barAccMode === 'year', labels: {color: th.axisC, boxWidth: 10, font: {size: 10}}},
+          legend: {display: true, labels: {color: th.axisC, boxWidth: 10, font: {size: 10}}},   // the years, on both
           tooltip: {backgroundColor: th.tooltipBg, borderColor: th.tooltipBorder, borderWidth: 1,
                     titleColor: th.tooltipTitle, bodyColor: th.tooltipBody,
                     callbacks: {
