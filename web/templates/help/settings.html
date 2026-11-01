@@ -1,0 +1,67 @@
+{% extends "help_base.html" %}
+{% set help_title = "Settings" %}
+{% block help_body %}
+<div class="card help-section">
+  <div class="card-title">⚙️ Meter Config</div>
+  <p>
+    A tab each: <strong>Site</strong>, <strong>Main meter</strong>, one for each device, and
+    <strong>+ Add device</strong>. An edit on one tab survives moving to another, and
+    <strong>Save Config</strong> saves them all; the engine picks the change up within seconds.
+  </p>
+  <ul>
+    <li><strong>↺ Refresh Entities</strong> — read Home Assistant's sensors again, after adding one.</li>
+    <li><strong>⚙ Change Setup</strong> — the setup wizard again: your supplier, your meter, where your
+      readings come from.</li>
+    <li><strong>🕓 Billing History</strong> — your billing day, address and supplier changes over time.</li>
+  </ul>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🏠 Site and ⚡ Main meter</div>
+  <ul>
+    <li><strong>Site</strong> — its name (used throughout the charts), the first day of your billing
+      period, the timezone, and the postcode prefix for carbon.</li>
+    <li><strong>Main meter</strong> — the import and export read sensors (cumulative kWh from and to the
+      grid), the rate and standing charge sensors, or Octopus's, and a power sensor for the live gauge.
+      Each channel's <strong>Advanced</strong> section holds its MPAN and tariff, shown on the bill card, and its source.</li>
+  </ul>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🔋 Devices</div>
+  <p>A device is a load EMT splits out of your import: a <strong>battery</strong>, an <strong>EV
+    charger</strong>, a <strong>heat pump</strong> or another.</p>
+  <ul>
+    <li><strong>Its read sensor</strong> — cumulative kWh, a total that only goes up. A charger or a heat
+      pump reports the energy it used. A <strong>battery must report the energy it took from the
+      grid</strong>, not all it charged: EMT cannot tell its solar charging apart. If its sensor is
+      caught counting solar, EMT says so at the top of every page and changes nothing.</li>
+    <li><strong>Its power sensors</strong> — optional, for the Overview's gauges only: a charger's or a
+      heat pump's power, a battery's state of charge and inverter, solar power. A power sensor can be
+      inverted, or its unit set, where it reports the other way round.</li>
+    <li><strong>History sensors</strong> — older sensors the device used before its current one. <strong>▶
+      Rebuild history</strong> rebuilds the device's past from Home Assistant's recorder, with them.</li>
+    <li><strong>Its colour and rate line</strong> on the charts.</li>
+    <li><strong>Archive</strong> — stop recording it from a date, keeping its history (<strong>↩ Unretire</strong>
+      brings it back). <strong>✕ Remove</strong> deletes it and its history, after a backup.</li>
+  </ul>
+  <p>
+    <strong>🚗 EV</strong> — with Octopus connected and an EV that smart-charges but no EV device, your
+    car still appears in the charts, from Octopus's bills and dispatches. Its tab sets its colour; an EV
+    device added later takes it on.
+  </p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🌿 Carbon</div>
+  <ul>
+    <li><strong>The postcode prefix</strong>, if not given at setup.</li>
+    <li><strong>Carbon equivalence</strong> — what a petrol car's mile, and the like, is taken to
+      emit, for comparisons on Insights.</li>
+    <li><strong>Battery</strong> and <strong>heat pump assumptions</strong> — the battery's round-trip
+      efficiency; the heat pump's seasonal COP, for the comparison with a gas boiler.</li>
+    <li><strong>Export carbon offset</strong> — how the carbon your export saved is counted: at the
+      grid's average intensity, by default.</li>
+  </ul>
+</div>
+{% endblock %}

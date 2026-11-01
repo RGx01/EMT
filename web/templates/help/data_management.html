@@ -1,0 +1,98 @@
+{% extends "help_base.html" %}
+{% set help_title = "Data Management" %}
+{% block help_body %}
+<div class="card help-section">
+  <div class="card-title">🩺 The health strip</div>
+  <p>Along the top, your data at a glance — each figure a link:</p>
+  <ul>
+    <li><strong>Import bill</strong> and <strong>Export bill</strong> — how many half-hours need a look,
+      or <em>all clear</em> (with Octopus connected).</li>
+    <li><strong>Missing</strong> — half-hours with no record at all, and in how many gaps.</li>
+    <li><strong>Last backup</strong> — how long ago, and what made it.</li>
+    <li><strong>Database</strong> — its size.</li>
+  </ul>
+  <p>While a job is rewriting history (an import, a gap fill, a re-fetch) the counts wait until it
+    finishes.</p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🔥 The data heatmap</div>
+  <p>
+    The same month-by-month heatmap as on Charts, with views of the data's state as well as its
+    energy:
+  </p>
+  <ul>
+    <li><strong>Import bill</strong> — is each half-hour's cost final? <em>Green</em>: final, Octopus's
+      cost (or, on a fixed-rate tariff, the settled kWh × its rate). <em>Light amber</em>: the kWh is
+      settled, Octopus's cost not in yet. <em>Amber</em>: the kWh is not settled yet. <em>Red</em>: not
+      final after 7 days, or something to look at. <em>Teal</em>: Octopus's cost with EMT's own car and
+      house split. <em>Blue</em>: your correction. <em>Grey</em>: nothing to settle (imported history,
+      or not on an Octopus agreement).</li>
+    <li><strong>Export bill</strong> — the same for export, which is final once its kWh settles.</li>
+    <li><strong>Missing</strong> — without Octopus, the one data view: is every half-hour recorded?</li>
+  </ul>
+  <p>
+    A missing half-hour is <strong>black and hatched</strong> on every view. The line under the
+    heatmap's title says what each colour means. <strong>Issues only</strong> folds away the days with nothing to
+    look at; a fold opens with a click.
+  </p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🛠 The tools on a selection</div>
+  <p>
+    <strong>Click</strong> a half-hour for its details. <strong>Drag</strong> across the heatmap (or
+    click one cell and shift-click another) to select a span, then <strong>right-click</strong> it (a long
+    press on a phone) for what can be done to it:
+  </p>
+  <ul>
+    <li><strong>Re-fetch from Octopus</strong> — ask Octopus again for the span's kWh and cost, see
+      what would change, and apply it or not.</li>
+    <li><strong>Fill this gap</strong> — where the span holds missing half-hours: from Octopus, from a
+      CSV (EMT gives you a template for the gap), or from your Octopus PDF bills.</li>
+    <li><strong>Fill the missing export</strong> from PDF bills or a CSV.</li>
+    <li><strong>Delete</strong> — the whole half-hours, import, export and the devices with them.
+      Home Assistant's own readings are kept, so when the half-hours are filled again the devices
+      are rebuilt from them.</li>
+    <li><strong>Make a support file</strong> for the span.</li>
+  </ul>
+  <div class="note-box">Every change that cannot be undone takes a backup first.</div>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🗂️ Whole history</div>
+  <p>The jobs for your whole history, in the menu at the top:</p>
+  <ul>
+    <li><strong>Import history from Octopus</strong> — the half-hours Octopus holds, about two years
+      back.</li>
+    <li><strong>Import a CSV</strong> and <strong>Import PDF bills</strong> — for history from before
+      that, or from another supplier.</li>
+    <li><strong>Recover every gap</strong> — ask Octopus for every missing half-hour it can fill.</li>
+    <li><strong>Delete all imported history</strong> — the half-hours brought in by an import, after
+      showing how many.</li>
+  </ul>
+  <p>For a range, select it on the heatmap instead.</p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🗄️ Backup &amp; restore</div>
+  <ul>
+    <li><strong>Backup now</strong> makes a backup at once; <strong>Backup &amp; restore</strong> lists
+      them — what made each, when, and its size — with the daily copy.</li>
+    <li><strong>Restore</strong> one from the list, or <strong>drop a backup</strong> (a <code>.zip</code>
+      or a <code>blocks.db</code>) anywhere on the page. EMT checks it before anything is touched, and
+      a backup from the previous version of EMT is brought across.</li>
+    <li><strong>Compact now</strong> rebuilds the database file to reclaim the space deleted rows left.</li>
+  </ul>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🩺 A support file</div>
+  <p>
+    One zip to send to whoever is helping you: EMT's log, a summary of your setup and the machine it
+    runs on, and your data for the span you choose. <strong>Hide my meter and account details</strong>
+    (on by default) turns your MPANs, meter serials, account number and postcode into placeholders.
+    Your Octopus API key is never in it, and nothing is sent anywhere — you download it.
+  </p>
+</div>
+{% endblock %}
