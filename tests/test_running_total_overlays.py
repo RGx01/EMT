@@ -25,7 +25,18 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGE = open(os.path.join(_ROOT, "web", "templates", "charts.html"), encoding="utf-8").read()
 
 
+def _kinds():
+    i = PAGE.index("var ERA_KINDS = {")
+    return PAGE[i:PAGE.index("\n};\n", i) + 3] + "\n"
+
+
 def _fn(name):
+    if name == "erasGroups":                  # the eras' order needs their kinds
+        return _kinds() + _fn_plain(name)
+    return _fn_plain(name)
+
+
+def _fn_plain(name):
     i = PAGE.index("function " + name + "(")
     line = PAGE[i:PAGE.index("\n", i)]
     if line.count("{") == line.count("}"):
@@ -43,7 +54,7 @@ class TheOverlays(unittest.TestCase):
               "var barEras = [{id: 'a1b2c3d4', label: 'Battery', kind: 'battery', start: '2024-06-12', end: '2025-01-01'}];\n"
               "var document = {getElementById: function (id) { return {checked: id === 'bar-tariff-cb' ? %s : %s}; }};\n") % (
             json.dumps(mode), "true" if tariffs_on else "false", "true" if eras_on else "false") + \
-            "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
+            "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
                                         "barAccYearOf", "barAccDoy", "barAccShowEras", "barAccShowTariffs",
                                         "barAccOverlays")) + \
             "\nconsole.log(JSON.stringify(barAccOverlays(%s)));" % json.dumps(years)
