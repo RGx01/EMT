@@ -9156,6 +9156,91 @@ def _build_charge_sessions(history, rates, day_peak, slot_kwh=None,
     return out
 
 
+# BL-99 (1 Nov 2026): a half-hour's EV share is "at peak" when its rate is over the day's cheapest
+# main import rate by more than this — by PRICE, not by the stored band: a daytime dispatch at the
+# off-peak price can carry a `peak` band (the staging copy, 30 Aug 2026).
+_AT_PEAK_EPS = 0.005
+
+
+def _charge_session_costs(sessions, ev_by_slot, day_min, rates, sources, cap, capped,
+                          bill_slots, cap_day_of):
+    """BL-99: what each delivered session cost, and its part at peak with the reason. Pure.
+
+    `ev_by_slot` {slot: [(kwh, rate)]}: the EV's share of each half-hour (its segments; Octopus's
+    where billed). A slot with none yet takes the dispatch kWh at the block's rate (`rates`).
+    `day_min` {YYYY-MM-DD: the day's cheapest main import rate}; `sources` {slot: dispatch source};
+    `cap` {cap_day: iog_cap.cap_usage's entry}; `capped(slot)` whether the 6-hour cap prices it;
+    `bill_slots` the slots whose split the bill has given; `cap_day_of(slot)` its noon→noon day.
+    A peak half-hour's reason, first that holds: `bump` (a bump/boost dispatch), `over_cap` (a
+    capped half-hour from its cap-day's boundary on), else `peak`. Adds to each session `cost`,
+    `billed`, `cap_day` and `at_peak` {kwh, cost, reason} (None when none was)."""
+    for s in sessions:
+        cost = pk = pc = 0.0
+        reasons = []
+        billed = True
+        for f in s.get("fill") or []:
+            k = f["slot"]
+            parts = ev_by_slot.get(k)
+            if not parts:
+                r = rates.get(k)
+                parts = [(f["kwh"], r)] if r is not None else []
+                billed = False
+            elif k not in bill_slots:
+                billed = False
+            lo = day_min.get(k[:10])
+            for kwh, rate in parts:
+                if rate is None:
+                    continue
+                cost += kwh * rate
+                if lo is not None and rate > lo + _AT_PEAK_EPS:
+                    pk += kwh
+                    pc += kwh * rate
+                    cd = cap_day_of(k)
+                    b = (cap.get(cd) or {}).get("boundary_slot")
+                    if (sources.get(k) or "").lower() in _BUMP_SOURCES:
+                        reasons.append("bump")
+                    elif capped(k) and (cap.get(cd) or {}).get("over") and b and k >= b:
+                        reasons.append("over_cap")
+                    else:
+                        reasons.append("peak")
+        s["cost"] = round(cost, 4)
+        s["billed"] = billed and bool(s.get("fill"))
+        s["cap_day"] = cap_day_of(s["start"])
+        s["at_peak"] = ({"kwh": round(pk, 3), "cost": round(pc, 4),
+                         "reason": max(set(reasons), key=reasons.count)} if pk > 1e-6 else None)
+    return sessions
+
+
+def _ev_outside_runs(ev_by_slot, completed, day_min, bridge_min=_CHARGE_SESSION_BRIDGE_MIN):
+    """BL-99: the EV's charging in half-hours with no completed dispatch — Octopus's split puts the
+    car there, no smart charge does — as runs (half-hours up to `bridge_min` apart), oldest first:
+    {start, end, kwh, cost, peak_kwh}. Pure."""
+    from datetime import datetime as _dt, timedelta as _td
+    slots = sorted(k for k, parts in ev_by_slot.items()
+                   if k not in completed and sum(p[0] for p in parts) > 1e-6)
+    runs, cur, prev = [], [], None
+    for k in slots:
+        t = _dt.fromisoformat(k)
+        if prev is not None and t - prev > _td(minutes=bridge_min):
+            runs.append(cur); cur = []
+        cur.append(k); prev = t
+    if cur:
+        runs.append(cur)
+    out = []
+    for grp in runs:
+        kwh = cost = pk = 0.0
+        for k in grp:
+            lo = day_min.get(k[:10])
+            for q, r in ev_by_slot[k]:
+                kwh += q
+                cost += q * (r or 0.0)
+                if r is not None and lo is not None and r > lo + _AT_PEAK_EPS:
+                    pk += q
+        out.append({"start": grp[0], "end": (_dt.fromisoformat(grp[-1]) + _td(minutes=30)).isoformat(),
+                    "kwh": round(kwh, 3), "cost": round(cost, 4), "peak_kwh": round(pk, 3)})
+    return out
+
+
 def _build_upcoming_dispatches(history, rates, day_peak, now_iso,
                                bridge_min=_CHARGE_SESSION_BRIDGE_MIN):
     """BL-10: fold *future planned* IOG dispatch slots into upcoming sessions.
@@ -9325,16 +9410,67 @@ def api_charge_sessions():
 
         upcoming = _build_upcoming_dispatches(history, rates, day_peak, now.isoformat())
 
-        for s in sessions + upcoming:
+        # BL-99: each session's cost and its part at peak (the EV's share of each half-hour), the
+        # 6-hour allowance per noon→noon cap-day, and the EV's charging outside any smart charge.
+        import engine as _eng
+        import iog_cap as _cap
+        ev_by_slot = {}
+        for r in store._conn.execute(
+                "SELECT block_start, kwh, inc_rate FROM block_segments WHERE meter_id = ? "
+                "AND channel = 'import' AND attribution = 'ev' AND kwh > 0 "
+                "AND block_start >= ? AND block_start < ?", (main_id, win_start, win_end)):
+            ev_by_slot.setdefault(r["block_start"], []).append((float(r["kwh"]), r["inc_rate"]))
+        day_min = {r["d"]: r["m"] for r in store._conn.execute(
+            "SELECT substr(block_start,1,10) d, MIN(inc_rate) m FROM block_segments "
+            "WHERE meter_id = ? AND channel = 'import' AND kwh > 0 AND block_start >= ? "
+            "AND block_start < ? GROUP BY d", (main_id, win_start, win_end))}
+        sources = {r["slot_start"]: r.get("source") for r in history
+                   if r.get("kind") in ("planned", "started") and r.get("source")}
+        # the cap-days from a day before the range, so the first one is counted whole
+        cap_hist = store.get_dispatch_history((now - _t2(days=days + 1)).isoformat(), win_end)
+        bump = {r["slot_start"] for r in cap_hist if (r.get("source") or "") in _BUMP_SOURCES}
+        cap = _cap.cap_usage([(r["raw_start"], r["raw_end"], r["energy_kwh"]) for r in cap_hist
+                              if r.get("kind") == "completed" and r.get("raw_start") and r.get("raw_end")
+                              and r["slot_start"] not in bump], tz_name, None)
+        try:
+            bill_slots = set(store.slots_with_bill_split(win_start, win_end))
+        except Exception:
+            bill_slots = set()
+
+        def _cap_day(slot):
+            return _cap.cap_day_key(slot, tz_name)
+
+        def _capped(slot):
+            try:
+                return bool(_eng.capped_at(slot))
+            except Exception:
+                return False
+        _charge_session_costs(sessions, ev_by_slot, day_min, rates, sources, cap, _capped,
+                              bill_slots, _cap_day)
+        completed = {r["slot_start"] for r in history if r.get("kind") == "completed"}
+        outside = _ev_outside_runs(ev_by_slot, completed, day_min)
+        cap_days = {}
+        for s in sessions:
+            cd = s["cap_day"]
+            if cd in cap_days:
+                continue
+            u = cap.get(cd) or {}
+            cap_days[cd] = {"used_minutes": round(float(u.get("used_hours") or 0.0) * 60),
+                            "cap_minutes": round(_cap.CAP_HOURS * 60), "over": bool(u.get("over")),
+                            "capped": _capped(s["start"])}
+        for o in outside:
+            o["cap_day"] = _cap_day(o["start"])
+
+        for s in sessions + upcoming + outside:
             s["local"] = {
-                "start": _loc(s["exact_start"]), "end": _loc(s["exact_end"])}
+                "start": _loc(s.get("exact_start") or s["start"]), "end": _loc(s.get("exact_end") or s["end"])}
             # Localise each per-slot label too (UTC->site tz), so the fill-chart bar
             # times match the summary window instead of reading an hour off under BST.
             for f in s.get("fill", []):
                 f["local_time"] = _loc(f["slot"])["time"]
 
-        return jsonify({"sessions": sessions, "upcoming": upcoming,
-                        "has_data": True, "currency": currency})
+        return jsonify({"sessions": sessions, "upcoming": upcoming, "outside": outside,
+                        "cap_days": cap_days, "has_data": True, "currency": currency})
     except Exception as e:
         logger.error("api_charge_sessions: %s", e)
         return jsonify({"error": str(e)}), 500
