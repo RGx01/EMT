@@ -607,6 +607,50 @@ average p/kWh. One rule for every tariff: the rate already carries IOG's dispatc
 time-of-use windows and Agile's price, and the stored band label is set only on Intelligent. No new
 storage or Octopus calls.
 
+### The surfaces list (the user, 1 Nov 2026)
+
+Eleven ideas and issues, sorted into nine items in the order to take them.
+
+**BL-94 — the PDF button on Bills and Usage Stats.** ✅ *Done 1 Nov 2026.* Three faults:
+- **Bills held only some of the day charts.** A day's chart is built near the view and released far
+  from it, and the PDF drew only the built ones. It now draws every filled day.
+- **Usage Stats' settings were a copy of the toolbar's buttons.** They are a line of named values
+  (period, metric, view, series, years or range, options), with the legend.
+- **Usage Stats in the dark theme leaked in:** the Net line and the tariff lanes' text white. The
+  chart is drawn again in the light theme for the PDF, then back as the page shows it.
+
+**BL-95 — the awaiting-kWh pill as a way in.** A click opens Data Management filtered to the issues;
+a right-click offers *Retry settlement* and *Data Management*.
+
+**BL-96 — Insights Carbon: the net carbon per billing period chart.** A click on a bar moves the page
+to that period, as the arrows do (`_trendNavTo`), and nothing says so. Label it or drop the click.
+
+**BL-97 — the EV on an API-only account.** It is "EV (from dispatch)", a name from before Octopus's
+breakdown carried the split; drop "from dispatch" and read the split. Its colour is fixed in code
+(`#8b5cf6`), as there is no device to configure: show it as a device, for its colour, only where the
+account has ever had an EV. A short design first: where that entry lives without HA sensors, and what
+happens when a real EV sensor is added later.
+
+**BL-98 — Insights Usage: the rate period usage chart.** It groups by the block's recorded rate,
+which blends a half-hour priced at two rates; the rate brackets (BL-93) read the price slices. A
+compact brackets summary for the period, or a way into Usage Stats' view, in its place.
+
+**BL-99 — Overview: the IOG card.** Per session: how long it ran, how much of the 6-hour allowance it
+used, and the kWh and £ charged outside a dispatch (a bump charge). Design first.
+
+**BL-100 — Overview: an Agile card.** Import and export prices, the 48-hour history card's style and
+size.
+
+**BL-101 — home eras.** A timeline of the home's changes: *Added solar*, *More storage*, *Added
+ASHP*, *Added A2A*. Each a label, a kind, a start, an optional end, and optional manufacturer, kW, kWh
+and notes; held in EMT's own database, perhaps linked to a device. Shown as a lane under Usage Stats'
+tariffs; the spiral's year started at an era's (or an agreement's) start; a before-and-after
+comparison of the same months a year apart, said not to be weather-corrected. Edited from a settings
+cog whose menu also holds the bar colours (BL-97's EV). Display only: never read for pricing or
+attribution. Takes up §G.1's user-defined periods. Design first.
+
+**BL-102 — the help pages.** An overhaul, last, once the surfaces above have settled.
+
 ## D. Surfacing performance
 
 *Measure before optimising.* Target hardware is a Raspberry Pi 4 class box on SD storage.
