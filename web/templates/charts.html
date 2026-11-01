@@ -322,6 +322,8 @@
   .eras-head h3 { margin:0; font-size:16px; }
   .eras-sub { font-size:12px; color:var(--muted); margin-bottom:12px; }
   .era-row { display:flex; gap:10px; align-items:flex-start; padding:10px 0; border-top:1px solid var(--border); }
+  .era-group { font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--muted); padding:14px 0 4px; }
+  .era-group:first-child { padding-top:4px; }
   .era-icon { font-size:18px; width:24px; text-align:center; }
   .era-main { flex:1; min-width:0; }
   .era-label { font-weight:600; }
@@ -932,17 +934,29 @@ function _eraMeta(e) {
   return parts.map(_eraEsc).join(' · ') + (e.notes ? '<br>' + _eraEsc(e.notes) : '');
 }
 // newest first
+// The eras by kind, in ERA_KINDS' order — solar and the battery together first — each kind's newest
+// first (1 Nov 2026, the user); a kind not known goes with Other
+function erasGroups(eras) {
+  var by = {};
+  eras.forEach(function(e) { var k = ERA_KINDS[e.kind] ? e.kind : 'other'; (by[k] || (by[k] = [])).push(e); });
+  return Object.keys(ERA_KINDS).filter(function(k) { return by[k]; }).map(function(k) {
+    return {kind: k, eras: by[k].sort(function(a, b) { return a.start < b.start ? 1 : a.start > b.start ? -1 : 0; })};
+  });
+}
 function erasRenderList() {
   var el = document.getElementById('eras-list');
   if (!_eras.length) { el.innerHTML = '<div class="eras-sub">No eras yet.</div>'; return; }
-  el.innerHTML = _eras.slice().sort(function(a, b) { return a.start < b.start ? 1 : -1; }).map(function(e) {
-    var k = ERA_KINDS[e.kind] || ERA_KINDS.other;
-    return '<div class="era-row"><div class="era-icon" title="' + _eraEsc(k.name) + '">' + k.icon + '</div>' +
-      '<div class="era-main"><div class="era-label">' + _eraEsc(e.label) + '</div><div class="era-meta">' + _eraMeta(e) + '</div></div>' +
-      '<div class="era-actions"><button class="btn btn-secondary btn-sm" onclick="erasEdit(\'' + _eraEsc(e.id) + '\')">Edit</button>' +
-      '<button class="btn btn-secondary btn-sm" onclick="erasDelete(\'' + _eraEsc(e.id) + '\')" aria-label="Delete ' +
-      _eraEsc(e.label) + '">🗑️</button></div></div>';
+  el.innerHTML = erasGroups(_eras).map(function(g) {
+    return '<div class="era-group">' + _eraEsc(ERA_KINDS[g.kind].name) + '</div>' + g.eras.map(erasRow).join('');
   }).join('');
+}
+function erasRow(e) {
+  var k = ERA_KINDS[e.kind] || ERA_KINDS.other;
+  return '<div class="era-row"><div class="era-icon" title="' + _eraEsc(k.name) + '">' + k.icon + '</div>' +
+    '<div class="era-main"><div class="era-label">' + _eraEsc(e.label) + '</div><div class="era-meta">' + _eraMeta(e) + '</div></div>' +
+    '<div class="era-actions"><button class="btn btn-secondary btn-sm" onclick="erasEdit(\'' + _eraEsc(e.id) + '\')">Edit</button>' +
+    '<button class="btn btn-secondary btn-sm" onclick="erasDelete(\'' + _eraEsc(e.id) + '\')" aria-label="Delete ' +
+    _eraEsc(e.label) + '">🗑️</button></div></div>';
 }
 function erasEdit(id) {
   var e = id ? _eras.filter(function(x) { return x.id === id; })[0] : null;
