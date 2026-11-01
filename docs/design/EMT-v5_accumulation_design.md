@@ -49,7 +49,7 @@ Usage Stats already has the period buttons, the metric switch (kWh, £, CO₂), 
   On *Year by year* the import tariffs are dots on the lines (1 Nov 2026): a filled one at each
   agreement's start, a smaller hollow one at each price change inside it, on its year's line at that
   day's total, in the year's colour; the hover is the bars' tariff tip, with the prices from that day.
-  The Tariffs box hides them.
+  The spiral has the same dots on its coil, on both windings. The Tariffs box hides them.
 - **The PDF** draws whichever is shown.
 
 ## 3. The Spiral tab
@@ -76,5 +76,5 @@ No new storage, writers or Octopus calls.
 | 1 | **built:** *Running total* in Usage Stats, **line**: the cards, the series, Lifetime / Year by year, the years, the table, the PDF |
 | 2 | **built:** the **spiral** in that view — the spiral's drawing moved in, the expand view, the PDF's spirals. *As built:* the lifetime coil starts at the first year shown, as the line does (the tab counted hidden years in) |
 | 3 | **built:** **the year's start** — 1 January, the billing anniversary, an import tariff's, an era's; the years named *2025/26*; a start on 29 February the month's last; a choice gone, 1 January |
-| 4 | **built:** eras and tariffs on the line — the tariffs along Lifetime (and, since 1 Nov 2026, as dots on Year by year), the eras in their year's colour on Year by year — and an era's chip on the spiral |
+| 4 | **built:** eras and tariffs on the line — the tariffs along Lifetime (and, since 1 Nov 2026, as dots on Year by year and on the spiral), the eras in their year's colour on Year by year — and an era's chip on the spiral |
 | 5 | **built:** the Spiral tab retired — its button, markup, `EMTSpiral`, PDF branch and refresh; a remembered tab or `?tab=spiral` opens the Running total's spiral, its saved view carried over once |
