@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{# BL-102 (help pages design): a help page each, with a side list to move between them. A page sets
+   `help_title` and fills `help_body`; `help_pages` and `section` come from the route. #}
+
+{% block topbar %}
+<div class="topbar">
+  <div>
+    <h2>Help{% if help_title %} · {{ help_title }}{% endif %}</h2>
+    <div class="sub">A reader's guide to Energy Meter Tracker</div>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<style>
+.help-layout { display: grid; grid-template-columns: 190px minmax(0, 1fr); gap: 18px; align-items: start; max-width: 1100px; }
+.help-nav { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 2px; }
+.help-nav a { display: block; padding: 7px 10px; border-radius: 6px; font-size: 13px; color: var(--muted); text-decoration: none; }
+.help-nav a:hover { background: var(--bg); color: var(--text); }
+.help-nav a.on { background: var(--accent); color: var(--surface); font-weight: 600; }
+.help-nav .help-nav-h { font-size: 10.5px; letter-spacing: .12em; text-transform: uppercase; color: var(--muted); padding: 4px 10px 6px; }
+.help-section { margin-bottom: 18px; }
+.help-section h3 { font-size: 14px; font-weight: 600; color: var(--accent); margin: 16px 0 8px; }
+.help-section h3:first-of-type { margin-top: 4px; }
+.help-section p { font-size: 13px; color: var(--text); line-height: 1.7; margin-bottom: 10px; }
+.help-section ul { margin: 6px 0 10px 18px; font-size: 13px; line-height: 1.7; color: var(--text); }
+.help-section li { margin-bottom: 4px; }
+.help-section strong { color: var(--text); }
+.help-section code { font-family: var(--mono); font-size: 12px; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; color: var(--accent2); word-break: break-all; }
+.help-section a { color: var(--accent); }
+.note-box { background: rgba(124,106,247,0.07); border: 1px solid rgba(124,106,247,0.25); border-radius: var(--radius); padding: 10px 14px; font-size: 13px; line-height: 1.7; color: var(--text); margin: 10px 0; }
+.warn-box { background: rgba(245,158,11,0.07); border: 1px solid rgba(245,158,11,0.3); border-radius: var(--radius); padding: 10px 14px; font-size: 13px; line-height: 1.7; color: var(--text); margin: 10px 0; }
+.help-next { display: flex; justify-content: space-between; gap: 10px; margin-top: 8px; font-size: 13px; }
+.help-next a { color: var(--accent); text-decoration: none; }
+@media (max-width: 768px) {
+  .help-layout { grid-template-columns: 1fr; }
+  .help-nav { position: static; flex-direction: row; flex-wrap: wrap; gap: 6px; }
+  .help-nav .help-nav-h { display: none; }
+  .help-nav a { border: 1px solid var(--border); padding: 5px 9px; font-size: 12px; }
+}
+</style>
+<div class="help-layout">
+  <nav class="help-nav" aria-label="Help pages">
+    <div class="help-nav-h">Help</div>
+    <a href="{{ url_for('help_page') }}" class="{{ 'on' if not section }}">Contents</a>
+    {% for slug, label in help_pages %}
+    <a href="{{ url_for('help_section', section=slug) }}" class="{{ 'on' if section == slug }}">{{ label }}</a>
+    {% endfor %}
+  </nav>
+  <div>
+    {% block help_body %}{% endblock %}
+    {% if section %}
+    {% set slugs = help_pages | map(attribute=0) | list %}
+    {% set i = slugs.index(section) %}
+    <div class="help-next">
+      <span>{% if i > 0 %}<a href="{{ url_for('help_section', section=help_pages[i-1][0]) }}">← {{ help_pages[i-1][1] }}</a>{% endif %}</span>
+      <span>{% if i < help_pages|length - 1 %}<a href="{{ url_for('help_section', section=help_pages[i+1][0]) }}">{{ help_pages[i+1][1] }} →</a>{% endif %}</span>
+    </div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}
