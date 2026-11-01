@@ -869,10 +869,11 @@ def serve_favicon():
     return "", 404
 
 
-# BL-102 (help pages design): a help page each, in the navigation's order. The pages still to be
-# rewritten stay on the contents page until they are (PR 2).
+# BL-102 (help pages design): a help page each — the app's pages in the navigation's order, then
+# the ideas they share.
 HELP_PAGES = (("getting-started", "Getting started"), ("overview", "Overview"), ("charts", "Charts"),
-              ("insights", "Insights"))
+              ("insights", "Insights"), ("data-management", "Data Management"), ("settings", "Settings"),
+              ("how-emt-counts", "How EMT counts"), ("running-emt", "Running EMT"))
 
 
 @app.route("/help")

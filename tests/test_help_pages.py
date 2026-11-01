@@ -1,7 +1,7 @@
 """
 BL-102 (help pages design, PR 1): the help is a page per section at /help/<section>, with a shared
-side list, and /help a contents page of them. Getting started, Overview, Charts and Insights are
-rewritten for v5; the old page's other cards stay on the contents page until PR 2.
+side list, and /help a contents page of them. PR 1: Getting started, Overview, Charts, Insights;
+PR 2: Data Management, Settings, How EMT counts, Running EMT, and the old page's cards gone.
 
 Discriminating (fail on the parent: one /help page, no /help/<section>), except the GUARDs marked.
 """
@@ -31,7 +31,9 @@ class HelpPages(unittest.TestCase):
 
     def test_each_section_has_its_page(self):
         titles = {"getting-started": "What Energy Meter Tracker does", "overview": "Smart Charging",
-                  "charts": "Usage Stats", "insights": "Peak Demand Window"}
+                  "charts": "Usage Stats", "insights": "Peak Demand Window",
+                  "data-management": "The tools on a selection", "settings": "Meter Config",
+                  "how-emt-counts": "The house and the devices", "running-emt": "Where your data is"}
         self.assertEqual([s for s, _ in self.server.HELP_PAGES], list(titles))
         for slug, marker in titles.items():
             html = self._text("/help/" + slug)
@@ -57,14 +59,23 @@ class HelpPages(unittest.TestCase):
         self.assertNotIn("←", nxt)
         self.assertIn("Overview →", nxt)
 
-    def test_the_contents_page_lists_the_pages_and_drops_the_rewritten_cards(self):
+    def test_the_contents_page_lists_the_pages_and_none_of_the_old_cards(self):
         html = self._text("/help")
+        body = html.split('class="help-contents"')[1]
         for slug, _ in self.server.HELP_PAGES:
-            self.assertIn('href="/help/%s"' % slug, html)
-        # The cards now pages of their own are gone from it; the ones still to be rewritten stay.
-        self.assertNotIn("What is Energy Meter Tracker?", html)
-        self.assertNotIn("⚡ Overview Page", html)
-        self.assertIn("Gap Filling", html)
+            self.assertIn('href="/help/%s"' % slug, body)
+        # PR 2: the v4 page's cards are all rewritten, so none is left on it.
+        for old in ("What is Energy Meter Tracker?", "Meter Reconciliation Period", "Gap Filling",
+                    "Home Assistant Sensors", "Further Reading"):
+            self.assertNotIn(old, html)
+
+    def test_no_page_offers_what_v5_does_not_have(self):
+        """The v4 page's claims gone with it: the dispatch overlay option, the billing source toggle,
+        and the four HA sensors (removed in v4 3.2.0)."""
+        for path in ["/help"] + ["/help/" + s for s, _ in self.server.HELP_PAGES]:
+            html = self._text(path)
+            for gone in ("dispatch overlay", "billing source", "sensor.energy_meter_import_kwh"):
+                self.assertNotIn(gone, html, path)
 
     def test_no_link_points_at_v4_s_repository(self):
         """v4's repository goes private when v5 launches (design §2)."""

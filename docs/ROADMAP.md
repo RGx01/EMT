@@ -686,7 +686,8 @@ No before-and-after comparison for now (the user).
 each page, links to v5's repository, a reader's guide (the design detail to the wiki when it is redone).*
 - **PR 1 ✅** `/help/<section>` with a side list and `/help` a contents page; Getting started, Overview, Charts,
   Insights; the old page's other cards kept on the contents page, their links on v5's repository;
-- **PR 2** Data Management, Settings, How EMT counts, Running EMT; the old cards gone;
+- **PR 2 ✅** Data Management, Settings, How EMT counts, Running EMT; the old cards gone, with the claims v5
+  no longer makes (the dispatch overlay option, the billing source toggle, the four HA sensors);
 - **PR 3** the ? on each page.
 
 **BL-103 — Agile for everyone.** ✅ *Done 1 Nov 2026 (agile for everyone design); decided: the comparison, Agile Outgoing, shown by default.* The Agile card (BL-100) on every account,

@@ -1,0 +1,96 @@
+{% extends "help_base.html" %}
+{% set help_title = "How EMT counts" %}
+{% block help_body %}
+<div class="card help-section">
+  <div class="card-title">🕐 The half-hour</div>
+  <p>
+    Everything EMT keeps is a <strong>half-hour</strong> — <code>09:00 → 09:30</code> — the period your
+    supplier bills by. From a local meter, each half-hour is the difference in its cumulative reading
+    across the half-hour. A reading rarely falls exactly on the boundary, so EMT works out where the
+    meter stood at it from the readings either side.
+  </p>
+  <div class="note-box">
+    If the meter reads 1000.0 kWh at 09:28 and 1000.5 kWh at 09:32, about 0.25 kWh crossed the 09:30
+    boundary — not none, and not all 0.5.
+  </div>
+  <p>
+    After a restart, a gap of up to 12 hours is filled from the readings either side of it. A longer
+    one is left missing, and shown on Data Management to be filled.
+  </p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">⚖️ The house and the devices</div>
+  <p>
+    The main meter says how much came from the grid in a half-hour. Each device's sensor says how much
+    it used. The devices' share of the grid comes out of the main meter's; whatever is left is the
+    house's <strong>direct import</strong>.
+  </p>
+  <ul>
+    <li><strong>The EV first</strong>: it is the load the cheap rate is meant for, so it takes the grid it
+      used before anything else does.</li>
+    <li><strong>Then the other devices</strong>, sharing what is left in proportion to what each used,
+      when the grid did not cover them all (solar or a battery supplied the rest).</li>
+    <li>A device's use beyond its share of the grid came from elsewhere — solar, the battery — and is
+      not priced.</li>
+  </ul>
+  <p>The total is always the main meter's: the split moves cost between the house and the devices,
+    never onto or off your bill.</p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">⏳ Settlement</div>
+  <p>With Octopus connected, a half-hour waits for Octopus at up to three stages:</p>
+  <ul>
+    <li><strong>kWh</strong> — the meter's settled reading, usually a day or two later. It says
+      <em>how much</em>.</li>
+    <li><strong>Bill</strong> — Octopus's cost for the half-hour, later still. It says <em>what it
+      cost</em>, and it is final.</li>
+    <li><strong>Split</strong> — on the capped Intelligent tariff, Octopus's own split of the half-hour
+      between the car and the house.</li>
+  </ul>
+  <p>
+    Until then a half-hour is priced on EMT's own figures, and the settlement pill counts it. On a
+    tariff whose rates are published in advance, the settled kWh × the rate is already final.
+  </p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">💷 Prices and VAT</div>
+  <ul>
+    <li>Each half-hour is priced at the rate of the tariff you were on then — from Octopus, or from your
+      rate sensors without it — and, once it arrives, at Octopus's own cost for it.</li>
+    <li>A half-hour on two rates (a cheap window starting mid-way, say) is priced in its parts.</li>
+    <li>The standing charge is a day's, on that local day.</li>
+    <li>VAT is at the rate in force on the day: Octopus's own figures carry it; where a figure has
+      none, EMT applies the statutory rate for the date.</li>
+  </ul>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🚗 Intelligent Octopus Go</div>
+  <p>
+    On Intelligent Octopus Go, Octopus <strong>dispatches</strong> your car to charge at the cheap rate,
+    often outside the usual night window. EMT records each dispatch as it happens, and a half-hour in one
+    is priced at the cheap rate.
+  </p>
+  <ul>
+    <li><strong>The 6-hour cap</strong> — on the capped tariff, the cheap rate covers 6 hours of
+      smart charging a day, counted from noon to noon. Charging past them is at the peak rate.</li>
+    <li><strong>Dispatches are only seen live.</strong> Octopus does not give past ones, so a dispatch
+      EMT was not running for is not known. The bill is still right — Octopus's cost is the cost — but
+      the car's share of it can only be EMT's estimate, or Octopus's split where it gives one.</li>
+  </ul>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🌿 Carbon</div>
+  <p>
+    With a postcode, EMT records the grid's carbon intensity in your region for each half-hour, from
+    the <a href="https://carbonintensity.org.uk" target="_blank" rel="noopener">Carbon Intensity API</a>:
+    its actual figure where the API has one, its forecast where not. A half-hour's carbon is its import ×
+    the intensity; export counts against it at the grid's average intensity. Half-hours from before the
+    postcode was set have none.
+  </p>
+</div>
+{% endblock %}

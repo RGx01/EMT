@@ -1,0 +1,70 @@
+{% extends "help_base.html" %}
+{% set help_title = "Running EMT" %}
+{% block help_body %}
+<div class="card help-section">
+  <div class="card-title">💾 Where your data is</div>
+  <ul>
+    <li>Everything is in one database, <code>blocks.db</code>, in
+      <code>/data/energy_meter_tracker/</code>.</li>
+    <li><strong>Backups</strong> go to <code>/share/energy_meter_tracker_backup_&lt;site&gt;/backups/</code>
+      (the site's name in the folder's). The 20 most recent are kept. One is made before every change
+      that cannot be undone, and whenever you ask on Data Management.</li>
+    <li><strong>Once a day</strong>, at about 3am, <code>blocks.db</code> is copied to
+      <code>/share/energy_meter_tracker_backup_&lt;site&gt;/</code>, beside the backups.</li>
+  </ul>
+  <div class="warn-box">
+    ⚠️ <strong>Uninstalling the add-on deletes <code>/data/</code>.</strong> Make sure there is a recent
+    backup in <code>/share/</code> first.
+  </div>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🌐 Opening EMT</div>
+  <ul>
+    <li>From Home Assistant's sidebar (<strong>Show in sidebar</strong> on the add-on's page).</li>
+    <li>Directly, at <code>http://&lt;your HA host&gt;:8098</code>. Change the port in the add-on's
+      <strong>Network</strong> settings to run a second copy beside it, or clear it to use the sidebar
+      only.</li>
+  </ul>
+  <p><strong>Logs</strong>, in EMT's own sidebar, shows what it is doing — and is the first thing to
+    look at when something seems wrong.</p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🧩 EMT's charts in a dashboard</div>
+  <p>Two pages are made for a Home Assistant dashboard's webpage card:</p>
+  <pre class="help-pre">http://&lt;host&gt;:8098/lovelace/billing   # the Billing chart
+http://&lt;host&gt;:8098/lovelace/heatmap   # the heatmap</pre>
+  <p>EMT adds no sensors to Home Assistant: its figures change as half-hours settle, and a sensor's
+    history cannot.</p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🐳 Standalone Docker</div>
+  <p>
+    Without Home Assistant's Supervisor, EMT runs as a container of its own, built from
+    <code>Dockerfile.standalone</code>. It needs your Home Assistant's address and a
+    <strong>long-lived access token</strong> (from your profile in Home Assistant):
+  </p>
+  <pre class="help-pre">docker run -d --name emt \
+  -e HA_URL=http://&lt;your HA host&gt;:8123 \
+  -e HA_TOKEN=&lt;your token&gt; \
+  -p 8099:8099 \
+  -v /path/to/emt-data:/data/energy_meter_tracker \
+  emt</pre>
+  <div class="warn-box">
+    ⚠️ <strong>The volume is essential</strong> — without it your data goes with the container. In
+    standalone mode backups are kept inside it, in <code>backup/</code>.
+  </div>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">📖 Help and support</div>
+  <ul>
+    <li><a href="https://github.com/RGx01/EMT/issues" target="_blank" rel="noopener">Issues</a> — bug
+      reports and ideas. A support file (Data Management) holds what is usually needed.</li>
+    <li><a href="https://github.com/RGx01/EMT" target="_blank" rel="noopener">The repository</a> — the
+      source and the releases.</li>
+  </ul>
+</div>
+{% endblock %}
