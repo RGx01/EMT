@@ -1096,6 +1096,40 @@ function showChart(name, btn) {
 }
 
 // ── PDF Export ────────────────────────────────────────────────────────────────
+// Usage Stats' settings for the PDF, as a line of named values ("Period Monthly · Metric kWh …") from
+// the controls shown, in place of a copy of the toolbar's buttons.
+function barPdfSettings() {
+  function shown(el) { return !!el && el.getClientRects().length > 0; }
+  function seg(id) {
+    var el = document.getElementById(id), b = el && el.querySelector('.bar-seg-btn.active');
+    return shown(el) && b ? b.textContent.trim() : '';
+  }
+  function esc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
+  var out = [];
+  function add(label, value) { if (value) out.push('<span><b>' + label + '</b>' + esc(value) + '</span>'); }
+  add('Period', seg('bar-period-seg'));
+  add('Periods', seg('bar-cal-seg'));
+  add('Metric', seg('bar-metric-seg'));
+  add('Show', seg('bar-show-seg'));
+  var sel = document.getElementById('bar-br-series');
+  if (shown(sel) && sel.selectedIndex >= 0) {
+    var pct = document.getElementById('bar-br-pct');
+    add('Series', sel.options[sel.selectedIndex].text + (pct && pct.checked ? ', % of kWh' : ''));
+  }
+  add('Order', seg('bar-order-seg'));
+  var lbl = document.querySelector('#bar-sub-bar .bar-period-label');
+  add(lbl ? 'Range' : 'Years', lbl ? lbl.textContent.trim()
+      : Array.from(barActiveYears).sort().join(', '));
+  var opts = [['bar-standing-wrap', 'bar-standing-cb', 'Standing charge'],
+              ['bar-net-wrap', 'bar-net-cb', null], ['bar-tariff-wrap', 'bar-tariff-cb', 'Tariffs']]
+    .filter(function (o) { var cb = document.getElementById(o[1]); return shown(document.getElementById(o[0])) && cb && cb.checked; })
+    .map(function (o) { return o[2] || (document.getElementById('bar-net-text') || {}).textContent || 'Net'; });
+  add('With', opts.join(', '));
+  var sort = document.getElementById('bar-sort-btn');
+  if (shown(sort)) add('Sort', sort.textContent.replace(/^[\u2191\u2193]\s*/, '').trim());
+  return out.length ? '<div class="pdf-settings">' + out.join('') + '</div>' : '';
+}
+
 function chartsPdfExport() {
   // Open popup SYNCHRONOUSLY (required for Safari's popup whitelist)
   var win = window.open('', '_blank');
@@ -1319,47 +1353,32 @@ function _doPdfExport(win, iconSrc) {
   // ── Usage Stats ────────────────────────────────────────────────────────────
   } else if (_activeChart === 'bar') {
     var canvas  = document.getElementById('barChart');
-    var imgData = (canvas && typeof canvas.toDataURL === 'function') ? canvas.toDataURL('image/png') : null;
+    var imgData = null, legendHtml = '';
+    var legEl   = document.getElementById('bar-legend');
+    // Drawn again in the light theme, at twice the pixels and with no animation (Chart.js's defaults,
+    // for this one chart), then back as the page shows it. It is drawn here by hand: a new chart draws
+    // on its next frame, and read straight after barRender() the canvas was blank, or its bars at 0
+    // where the animation starts. The legend is read light too (the Net line's).
+    var _anim = Chart.defaults.animation, _dpr = Chart.defaults.devicePixelRatio;
+    barPdfLight = true; Chart.defaults.animation = false; Chart.defaults.devicePixelRatio = 2;
+    try {
+      barRender();
+      var ch = barChartInstance;
+      if (ch && canvas && typeof canvas.toDataURL === 'function') {
+        ch.resize(); ch.draw();
+        imgData = canvas.toDataURL('image/png');
+      }
+      if (legEl && legEl.innerHTML.trim()) legendHtml = '<div class="pdf-legend">' + legEl.innerHTML + '</div>';
+    } finally {
+      barPdfLight = false; Chart.defaults.animation = _anim; Chart.defaults.devicePixelRatio = _dpr;
+      barRender();
+    }
     var tblEl   = document.getElementById('bar-table');
     var tblHtml = tblEl ? tblEl.outerHTML : '<p>No data table.</p>';
-
-    // Clone the actual toolbar HTML, stripping onclick handlers, marking active state visually
-    var barToolbar = document.querySelector('.bar-toolbar');
-    var toolbarHtml = '';
-    if (barToolbar) {
-      var clone = barToolbar.cloneNode(true);
-      // Remove onclick attrs and make active buttons visually distinct via inline style
-      clone.querySelectorAll('[onclick]').forEach(function(el) { el.removeAttribute('onclick'); });
-      clone.querySelectorAll('.bar-seg-btn.active').forEach(function(el) {
-        el.style.background = '#00a080';
-        el.style.color = '#fff';
-        el.style.fontWeight = '600';
-      });
-      clone.querySelectorAll('.bar-seg-btn:not(.active)').forEach(function(el) {
-        el.style.background = '#f0f0f0';
-        el.style.color = '#555';
-      });
-      // Replace checkboxes with visible text indicators — native checkbox checked
-      // state doesn't render reliably in PDF/print popup windows.
-      clone.querySelectorAll('input[type=checkbox]').forEach(function(el) {
-        var liveEl = el.id ? document.getElementById(el.id) : null;
-        var isChecked = liveEl ? liveEl.checked : el.checked;
-        var indicator = document.createElement('span');
-        indicator.textContent = isChecked ? '☑' : '☐';
-        indicator.style.cssText = 'font-size:14px;line-height:1;margin-right:2px;';
-        el.parentNode.insertBefore(indicator, el);
-        el.style.display = 'none';
-      });
-      // Also make the standing charge label text visible in the clone
-      clone.querySelectorAll('#bar-standing-wrap, [id$="-standing-wrap"]').forEach(function(el) {
-        el.style.display = 'flex';
-        // Remove the ::after pseudo-element workaround by showing the real text
-        el.querySelectorAll('span').forEach(function(s) { s.style.display = ''; });
-      });
-      clone.style.position = 'static';
-      clone.style.marginBottom = '16px';
-      toolbarHtml = clone.outerHTML;
-    }
+    var noteEl  = document.getElementById('bar-br-note');
+    var noteHtml = noteEl && noteEl.style.display !== 'none' && noteEl.textContent.trim()
+      ? '<div class="pdf-note">' + noteEl.innerHTML + '</div>' : '';
+    var toolbarHtml = barPdfSettings();
 
     var barStyles =
       'table{border-collapse:collapse;width:100%;font-size:11px;font-family:ui-monospace,monospace;}' +
@@ -1370,13 +1389,14 @@ function _doPdfExport(win, iconSrc) {
       'tr:nth-child(even){background:#fafafa;}' +
       '.col-total{font-weight:600;background:#f5f5f5;}' +
       '.bar-legend-dot{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:4px;}' +
-      '.bar-toolbar{display:flex;flex-wrap:wrap;gap:8px;padding:8px;background:#f9f9f9;border:1px solid #ddd;border-radius:6px;margin-bottom:16px;}' +
-      '.bar-toolbar-right{margin-left:auto;}' +
-      '.bar-seg{display:flex;gap:2px;}' +
-      '.bar-seg-btn{padding:3px 10px;border-radius:4px;border:none;cursor:default;font-size:12px;}';
+      '.pdf-settings{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:12px;color:#555;margin-bottom:14px;}' +
+      '.pdf-settings b{font-weight:600;color:#111;margin-right:5px;}' +
+      '.pdf-legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:11px;color:#555;margin-bottom:8px;}' +
+      '.pdf-legend>*{display:inline-flex;align-items:center;gap:4px;}' +
+      '.pdf-note{font-size:12px;color:#555;margin:4px 0 10px;}';
 
     var chartSection = imgData
-      ? '<img src="' + imgData + '" style="max-width:100%;margin-bottom:20px;border:1px solid #eee;border-radius:6px;">'
+      ? '<img src="' + imgData + '" style="width:100%;height:auto;display:block;margin-bottom:12px;border:1px solid #eee;border-radius:6px;">'
       : '<p style="color:#888;">Chart image not available.</p>';
 
     win.document.open();
@@ -1384,7 +1404,7 @@ function _doPdfExport(win, iconSrc) {
       '<title>EMT — ' + tabLabel + '</title>' +
       '<style>' + commonStyles + barStyles + '</style>' +
       '</head><body>' +
-      header + toolbarHtml + chartSection +
+      header + toolbarHtml + legendHtml + chartSection + noteHtml +
       '<div style="margin-top:16px;">' + tblHtml + '</div>' +
       '</body></html>');
     win.document.close();
@@ -1860,7 +1880,7 @@ function barTariffPlugin(ranges, lanes) {
   return {
     id: 'emtTariffs',
     afterDatasetsDraw: function(chart) {
-      var c = chart.ctx, th = barGetTheme(), dark = document.documentElement.getAttribute('data-theme') !== 'light';
+      var c = chart.ctx, th = barGetTheme(), dark = barIsDark();
       var segs = barTariffSegments(chart, ranges, lanes);
       chart._emtTariffSegs = segs;
       var fills = dark ? ['rgba(255,255,255,0.13)', 'rgba(255,255,255,0.22)']
@@ -2192,7 +2212,7 @@ function barBrLabel(n) {
 // money out: an import plunge is blue; export, earned, runs blue to purple, the best-paid bracket the
 // deepest purple; a negative export price, paid to export, is red.
 function barBrColor(n, ns) {
-  var dark = document.documentElement.getAttribute('data-theme') !== 'light';   // as barGetTheme
+  var dark = barIsDark();
   var i = ns.indexOf(n), alt = i % 2 ? (dark ? 14 : 13) : 0;
   var ex = barBrSign() < 0;
   if (n < 0) return ex ? 'hsl(0, ' + (dark ? 62 : 68) + '%, ' + ((dark ? 48 : 40) + alt) + '%)'
@@ -3595,8 +3615,13 @@ function barCopyTable() {
   }
 }
 
+// The page's theme, or light while the PDF draws the chart: the PDF is on white, and a chart drawn
+// in the dark theme took its colours there — the Net line and the tariff lanes' text white.
+var barPdfLight = false;
+function barIsDark() { return !barPdfLight && document.documentElement.getAttribute('data-theme') !== 'light'; }
+
 function barGetTheme() {
-  var dark = document.documentElement.getAttribute('data-theme') !== 'light';
+  var dark = barIsDark();
   return {
     axisC:  dark ? '#6b7080' : '#555566',
     gridC:  dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.08)',
