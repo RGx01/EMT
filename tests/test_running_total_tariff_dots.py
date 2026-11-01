@@ -7,7 +7,7 @@ agreement's start is a filled dot and each price change inside it (barTariffChan
 its end, up to today) a smaller hollow one, on its year's line at that day's running total, in the year's
 colour. A year not shown, or a day before the year's first point or after its last, has no dot. The hover is
 the bars' tariff tip at the dot's day (barTariffShow with its date, so the prices in force from it). The Tariffs
-box shows on both line modes and hides them; the spiral has none.
+box shows on both line modes and hides them. The spiral's dots are test_running_total_spiral_tariff_dots.
 
 The preview's scratch copy has no stored prices: checked there on 1 Nov 2026 with the starts, and with price
 changes injected.
@@ -65,7 +65,7 @@ class TheDots(unittest.TestCase):
             json.dumps(mode), json.dumps(view), json.dumps(TARIFFS), "true" if on else "false") + _kinds() + \
             "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts",
                                        "barTariffChangeDays", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
-                                       "barAccYearOf", "barAccDoy", "barAccShowEras", "barAccShowTariffs",
+                                       "barAccYearOf", "barAccDoy", "barAccShowEras", "barAccShowTariffs", "barAccTariffDays",
                                        "barAccOverlays")) + \
             "\nconsole.log(JSON.stringify(barAccOverlays(%s, %s)));" % (json.dumps(list(years)), json.dumps(series))
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
@@ -94,7 +94,7 @@ class TheDots(unittest.TestCase):
         self.assertEqual(self._run(on=False)["dots"], [])
         life = self._run(mode="lifetime")
         self.assertEqual((life["dots"], [a["name"] for a in life["tariffs"]]), ([], ["Go", "Intelligent Go"]))
-        self.assertEqual(self._run(view="spiral")["dots"], [])
+        self.assertEqual(self._run(view="spiral")["dots"], [])          # the spiral draws its own
 
 
 class TheView(unittest.TestCase):

@@ -3602,7 +3602,7 @@ function barAccSyncUI() {
    'bar-sort-btn', 'bar-br-wrap', 'bar-br-note'].forEach(function(id) { vis(id, false); });
   // PR 4: the eras on every drawing; the tariffs along the Lifetime line
   vis('bar-eras-wrap', !!(barEras && barEras.length), 'flex');
-  vis('bar-tariff-wrap', !!(barTariffs && barTariffs.length) && barAccView === 'line', 'flex');
+  vis('bar-tariff-wrap', !!(barTariffs && barTariffs.length), 'flex');
   vis('bar-acc-standing-wrap', barAccSeries === 'net', 'flex');
   var cb = document.getElementById('bar-acc-standing'); if (cb) cb.checked = barAccIncStanding;
   document.querySelectorAll('#bar-acc-mode .bar-seg-btn').forEach(function(b) {
@@ -3738,7 +3738,17 @@ function barAccShowEras() {
 }
 function barAccShowTariffs() {
   var cb = document.getElementById('bar-tariff-cb');
-  return !!(barTariffs && barTariffs.length) && !!cb && cb.checked && barAccView === 'line';
+  return !!(barTariffs && barTariffs.length) && !!cb && cb.checked;
+}
+// The days a tariff dot marks: each import agreement's start, and each price change inside it
+// (barTariffChangeDays) — [{a, iso, change}]
+function barAccTariffDays() {
+  var today = new Date().toISOString().slice(0, 10), out = [];
+  barTariffs.filter(function(a) { return a.direction !== 'export' && a.from; }).forEach(function(a) {
+    out.push({a: a, iso: a.from, change: false});
+    barTariffChangeDays(a, today).forEach(function(d) { out.push({a: a, iso: d, change: true}); });
+  });
+  return out;
 }
 // What a line chart draws: {tariffs: [agreements] | null, eras: [{e, x, end, color}], dots: [{a, iso, x,
 // y, change, color}]} in the x axis' own values (ms on Lifetime, days of the year on Year by year). On
@@ -3747,20 +3757,16 @@ function barAccShowTariffs() {
 // that day's total; none where the year has no point on or before it. `s` is the chart's series.
 function barAccOverlays(years, s) {
   var out = {tariffs: null, eras: [], dots: []};
-  if (barAccShowTariffs()) {
-    var imp = barTariffs.filter(function(a) { return a.direction !== 'export' && a.from; });
-    if (barAccMode === 'lifetime') out.tariffs = imp;
+  if (barAccShowTariffs() && barAccView === 'line') {
+    if (barAccMode === 'lifetime') out.tariffs = barTariffs.filter(function(a) { return a.direction !== 'export' && a.from; });
     else if (s) {
-      var today = new Date().toISOString().slice(0, 10);
-      imp.forEach(function(a) {
-        [[a.from, false]].concat(barTariffChangeDays(a, today).map(function(d) { return [d, true]; })).forEach(function(c) {
-          var r = {year: +c[0].slice(0, 4), month: +c[0].slice(5, 7), day: +c[0].slice(8, 10)};
-          var y = barAccYearOf(r), yi = years.indexOf(y), x = barAccDoy(r);
-          var pts = yi >= 0 ? s.years[y] || [] : [], pt = null;
-          pts.forEach(function(p) { if (p.x <= x) pt = p; });
-          if (!pt || pts[pts.length - 1].x < x) return;      // before the year's data, or after it
-          out.dots.push({a: a, iso: c[0], x: x, y: pt.y, change: c[1], color: BAR_ACC_YC[yi % BAR_ACC_YC.length]});
-        });
+      barAccTariffDays().forEach(function(t) {
+        var r = {year: +t.iso.slice(0, 4), month: +t.iso.slice(5, 7), day: +t.iso.slice(8, 10)};
+        var y = barAccYearOf(r), yi = years.indexOf(y), x = barAccDoy(r);
+        var pts = yi >= 0 ? s.years[y] || [] : [], pt = null;
+        pts.forEach(function(p) { if (p.x <= x) pt = p; });
+        if (!pt || pts[pts.length - 1].x < x) return;      // before the year's data, or after it
+        out.dots.push({a: t.a, iso: t.iso, x: x, y: pt.y, change: t.change, color: BAR_ACC_YC[yi % BAR_ACC_YC.length]});
       });
     }
   }
@@ -3875,6 +3881,22 @@ function _spLbl(v, u, sc) {
   var x = v / sc.d, ax = Math.abs(x), str = x.toFixed(ax >= 100 ? 0 : ax >= 1 ? 1 : 2);
   return str.indexOf('.') < 0 ? str : str.replace(/\.?0+$/, '');
 }
+// The spiral's tariff dots: [{a, iso, change, p, color}], p the coil's point for the day
+function barAccSpiralDots(pts, years) {
+  var out = [];
+  barAccTariffDays().forEach(function(t) {
+    var r = {year: +t.iso.slice(0, 4), month: +t.iso.slice(5, 7), day: +t.iso.slice(8, 10)};
+    var ms = barAccMs(r), y = barAccYearOf(r), yi = years.indexOf(y), p = null, after = false;
+    if (yi < 0) return;
+    pts.forEach(function(q) {
+      if (q.yr !== y) return;
+      if (barAccMs(q.r) <= ms) p = q; else after = true;
+    });
+    if (!p || (!after && barAccMs(p.r) < ms)) return;   // before the year's data, or after it
+    out.push({a: t.a, iso: t.iso, change: t.change, p: p, color: BAR_ACC_YC[yi % BAR_ACC_YC.length]});
+  });
+  return out;
+}
 function barAccSpiral(host, rows, k, years) {
   var G = BAR_SP, life = 0, per = {}, pts = [];
   rows.forEach(function(r) {
@@ -3931,6 +3953,17 @@ function barAccSpiral(host, rows, k, years) {
       var it = _spEl('text', {x: p.x, y: p.y + 0.5, 'text-anchor': 'middle', 'dominant-baseline': 'middle', 'font-size': 12});
       it.textContent = kk.icon; g.appendChild(it);
       svg.appendChild(g);
+    });
+  }
+  // The tariffs as dots on the coil, as on the line (1 Nov 2026, the user): at the day's point, the last
+  // drawn on or before it in the same year; none before the shown days or after them
+  if (barAccShowTariffs()) {
+    barAccSpiralDots(pts, years).forEach(function(t) {
+      var c = _spEl('circle', {cx: t.p.x, cy: t.p.y, r: t.change ? 3.4 : 5, 'stroke-width': 1.6, 'class': 'bar-acc-tdot',
+        style: t.change ? 'fill:var(--surface);stroke:' + t.color : 'fill:' + t.color + ';stroke:var(--surface)'});
+      c.onpointermove = function(ev) { ev.stopPropagation(); tip.style.opacity = 0; barTariffShow(t.a, ev, t.iso); };
+      c.onpointerleave = function() { barTariffHide(); };
+      svg.appendChild(c);
     });
   }
   var last = pts[pts.length - 1];

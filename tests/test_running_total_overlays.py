@@ -55,7 +55,7 @@ class TheOverlays(unittest.TestCase):
               "var document = {getElementById: function (id) { return {checked: id === 'bar-tariff-cb' ? %s : %s}; }};\n") % (
             json.dumps(mode), "true" if tariffs_on else "false", "true" if eras_on else "false") + \
             "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts", "barTariffChangeDays", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
-                                        "barAccYearOf", "barAccDoy", "barAccShowEras", "barAccShowTariffs",
+                                        "barAccYearOf", "barAccDoy", "barAccShowEras", "barAccShowTariffs", "barAccTariffDays",
                                         "barAccOverlays")) + \
             "\nconsole.log(JSON.stringify(barAccOverlays(%s)));" % json.dumps(years)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
@@ -92,7 +92,7 @@ class TheView(unittest.TestCase):
     def test_the_boxes_shown_where_they_apply(self):
         f = _fn("barAccSyncUI")
         self.assertIn("vis('bar-eras-wrap', !!(barEras && barEras.length), 'flex');", f)
-        self.assertIn("vis('bar-tariff-wrap', !!(barTariffs && barTariffs.length) && barAccView === 'line', 'flex');", f)
+        self.assertIn("vis('bar-tariff-wrap', !!(barTariffs && barTariffs.length), 'flex');", f)
 
     def test_the_line_charts_take_the_overlays(self):
         f = _fn("barAccRender")
