@@ -1,0 +1,5 @@
+{# BL-102 (help pages design §3): the ? beside a page's title, opening its help page.
+   `{% from "_help_q.html" import help_q %}` then `{{ help_q('charts') }}` inside the page's <h2>. #}
+{% macro help_q(section) -%}
+<a class="help-q" href="{{ url_for('help_section', section=section) }}" title="Help for this page" aria-label="Help for this page">?</a>
+{%- endmacro %}

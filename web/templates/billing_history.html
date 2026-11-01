@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_help_q.html" import help_q %}
 
 {% block topbar_title %}Billing History{% endblock %}
 {% block topbar_sub %}Track billing day, address and supplier changes over time{% endblock %}
@@ -42,7 +43,7 @@
 {% block topbar %}
 <div class="topbar" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;">
   <div>
-    <h2 style="margin:0;">🕓 Billing History</h2>
+    <h2 style="margin:0;">🕓 Billing History {{ help_q('settings') }}</h2>
     <div class="sub">Track billing day, address and supplier changes over time</div>
   </div>
   <div style="display:flex;gap:8px;">

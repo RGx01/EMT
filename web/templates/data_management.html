@@ -1,9 +1,10 @@
 {% extends "base.html" %}
+{% from "_help_q.html" import help_q %}
 
 {% block topbar %}
 <div class="topbar dm-topbar">
   <div>
-    <h2>Data Management</h2>
+    <h2>Data Management {{ help_q('data-management') }}</h2>
     <div class="sub">Your data, half-hour by half-hour</div>
   </div>
   <!-- The jobs off the heatmap, in the topbar (21 Oct 2026, the user): below it they moved as its

@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_help_q.html" import help_q %}
 <!-- EMT layout variant: WRAP-FILL (ACTIVE) — Cards wrap-and-fill: one filled row when wide; wraps left-aligned filling each row when narrow. -->
 
 {% block head %}
@@ -797,7 +798,7 @@
 {% block topbar %}
 <div class="topbar">
   <div>
-    <h2>Overview</h2>
+    <h2>Overview {{ help_q('overview') }}</h2>
     <div class="sub">Your energy at a glance</div>
   </div>
   <div style="font-size:12px;color:var(--muted);">
