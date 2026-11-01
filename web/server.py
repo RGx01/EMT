@@ -9352,6 +9352,74 @@ def _build_upcoming_dispatches(history, rates, day_peak, now_iso,
     return out   # soonest-first
 
 
+@app.route("/api/chart-styles", methods=["GET", "POST"])
+def api_chart_styles():
+    """BL-101 PR 4 (home eras design §4): every meter's chart style in one place, for the Charts
+    page's bar colours modal — the house (the main meter's import), each device, export, and the EV
+    with no device where the account has had one (BL-97).
+    GET {styles: [{key, label, bar, chosen, dashed}], palette, rate_mix}, in the charts' order.
+    POST {styles: [{key, bar_color?, rate_line?}]} — "" or absent clears to the default. Written to the
+    current config period's channels (the EV's to the store's meta), without the engine restart a
+    config save makes; the page's change poll sees it (`_config_token`)."""
+    import energy_charts as _ec
+    cfg = load_config()
+    store = store_access.store()
+    meters = cfg.get("meters") or {}
+    main_id = next((m for m, d in meters.items() if not (d.get("meta") or {}).get("sub_meter")), None)
+
+    def _where(key):
+        if key == "electricity_main":
+            return (main_id, "import") if main_id else None
+        if key == "electricity_main_export":
+            return (main_id, "export") if main_id else None
+        if key in meters and (meters[key].get("meta") or {}).get("sub_meter"):
+            return (key, "import")
+        return None
+    ev_shown = not _ec._ev_meter_id(cfg) and _ec.has_had_ev(store)
+    if request.method == "GET":
+        styles = _ec.build_meter_styles(cfg)
+        out = []
+        for key, st in styles.items():
+            w = _where(key)
+            if not w:
+                continue
+            ch = ((meters[w[0]].get("channels") or {}).get(w[1]) or {})
+            meta = meters[w[0]].get("meta") or {}
+            label = (meta.get("device") or key) if meta.get("sub_meter") else (
+                "Export" if key == "electricity_main_export" else "Direct import (the house)")
+            out.append({"key": key, "label": label, "bar": st["bar"], "dashed": st["dashed"],
+                        "chosen": bool(_chart_style.clean_color(ch.get("bar_color")))})
+        if ev_shown:
+            ev, saved = _ec.ev_dispatch_style(store), _ev_style_saved(store)
+            out.append({"key": "ev_dispatch", "label": "EV", "bar": ev["bar"], "dashed": ev["dashed"],
+                        "chosen": "bar_color" in saved})
+        return jsonify({"styles": out, "palette": _chart_style.PALETTE, "rate_mix": _chart_style.RATE_MIX})
+    body = request.get_json(force=True, silent=True) or {}
+    rows, ev = [], None
+    for s in body.get("styles") or []:
+        if not isinstance(s, dict):
+            continue
+        bar = _chart_style.clean_color(s.get("bar_color"))
+        line = _chart_style.clean_rate_line(s.get("rate_line"))
+        if s.get("key") == "ev_dispatch" and ev_shown:
+            ev = {k: v for k, v in (("bar_color", bar), ("rate_line", line)) if v}
+            continue
+        w = _where(s.get("key"))
+        if w:
+            rows.append((w[0], w[1], bar, line))
+    period = store.get_current_config_period_id()
+    if period is None:
+        return jsonify({"ok": False, "error": "no configuration yet"}), 409
+    try:
+        n = _engine_write(lambda st: _chart_style.apply_styles(st, period, rows))
+        if ev is not None:
+            _engine_write(lambda st: st.set_meta("ev_style", ev or None))
+    except Exception as e:
+        logger.error("api_chart_styles: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "written": n})
+
+
 @app.route("/api/home-eras", methods=["GET", "POST"])
 def api_home_eras():
     """BL-101 (home eras design): the home's eras — dated notes for display, never read for pricing.

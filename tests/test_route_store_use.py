@@ -76,7 +76,8 @@ class TestRouteStoreUse(unittest.TestCase):
         # +1: /api/tariff-agreements, Usage Stats' tariff overlay (31 Oct 2026).
         # +1: /api/ev-style, the colour of the EV with no device (BL-97, 1 Nov 2026).
         # +1: /api/home-eras, the home's eras (BL-101, 1 Nov 2026).
-        self.assertEqual(len(self.d["get_on_companion"]), 38)
+        # +1: /api/chart-styles, the bar colours modal (BL-101 PR 4, 1 Nov 2026).
+        self.assertEqual(len(self.d["get_on_companion"]), 39)
 
     def test_adoption_is_total(self):
         """Measured at 0% before the port: v4 credited one route with the read

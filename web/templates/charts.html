@@ -322,6 +322,17 @@
                     border:1px solid var(--border); border-radius:5px; }
   .era-error { color:#e05252; font-size:12px; grid-column:1 / -1; }
   @media (max-width:480px) { .era-form { grid-template-columns:1fr; } }
+  /* BL-101 PR 4: the bar colours modal */
+  .col-row { padding:10px 0; border-top:1px solid var(--border); }
+  .col-head { display:flex; align-items:center; gap:8px; font-weight:600; margin-bottom:6px; }
+  .col-prev { width:40px; height:16px; border-radius:3px; position:relative; flex:none; }
+  .col-prev i { position:absolute; left:2px; right:2px; top:7px; height:0; border-top:2px solid; }
+  .col-row .cs-row { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:4px; }
+  .col-sw { width:20px; height:20px; border-radius:4px; border:2px solid transparent; cursor:pointer; padding:0; }
+  .col-sw.on { border-color:var(--text); }
+  .col-note { font-size:11px; color:var(--muted); }
+  .col-row label { display:inline-flex; align-items:center; gap:4px; font-size:12px; color:var(--muted); text-transform:none;
+                   letter-spacing:normal; }
 </style>
 {% endblock %}
 
@@ -356,6 +367,21 @@
     <div id="eras-list"></div>
     <div id="eras-form-wrap"></div>
     <div style="margin-top:12px;"><button class="btn btn-primary btn-sm" id="eras-add-btn" onclick="erasEdit(null)">+ Add an era</button></div>
+  </div>
+</div>
+<div class="eras-backdrop" id="colours-backdrop" onclick="if(event.target===this)coloursClose()">
+  <div class="eras-panel" role="dialog" aria-modal="true" aria-labelledby="colours-title">
+    <div class="eras-head">
+      <h3 id="colours-title">🎨 Bar colours</h3>
+      <button class="btn btn-secondary btn-sm" onclick="coloursClose()" aria-label="Close">✕</button>
+    </div>
+    <div class="eras-sub">Each meter's bar colour and rate line, as on its Settings tab. The rate line's colour follows its bar.</div>
+    <div id="colours-list"></div>
+    <div class="era-error" id="colours-error"></div>
+    <div style="margin-top:12px;display:flex;gap:8px;">
+      <button class="btn btn-primary btn-sm" onclick="coloursSave()">Save</button>
+      <button class="btn btn-secondary btn-sm" onclick="coloursClose()">Cancel</button>
+    </div>
   </div>
 </div>
 <button id="topbar-toggle" onclick="toggleTopbar()" aria-label="Toggle chart controls">
@@ -1170,7 +1196,7 @@ function chartsCogMenu(btn) {
   settleCloseMenu();
   var menu = document.createElement('div');
   menu.id = 'settle-menu'; menu.className = 'settle-menu'; menu.setAttribute('role', 'menu');
-  [['🏡 Home eras…', erasOpen]].forEach(function(it) {
+  [['🏡 Home eras…', erasOpen], ['\ud83c\udfa8 Bar colours\u2026', coloursOpen]].forEach(function(it) {
     var b = document.createElement('button');
     b.type = 'button'; b.setAttribute('role', 'menuitem'); b.textContent = it[0];
     b.onclick = function() { settleCloseMenu(); it[1](); };
@@ -1300,6 +1326,85 @@ function erasDelete(id) {
 }
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape' && document.getElementById('eras-backdrop').classList.contains('open')) erasClose();
+});
+
+// ── Bar colours (BL-101 PR 4, home eras design §4) ────────────────────────────────────────────────
+// Every meter's chart style in one place, as each one's Settings tab has it: a palette swatch or any
+// colour, the default again, and the rate line solid or dashed. Saved together to /api/chart-styles,
+// without the engine restart a config save makes; the charts follow at once.
+var _colours = [], _coloursPalette = [], _coloursMix = 0.3, _coloursEdit = {};
+function _colRate(bar) {                // chart_style.rate_line_color
+  var c = /^#[0-9a-f]{6}$/i.test(bar || '') ? bar : '#333333';
+  var rgb = [1, 3, 5].map(function(i) { return parseInt(c.slice(i, i + 2), 16); });
+  var target = (0.299 * rgb[0] + 0.587 * rgb[1] + 0.114 * rgb[2]) / 255 < 0.5 ? 255 : 0;
+  return '#' + rgb.map(function(x) { return ('0' + Math.floor(x + (target - x) * _coloursMix + 0.5).toString(16)).slice(-2); }).join('');
+}
+function coloursOpen() {
+  document.getElementById('colours-backdrop').classList.add('open');
+  document.getElementById('colours-error').textContent = '';
+  document.getElementById('colours-list').innerHTML = '<div class="eras-sub">Loading…</div>';
+  fetch(apiUrl('/api/chart-styles')).then(function(r) { return r.json(); }).then(function(d) {
+    _colours = d.styles || []; _coloursPalette = d.palette || []; _coloursMix = d.rate_mix || 0.3; _coloursEdit = {};
+    coloursRender();
+  }).catch(function(e) {
+    document.getElementById('colours-list').innerHTML = '<div class="era-error">Colours unavailable: ' + _eraEsc(e.message) + '</div>';
+  });
+}
+function coloursClose() { document.getElementById('colours-backdrop').classList.remove('open'); }
+// a style as it stands with this modal's changes: {bar, chosen, dashed}
+function _colNow(s) {
+  var e = _coloursEdit[s.key] || {};
+  var bar = 'bar' in e ? e.bar : (s.chosen ? s.bar : null);
+  return {bar: bar || s.def || s.bar, chosen: !!bar, dashed: 'dashed' in e ? e.dashed : s.dashed};
+}
+function coloursRender() {
+  var now = {};
+  _colours.forEach(function(s) { if (!s.def) s.def = s.chosen ? null : s.bar; now[s.key] = _colNow(s); });
+  document.getElementById('colours-list').innerHTML = _colours.map(function(s) {
+    var n = now[s.key], line = _colRate(n.bar), k = _eraEsc(s.key);
+    var same = _colours.filter(function(o) { return o.key !== s.key && now[o.key].bar === n.bar; })
+                       .map(function(o) { return _eraEsc(o.label); });
+    return '<div class="col-row"><div class="col-head"><span class="col-prev" style="background:' + n.bar + ';">' +
+        '<i style="border-top-color:' + line + ';' + (n.dashed ? 'border-top-style:dashed;' : '') + '"></i></span>' +
+        _eraEsc(s.label) + '</div>' +
+      '<div class="cs-row">' + _coloursPalette.map(function(c) {
+          return '<button type="button" class="col-sw' + (c === n.bar ? ' on' : '') + '" style="background:' + c + ';" title="' + c +
+            '" aria-label="' + _eraEsc(s.label) + ' bar colour ' + c + '" onclick="coloursSet(\'' + k + '\', \'bar\', \'' + c + '\')"></button>';
+        }).join('') +
+        '<input type="color" value="' + n.bar + '" title="Any colour" onchange="coloursSet(\'' + k + '\', \'bar\', this.value)">' +
+        (n.chosen ? '<button type="button" class="btn btn-secondary btn-sm" onclick="coloursSet(\'' + k + '\', \'bar\', \'\')">Default</button>'
+                  : '<span class="col-note">default</span>') + '</div>' +
+      '<div class="cs-row"><span class="col-note">Rate line</span>' + ['solid', 'dashed'].map(function(v) {
+          return '<label><input type="radio" name="col-rl-' + k + '"' + ((v === 'dashed') === n.dashed ? ' checked' : '') +
+            ' onchange="coloursSet(\'' + k + '\', \'dashed\', ' + (v === 'dashed') + ')"> ' + (v === 'solid' ? 'Solid' : 'Dashed') + '</label>';
+        }).join('') + '</div>' +
+      (same.length ? '<div class="col-note">Same colour as ' + same.join(', ') + ' — the charts will not tell them apart.</div>' : '') +
+      '</div>';
+  }).join('');
+}
+function coloursSet(key, what, val) {
+  var e = _coloursEdit[key] || (_coloursEdit[key] = {});
+  if (what === 'bar') e.bar = val ? String(val).toLowerCase() : null; else e.dashed = !!val;
+  coloursRender();
+}
+function coloursSave() {
+  var styles = _colours.filter(function(s) { return _coloursEdit[s.key]; }).map(function(s) {
+    var n = _colNow(s);
+    return {key: s.key, bar_color: n.chosen ? n.bar : '', rate_line: n.dashed ? 'dashed' : 'solid'};
+  });
+  var err = document.getElementById('colours-error');
+  if (!styles.length) { coloursClose(); return; }
+  fetch(apiUrl('/api/chart-styles'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                       body: JSON.stringify({styles: styles})})
+    .then(function(r) { return r.json(); }).then(function(d) {
+      if (!d.ok) throw new Error(d.error || 'Not saved');
+      coloursClose();
+      // the channels' styles move the change poll's config token; the EV's (the store's meta) does not
+      if (typeof _refreshIfChanged === 'function') _refreshIfChanged(true);
+    }).catch(function(x) { err.textContent = x.message; });
+}
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && document.getElementById('colours-backdrop').classList.contains('open')) coloursClose();
 });
 
 // ── PDF Export ────────────────────────────────────────────────────────────────
