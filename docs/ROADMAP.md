@@ -637,11 +637,12 @@ middle, for any billing day: that bar is highlighted, and a click or Enter goes 
 so; its labels are thinned to fit; and the period is saved after it changes (the arrows saved it
 before, so their last step was never kept).
 
-**BL-97 — the EV on an API-only account.** It is "EV (from dispatch)", a name from before Octopus's
-breakdown carried the split; drop "from dispatch" and read the split. Its colour is fixed in code
-(`#8b5cf6`), as there is no device to configure: show it as a device, for its colour, only where the
-account has ever had an EV. A short design first: where that entry lives without HA sensors, and what
-happens when a real EV sensor is added later.
+**BL-97 — the EV on an account with no EV device.** ✅ *Done 1 Nov 2026 (API EV design).* It is "EV"
+now, not "EV (from dispatch)" — its figures were already Octopus's split wherever the bill has one,
+a completed dispatch only where it has not. Its colour, fixed in code, is chosen on a Settings tab
+**🚗 EV** (the user), shown where the account has ever had an EV (an EV share of a half-hour, or a
+completed dispatch) and has no EV device; kept in the store's meta (`ev_style`), not the config. A
+new EV device starts with its colour (the user).
 
 **BL-98 — Insights Usage: the rate period usage chart.** It groups by the block's recorded rate,
 which blends a half-hour priced at two rates; the rate brackets (BL-93) read the price slices. A

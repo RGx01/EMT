@@ -2,7 +2,7 @@
 BL-22 on the Billing tab: the derived-EV breakdown split.
 
 Covers the two pure helpers in energy_charts.py that give the Billing tab an
-"EV (from dispatch)" line (summary tables) + per-day trace WITHOUT moving a bill:
+"EV" line (summary tables; "EV (from dispatch)" until BL-97) + per-day trace WITHOUT moving a bill:
   - _dispatch_ev_slot_map        — per-slot EV, grid-clipped + cost-apportioned, gated
   - _inject_ev_breakdown_into_summary — splits the Direct-import remainder; the bill
     anchors (main_import_raw / standing / total_cost) stay byte-identical.
@@ -90,7 +90,7 @@ class TestInjectEvBreakdown(unittest.TestCase):
         s = _summary()
         ev_map = {"2026-08-04T00:00:00": {"kwh": 4.0, "cost": 0.22, "rate": 0.05}}
         ec._inject_ev_breakdown_into_summary(s, [{"start": "2026-08-04T00:00:00"}], ev_map)
-        ev = s["totals"]["EV (from dispatch) / Import"]
+        ev = s["totals"]["EV / Import"]
         self.assertTrue(ev["is_submeter"])
         self.assertAlmostEqual(ev["kwh"], 4.0, places=3)
         self.assertAlmostEqual(ev["cost"], 0.22, places=2)
@@ -137,18 +137,18 @@ class TestTheCarveKeepsKwhAndCostTogether(unittest.TestCase):
         s = self._carve(8.0, 0.42)                    # 8 kWh at 0.30, where the remainder holds 2
         row = s["meters"]["Home / Import"][0.30]
         self.assertEqual((row["kwh"], row["cost"]), (0.0, 0.0))
-        ev = s["meters"]["EV (from dispatch) / Import"][0.30]
+        ev = s["meters"]["EV / Import"][0.30]
         self.assertEqual((ev["kwh"], ev["cost"]), (2.0, 0.60))   # the EV takes the remainder
 
     def test_each_meter_adds_up_and_the_two_sum_to_the_original(self):
         """On the parent tree the totals still summed (they were computed apart from the
         rows), but the remainder's rows added up to 8.0 kWh against a 2.0 kWh total."""
         s = self._carve(8.0, 0.42)
-        for key in ("Home / Import", "EV (from dispatch) / Import"):
+        for key in ("Home / Import", "EV / Import"):
             rows, tot = s["meters"][key].values(), s["totals"][key]
             self.assertAlmostEqual(sum(r["kwh"] for r in rows), tot["kwh"], places=3, msg=key)
             self.assertAlmostEqual(sum(r["cost"] for r in rows), tot["cost"], places=2, msg=key)
-        rem, ev = s["totals"]["Home / Import"], s["totals"]["EV (from dispatch) / Import"]
+        rem, ev = s["totals"]["Home / Import"], s["totals"]["EV / Import"]
         self.assertAlmostEqual(rem["kwh"] + ev["kwh"], 10.0, places=3)
         self.assertAlmostEqual(rem["cost"] + ev["cost"], 1.04, places=2)
 
@@ -162,7 +162,7 @@ class TestTheCarveKeepsKwhAndCostTogether(unittest.TestCase):
         s = self._carve(1.5, 0.45)
         row = s["meters"]["Home / Import"][0.30]
         self.assertEqual((row["kwh"], row["cost"]), (0.5, 0.15))
-        ev = s["meters"]["EV (from dispatch) / Import"][0.30]
+        ev = s["meters"]["EV / Import"][0.30]
         self.assertEqual((ev["kwh"], ev["cost"]), (1.5, 0.45))
 
 class TestDispatchEvSlotMap(unittest.TestCase):

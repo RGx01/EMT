@@ -53,6 +53,7 @@
 
 <!-- ── Devices: each card is its own panel (data-panel="device-<meter id>") ──────────────── -->
 <div id="sub-meter-container"></div>
+<div id="api-ev-panel" data-panel="api-ev"></div>
 
 <!-- ── Add device: pick a type, then its form ────────────────────────────── -->
 <div id="add-device-panel" data-panel="add">
@@ -553,6 +554,11 @@ var OHME_DETECTION = {{ ohme_detection | tojson }};
 // far its rate line moves from its bar.
 var CHART_PALETTE = {{ chart_palette | tojson }};
 var CHART_RATE_MIX = {{ chart_rate_mix | tojson }};
+// BL-97: the EV of an account with no EV device (Octopus's split, or a completed dispatch where the
+// bill has not said yet) — whether the account has ever had one, its chosen style, and its colour unset.
+var HAS_HAD_EV = {{ has_had_ev | tojson }};
+var EV_STYLE = {{ ev_style | tojson }};
+var EV_DEFAULT = {{ ev_default | tojson }};
 // Timezone select HTML — rendered server-side to avoid JS string escaping issues
 var TZ_SELECT_HTML = {{ tz_select_html | tojson }};
 function buildTzSelect(id, currentTz) {
@@ -696,6 +702,9 @@ function renderAll() {
   var sc  = document.getElementById('sub-meter-container');
   sc.innerHTML = '';
   subIds.forEach(function(id) { sc.appendChild(buildSubCard(id, meters[id])); });
+  var ev = document.getElementById('api-ev-panel');
+  ev.innerHTML = '';
+  if (_showApiEv()) ev.appendChild(buildApiEvPanel());
 
   attachListeners();
   applySourceToggles();
@@ -726,8 +735,48 @@ function _cfgTabList() {
                label: (t === 'battery' ? '🔋' : t === 'ev' ? '🚗' : t === 'heat_pump' ? '♨️' : '⚡') + ' ' +
                       (meta.device || 'Device')});
   });
+  if (_showApiEv()) tabs.push({key: 'api-ev', label: '🚗 EV'});
   tabs.push({key: 'add', label: '+ Add device'});
   return tabs;
+}
+
+// ── The EV with no device (BL-97) ──────────────────────────────────────────────
+// An EV device as the charts tell one (energy_charts._ev_meter_id): an EV meter type, or an id that
+// names a charger. With none, the charts draw Octopus's EV — and it has a tab for its colour, where
+// the account has ever had an EV.
+function _hasEvDevice() {
+  var meters = config.meters || {};
+  return Object.keys(meters).some(function(id) {
+    var t = (meters[id].meta || {}).meter_type;
+    return t === 'ev' || t === 'ev_charger' || /ev|charger/i.test(id);
+  });
+}
+function _showApiEv() { return !!HAS_HAD_EV && !_hasEvDevice(); }
+function buildApiEvPanel() {
+  var div = document.createElement('div');
+  div.className = 'card';
+  div.innerHTML = '<div class="card-title">\ud83d\ude97 EV</div>' +
+    '<p style="margin:0 0 10px;">Your car as Octopus\u2019s bill splits it, or from a completed smart charge where ' +
+    'the bill has not said yet. It has no sensor in Home Assistant, so there is nothing to set up here but its ' +
+    'colour. Add an EV device to measure it yourself; the device starts with this colour.</p>' +
+    buildChartStyle('', 'ev', 'EV') +
+    '<div class="cs-note" id="ev-style-saved" style="margin-top:6px;"></div>';
+  return div;
+}
+function _saveEvStyle() {
+  var note = document.getElementById('ev-style-saved');
+  fetch(apiUrl('/api/ev-style'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                  body: JSON.stringify(EV_STYLE)})
+    .then(function(r) { return r.json(); })
+    .then(function(d) { if (note) note.textContent = d.ok ? 'Saved' : ('Not saved: ' + (d.error || '')); })
+    .catch(function(e) { if (note) note.textContent = 'Not saved: ' + e.message; });
+}
+// A new EV device starts with the EV's colour, so the car keeps it (the user, 1 Nov 2026). `shown`:
+// whether the EV's tab showed before the device was added — after, the device hides it.
+function _inheritEvStyle(imp, shown) {
+  if (!shown) return;
+  imp.bar_color = EV_STYLE.bar_color || EV_DEFAULT;
+  if (EV_STYLE.rate_line) imp.rate_line = EV_STYLE.rate_line;
 }
 
 function renderTabs() {
@@ -959,6 +1008,7 @@ function buildMainCards(meterId, meter) {
 // the devices in config order, export last — and its rate line keeps its old style (export
 // dashed). The rate line's colour follows the bar (rateLineColor, as chart_style.rate_line_color).
 function _chartKey(meterId, ch) {
+  if (ch === 'ev') return 'ev_dispatch';
   var meta = ((config.meters || {})[meterId] || {}).meta || {};
   if (meta.sub_meter) return meterId;
   return ch === 'export' ? 'electricity_main_export' : 'electricity_main';
@@ -1003,6 +1053,10 @@ function _chartStyles() {
                   label: meta.sub_meter ? (meta.device || id) : (ch === 'export' ? 'Export' : 'Direct import')};
     });
   });
+  if (_showApiEv()) {
+    var evc = /^#[0-9a-f]{6}$/i.test(EV_STYLE.bar_color || '') ? EV_STYLE.bar_color.toLowerCase() : '';
+    out.ev_dispatch = {bar: evc || EV_DEFAULT, chosen: !!evc, dashed: EV_STYLE.rate_line === 'dashed', label: 'EV'};
+  }
   return out;
 }
 
@@ -1054,11 +1108,16 @@ function buildChartStyle(meterId, ch, label) {
 
 function setChartStyle(el, key, val) {
   var box = el.closest('.chart-style'), m = box.dataset.csMeter, ch = box.dataset.csChannel;
-  var meter = config.meters[m];
-  if (!meter) return;
-  var chans = meter.channels || (meter.channels = {});
-  var c = chans[ch] || (chans[ch] = {});
-  if (val) c[key] = val.toLowerCase(); else delete c[key];
+  if (ch === 'ev') {                       // the EV with no device: its own store, saved now (BL-97)
+    if (val) EV_STYLE[key] = val.toLowerCase(); else delete EV_STYLE[key];
+    _saveEvStyle();
+  } else {
+    var meter = config.meters[m];
+    if (!meter) return;
+    var chans = meter.channels || (meter.channels = {});
+    var c = chans[ch] || (chans[ch] = {});
+    if (val) c[key] = val.toLowerCase(); else delete c[key];
+  }
   // every style on the page: a colour taken or freed changes the others' "same colour" note
   document.querySelectorAll('.chart-style').forEach(function(b) {
     b.outerHTML = buildChartStyle(b.dataset.csMeter, b.dataset.csChannel, b.dataset.csLabel);
@@ -2200,6 +2259,7 @@ function confirmAddDevice() {
 
   var mainMeters = Object.keys(config.meters||{}).filter(function(k) { return !config.meters[k].meta.sub_meter; });
   var id = 'sub_meter_' + Date.now();
+  var evShown = _showApiEv();
 
   var meta = {
     sub_meter:         true,
@@ -2238,6 +2298,7 @@ function confirmAddDevice() {
       }
     }
   };
+  if (type === 'ev') _inheritEvStyle(config.meters[id].channels.import, evShown);
 
   closeAddDevice();
   _cfgTab = 'device-' + id;
@@ -3534,11 +3595,13 @@ async function wizApplyAndClose() {
     });
   }
 
+  var evShown = _showApiEv();
   wiz.devices.forEach(function(devId) {
     var sd      = d.subMeters[devId] || {};
     var def     = devDefaults[devId];
     // Reuse existing sub-meter ID if one exists for this type, otherwise auto-generate
-    var subId   = findExistingSubId(devId) || ('sub_meter_' + Date.now() + Math.floor(Math.random()*1000));
+    var existing = findExistingSubId(devId);
+    var subId   = existing || ('sub_meter_' + Date.now() + Math.floor(Math.random()*1000));
 
     config.meters[subId] = {
       meta: {
@@ -3566,6 +3629,7 @@ async function wizApplyAndClose() {
         }
       }
     };
+    if (devId === 'ev' && !existing) _inheritEvStyle(config.meters[subId].channels.import, evShown);   // BL-97
   });
 
   closeWizard();

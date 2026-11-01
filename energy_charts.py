@@ -85,6 +85,39 @@ def build_meter_styles(cfg: dict) -> dict:
     return out
 
 
+# BL-97 (1 Nov 2026): the EV an account with no EV device draws (`ev_dispatch` — Octopus's split of
+# the bill, or a completed dispatch where the bill has not said yet) has no meter, so no channel to
+# keep a style on: it is kept in the store's meta, `ev_style` {bar_color, rate_line}, chosen on its
+# own Settings tab. The config is stored as columns, which would drop a key of its own on the meter.
+EV_DISPATCH_COLOR = "#8b5cf6"
+
+
+def ev_dispatch_style(store) -> dict:
+    """{"bar", "rate", "dashed"} for `ev_dispatch`: the chosen style, else the purple it always had."""
+    try:
+        st = (store.get_meta("ev_style") if store is not None else None) or {}
+    except Exception:
+        st = {}
+    if not isinstance(st, dict):
+        st = {}
+    bar = _chart_style.clean_color(st.get("bar_color")) or EV_DISPATCH_COLOR
+    line = _chart_style.clean_rate_line(st.get("rate_line")) or "solid"
+    return {"bar": bar, "rate": _chart_style.rate_line_color(bar), "dashed": line == "dashed"}
+
+
+def has_had_ev(store) -> bool:
+    """BL-97: whether the account has ever had an EV — a stored EV share of a half-hour, or a
+    completed dispatch (`dispatch_history` is kept for good; nothing prunes it). Either alone: an
+    imported history has EV shares and no dispatches, and a dispatch can precede its bill's split."""
+    try:
+        return bool(store._conn.execute(
+            "SELECT EXISTS (SELECT 1 FROM block_segments WHERE attribution = 'ev' AND kwh > 0) "
+            "OR EXISTS (SELECT 1 FROM dispatch_history WHERE kind = 'completed' "
+            "AND ABS(COALESCE(energy_kwh, 0)) > 0)").fetchone()[0])
+    except Exception:
+        return False
+
+
 def build_meter_colors_from_config(cfg: dict) -> dict:
     """{meter: bar colour} — `build_meter_styles`' bars: the colour the user chose on Settings,
     or the palette colour by position."""
@@ -561,7 +594,7 @@ def _fold_ev_submeter_into_remainder(summary, ev_devices):
 
 
 def _inject_ev_breakdown_into_summary(summary, period_blocks, ev_slot_map,
-                                      label="EV (from dispatch)", fold_devices=None):
+                                      label="EV", fold_devices=None):
     """Split the 'Direct import' remainder in a billing summary into a reduced house
     slice + a synthetic '<label> / Import' sub-meter, from ev_slot_map. DISPLAY-ONLY:
     main_import_raw ('Import — total grid'), standing, and total_cost are untouched, so
@@ -933,7 +966,7 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
                         summary_cost["ev_dispatch"] += _ec
                         summary_rates["electricity_main"][_r4] -= _ek
                         summary_rates["ev_dispatch"][_r4e]     += _ek
-                        meter_display_name.setdefault("ev_dispatch", "EV (from dispatch)")
+                        meter_display_name.setdefault("ev_dispatch", "EV")
 
             if main_export:
                 exp_kwh  = abs(_f(main_export.get("kwh")))
@@ -1239,7 +1272,7 @@ def billing_context(cfg, store, blocks, has_exc=None):
 
       * the EV identity — a has-EV-meter account gets one continuous 'EV' line
         (hybrid: synthetic post-seam, recorded physical pre-seam, H6); a no-EV-meter
-        account the display-only dispatch split 'EV (from dispatch)' (BL-22);
+        account the display-only dispatch split 'EV' (BL-22; 'EV (from dispatch)' until BL-97);
       * the per-slot EV map for that. Every rule in it is per SLOT, so building it from
         one period's blocks gives the same entries as building it from all of history;
       * meter colours (EV dispatch purple when the map has entries);
@@ -1255,11 +1288,11 @@ def billing_context(cfg, store, blocks, has_exc=None):
     meter_rate_dashed = {m: st["dashed"] for m, st in (_styles or {}).items()}
 
     # Derived-EV split (display-only; BL-22): no-op unless this is a no-sub-meter
-    # account with completed dispatches. Gives the Billing tab an "EV (from dispatch)"
+    # account with completed dispatches. Gives the Billing tab an "EV"
     # breakdown line + per-day trace without moving any bill total.
     # Hybrid EV for the billing breakdown (H6): a has-EV-meter account gets one continuous
     # 'EV' line (synthetic post-seam, recorded physical pre-seam) via the fold-back; a no-EV-
-    # meter account keeps the display-only dispatch split labelled 'EV (from dispatch)'.
+    # meter account keeps the display-only dispatch split, labelled 'EV' too (BL-97).
     _ev_phys_id = _ev_meter_id(cfg)
     if _ev_phys_id:
         _ev_slot_map = _hybrid_ev_slot_map(store, blocks, cfg)
@@ -1269,13 +1302,15 @@ def billing_context(cfg, store, blocks, has_exc=None):
     else:
         _ev_slot_map = _dispatch_ev_slot_map(store, blocks, cfg)
         _ev_fold_devices = None
-        _ev_label = "EV (from dispatch)"
+        _ev_label = "EV"                   # BL-97: Octopus's split, not only the dispatches
     # Day tables: has-EV-meter accounts fold the metered EV line to the SYNTHETIC segment
     # value in-place (ev_fold_meter) rather than carving a separate dispatch line, so the EV
     # bar matches Usage Stats. No-EV-meter accounts keep the dispatch carve. Grid totals hold.
     _ev_day_map = None if _ev_phys_id else _ev_slot_map
     if _ev_slot_map:
-        meter_colors["ev_dispatch"] = "#8b5cf6"
+        _ev_st = ev_dispatch_style(store)          # BL-97: chosen on its Settings tab
+        meter_colors["ev_dispatch"] = _ev_st["bar"]
+        meter_rate_dashed["ev_dispatch"] = _ev_st["dashed"]
     # H6c: the EV line keeps its DEVICE-INDEX palette colour (the colour the physical meter
     # had before), synthetic or recorded — not the synthetic purple — so it stays distinct
     # from the blue house line (accessibility — see roadmap BL-29).
