@@ -9352,6 +9352,37 @@ def _build_upcoming_dispatches(history, rates, day_peak, now_iso,
     return out   # soonest-first
 
 
+@app.route("/api/home-eras", methods=["GET", "POST"])
+def api_home_eras():
+    """BL-101 (home eras design): the home's eras — dated notes for display, never read for pricing.
+    GET {eras, kinds, site}; POST {eras: [...]} replaces the list, cleaned by `home_eras.clean`
+    (400 with the reason for an era that cannot be kept). Kept in the store's meta: a save does not
+    restart the engine. `site`: the site name, for a house move (no address is kept)."""
+    import home_eras as _he
+    if request.method == "GET":
+        site = ""
+        try:
+            for md in (load_config().get("meters") or {}).values():
+                m = md.get("meta") or {}
+                if not m.get("sub_meter"):
+                    site = m.get("site") or ""
+                    break
+        except Exception:
+            pass
+        return jsonify({"eras": _he.load(store_access.store()), "kinds": list(_he.KINDS), "site": site})
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        eras = _he.clean(body.get("eras"))
+    except _he.EraError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    try:
+        _engine_write(lambda st: st.set_meta(_he.META_KEY, eras))
+    except Exception as e:
+        logger.error("api_home_eras: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "eras": eras})
+
+
 @app.route("/api/agile-prices", methods=["GET"])
 def api_agile_prices():
     """BL-100: an Agile account's half-hourly import and export prices, 24 h back and as far ahead

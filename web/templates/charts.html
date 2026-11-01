@@ -299,6 +299,29 @@
     gap: 12px;
   }
   .chart-placeholder .icon { font-size: 40px; }
+  /* BL-101: the home eras modal, behind the ⚙︎ */
+  .eras-backdrop { position:fixed; inset:0; z-index:80; background:rgba(0,0,0,.55); display:none; align-items:flex-start;
+                   justify-content:center; padding:40px 12px; overflow-y:auto; }
+  .eras-backdrop.open { display:flex; }
+  .eras-panel { background:var(--surface); border:1px solid var(--border); border-radius:10px; width:100%; max-width:560px;
+                padding:16px 18px; box-shadow:0 10px 30px rgba(0,0,0,.4); }
+  .eras-head { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:6px; }
+  .eras-head h3 { margin:0; font-size:16px; }
+  .eras-sub { font-size:12px; color:var(--muted); margin-bottom:12px; }
+  .era-row { display:flex; gap:10px; align-items:flex-start; padding:10px 0; border-top:1px solid var(--border); }
+  .era-icon { font-size:18px; width:24px; text-align:center; }
+  .era-main { flex:1; min-width:0; }
+  .era-label { font-weight:600; }
+  .era-meta { font-size:12px; color:var(--muted); margin-top:2px; overflow-wrap:anywhere; }
+  .era-actions { display:flex; gap:6px; }
+  .era-form { display:grid; grid-template-columns:1fr 1fr; gap:8px 12px; border-top:1px solid var(--border); padding-top:12px; }
+  .era-form label { display:flex; flex-direction:column; gap:3px; font-size:12px; color:var(--muted); text-transform:none;
+                    letter-spacing:normal; }
+  .era-form .wide { grid-column:1 / -1; }
+  .era-form input, .era-form select, .era-form textarea { font-size:13px; padding:5px 7px; background:var(--bg); color:var(--text);
+                    border:1px solid var(--border); border-radius:5px; }
+  .era-error { color:#e05252; font-size:12px; grid-column:1 / -1; }
+  @media (max-width:480px) { .era-form { grid-template-columns:1fr; } }
 </style>
 {% endblock %}
 
@@ -315,11 +338,26 @@
     <button class="chart-tab"        data-chart="bar"     onclick="showChart('bar', this)" title="Usage Stats">📈<span class="tab-label"> Usage Stats</span></button>
   </div>
   <span id="dcc-settle-note" class="dcc-settle-note" style="display:none;"></span>
+  <button class="btn btn-secondary" onclick="chartsCogMenu(this)" title="Home eras and chart settings" id="charts-cog-btn"
+          aria-haspopup="menu">⚙︎</button>
   <button class="btn btn-secondary" onclick="chartsPdfExport()" title="Export current view as PDF" id="charts-pdf-btn">⬇ PDF</button>
 </div>
 {% endblock %}
 
 {% block content %}
+<div class="eras-backdrop" id="eras-backdrop" onclick="if(event.target===this)erasClose()">
+  <div class="eras-panel" role="dialog" aria-modal="true" aria-labelledby="eras-title">
+    <div class="eras-head">
+      <h3 id="eras-title">🏡 Home eras</h3>
+      <button class="btn btn-secondary btn-sm" onclick="erasClose()" aria-label="Close">✕</button>
+    </div>
+    <div class="eras-sub">The changes to your home — solar added, a bigger battery, a heat pump, a move. Dated notes that
+      the charts can mark; they change no figure.</div>
+    <div id="eras-list"></div>
+    <div id="eras-form-wrap"></div>
+    <div style="margin-top:12px;"><button class="btn btn-primary btn-sm" id="eras-add-btn" onclick="erasEdit(null)">+ Add an era</button></div>
+  </div>
+</div>
 <button id="topbar-toggle" onclick="toggleTopbar()" aria-label="Toggle chart controls">
   <span class="toggle-chevron">▼</span>
   <span id="topbar-toggle-label">Usage Stats</span>
@@ -1100,6 +1138,163 @@ function showChart(name, btn) {
   updateToggleLabel(name);
   setTimeout(function() { _suppressResize = false; }, 200);
 }
+
+// ── Home eras (BL-101, home eras design) ─────────────────────────────────────────
+// The ⚙︎'s menu, and the eras modal: the list, add, edit, delete, saved whole to /api/home-eras.
+// Display only — an era changes no figure. No address is kept: a house move takes the site name.
+var ERA_KINDS = {
+  solar:        {icon: '☀️', name: 'Solar',          kw: 'kWp'},
+  battery:      {icon: '🔋', name: 'Battery',        kwh: 'Capacity, kWh'},
+  heat_pump:    {icon: '♨️', name: 'Heat pump',      kw: 'Rated kW'},
+  a2a:          {icon: '❄️', name: 'Air-to-air',     kw: 'Rated kW'},
+  ev:           {icon: '🚗', name: 'EV',             kw: 'Charger kW', kwh: 'Battery, kWh'},
+  insulation:   {icon: '🧱', name: 'Insulation'},
+  house_move:   {icon: '🏠', name: 'House move',     site: true},
+  meter_change: {icon: '🔌', name: 'Meter change'},
+  other:        {icon: '•',       name: 'Other'}
+};
+var _eras = [], _erasSite = '';
+function _eraEsc(v) { return String(v == null ? '' : v).replace(/[&<>"]/g, function(c) {
+  return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]; }); }
+function _eraDate(ymd) {
+  if (!ymd) return '';
+  var d = new Date(ymd + 'T12:00:00');
+  return isNaN(d) ? ymd : d.toLocaleDateString('en-GB', {day: 'numeric', month: 'short', year: 'numeric'});
+}
+function chartsCogMenu(btn) {
+  settleCloseMenu();
+  var menu = document.createElement('div');
+  menu.id = 'settle-menu'; menu.className = 'settle-menu'; menu.setAttribute('role', 'menu');
+  [['🏡 Home eras…', erasOpen]].forEach(function(it) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.setAttribute('role', 'menuitem'); b.textContent = it[0];
+    b.onclick = function() { settleCloseMenu(); it[1](); };
+    menu.appendChild(b);
+  });
+  document.body.appendChild(menu);
+  var r = btn.getBoundingClientRect();
+  menu.style.left = Math.max(4, Math.min(r.right - menu.offsetWidth, window.innerWidth - menu.offsetWidth - 4)) + 'px';
+  menu.style.top = (r.bottom + 4) + 'px';
+  menu.querySelector('button').focus();
+  setTimeout(function() {
+    function away(e) {
+      if (e.type === 'keydown' && e.key !== 'Escape') return;
+      if (e.type !== 'keydown' && menu.contains(e.target)) return;
+      settleCloseMenu();
+      ['mousedown', 'touchstart', 'keydown'].forEach(function(k) { document.removeEventListener(k, away, true); });
+    }
+    ['mousedown', 'touchstart', 'keydown'].forEach(function(k) { document.addEventListener(k, away, true); });
+  }, 0);
+}
+function erasOpen() {
+  document.getElementById('eras-backdrop').classList.add('open');
+  document.getElementById('eras-form-wrap').innerHTML = '';
+  document.getElementById('eras-list').innerHTML = '<div class="eras-sub">Loading…</div>';
+  fetch(apiUrl('/api/home-eras')).then(function(r) { return r.json(); }).then(function(d) {
+    _eras = d.eras || []; _erasSite = d.site || ''; erasRenderList();
+  }).catch(function(e) {
+    document.getElementById('eras-list').innerHTML = '<div class="era-error">Eras unavailable: ' + _eraEsc(e.message) + '</div>';
+  });
+}
+function erasClose() { document.getElementById('eras-backdrop').classList.remove('open'); }
+function _eraMeta(e) {
+  var k = ERA_KINDS[e.kind] || ERA_KINDS.other, parts = [];
+  parts.push(_eraDate(e.start) + (e.end ? ' – ' + _eraDate(e.end) : ' onwards'));
+  if (e.site) parts.push(e.site);
+  var mm = [e.manufacturer, e.model].filter(Boolean).join(' ');
+  if (mm) parts.push(mm);
+  if (e.kw != null) parts.push(e.kw + ' ' + (k.kw === 'kWp' ? 'kWp' : 'kW'));
+  if (e.kwh != null) parts.push(e.kwh + ' kWh');
+  if (e.found) parts.push('found by EMT');
+  return parts.map(_eraEsc).join(' · ') + (e.notes ? '<br>' + _eraEsc(e.notes) : '');
+}
+// newest first
+function erasRenderList() {
+  var el = document.getElementById('eras-list');
+  if (!_eras.length) { el.innerHTML = '<div class="eras-sub">No eras yet.</div>'; return; }
+  el.innerHTML = _eras.slice().sort(function(a, b) { return a.start < b.start ? 1 : -1; }).map(function(e) {
+    var k = ERA_KINDS[e.kind] || ERA_KINDS.other;
+    return '<div class="era-row"><div class="era-icon" title="' + _eraEsc(k.name) + '">' + k.icon + '</div>' +
+      '<div class="era-main"><div class="era-label">' + _eraEsc(e.label) + '</div><div class="era-meta">' + _eraMeta(e) + '</div></div>' +
+      '<div class="era-actions"><button class="btn btn-secondary btn-sm" onclick="erasEdit(\'' + _eraEsc(e.id) + '\')">Edit</button>' +
+      '<button class="btn btn-secondary btn-sm" onclick="erasDelete(\'' + _eraEsc(e.id) + '\')" aria-label="Delete ' +
+      _eraEsc(e.label) + '">🗑️</button></div></div>';
+  }).join('');
+}
+function erasEdit(id) {
+  var e = id ? _eras.filter(function(x) { return x.id === id; })[0] : null;
+  e = e || {kind: 'solar', start: new Date().toISOString().slice(0, 10)};
+  document.getElementById('eras-add-btn').style.display = 'none';
+  var w = document.getElementById('eras-form-wrap');
+  w.innerHTML = '<form class="era-form" id="era-form" onsubmit="erasSave(event)">' +
+    '<input type="hidden" name="era_id" value="' + _eraEsc(e.id || '') + '">' +
+    '<label>Kind<select name="kind" onchange="erasKind(this.value)">' + Object.keys(ERA_KINDS).map(function(k) {
+      return '<option value="' + k + '"' + (k === e.kind ? ' selected' : '') + '>' + ERA_KINDS[k].icon + ' ' + ERA_KINDS[k].name + '</option>';
+    }).join('') + '</select></label>' +
+    '<label>Name<input name="label" maxlength="60" required value="' + _eraEsc(e.label || '') + '" placeholder="Added solar"></label>' +
+    '<label>Start<input type="date" name="start" required value="' + _eraEsc(e.start || '') + '"></label>' +
+    '<label>End (if it ended)<input type="date" name="end" value="' + _eraEsc(e.end || '') + '"></label>' +
+    '<label data-f="site" class="wide">Site name<input name="site" maxlength="60" value="' + _eraEsc(e.site || (id ? '' : _erasSite)) +
+      '" placeholder="The site’s name, not its address"></label>' +
+    '<label>Manufacturer<input name="manufacturer" maxlength="60" value="' + _eraEsc(e.manufacturer || '') + '"></label>' +
+    '<label>Model<input name="model" maxlength="60" value="' + _eraEsc(e.model || '') + '"></label>' +
+    '<label data-f="kw"><span></span><input type="number" name="kw" min="0" max="1000" step="0.01" value="' + _eraEsc(e.kw != null ? e.kw : '') + '"></label>' +
+    '<label data-f="kwh"><span></span><input type="number" name="kwh" min="0" max="1000" step="0.01" value="' + _eraEsc(e.kwh != null ? e.kwh : '') + '"></label>' +
+    '<label class="wide">Notes<textarea name="notes" rows="2" maxlength="500">' + _eraEsc(e.notes || '') + '</textarea></label>' +
+    '<div class="era-error" id="era-error"></div>' +
+    '<div class="wide" style="display:flex;gap:8px;"><button type="submit" class="btn btn-primary btn-sm">Save</button>' +
+    '<button type="button" class="btn btn-secondary btn-sm" onclick="erasCancel()">Cancel</button></div></form>';
+  if (e.found) w.querySelector('form').dataset.found = '1';
+  erasKind(e.kind);
+  w.querySelector('[name=label]').focus();
+}
+// the optional fields a kind offers
+function erasKind(kind) {
+  var k = ERA_KINDS[kind] || ERA_KINDS.other, f = document.getElementById('era-form');
+  if (!f) return;
+  f.querySelector('[data-f=site]').style.display = k.site ? '' : 'none';
+  ['kw', 'kwh'].forEach(function(n) {
+    var l = f.querySelector('[data-f=' + n + ']');
+    l.style.display = k[n] ? '' : 'none';
+    l.querySelector('span').textContent = k[n] || '';
+  });
+}
+function erasCancel() {
+  document.getElementById('eras-form-wrap').innerHTML = '';
+  document.getElementById('eras-add-btn').style.display = '';
+}
+function _erasPost(list, onDone) {
+  return fetch(apiUrl('/api/home-eras'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                         body: JSON.stringify({eras: list})})
+    .then(function(r) { return r.json(); }).then(function(d) {
+      if (!d.ok) throw new Error(d.error || 'Not saved');
+      _eras = d.eras || []; erasRenderList(); if (onDone) onDone();
+    });
+}
+function erasSave(ev) {
+  ev.preventDefault();
+  var f = ev.target, k = ERA_KINDS[f.kind.value] || ERA_KINDS.other, err = document.getElementById('era-error');
+  var e = {id: f.era_id.value || undefined, kind: f.kind.value, label: f.label.value.trim(), start: f.start.value,
+           end: f.end.value || undefined, manufacturer: f.manufacturer.value, model: f.model.value, notes: f.notes.value};
+  if (k.site) e.site = f.site.value;
+  if (k.kw && f.kw.value !== '') e.kw = f.kw.value;
+  if (k.kwh && f.kwh.value !== '') e.kwh = f.kwh.value;
+  if (f.dataset.found) e.found = true;
+  if (!e.label) { err.textContent = 'Give it a name'; return; }
+  if (!e.start) { err.textContent = 'A start date is needed'; return; }
+  if (e.end && e.end < e.start) { err.textContent = 'It ends before it starts'; return; }
+  var list = _eras.filter(function(x) { return x.id !== e.id; }).concat([e]);
+  err.textContent = '';
+  _erasPost(list, erasCancel).catch(function(x) { err.textContent = x.message; });
+}
+function erasDelete(id) {
+  var e = _eras.filter(function(x) { return x.id === id; })[0];
+  if (!e || !confirm('Delete “' + e.label + '”?')) return;
+  _erasPost(_eras.filter(function(x) { return x.id !== id; })).catch(function(x) { alert(x.message); });
+}
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && document.getElementById('eras-backdrop').classList.contains('open')) erasClose();
+});
 
 // ── PDF Export ────────────────────────────────────────────────────────────────
 // Usage Stats' settings for the PDF, as a line of named values ("Period Monthly · Metric kWh …") from

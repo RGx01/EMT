@@ -667,15 +667,32 @@ the poll's rate refresh holds (`engine.agile_prices`), no Octopus call of its ow
 prices, published about 4pm, appear at the poll after. *Open:* an extra rate refresh soon after 4pm
 on an Agile account, if the wait matters.
 
-**BL-101 — home eras.** A timeline of the home's changes: *Added solar*, *More storage*, *Added
-ASHP*, *Added A2A*. Each a label, a kind, a start, an optional end, and optional manufacturer, kW, kWh
-and notes; held in EMT's own database, perhaps linked to a device. Shown as a lane under Usage Stats'
-tariffs; the spiral's year started at an era's (or an agreement's) start; a before-and-after
-comparison of the same months a year apart, said not to be weather-corrected. Edited from a settings
-cog whose menu also holds the bar colours (BL-97's EV). Display only: never read for pricing or
-attribution. Takes up §G.1's user-defined periods. Design first.
+**BL-101 — home eras.** *Decided 1 Nov 2026 (home eras design); PR 1 done.* A timeline of the home's
+changes — *Added solar*, *More storage*, *Added ASHP*, *Moved house*, *Meter changed* — each a label, a
+kind, a start, an optional end, and optional manufacturer, model, kW, kWh, notes; a house move named
+by the site name, never an address. Display only: never read for pricing or attribution. Takes up
+§G.1's user-defined periods.
+- **PR 1 ✅** the store (`home_eras` in the meta), `GET` / `POST /api/home-eras`, and the eras modal
+  behind a ⚙︎ on the Charts page;
+- **PR 2** markers on Usage Stats (not a lane: eras overlap), an *Eras* checkbox;
+- **PR 3** eras found from the data: a house move from a new supply point in the agreements, a meter
+  change from a fingerprint of the meter's serial (EMT keeps no serial history yet);
+- **PR 4** a bar colours modal behind the same ⚙︎.
+No before-and-after comparison for now (the user).
 
 **BL-102 — the help pages.** An overhaul, last, once the surfaces above have settled.
+
+**BL-103 — Agile for everyone.** *The user, 1 Nov 2026.* The Agile card (BL-100) on every account,
+labelled *Agile in your region*: Octopus publishes Agile prices without an account, and the region is
+the letter that ends the account's own tariff code. Needs the current Agile product (the product list,
+or a known code) and one new public fetch a day soon after 4pm, kept across restarts — within the
+Octopus API rule (capped, paced, persisted). It answers "would Agile have been cheaper", so it may
+want a comparison with the account's own cost.
+
+**BL-104 — the spirals into Usage Stats as an accumulation chart.** *The user, 1 Nov 2026.* A running
+total, viewed as a line or a spiral, beside Devices and Rate brackets; the Spiral tab goes. The year's
+start — 1 January, the billing anniversary, a tariff's or an era's start — comes with it (home eras
+design §3.2). Design first.
 
 ## D. Surfacing performance
 
