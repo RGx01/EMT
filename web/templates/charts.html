@@ -75,6 +75,7 @@
     .bar-toolbar-right { flex-shrink: 0; }
     .bar-seg { flex-shrink: 0; }
     .bar-seg-btn { padding: 3px 7px; font-size: 11px; }
+    .bar-tb-sep { display: none; }            /* the rows wrap here: a rule would end a row */
     /* Standing charge label shorter on mobile */
     #bar-standing-wrap span { display: none; }
     #bar-standing-wrap::after { content: "SC"; font-size: 11px; color: var(--muted); }
@@ -139,6 +140,14 @@
     align-items: center;
     gap: 6px;
   }
+  /* The view (1 Nov 2026, the user): the toolbar's first choice, a little bolder, a rule after it */
+  .bar-seg.bar-show .bar-seg-btn { font-weight: 600; }
+  .bar-tb-sep { width: 1px; align-self: stretch; margin: 2px 4px; background: var(--border); }
+  /* The page's selects are full width (base.html); here each is as wide as its text */
+  .bar-toolbar select { width: auto; max-width: 260px; }
+  /* The toggles at the Years row's end, in the page's words (labels are capitals elsewhere) */
+  .bar-toggles { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-left: auto; }
+  .bar-toggles label { text-transform: none; letter-spacing: normal; margin: 0; }
 
   /* Bar chart controls */
   .bar-seg {
@@ -547,9 +556,16 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
 <!-- Import / Export bar chart -->
 <div id="chart-bar" class="chart-frame-wrap" style="display:none; flex-direction:column; height:calc(100vh - 56px); overflow:hidden;">
 
-  <!-- Floating toolbar — matches billing chart period-nav pattern -->
+  <!-- Floating toolbar (1 Nov 2026, the user): the view first — Devices, Rate brackets, Running total —
+       then only that view's own settings; the on/off toggles sit at the end of the Years row below. -->
   <div class="bar-toolbar" style="flex-shrink:0;">
     <div class="bar-toolbar-left">
+      <div class="bar-seg bar-show" id="bar-show-seg" title="The devices' import and export, or grid import by the price it was charged">
+        <button class="bar-seg-btn active" onclick="barSetShow('devices',this)">Devices</button>
+        <button class="bar-seg-btn"        onclick="barSetShow('brackets',this)">Rate brackets</button>
+        <button class="bar-seg-btn"        onclick="barSetShow('running',this)">Running total</button>
+      </div>
+      <span class="bar-tb-sep" aria-hidden="true"></span>
       <div class="bar-seg" id="bar-period-seg">
         <button class="bar-seg-btn"        onclick="barSetPeriod('hh',this)" title="Half-hourly breakdown of a single day">HH</button>
         <button class="bar-seg-btn active" onclick="barSetPeriod('daily',this)">Daily</button>
@@ -565,10 +581,9 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
         <button class="bar-seg-btn"        onclick="barSetMetric('cost',this)" id="bar-cost-btn">Cost</button>
         <button class="bar-seg-btn"        onclick="barSetMetric('co2',this)"  id="bar-co2-btn"  style="display:none">CO₂</button>
       </div>
-      <div class="bar-seg" id="bar-show-seg" title="The devices' import and export, or grid import by the price it was charged">
-        <button class="bar-seg-btn active" onclick="barSetShow('devices',this)">Devices</button>
-        <button class="bar-seg-btn"        onclick="barSetShow('brackets',this)">Rate brackets</button>
-        <button class="bar-seg-btn"        onclick="barSetShow('running',this)">Running total</button>
+      <div class="bar-seg" id="bar-order-seg" style="display:none;" title="Order monthly bars by calendar date, or grouped by month across years">
+        <button class="bar-seg-btn active" onclick="barSetOrder('date',this)">Date</button>
+        <button class="bar-seg-btn"        onclick="barSetOrder('month',this)">Month</button>
       </div>
       <span id="bar-acc-wrap" style="display:none; align-items:center; gap:8px; font-size:12px; color:var(--muted); flex-wrap:wrap;">
         <select id="bar-acc-series" onchange="barSetAccSeries(this.value)" aria-label="Which running total"
@@ -584,10 +599,6 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
         <select id="bar-acc-start" onchange="barSetAccStart(this.value)" aria-label="When the year starts"
                 title="When each year starts: 1 January, the billing anniversary, a tariff's start or an era's"
                 style="font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;"></select>
-        <label id="bar-acc-standing-wrap" style="display:none; align-items:center; gap:6px; cursor:pointer;" title="The standing charge in the net cost">
-          <input type="checkbox" id="bar-acc-standing" onchange="barSetAccStanding(this.checked)" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
-          Inc. standing charge
-        </label>
       </span>
       <span id="bar-br-wrap" style="display:none; align-items:center; gap:8px; font-size:12px; color:var(--muted);">
         <select id="bar-br-series" onchange="barSetBrSeries(this.value)" aria-label="Whose import, or the export"
@@ -597,12 +608,19 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
           %
         </label>
       </span>
-      <div class="bar-seg" id="bar-order-seg" style="display:none;" title="Order monthly bars by calendar date, or grouped by month across years">
-        <button class="bar-seg-btn active" onclick="barSetOrder('date',this)">Date</button>
-        <button class="bar-seg-btn"        onclick="barSetOrder('month',this)">Month</button>
-      </div>
+    </div>
+  </div>
+
+  <!-- The Years row (or the day / range navigator), and the toggles at its end -->
+  <div id="bar-sub-row" style="display:flex; align-items:center; gap:8px 16px; flex-wrap:wrap; margin-bottom:16px; min-height:28px; padding: 0 24px; flex-shrink:0;">
+    <div id="bar-sub-bar" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; flex:1 1 auto; min-width:0;"></div>
+    <div id="bar-toggles" class="bar-toggles">
       <label id="bar-standing-wrap" style="display:none; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer;">
         <input type="checkbox" id="bar-standing-cb" onchange="barSaveState(); barRender();" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
+        Inc. standing charge
+      </label>
+      <label id="bar-acc-standing-wrap" style="display:none; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer;" title="The standing charge in the net cost">
+        <input type="checkbox" id="bar-acc-standing" onchange="barSetAccStanding(this.checked)" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
         Inc. standing charge
       </label>
       <label id="bar-net-wrap" style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer;"
@@ -620,14 +638,9 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
         <input type="checkbox" id="bar-eras-cb" onchange="barSaveState(); barRender();" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
         Eras
       </label>
-    </div>
-    <div class="bar-toolbar-right">
       <button class="bar-seg-btn" id="bar-sort-btn" onclick="barToggleSort()" style="font-size:11px;">↑ Oldest first</button>
     </div>
   </div>
-
-  <!-- Period navigator (daily) / year selector (monthly+yearly) -->
-  <div id="bar-sub-bar" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:16px; min-height:28px; padding: 0 24px; flex-shrink:0;"></div>
 
   <!-- Legend -->
   <div id="bar-legend" style="display:flex; gap:16px; margin-bottom:12px; font-size:12px; color:var(--muted); flex-wrap:wrap; padding: 0 24px; flex-shrink:0;"></div>
@@ -3441,10 +3454,18 @@ function barAccStartChoices() {
   return out;
 }
 function barAccDateLabel(ymd) { return +ymd.slice(8, 10) + ' ' + BAR_ACC_MON[+ymd.slice(5, 7) - 1] + ' ' + ymd.slice(0, 4); }
-// {m, d} the year starts on; 1 January where the choice is gone (a tariff or era no longer there)
+// {m, d} the year starts on; 1 January where the choice is gone (a tariff or era no longer there).
+// Kept until what it is made from changes: every row's year and day ask for it, and each made the
+// choices again — sorting the whole history — so a redraw of ~1,240 days took 1–2 s (1 Nov 2026, the
+// user: the Eras box was laggy). Its sources are replaced, never changed in place, so a reference holds.
 function barAccAnchor() {
+  var key = [barAccStart, barData, barData ? barData.length : 0, barTariffs, barEras, barBillingDay];
+  var kept = barAccAnchor.kept;
+  if (kept && kept.key.every(function(v, i) { return v === key[i]; })) return kept.a;
   var c = barAccStartChoices().filter(function(o) { return o.id === barAccStart; })[0];
-  return c ? {m: c.m, d: c.d} : {m: 1, d: 1};
+  var a = c ? {m: c.m, d: c.d} : {m: 1, d: 1};
+  barAccAnchor.kept = {key: key, a: a};
+  return a;
 }
 // The start of year y: its anchor day, the month's last where it has fewer days (29 Feb in 2025 is 28 Feb)
 function barAccStartMs(y, a) {
@@ -3519,7 +3540,8 @@ function barAccSyncUI() {
   vis('bar-legend', !on, 'flex');
   vis('barChart', !on, '');
   vis('bar-acc', on, 'grid');
-  if (!on) return;
+  // its own standing charge box is with the toggles now, outside bar-acc-wrap: hidden with the view
+  if (!on) { vis('bar-acc-standing-wrap', false); return; }
   ['bar-cal-seg', 'bar-order-seg', 'bar-standing-wrap', 'bar-net-wrap',
    'bar-sort-btn', 'bar-br-wrap', 'bar-br-note'].forEach(function(id) { vis(id, false); });
   // PR 4: the eras on every drawing; the tariffs along the Lifetime line
