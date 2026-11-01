@@ -1249,7 +1249,7 @@ function erasEdit(id) {
     '<div class="era-error" id="era-error"></div>' +
     '<div class="wide" style="display:flex;gap:8px;"><button type="submit" class="btn btn-primary btn-sm">Save</button>' +
     '<button type="button" class="btn btn-secondary btn-sm" onclick="erasCancel()">Cancel</button></div></form>';
-  if (e.found) w.querySelector('form').dataset.found = '1';
+  if (e.found) { w.querySelector('form').dataset.found = '1'; w.querySelector('form').dataset.foundKey = e.found_key || ''; }
   erasKind(e.kind);
   w.querySelector('[name=label]').focus();
 }
@@ -1285,7 +1285,7 @@ function erasSave(ev) {
   if (k.site) e.site = f.site.value;
   if (k.kw && f.kw.value !== '') e.kw = f.kw.value;
   if (k.kwh && f.kwh.value !== '') e.kwh = f.kwh.value;
-  if (f.dataset.found) e.found = true;
+  if (f.dataset.found) { e.found = true; if (f.dataset.foundKey) e.found_key = f.dataset.foundKey; }   // kept through an edit
   if (!e.label) { err.textContent = 'Give it a name'; return; }
   if (!e.start) { err.textContent = 'A start date is needed'; return; }
   if (e.end && e.end < e.start) { err.textContent = 'It ends before it starts'; return; }
