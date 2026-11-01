@@ -679,7 +679,7 @@ by the site name, never an address. Display only: never read for pricing or attr
 - **PR 3 ✅** eras found from the data: a house move from a new supply point in the agreements (or
   reported by discovery), a meter change from a fingerprint of the meter's serial, dated when EMT
   noticed; fingerprints only, and a found era deleted is not found again;
-- **PR 4** a bar colours modal behind the same ⚙︎.
+- **PR 4 ✅** a bar colours modal behind the same ⚙︎ — every meter's style, saved without an engine restart.
 No before-and-after comparison for now (the user).
 
 **BL-102 — the help pages.** An overhaul, last, once the surfaces above have settled.
