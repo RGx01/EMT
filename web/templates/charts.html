@@ -3903,8 +3903,11 @@ function barAccSyncUI() {
   vis('barChart', !on, '');
   vis('bar-acc', on, 'grid');
   if (!on) return;
-  ['bar-cal-seg', 'bar-order-seg', 'bar-standing-wrap', 'bar-net-wrap', 'bar-tariff-wrap', 'bar-eras-wrap',
+  ['bar-cal-seg', 'bar-order-seg', 'bar-standing-wrap', 'bar-net-wrap',
    'bar-sort-btn', 'bar-br-wrap', 'bar-br-note'].forEach(function(id) { vis(id, false); });
+  // PR 4: the eras on every drawing; the tariffs along the Lifetime line
+  vis('bar-eras-wrap', !!(barEras && barEras.length), 'flex');
+  vis('bar-tariff-wrap', !!(barTariffs && barTariffs.length) && barAccView === 'line' && barAccMode === 'lifetime', 'flex');
   vis('bar-acc-standing-wrap', barAccSeries === 'net', 'flex');
   var cb = document.getElementById('bar-acc-standing'); if (cb) cb.checked = barAccIncStanding;
   document.querySelectorAll('#bar-acc-mode .bar-seg-btn').forEach(function(b) {
@@ -3965,11 +3968,14 @@ function barAccRender() {
           return {label: barAccYearLabel(y), data: s.years[y] || [], borderColor: c, backgroundColor: c, borderWidth: 2, pointRadius: 0};
         });
     var monthStarts = barAccMonthOffsets();     // the first of each month, days from the year's start
+    var ov = barAccOverlays(yearsShown);
     barAccCharts.push(new Chart(document.getElementById('bar-acc-c-' + i).getContext('2d'), {
       type: 'line',
       data: {datasets: datasets},
+      plugins: ov.tariffs || ov.eras.length ? [barAccOverlayPlugin(ov)] : [],
       options: {
         responsive: true, maintainAspectRatio: false, parsing: false, normalized: true,
+        layout: {padding: {top: (ov.tariffs ? BAR_TARIFF_LANE + 4 : 0) + (ov.eras.length ? BAR_ERA_CHIP + 4 : 0)}},
         interaction: {mode: 'nearest', axis: 'x', intersect: false},
         plugins: {
           legend: {display: barAccMode === 'year', labels: {color: th.axisC, boxWidth: 10, font: {size: 10}}},
@@ -3986,7 +3992,9 @@ function barAccRender() {
         },
         scales: {
           x: barAccMode === 'lifetime'
+            // the data's own span: Chart.js rounded it out (Apr 2022 to Jan 2027 for Jun 2023 to Oct 2026)
             ? {type: 'linear', grid: {display: false},
+               min: s.life.length ? s.life[0].x : undefined, max: s.life.length ? s.life[s.life.length - 1].x : undefined,
                ticks: {color: th.axisC, maxTicksLimit: 6, font: {size: 10},
                        callback: function(v) { var d = new Date(v); return BAR_ACC_MON[d.getUTCMonth()] + " '" + String(d.getUTCFullYear()).slice(2); }}}
             : {type: 'linear', min: 0, max: 365, grid: {display: false},
@@ -4020,6 +4028,92 @@ function barAccBuildTable(kinds, all, years) {
     }).join('') + '</tr>';
   });
   tbl.innerHTML = html + '</tbody>';
+}
+
+// ── Eras and tariffs on the running total (BL-104 PR 4) ────────────────────────────────────────────
+// Usage Stats' own Eras and Tariffs checkboxes. On the Lifetime line the import tariffs are a band
+// above the plot, as on the bars, and each era a dashed line with its chip; on Year by year the eras
+// only, each in its year's colour at its day of the year (a band a year would be clutter); on the
+// spiral an era is a chip on the coil (barAccSpiral). The hovers are the bars' (barTariffShow,
+// barEraShow).
+function barAccShowEras() {
+  var cb = document.getElementById('bar-eras-cb');
+  return !!(barEras && barEras.length) && !!cb && cb.checked;
+}
+function barAccShowTariffs() {
+  var cb = document.getElementById('bar-tariff-cb');
+  return !!(barTariffs && barTariffs.length) && !!cb && cb.checked && barAccMode === 'lifetime';
+}
+// What a line chart draws: {tariffs: [agreements] | null, eras: [{e, x, end, color}]} in the x axis'
+// own values (ms on Lifetime, days of the year on Year by year)
+function barAccOverlays(years) {
+  var out = {tariffs: null, eras: []};
+  if (barAccShowTariffs()) out.tariffs = barTariffs.filter(function(a) { return a.direction !== 'export' && a.from; });
+  if (!barAccShowEras()) return out;
+  barEras.forEach(function(e) {
+    var r = {year: +e.start.slice(0, 4), month: +e.start.slice(5, 7), day: +e.start.slice(8, 10)};
+    if (barAccMode === 'lifetime') {
+      out.eras.push({e: e, x: barAccMs(r), end: e.end ? Date.parse(e.end + 'T00:00:00Z') : null, color: null});
+    } else {
+      var y = barAccYearOf(r), yi = years.indexOf(y);
+      if (yi >= 0) out.eras.push({e: e, x: barAccDoy(r), end: null, color: BAR_ACC_YC[yi % BAR_ACC_YC.length]});
+    }
+  });
+  return out;
+}
+function barAccOverlayPlugin(ov) {
+  return {
+    id: 'emtAccOverlays',
+    afterDatasetsDraw: function(chart) {
+      var c = chart.ctx, ca = chart.chartArea, xs = chart.scales.x, th = barGetTheme(), dark = barIsDark();
+      var marks = [], bands = [];
+      c.save();
+      c.font = '10px ' + (getComputedStyle(document.body).fontFamily || 'sans-serif');
+      c.textBaseline = 'middle';
+      var laneY = ca.top - (ov.eras.length ? BAR_ERA_CHIP + 4 : 0) - BAR_TARIFF_LANE - 2;
+      (ov.tariffs || []).forEach(function(a, i) {
+        var x0 = Math.max(ca.left, xs.getPixelForValue(Date.parse(a.from + 'T00:00:00Z')));
+        var x1 = Math.min(ca.right, a.to ? xs.getPixelForValue(Date.parse(a.to + 'T00:00:00Z')) : ca.right);
+        if (x1 - x0 < 0.5) return;
+        c.fillStyle = (dark ? ['rgba(255,255,255,0.13)', 'rgba(255,255,255,0.22)'] : ['rgba(0,0,0,0.08)', 'rgba(0,0,0,0.15)'])[i % 2];
+        c.fillRect(x0, laneY, x1 - x0, BAR_TARIFF_LANE);
+        var label = a.name, room = x1 - x0 - 8;
+        while (label.length > 3 && c.measureText(label).width > room) label = label.slice(0, -2) + '…';
+        if (room > 20 && c.measureText(label).width <= room) { c.fillStyle = th.tooltipTitle; c.fillText(label, x0 + 4, laneY + BAR_TARIFF_LANE / 2); }
+        bands.push({a: a, x0: x0, x1: x1, y0: laneY, y1: laneY + BAR_TARIFF_LANE});
+      });
+      var cy = ca.top - BAR_ERA_CHIP / 2 - 2;
+      ov.eras.forEach(function(m) {
+        var x = xs.getPixelForValue(m.x), col = m.color || th.tooltipTitle;
+        [[x, 0.8], [m.end != null ? xs.getPixelForValue(m.end) : null, 0.35]].forEach(function(p) {
+          if (p[0] == null || p[0] <= ca.left || p[0] >= ca.right) return;
+          c.globalAlpha = p[1]; c.strokeStyle = col; c.lineWidth = 1; c.setLineDash([4, 3]);
+          c.beginPath(); c.moveTo(p[0], ca.top); c.lineTo(p[0], ca.bottom); c.stroke();
+        });
+        c.setLineDash([]); c.globalAlpha = 1;
+        if (x < ca.left - 1 || x > ca.right + 1) return;
+        var k = ERA_KINDS[m.e.kind] || ERA_KINDS.other, h = BAR_ERA_CHIP;
+        c.fillStyle = dark ? '#1a1d27' : '#ffffff'; c.strokeStyle = col;
+        c.beginPath(); if (c.roundRect) c.roundRect(x - h / 2, cy - h / 2, h, h, 4); else c.rect(x - h / 2, cy - h / 2, h, h);
+        c.fill(); c.stroke();
+        c.fillStyle = th.tooltipTitle; c.textAlign = 'center'; c.fillText(k.icon, x, cy + 0.5); c.textAlign = 'start';
+        marks.push({e: m.e, x: x, cy: cy});
+      });
+      chart._emtAccMarks = marks; chart._emtAccBands = bands;
+      c.restore();
+    },
+    beforeEvent: function(chart, args) {
+      var e = args.event;
+      if (e.type === 'mouseout') { barTariffHide(); return; }
+      if (e.type !== 'mousemove' && e.type !== 'click') return;
+      var r = BAR_ERA_CHIP / 2 + 2;
+      var m = (chart._emtAccMarks || []).find(function(q) { return Math.abs(e.x - q.x) <= r && Math.abs(e.y - q.cy) <= r; });
+      if (m) { barEraShow(m.e, e.native); return false; }
+      var b = (chart._emtAccBands || []).find(function(q) { return e.x >= q.x0 && e.x < q.x1 && e.y >= q.y0 && e.y <= q.y1; });
+      if (b) { barTariffShow(b.a, e.native, null); return false; }
+      barTariffHide();
+    }
+  };
 }
 
 // ── The spiral (BL-104 PR 2): the Spiral tab's drawing, moved into the view ─────────────────────────
@@ -4095,6 +4189,20 @@ function barAccSpiral(host, rows, k, years) {
     svg.appendChild(_spEl('path', {d: d, fill: 'none', stroke: c, 'stroke-width': 2.6, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', opacity: .95}));
     svg.appendChild(_spEl('circle', {cx: L.x, cy: L.y, r: 3.2, fill: c}));
   });
+  // PR 4: each era a chip on the coil at its start (the first day drawn on or after it)
+  if (barAccShowEras()) {
+    (barEras || []).forEach(function(e) {
+      var ms = Date.parse(e.start + 'T00:00:00Z');
+      var p = pts.filter(function(q) { return barAccMs(q.r) >= ms && years.indexOf(q.yr) >= 0; })[0];
+      if (!p || barAccMs(p.r) - ms > 7 * 864e5) return;            // not drawn: outside the days shown
+      var kk = ERA_KINDS[e.kind] || ERA_KINDS.other, g = _spEl('g', {'class': 'bar-acc-era'});
+      var tt = _spEl('title', {}); tt.textContent = kk.icon + ' ' + e.label + ' \u00b7 ' + _eraDate(e.start); g.appendChild(tt);
+      g.appendChild(_spEl('circle', {cx: p.x, cy: p.y, r: 11, style: 'fill:var(--surface);stroke:var(--text);stroke-width:1'}));
+      var it = _spEl('text', {x: p.x, y: p.y + 0.5, 'text-anchor': 'middle', 'dominant-baseline': 'middle', 'font-size': 12});
+      it.textContent = kk.icon; g.appendChild(it);
+      svg.appendChild(g);
+    });
+  }
   var last = pts[pts.length - 1];
   var cv = !last ? 0 : barAccMode === 'lifetime' ? last.life : (per[years[years.length - 1]] || 0);
   [[G.CY - 18, 'sp-cm', k.title], [G.CY + 10, 'sp-cv', _spLbl(cv, k.unit, sc)],
