@@ -1,6 +1,6 @@
 # EMT v5 — the accumulation chart: the spirals into Usage Stats (BL-104)
 
-*Status: decided 1 Nov 2026 (§5); PR 1 built. The user's idea (1 Nov 2026): "move the spirals into Usage Stats as an
+*Status: decided 1 Nov 2026 (§5); PRs 1 and 2 built. The user's idea (1 Nov 2026): "move the spirals into Usage Stats as an
 accumulation chart which can be viewed on a linear or spiral". Code facts read at `dev` after #380.*
 
 ---
@@ -66,7 +66,7 @@ No new storage, writers or Octopus calls.
 | PR | what |
 |---|---|
 | 1 | **built:** *Running total* in Usage Stats, **line**: the cards, the series, Lifetime / Year by year, the years, the table, the PDF |
-| 2 | **spiral** in that view — the spiral's drawing moved in, the expand view |
+| 2 | **built:** the **spiral** in that view — the spiral's drawing moved in, the expand view, the PDF's spirals. *As built:* the lifetime coil starts at the first year shown, as the line does (the tab counted hidden years in) |
 | 3 | **the year's start** — 1 January, billing anniversary, a tariff's, an era's |
 | 4 | eras and tariffs on the line, an era's tick on the spiral |
 | 5 | the Spiral tab retired, its links and saved state carried over |

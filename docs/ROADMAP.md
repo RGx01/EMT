@@ -696,7 +696,7 @@ want a comparison with the account's own cost.
 Usage, Carbon) side by side as the spiral had them, for a series (Net, Import, Export, a device, the
 standing charges), Lifetime or Year by year, with a table a year (total, change, to the same day).
 - **PR 1 ✅** the line;
-- **PR 2** the spiral in the view; **PR 3** the year's start (1 January, the billing anniversary, a
+- **PR 2 ✅** the spiral in the view, with its expand view and the PDF; **PR 3** the year's start (1 January, the billing anniversary, a
   tariff's, an era's); **PR 4** eras and tariffs on it; **PR 5** the Spiral tab retired.
 
 ## D. Surfacing performance
