@@ -625,12 +625,13 @@
     <div id="u-sc-note" class="insight-footnote" style="display:none;"></div>
   </div>
 
-  <!-- Rate Period Usage card — only shown when >1 rate tier -->
+  <!-- Rate brackets card (BL-98) — only shown when the import fell in more than one bracket -->
   <div class="insight-card" id="ucard-rates" style="display:none;">
-    <div class="insight-card-title">📊 Rate Period Usage</div>
-    <div class="insight-sub" id="u-rates-sub">How your import is distributed across tariff rate periods.</div>
+    <div class="insight-card-title">📊 Rate Brackets</div>
+    <div class="insight-sub" id="u-rates-sub">Your grid import by the price it was charged, in 2.5p brackets (inc VAT).</div>
     <div id="u-rate-bars"></div>
-    <div class="insight-footnote">Rate periods are determined by the import rate recorded on each half-hour block. Percentages show share of total grid import kWh.</div>
+    <div class="insight-footnote">Each half-hour's import at the rate it was charged: a half-hour billed at two rates counts in both brackets. Percentages are shares of grid import kWh.
+      <a id="u-rates-link" href="#">See it month by month in Usage Stats →</a></div>
   </div>
 
   <!-- Net Grid Position card -->
@@ -2122,45 +2123,75 @@ function fmtHour(h) {
   return pad(h) + ':00–' + pad((h + 2) % 24) + ':00';
 }
 
-function renderUsageTierBars(tiers, totalKwh, containerId, currency) {
-  var el = document.getElementById(containerId);
-  if (!el || !tiers || !tiers.length) return;
-  // Sort cheapest first
-  var sorted = tiers.slice().sort(function(a,b) { return a.rate - b.rate; });
-  var html = '';
-  sorted.forEach(function(t, i) {
-    var pct     = totalKwh > 0 ? (t.kwh / totalKwh * 100) : 0;
-    var pctDisp = pct < 1 ? pct.toFixed(1) : Math.round(pct);
-    var rateP   = (t.rate * 100).toFixed(2);
-    // Collapsed (Agile) rows carry a "(avg of N rates)" note, matching Billing.
-    var rateLbl = rateP + 'p/kWh' + (t.collapsed
-      ? ' <span style="opacity:0.6;">(avg of ' + t.n_rates + ' rates)</span>' : '');
-    var cur     = currency || '£';
-    // A plunge-price period nets a CREDIT (negative cost) — show it in parens like
-    // the Billing summary rather than a bare minus sign.
-    var costStr = t.cost < 0 ? '(' + cur + Math.abs(t.cost).toFixed(2) + ')'
-                             : cur + t.cost.toFixed(2);
-    // Bar width: minimum 2px so even 0% tiers show a sliver
-    var barW    = Math.max(pct, 0.3);
-    // Colour: cheapest = accent, others step through muted palette
-    var colours = ['var(--accent)', 'var(--warning, #f59e0b)', 'var(--danger, #ef4444)', 'var(--muted)'];
-    var col     = colours[Math.min(i, colours.length - 1)];
-    html +=
-      '<div style="margin-bottom:14px;">' +
-        '<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px;">' +
-          '<span style="font-family:var(--mono);font-size:13px;color:var(--text);">' + rateLbl + '</span>' +
-          '<span style="font-size:12px;color:var(--muted);">' +
-            t.kwh.toFixed(1) + ' kWh &nbsp;·&nbsp; ' +
-            costStr + ' &nbsp;·&nbsp; ' +
+// ── The Rate brackets card (BL-98, 1 Nov 2026) ────────────────────────────────
+// The period's grid import by the 2.5p bracket of the rate it was charged, for the whole meter — the
+// read Usage Stats' Rate brackets view makes (/api/energy?fields=brackets), its days summed. It was
+// Rate Period Usage: a row per exact rate, folded to one "avg of N rates" past five rates, so on Agile
+// it said nothing. On a fixed-rate tariff a bracket's average is the rate.
+var _insBrSeq = 0;
+function _insBrPence(v) { var s = (Math.abs(v)).toFixed(1).replace(/\.0$/, ''); return (v < 0 ? '\u2212' : '') + s; }
+function _insBrLabel(n, w) { return _insBrPence(n * w) + (n < 0 ? ' to ' : '\u2013') + _insBrPence((n + 1) * w) + 'p'; }
+// Usage Stats' colours (charts.html barBrColor): green to red by price across the brackets shown,
+// neighbours alternately lighter; a negative price blue
+function _insBrColor(n, ns) {
+  var dark = document.documentElement.getAttribute('data-theme') !== 'light';
+  var i = ns.indexOf(n), alt = i % 2 ? (dark ? 14 : 13) : 0;
+  if (n < 0) return 'hsl(215, 70%, ' + ((dark ? 50 : 40) + alt) + '%)';
+  var pos = ns.filter(function(x) { return x >= 0; });
+  var lo = pos[0], hi = pos[pos.length - 1], t = hi > lo ? (n - lo) / (hi - lo) : 0;
+  return 'hsl(' + Math.round(130 * (1 - t)) + ', ' + (dark ? 62 : 68) + '%, ' + ((dark ? 48 : 40) + alt) + '%)';
+}
+async function loadUsageBrackets(currency) {
+  var card = document.getElementById('ucard-rates');
+  var seq = ++_insBrSeq;
+  var url = apiUrl('/api/energy?resolution=day&fields=brackets&kind=' + _insMode + '&year=' + _calYear +
+                   (_insMode === 'month' ? '&month=' + _calMonth : ''));
+  var link = document.getElementById('u-rates-link');
+  if (link) link.href = BASE_PATH + '/charts?tab=bar&show=brackets';
+  try {
+    var j = await fetch(url).then(function(r) { return r.json(); });
+    if (seq !== _insBrSeq) return;             // a newer period asked meanwhile
+    var br = j.brackets || {}, sr = br.meter_series || 'meter', sum = {};
+    (br.rows || []).forEach(function(r) {
+      var b = (r.b || {})[sr] || {};
+      Object.keys(b).forEach(function(n) {
+        var a = sum[n] || (sum[n] = [0, 0]);
+        a[0] += b[n][0]; a[1] += b[n][1];
+      });
+    });
+    var ns = Object.keys(sum).map(Number).filter(function(n) { return sum[n][0] > 1e-6; })
+                 .sort(function(a, b) { return a - b; });
+    if (ns.length < 2) { card.style.display = 'none'; return; }   // one bracket says nothing
+    renderUsageBrackets(ns, sum, br.width_p || 2.5, currency);
+    card.style.display = 'block';
+  } catch (e) {
+    if (seq === _insBrSeq) card.style.display = 'none';
+  }
+}
+function renderUsageBrackets(ns, sum, w, currency) {
+  var el = document.getElementById('u-rate-bars');
+  if (!el) return;
+  var total = ns.reduce(function(s, n) { return s + sum[n][0]; }, 0), cur = currency || '£';
+  el.innerHTML = ns.map(function(n) {
+    var k = sum[n][0], c = sum[n][1], pct = total > 0 ? k / total * 100 : 0;
+    // a decimal under 1% and over 99%: 99.9% beside a 0.1% bracket read 100%
+    var pctDisp = pct < 1 || (pct > 99 && pct < 100) ? pct.toFixed(1) : Math.round(pct);
+    var costStr = c < 0 ? '(' + cur + Math.abs(c).toFixed(2) + ')' : cur + c.toFixed(2);   // a plunge's credit
+    var avg = k > 0 ? (c / k * 100).toFixed(1) + 'p' : '\u2014';
+    return '<div style="margin-bottom:14px;">' +
+        '<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-bottom:4px;">' +
+          '<span style="font-family:var(--mono);font-size:13px;color:var(--text);">' + _insBrLabel(n, w) + '</span>' +
+          '<span style="font-size:12px;color:var(--muted);text-align:right;">' +
+            k.toFixed(1) + ' kWh &nbsp;·&nbsp; ' + costStr + ' &nbsp;·&nbsp; avg ' + avg + ' &nbsp;·&nbsp; ' +
             '<strong style="color:var(--text);">' + pctDisp + '%</strong>' +
           '</span>' +
         '</div>' +
         '<div style="height:5px;background:var(--bg);border-radius:3px;overflow:visible;">' +
-          '<div style="height:100%;width:' + barW + '%;min-width:3px;background:' + col + ';border-radius:3px;transition:width 0.4s;"></div>' +
+          '<div style="height:100%;width:' + Math.max(pct, 0.3) + '%;min-width:3px;background:' + _insBrColor(n, ns) +
+            ';border-radius:3px;transition:width 0.4s;"></div>' +
         '</div>' +
       '</div>';
-  });
-  el.innerHTML = html;
+  }).join('');
 }
 
 // ── Per-device CARBON cards (#450) ──────────────────────────────────────────
@@ -2468,16 +2499,8 @@ function renderUsage(d, cmpData) {
     scNote.style.display = '';
   }
 
-  // ── Rate Period Usage ────────────────────────────────────────────────────
-  var rateTiers = d.rate_tiers || [];
-  // Show for >1 rate, OR a single COLLAPSED row (Agile folded to an avg-of-N) — but
-  // hide for a genuine single flat rate, where a lone 100% bar says nothing.
-  if (rateTiers.length > 1 || (rateTiers.length === 1 && rateTiers[0].collapsed)) {
-    document.getElementById('ucard-rates').style.display = 'block';
-    renderUsageTierBars(rateTiers, d.imp_kwh, 'u-rate-bars', currency);
-  } else {
-    document.getElementById('ucard-rates').style.display = 'none';
-  }
+  // ── Rate brackets (BL-98) ────────────────────────────────────────────────
+  loadUsageBrackets(currency);
 
   // ── Grid Position ─────────────────────────────────────────────────────────
   var netKwh = d.net_grid_kwh;
