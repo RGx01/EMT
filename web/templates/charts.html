@@ -300,6 +300,9 @@
     gap: 12px;
   }
   .chart-placeholder .icon { font-size: 40px; }
+  /* The ⚙︎ drawn at the button's text size was a speck (1 Nov 2026, the user): the glyph alone is
+     larger, its line box held to the text's so the button keeps the PDF button's height. */
+  #charts-cog-btn .cog-glyph { display: inline-block; font-size: 24px; line-height: 18px; height: 18px; }
   /* BL-101: the home eras modal, behind the ⚙︎ */
   .eras-backdrop { position:fixed; inset:0; z-index:80; background:rgba(0,0,0,.55); display:none; align-items:flex-start;
                    justify-content:center; padding:40px 12px; overflow-y:auto; }
@@ -371,7 +374,7 @@
   </div>
   <span id="dcc-settle-note" class="dcc-settle-note" style="display:none;"></span>
   <button class="btn btn-secondary" onclick="chartsCogMenu(this)" title="Home eras and chart settings" id="charts-cog-btn"
-          aria-haspopup="menu">⚙︎</button>
+          aria-haspopup="menu" aria-label="Home eras and chart settings"><span class="cog-glyph">⚙︎</span></button>
   <button class="btn btn-secondary" onclick="chartsPdfExport()" title="Export current view as PDF" id="charts-pdf-btn">⬇ PDF</button>
 </div>
 {% endblock %}
