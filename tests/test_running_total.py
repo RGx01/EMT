@@ -51,9 +51,11 @@ ROWS = [
 class TheTotals(unittest.TestCase):
 
     def _run(self, expr, series="net", inc=False):
+        # PR 3: a day's year is the year its year began in, from 1 January here
         js = "var barAccSeries = %s, barAccIncStanding = %s, barActiveYears = null, barData = %s;\n" % (
             json.dumps(series), "true" if inc else "false", json.dumps(ROWS)) + \
-            "\n".join(_fn(n) for n in ("barAccInc", "barAccMs", "barAccDoy", "barAccRows", "barAccSeriesOf")) + \
+            "var barAccStart = 'jan', barTariffs = [], barEras = [], barBillingDay = 1, BAR_ACC_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n" + \
+            "\n".join(_fn(n) for n in ("barAccInc", "barAccMs", "barAccStartChoices", "barAccDateLabel", "barAccAnchor", "barAccStartMs", "barAccYearOf", "barAccYearDays", "barAccDoy", "barAccRows", "barAccSeriesOf")) + \
             "\nconsole.log(JSON.stringify(" + expr + "));"
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
             fh.write(js)
