@@ -864,15 +864,24 @@ window.EMTBilling = (function () {
     var y = state.root.scrollTop;
     return show().then(function () { state.root.scrollTop = y; });
   }
-  // PDF: each built chart drawn on white, as a PNG.
+  // PDF: every filled day's chart drawn on white, as a PNG. Not only the built ones: a chart is built
+  // within 600px of the view and released past 4000px, so a PDF of those held only the days near
+  // where the page was scrolled. Each is built, drawn and released in turn; those shown are rebuilt.
+  // Folded away, a day has no size to draw in, and none is drawn, as before.
   function snapshotCharts() {
-    var out = {};
+    var out = {}, sec = state.cur;
+    if (!sec) return out;
+    var shown = Object.keys(state.charts);
     state.forceLight = true;
-    var days = Object.keys(state.charts);
-    days.forEach(function (d) { releaseChart(d); buildChart(d); });
-    days.forEach(function (d) { var c = state.charts[d]; if (c) out['bchart_' + d] = c.toBase64Image('image/png', 1); });
+    Object.keys(sec.dayRows).forEach(function (d) {
+      var el = state.section && state.section.querySelector('[data-day="' + d + '"] .chart-container');
+      if (!el || !el.getClientRects().length) return;          // the day charts folded: nothing to draw
+      releaseChart(d); buildChart(d);
+      var c = state.charts[d]; if (c) out['bchart_' + d] = c.toBase64Image('image/png', 1);
+      releaseChart(d);
+    });
     state.forceLight = false;
-    days.forEach(function (d) { releaseChart(d); buildChart(d); });
+    shown.forEach(buildChart);
     return out;
   }
   // PDF: every day's panel (and open table) filled, not only those scrolled to.
