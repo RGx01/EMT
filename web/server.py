@@ -1037,13 +1037,17 @@ def live_power_page():
     except Exception:
         has_dispatch_data = False
 
-    # BL-100: the Agile card where the import or export tariff is dynamic (no gap when not)
+    # BL-100: the Agile card where the import or export tariff is dynamic; BL-103: on every account
+    # with the supplier API and a region, as Agile in its region (the user: shown by default)
     has_agile = False
     try:
         import engine as _eng_ag
         import tariff_prices as _tp_ag
-        has_agile = any(_tp_ag.is_dynamic_code(((_eng_ag._kraken_discovery or {}).get(ch) or {})
-                                               .get("tariff_code") or "") for ch in ("import", "export"))
+        import agile_public as _ap_ag
+        _disc = _eng_ag._kraken_discovery or {}
+        has_agile = (any(_tp_ag.is_dynamic_code((_disc.get(ch) or {}).get("tariff_code") or "")
+                         for ch in ("import", "export"))
+                     or bool(_ap_ag.region_of((_disc.get("import") or {}).get("tariff_code") or "")))
     except Exception:
         has_agile = False
 
@@ -9456,10 +9460,31 @@ def api_agile_prices():
     """BL-100: an Agile account's half-hourly import and export prices, 24 h back and as far ahead
     as Octopus has published (up to 24 h), for the Overview's card — {import?, export?, now}, pence,
     import inc VAT. From the rate schedules the poll holds; no Octopus call."""
-    from datetime import datetime as _d, timezone as _tzu
+    from datetime import datetime as _d, timedelta as _td, timezone as _tzu
     import engine as _eng
+    import agile_public as _ap
     try:
-        return jsonify(dict(_eng.agile_prices(), now=_d.now(_tzu.utc).replace(tzinfo=None).isoformat()))
+        now = _d.now(_tzu.utc).replace(tzinfo=None)
+        out = dict(_eng.agile_prices(), now=now.isoformat())
+        # BL-103: a direction not on Agile has Agile's prices in the account's region (fetched once a
+        # day, kept in the store's meta), marked `public`, and what its last 30 days would have cost
+        store = store_access.store()
+        rec = store.get_meta(_ap.META_KEY) or {}
+        lo = (now - _td(days=_ap.COMPARE_DAYS)).isoformat()
+        for ch in ("import", "export"):
+            if ch in out:
+                continue
+            c = rec.get(ch) or {}
+            if not c.get("prices"):
+                continue
+            k, cost = ("imp_kwh", "imp_cost") if ch == "import" else ("exp_kwh", "exp_cost")
+            slots = [(r["block_start"], r[k], r[cost]) for r in store._conn.execute(
+                "SELECT block_start, %s, %s FROM blocks WHERE meter_id = 'electricity_main' "
+                "AND block_start >= ? AND block_start < ?" % (k, cost), (lo, now.isoformat()))]
+            out[ch] = {"tariff": c.get("tariff"), "public": True, "region": rec.get("region"),
+                       "prices": _ap.window(c["prices"], now),
+                       "compare": _ap.compare(c["prices"], slots)}
+        return jsonify(out)
     except Exception as e:
         logger.error("api_agile_prices: %s", e)
         return jsonify({"error": str(e)}), 500
