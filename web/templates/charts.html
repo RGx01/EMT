@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_help_q.html" import help_q %}
 
 {% block head %}
 <style>
@@ -360,7 +361,7 @@
 {% block topbar %}
 <div class="topbar">
   <div>
-    <h2>Charts</h2>
+    <h2>Charts {{ help_q('charts') }}</h2>
     <div class="sub">Billing, net energy heatmap and usage stats</div>
   </div>
   <div class="chart-tabs" style="margin-bottom:0;">

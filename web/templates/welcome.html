@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "_help_q.html" import help_q %}
 
 {#
   The first-run fork (first-run design §1, import spec §3a). An instance with no meters lands
@@ -9,7 +10,7 @@
 {% block topbar %}
 <div class="topbar">
   <div>
-    <h2>Welcome to Energy Meter Tracker</h2>
+    <h2>Welcome to Energy Meter Tracker {{ help_q('getting-started') }}</h2>
     <div class="sub">Start fresh, or bring your history across</div>
   </div>
 </div>

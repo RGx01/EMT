@@ -92,5 +92,43 @@ class HelpPages(unittest.TestCase):
             self.assertEqual(self.client.get("/help/getting-started").status_code, 200)
 
 
+class TheQuestionMark(unittest.TestCase):
+    """PR 3: a ? in each page's header opens its help page."""
+
+    PAGES = {"/charts": "charts", "/live-power": "overview", "/insights": "insights",
+             "/data-management": "data-management", "/settings": "settings",
+             "/settings?tab=carbon": "settings", "/billing-history": "settings",
+             "/logs": "running-emt", "/welcome": "getting-started", "/historical-import": "data-management"}
+
+    def setUp(self):
+        from tests.test_server import make_client, server
+        self.server = server
+        self.client = make_client()
+        cfg = {"meters": {"electricity_main": {"meta": {}, "channels": {}}}}
+        self.p = mock.patch.object(server, "load_config", lambda: cfg)
+        self.p.start()
+
+    def tearDown(self):
+        self.p.stop()
+
+    def test_each_page_links_its_help(self):
+        for path, section in self.PAGES.items():
+            r = self.client.get(path)
+            self.assertEqual(r.status_code, 200, path)
+            qs = re.findall(r'<a class="help-q" href="([^"]+)"', r.get_data(as_text=True))
+            self.assertEqual(qs, ["/help/" + section], path)
+
+    def test_every_template_with_a_title_has_its_question_mark(self):
+        """Every page with a title has its ?, and a page added later without one fails here (the help pages
+        themselves aside)."""
+        tdir = os.path.join(_ROOT, "web", "templates")
+        for name in sorted(os.listdir(tdir)):
+            if not name.endswith(".html") or name in ("base.html", "help_base.html"):
+                continue
+            src = open(os.path.join(tdir, name), encoding="utf-8").read()
+            if "{% block topbar %}" in src:
+                self.assertIn("help_q(", src, name)
+
+
 if __name__ == "__main__":
     unittest.main()

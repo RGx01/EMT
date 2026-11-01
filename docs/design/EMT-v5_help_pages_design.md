@@ -1,6 +1,6 @@
 # EMT v5 — the help pages (BL-102)
 
-*Status: decided 1 Nov 2026 (§4). Code facts read at `dev` after #386.*
+*Status: built 1 Nov 2026 (#387, #388 and PR 3); decided the same day (§4). Code facts read at `dev` after #386.*
 
 ---
 

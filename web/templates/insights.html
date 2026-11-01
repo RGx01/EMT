@@ -1,9 +1,10 @@
 {% extends "base.html" %}
+{% from "_help_q.html" import help_q %}
 
 {% block topbar %}
 <div class="topbar">
   <div style="flex:1;">
-    <h2>Insights</h2>
+    <h2>Insights {{ help_q('insights') }}</h2>
     <div class="sub">Energy, carbon and cost analysis</div>
   </div>
   <div class="insights-tabs" style="flex:0 0 auto;">

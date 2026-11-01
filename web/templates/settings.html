@@ -1,9 +1,10 @@
 {% extends "base.html" %}
+{% from "_help_q.html" import help_q %}
 
 {% block topbar %}
 <div class="topbar">
   <div>
-    <h2>Settings</h2>
+    <h2>Settings {{ help_q('settings') }}</h2>
     <div class="sub">Configure your meters and carbon assumptions</div>
   </div>
   <div class="settings-tabs">
