@@ -3450,22 +3450,38 @@ function barAccMs(r) { return Date.UTC(r.year, r.month - 1, r.day); }
 // ── The year's start (PR 3, accumulation design §2) ──
 // A month and day each year runs from: 1 January; the billing anniversary (the billing day of the month
 // the first bill started); a tariff's or an era's start. A row's year is the year its year began in.
+// Each choice names its group, the picker's <optgroup>: the tariffs newest first, the eras as the eras
+// modal lists them, by kind and newest first in each (erasGroups; 1 Nov 2026, the user).
 function barAccStartChoices() {
-  var out = [{id: 'jan', label: 'Year from 1 January', m: 1, d: 1}];
+  var out = [{id: 'jan', label: 'Year from 1 January', m: 1, d: 1, group: 'Year'}];
   var rows = (barData || []).slice().sort(function(a, b) { return barAccMs(a) - barAccMs(b); });
   if (rows.length) {
     var f = rows[0], bd = Math.max(1, Math.min(28, barBillingDay || 1)), bm = f.day >= bd ? f.month : (f.month === 1 ? 12 : f.month - 1);
-    out.push({id: 'billing', label: 'Billing anniversary (' + bd + ' ' + BAR_ACC_MON[bm - 1] + ')', m: bm, d: bd});
+    out.push({id: 'billing', label: 'Billing anniversary (' + bd + ' ' + BAR_ACC_MON[bm - 1] + ')', m: bm, d: bd, group: 'Year'});
   }
-  (barTariffs || []).filter(function(a) { return a.direction !== 'export' && a.from; }).forEach(function(a) {
-    out.push({id: 'tariff:' + a.from, label: 'Tariff: ' + a.name + ' (' + barAccDateLabel(a.from) + ')',
-              m: +a.from.slice(5, 7), d: +a.from.slice(8, 10)});
-  });
-  (barEras || []).forEach(function(e) {
-    out.push({id: 'era:' + e.id, label: 'Era: ' + e.label + ' (' + barAccDateLabel(e.start) + ')',
-              m: +e.start.slice(5, 7), d: +e.start.slice(8, 10)});
+  (barTariffs || []).filter(function(a) { return a.direction !== 'export' && a.from; })
+    .sort(function(a, b) { return a.from < b.from ? 1 : a.from > b.from ? -1 : 0; })
+    .forEach(function(a) {
+      out.push({id: 'tariff:' + a.from, label: 'Tariff: ' + a.name + ' (' + barAccDateLabel(a.from) + ')',
+                m: +a.from.slice(5, 7), d: +a.from.slice(8, 10), group: 'Tariffs'});
+    });
+  erasGroups(barEras || []).forEach(function(g) {
+    g.eras.forEach(function(e) {
+      out.push({id: 'era:' + e.id, label: 'Era: ' + e.label + ' (' + barAccDateLabel(e.start) + ')',
+                m: +e.start.slice(5, 7), d: +e.start.slice(8, 10), group: 'Eras: ' + ERA_KINDS[g.kind].name});
+    });
   });
   return out;
+}
+// The picker's options, an <optgroup> a run of one group
+function barAccStartOptions(starts, cur) {
+  var esc = function(v) { return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); };
+  var html = '', open = null;
+  starts.forEach(function(o) {
+    if (o.group !== open) { html += (open ? '</optgroup>' : '') + '<optgroup label="' + esc(o.group) + '">'; open = o.group; }
+    html += '<option value="' + esc(o.id) + '"' + (o.id === cur ? ' selected' : '') + '>' + esc(o.label) + '</option>';
+  });
+  return html + (open ? '</optgroup>' : '');
 }
 function barAccDateLabel(ymd) { return +ymd.slice(8, 10) + ' ' + BAR_ACC_MON[+ymd.slice(5, 7) - 1] + ' ' + ymd.slice(0, 4); }
 // {m, d} the year starts on; 1 January where the choice is gone (a tariff or era no longer there).
@@ -3583,9 +3599,7 @@ function barAccSyncUI() {
   });
   var ss = document.getElementById('bar-acc-start'), starts = barAccStartChoices();
   if (!starts.some(function(o) { return o.id === barAccStart; })) barAccStart = 'jan';
-  if (ss) ss.innerHTML = starts.map(function(o) {
-    return '<option value="' + o.id + '"' + (o.id === barAccStart ? ' selected' : '') + '>' + o.label.replace(/</g, '&lt;') + '</option>';
-  }).join('');
+  if (ss) ss.innerHTML = barAccStartOptions(starts, barAccStart);
   var sel = document.getElementById('bar-acc-series'), list = barAccSeriesList();
   if (!list.some(function(o) { return o.id === barAccSeries; })) barAccSeries = 'net';
   if (sel) {

@@ -34,7 +34,12 @@ def _fn(name):
     return PAGE[i:PAGE.index("\n}\n", i) + 2]
 
 
-NAMES = ("barAccMs", "barAccStartChoices", "barAccDateLabel", "barAccAnchor", "barAccStartMs", "barAccYearOf",
+def _kinds():
+    i = PAGE.index("var ERA_KINDS = {")
+    return PAGE[i:PAGE.index("\n};\n", i) + 3] + "\n"
+
+
+NAMES = ("barAccMs", "barAccStartChoices", "erasGroups", "barAccDateLabel", "barAccAnchor", "barAccStartMs", "barAccYearOf",
          "barAccDoy", "barAccYearDays", "barAccYearLabel", "barAccDayLabel", "barAccMonthOffsets", "_spLbl")
 
 
@@ -48,7 +53,7 @@ class TheStart(unittest.TestCase):
               "{direction: 'export', name: 'Outgoing', from: '2024-05-01'}];\n"
               "var barEras = [{id: 'abc12345', label: 'Added battery', start: '2024-02-29'}];\n") % (
             json.dumps(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]),
-            json.dumps(rows), billing_day, json.dumps(start)) + \
+            json.dumps(rows), billing_day, json.dumps(start)) + _kinds() + \
             "\n".join(_fn(n) for n in NAMES) + "\nconsole.log(JSON.stringify(" + expr + "));"
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
             fh.write(js)

@@ -25,7 +25,18 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PAGE = open(os.path.join(_ROOT, "web", "templates", "charts.html"), encoding="utf-8").read()
 
 
+def _kinds():
+    i = PAGE.index("var ERA_KINDS = {")
+    return PAGE[i:PAGE.index("\n};\n", i) + 3] + "\n"
+
+
 def _fn(name):
+    if name == "erasGroups":                  # the eras' order needs their kinds
+        return _kinds() + _fn_plain(name)
+    return _fn_plain(name)
+
+
+def _fn_plain(name):
     i = PAGE.index("function " + name + "(")
     line = PAGE[i:PAGE.index("\n", i)]
     if line.count("{") == line.count("}"):
@@ -40,7 +51,7 @@ class TheScale(unittest.TestCase):
         # PR 3: the year's start, 1 January here
         js = ("var barCurrency = '£', barAccStart = 'jan', barTariffs = [], barEras = [], barData = [], barBillingDay = 1, "
               "BAR_ACC_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n") + "\n".join(
-            _fn(n) for n in ("barAccMs", "barAccStartChoices", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
+            _fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
                              "barAccYearOf", "barAccYearDays", "barAccDoy", "_spFrac", "_spNice", "_spUnit", "_spLbl",
                              "barAccFmt")) + \
             "\nconsole.log(JSON.stringify(" + expr + "));"
