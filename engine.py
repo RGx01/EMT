@@ -180,6 +180,12 @@ _detected_integrations: dict | None = None
 # window is MIN(block_start)→now via get_oldest_block_start().
 _kraken_ingester = None         # KrakenIngester | None
 _KRAKEN_POLL_INTERVAL_S = 6 * 3600
+# BL-95 (1 Nov 2026): the settlement pill's *Retry settlement* runs the poll's cycle now, then the
+# 6 hours start again from it. A request within this long of a cycle's start is refused, so clicks
+# cannot spend the account's Octopus allowance (four instances share it).
+_KRAKEN_POLL_NOW_MIN_S = 15 * 60
+_kraken_poll_wake = None        # asyncio.Event the poll waits on between cycles, made by the task
+_kraken_poll_state: dict = {"running": False, "started": None, "finished": None}
 # 4b-iii: LIVE. The poll writes DCC settlement into blocks (imp_kwh_api / exp_kwh_api +
 # needs_pass2_rerun), which the engine drain re-runs into billing. (v4's one-time snapshot before
 # the first live write, `pre_live_snapshot_done`, went in engine step 5a, 27 Oct 2026: every version
@@ -12223,6 +12229,43 @@ async def resolve_history_gaps(now=None, meter_id: str = "electricity_main",
             "runs": runs_done}
 
 
+def kraken_poll_status() -> dict:
+    """The poll's last cycle, for the pill: {running, started, finished} (naive-UTC ISO or None)."""
+    return dict(_kraken_poll_state)
+
+
+def request_kraken_poll(loop) -> tuple:
+    """BL-95: wake the poll for a cycle now, from another thread (the web server's). (ok, reason):
+    refused with no API, no poll task, a cycle running, or one started under 15 minutes ago."""
+    from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+    if _kraken_client is None or not _kraken_discovery:
+        return False, "no supplier API connected"
+    ev = _kraken_poll_wake
+    if ev is None or _kraken_poll_task_handle is None or _kraken_poll_task_handle.done():
+        return False, "the poll is not running"
+    if _kraken_poll_state.get("running"):
+        return False, "a poll is running"
+    started = _kraken_poll_state.get("started")
+    now = _dt.now(_tz.utc).replace(tzinfo=None)
+    if started and now - _dt.fromisoformat(started) < _td(seconds=_KRAKEN_POLL_NOW_MIN_S):
+        return False, "Octopus was asked under %d minutes ago" % (_KRAKEN_POLL_NOW_MIN_S // 60)
+    loop.call_soon_threadsafe(ev.set)
+    return True, ""
+
+
+async def _kraken_poll_sleep(seconds: float) -> None:
+    """Wait until the next cycle: `seconds`, or less where a cycle is asked for (BL-95)."""
+    ev = _kraken_poll_wake
+    if ev is None:
+        await asyncio.sleep(seconds)
+        return
+    try:
+        await asyncio.wait_for(ev.wait(), timeout=seconds)
+    except asyncio.TimeoutError:
+        pass
+    ev.clear()
+
+
 async def kraken_poll_task(ha: HAClient):
     """Periodic DCC ingest loop. Runs poll() every 6h.
 
@@ -12243,6 +12286,8 @@ async def kraken_poll_task(ha: HAClient):
 
     logger.info("kraken_poll_task: started (interval=%ds, backfill_days=%d)",
                 _KRAKEN_POLL_INTERVAL_S, ingester.backfill_days)
+    global _kraken_poll_wake
+    _kraken_poll_wake = asyncio.Event()
     while True:
         try:
             # Don't poll/backfill while a manual delete is mutating blocks: they
@@ -12252,11 +12297,12 @@ async def kraken_poll_task(ha: HAClient):
             if delete_in_progress():
                 logger.info("kraken_poll_task: delete in progress — skipping this "
                             "poll cycle")
-                await asyncio.sleep(_KRAKEN_POLL_INTERVAL_S)
+                await _kraken_poll_sleep(_KRAKEN_POLL_INTERVAL_S)
                 continue
             # Mark the cycle active so a manual delete refuses rather than racing
             # this backfill. Cleared in finally, so it can never wedge deletes.
             set_poll_active(True)
+            _kraken_poll_state.update(running=True, started=_dt_now_iso_safe())
             # The account's agreements, once a day (17 Oct 2026): before the rate refresh,
             # so a new agreement's rates are built in this same cycle.
             await _maybe_rediscover()
@@ -12301,7 +12347,9 @@ async def kraken_poll_task(ha: HAClient):
             logger.error("kraken_poll_task: poll failed: %s", e)
         finally:
             set_poll_active(False)
-        await asyncio.sleep(_KRAKEN_POLL_INTERVAL_S)
+            if _kraken_poll_state.get("running"):
+                _kraken_poll_state.update(running=False, finished=_dt_now_iso_safe())
+        await _kraken_poll_sleep(_KRAKEN_POLL_INTERVAL_S)
 
 
 def _clear_stale_inprogress_reads(cb_for_gap, cold_start: bool) -> bool:

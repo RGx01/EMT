@@ -520,6 +520,22 @@ window.EMTHeatmap = (function () {
         }
       }
     });
+    // The rows at their size, measured: Chart.js takes room above and below the plot for the day
+    // labels (16 px, measured), out of the box, not beside it. A month of 31 rows lost half a pixel a
+    // row; one row — the 1st of a month, or Issues only leaving one — kept 4 px of its 20 (1 Nov 2026,
+    // the user's screenshot). The box grows by what was taken, the totals' with it.
+    var lost = days.length * cs - p.chart.chartArea.height;
+    if (lost > 0.5) {
+      h = Math.ceil(h + lost);
+      row.querySelectorAll('.hm-grid, .hm-tot').forEach(function (el) { el.style.height = h + 'px'; });
+      p.chart.resize();
+    }
+    // A month too short for its name on its side (one or two rows) is named by its month, in full on hover
+    var ml = p.el.querySelector('.hm-mlabel');
+    if (ml) {
+      ml.textContent = h < 56 ? monthLabel(key).split(' ')[0] : monthLabel(key);
+      ml.title = h < 56 ? monthLabel(key) : '';
+    }
     if (m !== 'intensity') {
       var ts = totStops(sc), tvals = days.map(function (d) { return rowOf(p, d).total[m]; });
       p.tot = new Chart(row.querySelector('.hm-tot canvas').getContext('2d'), {
@@ -1807,6 +1823,7 @@ window.EMTHeatmap = (function () {
 
   // `opts.mode`: 'chart' (the default — Charts, the Lovelace card) or 'data' (Data Management);
   // `opts.day`: in data mode, 'YYYY-MM-DD' to open that day's month and mark the day.
+  // `opts.issues`: in data mode, Issues only on for this visit.
   function init(root, opts) {
     opts = opts || {};
     state.root = root || document.getElementById('chart-heatmap-content');
@@ -1823,6 +1840,9 @@ window.EMTHeatmap = (function () {
       // the data views, not the energy ones; Issues only on unless turned off in this browser
       Object.keys(METRICS).forEach(function (k) { delete METRICS[k]; });
       try { state.collapse = localStorage.getItem('emt_hm_collapse') !== '0'; } catch (e) { state.collapse = true; }
+      // `opts.issues` (BL-95, the settlement pill's way in): Issues only on for this visit, the
+      // browser's own choice left as it was
+      if (opts.issues) state.collapse = true;
       // The settlement views are for supplier-API accounts only; ask once, and a failed
       // answer means "not shown", never an error for the heatmap.
       apiCheck = fetchJSON('/api/billing-source').then(function (r) {

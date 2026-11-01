@@ -129,7 +129,8 @@ class TheHosts(unittest.TestCase):
     def test_data_management_is_data_mode_with_the_day(self):
         dm = _page("data_management.html")
         self.assertIn('{% include "heatmap_module.html" %}', dm)
-        self.assertIn("{mode: 'data', day: new URLSearchParams(window.location.search).get('day'),", dm)
+        self.assertIn("var q = new URLSearchParams(window.location.search);", dm)
+        self.assertIn("{mode: 'data', day: q.get('day'),", dm)
 
 
 if __name__ == "__main__":
