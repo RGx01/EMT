@@ -62,18 +62,19 @@ class TestUsageCarbonTableCell(unittest.TestCase):
             const expAgg = { meters: { electricity_main: { carbon_g_exp: 99.88 } } };
             eq(call(expAgg, { key: 'co2_exp' }), -99.88, 'export offset must be -sum(carbon_g_exp)');
 
-            // Net view CO2: net_imp/net_exp must be GROSS import/export carbon
-            // (netting to carbon_g_net), not the net-positive/negative split.
+            // CO2 Import and Export offset must be GROSS import/export carbon
+            // (netting to carbon_g_net), not the net-positive/negative split. The offset is the
+            // co2_exp column, negative (31 Oct 2026: net_exp went when Net became a line).
             // Net-emitting day (has export): import is the gross figure, not net.
             const emit = { carbon_g_net: 4.154, meters: { electricity_main: {
               carbon_g_imp: 5.214, carbon_g_exp: 1.060 } } };
             eq(call(emit, { key: 'net_imp' }), 5.214, 'net_imp must be gross import carbon (not net)');
-            eq(call(emit, { key: 'net_exp' }), 1.060, 'net_exp must be gross export offset');
+            eq(call(emit, { key: 'co2_exp' }), -1.060, 'export offset must be the gross export carbon');
             // Net-offsetting day: import must NOT collapse to 0.
             const offset = { carbon_g_net: -2.413, meters: { electricity_main: {
               carbon_g_imp: 2.495, carbon_g_exp: 4.907 } } };
             eq(call(offset, { key: 'net_imp' }), 2.495, 'net_imp must stay gross on net-offsetting days');
-            eq(call(offset, { key: 'net_exp' }), 4.907, 'net_exp gross on net-offsetting days');
+            eq(call(offset, { key: 'co2_exp' }), -4.907, 'export offset gross on net-offsetting days');
             // Total reconciles: net_imp - net_exp == carbon_g_net (both days).
             if (Math.abs((5.214 - 1.060) - 4.154) > 0.001) fails.push('emit day net_imp-net_exp != carbon_g_net');
             if (Math.abs((2.495 - 4.907) - (-2.413)) > 0.001) fails.push('offset day net_imp-net_exp != carbon_g_net');

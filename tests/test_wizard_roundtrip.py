@@ -49,7 +49,9 @@ const sandbox = { console,
   document:{ getElementById:()=>fakeEl(), querySelector:()=>fakeEl(), querySelectorAll:()=>[],
     addEventListener:noop, createElement:()=>fakeEl(), body:{appendChild:noop} },
   fetch: async()=>({ json: async()=>({ok:true,source:'dcc',configured:false}) }),
-  alert:noop, setTimeout:(f)=>{ if(f) f(); return 0; }, clearTimeout:noop, location:{href:''} };
+  alert:noop, setTimeout:(f)=>{ if(f) f(); return 0; }, clearTimeout:noop, location:{href:'', hash:''},
+  // the Settings page's tabs (31 Oct 2026): a hashchange listener on window, and showTab sets the hash
+  addEventListener:noop, removeEventListener:noop, history:{replaceState:noop} };
 sandbox.window = sandbox;
 let prelude = ['renderWizStep','renderAll','closeWizard','show','showError','buildWizEntity',
   'attachEntityPickers','wizApplyEntityPickers'].map(n=>`function ${n}(){}`).join('\n')
