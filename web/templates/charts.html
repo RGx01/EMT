@@ -331,6 +331,18 @@
   .bar-acc-val { font-size:15px; font-weight:600; color:var(--text); }
   .bar-acc-sub { font-size:11px; color:var(--muted); }
   .bar-acc-plot { position:relative; flex:1; min-height:150px; }
+  /* the spiral in the view (PR 2): the Spiral tab's look, scoped here */
+  .bar-acc-spiral { display:flex; align-items:center; justify-content:center; min-height:240px; }
+  .bar-acc-spiral svg { width:100%; height:100%; max-height:100%; }
+  .bar-acc .sp-mo { font-family:var(--mono); font-size:15px; letter-spacing:.06em; fill:var(--text); opacity:.72; font-weight:600; }
+  .bar-acc .sp-rl { font-family:var(--mono); font-size:15px; fill:var(--text); opacity:.6; font-weight:500; }
+  .bar-acc .sp-cm { font-family:var(--mono); font-size:11px; letter-spacing:.13em; text-transform:uppercase; fill:var(--muted); }
+  .bar-acc .sp-cv { font-size:29px; font-weight:650; fill:var(--text); }
+  .bar-acc .sp-cu { font-size:12px; fill:var(--muted); }
+  .bar-acc-tip { position:absolute; pointer-events:none; opacity:0; transform:translate(-50%,-115%); background:var(--surface);
+                 border:1px solid var(--border); border-radius:8px; padding:6px 9px; font-size:12px; white-space:nowrap;
+                 box-shadow:0 8px 26px rgba(0,0,0,.4); z-index:5; }
+  .bar-acc-exp { border:none; background:none; color:var(--muted); cursor:pointer; padding:0 2px; font-size:13px; }
   /* BL-101 PR 4: the bar colours modal */
   .col-row { padding:10px 0; border-top:1px solid var(--border); }
   .col-head { display:flex; align-items:center; gap:8px; font-weight:600; margin-bottom:6px; }
@@ -376,6 +388,13 @@
     <div id="eras-list"></div>
     <div id="eras-form-wrap"></div>
     <div style="margin-top:12px;"><button class="btn btn-primary btn-sm" id="eras-add-btn" onclick="erasEdit(null)">+ Add an era</button></div>
+  </div>
+</div>
+<div class="eras-backdrop" id="acc-backdrop" onclick="if(event.target===this)barAccExpandClose()">
+  <div class="eras-panel" role="dialog" aria-modal="true" aria-labelledby="acc-exp-title" style="max-width:680px;">
+    <div class="eras-head"><h3 id="acc-exp-title"></h3>
+      <button class="btn btn-secondary btn-sm" onclick="barAccExpandClose()" aria-label="Close">✕</button></div>
+    <div class="bar-acc" style="display:block;height:auto;overflow:visible;"><div class="bar-acc-plot bar-acc-spiral" id="acc-exp-plot"></div></div>
   </div>
 </div>
 <div class="eras-backdrop" id="colours-backdrop" onclick="if(event.target===this)coloursClose()">
@@ -922,6 +941,10 @@ window.EMTSpiral=(function(){
       <span id="bar-acc-wrap" style="display:none; align-items:center; gap:8px; font-size:12px; color:var(--muted); flex-wrap:wrap;">
         <select id="bar-acc-series" onchange="barSetAccSeries(this.value)" aria-label="Which running total"
                 style="font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;"></select>
+        <span class="bar-seg" id="bar-acc-view" title="The running total along a time axis, or wound a year a turn">
+          <button class="bar-seg-btn active" onclick="barSetAccView('line',this)">Line</button>
+          <button class="bar-seg-btn"        onclick="barSetAccView('spiral',this)">Spiral</button>
+        </span>
         <span class="bar-seg" id="bar-acc-mode" title="One line from the first day, or each year from nought, overlaid">
           <button class="bar-seg-btn active" onclick="barSetAccMode('lifetime',this)">Lifetime</button>
           <button class="bar-seg-btn"        onclick="barSetAccMode('year',this)">Year by year</button>
@@ -1429,6 +1452,7 @@ function coloursSave() {
 }
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape' && document.getElementById('colours-backdrop').classList.contains('open')) coloursClose();
+  if (e.key === 'Escape' && document.getElementById('acc-backdrop').classList.contains('open')) barAccExpandClose();
 });
 
 // ── PDF Export ────────────────────────────────────────────────────────────────
@@ -1705,7 +1729,14 @@ function _doPdfExport(win, iconSrc) {
     try {
       barRender();
       var ch = barChartInstance;
-      if (barRunning()) {
+      if (barRunning() && barAccView === 'spiral') {
+        // BL-104 PR 2: the spirals, as SVG (their colours the page's variables, light here)
+        accShots = Array.prototype.map.call(document.querySelectorAll('#bar-acc .bar-acc-card'), function(card) {
+          var svg = card.querySelector('svg');
+          return {title: card.querySelector('.bar-acc-title').textContent, val: card.querySelector('.bar-acc-val').textContent,
+                  sub: card.querySelector('.bar-acc-sub').textContent, svg: svg ? svg.outerHTML : ''};
+        });
+      } else if (barRunning()) {
         // BL-104: the Running total view's cards, each its title, figure and chart
         accShots = barAccCharts.map(function(c, i) {
           c.resize(); c.draw();
@@ -1744,7 +1775,13 @@ function _doPdfExport(win, iconSrc) {
       '.pdf-settings b{font-weight:600;color:#111;margin-right:5px;}' +
       '.pdf-legend{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:11px;color:#555;margin-bottom:8px;}' +
       '.pdf-legend>*{display:inline-flex;align-items:center;gap:4px;}' +
-      '.pdf-note{font-size:12px;color:#555;margin:4px 0 10px;}';
+      '.pdf-note{font-size:12px;color:#555;margin:4px 0 10px;}' +
+      // the Running total's spirals (BL-104 PR 2)
+      '.pdf-sp svg{width:100%;height:auto;display:block;}' +
+      '.sp-mo{font-family:ui-monospace,monospace;font-size:15px;letter-spacing:.06em;fill:#1a1a1a;opacity:.72;font-weight:600;}' +
+      '.sp-rl{font-family:ui-monospace,monospace;font-size:15px;fill:#1a1a1a;opacity:.6;font-weight:500;}' +
+      '.sp-cm{font-family:ui-monospace,monospace;font-size:11px;letter-spacing:.13em;text-transform:uppercase;fill:#8a8f98;}' +
+      '.sp-cv{font-size:29px;font-weight:650;fill:#1a1a1a;} .sp-cu{font-size:12px;fill:#8a8f98;}';
 
     var chartSection = accShots
       ? '<div style="display:grid;grid-template-columns:repeat(' + Math.min(3, accShots.length) + ',1fr);gap:10px;margin-bottom:12px;">' +
@@ -1752,7 +1789,7 @@ function _doPdfExport(win, iconSrc) {
           return '<div style="border:1px solid #eee;border-radius:6px;padding:6px 8px;"><div style="font-size:11px;color:#555;' +
             'text-transform:uppercase;letter-spacing:.1em;">' + a.title + '</div><div style="font-size:14px;font-weight:600;">' + a.val +
             ' <span style="font-size:11px;font-weight:400;color:#777;">' + a.sub + '</span></div>' +
-            '<img src="' + a.url + '" style="width:100%;height:auto;display:block;"></div>';
+            (a.svg ? '<div class="pdf-sp">' + a.svg + '</div>' : '<img src="' + a.url + '" style="width:100%;height:auto;display:block;">') + '</div>';
         }).join('') + '</div>'
       : imgData
       ? '<img src="' + imgData + '" style="width:100%;height:auto;display:block;margin-bottom:12px;border:1px solid #eee;border-radius:6px;">'
@@ -1869,6 +1906,7 @@ function barSaveState() {
       brPct:    barBrPct,
       accSeries:   barAccSeries,
       accMode:     barAccMode,
+      accView:     barAccView,
       accStanding: barAccIncStanding,
     }));
   } catch(e) {}
@@ -1920,6 +1958,7 @@ function barLoadState(availableYears) {
     if (['devices','brackets','running'].indexOf(st.show) !== -1) barShow = st.show;
     if (typeof st.accSeries === 'string') barAccSeries = st.accSeries;
     if (st.accMode === 'lifetime' || st.accMode === 'year') barAccMode = st.accMode;
+    if (st.accView === 'line' || st.accView === 'spiral') barAccView = st.accView;
     barAccIncStanding = st.accStanding === true;
     if (typeof st.brSeries === 'string') barBrSeries = st.brSeries;
     barBrPct = st.brPct === true;
@@ -2631,6 +2670,7 @@ var barShow = 'devices';          // 'devices' | 'brackets' | 'running'
 // BL-104: the Running total view — which running total, wound how, and the standing charge in net
 var barAccSeries = 'net';         // 'net' | 'import' | 'export' | a device id | 'standing'
 var barAccMode = 'lifetime';      // 'lifetime' | 'year'
+var barAccView = 'line';          // 'line' | 'spiral' (PR 2)
 var barAccIncStanding = false;
 var barAccCharts = [];
 var barBrSeries = 'meter';        // 'meter' (the whole meter) | 'electricity_main' (the house) | a device id | 'export'
@@ -2852,6 +2892,7 @@ function barSetShow(v, el) {
 function barSetBrSeries(v) { barBrSeries = v; barSaveState(); barRender(); }
 function barSetAccSeries(v) { barAccSeries = v; barSaveState(); barRender(); }
 function barSetAccMode(v, el) { barAccMode = v; barSetActive('bar-acc-mode', el); barSaveState(); barRender(); }
+function barSetAccView(v, el) { barAccView = v; barSetActive('bar-acc-view', el); barSaveState(); barRender(); }
 function barSetAccStanding(on) { barAccIncStanding = !!on; barSaveState(); barRender(); }
 function barSetBrPct(on) { barBrPct = !!on; barSaveState(); barRender(); }
 
@@ -3773,8 +3814,8 @@ function barAccSeriesOf(rows, kind) {
 }
 function barAccFmt(v, unit) {
   if (unit === '£') return (v < 0 ? '−' : '') + barCurrency + Math.abs(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
-  var a = Math.abs(v), d = a >= 100 ? 0 : 1;
-  return v.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: d}) + ' ' + unit;
+  var a = Math.abs(v), d = a >= 100 ? 0 : 1;          // a minus sign, as the £ has, not a hyphen
+  return (v < 0 ? '\u2212' : '') + a.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: d}) + ' ' + unit;
 }
 // What the view shows and hides: the series and winding, not the period, metric or overlays
 function barAccSyncUI() {
@@ -3794,6 +3835,9 @@ function barAccSyncUI() {
   document.querySelectorAll('#bar-acc-mode .bar-seg-btn').forEach(function(b) {
     b.classList.toggle('active', (b.getAttribute('onclick') || '').indexOf("'" + barAccMode + "'") !== -1);
   });
+  document.querySelectorAll('#bar-acc-view .bar-seg-btn').forEach(function(b) {
+    b.classList.toggle('active', (b.getAttribute('onclick') || '').indexOf("'" + barAccView + "'") !== -1);
+  });
   var sel = document.getElementById('bar-acc-series'), list = barAccSeriesList();
   if (!list.some(function(o) { return o.id === barAccSeries; })) barAccSeries = 'net';
   if (sel) {
@@ -3808,15 +3852,27 @@ function barAccRender() {
   barAccCharts = [];
   var box = document.getElementById('bar-acc'), rows = barAccRows(), th = barGetTheme();
   var kinds = barAccKinds(), yearsShown = Array.from(new Set(rows.map(function(r) { return r.year; }))).sort();
+  var spiral = barAccView === 'spiral';
   box.innerHTML = kinds.map(function(k, i) {
     return '<div class="bar-acc-card"><div class="bar-acc-head"><span class="bar-acc-title">' + k.title + '</span>' +
-      '<span class="bar-acc-val" id="bar-acc-val-' + i + '"></span></div><div class="bar-acc-sub" id="bar-acc-sub-' + i + '"></div>' +
-      '<div class="bar-acc-plot"><canvas id="bar-acc-c-' + i + '"></canvas></div></div>';
+      '<span><span class="bar-acc-val" id="bar-acc-val-' + i + '"></span>' +
+      (spiral ? ' <button class="bar-acc-exp" title="Expand" onclick="barAccExpand(' + i + ')">\u26f6</button>' : '') + '</span></div>' +
+      '<div class="bar-acc-sub" id="bar-acc-sub-' + i + '"></div>' +
+      (spiral ? '<div class="bar-acc-plot bar-acc-spiral" id="bar-acc-s-' + i + '"></div>'
+              : '<div class="bar-acc-plot"><canvas id="bar-acc-c-' + i + '"></canvas></div>') + '</div>';
   }).join('');
   var all = {};
   kinds.forEach(function(k, i) {
     var s = barAccSeriesOf(rows, k.kind);
     all[k.kind] = s;
+    if (spiral) {
+      var latest0 = yearsShown[yearsShown.length - 1];
+      var head0 = barAccMode === 'lifetime' ? (s.life.length ? s.life[s.life.length - 1].y : 0) : (s.totals[latest0] || 0);
+      document.getElementById('bar-acc-val-' + i).textContent = barAccFmt(head0, k.unit);
+      document.getElementById('bar-acc-sub-' + i).textContent = barAccMode === 'lifetime' ? 'total to date' : latest0 ? String(latest0) + ' so far' : '';
+      barAccSpiral(document.getElementById('bar-acc-s-' + i), rows, k, yearsShown);
+      return;
+    }
     var latestY = yearsShown[yearsShown.length - 1];
     var head = barAccMode === 'lifetime' ? (s.life.length ? s.life[s.life.length - 1].y : 0) : (s.totals[latestY] || 0);
     document.getElementById('bar-acc-val-' + i).textContent = barAccFmt(head, k.unit);
@@ -3874,7 +3930,7 @@ function barAccBuildTable(kinds, all, years) {
     return '<th>' + k.title + '</th><th>vs year before</th><th>To ' + upto + '</th>';
   }).join('') + '</tr></thead><tbody>';
   years.slice().reverse().forEach(function(y) {
-    html += '<tr><td>' + y + '</td>' + kinds.map(function(k) {
+    html += '<tr style="white-space:nowrap;"><td>' + y + '</td>' + kinds.map(function(k) {
       // the change as an amount: a net that crosses nought makes a percentage meaningless
       var s = all[k.kind], t = s.totals[y] || 0, p = s.totals[y - 1];
       var ch = p != null ? t - p : null;
@@ -3884,6 +3940,113 @@ function barAccBuildTable(kinds, all, years) {
   });
   tbl.innerHTML = html + '</tbody>';
 }
+
+// ── The spiral (BL-104 PR 2): the Spiral tab's drawing, moved into the view ─────────────────────────
+// A running total wound a year a turn, 1 January at the top: Lifetime one coil (radius the total to
+// date), Year by year each year from nought on one scale, so the loops overlay. The geometry, rings,
+// month spokes, year colours, centre and hover are the Spiral tab's (EMTSpiral renderSpiral), which
+// goes when the tab does (PR 5).
+var BAR_SP = {NS: 'http://www.w3.org/2000/svg', VBW: 440, VBH: 448, CX: 220, CY: 212, R_IN: 34, R_OUT: 184, A0: -Math.PI / 2};
+function _spEl(t, a) { var e = document.createElementNS(BAR_SP.NS, t); for (var k in a) e.setAttribute(k, a[k]); return e; }
+function _spNice(range) {
+  if (!(range > 0)) return 1;
+  var exp = Math.floor(Math.log(range) / Math.LN10), f = range / Math.pow(10, exp);
+  return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * Math.pow(10, exp);
+}
+function _spFrac(r) {
+  var y = r.year, diy = (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0)) ? 366 : 365;
+  return barAccDoy(r) / diy;
+}
+// The spiral's scale for a unit: kWh to MWh, kg to t, once the magnitude passes 1000
+function _spUnit(u, mag) {
+  mag = Math.abs(mag);
+  if (u === 'kWh') return mag >= 1e6 ? {u: 'GWh', d: 1e6} : mag >= 1e3 ? {u: 'MWh', d: 1e3} : {u: 'kWh', d: 1};
+  if (u === 'kg') return mag >= 1e6 ? {u: 'kt', d: 1e6} : mag >= 1e3 ? {u: 't', d: 1e3} : {u: 'kg', d: 1};
+  return {u: u, d: 1};
+}
+function _spLbl(v, u, sc) {
+  if (u === '£') { var a = Math.abs(v); return '£' + (a >= 1000 ? (v / 1000).toFixed(a >= 10000 ? 0 : 1).replace(/\.0$/, '') + 'k' : v.toFixed(a >= 10 ? 0 : 1)); }
+  var x = v / sc.d, ax = Math.abs(x), str = x.toFixed(ax >= 100 ? 0 : ax >= 1 ? 1 : 2);
+  return str.indexOf('.') < 0 ? str : str.replace(/\.?0+$/, '');
+}
+function barAccSpiral(host, rows, k, years) {
+  var G = BAR_SP, life = 0, per = {}, pts = [];
+  rows.forEach(function(r) {
+    var inc = barAccInc(r, k.kind);
+    life += inc; per[r.year] = (per[r.year] || 0) + inc;
+    pts.push({r: r, inc: inc, life: life, yc: per[r.year], frac: _spFrac(r)});
+  });
+  var vals = pts.map(function(p) { return barAccMode === 'lifetime' ? p.life : p.yc; });
+  var lo = Math.min.apply(null, vals.concat([0])), hi = Math.max.apply(null, vals.concat([0]));
+  if (hi - lo < 1e-9) hi = lo + 1;
+  var step = _spNice((hi - lo) / 4);
+  lo = Math.floor(lo / step) * step; hi = Math.ceil(hi / step) * step; if (hi - lo < 1e-9) hi = lo + step;
+  var sc = _spUnit(k.unit, Math.max(Math.abs(hi), Math.abs(lo)));
+  pts.forEach(function(p) {
+    var v = barAccMode === 'lifetime' ? p.life : p.yc, rad = G.R_IN + ((v - lo) / (hi - lo)) * (G.R_OUT - G.R_IN);
+    var a = G.A0 + p.frac * 2 * Math.PI;
+    p.x = G.CX + rad * Math.cos(a); p.y = G.CY + rad * Math.sin(a); p.val = v;
+  });
+  var svg = _spEl('svg', {viewBox: '0 0 ' + G.VBW + ' ' + G.VBH});
+  var grid = _spEl('g', {}), n = Math.max(1, Math.round((hi - lo) / step));
+  for (var i = 1; i <= n; i++) {
+    var rr = G.R_IN + (G.R_OUT - G.R_IN) * i / n;
+    grid.appendChild(_spEl('circle', {cx: G.CX, cy: G.CY, r: rr, fill: 'none', 'stroke-width': 1, opacity: .5, style: 'stroke:var(--muted)'}));
+    var lab = _spEl('text', {x: G.CX + 6, y: G.CY - rr + 13, 'class': 'sp-rl'}); lab.textContent = _spLbl(lo + step * i, k.unit, sc); grid.appendChild(lab);
+  }
+  for (var m = 0; m < 12; m++) {
+    var a = G.A0 + (m / 12) * 2 * Math.PI;
+    grid.appendChild(_spEl('line', {x1: G.CX + (G.R_IN - 6) * Math.cos(a), y1: G.CY + (G.R_IN - 6) * Math.sin(a),
+      x2: G.CX + (G.R_OUT + 8) * Math.cos(a), y2: G.CY + (G.R_OUT + 8) * Math.sin(a), 'stroke-width': 1, opacity: .3, style: 'stroke:var(--muted)'}));
+    var t = _spEl('text', {x: G.CX + (G.R_OUT + 24) * Math.cos(a), y: G.CY + (G.R_OUT + 24) * Math.sin(a), 'text-anchor': 'middle',
+      'dominant-baseline': 'middle', 'class': 'sp-mo'});
+    t.textContent = BAR_ACC_MON[m].toUpperCase(); grid.appendChild(t);
+  }
+  svg.appendChild(grid);
+  years.forEach(function(y, yi) {
+    var seg = pts.filter(function(p) { return p.r.year === y; });
+    if (seg.length < 2) return;
+    var d = 'M ' + seg[0].x.toFixed(2) + ' ' + seg[0].y.toFixed(2);
+    for (var j = 1; j < seg.length; j++) d += ' L ' + seg[j].x.toFixed(2) + ' ' + seg[j].y.toFixed(2);
+    var c = BAR_ACC_YC[yi % BAR_ACC_YC.length], L = seg[seg.length - 1];
+    svg.appendChild(_spEl('path', {d: d, fill: 'none', stroke: c, 'stroke-width': 2.6, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', opacity: .95}));
+    svg.appendChild(_spEl('circle', {cx: L.x, cy: L.y, r: 3.2, fill: c}));
+  });
+  var last = pts[pts.length - 1];
+  var cv = !last ? 0 : barAccMode === 'lifetime' ? last.life : (per[years[years.length - 1]] || 0);
+  [[G.CY - 18, 'sp-cm', k.title], [G.CY + 10, 'sp-cv', _spLbl(cv, k.unit, sc)],
+   [G.CY + 28, 'sp-cu', (barAccMode === 'lifetime' ? 'total to date' : 'latest year') + (k.unit === '£' ? '' : ' · ' + sc.u)]]
+    .forEach(function(q) { var e = _spEl('text', {x: G.CX, y: q[0], 'text-anchor': 'middle', 'class': q[1]}); e.textContent = q[2]; svg.appendChild(e); });
+  host.innerHTML = '';
+  host.appendChild(svg);
+  var tip = document.createElement('div'); tip.className = 'bar-acc-tip'; host.appendChild(tip);
+  var dot = _spEl('circle', {r: 4.5, opacity: 0, 'pointer-events': 'none', style: 'fill:var(--text)'}); svg.appendChild(dot);
+  svg.onpointermove = function(ev) {
+    var r = svg.getBoundingClientRect(), px = (ev.clientX - r.left) / r.width * G.VBW, py = (ev.clientY - r.top) / r.height * G.VBH;
+    var best = null, bd = 1e9;
+    pts.forEach(function(p) { var dx = p.x - px, dy = p.y - py, dd = dx * dx + dy * dy; if (dd < bd) { bd = dd; best = p; } });
+    if (!best || bd > 26 * 26) { tip.style.opacity = 0; dot.setAttribute('opacity', 0); return; }
+    dot.setAttribute('cx', best.x); dot.setAttribute('cy', best.y); dot.setAttribute('opacity', 1);
+    var hr = host.getBoundingClientRect();
+    tip.innerHTML = '<div style="color:var(--muted);font-size:10.5px;">' + new Date(barAccMs(best.r)).toLocaleDateString(undefined, {day: 'numeric', month: 'short', year: 'numeric'}) +
+      '</div><div style="font-weight:650;">' + barAccFmt(best.val, k.unit) + '</div><div style="color:var(--muted);">that day: ' + barAccFmt(best.inc, k.unit) + '</div>';
+    tip.style.left = (r.left + best.x / G.VBW * r.width - hr.left) + 'px';
+    tip.style.top = (r.top + best.y / G.VBH * r.height - hr.top) + 'px';
+    tip.style.opacity = 1;
+  };
+  svg.onpointerleave = function() { tip.style.opacity = 0; dot.setAttribute('opacity', 0); };
+  return svg;
+}
+// The spiral larger, in a modal, as the Spiral tab's expand
+function barAccExpand(i) {
+  var k = barAccKinds()[i]; if (!k) return;
+  document.getElementById('acc-exp-title').textContent = k.title;
+  document.getElementById('acc-backdrop').classList.add('open');
+  var rows = barAccRows(), years = Array.from(new Set(rows.map(function(r) { return r.year; }))).sort();
+  var host = document.getElementById('acc-exp-plot'); host.style.height = Math.min(600, window.innerHeight - 140) + 'px';
+  barAccSpiral(host, rows, k, years);
+}
+function barAccExpandClose() { document.getElementById('acc-backdrop').classList.remove('open'); }
 
 function barBuildSubBar() {
   var bar = document.getElementById('bar-sub-bar');
