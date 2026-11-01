@@ -119,8 +119,9 @@ class ThePage(unittest.TestCase):
         self.assertIn("if (new URLSearchParams(location.search).get('show') !== 'brackets') return;", f)
         self.assertIn("barShow = 'brackets'; barBrSeries = 'meter';", f)
         load = _fn(CHARTS, "barLoadState")
-        self.assertIn("if (!raw) { barShowFromUrl(); return; }", load)
-        self.assertTrue(load.rstrip().endswith("barShowFromUrl();\n}") or "  barShowFromUrl();\n}" in load)
+        # both load paths; BL-104 PR 5 runs the Spiral tab's carry-over after it
+        self.assertIn("if (!raw) { barShowFromUrl(); barFromSpiral(); return; }", load)
+        self.assertIn("  barShowFromUrl();\n  barFromSpiral();\n}", load)
 
 
 if __name__ == "__main__":
