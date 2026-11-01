@@ -52,7 +52,7 @@ class TheOrder(unittest.TestCase):
               "var barTariffs = %s, barEras = %s;\n") % (
             json.dumps(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]),
             json.dumps(TARIFFS), json.dumps(ERAS)) + _kinds() + \
-            "\n".join(_fn(n) for n in ("barAccMs", "barAccDateLabel", "erasGroups", "barAccStartChoices",
+            "\n".join(_fn(n) for n in ("barAccMs", "barAccDateLabel", "erasGroups", "barTariffPriceStarts", "barAccStartChoices",
                                        "barAccStartOptions")) + \
             "\nconsole.log(JSON.stringify(" + expr + "));"
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:

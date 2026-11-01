@@ -3451,9 +3451,12 @@ function barAccMs(r) { return Date.UTC(r.year, r.month - 1, r.day); }
 // A month and day each year runs from: 1 January; the billing anniversary (the billing day of the month
 // the first bill started); a tariff's or an era's start. A row's year is the year its year began in.
 // Each choice names its group, the picker's <optgroup>: the tariffs newest first, the eras as the eras
-// modal lists them, by kind and newest first in each (erasGroups; 1 Nov 2026, the user).
+// modal lists them, by kind and newest first in each (erasGroups; 1 Nov 2026, the user). Under each
+// tariff, newest first, the days its prices changed inside it — the bars' minor ticks
+// (barTariffPriceStarts) — up to today; one already a choice is not listed twice.
 function barAccStartChoices() {
   var out = [{id: 'jan', label: 'Year from 1 January', m: 1, d: 1, group: 'Year'}];
+  var today = new Date().toISOString().slice(0, 10);
   var rows = (barData || []).slice().sort(function(a, b) { return barAccMs(a) - barAccMs(b); });
   if (rows.length) {
     var f = rows[0], bd = Math.max(1, Math.min(28, barBillingDay || 1)), bm = f.day >= bd ? f.month : (f.month === 1 ? 12 : f.month - 1);
@@ -3464,6 +3467,12 @@ function barAccStartChoices() {
     .forEach(function(a) {
       out.push({id: 'tariff:' + a.from, label: 'Tariff: ' + a.name + ' (' + barAccDateLabel(a.from) + ')',
                 m: +a.from.slice(5, 7), d: +a.from.slice(8, 10), group: 'Tariffs'});
+      barTariffPriceStarts(a).filter(function(d) { return (!a.to || d < a.to) && d <= today; }).reverse()
+        .forEach(function(d) {
+          if (out.some(function(o) { return o.id === 'tariff:' + d; })) return;
+          out.push({id: 'tariff:' + d, label: '\u00a0\u00a0\u00a0' + a.name + ' \u2014 price change ' + barAccDateLabel(d),
+                    m: +d.slice(5, 7), d: +d.slice(8, 10), group: 'Tariffs'});
+        });
     });
   erasGroups(barEras || []).forEach(function(g) {
     g.eras.forEach(function(e) {

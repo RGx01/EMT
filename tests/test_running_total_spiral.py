@@ -51,7 +51,7 @@ class TheScale(unittest.TestCase):
         # PR 3: the year's start, 1 January here
         js = ("var barCurrency = '£', barAccStart = 'jan', barTariffs = [], barEras = [], barData = [], barBillingDay = 1, "
               "BAR_ACC_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n") + "\n".join(
-            _fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
+            _fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
                              "barAccYearOf", "barAccYearDays", "barAccDoy", "_spFrac", "_spNice", "_spUnit", "_spLbl",
                              "barAccFmt")) + \
             "\nconsole.log(JSON.stringify(" + expr + "));"
