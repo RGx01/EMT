@@ -644,9 +644,13 @@ a completed dispatch only where it has not. Its colour, fixed in code, is chosen
 completed dispatch) and has no EV device; kept in the store's meta (`ev_style`), not the config. A
 new EV device starts with its colour (the user).
 
-**BL-98 — Insights Usage: the rate period usage chart.** It groups by the block's recorded rate,
-which blends a half-hour priced at two rates; the rate brackets (BL-93) read the price slices. A
-compact brackets summary for the period, or a way into Usage Stats' view, in its place.
+**BL-98 — Insights Usage: the rate period usage chart.** ✅ *Done 1 Nov 2026.* Rate Period Usage
+is **Rate Brackets**: the period's grid import by 2.5p bracket (BL-93's read, by day, summed) with
+each bracket's kWh, £, average p/kWh and share, and a link into Usage Stats' Rate brackets view
+(`/charts?tab=bar&show=brackets`). It had listed exact rates and folded to one "avg of N rates" row
+past five, so on Agile it said nothing. *Corrected:* it did not read the block's blended rate, as
+first written here — it read the price slices; its footnote was the stale part. The per-device rate
+lines are unchanged (the dispatch EV is no series of the brackets).
 
 **BL-99 — Overview: the IOG card.** Per session: how long it ran, how much of the 6-hour allowance it
 used, and the kWh and £ charged outside a dispatch (a bump charge). Design first.

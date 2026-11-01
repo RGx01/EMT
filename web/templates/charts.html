@@ -1517,10 +1517,20 @@ function barSaveState() {
   } catch(e) {}
 }
 
+// `?show=brackets` (BL-98, Insights' Rate brackets card): the whole meter's rate brackets, once, over
+// the remembered view
+function barShowFromUrl() {
+  try {
+    if (new URLSearchParams(location.search).get('show') !== 'brackets') return;
+    barShow = 'brackets'; barBrSeries = 'meter';
+    if (barMetric === 'co2') barMetric = 'kwh';
+  } catch(e) {}
+}
+
 function barLoadState(availableYears) {
   try {
     var raw = localStorage.getItem(EMT.lsKey('emt_bar_state'));
-    if (!raw) return;
+    if (!raw) { barShowFromUrl(); return; }
     var st = JSON.parse(raw);
     if (['daily','monthly','yearly','hh'].indexOf(st.period) !== -1) barPeriod = st.period;
     if (['kwh','cost','co2'].indexOf(st.metric) !== -1)       barMetric = st.metric;
@@ -1553,6 +1563,7 @@ function barLoadState(availableYears) {
     barBrPct = st.brPct === true;
     if (barShow === 'brackets' && barMetric === 'co2') barMetric = 'kwh';
   } catch(e) {}
+  barShowFromUrl();
 }
 
 // Apply a Usage Stats payload (fresh or cached) into the bar-chart state.
