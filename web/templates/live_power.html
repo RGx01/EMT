@@ -936,7 +936,7 @@ function setMiniSource(enabled){
     </svg>
   </button>
   <div class="card-title">🚗 Smart Charging</div>
-  <div style="font-size:11px;color:var(--muted);margin:-2px 0 4px;">Energy delivered to the car — not grid import</div>
+  <div style="font-size:11px;color:var(--muted);margin:-2px 0 4px;">Your car's smart charges, as Octopus reports and bills them</div>
   <div id="charge-summary" style="color:var(--muted);font-size:13px;">Loading…</div>
 </div>
 
@@ -945,7 +945,7 @@ function setMiniSource(enabled){
   <div class="expand-modal" role="dialog" aria-label="Smart charging detail">
     <button class="expand-modal-close" onclick="_closeChargeModal()">✕</button>
     <div class="card-title">🚗 Smart Charging</div>
-    <div style="font-size:12px;color:var(--muted);margin:2px 0 8px;">Energy delivered to the car (from Octopus dispatch) — not metered grid import, so solar offset and house load aren't reflected.</div>
+    <div style="font-size:12px;color:var(--muted);margin:2px 0 8px;">The car's energy from Octopus's dispatches; its cost from the car's share of the bill (est. until billed). On the capped tariff, each noon-to-noon day's 6 hours of smart charging, as EMT estimates it.</div>
     <div id="charge-range" style="display:flex;gap:6px;margin:2px 0 10px;">
       <button class="charge-range-btn" data-days="7"  onclick="_setChargeRange(7)">7 days</button>
       <button class="charge-range-btn" data-days="30" onclick="_setChargeRange(30)">30 days</button>
@@ -1081,18 +1081,6 @@ function _statusPill(st){
        + 'padding:1px 8px;border-radius:10px;vertical-align:middle;">'+x[1]+'</span>';
 }
 
-function _offText(s){
-  if(s.off_peak_kwh>=s.kwh-0.05) return 'all off-peak';
-  if(s.off_peak_kwh<=0.05) return 'all at peak';
-  // Show the (small) peak figure at its true value so it matches the billing
-  // blocks; let the large off-peak absorb the rounding so the parts still sum
-  // to the displayed total.
-  var tot=Math.round(s.kwh*10)/10;
-  var pk=Math.round(s.peak_kwh*10)/10;
-  var op=Math.round((tot-pk)*10)/10;
-  return op.toFixed(1)+' kWh off-peak, '+pk.toFixed(1)+' peak';
-}
-
 function _fmtDur(m){
   m=Math.round(m||0);
   if(m<60) return m+'m';
@@ -1111,42 +1099,79 @@ function _chargeTime(s){
 function _estChargeTime(s){
   return (s.est_charge_minutes!=null) ? _fmtDur(s.est_charge_minutes) : null;
 }
-// Combined label: "≈1h 47m charging · 2h 30m dispatched", or just the dispatched
-// window when there's no anchor slot to estimate from.
-function _chargeLabel(s){
-  var est=_estChargeTime(s), disp=_chargeTime(s);
-  return est ? ('≈'+est+' charging · '+disp+' dispatched') : (disp+' dispatched');
+
+// ── BL-99 (1 Nov 2026): the card as the user asked — the session's length, its cost, the 6-hour
+// allowance per noon→noon cap-day, and any part at peak with its reason. It was one run-on line of
+// eight facts with "saved" in place of a cost (the user: drop it). The allowance is EMT's estimate
+// (energy ÷ the car's inferred power), so it reads ≈.
+var _chargeCapDays = {};
+var _chargeOutside = [];
+function _dayName(ymd){
+  var d=new Date(ymd+'T12:00:00');
+  return isNaN(d) ? ymd : d.toLocaleDateString('en-GB',{weekday:'short',day:'numeric',month:'short'});
 }
-// Info affordance explaining the two figures (native tooltip; shown on the summary only).
-var _CHARGE_HELP='Dispatched: the time Octopus had your car in a smart-charge window (recorded at half-hour granularity). ≈ Charging: an estimate of how long it actually drew power — energy delivered ÷ its peak charging rate. The two differ when a slot only charged briefly. As an estimate it assumes steady charging, so a slow low-power top-up near full can read a little low.';
-function _chargeHelp(){
-  return ' <span title="'+_CHARGE_HELP+'" style="cursor:help;opacity:0.55;" aria-label="What do these times mean?">ⓘ</span>';
+function _money(v){ return (v<0?'(':'')+_chargeCurrency+Math.abs(v).toFixed(2)+(v<0?')':''); }
+function _costText(s){ return s.cost!=null ? (_money(s.cost)+(s.billed?'':' <span style="color:var(--muted);">est.</span>')) : ''; }
+// cap-day key YYYY-MM-DD: the day whose noon starts it
+function _capDayLabel(key){
+  var d=new Date(key+'T12:00:00'), n=new Date(d.getTime()+86400000);
+  var w=function(x){return x.toLocaleDateString('en-GB',{weekday:'short'});};
+  return isNaN(d) ? key : (w(d)+' noon → '+w(n)+' noon');
 }
-function _slotsText(s){
-  var n=s.n_slots||0;
-  return n+(n===1?' slot':' slots');
+function _capBar(c){
+  var used=c.used_minutes||0, cap=c.cap_minutes||360, over=used>cap;
+  var pct=Math.min(100, used/cap*100);
+  return '<span style="display:inline-block;vertical-align:middle;width:120px;height:6px;border-radius:3px;'
+       + 'background:var(--border);overflow:hidden;margin-right:6px;"><span style="display:block;height:100%;width:'
+       + pct.toFixed(1)+'%;background:'+(over?'#ff6b6b':'#00d4aa')+';"></span></span>'
+       + '≈'+_fmtDur(used)+' of '+_fmtDur(cap)
+       + (over ? ' <span style="color:#ff6b6b;">over by ≈'+_fmtDur(used-cap)+'</span>' : '');
+}
+// Line 2: on a capped agreement the cap-day's allowance; else how long it charged
+function _capLine(s, withDay){
+  var c=_chargeCapDays[s.cap_day];
+  if(c && c.capped){
+    return _capBar(c) + (withDay ? ' <span style="color:var(--muted);">(cap-day '+_cesc(_capDayLabel(s.cap_day))+')</span>' : '');
+  }
+  var est=_estChargeTime(s);
+  return '<span title="Dispatched: '+_chargeTime(s)+' — the time Octopus had the car in a smart-charge window">'
+       + (est ? '≈'+est+' charging' : _chargeTime(s)+' dispatched') + '</span>';
+}
+var _PEAK_WHY={bump:'a bump charge', over_cap:'over the 6 hours'};
+function _peakText(s){
+  var p=s.at_peak;
+  if(!p) return 'All off-peak';
+  var why=_PEAK_WHY[p.reason], all=p.kwh>=s.kwh-0.05;
+  return '<span style="color:#ff6b6b;">'+(all?'All ':'')+p.kwh.toFixed(1)+' kWh at peak, '+_money(p.cost)
+       + (why?' — '+why:'')+'</span>';
+}
+function _outsideText(o){
+  var win=(o.local.start.time||'')+'–'+(o.local.end.time||'');
+  return 'Charged outside a smart charge: '+o.kwh.toFixed(1)+' kWh, '+_money(o.cost)
+       + (o.peak_kwh>0.05 ? ' ('+o.peak_kwh.toFixed(1)+' kWh at peak)' : '')
+       + ' · '+_cesc(_dayName(o.local.start.date))+' '+_cesc(win);
 }
 
-function _chargeSummaryHtml(s){
-  var win=(s.local.start.time||'??')+'–'+(s.local.end.time||'??');
-  var off = _offText(s);
-  var save = s.saving ? ' <span style="color:var(--muted);font-size:12px;">· saved '
-           + _chargeCurrency+s.saving.toFixed(2)+'</span>' : '';
-  return _statusPill(s.status)
-       + ' <strong style="font-size:15px;">'+s.kwh.toFixed(1)+' kWh</strong>'
-       + ' <span style="color:var(--muted);">· '+_cesc(win)+' · '+_chargeLabel(s)+_chargeHelp()+' · '
-       + _slotsText(s)+' · '+off+'</span>'+save;
-}
-
+// The half-hours' bars; a gap the session bridged is drawn as a gap, so the window and the bars agree
 function _fillChartSVG(s){
   var f=s.fill||[]; if(!f.length) return '';
-  var W=Math.max(f.length*40,160), H=88, base=H-16;
-  var max=Math.max.apply(null, f.map(function(x){return x.kwh;}).concat([0.1]));
-  var step=(W-4)/f.length;
-  var bars='', labels='', hits='';
+  var cols=[];
   f.forEach(function(x,i){
-    var h=(x.kwh/max)*(base-6);
+    if(i && (new Date(x.slot+'Z') - new Date(f[i-1].slot+'Z')) > 30*60000) cols.push(null);
+    cols.push(x);
+  });
+  var W=Math.max(cols.length*40,160), H=88, base=H-16;
+  var max=Math.max.apply(null, f.map(function(x){return x.kwh;}).concat([0.1]));
+  var step=(W-4)/cols.length;
+  var bars='', labels='', hits='';
+  cols.forEach(function(x,i){
     var xx=i*step+4, bw=Math.max(step-6,6);
+    if(!x){
+      labels+='<text x="'+(xx+bw/2).toFixed(1)+'" y="'+(base-4)+'" font-size="10" fill="var(--muted)" '
+          +'text-anchor="middle">…</text>';
+      return;
+    }
+    var h=(x.kwh/max)*(base-6);
     var col=x.off_peak?'#00d4aa':'#ff6b6b';
     // Wall-clock (site tz) label, server-provided; fall back to UTC for old data.
     var t=_cesc(x.local_time || x.slot.substr(11,5));
@@ -1157,7 +1182,6 @@ function _fillChartSVG(s){
     hits+='<rect x="'+(i*step).toFixed(1)+'" y="0" width="'+step.toFixed(1)+'" height="'+base
         +'" fill="#000" opacity="0" pointer-events="all">'
         +'<title>'+t+' — '+x.kwh.toFixed(2)+' kWh</title></rect>';
-    // Time label under every block.
     labels+='<text x="'+(xx+bw/2).toFixed(1)+'" y="'+(H-3)+'" font-size="8" fill="var(--muted)" '
         +'text-anchor="middle">'+t+'</text>';
   });
@@ -1165,18 +1189,39 @@ function _fillChartSVG(s){
        +'px;margin-top:6px;" preserveAspectRatio="xMinYMax meet">'+bars+labels+hits+'</svg>';
 }
 
+// The face: the last charge in three lines
+function _chargeSummaryHtml(s){
+  var win=(s.local.start.time||'??')+'–'+(s.local.end.time||'??');
+  return '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">'
+       + '<span>'+_statusPill(s.status)+' <strong style="color:var(--text);">'+_cesc(_dayName(s.local.start.date))
+       + '</strong> · '+_cesc(win)+'</span>'
+       + '<span><strong style="font-size:15px;color:var(--text);">'+s.kwh.toFixed(1)+' kWh</strong> · '+_costText(s)+'</span></div>'
+       + '<div style="margin-top:4px;">'+_capLine(s, true)+'</div>'
+       + '<div style="margin-top:2px;">'+_peakText(s)+'</div>';
+}
+
 function _sessionRowHtml(s){
-  var d=s.local.start.date||s.start.substr(0,10);
   var win=(s.local.start.time||'')+'–'+(s.local.end.time||'');
-  var save=s.saving?(' · saved '+_chargeCurrency+s.saving.toFixed(2)):'';
   return '<div style="padding:10px 0;border-bottom:1px solid var(--border);font-size:13px;">'
     + '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">'
-    + '<span><strong>'+_cesc(d)+'</strong> <span style="color:var(--muted);">'+_cesc(win)+'</span></span>'
-    + '<span>'+s.kwh.toFixed(1)+' kWh '+_statusPill(s.status)+'</span></div>'
+    + '<span><strong>'+_cesc(_dayName(s.local.start.date))+'</strong> <span style="color:var(--muted);">'+_cesc(win)+'</span></span>'
+    + '<span>'+s.kwh.toFixed(1)+' kWh · '+_costText(s)+' '+_statusPill(s.status)+'</span></div>'
     + '<div style="color:var(--muted);font-size:11px;margin-top:2px;">'
-    + _chargeLabel(s)+' · '+_slotsText(s)+' · '+_offText(s)
-    + _cesc(save)+'</div>'
+    + _capLine({est_charge_minutes:s.est_charge_minutes, dispatch_minutes:s.dispatch_minutes,
+                charge_minutes:s.charge_minutes}, false)+' · '+_peakText(s)+'</div>'
     + _fillChartSVG(s) + '</div>';
+}
+function _upcomingRowHtml(u){
+  var win=(u.local.start.time||'')+'–'+(u.local.end.time||'');
+  return '<div style="padding:10px 0;border-bottom:1px solid var(--border);font-size:13px;">'
+    + '<div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;">'
+    + '<span><strong>'+_cesc(_dayName(u.local.start.date))+'</strong> <span style="color:var(--muted);">'+_cesc(win)+'</span></span>'
+    + '<span>'+u.kwh.toFixed(1)+' kWh planned '+_statusPill('scheduled')+'</span></div>'
+    + _fillChartSVG(u) + '</div>';
+}
+function _outsideRowHtml(o){
+  return '<div style="padding:10px 0;border-bottom:1px solid var(--border);font-size:12px;color:#ff6b6b;">'
+       + _outsideText(o) + '</div>';
 }
 
 function _chargeNextHint(u){
@@ -1192,18 +1237,28 @@ function _openChargeModal(){
   _updateChargeRangeBtns();
   document.getElementById('charge-backdrop').classList.add('active');
 }
+// The modal by cap-day, newest first: its allowance in the header, its charges under it
 function _renderChargeModalBody(){
   var body=document.getElementById('charge-modal-body');
   if(!body) return;
   var html='';
   if(_chargeUpcoming.length){
-    html += '<div class="charge-section-h">Upcoming</div>'
-          + _chargeUpcoming.map(_sessionRowHtml).join('')
-          + '<div class="charge-section-h">Recent</div>';
+    html += '<div class="charge-section-h">Upcoming</div>' + _chargeUpcoming.map(_upcomingRowHtml).join('');
   }
-  html += _chargeSessions.length
-    ? _chargeSessions.map(_sessionRowHtml).join('')
-    : '<div style="color:var(--muted);">No smart charges in this range.</div>';
+  var days={};
+  _chargeSessions.forEach(function(s){ (days[s.cap_day]||(days[s.cap_day]=[])).push({t:s.start, h:_sessionRowHtml(s)}); });
+  _chargeOutside.forEach(function(o){ (days[o.cap_day]||(days[o.cap_day]=[])).push({t:o.start, h:_outsideRowHtml(o)}); });
+  var keys=Object.keys(days).sort().reverse();
+  if(!keys.length){
+    html += '<div style="color:var(--muted);">No smart charges in this range.</div>';
+  }
+  keys.forEach(function(k){
+    var c=_chargeCapDays[k];
+    html += '<div class="charge-section-h">'+_cesc(_dayName(k)+' noon → '+_capDayLabel(k).split(' → ')[1])
+          + (c && c.capped ? ' · <span style="text-transform:none;letter-spacing:normal;font-weight:400;">'+_capBar(c)+'</span>' : '')
+          + '</div>';
+    html += days[k].sort(function(a,b){ return a.t<b.t?1:-1; }).map(function(x){return x.h;}).join('');
+  });
   body.innerHTML = html;
 }
 function _updateChargeRangeBtns(){
@@ -1211,6 +1266,12 @@ function _updateChargeRangeBtns(){
   for(var i=0;i<btns.length;i++){
     btns[i].classList.toggle('active', parseInt(btns[i].getAttribute('data-days'),10)===_chargeDays);
   }
+}
+function _takeCharges(d){
+  _chargeSessions=(d&&d.sessions)||[];
+  _chargeUpcoming=(d&&d.upcoming)||[];
+  _chargeOutside=(d&&d.outside)||[];
+  _chargeCapDays=(d&&d.cap_days)||{};
 }
 function _setChargeRange(n){
   if(n===_chargeDays) return;
@@ -1220,11 +1281,7 @@ function _setChargeRange(n){
   if(body) body.innerHTML='<div style="color:var(--muted);padding:10px 0;">Loading…</div>';
   fetch(apiUrl('/api/charge-sessions?days='+n))
     .then(function(r){return r.json();})
-    .then(function(d){
-      _chargeSessions=(d&&d.sessions)||[];
-      _chargeUpcoming=(d&&d.upcoming)||[];
-      _renderChargeModalBody();
-    })
+    .then(function(d){ _takeCharges(d); _renderChargeModalBody(); })
     .catch(function(){ _renderChargeModalBody(); });
 }
 function _closeChargeModal(){
@@ -1237,13 +1294,16 @@ function loadChargeSessions(){
   fetch(apiUrl('/api/charge-sessions?days='+_chargeDays))
     .then(function(r){return r.json();})
     .then(function(d){
-      _chargeSessions=(d&&d.sessions)||[];
-      _chargeUpcoming=(d&&d.upcoming)||[];
+      _takeCharges(d);
       _chargeCurrency=(d&&d.currency)||'£';
       if(!d||!d.has_data||(!_chargeSessions.length&&!_chargeUpcoming.length)){
         card.style.display='none'; return; }
       card.style.display='';
       var sum = _chargeSessions.length ? _chargeSummaryHtml(_chargeSessions[0]) : '';
+      if(_chargeOutside.length){
+        sum += '<div style="margin-top:4px;color:#ff6b6b;">Also '+_outsideText(_chargeOutside[_chargeOutside.length-1])
+                 .replace(/^Charged/, 'charged')+'</div>';
+      }
       if(_chargeUpcoming.length){
         var hint=_chargeNextHint(_chargeUpcoming[0]);
         sum = sum ? (sum+'<div style="margin-top:4px;">'+hint+'</div>') : hint;

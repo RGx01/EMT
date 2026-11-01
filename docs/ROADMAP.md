@@ -652,8 +652,12 @@ past five, so on Agile it said nothing. *Corrected:* it did not read the block's
 first written here — it read the price slices; its footnote was the stale part. The per-device rate
 lines are unchanged (the dispatch EV is no series of the brackets).
 
-**BL-99 — Overview: the IOG card.** Per session: how long it ran, how much of the 6-hour allowance it
-used, and the kWh and £ charged outside a dispatch (a bump charge). Design first.
+**BL-99 — Overview: the IOG card.** ✅ *Done 1 Nov 2026 (IOG overview card design).* The smart
+charging card shows each charge's day and window with its kWh and £ (the EV's share of the bill,
+*est.* until billed); on a capped agreement the noon→noon cap-day's allowance, *≈ of 6h* (EMT's
+estimate), red when over; any part at peak, by price, with its reason (a bump charge, over the 6
+hours); and the EV's charging outside any smart charge. "saved" is gone (the user). The modal groups
+the charges by cap-day, and a gap a session bridged is drawn as one.
 
 **BL-100 — Overview: an Agile card.** Import and export prices, the 48-hour history card's style and
 size.
