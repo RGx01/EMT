@@ -48,13 +48,30 @@ window.EMTHeatmap = (function () {
                  'completed dispatch with no House/EV split · red, hatched yellow: no cost from Octopus, ' +
                  'and EMT no longer asks — kWh \u00d7 rate · blue: ' +
                  'your correction · grey: nothing imported, imported history, or not on an Octopus agreement · ' +
-                 'black hatched: no block (missing)'},
+                 'black hatched: no block (missing)',
+            // the key, a swatch a state (BL-105, 1 Nov 2026, the user: "add visual colour keys to the
+            // wordy key"); a swatch is the state's own colour, settleColour's, hatched where it is
+            key: [['applied', 'final \u2014 Octopus\u2019s cost, or settled kWh \u00d7 a published rate'],
+                  ['applied_emt_split', 'Octopus\u2019s cost, EMT\u2019s House/EV split'],
+                  ['estimate_dcc', 'settled kWh \u00d7 rate, Octopus\u2019s cost not in yet'],
+                  ['estimate_cad', 'kWh not settled yet'],
+                  ['overdue', 'needs a look: not final after 7 days, Octopus\u2019s figures disagreeing (its cost, kWh, VAT ' +
+                 'or split), or the devices costing more than the meter'],
+                  ['abandoned', 'no cost from Octopus, and EMT no longer asks \u2014 kWh \u00d7 rate'],
+                  ['corrected', 'your correction'],
+                  ['none', 'nothing imported, imported history, or not on an Octopus agreement'],
+                  ['missing', 'no block (missing)']]},
     export: {label: 'Export bill', title: 'Export bill — is each half-hour\u2019s export cost final?', unit: '',
             dp: 0, tot: 'To look at', settle: 'export',
             sub: 'EMT fetches no export bill: kWh \u00d7 the export rate is final once the export kWh ' +
                  'settles. Green: settled (or an API import) · amber: not settled, under 7 days · red: ' +
                  'not settled after 7 days · red, hatched yellow: no export figure from Octopus or the CSV · ' +
-                 'grey: no export, or CSV history · black hatched: no block (missing)'}
+                 'grey: no export, or CSV history · black hatched: no block (missing)',
+            intro: 'EMT fetches no export bill: kWh \u00d7 the export rate is final once the export kWh settles.',
+            key: [['applied', 'settled (or an API import)'], ['waiting', 'not settled, under 7 days'],
+                  ['overdue', 'not settled after 7 days'],
+                  ['no_data', 'no export figure from Octopus or the CSV'],
+                  ['none', 'no export, or CSV history'], ['missing', 'no block (missing)']]}
   };
   // The Split view went on 17 Oct 2026: the Import bill carries the split (teal for EMT's, red for
   // a completed dispatch with none — `split_missing`), and the detail panel names its state.
@@ -62,7 +79,8 @@ window.EMTHeatmap = (function () {
   // missing — the one data view an install without the supplier API has.
   var PRESENCE_METRIC = {label: 'Missing', title: 'Missing — is every half-hour recorded?', unit: '',
     dp: 0, tot: 'To look at',
-    sub: 'Green: recorded · black hatched: no block for the half-hour (missing) — select it to fill it'};
+    sub: 'Green: recorded · black hatched: no block for the half-hour (missing) — select it to fill it',
+    key: [['present', 'recorded'], ['missing', 'no block for the half-hour (missing) \u2014 select it to fill it']]};
   function isSettle(m) { return m === 'bill' || m === 'export'; }
   function isCat(m) { return isSettle(m) || m === 'presence'; }
   // A half-hour inside the data's span with no main-meter block (heatmap issues design §2): drawn
@@ -131,6 +149,25 @@ window.EMTHeatmap = (function () {
     x.beginPath(); x.moveTo(-1, 7); x.lineTo(7, -1); x.moveTo(-1, 1); x.lineTo(1, -1);
     x.moveTo(5, 7); x.lineTo(7, 5); x.stroke();
     return (_hatchAb = x.createPattern(c, 'repeat'));
+  }
+  // A key swatch's CSS: the state's colour, or its hatch drawn as the canvas draws it (black with
+  // grey diagonals; red with yellow)
+  function swatchCss(m, v) {
+    var diag = function (bg, ln) {
+      return 'background:' + bg + ' repeating-linear-gradient(135deg,' + ln + ' 0 1.2px,transparent 1.2px 4px);';
+    };
+    if (v === 'missing') return diag('#000', '#6b7080');
+    if (v === 'abandoned' || v === 'no_data') return diag('#cc0000', '#f2c94c');
+    return 'background:' + settleColour(m, v) + ';';
+  }
+  // The key under the view's title: its swatches where it has them, else its sentence
+  function keyHtml(m) {
+    var M = METRICS[m], esc = function (t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;'); };
+    if (!M.key) return esc(M.sub);
+    return (M.intro ? '<div class="hm-key-intro">' + esc(M.intro) + '</div>' : '') +
+      '<div class="hm-key">' + M.key.map(function (k) {
+        return '<span class="hm-key-item"><span class="hm-sw" style="' + swatchCss(m, k[0]) + '"></span>' + esc(k[1]) + '</span>';
+      }).join('') + '</div>';
   }
   function isMissing(c) { return !!(c && c.missing && c.kwh === null); }
   function isData() { return state.mode === 'data'; }
@@ -627,7 +664,7 @@ window.EMTHeatmap = (function () {
     if (rescale) state.scale = computeScale();
     state.keys.forEach(function (k) { if (state.panels[k] && state.panels[k].drawn) drawMonth(k); });
     var t = state.root && state.root.querySelector('.hm-title');
-    if (t) { t.textContent = METRICS[state.metric].title; state.root.querySelector('.hm-sub').textContent = METRICS[state.metric].sub; }
+    if (t) { t.textContent = METRICS[state.metric].title; state.root.querySelector('.hm-sub').innerHTML = keyHtml(state.metric); }
   }
 
   // ── hover: arithmetic on the grid, an HTML tooltip — the canvas is never repainted ──
@@ -1993,6 +2030,11 @@ window.EMTHeatmap = (function () {
   .hm-head { text-align:center; margin:4px 0 6px; }
   .hm-title { font-size:15px; font-weight:600; }
   .hm-sub { font-size:12px; color:var(--muted, #6b7080); margin-top:2px; }
+  .hm-key { display:flex; flex-wrap:wrap; justify-content:center; gap:3px 14px; margin-top:3px; }
+  .hm-key-item { display:inline-flex; align-items:flex-start; gap:5px; max-width:100%; text-align:left; }
+  .hm-sw { flex:none; width:11px; height:11px; margin-top:2px; border-radius:2px;
+           border:1px solid rgba(127,127,127,0.45); box-sizing:border-box; }
+  .hm-key-intro { margin-bottom:1px; }
   /* the floating axis (heatmap issues design §4): under the bar, sticky as it is */
   .hm-axis { position:sticky; z-index:8; height:46px; margin-bottom:2px; pointer-events:none;
              background:var(--surface, var(--card, #1a1d27)); }
