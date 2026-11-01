@@ -121,7 +121,9 @@ const sandbox = { console,
   document:{ getElementById:()=>fakeEl(), querySelector:()=>fakeEl(), querySelectorAll:()=>[],
     addEventListener:noop, createElement:()=>fakeEl(), body:{appendChild:noop} },
   fetch: async()=>({ ok:true, json: async()=>({ok:true}) }),
-  alert:noop, setTimeout:(f)=>{ if(f) f(); return 0; }, clearTimeout:noop, location:{href:''} };
+  alert:noop, setTimeout:(f)=>{ if(f) f(); return 0; }, clearTimeout:noop, location:{href:'', hash:''},
+  // the Settings page's tabs (31 Oct 2026): a hashchange listener on window, and showTab sets the hash
+  addEventListener:noop, removeEventListener:noop, history:{replaceState:noop} };
 sandbox.window = sandbox;
 let prelude = ['renderWizStep','renderAll','closeWizard','show','showError']
   .map(n=>`function ${n}(){}`).join('\n') + '\nvar apiUrl=function(u){return u;};\n';

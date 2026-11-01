@@ -64,13 +64,15 @@ var expDay = { carbon_g_net: -0.5, imp_kwh: 4, exp_kwh: 9,
 
 function near(a,b){ return Math.abs(a-b) < 1e-9; }
 var fails = [];
-var ni1 = cellVal(impDay, {key:'net_imp'}), ne1 = cellVal(impDay, {key:'net_exp'});
-var ni2 = cellVal(expDay, {key:'net_imp'}), ne2 = cellVal(expDay, {key:'net_exp'});
+// The export offset is the co2_exp column, negative (31 Oct 2026: the net_imp / net_exp pair went
+// when Net became a line over the bars; the table keeps Import CO2 and Export offset)
+var ni1 = cellVal(impDay, {key:'net_imp'}), ne1 = -cellVal(impDay, {key:'co2_exp'});
+var ni2 = cellVal(expDay, {key:'net_imp'}), ne2 = -cellVal(expDay, {key:'co2_exp'});
 if (!near(ni1, 9.0)) fails.push('import-day net_imp should be total import incl. device 9.0, got '+ni1);
-if (!near(ne1, 3.0)) fails.push('import-day net_exp should be gross 3.0 (not 0), got '+ne1);
+if (!near(ne1, 3.0)) fails.push('import-day export offset should be gross 3.0 (not 0), got '+ne1);
 if (!near(ni1 - ne1, 6.0)) fails.push('import-day total should be 6.0 (total import - export), got '+(ni1-ne1));
 if (!near(ni2, 3.0)) fails.push('export-day net_imp should be total import incl. device 3.0 (not 0), got '+ni2);
-if (!near(ne2, 3.5)) fails.push('export-day net_exp should be gross 3.5, got '+ne2);
+if (!near(ne2, 3.5)) fails.push('export-day export offset should be gross 3.5, got '+ne2);
 if (!near(ni2 - ne2, -0.5)) fails.push('export-day total should be -0.5, got '+(ni2-ne2));
 
 console.log(fails.length ? 'FAIL: ' + fails.join('; ') : 'PASS');
@@ -127,7 +129,8 @@ class TestAvgIntensityNoBlowup(unittest.TestCase):
     def test_avg_intensity_uses_server_value_weighted(self):
         # barData is a global the function reads; declare it via the harness.
         baf = _extract("function barAggRows(filterFn) {", "\nfunction ")
-        harness = "var barData = [];\n" + AI_HARNESS.replace("__BARAGGROWS__", baf)
+        # barBrDays: the rate brackets' days (BL-93), none here
+        harness = "var barData = [];\nvar barBrDays = null;\n" + AI_HARNESS.replace("__BARAGGROWS__", baf)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
             fh.write(harness)
             path = fh.name
