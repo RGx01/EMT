@@ -76,6 +76,7 @@ since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-man
 | `docs/design/EMT-v5_iog_overview_card_design.md` | BL-99: the Overview's smart charging card — cost, the 6-hour allowance per cap-day (≈), peak parts by price with their reason, charging outside a dispatch (built) |
 | `docs/design/EMT-v5_api_ev_device_design.md` | BL-97: the EV of an account with no EV device — "EV", its colour on a Settings tab of its own, kept in the store's meta; a new EV device inherits it (built) |
 | `docs/design/EMT-v5_rate_brackets_design.md` | BL-93: a Usage Stats view of grid import in 2.5p rate brackets per device, day, month and year; one rule for every tariff, no band labels (built) |
+| `docs/design/EMT-v5_help_pages_design.md` | BL-102: the help as a page per section, a reader's guide, a ? on each page, links to v5's repository; 3 PRs (decided) |
 | `docs/design/EMT-v5_A1_writer_thread_design.md` | ROADMAP §A.1: why commits stall the loop on the SD card, and the writer thread |
 | `docs/ROADMAP.md` | the open backlog and each item's status — ✅ done on `dev` with its PR (no release has shipped) |
 | `docs/CONTRIBUTING.md`, `docs/DEVELOPMENT.md` | branch model, PR flow, what a change must carry |

@@ -202,7 +202,7 @@ def inject_globals():
 # screen, except the pages the fork itself uses (Settings: the setup wizard, and where a restore
 # without a key lands) and the two that help when something goes wrong (Help, Logs). APIs, static
 # files and the Lovelace cards are not pages and are not touched.
-_OPEN_BEFORE_SETUP = frozenset({"welcome_page", "settings_page", "help_page", "logs_page"})
+_OPEN_BEFORE_SETUP = frozenset({"welcome_page", "settings_page", "help_page", "help_section", "logs_page"})
 
 
 @app.before_request
@@ -869,9 +869,24 @@ def serve_favicon():
     return "", 404
 
 
+# BL-102 (help pages design): a help page each, in the navigation's order. The pages still to be
+# rewritten stay on the contents page until they are (PR 2).
+HELP_PAGES = (("getting-started", "Getting started"), ("overview", "Overview"), ("charts", "Charts"),
+              ("insights", "Insights"))
+
+
 @app.route("/help")
 def help_page():
-    return render_template("help.html", active="help")
+    return render_template("help.html", active="help", help_pages=HELP_PAGES, section=None)
+
+
+@app.route("/help/<section>")
+def help_section(section):
+    """One help page (`help/<section>.html`); 404 for a section there is none of."""
+    if section not in dict(HELP_PAGES):
+        return render_template("help.html", active="help", help_pages=HELP_PAGES, section=None), 404
+    return render_template("help/%s.html" % section.replace("-", "_"), active="help",
+                           help_pages=HELP_PAGES, section=section)
 
 
 @app.route("/logs")

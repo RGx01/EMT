@@ -682,7 +682,12 @@ by the site name, never an address. Display only: never read for pricing or attr
 - **PR 4 ✅** a bar colours modal behind the same ⚙︎ — every meter's style, saved without an engine restart.
 No before-and-after comparison for now (the user).
 
-**BL-102 — the help pages.** An overhaul, last, once the surfaces above have settled.
+**BL-102 — the help pages.** *In progress (help pages design); decided 1 Nov 2026: a page for each section, a ? on
+each page, links to v5's repository, a reader's guide (the design detail to the wiki when it is redone).*
+- **PR 1 ✅** `/help/<section>` with a side list and `/help` a contents page; Getting started, Overview, Charts,
+  Insights; the old page's other cards kept on the contents page, their links on v5's repository;
+- **PR 2** Data Management, Settings, How EMT counts, Running EMT; the old cards gone;
+- **PR 3** the ? on each page.
 
 **BL-103 — Agile for everyone.** ✅ *Done 1 Nov 2026 (agile for everyone design); decided: the comparison, Agile Outgoing, shown by default.* The Agile card (BL-100) on every account,
 labelled *Agile in your region*: Octopus publishes Agile prices without an account, and the region is
