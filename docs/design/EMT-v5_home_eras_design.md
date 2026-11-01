@@ -1,6 +1,6 @@
 # EMT v5 — home eras (BL-101)
 
-*Status: decided 1 Nov 2026 (§6); PR 1 built. Takes up ROADMAP §G.1's "user-defined periods". Code facts
+*Status: decided 1 Nov 2026 (§6); PRs 1 and 2 built. Takes up ROADMAP §G.1's "user-defined periods". Code facts
 read at `dev` after #376.*
 
 ---
@@ -101,7 +101,7 @@ view. Its menu:
 | PR | what |
 |---|---|
 | 1 | **built:** the store (`home_eras`), `GET` / `POST /api/home-eras` (cleaned: kinds, dates, lengths, numbers), and the eras modal behind the ⚙︎ on the Charts page — list, add, edit, delete |
-| 2 | Usage Stats' markers and the *Eras* checkbox |
+| 2 | **built:** Usage Stats' markers (Monthly by Date and Daily; not HH, a day) and the *Eras* checkbox, on until turned off |
 | 3 | eras found: a house move from a new supply point, a meter change from the serial's fingerprint |
 | 4 | the bar colours modal behind the same ⚙︎ |
 | — | the accumulation chart with the year's start (its own roadmap item) |

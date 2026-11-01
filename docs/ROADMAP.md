@@ -674,7 +674,8 @@ by the site name, never an address. Display only: never read for pricing or attr
 §G.1's user-defined periods.
 - **PR 1 ✅** the store (`home_eras` in the meta), `GET` / `POST /api/home-eras`, and the eras modal
   behind a ⚙︎ on the Charts page;
-- **PR 2** markers on Usage Stats (not a lane: eras overlap), an *Eras* checkbox;
+- **PR 2 ✅** markers on Usage Stats (not a lane: eras overlap) on Monthly by Date and Daily, an *Eras*
+  checkbox, a chip's hover;
 - **PR 3** eras found from the data: a house move from a new supply point in the agreements, a meter
   change from a fingerprint of the meter's serial (EMT keeps no serial history yet);
 - **PR 4** a bar colours modal behind the same ⚙︎.

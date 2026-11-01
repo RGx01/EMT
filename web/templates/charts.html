@@ -909,6 +909,11 @@ window.EMTSpiral=(function(){
         <input type="checkbox" id="bar-tariff-cb" onchange="barSaveState(); barRender();" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
         Tariffs
       </label>
+      <label id="bar-eras-wrap" style="display:none; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer;"
+             title="Your home's eras (the ⚙︎ menu) marked on the bars: a dashed line at each start; hover its icon for the details">
+        <input type="checkbox" id="bar-eras-cb" onchange="barSaveState(); barRender();" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
+        Eras
+      </label>
     </div>
     <div class="bar-toolbar-right">
       <button class="bar-seg-btn" id="bar-sort-btn" onclick="barToggleSort()" style="font-size:11px;">↑ Oldest first</button>
@@ -1269,6 +1274,7 @@ function _erasPost(list, onDone) {
     .then(function(r) { return r.json(); }).then(function(d) {
       if (!d.ok) throw new Error(d.error || 'Not saved');
       _eras = d.eras || []; erasRenderList(); if (onDone) onDone();
+      barEras = _eras; if (barInited && barData) barRender();      // the markers follow (BL-101 PR 2)
     });
 }
 function erasSave(ev) {
@@ -1322,7 +1328,8 @@ function barPdfSettings() {
   add(lbl ? 'Range' : 'Years', lbl ? lbl.textContent.trim()
       : Array.from(barActiveYears).sort().join(', '));
   var opts = [['bar-standing-wrap', 'bar-standing-cb', 'Standing charge'],
-              ['bar-net-wrap', 'bar-net-cb', null], ['bar-tariff-wrap', 'bar-tariff-cb', 'Tariffs']]
+              ['bar-net-wrap', 'bar-net-cb', null], ['bar-tariff-wrap', 'bar-tariff-cb', 'Tariffs'],
+              ['bar-eras-wrap', 'bar-eras-cb', 'Eras']]
     .filter(function (o) { var cb = document.getElementById(o[1]); return shown(document.getElementById(o[0])) && cb && cb.checked; })
     .map(function (o) { return o[2] || (document.getElementById('bar-net-text') || {}).textContent || 'Net'; });
   add('With', opts.join(', '));
@@ -1705,6 +1712,7 @@ function barSaveState() {
       years:    barActiveYears ? [...barActiveYears] : [],
       standing: cb ? cb.checked : false,
       tariffs:  !!(document.getElementById('bar-tariff-cb') || {}).checked,
+      eras:     !!(document.getElementById('bar-eras-cb') || {}).checked,
       show:     barShow,
       brSeries: barBrSeries,
       brPct:    barBrPct,
@@ -1753,6 +1761,8 @@ function barLoadState(availableYears) {
     if (nc) nc.checked = st.net === true || (st.net === undefined && st.view === 'net');
     var tc = document.getElementById('bar-tariff-cb');
     if (tc) tc.checked = st.tariffs === true;
+    var ec = document.getElementById('bar-eras-cb');
+    if (ec) ec.checked = st.eras !== false;              // on until turned off: an era is there to be seen
     if (['devices','brackets'].indexOf(st.show) !== -1) barShow = st.show;
     if (typeof st.brSeries === 'string') barBrSeries = st.brSeries;
     barBrPct = st.brPct === true;
@@ -2226,7 +2236,8 @@ function barTariffWhen(a) {
   return barFmtDate(a.from) + ' \u2013 ' + barFmtDate(end) + ' \u00b7 ' + len;
 }
 
-function barTariffShow(a, ev, iso) {
+// The overlays' one tip (the tariffs' and the eras'): made once, emptied for each hover
+function barTipEl() {
   var tip = document.getElementById('bar-tariff-tip');
   if (!tip) {
     tip = document.createElement('div');
@@ -2237,6 +2248,19 @@ function barTariffShow(a, ev, iso) {
     document.body.appendChild(tip);
   }
   tip.innerHTML = '';
+  return tip;
+}
+// Shown beside the pointer, kept on the screen
+function barTipPlace(tip, ev) {
+  tip.style.display = 'block';
+  var x = ev.clientX + 12, y = ev.clientY + 12, r = tip.getBoundingClientRect();
+  if (x + r.width > window.innerWidth - 8) x = ev.clientX - r.width - 12;
+  if (y + r.height > window.innerHeight - 8) y = ev.clientY - r.height - 12;
+  tip.style.left = Math.max(8, x) + 'px'; tip.style.top = Math.max(8, y) + 'px';
+}
+
+function barTariffShow(a, ev, iso) {
+  var tip = barTipEl();
   var head = document.createElement('div');
   head.style.fontWeight = '600';
   head.textContent = (a.direction === 'export' ? 'Export: ' : 'Import: ') + a.name;
@@ -2260,11 +2284,113 @@ function barTariffShow(a, ev, iso) {
       lines.forEach(function(l) { var d = document.createElement('div'); d.textContent = l; tip.appendChild(d); });
     }
   }
-  tip.style.display = 'block';
-  var x = ev.clientX + 12, y = ev.clientY + 12, r = tip.getBoundingClientRect();
-  if (x + r.width > window.innerWidth - 8) x = ev.clientX - r.width - 12;
-  if (y + r.height > window.innerHeight - 8) y = ev.clientY - r.height - 12;
-  tip.style.left = Math.max(8, x) + 'px'; tip.style.top = Math.max(8, y) + 'px';
+  barTipPlace(tip, ev);
+}
+
+// ── Home eras on the bars (BL-101 PR 2, home eras design §3.1) ─────────────────────────────────
+// Markers, not a lane — eras overlap: a dashed line at each start across the bars, a chip with the
+// era's icon at the top, a fainter line at an end. Where a bar is a stretch of days (Monthly by
+// Date, Daily); a start in a bar falls within it by its day, as the tariffs' edges (barTariffX).
+var barEras = null;                    // the eras once read; [] none
+var _barErasAsked = false;
+var BAR_ERA_CHIP = 16;                 // px, the chip's size
+function barLoadEras() {
+  if (_barErasAsked) return;
+  _barErasAsked = true;
+  fetch(apiUrl('/api/home-eras')).then(function(r) { return r.json(); }).then(function(j) {
+    barEras = j.eras || [];
+    if (barEras.length && barInited && barData) barRender();
+  }).catch(function() { barEras = []; });
+}
+function barErasAvailable() {
+  var view = (barPeriod === 'monthly' && barMonthOrder === 'date') || barPeriod === 'daily';
+  return view && !!barEras && barEras.length > 0;
+}
+function barShowEras() {
+  var cb = document.getElementById('bar-eras-cb');
+  return barErasAvailable() && !!cb && cb.checked;
+}
+// The markers in view, each {e, x, end, cy}: the chips stepped down where two would touch
+function barEraMarks(chart, ranges, lanes) {
+  var ca = chart.chartArea, lo = ranges[0].from, hi = ranges[ranges.length - 1].to, out = [];
+  var top = ca.top + 2 + (lanes && lanes.imp ? 8 + BAR_TARIFF_LANE + 4 : 0);
+  (barEras || []).slice().sort(function(a, b) { return a.start < b.start ? -1 : 1; }).forEach(function(e) {
+    var inS = e.start >= lo && e.start < hi, inE = e.end && e.end >= lo && e.end < hi;
+    if (!inS && !inE) return;
+    var m = { e: e, x: inS ? barTariffX(chart, ranges, e.start) : null, end: inE ? barTariffX(chart, ranges, e.end) : null };
+    if (m.x != null) {
+      var row = 0;
+      while (out.some(function(o) { return o.x != null && o.row === row && Math.abs(o.x - m.x) < BAR_ERA_CHIP + 2; })) row++;
+      m.row = row; m.cy = top + BAR_ERA_CHIP / 2 + row * (BAR_ERA_CHIP + 2);
+    }
+    out.push(m);
+  });
+  return out;
+}
+function barErasPlugin(ranges, lanes) {
+  return {
+    id: 'emtEras',
+    afterDatasetsDraw: function(chart) {
+      var c = chart.ctx, ca = chart.chartArea, th = barGetTheme(), dark = barIsDark();
+      var marks = barEraMarks(chart, ranges, lanes);
+      chart._emtEraMarks = marks;
+      c.save();
+      c.strokeStyle = th.tooltipTitle; c.lineWidth = 1;
+      marks.forEach(function(m) {
+        [[m.x, 0.8], [m.end, 0.35]].forEach(function(p) {
+          if (p[0] == null || p[0] <= ca.left || p[0] >= ca.right) return;
+          c.globalAlpha = p[1]; c.setLineDash([4, 3]);
+          c.beginPath(); c.moveTo(p[0], ca.top); c.lineTo(p[0], ca.bottom); c.stroke();
+        });
+      });
+      c.setLineDash([]); c.globalAlpha = 1;
+      c.font = '11px ' + (getComputedStyle(document.body).fontFamily || 'sans-serif');
+      c.textAlign = 'center'; c.textBaseline = 'middle';
+      marks.forEach(function(m) {
+        if (m.x == null || m.x < ca.left - 1 || m.x > ca.right + 1) return;
+        var k = (typeof ERA_KINDS !== 'undefined' && ERA_KINDS[m.e.kind]) || {icon: '•'}, h = BAR_ERA_CHIP;
+        c.fillStyle = dark ? '#1a1d27' : '#ffffff';
+        c.strokeStyle = th.tooltipTitle; c.lineWidth = 1;
+        c.beginPath();
+        if (c.roundRect) c.roundRect(m.x - h / 2, m.cy - h / 2, h, h, 4); else c.rect(m.x - h / 2, m.cy - h / 2, h, h);
+        c.fill(); c.stroke();
+        c.fillStyle = th.tooltipTitle;
+        c.fillText(k.icon, m.x, m.cy + 0.5);
+      });
+      c.restore();
+    },
+    beforeEvent: function(chart, args) {
+      var e = args.event, marks = chart._emtEraMarks || [];
+      if (e.type === 'mouseout') { barTariffHide(); return; }
+      if (e.type !== 'mousemove' && e.type !== 'click') return;
+      var r = BAR_ERA_CHIP / 2 + 2;
+      var hit = marks.find(function(m) { return m.x != null && Math.abs(e.x - m.x) <= r && Math.abs(e.y - m.cy) <= r; });
+      if (!hit) return;                 // the tariffs' own hover, or the bars'
+      if (chart.tooltip) chart.tooltip.setActiveElements([], { x: e.x, y: e.y });
+      barEraShow(hit.e, e.native);
+      return false;
+    }
+  };
+}
+// The hover: the tariffs' tip, holding the era — its name, kind, dates and fields
+function barEraShow(era, ev) {
+  var tip = barTipEl();
+  var k = (typeof ERA_KINDS !== 'undefined' && ERA_KINDS[era.kind]) || {icon: '•', name: 'Other'};
+  var head = document.createElement('div');
+  head.style.fontWeight = '600';
+  head.textContent = k.icon + ' ' + era.label;
+  var sub = document.createElement('div');
+  sub.style.cssText = 'color:var(--muted);margin-top:2px;';
+  sub.textContent = k.name + ' · ' + _eraDate(era.start) + (era.end ? ' – ' + _eraDate(era.end) : ' onwards');
+  tip.appendChild(head); tip.appendChild(sub);
+  var more = [era.site, [era.manufacturer, era.model].filter(Boolean).join(' '),
+              era.kw != null ? era.kw + (k.kw === 'kWp' ? ' kWp' : ' kW') : '', era.kwh != null ? era.kwh + ' kWh' : '']
+             .filter(Boolean).join(' · ');
+  [more, era.notes].forEach(function(t) {
+    if (!t) return;
+    var d = document.createElement('div'); d.style.marginTop = '2px'; d.textContent = t; tip.appendChild(d);
+  });
+  barTipPlace(tip, ev);
 }
 
 function barTariffHide() {
@@ -2990,6 +3116,10 @@ function barRender() {
   if (_tw) _tw.style.display = barTariffsAvailable() ? 'flex' : 'none';
   var tariffLanes = barShowTariffs() && pd.bucketRanges && pd.bucketRanges.length ? barTariffLanes(pd.bucketRanges) : null;
   barTariffHide();
+  barLoadEras();
+  var _ew = document.getElementById('bar-eras-wrap');
+  if (_ew) _ew.style.display = barErasAvailable() ? 'flex' : 'none';
+  var showEras = barShowEras() && pd.bucketRanges && pd.bucketRanges.length;
   var netAxis = !!pd.isHH && barShowNet();   // a boolean: Chart.js shows an axis whose display is undefined
   var axes = netAxis ? barAlignZero(datasets, tariffLanes) : null;
   // Month order: shade each bar by its year (older lighter → newer darker) so
@@ -3005,7 +3135,9 @@ function barRender() {
   barChartInstance = new Chart(ctx, {
     type: 'bar',
     data: { labels: pd.labels, datasets: datasets },
-    plugins: tariffLanes ? [barTariffPlugin(pd.bucketRanges, tariffLanes)] : [],
+    // the eras first: a chip's hover wins over the tariff band's under it
+    plugins: (showEras ? [barErasPlugin(pd.bucketRanges, tariffLanes)] : [])
+               .concat(tariffLanes ? [barTariffPlugin(pd.bucketRanges, tariffLanes)] : []),
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
