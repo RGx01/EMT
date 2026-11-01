@@ -95,6 +95,12 @@
   .chart-tab.active { background: rgba(0,212,170,0.1); color: var(--accent); border-color: var(--accent); }
   .dcc-settle-note { display:inline-flex; align-items:center; gap:5px; margin-left:10px; padding:5px 10px; border-radius:14px; font-size:12px; font-weight:600; background:rgba(130,140,150,0.14); color:var(--muted); border:1px solid rgba(130,140,150,0.30); white-space:nowrap; cursor:default; }
   .dcc-settle-note.amber { background:rgba(230,160,30,0.14); color:#e0a020; border-color:rgba(230,160,30,0.35); }
+  .dcc-settle-note.actionable { cursor:pointer; }
+  .settle-menu { position:fixed; z-index:70; min-width:200px; background:var(--surface); border:1px solid var(--border);
+                 border-radius:8px; padding:4px; box-shadow:0 6px 18px rgba(0,0,0,.35); }
+  .settle-menu button { display:block; width:100%; text-align:left; background:none; border:none; color:var(--text);
+                        padding:8px 10px; font-size:13px; border-radius:6px; cursor:pointer; }
+  .settle-menu button:hover, .settle-menu button:focus { background:rgba(127,127,127,.15); outline:none; }
   @media (max-width:768px){ .dcc-settle-note { margin-left:6px; padding:4px 8px; font-size:11px; } }
   /* A phone: the note goes last in the wrapping topbar, onto a row of its own under the title, tabs
      and PDF, and may wrap there. On one nowrap row the note and PDF ran past a phone's width (410 px:
@@ -3667,6 +3673,95 @@ if (!window.Chart) {
   document.head.appendChild(s);
 }
 
+// ── The settlement pill as a way in (BL-95, 1 Nov 2026) ─────────────────────────────────────
+// While half-hours wait at a stage of settlement: a click opens Data Management with Issues only on;
+// a right-click (a long press on touch) offers Retry settlement — the 6-hourly poll's cycle run now —
+// and Data Management. The retry's progress is the pill's own text until the cycle ends.
+var settleNoteBusy = false;
+function settleOpenDM() { window.location.href = BASE_PATH + '/data-management?issues=1'; }
+function settleCloseMenu() { var m = document.getElementById('settle-menu'); if (m) m.remove(); }
+function settleMenu(el, x, y) {
+  settleCloseMenu();
+  var menu = document.createElement('div');
+  menu.id = 'settle-menu'; menu.className = 'settle-menu'; menu.setAttribute('role', 'menu');
+  [['Retry settlement', function() { settleRetry(el); }], ['Data Management', settleOpenDM]].forEach(function(it) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.setAttribute('role', 'menuitem'); b.textContent = it[0];
+    b.onclick = function() { settleCloseMenu(); it[1](); };
+    menu.appendChild(b);
+  });
+  document.body.appendChild(menu);
+  var w = menu.offsetWidth, h = menu.offsetHeight;
+  menu.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 4)) + 'px';
+  menu.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + 'px';
+  menu.querySelector('button').focus();
+  setTimeout(function() {
+    function away(e) {
+      if (e.type === 'keydown' && e.key !== 'Escape') return;
+      if (e.type !== 'keydown' && menu.contains(e.target)) return;
+      settleCloseMenu();
+      ['mousedown', 'touchstart', 'keydown'].forEach(function(k) { document.removeEventListener(k, away, true); });
+    }
+    // a click elsewhere or Escape; not a scroll — the Billing tab's own panel scrolls as it loads
+    ['mousedown', 'touchstart', 'keydown'].forEach(function(k) { document.addEventListener(k, away, true); });
+  }, 0);
+}
+function settleSay(el, text, ms) {
+  el.textContent = text;
+  setTimeout(function() { settleNoteBusy = false; if (window._loadSettleNote) window._loadSettleNote(); }, ms || 0);
+}
+function settleRetry(el) {
+  if (settleNoteBusy) return;
+  settleNoteBusy = true;
+  el.textContent = '\u23f3 Asking Octopus\u2026';
+  fetch(apiUrl('/api/settlement/poll-now'), {method: 'POST'}).then(function(r) {
+    return r.json().then(function(j) { return {ok: r.ok && j.ok, j: j}; });
+  }).then(function(res) {
+    if (!res.ok) { settleSay(el, '\u26a0 ' + (res.j.error || 'Retry refused'), 5000); return; }
+    var since = res.j.since, t0 = Date.now();
+    (function wait() {
+      fetch(apiUrl('/api/settlement/poll-now')).then(function(r) { return r.json(); }).then(function(s) {
+        if ((s.started === since || s.running) && Date.now() - t0 < 10 * 60000) { setTimeout(wait, 3000); return; }
+        settleSay(el, '\u2713 Octopus asked', 2500);
+        if (typeof _refreshIfChanged === 'function') _refreshIfChanged(false);
+      }).catch(function() { settleSay(el, '\u26a0 Retry status unavailable', 5000); });
+    })();
+  }).catch(function(e) { settleSay(el, '\u26a0 Retry failed', 5000); });
+}
+function settleNoteWire(el) {
+  if (!el) return;
+  var pressed = false;      // a long press opened the menu: the click its lift makes is not a click
+  el.addEventListener('click', function() {
+    if (pressed) { pressed = false; return; }
+    if (el.classList.contains('actionable') && !settleNoteBusy) settleOpenDM();
+  });
+  el.addEventListener('keydown', function(e) {
+    if (!el.classList.contains('actionable')) return;
+    if (e.key === 'Enter') settleOpenDM();
+    else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
+      e.preventDefault(); var r = el.getBoundingClientRect(); settleMenu(el, r.left, r.bottom + 4);
+    }
+  });
+  el.addEventListener('contextmenu', function(e) {
+    if (!el.classList.contains('actionable') || settleNoteBusy) return;
+    e.preventDefault(); settleMenu(el, e.clientX, e.clientY);
+  });
+  var timer = null, t0 = null;
+  el.addEventListener('touchstart', function(e) {
+    if (e.touches.length !== 1 || !el.classList.contains('actionable')) return;
+    t0 = {x: e.touches[0].clientX, y: e.touches[0].clientY};
+    pressed = false;
+    timer = setTimeout(function() { timer = null; pressed = true; settleMenu(el, t0.x, t0.y); }, 550);
+  }, {passive: true});
+  ['touchend', 'touchcancel', 'touchmove'].forEach(function(k) {
+    el.addEventListener(k, function(e) {
+      if (!timer) return;
+      if (k === 'touchmove' && t0 && Math.abs(e.touches[0].clientX - t0.x) + Math.abs(e.touches[0].clientY - t0.y) <= 10) return;
+      clearTimeout(timer); timer = null;
+    }, {passive: true});
+  });
+}
+
 document.addEventListener('DOMContentLoaded', function() {
   // Billing-source status indicator. Reflects the actual source config so the
   // "N blocks awaiting DCC settlement" message only appears when DCC settlement
@@ -3692,7 +3787,7 @@ document.addEventListener('DOMContentLoaded', function() {
       fetch(apiUrl('/api/billing-source')).then(function(r){return r.json();}).then(function(d){
         var el = document.getElementById('dcc-settle-note');
         if (!el || !d) return;
-        var label = '', tip = '', amber = false, show = true;
+        var label = '', tip = '', amber = false, show = true, actionable = false;
         if (d.unsupported_tariff) {
           // BL-6: an unsupported tariff breaks billing app-wide, not just on this
           // page — surface it in the GLOBAL notification region, not a pill in the
@@ -3729,15 +3824,20 @@ document.addEventListener('DOMContentLoaded', function() {
           var st = _settleStages(d);
           label = '\u23f3 ' + st.map(function(x){ return x.n + ' awaiting ' + x.what; }).join(' \u00b7 ');
           tip = st.map(function(x){ return x.n + ' awaiting ' + x.what + ': ' + x.why; }).join('\n') +
-                '\nA half-hour settles in that order; until then it is priced on EMT\u2019s own figure. See Data Management for detail.';
-          amber = true;
+                '\nA half-hour settles in that order; until then it is priced on EMT\u2019s own figure.' +
+                '\nClick for Data Management\u2019s issues; right-click to retry settlement.';
+          amber = true; actionable = true;
         } else {
           // DCC path, everything settled — nothing to flag
           show = false;
         }
+        if (settleNoteBusy) return;      // a retry's own words stand until it ends
         el.textContent = label;
         el.title = tip;
         el.classList.toggle('amber', amber);
+        el.classList.toggle('actionable', actionable);
+        if (actionable) { el.setAttribute('role', 'button'); el.tabIndex = 0; }
+        else { el.removeAttribute('role'); el.removeAttribute('tabindex'); }
         el.style.display = show ? 'inline-flex' : 'none';
       }).catch(function(){});
     } catch(e) {}
@@ -3746,6 +3846,7 @@ document.addEventListener('DOMContentLoaded', function() {
   // (17 Oct 2026, the Pi: it was drawn once, so its counts stood still until a reload).
   window._loadSettleNote = loadSettleNote;
   loadSettleNote();
+  settleNoteWire(document.getElementById('dcc-settle-note'));
 
   // Sync theme toggle icon immediately
   var theme = document.documentElement.getAttribute('data-theme') || 'dark';

@@ -3877,6 +3877,27 @@ def _settlement_horizon_floor() -> str:
     return (datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=days)).isoformat()
 
 
+@app.route("/api/settlement/poll-now", methods=["GET", "POST"])
+def api_settlement_poll_now():
+    """BL-95: the settlement pill's *Retry settlement*. POST runs the 6-hourly poll's cycle now (the
+    agreements, the rates, Octopus's kWh for the poll's window), then the 6 hours start from it;
+    refused (409) within 15 minutes of the last cycle's start, or while one runs. GET is the poll's
+    state, {running, started, finished}."""
+    import engine as _eng
+    if request.method == "GET":
+        return jsonify(_eng.kraken_poll_status())
+    if _restore_job.get("status") == "running":
+        return jsonify({"ok": False, "error": "a restore is running"}), 409
+    if not (_event_loop and _event_loop.is_running()):
+        return jsonify({"ok": False, "error": "engine loop not running"}), 500
+    since = _eng.kraken_poll_status().get("started")
+    ok, why = _eng.request_kraken_poll(_event_loop)
+    if not ok:
+        return jsonify({"ok": False, "error": why}), 409
+    # `since`: the last cycle's start, so the pill can tell the one it asked for when it ends
+    return jsonify({"ok": True, "status": "running", "since": since})
+
+
 @app.route("/api/settlement/refetch/preview", methods=["POST"])
 def api_refetch_preview():
     """BL-86: start a re-fetch of a range from Octopus — into memory, compared with what is

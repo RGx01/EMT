@@ -619,8 +619,15 @@ Eleven ideas and issues, sorted into nine items in the order to take them.
 - **Usage Stats in the dark theme leaked in:** the Net line and the tariff lanes' text white. The
   chart is drawn again in the light theme for the PDF, then back as the page shows it.
 
-**BL-95 — the awaiting-kWh pill as a way in.** A click opens Data Management filtered to the issues;
-a right-click offers *Retry settlement* and *Data Management*.
+**BL-95 — the awaiting-kWh pill as a way in.** ✅ *Done 1 Nov 2026.* While half-hours wait at a stage
+of settlement, a click opens Data Management with Issues only on (`?issues=1`, for that visit); a
+right-click (a long press on touch) offers *Retry settlement* and *Data Management*. *Retry
+settlement* is the 6-hourly poll's cycle run now (the user) — the agreements, the rates, Octopus's
+kWh for the poll's window — and the 6 hours start again from it; refused within 15 minutes of the
+last cycle's start. *Found on the way:* a heatmap month of one row (the 1st of a month, or Issues
+only leaving one) drew it as a thin strip — Chart.js's day labels took 16 px out of its box — with
+its name on its side stretching the panel; the box now grows by what the labels take, and a short
+month is named by its month.
 
 **BL-96 — Insights Carbon: the net carbon per billing period chart.** A click on a bar moves the page
 to that period, as the arrows do (`_trendNavTo`), and nothing says so. Label it or drop the click.

@@ -231,11 +231,13 @@
 
 {% block scripts %}
 <script>
-// The data heatmap: data mode, and the day `?day=` names (data management design §1 (1))
+// The data heatmap: data mode, the day `?day=` names (data management design §1 (1)), and
+// `?issues=1` (the settlement pill, BL-95) with Issues only on
 document.addEventListener('DOMContentLoaded', function () {
   if (!window.EMTHeatmap) return;
+  var q = new URLSearchParams(window.location.search);
   EMTHeatmap.init(document.getElementById('dm-heatmap'),
-                  {mode: 'data', day: new URLSearchParams(window.location.search).get('day'),
+                  {mode: 'data', day: q.get('day'), issues: q.get('issues') === '1',
                    onChange: function () { if (window.loadHealth) loadHealth(); },
                    onSupportFile: function (from, to, label) { openSupport({from: from, to: to, label: label}); }});
 });
