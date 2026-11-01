@@ -5852,6 +5852,7 @@ async def _kraken_startup_discovery(force: bool = False) -> None:
         _kraken_discovery = disc
         _kraken_discovered_at = time.monotonic()
         _keep_agreements(disc)
+        _find_home_eras(disc)                         # BL-101 PR 3: a move or a meter change
 
         imp = disc.get("import") or {}
         exp = disc.get("export") or {}
@@ -5924,6 +5925,49 @@ def _agreements_signature(disc) -> tuple:
     return tuple(out)
 
 
+def _find_home_eras(disc=None) -> int:
+    """BL-101 PR 3 (home eras design §2): the eras EMT can see for itself, added to the user's — a
+    house move per supply point after the first in the stored import agreements (dated at its first
+    agreement), and a change of the import meter point discovery reports (a new supply point a move,
+    a new serial a meter change; dated the day EMT noticed). Points are kept as fingerprints only, and
+    a found era the user deleted is not found again. Display only. Returns how many were added; never
+    raises."""
+    if _store is None:
+        return 0
+    try:
+        import home_eras as _he
+        from zoneinfo import ZoneInfo
+        tz = ZoneInfo(_store.site_timezone() or "UTC")
+
+        def _local(iso):
+            return (datetime.fromisoformat(str(iso)[:19]).replace(tzinfo=timezone.utc)
+                    .astimezone(tz).date().isoformat())
+        today = datetime.now(timezone.utc).astimezone(tz).date().isoformat()
+        acct = _kraken_account_number or get_db_account()
+        changes = [dict(m, kind="house_move") for m in
+                   _he.moves_from_agreements(_store.get_tariff_agreements(acct) if acct else [], _local)]
+        imp = (disc or {}).get("import") or {}
+        seen = _store.get_meta(_he.POINTS_KEY) or []
+        seen2, ch = _he.note_point(seen, imp.get("mpan"), imp.get("serial"), today)
+        if seen2 != seen:
+            _store.set_meta(_he.POINTS_KEY, seen2)
+        if ch:
+            changes.append(ch)
+        if not changes:
+            return 0
+        periods = _store.get_config_periods() or []
+        site = (periods[-1].get("site_name") or "") if periods else ""
+        eras = _he.load(_store)
+        new = _he.found_eras(changes, eras, _store.get_meta(_he.DISMISSED_KEY) or [], site)
+        if new:
+            _store.set_meta(_he.META_KEY, _he.clean(eras + new))
+            logger.info("home eras: found %s", ", ".join("%s from %s" % (e["label"], e["start"]) for e in new))
+        return len(new)
+    except Exception as e:
+        logger.warning("home eras: finding them failed (%s)", e)
+        return 0
+
+
 def _meter_points(disc) -> tuple:
     return tuple((((disc or {}).get(ch) or {}).get("mpan"), ((disc or {}).get(ch) or {}).get("serial"))
                  for ch in ("import", "export"))
@@ -5959,6 +6003,7 @@ async def _maybe_rediscover(now: "float | None" = None) -> bool:
     if _meter_points(disc) != _meter_points(_kraken_discovery):
         logger.warning("kraken_rediscovery: the account's meter points have changed (a new MPAN or "
                        "meter) — not taken; reconnect in Settings to use them")
+        _find_home_eras(disc)                         # BL-101 PR 3: dated the day it was seen
         return False
     changed = _agreements_signature(disc) != _agreements_signature(_kraken_discovery)
     if changed:
@@ -5970,6 +6015,7 @@ async def _maybe_rediscover(now: "float | None" = None) -> bool:
                     (disc.get("export") or {}).get("tariff_code"))
     _kraken_discovery = disc
     _keep_agreements(disc)
+    _find_home_eras(disc)
     _store_export_settlement_expected(disc)
     return changed
 

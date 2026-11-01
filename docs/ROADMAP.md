@@ -676,8 +676,9 @@ by the site name, never an address. Display only: never read for pricing or attr
   behind a ⚙︎ on the Charts page;
 - **PR 2 ✅** markers on Usage Stats (not a lane: eras overlap) on Monthly by Date and Daily, an *Eras*
   checkbox, a chip's hover;
-- **PR 3** eras found from the data: a house move from a new supply point in the agreements, a meter
-  change from a fingerprint of the meter's serial (EMT keeps no serial history yet);
+- **PR 3 ✅** eras found from the data: a house move from a new supply point in the agreements (or
+  reported by discovery), a meter change from a fingerprint of the meter's serial, dated when EMT
+  noticed; fingerprints only, and a found era deleted is not found again;
 - **PR 4** a bar colours modal behind the same ⚙︎.
 No before-and-after comparison for now (the user).
 

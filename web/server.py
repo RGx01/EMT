@@ -9376,7 +9376,7 @@ def api_home_eras():
     except _he.EraError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     try:
-        _engine_write(lambda st: st.set_meta(_he.META_KEY, eras))
+        _engine_write(lambda st: _he.save(st, eras))
     except Exception as e:
         logger.error("api_home_eras: %s", e)
         return jsonify({"ok": False, "error": str(e)}), 500
