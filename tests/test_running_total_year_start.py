@@ -39,7 +39,7 @@ def _kinds():
     return PAGE[i:PAGE.index("\n};\n", i) + 3] + "\n"
 
 
-NAMES = ("barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts", "barAccDateLabel", "barAccAnchor", "barAccStartMs", "barAccYearOf",
+NAMES = ("barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts", "barTariffChangeDays", "barAccDateLabel", "barAccAnchor", "barAccStartMs", "barAccYearOf",
          "barAccDoy", "barAccYearDays", "barAccYearLabel", "barAccDayLabel", "barAccMonthOffsets", "_spLbl")
 
 

@@ -66,7 +66,7 @@ class TheTotals(unittest.TestCase):
         js = "var barAccSeries = %s, barAccIncStanding = %s, barActiveYears = null, barData = %s;\n" % (
             json.dumps(series), "true" if inc else "false", json.dumps(ROWS)) + \
             "var barAccStart = 'jan', barTariffs = [], barEras = [], barBillingDay = 1, BAR_ACC_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n" + \
-            "\n".join(_fn(n) for n in ("barAccInc", "barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts", "barAccDateLabel", "barAccAnchor", "barAccStartMs", "barAccYearOf", "barAccYearDays", "barAccDoy", "barAccRows", "barAccSeriesOf")) + \
+            "\n".join(_fn(n) for n in ("barAccInc", "barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts", "barTariffChangeDays", "barAccDateLabel", "barAccAnchor", "barAccStartMs", "barAccYearOf", "barAccYearDays", "barAccDoy", "barAccRows", "barAccSeriesOf")) + \
             "\nconsole.log(JSON.stringify(" + expr + "));"
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
             fh.write(js)

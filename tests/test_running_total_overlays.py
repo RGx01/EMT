@@ -48,13 +48,13 @@ def _fn_plain(name):
 class TheOverlays(unittest.TestCase):
 
     def _run(self, mode, years, tariffs_on=True, eras_on=True):
-        js = ("var barAccMode = %s, barAccStart = 'jan', barData = [], barBillingDay = 1,"
+        js = ("var barAccMode = %s, barAccView = 'line', barAccStart = 'jan', barData = [], barBillingDay = 1,"
               " BAR_ACC_YC = ['#a', '#b', '#c'], BAR_ACC_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n"
               "var barTariffs = [{direction: 'import', name: 'Go', from: '2023-06-01'}, {direction: 'export', name: 'Out', from: '2023-06-01'}];\n"
               "var barEras = [{id: 'a1b2c3d4', label: 'Battery', kind: 'battery', start: '2024-06-12', end: '2025-01-01'}];\n"
               "var document = {getElementById: function (id) { return {checked: id === 'bar-tariff-cb' ? %s : %s}; }};\n") % (
             json.dumps(mode), "true" if tariffs_on else "false", "true" if eras_on else "false") + \
-            "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
+            "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts", "barTariffChangeDays", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
                                         "barAccYearOf", "barAccDoy", "barAccShowEras", "barAccShowTariffs",
                                         "barAccOverlays")) + \
             "\nconsole.log(JSON.stringify(barAccOverlays(%s)));" % json.dumps(years)
@@ -74,9 +74,9 @@ class TheOverlays(unittest.TestCase):
         self.assertEqual(out["eras"][0]["x"], 1718150400000)                    # 12 Jun 2024, ms
         self.assertEqual(out["eras"][0]["end"], 1735689600000)
 
-    def test_year_by_year_the_era_at_its_day_in_its_years_colour_no_tariffs(self):
+    def test_year_by_year_the_era_at_its_day_in_its_years_colour_no_tariff_band(self):
         out = self._run("year", [2023, 2024])
-        self.assertIsNone(out["tariffs"])
+        self.assertIsNone(out["tariffs"])               # the tariffs are dots there (test_running_total_tariff_dots)
         self.assertEqual((out["eras"][0]["x"], out["eras"][0]["color"]), (163, "#b"))   # 12 Jun 2024: day 163
 
     def test_an_era_in_a_year_not_shown_is_left_out(self):
@@ -84,7 +84,7 @@ class TheOverlays(unittest.TestCase):
 
     def test_off_when_their_boxes_are(self):
         out = self._run("lifetime", [2023, 2024], tariffs_on=False, eras_on=False)
-        self.assertEqual(out, {"tariffs": None, "eras": []})
+        self.assertEqual(out, {"tariffs": None, "eras": [], "dots": []})
 
 
 class TheView(unittest.TestCase):
@@ -92,11 +92,11 @@ class TheView(unittest.TestCase):
     def test_the_boxes_shown_where_they_apply(self):
         f = _fn("barAccSyncUI")
         self.assertIn("vis('bar-eras-wrap', !!(barEras && barEras.length), 'flex');", f)
-        self.assertIn("&& barAccView === 'line' && barAccMode === 'lifetime', 'flex');", f)
+        self.assertIn("vis('bar-tariff-wrap', !!(barTariffs && barTariffs.length) && barAccView === 'line', 'flex');", f)
 
     def test_the_line_charts_take_the_overlays(self):
         f = _fn("barAccRender")
-        self.assertIn("plugins: ov.tariffs || ov.eras.length ? [barAccOverlayPlugin(ov)] : [],", f)
+        self.assertIn("plugins: ov.tariffs || ov.eras.length || ov.dots.length ? [barAccOverlayPlugin(ov)] : [],", f)
 
     def test_the_hovers_are_the_bars(self):
         i = PAGE.index("function barAccOverlayPlugin(")
