@@ -366,7 +366,6 @@
   <div class="chart-tabs" style="margin-bottom:0;">
     <button class="chart-tab active" data-chart="daily"   onclick="showChart('daily', this)" title="Billing">📊<span class="tab-label"> Billing</span></button>
     <button class="chart-tab"        data-chart="heatmap" onclick="showChart('heatmap', this)" title="Heatmaps">🔥<span class="tab-label"> Heatmaps</span></button>
-    <button class="chart-tab"        data-chart="spiral"  onclick="showChart('spiral', this)" title="Spiral">🌀<span class="tab-label"> Spiral</span></button>
     <button class="chart-tab"        data-chart="bar"     onclick="showChart('bar', this)" title="Usage Stats">📈<span class="tab-label"> Usage Stats</span></button>
   </div>
   <span id="dcc-settle-note" class="dcc-settle-note" style="display:none;"></span>
@@ -446,90 +445,6 @@
   <div id="chart-heatmap-content" class="chart-content-wrap" style="width:100%;overflow:auto;"></div>
 </div>
 
-<!-- Cumulative spiral chart -->
-<div id="chart-spiral" class="chart-frame-wrap" style="display:none;">
-  <style>
-    #chart-spiral{background:var(--surface)}
-    #chart-spiral .sp-board{display:grid;grid-template-columns:1fr 260px;gap:18px;padding:16px}
-    @media (max-width:820px){
-      /* Single-column: charts on top, options below. Let the panel grow and the
-         page scroll to the options (was clipped by chart-frame-wrap overflow). */
-      #chart-spiral{overflow:visible; height:auto;}
-      #chart-spiral .sp-board{grid-template-columns:1fr}
-      #chart-spiral .sp-chart{min-height:300px}
-      #chart-spiral .sp-side{max-width:none}
-    }
-    /* Cost / Usage / Carbon / Standing as equal-size tiles. On desktop cap at 3
-       columns so the 4th (Standing) wraps to its own row and each chart stays big;
-       narrower screens fall back to responsive wrapping. */
-    #chart-spiral .sp-charts{display:flex;flex-direction:column;gap:14px}
-    #chart-spiral .sp-main{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px}
-    @media (min-width:1100px){ #chart-spiral .sp-main{grid-template-columns:repeat(3,1fr)} }
-    #chart-spiral .sp-card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius)}
-    #chart-spiral .sp-chart{padding:8px 8px 6px;position:relative;display:flex;flex-direction:column;align-items:center}
-    #chart-spiral .sp-chart svg{max-width:100%}
-    #chart-spiral .sp-ctitle{font-family:var(--mono);font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);align-self:flex-start;margin:0 0 2px 2px}
-    /* Expand affordance + modal (mirrors the Overview expandable-card pattern). */
-    #chart-spiral .sp-expand{position:absolute;top:8px;right:8px;width:22px;height:22px;border:none;background:none;cursor:pointer;color:var(--muted);border-radius:4px;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity .12s,color .12s,background .12s;z-index:2}
-    #chart-spiral .sp-chart:hover .sp-expand{opacity:1}
-    #chart-spiral .sp-expand:hover{color:var(--text);background:rgba(127,127,127,.14)}
-    #chart-spiral .sp-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:600;backdrop-filter:blur(2px);align-items:center;justify-content:center;padding:20px;box-sizing:border-box}
-    #chart-spiral .sp-backdrop.on{display:flex}
-    #chart-spiral .sp-modal{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 22px;width:min(680px,96vw);position:relative;box-shadow:0 24px 64px rgba(0,0,0,.7);display:flex;flex-direction:column;align-items:center}
-    #chart-spiral .sp-modal .sp-ctitle{align-self:flex-start}
-    #chart-spiral .sp-modal svg{width:100%;max-width:600px}
-    #chart-spiral .sp-mclose{position:absolute;top:10px;right:12px;width:28px;height:28px;border:none;background:rgba(127,127,127,.12);color:var(--muted);border-radius:6px;cursor:pointer;font-size:15px;line-height:1}
-    #chart-spiral .sp-mclose:hover{background:rgba(127,127,127,.22);color:var(--text)}
-    #chart-spiral .sp-side{padding:16px;display:flex;flex-direction:column;gap:18px}
-    #chart-spiral .sp-standing-wrap{display:flex;align-items:center;gap:8px;font-size:12.5px;color:var(--muted);cursor:pointer}
-    #chart-spiral .sp-standing-wrap input{width:14px;height:14px;accent-color:var(--accent);cursor:pointer}
-    #chart-spiral .sp-gl{font-family:var(--mono);font-size:10.5px;letter-spacing:.16em;text-transform:uppercase;color:var(--muted);opacity:.8;margin:0 0 9px}
-    #chart-spiral .sp-seg{display:flex;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:3px}
-    #chart-spiral .sp-seg button{flex:1;border:0;background:transparent;color:var(--muted);font:inherit;font-size:12.5px;padding:7px 6px;border-radius:6px;cursor:pointer}
-    #chart-spiral .sp-seg button.on{background:var(--accent);color:var(--surface);font-weight:600}
-    #chart-spiral .sp-items{display:flex;flex-direction:column;gap:2px;margin-top:10px}
-    #chart-spiral .sp-metric{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:7px;cursor:pointer;border:1px solid transparent}
-    #chart-spiral .sp-metric:hover{background:var(--bg)}
-    #chart-spiral .sp-metric.on{background:var(--accent);border-color:var(--accent)}
-    #chart-spiral .sp-metric .sp-nm{font-size:13.5px;flex:1;color:var(--text)}
-    #chart-spiral .sp-metric.hd .sp-nm{font-weight:600}
-    #chart-spiral .sp-metric .sp-kd{font-family:var(--mono);font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.06em}
-    #chart-spiral .sp-metric.on .sp-nm{color:var(--surface)}
-    #chart-spiral .sp-metric.on .sp-kd{color:var(--surface);opacity:.8}
-    #chart-spiral .sp-years{display:flex;flex-direction:column;gap:2px}
-    #chart-spiral .sp-yr{display:flex;align-items:center;gap:10px;padding:6px 8px;border-radius:7px;cursor:pointer}
-    #chart-spiral .sp-yr:not(.off){background:rgba(0,212,170,.12)}
-    #chart-spiral .sp-yr:hover{background:var(--bg)} #chart-spiral .sp-yr.off{opacity:.32;background:transparent}
-    #chart-spiral .sp-sw{width:22px;height:3px;border-radius:2px;flex:none}
-    #chart-spiral .sp-yl{font-family:var(--mono);font-size:12px} #chart-spiral .sp-yt{margin-left:auto;font-variant-numeric:tabular-nums;font-size:12.5px;color:var(--muted)}
-    #chart-spiral svg{display:block;width:100%;max-width:min(100%,70vh);height:auto;margin:0 auto;touch-action:none}
-    #chart-spiral .sp-mo{font-family:var(--mono);font-size:15px;letter-spacing:.06em;fill:var(--text);opacity:.72;font-weight:600}
-    #chart-spiral .sp-rl{font-family:var(--mono);font-size:15px;fill:var(--text);opacity:.6;font-weight:500}
-    #chart-spiral .sp-cm{font-family:var(--mono);font-size:11px;letter-spacing:.13em;text-transform:uppercase;fill:var(--muted)}
-    #chart-spiral .sp-cv{font-size:29px;font-weight:650;fill:var(--text)} #chart-spiral .sp-cu{font-size:12px;fill:var(--muted)}
-    #chart-spiral .sp-tip{position:absolute;pointer-events:none;opacity:0;transform:translate(-50%,-115%);background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:8px 11px;font-size:12px;line-height:1.45;white-space:nowrap;box-shadow:0 8px 26px rgba(0,0,0,.4);transition:opacity .09s}
-    #chart-spiral .sp-tip .sp-d{font-family:var(--mono);color:var(--muted);font-size:10.5px;margin-bottom:3px}
-    #chart-spiral .sp-tip .sp-b{font-weight:650;font-variant-numeric:tabular-nums} #chart-spiral .sp-tip .sp-i{color:var(--muted);font-variant-numeric:tabular-nums}
-    #chart-spiral .sp-hint{min-height:28px;color:var(--muted);opacity:.75;font-size:11.5px;line-height:1.5;margin-top:11px}
-    #chart-spiral .sp-status{color:var(--muted);font-size:13px;text-align:center;padding:60px 20px}
-  </style>
-  <div class="sp-board">
-    <div class="sp-charts" id="sp-charts">
-      <div class="sp-status" id="sp-status">Loading&#8230;</div>
-      <div class="sp-main" id="sp-main"></div>
-    </div>
-    <div class="sp-side">
-      <div><p class="sp-gl">Grouping</p><div class="sp-items" id="sp-items"></div></div>
-      <label class="sp-standing-wrap" id="sp-standing-toggle" style="display:none">
-        <input type="checkbox" id="sp-inc-standing"> Include standing charge in net cost
-      </label>
-      <div><p class="sp-gl">Winding</p><div class="sp-seg" id="sp-mode">
-        <button data-mode="lifetime" class="on">Lifetime</button><button data-mode="year">Year&#8209;aligned</button>
-      </div><div class="sp-hint" id="sp-hint"></div></div>
-      <div><p class="sp-gl">Years</p><div class="sp-years" id="sp-years"></div></div>
-    </div>
-  </div>
-</div>
 <script>
 // ── Every local day's Usage Stats row, kept by day (C, 2 Oct 2026) ──────────────────
 // Spiral and Usage Stats draw the same rows — /api/energy?resolution=day&kind=all
@@ -623,293 +538,6 @@ window.EMTDayRows = (function () {
 })();
 // The whole payload was also kept as 'emt_bar_summary' until 2 Oct 2026: drop that copy.
 try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
-</script>
-<script>
-window.EMTSpiral=(function(){
-  // Every local day's row, from the one endpoint (C step 1, part 3) — the rows Usage
-  // Stats reads too (usage_view.day_stats).
-  // (The rows: /api/energy?resolution=day&kind=all&fields=stats, via EMTDayRows.)
-  var ROWS=[],YEARS=[],DEVICE_IDS=[],LABELS={},inited=false;
-  var HAS_CARBON=false,HAS_EXPORT=false;
-  // One shared grouping (Net / Import / Export / device) + winding + years drives
-  // all spirals at once, so Cost / Usage / Carbon are read side by side.
-  var state={grouping:"net",mode:"lifetime",hidden:new Set(),incStanding:false};
-  // The page remembers its view between visits (grouping, winding, hidden years, the
-  // standing toggle) — per instance, as Usage Stats does. It forgot all four until
-  // 1 Oct 2026: they lived only in `state`, so every visit opened on the defaults.
-  function stateKey(){try{return EMT.lsKey("emt_spiral_state");}catch(e){return "emt_spiral_state";}}
-  function saveState(){try{localStorage.setItem(stateKey(),JSON.stringify({grouping:state.grouping,
-    mode:state.mode,hidden:Array.from(state.hidden),incStanding:state.incStanding}));}catch(e){}}
-  // Restore, validated against the data now loaded: a grouping that no longer exists
-  // (a removed device) falls back to Net; hidden years keep only years still present.
-  function loadState(){try{var st=JSON.parse(localStorage.getItem(stateKey())||"null");if(!st)return;
-    if(groupingOptions().some(function(o){return o.key===st.grouping;}))state.grouping=st.grouping;
-    if(st.mode==="lifetime"||st.mode==="year")state.mode=st.mode;
-    if(Array.isArray(st.hidden))state.hidden=new Set(st.hidden.filter(function(y){return YEARS.indexOf(y)>=0;}));
-    if(typeof st.incStanding==="boolean")state.incStanding=st.incStanding;}catch(e){}}
-  var HINT={lifetime:"Radius = running total. One continuous coil; a fatter gap between loops = a heavier year.",
-    year:"Every year starts from the centre on the same scale, so loops overlay \u2014 an outer loop at any angle used more by that date. Where loops cross, one year overtook another."};
-  // Put the controls the module does not rebuild (winding buttons, standing checkbox)
-  // in line with `state`.
-  function syncControls(){
-    Array.prototype.forEach.call(document.querySelectorAll("#sp-mode button"),function(b){b.classList.toggle("on",b.dataset.mode===state.mode);});
-    var h=document.getElementById("sp-hint");if(h)h.textContent=HINT[state.mode];
-    var cb=document.getElementById("sp-inc-standing");if(cb)cb.checked=state.incStanding;
-  }
-  var YC=["#00d4aa","#7c6af7","#f9a825","#38bdf8","#ef4444","#fb7185"];
-  var NS="http://www.w3.org/2000/svg",VBW=440,VBH=448,CX=220,CY=212,R_IN=34,R_OUT=184,A0=-Math.PI/2;
-  var CARDS={};   // kind -> {svg, tip}
-  var MODAL=null; // expand overlay: {backdrop, title, card:{svg,tip}, spec}
-
-  function buildMetaFrom(meters,rows){
-    LABELS={};(meters||[]).forEach(function(m){var id=m.meter_id||m.id;if(id)LABELS[id]=m.label||id;});
-    var seen=new Set();rows.forEach(function(r){Object.keys(r.meters||{}).forEach(function(k){if(k!=="electricity_main")seen.add(k);});});
-    DEVICE_IDS=Array.from(seen);
-    HAS_EXPORT=rows.some(function(r){return (r.exp_kwh||0)>0||(r.exp_cost||0)>0;});
-  }
-  // Grouping options shared by every spiral: Net, Import, Export (if any), devices.
-  function groupingOptions(){
-    var o=[{key:"net",name:"Net",kind:"import \u2212 export"},{key:"import",name:"Import",kind:"+"}];
-    if(HAS_EXPORT)o.push({key:"export",name:"Export",kind:"\u2212"});
-    DEVICE_IDS.forEach(function(id){o.push({key:id,name:LABELS[id]||id,kind:"device"});});
-    return o;
-  }
-  function isDevice(g){return DEVICE_IDS.indexOf(g)>=0;}
-  // Per-row increment for a given spiral (kind) under the shared grouping. Net is
-  // consistent across all three: import \u2212 export (usage kWh, cost \u00a3, carbon kg),
-  // so the three spirals compare like-for-like. Standing ignores grouping.
-  function incValue(row,kind){
-    var M=row.meters||{},main=M.electricity_main||{},g=state.grouping,dev=M[g]||{};
-    if(kind==="standing")return row.standing||0;
-    if(kind==="cost"){
-      if(isDevice(g))return dev.imp_cost||0;
-      if(g==="net")return (row.net_cost||0)-(state.incStanding?0:(row.standing||0));
-      if(g==="import")return row.imp_cost||0;
-      if(g==="export")return row.exp_cost||0;
-      return 0;
-    }
-    if(kind==="usage"){
-      if(isDevice(g))return dev.imp_kwh||0;
-      if(g==="net")return (row.imp_kwh||0)-(row.exp_kwh||0);
-      if(g==="import")return row.imp_kwh||0;
-      if(g==="export")return row.exp_kwh||0;
-      return 0;
-    }
-    // carbon (kg)
-    if(isDevice(g))return (dev.carbon_g||0)/1000;
-    if(g==="net")return ((main.carbon_g_imp||0)-(main.carbon_g_exp||0))/1000;
-    if(g==="import")return (main.carbon_g_imp||0)/1000;
-    if(g==="export")return (main.carbon_g_exp||0)/1000;
-    return 0;
-  }
-  // Active main spirals (carbon only when carbon data exists); standing is separate.
-  function mainSpirals(){
-    var s=[{kind:"cost",unit:"\u00a3",title:"Cost"},{kind:"usage",unit:"kWh",title:"Usage"}];
-    if(HAS_CARBON)s.push({kind:"carbon",unit:"kg",title:"Carbon"});
-    return s;
-  }
-  function fmtS(v){var a=Math.abs(v);if(a>=1000){var t=(v/1000).toFixed(a>=10000?0:1);return (t.indexOf(".")<0?t:t.replace(/\.?0+$/,""))+"k";}if(a>=100)return v.toFixed(0);return v.toFixed(a>=10?0:1);}
-  // Auto-scale a base unit up its ladder once a magnitude crosses 1000:
-  // kWh -> MWh -> GWh, kg(CO2) -> t -> kt. Other units (e.g. £) unchanged.
-  function scaleUnit(u,mag){mag=Math.abs(mag);
-    if(u==="kWh"){if(mag>=1e6)return{u:"GWh",d:1e6};if(mag>=1e3)return{u:"MWh",d:1e3};return{u:"kWh",d:1};}
-    if(u==="kg"){if(mag>=1e6)return{u:"kt",d:1e6};if(mag>=1e3)return{u:"t",d:1e3};return{u:"kg",d:1};}
-    return{u:u,d:1};}
-  // Compact number, trailing zeros trimmed (e.g. 1.0->1, 4.598->4.6, 0.42->0.42).
-  function fmtC(x){var a=Math.abs(x),d=a>=100?0:a>=1?1:2,s=x.toFixed(d);return s.indexOf(".")<0?s:s.replace(/\.?0+$/,"");}
-  // Ring/centre value in the chart-wide scale sc, no unit suffix (£ keeps k-abbrev).
-  function lblV(v,u,sc){return u==="\u00a3"?"\u00a3"+fmtS(v):fmtC(v/sc.d);}
-  // Year-row value WITH unit, in the chart-wide scale sc.
-  function lblU(v,u,sc){return u==="\u00a3"?fmt(v,"\u00a3"):fmtC(v/sc.d)+" "+sc.u;}
-  // Full value with unit; for tooltips it auto-scales by the value's own magnitude.
-  function fmt(v,u){
-    if(u==="\u00a3")return "\u00a3"+v.toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2});
-    var sc=scaleUnit(u,v),x=v/sc.d,a=Math.abs(x),d=a>=100?0:a>=10?1:2;
-    return x.toLocaleString(undefined,{minimumFractionDigits:0,maximumFractionDigits:d})+" "+sc.u;}
-  function dayFrac(row){var y=row.year,d=new Date(Date.UTC(y,(row.month||1)-1,row.day||1));var diy=(y%4===0&&(y%100!==0||y%400===0))?366:365;var doy=Math.floor((d-Date.UTC(y,0,1))/86400000);return doy/diy;}
-  function el(t,a){var e=document.createElementNS(NS,t);for(var k in a)e.setAttribute(k,a[k]);return e;}
-  // Round a range to a "nice" number (1/2/5 x 10^n) so axis ticks land on clean
-  // values (0,50,100,150,200) instead of raw quarter-fractions (41,82,123,164).
-  function niceNum(range,round){
-    if(!(range>0))return 1;
-    var exp=Math.floor(Math.log(range)/Math.LN10),f=range/Math.pow(10,exp),nf;
-    if(round){nf=f<1.5?1:f<3?2:f<7?5:10;}else{nf=f<=1?1:f<=2?2:f<=5?5:10;}
-    return nf*Math.pow(10,exp);
-  }
-
-  // Cumulative series for one spiral (kind), under the shared grouping/mode.
-  function computeSeries(kind){
-    var life=0,perYear={};YEARS.forEach(function(y){perYear[y]=0;});
-    var pts=[];
-    ROWS.forEach(function(r){var inc=incValue(r,kind);life+=inc;perYear[r.year]+=inc;pts.push({r:r,inc:inc,life:life,yearCum:perYear[r.year],frac:dayFrac(r)});});
-    var yearTotals={};YEARS.forEach(function(y){yearTotals[y]=perYear[y];});
-    // Radial scale spans the cumulative range and always includes 0, so net
-    // metrics that go negative map inward toward the centre instead of producing
-    // a negative radius (which would flip the point 180deg to the wrong month).
-    var vals=pts.map(function(p){return state.mode==="lifetime"?p.life:p.yearCum;});
-    var lo=vals.length?Math.min.apply(null,vals):0,hi=vals.length?Math.max.apply(null,vals):1;
-    lo=Math.min(lo,0);hi=Math.max(hi,0);if(hi-lo<1e-9)hi=lo+1;
-    // Snap the scale to nice round bounds so the ring labels read cleanly and the
-    // outer ring is a round ceiling the cumulative spiral climbs toward.
-    var step=niceNum((hi-lo)/4,true);
-    lo=Math.floor(lo/step)*step;hi=Math.ceil(hi/step)*step;if(hi-lo<1e-9)hi=lo+step;
-    var span=hi-lo;
-    pts.forEach(function(p){
-      var v=state.mode==="lifetime"?p.life:p.yearCum;
-      var radius=R_IN+((v-lo)/span)*(R_OUT-R_IN);
-      var a=A0+p.frac*2*Math.PI;p.x=CX+radius*Math.cos(a);p.y=CY+radius*Math.sin(a);p.val=v;
-    });
-    return {pts:pts,yearTotals:yearTotals,lo:lo,hi:hi,step:step};
-  }
-  // Draw one spiral into its card's SVG. Small enough to sit alongside the others.
-  // cardOverride lets the expand modal render the same spiral into a larger SVG.
-  function renderSpiral(spec,cardOverride){
-    var card=cardOverride||CARDS[spec.kind];if(!card)return;
-    var SVG=card.svg,unit=spec.unit,cs=computeSeries(spec.kind),sc=scaleUnit(unit,Math.max(Math.abs(cs.hi),Math.abs(cs.lo)));
-    SVG.textContent="";
-    var grid=el("g",{});
-    var nring=Math.max(1,Math.round((cs.hi-cs.lo)/cs.step));
-    for(var i=1;i<=nring;i++){var rr=R_IN+(R_OUT-R_IN)*i/nring;
-      grid.appendChild(el("circle",{cx:CX,cy:CY,r:rr,fill:"none","stroke-width":1,opacity:.5,style:"stroke:var(--muted)"}));
-      var lab=el("text",{x:CX+6,y:CY-rr+13,class:"sp-rl"});lab.textContent=lblV(cs.lo+cs.step*i,unit,sc);grid.appendChild(lab);}
-    var MO=["JAN","FEB","MAR","APR","MAY","JUN","JUL","AUG","SEP","OCT","NOV","DEC"];
-    for(var m=0;m<12;m++){var a=A0+(m/12)*2*Math.PI;
-      grid.appendChild(el("line",{x1:CX+(R_IN-6)*Math.cos(a),y1:CY+(R_IN-6)*Math.sin(a),x2:CX+(R_OUT+8)*Math.cos(a),y2:CY+(R_OUT+8)*Math.sin(a),"stroke-width":1,opacity:.3,style:"stroke:var(--muted)"}));
-      var t=el("text",{x:CX+(R_OUT+24)*Math.cos(a),y:CY+(R_OUT+24)*Math.sin(a),"text-anchor":"middle","dominant-baseline":"middle",class:"sp-mo"});t.textContent=MO[m];grid.appendChild(t);}
-    SVG.appendChild(grid);
-    var visible=[];
-    YEARS.forEach(function(y,yi){
-      if(state.hidden.has(y))return;
-      var seg=cs.pts.filter(function(p){return p.r.year===y;});if(seg.length<2)return;
-      var d="M "+seg[0].x.toFixed(2)+" "+seg[0].y.toFixed(2);
-      for(var i=1;i<seg.length;i++)d+=" L "+seg[i].x.toFixed(2)+" "+seg[i].y.toFixed(2);
-      var c=YC[yi%YC.length];
-      SVG.appendChild(el("path",{d:d,fill:"none",stroke:c,"stroke-width":2.6,"stroke-linecap":"round","stroke-linejoin":"round",opacity:.95,style:"filter:drop-shadow(0 0 3px "+c+"55)"}));
-      var L=seg[seg.length-1];SVG.appendChild(el("circle",{cx:L.x,cy:L.y,r:3.2,fill:c}));
-      seg.forEach(function(p){visible.push(p);});
-    });
-    var latest=cs.pts[cs.pts.length-1];
-    var cv=!latest?0:(state.mode==="lifetime"?latest.life:cs.yearTotals[YEARS[YEARS.length-1]]);
-    var cg=el("g",{});
-    var q1=el("text",{x:CX,y:CY-18,"text-anchor":"middle",class:"sp-cm"});q1.textContent=spec.title;
-    var q2=el("text",{x:CX,y:CY+10,"text-anchor":"middle",class:"sp-cv"});q2.textContent=lblV(cv,unit,sc);
-    var q3=el("text",{x:CX,y:CY+28,"text-anchor":"middle",class:"sp-cu"});q3.textContent=(state.mode==="lifetime"?"total to date":"latest year")+(unit==="\u00a3"?"":" \u00b7 "+sc.u);
-    cg.appendChild(q1);cg.appendChild(q2);cg.appendChild(q3);SVG.appendChild(cg);
-    attachHover(card,visible,unit);
-  }
-  function attachHover(card,points,unit){
-    var SVG=card.svg,TIP=card.tip;
-    var hoverDot=el("circle",{r:4.5,opacity:0,"pointer-events":"none",style:"fill:var(--text)"});SVG.appendChild(hoverDot);
-    SVG.onpointermove=function(ev){
-      var r=SVG.getBoundingClientRect(),pt={x:(ev.clientX-r.left)/r.width*VBW,y:(ev.clientY-r.top)/r.height*VBH};
-      var best=null,bd=1e9;points.forEach(function(p){var dx=p.x-pt.x,dy=p.y-pt.y,dd=dx*dx+dy*dy;if(dd<bd){bd=dd;best=p;}});
-      if(!best||bd>26*26){TIP.style.opacity=0;hoverDot.setAttribute("opacity",0);return;}
-      hoverDot.setAttribute("cx",best.x);hoverDot.setAttribute("cy",best.y);hoverDot.setAttribute("opacity",1);hoverDot.setAttribute("fill",YC[YEARS.indexOf(best.r.year)%YC.length]);
-      var cardR=SVG.parentElement.getBoundingClientRect();var sx=r.left+(best.x/VBW)*r.width,sy=r.top+(best.y/VBH)*r.height;
-      var dstr=new Date(Date.UTC(best.r.year,(best.r.month||1)-1,best.r.day||1)).toLocaleDateString(undefined,{day:"numeric",month:"short",year:"numeric"});
-      TIP.innerHTML='<div class="sp-d">'+dstr+'</div><div class="sp-b">'+fmt(best.val,unit)+'</div><div class="sp-i">that day: '+fmt(best.inc,unit)+'</div>';
-      TIP.style.left=(sx-cardR.left)+"px";TIP.style.top=(sy-cardR.top)+"px";TIP.style.opacity=1;
-      hoverDot.setAttribute("data-x",0);
-    };
-    SVG.onpointerleave=function(){TIP.style.opacity=0;hoverDot.setAttribute("opacity",0);};
-  }
-  // Build a spiral card (title + svg + tooltip + expand button) and register it.
-  function makeCard(container,spec){
-    var card=document.createElement("div");card.className="sp-card sp-chart";
-    var title=document.createElement("p");title.className="sp-ctitle";title.textContent=spec.title;
-    var svg=document.createElementNS(NS,"svg");svg.setAttribute("viewBox","0 0 "+VBW+" "+VBH);svg.setAttribute("class","sp-svg");
-    var tip=document.createElement("div");tip.className="sp-tip";
-    var exp=document.createElement("button");exp.className="sp-expand";exp.title="Expand";
-    exp.innerHTML='<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3H5a2 2 0 0 0-2 2v4M15 3h4a2 2 0 0 1 2 2v4M9 21H5a2 2 0 0 1-2-2v-4M15 21h4a2 2 0 0 0 2-2v-4"/></svg>';
-    exp.onclick=function(ev){ev.stopPropagation();openExpand(spec);};
-    card.appendChild(title);card.appendChild(exp);card.appendChild(svg);card.appendChild(tip);container.appendChild(card);
-    CARDS[spec.kind]={svg:svg,tip:tip};
-  }
-  var SPECS={};   // kind -> spec, so the modal can re-render on state changes
-  function renderAll(){
-    mainSpirals().concat([{kind:"standing",unit:"\u00a3",title:"Standing charges"}]).forEach(function(spec){
-      SPECS[spec.kind]=spec; renderSpiral(spec);
-    });
-    if(MODAL&&MODAL.spec&&MODAL.backdrop.classList.contains("on")) renderSpiral(MODAL.spec,MODAL.card);
-  }
-  function openExpand(spec){
-    if(!MODAL)return;
-    MODAL.spec=spec; MODAL.title.textContent=spec.title;
-    MODAL.backdrop.classList.add("on"); renderSpiral(spec,MODAL.card);
-  }
-  function closeExpand(){ if(MODAL){MODAL.backdrop.classList.remove("on");MODAL.spec=null;} }
-  function buildModal(){
-    var bd=document.createElement("div");bd.className="sp-backdrop";
-    var md=document.createElement("div");md.className="sp-modal";
-    var mclose=document.createElement("button");mclose.className="sp-mclose";mclose.textContent="\u2715";mclose.title="Close";
-    var mtitle=document.createElement("p");mtitle.className="sp-ctitle";
-    var msvg=document.createElementNS(NS,"svg");msvg.setAttribute("viewBox","0 0 "+VBW+" "+VBH);msvg.setAttribute("class","sp-svg");
-    var mtip=document.createElement("div");mtip.className="sp-tip";
-    md.appendChild(mclose);md.appendChild(mtitle);md.appendChild(msvg);md.appendChild(mtip);bd.appendChild(md);
-    document.getElementById("chart-spiral").appendChild(bd);
-    MODAL={backdrop:bd,title:mtitle,card:{svg:msvg,tip:mtip},spec:null};
-    mclose.onclick=closeExpand;
-    bd.onclick=function(e){if(e.target===bd)closeExpand();};
-    document.addEventListener("keydown",function(e){if(e.key==="Escape")closeExpand();});
-  }
-  // Grouping list (shared across spirals). Selecting one re-renders everything.
-  function buildItems(){var h=document.getElementById("sp-items");h.textContent="";
-    groupingOptions().forEach(function(it,i){var row=document.createElement("div");row.className="sp-metric"+(it.key===state.grouping?" on":"")+(i===0?" hd":"");
-      row.innerHTML='<span class="sp-nm"></span><span class="sp-kd"></span>';row.children[0].textContent=it.name;row.children[1].textContent=it.kind||"";
-      row.onclick=function(){state.grouping=it.key;saveState();buildItems();syncStandingToggle();renderAll();};h.appendChild(row);});}
-  // The "include standing charge in net cost" toggle only bites on grouping=net.
-  function syncStandingToggle(){var w=document.getElementById("sp-standing-toggle");if(w)w.style.display=(state.grouping==="net")?"flex":"none";}
-  function buildYears(){var h=document.getElementById("sp-years");h.textContent="";
-    YEARS.forEach(function(y,i){var row=document.createElement("div");row.className="sp-yr"+(state.hidden.has(y)?" off":"");var partial=(y===YEARS[YEARS.length-1]);
-      row.innerHTML='<span class="sp-sw"></span><span class="sp-yl"></span>';
-      row.children[0].style.background=YC[i%YC.length];row.children[1].textContent=y+(partial?" \u00b7":"");
-      row.onclick=function(){state.hidden.has(y)?state.hidden.delete(y):state.hidden.add(y);saveState();buildYears();renderAll();};h.appendChild(row);});}
-  function wireMode(){
-    Array.prototype.forEach.call(document.querySelectorAll("#sp-mode button"),function(b){b.onclick=function(){
-      state.mode=b.dataset.mode;saveState();syncControls();
-      renderAll();
-    };});
-  }
-  function wireStanding(){var cb=document.getElementById("sp-inc-standing");if(cb)cb.onchange=function(){state.incStanding=cb.checked;saveState();renderAll();};}
-  function fail(msg){var s=document.getElementById("sp-status");if(s){s.style.display="block";s.textContent=msg;}}
-
-  // Fetch and draw. `quiet` (a refresh of an already-drawn page) keeps what is on
-  // screen if the fetch fails, rather than replacing it with an error.
-  async function load(quiet){
-    try{
-      // The day rows, kept by day and brought up to date (EMTDayRows) — shared with Usage
-      // Stats, re-fetching only the days that moved.
-      var j=await EMTDayRows.get();
-      if(!j.rows||!j.rows.length){fail("No data yet \u2014 the spirals fill in once blocks are recorded.");return false;}
-      ROWS=j.rows.slice().sort(function(a,b){return (a.year-b.year)||(a.month-b.month)||(a.day-b.day);});
-      YEARS=Array.from(new Set(ROWS.map(function(r){return r.year;}))).sort();
-      buildMetaFrom(j.meters||[],ROWS);
-      HAS_CARBON=!!j.has_postcode||ROWS.some(function(r){return r.carbon_g_net!=null;});
-      loadState();
-      // Build equal-size spiral cards: Cost / Usage / (Carbon) / Standing charges.
-      var mainEl=document.getElementById("sp-main");mainEl.textContent="";CARDS={};
-      mainSpirals().forEach(function(spec){makeCard(mainEl,spec);});
-      makeCard(mainEl,{kind:"standing",unit:"\u00a3",title:"Standing charges"});
-      if(!MODAL)buildModal();
-      document.getElementById("sp-status").style.display="none";
-      syncControls();buildItems();syncStandingToggle();buildYears();wireMode();wireStanding();renderAll();
-      return true;
-    }catch(e){if(!quiet)fail("Couldn't load chart data \u2014 "+(e&&e.message?e.message:e));return false;}
-  }
-  // First visit to the tab: load once. A tab switch back does not re-fetch — the data
-  // poll (refresh) does that when the data has actually changed.
-  async function init(){
-    if(inited)return; inited=true;
-    if(!(await load(false)))inited=false;
-  }
-  // Re-fetch and redraw, keeping the view. Until 1 Oct 2026 the poll called init(),
-  // which returned at once, so the spirals never moved until the page was reloaded.
-  async function refresh(){
-    if(!inited)return init();
-    await load(true);
-  }
-  return { init: init, refresh: refresh };
-})();
 </script>
 
 <!-- Import / Export bar chart -->
@@ -1193,7 +821,7 @@ function toggleTopbar() {
 }
 
 function updateToggleLabel(name) {
-  var labels = { daily: 'Billing', heatmap: 'Heatmaps', spiral: 'Spiral', bar: 'Usage Stats' };
+  var labels = { daily: 'Billing', heatmap: 'Heatmaps', bar: 'Usage Stats' };
   var el = document.getElementById('topbar-toggle-label');
   if (el) el.textContent = labels[name] || name;
 }
@@ -1205,13 +833,10 @@ function showChart(name, btn) {
   document.getElementById('chart-daily').style.display   = name === 'daily'   ? 'block' : 'none';
   document.getElementById('chart-heatmap').style.display = name === 'heatmap' ? 'block' : 'none';
   document.getElementById('chart-bar').style.display     = name === 'bar'     ? 'flex' : 'none';
-  var _spEl = document.getElementById('chart-spiral'); if (_spEl) _spEl.style.display = name === 'spiral' ? 'block' : 'none';
   _activeChart = name;
 
   if (name === 'bar') {
     barInit();
-  } else if (name === 'spiral') {
-    if (window.EMTSpiral) EMTSpiral.init();
   } else {
     loadChartContent(name);
   }
@@ -1807,42 +1432,6 @@ function _doPdfExport(win, iconSrc) {
       '<div style="margin-top:16px;">' + tblHtml + '</div>' +
       '</body></html>');
     win.document.close();
-  } else if (_activeChart === 'spiral') {
-    // Spiral is an inline SVG using CSS-var colours; inject a light-theme
-    // stylesheet so it renders on white in the PDF (issue #250).
-    // Capture every spiral card (Cost / Usage / Carbon / Standing) with its title.
-    var spCards = document.querySelectorAll('#chart-spiral .sp-chart');
-    var cardsHtml = '';
-    Array.prototype.forEach.call(spCards, function(card) {
-      var svg = card.querySelector('svg.sp-svg');
-      if (!svg) return;
-      var titleEl = card.querySelector('.sp-ctitle');
-      var title = titleEl ? titleEl.textContent : '';
-      var sclone = svg.cloneNode(true);
-      sclone.setAttribute('style', 'display:block;width:100%;max-width:300px;height:auto;');
-      cardsHtml += '<div class="pdf-sp-card">' +
-        (title ? '<div class="sp-h">' + title + '</div>' : '') + sclone.outerHTML + '</div>';
-    });
-    var svgHtml = cardsHtml || '<p style="color:#888;">Spiral chart not available.</p>';
-    var spiralStyles =
-      ':root{--text:#1a1a1a;--muted:#8a8f98;--accent:#00a080;--mono:ui-monospace,monospace;}' +
-      '.sp-mo{font-family:var(--mono);font-size:15px;letter-spacing:.06em;fill:var(--text);opacity:.72;font-weight:600;}' +
-      '.sp-rl{font-family:var(--mono);font-size:15px;fill:var(--text);opacity:.6;font-weight:500;}' +
-      '.sp-cm{font-family:var(--mono);font-size:11px;fill:var(--muted);letter-spacing:.08em;}' +
-      '.sp-cv{font-size:29px;font-weight:650;fill:var(--text);} .sp-cu{font-size:12px;fill:var(--muted);}' +
-      '#pdf-sp{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;justify-content:center;}' +
-      '.pdf-sp-card{flex:0 0 auto;break-inside:avoid;text-align:center;}' +
-      '.sp-h{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:#888;margin:0 0 8px;}';
-    win.document.open();
-    win.document.write('<!DOCTYPE html><html><head><meta charset="UTF-8">' +
-      '<title>EMT \u2014 ' + tabLabel + '</title>' +
-      // Swap the shared landscape @page for portrait — the spiral is square-ish.
-      // Replacing (not adding) avoids Chrome honouring the first @page it sees.
-      '<style>' + commonStyles.replace('size:A4 landscape', 'size:A4 portrait') + spiralStyles + '</style></head><body>' +
-      header +
-      '<div id="pdf-sp">' + svgHtml + '</div>' +
-      '</body></html>');
-    win.document.close();
   }
 }
 
@@ -1929,7 +1518,7 @@ function barShowFromUrl() {
 function barLoadState(availableYears) {
   try {
     var raw = localStorage.getItem(EMT.lsKey('emt_bar_state'));
-    if (!raw) { barShowFromUrl(); return; }
+    if (!raw) { barShowFromUrl(); barFromSpiral(); return; }
     var st = JSON.parse(raw);
     if (['daily','monthly','yearly','hh'].indexOf(st.period) !== -1) barPeriod = st.period;
     if (['kwh','cost','co2'].indexOf(st.metric) !== -1)       barMetric = st.metric;
@@ -1970,6 +1559,30 @@ function barLoadState(availableYears) {
     if (barShow === 'brackets' && barMetric === 'co2') barMetric = 'kwh';
   } catch(e) {}
   barShowFromUrl();
+  barFromSpiral();
+}
+
+// BL-104 PR 5: the retired Spiral tab's saved view (grouping, winding, hidden years, the standing
+// charge in net) carried into the Running total's spiral, once — when the page opened from a
+// remembered Spiral tab or ?tab=spiral — and its record removed
+var _barFromSpiral = false;
+function barFromSpiral() {
+  if (!_barFromSpiral) return;
+  _barFromSpiral = false;
+  barShow = 'running'; barAccView = 'spiral';
+  try {
+    var k = EMT.lsKey('emt_spiral_state'), st = JSON.parse(localStorage.getItem(k) || 'null');
+    if (st) {
+      if (typeof st.grouping === 'string') barAccSeries = st.grouping;     // the same ids: net, import, export, a device
+      if (st.mode === 'lifetime' || st.mode === 'year') barAccMode = st.mode;
+      if (typeof st.incStanding === 'boolean') barAccIncStanding = st.incStanding;
+      if (Array.isArray(st.hidden) && st.hidden.length) {
+        barActiveYears = new Set(barGetYears().filter(function(y) { return st.hidden.indexOf(y) < 0; }));
+      }
+    }
+    localStorage.removeItem(k);
+  } catch (e) {}
+  barSaveState();
 }
 
 // Apply a Usage Stats payload (fresh or cached) into the bar-chart state.
@@ -3778,7 +3391,7 @@ function barAccKinds() {
     k.push({kind: 'carbon', unit: 'kg', title: 'Carbon'});
   return k;
 }
-// A day's increment, the spiral's rule (EMTSpiral incValue): Net is import − export in kWh, £ and kg alike
+// A day's increment, the Spiral tab's rule (it was EMTSpiral's incValue): Net is import − export in kWh, £ and kg alike
 function barAccInc(row, kind) {
   var M = row.meters || {}, main = M.electricity_main || {}, g = barAccSeries, dev = M[g];
   if (kind === 'standing') return row.standing || 0;
@@ -4119,8 +3732,8 @@ function barAccOverlayPlugin(ov) {
 // ── The spiral (BL-104 PR 2): the Spiral tab's drawing, moved into the view ─────────────────────────
 // A running total wound a year a turn, 1 January at the top: Lifetime one coil (radius the total to
 // date), Year by year each year from nought on one scale, so the loops overlay. The geometry, rings,
-// month spokes, year colours, centre and hover are the Spiral tab's (EMTSpiral renderSpiral), which
-// goes when the tab does (PR 5).
+// month spokes, year colours, centre and hover are the Spiral tab's (its renderSpiral), moved here
+// when the tab was retired (PR 5).
 var BAR_SP = {NS: 'http://www.w3.org/2000/svg', VBW: 440, VBH: 448, CX: 220, CY: 212, R_IN: 34, R_OUT: 184, A0: -Math.PI / 2};
 function _spEl(t, a) { var e = document.createElementNS(BAR_SP.NS, t); for (var k in a) e.setAttribute(k, a[k]); return e; }
 function _spNice(range) {
@@ -4918,9 +4531,11 @@ document.addEventListener('DOMContentLoaded', function() {
     // ?tab= opens a tab once, over the remembered one (/corrections → the Billing tab).
     try { var q = new URLSearchParams(location.search).get('tab'); if (q) saved = q; } catch(e) {}
     var tabs = document.querySelectorAll('.chart-tab');
+    // BL-104 PR 5: the Spiral tab is retired — a remembered one, or ?tab=spiral, opens Usage Stats on
+    // the Running total's spiral, its saved view carried over once (barFromSpiral)
+    if (saved === 'spiral') { _barFromSpiral = true; saved = 'bar'; }
     if (saved === 'heatmap') { showChart('heatmap', tabs[1]); }
-    else if (saved === 'spiral') { showChart('spiral', tabs[2]); }
-    else if (saved === 'bar') { showChart('bar', tabs[3]); }
+    else if (saved === 'bar') { showChart('bar', tabs[2]); }
     else { loadChartContent('daily'); updateToggleLabel('daily'); }
   }, 350);
 });
@@ -4981,7 +4596,6 @@ async function _refreshIfChanged(force) {
     barLastFetch  = 0;      // force barInit past its TTL
     barHHDataDate = null;   // force today's HH to refetch on next render
     if (_activeChart === 'bar') { await barInit(); }
-    else if (_activeChart === 'spiral') { if (window.EMTSpiral) EMTSpiral.refresh(); }
     else { chartsLoaded = {}; await loadChartContent(_activeChart || 'daily'); }
     if (v) _lastDataVersion = v;
     _refreshSettleNote();
