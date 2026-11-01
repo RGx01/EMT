@@ -405,7 +405,7 @@ def live_rows(live, days, cfg, ev_meter_id):
     ev_cost = round(ev["cost"], 2)
     if ev["kwh"] > 0.001 or abs(ev_cost) > 0.001:
         label = ((((meters_cfg.get(ev_meter_id) or {}).get("meta") or {}).get("device") or "EV")
-                 if ev_meter_id else "EV (from dispatch)")
+                 if ev_meter_id else "EV")
         sub_rows.append({"label": "↳ %s (%.3f kWh)" % (label, ev["kwh"]), "cost": ev_cost, "bold": False})
 
     rows = []

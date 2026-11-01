@@ -386,7 +386,7 @@ def _hybrid_ev_by_block(main_ev_by_block, phys_ev_by_block=None):
 
 
 def _apply_ev_split_to_summary_rows(rows, meters_list, ev_by_bucket,
-                                    color="#8b5cf6", label="EV (from dispatch)",
+                                    color="#8b5cf6", label="EV",
                                     key_fn=None) -> bool:
     """Split each row's electricity_main import segment into a derived EV slice + a
     reduced house slice, per {bucket: {"kwh","cost"}} from _dispatch_ev_split_by_bucket.
@@ -668,7 +668,9 @@ def _apply_ev(store, cfg, raw, rows, meters, utc_start, utc_end, bucket_of, key_
                 bill_split_slots=bill_slot)
         except Exception:
             by_bucket = {}
-        _apply_ev_split_to_summary_rows(rows, meters, by_bucket, key_fn=key_fn)
+        import energy_charts as _ec
+        _apply_ev_split_to_summary_rows(rows, meters, by_bucket, key_fn=key_fn,
+                                        color=_ec.ev_dispatch_style(store)["bar"])
     elif _configured_ev_meter_id(cfg) is not None:
         # Hybrid EV (H2): physical sub-meter pre-seam, synthetic dispatch post-seam.
         ev_mid = _configured_ev_meter_id(cfg)

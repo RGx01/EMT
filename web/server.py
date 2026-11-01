@@ -3513,6 +3513,7 @@ def settings_page():
         _has_creds = _eng2.has_kraken_credentials()
     except Exception:
         _has_creds = False
+    import energy_charts as _ec
     return render_template(
         "meter_config.html",
         config=cfg,
@@ -3524,7 +3525,53 @@ def settings_page():
         ohme_detection=_ohme_detection(),
         chart_palette=_chart_style.PALETTE,
         chart_rate_mix=_chart_style.RATE_MIX,
+        # BL-97: the EV of an account with no EV device — whether it has ever had one, and its style
+        has_had_ev=_ec.has_had_ev(store),
+        ev_style=_ev_style_saved(store),
+        ev_default=_ec.EV_DISPATCH_COLOR,
     )
+
+
+def _ev_style_saved(store) -> dict:
+    """BL-97: the EV style chosen on its Settings tab, cleaned ({} unset)."""
+    try:
+        st = store.get_meta("ev_style") or {}
+    except Exception:
+        st = {}
+    if not isinstance(st, dict):
+        return {}
+    out = {}
+    bar = _chart_style.clean_color(st.get("bar_color"))
+    line = _chart_style.clean_rate_line(st.get("rate_line"))
+    if bar:
+        out["bar_color"] = bar
+    if line:
+        out["rate_line"] = line
+    return out
+
+
+@app.route("/api/ev-style", methods=["GET", "POST"])
+def api_ev_style():
+    """BL-97: the style of the EV an account with no EV device draws — Octopus's split, or a
+    completed dispatch where the bill has not said yet. GET {bar_color?, rate_line?}; POST the same
+    (anything not `#rrggbb` / solid|dashed dropped; empty clears it). Kept in the store's meta, not
+    the config: no engine restart, and the config's columns have no place for it."""
+    if request.method == "GET":
+        return jsonify(_ev_style_saved(store_access.store()))
+    body = request.get_json(force=True, silent=True) or {}
+    out = {}
+    bar = _chart_style.clean_color(body.get("bar_color"))
+    line = _chart_style.clean_rate_line(body.get("rate_line"))
+    if bar:
+        out["bar_color"] = bar
+    if line:
+        out["rate_line"] = line
+    try:
+        _engine_write(lambda st: st.set_meta("ev_style", out or None))
+    except Exception as e:
+        logger.error("api_ev_style: %s", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, "style": out})
 
 
 @app.route("/api/settings", methods=["GET"])
@@ -7545,7 +7592,7 @@ def _aggregate_usage(store, cfg, utc_start: str, utc_end: str,
                 house_imp_cost = max(0.0, house_imp_cost - _ev_cost)
                 sub_totals["ev_dispatch"] = {
                     "imp_kwh": _ev_kwh, "imp_cost": _ev_cost, "exp_kwh": 0.0,
-                    "label": "EV (from dispatch)", "meter_type": "ev_charger",
+                    "label": "EV", "meter_type": "ev_charger",
                     "derived": True, "rate_tiers": _ev_tiers,
                 }
 

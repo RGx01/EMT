@@ -39,6 +39,10 @@ ec.build_meter_colors                  = lambda *a, **kw: {
     "electricity_main": "#1f77b4",
     "electricity_main_export": "#ff7f0e",
 }
+# BL-97: the EV with no device — its style and whether the account has had one
+ec.EV_DISPATCH_COLOR                   = "#8b5cf6"
+ec.ev_dispatch_style                   = lambda *a, **kw: {"bar": "#8b5cf6", "rate": "#a27df7", "dashed": False}
+ec.has_had_ev                          = lambda *a, **kw: False
 ec.build_meter_colors_from_config      = lambda *a, **kw: {
     "electricity_main": "#1f77b4",
     "electricity_main_export": "#ff7f0e",
