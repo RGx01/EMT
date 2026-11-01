@@ -57,7 +57,7 @@ class TheToolbar(unittest.TestCase):
         save, load = _fn("barSaveState"), _fn("barLoadState")
         for k in ("show:     barShow,", "brSeries: barBrSeries,", "brPct:    barBrPct,"):
             self.assertIn(k, save)
-        self.assertIn("if (['devices','brackets'].indexOf(st.show) !== -1) barShow = st.show;", load)
+        self.assertIn("if (['devices','brackets','running'].indexOf(st.show) !== -1) barShow = st.show;", load)
 
 
 class TheData(unittest.TestCase):
