@@ -705,6 +705,11 @@ class KrakenAPIClient:
             params["period_to"] = period_to
         return await self._get_paginated(path, params)
 
+    async def get_products(self) -> list[dict]:
+        """BL-103: Octopus's product list (public), for the current Agile products. Each
+        {code, direction, display_name, available_from, available_to, is_business, is_prepay, ...}."""
+        return await self._get_paginated("/v1/products/", {"brand": "OCTOPUS_ENERGY"})
+
     async def get_standing_charges(
         self, product_code: str, tariff_code: str,
         *, period_from: Optional[str] = None, period_to: Optional[str] = None,

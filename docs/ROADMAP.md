@@ -684,7 +684,7 @@ No before-and-after comparison for now (the user).
 
 **BL-102 — the help pages.** An overhaul, last, once the surfaces above have settled.
 
-**BL-103 — Agile for everyone.** *The user, 1 Nov 2026.* The Agile card (BL-100) on every account,
+**BL-103 — Agile for everyone.** ✅ *Done 1 Nov 2026 (agile for everyone design); decided: the comparison, Agile Outgoing, shown by default.* The Agile card (BL-100) on every account,
 labelled *Agile in your region*: Octopus publishes Agile prices without an account, and the region is
 the letter that ends the account's own tariff code. Needs the current Agile product (the product list,
 or a known code) and one new public fetch a day soon after 4pm, kept across restarts — within the

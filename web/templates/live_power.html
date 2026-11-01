@@ -1030,7 +1030,7 @@ function setMiniSource(enabled){
 <div class="wide-row">
   <div class="card power-history-card" id="agile-card-wrap">
     <div class="card-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-      <span>⚡ Agile Prices</span>
+      <span id="agile-title">⚡ Agile Prices</span>
       <span id="agile-now" style="font-size:12px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--muted);"></span>
     </div>
     <div class="power-history-wrap">
@@ -1042,6 +1042,7 @@ function setMiniSource(enabled){
       <span id="agile-legend-export"><i style="background:#a78bfa;"></i>Export</span>
       <span id="agile-status" style="margin-left:auto;font-size:11px;color:var(--muted);"></span>
     </div>
+    <div id="agile-compare" style="display:none;font-size:12px;color:var(--muted);margin-top:6px;"></div>
   </div>
 </div>
 {% endif %}
@@ -1422,16 +1423,30 @@ function _agileSummary(){
   var imp = (_agile.import || {}).prices || [], exp = (_agile.export || {}).prices || [];
   var now = _agileMs(_agile.now), out = [];
   var pi = _agileAt(imp, now), pe = _agileAt(exp, now);
-  if (pi != null) out.push('Now ' + pi.toFixed(1) + 'p import');
-  if (pe != null) out.push(pe.toFixed(1) + 'p export');
+  function pp(v) { return (v < 0 ? '\u2212' : '') + Math.abs(v).toFixed(1) + 'p'; }   // a minus sign, not a hyphen
+  if (pi != null) out.push('Now ' + pp(pi) + ' import');
+  if (pe != null) out.push(pp(pe) + ' export');
   var c = _agileCheapest(imp, now);
-  if (c) out.push('cheapest hour ' + _agileHHMM(c.ms) + ', ' + c.avg.toFixed(1) + 'p');
+  if (c) out.push('cheapest hour ' + _agileHHMM(c.ms) + ', ' + pp(c.avg));
   document.getElementById('agile-now').textContent = out.join(' · ');
   var last = imp.length ? _agileMs(imp[imp.length - 1][0]) + 1800000 : null;
   document.getElementById('agile-status').textContent = last
     ? ('Published to ' + _agileHHMM(last) + (last < now + 24 * 3600000 ? ' · tomorrow’s from about 4pm' : '')) : '';
   document.getElementById('agile-legend-import').style.display = imp.length ? '' : 'none';
   document.getElementById('agile-legend-export').style.display = exp.length ? '' : 'none';
+  // BL-103: on an account not on Agile, Agile's prices in its region, and its last 30 days at them
+  var pub = (_agile.import || {}).public || (_agile.export || {}).public;
+  var reg = (_agile.import || {}).region || (_agile.export || {}).region;
+  document.getElementById('agile-title').textContent = pub ? '\u26a1 Agile in your region' + (reg ? ' (' + reg + ')' : '') : '\u26a1 Agile Prices';
+  var cmp = document.getElementById('agile-compare'), parts = [];
+  var ci = (_agile.import || {}).compare, ce = (_agile.export || {}).compare;
+  function gbp(v) { return (v < 0 ? '\u2212' : '') + '\u00a3' + Math.abs(v).toFixed(2); }
+  if (ci) parts.push('import ' + gbp(ci.agile) + ' against ' + gbp(ci.actual) + ' paid');
+  if (ce) parts.push('export ' + gbp(ce.agile) + ' against ' + gbp(ce.actual) + ' earned');
+  var days = (ci || ce || {}).days;
+  cmp.style.display = parts.length ? '' : 'none';
+  cmp.textContent = parts.length ? 'Your last ' + days + (days === 1 ? ' day' : ' days') + ' at Agile\u2019s unit rates: ' +
+    parts.join(' \u00b7 ') + ' (standing charges aside)' : '';
 }
 function loadAgilePrices(){
   if (!document.getElementById('agile-card-wrap')) return;

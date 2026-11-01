@@ -90,10 +90,10 @@ class TheRouteAndPage(unittest.TestCase):
         i = SERVER.index("def api_agile_prices(")
         self.assertIn("_eng.agile_prices()", SERVER[i:i + 800])
 
-    def test_the_card_only_on_a_dynamic_tariff(self):
+    def test_the_card_on_a_dynamic_tariff_or_since_bl_103_any_with_a_region(self):
         self.assertIn("{% if has_agile %}", PAGE)
         self.assertIn('id="agile-card-wrap"', PAGE)
-        i = SERVER.index("has_agile = any(_tp_ag.is_dynamic_code(")
+        i = SERVER.index("has_agile = (any(_tp_ag.is_dynamic_code(")
         self.assertLess(i, SERVER.index("has_agile=has_agile,"))
 
     def test_its_size_is_the_history_cards(self):

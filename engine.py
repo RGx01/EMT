@@ -5408,6 +5408,8 @@ async def _engine_tick(ha: HAClient):
     _start_discovery_retry()
     # A battery sensor that counts solar: its evidence, hourly (battery sensor design §3)
     _maybe_check_battery_sensors()
+    # BL-103: Agile's prices in the account's region, once a day after Octopus publishes, off the tick
+    _start_agile_public_fetch()
 
     # Block lifecycle
     updated_block = ensure_correct_block(ha, current_block, now, last_known_rates=_post_gap_rates)
@@ -6078,6 +6080,123 @@ def _start_discovery_retry() -> None:
             _discovery_retry_running = False
     _discovery_retry_running = True
     loop.create_task(_go())
+
+
+# ── Agile for everyone (BL-103, agile for everyone design) ─────────────────────────────────────────
+_agile_public_running = False
+
+
+def _agile_public_channels() -> list:
+    """The directions to fetch Agile's public prices for: import unless the account is on Agile
+    itself (its own schedule has them), export where it exports and is not on Agile Outgoing."""
+    import tariff_prices as _tp
+    disc = _kraken_discovery or {}
+    out = []
+    for ch in ("import", "export"):
+        d = disc.get(ch) or {}
+        if ch == "export" and not d:
+            continue
+        if not _tp.is_dynamic_code(d.get("tariff_code") or ""):
+            out.append(ch)
+    return out
+
+
+def _agile_public_due() -> bool:
+    """A cheap test, every tick: an API account with a region, a direction to fetch, and the record
+    short of what it should hold (agile_public.due)."""
+    if _store is None or _kraken_client is None or not _kraken_discovery:
+        return False
+    import agile_public as _ap
+    from zoneinfo import ZoneInfo
+    if not _ap.region_of(((_kraken_discovery.get("import") or {}).get("tariff_code")) or ""):
+        return False
+    chans = _agile_public_channels()
+    if not chans:
+        return False
+    try:
+        tz = ZoneInfo(_store.site_timezone() or "Europe/London")
+        now = datetime.now(timezone.utc)
+        return _ap.due(_reader().get_meta(_ap.META_KEY) or {}, now.replace(tzinfo=None), now.astimezone(tz), tz, chans)
+    except Exception:
+        return False
+
+
+def _start_agile_public_fetch() -> None:
+    """`_fetch_agile_public` as a loop task when it is due, one at a time, so a slow Octopus never
+    holds the engine tick."""
+    global _agile_public_running
+    if _agile_public_running or not _agile_public_due():
+        return
+    import asyncio as _aio
+    try:
+        loop = _aio.get_running_loop()
+    except RuntimeError:
+        return
+
+    async def _go():
+        global _agile_public_running
+        try:
+            await _fetch_agile_public()
+        finally:
+            _agile_public_running = False
+    _agile_public_running = True
+    loop.create_task(_go())
+
+
+async def _fetch_agile_public() -> dict:
+    """BL-103: ask Octopus for Agile's prices in the account's region — the product list once a week,
+    the prices from where the record ends (30 days back the first time) to the end of tomorrow — and
+    keep them in the store's meta. At most a call a direction, MAX_TRIES_A_DAY times a day, 90
+    minutes apart (agile_public.due). Returns the record; never raises."""
+    import agile_public as _ap
+    from zoneinfo import ZoneInfo
+    try:
+        rec = dict(_reader().get_meta(_ap.META_KEY) or {})
+        tz = ZoneInfo(_store.site_timezone() or "Europe/London")
+        now = datetime.now(timezone.utc)
+        now_utc, now_local = now.replace(tzinfo=None), now.astimezone(tz)
+        region = _ap.region_of(((_kraken_discovery or {}).get("import") or {}).get("tariff_code") or "")
+        today = now_local.date().isoformat()
+        rec["asked"] = now_utc.isoformat()
+        rec["tries"] = {today: int((rec.get("tries") or {}).get(today, 0)) + 1}
+        rec["region"] = region
+        if _ap.products_due(rec, now_utc) or not all((rec.get(ch) or {}).get("product") for ch in _agile_public_channels()):
+            products = await _kraken_client.get_products()
+            for ch in ("import", "export"):
+                p = _ap.pick_product(products, ch)
+                if p:
+                    rec.setdefault(ch, {})["product"] = p
+            rec["products_checked"] = now_utc.isoformat()
+        want = _ap.target_through(now_local, tz)
+        for ch in _agile_public_channels():
+            c = rec.setdefault(ch, {})
+            if not c.get("product") or not region:
+                continue
+            tc = _ap.tariff_code(c["product"], region)
+            if c.get("tariff") != tc:
+                c["prices"] = []                    # a new product or region: start again
+            c["tariff"] = tc
+            have = _ap.through_of(c.get("prices") or [])
+            frm = have or (now_utc - timedelta(days=_ap.COMPARE_DAYS + 1)).replace(minute=0, second=0, microsecond=0)
+            if frm >= want:
+                continue
+            recs = await _kraken_client.get_unit_rates(
+                c["product"], tc, period_from=frm.isoformat() + "Z", period_to=want.isoformat() + "Z")
+            c["prices"] = _ap.merge(c.get("prices") or [], recs, now_utc)
+            c["fetched"] = now_utc.isoformat()
+            logger.info("agile prices: %s %s to %s (%d half-hours kept)", ch, tc,
+                        (_ap.through_of(c["prices"]) or now_utc).isoformat(), len(c["prices"]))
+        _store.set_meta(_ap.META_KEY, rec)
+        return rec
+    except Exception as e:
+        logger.warning("agile prices: the fetch failed (%s) — asked again later", e)
+        try:
+            r = dict(_reader().get_meta(_ap.META_KEY) or {})
+            r["asked"] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
+            _store.set_meta(_ap.META_KEY, r)
+        except Exception:
+            pass
+        return {}
 
 
 def _teardown_mini_if_no_api() -> bool:
