@@ -629,8 +629,13 @@ only leaving one) drew it as a thin strip — Chart.js's day labels took 16 px o
 its name on its side stretching the panel; the box now grows by what the labels take, and a short
 month is named by its month.
 
-**BL-96 — Insights Carbon: the net carbon per billing period chart.** A click on a bar moves the page
-to that period, as the arrows do (`_trendNavTo`), and nothing says so. Label it or drop the click.
+**BL-96 — Insights Carbon: the net carbon per billing period chart.** ✅ *Done 1 Nov 2026 — a
+defect, not only a missing label.* A click on a bar was meant to go to that period and did not: it set
+an index `loadPeriod` never read, so it moved the highlight and reloaded the month in view, and the
+highlight started on the oldest bar. A bar now stands for the month (Year: the year) holding its
+middle, for any billing day: that bar is highlighted, and a click or Enter goes to it. The strip says
+so; its labels are thinned to fit; and the period is saved after it changes (the arrows saved it
+before, so their last step was never kept).
 
 **BL-97 — the EV on an API-only account.** It is "EV (from dispatch)", a name from before Octopus's
 breakdown carried the split; drop "from dispatch" and read the split. Its colour is fixed in code

@@ -139,6 +139,9 @@
     gap: 6px;
     flex-wrap: wrap;
   }
+  /* the net carbon strip's bars that go to their month (BL-96) */
+  .trend-bar:hover, .trend-bar:focus { filter:brightness(1.35); outline:none; }
+  .trend-bar:focus-visible { stroke:var(--accent); stroke-width:1.5; }
   .insight-sub {
     font-size: 13px;
     color: var(--muted);
@@ -339,7 +342,7 @@
       <div class="insight-equiv"   id="sum-equiv"></div>
       <div class="coverage-warn"   id="sum-coverage"></div>
       <div id="trend-wrap">
-        <div style="font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin-bottom:10px;">Net carbon per billing period</div>
+        <div style="font-size:11px; font-weight:600; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); margin-bottom:10px;">Net carbon per billing period<span id="trend-hint" style="text-transform:none; letter-spacing:normal; font-weight:400;"></span></div>
         <div id="trend-chart" style="width:100%; overflow-x:auto;"></div>
       </div>
       <!-- Generation mix bar — hidden when no mix data -->
@@ -679,7 +682,6 @@
 {% include '_period_spinner.html' %}
 <script>
 var _periods    = [];
-var _periodIdx  = 0;
 var _insMode    = 'month';   // 'month' | 'year'
 var _insCompare = null;      // null | 'prev' | 'year' | 'lastyear'
 var _calYear    = new Date().getFullYear();
@@ -1322,10 +1324,25 @@ function renderInsights(d, _cmp) {
 
   renderTrend();
 }
+// The trend strip's bars are billing periods; the page shows a calendar month or year (BL-96, 1 Nov
+// 2026). A bar stands for the month (or year) holding its middle — any billing day — which is the
+// one it highlights and the one a click goes to. The click set an index loadPeriod never read, so
+// it moved the highlight and reloaded the month in view; the highlight started on the oldest bar.
+function _trendMid(p) {
+  var a = Date.parse(p.period_start + 'T00:00:00Z'), b = Date.parse(p.period_end + 'T00:00:00Z');
+  return new Date((a + (isNaN(b) ? a : b)) / 2);
+}
+function _trendInView(p) {
+  var m = _trendMid(p);
+  return m.getUTCFullYear() === _calYear && (_insMode !== 'month' || m.getUTCMonth() + 1 === _calMonth);
+}
 function _trendNavTo(idx) {
-  if (idx < 0 || idx >= _periods.length || idx === _periodIdx) return;
-  _periodIdx = idx;
-  loadPeriod();
+  var p = _periods[idx];
+  if (!p || _trendInView(p)) return;
+  var m = _trendMid(p);
+  _calYear = m.getUTCFullYear();
+  if (_insMode === 'month') _calMonth = m.getUTCMonth() + 1;
+  _insSaveState(); updatePeriodNav(); loadPeriod();
 }
 
 function renderTrend() {
@@ -1336,10 +1353,13 @@ function renderTrend() {
   var values = _periods.map(function(p) {
     return p.carbon_g_net != null ? +(p.carbon_g_net / 1000) : null;
   });
-  var labels = _periods.map(function(p) {
-    var d = new Date(p.period_start + 'T12:00:00Z');
+  var labels = _periods.map(function(p) {         // the month it stands for (_trendMid)
+    var d = _trendMid(p);
     return MONTHS[d.getUTCMonth()] + " '" + String(d.getUTCFullYear()).slice(2);
   });
+  var hint = document.getElementById('trend-hint');
+  if (hint) hint.textContent = _periods.length > 1
+    ? ' \u00b7 click a bar to view its ' + (_insMode === 'month' ? 'month' : 'year') : '';
 
   var validValues = values.filter(function(v) { return v != null; });
   if (validValues.length === 0) return;
@@ -1354,6 +1374,9 @@ function renderTrend() {
   var chartH = H - PAD_T - PAD_B;
   var n = values.length;
   var barW = Math.max(4, Math.floor(chartW / n) - 2);
+  // A label every `every` bars, counted back from the newest, so none overlap (about 40 px each):
+  // three years of periods on a phone ran into one another
+  var every = Math.max(1, Math.ceil(n * 40 / chartW));
   var zeroY = PAD_T + chartH / 2;  // zero line in middle if mixed pos/neg
 
   // Determine if all values same sign
@@ -1395,39 +1418,48 @@ function renderTrend() {
   for (var i = 0; i < n; i++) {
     var v = values[i];
     var x = PAD_L + Math.round(i * chartW / n) + Math.round((chartW / n - barW) / 2);
-    var isCurrent = (i === _periodIdx);
+    var isCurrent = _trendInView(_periods[i]);
+    var clickable = !isCurrent;
+    // a bar to click is a button: focusable, Enter or Space goes to it (the listener on the strip)
+    var act = clickable ? ' class="trend-bar" style="cursor:pointer;" tabindex="0" role="button" data-i="' + i +
+      '" aria-label="' + labels[i] + ': view it" onclick="_trendNavTo(' + i + ')"' : '';
 
     if (v == null) {
       // No data placeholder
       svgParts.push('<rect x="' + x + '" y="' + (baseline - 2) + '" width="' + barW +
-        '" height="4" rx="2" fill="' + mutedC + '" opacity="0.3"' +
-        (i !== _periodIdx ? ' style="cursor:pointer;" onclick="_trendNavTo(' + i + ')"' : '') + '>');
+        '" height="4" rx="2" fill="' + mutedC + '" opacity="0.3"' + act + '>');
       svgParts.push('<title>' + labels[i] + ': no carbon data' +
-        (i !== _periodIdx ? ' — click to view' : '') + '</title></rect>');
+        (clickable ? ' — click to view' : '') + '</title></rect>');
     } else {
       var barH = Math.max(2, Math.abs(v) * scale);
       var barY = v >= 0 ? (baseline - barH) : baseline;
       var col = v < 0
         ? (isCurrent ? '#1a7a3c' : 'rgba(26,122,60,0.45)')
         : (isCurrent ? '#c0392b' : 'rgba(192,57,43,0.45)');
-      var clickable = (i !== _periodIdx);
       svgParts.push('<rect x="' + x + '" y="' + barY + '" width="' + barW +
-        '" height="' + barH + '" rx="2" fill="' + col + '"' +
-        (clickable ? ' style="cursor:pointer;" onclick="_trendNavTo(' + i + ')"' : '') + '>');
+        '" height="' + barH + '" rx="2" fill="' + col + '"' + act + '>');
       svgParts.push('<title>' + labels[i] + ': ' + v.toFixed(2) + ' kgCO₂' +
-        (clickable ? ' — click to view' : ' — current view') + '</title>');
+        (clickable ? ' — click to view' : ' — in view') + '</title>');
       svgParts.push('</rect>');
     }
 
-    // X label — show every period if few, else alternate
-    if (n <= 6 || i % 2 === 0 || i === n - 1) {
-      svgParts.push('<text x="' + (x + barW / 2) + '" y="' + (H - 6) +
-        '" text-anchor="middle" font-size="9" fill="' + textC + '">' + labels[i] + '</text>');
+    if ((n - 1 - i) % every === 0) {
+      // the newest ends at its bar's right edge: centred, it ran off the strip
+      var last = i === n - 1;
+      svgParts.push('<text x="' + (last ? x + barW : x + barW / 2) + '" y="' + (H - 6) +
+        '" text-anchor="' + (last ? 'end' : 'middle') + '" font-size="9" fill="' + textC + '">' + labels[i] + '</text>');
     }
   }
 
   svgParts.push('</svg>');
   wrap.innerHTML = svgParts.join('');
+  if (!wrap._keys) {
+    wrap._keys = true;
+    wrap.addEventListener('keydown', function(e) {
+      var b = e.target.closest && e.target.closest('.trend-bar');
+      if (b && (e.key === 'Enter' || e.key === ' ')) { e.preventDefault(); _trendNavTo(+b.getAttribute('data-i')); }
+    });
+  }
 }
 
 function renderComparison(d, c) {
@@ -1733,7 +1765,6 @@ function insSetCompare(cmp, el) {
 }
 
 function navPeriod(dir) {
-  _insSaveState();
   if (_insMode === 'month') {
     _calMonth += dir;
     if (_calMonth > 12) { _calMonth = 1;  _calYear++; }
@@ -1741,6 +1772,7 @@ function navPeriod(dir) {
   } else {
     _calYear += dir;
   }
+  _insSaveState();          // after the step, as the rolodex's: before it, the last step was never kept
   updatePeriodNav();
   loadPeriod();
 }
