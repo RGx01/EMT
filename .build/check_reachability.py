@@ -6,7 +6,7 @@ real entry points.
 WHY THIS EXISTS
     EMT (v5) is a SUBTRACTIVE project against a codebase that works. The risk is
     not writing a bug — it is removing something load-bearing and not finding out
-    for months. `docs/design/EMT-v5_architecture.md` §4a therefore requires an
+    for months. `docs/history/design/EMT-v5_architecture.md` §4a therefore requires an
     over-approximating reachability trace before anything is deleted. This is that
     trace, committed so the requirement is enforceable rather than aspirational.
 

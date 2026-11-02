@@ -12,8 +12,9 @@ name: Tests
 # 10 Oct 2026  The merge to dev re-tested what its PR had just passed, on two Pythons: about
 #              7 of a PR's ~11 billed minutes. A push now runs only on main (both Pythons, so
 #              3.13 is still met before a release). And a change that touches only docs runs
-#              nothing, EXCEPT the two design docs whose figures the suite asserts
-#              (tests/test_b_design_figures.py): editing those still runs the tests. There is
+#              nothing, EXCEPT the page whose figures the suite asserts
+#              (docs/reference/architecture.md, tests/test_b_design_figures.py; since 2 Nov 2026
+#              the only one): editing it still runs the tests. There is
 #              no required check to wait on (a private repo on the free plan has no branch
 #              protection), so a skipped run blocks no merge.
 
@@ -26,8 +27,7 @@ on:
       - "!**/*.md"
       - "!LICENSE"
       - "!screenshots/**"
-      - "docs/design/EMT-v5_architecture.md"
-      - "docs/design/EMT-v5_B_coordinator_design.md"
+      - "docs/reference/architecture.md"
   pull_request:
     paths:
       - "**"
@@ -35,8 +35,7 @@ on:
       - "!**/*.md"
       - "!LICENSE"
       - "!screenshots/**"
-      - "docs/design/EMT-v5_architecture.md"
-      - "docs/design/EMT-v5_B_coordinator_design.md"
+      - "docs/reference/architecture.md"
 
 permissions:
   contents: read
@@ -57,9 +56,9 @@ jobs:
         # 3.10 leg this replaces (4 Oct 2026) guarded a floor no install uses.
         python-version: ${{ fromJSON(github.event_name == 'pull_request' && '["3.12"]' || '["3.12", "3.13"]') }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262   # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065   # v5.6.0
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0   # v7.1.0
         with:
           python-version: ${{ matrix.python-version }}
 

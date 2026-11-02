@@ -160,7 +160,8 @@ def main(argv=None):
     print(out_json)
     if report:
         print(f"\n{len(report)} watched type(s) changed — review whether it enables better IOG "
-              "reconstruction (see docs/design/charger_derived_iog_split_design.md):", file=sys.stderr)
+              "reconstruction — the car/house split beyond Octopus's ~90 days of completed "
+              "dispatches (v4 BL-28):", file=sys.stderr)
         for t, d in report.items():
             if d["added"]:
                 print(f"  + {t}: added {', '.join(d['added'])}", file=sys.stderr)

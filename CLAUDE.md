@@ -31,16 +31,22 @@ raises the floor EMT will import from. A below-floor database must be **refused*
 this in the last v4 release first", not imported with a warning. v5 carries **no v4 heals** —
 the floor is what makes that safe — so a v4 fix is ported as its forward fix only.
 
-**The work now is v5**, in this repo (`RGx01/EMT`). It was seeded from v4 4.5.14 and is being
+**The work now is v5**, in this repo (`RGx01/EMT`, public). It was seeded from v4 4.5.14 and
 deconstructed in the open; the forward fixes from 4.5.15 (#473, #475) and 4.5.16 (#481) were
 ported afterwards, and 4.5.17–4.5.19's VAT forward fixes with them, 4.5.20's gap-fill fix, 4.5.21's four, 4.5.22's VAT resync (as forward code: it waits on Octopus, so the floor alone cannot guarantee it ran; removed in engine step 2d-3, 23 Oct 2026 — a v4 backup from before 13 Oct is opened in v4 first, import spec v26), 4.5.23's hold-back, and 4.5.24's stitch cache (EMT #209, found here first). **Each new v4 release:** port its forward fixes, not its heal, and raise the
-floor if it carries a heal (`v4import/gate.py` `FLOOR_VERSION`, import spec, ROADMAP §E, programme §E, this file).
-Steps: 1 dead code, 2 extract `billing.py`, 3 ReadStore/WriteStore, 4 API consolidated + HTML
-pipeline deleted, 5 schema (11 columns dropped, band moves to `block_segments`; done 10 Oct 2026 in PRs 5a–5c), 6 client +
-first-run fork (the fork done 12 Oct 2026: `/welcome`, the staged restore, run on the Pi — first-run design §9), 7 importer. Workstreams A (store split) and B (job coordinator) merged in PR #2.
-**A is closed (30 Sep 2026)** after five Pi soaks — A design §5e; **B is closed (5 Oct 2026)**,
-all six acceptances met (B §5); **C's eight acceptances are met** (C §0, 3 Oct 2026 — the pre-rendered
-pipeline went on 30 Sep); #31 and C §7.3 closed 5 Oct, so nothing in C is open. The Pi runs from an **SD card**: ROADMAP §A.1 is closed with a caveat — about a minute of 2–6 s commit stalls after a restore or upgrade; the writer-thread design is held in reserve.
+floor if it carries a heal (`v4import/gate.py` `FLOOR_VERSION`, the import spec, `docs/reference/v4-import-and-first-run.md`,
+README, BETA.md, the v4-import issue form, this file — `git grep 4.5.23` finds them).
+The deconstruction (steps 1–7, workstreams A–E) is done; its record is `docs/history/design/` and
+`docs/history/ROADMAP-done.md`. The Pi runs from an **SD card**: about a minute of 2–6 s commit stalls
+after a restore or upgrade; the writer-thread design is held in reserve.
+
+**Repositories (2 Nov 2026).** This repo was created that day from a history rewritten clean of real
+account details; the work before it, with its issues and PRs, is the private `RGx01/EMT-archive`
+(local clone `~/code/EMT-archive`). A `#NNN` before 2 Nov in a history doc, or `RGx01/EMT-archive#NNN`
+in a commit message, is there. **Never push from the archive clone to `RGx01/EMT`.**
+
+**Versions:** CalVer `YYYY.M.PATCH`, betas `2026.11.0b1`, `b2`, …; `main` holds the first beta,
+2026.11.0b1. The slug is `emt`, the direct port 8098. Releasing: `docs/DEVELOPMENT.md`.
 
 **Soaking on the Pi:** `.build/soak_prepare_db.py` → restore via Data Management (through ingress
 since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-management` still works) → `.build/soak.py run` → save the log with
@@ -50,37 +56,16 @@ since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-man
 
 | document | what it settles |
 |---|---|
-| `docs/design/EMT-v5_architecture.md` | the plan, the four layers, the deconstruction steps, open questions |
-| `docs/design/EMT-v5_programme.md` | workstreams A–E in dependency order, and why that order |
-| `docs/design/EMT-v5_import_spec.md` | how v5 reads a v4 database; the floor (§1.1) |
-| `docs/design/EMT-v5_A_storage_design.md`, `…_B_coordinator_design.md`, `…_C_surfaces_design.md` | each workstream's design |
-| `docs/design/EMT-v5_E_importer_design.md` | step 7: the `v4import/` package, the restore wiring, transform order, key allow-lists, PR order |
-| `docs/design/EMT-v5_first_run_design.md` | step 6: the first-run fork — the welcome page, the two-step restore, where the account check runs |
-| `docs/design/EMT-v5_settlement_surfaces_design.md` | ROADMAP BL-85 parts 2–3 and BL-86: settlement state per half-hour and channel (kWh, bill, split), the heatmap views, the detail panel, the range re-fetch (draft) |
-| `docs/design/EMT-v5_bill_and_split_paths_design.md` | the five bill-fetch paths and six EV-split writers, where they disagree, and the consolidation order (draft) |
-| `docs/design/EMT-v5_capped_pricing_by_agreement_design.md` | whether a half-hour is priced under the 6-hour cap by its own agreement or the account's current one; the gates, the soak's latent cases, `capped_at` (draft) |
-| `docs/design/EMT-v5_heatmap_issues_design.md` | the heatmap as the data-quality surface: missing half-hours, collapsing clean days, one cell width; the step before the data tools (draft) |
-| `docs/design/EMT-v5_gap_fill_design.md` | gap fill as an action on the heatmap's selection: what is filled, the preview, the required backup, one job over several runs (draft) |
-| `docs/design/EMT-v5_data_tools_design.md` | ROADMAP BL-88–90: the data tools as actions on a heatmap selection, a data-quality strip on Usage Stats, soft delete (draft) |
-| `docs/design/EMT-v5_device_sensors_design.md` | a device's sensors in one place: one primary, secondaries for history, the v5 upgrade moving Device History's sensors in (draft) |
-| `docs/design/EMT-v5_soft_delete_design.md` | BL-90: HA's reads kept in a table of their own (a recorder hour as the hour), whole half-hours deleted from the heatmap, a refill rebuilding the devices; and the one per-channel delete kept, an imported export (draft) |
-| `docs/design/EMT-v5_data_management_design.md` | Data Management rebuilt around the data heatmap: a health strip, the tools on a selection, a Whole history card, one Backups & storage card, a support file; Charts read-only; corrections on the Billing tab, CAD-only; the sub-pages retired; 7 PRs (decided) |
-| `docs/design/EMT-v5_device_cost_check_design.md` | BL-91: a settled half-hour whose devices cost more than the meter, flagged red, fixed by a re-fetch, reported by the importer; the tolerance a thousandth of a penny (decided) |
-| `docs/design/EMT-v5_published_tariff_final_design.md` | a published tariff's half-hour final by its own agreement's rate, checked, at any age; CSV grey on any tariff (decided) |
-| `docs/design/EMT-v5_G_tariff_agreements_design.md` | ROADMAP §G's first half: the account's agreements stored, read before discovery, fetched in the restore's phase 2 before a v4 import settles; `no_agreement` for another supplier's or a gap's half-hours (decided) |
-| `docs/design/EMT-v5_G2_tariff_prices_design.md` | §G's second half, re-scoped: each agreement's standing charge and unit rates as dated price periods, for the tariff overlay's hover only; Agile's unit rates left out; never read for pricing; minor ticks at each price change (decided) |
-| `docs/design/EMT-v5_battery_sensor_and_device_split_design.md` | BL-76: the device grid split proportional after the EV, one rule for PASS 2 and settle(); a battery sensor caught counting solar flagged loudly, its data unchanged (decided) |
-| `docs/design/EMT-v5_agile_for_everyone_design.md` | BL-103: the Agile card on every account as *Agile in your region* — the product list weekly, the prices daily after 4pm, kept in the store's meta; Agile Outgoing; the last 30 days at Agile's rates (built) |
-| `docs/design/EMT-v5_accumulation_design.md` | BL-104: the spirals into Usage Stats as *Running total* — cards side by side, line or spiral, a series, Lifetime / Year by year, the year's start, a table a year; the Spiral tab retired (built) |
-| `docs/design/EMT-v5_home_eras_design.md` | BL-101: the home's eras — dated notes for display, kept in the store's meta, edited in a modal behind the Charts ⚙︎; markers on Usage Stats, eras found from the data, a bar colours modal (decided; PR 1 built) |
-| `docs/design/EMT-v5_iog_overview_card_design.md` | BL-99: the Overview's smart charging card — cost, the 6-hour allowance per cap-day (≈), peak parts by price with their reason, charging outside a dispatch (built) |
-| `docs/design/EMT-v5_api_ev_device_design.md` | BL-97: the EV of an account with no EV device — "EV", its colour on a Settings tab of its own, kept in the store's meta; a new EV device inherits it (built) |
-| `docs/design/EMT-v5_rate_brackets_design.md` | BL-93: a Usage Stats view of grid import in 2.5p rate brackets per device, day, month and year; one rule for every tariff, no band labels (built) |
-| `docs/design/EMT-v5_help_pages_design.md` | BL-102: the help as a page per section, a reader's guide, a ? on each page, links to v5's repository; 3 PRs (built) |
-| `docs/design/EMT-v5_A1_writer_thread_design.md` | ROADMAP §A.1: why commits stall the loop on the SD card, and the writer thread |
-| `docs/ROADMAP.md` | the open backlog and each item's status — ✅ done on `dev` with its PR (no release has shipped) |
-| `docs/CONTRIBUTING.md`, `docs/DEVELOPMENT.md` | branch model, PR flow, what a change must carry |
+| `docs/reference/` | **how EMT works today** — architecture, pricing and settlement, Data Management and devices, the v4 import and first run, the API. Fix a page in the same PR as the code it describes. |
+| `docs/design/EMT-v5_import_spec.md` | how v5 reads a v4 database; the floor (§1.1). A living contract. |
+| `docs/design/EMT-v5_A1_writer_thread_design.md` | why commits stall the loop on the SD card, and the writer thread held in reserve |
+| `docs/ROADMAP.md` | what is open; done items are in `docs/history/ROADMAP-done.md` |
+| `docs/history/design/` | each design **as it was decided** — the why, and rejected alternatives. Records: never updated, parts describe code since changed. Indexed in `docs/README.md`. |
+| `docs/DEVELOPMENT.md`, `docs/CONTRIBUTING.md` | branches, tests, `.build/serve_local.py`, the repositories, releasing; what a change must carry |
 | `CHANGELOG.md` | user-facing history in the project's voice |
+
+A new design is written in `docs/design/` while it is decided and built; once built it moves to
+`docs/history/design/` with the history header, and what it settled goes into `docs/reference/`.
 
 v4's `docs/ROADMAP_archive.md` records **why** past decisions were made; read it (in the v4 repo)
 before re-opening anything.
@@ -98,10 +83,11 @@ with a query against a database in the repo's test fixtures or a supplied backup
 same sentence, multiply them and confirm they agree with the observed total before writing it
 down.
 
-**Branches and PRs.** Work on `fix/…`, `feat/…` or `chore/…` branched from `dev`; PR to `dev`.
+**Branches and PRs.** Work on `fix/…`, `feat/…`, `chore/…` or `docs/…` branched from `dev`; PR to `dev`.
 Nothing is committed straight to `main` or `dev`. Don't push or open a PR without asking.
 
-**No real customer figures** in the changelog, code comments or issues.
+**No real customer figures or identifiers** in the changelog, code, comments, docs, commits or issues — the
+repository and its whole history are public. Placeholders: MPANs 2600000000001/2, postcode SW1A, account A-0000ABC7.
 
 **Tests must discriminate.** A test that passes both before and after a fix is a guard, not a
 regression test — label it as such. Check new tests fail on the unpatched tree.
@@ -132,5 +118,6 @@ import floor. v5 has none of its own.
 - **Run the suite with `bash run_tests.sh` at the repo root** — it runs each test file in its own
   process (plain `pytest tests/` collides at collection) and creates/removes the test symlinks.
   Keep any virtualenv **outside** the repo.
-- **Doc figures are asserted by tests** (`tests/test_b_design_figures.py`). A change that moves a
-  tool's count must update the doc in the same change.
+- **Doc figures are asserted by tests** (`tests/test_b_design_figures.py`, against
+  `docs/reference/architecture.md`). A change that moves a tool's count must update the page in the
+  same change.

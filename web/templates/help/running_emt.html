@@ -49,9 +49,14 @@ http://&lt;host&gt;:8098/lovelace/heatmap   # the heatmap</pre>
   <pre class="help-pre">docker run -d --name emt \
   -e HA_URL=http://&lt;your HA host&gt;:8123 \
   -e HA_TOKEN=&lt;your token&gt; \
-  -p 8099:8099 \
+  -p 8098:8099 \
   -v /path/to/emt-data:/data/energy_meter_tracker \
   emt</pre>
+  <p>
+    Then open <code>http://&lt;host&gt;:8098</code>. EMT listens on 8099 inside the container and is
+    published on 8098, as the add-on is, so it runs beside v4 (8099) without a clash; change the first
+    number to move it.
+  </p>
   <div class="warn-box">
     ⚠️ <strong>The volume is essential</strong> — without it your data goes with the container. In
     standalone mode backups are kept inside it, in <code>backup/</code>.

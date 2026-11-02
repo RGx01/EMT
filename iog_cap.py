@@ -6,7 +6,7 @@ from `completed` dispatch: the EV portion of a slot bills off-peak until cumulat
 charging reaches the boundary and EV-peak beyond. Charged time is `|energy| ÷ power`,
 with power inferred the way the charge card does (`2 ×` the cap-day's fullest delivered
 half-hour ≈ true charge power), so a part-filled slot counts as the fraction it charged
-and the boundary can fall MID-slot (a blended block). See docs/iog_6hr_cap_design.md.
+and the boundary can fall MID-slot (a blended block). See docs/reference/pricing-and-settlement.md, *The 6-hour cap*.
 
 Everything here is a pure function of (completed dispatch slots + delivered energy,
 timezone), so it is unit-testable and gives the *same* answer live and at settlement. It
@@ -158,7 +158,7 @@ def _band(frac: float, off: str = "off_peak", on: str = "peak") -> str:
 def classify_slot(block_start: str, block_end: str, *, in_off_peak_window: bool,
                   is_dispatch: bool, is_boost: bool = False,
                   boundary=None) -> dict:
-    """4-rate classification for one half-hour (docs/iog_6hr_cap_design.md).
+    """4-rate classification for one half-hour (docs/reference/pricing-and-settlement.md, *The 6-hour cap*).
 
     Pure — the caller resolves the inputs:
       in_off_peak_window : the slot is in the tariff's guaranteed off-peak (night)

@@ -1,8 +1,11 @@
 """
-The B design doc claims to carry no hand counts. This checks that.
+The reference architecture page claims to carry no hand counts. This checks that.
 
-Every figure in `docs/design/EMT-v5_B_coordinator_design.md` is supposed to come
-from a committed tool. Figures in prose drift — this programme's docs have drifted
+Every figure in `docs/reference/architecture.md` (the reachability headline, the
+job coordinator's figures) is supposed to come from a committed tool. Until 2 Nov
+2026 the coordinator figures lived in the B design, now a history record
+(`docs/history/design/EMT-v5_B_coordinator_design.md`) whose figures stay as they
+stood. Figures in prose drift — this programme's docs have drifted
 four times already (85 unreachable that was 88 that was 84; 104/77 write/read that
 was 93/102; 88 GET routes that was 87; "4% adoption" that was 0%). Each time the
 doc was right when written and wrong a week later.
@@ -20,7 +23,7 @@ import sys
 import unittest
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DOC = os.path.join(_ROOT, "docs", "design", "EMT-v5_B_coordinator_design.md")
+_DOC = os.path.join(_ROOT, "docs", "reference", "architecture.md")
 
 
 def _tool(name, *args):
@@ -39,13 +42,14 @@ class TestArchitectureDocHeadline(unittest.TestCase):
 
     def test_the_unreachable_headline_is_current(self):
         d = json.loads(_tool("check_reachability.py", "--json"))
-        doc = os.path.join(_ROOT, "docs", "design", "EMT-v5_architecture.md")
+        # the living page (2 Nov 2026); the architecture record in docs/history/ keeps the past figures
+        doc = os.path.join(_ROOT, "docs", "reference", "architecture.md")
         with open(doc, encoding="utf-8") as fh:
             text = fh.read()
         claim = "%d of %s definitions unreachable" % (
             d["unreachable"], format(d["definitions"], ","))
         self.assertIn(claim, text,
-                      "architecture §4 says something other than %r" % claim)
+                      "docs/reference/architecture.md says something other than %r" % claim)
 
 
 class TestDocFiguresMatchTheTools(unittest.TestCase):
@@ -89,8 +93,10 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
             self.assertIn(h, self.doc, "%s is a member and is not listed" % h)
 
     def test_membership_total(self):
-        self.assertIn("member 23", self.doc, "the live tick was omitted once already")
         d = json.loads(_tool("check_job_membership.py", "--json"))
+        # the live tick was omitted from the count once already
+        self.assertIn("engine_loop_task", d["registered"])
+        self.assertIn("the live\n  tick among them", self.doc)
         self.assertEqual(d["members"], 13)
         self.assertIn("13 members", self.doc)
         d = json.loads(_tool("check_job_guards.py", "--json"))
@@ -105,7 +111,7 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
                     routes.add(n.name)
 
     def test_the_import_does_not_take_the_loop_lock(self):
-        """§4.0 rests on this: the import and the live tick interleave rather
+        """The coordinator record §4.0 rests on this: the import and the live tick interleave rather
         than one blocking the other. If the import ever takes
         `_engine_loop_lock`, live capture stalls for the duration of an import
         and the section is wrong."""
@@ -150,7 +156,7 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
                       % (reg, total))
 
     def test_the_scope_claim(self):
-        """§2.1 — a table-granularity rule is a global lock."""
+        """A table-granularity rule is a global lock (the coordinator record §2.1)."""
         out = _tool("write_scope.py")
         m = re.search(r"(\d+) of (\d+) jobs write `blocks`", out)
         self.assertIsNotNone(m)
@@ -158,7 +164,7 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
         self.assertEqual((m.group(1), m.group(2)), ("7", "7"))
 
     def test_only_two_jobs_declare_a_scope(self):
-        """§2.2 — the correction. `max_blocks`/`limit`/`force` are budgets, not
+        """The coordinator record §2.2 — the correction. `max_blocks`/`limit`/`force` are budgets, not
         scopes, and an earlier draft of that section got this backwards."""
         with open(os.path.join(_ROOT, "engine.py"), encoding="utf-8") as fh:
             src = fh.read()
@@ -174,10 +180,10 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
                 scoped.append(job)
         self.assertEqual(sorted(scoped),
                          ["run_attribution_job", "run_gap_fill_job"])
-        self.assertIn("Only two of eleven", self.doc)
+        self.assertIn("**Two jobs take a scope**", self.doc)
 
     def test_run_exclusive_is_still_the_unused_primitive(self):
-        """§6 q5 rests on this."""
+        """The coordinator record §6 q5 rests on this."""
         hits = []
         for dirpath, dirnames, files in os.walk(_ROOT):
             dirnames[:] = [d for d in dirnames if d not in

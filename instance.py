@@ -45,7 +45,7 @@ _INSTANCE_ID_FILE = "instance_id"
 # Install-scoped (NOT in blocks.db, so it survives a restore): the set of data
 # lineages (db_uuids) whose "restored from another instance" notice the user has
 # dismissed. Keyed by db_uuid so the same source lineage stays quiet across
-# repeated restores. See docs/instance_isolation_design.md.
+# repeated restores. See docs/reference/data-management-and-devices.md, *Two installs on one /share*.
 _ACK_FILE = "acknowledged_db_uuids"
 _MAX_SLUG_LEN = 48
 _DEFAULT_SLUG = "site"
@@ -153,7 +153,7 @@ def resolve_backup_dir(site_name: str | None, *, data_dir: str = DATA_DIR,
     Supervised: `/share/energy_meter_tracker_backup_<site_slug>`, resolved by
     scanning for the directory this instance *owns* (marker == our instance id)
     before falling back to the site-name path. Always silent. See
-    docs/instance_isolation_design.md.
+    docs/reference/data-management-and-devices.md, *Two installs on one /share*.
 
     `current_dir` is accepted for backward compatibility but no longer needed —
     the /share scan finds our directory wherever it is.

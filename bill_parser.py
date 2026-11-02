@@ -1,7 +1,8 @@
 """bill_parser.py — Octopus electricity PDF bill → EMT import CSV (in-EMT).
 
 Turns a set of Octopus **electricity** bills (PDF) into per-channel CSVs that
-conform to EMT's CSV import contract (see docs/bill_to_csv_import_spec.md). The
+conform to EMT's CSV import contract (docs/reference/data-management-and-devices.md,
+*The CSV import format*). The
 parser is the fragile, format-churny part, so it is kept as a self-contained,
 heavily self-checking module: every bill is reconciled against its own printed
 totals and a mismatch is FLAGGED, never silently emitted.

@@ -1,8 +1,8 @@
 """Historical-import CSV core (pure, no I/O).
 
 Parses the Octopus website consumption export (per channel) and derives, from the
-*cost* column, the per-block unit rate and off-peak/peak split — the model in
-`docs/historical_import_design.md` §B:
+*cost* column, the per-block unit rate and off-peak/peak split (the file format:
+docs/reference/data-management-and-devices.md, *The CSV import format*):
 
   - A single block's `cost ÷ kwh` is only a COARSE signal (Octopus rounds it), so
     it's used to *bucket* blocks, never as the stored rate.

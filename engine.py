@@ -9887,8 +9887,8 @@ def _planned_dispatch_slot_energy(planned: list, include_all: bool = False) -> d
     Companion to _planned_dispatch_slots_preview: distributes each dispatch's
     energyAddedKwh (normalised to `delta`) evenly across the 30-min slots it
     covers, so we can persist energy_planned per slot. OBSERVE-ONLY — recorded
-    for diagnostics / future validation, NOT used for billing (see
-    dispatch_validation_design.md). Slots whose dispatch has no delta map to None.
+    for diagnostics / future validation, NOT used for billing. Slots whose
+    dispatch has no delta map to None.
 
     `include_all` skips the smart-charge source filter — used by the OHME history
     path, whose source labels are unreliable so every planned slot is retained.
@@ -9979,8 +9979,8 @@ def _completed_dispatch_slot_energy(completed: list) -> dict:
     filter: completed dispatches come back source='unknown' (the smart-vs-bump
     label is lost on completion), so we key on the dispatch itself, not a label.
     Signed like the planned figure (a charge is negative kWh). OBSERVE-ONLY —
-    recorded to energy_completed for the future settlement-time validation
-    (see dispatch_validation_design.md); NOT used for billing yet.
+    recorded to energy_completed for a future settlement-time validation;
+    NOT used for billing yet.
     """
     out: dict = {}
     for d in completed or []:

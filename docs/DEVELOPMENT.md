@@ -8,9 +8,8 @@
 | `dev` | Integration. Complete work, testable on other machines, not yet released. | PR from a work branch |
 | `fix/…` `feat/…` `chore/…` | One change in progress. Short-lived; deleted after merge. | PR to `dev` |
 
-Branch naming follows the v4 add-on unchanged — `fix/rate-line-zero-on-current-day`,
-`feat/gas-meter`, `chore/update-dependencies`. There is no reason for the two repositories to differ
-here, and muscle memory is worth more than novelty.
+Branch names say what kind of change it is: `fix/rate-line-zero-on-current-day`, `feat/gas-meter`,
+`chore/update-dependencies`, `docs/…` (the same as v4's).
 
 Nothing is committed straight to `main` or `dev`, including by the repository owner. The rule holds
 when there is one developer for the same reason it holds when there are five: the PR is where the
@@ -24,6 +23,33 @@ git switch -c feat/storage-readonly-connections
 git push -u origin feat/storage-readonly-connections
 # open PR → dev
 ```
+
+## Running the tests
+
+```bash
+pip install -r requirements.txt pytest       # in a virtualenv OUTSIDE the repository
+bash run_tests.sh                            # the whole suite: each test file in its own process
+bash run_tests.sh -k settle                  # extra arguments go to pytest, for every file
+```
+
+Always through `run_tests.sh`: it links the modules into `tests/` and runs each file on its own,
+because several install `sys.modules` stubs at import; a plain `pytest tests/` collides at collection.
+Everything runs against temporary SQLite databases — no Home Assistant, no Octopus, no real data. A
+few tests drive the pages' JavaScript in Node, and skip without `node` on the `PATH` (CI skips 8). CI
+runs the suite on every PR to `dev` (Python 3.12, the add-on's), and on `main` on 3.12 and 3.13.
+
+## Looking at a change in the browser
+
+```bash
+python .build/demo_db.py ~/emt-demo                  # a made-up household, the same every time
+python .build/serve_local.py ~/emt-demo              # http://127.0.0.1:8766
+```
+
+`serve_local.py` runs the web server and the engine's loop against `<dir>/blocks.db` — no Home
+Assistant, no Octopus, so nothing new arrives: the pages show what the database holds, and their
+writes work. Point it at a **copy** of a backup's `blocks.db` to see real history; never the live file.
+For EMT reading real sensors, run it standalone against a Home Assistant (the README's *Standalone
+Docker*) or as a local add-on (below).
 
 ## Testing a branch on another machine
 
@@ -56,35 +82,37 @@ clone made before that, such as the Pi soak's `local_emt_soak`, keeps its data o
 
 `docs/screenshots/` is taken from a made-up household, never a real install: `python
 .build/demo_db.py <dir>` writes it (seeded — the same database every time), and a local server on that
-directory serves it, with `EMT_INSTANCE_NAME=Demo` so the footer names no machine. Take each page at
+directory serves it (`EMT_INSTANCE_NAME=Demo python .build/serve_local.py <dir>`, so the footer
+names no machine). Take each page at
 about 1440 × 900, dark theme, the page only.
 
-## Relationship to the v4 add-on's docs
+## The repositories
 
-The v4 repository has its own `CONTRIBUTING.md` and `DEVELOPMENT.md`. What carries across, and what
-deliberately does not:
-
-| v4 content | Here |
+| Repository | Holds |
 |---|---|
-| Branch naming, fork-and-PR workflow, `dev`-not-`main` rule | **Reused as-is** — see above |
-| Bug reports, feature suggestions, adding a supplier, what won't be accepted | **Port when the repo goes public.** Written for external contributors; no audience yet. |
-| Running tests, local development modes, swapping databases between environments | **Port when there is code to run** — the process is unchanged, the commands are not yet true here |
-| Architecture: schema, block lifecycle, billing periods, file structure (~250 of its 375 lines) | **Do not port.** It documents v4's implementation, and the storage model, job boundaries and surfaces are precisely what EMT is changing. |
+| `RGx01/EMT` (this one, public) | EMT from 2 Nov 2026, when its history was rewritten clean of real account details |
+| `RGx01/EMT-archive` (private) | The same work before that: its issues and PRs. A `#NNN` in a history document, or `RGx01/EMT-archive#NNN` in a commit message, is there. |
+| `RGx01/energy-meter-tracker-addon` | v4. Critical fixes only. Its `docs/ROADMAP_archive.md` records why v4's decisions were made. |
 
-That last row is the important one. Copying v4's architecture sections now would produce a document
-that is wrong on the day it lands and drifts further with every workstream — the same failure as the
-v4 roadmap's BL-63 entry, which described a shelved code layer that had since been half-wired, and
-so misled anyone who acted on it.
-
-**So: written as each workstream lands, not up front.** Workstream A writes the storage section
-because A decides what it says. Until then this file covers process only, which is the part that is
-actually true today.
+Never push from a clone of the archive to this repository: the archive's history still holds what
+was scrubbed.
 
 ## Releasing
 
-1. PR `dev` → `main`. The PR body is the release note.
-2. Merge, then tag on `main`: `git tag 2026.10.0 && git push --tags`.
-3. CalVer — `YYYY.M.PATCH`. The month is the release month, not the sprint.
+Versions are CalVer, `YYYY.M.PATCH`, the month the release's: `2026.11.0`, `2026.11.1`, `2026.12.0`.
+A beta is Home Assistant's `bN` on the version it leads to: `2026.11.0b1`, `2026.11.0b2`, then
+`2026.11.0`. `_version_key` (`web/server.py`) sorts a beta before its release.
+
+1. On a branch from `dev`: `config.yaml`'s `version:`, and `CHANGELOG.md`'s `[Unreleased]` becomes
+   that version with its date. PR to `dev`, merge.
+2. PR `dev` → `main`; the PR body is the release note. Merge.
+3. Tag `main` and push the tag: `git tag -s v2026.11.0b1 -m 2026.11.0b1 && git push origin v2026.11.0b1`.
+4. A GitHub release on the tag, marked **pre-release** for a beta.
+
+A supervised install sees the update from `config.yaml` on `main` (the add-on store reads the default
+branch). A standalone install has no store: its *update available* notice reads this repository's
+GitHub releases (`/api/update-check`) — the latest release, or, on a beta, the newest of the last 20
+including pre-releases. So step 4 is what tells standalone users.
 
 ## A pypdf bump
 
@@ -103,13 +131,12 @@ field — never a value. The snapshots live in `<bills>/.pypdf-snapshots/`.
 
 ## Before opening a PR
 
-- The full test suite passes on the **Pi**, not only on a development machine. ARM and SD-card I/O
-  are the target's real constraints; a timing-sensitive test that passes on a laptop proves little.
-- **Run it through `run_tests.sh`.** The suite is file-isolated — several modules install
-  `sys.modules` stubs at import time, so a plain `pytest tests/` collides at collection and a
-  "passing" run that skipped the runner has proved nothing.
+- The full suite passes through `run_tests.sh` (above); CI runs it again on the PR.
+- A change to timing, the engine's loop or the store is soaked on a Pi as well (the owner's soak,
+  `.build/soak.py`): ARM and SD-card I/O are the target's real constraints, and a timing-sensitive
+  test that passes on a laptop proves little.
 - **A PR that removes code satisfies the deletion protocol**
-  ([architecture §4a](design/EMT-v5_architecture.md)): AST trace, suite green, **one deletion per
+  ([architecture §4a](history/design/EMT-v5_architecture.md)): AST trace, suite green, **one deletion per
   commit**, evidence in the message rather than intention. A reviewer should be able to revert a
   single sha if the removal turns out to have been load-bearing.
 - Figures quoted in a commit message or doc name their source and date.
