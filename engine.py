@@ -3164,8 +3164,9 @@ def backout_recorder_attribution(*, run_id=None, meter_id=None,
                 "parents": res.get("parents") or [], "recomputed": recomputed,
                 "from": lo, "to": hi}
     except Exception as e:
-        logger.warning("backout_recorder_attribution failed (run=%s): %s", run_id, e)
-        return {"ok": False, "error": str(e)}
+        logger.error("backout_recorder_attribution failed (run=%s): %s", run_id, e, exc_info=e)
+        # A code, not the exception's text: the route answers the page with it (CodeQL, 2 Nov 2026).
+        return {"ok": False, "error": "backout_failed"}
     finally:
         _backout_job.clear()
         _backout_job.update({"status": "idle"})

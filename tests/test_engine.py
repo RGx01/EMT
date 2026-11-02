@@ -3381,6 +3381,15 @@ class TestBackoutRecorderAttribution(unittest.TestCase):
         self.assertEqual(res["error"], "run_not_found")
         store.delete_recorder_attributed.assert_not_called()   # never touched the DB
 
+    def test_a_failure_returns_a_code_not_the_exception(self):
+        # CodeQL triage (2 Nov 2026): the route answered the page with this dict.
+        store = MagicMock()
+        store.delete_recorder_attributed.side_effect = RuntimeError("/data/secret")
+        engine.get_store = lambda: store
+        engine.get_block_minutes = lambda: 30
+        res = engine.backout_recorder_attribution(meter_id="ev_charger")
+        self.assertEqual(res, {"ok": False, "error": "backout_failed"})
+
     def test_concurrent_backout_refused(self):
         # While one back-out holds the single-flight lock, a second is refused
         # (atomically) rather than racing it on the shared DB connection.

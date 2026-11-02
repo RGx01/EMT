@@ -5779,6 +5779,31 @@ class TestErrorRepliesKeepTheErrorInTheLog(unittest.TestCase):
         self.assertIn("the log has the detail", server._delete_job["error"])
 
 
+class TestTheLastTwoEchoes(unittest.TestCase):
+    """CodeQL triage (2 Nov 2026): the BottleCapDave detection and the attribution undo still
+    answered with an exception's text after the generic 500s."""
+
+    def test_detection_failure_says_so_without_the_exception(self):
+        cli = make_client()
+        with patch.object(server, "_ha_client", MagicMock()), \
+             patch.object(server, "_run_on_engine_loop",
+                          side_effect=RuntimeError("/data/secret")):
+            r = cli.get("/api/detect-bcd")
+        j = r.get_json()
+        self.assertFalse(j["found"])
+        self.assertEqual(j["detail"], "detection_failed")
+
+    def test_undo_failure_answers_without_the_exception(self):
+        import engine
+        engine.attribution_running = lambda meter_id=None: False
+        engine.backout_running = lambda: False
+        engine.backout_recorder_attribution = lambda **kw: {"ok": False, "error": "/data/secret"}
+        r = make_client().post("/api/historical/attribute/backout", json={"run_id": "r1"})
+        self.assertEqual(r.status_code, 500)
+        self.assertNotIn("secret", r.get_json()["error"])
+        self.assertIn("the log has the detail", r.get_json()["error"])
+
+
 class TestAtomicRestoreWrite(unittest.TestCase):
     """_atomic_restore_write must never leave a truncated/zero-length target: an
     interrupted restore leaves either the OLD file or the COMPLETE new one."""
