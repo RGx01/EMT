@@ -2941,7 +2941,11 @@ def _error_text(where, e) -> str:
     has no login (CodeQL's first scan, 2 Nov 2026). The log has the message and the traceback,
     under the same time."""
     from datetime import datetime as _dt
+    from kraken_api_client import person_message
     logger.error("%s: %s", where, e, exc_info=e)
+    msg = person_message(e)               # Octopus's, in plain words: what to do, no URL
+    if msg:
+        return msg
     return ("Something went wrong (%s, %s) — the log has the detail."
             % (where, _dt.now().strftime("%H:%M:%S")))
 

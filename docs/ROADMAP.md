@@ -58,13 +58,11 @@ missing and where it stands; the done history, with every decision's story, is i
   closing when they reach `main`: the backup and upload path checks (#22), unexpected errors
   answered with where and when instead of the exception's text (#23, #24, and the BottleCapDave
   detection and attribution undo after them), the tests' temporary files (#24). Dismissed with a reason each (27): replies carrying EMT's own messages,
-  the support file's diagnostics, the outward code and site name in logs, the page cookie. Still
-  open: **nine engine functions put `str(e)` in a status or reply the pages read** (14 sites in `engine.py`:
-  the API import, gap fill, attribution, re-fetch preview and apply, the ask dry run, settle
-  parity, site discovery). CodeQL does not follow the flow from the engine into the route, so none
-  was flagged; the same rule applies — `_error_text`, the detail in the log — but some of those
-  texts are Octopus's own answers a person needs (a rate limit, a refused key), so each wants a
-  look rather than a sweep.
+  the support file's diagnostics, the outward code and site name in logs, the page cookie. And
+  beyond what CodeQL traces: the engine's job statuses and replies (18 sites) now say an Octopus
+  error in plain words (`kraken_api_client.person_message`) — the error's own text named the URL,
+  with the account number, MPAN and serial — and anything else as where and when. Left: the
+  fixed alerts close when `dev` reaches `main`.
 - **`WriteStore` and `store_access.writer()` have no production caller.** The engine writes through
   its own `BlockStore` and pages hand writes to it (`_engine_write`); the typed write path is unused.
   A candidate for the deletion protocol.
