@@ -114,6 +114,20 @@ branch). A standalone install has no store: its *update available* notice reads 
 GitHub releases (`/api/update-check`) — the latest release, or, on a beta, the newest of the last 20
 including pre-releases. So step 4 is what tells standalone users.
 
+## Dependabot
+
+Two kinds of PR, and they arrive on different branches:
+
+- **Version updates** (weekly, grouped; pypdf on its own) open against `dev`, as `dependabot.yml`'s
+  `target-branch` says.
+- **Security updates** (as soon as an advisory lands) open against `main`: GitHub raises them on the
+  default branch and they ignore `target-branch`. **Retarget one to `dev` before merging** (*Edit* next
+  to the PR's title, then the base branch). Merged on `main`, it puts a commit there that `dev`
+  lacks, and the next `dev` → `main` PR conflicts — 2 Nov 2026, #12 and #14; #16 merged `main` back.
+
+If one is merged on `main` anyway, merge `main` into a branch from `dev`, keep `dev`'s side of any
+conflict, and PR it to `dev` as a merge commit (not squashed — a squash loses the link to `main`).
+
 ## A pypdf bump
 
 `bill_parser` reads a PDF bill's text through pypdf and parses it with regular expressions, so a
@@ -122,9 +136,13 @@ text) cannot see it. Dependabot raises pypdf on its own PR; merge it only once t
 run against bills kept **outside the repo** — no bill, redacted or not, and no snapshot is committed:
 
 ```bash
-python3 .build/pypdf_gate.py snapshot ~/bills                         # with the pinned pypdf
-python3 .build/pypdf_gate.py compare ~/bills --against <pinned>       # in a venv outside the repo, candidate installed
+python3 -m venv ~/pypdf-old && ~/pypdf-old/bin/pip install pypdf==<pinned>
+~/pypdf-old/bin/python .build/pypdf_gate.py snapshot ~/bills
+python3 -m venv ~/pypdf-new && ~/pypdf-new/bin/pip install pypdf==<candidate>
+~/pypdf-new/bin/python .build/pypdf_gate.py compare ~/bills --against <pinned>
 ```
+
+The parser needs nothing but pypdf, so two throwaway environments outside the repo are enough.
 
 `compare` exits 1 if any bill parses differently, naming each by a hash and each difference by its
 field — never a value. The snapshots live in `<bills>/.pypdf-snapshots/`.
