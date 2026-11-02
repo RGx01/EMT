@@ -8027,8 +8027,13 @@ def _staged_path(token):
     the file must still be in DATA_DIR (first-run design §2.2)."""
     if not isinstance(token, str) or not _STAGED_RE.match(token):
         return None
-    p = os.path.join(DATA_DIR, token)
-    return p if _in_data_dir(p) and os.path.isfile(p) else None
+    # Resolved and contained here, before the file is asked about — CodeQL does not see the
+    # check inside _in_data_dir as a guard (as _resolve_backup_zip, #29).
+    folder = os.path.realpath(DATA_DIR)
+    p = os.path.realpath(os.path.join(folder, token))
+    if not p.startswith(folder + os.sep) or os.path.dirname(p) != folder:
+        return None
+    return p if os.path.isfile(p) else None
 
 
 def _remove_stale_stages(max_age=_STAGED_MAX_AGE_S, keep=None):
@@ -8044,7 +8049,9 @@ def _remove_stale_stages(max_age=_STAGED_MAX_AGE_S, keep=None):
         if not (_STAGED_RE.match(n) or _PART_RE.match(n)):    # an abandoned upload's pieces too
             continue
         p = os.path.join(DATA_DIR, n)
-        if p == keep or running:
+        # Resolved both sides: _staged_path / _part_path return the real path, and DATA_DIR may
+        # be reached through a link.
+        if (keep and os.path.realpath(p) == os.path.realpath(keep)) or running:
             continue
         try:
             if now - os.path.getmtime(p) > max_age:
@@ -8260,8 +8267,11 @@ _PART_MAX_BYTES = 1024 * 1024 * 1024          # a backup over 1 GB is not one
 def _part_path(upload_id):
     if not isinstance(upload_id, str) or not _PART_RE.match(upload_id):
         return None
-    p = os.path.join(DATA_DIR, upload_id)
-    return p if _in_data_dir(p) and os.path.isfile(p) else None
+    folder = os.path.realpath(DATA_DIR)              # contained before asked about (_staged_path)
+    p = os.path.realpath(os.path.join(folder, upload_id))
+    if not p.startswith(folder + os.sep) or os.path.dirname(p) != folder:
+        return None
+    return p if os.path.isfile(p) else None
 
 
 @app.route("/api/restore/upload/begin", methods=["POST"])
