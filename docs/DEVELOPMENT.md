@@ -109,7 +109,7 @@ field — never a value. The snapshots live in `<bills>/.pypdf-snapshots/`.
   `sys.modules` stubs at import time, so a plain `pytest tests/` collides at collection and a
   "passing" run that skipped the runner has proved nothing.
 - **A PR that removes code satisfies the deletion protocol**
-  ([architecture §4a](design/EMT-v5_architecture.md)): AST trace, suite green, **one deletion per
+  ([architecture §4a](history/design/EMT-v5_architecture.md)): AST trace, suite green, **one deletion per
   commit**, evidence in the message rather than intention. A reviewer should be able to revert a
   single sha if the removal turns out to have been load-bearing.
 - Figures quoted in a commit message or doc name their source and date.

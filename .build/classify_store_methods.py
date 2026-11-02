@@ -3,7 +3,7 @@
 Partition BlockStore's methods into READ-ONLY and WRITE, by the SQL they execute.
 
 WHY THIS EXISTS
-    Workstream A (docs/design/EMT-v5_A_storage_design.md) splits the store into
+    Workstream A (docs/history/design/EMT-v5_A_storage_design.md) splits the store into
     `ReadStore` and `WriteStore` so that a read path CANNOT write — not by
     convention but because the object has no such attribute. That split has to be
     drawn somewhere, and drawing it by hand across 204 methods is how you end up

@@ -134,7 +134,7 @@ class WhatMustSurvive(unittest.TestCase):
         self.assertNotIn("run_settled_ev_split_heal", fns)
         self.assertIn("settle_facts", fns)
         note = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                                 "docs", "design", "EMT-v5_bill_and_split_paths_design.md"),
+                                 "docs", "history", "design", "EMT-v5_bill_and_split_paths_design.md"),
                     encoding="utf-8").read()
         self.assertIn("### 7.3 The runtime split heal — removed", note)
 

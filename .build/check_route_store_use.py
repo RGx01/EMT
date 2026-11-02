@@ -3,7 +3,7 @@
 Which web routes reach the WRITER connection — the adoption guard for workstream A.
 
 WHY THIS EXISTS
-    `docs/design/EMT-v5_A_storage_design.md` §5 acceptance 3 calls a structural
+    `docs/history/design/EMT-v5_A_storage_design.md` §5 acceptance 3 calls a structural
     test against writer use by route handlers "the single most important item on
     this list", because the read companion already exists in v4 and sits at 4%
     adoption. A safe path that is opt-in stays opt-in. Nothing about the wrong

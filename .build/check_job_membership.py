@@ -16,7 +16,7 @@ structural test first; route adoption went 0% -> 100% and the baseline now holds
 it there. This is the same device for B.
 
 WHAT IT MEASURES
-    The 23 members named in docs/design/EMT-v5_B_coordinator_design.md §4, and
+    The 23 members named in docs/history/design/EMT-v5_B_coordinator_design.md §4, and
     whether each one declares itself to the coordinator. A member declares by
     carrying a `@job(...)` decorator (engine jobs and, once ported, the bulk
     route handlers) — the surface the design specifies. None do yet, so the
