@@ -3033,12 +3033,15 @@ def _resolve_backup_zip(zipname: str):
     zipname = os.path.basename(zipname or "")          # strip any path components
     if not zipname or "/" in zipname or "\\" in zipname or not zipname.endswith(".zip"):
         return None, ("Invalid backup name", 400)
-    folder = os.path.join(_share_backup_dir(), "backups")
-    path = os.path.join(folder, zipname)
-    if not os.path.exists(path):
+    # Resolved and contained BEFORE the file system is asked anything about it (CodeQL on #28:
+    # an exists() ahead of the check let a name be probed), and here rather than in a helper,
+    # where the check is visible as the guard it is.
+    folder = os.path.realpath(os.path.join(_share_backup_dir(), "backups"))
+    path = os.path.realpath(os.path.join(folder, zipname))
+    if not path.startswith(folder + os.sep) or os.path.dirname(path) != folder:
+        return None, ("Invalid backup name", 400)      # a link out of the folder
+    if not os.path.isfile(path):
         return None, ("Backup not found", 404)
-    if not _directly_in(path, folder) or not os.path.isfile(path):
-        return None, ("Invalid backup name", 400)      # a link out of the folder, or not a file
     return path, None
 
 
