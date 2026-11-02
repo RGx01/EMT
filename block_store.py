@@ -2146,9 +2146,13 @@ class BlockStore:
     # ── IOG 6-hour cap boundary (shared by settlement pricing + the day chart) ──
     _BUMP_SOURCES = ("bump-charge", "boost")
 
-    def cap_day_boundary(self, block_start: str, tz_name: str):
+    def cap_day_boundary(self, block_start: str, tz_name: str, exclude=None):
         """The 6-hour-cap boundary for the noon->noon cap-day this slot belongs to, as
         `(boundary_slot, boundary_frac)` -- or None when the cap is never reached.
+
+        `exclude(slot_start) -> bool` leaves out a completed slot the source names cannot: a bump
+        Octopus labels `unknown` and EMT prices at peak, or one its bill priced at peak
+        (engine.cap_excluded; 1 Nov 2026, the user: bumps and peak-costed charges counted).
 
         The cap measures ACTUAL smart-charge time (design 4-rate rules): a BUMP/BOOST slot
         bills at PEAK and therefore must NOT advance the cap -- a peak-billed slot can't
@@ -2175,7 +2179,8 @@ class BlockStore:
         except Exception:
             return None
         feed = [(r["raw_start"], r["raw_end"], r["energy_kwh"])
-                for r in rows if r["slot_start"] not in boost]
+                for r in rows if r["slot_start"] not in boost
+                and not (exclude is not None and exclude(r["slot_start"]))]
         return iog_cap.cap_day_boundaries(feed, tz_name, iog_cap.CAP_HOURS).get(key)
 
     def prune_dispatch_slots(self, days: int = 90) -> int:
