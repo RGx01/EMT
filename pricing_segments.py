@@ -7,7 +7,9 @@ A segment is one homogeneously-priced slice of the block's grid import:
         band, attribution : OPEN labels (strings). Storage and surfaces NEVER switch on
                             them — only the classifier assigns meaning. This is what makes
                             a new rate dimension (a battery band, a heat-pump attribution)
-                            a one-place change. See docs/design/segment_pricing_refactor_design.md.
+                            a one-place change. (Why segments: v4 stored the EV split, the ex-VAT
+                            figures and the device prices beside the rate, so every path that
+                            changed the rate had to remember all three; it kept not happening.)
         exc_rate          : per-segment ex-VAT rate — VAT is a property of the slice, so a
                             VAT holiday / per-band quirk is absorbed with no special-casing.
 

@@ -47,7 +47,62 @@ required `pre-purge-import` backup, and keeps `ha_reads`.
   new version before it starts (`pre_upgrade_<version>`, a raw copy).
 - A daily copy of `blocks.db` beside them, at about 03:15 or 03:45 local.
 - The `/share` folder is claimed by an instance-id marker, so two installs never share or restore each
-  other's backups (`instance.py`).
+  other's backups (`instance.py`) — below.
+
+### Two installs on one `/share`
+
+`/data` is per add-on, so each install's `blocks.db` is its own; `/share`, where the backups live, is
+shared by every add-on on the machine. Restoring one install's backup into another on the same
+machine is routine (a test install restored from the real one), and a backup carries the site name.
+
+- **Two identities.** `install_id` (`/data/energy_meter_tracker/instance_id`) is minted once per
+  install and never changes on a restore; it alone owns a backup folder, through the folder's
+  `.emt_instance` marker. `db_uuid` (`store_meta`) travels with the data and marks its lineage. A
+  native database has `db_uuid == install_id`; a restored one carries the source's.
+- **Why ownership is the install's.** Keyed on the data's `db_uuid`, a restored install would adopt
+  the source install's live backup folder — two installs writing one folder.
+- **Scan first** (`resolve_backup_dir`): the folder whose marker is this install's id, wherever it is
+  and whatever the site is now called. Without the scan, a restored install would follow the source's
+  site name, find that folder owned, and make a new folder at every start. A site rename moves the
+  folder when the new name is free; otherwise the owned folder is kept. Names are cosmetic; the marker
+  decides. Ownership is by identity, never by whether the other install is running.
+- **The notice.** A database with `db_uuid != install_id` raises one dismissible notice, "restored
+  data from another instance" (`/api/instance/notice`). Dismissals are kept per `db_uuid` in `/data`
+  (`acknowledged_db_uuids`), not in `blocks.db`, so they survive the next restore of the same source.
+- **Not handled:** a reinstall that lost `/data` gets a new id and does not recognise its old folder;
+  its backups are still on `/share` and can be restored by hand. Standalone keeps backups in its own
+  data volume, so none of this applies.
+
+## The CSV import format
+
+One file per channel (import, export); the bill parser (`bill_parser.py`) writes the same format from
+PDF bills. Headers are matched by substring, ignoring case and order (`csv_import.parse_octopus_csv`):
+
+```
+Start, End, Consumption (kWh), Unit Rate (p/kWh), Estimated Cost Inc. Tax (p), Standing Charge Inc. Tax (p)
+```
+
+and, optionally, `Unit Rate Exc. Tax (p/kWh)` and `Estimated Cost Exc. Tax (p)`. The import page's
+*Template* button writes a file for a span with every half-hour's Start and End filled in
+(`csv_import.TEMPLATE_HEADERS`).
+
+- **`Start` needs its offset** (`2024-07-03T00:00:00+01:00`); a row without one is refused. On the
+  night the clocks go back, the repeated 01:00 and 01:30 carry `+01:00` then `+00:00`, or they land on
+  one UTC half-hour.
+- **Rate first.** A row with a unit rate is costed rate × kWh, and its cost column is ignored; a row
+  with only a cost (Octopus's own export) uses the cost. Both inc-VAT, in pence. The ex-VAT columns
+  follow the same rule and never change an inc-VAT figure.
+- **Standing charge** is summed per day: the day's charge on one row, or a 48th on each — never the
+  day's charge on every row.
+- **Channels:** import is written first, export merges onto the same half-hours by `Start`.
+- **What it may write** (`BlockStore.apply_csv_import`): an empty half-hour is filled. A half-hour
+  already held is left as it is, except: an earlier import over an agreement Octopus does not cost may
+  be replaced; and a half-hour whose kWh has settled and which has no bill takes the CSV's cost as its
+  bill, its kWh and devices untouched — on an Intelligent tariff, when the CSV's kWh is the settled kWh
+  and its cost ÷ kWh is one of the two rates (not a blend). Live and settled readings and user
+  corrections are never replaced.
+- A `pre-csv-import` backup is taken first; the import's half-hours can be deleted as imported
+  history.
 
 ## The support file
 

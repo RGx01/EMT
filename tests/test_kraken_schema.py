@@ -1448,7 +1448,7 @@ if __name__ == "__main__":
     unittest.main()
 
 class TestDispatchLifecycleColumns(_StoreBase):
-    """3.1.x observe-only dispatch lifecycle capture (dispatch_validation_design.md):
+    """3.1.x observe-only dispatch lifecycle capture:
     state + planned/completed energy persisted per slot, no billing effect."""
 
     def test_lifecycle_columns_present(self):

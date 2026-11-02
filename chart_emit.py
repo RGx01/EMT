@@ -5,8 +5,8 @@ Given a day's blocks (each carrying the derived values reprice wrote: the main i
 and the EV-attributed segments), it returns the per-slot rate SERIES the charts plot: one
 house series (every house line shares it) and one EV series. ALL of "what rate applies each
 half-hour" lives here, once — so the chart is a pure plotter. If a rate line looks wrong the
-fix is here, never in energy_charts. See the presentation read-contract in
-docs/design/4.4.0_iog_pricing_and_reprice_design.md.
+fix is here, never in energy_charts. The read contract (v4 4.4.0): the chart owns how it draws
+(step shape, colour, gaps, hover), never what the value is.
 
 Rate lines are DATA where the block has usage/split data, TARIFF-FILL where it doesn't:
   HOUSE — where the house genuinely drew, its priced rate (which already carries the

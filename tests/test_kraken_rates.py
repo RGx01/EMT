@@ -263,7 +263,7 @@ class TestBuildRateScheduleFetchErrors(unittest.TestCase):
 
 class TestIsOffPeak(unittest.TestCase):
     """RateSchedule.is_off_peak — the agreement-driven guaranteed-window primitive
-    for the IOG 6-hour-cap classifier (docs/iog_6hr_cap_design.md build piece 1)."""
+    for the IOG 6-hour-cap classifier."""
 
     def _iog_day_night(self):
         # IOG-style banded schedule: off-peak 23:30–05:30 (5.5p), peak otherwise
