@@ -10,10 +10,6 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Before the first release
 
-- **Going public.** The repository's visibility, then: rulesets on `main` and `dev` (a PR, signed
-  commits, the tests check, no force pushes); secret scanning with push protection; Dependabot
-  alerts; private vulnerability reporting (SECURITY.md links its form); CodeQL; the labels the issue
-  templates apply (`bug`, `v4-import`, `beta-feedback`).
 - **The import floor, pinned on release day.** `v4import/gate.py` `FLOOR_VERSION` is 4.5.23, the last
   v4 release that added a heal. It is set again from what v4 has reached when EMT's first release is
   cut, and the positive import fixture retaken at that version.
@@ -58,6 +54,23 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Code to tidy
 
+- **CodeQL's first scan: 213 open alerts** (2 Nov 2026, the default setup; Security → Code scanning).
+  None looked urgent on a first read; each kind wants a decision, and a dismissal its reason:
+  - *Path injection* (19, `web/server.py`: the backup, restore and upload routes). The names are
+    checked — no `/` or `\` in a backup's name, upload tokens matched by pattern and kept inside the
+    data folder — in ways CodeQL does not recognise. Review each route, and make the check one
+    helper it can see (e.g. a resolved path that must stay under the backups folder; `..` passes the
+    slash check today, and what happens next is untraced).
+  - *Stack-trace exposure* (119, `web/server.py`): routes answer an error with `str(e)`. The
+    exception's message, not a traceback — but the direct port has no login. A generic message,
+    the detail in the log.
+  - *Clear-text logging* (11): the postcode's outward code and the site name in log lines. Low risk
+    (the support file hides the postcode); decide whether to keep them.
+  - *Insecure temporary file* (62, all in `tests/`): not shipped; fix with `tempfile` or dismiss as
+    test code.
+  - *Cookie injection* (1, `emt_last_page`, checked against a fixed list) and *weak hashing* (1,
+    SHA-1 for a property id in `block_store.py`, not security): false positives — dismiss.
+
 - **`WriteStore` and `store_access.writer()` have no production caller.** The engine writes through
   its own `BlockStore` and pages hand writes to it (`_engine_write`); the typed write path is unused.
   A candidate for the deletion protocol.
@@ -77,6 +90,13 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Resolved since the record
 
+- **Going public** — the repository public on 2 Nov 2026, with: rulesets on `main` (a PR, signed
+  commits, no force push or deletion) and `dev` (the same without signatures); no required check,
+  because a docs-only PR skips the tests and a required check that never reports would block it;
+  secret scanning with push protection (0 alerts on the rewritten history); Dependabot alerts and
+  security updates (all 30 alerts were against the old pins, already fixed); private vulnerability
+  reporting; CodeQL's default setup (its alerts are under *Code to tidy*); the labels `bug`,
+  `v4-import`, `beta-feedback`. 2026.11.0b1 tagged and released as a pre-release the same day.
 - **The licence** — EMT is under the PolyForm Noncommercial License 1.0.0 from 2 Nov 2026 (it was
   v4's Business Source License 1.1): no commercial use without permission, and no date on which that
   lifts — BUSL's 4-year change to GPL would have let any version be sold four years on.
