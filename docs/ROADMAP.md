@@ -1,6 +1,6 @@
 # Roadmap
 
-*What is open, as of 2026.11.0b1 (the first beta, 2 Nov 2026). Each item says what is wrong or
+*What is open, as of 2026.11.0b2 (2 Nov 2026). Each item says what is wrong or
 missing and where it stands; the done history, with every decision's story, is in
 [history/ROADMAP-done.md](history/ROADMAP-done.md), and what users see is in the
 [changelog](../CHANGELOG.md). Numbers like BL-80 carry over from that record. A PR number written
