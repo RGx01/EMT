@@ -87,7 +87,7 @@ services:
     container_name: emt
     restart: unless-stopped
     ports:
-      - "8099:8099"                     # host:container — change the first to move it
+      - "8098:8099"                     # host:container — change the first to move it
     environment:
       - HA_URL=http://homeassistant:8123   # your Home Assistant, by name or address
       - HA_TOKEN=your_long_lived_access_token
@@ -100,14 +100,15 @@ services:
 docker compose up -d --build emt
 ```
 
-Open `http://<host>:8099`. The volume is essential — without it your data goes with the container.
+Open `http://<host>:8098`. EMT listens on 8099 inside its container and is published on 8098, as the
+add-on is, so it never collides with v4 (published on 8099). The volume is essential — without it your data goes with the container.
 In standalone mode the backups are kept inside it, in `backup/`, and the log in `addon.log`.
 
 **To update:** `git pull` in your clone, then `docker compose up -d --build emt`. The volume, and with
 it your data, is kept.
 
 **In Home Assistant's sidebar:** Settings → Dashboards → **Add dashboard → Webpage**, with the URL
-`http://<host>:8099`. (The sidebar's own add-on panel is the Supervisor's, so standalone has none.)
+`http://<host>:8098`. (The sidebar's own add-on panel is the Supervisor's, so standalone has none.)
 
 ## Coming from v4
 
@@ -118,7 +119,8 @@ it your data, is kept.
    checks the backup before anything is written, then brings the history across.
 4. Run both for as long as you like and compare. When you're happy, stop v4.
 
-The two don't collide: v4's slug is `energy_meter_tracker` and its port 8099; EMT's are `emt` and 8098.
+The two don't collide: v4's slug is `energy_meter_tracker` and its port 8099; EMT's are `emt` and 8098 —
+as an add-on or in standalone Docker.
 Each keeps its own backups folder in `/share`.
 
 ## Updating
