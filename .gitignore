@@ -24,6 +24,10 @@ venv/
 /scratch/
 /tmp/
 
+# ── Local tooling and soak output ─────────────────────────────────────────────
+.claude/
+/soak-*/
+
 # ── Editor / OS ──────────────────────────────────────────────────────────────
 .DS_Store
 .vscode/

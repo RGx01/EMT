@@ -1,0 +1,16 @@
+name: Beta feedback
+description: Anything else — what worked, what was confusing, what's missing.
+labels: ["beta-feedback"]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: EMT version
+      placeholder: 2026.11.0b1
+  - type: textarea
+    id: feedback
+    attributes:
+      label: Your feedback
+      description: The page or feature, and what you think. Wording that's unclear is worth reporting too.
+    validations:
+      required: true

@@ -5,6 +5,9 @@ updates:
   # grouped into a single PR to keep the noise down.
   - package-ecosystem: "pip"
     directory: "/"
+    # PRs go to dev, as every change does (docs/CONTRIBUTING.md); Dependabot reads the default
+    # branch's copy of this file wherever it raises them.
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
@@ -18,3 +21,13 @@ updates:
         # (.build/pypdf_gate.py, docs/DEVELOPMENT.md "A pypdf bump").
         exclude-patterns:
           - "pypdf"
+
+  # The workflows' actions, pinned to commit SHAs (a tag can be moved; a SHA cannot). Dependabot
+  # keeps the pins current and raises a major version as its own PR.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "dev"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
