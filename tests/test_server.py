@@ -5745,6 +5745,40 @@ class TestBackupDownloadDelete(unittest.TestCase):
         self.assertFalse(os.path.exists(p))     # the file is gone
 
 
+class TestErrorRepliesKeepTheErrorInTheLog(unittest.TestCase):
+    """CodeQL's first scan (2 Nov 2026): 96 routes answered an unexpected exception with its own
+    message, `str(e)`, on a port with no login. They now say where and when, and log the rest."""
+
+    def test_a_route_500_does_not_echo_the_exception(self):
+        cli = make_client()
+        with patch.object(server, "_resolve_backup_zip",
+                          side_effect=RuntimeError("/data/secret/path near SELECT x FROM y")), \
+             self.assertLogs(server.logger, level="ERROR") as logs:
+            r = cli.post("/api/backup/zip-entries", json={"zip": "a.zip"})
+        self.assertEqual(r.status_code, 500)
+        err = r.get_json()["error"]
+        self.assertNotIn("secret", err)
+        self.assertNotIn("SELECT", err)
+        self.assertIn("api_backup_zip_entries", err)          # where, to find it in the log
+        self.assertIn("the log has the detail", err)
+        logged = "\n".join(logs.output)
+        self.assertIn("/data/secret/path", logged)             # the detail is kept, with its
+        self.assertIn("Traceback", logged)                     # traceback
+
+    def test_a_background_job_error_does_not_echo_the_exception(self):
+        import engine
+        make_client()
+        server._delete_job.clear()
+        with patch.object(engine, "set_delete_active", create=True), \
+             patch.object(server, "_stop_running_import", return_value=True), \
+             patch.object(server, "_safety_backup", side_effect=RuntimeError("/data/secret")), \
+             self.assertLogs(server.logger, level="ERROR"):
+            server._delete_worker("2026-03-01", "00:00", "2026-03-01", "23:59", None, "UTC", False)
+        self.assertEqual(server._delete_job.get("status"), "error")
+        self.assertNotIn("secret", server._delete_job["error"])
+        self.assertIn("the log has the detail", server._delete_job["error"])
+
+
 class TestAtomicRestoreWrite(unittest.TestCase):
     """_atomic_restore_write must never leave a truncated/zero-length target: an
     interrupted restore leaves either the OLD file or the COMPLETE new one."""
