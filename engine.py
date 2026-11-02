@@ -630,16 +630,45 @@ def _iog_slot_is_boost(block_start: str, store=None) -> bool:
     return any((r["source"] or "") in _IOG_BUMP_SOURCES for r in rows)
 
 
+def cap_excluded(slot_start: str, store=None) -> bool:
+    """Whether a completed charge in this half-hour is left out of the 6-hour cap: it was not a
+    smart charge billed off-peak, so it cannot use the allowance (1 Nov 2026, the user: "bumped
+    charges and peak rate costed charges shouldn't count toward 6hr limit").
+    - a bump or boost by its source (`_iog_slot_is_boost`) — which Octopus no longer sends: on the
+      user's account every planned dispatch reads `smart-charge` and every completed one `unknown`;
+    - the bill priced the EV's bucket at peak (`_bucket_bands`, Octopus's own rate);
+    - with no EV bucket billed, a bump by EMT's own rule: outside the guaranteed window, the
+      dispatch lifecycle's verdict is peak (`_lifecycle_band` — completed with no plan or start while
+      EMT was recording), as `predicted_band` prices it.
+    A charge past the 6 hours not billed yet still counts, so the boundary stays where it is."""
+    st = store if store is not None else _store
+    if st is None:
+        return False
+    try:
+        if _iog_slot_is_boost(slot_start, st):
+            return True
+        bd = st.get_measured_breakdown(slot_start)
+        if bd and bd.get("ev_kwh") is not None and float(bd["ev_kwh"]) > 1e-9:
+            return _bucket_bands(slot_start, bd).get("ev") == "peak"
+        sched = _kraken_rate_schedules.get("import")
+        if sched is None or sched.is_off_peak(slot_start) is True:
+            return False
+        return _lifecycle_band(slot_start, "off_peak",
+                               was_online=not st.has_interpolated_block(slot_start)) == "peak"
+    except Exception:
+        return False
+
+
 def _iog_cap_day_boundary(block_start: str, tz_name: str, store=None):
     """The 6-hour cap boundary for this slot's noon→noon cap-day, or None. Thin wrapper
     over BlockStore.cap_day_boundary — the SINGLE source that unions the cap-day's
-    completed dispatch windows and EXCLUDES bump/boost energy (a peak-billed slot does
-    not advance the cap). `store` defaults to the module store."""
+    completed dispatch windows and EXCLUDES what cannot use the allowance (`cap_excluded`:
+    a bump, a peak-billed charge). `store` defaults to the module store."""
     st = store if store is not None else _store
     if st is None:
         return None
     try:
-        return st.cap_day_boundary(block_start, tz_name)
+        return st.cap_day_boundary(block_start, tz_name, exclude=lambda s: cap_excluded(s, st))
     except Exception:
         return None
 

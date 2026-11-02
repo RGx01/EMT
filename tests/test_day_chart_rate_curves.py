@@ -52,7 +52,7 @@ class _CapStub:
     its (boundary_slot, boundary_frac). build_day only calls cap_day_boundary()."""
     def __init__(self, boundary_by_capday):
         self._b = boundary_by_capday or {}
-    def cap_day_boundary(self, ts, tz_name):
+    def cap_day_boundary(self, ts, tz_name, exclude=None):
         import iog_cap
         return self._b.get(iog_cap.cap_day_key(ts, tz_name))
 

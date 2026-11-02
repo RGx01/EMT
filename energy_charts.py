@@ -1046,7 +1046,9 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
                     _ts = (_base_oc + _td_oc(minutes=_hh * block_minutes)).isoformat()
                     _k = _iogc.cap_day_key(_ts, timezone_name)
                     if _k not in _bcache:
-                        _bcache[_k] = store.cap_day_boundary(_ts, timezone_name)
+                        import engine as _eng_oc       # the cap's one rule (engine.cap_excluded)
+                        _bcache[_k] = store.cap_day_boundary(
+                            _ts, timezone_name, exclude=lambda s: _eng_oc.cap_excluded(s, store))
                     # < 1.0: boundary slot (blend) and every slot after it in the cap-day.
                     if _iogc._within_cap_frac(_ts, _bcache[_k]) < 1.0:
                         _over_cap[_hh] = True

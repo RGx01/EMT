@@ -43,7 +43,7 @@ def _blk(hh, segs, ev_dev):
 class _CapStub:
     """Supplies day_chart_data's over_cap read; only cap_day_boundary is called."""
     def __init__(self, by_capday): self._b = by_capday or {}
-    def cap_day_boundary(self, ts, tz_name):
+    def cap_day_boundary(self, ts, tz_name, exclude=None):
         import iog_cap
         return self._b.get(iog_cap.cap_day_key(ts, tz_name))
 

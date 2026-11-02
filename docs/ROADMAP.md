@@ -727,6 +727,15 @@ about it. It should say:
   `heatmap_module.html`) are one sentence of colour names. Add a swatch beside each state, with the hatched
   ones drawn hatched, and use the same swatches on the help page.
 
+**BL-106 — bumps and peak-billed charges left out of the 6-hour cap.** ✅ *Done 1 Nov 2026 (the user: "bumped
+charges and peak rate costed charges shouldn't count toward 6hr limit").* The cap's count (settle()'s boundary, the
+day chart's, the Overview card's) left a bump out only by its dispatch source, `bump-charge` / `boost`, which
+Octopus no longer sends — on the user's account every planned dispatch reads `smart-charge`, every completed one
+`unknown`. `engine.cap_excluded` now leaves out a completed half-hour that is a bump by its source, whose bill
+priced the EV's bucket at peak, or (no EV bucket billed) that is outside the window with the dispatch lifecycle's
+verdict peak — the rule `predicted_band` prices it by. On the user's support file the cap-day from noon on 31 Oct
+2026 went from 2.09 h to 1.21 h (the 11:00–12:00 bump).
+
 ## D. Surfacing performance
 
 *Measure before optimising.* Target hardware is a Raspberry Pi 4 class box on SD storage.

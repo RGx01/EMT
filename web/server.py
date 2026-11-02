@@ -9594,9 +9594,11 @@ def api_charge_sessions():
         # the cap-days from a day before the range, so the first one is counted whole
         cap_hist = store.get_dispatch_history((now - _t2(days=days + 1)).isoformat(), win_end)
         bump = {r["slot_start"] for r in cap_hist if (r.get("source") or "") in _BUMP_SOURCES}
+        # a bump Octopus labels `unknown`, or a peak-billed charge: the pricing's rule (engine.cap_excluded)
         cap = _cap.cap_usage([(r["raw_start"], r["raw_end"], r["energy_kwh"]) for r in cap_hist
                               if r.get("kind") == "completed" and r.get("raw_start") and r.get("raw_end")
-                              and r["slot_start"] not in bump], tz_name, None)
+                              and r["slot_start"] not in bump
+                              and not _eng.cap_excluded(r["slot_start"], store)], tz_name, None)
         try:
             bill_slots = set(store.slots_with_bill_split(win_start, win_end))
         except Exception:
