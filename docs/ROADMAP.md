@@ -19,8 +19,6 @@ missing and where it stands; the done history, with every decision's story, is i
   cut, and the positive import fixture retaken at that version.
 - **The importer's time on a Pi.** The soak's v4 backup imported in about 80 s on the Pi from an SD
   card (importer design §8a); no target has been agreed, so this is not yet called met.
-- **The licence.** EMT is under the Business Source License 1.1 (LICENSE), as v4 is. Decide whether
-  that is what EMT wants long-term — given contributors, packagers and v4's own terms.
 - **A login on the direct port.** Port 8098 (published by default, for the dashboard cards) has none:
   anyone on the network reaches every tool (SECURITY.md). Ingress is behind Home Assistant's login.
 
@@ -79,6 +77,9 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Resolved since the record
 
+- **The licence** — EMT is under the PolyForm Noncommercial License 1.0.0 from 2 Nov 2026 (it was
+  v4's Business Source License 1.1): no commercial use without permission, and no date on which that
+  lifts — BUSL's 4-year change to GPL would have let any version be sold four years on.
 - **BL-80, CSV history's cost** — the CSV's *estimated* cost differed from kWh × the published rate
   by fractions of a penny. Since engine step 4d every half-hour, CSV history included, is priced by
   `settle()` at kWh × the rate (engine.py `settle_half_hour`, which skips only corrections): on a
