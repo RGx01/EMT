@@ -1,7 +1,7 @@
 """
 The B design doc claims to carry no hand counts. This checks that.
 
-Every figure in `docs/design/EMT-v5_B_coordinator_design.md` is supposed to come
+Every figure in `docs/history/design/EMT-v5_B_coordinator_design.md` is supposed to come
 from a committed tool. Figures in prose drift — this programme's docs have drifted
 four times already (85 unreachable that was 88 that was 84; 104/77 write/read that
 was 93/102; 88 GET routes that was 87; "4% adoption" that was 0%). Each time the
@@ -20,7 +20,7 @@ import sys
 import unittest
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_DOC = os.path.join(_ROOT, "docs", "design", "EMT-v5_B_coordinator_design.md")
+_DOC = os.path.join(_ROOT, "docs", "history", "design", "EMT-v5_B_coordinator_design.md")
 
 
 def _tool(name, *args):
@@ -39,13 +39,14 @@ class TestArchitectureDocHeadline(unittest.TestCase):
 
     def test_the_unreachable_headline_is_current(self):
         d = json.loads(_tool("check_reachability.py", "--json"))
-        doc = os.path.join(_ROOT, "docs", "design", "EMT-v5_architecture.md")
+        # the living page (2 Nov 2026); the architecture record in docs/history/ keeps the past figures
+        doc = os.path.join(_ROOT, "docs", "reference", "architecture.md")
         with open(doc, encoding="utf-8") as fh:
             text = fh.read()
         claim = "%d of %s definitions unreachable" % (
             d["unreachable"], format(d["definitions"], ","))
         self.assertIn(claim, text,
-                      "architecture §4 says something other than %r" % claim)
+                      "docs/reference/architecture.md says something other than %r" % claim)
 
 
 class TestDocFiguresMatchTheTools(unittest.TestCase):

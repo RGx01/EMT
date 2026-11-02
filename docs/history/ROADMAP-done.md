@@ -124,7 +124,7 @@ checkpoint does, and 10 of the 11 slow commits had none inside. The time is ther
 the commit's own `write()` blocking while the card drains dirty pages — Home Assistant's recorder
 writes to the same card. Fewer commits cannot fix a single commit that takes 10 s; keeping the loop
 from waiting on one can. **Next: the writer thread** —
-[design/EMT-v5_A1_writer_thread_design.md](design/EMT-v5_A1_writer_thread_design.md).
+[design/EMT-v5_A1_writer_thread_design.md](../design/EMT-v5_A1_writer_thread_design.md).
 
 **Seventeenth soak (5 Oct 2026) — the design's step 0, with the Pi's second EMT instance (v4
 4.5.20 dev) stopped.** The quiet phase had **no** over-budget lag, finalise included (the 12:00
@@ -150,7 +150,7 @@ was **one commit with nothing beside it**: the first poll's outage backfill
 after a restore or an upgrade, single commits take 2–6 s and the engine loop waits on each; normal
 running is clean. The original criterion — no stall over 2 s across the whole run — is not met.
 The fix for the remainder is the writer thread, designed and not built
-([design/EMT-v5_A1_writer_thread_design.md](design/EMT-v5_A1_writer_thread_design.md)); reopen if
+([design/EMT-v5_A1_writer_thread_design.md](../design/EMT-v5_A1_writer_thread_design.md)); reopen if
 real use shows the burst matters, or when HA's recorder sharing a card is shown to bring stalls into
 normal running. Known cost, also recorded: **two EMT instances on one SD card** commit their
 half-hour finalises together (soak 16's 18.3 s stall).
@@ -775,7 +775,7 @@ storage. The original criterion asked for both in CI; the split is the accepted 
 ## E. Importer
 
 *Ingest a backup at or above the floor version, currently **4.5.23**. Spec at
-[design/EMT-v5_import_spec.md](design/EMT-v5_import_spec.md).*
+[design/EMT-v5_import_spec.md](../design/EMT-v5_import_spec.md).*
 
 Three things the importer needs from a source. **Two are new in 4.5.14; one already exists** — an
 earlier draft of BL-73 proposed adding a duplicate of that one, before the 4.5.13 schema was
@@ -1090,7 +1090,7 @@ or not; v5 pins pypdf 6.18.0. `.build/pypdf_gate.py` snapshots each bill's parse
 CSV rows) with the pinned pypdf, into the bills' own folder, and compares a candidate's against it; a bill
 is named by a hash and a difference by its field, never a value, and a folder inside the repo is refused.
 Dependabot raises pypdf on its own PR (excluded from the weekly group), merged once the gate passes —
-[DEVELOPMENT.md](DEVELOPMENT.md) "A pypdf bump". The gate's logic is tested on stand-in bills
+[DEVELOPMENT.md](../DEVELOPMENT.md) "A pypdf bump". The gate's logic is tested on stand-in bills
 (`tests/test_pypdf_gate.py`); its first real run is the next bump.
 
 ---
@@ -1262,7 +1262,7 @@ workstreams that depend on them start.
       start now offers *new setup* or *restore from a v4 backup*, and on the restore path the backup
       drives the credential prompt rather than the reverse. Forces §3's gates to split: everything
       checkable from the file runs **before** the user is asked to authenticate.
-      See [import spec §3a](design/EMT-v5_import_spec.md). *(client + E)*
+      See [import spec §3a](../design/EMT-v5_import_spec.md). *(client + E)*
 - [ ] **Viewport range vs materialised period summary** — once scoped to what the user can see, is
       per-request computation cheap enough, or does the writer maintain an incremental summary?
       Benchmark on the Pi: TTFB for a month and a year, cold and warm, plus queries-per-surface.

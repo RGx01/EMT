@@ -177,7 +177,8 @@ Octopus account — run a second EMT. Each keeps its own database and backups; g
 | [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Branches, running the tests, testing a branch on another machine |
 | [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | What a change must carry |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | What is open, in progress and done |
-| [docs/design/EMT-v5_architecture.md](docs/design/EMT-v5_architecture.md) | How EMT is built, and why |
+| [docs/reference/](docs/reference/README.md) | How EMT works today: how it's built, pricing and settlement, Data Management, the v4 import, the API |
+| [docs/history/](docs/history/) | Why: the design records and the roadmap's history |
 | [docs/design/EMT-v5_import_spec.md](docs/design/EMT-v5_import_spec.md) | How a v4 database is brought across |
 
 Run the suite with `bash run_tests.sh` at the repository root (each test file in its own process).

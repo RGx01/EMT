@@ -26,8 +26,8 @@ on:
       - "!**/*.md"
       - "!LICENSE"
       - "!screenshots/**"
-      - "docs/design/EMT-v5_architecture.md"
-      - "docs/design/EMT-v5_B_coordinator_design.md"
+      - "docs/reference/architecture.md"
+      - "docs/history/design/EMT-v5_B_coordinator_design.md"
   pull_request:
     paths:
       - "**"
@@ -35,8 +35,8 @@ on:
       - "!**/*.md"
       - "!LICENSE"
       - "!screenshots/**"
-      - "docs/design/EMT-v5_architecture.md"
-      - "docs/design/EMT-v5_B_coordinator_design.md"
+      - "docs/reference/architecture.md"
+      - "docs/history/design/EMT-v5_B_coordinator_design.md"
 
 permissions:
   contents: read
