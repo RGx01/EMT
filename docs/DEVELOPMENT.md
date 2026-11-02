@@ -105,7 +105,7 @@ A beta is Home Assistant's `bN` on the version it leads to: `2026.11.0b1`, `2026
 
 1. On a branch from `dev`: `config.yaml`'s `version:`, and `CHANGELOG.md`'s `[Unreleased]` becomes
    that version with its date. PR to `dev`, merge.
-2. PR `dev` → `main`; the PR body is the release note. Merge.
+2. PR `dev` → `main`; the PR body is the release note. Merge once its **CodeQL** check passes (below).
 3. Tag `main` and push the tag: `git tag -s v2026.11.0b1 -m 2026.11.0b1 && git push origin v2026.11.0b1`.
 4. A GitHub release on the tag, marked **pre-release** for a beta.
 
@@ -113,6 +113,21 @@ A supervised install sees the update from `config.yaml` on `main` (the add-on st
 branch). A standalone install has no store: its *update available* notice reads this repository's
 GitHub releases (`/api/update-check`) — the latest release, or, on a beta, the newest of the last 20
 including pre-releases. So step 4 is what tells standalone users.
+
+## CodeQL
+
+GitHub's default CodeQL setup (Python and the workflows) scans `main`, a weekly schedule, and pull
+requests **into `main`** only. A PR into `dev` gets the tests and no scan, so a new alert in a
+`dev` PR first shows at the `dev` → `main` PR, as a failed **CodeQL** check: "N new alerts in code
+changed by this pull request" (2 Nov 2026, #28 — an `exists()` ahead of the backup-name check from
+#22; fixed in #29, which #28 then picked up).
+
+When it fails: read the alert (the check's annotation, or Security → Code scanning, filtered to the
+PR), fix it on a branch from `dev`, and merge that; the `dev` → `main` PR re-runs. CodeQL does not
+count a check made inside a helper function as a guard on the caller's path — put the containment
+check (resolved path, `startswith` the folder) in the function that uses the path. Dismiss an alert
+only with a reason (Security → Code scanning → the alert → *Dismiss alert*). Scanning `dev` too would
+need the advanced setup — a CodeQL workflow of our own — which the default setup cannot do.
 
 ## Dependabot
 
