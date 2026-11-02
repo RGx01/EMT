@@ -5765,6 +5765,20 @@ class TestErrorRepliesKeepTheErrorInTheLog(unittest.TestCase):
         self.assertIn("/data/secret/path", logged)             # the detail is kept, with its
         self.assertIn("Traceback", logged)                     # traceback
 
+    def test_an_octopus_error_says_what_to_do(self):
+        """2 Nov 2026: Octopus's errors in plain words (kraken_api_client.person_message)."""
+        import kraken_api_client as K
+        cli = make_client()
+        with patch.object(server, "_resolve_backup_zip",
+                          side_effect=K.KrakenAuthError("authentication failed (401) for "
+                                                        "https://x/v1/accounts/A-0000ABC7/", status=401)), \
+             self.assertLogs(server.logger, level="ERROR"):
+            r = cli.post("/api/backup/zip-entries", json={"zip": "a.zip"})
+        self.assertEqual(r.status_code, 500)
+        err = r.get_json()["error"]
+        self.assertIn("check it in Settings", err)
+        self.assertNotIn("A-0000ABC7", err)
+
     def test_a_background_job_error_does_not_echo_the_exception(self):
         import engine
         make_client()

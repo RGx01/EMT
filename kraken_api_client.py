@@ -386,6 +386,33 @@ class KrakenEdgeBlockError(KrakenAPIError):
     response body, so EMT never tells the user to 'check API key' for a block."""
 
 
+def person_message(e) -> Optional[str]:
+    """What to tell a person about an Octopus error, or None when `e` is not one.
+
+    An error's own text is for the log: a REST error names the URL it asked
+    (`/v1/accounts/<account>/`, `/v1/electricity-meter-points/<MPAN>/meters/<serial>/…`) and
+    quotes Octopus's reply, and it reached job statuses and the Settings page as it was (2 Nov
+    2026). This says what happened and what to do, from the error's type and status alone."""
+    if not isinstance(e, KrakenAPIError):
+        return None
+    if isinstance(e, KrakenEdgeBlockError):
+        return ("Octopus's servers refused the request (HTTP 403). This is not your API key; "
+                "EMT tries again later.")
+    if isinstance(e, KrakenAuthError):
+        return "Octopus refused the API key — check it in Settings."
+    if isinstance(e, KrakenCooldownError):
+        return "Octopus's API is paused after a refusal; EMT tries again after the cooldown."
+    if isinstance(e, KrakenRateLimitError):
+        return "Octopus's rate limit was reached; EMT tries again later."
+    if isinstance(e, KrakenQueryTooLargeError):
+        return "Octopus said the request was too large."
+    if e.status:
+        return "Octopus answered with an error (HTTP %d)." % e.status
+    if "network error" in str(e):
+        return "Octopus could not be reached."
+    return "Octopus answered with an error."
+
+
 def _looks_like_edge_block(body: str) -> bool:
     """True if a 403 body is an HTML error page (edge/WAF) rather than a JSON API
     error (auth/permission). Octopus's app layer returns JSON; an Akamai-style
