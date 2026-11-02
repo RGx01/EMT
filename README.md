@@ -2,7 +2,7 @@
 
 [![Release](https://img.shields.io/github/v/release/RGx01/EMT?include_prereleases&label=release)](https://github.com/RGx01/EMT/releases)
 ![Stage: beta](https://img.shields.io/badge/stage-beta-orange)
-[![Licence: BUSL-1.1](https://img.shields.io/badge/licence-BUSL--1.1-blue)](LICENSE)
+[![Licence: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/licence-PolyForm%20Noncommercial-blue)](LICENSE)
 ![aarch64](https://img.shields.io/badge/aarch64-yes-green)
 ![amd64](https://img.shields.io/badge/amd64-yes-green)
 
@@ -193,4 +193,9 @@ dispute or formal energy accounting.
 
 ## Licence
 
-[Business Source License 1.1](LICENSE).
+[PolyForm Noncommercial 1.0.0](LICENSE). Use EMT, change it and share it for any noncommercial
+purpose — at home, or in a charity, school or public body. Using it to make money — selling it,
+building it into a product, or running it as a paid service — needs permission: for that, open an
+[issue](https://github.com/RGx01/EMT/issues).
+
+Until 2 Nov 2026 this repository carried v4's Business Source License 1.1.

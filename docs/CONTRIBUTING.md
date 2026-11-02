@@ -49,6 +49,14 @@ diff nobody can read, and whose revert is a gamble.
 - **The rationale, where it will be found later.** Non-obvious decisions belong in a comment at the
   code, not only in the PR description — PRs are hard to find from a line of code two years on.
 
+## Licence of a contribution
+
+EMT is under the [PolyForm Noncommercial License 1.0.0](../LICENSE): free for any noncommercial use,
+and commercial use only with the licensor's permission. By opening a PR you agree that your
+contribution is licensed under those terms, and that RGx01 may also license it to others on other
+terms (a commercial licence, or a later licence for the whole project) — so one contributor's code
+never blocks a decision about all of it.
+
 ## Code style
 
 - Python: the existing style — 4-space indent, type hints where the surrounding code has them,

@@ -10,3 +10,4 @@ internal name for everything before the first public release and never appears i
 **The first beta**, for a few invited testers (see [BETA.md](BETA.md)): EMT installs
 beside v4 as its own add-on (`emt`), and starts from scratch or brings v4's history across from a
 backup of v4 4.5.23 or later. [docs/ROADMAP.md](docs/ROADMAP.md) has the state of each workstream.
+EMT is under the [PolyForm Noncommercial License 1.0.0](LICENSE): free for any noncommercial use.
