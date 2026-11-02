@@ -2954,8 +2954,18 @@ def _move_restore_into_place(src, dest):
     _fsync_dir(dest)
 
 
+def _directly_in(path, folder) -> bool:
+    """Whether `path` is a file directly inside `folder` once both are resolved — symlinks and
+    `..` included. The one check behind every path a request names (CodeQL's first scan, 2 Nov
+    2026: two routes had checked a name for slashes only, so `..` passed)."""
+    if not path or not folder:
+        return False
+    real, root = os.path.realpath(path), os.path.realpath(folder)
+    return real.startswith(root + os.sep) and os.path.dirname(real) == root
+
+
 def _in_data_dir(path):
-    return bool(path) and os.path.dirname(os.path.abspath(path)) == os.path.abspath(DATA_DIR)
+    return _directly_in(path, DATA_DIR)
 
 
 def _atomic_restore_write(dest, fill):
@@ -2989,10 +2999,10 @@ def api_backup_restore():
         selected  = data.get("files", None)
         from_flat = data.get("from_flat", False)
         if not from_flat:
-            if not zipname or "/" in zipname or "\\" in zipname:
-                return jsonify({"error": "Invalid zip name"}), 400
-            if not os.path.exists(f"{_share_backup_dir()}/backups/{zipname}"):
-                return jsonify({"error": "Backup not found"}), 404
+            path, err = _resolve_backup_zip(zipname)
+            if err:
+                return jsonify({"error": err[0]}), err[1]
+            zipname = os.path.basename(path)
         with _restore_launch_lock:
             if _restore_job.get("status") == "running":
                 return jsonify({"error": "a restore is already running",
@@ -3021,9 +3031,12 @@ def _resolve_backup_zip(zipname: str):
     zipname = os.path.basename(zipname or "")          # strip any path components
     if not zipname or "/" in zipname or "\\" in zipname or not zipname.endswith(".zip"):
         return None, ("Invalid backup name", 400)
-    path = os.path.join(_share_backup_dir(), "backups", zipname)
+    folder = os.path.join(_share_backup_dir(), "backups")
+    path = os.path.join(folder, zipname)
     if not os.path.exists(path):
         return None, ("Backup not found", 404)
+    if not _directly_in(path, folder) or not os.path.isfile(path):
+        return None, ("Invalid backup name", 400)      # a link out of the folder, or not a file
     return path, None
 
 
@@ -7864,12 +7877,9 @@ def api_backup_zip_entries():
     import zipfile
     try:
         data = request.get_json(force=True) or {}
-        zipname = data.get("zip", "")
-        if not zipname or "/" in zipname or "\\" in zipname:
-            return jsonify({"error": "Invalid zip name"}), 400
-        zip_path = f"{_share_backup_dir()}/backups/{zipname}"
-        if not os.path.exists(zip_path):
-            return jsonify({"error": "Backup not found"}), 404
+        zip_path, err = _resolve_backup_zip(data.get("zip", ""))
+        if err:
+            return jsonify({"error": err[0]}), err[1]
         known = {"blocks.db", "blocks.json"}
         entries = {}
         with zipfile.ZipFile(zip_path, "r") as zf:

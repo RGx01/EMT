@@ -5680,6 +5680,54 @@ class TestBackupDownloadDelete(unittest.TestCase):
         r = make_client().get("/api/backup/download/blocks.db")
         self.assertEqual(r.status_code, 400)
 
+    # CodeQL's first scan (2 Nov 2026): restore and zip-entries checked a name for slashes only,
+    # so `..` — the backups folder's parent — passed and was found to exist.
+    def test_restore_rejects_the_parent_folder(self):
+        self._backup_dir()
+        r = make_client().post("/api/backup/restore", json={"zip": ".."})
+        self.assertEqual(r.status_code, 400)
+        self.assertNotEqual(server._restore_job.get("status"), "running")
+
+    def test_zip_entries_rejects_the_parent_folder(self):
+        self._backup_dir()
+        r = make_client().post("/api/backup/zip-entries", json={"zip": ".."})
+        self.assertEqual(r.status_code, 400)
+
+    def test_zip_entries_rejects_a_path(self):
+        """GUARD — passes before the fix too (a slash was always refused)."""
+        self._backup_dir()
+        r = make_client().post("/api/backup/zip-entries", json={"zip": "../x.zip"})
+        self.assertIn(r.status_code, (400, 404))
+
+    def test_a_link_out_of_the_backups_folder_is_refused(self):
+        """A `.zip` in the backups folder that is a symlink to a file elsewhere is not served."""
+        import tempfile
+        tmp = self._backup_dir()
+        outside = os.path.join(tempfile.mkdtemp(), "secret.txt")
+        with open(outside, "w") as f:
+            f.write("not a backup")
+        os.symlink(outside, os.path.join(tmp, "backups", "20260101T000000_link.zip"))
+        r = make_client().get("/api/backup/download/20260101T000000_link.zip")
+        self.assertEqual(r.status_code, 400)
+        self.assertNotIn(b"not a backup", r.data)
+
+    def test_a_staged_token_linking_out_of_the_data_folder_is_refused(self):
+        """The staged-upload token is a file directly in DATA_DIR, resolved: a link out is not one."""
+        import tempfile
+        make_client()
+        data = tempfile.mkdtemp()
+        server.DATA_DIR = data
+        outside = os.path.join(tempfile.mkdtemp(), "elsewhere.db")
+        open(outside, "w").close()
+        os.symlink(outside, os.path.join(data, "uploaded_restore-abc.db"))
+        try:
+            self.assertIsNone(server._staged_path("uploaded_restore-abc.db"))
+            real = os.path.join(data, "uploaded_restore-def.db")
+            open(real, "w").close()
+            self.assertEqual(server._staged_path("uploaded_restore-def.db"), real)
+        finally:
+            server.DATA_DIR = "/tmp/emt_test_data"
+
     def test_download_then_delete_roundtrip(self):
         tmp = self._backup_dir()
         name = "20260101T000000_manual.zip"
