@@ -5724,7 +5724,29 @@ class TestBackupDownloadDelete(unittest.TestCase):
             self.assertIsNone(server._staged_path("uploaded_restore-abc.db"))
             real = os.path.join(data, "uploaded_restore-def.db")
             open(real, "w").close()
-            self.assertEqual(server._staged_path("uploaded_restore-def.db"), real)
+            self.assertEqual(server._staged_path("uploaded_restore-def.db"), os.path.realpath(real))
+        finally:
+            server.DATA_DIR = "/tmp/emt_test_data"
+
+    def test_the_kept_stage_survives_a_linked_data_folder(self):
+        """GUARD — the resolved path _staged_path returns is still the one the sweep keeps, when
+        DATA_DIR is reached through a link (passes before the fix too, which returned the joined
+        path; pins the comparison the fix had to resolve)."""
+        import tempfile, time
+        make_client()
+        real_dir = tempfile.mkdtemp()
+        link = os.path.join(tempfile.mkdtemp(), "data")
+        os.symlink(real_dir, link)
+        server.DATA_DIR = link
+        f = os.path.join(link, "uploaded_restore-keep.db")
+        open(f, "w").close()
+        old = time.time() - 2 * server._STAGED_MAX_AGE_S
+        os.utime(f, (old, old))
+        try:
+            kept = server._staged_path("uploaded_restore-keep.db")
+            server._restore_job = {"status": "idle"}
+            server._remove_stale_stages(keep=kept)
+            self.assertTrue(os.path.exists(f), "the kept stage was swept")
         finally:
             server.DATA_DIR = "/tmp/emt_test_data"
 
