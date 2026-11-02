@@ -445,7 +445,7 @@ CREATE TABLE IF NOT EXISTS dispatch_slots (
     provider    TEXT,               -- e.g. 'MYENERGI_V2', 'OHME', 'TESLA'
     source      TEXT,               -- meta.source: smart-charge/bump-charge/unknown
     captured_at TEXT NOT NULL,      -- UTC ISO when we recorded this slot
-    -- Dispatch lifecycle capture (see dispatch_validation_design.md). OBSERVE-ONLY:
+    -- Dispatch lifecycle capture (v4 3.1.x). OBSERVE-ONLY:
     -- recorded but NOT yet used for billing. Lets us validate a planned slot
     -- against what actually charged, instead of the meter-draw floor alone.
     state            TEXT,          -- 'planned' | 'started' | 'completed'
@@ -457,12 +457,13 @@ CREATE TABLE IF NOT EXISTS dispatch_slots (
 );
 CREATE INDEX IF NOT EXISTS idx_dispatch_slots_start ON dispatch_slots (slot_start);
 
--- Local dispatch ACCUMULATION (observe-only; see dispatch_validation_design.md §11).
--- Separate from dispatch_slots (the billing surface) on purpose: this records
--- EVERY planned/completed dispatch we ever see, accumulated across polls, so
--- "absent" becomes meaningful and transient/tail dispatches aren't lost to the
--- per-poll snapshot. NOTHING reads this for billing. Mirrors BCD's local
--- intelligent_dispatches_history.
+-- Local dispatch ACCUMULATION (v4 3.1.x). Separate from dispatch_slots on purpose:
+-- this records EVERY planned/started/completed dispatch we ever see, accumulated
+-- across polls, so "absent" becomes meaningful and transient/tail dispatches
+-- aren't lost to the per-poll snapshot (one poll's answer can miss a dispatch
+-- that was there an hour ago). Pricing reads it: the reconcile's lifecycle band
+-- (`_lifecycle_band`), a bump or boost by its source (`_iog_slot_is_boost`) and
+-- the 6-hour cap's exclusions. Mirrors BCD's local intelligent_dispatches_history.
 CREATE TABLE IF NOT EXISTS dispatch_history (
     slot_start  TEXT NOT NULL,      -- naive-UTC ISO, 30-min slot boundary
     kind        TEXT NOT NULL,      -- 'planned' | 'completed' | 'started'
@@ -2075,7 +2076,7 @@ class BlockStore:
         pricing time, NOT here).
 
         state / energy_planned / energy_completed are OBSERVE-ONLY lifecycle
-        capture (see dispatch_validation_design.md) — recorded but not yet used
+        capture (v4 3.1.x) — recorded but not yet used
         for billing. energy_completed is preserved across refreshes if a later
         upsert doesn't supply it (a planned re-capture shouldn't wipe a settled
         figure), and likewise energy_planned once known.
@@ -5847,8 +5848,9 @@ class BlockStore:
         appends a new current period). To avoid unvalidated surgery on
         billing-affecting history, we stamp the latest region where safe and
         return split_required=True with the spans, so the split can be done
-        deliberately (and reviewed) rather than silently. See ROADMAP 3.5.1 /
-        docs/region_timeline_design.md.
+        deliberately (and reviewed) rather than silently. (v4 3.5.1's region
+        timeline: config_periods × the main meter's outward code, which is the
+        only part of a postcode EMT stores — it resolves one of ~14 DNO regions.)
         """
         clean = []
         for s in (spans or []):
@@ -6076,7 +6078,7 @@ class BlockStore:
     # is instead to CONFIRM the property history FIRST and create the covering
     # periods up front, so every imported block lands in its correct period from
     # the first write (correctly regioned + carbon-eligible), with no post-hoc
-    # split or block reassignment. See docs/region_timeline_design.md.
+    # split or block reassignment (v4 3.5.1's region timeline).
 
     def create_covering_period(self, from_iso: str, to_iso,
                                *, outcode=None, site_name: Optional[str] = None,

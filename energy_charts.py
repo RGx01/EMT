@@ -984,8 +984,8 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
             pass
 
     # ── BL-27: the rate LINES come from the day-level emit (chart_emit.day_rate_series) —
-    # ONE tested place for "what rate applies each half-hour"; the chart only plots it. See
-    # the presentation read-contract in docs/design/4.4.0_iog_pricing_and_reprice_design.md.
+    # ONE tested place for "what rate applies each half-hour"; the chart only plots it: it owns
+    # how a line is drawn, never what its value is (v4 4.4.0's read contract).
     import chart_emit
     # Cap gating: the 6-h-cap held-peak / noon-reset rules apply only to days within the
     # capped IOG-SMB era (cap_from = the SMB agreement's start). Pre-cap days follow uncapped

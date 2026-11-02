@@ -14,7 +14,7 @@ concrete runners. This module decides three things:
   3. **Windows** — of the target windows, which are empty (fill) vs already
                    occupied (overwrite-protection / hand-off to Cost Corrections)?
 
-Design boundaries (see docs/data_management_vision.md):
+Design boundaries:
   * Backfill = fill EMPTIES only. Occupied windows are never silently overwritten;
     they are surfaced as a hand-off to Cost Corrections.
   * The "gaps" scope uses resolve_history_gaps (settled/Measurements fetch for the

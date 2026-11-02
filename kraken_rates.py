@@ -679,10 +679,9 @@ async def build_rate_schedule(
         # `ev-device-*` (EV charging) buckets. Reconstruct the base TOU schedule
         # by merging day + night — each carries its own half-hour periods, so
         # concatenating them rebuilds the full day/night schedule. The EV-device
-        # rates and the daily 6-hour off-peak cap are deliberately NOT applied
-        # yet (OE hasn't confirmed the cap rules — see docs/iog_6hr_cap_design.md);
-        # dispatched EV charging keeps using the general off-peak (night) rate via
-        # the dispatch overlay in the interim.
+        # rates and the 6-hour cap are not applied here: build_ev_device_schedules
+        # fetches the EV buckets and iog_cap classifies against the cap
+        # (docs/reference/pricing-and-settlement.md, *The 6-hour cap*).
         try:
             day = await client.get_unit_rates(
                 product_code, tariff_code, rate_type="day-unit-rates",
@@ -734,7 +733,7 @@ async def build_ev_device_schedules(
     missing bucket yields an empty RateSchedule, so the cap classifier just has no
     EV-device rate for that slot and the caller falls back to the general overlay.
     Used to price the EV portion of a dispatched slot (off-peak within the 6-hour
-    cap, peak beyond). See docs/iog_6hr_cap_design.md. `vat` as build_rate_schedule."""
+    cap, peak beyond). See docs/reference/pricing-and-settlement.md, *The 6-hour cap*. `vat` as build_rate_schedule."""
     async def _one(rate_type: str) -> RateSchedule:
         if not product_code or not tariff_code:
             return RateSchedule([])

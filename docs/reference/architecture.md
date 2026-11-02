@@ -43,6 +43,25 @@ it is admitted, deferred, made to wait or preempted. A paused engine's tick skip
 and `drain_tick()` waits out one in flight. The one route that writes outside the coordinator is the
 database vacuum (`api_db_vacuum`).
 
+**The coordinator today, from the tools.** The suite asserts these lines against the tools that
+produce them (`tests/test_b_design_figures.py`); a PR that moves one updates it here.
+
+- **7 live engine jobs** (`.build/check_job_guards.py`): `run_api_import_job`,
+  `_run_settle_history_sweep`, `_run_historical_carbon_backfill`, `run_measured_history_drain`,
+  `run_gap_fill_job`, `run_iog_split_carve`, `run_attribution_job`.
+- **13 members**, 12/13 registered with the coordinator (`.build/check_job_membership.py`), the live
+  tick among them; the one outside is the vacuum.
+- **1 bulk route handler** writing on the request thread (`.build/write_inventory.py`):
+  `api_db_vacuum`. It rewrites the whole file and takes minutes on a Pi, so it pauses the engine
+  rather than hop onto its thread.
+- **7 of the 7 live jobs write `blocks`** (`.build/write_scope.py`), so a rule by table would be one
+  global lock: conflicts are declared job by job instead.
+- **Two jobs take a scope** — a span or a device: `run_attribution_job` and `run_gap_fill_job`. The
+  others' `max_blocks`, `limit` and `force` are budgets, not scopes.
+
+How the coordinator came to be, and the figures as they stood then:
+[the coordinator record](../history/design/EMT-v5_B_coordinator_design.md).
+
 ## The tables
 
 | Table | Holds |

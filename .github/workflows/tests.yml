@@ -12,8 +12,9 @@ name: Tests
 # 10 Oct 2026  The merge to dev re-tested what its PR had just passed, on two Pythons: about
 #              7 of a PR's ~11 billed minutes. A push now runs only on main (both Pythons, so
 #              3.13 is still met before a release). And a change that touches only docs runs
-#              nothing, EXCEPT the two design docs whose figures the suite asserts
-#              (tests/test_b_design_figures.py): editing those still runs the tests. There is
+#              nothing, EXCEPT the page whose figures the suite asserts
+#              (docs/reference/architecture.md, tests/test_b_design_figures.py; since 2 Nov 2026
+#              the only one): editing it still runs the tests. There is
 #              no required check to wait on (a private repo on the free plan has no branch
 #              protection), so a skipped run blocks no merge.
 
@@ -27,7 +28,6 @@ on:
       - "!LICENSE"
       - "!screenshots/**"
       - "docs/reference/architecture.md"
-      - "docs/history/design/EMT-v5_B_coordinator_design.md"
   pull_request:
     paths:
       - "**"
@@ -36,7 +36,6 @@ on:
       - "!LICENSE"
       - "!screenshots/**"
       - "docs/reference/architecture.md"
-      - "docs/history/design/EMT-v5_B_coordinator_design.md"
 
 permissions:
   contents: read

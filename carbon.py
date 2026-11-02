@@ -1,6 +1,8 @@
 """
 carbon.py — the pure carbon axis for 4.4.0 (Δ5).
-See docs/design/4.4.0_iog_pricing_and_reprice_design.md §3a.
+Billing wants the EV grid-clipped (only what crossed the meter is charged); carbon wants the car's
+full draw, because the part the grid did not supply came from behind the meter at no grid carbon
+(v4 4.4.0, design §3a).
 
 Carbon is a SEPARATE derived axis: kWh × grid CO2 intensity, price NEVER enters. It takes
 energies — the car's unclipped and grid-clipped kWh — and multiplies by the grid intensity

@@ -2,7 +2,8 @@
 
 The API route fetches Octopus consumption over the pre-EMT span in bounded
 sub-windows, newest→oldest, so a tenure-scale import is resumable and never a
-single giant request (see docs/historical_import_build_spec.md Part 2). This
+single giant request: newest first, so a failure part-way still leaves the recent
+end imported and contiguous with go-live, and a re-run resumes deeper. This
 module is the pure planning half: clamp the requested window to what's reachable
 (the ~2-year API wall) and to go-live (EMT's oldest block), then split it into
 chunks. No HTTP, no DB — the engine feeds it dates and executes the plan.
