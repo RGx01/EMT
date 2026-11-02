@@ -44,7 +44,7 @@ pipeline went on 30 Sep); #31 and C §7.3 closed 5 Oct, so nothing in C is open.
 
 **Soaking on the Pi:** `.build/soak_prepare_db.py` → restore via Data Management (through ingress
 since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-management` still works) → `.build/soak.py run` → save the log with
-`ha apps logs local_emt_soak --lines 50000` (`ha addons` is deprecated) → `.build/soak.py scan-log <log> --since <restore time>`.
+`ha apps logs local_emt_soak --lines 50000` (the Pi's clone keeps `slug: "emt_soak"` locally; the repo's is `emt` since 2 Nov 2026 — docs/DEVELOPMENT.md) (`ha addons` is deprecated) → `.build/soak.py scan-log <log> --since <restore time>`.
 
 ## Read these before v5 work
 

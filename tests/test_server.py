@@ -4411,6 +4411,46 @@ class TestUpdateCheck(unittest.TestCase):
             self.client.get("/api/update-check")
         self.assertEqual(up.call_count, 1)   # second served from cache
 
+    def test_calver_betas_sort_before_their_release(self):
+        # 2 Nov 2026: CalVer with Home Assistant's bN betas; '0b1' read as 1 before
+        k = server._version_key
+        self.assertEqual(server._parse_version("2026.11.0b1"), (2026, 11, 0))
+        self.assertLess(k("2026.11.0b1"), k("2026.11.0b2"))
+        self.assertLess(k("2026.11.0b2"), k("2026.11.0"))
+        self.assertLess(k("2026.11.0"), k("2026.11.1"))
+        self.assertLess(k("2026.11.1"), k("2026.12.0b1"))
+        self.assertTrue(server._is_prerelease("2026.11.0b1"))
+        self.assertFalse(server._is_prerelease("2026.11.0"))
+
+    def _urlopen(self, body):
+        m = MagicMock()
+        m.read.return_value = json.dumps(body).encode()
+        m.__enter__ = lambda s: m
+        m.__exit__ = lambda s, *a: False
+        return m
+
+    def test_a_beta_is_offered_the_next_beta_from_emts_releases(self):
+        server.APP_VERSION = "2026.11.0b1"
+        rel = [{"tag_name": "v2026.11.0b2", "html_url": "u2", "prerelease": True},
+               {"tag_name": "v2026.11.0b1", "html_url": "u1", "prerelease": True},
+               {"tag_name": "v2026.12.0b1", "html_url": "d", "draft": True}]
+        with patch("urllib.request.urlopen", return_value=self._urlopen(rel)) as up:
+            d = self.client.get("/api/update-check").get_json()
+        self.assertEqual(up.call_args[0][0].full_url, "https://api.github.com/repos/RGx01/EMT/releases?per_page=20")
+        self.assertEqual((d["latest"], d["update_available"], d["url"]), ("2026.11.0b2", True, "u2"))
+
+    def test_a_release_asks_emts_latest_and_a_beta_of_it_is_not_newer(self):
+        server.APP_VERSION = "2026.11.0"
+        with patch("urllib.request.urlopen", return_value=self._urlopen({"tag_name": "v2026.11.0"})) as up:
+            d = self.client.get("/api/update-check").get_json()
+        self.assertEqual(up.call_args[0][0].full_url, "https://api.github.com/repos/RGx01/EMT/releases/latest")
+        self.assertFalse(d["update_available"])
+        server._update_check_cache.update({"checked_at": 0.0, "payload": None})
+        server.APP_VERSION = "2026.11.0b2"
+        rel = [{"tag_name": "v2026.11.0"}]
+        with patch("urllib.request.urlopen", return_value=self._urlopen(rel)):
+            self.assertTrue(self.client.get("/api/update-check").get_json()["update_available"])
+
     def test_unknown_own_version_never_prompts(self):
         """If we can't read our own version, (0,0,0) < anything would prompt on
         every release. Guard against that."""

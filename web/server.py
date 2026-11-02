@@ -3839,17 +3839,38 @@ def api_reactivate_kraken():
 
 
 def _parse_version(v: str):
-    """'3.2.0' -> (3, 2, 0). Non-numeric parts sort as 0. Tolerates a 'v' prefix."""
+    """'3.2.0' -> (3, 2, 0); '2026.11.0b1' -> (2026, 11, 0). Each part is its LEADING digits, so a
+    pre-release suffix is not read into the number (it read '0b1' as 1 until 2 Nov 2026). Tolerates
+    a 'v' prefix."""
     v = (v or "").strip().lstrip("vV")
     parts = []
     for chunk in v.split(".")[:3]:
-        digits = "".join(c for c in chunk if c.isdigit())
-        parts.append(int(digits) if digits else 0)
+        m = re.match(r"\d+", chunk)
+        parts.append(int(m.group(0)) if m else 0)
     while len(parts) < 3:
         parts.append(0)
     return tuple(parts)
 
 
+def _version_key(v: str):
+    """A version's sort key, pre-releases before their release: '2026.11.0b1' < '2026.11.0b2' <
+    '2026.11.0' < '2026.11.1'. CalVer with Home Assistant's `bN` betas (2 Nov 2026); any other
+    suffix after the third part is a pre-release numbered 0."""
+    v = (v or "").strip().lstrip("vV")
+    third = (v.split(".") + ["", "", ""])[2]
+    m = re.match(r"\d*(.*)$", third)
+    tail = m.group(1) if m else ""
+    if not tail:
+        return _parse_version(v) + (1, 0)
+    n = re.search(r"(\d+)$", tail)
+    return _parse_version(v) + (0, int(n.group(1)) if n else 0)
+
+
+def _is_prerelease(v: str) -> bool:
+    return _version_key(v)[3] == 0
+
+
+_RELEASES_API = "https://api.github.com/repos/RGx01/EMT/releases"
 _update_check_cache = {"checked_at": 0.0, "payload": None}
 _UPDATE_CHECK_TTL = 86400.0   # once a day — the release cadence is far slower
 
@@ -3876,12 +3897,18 @@ def api_update_check():
                "update_available": False}
     try:
         import urllib.request
+        # EMT's own releases (it asked v4's until 2 Nov 2026). A beta install is offered the next
+        # beta too: `latest` leaves pre-releases out, so it reads the list and takes the newest.
+        beta = bool(APP_VERSION) and _is_prerelease(APP_VERSION)
         req = urllib.request.Request(
-            "https://api.github.com/repos/RGx01/energy-meter-tracker-addon/releases/latest",
+            _RELEASES_API + ("?per_page=20" if beta else "/latest"),
             headers={"Accept": "application/vnd.github+json",
                      "User-Agent": "energy-meter-tracker"})
         with urllib.request.urlopen(req, timeout=8) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+        if isinstance(data, list):
+            tags = [r for r in data if not r.get("draft") and (r.get("tag_name") or "").strip()]
+            data = max(tags, key=lambda r: _version_key(r["tag_name"])) if tags else {}
         latest = (data.get("tag_name") or "").strip()
         if latest:
             payload["latest"] = latest.lstrip("vV")
@@ -3889,7 +3916,7 @@ def api_update_check():
             # If we cannot determine our OWN version, never claim an update —
             # (0,0,0) < anything would prompt on every release, wrongly.
             payload["update_available"] = bool(APP_VERSION) and (
-                _parse_version(latest) > _parse_version(APP_VERSION))
+                _version_key(latest) > _version_key(APP_VERSION))
     except Exception as e:
         logger.info("api_update_check: lookup failed (non-fatal): %s", e)
 

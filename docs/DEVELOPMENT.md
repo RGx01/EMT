@@ -43,9 +43,14 @@ git switch dev
 Home Assistant then offers it as a *Local add-on*, separate from anything installed from a store
 repository. To pick up new commits: `git pull`, then rebuild the add-on from its page.
 
-If a released version is already installed from a repository, stop it first — two instances of the
-same add-on running against the same Home Assistant is exactly the entity-collision case that is
-still an open question (see [ROADMAP.md](ROADMAP.md)).
+If a released version is already installed from a repository, stop it first: both would be the
+same add-on (`emt`), sharing one name in the sidebar.
+
+**The slug is the add-on's identity.** Home Assistant names a local add-on `local_<slug>` and keeps its
+data under that name, so a pull that changes `config.yaml`'s `slug:` makes it a **different add-on**,
+and the old one's data does not follow. The slug became `emt` on 2 Nov 2026 (it was `emt_soak`): a
+clone made before that, such as the Pi soak's `local_emt_soak`, keeps its data only if its local
+`config.yaml` keeps `slug: "emt_soak"` — edit it after the pull, before rebuilding.
 
 ## Relationship to the v4 add-on's docs
 
