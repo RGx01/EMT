@@ -17,7 +17,7 @@ from block_store import (  # noqa: E402
 
 
 def _new_store():
-    return BlockStore(tempfile.mktemp(suffix=".db"))
+    return BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
 
 
 def _add_period(store, *, eff_from, eff_to=None, postcode=None, source=None,
@@ -202,7 +202,7 @@ class TestApplyRegionPeriods(unittest.TestCase):
     def test_migration_tags_existing_postcode_as_user(self):
         # A postcode present with NULL source (legacy) should be tagged 'user'
         # by the schema migration when the store is (re)opened.
-        path = tempfile.mktemp(suffix=".db")
+        path = os.path.join(tempfile.mkdtemp(), "blocks.db")
         store = BlockStore(path)
         _add_period(store, eff_from="2024-01-01", eff_to=None,
                     postcode="DE1", source=None)
@@ -709,7 +709,7 @@ class TestPreImportPersistence(unittest.TestCase):
     vanish on reopen)."""
 
     def test_created_periods_persist_across_reopen(self):
-        path = tempfile.mktemp(suffix=".db")
+        path = os.path.join(tempfile.mkdtemp(), "blocks.db")
         store = BlockStore(path)
         with store._conn:
             pid = store._conn.execute(

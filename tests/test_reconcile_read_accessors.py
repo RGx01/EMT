@@ -35,7 +35,7 @@ S = "2026-09-01T00:00:00"
 
 
 def _mk_store():
-    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
     st._conn.execute("PRAGMA foreign_keys=OFF")
     return st
 

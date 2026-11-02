@@ -31,7 +31,7 @@ FROM, TO = "2025-05-17T00:00:00", "2025-05-18T00:00:00"
 class IntensityInThePayload(unittest.TestCase):
 
     def setUp(self):
-        self.st = BlockStore(tempfile.mktemp(suffix=".db"))
+        self.st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
         self.st._conn.execute("PRAGMA foreign_keys=OFF")
         self.addCleanup(self.st.close)
 

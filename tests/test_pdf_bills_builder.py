@@ -86,6 +86,25 @@ class TheDuplicates(_Base):
         self.assertEqual(len(w), len(set(w)))                # and every other note once too
 
 
+def _unreadable(bp, n):
+    raise RuntimeError("/data/secret/pypdf internals")
+
+
+class AFileThatIsNotABill(_Base):
+    """CodeQL triage (2 Nov 2026): a file the parser fails on is reported as not a bill, and the
+    parser's own error — whatever pypdf or a pattern raised — stays in the log."""
+    BILLS = {b"oct": lambda bp, n: _bill(bp, n, IMP, EXP, date(2024, 10, 10)),
+             b"junk": _unreadable}
+
+    def test_is_failed_without_the_parsers_text(self):
+        j = self.post(("oct.pdf", b"oct"), ("junk.pdf", b"junk"))
+        self.assertEqual([f["file"] for f in j["failed"]], ["junk.pdf"])
+        err = j["failed"][0]["error"]
+        self.assertIn("Not read as an Octopus electricity bill", err)
+        self.assertNotIn("secret", err)
+        self.assertEqual(len(j["groups"]), 1)                 # the other bill is still read
+
+
 class TheExportOnlyBill(_Base):
     BILLS = {b"imp": lambda bp, n: _bill(bp, n, IMP, EXP, date(2024, 7, 20)),
              b"reissue": lambda bp, n: _bill(bp, n, None, EXP, date(2024, 8, 10)),

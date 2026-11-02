@@ -46,7 +46,7 @@ EXC_DAYS = 5          # the first five days carry a captured ex-VAT cost, the re
 def _store(bill_rounding=True):
     """20 days from 21 Sep 2026 (local), billing day 3 — so two billing periods — a
     main meter with export and a standing charge, and an EV sub-meter charging at night."""
-    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
     st._conn.execute("PRAGMA foreign_keys=OFF")
     st._conn.execute("INSERT INTO config_periods (id, effective_from, billing_day, block_minutes, "
                      "timezone) VALUES (1, '2026-01-01T00:00:00', 3, 30, ?)", (TZ,))

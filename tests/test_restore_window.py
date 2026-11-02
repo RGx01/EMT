@@ -137,7 +137,7 @@ class AConnectionInUse(unittest.TestCase):
     """#57: a swap retires a thread's connection instead of closing it mid-request."""
 
     def setUp(self):
-        self.path = tempfile.mktemp(suffix=".db")
+        self.path = os.path.join(tempfile.mkdtemp(), "blocks.db")
         BlockStore(self.path).close()
         store_access.reset_for_tests()
         store_access.bind(self.path)

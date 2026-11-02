@@ -26,7 +26,7 @@ import server                                             # noqa: E402
 def _backup_bytes():
     st = BlockStore(_memory_uri())
     st.set_meta("written_by", "4.5.23")
-    p = tempfile.mktemp(suffix=".db")
+    p = os.path.join(tempfile.mkdtemp(), "blocks.db")
     try:
         st.backup(p)
         return open(p, "rb").read()

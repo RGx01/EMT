@@ -33,7 +33,7 @@ FROM, TO = "2026-09-01T00:00:00", "2026-09-10T00:00:00"
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        self.st = BlockStore(tempfile.mktemp(suffix=".db"))
+        self.st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
         self.st._conn.execute("PRAGMA foreign_keys=OFF")
         self.addCleanup(self.st.close)
 

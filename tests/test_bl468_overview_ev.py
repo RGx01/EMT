@@ -56,7 +56,7 @@ def _hybrid_py(main_ev_by_block, phys_ev_by_block=None):
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        self.path = tempfile.mktemp(suffix=".db")
+        self.path = os.path.join(tempfile.mkdtemp(), "blocks.db")
         self.store = BlockStore(self.path)
         self.store._conn.execute("PRAGMA foreign_keys=OFF")
         self.store._conn.execute(

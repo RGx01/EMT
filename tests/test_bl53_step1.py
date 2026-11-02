@@ -12,7 +12,7 @@ from block_store import BlockStore
 
 
 def _mk_store():
-    p = tempfile.mktemp(suffix=".db")
+    p = os.path.join(tempfile.mkdtemp(), "blocks.db")
     st = BlockStore(p)
     st._conn.execute("PRAGMA foreign_keys=OFF")
     return st, p
