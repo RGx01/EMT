@@ -52,6 +52,13 @@ and the old one's data does not follow. The slug became `emt` on 2 Nov 2026 (it 
 clone made before that, such as the Pi soak's `local_emt_soak`, keeps its data only if its local
 `config.yaml` keeps `slug: "emt_soak"` — edit it after the pull, before rebuilding.
 
+## Screenshots
+
+`docs/screenshots/` is taken from a made-up household, never a real install: `python
+.build/demo_db.py <dir>` writes it (seeded — the same database every time), and a local server on that
+directory serves it, with `EMT_INSTANCE_NAME=Demo` so the footer names no machine. Take each page at
+about 1440 × 900, dark theme, the page only.
+
 ## Relationship to the v4 add-on's docs
 
 The v4 repository has its own `CONTRIBUTING.md` and `DEVELOPMENT.md`. What carries across, and what
