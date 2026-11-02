@@ -1,21 +1,29 @@
 # EMT documentation
 
+Four kinds of document, kept apart so each can be trusted for what it is:
+
+| Where | What it is | Kept true by |
+|---|---|---|
+| [reference/](reference/README.md) | **How EMT works today** — how it is built, pricing and settlement, Data Management and devices, the v4 import and first run, the pages and the API | Fixed in the same PR as the code it describes; when a page and the code disagree, the code is right |
+| [design/](design/) | Living contracts: [the import spec](design/EMT-v5_import_spec.md) (how a v4 database is brought across, and the floor), and [the writer thread](design/EMT-v5_A1_writer_thread_design.md), designed and held in reserve | Versioned; changed with the code |
+| [history/](history/) | **Records**: each design as it was decided ([history/design/](history/design/)), and the done half of the roadmap ([ROADMAP-done.md](history/ROADMAP-done.md)). Each says what it was and where today's account is. `#NNN` there is in the private archive. | Not updated: a record stays as it stood |
+| [ROADMAP.md](ROADMAP.md) | What is open: before the first release, the backlog, code to tidy, open questions | Items leave when they are done |
+
+And:
+
 | Document | Purpose |
 |---|---|
-| [ROADMAP.md](ROADMAP.md) | Workstream status — what is open, in progress and done |
-| [DEVELOPMENT.md](DEVELOPMENT.md) | Branch model, testing a branch on another machine, releasing |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | What a change must carry, and what not to commit |
-| [design/EMT-v5_architecture.md](history/design/EMT-v5_architecture.md) | **The agreed picture** — four layers, what carries, what dies. Read first. |
-| [design/EMT-v5_programme.md](history/design/EMT-v5_programme.md) | The programme map: five workstreams in dependency order |
-| [design/EMT-v5_A_storage_design.md](history/design/EMT-v5_A_storage_design.md) | Workstream A — storage and access model (the root) |
-| [design/EMT-v5_C_surfaces_design.md](history/design/EMT-v5_C_surfaces_design.md) | Workstream C — one API, retiring pre-generated HTML |
-| [design/EMT-v5_schema_notes.md](history/design/EMT-v5_schema_notes.md) | `blocks` table shape — what goes, what stays, what was rejected |
-| [design/EMT-v5_import_spec.md](design/EMT-v5_import_spec.md) | The v4 → EMT migration contract |
+| [DEVELOPMENT.md](DEVELOPMENT.md) | Branches, running the tests, looking at a change locally, the repositories, releasing |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Reporting a problem; what a change must carry, and what won't be accepted |
+| [../CHANGELOG.md](../CHANGELOG.md) | What changed, for the people using EMT |
+| [../BETA.md](../BETA.md), [../SECURITY.md](../SECURITY.md) | For beta testers; reporting a vulnerability, and what EMT holds |
+| The help, in the app | How to use each page (`web/templates/help/`) |
 
 ## Conventions
 
-- **One design document per workstream**, created when that workstream is picked up. The programme
-  map frames them; it does not replace them.
+- **A design document before a change of shape.** It is written in `design/` while it is decided and
+  built; once built, it moves to `history/design/` with the history header, and what it settled is
+  written into `reference/`.
 - **Evidence over assertion.** A claim about behaviour cites the code, a log line, or a query
   against a real database. Figures measured from a database name which database and when — they
   move, and a stale figure presented as current is worse than none.
