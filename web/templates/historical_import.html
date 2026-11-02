@@ -1399,6 +1399,20 @@ function collectOverrides(){
   return ov;
 }
 
+// What the import gave the settled half-hours it left as they were: the CSV's cost as their bill,
+// their kWh untouched (2 Nov 2026, the user), and what it could not give one
+function csvCostsNote(d){
+  var t = d.costs_taken||0, k = d.costs_kwh_differs||0, b = d.costs_no_band||0, c = d.costs_corrected||0;
+  if(!(t||k||b||c)) return '';
+  var parts = [];
+  if(k) parts.push(k+' where the CSV\u2019s kWh is not the settled kWh');
+  if(b) parts.push(b+' whose cost is neither of the day\u2019s rates');
+  if(c) parts.push(c+' you corrected');
+  return '<div style="color:var(--muted);margin-top:6px;">'
+    + (t ? t+' settled half-hour(s) Octopus had not costed took the CSV\u2019s cost; their kWh is unchanged.' : '')
+    + (parts.length ? (t ? ' ' : '') + 'Not taken: ' + parts.join(', ') + '.' : '') + '</div>';
+}
+
 function doApply(){
   var st = document.getElementById('apply-status');
   // The confirm box is the real gate — read it here, don't just trust the button's
@@ -1435,6 +1449,7 @@ function doApply(){
         + '(first-in wins — an import never overwrites an existing block). '
         + 'To replace them, delete that span on the heatmap first (Delete\u2026), then re-import.</div>';
     }
+    html += csvCostsNote(d);
     html += '<div style="color:var(--muted);margin-top:6px;">Backup: '+_esc(d.backup||'(none)')
       + '. Charts will refresh shortly'
       + '. To undo: Delete\u2026 on the heatmap, only the imported half-hours.</div>';
