@@ -42,7 +42,7 @@ class TestServerSendsEveryDevice(unittest.TestCase):
 
     def setUp(self):
         from block_store import BlockStore
-        self.path = tempfile.mktemp(suffix=".db")
+        self.path = os.path.join(tempfile.mkdtemp(), "blocks.db")
         self.store = BlockStore(self.path)
         self.store._conn.execute("PRAGMA foreign_keys=OFF")
         self.store._conn.execute(

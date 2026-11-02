@@ -58,7 +58,7 @@ class _Base(unittest.TestCase):
 
     def setUp(self):
         engine.set_delete_active(False)
-        self.db = tempfile.mktemp(suffix=".db")
+        self.db = os.path.join(tempfile.mkdtemp(), "blocks.db")
         st = BlockStore(self.db)
         with st._conn:
             st._conn.execute("INSERT INTO config_periods (id, effective_from, billing_day, "

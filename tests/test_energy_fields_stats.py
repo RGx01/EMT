@@ -42,7 +42,7 @@ META = {"timezone": TZ, "currency_symbol": "£", "billing_day": 3, "block_minute
 
 
 def _blank():
-    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
     st._conn.execute("PRAGMA foreign_keys=OFF")
     return st
 

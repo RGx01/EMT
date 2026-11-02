@@ -36,7 +36,7 @@ def _server():
 
 
 def _store(starts):
-    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
     st._conn.execute("PRAGMA foreign_keys=OFF")
     for bs in starts:
         be = (datetime.fromisoformat(bs) + timedelta(minutes=30)).isoformat()

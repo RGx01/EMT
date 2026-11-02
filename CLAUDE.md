@@ -45,8 +45,8 @@ account details; the work before it, with its issues and PRs, is the private `RG
 (local clone `~/code/EMT-archive`). A `#NNN` before 2 Nov in a history doc, or `RGx01/EMT-archive#NNN`
 in a commit message, is there. **Never push from the archive clone to `RGx01/EMT`.**
 
-**Versions:** CalVer `YYYY.M.PATCH`, betas `2026.11.0b1`, `b2`, …; `main` holds the first beta,
-2026.11.0b1. The slug is `emt`, the direct port 8098. Releasing: `docs/DEVELOPMENT.md`.
+**Versions:** CalVer `YYYY.M.PATCH`, betas `2026.11.0b1`, `b2`, …; `main` holds the latest beta,
+2026.11.0b2. The slug is `emt`, the direct port 8098. Releasing: `docs/DEVELOPMENT.md`.
 
 **Soaking on the Pi:** `.build/soak_prepare_db.py` → restore via Data Management (through ingress
 since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-management` still works) → `.build/soak.py run` → save the log with

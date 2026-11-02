@@ -296,7 +296,7 @@ class TestSchema(unittest.TestCase):
         # autocommit state (no lingering transaction), or the engine's startup
         # wal_checkpoint(TRUNCATE) fails with "database table is locked".
         import tempfile, os
-        p = tempfile.mktemp(suffix=".db")
+        p = os.path.join(tempfile.mkdtemp(), "blocks.db")
         try:
             from block_store import BlockStore
             store = BlockStore(p)
@@ -652,7 +652,7 @@ class TestSchema(unittest.TestCase):
         # the writer's data but never be able to write (query_only), so it can't
         # contend with or corrupt the primary connection.
         import tempfile, os
-        p = tempfile.mktemp(suffix=".db")
+        p = os.path.join(tempfile.mkdtemp(), "blocks.db")
         try:
             w = BlockStore(p)
             w.insert_config_period(EXAMPLE_CONFIG)
@@ -1401,8 +1401,8 @@ class TestBackup(unittest.TestCase):
 
     def setUp(self):
         import tempfile
-        self.tmp_db  = tempfile.mktemp(suffix=".db")
-        self.tmp_bak = tempfile.mktemp(suffix=".db")
+        self.tmp_db  = os.path.join(tempfile.mkdtemp(), "blocks.db")
+        self.tmp_bak = os.path.join(tempfile.mkdtemp(), "blocks.db")
         self.store = open_block_store(self.tmp_db)
         self.store.insert_config_period(EXAMPLE_CONFIG)
         for i in range(5):
@@ -3927,7 +3927,7 @@ class TestGenerationMix(unittest.TestCase):
     def test_migration_removes_sub_meter_mix_rows(self):
         """Opening a DB with sub-meter mix rows removes them on first open."""
         import tempfile, os
-        tmp = tempfile.mktemp(suffix=".db")
+        tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         try:
             store = BlockStore(tmp)
             with store._conn:
@@ -4052,7 +4052,7 @@ class TestMixHistory(unittest.TestCase):
     def test_migration_backfills_from_generation_mix(self):
         """mix_history is backfilled from generation_mix on first open when empty."""
         import tempfile, os
-        tmp = tempfile.mktemp(suffix=".db")
+        tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         try:
             store = BlockStore(tmp)
             with store._conn:

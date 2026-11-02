@@ -35,7 +35,7 @@ from block_store import BlockStore          # noqa: E402
 class BackupIsCompleteWithoutACheckpoint(unittest.TestCase):
 
     def setUp(self):
-        self.st = BlockStore(tempfile.mktemp(suffix=".db"))
+        self.st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
 
     def test_an_uncheckpointed_wal_is_still_backed_up(self):
         """The whole argument, in one assertion: write enough to leave megabytes

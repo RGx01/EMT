@@ -42,7 +42,7 @@ CFG = {"meters": {
 def _store(start, hours):
     """`hours` of half-hours from naive-UTC `start`: main 1.0 kWh @ 0.25, a battery
     drawing 0.2 kWh of it from the grid, and a standing charge on every block."""
-    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
     st._conn.execute("PRAGMA foreign_keys=OFF")
     st._conn.execute("INSERT INTO config_periods (id, effective_from, billing_day, block_minutes, "
                      "timezone) VALUES (1, '2025-01-01T00:00:00', 3, 30, ?)", (TZ,))

@@ -34,7 +34,7 @@ CFG = {"meters": {"electricity_main": {"meta": {"timezone": TZ, "currency_symbol
 
 
 def _store():
-    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
     st._conn.execute("PRAGMA foreign_keys=OFF")
     st._conn.execute("INSERT INTO config_periods (id, effective_from, billing_day, block_minutes, "
                      "timezone) VALUES (1, '2026-01-01T00:00:00', 1, 30, ?)", (TZ,))

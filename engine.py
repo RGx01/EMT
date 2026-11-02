@@ -576,6 +576,18 @@ def _dispatch_overlay_rate(channel_name: str, block_start: str,
     return off_peak_rate
 
 
+def _error_text(where, e) -> str:
+    """What a job's status or a reply tells a person about an exception: Octopus's in plain words
+    (`kraken_api_client.person_message` — never its URL, which names the account, MPAN or serial),
+    anything else as where and when. The caller logs the exception itself (2 Nov 2026)."""
+    from kraken_api_client import person_message
+    msg = person_message(e)
+    if msg:
+        return msg
+    return ("Something went wrong (%s, %s) — the log has the detail."
+            % (where, datetime.now().strftime("%H:%M:%S")))
+
+
 def _snap_to_slot(block_start: str) -> str:
     """Snap a block_start to its 30-min slot boundary ISO (matches capture)."""
     try:
@@ -3164,8 +3176,9 @@ def backout_recorder_attribution(*, run_id=None, meter_id=None,
                 "parents": res.get("parents") or [], "recomputed": recomputed,
                 "from": lo, "to": hi}
     except Exception as e:
-        logger.warning("backout_recorder_attribution failed (run=%s): %s", run_id, e)
-        return {"ok": False, "error": str(e)}
+        logger.error("backout_recorder_attribution failed (run=%s): %s", run_id, e, exc_info=e)
+        # A code, not the exception's text: the route answers the page with it (CodeQL, 2 Nov 2026).
+        return {"ok": False, "error": "backout_failed"}
     finally:
         _backout_job.clear()
         _backout_job.update({"status": "idle"})
@@ -3679,10 +3692,10 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
         return {"ok": True, "written": written, "skipped": skipped, "gaps": gaps,
                 "run_id": run_id, "status": j["status"]}
     except Exception as e:
-        logger.warning("run_attribution_job failed: %s", e)
-        j.update({"status": "error", "error": str(e)})
+        logger.warning("run_attribution_job failed: %s", e, exc_info=e)
+        j.update({"status": "error", "error": _error_text("attribution", e)})
         _coord.mark("attribution", device_meter_id, status="error")
-        return {"ok": False, "error": str(e)}
+        return {"ok": False, "error": j["error"]}
     finally:
         _pass2_quiet = False          # never leave bulk-suppression on after the job
 
@@ -5651,7 +5664,8 @@ async def connect_kraken_now() -> dict:
     try:
         await _kraken_startup_discovery(force=True)
     except Exception as e:
-        return {"ok": False, "connected": False, "detail": str(e)}
+        logger.warning("connect_kraken_now: %s", e, exc_info=e)
+        return {"ok": False, "connected": False, "detail": _error_text("connecting to Octopus", e)}
     if _kraken_client is None or not _kraken_discovery:
         return {"ok": False, "connected": False, "detail": "discovery_failed"}
     imp = _kraken_discovery.get("import") or {}
@@ -5749,8 +5763,8 @@ async def disconnect_kraken() -> dict:
                     "Mini/discovery torn down, progress state wiped, mode→cad", had)
         return {"ok": True, "mode": "cad", "had_credentials": had}
     except Exception as e:
-        logger.error("disconnect_kraken: failed: %s", e)
-        return {"ok": False, "detail": str(e), "had_credentials": had}
+        logger.error("disconnect_kraken: failed: %s", e, exc_info=e)
+        return {"ok": False, "detail": _error_text("disconnecting", e), "had_credentials": had}
 
 
 def _cancel_kraken_poll_task() -> None:
@@ -8404,8 +8418,8 @@ async def discover_pre_import_sites() -> dict:
         plan = _store.plan_pre_import_sites(spans)
         return {"ok": True, **plan}
     except Exception as e:
-        logger.warning("discover_pre_import_sites: %s", e)
-        return {"ok": False, "error": str(e) or type(e).__name__}
+        logger.warning("discover_pre_import_sites: %s", e, exc_info=e)
+        return {"ok": False, "error": _error_text("site discovery", e)}
 
 
 async def _probe_and_apply_region_periods() -> dict | None:
@@ -8509,8 +8523,8 @@ async def run_gap_fill_job(from_ts, to_ts, *, channels=("import", "export"),
                                   max_chunks=max_chunks, pace_s=pace_s, meter_id=meter_id):
             await _gap_fill_finish(j, channels)
     except Exception as e:
-        logger.warning("run_gap_fill_job: %s", e)
-        j["status"] = "error"; j["error"] = str(e)
+        logger.warning("run_gap_fill_job: %s", e, exc_info=e)
+        j["status"] = "error"; j["error"] = _error_text("gap fill", e)
     finally:
         _coord.mark("import", status="done")      # every way out: done, cancel, error
 
@@ -8791,8 +8805,8 @@ async def run_gap_fill_runs(runs, *, channels=("import", "export"), chunk_days: 
             r["status"] = "done"
         await _gap_fill_finish(j, channels)
     except Exception as e:
-        logger.warning("run_gap_fill_runs: %s", e)
-        j["status"] = "error"; j["error"] = str(e)
+        logger.warning("run_gap_fill_runs: %s", e, exc_info=e)
+        j["status"] = "error"; j["error"] = _error_text("gap fill", e)
     finally:
         _coord.mark("import", status="done")
 
@@ -8917,10 +8931,10 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
                         break
                     await asyncio.sleep(1.0)
     except Exception as e:
-        logger.warning("run_api_import_job: failed: %s", e)
+        logger.warning("run_api_import_job: failed: %s", e, exc_info=e)
         j["status"] = "error"
         _coord.mark("import", status="done")
-        j["error"] = str(e)
+        j["error"] = _error_text("import", e)
 
 
 async def _maybe_run_settlement_sweep() -> None:
@@ -11159,9 +11173,9 @@ async def run_ask_dry_run(out_dir: str) -> dict:
         logger.info("ask dry run: %s — %s", summary["queue"], summary["considered"]["by_reason"])
         return summary
     except Exception as e:
-        logger.warning("ask dry run failed: %s", e)
-        st.update({"status": "error", "error": str(e)})
-        return {"ok": False, "error": str(e)}
+        logger.warning("ask dry run failed: %s", e, exc_info=e)
+        st.update({"status": "error", "error": _error_text("ask dry run", e)})
+        return {"ok": False, "error": st["error"]}
 
 
 # ── Engine step 4a: settle() and its parity report (EMT-v5_engine_step4_settle_design.md §5) ──────
@@ -11452,9 +11466,9 @@ async def run_settle_parity(utc_from: str, utc_to: str, out_dir: str) -> dict:
                     utc_from, utc_to, counts, by_part, moves, tot["stored"], tot["settle"])
         return summary
     except Exception as e:
-        logger.warning("settle parity: failed: %s", e)
-        st.update({"status": "error", "error": str(e)})
-        return {"ok": False, "error": str(e)}
+        logger.warning("settle parity: failed: %s", e, exc_info=e)
+        st.update({"status": "error", "error": _error_text("settle parity", e)})
+        return {"ok": False, "error": st["error"]}
 
 
 # ── Re-fetch a range from Octopus: preview, then apply (ROADMAP BL-86) ─────────────────────
@@ -11694,9 +11708,9 @@ async def run_refetch_preview(utc_from: str, utc_to: str, parts=_REFETCH_PARTS) 
         logger.info("range re-fetch: preview %s..%s — %s", utc_from, utc_to, summary)
         return summary
     except Exception as e:
-        st.update({"status": "error", "error": str(e)})
-        logger.warning("range re-fetch: preview failed: %s", e)
-        return {"ok": False, "error": str(e)}
+        logger.warning("range re-fetch: preview failed: %s", e, exc_info=e)
+        st.update({"status": "error", "error": _error_text("re-fetch preview", e)})
+        return {"ok": False, "error": st["error"]}
     finally:
         _jc.mark("range_refetch", status=st.get("status") or "done")
 
@@ -11747,9 +11761,9 @@ async def run_refetch_apply(token: str) -> dict:
         logger.info("range re-fetch: applied %s..%s — %s", p.get("from"), p.get("to"), done)
         return done
     except Exception as e:
-        st.update({"status": "error", "error": str(e)})
-        logger.warning("range re-fetch: apply failed: %s", e)
-        return {"ok": False, "error": str(e)}
+        logger.warning("range re-fetch: apply failed: %s", e, exc_info=e)
+        st.update({"status": "error", "error": _error_text("re-fetch apply", e)})
+        return {"ok": False, "error": st["error"]}
     finally:
         _jc.mark("range_refetch", status=st.get("status") or "done")
 
@@ -12305,8 +12319,8 @@ def run_prune_stale_tombstones() -> dict:
     try:
         n = _store.prune_stale_deleted_ranges()
     except Exception as e:
-        logger.warning("stale tombstone prune: failed: %s", e)
-        return {"ok": False, "reason": str(e)}
+        logger.warning("stale tombstone prune: failed: %s", e, exc_info=e)
+        return {"ok": False, "reason": _error_text("tombstone prune", e)}
     if n:
         logger.info("stale tombstone prune: removed %d tombstone(s) whose range is "
                     "already fully populated", n)

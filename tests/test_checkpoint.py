@@ -32,7 +32,7 @@ from block_store import BlockStore          # noqa: E402
 
 
 def _mk_store():
-    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
     st._conn.execute("PRAGMA foreign_keys=OFF")
     return st
 
@@ -128,7 +128,7 @@ class JournalSizeLimit(unittest.TestCase):
         comparison against an unlimited connection is exact.
         """
         def run(limit):
-            path = tempfile.mktemp(suffix=".db")
+            path = os.path.join(tempfile.mkdtemp(), "blocks.db")
             w = sqlite3.connect(path)
             w.executescript("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")
             if limit is not None:

@@ -30,7 +30,7 @@ ALL = ("2000-01-01T00:00:00", "2100-01-01T00:00:00")
 
 
 def _store():
-    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
     c = st._conn
     c.execute("PRAGMA foreign_keys=OFF")
     c.execute("INSERT INTO config_periods (id, effective_from, billing_day, block_minutes, timezone) "

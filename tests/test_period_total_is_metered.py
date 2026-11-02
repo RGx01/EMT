@@ -43,7 +43,7 @@ SUB_A, SUB_B = 2.00, 1.00          # subs total 3.00 -- far more than the main
 
 class _Base(unittest.TestCase):
     def setUp(self):
-        self.tmp = tempfile.mktemp(suffix=".db")
+        self.tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         self.store = BlockStore(self.tmp)
         with self.store._conn:
             self.store._conn.execute(

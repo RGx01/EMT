@@ -2099,7 +2099,7 @@ class TestApiRestoreStaged(unittest.TestCase):
             store.set_meta("supplier", supplier)
         if account:
             store.set_kraken_state("kraken_account_number", account)
-        tmp = tempfile.mktemp(suffix=".db")
+        tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         try:
             store.backup(tmp)
             with open(tmp, "rb") as f:
@@ -2187,7 +2187,7 @@ class TestApiRestoreStaged(unittest.TestCase):
         import os, tempfile, sqlite3
         b = self._make_db_bytes()
         # a v4-shaped file: no emt_schema, stamped below the floor
-        p = tempfile.mktemp(suffix=".db")
+        p = os.path.join(tempfile.mkdtemp(), "blocks.db")
         open(p, "wb").write(b)
         c = sqlite3.connect(p)
         c.execute("DELETE FROM store_meta WHERE key = 'emt_schema'")
@@ -3538,7 +3538,7 @@ class TestPeriodsBoundsCarbonVsUsage(unittest.TestCase):
     def _store_with_split_history(self):
         import tempfile
         from block_store import BlockStore
-        store = BlockStore(tempfile.mktemp(suffix=".db"))
+        store = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
         with store._conn:
             store._conn.execute(
                 "INSERT INTO config_periods (billing_day, block_minutes, timezone, "
@@ -3631,7 +3631,7 @@ class TestAggregateInsights(unittest.TestCase):
 
     def setUp(self):
         import tempfile, os
-        self.tmp = tempfile.mktemp(suffix=".db")
+        self.tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         from block_store import BlockStore
         self.store = BlockStore(self.tmp)
         # Insert a known block
@@ -3952,7 +3952,7 @@ class TestApiPowerMixHistory(unittest.TestCase):
     def setUp(self):
         import tempfile
         from datetime import datetime, timezone, timedelta
-        self.tmp = tempfile.mktemp(suffix=".db")
+        self.tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         from block_store import BlockStore
         self.store = BlockStore(self.tmp)
         recent = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
@@ -3994,7 +3994,7 @@ class TestApiPowerMixHistory(unittest.TestCase):
 
     def test_empty_db_returns_empty_slots(self):
         import tempfile, os
-        tmp2 = tempfile.mktemp(suffix=".db")
+        tmp2 = os.path.join(tempfile.mkdtemp(), "blocks.db")
         try:
             from block_store import BlockStore
             empty_store = BlockStore(tmp2)
@@ -4017,7 +4017,7 @@ class TestAggregateInsightsGenerationMix(unittest.TestCase):
 
     def setUp(self):
         import tempfile
-        self.tmp = tempfile.mktemp(suffix=".db")
+        self.tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         from block_store import BlockStore
         self.store = BlockStore(self.tmp)
         with self.store._conn:
@@ -4097,7 +4097,7 @@ class TestApiBlocksSummaryDirectImportCost(unittest.TestCase):
 
     def setUp(self):
         import tempfile
-        self.tmp = tempfile.mktemp(suffix=".db")
+        self.tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         from block_store import BlockStore
         self.store = BlockStore(self.tmp)
         with self.store._conn:
@@ -4198,7 +4198,7 @@ class TestGaugeScaleFromPowerHistory(unittest.TestCase):
 
     def setUp(self):
         import tempfile
-        self.tmp = tempfile.mktemp(suffix=".db")
+        self.tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         from block_store import BlockStore
         self.store = BlockStore(self.tmp)
         # Add power_history rows with known values
@@ -5680,6 +5680,54 @@ class TestBackupDownloadDelete(unittest.TestCase):
         r = make_client().get("/api/backup/download/blocks.db")
         self.assertEqual(r.status_code, 400)
 
+    # CodeQL's first scan (2 Nov 2026): restore and zip-entries checked a name for slashes only,
+    # so `..` — the backups folder's parent — passed and was found to exist.
+    def test_restore_rejects_the_parent_folder(self):
+        self._backup_dir()
+        r = make_client().post("/api/backup/restore", json={"zip": ".."})
+        self.assertEqual(r.status_code, 400)
+        self.assertNotEqual(server._restore_job.get("status"), "running")
+
+    def test_zip_entries_rejects_the_parent_folder(self):
+        self._backup_dir()
+        r = make_client().post("/api/backup/zip-entries", json={"zip": ".."})
+        self.assertEqual(r.status_code, 400)
+
+    def test_zip_entries_rejects_a_path(self):
+        """GUARD — passes before the fix too (a slash was always refused)."""
+        self._backup_dir()
+        r = make_client().post("/api/backup/zip-entries", json={"zip": "../x.zip"})
+        self.assertIn(r.status_code, (400, 404))
+
+    def test_a_link_out_of_the_backups_folder_is_refused(self):
+        """A `.zip` in the backups folder that is a symlink to a file elsewhere is not served."""
+        import tempfile
+        tmp = self._backup_dir()
+        outside = os.path.join(tempfile.mkdtemp(), "secret.txt")
+        with open(outside, "w") as f:
+            f.write("not a backup")
+        os.symlink(outside, os.path.join(tmp, "backups", "20260101T000000_link.zip"))
+        r = make_client().get("/api/backup/download/20260101T000000_link.zip")
+        self.assertEqual(r.status_code, 400)
+        self.assertNotIn(b"not a backup", r.data)
+
+    def test_a_staged_token_linking_out_of_the_data_folder_is_refused(self):
+        """The staged-upload token is a file directly in DATA_DIR, resolved: a link out is not one."""
+        import tempfile
+        make_client()
+        data = tempfile.mkdtemp()
+        server.DATA_DIR = data
+        outside = os.path.join(tempfile.mkdtemp(), "elsewhere.db")
+        open(outside, "w").close()
+        os.symlink(outside, os.path.join(data, "uploaded_restore-abc.db"))
+        try:
+            self.assertIsNone(server._staged_path("uploaded_restore-abc.db"))
+            real = os.path.join(data, "uploaded_restore-def.db")
+            open(real, "w").close()
+            self.assertEqual(server._staged_path("uploaded_restore-def.db"), real)
+        finally:
+            server.DATA_DIR = "/tmp/emt_test_data"
+
     def test_download_then_delete_roundtrip(self):
         tmp = self._backup_dir()
         name = "20260101T000000_manual.zip"
@@ -5695,6 +5743,79 @@ class TestBackupDownloadDelete(unittest.TestCase):
         self.assertEqual(rx.status_code, 200)
         self.assertTrue(rx.get_json()["ok"])
         self.assertFalse(os.path.exists(p))     # the file is gone
+
+
+class TestErrorRepliesKeepTheErrorInTheLog(unittest.TestCase):
+    """CodeQL's first scan (2 Nov 2026): 96 routes answered an unexpected exception with its own
+    message, `str(e)`, on a port with no login. They now say where and when, and log the rest."""
+
+    def test_a_route_500_does_not_echo_the_exception(self):
+        cli = make_client()
+        with patch.object(server, "_resolve_backup_zip",
+                          side_effect=RuntimeError("/data/secret/path near SELECT x FROM y")), \
+             self.assertLogs(server.logger, level="ERROR") as logs:
+            r = cli.post("/api/backup/zip-entries", json={"zip": "a.zip"})
+        self.assertEqual(r.status_code, 500)
+        err = r.get_json()["error"]
+        self.assertNotIn("secret", err)
+        self.assertNotIn("SELECT", err)
+        self.assertIn("api_backup_zip_entries", err)          # where, to find it in the log
+        self.assertIn("the log has the detail", err)
+        logged = "\n".join(logs.output)
+        self.assertIn("/data/secret/path", logged)             # the detail is kept, with its
+        self.assertIn("Traceback", logged)                     # traceback
+
+    def test_an_octopus_error_says_what_to_do(self):
+        """2 Nov 2026: Octopus's errors in plain words (kraken_api_client.person_message)."""
+        import kraken_api_client as K
+        cli = make_client()
+        with patch.object(server, "_resolve_backup_zip",
+                          side_effect=K.KrakenAuthError("authentication failed (401) for "
+                                                        "https://x/v1/accounts/A-0000ABC7/", status=401)), \
+             self.assertLogs(server.logger, level="ERROR"):
+            r = cli.post("/api/backup/zip-entries", json={"zip": "a.zip"})
+        self.assertEqual(r.status_code, 500)
+        err = r.get_json()["error"]
+        self.assertIn("check it in Settings", err)
+        self.assertNotIn("A-0000ABC7", err)
+
+    def test_a_background_job_error_does_not_echo_the_exception(self):
+        import engine
+        make_client()
+        server._delete_job.clear()
+        with patch.object(engine, "set_delete_active", create=True), \
+             patch.object(server, "_stop_running_import", return_value=True), \
+             patch.object(server, "_safety_backup", side_effect=RuntimeError("/data/secret")), \
+             self.assertLogs(server.logger, level="ERROR"):
+            server._delete_worker("2026-03-01", "00:00", "2026-03-01", "23:59", None, "UTC", False)
+        self.assertEqual(server._delete_job.get("status"), "error")
+        self.assertNotIn("secret", server._delete_job["error"])
+        self.assertIn("the log has the detail", server._delete_job["error"])
+
+
+class TestTheLastTwoEchoes(unittest.TestCase):
+    """CodeQL triage (2 Nov 2026): the BottleCapDave detection and the attribution undo still
+    answered with an exception's text after the generic 500s."""
+
+    def test_detection_failure_says_so_without_the_exception(self):
+        cli = make_client()
+        with patch.object(server, "_ha_client", MagicMock()), \
+             patch.object(server, "_run_on_engine_loop",
+                          side_effect=RuntimeError("/data/secret")):
+            r = cli.get("/api/detect-bcd")
+        j = r.get_json()
+        self.assertFalse(j["found"])
+        self.assertEqual(j["detail"], "detection_failed")
+
+    def test_undo_failure_answers_without_the_exception(self):
+        import engine
+        engine.attribution_running = lambda meter_id=None: False
+        engine.backout_running = lambda: False
+        engine.backout_recorder_attribution = lambda **kw: {"ok": False, "error": "/data/secret"}
+        r = make_client().post("/api/historical/attribute/backout", json={"run_id": "r1"})
+        self.assertEqual(r.status_code, 500)
+        self.assertNotIn("secret", r.get_json()["error"])
+        self.assertIn("the log has the detail", r.get_json()["error"])
 
 
 class TestAtomicRestoreWrite(unittest.TestCase):

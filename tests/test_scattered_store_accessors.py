@@ -27,7 +27,7 @@ S = "2026-09-01T00:00:00"
 
 
 def _mk_store():
-    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
     st._conn.execute("PRAGMA foreign_keys=OFF")
     return st
 
@@ -45,7 +45,7 @@ def _block(st, start=S, meter_id="electricity_main", **cols):
 class SiteTimezone(unittest.TestCase):
 
     def test_no_config_period_is_utc(self):
-        st = BlockStore(tempfile.mktemp(suffix=".db"))
+        st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
         st._conn.execute("DELETE FROM config_periods")
         st._conn.commit()
         self.assertEqual(st.site_timezone(), "UTC")

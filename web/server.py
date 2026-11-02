@@ -915,7 +915,7 @@ def api_logs():
                                           "Run with -v /path/to/logs:/data/energy_meter_tracker",
                                           "or check docker logs <container_name>"]})
         except Exception as e:
-            return jsonify({"error": str(e), "lines": []})
+            return jsonify({"error": _error_text("api_logs", e), "lines": []})
     else:
         token = os.environ.get("SUPERVISOR_TOKEN", "")
         try:
@@ -930,8 +930,7 @@ def api_logs():
             all_lines = raw.splitlines()
             return jsonify({"lines": all_lines[-lines:]})
         except Exception as e:
-            logger.error("api_logs: %s", e)
-            return jsonify({"error": str(e), "lines": []})
+            return jsonify({"error": _error_text("api_logs", e), "lines": []})
 
 
 @app.route("/charts")
@@ -1462,8 +1461,7 @@ def api_power():
             "generation_mix":   current_mix,
         })
     except Exception as e:
-        logger.error("api_power: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/power-source/mini", methods=["POST"])
@@ -1496,8 +1494,7 @@ def api_power_source_mini():
                     "enabled" if enabled else "disabled")
         return jsonify({"ok": True, "enabled": enabled})
     except Exception as e:
-        logger.error("api_power_source_mini: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/carbon")
@@ -1567,8 +1564,7 @@ def api_carbon():
         logger.warning("api_carbon: network error: %s", e)
         return jsonify({"error": "network_error"}), 503
     except Exception as e:
-        logger.error("api_carbon: type=%s repr=%r str=%s", type(e).__name__, e, e)
-        return jsonify({"error": str(e), "type": type(e).__name__, "repr": repr(e)}), 500
+        return _error_reply(e)
 
 
 # ── Power history + carbon intensity ─────────────────────────────────────────
@@ -1586,8 +1582,7 @@ def api_power_history():
         rows  = store.get_power_history(hours=hours)
         return jsonify({"rows": rows})
     except Exception as e:
-        logger.error("api_power_history: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/power/mix-history")
@@ -1602,8 +1597,7 @@ def api_power_mix_history():
         slots = store.get_mix_history(hours=48)
         return jsonify({"slots": slots})
     except Exception as e:
-        logger.error("api_power_mix_history: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/engine/meter-reset-detected")
@@ -1617,7 +1611,7 @@ def api_meter_reset_detected():
             logger.warning("api_meter_reset_detected: meter reset flag was set — serving advisory to UI")
         return jsonify({"detected": detected})
     except Exception as e:
-        return jsonify({"detected": False, "error": str(e)})
+        return jsonify({"detected": False, "error": _error_text("api_meter_reset_detected", e)})
 
 
 @app.route("/api/engine/pause-state")
@@ -1635,7 +1629,7 @@ def api_engine_pause_state():
         return jsonify({"ok": True, **_eng.engine_pause_state(),
                         "loop_lag": _eng.engine_loop_lag()})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/meter/<meter_id>/retire", methods=["POST"])
@@ -1663,8 +1657,7 @@ def api_retire_meter(meter_id: str):
         logger.info("api_retire_meter: %s retired at %s (%s)", meter_id, retired_at, retired_reason)
         return jsonify({"ok": True, "meter_id": meter_id, "retired_at": retired_at})
     except Exception as e:
-        logger.error("api_retire_meter: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/meter/<meter_id>/unretire", methods=["POST"])
@@ -1684,8 +1677,7 @@ def api_unretire_meter(meter_id: str):
         logger.warning("api_unretire_meter: conflict — %s", e)
         return jsonify({"error": str(e), "conflict": True}), 409
     except Exception as e:
-        logger.error("api_unretire_meter: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/meter/main/reset", methods=["POST"])
@@ -1769,8 +1761,7 @@ def api_meter_main_reset():
 
         return jsonify({"ok": True})
     except Exception as e:
-        logger.error("api_meter_main_reset: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/meter/<meter_id>/delete-data", methods=["POST"])
@@ -1992,7 +1983,7 @@ def _meter_delete_data(meter_id: str):
             _eng_e.resume_engine()
         except Exception:
             pass
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/sub-meter/history")
@@ -2024,8 +2015,7 @@ def api_sub_meter_history():
             max_kw = max(max_kw, kw_vals[p90_idx])
         return jsonify({"rows": rows, "max_kw": round(max_kw, 1)})
     except Exception as e:
-        logger.error("api_sub_meter_history: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/carbon/current")
@@ -2060,8 +2050,7 @@ def api_carbon_current():
             })
         return jsonify({"error": "no_data", "postcode": postcode}), 404
     except Exception as e:
-        logger.error("api_carbon_current: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/data-management")
@@ -2405,8 +2394,7 @@ def api_config_history():
             pass
         return jsonify({"periods": rows, "timezone": cfg_tz})
     except Exception as e:
-        logger.error("api_config_history: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/region/reconcile")
@@ -2420,7 +2408,7 @@ def api_region_reconcile_get():
             return jsonify({"pending": False})
         return jsonify({"pending": True, "plan": plan})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/region/reconcile/apply", methods=["POST"])
@@ -2455,8 +2443,7 @@ def api_region_reconcile_apply():
         logger.info("api_region_reconcile_apply: %s", res)
         return jsonify({"ok": True, **res})
     except Exception as e:
-        logger.error("api_region_reconcile_apply: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/region/reconcile/dismiss", methods=["POST"])
@@ -2466,7 +2453,7 @@ def api_region_reconcile_dismiss():
         _engine_write(lambda st: st.set_meta("region_reconcile_pending", None))
         return jsonify({"ok": True})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/config/history", methods=["POST"])
@@ -2556,8 +2543,7 @@ def api_config_history_create():
     except _ConfigBusy:
         return jsonify({"queued": True, "error": _CONFIG_BUSY_MSG}), 503
     except Exception as e:
-        logger.error("api_config_history_create: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/config/history/<int:period_id>", methods=["PUT"])
@@ -2658,8 +2644,7 @@ def api_config_history_update(period_id):
     except _ConfigBusy:
         return jsonify({"queued": True, "error": _CONFIG_BUSY_MSG}), 503
     except Exception as e:
-        logger.error("api_config_history_update: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/config/history/<int:period_id>", methods=["DELETE"])
@@ -2718,8 +2703,7 @@ def api_config_history_delete(period_id):
         return jsonify({"queued": True, "error": _CONFIG_BUSY_MSG}), 503
     except Exception as e:
         # repr(): a loop timeout (TimeoutError) str()s to '' — repr keeps the type.
-        logger.error("api_config_history_delete: %r", e)
-        return jsonify({"error": str(e) or e.__class__.__name__}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/config", methods=["POST"])
@@ -2838,8 +2822,7 @@ def api_save_config():
 
         return jsonify({"ok": True})
     except Exception as e:
-        logger.error("api_save_config: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/backup/create", methods=["POST"])
@@ -2851,8 +2834,7 @@ def api_backup_create():
         path  = _create_backup_zip(label=label)
         return jsonify({"ok": True, "path": os.path.basename(path)})
     except Exception as e:
-        logger.error("api_backup_create: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/backup", methods=["POST"])
@@ -2867,8 +2849,7 @@ def api_backup():
             size = None
         return jsonify({"ok": True, "path": os.path.basename(path), "size": size})
     except Exception as e:
-        logger.error("api_backup: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/backup/info", methods=["GET"])
@@ -2954,8 +2935,40 @@ def _move_restore_into_place(src, dest):
     _fsync_dir(dest)
 
 
+def _error_text(where, e) -> str:
+    """What a reply says when something unexpected went wrong: where and when, not what. The
+    exception's own message can carry a path, SQL or a library's internals, and the direct port
+    has no login (CodeQL's first scan, 2 Nov 2026). The log has the message and the traceback,
+    under the same time."""
+    from datetime import datetime as _dt
+    from kraken_api_client import person_message
+    logger.error("%s: %s", where, e, exc_info=e)
+    msg = person_message(e)               # Octopus's, in plain words: what to do, no URL
+    if msg:
+        return msg
+    return ("Something went wrong (%s, %s) — the log has the detail."
+            % (where, _dt.now().strftime("%H:%M:%S")))
+
+
+def _error_reply(e, fields=None, status=500):
+    """A route's reply to an unexpected exception: `fields` and a generic `error` (_error_text)."""
+    body = dict(fields or {})
+    body["error"] = _error_text(request.endpoint or "request", e)
+    return jsonify(body), status
+
+
+def _directly_in(path, folder) -> bool:
+    """Whether `path` is a file directly inside `folder` once both are resolved — symlinks and
+    `..` included. The one check behind every path a request names (CodeQL's first scan, 2 Nov
+    2026: two routes had checked a name for slashes only, so `..` passed)."""
+    if not path or not folder:
+        return False
+    real, root = os.path.realpath(path), os.path.realpath(folder)
+    return real.startswith(root + os.sep) and os.path.dirname(real) == root
+
+
 def _in_data_dir(path):
-    return bool(path) and os.path.dirname(os.path.abspath(path)) == os.path.abspath(DATA_DIR)
+    return _directly_in(path, DATA_DIR)
 
 
 def _atomic_restore_write(dest, fill):
@@ -2989,10 +3002,10 @@ def api_backup_restore():
         selected  = data.get("files", None)
         from_flat = data.get("from_flat", False)
         if not from_flat:
-            if not zipname or "/" in zipname or "\\" in zipname:
-                return jsonify({"error": "Invalid zip name"}), 400
-            if not os.path.exists(f"{_share_backup_dir()}/backups/{zipname}"):
-                return jsonify({"error": "Backup not found"}), 404
+            path, err = _resolve_backup_zip(zipname)
+            if err:
+                return jsonify({"error": err[0]}), err[1]
+            zipname = os.path.basename(path)
         with _restore_launch_lock:
             if _restore_job.get("status") == "running":
                 return jsonify({"error": "a restore is already running",
@@ -3005,8 +3018,7 @@ def api_backup_restore():
                          daemon=True, name="restore").start()
         return jsonify({"ok": True, "status": "running"})
     except Exception as e:
-        logger.error("api_backup_restore(launch): %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/backup/restore/status", methods=["GET"])
@@ -3021,8 +3033,14 @@ def _resolve_backup_zip(zipname: str):
     zipname = os.path.basename(zipname or "")          # strip any path components
     if not zipname or "/" in zipname or "\\" in zipname or not zipname.endswith(".zip"):
         return None, ("Invalid backup name", 400)
-    path = os.path.join(_share_backup_dir(), "backups", zipname)
-    if not os.path.exists(path):
+    # Resolved and contained BEFORE the file system is asked anything about it (CodeQL on #28:
+    # an exists() ahead of the check let a name be probed), and here rather than in a helper,
+    # where the check is visible as the guard it is.
+    folder = os.path.realpath(os.path.join(_share_backup_dir(), "backups"))
+    path = os.path.realpath(os.path.join(folder, zipname))
+    if not path.startswith(folder + os.sep) or os.path.dirname(path) != folder:
+        return None, ("Invalid backup name", 400)      # a link out of the folder
+    if not os.path.isfile(path):
         return None, ("Backup not found", 404)
     return path, None
 
@@ -3054,8 +3072,7 @@ def api_backup_delete():
         logger.info("api_backup_delete: removed backup %s", os.path.basename(path))
         return jsonify({"ok": True, "deleted": os.path.basename(path)})
     except Exception as e:
-        logger.error("api_backup_delete: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 class _RestoreRefused(Exception):
@@ -3600,8 +3617,7 @@ def api_ev_style():
     try:
         _engine_write(lambda st: st.set_meta("ev_style", out or None))
     except Exception as e:
-        logger.error("api_ev_style: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
     return jsonify({"ok": True, "style": out})
 
 
@@ -3653,7 +3669,8 @@ def api_detect_bcd():
         return jsonify(result)
     except Exception as e:
         # Detection failure must never block setup — fall back to pure-API path.
-        return jsonify({"found": False, "detail": str(e)})
+        logger.warning("api_detect_bcd: %s", e, exc_info=e)
+        return jsonify({"found": False, "detail": "detection_failed"})
 
 
 @app.route("/api/data-source-mode", methods=["GET"])
@@ -3673,7 +3690,7 @@ def api_data_source_mode_get():
                         # file that backups don't include).
                         "credentials_missing": bool(uses_api and not has_creds)})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/data-source-mode", methods=["POST"])
@@ -3723,7 +3740,7 @@ def api_data_source_mode_post():
     except ValueError as ve:
         return jsonify({"error": str(ve)}), 400
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/kraken-config", methods=["GET"])
@@ -3754,7 +3771,7 @@ def api_kraken_config_get():
             out["credentials_account"] = mm[1]
         return jsonify(out)
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/kraken-config", methods=["POST"])
@@ -3791,7 +3808,7 @@ def api_kraken_config_post():
                 "it." % (result.get("detail") or "unknown"))
         return jsonify(result), (200 if result.get("ok") else 400)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/disconnect-kraken", methods=["POST"])
@@ -3806,7 +3823,7 @@ def api_disconnect_kraken():
         result = _run_on_engine_loop(_eng.disconnect_kraken(), timeout=30.0)
         return jsonify(result), (200 if result.get("ok") else 500)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/reactivate-kraken", methods=["POST"])
@@ -3835,7 +3852,7 @@ def api_reactivate_kraken():
             pass
         return jsonify(result), (200 if result.get("ok") else 400)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 def _parse_version(v: str):
@@ -3963,8 +3980,7 @@ def api_instance_notice_dismiss():
             _eng.FOREIGN_RESTORE_NOTICE["acknowledged"] = True
         return jsonify({"ok": True})
     except Exception as e:
-        logger.warning("api_instance_notice_dismiss: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 def _settlement_horizon_floor() -> str:
@@ -4038,8 +4054,7 @@ def api_refetch_preview():
             raise
         return jsonify({"ok": True, "status": "running"})
     except Exception as e:
-        logger.error("api_refetch_preview: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/settlement/refetch/status", methods=["GET"])
@@ -4070,7 +4085,9 @@ def api_refetch_apply():
         try:
             backup = _safety_backup("pre-refetch")
         except Exception as be:
-            return jsonify({"ok": False, "error": "no safety backup, so nothing applied: %s" % be}), 500
+            logger.error("pre-refetch safety backup failed: %s", be, exc_info=be)
+            return jsonify({"ok": False, "error": "No safety backup could be taken, so nothing was "
+                            "applied — the log has the reason."}), 500
         ok, reason = _eng.refetch_claim()
         if not ok:
             return jsonify({"ok": False, "error": reason}), 409
@@ -4082,8 +4099,7 @@ def api_refetch_apply():
             raise
         return jsonify({"ok": True, "status": "running", "backup": backup})
     except Exception as e:
-        logger.error("api_refetch_apply: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 # ── Gap fill as an action on the heatmap's selection (gap fill design §2–§4) ──────────────────
@@ -4129,8 +4145,7 @@ def api_gaps_around():
         plan = _eng.gap_fill_plan(st, gaps, channels=_gap_fill_channels()) if gaps else {"runs": []}
         return jsonify({"ok": True, "gaps": plan["runs"]})
     except Exception as e:
-        logger.error("api_gaps_around: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/gaps/fill/preview", methods=["POST"])
@@ -4158,8 +4173,7 @@ def api_gap_fill_preview():
                                       "fill_runs": plan["fill_runs"], "channels": chans})
         return jsonify({"ok": True, "token": token, **plan})
     except Exception as e:
-        logger.error("api_gap_fill_preview: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/gaps/fill/apply", methods=["POST"])
@@ -4193,8 +4207,7 @@ def api_gap_fill_apply():
             _eng.run_gap_fill_runs(p["fill_runs"], channels=p["channels"]), _event_loop)
         return jsonify({"ok": True, "status": "running", "runs": len(p["fill_runs"])})
     except Exception as e:
-        logger.error("api_gap_fill_apply: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/gaps/fill/status", methods=["GET"])
@@ -4234,8 +4247,7 @@ def api_settle_parity_start():
             _event_loop)
         return jsonify({"ok": True, "status": "running", "from": utc_from, "to": utc_to})
     except Exception as e:
-        logger.error("api_settle_parity_start: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/settlement/settle-parity/status", methods=["GET"])
@@ -4285,8 +4297,7 @@ def api_ask_dry_run_start():
             _eng.run_ask_dry_run(os.path.join(_share_backup_dir(), "reports")), _event_loop)
         return jsonify({"ok": True, "status": "running"})
     except Exception as e:
-        logger.error("api_ask_dry_run_start: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/settlement/ask-dry-run/status", methods=["GET"])
@@ -4372,8 +4383,7 @@ def api_block_settlement():
                           "kinds": sorted({h.get("kind") for h in hist})} if hist else None),
         })
     except Exception as e:
-        logger.warning("api_block_settlement: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 def _reach_floor() -> str:
@@ -4516,7 +4526,7 @@ def api_billing_source_get():
                         "credentials_missing": bool(_uses_api and not _has_creds),
                         "unsupported_tariff": _eng._rate_schedule_unsupported})
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 # ── Unified backfill (Heal Gaps + Historical Import) ────────────────────────
@@ -4607,7 +4617,7 @@ def api_backfill_plan():
                      "gap_slots_total": sum(g.get("slots", 0) for g in gaps)})
         return jsonify(plan), (200 if plan.get("ok") else 400)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/backfill/run", methods=["POST"])
@@ -4676,7 +4686,7 @@ def api_backfill_run():
 
         return jsonify({"ok": False, "message": "no runner for action '%s'" % action}), 400
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/backfill/reach")
@@ -4701,7 +4711,7 @@ def api_backfill_reach():
                         "up_to": plan.get("go_live"),
                         "chunk_estimate": (max(chunks) if chunks else 0)}), 200
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 def _gap_end_inclusive(store, frm, to):
@@ -4758,7 +4768,7 @@ def api_backfill_fill_gap():
             _eng.run_gap_fill_job(frm, to, channels=channels), _event_loop)
         return jsonify({"ok": True, "status": "running"}), 200
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/backfill/gaps")
@@ -4830,7 +4840,7 @@ def api_backfill_gaps():
             "api_available": api_available,
         })
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 # The flags the heatmap folds into a bill cell's value (heatmap_module.html `settleValue`): the
@@ -4929,8 +4939,7 @@ def api_data_health():
             out["db_bytes"] = os.path.getsize(db_path)
         return jsonify(out)
     except Exception as e:
-        logger.error("api_data_health: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 def _health_answer(store, views) -> dict:
@@ -5279,8 +5288,7 @@ def _support_worker(lo, hi, redact, summary):
         _j.update({"status": "done", "name": name, "bytes": r["bytes"], "redacted": r["redacted"],
                    "error": None})
     except Exception as e:
-        logger.error("support file: %s", e)
-        _j.update({"status": "error", "error": str(e)})
+        _j.update({"status": "error", "error": _error_text("support file", e)})
 
 
 @app.route("/api/support/estimate", methods=["POST"])
@@ -5299,8 +5307,7 @@ def api_support_estimate():
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:
-        logger.error("api_support_estimate: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/support/build", methods=["POST"])
@@ -5321,8 +5328,7 @@ def api_support_build():
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:
-        logger.error("api_support_build: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/support/status")
@@ -5359,7 +5365,7 @@ def api_history_gaps():
                         "total_slots": sum(g["slots"] for g in gaps),
                         "api_available": _eng.kraken_available()})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/resolve-gaps", methods=["POST"])
@@ -5377,7 +5383,7 @@ def api_resolve_gaps():
         result = _run_on_engine_loop(_eng.resolve_history_gaps(), timeout=300.0)
         return jsonify(result), (200 if result.get("ok") else 400)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/historical/probe", methods=["POST"])
@@ -5408,7 +5414,7 @@ def api_historical_probe():
             _eng.probe_recorder_statistics(entity_ids, days), timeout=300.0)
         return jsonify(result), (200 if result.get("ok") else 400)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/historical/probe-devices", methods=["GET"])
@@ -5454,8 +5460,7 @@ def api_probe_devices():
         devices.sort(key=lambda d: (d["is_sub_meter"], d["label"].lower()))
         return jsonify({"ok": True, "devices": devices})
     except Exception as e:
-        logger.error("api_probe_devices: %s", e)
-        return jsonify({"ok": False, "error": str(e), "devices": []}), 500
+        return _error_reply(e, {"ok": False, "devices": []})
 
 
 def _rebuild_devices_after_csv(result) -> None:
@@ -5522,8 +5527,7 @@ def api_meter_delete_preview(meter_id: str):
                         "first": (row["first"] or "")[:10] or None,
                         "sensors": _device_sensor_list(meter_id)})
     except Exception as e:
-        logger.error("api_meter_delete_preview: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/meter/<meter_id>/history-sensors", methods=["POST"])
@@ -5546,8 +5550,7 @@ def api_meter_history_sensors(meter_id: str):
         saved = _engine_write(lambda st: st.set_device_history_sensors(meter_id, "import", ents))
         return jsonify({"ok": True, "meter_id": meter_id, "history_sensors": saved})
     except Exception as e:
-        logger.error("api_meter_history_sensors: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/historical/attribute/start", methods=["POST"])
@@ -5630,7 +5633,7 @@ def api_attribute_start():
             _eng_rel.attribution_release(meter_id)
         except Exception:
             pass
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/historical/attribute/status", methods=["GET"])
@@ -5694,11 +5697,10 @@ def api_attribute_backout():
             if err == "run_not_found":
                 return jsonify({"ok": False, "error": "that run was already undone "
                                 "(or no longer exists)"}), 409
-            return jsonify(res), 500
+            return jsonify({"ok": False, "error": "The undo failed — the log has the detail."}), 500
         return jsonify(res)
     except Exception as e:
-        logger.error("api_attribute_backout: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/historical/attribute/backout/status", methods=["GET"])
@@ -5720,7 +5722,7 @@ def api_historical_site_plan():
         result = _run_on_engine_loop(_eng.discover_pre_import_sites(), timeout=60.0)
         return jsonify(result), (200 if result.get("ok") else 400)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/historical/site-plan/apply", methods=["POST"])
@@ -5755,8 +5757,7 @@ def api_historical_site_plan_apply():
         logger.info("api_historical_site_plan_apply: %s", res)
         return jsonify({"ok": True, "backup": backup, **res})
     except Exception as e:
-        logger.error("api_historical_site_plan_apply: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/historical/api-import/plan", methods=["POST"])
@@ -5776,7 +5777,7 @@ def api_historical_api_plan():
             _eng.plan_api_import(body.get("from"), chunk_days=chunk_days), timeout=60.0)
         return jsonify(result), (200 if result.get("ok") else 400)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/historical/api-import/start", methods=["POST"])
@@ -5826,8 +5827,7 @@ def api_historical_api_start():
             raise
         return jsonify({"ok": True, "status": "running", "backup": backup})
     except Exception as e:
-        logger.error("api_historical_api_start: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/historical/api-import/control", methods=["POST"])
@@ -5838,7 +5838,7 @@ def api_historical_api_control():
         body = request.get_json(force=True, silent=True) or {}
         return jsonify(_eng.api_import_control(body.get("action", "")))
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/historical/api-import/status", methods=["GET"])
@@ -5848,7 +5848,7 @@ def api_historical_api_status():
         import engine as _eng
         return jsonify(_eng.api_import_status())
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/historical/api-import/gaps", methods=["GET"])
@@ -5859,7 +5859,7 @@ def api_historical_api_gaps():
         import engine as _eng
         return jsonify(_eng.api_import_gaps())
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/historical/retag-imports", methods=["POST"])
@@ -5876,8 +5876,7 @@ def api_historical_retag_imports():
         logger.info("api_historical_retag_imports: %s", res)
         return jsonify({"ok": True, **res})
     except Exception as e:
-        logger.error("api_historical_retag_imports: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 
@@ -5897,7 +5896,7 @@ def api_carbon_pause():
             return jsonify({"ok": True, "paused": paused})
         return jsonify({"ok": True, "paused": bool(store.get_meta("carbon_paused", None))})
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 
@@ -5953,7 +5952,10 @@ def api_historical_bills_build():
                 b = _bp.parse_bill(data, source_name=f.filename or "bill.pdf")
                 parsed.append(b)
             except Exception as e:
-                failed.append({"file": f.filename, "error": str(e)})
+                # the parser raises whatever pypdf or a pattern raised: not a message for a person
+                failed.append({"file": f.filename,
+                               "error": "Not read as an Octopus electricity bill. "
+                                        + _error_text("a bill's parse", e)})
 
         # By import MPAN — a folder can span a house move. A bill with export only (a re-issued
         # export bill, 22 Oct 2026, staging) has no import MPAN: it joins the group whose export
@@ -6021,8 +6023,7 @@ def api_historical_bills_build():
         return jsonify({"ok": True, "files": len(pdfs), "groups": out_groups,
                         "failed": failed, "duplicates": duplicates, "warnings": warnings})
     except Exception as e:
-        logger.error("api_historical_bills_build: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/historical/csv/preview", methods=["POST"])
@@ -6051,7 +6052,7 @@ def api_historical_csv_preview():
             }
         return jsonify(out)
     except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/historical/csv/apply", methods=["POST"])
@@ -6129,8 +6130,7 @@ def api_historical_csv_apply():
         # previously left the charts stale until the next startup/live-block regen.
         return jsonify(result)
     except Exception as e:
-        logger.error("api_historical_csv_apply: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 def _period_block_minutes_tz(store, from_iso):
@@ -6202,8 +6202,7 @@ def api_historical_gap_template():
         return Response(csv_text, mimetype="text/csv",
                         headers={"Content-Disposition": f'attachment; filename="{fname}"'})
     except Exception as e:
-        logger.error("api_historical_gap_template: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 
@@ -6219,8 +6218,7 @@ def api_historical_csv_template():
         return Response(csv_text, mimetype="text/csv",
                         headers={"Content-Disposition": 'attachment; filename="emt-consumption-template.csv"'})
     except Exception as e:
-        logger.error("api_historical_csv_template: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 _SETTLE_CAUSE_WINDOW_H = 12.0   # an import finishing this recently owns the sweep
@@ -6281,8 +6279,7 @@ def api_battery_sensor_confirm():
         ok = bool(mid) and _engine_write(lambda st: _eng.confirm_battery_sensor(mid, yes))
         return jsonify({"ok": bool(ok)}), (200 if ok else 404)
     except Exception as e:
-        logger.warning("api_battery_sensor_confirm: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/tariff-agreements", methods=["GET"])
@@ -6350,8 +6347,7 @@ def api_tariff_agreements_accept():
         out = _run_on_engine_loop(_accept())
         return jsonify(out), (200 if out.get("ok") else 409)
     except Exception as e:
-        logger.warning("api_tariff_agreements_accept: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/settle-history-status")
@@ -6741,7 +6737,7 @@ def api_energy():
         return jsonify(out)
     except Exception as e:
         logger.exception("api_energy failed")
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/periods")
@@ -6916,7 +6912,7 @@ def api_periods():
         })
     except Exception as e:
         logger.exception("api_periods failed")
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 
@@ -7864,12 +7860,9 @@ def api_backup_zip_entries():
     import zipfile
     try:
         data = request.get_json(force=True) or {}
-        zipname = data.get("zip", "")
-        if not zipname or "/" in zipname or "\\" in zipname:
-            return jsonify({"error": "Invalid zip name"}), 400
-        zip_path = f"{_share_backup_dir()}/backups/{zipname}"
-        if not os.path.exists(zip_path):
-            return jsonify({"error": "Backup not found"}), 404
+        zip_path, err = _resolve_backup_zip(data.get("zip", ""))
+        if err:
+            return jsonify({"error": err[0]}), err[1]
         known = {"blocks.db", "blocks.json"}
         entries = {}
         with zipfile.ZipFile(zip_path, "r") as zf:
@@ -7881,8 +7874,7 @@ def api_backup_zip_entries():
             return jsonify({"error": "No recognised files found in backup"}), 400
         return jsonify({"files": entries})
     except Exception as e:
-        logger.error("api_backup_zip_entries: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 def _create_backup_zip(label="backup"):
@@ -8011,9 +8003,9 @@ def _safety_backup_or_refuse(label):
     try:
         return _safety_backup(label), None
     except Exception as e:
-        logger.error("safety backup %s failed — operation refused: %s", label, e)
+        logger.error("safety backup %s failed — operation refused: %s", label, e, exc_info=e)
         return None, (jsonify({"ok": False, "error": "A safety backup could not be taken, "
-                               "so nothing was changed: %s" % e}), 500)
+                               "so nothing was changed — the log has the reason."}), 500)
 
 
 
@@ -8229,8 +8221,7 @@ def api_restore_stage():
         return _stage_reply(staged, "parsed in %.1f s, saved in %.1f s"
                             % (_t_parse, _t.monotonic() - _t1))
     except Exception as e:
-        logger.error("restore/stage: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 def _stage_reply(staged, how):
@@ -8291,8 +8282,7 @@ def api_restore_upload_begin():
         os.close(_fd)
         return jsonify({"ok": True, "id": os.path.basename(part), "chunk": 512 * 1024})
     except Exception as e:
-        logger.error("restore/upload/begin: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/restore/upload/chunk", methods=["POST"])
@@ -8318,8 +8308,7 @@ def api_restore_upload_chunk():
             f.truncate(offset + len(data))      # a retried piece replaces itself, no more
         return jsonify({"ok": True, "received": offset + len(data)})
     except Exception as e:
-        logger.error("restore/upload/chunk: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/restore/upload/finish", methods=["POST"])
@@ -8354,8 +8343,7 @@ def api_restore_upload_finish():
             return jsonify({"error": str(e)}), 400
         return _stage_reply(staged, "in pieces, staged in %.1f s" % (_t.monotonic() - _t1))
     except Exception as e:
-        logger.error("restore/upload/finish: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/restore/confirm", methods=["POST"])
@@ -8434,8 +8422,7 @@ def api_restore_confirm():
                          daemon=True, name="restore-upload").start()
         return jsonify({"ok": True, "status": "running"})
     except Exception as e:
-        logger.error("restore/confirm: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 # ── Database maintenance ───────────────────────────────────────────────────────────────────
 
@@ -8500,8 +8487,7 @@ def api_db_vacuum():
             _eng.resume_engine()
         except Exception:
             pass
-        logger.error("api_db_vacuum: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 # ── Block deletion ────────────────────────────────────────────────────────────────────────────────
@@ -8563,8 +8549,7 @@ def api_blocks_delete_preview():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
-        logger.error("api_blocks_delete_preview: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 # Background delete/purge job — shared status so the UI can show a persistent
@@ -8641,8 +8626,7 @@ def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
                     meter_id or "all")
         _j.update({"status": "done", "kind": "delete", "result": result, "error": None})
     except Exception as e:
-        logger.error("_delete_worker: %s", e)
-        _j.update({"status": "error", "error": str(e)})
+        _j.update({"status": "error", "error": _error_text("_delete_worker", e)})
     finally:
         _eng.set_delete_active(False)
         # Own connection, own thread — close it here or every delete leaks one.
@@ -8684,8 +8668,7 @@ def _purge_worker():
         _j.update({"status": "done", "kind": "purge",
                    "result": {"ok": True, **result}, "error": None})
     except Exception as e:
-        logger.error("_purge_worker: %s", e)
-        _j.update({"status": "error", "error": str(e)})
+        _j.update({"status": "error", "error": _error_text("_purge_worker", e)})
     finally:
         _eng.set_delete_active(False)
         # Own connection, own thread — close it here or every delete leaks one.
@@ -8761,8 +8744,7 @@ def api_blocks_delete():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
-        logger.error("api_blocks_delete: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 def _site_tz() -> str:
@@ -8806,8 +8788,7 @@ def api_delete_export_preview():
     except ValueError as e:
         return jsonify({"ok": False, "error": str(e)}), 400
     except Exception as e:
-        logger.error("api_delete_export_preview: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
 
 
 @app.route("/api/blocks/delete-export", methods=["POST"])
@@ -8833,8 +8814,7 @@ def api_delete_export():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except Exception as e:
-        logger.error("api_delete_export: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/historical/purge-preview")
@@ -8843,8 +8823,7 @@ def api_historical_purge_preview():
     try:
         return jsonify(store_access.store().count_imported_history())
     except Exception as e:
-        logger.error("api_historical_purge_preview: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/historical/purge", methods=["POST"])
@@ -8869,8 +8848,7 @@ def api_historical_purge():
         threading.Thread(target=_purge_worker, daemon=True, name="purge").start()
         return jsonify({"ok": True, "status": "running"})
     except Exception as e:
-        logger.error("api_historical_purge: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 # ── Historical corrections ────────────────────────────────────────────────────
@@ -9465,8 +9443,7 @@ def api_chart_styles():
         if ev is not None:
             _engine_write(lambda st: st.set_meta("ev_style", ev or None))
     except Exception as e:
-        logger.error("api_chart_styles: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
     return jsonify({"ok": True, "written": n})
 
 
@@ -9496,8 +9473,7 @@ def api_home_eras():
     try:
         _engine_write(lambda st: _he.save(st, eras))
     except Exception as e:
-        logger.error("api_home_eras: %s", e)
-        return jsonify({"ok": False, "error": str(e)}), 500
+        return _error_reply(e, {"ok": False})
     return jsonify({"ok": True, "eras": eras})
 
 
@@ -9532,8 +9508,7 @@ def api_agile_prices():
                        "compare": _ap.compare(c["prices"], slots)}
         return jsonify(out)
     except Exception as e:
-        logger.error("api_agile_prices: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/charge-sessions", methods=["GET"])
@@ -9669,8 +9644,7 @@ def api_charge_sessions():
         return jsonify({"sessions": sessions, "upcoming": upcoming, "outside": outside,
                         "cap_days": cap_days, "has_data": True, "currency": currency})
     except Exception as e:
-        logger.error("api_charge_sessions: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/corrections/meters", methods=["GET"])
@@ -9683,8 +9657,7 @@ def api_corrections_meters():
         ).fetchall()
         return jsonify({"meters": [r["meter_id"] for r in rows]})
     except Exception as e:
-        logger.error("api_corrections_meters: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 # Days of blocks either side of the correction window to sample rates from.
@@ -9749,8 +9722,7 @@ def api_corrections_nearby_rates():
         return jsonify({"rates": rates, "channel": channel,
                         "window": [win_from, win_to]})
     except Exception as e:
-        logger.error("api_corrections_nearby_rates: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 @app.route("/api/corrections/preview", methods=["POST"])
@@ -9890,8 +9862,7 @@ def api_corrections_preview():
             return jsonify({"blocks": blocks_out})
 
     except Exception as e:
-        logger.error("api_corrections_preview: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
 
 
 def _corrections_multiband_count(store, where, params):
@@ -10161,5 +10132,4 @@ def api_corrections_apply():
 
         return jsonify({"ok": True, "updated_blocks": updated})
     except Exception as e:
-        logger.error("api_corrections_apply: %s", e)
-        return jsonify({"error": str(e)}), 500
+        return _error_reply(e)
