@@ -11,6 +11,13 @@ EMT is the successor to [Energy Meter Tracker v4](https://github.com/RGx01/energ
 It is a **new add-on with its own slug** (`emt`), not an upgrade: it installs beside v4, runs beside
 it for as long as you like, and can bring v4's history across from a v4 backup.
 
+| | |
+|---|---|
+| ![The bill for a billing period](docs/screenshots/charts-billing.webp) | ![Usage Stats: each device's import, month by month](docs/screenshots/usage-devices.webp) |
+| ![The net energy heatmap, a half-hour a cell](docs/screenshots/charts-heatmap.webp) | ![The running total, a year a turn of the spiral](docs/screenshots/running-total-spiral.webp) |
+
+*A made-up household — `.build/demo_db.py`.*
+
 ## Install
 
 1. In Home Assistant: **Settings → Add-ons → Add-on store → ⋮ → Repositories**, and add
