@@ -707,8 +707,8 @@ standing charges), Lifetime or Year by year, with a table a year (total, change,
   tariff's, an era's); **PR 4 ✅** eras and tariffs on it; **PR 5 ✅** the Spiral tab retired — a remembered one, or `?tab=spiral`, opens the Running total's
   spiral with its saved view carried over.
 
-**BL-105 — the help: fixing the data heatmap, and red days Octopus has not costed.** *Noted 1 Nov 2026 (the
-user).* *PR 1 ✅ the key's swatches. Traced 1 Nov 2026: a re-fetch writes only the half-hours Octopus's
+**BL-105 — the help: fixing the data heatmap, and red days Octopus has not costed.** ✅ *Noted 1 Nov 2026 (the
+user).* *PR 1 ✅ the key's swatches; PR 2 ✅ (2 Nov 2026) the help page's Fixing the heatmap card, a state a swatch. Traced 1 Nov 2026: a re-fetch writes only the half-hours Octopus's
 answer differs on, and one it does not answer is counted, not written — it never clears a cost. A costed half-hour
 reads red after one only where Octopus's own figures disagree (its cost and kWh × its rate, the kWh it priced and
 the settled kWh, its VAT and the day's, a completed dispatch with no EV in its breakdown past the 28-day hold), or
