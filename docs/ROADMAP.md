@@ -708,7 +708,11 @@ standing charges), Lifetime or Year by year, with a table a year (total, change,
   spiral with its saved view carried over.
 
 **BL-105 — the help: fixing the data heatmap, and red days Octopus has not costed.** *Noted 1 Nov 2026 (the
-user).* Data Management's help page (`help/data_management.html`) says what the heatmap is, not what to do
+user).* *PR 1 ✅ the key's swatches. Traced 1 Nov 2026: a re-fetch writes only the half-hours Octopus's
+answer differs on, and one it does not answer is counted, not written — it never clears a cost. A costed half-hour
+reads red after one only where Octopus's own figures disagree (its cost and kWh × its rate, the kWh it priced and
+the settled kWh, its VAT and the day's, a completed dispatch with no EV in its breakdown past the 28-day hold), or
+where EMT stored the bill and could not apply it (logged "did not re-settle from it").* Data Management's help page (`help/data_management.html`) says what the heatmap is, not what to do
 about it. It should say:
 - **How to fix each state**: the action on a selection for each colour of the Import bill and Export bill
   views (a re-fetch, a gap fill, a correction), and which states have none.
