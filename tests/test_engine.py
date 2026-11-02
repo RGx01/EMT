@@ -4457,7 +4457,7 @@ class TestBackupToShareOffloaded(unittest.TestCase):
     def test_backup_writes_valid_db_and_resets_guard(self):
         import tempfile, os, sqlite3
         from block_store import BlockStore
-        tmpdb = tempfile.mktemp(suffix=".db")
+        tmpdb = os.path.join(tempfile.mkdtemp(), "blocks.db")
         bkdir = tempfile.mkdtemp()
         try:
             s = BlockStore(tmpdb)

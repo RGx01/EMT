@@ -84,7 +84,7 @@ class _Base(unittest.TestCase):
     RATE_DAY = 0.32309
 
     def setUp(self):
-        self.tmp = tempfile.mktemp(suffix=".db")
+        self.tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         self.store = BlockStore(self.tmp)
         with self.store._conn:
             self.store._conn.execute(

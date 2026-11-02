@@ -20,7 +20,7 @@ from block_store import BlockStore
 
 
 def _mk_store():
-    p = tempfile.mktemp(suffix=".db")
+    p = os.path.join(tempfile.mkdtemp(), "blocks.db")
     st = BlockStore(p)
     st._conn.execute("PRAGMA foreign_keys=OFF")
     return st, p
@@ -81,7 +81,7 @@ class TestSurvivesBackup(unittest.TestCase):
         st, p = _mk_store()
         with mock.patch.object(engine, "_read_config_version", return_value="4.5.14"):
             engine.stamp_version(st)
-        dst = tempfile.mktemp(suffix=".db")
+        dst = os.path.join(tempfile.mkdtemp(), "blocks.db")
         a = sqlite3.connect(p); b = sqlite3.connect(dst)
         try:
             a.backup(b)

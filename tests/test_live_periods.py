@@ -70,7 +70,7 @@ def _store():
     """Today, local: main 2 kWh @ 0.25 per block for 4 blocks (export 1 kWh @ 0.15 on one),
     standing 0.48 on every block; the battery draws 0.5 grid kWh of each; the EV meter reads
     0.8 kWh, but on the first two blocks the bill split says EV was 1.0 kWh / £0.05."""
-    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
     st._conn.execute("PRAGMA foreign_keys=OFF")
     st._conn.execute("INSERT INTO config_periods (id, effective_from, billing_day, block_minutes, "
                      "timezone) VALUES (1, '2026-01-01T00:00:00', 3, 30, ?)", (TZ,))

@@ -2099,7 +2099,7 @@ class TestApiRestoreStaged(unittest.TestCase):
             store.set_meta("supplier", supplier)
         if account:
             store.set_kraken_state("kraken_account_number", account)
-        tmp = tempfile.mktemp(suffix=".db")
+        tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         try:
             store.backup(tmp)
             with open(tmp, "rb") as f:
@@ -2187,7 +2187,7 @@ class TestApiRestoreStaged(unittest.TestCase):
         import os, tempfile, sqlite3
         b = self._make_db_bytes()
         # a v4-shaped file: no emt_schema, stamped below the floor
-        p = tempfile.mktemp(suffix=".db")
+        p = os.path.join(tempfile.mkdtemp(), "blocks.db")
         open(p, "wb").write(b)
         c = sqlite3.connect(p)
         c.execute("DELETE FROM store_meta WHERE key = 'emt_schema'")
@@ -3538,7 +3538,7 @@ class TestPeriodsBoundsCarbonVsUsage(unittest.TestCase):
     def _store_with_split_history(self):
         import tempfile
         from block_store import BlockStore
-        store = BlockStore(tempfile.mktemp(suffix=".db"))
+        store = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
         with store._conn:
             store._conn.execute(
                 "INSERT INTO config_periods (billing_day, block_minutes, timezone, "
@@ -3631,7 +3631,7 @@ class TestAggregateInsights(unittest.TestCase):
 
     def setUp(self):
         import tempfile, os
-        self.tmp = tempfile.mktemp(suffix=".db")
+        self.tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         from block_store import BlockStore
         self.store = BlockStore(self.tmp)
         # Insert a known block
@@ -3952,7 +3952,7 @@ class TestApiPowerMixHistory(unittest.TestCase):
     def setUp(self):
         import tempfile
         from datetime import datetime, timezone, timedelta
-        self.tmp = tempfile.mktemp(suffix=".db")
+        self.tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         from block_store import BlockStore
         self.store = BlockStore(self.tmp)
         recent = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
@@ -3994,7 +3994,7 @@ class TestApiPowerMixHistory(unittest.TestCase):
 
     def test_empty_db_returns_empty_slots(self):
         import tempfile, os
-        tmp2 = tempfile.mktemp(suffix=".db")
+        tmp2 = os.path.join(tempfile.mkdtemp(), "blocks.db")
         try:
             from block_store import BlockStore
             empty_store = BlockStore(tmp2)
@@ -4017,7 +4017,7 @@ class TestAggregateInsightsGenerationMix(unittest.TestCase):
 
     def setUp(self):
         import tempfile
-        self.tmp = tempfile.mktemp(suffix=".db")
+        self.tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         from block_store import BlockStore
         self.store = BlockStore(self.tmp)
         with self.store._conn:
@@ -4097,7 +4097,7 @@ class TestApiBlocksSummaryDirectImportCost(unittest.TestCase):
 
     def setUp(self):
         import tempfile
-        self.tmp = tempfile.mktemp(suffix=".db")
+        self.tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         from block_store import BlockStore
         self.store = BlockStore(self.tmp)
         with self.store._conn:
@@ -4198,7 +4198,7 @@ class TestGaugeScaleFromPowerHistory(unittest.TestCase):
 
     def setUp(self):
         import tempfile
-        self.tmp = tempfile.mktemp(suffix=".db")
+        self.tmp = os.path.join(tempfile.mkdtemp(), "blocks.db")
         from block_store import BlockStore
         self.store = BlockStore(self.tmp)
         # Add power_history rows with known values

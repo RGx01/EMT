@@ -77,7 +77,7 @@ class BlockBounds(unittest.TestCase):
     def _store(self):
         import tempfile
         from block_store import BlockStore
-        st = BlockStore(tempfile.mktemp(suffix=".db"))
+        st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
         st._conn.execute("PRAGMA foreign_keys=OFF")
         self.addCleanup(st.close)
         return st

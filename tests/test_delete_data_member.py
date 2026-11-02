@@ -41,7 +41,7 @@ class TheDeviceDelete(unittest.TestCase):
     def setUp(self):
         C.reset_for_tests()
         engine.set_delete_active(False)
-        self.st = BlockStore(tempfile.mktemp(suffix=".db"))
+        self.st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
         self.seen = {}
 
         def _write(op, timeout=30.0):

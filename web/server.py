@@ -915,7 +915,7 @@ def api_logs():
                                           "Run with -v /path/to/logs:/data/energy_meter_tracker",
                                           "or check docker logs <container_name>"]})
         except Exception as e:
-            return jsonify({"error": str(e), "lines": []})
+            return jsonify({"error": _error_text("api_logs", e), "lines": []})
     else:
         token = os.environ.get("SUPERVISOR_TOKEN", "")
         try:
@@ -930,8 +930,7 @@ def api_logs():
             all_lines = raw.splitlines()
             return jsonify({"lines": all_lines[-lines:]})
         except Exception as e:
-            logger.error("api_logs: %s", e)
-            return jsonify({"error": str(e), "lines": []})
+            return jsonify({"error": _error_text("api_logs", e), "lines": []})
 
 
 @app.route("/charts")
@@ -1612,7 +1611,7 @@ def api_meter_reset_detected():
             logger.warning("api_meter_reset_detected: meter reset flag was set — serving advisory to UI")
         return jsonify({"detected": detected})
     except Exception as e:
-        return jsonify({"detected": False, "error": str(e)})
+        return jsonify({"detected": False, "error": _error_text("api_meter_reset_detected", e)})
 
 
 @app.route("/api/engine/pause-state")
@@ -5945,7 +5944,10 @@ def api_historical_bills_build():
                 b = _bp.parse_bill(data, source_name=f.filename or "bill.pdf")
                 parsed.append(b)
             except Exception as e:
-                failed.append({"file": f.filename, "error": str(e)})
+                # the parser raises whatever pypdf or a pattern raised: not a message for a person
+                failed.append({"file": f.filename,
+                               "error": "Not read as an Octopus electricity bill. "
+                                        + _error_text("a bill's parse", e)})
 
         # By import MPAN — a folder can span a house move. A bill with export only (a re-issued
         # export bill, 22 Oct 2026, staging) has no import MPAN: it joins the group whose export

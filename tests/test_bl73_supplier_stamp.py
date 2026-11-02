@@ -15,7 +15,7 @@ from block_store import BlockStore
 
 
 def _mk_store(supplier=None, with_period=True):
-    p = tempfile.mktemp(suffix=".db")
+    p = os.path.join(tempfile.mkdtemp(), "blocks.db")
     st = BlockStore(p)
     st._conn.execute("PRAGMA foreign_keys=OFF")
     if with_period:
@@ -102,7 +102,7 @@ class TestSurvivesBackup(unittest.TestCase):
         so the stamp reaches v5 in the backup zip. Asserted, not assumed."""
         st, p = _mk_store("Octopus Energy")
         engine.stamp_supplier(st)
-        dst_path = tempfile.mktemp(suffix=".db")
+        dst_path = os.path.join(tempfile.mkdtemp(), "blocks.db")
         src = sqlite3.connect(p)
         dst = sqlite3.connect(dst_path)
         try:

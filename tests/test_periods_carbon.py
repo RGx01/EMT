@@ -38,7 +38,7 @@ def _store():
     """Billing day 3. 1-2 Sep: no carbon data. 2 Sep 23:30Z (= 00:30 BST on 3 Sep, the
     new period's first hour): 100 g. 3-4 Sep: +50 g import, -50 g export each block —
     a real net zero over the period apart from that first block."""
-    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
     st._conn.execute("PRAGMA foreign_keys=OFF")
     st._conn.execute("INSERT INTO config_periods (id, effective_from, billing_day, block_minutes, "
                      "timezone) VALUES (1, '2026-01-01T00:00:00', 3, 30, ?)", (TZ,))

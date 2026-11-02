@@ -33,7 +33,7 @@ TZ = "Europe/London"
 def _store(days, start="2026-10-10T23:00:00", seed=7):
     """A main meter with random half-hourly costs over `days` local days, the same
     daily standing charge on every block, and some export."""
-    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
     st._conn.execute("PRAGMA foreign_keys=OFF")
     st._conn.execute("INSERT INTO config_periods (id, effective_from, billing_day, "
                      "block_minutes, timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, ?)", (TZ,))
@@ -168,7 +168,7 @@ _FLIP = {"electricity_main": 1.204875, "ev_charger": 0.1000655, "house_battery":
 
 
 def _flip_store():
-    st = BlockStore(tempfile.mktemp(suffix=".db"))
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
     st._conn.execute("PRAGMA foreign_keys=OFF")
     st._conn.execute("INSERT INTO config_periods (id, effective_from, billing_day, "
                      "block_minutes, timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, ?)", (TZ,))

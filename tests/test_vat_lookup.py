@@ -73,7 +73,7 @@ class TheSummary(unittest.TestCase):
         once per UTC hour (72 times on the parent tree)."""
         from block_store import BlockStore
         import billing
-        st = BlockStore(tempfile.mktemp(suffix=".db"))
+        st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
         self.addCleanup(st.close)
         st._conn.execute("PRAGMA foreign_keys=OFF")
         st._conn.execute("INSERT INTO config_periods (id, effective_from, billing_day, block_minutes, "
