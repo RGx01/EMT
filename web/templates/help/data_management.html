@@ -1,6 +1,20 @@
 {% extends "help_base.html" %}
 {% set help_title = "Data Management" %}
+{# BL-105 PR 2: the key's swatches, as the heatmap draws them (heatmap_module's settleColour / swatchCss) #}
+{% macro sw(kind) %}<span class="hsw hsw-{{ kind }}" aria-hidden="true"></span>{% endmacro %}
 {% block help_body %}
+<style>
+.hsw { display:inline-block; width:12px; height:12px; border-radius:2px; vertical-align:-1px; margin-right:6px;
+       border:1px solid rgba(127,127,127,0.45); box-sizing:border-box; }
+.hsw-green { background:#2e9e5b; } .hsw-teal { background:#2a9d9f; } .hsw-lamber { background:#f2cf7a; }
+.hsw-amber { background:#e0a020; } .hsw-red { background:#cc0000; } .hsw-blue { background:#3b7dd8; }
+.hsw-grey { background:#d4d7de; } [data-theme="dark"] .hsw-grey { background:#3a3e4a; }
+.hsw-missing { background:#000 repeating-linear-gradient(135deg,#6b7080 0 1.2px,transparent 1.2px 4px); }
+.hsw-abandoned { background:#cc0000 repeating-linear-gradient(135deg,#f2c94c 0 1.2px,transparent 1.2px 4px); }
+.help-states { list-style:none; margin-left:0 !important; }
+.help-states > li { margin-bottom:8px; }
+.help-states ul { margin-top:4px; }
+</style>
 <div class="card help-section">
   <div class="card-title">🩺 The health strip</div>
   <p>Along the top, your data at a glance — each figure a link:</p>
@@ -22,18 +36,14 @@
     energy:
   </p>
   <ul>
-    <li><strong>Import bill</strong> — is each half-hour's cost final? <em>Green</em>: final, Octopus's
-      cost (or, on a fixed-rate tariff, the settled kWh × its rate). <em>Light amber</em>: the kWh is
-      settled, Octopus's cost not in yet. <em>Amber</em>: the kWh is not settled yet. <em>Red</em>: not
-      final after 7 days, or something to look at. <em>Teal</em>: Octopus's cost with EMT's own car and
-      house split. <em>Blue</em>: your correction. <em>Grey</em>: nothing to settle (imported history,
-      or not on an Octopus agreement).</li>
+    <li><strong>Import bill</strong> — is each half-hour's cost final?</li>
     <li><strong>Export bill</strong> — the same for export, which is final once its kWh settles.</li>
     <li><strong>Missing</strong> — without Octopus, the one data view: is every half-hour recorded?</li>
   </ul>
   <p>
-    A missing half-hour is <strong>black and hatched</strong> on every view. The line under the
-    heatmap's title says what each colour means. <strong>Issues only</strong> folds away the days with nothing to
+    A missing half-hour is {{ sw('missing') }}<strong>black and hatched</strong> on every view. The key
+    under the heatmap's title gives each colour; <a href="#fixing">Fixing the heatmap</a> below says what
+    each means and what to do about it. <strong>Issues only</strong> folds away the days with nothing to
     look at; a fold opens with a click.
   </p>
 </div>
@@ -57,6 +67,70 @@
     <li><strong>Make a support file</strong> for the span.</li>
   </ul>
   <div class="note-box">Every change that cannot be undone takes a backup first.</div>
+</div>
+
+<div class="card help-section" id="fixing">
+  <div class="card-title">🧭 Fixing the heatmap</div>
+  <p>Click a half-hour for its details: they say which of these it is. Right-click it, or a selection,
+    for the tools.</p>
+
+  <h3>Import bill</h3>
+  <ul class="help-states">
+    <li>{{ sw('green') }}<strong>Final</strong> — Octopus's cost, or on a published-rate tariff the
+      settled kWh × its rate. Nothing to do.</li>
+    <li>{{ sw('teal') }}<strong>Octopus's cost, EMT's House/EV split</strong> — the cost is final; the car's
+      share of it is EMT's own estimate. Nothing to do.</li>
+    <li>{{ sw('lamber') }}<strong>Settled kWh, Octopus's cost not in yet</strong> — priced kWh × rate until
+      it comes. Wait: EMT asks for it.</li>
+    <li>{{ sw('amber') }}<strong>kWh not settled yet</strong> — Octopus usually settles it within a day or
+      two. Wait.</li>
+    <li>{{ sw('red') }}<strong>Needs a look</strong> — one of:
+      <ul>
+        <li><em>Not final after 7 days</em>: Octopus has not given its cost yet. EMT keeps asking — hourly
+          for two days, then daily, for 30 days. <strong>Re-fetch from Octopus</strong> asks now.</li>
+        <li><em>Octopus's figures disagree</em>: its cost is not its kWh × its rate, it priced a different
+          kWh from the one that settled, or its VAT is not the day's rate. These are Octopus's figures,
+          outside EMT's control. When Octopus corrects them, a re-fetch takes the correction.</li>
+        <li><em>A completed dispatch with no House/EV split</em>: Octopus's breakdown puts none of the
+          half-hour on the car, though the car charged in it. A re-fetch takes a corrected breakdown once
+          Octopus has one.</li>
+        <li><em>The devices cost more than the meter</em>: the device breakdown reads too high and the
+          house's too low (the bill itself is right). A re-fetch prices the devices again and clears it.</li>
+      </ul></li>
+    <li>{{ sw('abandoned') }}<strong>No cost from Octopus, no longer asked</strong> — asked for 30 days and
+      never answered, so EMT has stopped asking. The cost shown is kWh × rate: an estimate, not your bill.
+      A re-fetch may still get it, but only Octopus can supply it. Some accounts have long stretches like
+      this — whole days Octopus has never costed.</li>
+    <li>{{ sw('blue') }}<strong>Your correction</strong> — a rate you set. On an Intelligent tariff with
+      Octopus connected, a re-fetch replaces it with Octopus's own cost.</li>
+    <li>{{ sw('grey') }}<strong>Nothing to settle</strong> — nothing imported, imported history, or not on
+      an Octopus agreement.</li>
+    <li>{{ sw('missing') }}<strong>Missing</strong> — no record for the half-hour. <strong>Fill this
+      gap</strong>, from Octopus, a CSV or your PDF bills.</li>
+  </ul>
+
+  <h3>Export bill</h3>
+  <ul class="help-states">
+    <li>{{ sw('green') }}<strong>Settled</strong> — final. Nothing to do.</li>
+    <li>{{ sw('amber') }}<strong>Not settled, under 7 days</strong> — wait.</li>
+    <li>{{ sw('red') }}<strong>Not settled after 7 days</strong> — <strong>Re-fetch from Octopus</strong>.</li>
+    <li>{{ sw('abandoned') }}<strong>No export figure</strong> — neither Octopus nor the CSV gave one. A
+      re-fetch may get it; otherwise <strong>Fill the missing export</strong> from your PDF bills or a CSV.</li>
+    <li>{{ sw('grey') }}<strong>Nothing to settle</strong> — no export, or CSV history.</li>
+    <li>{{ sw('missing') }}<strong>Missing</strong> — <strong>Fill this gap</strong>.</li>
+  </ul>
+
+  <h3>A costed half-hour turning red after a re-fetch</h3>
+  <p>
+    A re-fetch writes only what Octopus's new answer changes. A half-hour Octopus does not answer is left
+    as it was, so a re-fetch never takes away a cost. If a half-hour that was green turns red after one,
+    Octopus's new answer disagrees with itself — or with the day's VAT — as above. That is outside EMT's
+    control; Octopus may correct it later, and a re-fetch then takes the correction.
+  </p>
+  <div class="note-box">
+    The one exception is EMT's: <strong>Logs</strong> showing <code style="word-break:normal">the bill is stored, the block did not
+    re-settle from it</code>. Make a support file for that day and report it.
+  </div>
 </div>
 
 <div class="card help-section">
