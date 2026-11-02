@@ -1,7 +1,11 @@
-name: "Energy Meter Tracker SOAK"
-description: "Electricity metering engine with configurable reconciliation periods, sub-meter support, gap filling, and billing charts"
-version: "4.5.23-a24"
-slug: "emt_soak"
+name: "EMT — Energy Meter Tracker"
+description: "Half-hourly electricity cost for Octopus Energy accounts: devices split out of the meter, Intelligent tariffs' smart charging, and history settled against Octopus's own bill"
+# CalVer, YYYY.M.PATCH; a beta is 2026.11.0b1 (Home Assistant's own style). EMT's own version, never a
+# v4 one: the v4 import floor is in v4's numbers (v4import/gate.py FLOOR_VERSION).
+version: "2026.11.0b1"
+# The add-on's identity: a different slug is a different add-on, whose data does not follow. v4 is
+# `energy_meter_tracker`, so the two run side by side.
+slug: "emt"
 init: false
 startup: application
 boot: auto
@@ -44,7 +48,7 @@ hassio_role: default
 
 # ── Panel (optional — adds a sidebar link to the config UI) ──────────────────
 panel_icon: "mdi:speedometer"
-panel_title: "Energy Meter"
+panel_title: "EMT"
 
 # ── Options schema ────────────────────────────────────────────────────────────
 # Minimal top-level options — meter config is managed via the UI, not here
@@ -60,7 +64,7 @@ options:
   # to use the add-on name (from config.yaml). Set it per instance — e.g. "Prod"
   # / "Dev" — when two installs share the same add-on name (the repo-URL
   # workaround), since it's a per-install setting, not stored in the database.
-  instance_name: "SOAK"
+  instance_name: ""
 
 schema:
   log_level: "list(debug|info|warning|error)"

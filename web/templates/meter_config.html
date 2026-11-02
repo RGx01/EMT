@@ -1135,7 +1135,7 @@ function ohmeEvNote() {
   var mode = (typeof DATA_SOURCE_MODE !== 'undefined' && DATA_SOURCE_MODE) ? DATA_SOURCE_MODE : '';
   if (mode.indexOf('api') === -1) return '';   // Octopus / IOG (API) accounts only
   var det = (typeof OHME_DETECTION !== 'undefined' && OHME_DETECTION) ? OHME_DETECTION : {};
-  var gh = 'https://github.com/RGx01/energy-meter-tracker-addon/issues';
+  var gh = 'https://github.com/RGx01/EMT/issues';
   var head, body;
   if (det && det.found) {
     var integ = det.integration === 'official' ? 'the official Ohme integration'

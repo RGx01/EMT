@@ -7,6 +7,6 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
-Pre-release. No public version has shipped yet; see
-[docs/design/EMT-v5_programme.md](docs/design/EMT-v5_programme.md) for what is being built and
-[docs/ROADMAP.md](docs/ROADMAP.md) for the current state of each workstream.
+**2026.11.0b1 — the first beta**, for a few invited testers (see [BETA.md](BETA.md)): EMT installs
+beside v4 as its own add-on (`emt`), and starts from scratch or brings v4's history across from a
+backup of v4 4.5.23 or later. [docs/ROADMAP.md](docs/ROADMAP.md) has the state of each workstream.

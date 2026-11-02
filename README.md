@@ -1,39 +1,53 @@
-# EMT
+# EMT — Energy Meter Tracker
 
-Energy tracking for Home Assistant, for Octopus Energy accounts — half-hourly cost, the EV/House
-split on Intelligent tariffs, and history reconciled against the supplier's own bill.
+A Home Assistant add-on for Octopus Energy accounts: each half-hour's electricity cost, your devices
+(a car, a battery, a heat pump) split out of the meter, Intelligent Octopus Go's smart charging and
+its 6-hour cap, and your history settled against Octopus's own bill.
 
-> **Pre-release.** Nothing has shipped yet. This repository is at the design stage; the code lives
-> in the v4 add-on (`energy-meter-tracker-addon`) while EMT is built.
+> **Beta.** EMT is being tested by a few invited people before its first release. Expect rough
+> edges; please report them — see [BETA.md](BETA.md).
 
-## What this is
+EMT is the successor to [Energy Meter Tracker v4](https://github.com/RGx01/energy-meter-tracker-addon).
+It is a **new add-on with its own slug** (`emt`), not an upgrade: it installs beside v4, runs beside
+it for as long as you like, and can bring v4's history across from a v4 backup.
 
-EMT is a **new add-on with a new slug**, not an upgrade. It installs alongside Energy Meter Tracker
-v4, in its own container, and ingests a copy of that add-on's history. Both can run indefinitely —
-there is no cutover deadline and no migration window.
+## Install
 
-- **Versioning.** Public releases are CalVer `YYYY.M.PATCH` (e.g. `2026.10.0`). `v5` is the internal
-  discriminator for pre-release work only.
-- **Migration.** A 4.5.13 backup zip, or a `blocks.db` taken from one. There is no cooperating
-  exporter — the importer validates the source itself. See
-  [the import spec](docs/design/EMT-v5_import_spec.md).
+1. In Home Assistant: **Settings → Add-ons → Add-on store → ⋮ → Repositories**, and add
+   `https://github.com/RGx01/EMT`.
+2. Install **EMT — Energy Meter Tracker**, start it, and open it from the sidebar (**EMT**).
+3. The welcome page offers two ways in: **Set up a new account** (from scratch), or **Restore from
+   an Energy Meter Tracker backup** (a v4 backup's `.zip`, or its `blocks.db`).
 
-## Layout
+Bringing v4's history across needs a backup from **v4 4.5.23 or later**; an older one is refused,
+with the reason. Open it in the latest v4 first, then back it up again.
 
-```
-.                       add-on manifest (once there is one to ship)
-docs/                   design documents and the roadmap
-docs/design/            one document per workstream
-tests/                  the test suite
-```
+## Versions
 
-The shape follows the v4 add-on deliberately: its ~2,700-test suite and runner assume this layout,
-and that suite is the main instrument for proving EMT computes what v4 computed.
+EMT uses CalVer, as Home Assistant does: `YYYY.M.PATCH` — `2026.11.0` is the first release in
+November 2026, `2026.11.1` the next. Betas are `2026.11.0b1`, `b2`, … A release that changes
+something you rely on says so under **⚠️ Breaking** in the [changelog](CHANGELOG.md).
 
-## Where to start
+## Help and support
+
+- **In the app:** the **?** beside each page's title opens its help.
+- **Something wrong?** Open an [issue](https://github.com/RGx01/EMT/issues). A **support file** (Data
+  Management → Backup & restore) holds what is usually needed, with your meter and account details
+  replaced by placeholders.
+- **A security problem?** See [SECURITY.md](SECURITY.md) — please don't open a public issue.
+
+## For developers
 
 | Document | What it covers |
 |---|---|
-| [docs/design/EMT-v5_programme.md](docs/design/EMT-v5_programme.md) | The five workstreams, why they are in that order, and what does not get carried across |
-| [docs/design/EMT-v5_import_spec.md](docs/design/EMT-v5_import_spec.md) | The migration contract: eligibility gates, table-by-table disposition, acceptance |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | Current state of each workstream |
+| [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) | Branches, running the tests, testing a branch on another machine |
+| [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) | What a change must carry |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | What is open, in progress and done |
+| [docs/design/EMT-v5_architecture.md](docs/design/EMT-v5_architecture.md) | How EMT is built, and why |
+| [docs/design/EMT-v5_import_spec.md](docs/design/EMT-v5_import_spec.md) | How a v4 database is brought across |
+
+Run the suite with `bash run_tests.sh` at the repository root (each test file in its own process).
+
+## Licence
+
+[Business Source License 1.1](LICENSE).
