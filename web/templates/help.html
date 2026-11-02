@@ -1,0 +1,27 @@
+{% extends "help_base.html" %}
+{# BL-102: the contents page — a line for each help page. #}
+{% block help_body %}
+<style>
+.help-contents { list-style: none; margin: 4px 0 0 0 !important; }
+.help-contents li { margin-bottom: 8px; }
+.help-contents a { font-weight: 600; text-decoration: none; }
+</style>
+{% set blurbs = {
+  'getting-started': "what EMT does, the first time, where your readings come from, what it needs from Home Assistant.",
+  'overview': "live power and the devices, today and the bill, smart charging, Agile prices.",
+  'charts': "Billing, Heatmaps, Usage Stats, the settlement pill, home eras and bar colours, the PDF.",
+  'insights': "Carbon and Usage.",
+  'data-management': "the health strip, the data heatmap, the tools on a selection, whole history, backups, a support file.",
+  'settings': "the site, the main meter, each device, the EV with no device, carbon.",
+  'how-emt-counts': "the half-hour, the house and the devices, settlement, prices and VAT, Intelligent Octopus Go, carbon.",
+  'running-emt': "where your data is, opening EMT, its charts in a dashboard, standalone Docker, support.",
+} %}
+<div class="card help-section">
+  <div class="card-title">📖 Contents</div>
+  <ul class="help-contents">
+    {% for slug, label in help_pages %}
+    <li><a href="{{ url_for('help_section', section=slug) }}">{{ label }}</a> — {{ blurbs[slug] }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endblock %}

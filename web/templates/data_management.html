@@ -1,0 +1,1067 @@
+{% extends "base.html" %}
+{% from "_help_q.html" import help_q %}
+
+{% block topbar %}
+<div class="topbar dm-topbar">
+  <div>
+    <h2>Data Management {{ help_q('data-management') }}</h2>
+    <div class="sub">Your data, half-hour by half-hour</div>
+  </div>
+  <!-- The jobs off the heatmap, in the topbar (21 Oct 2026, the user): below it they moved as its
+       months loaded. Whole history's items are decided here, so the menu is whole at first paint. -->
+  <div class="dm-top-actions">
+    <div class="dm-menu-wrap">
+      <button class="btn btn-secondary" id="btn-whole" onclick="dmToggleWhole(event)"
+              aria-haspopup="menu" aria-expanded="false">🗂️ <span class="dm-long">Whole history</span><span class="dm-short">History</span> ▾</button>
+      <div id="dm-whole-menu" class="dm-menu" role="menu" style="display:none;">
+        <div class="dm-menu-note">For a range, select it on the heatmap.</div>
+        {% if uses_api %}<button role="menuitem" onclick="dmWhole('api:whole_history', 'Import history from Octopus')">📥 Import history from Octopus</button>{% endif %}
+        <button role="menuitem" onclick="dmWhole('csv:range', 'Import a CSV')">📄 Import a CSV</button>
+        <button role="menuitem" onclick="dmWhole('csv:bills', 'Import PDF bills')">🧾 Import PDF bills</button>
+        {% if uses_api %}<button role="menuitem" onclick="dmWhole('api:gaps', 'Recover every gap')">🩹 Recover every gap</button>{% endif %}
+        <button role="menuitem" id="dm-purge-btn" class="dm-menu-danger" onclick="dmPurge()"
+                {% if not has_imported %}style="display:none;"{% endif %}>🗑️ Delete all imported history</button>
+      </div>
+    </div>
+    <button class="btn btn-secondary" id="btn-backups" onclick="openBackups()">🗄️ <span class="dm-long">Backup &amp; restore</span><span class="dm-short">Backups</span></button>
+    <button class="btn btn-secondary" id="btn-backup" onclick="doManualBackup()">💾 Backup now</button>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+
+<div id="alert-success" class="alert alert-success"></div>
+<div id="alert-error"   class="alert alert-danger"></div>
+<div id="alert-working" class="alert alert-info" role="status"></div>
+
+<!-- ── Restore modal ─────────────────────────────────────────────────────── -->
+<div id="restore-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1000;overflow-y:auto;">
+  <div style="max-width:520px;margin:60px auto;padding:0 16px 60px;">
+    <div class="card" style="padding:28px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <h3 style="margin:0;font-size:15px;font-weight:600;">Restore from Backup</h3>
+        <button onclick="closeRestoreModal()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;">✕</button>
+      </div>
+
+      <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:var(--radius);padding:12px 14px;margin-bottom:20px;font-size:13px;line-height:1.7;">
+        ⚠️ Select which files to restore. Deselect any you want to keep as-is.
+        A backup of your current data will be created automatically before restoring.
+      </div>
+
+      <div id="restore-file-list" style="margin-bottom:16px;"></div>
+
+      <div id="restore-mismatch-warn" style="display:none;background:rgba(240,82,82,0.08);border:1px solid var(--danger);border-radius:var(--radius);padding:12px 14px;margin-bottom:16px;font-size:13px;line-height:1.7;color:var(--danger);">
+        ℹ️ <strong>Note:</strong> <code>blocks.db</code> contains all data including config — restoring it alone is safe and complete.
+      </div>
+
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button class="btn btn-secondary" onclick="closeRestoreModal()">Cancel</button>
+        <button class="btn btn-primary" id="restore-confirm-btn" onclick="confirmRestore()">↩ Restore Selected</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Zip restore confirm modal ─────────────────────────────────────────────── -->
+<div id="zip-restore-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1001;overflow-y:auto;">
+  <div style="max-width:480px;margin:80px auto;padding:0 16px 60px;">
+    <div class="card" style="padding:28px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <h3 style="margin:0;font-size:15px;font-weight:600;">Restore from a file</h3>
+        <button onclick="closeZipConfirm()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;">✕</button>
+      </div>
+
+      <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.3);border-radius:var(--radius);padding:12px 14px;margin-bottom:20px;font-size:13px;line-height:1.7;">
+        ⚠️ This will <strong>replace all current data</strong> with the contents of this file. It is checked first; a backup of your current data is the way back.
+      </div>
+
+      <div id="zip-file-info" style="background:var(--bg);border:1px solid var(--border);border-radius:var(--radius);padding:12px 14px;margin-bottom:16px;font-size:13px;line-height:1.8;font-family:var(--mono);"></div>
+
+      <label style="display:flex;align-items:center;gap:10px;font-size:13px;margin-bottom:20px;cursor:pointer;">
+        <input type="checkbox" id="zip-backup-first" checked style="width:15px;height:15px;accent-color:var(--accent);">
+        <span>Create a backup of current data before restoring</span>
+      </label>
+
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button class="btn btn-secondary" onclick="closeZipConfirm()">Cancel</button>
+        <button class="btn btn-primary" id="zip-confirm-btn" onclick="doZipRestore()">↩ Restore</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── The support file (data management design §1 (5)) ──────────────────────── -->
+<div id="support-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1003;overflow-y:auto;">
+  <div style="max-width:520px;margin:70px auto;padding:0 16px 60px;">
+    <div class="card" style="padding:24px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+        <h3 style="margin:0;font-size:15px;font-weight:600;">Make a support file</h3>
+        <button onclick="closeSupport()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;">✕</button>
+      </div>
+      <p style="font-size:13px;color:var(--muted);line-height:1.6;margin:0 0 12px;">
+        One zip to send to whoever is helping you: EMT's log, a summary of your setup and the
+        machine it runs on (its processor, memory and disk — not its name or address), and your
+        data for the span you choose. Nothing is sent anywhere — you download it.
+      </p>
+      <div id="support-spans" style="font-size:13px;line-height:2;">
+        <div><input type="radio" name="support-span" value="30d" id="ss-30d" checked> <span>The last 30 days</span></div>
+        <div><input type="radio" name="support-span" value="month" id="ss-month"> <span>A month:</span>
+             <input type="month" id="ss-month-val" style="font-size:13px;padding:2px 4px;"></div>
+        <div id="ss-range-row" style="display:none;"><input type="radio" name="support-span" value="range" id="ss-range">
+             <span id="ss-range-label"></span></div>
+        <div><input type="radio" name="support-span" value="all" id="ss-all"> <span>Everything</span></div>
+      </div>
+      <div style="font-size:13px;margin:12px 0;line-height:1.6;">
+        <input type="checkbox" id="ss-redact" checked> <span><b>Hide my meter and account details</b> —
+        your MPANs, meter serials, Octopus account number and postcode become placeholders
+        (<code>MPAN-1</code>, <code>ACCOUNT-1</code> …), the same wherever they appear. Your Octopus API key
+        is never in the file.</span>
+      </div>
+      <div id="ss-estimate" style="font-size:12px;color:var(--muted);margin-bottom:14px;">Working out the size…</div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button class="btn btn-secondary" onclick="closeSupport()">Cancel</button>
+        <button class="btn btn-primary" id="ss-build" onclick="buildSupport()">Make the file</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Generic confirm modal (styled, reusable) ─────────────────────────────── -->
+<div id="confirm-overlay" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.7);z-index:1002;overflow-y:auto;">
+  <div style="max-width:460px;margin:90px auto;padding:0 16px 60px;">
+    <div class="card" style="padding:28px;">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:16px;">
+        <h3 id="confirm-title" style="margin:0;font-size:15px;font-weight:600;"></h3>
+        <button onclick="closeConfirm()" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;">✕</button>
+      </div>
+      <div id="confirm-message" style="font-size:13px;line-height:1.7;color:var(--muted);margin-bottom:20px;"></div>
+      <div style="display:flex;gap:10px;justify-content:flex-end;">
+        <button class="btn btn-secondary" onclick="closeConfirm()">Cancel</button>
+        <button class="btn btn-primary" id="confirm-ok-btn">Confirm</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .dm-top-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .dm-short { display: none; }
+  .dm-menu-wrap { position: relative; display: inline-block; }
+  .dm-menu { position: absolute; top: calc(100% + 4px); right: 0; z-index: 200; background: var(--surface);
+    border: 1px solid var(--border); border-radius: var(--radius); box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    min-width: 240px; overflow: hidden; padding: 4px 0; }
+  .dm-menu button { display: block; width: 100%; text-align: left; padding: 9px 16px; border: none; background: transparent;
+    color: var(--text); cursor: pointer; font-size: 13px; }
+  .dm-menu button:hover, .dm-menu button:focus { background: var(--border); outline: none; }
+  .dm-menu .dm-menu-danger { color: var(--danger); border-top: 1px solid var(--border); }
+  .dm-menu-note { padding: 6px 16px 8px; font-size: 11px; color: var(--muted); border-bottom: 1px solid var(--border); }
+  .dm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 999; overflow-y: auto; }
+  /* wide enough that a backup's row stays on one line (21 Oct 2026, the user) */
+  .dm-modal { max-width: 1040px; margin: 50px auto; padding: 0 16px 60px; }
+  .dm-drop-anywhere { position: fixed; inset: 12px; z-index: 1100; border: 2px dashed var(--accent); border-radius: 12px;
+    background: rgba(0,0,0,0.55); color: var(--text); font-size: 18px; display: flex; align-items: center;
+    justify-content: center; pointer-events: none; }
+  @media (max-width: 600px) {
+    /* the title on its row, the three on one row beneath it, shorter */
+    .dm-topbar { flex-wrap: wrap; gap: 8px; }
+    .dm-top-actions { flex-basis: 100%; flex-wrap: nowrap; }
+    .dm-top-actions .btn { padding: 6px 10px; font-size: 12px; white-space: nowrap; }
+    .dm-long { display: none; }
+    .dm-short { display: inline; }
+    .dm-menu { right: auto; left: 0; }
+    .dm-modal { margin: 16px auto; }
+  }
+</style>
+
+<!-- ── Health (data management design §1 (2)): each data view's half-hours to look at, counted with
+     the heatmap's own rule over the whole history; the missing half-hours; the last backup; the
+     database's size. Each figure is a link. -->
+<div class="card" id="dm-health" style="padding:12px 16px;">
+  <div id="dm-health-row" style="display:flex;gap:8px 18px;flex-wrap:wrap;align-items:center;font-size:13px;">
+    <span style="color:var(--muted);">Counting…</span>
+  </div>
+</div>
+
+<!-- ── The data heatmap (§1 (1)): the data views and every tool on a selection. `?day=` opens a
+     day — Charts' detail panel links here. -->
+<div class="card" id="dm-heatmap-card" style="padding:0;overflow:visible;">
+  <div id="dm-heatmap"></div>
+</div>
+
+<!-- ═══ Backup & restore (data management design §1 (5)) ═══════════════════════
+     A modal from the topbar (21 Oct 2026): create a backup, compact or make a support file in its
+     head; storage as one line; the backups as a table (what made each, when, its size); the daily
+     copy restorable; a file dropped here — or anywhere on the page — opens the restore at once. -->
+<div id="backups-overlay" class="dm-overlay" style="display:none;" onclick="if (event.target === this) closeBackups()">
+<div class="dm-modal">
+<div class="card" id="dm-backups" role="dialog" aria-modal="true" aria-label="Backup and restore">
+  <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px;">
+    <div class="card-title" style="margin:0;">🗄️ Backup &amp; restore</div>
+    <button onclick="closeBackups()" aria-label="Close" style="background:none;border:none;color:var(--muted);font-size:20px;cursor:pointer;">✕</button>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;flex-basis:100%;">
+      <button class="btn btn-secondary" onclick="doManualBackup()" id="btn-backup2">💾 Create backup now</button>
+      <button class="btn btn-secondary" id="btn-vacuum" onclick="doVacuum()"
+              title="Rebuild the database file to reclaim the space deleted or updated rows left. The engine pauses briefly.">🗜️ Compact now</button>
+      <button class="btn btn-secondary" onclick="openSupport()"
+              title="One zip to send to whoever is helping you: the log, a summary and your data for a span">🩺 Make a support file…</button>
+    </div>
+  </div>
+  <div id="dm-storage-line" style="font-size:12px;color:var(--muted);margin-bottom:10px;">Loading…</div>
+  <div id="vacuum-result" style="font-size:12px;margin-bottom:10px;display:none;"></div>
+  <div id="backup-list" style="font-size:13px;color:var(--muted);">Loading...</div>
+  <div id="drop-zone" style="border:1px dashed var(--border);border-radius:var(--radius);padding:12px;
+       margin-top:12px;text-align:center;font-size:13px;color:var(--muted);cursor:pointer;transition:border-color 0.15s;"
+       ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)"
+       onclick="document.getElementById('file-input').click()">
+    📂 Drop a backup zip or <code>blocks.db</code> here to restore it, or click to choose one
+    <input type="file" id="file-input" accept=".zip,.db" style="display:none" onchange="onFileSelect(this.files); this.value='';">
+  </div>
+  <div style="font-size:11px;color:var(--muted);margin-top:8px;">
+    Kept in <code id="backup-path-display" style="font-family:var(--mono);">/share/energy_meter_tracker_backup/backups/</code>
+    — the 20 most recent. Every irreversible action takes one first.
+  </div>
+</div>
+</div>
+</div>
+<div id="drop-anywhere" class="dm-drop-anywhere" style="display:none;">📂 Drop to restore this backup</div>
+
+
+{% include "heatmap_module.html" %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+// The data heatmap: data mode, the day `?day=` names (data management design §1 (1)), and
+// `?issues=1` (the settlement pill, BL-95) with Issues only on
+document.addEventListener('DOMContentLoaded', function () {
+  if (!window.EMTHeatmap) return;
+  var q = new URLSearchParams(window.location.search);
+  EMTHeatmap.init(document.getElementById('dm-heatmap'),
+                  {mode: 'data', day: q.get('day'), issues: q.get('issues') === '1',
+                   onChange: function () { if (window.loadHealth) loadHealth(); },
+                   onSupportFile: function (from, to, label) { openSupport({from: from, to: to, label: label}); }});
+});
+
+{% include "_upload_js.html" %}
+
+// A restore of an uploaded backup — a .zip or a blocks.db — in its two steps (first-run design
+// §2, 11 Oct 2026): stage it, which checks it (a refusal comes back here, before anything live
+// is touched), then confirm it. This page is for a configured instance, so no key is asked for:
+// the credentials already on disk meet the backup's account when the engine restarts, as they
+// always have. Resolves once the restore is running; throws with the reason otherwise.
+async function restoreUpload(file, onStage) {
+  const data = await stageInPieces(file, onStage);     // in pieces: ingress refuses one big body
+  if (!data.ok) throw new Error(data.error || 'That backup could not be checked');
+  onStage('Checked — starting the restore…');
+  const c = await fetch(apiUrl('/api/restore/confirm'), {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({token: data.token})
+  });
+  const started = await uploadReply(c);
+  if (!started.ok) throw new Error(started.error || 'The restore did not start');
+}
+
+// For the length of one upload: the banner says how far it has got, and the button that
+// would start a second upload is off. Afterwards the button follows the file list again.
+function onDragOver(e) {
+  e.preventDefault();
+  document.getElementById('drop-zone').style.borderColor = 'var(--accent)';
+}
+function onDragLeave(e) {
+  document.getElementById('drop-zone').style.borderColor = 'var(--border)';
+}
+function onDrop(e) {
+  e.preventDefault();
+  document.getElementById('drop-zone').style.borderColor = 'var(--border)';
+  onFileSelect(e.dataTransfer.files);
+}
+
+let _pendingZipFile = null;
+
+// A dropped or chosen file opens the restore at once (21 Oct 2026, the user: a blocks.db waited
+// for an Import button below the fold) — a backup zip or a blocks.db alike.
+function onFileSelect(files) {
+  var f = Array.from(files || []).filter(function (x) { return /\.(zip|db)$/i.test(x.name); })[0];
+  if (!f) { if ((files || []).length) showError('Choose a backup .zip or a blocks.db.'); return; }
+  showZipConfirm(f);
+}
+
+function showZipConfirm(zipFile) {
+  _pendingZipFile = zipFile;
+  const sizeMb = (zipFile.size / 1048576).toFixed(1);
+  document.getElementById('zip-file-info').innerHTML =
+    '<strong>File:</strong> ' + _hEsc(zipFile.name) + '<br>' +
+    '<strong>Size:</strong> ' + sizeMb + ' MB';
+  document.getElementById('zip-restore-overlay').style.display = 'block';
+}
+
+function closeZipConfirm() {
+  _pendingZipFile = null;
+  document.getElementById('zip-restore-overlay').style.display = 'none';
+}
+
+async function doZipRestore() {
+  if (!_pendingZipFile) return;
+  const zipFile     = _pendingZipFile;
+  const backupFirst = document.getElementById('zip-backup-first').checked;
+  closeZipConfirm();
+  hideAlerts();
+
+  const statusEl = document.getElementById('alert-success');
+  statusEl.textContent = '⏳ Restoring… please wait.';
+  statusEl.classList.add('show');
+
+  try {
+    if (backupFirst) {
+      statusEl.textContent = '⏳ Creating backup of current data…';
+      try {
+        await fetch(apiUrl('/api/backup/create'), {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({label: 'pre_zip_restore'})
+        });
+      } catch(e) { /* backup failure non-fatal */ }
+    }
+
+    await restoreUpload(zipFile, function(t) { statusEl.textContent = '⏳ ' + t; });
+    _restoreWasRunning = true;
+    pollRestoreStatus();
+  } catch(e) {
+    statusEl.classList.remove('show');
+    showError('Restore failed: ' + e.message);
+  }
+}
+// ── Restore modal ─────────────────────────────────────────────────────────────
+async function restoreFromFlat() {
+  // Load flat file info then open modal
+  try {
+    var r    = await fetch(apiUrl('/api/backup/flat-info'));
+    var info = await r.json();
+    if (!info || Object.keys(info).length === 0) {
+      showError('No daily backup files found');
+      return;
+    }
+    _restoreZip   = null;
+    _restoreFlat  = true;
+    _restoreFiles = {};
+    Object.keys(info).forEach(function(name) {
+      _restoreFiles[name] = info[name];  // { modified, size_kb }
+    });
+
+    var riskMap = {
+      'blocks.db':              { risk: 'success', note: 'Safe to restore alone — contains all config, blocks and settings' },
+      'meters_config.json':     { risk: 'muted',   note: 'No longer needed — config is stored inside blocks.db' },
+      'current_block.json':     { risk: 'muted',   note: 'No longer used — will be ignored (state is now in blocks.db)' },
+      'cumulative_totals.json': { risk: 'muted',   note: 'No longer used — will be ignored (totals derived from blocks)' },
+    };
+
+    var listEl = document.getElementById('restore-file-list');
+    listEl.innerHTML = Object.keys(_restoreFiles).map(function(name) {
+      var inf  = _restoreFiles[name];
+      var risk = riskMap[name] || { risk: 'muted', note: '' };
+      return '<label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;' +
+             'background:var(--bg);border-radius:var(--radius);border:1px solid var(--border);margin-bottom:6px;cursor:pointer;">' +
+        '<input type="checkbox" class="restore-cb" data-file="' + name + '"' +
+               ((['meters_config.json','current_block.json','cumulative_totals.json'].includes(name)) ? '' : ' checked') +
+               ' style="margin-top:2px;width:15px;height:15px;accent-color:var(--accent);" ' +
+               'onchange="checkRestoreMismatch()">' +
+        '<div>' +
+          '<div style="font-family:var(--mono);font-size:13px;">' + name + '</div>' +
+          '<div style="font-size:11px;color:var(--muted);margin-top:1px;">Last updated: ' + inf.modified + ' · ' + inf.size_kb + ' KB</div>' +
+          '<div style="font-size:11px;color:var(--' + risk.risk + ');margin-top:1px;">' + risk.note + '</div>' +
+        '</div>' +
+      '</label>';
+    }).join('');
+
+    checkRestoreMismatch();
+    document.getElementById('restore-overlay').style.display = 'block';
+  } catch(e) {
+    showError('Failed to load backup info: ' + e.message);
+  }
+}
+
+async function restoreFromZip(zipName) {
+  _restoreZip   = zipName;
+  _restoreFlat  = false;
+  _restoreFiles = {};
+
+  // Open the dialog IMMEDIATELY with a loading state, so pressing Restore feels
+  // instant. We only need the file LIST from the zip (names + sizes) — cheap, no
+  // decompression — not the whole blocks.db base64-encoded as before (which stalled
+  // the dialog for seconds on a large DB). The restore itself re-extracts server-side.
+  const listEl = document.getElementById('restore-file-list');
+  listEl.textContent = 'Reading backup…';
+  listEl.style.color = 'var(--muted)';
+  document.getElementById('restore-mismatch-warn').style.display = 'none';
+  document.getElementById('restore-confirm-btn').disabled = true;
+  document.getElementById('restore-overlay').style.display = 'block';
+
+  try {
+    const r    = await fetch(apiUrl('/api/backup/zip-entries'), {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ zip: zipName })
+    });
+    const data = await r.json();
+    if (data.files) {
+      _restoreFiles = data.files;  // { filename: {size_kb} }
+    } else {
+      listEl.style.color = 'var(--danger)';
+      listEl.textContent = data.error || 'Could not read backup';
+      return;
+    }
+  } catch(e) {
+    listEl.style.color = 'var(--danger)';
+    listEl.textContent = 'Failed to read backup: ' + e.message;
+    return;
+  }
+
+  // Build checkbox list
+  const riskMap = {
+    'blocks.db':              { risk: 'success', note: 'Safe to restore alone — contains all config, blocks and settings' },
+    'blocks.json':            { risk: 'warning', note: 'Legacy format — will be migrated to blocks.db on restore' },
+    'meters_config.json':     { risk: 'muted',   note: 'No longer needed — config is stored inside blocks.db' },
+    'current_block.json':     { risk: 'muted',   note: 'No longer used — will be ignored (state is now in blocks.db)' },
+    'cumulative_totals.json': { risk: 'muted',   note: 'No longer used — will be ignored (totals derived from blocks)' },
+  };
+
+  listEl.style.color = '';
+  listEl.innerHTML = Object.keys(_restoreFiles).map(function(name) {
+    const info = riskMap[name] || { risk: 'muted', note: '' };
+    const sz   = (_restoreFiles[name] && _restoreFiles[name].size_kb != null)
+      ? (' · ' + _restoreFiles[name].size_kb + ' KB') : '';
+    return `<label style="display:flex;align-items:flex-start;gap:10px;padding:10px 12px;
+                           background:var(--bg);border-radius:var(--radius);
+                           border:1px solid var(--border);margin-bottom:6px;cursor:pointer;">
+      <input type="checkbox" class="restore-cb" data-file="${name}"
+             ${(['meters_config.json','current_block.json','cumulative_totals.json'].includes(name)) ? '' : 'checked'}
+             style="margin-top:2px;width:15px;height:15px;accent-color:var(--accent);"
+             onchange="checkRestoreMismatch()">
+      <div>
+        <div style="font-family:var(--mono);font-size:13px;">${name}${sz}</div>
+        <div style="font-size:11px;color:var(--${info.risk});margin-top:2px;">${info.note}</div>
+      </div>
+    </label>`;
+  }).join('');
+
+  checkRestoreMismatch();
+  document.getElementById('restore-overlay').style.display = 'block';
+}
+
+function checkRestoreMismatch() {
+  const checked = Array.from(document.querySelectorAll('.restore-cb:checked')).map(function(cb) { return cb.dataset.file; });
+  // blocks.db is self-contained — no mismatch risk between files
+  document.getElementById('restore-mismatch-warn').style.display = 'none';
+  document.getElementById('restore-confirm-btn').disabled = checked.length === 0;
+}
+
+function closeRestoreModal() {
+  document.getElementById('restore-overlay').style.display = 'none';
+  _restoreZip   = null;
+  _restoreFlat  = false;
+  _restoreFiles = {};
+}
+
+async function confirmRestore() {
+  const checked = Array.from(document.querySelectorAll('.restore-cb:checked')).map(function(cb) { return cb.dataset.file; });
+  if (checked.length === 0) return;
+
+  // Capture values before closeRestoreModal resets them
+  const zipToRestore  = _restoreZip;
+  const flatToRestore = _restoreFlat;
+
+  hideAlerts();
+  closeRestoreModal();
+
+  try {
+    const r    = await fetch(apiUrl('/api/backup/restore'), {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ zip: zipToRestore || '', files: checked, from_flat: flatToRestore })
+    });
+    const data = await r.json();
+    if (data.ok) {
+      _restoreWasRunning = true;   // a restore we started → reload when it finishes
+      pollRestoreStatus();
+    } else {
+      showError(data.error || 'Restore failed');
+    }
+  } catch(e) {
+    showError(e.message);
+  }
+}
+
+// The restore runs in the background (survives navigation). Poll its status and
+// reflect it in the banner; reload once it completes so the UI shows fresh data.
+var _restoreWasRunning = false;
+var _restoreTimer = null;
+function pollRestoreStatus() {
+  fetch(apiUrl('/api/backup/restore/status')).then(function(r){ return r.json(); }).then(function(d) {
+    var el = document.getElementById('alert-success');
+    if (d.status === 'running') {
+      _restoreWasRunning = true;
+      // Safe to navigate away in the browser — but the DB is being rewritten, so
+      // rebuilding or restarting the ADD-ON now can interrupt the write. Say so.
+      var _stepTxt = String(d.step || '').replace(/[<>&]/g, function(c){
+        return c === '<' ? '&lt;' : c === '>' ? '&gt;' : '&amp;'; });
+      el.innerHTML = '⏳ <strong>Restoring…</strong> ' + _stepTxt +
+        ' — safe to leave this page. <strong>Do not rebuild or restart the ' +
+        'add-on until this finishes</strong> (it would interrupt the restore).';
+      el.classList.add('show');
+      if (_restoreTimer) clearTimeout(_restoreTimer);
+      _restoreTimer = setTimeout(pollRestoreStatus, 1500);
+    } else if (d.status === 'done' && _restoreWasRunning) {
+      el.textContent = '✓ Restored: ' + ((d.restored || []).join(', ') || 'complete') + '. Reloading…';
+      el.classList.add('show');
+      setTimeout(function() { sessionStorage.setItem('emt_db_restored', Date.now()); window.location.reload(); }, 1800);
+    } else if (d.status === 'error' && _restoreWasRunning) {
+      el.classList.remove('show');
+      showError(d.error || 'Restore failed');
+    }
+    // idle / stale-done from a prior session → do nothing (no reload loop)
+  }).catch(function() {
+    if (_restoreTimer) clearTimeout(_restoreTimer);
+    _restoreTimer = setTimeout(pollRestoreStatus, 3000);
+  });
+}
+// On load: if a restore is already running (e.g. you navigated away and back),
+// pick it up and reflect progress.
+document.addEventListener('DOMContentLoaded', pollRestoreStatus);
+
+// ── Backup ────────────────────────────────────────────────────────────────────
+async function doManualBackup() {
+  var btn = document.getElementById('btn-backup') || document.getElementById('btn-backup2');
+  var el  = document.getElementById('alert-success');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Backing up...'; }
+  // In-flight banner, same style as restore/delete — so the user sees it working,
+  // not just the result. (Backup is a quick synchronous copy, so no polling needed.)
+  if (el) { el.innerHTML = '⏳ <strong>Creating backup…</strong> copying the database — this only takes a moment.'; el.classList.add('show'); }
+  try {
+    var r    = await fetch(apiUrl('/api/backup'), { method: 'POST' });
+    var data = await r.json();
+    if (data.ok) {
+      if (el) {
+        el.textContent = '✓ Backup ready: ' + data.path + (data.size ? ' (' + EMT.fmtBytes(data.size) + ')' : '');
+        el.classList.add('show');
+        setTimeout(function() { el.classList.remove('show'); }, 8000);
+      }
+      loadBackupList();
+    } else {
+      if (el) el.classList.remove('show');
+      showError(data.error || 'Backup failed');
+    }
+  } catch(e) {
+    if (el) el.classList.remove('show');
+    showError(e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '💾 Backup Now'; }
+  }
+}
+
+// The backups as a table (data management design §1 (5)): what made each (the label in its name),
+// when, its size; Download, Restore, Delete. The daily copy of the database a row of its own.
+// When a backup was made: the time in its name (UTC, `YYYYMMDDTHHMMSS_label.zip`) — a copy keeps
+// it, where the file's modified time moves — else the modified time.
+function _madeAt(z) {
+  var m = /^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})_/.exec(z.name || '');
+  return m ? Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]) / 1000 : z.mtime;
+}
+function _localWhen(sec) {
+  try {
+    return new Intl.DateTimeFormat('en-GB', {day: 'numeric', month: 'short', hour: '2-digit',
+      minute: '2-digit', hourCycle: 'h23'}).format(new Date(sec * 1000));
+  } catch (e) { return ''; }
+}
+async function loadBackupList() {
+  var el = document.getElementById('backup-list');
+  if (!el) return;
+  try {
+    var data = await (await fetch(apiUrl('/api/backup/list'))).json();
+    var zips = data.zip_info || (data.zips || []).map(function (n) { return {name: n}; });
+    var daily = (data.flat || []).filter(function (f) { return !f.legacy && f.name === 'blocks.db'; })[0];
+    var td = 'padding:6px 8px;border-bottom:1px solid var(--border);';
+    var rows = zips.map(function (z) {
+      var zq = z.name.replace(/'/g, "\\'"), what = _backupWhat(z.name);
+      return '<tr title="' + _hEsc(z.name) + '">' +
+        '<td style="' + td + 'color:var(--text);">' + _hEsc(what ? what.charAt(0).toUpperCase() + what.slice(1) : z.name) + '</td>' +
+        '<td style="' + td + 'white-space:nowrap;">' + (_madeAt(z) ? _hEsc(_localWhen(_madeAt(z))) + ' · ' + _hEsc(_ago(_madeAt(z))) : '') + '</td>' +
+        '<td style="' + td + 'text-align:right;font-family:var(--mono);white-space:nowrap;">' + _fmtBytes(z.size) + '</td>' +
+        '<td style="' + td + 'text-align:right;white-space:nowrap;">' +
+          '<button class="btn btn-secondary btn-sm" onclick="downloadBackup(\'' + zq + '\')">⬇ Download</button> ' +
+          '<button class="btn btn-secondary btn-sm" onclick="restoreFromZip(\'' + zq + '\')">↩ Restore</button> ' +
+          '<button class="btn btn-secondary btn-sm" style="color:var(--danger);" onclick="deleteBackup(\'' + zq + '\')">🗑 Delete</button>' +
+        '</td></tr>';
+    });
+    if (daily) rows.push('<tr><td style="' + td + 'color:var(--text);">Daily copy of the database</td>' +
+      '<td style="' + td + '">' + _hEsc((daily.modified || '').replace('T', ' ').slice(0, 16)) + ' UTC</td>' +
+      '<td style="' + td + 'text-align:right;font-family:var(--mono);white-space:nowrap;">' + _fmtBytes(daily.size) + '</td>' +
+      '<td style="' + td + 'text-align:right;"><button class="btn btn-secondary btn-sm" onclick="restoreFromFlat()">↩ Restore</button></td></tr>');
+    if (!rows.length) { el.innerHTML = '<div>No backups yet.</div>'; return; }
+    var th = 'text-align:left;font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.06em;padding:4px 8px;';
+    el.innerHTML = '<div style="' + (rows.length > 8 ? 'max-height:300px;overflow-y:auto;' : '') + '">' +
+      '<table style="width:100%;border-collapse:collapse;font-size:13px;">' +
+      '<thead><tr><th style="' + th + '">What</th><th style="' + th + '">When</th>' +
+      '<th style="' + th + 'text-align:right;">Size</th><th></th></tr></thead><tbody>' + rows.join('') +
+      '</tbody></table></div>';
+  } catch (e) {
+    el.innerHTML = '<div style="color:var(--danger);">Failed to load backups: ' + _hEsc(e.message) + '</div>';
+  }
+}
+
+// Download a backup zip — the browser handles the file; a brief banner confirms it.
+function downloadBackup(z) {
+  var el = document.getElementById('alert-success');
+  if (el) { el.textContent = '⬇ Downloading ' + z + '…'; el.classList.add('show'); setTimeout(function() { el.classList.remove('show'); }, 5000); }
+  window.location.href = apiUrl('/api/backup/download/' + encodeURIComponent(z));
+}
+
+// Delete a backup zip — same in-flight banner pattern as restore/create, with a
+// confirm first (it removes the file permanently).
+async function deleteBackup(z) {
+  if (!window.confirm('Delete backup "' + z + '"?\n\nThis permanently removes the file and cannot be undone.')) return;
+  var el = document.getElementById('alert-success');
+  if (el) { el.innerHTML = '⏳ <strong>Deleting backup…</strong> ' + z; el.classList.add('show'); }
+  try {
+    var r    = await fetch(apiUrl('/api/backup/delete'), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ zip: z })
+    });
+    var data = await r.json();
+    if (data.ok) {
+      if (el) { el.textContent = '✓ Backup deleted: ' + z; el.classList.add('show'); setTimeout(function() { el.classList.remove('show'); }, 6000); }
+      loadBackupList();
+    } else {
+      if (el) el.classList.remove('show');
+      showError(data.error || 'Delete failed');
+    }
+  } catch(e) {
+    if (el) el.classList.remove('show');
+    showError(e.message);
+  }
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function show(id) {
+  document.getElementById(id).classList.add('show');
+  setTimeout(function() { document.getElementById(id).classList.remove('show'); }, 6000);
+}
+function hideAlerts() {
+  document.getElementById('alert-success').classList.remove('show');
+  document.getElementById('alert-error').classList.remove('show');
+  document.getElementById('alert-working').classList.remove('show');
+}
+// A job under way, from its start until it ends (22 Oct 2026, the user: the purge showed nothing
+// until it had finished). The success or error banner that follows replaces it.
+function showWorking(msg) {
+  hideAlerts();
+  const el = document.getElementById('alert-working');
+  el.textContent = '\u231b ' + msg;
+  el.classList.add('show');
+}
+function showError(msg) {
+  document.getElementById('alert-working').classList.remove('show');
+  const el = document.getElementById('alert-error');
+  el.textContent = '✕ ' + msg;
+  el.classList.add('show');
+}
+function showSuccess(msg) {
+  document.getElementById('alert-working').classList.remove('show');
+  const el = document.getElementById('alert-success');
+  el.textContent = '✓ ' + msg;
+  el.classList.add('show');
+  // it goes after a while (22 Oct 2026, the user: the purge's stayed for good); an error stays
+  clearTimeout(showSuccess._t);
+  showSuccess._t = setTimeout(function () { el.classList.remove('show'); }, 10000);
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  loadBackupList();
+  // Update backup path display
+  fetch(apiUrl('/api/backup/info'))
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      var el = document.getElementById('backup-path-display');
+      if (el && data.backup_dir) el.textContent = data.backup_dir + '/backups/';
+    })
+    .catch(function() {});
+});
+
+// ── Generic styled confirm modal ────────────────────────────────────────────
+// Replaces native confirm(): showConfirm({title, message, okLabel, onConfirm}).
+var _confirmCb = null;
+function showConfirm(opts) {
+  document.getElementById('confirm-title').textContent = opts.title || 'Confirm';
+  document.getElementById('confirm-message').innerHTML = opts.message || '';
+  var ok = document.getElementById('confirm-ok-btn');
+  ok.textContent = opts.okLabel || 'Confirm';
+  // a destructive action's button reads as one
+  ok.style.background = opts.danger ? 'var(--danger)' : '';
+  ok.style.borderColor = opts.danger ? 'var(--danger)' : '';
+  _confirmCb = opts.onConfirm || null;
+  document.getElementById('confirm-overlay').style.display = 'block';
+}
+function closeConfirm() {
+  document.getElementById('confirm-overlay').style.display = 'none';
+  _confirmCb = null;
+}
+document.getElementById('confirm-ok-btn').addEventListener('click', function() {
+  var cb = _confirmCb;
+  closeConfirm();
+  if (cb) cb();
+});
+document.getElementById('confirm-overlay').addEventListener('click', function(e) {
+  if (e.target === this) closeConfirm();
+});
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' &&
+      document.getElementById('confirm-overlay').style.display === 'block') {
+    closeConfirm();
+  }
+});
+
+// ── Health (data management design §1 (2)) ──────────────────────────────────
+// One call, the whole history: each data view's half-hours by state, counted here with the
+// heatmap's own rule (EMTHeatmap.issueCount) — the missing half-hours count in every view, as in
+// the grid's "To look at" — plus the missing, the last backup and the database's size.
+var _BACKUP_WHAT = {manual: 'made by you', pre_config_save: 'before a settings save',
+  pre_restore: 'before a restore', 'pre-refetch': 'before a re-fetch', 'pre-gap-fill': 'before a gap fill',
+  'pre-attribution': 'before a device rebuild', 'pre-import-sites': 'before a site change',
+  'pre-api-import': 'before an import', 'pre-csv-import': 'before a CSV import',
+  'pre-delete': 'before a delete', 'pre-delete-export': 'before an export delete',
+  'pre-purge-import': 'before deleting imported history', 'pre-delete-device': 'before a device delete'};
+function _hEsc(v) { return String(v == null ? '' : v).replace(/[&<>"]/g, function (c) {
+  return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]; }); }
+function _backupWhat(name) {
+  var m = /^\d{8}T\d{6}_(.+)\.zip$/.exec(name || ''); return m ? (_BACKUP_WHAT[m[1]] || m[1]) : '';
+}
+function _ago(sec) {
+  var d = Math.max(0, Date.now() / 1000 - sec);
+  return d < 90 ? 'just now' : d < 5400 ? Math.round(d / 60) + ' min ago'
+       : d < 129600 ? Math.round(d / 3600) + ' h ago' : Math.round(d / 86400) + ' days ago';
+}
+function _hChip(html, onclick, tone) {
+  var c = tone === 'bad' ? 'var(--danger)' : tone === 'good' ? 'var(--success, #2e9e5b)' : 'var(--text)';
+  return '<a href="#" class="dm-chip" style="color:' + c + ';text-decoration:none;" onclick="' + onclick +
+         ';return false;">' + html + '</a>';
+}
+function dmShowView(view) {
+  if (window.EMTHeatmap) EMTHeatmap.setMetric(view);
+  document.getElementById('dm-heatmap-card').scrollIntoView({behavior: 'smooth', block: 'start'});
+}
+var _HEALTH_JOB = {'import': 'the import', gap_fill: 'the gap fill', attribution: 'the device rebuild',
+                   verify_pricing: 'the pricing check', settle_sweep: 'the re-pricing',
+                   range_refetch: 'the re-fetch', 'delete': 'the delete', restore: 'the restore'};
+function loadHealthSoon() {               // the poll: a hidden tab waits for the next one
+  if (document.hidden) { loadHealth._t = setTimeout(loadHealthSoon, 60000); return; }
+  loadHealth();
+}
+function loadHealth() {
+  var row = document.getElementById('dm-health-row');
+  if (!row) return;
+  fetch(apiUrl('/api/data-health')).then(function (r) { return r.json(); }).then(function (d) {
+    if (!d.ok) throw new Error(d.error || 'unavailable');
+    var miss = (d.missing || {}).half_hours || 0, out = [];
+    [['bill', 'Import bill'], ['export', 'Export bill']].forEach(function (v) {
+      if (!d.views || !d.views[v[0]]) return;
+      var n = EMTHeatmap.issueCount(v[0], d.views[v[0]]) + miss;
+      out.push(_hChip('<b>' + v[1] + '</b> ' + (n ? n + ' to look at' : 'all clear'),
+                      "dmShowView('" + v[0] + "')", n ? 'bad' : 'good'));
+    });
+    out.push(_hChip('<b>Missing</b> ' + (miss ? miss + ' half-hour' + (miss === 1 ? '' : 's') + ' in ' +
+                    d.missing.gaps + ' gap' + (d.missing.gaps === 1 ? '' : 's') : 'none'),
+                    // the bill views show a missing half-hour as an issue; Missing is CAD-only's view
+                    "dmShowView('" + (d.views && d.views.bill ? 'bill' : d.views && d.views.export ? 'export' : 'presence') + "')",
+                    miss ? 'bad' : 'good'));
+    var b = d.last_backup;
+    out.push(_hChip('<b>Last backup</b> ' + (b ? _hEsc(_ago(_madeAt(b))) +
+                    (_backupWhat(b.name) ? ' (' + _hEsc(_backupWhat(b.name)) + ')' : '') : 'none yet'),
+                    "openBackups()", b ? '' : 'bad'));
+    if (d.db_bytes) out.push('<span><b>Database</b> ' + (d.db_bytes / 1048576).toFixed(0) + ' MB</span>');
+    // the counts stand while a job rewrites history, and are made again once it finishes (§1 (21))
+    var busy = !!(d.updating && d.updating.length);
+    if (busy) out.push('<span style="color:var(--muted);">Counts update when ' +
+                       _hEsc(_HEALTH_JOB[d.updating[0]] || 'the running job') + ' finishes</span>');
+    row.innerHTML = out.join('<span style="color:var(--border);">·</span>');
+    // The page follows the data: asked again every 30 s while a job runs, every 60 s otherwise
+    // (cheap — the answer is cached until the data moves). When the months' counts move, or a job's
+    // freeze lifts, the heatmap is refreshed too (22 Oct 2026, the user: after an Octopus import
+    // finished, Issues only still folded March 2025's red half-hours away).
+    var sig = JSON.stringify(d.months || {});
+    if (loadHealth._sig !== undefined && (sig !== loadHealth._sig || (loadHealth._busy && !busy)) &&
+        window.EMTHeatmap) EMTHeatmap.refresh();
+    loadHealth._sig = sig; loadHealth._busy = busy;
+    clearTimeout(loadHealth._t); loadHealth._t = setTimeout(loadHealthSoon, busy ? 30000 : 60000);
+  }).catch(function (e) {
+    row.innerHTML = '<span style="color:var(--muted);">Health unavailable: ' + _hEsc(e.message) + '</span>';
+  });
+}
+
+// ── Whole history (§1 (4)) ─────────────────────────────────────────────────────
+// Historical Import's own flows, on a task (?task=), as a modal over this page; a close re-counts.
+function dmToggleWhole(e) {
+  e.stopPropagation();
+  var menu = document.getElementById('dm-whole-menu'), btn = document.getElementById('btn-whole');
+  var open = menu.style.display === 'none';
+  menu.style.display = open ? 'block' : 'none';
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (!open) return;
+  function off(evt) {
+    if (evt.type === 'keydown' && evt.key !== 'Escape') return;
+    if (evt.type === 'mousedown' && (btn.contains(evt.target) || menu.contains(evt.target))) return;
+    dmCloseWhole();
+    document.removeEventListener('mousedown', off); document.removeEventListener('keydown', off);
+  }
+  document.addEventListener('mousedown', off); document.addEventListener('keydown', off);
+}
+function dmCloseWhole() {
+  document.getElementById('dm-whole-menu').style.display = 'none';
+  document.getElementById('btn-whole').setAttribute('aria-expanded', 'false');
+}
+function dmWhole(task, title) {
+  dmCloseWhole();
+  EMTHeatmap.openEmbedded('/historical-import?embed=1&task=' + encodeURIComponent(task), title, loadHealth);
+}
+function dmPurge() {
+  dmCloseWhole();
+  fetch(apiUrl('/api/historical/purge-preview')).then(function (r) { return r.json(); }).then(function (p) {
+    if (!p.blocks) { showError('There is no imported history to delete.'); return; }
+    showConfirm({
+      title: 'Delete all imported history',
+      message: 'Deletes all <b>' + p.blocks + '</b> imported half-hour rows (' + _hEsc((p.from || '').slice(0, 10)) +
+               ' → ' + _hEsc((p.to || '').slice(0, 10)) + ') — CSV, PDF bills and the API import — with the ' +
+               'devices\' data in those half-hours, their rate derivations and the import\'s checkpoints. ' +
+               'HA\'s own readings are kept: a re-import rebuilds the devices from them. Live and settled ' +
+               'data are kept. A backup is taken first; nothing is deleted without it.',
+      okLabel: 'Delete all imported history', danger: true,
+      onConfirm: function () {
+        showWorking('Deleting all imported history: starting\u2026');
+        fetch(apiUrl('/api/historical/purge'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({confirmed: true})}).then(function (r) { return r.json(); }).then(function (r) {
+          if (!r.ok) throw new Error(r.error || 'the delete did not start');
+          dmPurgeWatch();
+        }).catch(function (e) { showError(e.message); });
+      }
+    });
+  }).catch(function (e) { showError(e.message); });
+}
+// The purge's banner, by the job's own step, until it ends — also when the page is opened (or
+// reloaded) while one runs.
+function dmPurgeWatch() {
+  fetch(apiUrl('/api/blocks/delete/status')).then(function (x) { return x.json(); }).then(function (s) {
+    if (s.kind !== 'purge') return;
+    if (s.status === 'running') {
+      showWorking('Deleting all imported history: ' + (s.step || 'working') + '\u2026 ' +
+                  'Keep using EMT; the heatmap refreshes when it is done.');
+      setTimeout(dmPurgeWatch, 1000); return;
+    }
+    if (!document.getElementById('alert-working').classList.contains('show')) return;   // an old job's end
+    if (s.status === 'error') { showError(s.error || 'The delete failed'); return; }
+    if (s.status !== 'done') return;
+    var res = s.result || {};
+    showSuccess('Deleted ' + (res.blocks || 0) + ' imported rows' + (res.backup ? ' — backup ' + res.backup : '') + '.');
+    if (window.EMTHeatmap) EMTHeatmap.refresh();
+    loadHealth(); dmWholeButtons();
+  }, function () { setTimeout(dmPurgeWatch, 2000); });
+}
+document.addEventListener('DOMContentLoaded', dmPurgeWatch);
+// ── The support file (§1 (5)) ─────────────────────────────────────────────────
+// From the card, or from a heatmap selection (`range`); the size estimated before it is built.
+var _ssRange = null;
+function openSupport(range) {
+  _ssRange = range || null;
+  document.getElementById('ss-range-row').style.display = range ? '' : 'none';
+  if (range) document.getElementById('ss-range-label').textContent = 'This selection: ' + range.label;
+  document.getElementById(range ? 'ss-range' : 'ss-30d').checked = true;
+  var m = document.getElementById('ss-month-val');
+  if (!m.value) { var d = new Date(); d.setMonth(d.getMonth() - 1); m.value = d.toISOString().slice(0, 7); }
+  _ssMake();
+  document.getElementById('support-overlay').style.display = 'block';
+  supportEstimate();
+}
+// The button back to "Make the file" — its label AND its click: after a file is made it becomes
+// "Download", and reopening the dialog reset only the label, so it downloaded the last file again
+// (24 Oct 2026, staging: "it kept downloading rather than making").
+function _ssMake() {
+  var b = document.getElementById('ss-build');
+  b.disabled = false; b.textContent = 'Make the file'; b.onclick = buildSupport;
+}
+function closeSupport() { document.getElementById('support-overlay').style.display = 'none'; }
+function _ssBody() {
+  var span = (document.querySelector('input[name="support-span"]:checked') || {}).value || '30d';
+  var b = {span: span, redact: document.getElementById('ss-redact').checked};
+  if (span === 'month') b.month = document.getElementById('ss-month-val').value;
+  if (span === 'range' && _ssRange) { b.from_utc = _ssRange.from; b.to_utc = _ssRange.to; }
+  return b;
+}
+function _ssPost(url, body) {
+  return fetch(apiUrl(url), {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body)}).then(function (r) { return r.json(); });
+}
+// Only the latest estimate is shown: a slower reply to an earlier choice must not overwrite it
+// (clicked through: "A month" then a month asked twice, and the first answer came back last).
+var _ssSeq = 0;
+function supportEstimate() {
+  var el = document.getElementById('ss-estimate'), seq = ++_ssSeq;
+  el.textContent = 'Working out the size…';
+  _ssPost('/api/support/estimate', _ssBody()).then(function (e) {
+    if (seq !== _ssSeq) return;
+    if (!e.ok) throw new Error(e.error || 'unavailable');
+    var mb = e.bytes / 1048576, big = mb > 10;
+    el.innerHTML = 'About <b>' + (mb < 1 ? '< 1' : mb.toFixed(0)) + ' MB</b> · ' + e.half_hours + ' half-hours' +
+      (big ? ' — <span style="color:var(--warning);">over 10 MB, more than many email services take. ' +
+             'A shorter span is smaller.</span>' : '');
+  }).catch(function (e) { if (seq === _ssSeq) el.textContent = 'Size unknown: ' + e.message; });
+}
+document.addEventListener('change', function (e) {
+  // a new span is a new file to make, not the last one to download
+  if (e.target && (e.target.name === 'support-span' || e.target.id === 'ss-month-val')) {
+    _ssMake(); supportEstimate();
+  }
+});
+function buildSupport() {
+  var b = document.getElementById('ss-build'), el = document.getElementById('ss-estimate');
+  b.disabled = true; b.textContent = 'Making it…';
+  _ssPost('/api/support/build', _ssBody()).then(function (r) {
+    if (!r.ok) throw new Error(r.error || 'it did not start');
+    (function tick() {
+      fetch(apiUrl('/api/support/status')).then(function (x) { return x.json(); }).then(function (s) {
+        if (s.status === 'running') { el.textContent = '⏳ ' + (s.step || 'working') + '…'; setTimeout(tick, 1000); return; }
+        if (s.status === 'error') throw new Error(s.error || 'it failed');
+        el.innerHTML = '✓ <b>' + _hEsc(s.name) + '</b> — ' + (s.bytes / 1048576).toFixed(1) + ' MB' +
+          (s.redacted ? ', ' + s.redacted + ' detail' + (s.redacted === 1 ? '' : 's') + ' hidden' : '') + '.';
+        b.disabled = false; b.textContent = '⬇ Download';
+        b.onclick = function () { window.location.href = apiUrl('/api/support/download'); };
+      }).catch(function (e) { el.textContent = '✕ ' + e.message; _ssMake(); });
+    })();
+  }).catch(function (e) { el.textContent = '✕ ' + e.message; _ssMake(); });
+}
+
+// Octopus's actions only with the supplier API; the purge only with imported history to delete
+// The purge's item, after a write that may add or remove imported history (the page renders it
+// first; the API items follow the mode, which a write here does not change).
+function dmWholeButtons() {
+  fetch(apiUrl('/api/historical/purge-preview')).then(function (r) { return r.json(); }).then(function (p) {
+    document.getElementById('dm-purge-btn').style.display = p && p.blocks ? '' : 'none';
+  }, function () {});
+}
+
+// ── Backup & restore, from the topbar; `?open=backups` (or `support`) opens it from a link ──
+function openBackups() {
+  document.getElementById('backups-overlay').style.display = 'block';
+  loadBackupList(); loadStorageInfo();
+}
+function closeBackups() { document.getElementById('backups-overlay').style.display = 'none'; }
+document.addEventListener('keydown', function (e) {
+  if (e.key !== 'Escape' || document.getElementById('backups-overlay').style.display !== 'block') return;
+  // a modal above it closes first
+  var above = ['restore-overlay', 'zip-restore-overlay', 'confirm-overlay', 'support-overlay'].some(function (id) {
+    var el = document.getElementById(id); return el && el.style.display === 'block';
+  });
+  if (!above) closeBackups();
+});
+document.addEventListener('DOMContentLoaded', function () {
+  var o = new URLSearchParams(window.location.search).get('open');
+  if (o === 'backups') openBackups();
+  else if (o === 'support') openSupport();
+});
+
+// A backup dropped anywhere on the page opens the restore — the drop row is in a modal now.
+(function () {
+  var hint = null, depth = 0;
+  function files(e) { return e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0; }
+  function show(on) { hint = hint || document.getElementById('drop-anywhere'); if (hint) hint.style.display = on ? 'flex' : 'none'; }
+  window.addEventListener('dragenter', function (e) { if (files(e)) { depth++; show(true); } });
+  window.addEventListener('dragleave', function (e) { if (files(e) && --depth <= 0) { depth = 0; show(false); } });
+  window.addEventListener('dragover', function (e) { if (files(e)) e.preventDefault(); });
+  window.addEventListener('drop', function (e) {
+    depth = 0; show(false);
+    if (!files(e) || e.defaultPrevented) return;      // the drop row handled it
+    e.preventDefault();
+    onFileSelect(e.dataTransfer.files);
+  });
+})();
+document.addEventListener('DOMContentLoaded', function () { loadHealth(); dmWholeButtons(); });
+
+// ── Historical Corrections ─────────────────────────────────────────────────
+
+// ── Database compaction ────────────────────────────────────────────────────
+// Storage, one line (data management design §1 (5)): the database, what a compact would reclaim,
+// the disk free, the runway — the runway coloured when it is short.
+function _fmtBytes(b) {
+  if (b == null) return '—';
+  if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB';
+  if (b >= 1048576) return (b / 1048576).toFixed(b >= 104857600 ? 0 : 1) + ' MB';
+  if (b >= 1024) return (b / 1024).toFixed(0) + ' KB';
+  return b + ' B';
+}
+async function loadStorageInfo() {
+  var el = document.getElementById('dm-storage-line');
+  try {
+    var r = await fetch(apiUrl('/api/storage-info'));
+    var d = await r.json();
+    var days = d.runway_days, runway = !days ? '' : days > 3650 ? 'over 10 years of room'
+             : days > 730 ? '~' + Math.floor(days / 365) + ' years of room'
+             : days > 365 ? '~' + (days / 365).toFixed(1) + ' years of room'
+             : days > 60 ? '~' + Math.round(days / 30) + ' months of room' : days + ' days of room';
+    var rc = !days ? '' : days > 730 ? '' : days > 180 ? 'var(--warning)' : 'var(--danger)';
+    var parts = ['Database <b>' + _fmtBytes(d.db_bytes) + '</b>'];
+    // SQLite's free pages: what a compact reclaims at least — it also packs part-empty pages
+    if (d.reclaimable_bytes > 1048576)
+      parts.push('<b>' + _fmtBytes(d.reclaimable_bytes) + '</b> free inside the file');
+    if (d.disk_free_mb) parts.push('disk free <b>' + _fmtBytes(d.disk_free_mb * 1048576) + '</b>');
+    if (runway) parts.push('<span' + (rc ? ' style="color:' + rc + ';"' : '') + '>' + runway + '</span>');
+    el.innerHTML = parts.join(' · ');
+    el.title = d.days_of_data ? 'Growth ' + (d.growth_mb_per_day ? d.growth_mb_per_day.toFixed(3) + ' MB/day' : '—') +
+      ' over ' + Math.round(d.days_of_data) + ' days of data; the runway assumes it carries on.' : '';
+  } catch (e) {
+    el.textContent = 'Storage unavailable.';
+  }
+}
+
+loadStorageInfo();
+
+async function doVacuum() {
+  var btn    = document.getElementById('btn-vacuum');
+  var result = document.getElementById('vacuum-result');
+  btn.disabled   = true;
+  btn.textContent = '🗜️ Compacting…';
+  result.style.display = 'none';
+  try {
+    var r = await fetch(apiUrl('/api/db/vacuum'), { method: 'POST' });
+    var d = await r.json();
+    result.style.display = 'block';
+    if (d.ok) {
+      result.style.color = 'var(--success)';
+      function fmtBytes(b) {
+        if (b >= 1048576) return (b/1048576).toFixed(2) + ' MB';
+        if (b >= 1024)    return (b/1024).toFixed(1) + ' KB';
+        return b + ' B';
+      }
+      var msg = 'Done — ' + fmtBytes(d.size_before) + ' → ' + fmtBytes(d.size_after);
+      if (d.saved > 0) {
+        msg += ' (reclaimed ' + fmtBytes(d.saved) + ')';
+      } else if (d.free_pages === 0) {
+        msg += ' — no free pages to reclaim';
+      } else {
+        msg += ' — ' + d.free_pages + ' free page' + (d.free_pages !== 1 ? 's' : '') +
+               ' (' + fmtBytes(d.free_bytes) + ') reclaimed';
+      }
+      result.textContent = msg;
+    } else {
+      result.style.color = 'var(--danger)';
+      result.textContent = 'Error: ' + (d.error || 'unknown error');
+    }
+  } catch(e) {
+    result.style.display = 'block';
+    result.style.color   = 'var(--danger)';
+    result.textContent   = 'Error: ' + e.message;
+  } finally {
+    btn.disabled    = false;
+    btn.textContent = '🗜️ Compact now';
+    loadStorageInfo();                     // what is left to reclaim
+  }
+}
+
+</script>
+{% endblock %}

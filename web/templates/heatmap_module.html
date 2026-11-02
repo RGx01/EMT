@@ -1,0 +1,2111 @@
+<!--
+  Heatmaps tab, drawn in the browser from /api/energy (workstream C, 30 Sep 2026).
+
+  Replaces the pre-rendered net_heatmap.html iframe (energy_charts.generate_net_heatmap,
+  Plotly). Chart.js 4 + chartjs-chart-matrix — Usage Stats already loads Chart.js, and
+  this was the test of whether it is enough for the whole Charts page.
+
+  LOOK — v4's, matched deliberately (compared side by side on the Pi, 30 Sep 2026):
+    * square cells (v4: 20 px), times at -45° across the top, day numbers down the side;
+    * v4's colour stops EXACTLY (make_colorscale / _hmCo2Cs / _hmIntensityCs), over the
+      data's own min..max with the background colour at zero — not a symmetric ramp;
+      intensity 0..p95 (floor 50 gCO2/kWh);
+    * the daily total as horizontal bars on their own scale, weekends shaded behind.
+  LAYOUT: one chart per MONTH (square cells make a year ~7,000 px tall — too big for one
+  canvas on a phone). Months are drawn as they near the viewport and released when far
+  away; each keeps its placeholder height, so scrolling does not jump.
+  DATA: /api/energy?resolution=block&kind=month, one request per month; no API shape of
+  its own (C §3a). Cached in memory by per-day fingerprint and epoch (C §2a).
+  THEME: a MutationObserver on data-theme re-draws every drawn month — it does not rely
+  on the page's toggle wiring (a first draft did, and the canvas kept the old colours).
+  LOCAL TIME: slots are local half-hours in the SITE timezone; the repeated clocks-back
+  hour is SUMMED into its slot (v4 overwrote it); the clocks-forward hour is empty.
+-->
+<script>
+window.EMTHeatmap = (function () {
+  var PLUGIN = 'https://cdn.jsdelivr.net/npm/chartjs-chart-matrix@2.0.1/dist/chartjs-chart-matrix.min.js';
+  var CHARTJS = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js';
+  var METRICS = {
+    kwh:       {label: 'kWh',      title: 'Net Energy (kWh)',  sub: 'Energy imported minus exported, each half-hour · black hatched: no block (missing)',
+                unit: ' kWh', dp: 3, tot: 'Daily Total'},
+    co2:       {label: 'gCO₂',     title: 'Carbon (gCO₂)',     sub: 'Emissions from what you drew, net of what you exported · black hatched: no block (missing)',
+                unit: ' gCO₂', dp: 1, tot: 'Daily CO₂'},
+    intensity: {label: 'gCO₂/kWh', title: 'Grid Carbon Intensity (gCO₂/kWh)',
+                sub: 'How clean the grid was, regardless of your usage · black hatched: no block (missing)', unit: ' gCO₂/kWh', dp: 0, tot: null}
+  };
+  // The API import / API export views were retired on 14 Oct 2026 (settlement surfaces design
+  // §9.2): Import bill and Export bill carry what they showed, on the cost's window.
+  // BL-85 (settlement surfaces design §1–§2): the bill and the House/EV split, per main-meter
+  // import half-hour, from the payload's `settle` (include=settle) — the server decides the
+  // state, the grid draws it. Added in init from /api/billing-source's `settle_views`.
+  var SETTLE_METRICS = {
+    bill:  {label: 'Import bill', title: 'Import bill — is each half-hour\u2019s cost final?', unit: '', dp: 0,
+            tot: 'To look at', settle: 'bill',
+            sub: 'Green: final — Octopus\u2019s cost (a bill, or an API import), or on a published-rate ' +
+                 'tariff the settled kWh \u00d7 rate · teal: Octopus\u2019s cost, EMT\u2019s House/EV split · ' +
+                 'light amber: settled kWh \u00d7 rate, Octopus\u2019s cost not in yet · amber: kWh not ' +
+                 'settled yet · red: not final after 7 days, the stored cost is not the bill, or a ' +
+                 'completed dispatch with no House/EV split · red, hatched yellow: no cost from Octopus, ' +
+                 'and EMT no longer asks — kWh \u00d7 rate · blue: ' +
+                 'your correction · grey: nothing imported, imported history, or not on an Octopus agreement · ' +
+                 'black hatched: no block (missing)',
+            // the key, a swatch a state (BL-105, 1 Nov 2026, the user: "add visual colour keys to the
+            // wordy key"); a swatch is the state's own colour, settleColour's, hatched where it is
+            key: [['applied', 'final \u2014 Octopus\u2019s cost, or settled kWh \u00d7 a published rate'],
+                  ['applied_emt_split', 'Octopus\u2019s cost, EMT\u2019s House/EV split'],
+                  ['estimate_dcc', 'settled kWh \u00d7 rate, Octopus\u2019s cost not in yet'],
+                  ['estimate_cad', 'kWh not settled yet'],
+                  ['overdue', 'needs a look: not final after 7 days, Octopus\u2019s figures disagreeing (its cost, kWh, VAT ' +
+                 'or split), or the devices costing more than the meter'],
+                  ['abandoned', 'no cost from Octopus, and EMT no longer asks \u2014 kWh \u00d7 rate'],
+                  ['corrected', 'your correction'],
+                  ['none', 'nothing imported, imported history, or not on an Octopus agreement'],
+                  ['missing', 'no block (missing)']]},
+    export: {label: 'Export bill', title: 'Export bill — is each half-hour\u2019s export cost final?', unit: '',
+            dp: 0, tot: 'To look at', settle: 'export',
+            sub: 'EMT fetches no export bill: kWh \u00d7 the export rate is final once the export kWh ' +
+                 'settles. Green: settled (or an API import) · amber: not settled, under 7 days · red: ' +
+                 'not settled after 7 days · red, hatched yellow: no export figure from Octopus or the CSV · ' +
+                 'grey: no export, or CSV history · black hatched: no block (missing)',
+            intro: 'EMT fetches no export bill: kWh \u00d7 the export rate is final once the export kWh settles.',
+            key: [['applied', 'settled (or an API import)'], ['waiting', 'not settled, under 7 days'],
+                  ['overdue', 'not settled after 7 days'],
+                  ['no_data', 'no export figure from Octopus or the CSV'],
+                  ['none', 'no export, or CSV history'], ['missing', 'no block (missing)']]}
+  };
+  // The Split view went on 17 Oct 2026: the Import bill carries the split (teal for EMT's, red for
+  // a completed dispatch with none — `split_missing`), and the detail panel names its state.
+  // The Missing view (data management design §1 (1), 21 Oct 2026): every half-hour, recorded or
+  // missing — the one data view an install without the supplier API has.
+  var PRESENCE_METRIC = {label: 'Missing', title: 'Missing — is every half-hour recorded?', unit: '',
+    dp: 0, tot: 'To look at',
+    sub: 'Green: recorded · black hatched: no block for the half-hour (missing) — select it to fill it',
+    key: [['present', 'recorded'], ['missing', 'no block for the half-hour (missing) \u2014 select it to fill it']]};
+  function isSettle(m) { return m === 'bill' || m === 'export'; }
+  function isCat(m) { return isSettle(m) || m === 'presence'; }
+  // A half-hour inside the data's span with no main-meter block (heatmap issues design §2): drawn
+  // black and diagonally hatched on every view, an issue on the bills (rank 3, as red).
+  var MISSING_TEXT = 'no block for this half-hour \u2014 missing';
+  var CAT_RANK = {
+    bill:  {none: 0, imported: 0, no_agreement: 0, applied: 1, applied_emt_split: 1, corrected: 1, estimate_dcc: 2,
+            estimate_cad: 2, overdue: 3, abandoned: 3, differs: 3, flagged: 3, missing: 3},
+    export: {none: 0, imported: 0, no_agreement: 0, applied: 1, waiting: 2, overdue: 3, no_data: 3, missing: 3},
+    presence: {present: 0, missing: 3}
+  };
+  var CAT_TEXT = {
+    bill: {none: 'nothing imported in this half-hour', imported: 'imported history, or no bill past Octopus\u2019s two years — not Octopus\u2019s cost',
+           applied: 'final — Octopus\u2019s cost, or the settled kWh \u00d7 a published rate',
+           applied_emt_split: 'Octopus\u2019s cost — the House/EV split is still EMT\u2019s',
+           corrected: 'your rate correction',
+           estimate_dcc: 'settled kWh \u00d7 rate — Octopus\u2019s cost not in yet',
+           estimate_cad: 'kWh not settled yet \u00d7 rate',
+           overdue: 'not final after 7 days — kWh \u00d7 rate',
+           abandoned: 'no cost from Octopus, and EMT no longer asks for it — kWh \u00d7 rate. ' +
+                      'Re-fetch may still get it; a CSV or PDF bill for the day can supply it',
+           differs: 'Octopus\u2019s cost isn\u2019t kWh \u00d7 its rate', flagged: 'billed — but see below',
+           no_agreement: 'not on an Octopus agreement \u2014 another supplier\u2019s, or between agreements. ' +
+                         'EMT\u2019s price, kWh \u00d7 your configured rate; nothing to ask Octopus for',
+           missing: MISSING_TEXT},
+    export: {none: 'no export in this half-hour', imported: 'CSV history',
+             applied: 'export kWh settled — kWh \u00d7 rate is final',
+             waiting: 'export kWh not settled yet', overdue: 'export kWh not settled after 7 days',
+             no_agreement: 'no export agreement for this half-hour \u2014 nothing is paid',
+             no_data: 'no export figure from Octopus or the CSV \u2014 a gap. Re-fetch may get it; ' +
+                      'a CSV can supply it',
+             missing: MISSING_TEXT},
+    presence: {present: 'recorded', missing: MISSING_TEXT},
+    split: {bill: 'split from the bill', emt: 'EMT\u2019s split — the bill not in yet',
+            held: 'bill had no EV — asking Octopus again', kept: 'EMT\u2019s split kept (28 days)',
+            missing: 'completed dispatch, no split'}
+  };
+  var FLAG_TEXT = {bill_kwh_differs: 'the bill priced a different kWh than settled',
+                   vat_disagrees: 'the bill\u2019s VAT is not the calendar\u2019s',
+                   split_missing: 'a completed dispatch, and no House/EV split at all',
+                   devices_exceed: 'the devices cost more than the meter \u2014 the device breakdown reads too high ' +
+                                   'and the house\u2019s too low (the bill is not affected). Re-fetch it to price ' +
+                                   'the devices again'};
+  // the missing cells' hatch: black, with grey diagonals so it is neither a colour of the scale
+  // nor the dark theme's near-black background (§6 (b))
+  var _hatch = null;
+  function hatch() {
+    if (_hatch) return _hatch;
+    var c = document.createElement('canvas'); c.width = c.height = 6;
+    var x = c.getContext('2d');
+    x.fillStyle = '#000'; x.fillRect(0, 0, 6, 6);
+    x.strokeStyle = '#6b7080'; x.lineWidth = 1.2;
+    x.beginPath(); x.moveTo(-1, 7); x.lineTo(7, -1); x.moveTo(-1, 1); x.lineTo(1, -1);
+    x.moveTo(5, 7); x.lineTo(7, 5); x.stroke();
+    return (_hatch = x.createPattern(c, 'repeat'));
+  }
+  // A cost EMT no longer asks Octopus for (19 Oct 2026, the user): red, hatched yellow — still an
+  // issue, and not one a re-fetch is likely to clear
+  var _hatchAb = null;
+  function hatchAbandoned() {
+    if (_hatchAb) return _hatchAb;
+    var c = document.createElement('canvas'); c.width = c.height = 6;
+    var x = c.getContext('2d');
+    x.fillStyle = '#cc0000'; x.fillRect(0, 0, 6, 6);
+    x.strokeStyle = '#f2c94c'; x.lineWidth = 1.4;
+    x.beginPath(); x.moveTo(-1, 7); x.lineTo(7, -1); x.moveTo(-1, 1); x.lineTo(1, -1);
+    x.moveTo(5, 7); x.lineTo(7, 5); x.stroke();
+    return (_hatchAb = x.createPattern(c, 'repeat'));
+  }
+  // A key swatch's CSS: the state's colour, or its hatch drawn as the canvas draws it (black with
+  // grey diagonals; red with yellow)
+  function swatchCss(m, v) {
+    var diag = function (bg, ln) {
+      return 'background:' + bg + ' repeating-linear-gradient(135deg,' + ln + ' 0 1.2px,transparent 1.2px 4px);';
+    };
+    if (v === 'missing') return diag('#000', '#6b7080');
+    if (v === 'abandoned' || v === 'no_data') return diag('#cc0000', '#f2c94c');
+    return 'background:' + settleColour(m, v) + ';';
+  }
+  // The key under the view's title: its swatches where it has them, else its sentence
+  function keyHtml(m) {
+    var M = METRICS[m], esc = function (t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;'); };
+    if (!M.key) return esc(M.sub);
+    return (M.intro ? '<div class="hm-key-intro">' + esc(M.intro) + '</div>' : '') +
+      '<div class="hm-key">' + M.key.map(function (k) {
+        return '<span class="hm-key-item"><span class="hm-sw" style="' + swatchCss(m, k[0]) + '"></span>' + esc(k[1]) + '</span>';
+      }).join('') + '</div>';
+  }
+  function isMissing(c) { return !!(c && c.missing && c.kwh === null); }
+  function isData() { return state.mode === 'data'; }
+  // `opts.onChange` (data mode): called when a tool has written — the health strip re-counts
+  function changed() { try { if (state.onChange) state.onChange(); } catch (e) {} }
+  // Chart mode's way to the tools: the day on Data Management (`?day=`)
+  function dmUrl(day) { return apiUrl('/data-management?day=' + encodeURIComponent(day)); }
+  function openInDM(day) { window.location.href = dmUrl(day); }
+  // What is an ISSUE (heatmap issues design §3, §6 (a), decided 17 Oct 2026): anything not green,
+  // except CSV history and `none` (nothing imported or exported — nothing to settle). One rule for
+  // the "To look at" totals and the collapse. On the energy views, only a missing half-hour.
+  var ISSUE = {
+    bill: {applied_emt_split: 1, corrected: 1, estimate_dcc: 1, estimate_cad: 1,
+           overdue: 1, abandoned: 1, differs: 1, flagged: 1, missing: 1},
+    // no_agreement is not an issue (22 Oct 2026, the user): nothing is paid, nothing to fix
+    export: {waiting: 1, overdue: 1, no_data: 1, missing: 1},
+    presence: {missing: 1}
+  };
+  function isIssue(c, m) {
+    if (!c) return false;
+    if (c.missing) return true;                        // every view (§2)
+    return !!(ISSUE[m] && ISSUE[m][c[m]]);
+  }
+  function settleColour(m, v) {
+    if (v === 'missing') return hatch();
+    if (v === 'abandoned' || v === 'no_data') return hatchAbandoned();
+    var C = {green: '#2e9e5b', amber: '#e0a020', lamber: '#f2cf7a', red: '#cc0000', blue: '#3b7dd8', teal: '#2a9d9f',
+             grey: dark() ? '#3a3e4a' : '#d4d7de'};
+    if (m === 'presence') return v === 'present' ? C.green : 'rgba(0,0,0,0)';
+    var by = m === 'export'
+      ? {applied: C.green, waiting: C.amber, overdue: C.red, imported: C.grey, no_agreement: C.grey,
+         none: C.grey}
+      : {applied: C.green, applied_emt_split: C.teal, estimate_dcc: C.lamber, estimate_cad: C.amber,
+         overdue: C.red, differs: C.red, flagged: C.red,
+         corrected: C.blue, imported: C.grey, no_agreement: C.grey, none: C.grey};
+    return by[v] || 'rgba(0,0,0,0)';
+  }
+  // the cell value for a view: the state, with the attention flags folded in (§1.4)
+  function settleValue(m, st) {
+    if (!st) return null;
+    if (m === 'export') return st.export || null;
+    var v = st.bill, fl = st.flags || [];
+    // devices costing more than the meter is wrong whatever the cost's state — your correction
+    // included, the case it was found in (device cost check design §2)
+    if (fl.indexOf('devices_exceed') >= 0 && v !== 'none' && v !== 'missing') return 'flagged';
+    if ((v === 'applied' || v === 'differs') &&
+        (fl.indexOf('bill_kwh_differs') >= 0 || fl.indexOf('vat_disagrees') >= 0 ||
+         fl.indexOf('split_missing') >= 0)) return 'flagged';
+    return v;
+  }
+  var AXIS_LEFT = 30, CELL_MAX = 22, CELL_MIN = 6;
+  // Two modes (data management design §1 (1), 21 Oct 2026): `chart` — Charts and the Lovelace card,
+  // the energy views, read-only — and `data` — Data Management, the data views and every tool.
+  var state = {metric: 'kwh', tz: null, bm: 30, months: {}, keys: [], panels: {}, epoch: null,
+               mode: 'chart', collapse: false, expanded: {}, dayWanted: null, mhealth: null, mexpanded: {},
+               root: null, inited: false, loading: {}, scale: null, forceLight: false};
+  var fetchJSON = function (url) { return fetch(apiUrl(url)).then(function (r) { return r.json(); }); };
+
+  function loadScript(src) {
+    return new Promise(function (ok, bad) {
+      if (document.querySelector('script[src="' + src + '"]')) { ok(); return; }
+      var s = document.createElement('script'); s.src = src; s.onload = ok; s.onerror = bad;
+      document.head.appendChild(s);
+    });
+  }
+  function libs() {
+    var p = window.Chart ? Promise.resolve() : loadScript(CHARTJS);
+    return p.then(function () {
+      return (window.Chart && Chart.registry.controllers.get('matrix')) ? null : loadScript(PLUGIN);
+    });
+  }
+  function dark() {
+    if (state.forceLight) return false;                  // PDF snapshot prints on white
+    return document.documentElement.getAttribute('data-theme') !== 'light';
+  }
+  function bg() { return dark() ? '#1a1d27' : '#ffffff'; }         // v4's zero colour, per theme
+  function axisC() { return dark() ? '#6b7080' : '#555566'; }
+
+  // ── v4's colour scales, exactly ───────────────────────────────────────────
+  function hex(c) { c = c.replace('#', ''); return [parseInt(c.slice(0, 2), 16), parseInt(c.slice(2, 4), 16), parseInt(c.slice(4, 6), 16)]; }
+  function kwhStops(mn, mx) {                           // energy_charts.make_colorscale
+    var W = bg();
+    if (mx === mn) mx = mn + 1;
+    var wp = Math.max(0, Math.min(1, (0 - mn) / (mx - mn)));
+    if (wp <= 0.01) return [[0, W], [0.33, '#ffcc99'], [0.66, '#ff6600'], [1, '#cc0000']];
+    if (wp >= 0.99) return [[0, '#003366'], [0.33, '#0066cc'], [0.66, '#00aa66'], [1, W]];
+    return [[0, '#003366'], [wp * 0.33, '#0066cc'], [wp * 0.66, '#00aa66'], [wp, W],
+            [wp + (1 - wp) * 0.33, '#ffcc99'], [wp + (1 - wp) * 0.66, '#ff6600'], [1, '#cc0000']];
+  }
+  function co2Stops(mn, mx) {                           // _hmCo2Cs
+    var W = bg();
+    if (mn >= 0) return [[0, W], [0.5, '#ff9966'], [1, '#cc0000']];
+    if (mx <= 0) return [[0, '#1a6632'], [0.5, '#66bb88'], [1, W]];
+    var wp = Math.max(0.01, Math.min(0.99, (0 - mn) / (mx - mn)));
+    return [[0, '#1a6632'], [wp * 0.5, '#66bb88'], [wp, W], [wp + (1 - wp) * 0.5, '#ff9966'], [1, '#cc0000']];
+  }
+  var INT_STOPS = [[0, '#1a6632'], [0.25, '#52b788'], [0.5, '#f9c74f'], [0.75, '#f3722c'], [1, '#cc0000']];
+  function paint(stops, mn, mx, v) {
+    if (v === null || v === undefined) return 'rgba(0,0,0,0)';
+    var t = mx > mn ? (v - mn) / (mx - mn) : 0.5; t = Math.max(0, Math.min(1, t));
+    for (var i = 1; i < stops.length; i++) {
+      if (t <= stops[i][0] || i === stops.length - 1) {
+        var a = stops[i - 1], b = stops[i], span = b[0] - a[0], u = span > 0 ? Math.min(1, (t - a[0]) / span) : 0;
+        var A = hex(a[1]), B = hex(b[1]);
+        return 'rgb(' + [0, 1, 2].map(function (k) { return Math.round(A[k] + (B[k] - A[k]) * u); }).join(',') + ')';
+      }
+    }
+    return stops[stops.length - 1][1];
+  }
+
+  // ── local wall-clock parts in the site timezone, memoised per UTC half-hour ──
+  var _fmt = null, _memo = {};
+  function localParts(utcIso) {
+    var hit = _memo[utcIso]; if (hit) return hit;
+    if (!_fmt) _fmt = new Intl.DateTimeFormat('en-GB', {timeZone: state.tz, year: 'numeric',
+      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23'});
+    var p = {}; _fmt.formatToParts(new Date(utcIso + 'Z')).forEach(function (x) { p[x.type] = x.value; });
+    var out = {day: p.year + '-' + p.month + '-' + p.day, slot: Math.floor((+p.hour * 60 + +p.minute) / state.bm)};
+    _memo[utcIso] = out; return out;
+  }
+  function slotLabel(i) {
+    var m = i * state.bm, h = Math.floor(m / 60) % 24, mm = m % 60;
+    return (h < 10 ? '0' : '') + h + ':' + (mm < 10 ? '0' : '') + mm;
+  }
+  function slots() { return Math.round(1440 / state.bm); }
+
+  // one month's grid: day -> {slots:[{kwh,co2,int}], total:{kwh,co2}}, days in LOCAL time
+  function monthGrid(key) {
+    var days = {}, n = slots(), now = Date.now();
+    (state.months[key].blocks || []).forEach(function (b) {
+      if (b.meter_id !== 'electricity_main') return;
+      var lp = localParts(b.block_start);
+      if (lp.day.slice(0, 7) !== key) return;                  // a UTC edge of the month
+      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0, presence: 0}});
+      var net = (b.imp_kwh || 0) - (b.exp_kwh || 0), cg = b.carbon_g;
+      var c = d.slots[lp.slot] || (d.slots[lp.slot] = {kwh: 0, co2: null, int: null});
+      (c.starts || (c.starts = [])).push(b.block_start);       // UTC, for the detail panel (§4)
+      c.kwh += net;                                             // clocks-back: summed
+      if (cg !== null && cg !== undefined) c.co2 = (c.co2 || 0) + cg;
+      // The payload states the grid's intensity per block (carbon.slot_intensity).
+      if (b.carbon_intensity_g !== null && b.carbon_intensity_g !== undefined) c.int = b.carbon_intensity_g;
+      var sm = (state.months[key].settle || {})[b.block_start];          // BL-85
+      Object.keys(SETTLE_METRICS).forEach(function (k) {
+        var v = settleValue(k, sm); if (v === null) return;
+        if (!c[k] || CAT_RANK[k][v] > CAT_RANK[k][c[k]]) { c[k] = v; c[k + 'Flags'] = k === 'bill' ? (sm && sm.flags) || [] : []; }
+      });
+      d.total.kwh += net; if (cg) d.total.co2 += cg;
+    });
+    markMissing(key, days, n);
+    Object.keys(days).forEach(function (k) {                      // the day's half-hours still owed
+      Object.keys(SETTLE_METRICS).concat(['presence']).forEach(function (m) {   // worth a look
+        days[k].total[m] = days[k].slots.filter(function (c) { return isIssue(c, m); }).length;
+      });
+    });
+    return days;
+  }
+  // Every UTC half-hour of the month inside the data's span — from the first block to the last
+  // finished half-hour — with no main-meter block is MISSING, and its day gets a row even with no
+  // blocks at all, so a gap shows as a band (heatmap issues design §2, §6 (c), (d)). Walking UTC
+  // half-hours, the clocks-forward hour never comes up: it does not exist (§6 (b)). Inside a
+  // tombstone it is still missing; the tooltip says when it was deleted.
+  function markMissing(key, days, n) {
+    var M = state.months[key], b = state.bounds || {};
+    if (!M || !M.range || !b.earliest_block) return;
+    var have = {};
+    (M.blocks || []).forEach(function (x) { if (x.meter_id === 'electricity_main') have[x.block_start] = 1; });
+    var HH = 1800000, ms = function (s) { return Date.parse(s + 'Z'); };
+    // the last FINISHED half-hour starts here — with two minutes' grace after a boundary, while
+    // the engine waits for the post-boundary read and writes the block that just ended
+    var lastDone = Math.floor((Date.now() - 120000) / HH) * HH - HH;
+    var t = Math.max(ms(M.range.start_utc), ms(b.earliest_block));
+    var end = Math.min(ms(M.range.end_utc), lastDone + HH);
+    for (; t < end; t += HH) {
+      var iso = new Date(t).toISOString().slice(0, 19);
+      if (have[iso]) continue;
+      var lp = localParts(iso); if (lp.day.slice(0, 7) !== key) continue;
+      var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0, presence: 0}});
+      var c = d.slots[lp.slot] || (d.slots[lp.slot] = {kwh: null, co2: null, int: null});
+      c.missing = (c.missing || 0) + 1;
+      (c.starts || (c.starts = [])).push(iso);
+      (c.gaps || (c.gaps = [])).push(iso);                     // which of them: what a fill asks for
+      var del = (M.deleted || []).filter(function (r) { return iso >= r.start_utc && iso < r.end_utc; })[0];
+      if (del) c.deleted = (del.created_at || '').slice(0, 10) || 'yes';
+      Object.keys(SETTLE_METRICS).forEach(function (k) {
+        if (!c[k] || CAT_RANK[k].missing > CAT_RANK[k][c[k]]) { c[k] = 'missing'; c[k + 'Flags'] = []; }
+      });
+    }
+  }
+  function missingText(c) {
+    return MISSING_TEXT + (c && c.deleted ? '<br>deleted ' + c.deleted : '');
+  }
+  function metricOf(c, m) {
+    if (!c) return null;
+    if (m === 'presence') return c.missing ? 'missing' : 'present';
+    return m === 'kwh' ? c.kwh : m === 'co2' ? c.co2 : isCat(m) ? c[m] : c.int;
+  }
+
+  // The range every drawn month shares, so months are comparable: over all LOADED months.
+  // It can widen as older months load; drawn months are re-coloured when it does.
+  function computeScale() {
+    var m = state.metric, lo = Infinity, hi = -Infinity, tlo = Infinity, thi = -Infinity, ints = [];
+    if (isCat(m)) {                     // categorical cells; the bar counts from 0 to the worst day
+      var worst = 1;
+      Object.keys(state.panels).forEach(function (k) {
+        var g = state.panels[k].grid; if (!g) return;
+        Object.keys(g).forEach(function (d) { worst = Math.max(worst, g[d].total[m]); });
+      });
+      return {lo: 0, hi: 1, tlo: 0, thi: worst};
+    }
+    Object.keys(state.panels).forEach(function (k) {
+      var g = state.panels[k].grid; if (!g) return;
+      Object.keys(g).forEach(function (d) {
+        g[d].slots.forEach(function (c) {
+          var v = metricOf(c, m); if (v === null || v === undefined) return;
+          if (m === 'intensity') ints.push(v); else { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+        });
+        if (m !== 'intensity') { var t = g[d].total[m]; tlo = Math.min(tlo, t); thi = Math.max(thi, t); }
+      });
+    });
+    if (m === 'intensity') {                                    // v4: p95, floor 50, else 300
+      ints.sort(function (a, b) { return a - b; });
+      var mx = ints.length ? Math.max(ints[Math.floor(0.95 * (ints.length - 1))], 50) : 300;
+      return {lo: 0, hi: mx, tlo: 0, thi: 1};
+    }
+    if (!isFinite(lo)) { lo = 0; hi = 1; }
+    if (!isFinite(tlo)) { tlo = 0; thi = 1; }
+    if (thi === tlo) thi = tlo + 1;
+    return {lo: lo, hi: hi, tlo: tlo, thi: thi};
+  }
+  function cellStops(sc) { return state.metric === 'kwh' ? kwhStops(sc.lo, sc.hi) : state.metric === 'co2' ? co2Stops(sc.lo, sc.hi) : INT_STOPS; }
+  function totStops(sc) {
+    if (isCat(state.metric)) return [[0, bg()], [1, isSettle(state.metric) ? '#e0a020' : '#cc0000']];
+    return state.metric === 'kwh' ? kwhStops(sc.tlo, sc.thi) : co2Stops(sc.tlo, sc.thi);
+  }
+
+  // The daily-total column narrows with the screen: v4's 150 px on a desktop, 56 px on a
+  // phone. Cells are square and sized from what is left; below CELL_MIN the row scrolls
+  // sideways rather than squash them.
+  //
+  // ONE size for every month (heatmap issues design §4, 17 Oct 2026): measured from the first
+  // month's row — every row is the same width — not from the panel being drawn, so months drawn
+  // at different moments cannot disagree.
+  function rowWidth() {
+    var p0 = state.panels[state.keys[0]];
+    return p0 ? p0.el.querySelector('.hm-row').clientWidth : 0;
+  }
+  function totW() {
+    if (state.metric === 'intensity') return 0;
+    return Math.round(Math.max(56, Math.min(150, rowWidth() * 0.16)));
+  }
+  function cellSize() {
+    var w = rowWidth() - AXIS_LEFT - totW() - 16;
+    return Math.max(CELL_MIN, Math.min(CELL_MAX, Math.floor(w / slots())));
+  }
+  function monthLabel(key) {
+    return new Date(+key.slice(0, 4), +key.slice(5, 7) - 1, 1).toLocaleString('en-GB', {month: 'short', year: 'numeric'});
+  }
+  function daysIn(key) { return new Date(+key.slice(0, 4), +key.slice(5, 7), 0).getDate(); }
+
+  // v4's weekend rows: a translucent band over Saturday and Sunday — across all the
+  // slots of the grid (drawn OVER the cells, as v4's overlay trace was; v4 kept that
+  // trace for every metric) and behind the daily-total bars.
+  function weekendRows(days, hook) {
+    var plugin = {id: 'hmWeekend'};
+    plugin[hook] = function (ch) {
+      var a = ch.chartArea, rh = a.height / days.length, c = ch.ctx;
+      c.save(); c.fillStyle = dark() ? 'rgba(0,0,0,0.15)' : 'rgba(0,0,0,0.10)';
+      days.forEach(function (d, i) {
+        var dow = new Date(d + 'T12:00:00').getDay();
+        if (dow === 0 || dow === 6) c.fillRect(a.left, a.top + i * rh, a.width, rh);
+      });
+      c.restore();
+    };
+    return plugin;
+  }
+
+  // ── issues first: runs of days with nothing to look at fold into one row (§3) ──
+  // With "Issues only" on, each run of clean days becomes a fold, which a click expands — a single
+  // clean day too (20 Oct 2026, the user: a lone clean day left as a row read as a day with issues). A fold carries its days' half-hours, so a drag that starts or ends on one covers them.
+  function foldRows(p, key, days) {
+    p.folds = {};
+    if (!state.collapse) return days;
+    var m = state.metric, out = [], run = [];
+    function flush() {
+      var oldest = run[run.length - 1], newest = run[0];
+      if (run.length && !state.expanded[key + '|' + oldest + '|' + newest]) {
+        var id = 'fold:' + oldest + ':' + newest, starts = [];
+        run.forEach(function (d) { p.grid[d].slots.forEach(function (c) {
+          if (c && c.starts) starts = starts.concat(c.starts); }); });
+        starts.sort();
+        p.folds[id] = {key: key, from: oldest, to: newest, n: run.length, starts: starts,
+                       slots: new Array(slots()).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0, presence: 0}};
+        out.push(id);
+      } else out = out.concat(run);
+      run = [];
+    }
+    days.forEach(function (d) {                                  // newest first
+      if (p.grid[d].slots.some(function (c) { return isIssue(c, m); })) { flush(); out.push(d); }
+      else run.push(d);
+    });
+    flush();
+    return out;
+  }
+  function rowOf(p, k) { return (p.folds && p.folds[k]) || p.grid[k]; }
+  function foldLabel(f) {
+    var a = +f.from.slice(8), b = +f.to.slice(8), mo = monthLabel(f.key).split(' ')[0];
+    return (a === b ? a : a + '\u2013' + b) + ' ' + mo;
+  }
+  function foldText(f) {
+    return f.n + (f.n === 1 ? ' day' : ' days') + ' with nothing to look at (' + foldLabel(f) +
+      ') \u2014 click to show ' + (f.n === 1 ? 'it' : 'them');
+  }
+  function expandFold(f) {
+    state.expanded[f.key + '|' + f.from + '|' + f.to] = true;
+    drawMonth(f.key);
+  }
+  function foldBands(rows, p) {
+    return {id: 'hmFolds', afterDatasetsDraw: function (ch) {
+      var a = ch.chartArea, rh = a.height / rows.length, c = ch.ctx;
+      c.save();
+      rows.forEach(function (k, i) {
+        var f = p.folds[k]; if (!f) return;
+        c.fillStyle = dark() ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.05)';
+        c.fillRect(a.left, a.top + i * rh, a.width, rh - 1);
+        c.fillStyle = axisC(); c.textAlign = 'center'; c.textBaseline = 'middle';
+        c.font = Math.max(6, Math.min(11, Math.floor(rh - 2))) + 'px sans-serif';
+        c.fillText(foldText(f), a.left + a.width / 2, a.top + i * rh + rh / 2);
+      });
+      c.restore();
+    }};
+  }
+
+  // ── draw one month ─────────────────────────────────────────────────────────
+  function drawMonth(key) {
+    var p = state.panels[key]; if (!p || !state.months[key]) return;
+    p.grid = p.grid || monthGrid(key);
+    var days = foldRows(p, key, Object.keys(p.grid).sort().reverse());   // newest at the top
+    release(key, true);
+    var row = p.el.querySelector('.hm-row');
+    if (!days.length) { row.innerHTML = '<div class="hm-empty">No data.</div>'; return; }
+    var m = state.metric, sc = state.scale || (state.scale = computeScale()), n = slots();
+    var cs = cellSize(), TOT_W = totW(), h = days.length * cs + 2;
+    var xs = []; for (var i = 0; i < n; i++) xs.push(slotLabel(i));
+    var pts = [];
+    days.forEach(function (d) { rowOf(p, d).slots.forEach(function (c, i) { pts.push({x: xs[i], y: d, c: c}); }); });
+    // Fixed-size containers and `responsive: true`: Chart.js sizes the canvas to its
+    // parent. (With responsive:false it keeps the canvas's default 300x150 and ignores the
+    // container — cells came out 5x3 px instead of square.)
+    row.innerHTML = '<div class="hm-grid" style="position:relative;height:' + h + 'px;width:' + (n * cs + AXIS_LEFT + 4) +
+      'px"><canvas></canvas></div>' + (m === 'intensity' ? '' :
+      '<div class="hm-tot" style="position:relative;height:' + h + 'px;width:' + TOT_W + 'px"><canvas></canvas></div>');
+    var stops = cellStops(sc);
+    var dpr = Math.min(2, window.devicePixelRatio || 1);
+    p.chart = new Chart(row.querySelector('.hm-grid canvas').getContext('2d'), {
+      type: 'matrix', plugins: [weekendRows(days, 'afterDatasetsDraw'), foldBands(days, p)],
+      data: {datasets: [{data: pts, borderWidth: 0,
+        backgroundColor: function (ctx) {
+          var r = ctx.raw; if (!r) return 'rgba(0,0,0,0)';
+          if (isMissing(r.c)) return hatch();                 // every view (§2)
+          var v = metricOf(r.c, state.metric);
+          return isCat(state.metric) ? settleColour(state.metric, v)
+               : paint(stops, sc.lo, sc.hi, v);
+        },
+        width: function (ctx) { var a = ctx.chart.chartArea; return a ? a.width / n - 1 : cs - 1; },
+        height: function (ctx) { var a = ctx.chart.chartArea; return a ? a.height / days.length - 1 : cs - 1; }}]},
+      options: {
+        animation: false, maintainAspectRatio: false, responsive: true, devicePixelRatio: dpr,
+        // Hover is arithmetic on the grid (attachHover), not Chart.js's tooltip, which
+        // repaints the whole chart on every pointer move.
+        events: [], plugins: {legend: {display: false}, tooltip: {enabled: false}},
+        layout: {padding: {right: 2}},
+        scales: {
+          // No time labels here: they float in one header above every month (drawAxis). The
+          // panel that drew them had its plot area shrunk to fit the last rotated label, so its
+          // cells came out narrower than every other month's (the user's screenshot, 17 Oct).
+          x: {type: 'category', labels: xs, offset: true, grid: {display: false}, display: false},
+          // EXPLICIT, not the default: chartjs-chart-matrix's defaults reverse the y axis,
+          // which drew the newest day at the BOTTOM while the hover arithmetic counts rows
+          // from the top — naming the wrong day. Checked against scale.getPixelForValue.
+          y: {type: 'category', labels: days, offset: true, reverse: false, grid: {display: false},
+              afterFit: function (s) { s.width = AXIS_LEFT; },
+              ticks: {color: axisC(), autoSkip: false, font: {size: 10}, padding: 2,
+                      // every day at v4's size; the 1st and every 5th when cells are small
+                      callback: function (v, i) { if (p.folds[days[i]]) return '\u22ef';
+                        var dn = +days[i].slice(8);
+                        return (cs >= 12 || dn === 1 || dn % 5 === 0) ? String(dn) : ''; }}}
+        }
+      }
+    });
+    // The rows at their size, measured: Chart.js takes room above and below the plot for the day
+    // labels (16 px, measured), out of the box, not beside it. A month of 31 rows lost half a pixel a
+    // row; one row — the 1st of a month, or Issues only leaving one — kept 4 px of its 20 (1 Nov 2026,
+    // the user's screenshot). The box grows by what was taken, the totals' with it.
+    var lost = days.length * cs - p.chart.chartArea.height;
+    if (lost > 0.5) {
+      h = Math.ceil(h + lost);
+      row.querySelectorAll('.hm-grid, .hm-tot').forEach(function (el) { el.style.height = h + 'px'; });
+      p.chart.resize();
+    }
+    // A month too short for its name on its side (one or two rows) is named by its month, in full on hover
+    var ml = p.el.querySelector('.hm-mlabel');
+    if (ml) {
+      ml.textContent = h < 56 ? monthLabel(key).split(' ')[0] : monthLabel(key);
+      ml.title = h < 56 ? monthLabel(key) : '';
+    }
+    if (m !== 'intensity') {
+      var ts = totStops(sc), tvals = days.map(function (d) { return rowOf(p, d).total[m]; });
+      p.tot = new Chart(row.querySelector('.hm-tot canvas').getContext('2d'), {
+        type: 'bar', plugins: [weekendRows(days, 'beforeDatasetsDraw')],
+        data: {labels: days, datasets: [{data: tvals, barPercentage: 0.8, categoryPercentage: 1,
+          backgroundColor: tvals.map(function (v) { return paint(ts, sc.tlo, sc.thi, v); })}]},
+        options: {
+          indexAxis: 'y', animation: false, maintainAspectRatio: false, responsive: true, devicePixelRatio: dpr,
+          events: [], plugins: {legend: {display: false}, tooltip: {enabled: false}},
+          scales: {
+            // the range every month shares, so a bar compares across months (it was each
+            // month's own); its scale floats in the header (drawAxis)
+            // On, but drawing nothing and taking no room: its ticks and pixel mapping are what the
+            // header's labels are placed from.
+            x: {position: 'top', min: Math.min(0, sc.tlo), max: Math.max(0, sc.thi), grid: {display: false},
+                border: {display: false}, afterFit: function (s) { s.height = 0; },
+                ticks: {display: false, maxTicksLimit: TOT_W < 100 ? 2 : 4}},
+            y: {type: 'category', labels: days, offset: true, reverse: false, display: false}
+          }
+        }
+      });
+    }
+    if (p.tot) {
+      // Align the totals' rows with the grid's, measured rather than assumed: the grid's
+      // day labels make Chart.js pad its chart area (8 px at the bottom, measured) and the
+      // totals chart has no labels to do the same.
+      var ga = p.chart.chartArea, ta = p.tot.chartArea;
+      var pb = Math.max(0, ta.bottom - ga.bottom), pt = Math.max(0, ga.top - ta.top);
+      if (pb || pt) { p.tot.options.layout = {padding: {top: pt, bottom: pb}}; p.tot.update('none'); }
+    }
+    p.days = days; p.xs = xs; p.drawn = true;
+    attachHover(p);
+    drawAxis(p);
+    if (state.sel) markSelection(state.sel.from, state.sel.to);   // a month drawn inside it
+  }
+
+  // ── the floating axis: the time labels over the grid, the totals' scale over the totals ──
+  // One header under the metric bar, sticky as it is, so the axis stays in view whatever month is
+  // on screen (the user, 17 Oct 2026). Placed from a drawn month's own chart geometry — every
+  // month draws to the same — and kept in step with a row scrolled sideways (narrow screens).
+  function drawAxis(p) {
+    var ax = state.root && state.root.querySelector('.hm-axis');
+    if (!ax || !p || !p.chart) return;
+    var bar = state.root.querySelector('.hm-bar');
+    ax.style.top = (bar ? bar.offsetHeight : 0) + 'px';
+    var inner = ax.querySelector('.hm-axis-in'), base = ax.getBoundingClientRect().left;
+    var ga = p.chart.chartArea, gl = p.chart.canvas.getBoundingClientRect().left - base;
+    var n = p.xs.length, cw = ga.width / n, cs = cellSize();
+    var every = cs >= 18 ? 1 : cs >= 10 ? 2 : 4;           // v4 labelled every slot at 20 px
+    var html = '';
+    for (var i = 0; i < n; i += every) {
+      html += '<span class="hm-ax-t" style="left:' + (gl + ga.left + (i + 0.5) * cw).toFixed(1) + 'px">' +
+              p.xs[i] + '</span>';
+    }
+    if (p.tot) {
+      var tx = p.tot.scales.x, tl = p.tot.canvas.getBoundingClientRect().left - base, ta = p.tot.chartArea;
+      html += '<span class="hm-ax-title" style="left:' + (tl + ta.left + ta.width / 2).toFixed(1) + 'px">' +
+              METRICS[state.metric].tot + '</span>';
+      (tx.ticks || []).forEach(function (t) {
+        html += '<span class="hm-ax-v" style="left:' + (tl + tx.getPixelForValue(t.value)).toFixed(1) + 'px">' +
+                (t.label === undefined ? t.value : t.label) + '</span>';
+      });
+    }
+    inner.innerHTML = html;
+    ax.style.color = axisC();
+  }
+  // a row scrolled sideways takes the others, and the axis, with it
+  function syncRows(src) {
+    if (state.syncing) return;
+    state.syncing = true;
+    Object.keys(state.panels).forEach(function (k) {
+      var r = state.panels[k].el.querySelector('.hm-row'); if (r !== src) r.scrollLeft = src.scrollLeft;
+    });
+    state.syncing = false;
+    var p = state.panels[state.keys.filter(function (k) { return state.panels[k].drawn; })[0]];
+    if (p) drawAxis(p);
+  }
+  function release(key, keepSize) {
+    var p = state.panels[key]; if (!p) return;
+    if (p.chart) { p.chart.destroy(); p.chart = null; }
+    if (p.tot) { p.tot.destroy(); p.tot = null; }
+    p.drawn = false;
+    var row = p.el.querySelector('.hm-row');
+    if (!keepSize) {                                            // far off screen: free the canvas
+      var hgt = row.offsetHeight; row.innerHTML = ''; row.style.height = hgt + 'px';
+    } else { row.style.height = ''; }
+  }
+  function redrawAll(rescale) {
+    if (rescale) state.scale = computeScale();
+    state.keys.forEach(function (k) { if (state.panels[k] && state.panels[k].drawn) drawMonth(k); });
+    var t = state.root && state.root.querySelector('.hm-title');
+    if (t) { t.textContent = METRICS[state.metric].title; state.root.querySelector('.hm-sub').innerHTML = keyHtml(state.metric); }
+  }
+
+  // ── hover: arithmetic on the grid, an HTML tooltip — the canvas is never repainted ──
+  function tipEl() {
+    var t = document.getElementById('hm-tip');
+    if (!t) { t = document.createElement('div'); t.id = 'hm-tip'; t.className = 'hm-tip'; document.body.appendChild(t); }
+    return t;
+  }
+  function attachHover(p) {
+    var row = p.el.querySelector('.hm-row');
+    if (row._hmHover) return; row._hmHover = true;
+    function show(ev) {
+      // no grid: the month is being reloaded (an epoch change dropped it) — nothing to say yet
+      var tip = tipEl(); if (!p.drawn || !p.chart || !p.grid) { tip.style.display = 'none'; return; }
+      var pt = ev.touches ? ev.touches[0] : ev, mm = METRICS[state.metric], v, lab, day;
+      var hitTot = !!(p.tot && p.tot.canvas === ev.target);
+      var ch = hitTot ? p.tot : p.chart, a = ch.chartArea, r = ch.canvas.getBoundingClientRect();
+      var x = pt.clientX - r.left, y = pt.clientY - r.top;
+      if (!a || x < a.left || x > a.right || y < a.top || y > a.bottom) { tip.style.display = 'none'; return; }
+      day = p.days[Math.floor((y - a.top) / (a.height / p.days.length))];
+      if (!day) { tip.style.display = 'none'; return; }
+      if (p.folds && p.folds[day]) {
+        tip.innerHTML = foldText(p.folds[day]); tip.style.display = 'block';
+        tip.style.left = (pt.clientX + 12) + 'px'; tip.style.top = (pt.clientY + 12) + 'px'; return;
+      }
+      if (hitTot) { v = p.grid[day].total[state.metric]; lab = mm.tot; }
+      else { var ci = Math.floor((x - a.left) / (a.width / p.xs.length));
+             v = metricOf(p.grid[day].slots[ci], state.metric); lab = p.xs[ci] + '–' + slotLabel(ci + 1); }
+      var hc = hitTot ? null : p.grid[day].slots[ci];
+      var txt = (!hitTot && (v === 'missing' || isMissing(hc))) ? missingText(hc)
+              : (v === null || v === undefined) ? 'no data'
+              : isCat(state.metric) ? (hitTot ? v + ' half-hour' + (v === 1 ? '' : 's') + ' to look at'
+                  : CAT_TEXT[state.metric][v] + (((p.grid[day].slots[ci] || {})[state.metric + 'Flags'] || [])
+                      .filter(function (x) { return FLAG_TEXT[x]; })
+                      .map(function (x) { return '<br>\u26a0 ' + FLAG_TEXT[x]; }).join('')))
+              : (+v).toFixed(mm.dp) + mm.unit;
+      var inSel = state.sel && !hitTot && hc && hc.starts && hc.starts.some(function (x) {
+        return x >= state.sel.from && x < state.sel.to; });
+      tip.innerHTML = '<b>' + day + '</b> ' + lab + '<br>' + txt +
+        (inSel ? '<br><i>Right-click (long-press) the selection for its actions</i>' : '');
+      tip.style.display = 'block'; tip.style.left = (pt.clientX + 12) + 'px'; tip.style.top = (pt.clientY + 12) + 'px';
+    }
+    row.addEventListener('mousemove', show);
+    row.addEventListener('touchstart', show, {passive: true});
+    row.addEventListener('mouseleave', function () { tipEl().style.display = 'none'; });
+    // A click (or tap) on a cell opens that half-hour's settlement detail (design §4). A drag
+    // selects a span — cells to cells, or days down the day column, across months — and a
+    // shift-click extends one from the last click; the selection stays outlined, and a right
+    // click (a long press on touch) inside it offers its actions (22 Oct 2026, the user: the menu
+    // had opened on the release). A right click elsewhere offers the cell's; the day column
+    // offers its day (§5.1). Escape lets the selection go.
+    row.addEventListener('mousedown', function (ev) {
+      if (ev.button !== 0 || !isData()) return;   // a span is for the tools: data mode only
+      var h = hitCell(p, ev); if (!h) return;
+      ev.preventDefault();                         // no text selection while dragging
+      if (ev.shiftKey && state.anchor) return;     // the click extends the selection
+      state.drag = {p: p, h: h, span: null};
+    });
+    row.addEventListener('click', function (ev) {
+      var h = hitCell(p, ev); if (!h) return;
+      tipEl().style.display = 'none';
+      if (state.dragEnded) return;                 // the drag's own release: the selection stays
+      if (ev.shiftKey && state.anchor && isData()) {
+        var sp = dragSpan(state.anchor, {p: p, h: h});
+        if (sp) { state.sel = sp; markSelection(sp.from, sp.to); }
+        return;
+      }
+      state.sel = null; state.anchor = {p: p, h: h};
+      if (h.fold) { expandFold(h.fold); return; }
+      if (h.tot) { dayBarPick(p, h.day, ev); return; }
+      markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
+      if (isMissing(p.grid[h.day].slots[h.ci])) { openMissing(p.grid[h.day].slots[h.ci], h.day + ' ' + h.label); return; }
+      openPanel(h.starts, h.day + ' ' + h.label);
+    });
+    row.addEventListener('contextmenu', function (ev) {
+      var h = hitCell(p, ev); if (!h) return;
+      ev.preventDefault(); tipEl().style.display = 'none';
+      if (isData() && inSelection(p, h)) { selectionMenu(ev); return; }
+      state.sel = null;                            // a right click elsewhere: that cell, that day
+      if (h.fold) { expandFold(h.fold); return; }
+      if (h.tot) { dayBarPick(p, h.day, ev); return; }
+      markSelection(h.starts[0], plus30(h.starts[h.starts.length - 1]));
+      var hc = p.grid[h.day].slots[h.ci];
+      var items = [{text: 'Show details', run: function () {
+        if (isMissing(hc)) openMissing(hc, h.day + ' ' + h.label); else openPanel(h.starts, h.day + ' ' + h.label); }}];
+      if (!isData()) {                             // chart mode: read-only, the tools a click away
+        items.push({text: 'Open ' + h.day + ' in Data Management', run: function () { openInDM(h.day); }});
+        showMenu(ev, items, h.day + ' ' + h.label);
+        return;
+      }
+      if (state.canRefetch) {
+        items.push({text: 'Re-fetch this half-hour from Octopus\u2026', run: function () {
+          openRefetch(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label); }});
+        var dr = dayRange(p, h.day);
+        if (dr) items.push({text: 'Re-fetch ' + h.day + ' from Octopus\u2026', run: function () {
+          markSelection(dr[0], dr[1]); openRefetch(dr[0], dr[1], h.day); }});
+      }
+      items = items.concat(toolItems(h.starts[0], plus30(h.starts[h.starts.length - 1]), h.day + ' ' + h.label));
+      showMenu(ev, items, h.day + ' ' + h.label);
+    });
+  }
+  // The tools on a span, after its re-fetch: fill a gap, fill the missing export, delete the
+  // imported export, delete, the support file — one list for a cell, a day and a selection.
+  function toolItems(from, to, label) {
+    var items = [], f = fillItem(from, to, label); if (f) items.push(f);
+    items = items.concat(exportFillItems(from, to));
+    var x = exportDeleteItem(from, to); if (x) items.push(x);
+    items.push(deleteItem(from, to, label));
+    var sf = supportItem(from, to, label); if (sf) items.push(sf);
+    return items;
+  }
+  function inSelection(p, h) {
+    var s = state.sel; if (!s) return false;
+    var st = h.tot ? (dayRange(p, h.day) || []) : h.starts;
+    return !!st && st.some(function (x) { return x >= s.from && x < s.to; });
+  }
+  function selectionMenu(ev) {
+    var sp = state.sel;
+    var items = state.canRefetch ? [{text: 'Re-fetch ' + sp.label + ' from Octopus\u2026', run: function () {
+      openRefetch(sp.from, sp.to, sp.label); }}] : [];
+    showMenu(ev, items.concat(toolItems(sp.from, sp.to, sp.label)), sp.label);
+  }
+
+  // the cell (or day bar) under a pointer event: {key, day, ci, label, starts, tot}
+  function hitCell(p, ev) {
+    if (!p.drawn || !p.chart || !p.grid) return null;
+    var tot = !!(p.tot && p.tot.canvas === ev.target), ch = tot ? p.tot : p.chart;
+    var a = ch.chartArea, r = ch.canvas.getBoundingClientRect();
+    var x = ev.clientX - r.left, y = ev.clientY - r.top;
+    if (!a || x < a.left || x > a.right || y < a.top || y > a.bottom) return null;
+    var day = p.days[Math.floor((y - a.top) / (a.height / p.days.length))];
+    if (!day) return null;
+    var f = p.folds && p.folds[day];
+    if (f) return f.starts.length ? {key: p.el.dataset.key, day: day, fold: f, starts: f.starts,
+                                     label: foldLabel(f), tot: false} : null;
+    if (tot) return {key: p.el.dataset.key, day: day, tot: true};
+    var ci = Math.floor((x - a.left) / (a.width / p.xs.length)), c = p.grid[day].slots[ci];
+    if (!c || !c.starts || !c.starts.length) return null;
+    return {key: p.el.dataset.key, day: day, ci: ci, label: p.xs[ci] + '\u2013' + slotLabel(ci + 1),
+            starts: c.starts.slice().sort()};
+  }
+  function plus30(utcIso) {
+    return new Date(Date.parse(utcIso + 'Z') + 1800e3).toISOString().slice(0, 19);
+  }
+  // a local day's [first half-hour, end of its last) in UTC, from the half-hours the grid holds
+  function dayRange(p, day) {
+    var all = [];
+    var g = rowOf(p, day);
+    if (g && g.starts) all = g.starts.slice();                     // a fold: its days' half-hours
+    else (g ? g.slots : []).forEach(function (c) { if (c && c.starts) all = all.concat(c.starts); });
+    if (!all.length) return null;
+    all.sort();
+    return [all[0], plus30(all[all.length - 1])];
+  }
+  // The day column: a tap offers that day, and only that day — a span of days is a drag across
+  // the cells (decided on the Pi, 14 Oct 2026: a first version kept a picked day for a second
+  // tap to close a range, and a tap on 10 Oct quietly closed one from 10 Aug).
+  function dayBarPick(p, day, ev) {
+    var dr = dayRange(p, day); if (!dr) return;
+    if (!isData()) {
+      showMenu(ev, [{text: 'Open ' + day + ' in Data Management', run: function () { openInDM(day); }}], day);
+      return;
+    }
+    var items = state.canRefetch ? [{text: 'Re-fetch ' + day + ' from Octopus\u2026', run: function () {
+      openRefetch(dr[0], dr[1], day); }}] : [];
+    items = items.concat(toolItems(dr[0], dr[1], day));
+    markSelection(dr[0], dr[1]);
+    showMenu(ev, items, day);
+  }
+  // What a click, drag, day or range refers to, outlined on the grid while its menu or dialog is
+  // open — the cells whose half-hour falls in [from, to), one outline per run of a day's cells.
+  // The drag, at document level so it can cross months (each month is its own chart) and run
+  // down the day column (PR 5 on the Pi, 14 Oct 2026: it did neither). It starts on a cell or a
+  // day bar; from a day bar both ends are whole days.
+  function hitAt(ev) {
+    var el = document.elementFromPoint(ev.clientX, ev.clientY);
+    var keys = Object.keys(state.panels);
+    for (var i = 0; i < keys.length; i++) {
+      var p = state.panels[keys[i]];
+      if (el && p.el && p.el.contains(el)) {
+        var h = hitCell(p, {target: el, clientX: ev.clientX, clientY: ev.clientY});
+        return h ? {p: p, h: h} : null;
+      }
+    }
+    return null;
+  }
+  function dragEnd(at, whole) {                    // [from, to) and a label for one end
+    if (whole) {
+      var dr = dayRange(at.p, at.h.day);
+      return dr ? {from: dr[0], to: dr[1], label: at.h.fold ? at.h.label : at.h.day} : null;
+    }
+    var st = at.h.starts;
+    return {from: st[0], to: plus30(st[st.length - 1]), label: at.h.day + ' ' + at.h.label};
+  }
+  // Within one row a drag runs cell to cell; once it leaves its row, every day it crosses is
+  // whole, its first row too (21 Oct 2026, the user: rows run newest first, so a span of time
+  // took the origin row from midnight up to the cell — the wrong way from where it began).
+  function dragSpan(d, at) {
+    var whole = !!(d.h.tot || at.h.tot || d.h.fold || at.h.fold || d.p !== at.p || d.h.day !== at.h.day);
+    var a = dragEnd(d, whole), b = dragEnd(at, whole);
+    if (!a || !b || (a.from === b.from && a.to === b.to)) return null;   // not moved off its start
+    if (b.from < a.from) { var t = a; a = b; b = t; }
+    return {from: a.from, to: b.to, label: a.label + ' \u2192 ' + b.label};
+  }
+  function dragTo(x, y) {
+    var d = state.drag; if (!d) return;
+    var at = hitAt({clientX: x, clientY: y}); if (!at) return;   // between months: keep what is outlined
+    var span = dragSpan(d, at), id = span ? span.from + span.to : '';
+    if (id === d.id) return;
+    d.id = id; d.span = span;
+    if (span) markSelection(span.from, span.to); else clearSelection();
+  }
+  // Near the window's top or bottom edge a drag scrolls the page, faster the further in, and
+  // keeps selecting under the pointer (22 Oct 2026, the user: it couldn't reach off the page).
+  var EDGE = 48, autoS = {raf: 0, x: 0, y: 0};
+  function viewEdges() {
+    var box = scrollParent(state.root), doc = box === document.scrollingElement || box === document.body;
+    var r = doc ? {top: 0, bottom: window.innerHeight} : box.getBoundingClientRect(), top = r.top;
+    ['.hm-bar', '.hm-axis'].forEach(function (q) {           // under both sticky headers
+      var e = state.root.querySelector(q); if (e) top = Math.max(top, e.getBoundingClientRect().bottom); });
+    return {box: box, doc: doc, top: top, bottom: Math.min(r.bottom, window.innerHeight)};
+  }
+  function autoScroll() {
+    autoS.raf = 0; if (!state.drag) return;
+    var e = viewEdges(), v = 0;
+    if (autoS.y < e.top + EDGE) v = -(e.top + EDGE - autoS.y);
+    else if (autoS.y > e.bottom - EDGE) v = autoS.y - (e.bottom - EDGE);
+    if (!v) return;
+    v = Math.max(-24, Math.min(24, Math.round(v / 3)));     // up to ~1,400 px a second
+    if (e.doc) window.scrollBy(0, v); else e.box.scrollTop += v;
+    dragTo(autoS.x, Math.max(e.top + 2, Math.min(e.bottom - 2, autoS.y)));
+    autoS.raf = requestAnimationFrame(autoScroll);
+  }
+  document.addEventListener('mousemove', function (ev) {
+    var d = state.drag; if (!d) return;
+    if (!(ev.buttons & 1)) { state.drag = null; return; }
+    autoS.x = ev.clientX; autoS.y = ev.clientY;
+    dragTo(ev.clientX, ev.clientY);
+    if (!autoS.raf) autoS.raf = requestAnimationFrame(autoScroll);
+  });
+  document.addEventListener('mouseup', function () {
+    var d = state.drag; state.drag = null;
+    if (autoS.raf) { cancelAnimationFrame(autoS.raf); autoS.raf = 0; }
+    if (!d || !d.span) return;                     // a tap: the click handles it
+    state.dragEnded = true;                        // the click that follows is this release
+    setTimeout(function () { state.dragEnded = false; }, 0);
+    state.sel = d.span; state.anchor = {p: d.p, h: d.h};    // outlined, no menu: right-click it
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key !== 'Escape' || state.dialogOpen) return;
+    var m = document.getElementById('hm-menu');
+    if (m && m.style.display !== 'none') return;   // the menu goes first
+    if (state.sel) { state.sel = null; clearSelection(); }
+  });
+  function clearSelection() {
+    document.querySelectorAll('.hm-sel').forEach(function (x) { x.remove(); });
+  }
+  function markSelection(from, to) {
+    clearSelection();
+    Object.keys(state.panels).forEach(function (k) {
+      var p = state.panels[k]; if (!p.drawn || !p.chart || !p.grid || !p.days) return;
+      var a = p.chart.chartArea, host = p.el.querySelector('.hm-grid'); if (!a || !host) return;
+      var cw = a.width / p.xs.length, rh = a.height / p.days.length;
+      p.days.forEach(function (day, ri) {
+        var run = null, slots = rowOf(p, day) ? rowOf(p, day).slots : [];
+        var f = p.folds && p.folds[day];
+        if (f) {                                   // a fold inside the selection: its whole row
+          if (f.starts.some(function (x) { return x >= from && x < to; })) { run = [0, p.xs.length - 1]; }
+          slots = [];
+        }
+        function flush() {
+          if (!run) return;
+          var d = document.createElement('div'); d.className = 'hm-sel';
+          d.style.left = (a.left + run[0] * cw - 1) + 'px'; d.style.top = (a.top + ri * rh - 1) + 'px';
+          d.style.width = ((run[1] - run[0] + 1) * cw + 1) + 'px'; d.style.height = (rh + 1) + 'px';
+          host.appendChild(d); run = null;
+        }
+        for (var ci = 0; ci < slots.length; ci++) {
+          var c = slots[ci];
+          var inside = c && c.starts && c.starts.some(function (x) { return x >= from && x < to; });
+          if (inside) { if (run && run[1] === ci - 1) run[1] = ci; else { flush(); run = [ci, ci]; } }
+          else flush();
+        }
+        flush();
+      });
+    });
+  }
+  function showMenu(ev, items, title) {
+    var m = document.getElementById('hm-menu');
+    if (!m) {
+      m = document.createElement('div'); m.id = 'hm-menu'; m.className = 'hm-menu';
+      var dismiss = function () {
+        if (m.style.display === 'none') return;
+        m.style.display = 'none';
+        if (state.sel) markSelection(state.sel.from, state.sel.to);   // the selection stays
+        else if (!state.dialogOpen) clearSelection();
+      };
+      document.addEventListener('click', function (e) {
+        if (!m.contains(e.target) && !state.dragEnded) dismiss(); }, true);
+      document.addEventListener('keydown', function (e) {
+        if (e.key !== 'Escape') return;
+        dismiss();
+      });
+      document.body.appendChild(m);
+    }
+    m.innerHTML = '<div class="hm-menu-title">' + esc(title) + '</div>';
+    items.forEach(function (it) {
+      var b = document.createElement(it.run ? 'button' : 'div');
+      b.className = it.run ? 'hm-menu-item' : 'hm-menu-hint'; b.textContent = it.text;
+      if (it.run) b.onclick = function (e) { e.stopPropagation(); m.style.display = 'none'; state.sel = null; it.run(); };
+      m.appendChild(b);
+    });
+    m.style.display = 'block';
+    var w = m.offsetWidth, h = m.offsetHeight;
+    m.style.left = Math.max(8, Math.min(ev.clientX, window.innerWidth - w - 8)) + 'px';
+    m.style.top = Math.max(8, Math.min(ev.clientY, window.innerHeight - h - 8)) + 'px';
+  }
+
+  // ── BL-86's re-fetch (design §5.2): preview, show what differs, apply on confirm ──
+  // The engine holds one preview of at most 31 days, so a longer range runs a chunk at a time:
+  // a chunk with nothing different moves straight on; one that differs waits for Apply / Skip /
+  // Stop. Nothing is written without a confirm.
+  var REFETCH_DAYS = 31;
+  function postJSON(url, body) {
+    return fetch(apiUrl(url), {method: 'POST', headers: {'Content-Type': 'application/json'},
+                               body: JSON.stringify(body)}).then(function (r) {
+      return r.json().then(function (j) { if (!r.ok && !j.error) j.error = 'HTTP ' + r.status; return j; });
+    });
+  }
+  function pollRefetch(onPhase) {
+    return new Promise(function (ok, bad) {
+      (function tick() {
+        fetchJSON('/api/settlement/refetch/status').then(function (s) {
+          if (s.status === 'running') { onPhase(s.phase || 'working'); setTimeout(tick, 1500); }
+          else if (s.status === 'error') bad(new Error(s.error || 'the re-fetch failed'));
+          else ok(s);
+        }, function () { setTimeout(tick, 3000); });
+      })();
+    });
+  }
+  function refetchChunks(from, to) {
+    var out = [], a = Date.parse(from + 'Z'), end = Date.parse(to + 'Z'), step = REFETCH_DAYS * 86400e3;
+    while (a < end) { var b = Math.min(end, a + step);
+      out.push([new Date(a).toISOString().slice(0, 19), new Date(b).toISOString().slice(0, 19)]); a = b; }
+    return out;
+  }
+  function diffTable(rows) {
+    var head = '<tr><th>half-hour</th><th>kWh</th><th>bill</th><th>EV share</th></tr>';
+    var body = rows.slice(0, 50).map(function (r) {
+      var k = r.kwh ? (r.kwh.stored === null ? '—' : (+r.kwh.stored).toFixed(3)) + ' \u2192 ' + (+r.kwh.octopus).toFixed(3) : '';
+      if (r.export) k += (k ? '<br>' : '') + 'export ' + (r.export.stored === null ? '—' : (+r.export.stored).toFixed(3)) +
+                         ' \u2192 ' + (+r.export.octopus).toFixed(3);
+      // pence below 4 dp: show 6, so a real difference never reads "£0.0003 → £0.0003"
+      var dp = r.bill && r.bill.stored !== null && (+r.bill.stored).toFixed(4) === (+r.bill.octopus).toFixed(4) ? 6 : 4;
+      var g = function (v) { return v === null || v === undefined ? '—' : '£' + (+v).toFixed(dp); };
+      var b = r.bill ? g(r.bill.stored) + (r.bill.corrected ? ' <span class="hm-note2">(your correction)</span>'
+                       : r.bill.unapplied ? ' <span class="hm-note2">(stored \u2014 the bill not applied)</span>'
+                       : r.bill.stored_is_bill ? '' : ' <span class="hm-note2">(EMT\u2019s cost)</span>') +
+                       ' \u2192 ' + g(r.bill.octopus) : '';
+      if (r.bill && r.bill.devices) b += ' <span class="hm-note2">(the devices cost more than the meter \u2014 ' +
+                                      'priced again)</span>';
+      // imported history keeps its own kWh: the difference is shown, not written
+      if ((r.kwh && r.kwh.imported) || (r.export && r.export.imported))
+        k += ' <span class="hm-note2">imported \u2014 kept</span>';
+      // the EV share only where it moves — an unchanged split is not a difference to read
+      // ... or where the bill's split replaces EMT's own, which is labelled as EMT's
+      var evMoved = r.bill && r.bill.octopus_ev !== null && r.bill.octopus_ev !== undefined &&
+        (r.bill.stored_ev === null || r.bill.stored_ev_is_bill === false ||
+         Math.abs(r.bill.stored_ev - r.bill.octopus_ev) > 0.0005);
+      var e = evMoved
+        ? (r.bill.stored_ev === null ? '—' : (+r.bill.stored_ev).toFixed(3)) +
+          (r.bill.stored_ev_is_bill === false ? ' <span class="hm-note2">(EMT\u2019s split)</span>' : '') +
+          ' \u2192 ' + (+r.bill.octopus_ev).toFixed(3)
+          + (r.bill.held ? ' <span class="hm-wait">held</span>' : '') : (r.bill && r.bill.held ? '<span class="hm-wait">held</span>' : '');
+      return '<tr><td>' + esc(localTime(r.start)) + '</td><td>' + k + '</td><td>' + b + '</td><td>' + e + '</td></tr>';
+    }).join('');
+    return '<table class="hm-detail hm-diff">' + head + body + '</table>' +
+           (rows.length > 50 ? '<div class="hm-note2">and ' + (rows.length - 50) + ' more</div>' : '');
+  }
+  function openRefetch(from, to, label) {
+    state.dialogOpen = true; markSelection(from, to);
+    var el = panelEl(), chunks = refetchChunks(from, to), i = 0,
+        totals = {kwh: 0, export: 0, bill: 0, held: 0, not_settled: 0, corrections: 0}, noBill = 0;
+    function box(inner, buttons) {
+      el.innerHTML = '<div class="hm-panel-box" role="dialog" aria-label="Re-fetch from Octopus">' +
+        '<div class="hm-panel-head"><b>Re-fetch from Octopus \u2014 ' + esc(label) +
+        ' <span class="hm-note2">(' + esc(localTime(from)) + ' \u2192 ' + esc(localTime(to)) + ')</span></b>' +
+        '<button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' + inner +
+        '<div class="hm-actions">' + (buttons || '') + '</div></div>';
+      el.style.display = 'flex';
+    }
+    function part() { return chunks.length > 1 ? ' (part ' + (i + 1) + ' of ' + chunks.length + ')' : ''; }
+    function finish(msg) {
+      box('<p>' + msg + '</p><p class="hm-note2">Applied: ' + totals.kwh + ' kWh, ' + totals.export + ' export, ' +
+          totals.bill + ' bill(s); held ' + totals.held + '.' +
+          (totals.corrections ? ' ' + totals.corrections + ' of the bills replaced your correction.' : '') +
+          (totals.not_settled ? ' <span class="hm-wait">' + totals.not_settled + ' bill(s) stored but not re-settled ' +
+           '\u2014 see the log.</span>' : '') + '</p>', '<button class="hm-btn" data-close="1">Close</button>');
+      if (totals.kwh || totals.export || totals.bill || totals.not_settled) reloadRange(from, to);
+    }
+    function next() {
+      // "matches" only where Octopus answered for every half-hour asked (PR 5 on the Pi)
+      if (i >= chunks.length) {
+        finish(noBill ? 'Done \u2014 but Octopus returned no bill for ' + noBill + ' half-hour' +
+                        (noBill === 1 ? '' : 's') + '; ' + (noBill === 1 ? 'it keeps' : 'they keep') +
+                        ' EMT\u2019s kWh \u00d7 rate. Try again later.'
+                      : 'Done \u2014 the range now matches Octopus.');
+        return;
+      }
+      var c = chunks[i];
+      box('<p>Asking Octopus' + part() + '\u2026 nothing is changed yet.</p><p class="hm-note2 hm-phase"></p>');
+      postJSON('/api/settlement/refetch/preview', {from: c[0], to: c[1]}).then(function (r) {
+        if (!r.ok) throw new Error(r.error || 'the preview did not start');
+        return pollRefetch(function (ph) { var x = el.querySelector('.hm-phase'); if (x) x.textContent = ph; });
+      }).then(function (s) {
+        var sm = s.summary || {};
+        noBill += sm.no_bill || 0;
+        if (!sm.differ) { i++; next(); return; }                    // nothing different: move on
+        box('<p>' + sm.differ + ' of ' + sm.checked + ' half-hours differ from what EMT holds' + part() + '.' +
+            (sm.no_bill ? ' Octopus returned no bill for ' + sm.no_bill + '.' : '') +
+            (sm.held ? ' ' + sm.held + ' would be held: Octopus\u2019s bill has no EV where your car charged.' : '') +
+            '</p>' + diffTable(s.rows || []) +
+            '<p class="hm-note2">Apply writes only these, after a safety backup. ' +
+            (sm.corrected ? '<b>' + sm.corrected + ' of them replace' + (sm.corrected === 1 ? 's' : '') +
+             ' your own correction with Octopus\u2019s bill</b> \u2014 a correction cannot be put back. ' : '') +
+            (sm.devices ? sm.devices + ' price' + (sm.devices === 1 ? 's its' : ' their') +
+             ' devices again, on their share of the meter\u2019s kWh. ' : '') +
+            'Device readings are not touched.</p>',
+            '<button class="hm-btn hm-primary" data-act="apply">Apply</button>' +
+            (chunks.length > 1 ? '<button class="hm-btn" data-act="skip">Skip</button>' : '') +
+            '<button class="hm-btn" data-act="stop">' + (chunks.length > 1 ? 'Stop' : 'Cancel') + '</button>');
+        el.querySelector('[data-act="apply"]').onclick = function () { apply(s.token); };
+        var sk = el.querySelector('[data-act="skip"]'); if (sk) sk.onclick = function () { i++; next(); };
+        el.querySelector('[data-act="stop"]').onclick = function () { finish('Stopped.'); };
+      }).catch(fail);
+    }
+    function apply(token) {
+      box('<p>Applying' + part() + '\u2026</p><p class="hm-note2 hm-phase"></p>');
+      postJSON('/api/settlement/refetch/apply', {token: token}).then(function (r) {
+        if (!r.ok) throw new Error(r.error || 'the apply did not start');
+        return pollRefetch(function (ph) { var x = el.querySelector('.hm-phase'); if (x) x.textContent = ph; });
+      }).then(function (s) {
+        var a = s.applied || {};
+        ['kwh', 'export', 'bill', 'held', 'not_settled', 'corrections'].forEach(function (k) { totals[k] += a[k] || 0; });
+        i++; next();
+      }).catch(fail);
+    }
+    function fail(e) {
+      box('<p class="hm-bad">' + esc(e.message) + '</p>', '<button class="hm-btn" data-close="1">Close</button>');
+    }
+    next();
+  }
+  // after an apply: drop and redraw the months the range touched
+  function reloadRange(from, to) {
+    changed();
+    Object.keys(state.panels).forEach(function (k) {
+      var lo = k + '-01', hi = k + '-31';
+      if (from.slice(0, 10) <= hi && to.slice(0, 10) >= lo) {
+        delete state.months[k]; state.panels[k].grid = null;
+        if (state.panels[k].drawn) loadMonth(k);
+      }
+    });
+  }
+
+  // ── gap fill (gap fill design §1–§4): the selection's missing half-hours, from Octopus ──
+  // The missing half-hours in [from, to) of every loaded month, as contiguous runs [from, to) —
+  // the cells markMissing hatched, not the whole selection: asking Octopus for half-hours EMT
+  // already holds spends the rate limit for nothing (§1). The server counts them again.
+  function missingRuns(from, to) {
+    var all = {};
+    Object.keys(state.panels).forEach(function (k) {
+      var p = state.panels[k], g = p.grid || (state.months[k] ? (p.grid = monthGrid(k)) : null);
+      if (!g) return;
+      Object.keys(g).forEach(function (d) {
+        g[d].slots.forEach(function (c) {
+          (c && c.gaps || []).forEach(function (x) { if (x >= from && x < to) all[x] = 1; });
+        });
+      });
+    });
+    var runs = [];
+    Object.keys(all).sort().forEach(function (x) {
+      var r = runs[runs.length - 1];
+      if (r && r[1] === x) r[1] = plus30(x); else runs.push([x, plus30(x)]);
+    });
+    return runs;
+  }
+  function runsCount(runs) {
+    return runs.reduce(function (n, r) { return n + Math.round((Date.parse(r[1] + 'Z') - Date.parse(r[0] + 'Z')) / 1800e3); }, 0);
+  }
+  function hh(n) { return n + ' half-hour' + (n === 1 ? '' : 's'); }
+  // the menu's "Fill this gap…" — where the selection holds a missing half-hour. Any half-hour
+  // selected in a gap means the whole gap (decided 18 Oct 2026, the user): the server finds its
+  // bounds. No supplier API needed — a gap fills from a CSV or the PDF bills too.
+  function fillItem(from, to, label) {
+    var runs = missingRuns(from, to);
+    if (!runs.length) return null;
+    return {n: runsCount(runs), text: runs.length === 1 ? 'Fill this gap…' : 'Fill these ' + runs.length + ' gaps…',
+            run: function () { openGapFill(runs.map(function (r) { return r[0]; }), label); }};
+  }
+  // The half-hours a selection holds whose export is missing (`no_data`: imported, the meter
+  // exports, no export figure) — first to last, and how many. 22 Oct 2026, the user: a selection
+  // over red-hatched export offered no way to fill it from a CSV or the PDF bills.
+  function exportGapSpan(from, to) {
+    var lo = null, hi = null, n = 0;
+    Object.keys(state.months).forEach(function (k) {
+      var s = (state.months[k] && state.months[k].settle) || {};
+      Object.keys(s).forEach(function (x) {
+        if (x < from || x >= to || settleValue('export', s[x]) !== 'no_data') return;
+        n++; if (lo === null || x < lo) lo = x; if (hi === null || x > hi) hi = x;
+      });
+    });
+    return n ? {from: lo, to: plus30(hi), n: n} : null;
+  }
+  // "Fill the missing export from PDF bills… / from a CSV…": the import page on the span, export
+  // only. Import EMT holds is kept (a CSV fills only an empty channel), so the export lands beside it.
+  function exportFillItems(from, to) {
+    var g = exportGapSpan(from, to); if (!g) return [];
+    var what = 'the missing export (' + hh(g.n) + ')';
+    function open(src) {
+      openEmbedded('/historical-import?embed=1&source=' + src + '&channel=export&gap_from=' +
+        encodeURIComponent(g.from) + '&gap_to=' + encodeURIComponent(g.to),
+        'Fill ' + what + ' — ' + localTime(g.from) + ' → ' + localTime(g.to));
+    }
+    return [{text: 'Fill ' + what + ' from PDF bills\u2026', run: function () { open('bills'); }},
+            {text: 'Fill ' + what + ' from a CSV\u2026', run: function () { open('csv'); }}];
+  }
+  var FILL_GOING = {claimed: 1, running: 1, paused: 1, rate_limited: 1, finalising: 1};
+  var FILL_PHASE = {importing: 'asking Octopus', finalising: 'finishing', recovering_prices: 'pricing the new half-hours'};
+  function gapText(g) {
+    return esc(localTime(g.from)) + ' → ' + esc(localTime(g.to)) + ' · ' + hh(g.missing) +
+           (g.deleted ? ' · ' + g.deleted + ' deleted by you' : '');
+  }
+  function openGapFill(ats, label) {
+    state.dialogOpen = true;
+    var el = panelEl(), gaps = [], from = null, to = null, before = null;
+    function box(inner, buttons) {
+      el.innerHTML = '<div class="hm-panel-box" role="dialog" aria-label="Fill the gap">' +
+        '<div class="hm-panel-head"><b>' + (gaps.length > 1 ? 'Fill ' + gaps.length + ' gaps' : 'Fill the gap') + '</b>' +
+        '<button class="hm-x" data-close="1" aria-label="Close">✕</button></div>' + inner +
+        '<div class="hm-actions">' + (buttons || '') + '</div></div>';
+      el.style.display = 'flex';
+    }
+    var close = '<button class="hm-btn" data-close="1">Close</button>';
+    function fail(e) { box('<p class="hm-bad">' + esc(e.message) + '</p>', close); }
+    function gapList() {
+      return '<ul class="hm-gaps">' + gaps.map(function (g) { return '<li>' + gapText(g) + '</li>'; }).join('') + '</ul>';
+    }
+    box('<p>Finding the gap…</p>');
+    postJSON('/api/gaps/around', {at: ats}).then(function (r) {
+      if (!r.ok) throw new Error(r.error || 'could not find the gap');
+      gaps = r.gaps || [];
+      if (!gaps.length) { box('<p>This is not inside a gap EMT can fill.</p>', close); return; }
+      from = gaps[0].from; to = gaps[gaps.length - 1].to; markSelection(from, to);
+      choose();
+    }).catch(fail);
+    // where the data comes from: three separate choices, each saying what it does
+    function choose() {
+      var fillable = gaps.reduce(function (n, g) { return n + g.fillable; }, 0), one = gaps.length === 1;
+      function card(act, title, what, off) {
+        return '<button class="hm-src" data-src="' + act + '"' + (off ? ' disabled' : '') + '><b>' + title +
+               '</b><span>' + (off || what) + '</span></button>';
+      }
+      var oneOnly = one ? '' : 'One gap at a time — select a single gap to fill it this way.';
+      box(gapList() + '<p class="hm-note2">Where should the data come from?</p><div class="hm-srcs">' +
+          (state.canRefetch ? card('api', 'From Octopus (API)', 'EMT asks Octopus for the missing half-hours. ' +
+                                   hh(fillable) + ' can be filled now.',
+                                   fillable ? '' : 'Nothing here Octopus can fill — too recent, or beyond its two years.') : '') +
+          card('csv', 'From a CSV', 'Download this gap’s pre-filled templates, add your figures, upload them.', oneOnly) +
+          card('bills', 'From Octopus PDF bills', 'EMT reads your bills and builds the CSVs for you.', oneOnly) +
+          '</div>', '<button class="hm-btn" data-close="1">Cancel</button>');
+      el.querySelectorAll('.hm-src').forEach(function (b) {
+        b.onclick = function () {
+          if (b.disabled) return;
+          if (b.dataset.src === 'api') preview(); else openFillHistory(gaps[0], b.dataset.src);
+        };
+      });
+    }
+    function preview() {
+      box(gapList() + '<p>Counting… nothing is changed.</p>');
+      postJSON('/api/gaps/fill/preview', {runs: gaps.map(function (g) { return [g.from, g.to]; })}).then(function (r) {
+        if (!r.ok) throw new Error(r.error || 'the preview failed');
+        before = r;
+        var t = r.total || {}, out = [gapList()];
+        out.push('<p><b>From Octopus (API)</b></p>');
+        if (t.deleted) out.push('<p>' + hh(t.deleted) + ' of it you deleted — filling brings ' +
+                                (t.deleted === 1 ? 'it' : 'them') + ' back.</p>');
+        var left = [];
+        if (t.too_recent) left.push(hh(t.too_recent) + ' too recent: Octopus has not settled ' +
+                                    (t.too_recent === 1 ? 'it' : 'them') + ' yet (under 48 hours)');
+        if (t.too_old) left.push(hh(t.too_old) + ' too old: beyond the two years Octopus keeps');
+        if (left.length) out.push('<p class="hm-note2">Left out: ' + left.map(esc).join('; ') + '.</p>');
+        var sz = Object.keys(r.size || {}).map(function (ch) {
+          var z = r.size[ch]; return esc(ch) + ' ' + hh(z.half_hours) + ' (' + z.chunks + ' request' + (z.chunks === 1 ? '' : 's') + ')';
+        }).join(', ');
+        out.push('<p>Fill ' + hh(t.fillable) + ' — ' + sz + '.</p><p class="hm-note2">Fill writes only half-hours EMT ' +
+                 'has no block for. Their bills follow from Octopus.</p>');
+        box(out.join(''), '<button class="hm-btn" data-act="back">Back</button>' +
+                          '<button class="hm-btn hm-primary" data-act="apply">Fill</button>');
+        el.querySelector('[data-act="back"]').onclick = choose;
+        el.querySelector('[data-act="apply"]').onclick = function () { apply(r.token); };
+      }).catch(fail);
+    }
+    function apply(token) {
+      box('<p>Starting the fill…</p>');
+      postJSON('/api/gaps/fill/apply', {token: token}).then(function (r) {
+        if (!r.ok) throw new Error(r.error || 'the fill did not start');
+        return follow();
+      }).then(result).catch(fail);
+    }
+    // until the job ends; a status from before the fill began (the last run's) is not its end
+    function follow() {
+      var seen = false, polls = 0;
+      return new Promise(function (ok, bad) {
+        (function tick() {
+          fetchJSON('/api/gaps/fill/status').then(function (s) {
+            polls++;
+            if (FILL_GOING[s.status] && s.runs) {
+              seen = true;
+              var done = s.runs.filter(function (x) { return x.status === 'done'; }).length;
+              box('<p>Filling — ' + esc(FILL_PHASE[s.phase] || s.phase || s.status) +
+                  (s.status === 'rate_limited' ? ' (Octopus asked EMT to slow down; it carries on)' : '') +
+                  '…</p><p class="hm-note2">' + done + ' of ' + s.runs.length + ' run' +
+                  (s.runs.length === 1 ? '' : 's') + ' done.</p>',
+                  '<button class="hm-btn" data-act="stop">Stop</button>');
+              el.querySelector('[data-act="stop"]').onclick = function () {
+                postJSON('/api/historical/api-import/control', {action: 'cancel'}); };
+              setTimeout(tick, 2000);
+            } else if (!seen && polls < 10) setTimeout(tick, 1000);
+            else ok(s);
+          }, function () { setTimeout(tick, 3000); });
+        })();
+      });
+    }
+    // what happened: counted again from the store — what is still missing, Octopus had no data for
+    function result(s) {
+      var lifted = (s.runs || []).reduce(function (n, x) { return n + (x.lifted || 0); }, 0);
+      postJSON('/api/gaps/fill/preview', {runs: before.fill_runs}).then(function (r) {
+        var asked = before.total.fillable, still = r.ok ? (r.total || {}).missing || 0 : null;
+        var msg = s.status === 'error' ? '<p class="hm-bad">The fill stopped: ' + esc(s.error || 'an error') + '.</p>'
+                : s.status === 'cancelled' ? '<p>Stopped.</p>' : '<p>Done.</p>';
+        msg += still === null ? '' : '<p>Filled ' + hh(asked - still) + ' of ' + asked + '.' +
+               (still ? ' ' + hh(still) + ' left missing: Octopus had no data for ' + (still === 1 ? 'it' : 'them') +
+                ' (a meter offline, or before the account).' : '') + '</p>';
+        if (lifted) msg += '<p class="hm-note2">Deleted ranges lifted: ' + lifted + '.</p>';
+        box(msg, close);
+        reloadRange(from, to);
+      });
+    }
+  }
+  // The CSV and PDF routes: the Fill History page itself, as a modal over the heatmap, opened on
+  // this gap (decided 18 Oct 2026, the user) — its templates, upload, review and apply, not a
+  // copy of them. Closing it redraws what changed.
+  function openFillHistory(g, source) {
+    openEmbedded('/historical-import?embed=1&source=' + encodeURIComponent(source) +
+      '&gap_from=' + encodeURIComponent(g.from) + '&gap_to=' + encodeURIComponent(g.to),
+      'Fill the gap — ' + gapText(g));
+  }
+  // An EMT page as a modal over the heatmap (`path`, with embed=1), redrawing on close — the gap
+  // fill's CSV and bills routes, and Data Management's Whole history card (§1 (4)).
+  function openEmbedded(path, title, onClose) {
+    panelEl().style.display = 'none';
+    var m = document.createElement('div'); m.className = 'hm-modal';
+    m.innerHTML = '<div class="hm-modal-box" role="dialog" aria-label="' + esc(title) + '">' +
+      '<div class="hm-panel-head"><b>' + esc(title) + '</b>' +
+      '<button class="hm-x" data-close="1" aria-label="Close">✕</button></div>' +
+      '</div>';
+    // built, not written as markup: the Charts page carries no pre-rendered chart frames (C §3a),
+    // and this is not one — it is a whole EMT page
+    var f = document.createElement('iframe'); f.className = 'hm-modal-frame'; f.title = title;
+    m.firstChild.appendChild(f);
+    f.src = apiUrl(path);
+    function shut() {
+      m.remove(); state.dialogOpen = false; clearSelection();
+      document.removeEventListener('keydown', esc1);
+      window.removeEventListener('message', fromFrame);
+      refresh(); changed();
+      if (onClose) onClose();
+    }
+    // the page inside asks to close (its link back to Data Management — base.html, embed)
+    function fromFrame(e) {
+      if (e.source === f.contentWindow && e.data && e.data.type === 'emt-embed-close') shut();
+    }
+    window.addEventListener('message', fromFrame);
+    function esc1(e) { if (e.key === 'Escape') shut(); }
+    m.addEventListener('click', function (e) { if (e.target === m || e.target.dataset.close) shut(); });
+    document.addEventListener('keydown', esc1);
+    document.body.appendChild(m);
+  }
+
+  // ── Deleting half-hours (soft delete design §3, PR 4) ─────────────────────────────────────
+  // Whole half-hours — every meter, both channels — after a required backup, on every view. The
+  // preview says plainly that it is not one channel, and that HA's readings are kept: a refill from
+  // Octopus or a CSV rebuilds the devices from them. Re-fetch is named where it can help instead.
+  function supportItem(from, to, label) {
+    if (!state.onSupportFile) return null;
+    return {text: 'Make a support file for ' + label + '\u2026',
+            run: function () { state.onSupportFile(from, to, label); }};
+  }
+  function deleteItem(from, to, label) {
+    return {text: 'Delete ' + label + '\u2026', run: function () { openDelete(from, to, label); }};
+  }
+  function openDelete(a, b, label) {
+    state.dialogOpen = true;
+    var el = panelEl();
+    function box(inner, buttons) {
+      el.innerHTML = '<div class="hm-panel-box" role="dialog" aria-label="Delete half-hours">' +
+        '<div class="hm-panel-head"><b>Delete \u2014 ' + esc(label) + '</b>' +
+        '<button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' + inner +
+        '<div class="hm-actions">' + (buttons || '') + '</div></div>';
+      el.style.display = 'flex';
+    }
+    var close = '<button class="hm-btn" data-close="1">Close</button>';
+    function fail(e) { box('<p class="hm-bad">' + esc(e.message) + '</p>', close); }
+    var chan = state.metric === 'export' ? 'export' : 'import';
+    var twoYears = new Date(Date.now() - 730 * 864e5).toISOString().slice(0, 19);
+    box('<p>Counting\u2026 nothing is changed.</p>');
+    postJSON('/api/blocks/delete/preview', {from_utc: a, to_utc: b}).then(function (p) {
+      if (!p.ok) throw new Error(p.error || 'the preview failed');
+      markSelection(p.from_utc, p.to_utc);
+      if (!p.half_hours) { box('<p>Nothing recorded in ' + esc(label) + ' \u2014 nothing to delete.</p>', close); return; }
+      var dev = p.devices.length ? ', and ' + esc(p.devices.join(', ')) + '\u2019s' : '';
+      // Imported and live together (data management design §1 (6)): the choice to take the
+      // imported half-hours only — the way to roll back a bad import over part of the history
+      var both = p.imported_half_hours > 0 && p.imported_half_hours < p.half_hours;
+      var choice = both ? '<div class="hm-choice" style="margin:8px 0;">' +
+          '<label style="display:block;margin:4px 0;"><input type="radio" name="hm-del-scope" value="all" checked> ' +
+          '<b>Everything</b> \u2014 ' + hh(p.half_hours) + '</label>' +
+          '<label style="display:block;margin:4px 0;"><input type="radio" name="hm-del-scope" value="imported"> ' +
+          '<b>Only the imported half-hours</b> \u2014 ' + p.imported_half_hours + ' of ' + p.half_hours +
+          ' (CSV, PDF bills or the API import), with the devices\u2019 data in them. Live and settled ' +
+          'ones are kept.</label></div>' : '';
+      box('<p><b>Deletes everything in these half-hours, not only the ' + chan + '.</b> Import, export' + dev +
+          ' data for ' + hh(p.half_hours) + ' (' + esc(localTime(p.from_utc)) + ' \u2192 ' +
+          esc(localTime(p.to_utc)) + ') are deleted.</p>' +
+          (p.ha_reads ? '<p>HA\u2019s own readings are kept: when the half-hours are filled again from ' +
+           'Octopus or a CSV, the devices are rebuilt from them.</p>' : '') +
+          (state.canRefetch && p.from_utc >= twoYears ? '<p class="hm-note2">If only the ' + chan +
+           ' is wrong, Re-fetch from Octopus corrects it without deleting anything.</p>' : '') +
+          choice + '<p class="hm-note2">A backup is taken first.</p>',
+          '<button class="hm-btn" data-close="1">Cancel</button>' +
+          '<button class="hm-btn hm-primary" data-act="go" style="background:#cc0000;border-color:#cc0000;">Delete</button>');
+      el.querySelector('[data-act="go"]').onclick = function () {
+        var pick = el.querySelector('input[name="hm-del-scope"]:checked');
+        go(p, !!(pick && pick.value === 'imported'));
+      };
+    }).catch(fail);
+    function go(p, importedOnly) {
+      box('<p>Taking a backup and deleting\u2026</p>');
+      var n = importedOnly ? p.imported_half_hours : p.half_hours;
+      postJSON('/api/blocks/delete', {from_utc: p.from_utc, to_utc: p.to_utc, confirmed: true,
+                                      reconstructed_only: importedOnly}).then(function (r) {
+        if (!r.ok) throw new Error(r.error || 'the delete did not start');
+        return new Promise(function (ok, bad) {
+          (function tick() {
+            fetchJSON('/api/blocks/delete/status').then(function (s) {
+              if (s.status === 'running') { setTimeout(tick, 1000); return; }
+              if (s.status === 'error') { bad(new Error(s.error || 'the delete failed')); return; }
+              ok(s);
+            }, function () { setTimeout(tick, 2000); });
+          })();
+        });
+      }).then(function (s) {
+        box('<p>Done \u2014 ' + hh(n) + (importedOnly ? ' of imported history' : '') +
+            ' deleted. To fill the gap, select it and ' +
+            'choose Fill this gap\u2026</p>' +
+            (s.backup ? '<p class="hm-note2">Backup: ' + esc(s.backup) + '</p>' : ''), close);
+        reloadRange(p.from_utc, p.to_utc);
+      }).catch(fail);
+    }
+  }
+
+  // ── Deleting an imported export (soft delete design §4, PR 1) ─────────────────────────────
+  // The export of IMPORTED history (a CSV, a PDF bill, the API import) over whole local days, after
+  // a required backup — for a wrong third-party or FIT export over import that is fine. Not on the
+  // Import bill view; offered on the others whatever the source, so an install without the
+  // supplier API (no Export bill view) has it too. The preview says when there is nothing to do.
+  function localDay(utcIso) { return localParts(utcIso).day; }
+  function exportDeleteItem(from, to) {
+    if (state.metric === 'bill') return null;
+    var a = localDay(from), b = localDay(new Date(Date.parse(to + 'Z') - 1800e3).toISOString().slice(0, 19));
+    return {text: 'Delete the imported export of ' + (a === b ? a : a + ' \u2192 ' + b) + '\u2026',
+            run: function () { openExportDelete(a, b); }};
+  }
+  function openExportDelete(a, b) {
+    state.dialogOpen = true;
+    var el = panelEl(), label = a === b ? a : a + ' \u2192 ' + b;
+    function box(inner, buttons) {
+      el.innerHTML = '<div class="hm-panel-box" role="dialog" aria-label="Delete the imported export">' +
+        '<div class="hm-panel-head"><b>Delete the imported export \u2014 ' + esc(label) + '</b>' +
+        '<button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' + inner +
+        '<div class="hm-actions">' + (buttons || '') + '</div></div>';
+      el.style.display = 'flex';
+    }
+    var close = '<button class="hm-btn" data-close="1">Close</button>';
+    function fail(e) { box('<p class="hm-bad">' + esc(e.message) + '</p>', close); }
+    box('<p>Counting\u2026 nothing is changed.</p>');
+    postJSON('/api/blocks/delete-export/preview', {from_date: a, to_date: b}).then(function (p) {
+      if (!p.ok) throw new Error(p.error || 'the preview failed');
+      markSelection(p.from_utc, p.to_utc);
+      if (!p.half_hours) {
+        box('<p>No imported export on ' + esc(label) + ' \u2014 nothing to delete.' +
+            (p.live_kept ? ' Its ' + hh(p.live_kept) + ' recorded live are not deleted here: Re-fetch from ' +
+             'Octopus corrects a live export.' : '') + '</p>', close);
+        return;
+      }
+      box('<p>Deletes the <b>imported export</b> for ' + hh(p.half_hours) + ' (' + p.kwh + ' kWh) over ' +
+          esc(label) + ', whole days in local time. <b>Import is kept</b>, and its carbon is worked out ' +
+          'again from import alone.</p>' +
+          (p.live_kept ? '<p class="hm-note2">' + hh(p.live_kept) + ' recorded live on these days keep their ' +
+           'export.</p>' : '') +
+          '<p class="hm-note2">A backup is taken first. To put an export back, overlay a CSV for these days ' +
+          '(Historical import \u2192 CSV \u2192 Date range, channel \u201cExport only\u201d).</p>',
+          '<button class="hm-btn" data-close="1">Cancel</button>' +
+          '<button class="hm-btn hm-primary" data-act="go" style="background:#cc0000;border-color:#cc0000;">Delete the export</button>');
+      el.querySelector('[data-act="go"]').onclick = function () { go(p); };
+    }).catch(fail);
+    function go(p) {
+      box('<p>Taking a backup and deleting\u2026</p>');
+      postJSON('/api/blocks/delete-export', {from_date: a, to_date: b, confirmed: true}).then(function (r) {
+        if (!r.ok) throw new Error(r.error || 'the delete did not start');
+        return new Promise(function (ok, bad) {
+          (function tick() {
+            fetchJSON('/api/blocks/delete/status').then(function (s) {
+              if (s.status === 'running') { setTimeout(tick, 1000); return; }
+              if (s.status === 'error') { bad(new Error(s.error || 'the delete failed')); return; }
+              ok(s);
+            }, function () { setTimeout(tick, 2000); });
+          })();
+        });
+      }).then(function (s) {
+        var n = ((s.result || {}).half_hours) || 0;
+        box('<p>Done \u2014 the imported export of ' + hh(n) + ' deleted.</p>' +
+            (s.backup ? '<p class="hm-note2">Backup: ' + esc(s.backup) + '</p>' : ''), close);
+        reloadRange(p.from_utc, p.to_utc);
+      }).catch(fail);
+    }
+  }
+
+  // ── the settlement detail panel (design §4): the evidence for one half-hour ──
+  function esc(v) {
+    return String(v === null || v === undefined ? '' : v).replace(/[&<>"]/g, function (c) {
+      return {'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]; });
+  }
+  function localTime(utcIso) {
+    if (!utcIso) return '';
+    try {
+      return new Intl.DateTimeFormat('en-GB', {timeZone: state.tz, day: 'numeric', month: 'short',
+        hour: '2-digit', minute: '2-digit', hourCycle: 'h23'}).format(new Date(utcIso.slice(0, 19) + 'Z'));
+    } catch (e) { return utcIso; }
+  }
+  function panelEl() {
+    var el = document.getElementById('hm-panel');
+    if (!el) {
+      el = document.createElement('div'); el.id = 'hm-panel'; el.className = 'hm-panel';
+      var shut = function () { el.style.display = 'none'; state.dialogOpen = false; clearSelection(); };
+      el.addEventListener('click', function (e) { if (e.target === el || e.target.dataset.close) shut(); });
+      document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && el.style.display !== 'none') shut(); });
+      document.body.appendChild(el);
+    }
+    return el;
+  }
+  function gbp(v) { return v === null || v === undefined ? '—' : '£' + (+v).toFixed(4); }
+  function kwh(v) { return v === null || v === undefined ? '—' : (+v).toFixed(3) + ' kWh'; }
+  function renderPanel(d, label, more) {
+    var st = d.state || {}, b = d.bill, k = d.kwh || {}, c = d.cost || {};
+    var rows = [];
+    function row(name, value, note, cls) {
+      rows.push('<tr' + (cls ? ' class="' + cls + '"' : '') + '><th>' + name + '</th><td>' + value +
+                '</td><td class="hm-note2">' + (note || '') + '</td></tr>');
+    }
+    // Import and export side by side, whichever view opened it (22 Oct 2026, the user: the Export
+    // bill's panel gave the import rate alone)
+    function head(name) { rows.push('<tr class="hm-sec"><th colspan="3">' + name + '</th></tr>'); }
+    function pence(r) { return r !== null && r !== undefined ? (r * 100).toFixed(3) + 'p' : '\u2014'; }
+    // an import's kWh and cost are the import's, not a DCC read or a fetched bill (28 Oct 2026)
+    var ORIGIN = {api_import: 'the API import', csv_import: 'the CSV import', import: 'the import'};
+    var kNote = k.origin === 'api_import' ? 'Octopus\u2019s, from the API import'
+              : k.origin === 'csv_import' ? 'from the CSV import'
+              : k.settled ? (k.dcc !== null && k.stored !== null && Math.abs(k.dcc - k.stored) > 0.0005
+                  ? 'DCC ' + esc(kwh(k.dcc)) + ' — stored differs' : 'DCC settled')
+              : 'not settled yet — EMT\u2019s own reading';
+    head('Import');
+    row('kWh', esc(kwh(k.stored)), kNote, k.settled ? '' : 'hm-wait');
+    if (b && b.origin === 'api_import') {
+      // v4's price, not Octopus's cost: Octopus never sent one for it (28 Oct 2026, the user). The
+      // stored cost is this bill, so no check mark.
+      row('bill', esc(gbp(b.cost)), 'v4\u2019s price, ' + esc(kwh(b.kwh)) + ' \u00d7 ' + pence(c.rate) +
+          (st.bill === 'applied' ? ' \u2014 final on a published tariff, checked against its rate'
+           : ' at Octopus\u2019s band \u2014 ' + (d.reachable ? 'until Octopus sends its own cost'
+                                                 : 'past Octopus\u2019s two years, so it can\u2019t be checked')));
+      if (b.cost_exc) row('', esc(gbp(b.cost_exc)) + ' ex-VAT',
+          'VAT ' + (b.cost_exc > 0.001 ? ((b.cost / b.cost_exc - 1) * 100).toFixed(1) + '%' : '—'));
+    } else if (b) {
+      var same = c.stored !== null && Math.abs(c.stored - b.cost) <= 0.00001;
+      row('bill', esc(gbp(b.cost)), (ORIGIN[b.origin] ? ORIGIN[b.origin] + '\u2019s cost, imported '
+                                     : 'Octopus, fetched ') + esc(localTime(b.fetched_at)) + ' · stored ' +
+          esc(gbp(c.stored)) + (same ? ' \u2713' : ' \u2717'), same ? '' : 'hm-bad');
+      if (b.cost_exc) row('', esc(gbp(b.cost_exc)) + ' ex-VAT',
+          'VAT ' + (b.cost_exc > 0.001 ? ((b.cost / b.cost_exc - 1) * 100).toFixed(1) + '%' : '—'));
+    } else {
+      row('bill', '—', esc(CAT_TEXT.bill[st.bill] || st.bill || ''),
+          (st.bill === 'overdue' || st.bill === 'abandoned') ? 'hm-bad' : /^estimate_/.test(st.bill) ? 'hm-wait' : '');
+      if (st.bill === 'abandoned' && d.no_cost_since)
+        row('', 'not asked since ' + esc(localTime(d.no_cost_since)), '', 'hm-bad');
+      row('', esc(gbp(c.stored)), 'stored (kWh \u00d7 rate)');
+    }
+    var ev = 0, house = 0;
+    (d.segments || []).forEach(function (sg) { if (sg.attribution === 'ev') ev += sg.kwh; else house += sg.kwh; });
+    if (st.split || d.dispatch) {
+      var dn = d.dispatch && d.dispatch.completed_kwh !== null ? 'completed dispatch ' + d.dispatch.completed_kwh + ' kWh'
+             : d.dispatch ? 'dispatch ' + esc((d.dispatch.kinds || []).join(', ')) : '';
+      row('split', 'EV ' + ev.toFixed(3) + ' / House ' + house.toFixed(3),
+          esc(st.split ? CAT_TEXT.split[st.split] : '') + (dn ? ' · ' + dn : ''),
+          st.split === 'missing' ? 'hm-bad' : (st.split === 'held' ? 'hm-wait' : ''));
+      if (b && b.ev_kwh !== null) row('', 'bill: EV ' + (+b.ev_kwh).toFixed(3) + ' / House ' + (+b.home_kwh).toFixed(3), '');
+    }
+    var bands = {}; (d.segments || []).forEach(function (sg) { bands[sg.band] = 1; });
+    // v4's price, not a rate settled from Octopus's cost
+    var rsrc = b && b.origin === 'api_import' ? 'v4\u2019s price' : c.rate_source ? esc(c.rate_source) : '';
+    row('rate', pence(c.rate),
+        esc(Object.keys(bands).join(', ')) + (rsrc ? ' · ' + rsrc : '') + (c.corrected ? ' · your correction' : ''));
+    (st.flags || []).forEach(function (f) { if (FLAG_TEXT[f]) row('\u26a0', esc(FLAG_TEXT[f]), '', 'hm-bad'); });
+    // Octopus's band against its own rules (engine step 2b): billed wins, so a note, not an issue
+    var bn = d.band, BN = {off_peak: 'off-peak', peak: 'peak'};
+    if (bn && bn.disagrees)
+      row('band', 'billed ' + esc(BN[bn.settled]), 'Octopus\u2019s rules give ' + esc(BN[bn.predicted]) +
+          ' here \u2014 billed wins until Octopus corrects it');
+    var x = d.export;
+    if (x && (METRICS.export || x.kwh !== null || x.dcc !== null)) {
+      var xs = st.export, xv = x.dcc !== null ? x.dcc : x.kwh;
+      head('Export');
+      row('kWh', xv !== null ? esc(kwh(xv)) : '\u2014', esc(CAT_TEXT.export[xs] || xs || ''),
+          (xs === 'overdue' || xs === 'no_data') ? 'hm-bad' : xs === 'waiting' ? 'hm-wait' : '');
+      row('earned', x.cost !== null ? esc(gbp(x.cost)) : '\u2014', 'stored (kWh \u00d7 rate)');
+      row('rate', pence(x.rate), '');
+    }
+    var el = panelEl();
+    el.innerHTML = '<div class="hm-panel-box" role="dialog" aria-label="Half-hour detail">' +
+      '<div class="hm-panel-head"><b>' + esc(label) + '</b><button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' +
+      '<table class="hm-detail">' + rows.join('') + '</table>' +
+      (more ? '<div class="hm-note2">' + esc(more) + '</div>' : '') +
+      (!isData() ? '<div class="hm-actions"><button class="hm-btn" data-close="1">Close</button>' +
+                   '<a class="hm-btn hm-primary" href="' + dmUrl(localParts(d.start).day) + '">Open in Data Management</a></div>'
+       : state.canRefetch ? '<div class="hm-actions">' +
+                            // past Octopus's two years there is nothing to re-fetch (28 Oct 2026)
+                            (d.reachable === false ? '' : '<button class="hm-btn" data-act="refetch">Re-fetch from Octopus</button>') +
+                            '<button class="hm-btn" data-close="1">Close</button></div>' : '') + '</div>';
+    el.style.display = 'flex';
+    var rb = el.querySelector('[data-act="refetch"]');
+    if (rb) rb.onclick = function () { openRefetch(d.start, d.end, label); };
+  }
+  // a missing half-hour has no block, so no detail to fetch: say what it is
+  function openMissing(c, label) {
+    var el = panelEl();
+    var g = (c && c.gaps) || [], fc = g.length && isData() ? fillItem(g[0], plus30(g[g.length - 1]), label) : null;
+    var day = g.length ? localParts(g[0]).day : null;
+    el.innerHTML = '<div class="hm-panel-box"><div class="hm-panel-head"><b>' + esc(label) +
+                   '</b><button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' +
+                   '<p>' + (c && c.deleted ? 'Deleted on ' + esc(c.deleted) + ' \u2014 there is no block for this ' +
+                   'half-hour.' : 'EMT holds no block for this half-hour: it was never recorded, or not ' +
+                   'imported.') + '</p>' +
+                   (fc ? '<div class="hm-actions"><button class="hm-btn" data-close="1">Close</button>' +
+                         '<button class="hm-btn hm-primary" data-act="fill">Fill this gap\u2026</button></div>'
+                    : !isData() && day ? '<div class="hm-actions"><button class="hm-btn" data-close="1">Close</button>' +
+                         '<a class="hm-btn hm-primary" href="' + dmUrl(day) + '">Open in Data Management</a></div>' : '') +
+                   '</div>';
+    el.style.display = 'flex';
+    var b = el.querySelector('[data-act="fill"]'); if (b) b.onclick = fc.run;
+  }
+
+  function openPanel(starts, label) {
+    var el = panelEl();
+    el.innerHTML = '<div class="hm-panel-box"><div class="hm-panel-head"><b>' + esc(label) +
+                   '</b><button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>Loading…</div>';
+    el.style.display = 'flex';
+    fetchJSON('/api/blocks/settlement?start=' + encodeURIComponent(starts[0])).then(function (d) {
+      if (d.error) throw new Error(d.error);
+      // the clocks-back hour folds two half-hours into one cell: show the first, say so
+      renderPanel(d, label, starts.length > 1 ? 'This cell holds ' + starts.length +
+                  ' half-hours (the clocks went back); showing the first.' : '');
+    }).catch(function (e) {
+      el.querySelector('.hm-panel-box').lastChild.textContent = 'Could not load: ' + e.message;
+    });
+  }
+
+  // ── data ───────────────────────────────────────────────────────────────────
+  // At most two months at once, in the order asked (22 Oct 2026, staging: four months loading at
+  // once filled every web thread, each classifying and compressing ~2 MB, beside a device rebuild —
+  // the engine loop was held 16.9 s). A month is mostly the server's work, so more at once is not
+  // faster on a small box, only harder on the engine.
+  var FETCH_MAX = 2, fetchQ = [], fetching = 0;
+  function fetchMonth(key) {
+    return new Promise(function (ok, bad) { fetchQ.push({key: key, ok: ok, bad: bad}); pumpFetches(); });
+  }
+  function pumpFetches() {
+    while (fetching < FETCH_MAX && fetchQ.length) {
+      var j = fetchQ.shift(); fetching++;
+      fetchMonthNow(j.key).then(j.ok, j.bad).then(function () { fetching--; pumpFetches(); });
+    }
+  }
+  function fetchMonthNow(key) {
+    var y = key.slice(0, 4), mo = +key.slice(5, 7);
+    var inc = '&include=' + (METRICS.bill ? 'settle,' : '') + 'gaps';
+    return fetchJSON('/api/energy?resolution=block&kind=month&year=' + y + '&month=' + mo + inc).then(function (r) {
+      if (r.error) throw new Error(r.error);
+      state.tz = state.tz || r.timezone;
+      var stale = [];
+      if (state.epoch !== null && r.fingerprint.epoch !== state.epoch) {   // bulk change: drop the cache
+        state.months = {}; Object.keys(state.panels).forEach(function (k) { state.panels[k].grid = null; });
+        // ...and fetch again every other month still on screen: left drawn with no grid, its hover and
+        // click read p.grid[day] from null until the page was reloaded (24 Oct 2026, Data Management)
+        stale = Object.keys(state.panels).filter(function (k) { return k !== key && state.panels[k].drawn; });
+      }
+      state.epoch = r.fingerprint.epoch;
+      state.months[key] = {blocks: r.blocks || [], settle: r.settle || {}, deleted: r.deleted || [],
+                           range: r.range || null, fp: JSON.stringify(r.fingerprint.days)};
+      if (state.panels[key]) state.panels[key].grid = null;
+      stale.forEach(function (k) { loadMonth(k); });
+    });
+  }
+  function loadMonth(key) {
+    if (state.loading[key]) return state.loading[key];
+    var p = state.panels[key], t0 = performance.now();
+    var need = state.months[key] ? Promise.resolve() : fetchMonth(key);
+    return (state.loading[key] = need.then(function () {
+      var t1 = performance.now();
+      p.grid = p.grid || monthGrid(key);
+      var before = state.scale ? JSON.stringify(state.scale) : null, after = computeScale();
+      state.scale = after;
+      if (before && before !== JSON.stringify(after)) redrawAll(false);    // the range widened
+      drawMonth(key);
+      p.timing = {fetch_ms: Math.round(t1 - t0), draw_ms: Math.round(performance.now() - t1)};
+      delete state.loading[key];
+    }).catch(function (e) {
+      p.el.querySelector('.hm-row').innerHTML = '<div class="hm-empty">Could not load ' + monthLabel(key) + ': ' + e.message + '</div>';
+      delete state.loading[key];
+    }));
+  }
+
+  // Switch the view (a metric button, or the health strip's figures on Data Management)
+  function setMetric(k) {
+    if (!METRICS[k] || !state.root) return;
+    state.metric = k; state.mexpanded = {};
+    state.root.querySelectorAll('.hm-metrics button:not(.hm-collapse)').forEach(function (x) {
+      x.classList.toggle('active', x.dataset.metric === k); });
+    foldMonths();
+    redrawAll(true);
+  }
+  // The health strip's count for a view (data management design §1 (2)): the server's half-hours
+  // by state — `state` or `state|flag,flag` — through this module's own settleValue and isIssue,
+  // so the strip and the grid cannot disagree.
+  function issueCount(view, counts) {
+    var n = 0;
+    Object.keys(counts || {}).forEach(function (key) {
+      var parts = key.split('|'), c = {};
+      c[view] = view === 'bill' ? settleValue('bill', {bill: parts[0], flags: parts[1] ? parts[1].split(',') : []})
+                                : parts[0];
+      if (isIssue(c, view)) n += counts[key];
+    });
+    return n;
+  }
+  function buildUI() {
+    var root = state.root;
+    root.innerHTML = '<div class="hm-bar"><div class="hm-metrics"></div>' +
+      '<span class="hm-note">Local time · newest first</span></div>' +
+      '<div class="hm-head"><div class="hm-title"></div><div class="hm-sub"></div></div>' +
+      '<div class="hm-axis"><div class="hm-axis-in"></div></div><div class="hm-months"></div>';
+    var mb = root.querySelector('.hm-metrics');
+    Object.keys(METRICS).forEach(function (k) {
+      var b = document.createElement('button'); b.className = 'hm-metric-btn' + (k === state.metric ? ' active' : '');
+      b.textContent = METRICS[k].label; b.title = METRICS[k].title;
+      b.dataset.metric = k;
+      b.onclick = function () { setMetric(k); };
+      mb.appendChild(b);
+    });
+    // "Issues only" (§3): fold the days with nothing to look at; remembered per browser. Data
+    // mode only — Charts is a chart (data management design §1 (1)).
+    if (!isData()) return buildMonths(root);
+    var fb = document.createElement('button');
+    fb.className = 'hm-metric-btn hm-collapse' + (state.collapse ? ' active' : '');
+    fb.textContent = 'Issues only';
+    fb.title = 'Fold the days with nothing to look at; click a fold to show its days';
+    fb.onclick = function () {
+      state.collapse = !state.collapse; state.expanded = {}; state.mexpanded = {};
+      fb.classList.toggle('active', state.collapse);
+      try { localStorage.setItem('emt_hm_collapse', state.collapse ? '1' : '0'); } catch (e) {}
+      foldMonths();
+      redrawAll(false);
+    };
+    mb.appendChild(fb);
+    buildMonths(root);
+  }
+  function buildMonths(root) {
+    var wrap = root.querySelector('.hm-months');
+    // Draw near the viewport; release far from it (a month's canvases at 2x are ~10 MB).
+    var near = new IntersectionObserver(function (ents) {
+      ents.forEach(function (e) { var k = e.target.dataset.key;
+        if (e.isIntersecting && !state.panels[k].drawn) loadMonth(k); });
+    }, {rootMargin: '800px'});
+    var far = new IntersectionObserver(function (ents) {
+      ents.forEach(function (e) { var k = e.target.dataset.key;
+        if (!e.isIntersecting && state.panels[k].drawn) release(k, false); });
+    }, {rootMargin: '4000px'});
+    state.keys.forEach(function (k, i) {
+      var el = document.createElement('section'); el.className = 'hm-month'; el.dataset.key = k;
+      var guess = daysIn(k) * 18;
+      el.innerHTML = '<div class="hm-mlabel">' + monthLabel(k) + '</div><div class="hm-row" style="height:' + guess + 'px"></div>';
+      el.querySelector('.hm-row').addEventListener('scroll', function (e) { syncRows(e.target); }, {passive: true});
+      wrap.appendChild(el); state.panels[k] = {el: el, first: i === 0};
+      // Never make the first month wait on an intersection event — a page that is not
+      // visible yet (a background tab, a hidden pane) reports none.
+      if (i === 0) loadMonth(k);
+      near.observe(el); far.observe(el);
+    });
+    reachRow();
+    foldMonths();
+    redrawAll(false);
+    // Theme: watch the attribute itself, so any toggle from any code path re-draws.
+    new MutationObserver(function () { redrawAll(true); })
+      .observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
+    // Width: square cells are sized from it.
+    // Any change, not only one of 8 px or more: a scrollbar appearing is ~15 px on some systems
+    // and less on others, and every month must draw to the one width.
+    var lastW = root.clientWidth, rt = null;
+    new ResizeObserver(function () {
+      if (root.clientWidth === lastW) return; lastW = root.clientWidth;
+      clearTimeout(rt); rt = setTimeout(function () { redrawAll(false); }, 150);
+    }).observe(root);
+  }
+
+  // ── Issues only, a month at a time (21 Oct 2026, the user): a month with nothing to look at in the
+  // view folds, a run of them into one line, which a click shows. From the health strip's counts by
+  // month (/api/data-health, cached on the server), so a clean month is never fetched to find out.
+  // The newest month is live and always shown; so is the month ?day= opens. A month the counts do
+  // not name has no half-hour in any state and none missing (a month inside the history with no
+  // blocks counts its half-hours missing), so it is clean: CAD-only's counts name only the months
+  // with something missing.
+  function monthClean(k) {
+    if (!isData() || !state.collapse || !state.mhealth || state.mexpanded[k]) return false;
+    if (k === state.keys[0] || (state.dayWanted && k === state.dayWanted.slice(0, 7))) return false;
+    var h = state.mhealth[k] || {};
+    var miss = h.missing || 0;
+    if (state.metric === 'presence') return miss === 0;
+    if (!isSettle(state.metric)) return false;
+    return miss === 0 && issueCount(state.metric, h[state.metric] || {}) === 0;
+  }
+  function foldMonths() {
+    var wrap = state.root && state.root.querySelector('.hm-months'); if (!wrap) return;
+    wrap.querySelectorAll('.hm-mfold').forEach(function (x) { x.remove(); });
+    var run = [];
+    function flush() {
+      if (!run.length) return;
+      var ks = run.slice(), el = document.createElement('button');
+      el.className = 'hm-mfold'; el.type = 'button';
+      var lab = ks.length === 1 ? monthLabel(ks[0]) : monthLabel(ks[ks.length - 1]) + ' \u2013 ' + monthLabel(ks[0]);
+      el.textContent = lab + ': nothing to look at \u2014 click to show';
+      el.onclick = function () { ks.forEach(function (k) { state.mexpanded[k] = true; }); foldMonths(); };
+      wrap.insertBefore(el, state.panels[ks[0]].el);
+      run = [];
+    }
+    state.keys.forEach(function (k) {
+      var p = state.panels[k]; if (!p) return;
+      var clean = monthClean(k);
+      p.el.style.display = clean ? 'none' : '';
+      if (clean) run.push(k); else flush();
+    });
+    flush();
+  }
+
+  // Octopus's history before EMT's oldest block (decided 18 Oct 2026, the user): its own row below
+  // the oldest month, not hatched and not an issue — never recorded is not missing. It links to the
+  // Historical import's API import, which fills it.
+  function reachRow() {
+    var wrap = state.root && state.root.querySelector('.hm-months'); if (!wrap) return;
+    var el = wrap.querySelector('.hm-reach'), r = (state.bounds || {}).reach_from;
+    if (!(state.canRefetch && r)) { if (el) el.remove(); return; }
+    if (!el) { el = document.createElement('div'); el.className = 'hm-reach'; }
+    wrap.appendChild(el);                                         // after the oldest month
+    var d = '';
+    try { d = new Intl.DateTimeFormat('en-GB', {timeZone: state.tz, day: 'numeric', month: 'long', year: 'numeric'})
+                .format(new Date(r + 'Z')); } catch (e) { d = r.slice(0, 10); }
+    el.innerHTML = 'Octopus holds your data back to <b>' + esc(d) + '</b> \u2014 ' +
+                   '<a href="' + apiUrl('/historical-import#api-import-panel') + '">import it</a>';
+  }
+
+  var HEALTH_WAIT_MS = 1500;
+  function loadMonthHealth() {
+    return fetchJSON('/api/data-health').then(function (d) {
+      state.mhealth = (d && d.ok && d.months) || null;
+      foldMonths();                                // a no-op before the months are built
+    }, function () { state.mhealth = null; });
+  }
+
+  // `opts.mode`: 'chart' (the default — Charts, the Lovelace card) or 'data' (Data Management);
+  // `opts.day`: in data mode, 'YYYY-MM-DD' to open that day's month and mark the day.
+  // `opts.issues`: in data mode, Issues only on for this visit.
+  function init(root, opts) {
+    opts = opts || {};
+    state.root = root || document.getElementById('chart-heatmap-content');
+    if (state.inited) return refresh();
+    state.inited = true;
+    state.mode = opts.mode === 'data' ? 'data' : 'chart';
+    state.dayWanted = isData() && /^\d{4}-\d{2}-\d{2}$/.test(opts.day || '') ? opts.day : null;
+    state.onChange = typeof opts.onChange === 'function' ? opts.onChange : null;
+    // `opts.onSupportFile(from, to, label)` (data mode): the selection's "Make a support file…"
+    state.onSupportFile = typeof opts.onSupportFile === 'function' ? opts.onSupportFile : null;
+    state.root.innerHTML = '<div class="hm-empty">Loading…</div>';
+    var apiCheck = Promise.resolve();
+    if (isData()) {
+      // the data views, not the energy ones; Issues only on unless turned off in this browser
+      Object.keys(METRICS).forEach(function (k) { delete METRICS[k]; });
+      try { state.collapse = localStorage.getItem('emt_hm_collapse') !== '0'; } catch (e) { state.collapse = true; }
+      // `opts.issues` (BL-95, the settlement pill's way in): Issues only on for this visit, the
+      // browser's own choice left as it was
+      if (opts.issues) state.collapse = true;
+      // The settlement views are for supplier-API accounts only; ask once, and a failed
+      // answer means "not shown", never an error for the heatmap.
+      apiCheck = fetchJSON('/api/billing-source').then(function (r) {
+        if (!(r && r.uses_api)) return;
+        state.canRefetch = true;                // BL-86: a re-fetch needs the supplier API
+        (r.settle_views || []).forEach(function (k) { if (SETTLE_METRICS[k]) METRICS[k] = SETTLE_METRICS[k]; });
+      }, function () {}).then(function () {
+        // Missing only where there is no bill view (21 Oct 2026, the user): with the API, a missing
+        // half-hour is an issue in the Import and Export bill views already; CAD-only has no other.
+        if (!METRICS.bill && !METRICS.export) METRICS.presence = PRESENCE_METRIC;
+        state.metric = METRICS.bill ? 'bill' : METRICS.export ? 'export' : 'presence';
+        // The month counts fold clean months before they are drawn; the grid waits for them only
+        // so long (21 Oct 2026: a first count after new data is seconds on the Pi), and folds
+        // them when they come.
+        return Promise.race([loadMonthHealth(), new Promise(function (r) { setTimeout(r, HEALTH_WAIT_MS); })]);
+      });
+    }
+    return libs().then(function () { return apiCheck; })
+      .then(function () { return fetchJSON('/api/periods?kind=month'); }).then(function (p) {
+      var b = p.bounds || {};
+      if (!b.earliest) { state.root.innerHTML = '<div class="hm-empty">No heatmap data yet.</div>'; return; }
+      state.tz = p.timezone || state.tz; state.bounds = b; state.keys = [];
+      var y = +b.latest.slice(0, 4), mo = +b.latest.slice(5, 7), stop = b.earliest.slice(0, 7);
+      for (;;) {
+        var k = y + '-' + (mo < 10 ? '0' : '') + mo; state.keys.push(k);
+        if (k <= stop) break; mo--; if (mo < 1) { mo = 12; y--; }
+      }
+      buildUI();
+      if (state.dayWanted) openDay(state.dayWanted);
+    }).catch(function (e) { state.root.innerHTML = '<div class="hm-empty">Heatmap unavailable: ' + e.message + '</div>'; });
+  }
+
+  // `?day=` (data management design §1 (1)): draw every month from the newest down to the day's —
+  // only those above it move it, and Issues only folds them far shorter than their placeholders —
+  // then open the day if it is folded, mark it as a selection, and scroll it in under the view bar.
+  function openDay(day) {
+    var key = day.slice(0, 7), p = state.panels[key], i = state.keys.indexOf(key);
+    if (!p || i < 0) return;
+    return Promise.all(state.keys.slice(0, i + 1).map(function (k) { return loadMonth(k); })).then(function () {
+      var f = p.folds && Object.keys(p.folds).map(function (k) { return p.folds[k]; })
+                .filter(function (x) { return day >= x.from && day <= x.to; })[0];
+      if (f) expandFold(f);
+      var dr = dayRange(p, day);
+      if (dr) markSelection(dr[0], dr[1]);
+      scrollToRow(p, day);
+    });
+  }
+  function scrollToRow(p, day) {
+    var box = scrollParent(state.root), a = p.chart && p.chart.chartArea;
+    var ri = p.days ? p.days.indexOf(day) : -1, rh = a && p.days ? a.height / p.days.length : 0;
+    var grid = p.el.querySelector('.hm-grid') || p.el;
+    var top = grid.getBoundingClientRect().top + (a ? a.top : 0) + (ri > 0 ? ri * rh : 0);
+    // below both sticky headers: the view bar and the time axis under it
+    var under = 0;
+    ['.hm-bar', '.hm-axis'].forEach(function (q) {
+      var e = state.root.querySelector(q); if (e) under = Math.max(under, e.getBoundingClientRect().bottom); });
+    if (box === document.scrollingElement || box === document.body) window.scrollBy(0, top - under - 24);
+    else box.scrollTop += top - Math.max(under, box.getBoundingClientRect().top) - 24;
+  }
+  function scrollParent(el) {
+    for (var n = el && el.parentElement; n; n = n.parentElement) {
+      var o = getComputedStyle(n).overflowY;
+      if ((o === 'auto' || o === 'scroll') && n.scrollHeight > n.clientHeight) return n;
+    }
+    return document.scrollingElement || document.body;
+  }
+
+  // Re-fetch the current month (where change happens, C §2a), and every other DRAWN month whose
+  // per-day fingerprints moved — asked cheaply (fields=days), so only a month that changed is
+  // re-fetched. Until 18 Oct 2026 only the current month was asked: bills applied to August by
+  // the history drain turned it green in the store and never on the page. A cached month not
+  // drawn is dropped, to be fetched afresh when it scrolls near.
+  function refresh() {
+    var k = state.keys[0]; if (!k) return Promise.resolve();
+    if (isData()) loadMonthHealth().then(foldMonths);     // a write may clean, or dirty, a month
+    var before = state.months[k] && state.months[k].fp, ep = state.epoch;
+    return fetchMonth(k).then(function () {
+      // A bulk change (a restore, an import, a delete) moved the epoch: fetchMonth emptied the
+      // cache, so every drawn month is re-fetched — redrawAll alone redraws only cached months,
+      // and left the older ones showing what they showed before (18 Oct 2026).
+      if (state.epoch !== ep) {
+        state.scale = null;
+        fetchJSON('/api/periods?kind=month').then(function (pp) {
+          state.bounds = (pp && pp.bounds) || state.bounds; reachRow(); }, function () {});
+        return Promise.all(state.keys.map(function (o) {
+          var p = state.panels[o];
+          if (!p) return null;
+          if (o !== k && !p.drawn) return null;               // fetched when it scrolls near
+          p.grid = null;
+          return loadMonth(o);
+        }));
+      }
+      var work = [];
+      // fetchMonth drops the month's grid; unchanged, the drawn month still needs it — without
+      // it the hover and the click read a null grid after the first quiet poll (13 Oct 2026)
+      if (state.months[k].fp === before) { if (state.panels[k]) state.panels[k].grid = monthGrid(k); }
+      else { state.panels[k].grid = null; work.push(loadMonth(k)); }
+      state.keys.slice(1).forEach(function (o) {
+        if (!state.months[o]) return;
+        if (!(state.panels[o] && state.panels[o].drawn)) { delete state.months[o]; return; }
+        work.push(fetchJSON('/api/energy?fields=days&resolution=block&kind=month&year=' + o.slice(0, 4) +
+                            '&month=' + (+o.slice(5, 7))).then(function (r) {
+          var fp = JSON.stringify(((r || {}).fingerprint || {}).days || {});
+          if (!state.months[o] || fp === state.months[o].fp) return;
+          delete state.months[o]; state.panels[o].grid = null;
+          return loadMonth(o);
+        }, function () {}));
+      });
+      return Promise.all(work);
+    });
+  }
+  function rerender() { redrawAll(true); return Promise.resolve(); }
+
+  // PNG of every drawn month (cells + daily totals side by side), in the light palette
+  // for print, then the view is restored
+  function snapshot() {
+    state.forceLight = true; redrawAll(true);
+    var out = state.keys.filter(function (k) { return state.panels[k].drawn; }).map(function (k) {
+      var p = state.panels[k], a = p.chart.canvas, b = p.tot ? p.tot.canvas : null;
+      var c = document.createElement('canvas'); c.width = a.width + (b ? b.width : 0); c.height = a.height;
+      var x = c.getContext('2d'); x.fillStyle = '#ffffff'; x.fillRect(0, 0, c.width, c.height);
+      x.drawImage(a, 0, 0); if (b) x.drawImage(b, a.width, 0);
+      return {month: monthLabel(k), url: c.toDataURL('image/png')};
+    });
+    state.forceLight = false; redrawAll(true);
+    return out;
+  }
+
+  return {init: init, refresh: refresh, loadMonth: loadMonth, rerender: rerender, snapshot: snapshot,
+          setMetric: setMetric, issueCount: issueCount, openEmbedded: openEmbedded,
+          metricLabel: function () { return METRICS[state.metric].title; },
+          _state: state, _monthGrid: monthGrid, _paint: paint, _kwhStops: kwhStops, _release: release};
+})();
+</script>
+<style>
+  /* v4's floating metric bar (#hm-nav): stays at the top of the scroll container
+     whatever the scroll position, with its drop shadow. */
+  .hm-bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; padding:8px 12px;
+            position:sticky; top:0; z-index:9; margin-bottom:8px; box-sizing:border-box;
+            background:var(--surface, var(--card, #1a1d27)); border-radius:0 0 8px 8px;
+            box-shadow:0 2px 8px rgba(0,0,0,0.4); }
+  .hm-metrics { display:flex; gap:6px; }
+  .hm-metric-btn { padding:4px 10px; border-radius:6px; border:1px solid var(--border, #2a2d3a);
+                   background:transparent; color:inherit; cursor:pointer; font-size:12px; }
+  .hm-metric-btn.active { background:var(--accent, #3b82f6); color:#fff; border-color:transparent; }
+  .hm-note { font-size:12px; color:var(--muted, #6b7080); }
+  @media (max-width: 600px) { .hm-note { display:none; } }   /* keep the floating bar one row */
+  .hm-head { text-align:center; margin:4px 0 6px; }
+  .hm-title { font-size:15px; font-weight:600; }
+  .hm-sub { font-size:12px; color:var(--muted, #6b7080); margin-top:2px; }
+  .hm-key { display:flex; flex-wrap:wrap; justify-content:center; gap:3px 14px; margin-top:3px; }
+  .hm-key-item { display:inline-flex; align-items:flex-start; gap:5px; max-width:100%; text-align:left; }
+  .hm-sw { flex:none; width:11px; height:11px; margin-top:2px; border-radius:2px;
+           border:1px solid rgba(127,127,127,0.45); box-sizing:border-box; }
+  .hm-key-intro { margin-bottom:1px; }
+  /* the floating axis (heatmap issues design §4): under the bar, sticky as it is */
+  .hm-axis { position:sticky; z-index:8; height:46px; margin-bottom:2px; pointer-events:none;
+             background:var(--surface, var(--card, #1a1d27)); }
+  .hm-axis-in { position:relative; height:100%; overflow:hidden; font-size:10px; }
+  .hm-ax-t { position:absolute; bottom:2px; white-space:nowrap; transform-origin:left bottom;
+             transform:rotate(-45deg); }
+  .hm-ax-v { position:absolute; bottom:2px; transform:translateX(-50%); white-space:nowrap; }
+  .hm-ax-title { position:absolute; top:4px; transform:translateX(-50%); font-size:11px; white-space:nowrap; }
+  .hm-month { display:flex; align-items:stretch; }
+  /* the delete's choice: base.html styles every label as a form caption (caps, muted, small) */
+  .hm-choice label { text-transform:none; letter-spacing:normal; font-size:13px; font-weight:400;
+                     color:inherit; margin:4px 0; cursor:pointer; }
+  .hm-mlabel { writing-mode:vertical-rl; transform:rotate(180deg); font-size:11px; color:var(--muted, #6b7080);
+               padding:0 4px; text-align:center; white-space:nowrap; }
+  .hm-row { display:flex; gap:12px; flex:1; min-width:0; overflow-x:auto; }
+  .hm-grid, .hm-tot { flex:none; }         /* never shrink: cells are sized to stay square */
+  .hm-empty { padding:40px; text-align:center; color:var(--muted, #6b7080); }
+  .hm-panel { position:fixed; inset:0; z-index:60; display:none; align-items:center; justify-content:center;
+              background:rgba(0,0,0,.45); padding:16px; }
+  .hm-panel-box { background:var(--surface, #1a1d27); color:var(--text, #e8eaf0); border:1px solid var(--border, #2a2d3a);
+                  border-radius:10px; padding:14px 16px; width:min(640px, 100%); max-height:90vh; overflow-y:auto;
+                  font-size:13px; box-shadow:0 8px 24px rgba(0,0,0,.35); }
+  .hm-panel-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  .hm-x { background:none; border:none; color:var(--muted, #6b7080); font-size:16px; cursor:pointer; }
+  .hm-detail { width:100%; border-collapse:collapse; }
+  .hm-detail th { text-align:left; font-weight:600; padding:4px 10px 4px 0; vertical-align:top; white-space:nowrap; }
+  .hm-detail td { padding:4px 8px 4px 0; vertical-align:top; }
+  .hm-detail .hm-sec th { padding-top:10px; font-size:11px; text-transform:uppercase; letter-spacing:.05em; opacity:.7; }
+  .hm-detail tr.hm-bad td, .hm-detail tr.hm-bad th { color:#e05252; }
+  .hm-detail tr.hm-wait td, .hm-detail tr.hm-wait th { color:#e0a020; }
+  .hm-note2 { color:var(--muted, #6b7080); font-size:12px; }
+  .hm-grid canvas { cursor:pointer; }
+  .hm-sel { position:absolute; pointer-events:none; border:2px solid var(--accent, #3b7dd8);
+            box-shadow:0 0 0 1px rgba(255,255,255,.6); border-radius:2px; z-index:2; }
+  .hm-actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; margin-top:12px; }
+  .hm-btn { background:none; border:1px solid var(--border, #2a2d3a); color:var(--text, #e8eaf0); border-radius:6px;
+            padding:6px 12px; font-size:13px; cursor:pointer; }
+  .hm-btn.hm-primary { background:var(--accent, #2e9e5b); border-color:var(--accent, #2e9e5b); color:#fff; }
+  .hm-diff th, .hm-diff td { font-size:12px; }
+  .hm-diff td:first-child { white-space:nowrap; }       /* the half-hour; the rest may wrap */
+  .hm-bad { color:#e05252; } .hm-wait { color:#e0a020; }
+  .hm-menu { position:fixed; z-index:70; display:none; min-width:220px; background:var(--surface, #1a1d27);
+             border:1px solid var(--border, #2a2d3a); border-radius:8px; padding:4px; box-shadow:0 6px 18px rgba(0,0,0,.35); }
+  .hm-menu-title { font-size:11px; color:var(--muted, #6b7080); padding:6px 10px 4px; }
+  .hm-menu-item { display:block; width:100%; text-align:left; background:none; border:none; color:var(--text, #e8eaf0);
+                  padding:8px 10px; font-size:13px; border-radius:6px; cursor:pointer; }
+  .hm-menu-item:hover { background:rgba(127,127,127,.15); }
+  .hm-menu-hint { font-size:12px; color:var(--muted, #6b7080); padding:6px 10px; }
+  .hm-gaps { margin:0 0 10px; padding-left:18px; }
+  .hm-srcs { display:flex; flex-direction:column; gap:8px; }
+  .hm-src { display:flex; flex-direction:column; gap:2px; text-align:left; padding:10px 12px; cursor:pointer;
+            background:none; color:var(--text, #e8eaf0); border:1px solid var(--border, #2a2d3a); border-radius:8px;
+            font-size:13px; }
+  .hm-src:hover:not([disabled]) { border-color:var(--accent, #3b82f6); background:rgba(127,127,127,.08); }
+  .hm-src span { color:var(--muted, #6b7080); font-size:12px; }
+  .hm-src[disabled] { opacity:.55; cursor:default; }
+  .hm-modal { position:fixed; inset:0; z-index:65; display:flex; align-items:center; justify-content:center;
+              background:rgba(0,0,0,.45); padding:16px; }
+  .hm-modal-box { background:var(--surface, #1a1d27); color:var(--text, #e8eaf0); border:1px solid var(--border, #2a2d3a);
+                  border-radius:10px; padding:12px 14px; width:min(960px, 100%); height:min(860px, 92vh);
+                  display:flex; flex-direction:column; box-shadow:0 8px 24px rgba(0,0,0,.35); font-size:13px; }
+  .hm-modal-frame { flex:1; width:100%; border:0; border-radius:6px; background:var(--bg, #0f1117); }
+  .hm-mfold { display:block; width:100%; margin:6px 0; padding:6px 12px; border:1px dashed var(--border, #2a2d3a);
+              border-radius:8px; background:transparent; font-size:12px; color:var(--muted, #6b7080); cursor:pointer;
+              text-align:center; }
+  .hm-mfold:hover { color:var(--text, #e2e4ea); border-color:var(--muted, #6b7080); }
+  .hm-reach { margin:10px 0 4px; padding:10px 12px; border:1px dashed var(--border, #2a2d3a); border-radius:8px;
+              font-size:13px; color:var(--muted, #6b7080); text-align:center; }
+  .hm-reach a { color:var(--accent, #3b82f6); }
+  .hm-tip { position:fixed; z-index:50; pointer-events:none; display:none; padding:6px 8px;
+            border-radius:6px; font-size:12px; line-height:1.4; background:var(--surface, #1a1d27);
+            color:var(--text, #e8eaf0); border:1px solid var(--border, #2a2d3a);
+            box-shadow:0 4px 12px rgba(0,0,0,.25); }
+</style>

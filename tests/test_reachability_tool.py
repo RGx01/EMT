@@ -1,0 +1,206 @@
+"""The reachability trace §4a depends on.
+
+EMT is a subtractive project against a codebase that works, so `architecture §4a`
+requires an over-approximating reachability trace before anything is deleted.
+These tests exist so that requirement is enforceable rather than aspirational:
+the trace is committed, its dead set cannot silently grow, and — most
+importantly — it is checked against cases established by hand, because a trace
+nobody has validated is worse than no trace at all.
+"""
+import json
+import os
+import subprocess
+import sys
+import unittest
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_TOOL = os.path.join(_ROOT, ".build", "check_reachability.py")
+_BASE = os.path.join(_ROOT, ".build", "reachability_baseline.json")
+
+
+def _run(*args):
+    return subprocess.run([sys.executable, _TOOL, *args],
+                          capture_output=True, text=True, cwd=_ROOT)
+
+
+class TestToolRuns(unittest.TestCase):
+    def test_reports_json(self):
+        r = _run("--json")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        d = json.loads(r.stdout)
+        self.assertGreater(d["files_scanned"], 20)
+        self.assertGreater(d["definitions"], 1000)
+        self.assertEqual(d["parse_errors"], [], "every production file must parse")
+
+
+class TestWalkScope(unittest.TestCase):
+    """Regression: `production_files` used `.lstrip("./")` to trim a prefix. lstrip
+    takes a character SET, so a local `.venv/lib/x.py` came back as `venv/lib/x.py`
+    -- a path that does not exist -- and the tool crashed on it. A virtualenv is
+    also not production code, dotted or not, and must not be scanned."""
+
+    def test_virtualenvs_and_dot_dirs_are_not_scanned(self):
+        import importlib.util
+        import tempfile
+        spec = importlib.util.spec_from_file_location("_reach", _TOOL)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        with tempfile.TemporaryDirectory() as root:
+            for rel in ("main.py", "pkg/mod.py", ".venv/lib/a.py",
+                        "venv/lib/b.py", ".hidden/c.py"):
+                path = os.path.join(root, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                open(path, "w").close()
+            mod.ROOT = root
+            self.assertEqual(mod.production_files(), ["main.py", "pkg/mod.py"])
+
+
+class TestAgreesWithHandEstablishedCases(unittest.TestCase):
+    """The trace was checked against cases worked out by reading the code. If a
+    future change to the tool breaks one of these, the tool is wrong — not the
+    case."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.dead = {n["name"]
+                    for v in json.loads(_run("--json").stdout)["by_file"].values()
+                    for n in v}
+
+    def _dead(self, *names):
+        for n in names:
+            self.assertIn(n, self.dead, "%s should trace as unreachable" % n)
+
+    def _live(self, *names):
+        for n in names:
+            self.assertNotIn(n, self.dead, "%s is LIVE — tracing it dead would "
+                                           "licence deleting working code" % n)
+
+    def test_pricing_segments_eight_live(self):
+        # The three it held dead (attribute_devices, import_segments, total_cost_exc)
+        # moved to tests/segment_helpers.py — BL-63, 4 Oct 2026.
+        # These six have no EXTERNAL caller but are reached transitively; an
+        # earlier v4 roadmap entry called all nine shelved, and acting on that
+        # would have deleted working code.
+        self._live("segments_from_legacy", "price_devices_hybrid", "total_kwh",
+                   "total_cost", "blended_rate", "attribution_kwh",
+                   "attribution_cost", "attribution_rate")
+
+    def test_the_reads_table_api_is_gone(self):
+        """The five `reads`-table methods the tool traced dead, deleted 20 Oct 2026 with the table
+        (v4 2.0.0's raw-sample table, never written; HA's data is kept in `ha_reads`)."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "block_store.py"), encoding="utf-8") as fh:
+            src = fh.read()
+        for gone in ("def insert_read(", "def link_reads_to_block(", "def get_reads_for_block(",
+                     "def get_reads_for_range(", "def purge_reads_older_than("):
+            self.assertNotIn(gone, src, "%s came back" % gone)
+
+    # `_format_billing` was the superseded-card-formatter case; it was deleted on 6 Oct 2026
+    # (a fourth copy of the Direct-import subtraction, architecture §4).
+
+    def test_conditionally_live_code_is_not_called_dead(self):
+        """`_hybrid_ev_by_block` is the EV rule for accounts WITH a physical
+        meter; `_dispatch_ev_split_by_bucket` serves accounts without one. A
+        4.5.13 bug was misdiagnosed against the first on the belief it was
+        unreferenced. Both are live."""
+        self._live("_hybrid_ev_by_block", "_dispatch_ev_split_by_bucket")
+
+    def test_dunders_are_never_reported_dead(self):
+        """Found by the first real use of this tool. `IngressMiddleware.__call__`
+        is the WSGI entry point — EVERY request goes through it — but nothing
+        writes the name, so a name-trace saw no caller and reported it dead.
+        `__aenter__`/`__aexit__` (async with) and `__len__` (len()) the same.
+        This is the tool lying about DEAD, the direction that deletes working
+        code, so the whole dunder namespace is now excluded."""
+        self._live("__call__", "__aenter__", "__aexit__", "__len__")
+
+    def test_the_first_five_deletions_are_gone_and_their_siblings_live(self):
+        """§4a's first exercise, 22 Sep 2026. Each of these had a LIVE near-twin,
+        which is exactly how a careless deletion takes the wrong one."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for fn, gone in (("engine.py", "def io_save("),
+                         ("iog_cap.py", "def _hours("),
+                         ("energy_engine_io.py", "def save_json("),
+                         ("block_store.py", "def get_setting("),
+                         ("energy_charts.py", "def rate_breakdown_html(")):
+            with open(os.path.join(root, fn), encoding="utf-8") as fh:
+                src = fh.read()
+            self.assertNotIn(gone, src, "%s came back in %s" % (gone, fn))
+        self._live("save_json_atomic", "get_settings", "get_meta", "cap_usage")
+
+    def test_generated_mirrors_are_not_evidence_of_use(self):
+        """`store_types.py` binds every read method of BlockStore as a class
+        attribute. Scanning it marked 25 genuinely dead names reachable —
+        including `get_reads_for_block` and `get_reads_for_range`, two of the five
+        `reads`-table methods §4 documented as dead (deleted 20 Oct 2026, with the
+        table). A generated mirror of an API is not a caller of it.
+
+        Caught by the ratchet when the file was added, which is the ratchet
+        earning its place: the failure mode was a baseline that silently got 25
+        names smaller and stopped protecting them.
+        """
+        # `tombstoned_slots_in` was in this list until the heatmap's gap fill (gap fill design §2,
+        # 18 Oct 2026) began to call it, from `engine.gap_fill_plan`.
+        self._dead("get_generation_mix")
+
+    def test_workstream_a_scaffolding_is_now_wired(self):
+        """`store_access.bind` was dead when the module landed — scaffolding ahead
+        of its callers. `server.init()` calls it now, so the exception is spent.
+        It is asserted LIVE rather than deleted, so the wiring cannot quietly go
+        away again."""
+        self._live("bind")
+
+    def test_the_test_infrastructure_exceptions(self):
+        """Test-only helpers living in production code, named rather than
+        exempted by a rule — a rule like "anything ending _for_tests is fine" is
+        a loophole anyone can walk through.
+
+        `bind_object_for_tests` is the one hole in A's read/write boundary: parts
+        of the suite hand the server a MagicMock with no openable path, and a
+        second connection to such a thing does not exist. Production calls
+        `bind()`, which takes a path.
+
+        `reset_for_tests` is NO LONGER in the dead set, and the reason is the
+        tool's documented over-approximation rather than a change in the code:
+        `job_coordinator.__all__` lists it as a string, and an identifier-shaped
+        string literal is indistinguishable here from a `getattr`. Same mechanism
+        as `carbon.ev_carbon`, which is reachable only through dead code but has
+        its name in a JSON payload. The tool lying about ALIVE, which is the safe
+        direction — it means less gets deleted, not more.
+        """
+        exceptions = sorted(n for n in self.dead if n.endswith("_for_tests"))
+        self.assertEqual(exceptions, ["bind_object_for_tests"])
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        owners = []
+        for f in sorted(os.listdir(root)):
+            if not f.endswith(".py"):
+                continue
+            with open(os.path.join(root, f), encoding="utf-8") as fh:
+                if "def reset_for_tests" in fh.read():
+                    owners.append(f)
+        # Two modules is a pattern; a third is a convention that should be
+        # extracted rather than listed, and this test should change shape then.
+        self.assertEqual(owners, ["job_coordinator.py", "store_access.py"])
+
+    def test_the_414_markers_are_live(self):
+        self._live("stamp_version", "stamp_supplier", "_reconcile_decision")
+
+    def test_the_live_carbon_functions(self):
+        """`carbon_from_reprice` and `house_carbon` went with the shelved pricing model
+        (BL-63, 4 Oct 2026). `ev_carbon` stays: it is genuinely live — `period_ev_saving`
+        calls it — not merely over-approximated by the "ev_carbon" payload key in
+        server.py, as an earlier version of this test said."""
+        self._live("ev_carbon", "period_ev_saving", "slot_intensity")
+
+
+class TestBaselineGuard(unittest.TestCase):
+    def test_baseline_exists_and_matches(self):
+        self.assertTrue(os.path.exists(_BASE), "the baseline is the regression guard")
+        r = _run("--baseline", _BASE)
+        self.assertEqual(r.returncode, 0,
+                         "the unreachable set has grown — wire it up or delete it "
+                         "under §4a, but do not let dead code accumulate:\n" + r.stdout)
+
+
+if __name__ == "__main__":
+    unittest.main()

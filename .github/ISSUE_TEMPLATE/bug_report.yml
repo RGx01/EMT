@@ -1,0 +1,65 @@
+name: Something's wrong
+description: A figure, a page or a tool that doesn't do what it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting it. **Please don't paste MPANs, your account number or your address** —
+        the support file below replaces them with placeholders.
+  - type: input
+    id: version
+    attributes:
+      label: EMT version
+      description: In the footer of any page, or on the add-on's page in Home Assistant.
+      placeholder: 2026.11.0b1
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what you expected
+      description: The page, the day or half-hour, and the figures — EMT's, and what you expected (v4's, or your bill's).
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to see it
+      description: The steps that lead to it, if it isn't just "open this page".
+  - type: dropdown
+    id: start
+    attributes:
+      label: How EMT was set up
+      options:
+        - Set up a new account (from scratch)
+        - Restored from a v4 backup
+        - Restored from an EMT backup
+    validations:
+      required: true
+  - type: dropdown
+    id: source
+    attributes:
+      label: Where your readings come from
+      description: Settings → Meter Config shows it as "Data source".
+      options:
+        - Local meter (CAD) + Octopus Energy settlement
+        - Octopus Energy settlement (DCC)
+        - Octopus Energy settlement + Octopus Mini (near-real-time)
+        - Local meter (CAD)
+        - Not sure
+  - type: textarea
+    id: support
+    attributes:
+      label: Support file
+      description: |
+        Data Management → Backup & restore → **Make a support file…**, for the days in question, with
+        **Hide my meter and account details** ticked. Drag the zip here. If it's too big for GitHub,
+        say so and we'll arrange another way.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before sending
+      options:
+        - label: I've left out MPANs, my account number and my address.
+          required: true

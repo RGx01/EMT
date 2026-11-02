@@ -1,0 +1,76 @@
+{# Shared by every page that uploads a backup: data_management.html and welcome.html. Included
+   inside a <script> block. #}
+// The answer to an UPLOAD, as JSON — or a plain reason when it is not JSON (5 Oct 2026).
+// Through Home Assistant's ingress proxy a large upload can be refused before it reaches
+// EMT, and the reply is the proxy's own page, not JSON; `r.json()` on it failed with the
+// browser's parse error ("The string did not match the expected pattern." in Safari),
+// which named nothing. Say what happened and where it works instead.
+async function uploadReply(r) {
+  var type = (r.headers.get('content-type') || '').toLowerCase();
+  if (type.indexOf('application/json') !== -1) return r.json();
+  throw new Error('the server answered HTTP ' + r.status + ' without a result. ' +
+    'Home Assistant\'s ingress can refuse a large upload before it reaches EMT — ' +
+    'open the add-on\'s Web UI directly (port 8098 by default) and restore from there.');
+}
+
+// A backup sent in pieces (14 Oct 2026). Through Home Assistant's ingress a whole backup in one
+// request was refused before it reached EMT — "HTTP 413", the proxy's body limit — so a restore
+// worked only on the add-on's own port. Each piece is small enough for any limit; the server
+// writes it at the offset it states (a retried piece replaces itself) and stages the whole file at
+// the end, exactly as one upload would be. A piece that fails is tried twice more. `onStage(text)`
+// says how far it has got. Resolves to the stage's reply: {ok, token, facts} or {error}.
+// One piece, as bytes in memory, by XMLHttpRequest (14 Oct 2026). fetch() with a Blob body — a
+// slice of the chosen file — never left Safari: the request showed no headers and no status, and
+// the upload sat at 0%. XHR is what sent the whole file before, in the same Safari; reading the
+// piece first means there is no Blob to stream. A piece that has not answered in 60 s is an error,
+// so a stall is retried instead of waiting for ever. Resolves to what uploadReply() reads.
+function sendPiece(url, piece) {
+  return piece.arrayBuffer().then(function (buf) {
+    return new Promise(function (resolve, reject) {
+      var xhr = new XMLHttpRequest();
+      xhr.open('POST', url);
+      xhr.timeout = 60000;
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      xhr.onload = function () {
+        var body = xhr.responseText;
+        resolve({status: xhr.status,
+                 headers: {get: function (h) { return xhr.getResponseHeader(h); }},
+                 json: function () { return Promise.resolve(JSON.parse(body)); }});
+      };
+      xhr.onerror = function () { reject(new Error('a piece of the upload did not reach EMT')); };
+      xhr.ontimeout = function () { reject(new Error('a piece of the upload took over a minute')); };
+      xhr.send(buf);
+    });
+  });
+}
+
+async function stageInPieces(file, onStage) {
+  var post = function (url, opts) {
+    return fetch(apiUrl(url), Object.assign({method: 'POST'}, opts)).then(uploadReply);
+  };
+  var json = function (o) { return {headers: {'Content-Type': 'application/json'}, body: JSON.stringify(o)}; };
+  var mb = function (n) { return (n / 1048576).toFixed(1); };
+  var b = await post('/api/restore/upload/begin', json({size: file.size}));
+  if (!b.ok) return b;
+  var step = b.chunk || 524288, off = 0;
+  onStage('Uploading… 0% (0.0 of ' + mb(file.size) + ' MB)');
+  while (off < file.size) {
+    var piece = file.slice(off, Math.min(file.size, off + step)), tries = 0, r;
+    for (;;) {
+      try {
+        r = await uploadReply(await sendPiece(
+          apiUrl('/api/restore/upload/chunk?id=' + encodeURIComponent(b.id) + '&offset=' + off), piece));
+        break;
+      } catch (e) {
+        if (++tries > 2) throw e;
+        await new Promise(function (ok) { setTimeout(ok, 1000 * tries); });
+      }
+    }
+    if (!r.ok) return r;
+    off = r.received;
+    onStage('Uploading… ' + Math.floor(100 * off / file.size) + '% (' + mb(off) + ' of ' +
+            mb(file.size) + ' MB)');
+  }
+  onStage('Uploaded — EMT is checking the file. On a Pi this can take a minute or two.');
+  return post('/api/restore/upload/finish', json({id: b.id, size: file.size}));
+}

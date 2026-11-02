@@ -1,0 +1,174 @@
+"""#115 — settled = authority. apply_measured_settled applies the bill for EVERY cached
+settled slot (both bands), with NO age-gate and NO review-flag. apply_measured_to_block
+NEVER derives a cost/kWh rate: it snaps to the tariff agreement, or skips the slot.
+(Replaces the retired test_measured_age_gate / test_measured_apply_pass / test_bl53_step2.)"""
+import os, sys, unittest
+from unittest import mock
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import engine
+import ev_split
+from block_store import BlockStore
+
+OFF, PK = 0.05493, 0.323092
+
+
+class _Sched:
+    def is_empty(self): return False
+    def day_rate_bounds(self, ts): return (5.493, 32.3092)   # pence (off, peak)
+
+
+class _NoBoundsSched:
+    def is_empty(self): return False
+    def day_rate_bounds(self, ts): return (None, None)
+
+
+class TestMeasuredSettledV2(unittest.TestCase):
+    def setUp(self):
+        self._save = (engine._store, engine._kraken_rate_schedules, engine._kraken_discovery,
+                      engine._kraken_current_agreement_from)
+        self.st = BlockStore(":memory:")
+        engine._store = self.st
+        engine._kraken_rate_schedules = {"import": _Sched()}
+        # engine step 4b: settle() asks the tariff kind (the apply never did); no agreement is loaded
+        _tk = mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+        _tk.start()
+        self.addCleanup(_tk.stop)
+        # an Intelligent tariff (the bill apply takes Intelligent half-hours only, 16 Oct 2026);
+        # not IOG-SMB, so these cases keep the dispatch rule they were written for
+        engine._kraken_discovery = {"import": {"mpan": "m", "tariff_code": "E-1R-INTELLI-VAR-22-10-14-B"}}
+        engine._kraken_current_agreement_from = "2026-08-01T00:00:00"
+        self.st._conn.execute(
+            "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
+            "block_minutes, timezone) VALUES (1,'2020-01-01T00:00:00',1,30,'UTC')")
+
+    def tearDown(self):
+        (engine._store, engine._kraken_rate_schedules, engine._kraken_discovery,
+         engine._kraken_current_agreement_from) = self._save
+
+    def _blk(self, slot, kwh, rate):
+        self.st._conn.execute(
+            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
+            "imp_kwh, imp_kwh_api, imp_rate, imp_cost, rate_source, rate_corrected) "
+            "VALUES (?,?,?,1,?,?,?,?,'reconciled',0)",
+            (slot, slot, "electricity_main", kwh, kwh, rate, round(kwh * rate, 6)))  # DCC-settled
+        self.st._conn.commit()
+
+    def _meas(self, slot, cost_incl, label):
+        self.st.upsert_measured_cost(slot, mpan="m", cost_incl=cost_incl,
+                                     cost_excl=round(cost_incl * 0.95238, 6), label=label)
+
+    def _rate(self, slot):
+        return self.st._conn.execute(
+            "SELECT imp_rate, rate_source, needs_review FROM blocks WHERE block_start=?",
+            (slot,)).fetchone()
+
+    def test_settlement_recosts_physical_device_submeter(self):
+        # SMB device-cost fix: a settled block whose ev_charger sub-meter was costed by PASS 2
+        # at the pre-settlement PEAK must have the device RE-COSTED off-peak when the bill
+        # settles the slot off-peak (device == main == bill) — not left at the stale peak.
+        slot = "2026-09-08T04:00:00"
+        self._blk(slot, 3.0, PK)                              # main provisionally PEAK
+        self.st._conn.execute(                               # settle() reads the meters config
+            "INSERT INTO meters (config_period_id, meter_id, is_sub_meter, parent_meter_id) "
+            "VALUES (1, 'ev_charger', 1, 'electricity_main')")
+        self.st._conn.execute(                               # device sub-meter, PASS-2 costed PEAK
+            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
+            "imp_kwh, imp_rate, imp_cost, rate_source, rate_corrected) "
+            "VALUES (?,?,?,1,?,?,?,'reconciled',0)",
+            (slot, slot, "ev_charger", 2.0, PK, round(2.0 * PK, 6)))
+        self.st._conn.commit()
+        self._meas(slot, round(3.0 * OFF, 6), "OFF_PEAK")     # bill: off-peak
+        engine.apply_measured_settled()
+        self.assertAlmostEqual(self._rate(slot)["imp_rate"], OFF, places=5)   # main off-peak
+        dev = self.st._conn.execute(
+            "SELECT imp_rate, imp_cost FROM blocks WHERE meter_id='ev_charger' AND block_start=?",
+            (slot,)).fetchone()
+        self.assertAlmostEqual(dev["imp_rate"], OFF, places=5)                # device re-costed
+        self.assertAlmostEqual(dev["imp_cost"], round(2.0 * OFF, 6), places=6)
+
+    def test_settlement_caps_ev_to_dispatch_not_bill_bucket(self):
+        # 4.5.9: Octopus's settled EV_DEVICE bucket over-attributes on a slot where the home
+        # battery grid-charged inside the dispatch window (no battery bucket). The car's
+        # completed-dispatch session is the measured ceiling — the settlement must cap EV to
+        # it, not write the inflated bill bucket into the EV segment. TOTAL cost is untouched.
+        slot = "2026-09-08T02:30:00"
+        self._blk(slot, 4.347, OFF)                              # main grid import, off-peak
+        self._meas(slot, round(4.347 * OFF, 6), "OFF_PEAK")
+        self.st.upsert_measured_breakdown(slot, mpan="m",
+                                          ev_kwh=3.182, ev_rate=OFF,   # confounded bill bucket
+                                          home_kwh=1.165, home_rate=OFF)
+        self.st._conn.execute(                                   # car's ACTUAL session = 1.37
+            "INSERT INTO dispatch_history (slot_start, kind, energy_kwh, first_seen, last_seen) "
+            "VALUES (?,?,?,?,?)", (slot, "completed", -1.37, slot, slot))
+        self.st._conn.commit()
+        engine.apply_measured_settled()
+        r = self.st._conn.execute(
+            "SELECT " + ev_split.sql_kwh("b") + " AS imp_kwh_ev, imp_cost FROM blocks b "
+            "WHERE block_start=? AND meter_id='electricity_main'", (slot,)).fetchone()
+        self.assertAlmostEqual(r["imp_kwh_ev"], 1.37, places=5)         # capped to dispatch
+        self.assertAlmostEqual(r["imp_cost"], round(4.347 * OFF, 6), places=6)  # TOTAL unchanged
+
+    def test_applies_both_bands_no_defer_no_flag(self):
+        peak = "2026-09-09T13:00:00"           # recent, currently off-peak, bill says PEAK
+        self._blk(peak, 3.0, OFF); self._meas(peak, round(3.0 * PK, 6), "STANDARD_RATE")
+        off = "2026-09-08T02:00:00"            # off-peak, bill agrees
+        self._blk(off, 2.0, OFF); self._meas(off, round(2.0 * OFF, 6), "OFF_PEAK")
+        res = engine.apply_measured_settled()
+        self.assertEqual(res["applied"], 2)              # BOTH applied (no age-gate defer)
+        self.assertNotIn("deferred", res)
+        self.assertNotIn("flagged", res)
+        pr = self._rate(peak)
+        self.assertAlmostEqual(pr["imp_rate"], PK, places=5)     # snapped to CLEAN agreement peak
+        self.assertEqual(pr["rate_source"], "settled")
+        self.assertEqual(pr["needs_review"] or 0, 0)             # NOT review-flagged
+        self.assertAlmostEqual(self._rate(off)["imp_rate"], OFF, places=5)
+
+    def test_no_agreement_bounds_does_not_settle(self):
+        engine._kraken_rate_schedules = {"import": _NoBoundsSched()}
+        slot = "2026-09-09T13:00:00"
+        self._blk(slot, 3.0, OFF); self._meas(slot, round(3.0 * PK, 6), "STANDARD_RATE")
+        res = engine.apply_measured_settled()
+        self.assertEqual(res["applied"], 0)              # skipped — never a cost/kWh rate
+        r = self._rate(slot)
+        self.assertAlmostEqual(r["imp_rate"], OFF, places=5)     # unchanged
+        self.assertNotEqual(r["rate_source"], "settled")        # NOT settled
+
+
+class TheApplyIsIntelligentOnly(unittest.TestCase):
+    """16 Oct 2026 (settlement surfaces design §9.2; bill and split paths design §6 (c), narrowed):
+    `apply_measured_settled` takes a cached bill on an Intelligent half-hour only — applying snaps
+    the rate to the day's lowest or highest band, which would mis-set an Agile / Go / Cosy / flat
+    half-hour. Discriminating: the parent applied it."""
+
+    def setUp(self):
+        self._save = (engine._store, engine._kraken_rate_schedules, engine._kraken_discovery,
+                      engine._kraken_current_agreement_from)
+        self.st = BlockStore(":memory:")
+        engine._store = self.st
+        engine._kraken_discovery = {"import": {"mpan": "m", "tariff_code": "E-1R-AGILE-24-10-01-B"}}
+        engine._kraken_current_agreement_from = "2026-08-01T00:00:00"
+        engine._kraken_rate_schedules = {"import": _Sched()}
+        self.st._conn.execute(
+            "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, block_minutes, "
+            "timezone) VALUES (1, '2020-01-01T00:00:00', 1, 30, 'UTC')")
+        self.st._conn.execute(
+            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
+            "imp_kwh_api, imp_rate, imp_cost, source) VALUES ('2026-08-20T12:00:00', "
+            "'2026-08-20T12:30:00', 'electricity_main', 1, 2.0, 2.0, 0.1834, 0.3668, 'kraken_api')")
+        self.st.upsert_measured_cost("2026-08-20T12:00:00", mpan="m", cost_incl=0.3668,
+                                     cost_excl=0.3493, label="STANDARD_RATE", kwh=2.0)
+        self.st._conn.commit()
+
+    def tearDown(self):
+        (engine._store, engine._kraken_rate_schedules, engine._kraken_discovery,
+         engine._kraken_current_agreement_from) = self._save
+
+    def test_an_agile_half_hour_keeps_its_rate(self):
+        res = engine.apply_measured_settled()
+        r = self.st._conn.execute("SELECT imp_rate, rate_source FROM blocks").fetchone()
+        self.assertEqual((r[0], r[1]), (0.1834, None), "the bill was applied with the two-rate snap")
+        self.assertEqual((res["applied"], res.get("published_rate")), (0, 1))
+
+
+if __name__ == "__main__":
+    unittest.main()

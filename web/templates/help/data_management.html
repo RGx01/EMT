@@ -1,0 +1,186 @@
+{% extends "help_base.html" %}
+{% set help_title = "Data Management" %}
+{# BL-105 PR 2: the key's swatches, as the heatmap draws them (heatmap_module's settleColour / swatchCss) #}
+{% macro sw(kind) %}<span class="hsw hsw-{{ kind }}" aria-hidden="true"></span>{% endmacro %}
+{% block help_body %}
+<style>
+.hsw { display:inline-block; width:12px; height:12px; border-radius:2px; vertical-align:-1px; margin-right:6px;
+       border:1px solid rgba(127,127,127,0.45); box-sizing:border-box; }
+.hsw-green { background:#2e9e5b; } .hsw-teal { background:#2a9d9f; } .hsw-lamber { background:#f2cf7a; }
+.hsw-amber { background:#e0a020; } .hsw-red { background:#cc0000; } .hsw-blue { background:#3b7dd8; }
+.hsw-grey { background:#d4d7de; } [data-theme="dark"] .hsw-grey { background:#3a3e4a; }
+.hsw-missing { background:#000 repeating-linear-gradient(135deg,#6b7080 0 1.2px,transparent 1.2px 4px); }
+.hsw-abandoned { background:#cc0000 repeating-linear-gradient(135deg,#f2c94c 0 1.2px,transparent 1.2px 4px); }
+.help-states { list-style:none; margin-left:0 !important; }
+.help-states > li { margin-bottom:8px; }
+.help-states ul { margin-top:4px; }
+</style>
+<div class="card help-section">
+  <div class="card-title">🩺 The health strip</div>
+  <p>Along the top, your data at a glance — each figure a link:</p>
+  <ul>
+    <li><strong>Import bill</strong> and <strong>Export bill</strong> — how many half-hours need a look,
+      or <em>all clear</em> (with Octopus connected).</li>
+    <li><strong>Missing</strong> — half-hours with no record at all, and in how many gaps.</li>
+    <li><strong>Last backup</strong> — how long ago, and what made it.</li>
+    <li><strong>Database</strong> — its size.</li>
+  </ul>
+  <p>While a job is rewriting history (an import, a gap fill, a re-fetch) the counts wait until it
+    finishes.</p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🔥 The data heatmap</div>
+  <p>
+    The same month-by-month heatmap as on Charts, with views of the data's state as well as its
+    energy:
+  </p>
+  <ul>
+    <li><strong>Import bill</strong> — is each half-hour's cost final?</li>
+    <li><strong>Export bill</strong> — the same for export, which is final once its kWh settles.</li>
+    <li><strong>Missing</strong> — without Octopus, the one data view: is every half-hour recorded?</li>
+  </ul>
+  <p>
+    A missing half-hour is {{ sw('missing') }}<strong>black and hatched</strong> on every view. The key
+    under the heatmap's title gives each colour; <a href="#fixing">Fixing the heatmap</a> below says what
+    each means and what to do about it. <strong>Issues only</strong> folds away the days with nothing to
+    look at; a fold opens with a click.
+  </p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🛠 The tools on a selection</div>
+  <p>
+    <strong>Click</strong> a half-hour for its details. <strong>Drag</strong> across the heatmap (or
+    click one cell and shift-click another) to select a span, then <strong>right-click</strong> it (a long
+    press on a phone) for what can be done to it:
+  </p>
+  <ul>
+    <li><strong>Re-fetch from Octopus</strong> — ask Octopus again for the span's kWh and cost, see
+      what would change, and apply it or not.</li>
+    <li><strong>Fill this gap</strong> — where the span holds missing half-hours: from Octopus, from a
+      CSV (EMT gives you a template for the gap), or from your Octopus PDF bills.</li>
+    <li><strong>Fill the missing export</strong> from PDF bills or a CSV.</li>
+    <li><strong>Delete</strong> — the whole half-hours, import, export and the devices with them.
+      Home Assistant's own readings are kept, so when the half-hours are filled again the devices
+      are rebuilt from them.</li>
+    <li><strong>Make a support file</strong> for the span.</li>
+  </ul>
+  <div class="note-box">Every change that cannot be undone takes a backup first.</div>
+</div>
+
+<div class="card help-section" id="fixing">
+  <div class="card-title">🧭 Fixing the heatmap</div>
+  <p>Click a half-hour for its details: they say which of these it is. Right-click it, or a selection,
+    for the tools.</p>
+
+  <h3>Import bill</h3>
+  <ul class="help-states">
+    <li>{{ sw('green') }}<strong>Final</strong> — Octopus's cost, or on a published-rate tariff the
+      settled kWh × its rate. Nothing to do.</li>
+    <li>{{ sw('teal') }}<strong>Octopus's cost, EMT's House/EV split</strong> — the cost is final; the car's
+      share of it is EMT's own estimate. Nothing to do.</li>
+    <li>{{ sw('lamber') }}<strong>Settled kWh, Octopus's cost not in yet</strong> — priced kWh × rate until
+      it comes. Wait: EMT asks for it.</li>
+    <li>{{ sw('amber') }}<strong>kWh not settled yet</strong> — Octopus usually settles it within a day or
+      two. Wait.</li>
+    <li>{{ sw('red') }}<strong>Needs a look</strong> — one of:
+      <ul>
+        <li><em>Not final after 7 days</em>: Octopus has not given its cost yet. EMT keeps asking — hourly
+          for two days, then daily, for 30 days. <strong>Re-fetch from Octopus</strong> asks now, or
+          <a href="#csv-cost">import the day's CSV or PDF bill</a>.</li>
+        <li><em>Octopus's figures disagree</em>: its cost is not its kWh × its rate, it priced a different
+          kWh from the one that settled, or its VAT is not the day's rate. These are Octopus's figures,
+          outside EMT's control. When Octopus corrects them, a re-fetch takes the correction.</li>
+        <li><em>A completed dispatch with no House/EV split</em>: Octopus's breakdown puts none of the
+          half-hour on the car, though the car charged in it. A re-fetch takes a corrected breakdown once
+          Octopus has one.</li>
+        <li><em>The devices cost more than the meter</em>: the device breakdown reads too high and the
+          house's too low (the bill itself is right). A re-fetch prices the devices again and clears it.</li>
+      </ul></li>
+    <li>{{ sw('abandoned') }}<strong>No cost from Octopus, no longer asked</strong> — asked for 30 days and
+      never answered, so EMT has stopped asking. The cost shown is kWh × rate: an estimate, not your bill.
+      A re-fetch may still get it; or <a href="#csv-cost">import the day's CSV or PDF bill</a>. Some
+      accounts have long stretches like this — whole days Octopus has never costed.</li>
+    <li>{{ sw('blue') }}<strong>Your correction</strong> — a rate you set. On an Intelligent tariff with
+      Octopus connected, a re-fetch replaces it with Octopus's own cost.</li>
+    <li>{{ sw('grey') }}<strong>Nothing to settle</strong> — nothing imported, imported history, or not on
+      an Octopus agreement.</li>
+    <li>{{ sw('missing') }}<strong>Missing</strong> — no record for the half-hour. <strong>Fill this
+      gap</strong>, from Octopus, a CSV or your PDF bills.</li>
+  </ul>
+
+  <h3>Export bill</h3>
+  <ul class="help-states">
+    <li>{{ sw('green') }}<strong>Settled</strong> — final. Nothing to do.</li>
+    <li>{{ sw('amber') }}<strong>Not settled, under 7 days</strong> — wait.</li>
+    <li>{{ sw('red') }}<strong>Not settled after 7 days</strong> — <strong>Re-fetch from Octopus</strong>.</li>
+    <li>{{ sw('abandoned') }}<strong>No export figure</strong> — neither Octopus nor the CSV gave one. A
+      re-fetch may get it; otherwise <strong>Fill the missing export</strong> from your PDF bills or a CSV.</li>
+    <li>{{ sw('grey') }}<strong>Nothing to settle</strong> — no export, or CSV history.</li>
+    <li>{{ sw('missing') }}<strong>Missing</strong> — <strong>Fill this gap</strong>.</li>
+  </ul>
+
+  <h3 id="csv-cost">A cost from a CSV or your PDF bills</h3>
+  <p>
+    <strong>Import a CSV</strong> or <strong>Import PDF bills</strong> (Whole history) fills missing
+    half-hours, and leaves every half-hour EMT already has as it is. One exception: a half-hour on an
+    Intelligent tariff whose kWh has settled and which Octopus has not costed takes the CSV's cost as
+    its bill. Its kWh — Octopus's settled figure — is not changed; the cost tells EMT which of the
+    day's rates applied, and the half-hour is priced at the settled kWh × that rate. It then reads
+    {{ sw('grey') }}grey: final, but your bill's figure rather than Octopus's own answer, so EMT no
+    longer asks Octopus for it.
+  </p>
+  <p>Not taken, and counted after the import: a half-hour whose CSV kWh is not the settled kWh, one
+    whose cost is neither of the day's rates (a half-hour split between them), and one you corrected.</p>
+
+  <h3>A costed half-hour turning red after a re-fetch</h3>
+  <p>
+    A re-fetch writes only what Octopus's new answer changes. A half-hour Octopus does not answer is left
+    as it was, so a re-fetch never takes away a cost. If a half-hour that was green turns red after one,
+    Octopus's new answer disagrees with itself — or with the day's VAT — as above. That is outside EMT's
+    control; Octopus may correct it later, and a re-fetch then takes the correction.
+  </p>
+  <div class="note-box">
+    The one exception is EMT's: <strong>Logs</strong> showing <code style="word-break:normal">the bill is stored, the block did not
+    re-settle from it</code>. Make a support file for that day and report it.
+  </div>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🗂️ Whole history</div>
+  <p>The jobs for your whole history, in the menu at the top:</p>
+  <ul>
+    <li><strong>Import history from Octopus</strong> — the half-hours Octopus holds, about two years
+      back.</li>
+    <li><strong>Import a CSV</strong> and <strong>Import PDF bills</strong> — for history from before
+      that, or from another supplier.</li>
+    <li><strong>Recover every gap</strong> — ask Octopus for every missing half-hour it can fill.</li>
+    <li><strong>Delete all imported history</strong> — the half-hours brought in by an import, after
+      showing how many.</li>
+  </ul>
+  <p>For a range, select it on the heatmap instead.</p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🗄️ Backup &amp; restore</div>
+  <ul>
+    <li><strong>Backup now</strong> makes a backup at once; <strong>Backup &amp; restore</strong> lists
+      them — what made each, when, and its size — with the daily copy.</li>
+    <li><strong>Restore</strong> one from the list, or <strong>drop a backup</strong> (a <code>.zip</code>
+      or a <code>blocks.db</code>) anywhere on the page. EMT checks it before anything is touched, and
+      a backup from the previous version of EMT is brought across.</li>
+    <li><strong>Compact now</strong> rebuilds the database file to reclaim the space deleted rows left.</li>
+  </ul>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🩺 A support file</div>
+  <p>
+    One zip to send to whoever is helping you: EMT's log, a summary of your setup and the machine it
+    runs on, and your data for the span you choose. <strong>Hide my meter and account details</strong>
+    (on by default) turns your MPANs, meter serials, account number and postcode into placeholders.
+    Your Octopus API key is never in it, and nothing is sent anywhere — you download it.
+  </p>
+</div>
+{% endblock %}

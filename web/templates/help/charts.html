@@ -1,0 +1,105 @@
+{% extends "help_base.html" %}
+{% set help_title = "Charts" %}
+{% block help_body %}
+<div class="card help-section">
+  <div class="card-title">📊 Billing</div>
+  <p>
+    Your bill, a billing period at a time — or a month, quarter or year — with the arrows to move
+    between them. The bill card sets out what the period cost, line by line, as a bill does.
+  </p>
+  <ul>
+    <li><strong>vs Prev</strong> and <strong>vs Last Year</strong> set the period beside the one before,
+      or the same one a year ago.</li>
+    <li><strong>Censor</strong> blurs the meter number, the readings and the site's name, for a screenshot.</li>
+    <li><strong>Show Data</strong> shows or hides every day's data table.</li>
+    <li>Each day has a chart: its half-hours' kWh as bars, a device each, and the rate as a line.</li>
+    <li><strong>Correcting a rate</strong> — without the supplier API, right-click a day's chart (a long
+      press on a phone) to correct a half-hour's rate or the day's standing charge. With Octopus
+      connected the bill is Octopus's, so there is nothing to correct.</li>
+  </ul>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🔥 Heatmaps</div>
+  <p>
+    A month at a time, a row a day and a cell a half-hour, coloured by its <strong>kWh</strong>, its
+    carbon (<strong>gCO₂</strong>) or the grid's carbon intensity (<strong>gCO₂/kWh</strong>), with each
+    day's total beside it. The data's health — what is settled and what is missing — is the same heatmap
+    on Data Management.
+  </p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">📈 Usage Stats</div>
+  <p>Three views, chosen under <strong>Show</strong>:</p>
+  <h3>Devices</h3>
+  <ul>
+    <li>A bar each period — <strong>HH</strong> (a day's half-hours), <strong>Daily</strong>,
+      <strong>Monthly</strong>, <strong>Yearly</strong> — split into the house and each device, with
+      export below the axis.</li>
+    <li><strong>Billing</strong> or <strong>Calendar</strong> periods; <strong>kWh</strong>,
+      <strong>Cost</strong> or <strong>CO₂</strong>; the years shown, below.</li>
+    <li><strong>Net</strong> draws import less export as a line; <strong>Inc. standing charge</strong>
+      adds it to the cost.</li>
+    <li><strong>Tariffs</strong> lays your Octopus tariffs along the bars (import above, export below);
+      hover one for its prices. <strong>Eras</strong> marks your home's changes (below).</li>
+    <li>The table below follows the chart; drag the line between them to resize, and
+      <strong>Copy to clipboard</strong> to take the table elsewhere.</li>
+  </ul>
+  <h3>Rate brackets</h3>
+  <p>
+    Your grid import by the price it was charged, in 2.5p brackets (inc VAT) — for the whole meter, the
+    house, a device, or your export — so you can see how much of it fell on cheap or dear half-hours, on
+    any tariff. <strong>%</strong> shows each bracket's share. Below the chart, the average price against
+    the whole meter's, and a row a bracket.
+  </p>
+  <h3>Running total</h3>
+  <ul>
+    <li>Your running totals side by side — <strong>Cost</strong>, <strong>Usage</strong> and, with carbon,
+      <strong>Carbon</strong> — for Net, Import, Export, a device, or the standing charges.</li>
+    <li><strong>Line</strong> or <strong>Spiral</strong>: along a time axis, or wound a year a turn.</li>
+    <li><strong>Lifetime</strong>, from the first day; or <strong>Year by year</strong>, each year from
+      nought, laid over each other.</li>
+    <li><strong>The year starts</strong> on 1 January, your billing anniversary, a tariff's start or an
+      era's — so the year before your solar and the year after it each start together.</li>
+    <li>The table: each year's total, its change on the year before, and its total to the same day of the
+      year as the latest — like for like.</li>
+  </ul>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">⏳ The settlement pill</div>
+  <p>
+    With Octopus connected, the pill at the top says how many half-hours are still waiting for Octopus,
+    at each stage: their <strong>kWh</strong> (the meter's settled reading), their <strong>bill</strong>
+    (Octopus's cost), and, on the capped Intelligent tariff, their car and house
+    <strong>split</strong>. Until then a half-hour is priced on EMT's own figures.
+  </p>
+  <ul>
+    <li><strong>Click</strong> it for Data Management, with the half-hours that need a look.</li>
+    <li><strong>Right-click</strong> it (a long press on a phone) to <strong>Retry settlement</strong> —
+      ask Octopus now rather than at the next 6-hourly check (not again within 15 minutes).</li>
+  </ul>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">⚙︎ Home eras and bar colours</div>
+  <p>The ⚙︎ beside <strong>PDF</strong>:</p>
+  <ul>
+    <li><strong>Home eras</strong> — a dated note for each change to your home: solar, a battery, a heat
+      pump, an air-to-air unit, an EV, insulation, a house move, a meter change. EMT adds a house move and
+      a meter change itself when it sees them in your Octopus account. Eras are marked on Usage Stats;
+      they change no figure.</li>
+    <li><strong>Bar colours</strong> — each meter's colour and rate line, in one place, as on each
+      device's Settings tab.</li>
+  </ul>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">⬇ PDF</div>
+  <p>
+    Saves the tab you are on as a PDF, on a white page whatever your theme: the Billing tab with every
+    day's chart, Usage Stats with its settings, chart and table.
+  </p>
+</div>
+{% endblock %}

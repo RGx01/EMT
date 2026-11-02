@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<!--
+  /lovelace/heatmap — the net energy heatmap on its own, for a Home Assistant dashboard
+  card (an iframe/webpage card pointing at this URL). Same URL as before 30 Sep 2026;
+  it served the pre-rendered net_heatmap.html until the Heatmaps tab moved into the
+  browser. Now it is heatmap_module.html on a bare page, refreshing the current month
+  every {{ refresh_s }} s (fingerprint-checked — nothing is re-fetched unless it moved).
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EMT heatmap</title>
+  <script>
+    // Ingress-aware base path, exactly as base.html sets it.
+    var BASE_PATH = "{{ request.environ.get('SCRIPT_NAME', '') }}";
+    function apiUrl(path) { return BASE_PATH + path; }
+    // A dashboard card has no EMT theme toggle: follow the viewer's system setting,
+    // or ?theme=light|dark when the card wants to force one.
+    (function () {
+      var q = new URLSearchParams(location.search).get('theme');
+      var t = q || (window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+      document.documentElement.setAttribute('data-theme', t);
+    })();
+  </script>
+  <style>
+    :root { --bg:#0f1117; --text:#e8eaf0; --muted:#6b7080; --border:#2a2d3a; --card:#1a1d27; --accent:#3b82f6; }
+    :root[data-theme="light"] { --bg:#ffffff; --text:#1a1a2e; --muted:#555566; --border:#dddddd; --card:#ffffff; }
+    html, body { margin:0; background:var(--bg); color:var(--text);
+                 font-family:system-ui, -apple-system, "Segoe UI", sans-serif; }
+    #chart-heatmap-content { padding:8px 12px; }
+  </style>
+</head>
+<body>
+  <div id="chart-heatmap-content"></div>
+  {% include "heatmap_module.html" %}
+  <script>
+    EMTHeatmap.init(document.getElementById('chart-heatmap-content'), {mode: 'chart'});
+    setInterval(function () { EMTHeatmap.refresh(); }, {{ refresh_s|int }} * 1000);
+  </script>
+</body>
+</html>

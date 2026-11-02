@@ -1,0 +1,53 @@
+name: Bringing v4's history across
+description: Restoring a v4 backup into EMT — refused, failed, or the history doesn't look right.
+labels: ["v4-import"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing the import. **Please don't attach the v4 backup itself** — it holds your
+        meter and account details. A support file from EMT, with *Hide my meter and account details*
+        ticked, is what helps.
+  - type: input
+    id: v4
+    attributes:
+      label: v4 version the backup came from
+      description: On v4's add-on page, or its footer. EMT needs 4.5.23 or later.
+      placeholder: 4.5.24
+    validations:
+      required: true
+  - type: input
+    id: emt
+    attributes:
+      label: EMT version
+      placeholder: 2026.11.0b1
+    validations:
+      required: true
+  - type: dropdown
+    id: outcome
+    attributes:
+      label: What happened
+      options:
+        - The backup was refused
+        - The import started but failed
+        - It imported, but some history looks wrong
+        - It imported, but it was slow
+    validations:
+      required: true
+  - type: textarea
+    id: detail
+    attributes:
+      label: Details
+      description: The message EMT showed, if any; for wrong history, the month or day and both figures (v4's and EMT's).
+    validations:
+      required: true
+  - type: input
+    id: size
+    attributes:
+      label: Backup size and how long the import took
+      placeholder: 90 MB, about 3 minutes
+  - type: textarea
+    id: support
+    attributes:
+      label: Support file
+      description: Data Management → Backup & restore → Make a support file…, with Hide my meter and account details ticked.

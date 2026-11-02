@@ -1,0 +1,59 @@
+{% extends "help_base.html" %}
+{% set help_title = "Overview" %}
+{% block help_body %}
+<div class="card help-section">
+  <div class="card-title">⚡ Live power and the devices</div>
+  <ul>
+    <li><strong>Live Power</strong> — your grid power now: importing, exporting or net zero. It needs a
+      power sensor for the main meter, or an Octopus Home Mini.</li>
+    <li><strong>A gauge for each device</strong> with a power sensor: a battery's charge and its
+      inverter (charging or discharging), an EV charger's draw, a heat pump's.</li>
+    <li><strong>🌿 Carbon Intensity</strong> — the grid's carbon now in your region, and its forecast for
+      the next 48 hours. It needs a postcode.</li>
+    <li><strong>48-Hour Power History</strong> — your grid power over the last two days (kW); with a
+      postcode, its carbon (CO₂) and the grid's fuel mix (Mix).</li>
+  </ul>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">💷 Today, this bill and this year</div>
+  <p>
+    Three cards — <strong>Today</strong>, <strong>This Bill</strong> (your current billing period) and
+    <strong>This Year</strong> — each with its net cost so far, and the lines behind it: the total
+    import, the house's direct import and each device beneath it, the grid export and the standing charge.
+  </p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🚗 Smart Charging</div>
+  <p>On Intelligent Octopus Go, the card shows your car's last smart charge:</p>
+  <ul>
+    <li>the day and the window it ran, its kWh and what it cost — <em>est.</em> until Octopus's bill for
+      those half-hours arrives;</li>
+    <li>on the capped tariff, how much of the day's <strong>6 hours</strong> of smart charging it used
+      (Octopus counts the 6 hours from noon to noon). It reads <em>≈</em>: it is EMT's estimate from the
+      energy and the car's charging power, as Octopus does not say;</li>
+    <li>whether any of it was at the peak rate, and why — <em>a bump charge</em> or <em>over the 6
+      hours</em>;</li>
+    <li>any charging outside a smart charge;</li>
+    <li>the next charge Octopus has planned.</li>
+  </ul>
+  <p>Expand the card for the last 7, 30 or 90 days of charges, grouped by noon-to-noon day.</p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">⚡ Agile prices</div>
+  <p>
+    On <strong>Agile</strong>, your half-hourly prices from 24 hours ago to as far ahead as Octopus has
+    published: import as bars, coloured cheap to dear (blue below 0p), export as a line, now as a dashed
+    line. Above them, the price now and the cheapest hour still to come. Tomorrow's prices are published
+    at about 4pm.
+  </p>
+  <p>
+    <strong>Not on Agile?</strong> With Octopus connected, the card shows <strong>Agile in your
+    region</strong> — Agile's prices where you live, and Agile Outgoing's if you export — with what your
+    last 30 days would have cost at them, against what you paid or earned (unit rates only; standing
+    charges aside). EMT asks Octopus for them once a day, after 4pm.
+  </p>
+</div>
+{% endblock %}

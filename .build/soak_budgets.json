@@ -1,0 +1,73 @@
+{
+  "_about": "C §6 row 8: per-surface REGRESSION BOUNDS for .build/soak.py, judged on the quiet phase (seconds, whole response). Set 3 Oct 2026 from the tenth soak (dev database, Pi, SD card; after #48): p50 = 1.5 x measured, p95 = 2 x measured, each rounded up to a step of 0.25/0.3/0.5/0.75/1/1.25/1.5/2/2.5/3/3.5/4/4.5/5/6/7/8/9/10/12/15/20/25/30, and p95 capped at the soak's 30 s timeout. They replace the seventh soak's bounds (2 Oct), which were measured before the soak asked for full periods and with a 115 MB WAL; the tenth is the first full-period run with a settled WAL. They bound regression, not acceptability. All 17 are set.",
+  "budgets": {
+    "Charts: change poll": {
+      "p50": 0.3,
+      "p95": 1
+    },
+    "Charts: recent-day check": {
+      "p50": 0.5,
+      "p95": 2
+    },
+    "Spiral / Usage Stats: all days": {
+      "p50": 4.5,
+      "p95": 12
+    },
+    "Spiral / Usage Stats: moved days": {
+      "p50": 0.25,
+      "p95": 2
+    },
+    "Usage Stats: one day": {
+      "p50": 0.25,
+      "p95": 0.75
+    },
+    "Heatmap: a month of blocks": {
+      "p50": 0.5,
+      "p95": 2
+    },
+    "Billing: a year's bill": {
+      "p50": 8,
+      "p95": 20
+    },
+    "Billing: a quarter's bill": {
+      "p50": 2,
+      "p95": 6
+    },
+    "Billing: a month's bill": {
+      "p50": 0.75,
+      "p95": 3.5
+    },
+    "Billing: a billing period's bill": {
+      "p50": 1,
+      "p95": 3.5
+    },
+    "Billing: a month of day charts": {
+      "p50": 1,
+      "p95": 4.5
+    },
+    "Insights: carbon view": {
+      "p50": 0.25,
+      "p95": 3
+    },
+    "Insights: usage view": {
+      "p50": 0.75,
+      "p95": 10
+    },
+    "Live Power: cards": {
+      "p50": 1,
+      "p95": 4
+    },
+    "Billing: picker totals": {
+      "p50": 1.25,
+      "p95": 4.5
+    },
+    "Insights: trend strip": {
+      "p50": 1.5,
+      "p95": 4
+    },
+    "Period picker": {
+      "p50": 0.5,
+      "p95": 1
+    }
+  }
+}

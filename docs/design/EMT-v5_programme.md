@@ -98,25 +98,77 @@ rows and no read blocked behind a write.
 
 ### B. Job coordinator (BL-50)
 
+*Designed: [EMT-v5_B_coordinator_design.md](EMT-v5_B_coordinator_design.md). The headline from that work is that **B is not mutual exclusion** — measurement says uncoordinated jobs do not corrupt each other, and what v4 actually coordinates for is data DEPENDENCIES ("is what I am about to read settled?"), resource contention, and preconditions. A lock would serialise 22 members that mostly do not conflict and still not fix the one real bug in the set.*
+
 *v4 got this right for some jobs and not others — that asymmetry is the bug.*
 
-Guard-reference counts across the Tier 1 job registry in 4.5.13:
+**Measured 22 Sep 2026** by `.build/check_job_guards.py`, pinned by
+`tests/test_job_guards.py`. The asymmetry is wider than the four-job table this section used to
+carry: there are **17 long-running write jobs, 14 of them live** (three are the unreachable legacy
+backfills), and v4 has **17 coordination primitives** — 9 module flags and 8 predicate functions —
+spread across them.
 
-| Job | Guard | Refs |
-|---|---|---|
-| Historical import | `api_import_running` | 17 |
-| Device delete | `delete_in_progress` | 14 |
-| Measured-history drain | `_measured_history_drain_running` | 8 |
-| **Device-history attribution** | `attribution_running` | **3** |
+| | |
+|---|---|
+| live long-running write jobs | **14** |
+| …consulting **no** guard at all | **9** |
+| …coordinating with something | 5 |
 
-Backup/restore and historical import were built not to disturb live processing and they behave.
-Attribution was not held to the same standard, and it is the one that has crashed against the
-engine. The fix is not more ad-hoc flags — it is the single coordinator BL-50 specifies, with
-attribution, attribution-backout and the blocks-delete endpoints as first-class members rather than
+And the five that coordinate all coordinate against the **same two things**: `api_import_running`
+and `delete_in_progress`. So it is not that v4 lacks coordination — it is that exactly two jobs were
+ever considered worth avoiding, and nothing else was. Backup/restore and historical import were
+built not to disturb live processing and they behave; everything added since inherited neither the
+habit nor a mechanism that would have made it automatic.
+
+**The one real mutual-exclusion primitive is unused.** `run_exclusive()` takes the engine loop lock
+and runs an operation under it. It has a single caller, and that caller passes `lambda: None` — it
+is used to *drain* the in-flight tick, never to run anything. A correct mechanism at zero adoption,
+which is precisely the shape workstream A found in the read companion (§1 there), and for the same
+reason: nothing punishes the wrong choice at the moment it is made.
+
+**What this is not.** Nine unguarded jobs is not nine races. They all run on the one engine loop, so
+coroutines interleave at `await` points rather than running in parallel — A removed the
+parallel-thread class. The hazard is **logical**: a batch reading rows another job is part-way
+through rewriting. Real, and silent, but a weaker claim than a data race, and the number should not
+be quoted as the stronger one.
+
+The fix is not more ad-hoc flags — it is the single coordinator BL-50 specifies, with attribution,
+attribution-backout and the blocks-delete endpoints as first-class members rather than
 afterthoughts.
 
-Scope note: with workstream A done, this shrinks to coordinating **writers**. That is a materially
-smaller and more tractable problem than the "serialise everything" version.
+**What the coordinator cannot be.** The obvious rule — *two jobs may run together when their write
+scopes are disjoint* — was measured (`.build/write_scope.py`, pinned by `tests/test_write_scope.py`)
+and does not survive at table granularity:
+
+> **13 of the 14 live jobs write `blocks`; 11 also write `block_segments`.**
+
+Everything conflicts with everything, so a table-level rule is a global lock wearing a costume. The
+scope that could work is finer — the block RANGE or the meter — and the information already exists:
+the import has from/to, the sweeps carry cursors, the SMB repairs have a floor, attribution has a
+device and a span.
+
+**Why today's nine uncoordinated jobs nevertheless converge.** The per-block write path is **fully
+synchronous** — no `await` anywhere in its call tree. On the single engine loop that makes one
+block's read-modify-write atomic: another coroutine cannot interleave inside it, so jobs interleave
+*between* blocks and each re-derives from the block's current state.
+
+That is load-bearing and easy to lose. **A coordinator that introduces an `await` inside a block
+write removes the property that currently keeps uncoordinated jobs safe** — which would make the
+coordinator the thing that created the problem it was built to solve. There is a test asserting the
+call tree stays synchronous.
+
+*(Correction, same work: two attribution runs for different devices were described earlier as
+touching "disjoint rows". They do not — the device write re-derives the PARENT meter's remainder,
+so both rewrite the house row. They are safe for the atomicity reason above, not for disjointness.)*
+
+Scope note: with workstream A done, this is coordinating **writers** — and writers are now
+enumerated rather than guessed at (`.build/write_inventory.py`): **92 functions in `engine.py`**,
+26 in `web/server.py` of which 19 are route handlers still writing on a request thread, 1 in
+`kraken_ingester.py`, and **zero** in `backfill.py` / `csv_import.py` / `api_import.py`.
+
+Note this is a *sharper* scope, not a smaller one. A §7 q3 established that all the long-running
+jobs are writers, so the minutes-long work is exactly what B must coordinate. What A bought B is a
+measured boundary in place of "serialise everything".
 
 ### C. One API for every surface
 
@@ -188,9 +240,40 @@ queries per surface. A surface issuing 200 small queries is the likely shape of 
 
 ### E. Importer (see [EMT-v5_import_spec.md](EMT-v5_import_spec.md))
 
-Ingests a 4.5.13 backup zip, or a `blocks.db` taken from one. No cooperating exporter — the source
-is validated by the importer itself. Contract, gates and table-by-table disposition are in that
-document.
+Ingests a backup zip at or above the floor version (currently **4.5.23**), or a `blocks.db`
+taken from one. No cooperating exporter — the source is validated by the importer itself. Contract,
+gates and table-by-table disposition are in that document. How it is built — the package, the restore wiring, the transform order and the PR order — is
+[EMT-v5_E_importer_design.md](EMT-v5_E_importer_design.md).
+
+Two things that were missing from every draft before 19 Sep and are now in the spec: the **first-run
+fork** (§3a — new setup or restore, with the backup driving the credential prompt rather than the
+reverse), and the rule that **absent credentials never block an import** on either side, which is
+what keeps the diagnostic path working where a maintainer disconnects before importing someone
+else's database.
+
+**E is the only workstream with a retirement rule, and it needs one.** Everything v4-shaped lives
+here — the 4.5.14 gate, the column rules, the `store_meta` allow-list, the band relabel — and all
+of it is dead the day 4.5.13 sources stop being supported. That is a long way off and deliberately
+undated (§1 of the import spec: the two add-ons coexist indefinitely), which is exactly why the
+excision has to be cheap *by construction* rather than by a future decision:
+
+> **E is one module. Dependencies point inward only — no domain code imports from it — and no
+> importer-only concept appears in the domain layer. It is removed in the release after v4 sources
+> stop being supported.**
+
+§3 below is the argument for this. v4's three legacy backfills (162 lines) are still in `engine.py`
+today, two years after being retired, **because they were retired by unwiring** — there was no
+boundary to cut along, so unwiring was the cheap move and deletion never followed. The importer is
+the one part of v5 guaranteed to become obsolete. It is the one part that must be shaped so that
+obsolete means *deletable*, not *unwired*.
+
+*(Closed 10 Oct 2026, ROADMAP BL-81: the relabel is not wanted. Octopus's 28 Sep rename made its own buckets side × rate — HOME/EV LOW RATE, HOME/EV STANDARD RATE — with no "night"; house `off_peak` stays in every era and the importer relabels nothing.)*
+
+*Consequence for the band question:* the SMB-era `house off_peak → night` relabel lives here as a
+declarative column rule. It is a schema translation, not a heal — it runs once, in one direction,
+and expires with the module. Putting it in the domain instead would have made it permanent, because
+imported and natively-derived rows would otherwise label the same tariff era two different ways and
+every reader would have to accept both forever.
 
 ---
 
@@ -202,8 +285,9 @@ matches any function of that name), so anything reported unreachable is confiden
 ```
 reprice.py            4 defs   LIVE=0   dead: _band_label, _reconcile_house,
                                               reprice_block, resolve_ev_energy
-carbon.py             5 defs   LIVE=4   dead: carbon_from_reprice
-pricing_segments.py  15 defs   LIVE=12  dead: attribute_devices, import_segments,
+carbon.py             5 pub    LIVE=2   dead: carbon_from_reprice, and ev_carbon +
+                                              house_carbon, reachable only via it
+pricing_segments.py  11 pub    LIVE=8   dead: attribute_devices, import_segments,
                                               total_cost_exc
 ```
 
@@ -213,31 +297,60 @@ this costs nothing: they simply never arrive, and their ~37 test references stay
 repo where the suite still proves v4.
 
 **Correct BL-63 in the v4 roadmap.** It describes the shelved layer as including
-`carbon.ev_carbon` / `house_carbon` and "9 of 11 public functions in `pricing_segments`". Neither
-holds: the Δ5 wiring made the carbon functions live, and `pricing_segments` is 12 live / 3 dead. A
-backlog item that exists to clean up misleading code has itself become misleading.
+`carbon.ev_carbon` / `house_carbon` and *"9 of 11 public functions in `pricing_segments`"*. The
+second is wrong — three of eleven are unreachable, and its recommendation to retire "the projection
+layer" would delete six live functions. The first is **correct**: those carbon functions are
+reachable only through the dead `carbon_from_reprice`. *(An earlier version of this paragraph said
+Δ5 made them live. It made `period_ev_saving` and `slot_intensity` live, not these.)*
+
+A backlog item that exists to clean up misleading code had itself become misleading — and so, in the
+other direction, had this correction.
 
 Note also that 85 of 1,116 production function names are unreachable overall, so the three modules
 above are a floor, not the whole surface. A full pass belongs in whichever workstream touches each
 module — not as a separate cleanup project.
 
-**Why this matters more than the byte count.** During 4.5.13 development the EV-split bug was
-diagnosed at length against `_hybrid_ev_by_block`, confidently and wrongly; the live path was
-`_dispatch_ev_split_by_bucket`. The wrong function was chosen *because unreferenced code reads as
-load-bearing*. The cost of the shelved model was never disk space — it was misdirecting the next
-person to read the file.
+**Why this matters more than the byte count.** The cost of the shelved model was never disk space —
+it is misdirecting the next person to read the file.
+
+*Corrected 21 Sep 2026.* This paragraph used to cite the 4.5.13 EV-split misdiagnosis as its
+example, saying `_hybrid_ev_by_block` was chosen *"because unreferenced code reads as load-bearing"*.
+That function has two live callers (`web/server.py:2763`, `:2926`) — it is the EV rule for accounts
+**with** a physical EV meter, while `_dispatch_ev_split_by_bucket` serves accounts without one. The
+misdiagnosis was picking the right function for the wrong account shape, not mistaking dead code for
+live. The argument for removing genuinely unwired paths stands on its own; it did not need that
+example, and the example was not true.
 
 ---
 
 ## 4. Open questions for the programme
 
-1. **Does v5 publish anything to Home Assistant?** If it publishes statistics or entities under
-   names v4 also uses, two running add-ons collide — the one shared namespace `instance.py` does not
-   arbitrate. Must be settled before the first release that publishes anything.
-2. **Where does the band vocabulary decision land?** The import spec (§5.2) commits v5 to one
-   vocabulary, `off_peak` / `peak`, with `day → peak` mapped on the way in and `standard` carried as
-   an explicit unknown. If a workstream wants a different internal representation, it changes the
-   importer's contract and must be raised there, not decided locally.
+1. ~~**Does v5 publish anything to Home Assistant?**~~ **Closed 18 Sep 2026: no.** EMT is
+   **read-only toward Home Assistant** — it subscribes to sensors and creates nothing. No entities,
+   no statistics, no Energy Dashboard feed. Side-by-side is therefore unconditionally safe on that
+   axis: the one namespace `instance.py` cannot arbitrate is one EMT never enters. *Accepted
+   consequence:* EMT's figures appear only in EMT's own UI. *Reopens if* that ever changes —
+   publishing to HA would make collision with a running v4 a first-class problem again, needing
+   distinct entity prefixes or an explicit ownership flag.
+2. ~~**Where does the band vocabulary decision land?**~~ **Closed 18 Sep 2026 — and the earlier
+   answer was wrong.** This question previously recorded that the import spec committed v5 to one
+   vocabulary, `off_peak` / `peak`, with `day → peak` mapped on the way in. That would have
+   destroyed information. The four v4 words are a **2×2 of attribution × band** — house
+   `day`/`night` (clock-determined, Economy-7) and EV `peak`/`off_peak` (dispatch-determined) — plus
+   `standard` for unknown. They are different determinations that happen to share the adjectives
+   "cheap" and "expensive".
+
+   *(Closed 10 Oct 2026, ROADMAP BL-81: the relabel is not wanted. Octopus's 28 Sep rename made its own buckets side × rate — HOME/EV LOW RATE, HOME/EV STANDARD RATE — with no "night"; house `off_peak` stays in every era and the importer relabels nothing.)*
+
+   **v5 keeps all four.** The importer makes exactly one change: house low `off_peak → night`,
+   **IOG-SMB era only**, because only SMB has an `ECO7_NIGHT` bucket; pre-SMB house low genuinely
+   means dispatch-discounted and `off_peak` is correct there. Full rule in import spec §5.2;
+   schema consequences in [EMT-v5_schema_notes.md](EMT-v5_schema_notes.md) §3a; API shape in
+   [EMT-v5_C_surfaces_design.md](EMT-v5_C_surfaces_design.md) §3–§4, which now carries **four** rate
+   series keyed by *(attribution, band)* rather than a low/high pair.
+
+   *Reopens if* a workstream wants a different internal representation — that changes the importer's
+   contract and is raised there, not decided locally.
 3. **Test-suite portage.** Carried wholesale, or rebuilt against the new API surface as C lands?
    Wholesale keeps the v4-equivalence proof; rebuilding suits the new shape. Probably both, in that
    order — but the decision affects how C is sequenced.

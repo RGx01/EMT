@@ -1,0 +1,128 @@
+"""BL-53 step 1 + BL-57 — rate_source authority column, measured_cost store,
+the reconcile/rerun authority gate, the corrections exc restamp, and the
+pre-migration upgrade snapshot.
+"""
+import glob
+import os
+import tempfile
+import unittest
+import zipfile
+
+from block_store import BlockStore
+
+
+def _mk_store():
+    p = tempfile.mktemp(suffix=".db")
+    st = BlockStore(p)
+    st._conn.execute("PRAGMA foreign_keys=OFF")
+    return st, p
+
+
+def _ins(c, bs, *, rate=None, rc=0, rs=None, kwh=None,
+         cost_exc=None, cost=None):
+    c.execute(
+        "INSERT INTO blocks (block_start, block_end, config_period_id, meter_id, "
+        "imp_kwh, imp_rate, imp_cost, imp_cost_exc, rate_corrected, "
+        "rate_source) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        (bs, bs[:-2] + "30", 1, "electricity_main", kwh, rate, cost,
+         cost_exc, rc, rs))
+
+
+# The BL-53 backfill (rate_source derived from rate_corrected / rate_reconciled / imp_rate) and
+# its test went with rate_reconciled (dropped, step 5, 10 Oct 2026): v5 has no such column to
+# derive from, and a v4 source's provenance is folded by the importer.
+_GATE = "(rate_source IS NULL OR rate_source NOT IN ('settled','corrected'))"
+
+
+class TestSchemaAndBackfill(unittest.TestCase):
+    def test_column_and_table_exist(self):
+        st, p = _mk_store()
+        cols = [r[1] for r in st._conn.execute("PRAGMA table_info(blocks)")]
+        self.assertIn("rate_source", cols)
+        self.assertTrue(st._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='measured_cost'").fetchone())
+        os.remove(p)
+
+
+class TestMeasuredCostStore(unittest.TestCase):
+    def test_upsert_get_missing(self):
+        st, p = _mk_store()
+        st.upsert_measured_cost("2026-08-23T10:00:00", mpan="X", cost_incl=1.0294,
+                                cost_excl=0.98, label="STANDARD_RATE", kwh=3.186)
+        got = st.get_measured_cost("2026-08-23T10:00:00", mpan="X")
+        self.assertEqual(got["cost_incl"], 1.0294)
+        self.assertEqual(got["label"], "STANDARD_RATE")
+        # upsert overwrites
+        st.upsert_measured_cost("2026-08-23T10:00:00", mpan="X", cost_incl=2.0, label="OFF_PEAK")
+        self.assertEqual(st.get_measured_cost("2026-08-23T10:00:00", mpan="X")["cost_incl"], 2.0)
+        miss = st.measured_slots_missing(
+            ["2026-08-23T10:00:00", "2026-08-23T10:30:00"], mpan="X")
+        self.assertEqual(miss, ["2026-08-23T10:30:00"])
+        os.remove(p)
+
+
+class TestAuthorityGate(unittest.TestCase):
+    def test_reconcile_query_skips_measured_and_corrected(self):
+        st, p = _mk_store(); c = st._conn
+        _ins(c, "2026-08-24T09:00:00", rate=0.05, rs="settled")
+        _ins(c, "2026-08-24T09:30:00", rate=0.05, rc=1, rs="corrected")
+        _ins(c, "2026-08-24T10:00:00", rate=0.05, rs="reconciled")
+        _ins(c, "2026-08-24T10:30:00", rate=0.32, rs="schedule")
+        c.commit()
+        sel = [r[0] for r in c.execute(
+            f"SELECT block_start FROM blocks WHERE meter_id='electricity_main' "
+            f"AND rate_corrected=0 AND {_GATE} ORDER BY block_start")]
+        self.assertNotIn("2026-08-24T09:00:00", sel)   # measured
+        self.assertNotIn("2026-08-24T09:30:00", sel)   # corrected (rate_corrected=1)
+        self.assertIn("2026-08-24T10:00:00", sel)      # reconciled — still eligible
+        self.assertIn("2026-08-24T10:30:00", sel)      # schedule — eligible
+        os.remove(p)
+
+
+class TestCorrectionsExc(unittest.TestCase):
+    def test_exc_restamped_preserves_vat_ratio(self):
+        st, p = _mk_store(); c = st._conn
+        _ins(c, "2026-08-23T10:00:00", kwh=2.0, rate=0.30, cost=0.60,
+             cost_exc=0.5714)      # VAT ~1.05
+        c.commit()
+        value = 0.20
+        c.execute(
+            """UPDATE blocks SET imp_rate=?, imp_cost=ROUND(imp_kwh*?,6),
+                 imp_cost_exc=CASE WHEN imp_cost_exc IS NOT NULL AND imp_rate!=0
+                                   THEN ROUND(imp_cost_exc*?/imp_rate,6) ELSE imp_cost_exc END,
+                 rate_corrected=1, rate_source='corrected'
+               WHERE block_start='2026-08-23T10:00:00'""",
+            [value, value, value])
+        c.commit()
+        r = dict(c.execute("SELECT imp_rate, imp_cost, imp_cost_exc, rate_source "
+                           "FROM blocks").fetchone())
+        # imp_rate_exc dropped (step 5b, 10 Oct 2026): the ex-VAT rate is derived from the pair.
+        self.assertAlmostEqual(r["imp_cost_exc"], round(0.5714 * 0.20 / 0.30, 6), places=6)
+        self.assertAlmostEqual(r["imp_cost"] / r["imp_cost_exc"], 0.60 / 0.5714, places=3)  # VAT preserved
+        self.assertEqual(r["rate_source"], "corrected")
+        os.remove(p)
+
+
+class TestPreUpgradeBackup(unittest.TestCase):
+    def test_snapshot_created_gated_idempotent(self):
+        import engine
+        d = tempfile.mkdtemp()
+        saveD, saveB, saveS = engine.DATA_DIR, engine.BLOCKS_DB_PATH, engine.SHARE_BACKUP_DIR
+        try:
+            engine.DATA_DIR = d
+            engine.BLOCKS_DB_PATH = os.path.join(d, "blocks.db")
+            engine.SHARE_BACKUP_DIR = os.path.join(d, "share")
+            open(engine.BLOCKS_DB_PATH, "wb").write(b"db")
+            open(engine.BLOCKS_DB_PATH + "-wal", "wb").write(b"wal")
+            engine._pre_upgrade_backup_if_needed()
+            zips = glob.glob(os.path.join(d, "share", "backups", "*_pre_upgrade_*.zip"))
+            self.assertEqual(len(zips), 1)
+            self.assertIn("blocks.db-wal", zipfile.ZipFile(zips[0]).namelist())
+            engine._pre_upgrade_backup_if_needed()   # same version → no new zip
+            self.assertEqual(len(glob.glob(os.path.join(d, "share", "backups", "*.zip"))), 1)
+        finally:
+            engine.DATA_DIR, engine.BLOCKS_DB_PATH, engine.SHARE_BACKUP_DIR = saveD, saveB, saveS
+
+
+if __name__ == "__main__":
+    unittest.main()

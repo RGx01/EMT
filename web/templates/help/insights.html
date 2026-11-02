@@ -1,0 +1,47 @@
+{% extends "help_base.html" %}
+{% set help_title = "Insights" %}
+{% block help_body %}
+<div class="card help-section">
+  <div class="card-title">🔭 Choosing a period</div>
+  <p>
+    Insights reads a period at a time: a <strong>Month</strong> or a <strong>Year</strong>, with the
+    arrows to move between them. Beside a month, <strong>vs Last Month</strong> or <strong>vs Same Month
+    Last Year</strong>; beside a year, <strong>vs Last Year</strong>. <strong>⬇ PDF</strong> saves the
+    tab you are on.
+  </p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🌿 Carbon</div>
+  <p>The carbon your electricity carried, from the grid's intensity in your region. It needs a postcode.</p>
+  <ul>
+    <li><strong>Carbon Summary</strong> — the grid carbon you imported and what your export offset,
+      and whether your use leaned to the grid's cleaner or dirtier half-hours.</li>
+    <li><strong>Solar Export Offset</strong> — the carbon your export displaced from the grid.</li>
+    <li><strong>Direct Import</strong> — the house's own share, without the devices.</li>
+    <li><strong>Battery Charging Behaviour</strong> — whether the battery's grid charging was timed to the
+      grid's cleaner periods.</li>
+    <li><strong>Heat Pump Carbon</strong> — its carbon, and the grid intensity above which a gas boiler
+      would have been cleaner.</li>
+    <li><strong>EV Charging Carbon</strong> — the carbon of the car's charging.</li>
+    <li><strong>Net carbon per billing period</strong> — a bar a period; click one to view its
+      month.</li>
+  </ul>
+  <p>A card shows only when you have the device it is about.</p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">💷 Usage</div>
+  <ul>
+    <li><strong>Cost &amp; Earnings</strong> — the period's net cost: grid import, export earnings, the
+      standing charge and the average import rate.</li>
+    <li><strong>Rate Brackets</strong> — the period's grid import by the price it was charged, in 2.5p
+      brackets (inc VAT); a half-hour billed at two rates counts in both. It shows when the import fell
+      in more than one bracket, and links to the same view, month by month, on Usage Stats.</li>
+    <li><strong>Grid Position</strong> — import, export and the house's direct import in kWh, and how
+      many days you exported more than you imported.</li>
+    <li><strong>Peak Demand Window</strong> — the 2-hour window with the house's highest grid import.</li>
+    <li><strong>A card for each device</strong> — its kWh and cost for the period.</li>
+  </ul>
+</div>
+{% endblock %}

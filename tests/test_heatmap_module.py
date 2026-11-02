@@ -1,0 +1,217 @@
+"""
+The in-browser Heatmaps tab (web/templates/heatmap_module.html) — decisions pinned.
+
+JavaScript cannot run in the suite (no Node on the Mac or the Pi), so what the module
+must not lose is pinned from its source. Each line here was learned by measuring it in
+a browser against a real 4.5.16 database (30 Sep 2026), not assumed:
+
+  * the y axis is set `reverse: false` EXPLICITLY — chartjs-chart-matrix's defaults
+    reverse it, which drew the newest day at the bottom while the hover arithmetic
+    counted rows from the top, so every tooltip named the wrong day;
+  * hover is arithmetic on the grid, not Chart.js's tooltip — which repaints every
+    cell on every pointer move;
+  * canvas density is capped at 2x;
+  * one chart per MONTH (v4's layout), the newest loaded at once, older ones on scroll;
+  * data comes from /api/energy, month by month, never a pre-rendered file.
+
+And three that the first in-browser version got wrong, found comparing it with v4 on
+the Pi (30 Sep 2026):
+
+  * a theme switch re-draws every drawn month — the zero colour is the page
+    background, baked into the canvas, and it stayed behind until another tab;
+  * cells are square — one size for both axes, from the width;
+  * the colour scales are v4's own stops (energy_charts.make_colorscale, _hmCo2Cs).
+
+And two v4 features it lacked:
+
+  * the metric bar floats — sticky at the top of the scroll container (v4's #hm-nav),
+    with v4's drop shadow;
+  * weekends are shaded across every slot of the grid, not only behind the totals.
+"""
+import os
+import re
+import unittest
+
+_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SRC = open(os.path.join(_ROOT, "web", "templates", "heatmap_module.html"), encoding="utf-8").read()
+_PAGE = open(os.path.join(_ROOT, "web", "templates", "charts.html"), encoding="utf-8").read()
+
+
+class ModuleDecisions(unittest.TestCase):
+
+    def test_the_y_axis_direction_is_explicit(self):
+        m = re.search(r"y:\s*\{type: 'category'[^}]*", _SRC)
+        self.assertIsNotNone(m)
+        self.assertIn("reverse: false", m.group(0))
+
+    def test_hover_does_not_repaint_the_canvas(self):
+        self.assertIn("events: []", _SRC)
+        self.assertIn("tooltip: {enabled: false}", _SRC)
+        self.assertIn("function attachHover(", _SRC)
+
+    def test_canvas_density_is_capped(self):
+        self.assertIn("var dpr = Math.min(2, window.devicePixelRatio || 1);", _SRC)
+        self.assertEqual(_SRC.count("devicePixelRatio: dpr"), 2)      # grid and totals
+
+    def test_it_reads_the_api_month_by_month(self):
+        self.assertIn("/api/energy?resolution=block&kind=month&year=", _SRC)
+        self.assertNotIn("net_heatmap", re.sub(r"<!--.*?-->", "", _SRC, flags=re.S))
+
+    def test_the_newest_month_does_not_wait_for_a_scroll(self):
+        self.assertIn("if (i === 0) loadMonth(k);", _SRC)
+
+
+class V4Parity(unittest.TestCase):
+    """REGRESSION (30 Sep 2026): each fails on the tree #17 merged."""
+
+    def test_a_theme_switch_redraws(self):
+        self.assertRegex(_SRC, r"new MutationObserver\(function \(\) \{ redrawAll\(true\); \}\)\s*"
+                               r"\.observe\(document\.documentElement, \{attributes: true, "
+                               r"attributeFilter: \['data-theme'\]\}\)")
+        self.assertIn("function bg() { return dark() ? '#1a1d27' : '#ffffff'; }", _SRC)
+
+    def test_cells_are_square(self):
+        """One cell size, used for both the width and the height of the grid."""
+        self.assertIn("function cellSize() {", _SRC)
+        self.assertIn("h = days.length * cs + 2", _SRC)
+
+    def test_the_kwh_scale_is_v4s(self):
+        """make_colorscale's stops: blue for export, the background at zero, red for import."""
+        for c in ("#003366", "#0066cc", "#00aa66", "#ffcc99", "#ff6600", "#cc0000"):
+            self.assertIn("'%s'" % c, _SRC[_SRC.index("function kwhStops("):_SRC.index("function co2Stops(")])
+        self.assertIn("[wp, W]", _SRC)
+
+
+class V4Features(unittest.TestCase):
+    """REGRESSION (30 Sep 2026): the bar and weekend tests fail on the tree before this change."""
+
+    def _css(self, sel):
+        m = re.search(re.escape(sel) + r"\s*\{([^}]*)\}", _SRC)
+        self.assertIsNotNone(m, sel)
+        return m.group(1)
+
+    def test_the_metric_bar_floats_with_a_shadow(self):
+        css = self._css(".hm-bar")
+        self.assertIn("position:sticky", css)
+        self.assertIn("top:0", css)
+        self.assertIn("box-shadow:0 2px 8px rgba(0,0,0,0.4)", css)     # v4's #hm-nav
+        self.assertIn("background:", css)                             # opaque over the cells
+
+    def test_the_bar_is_a_direct_child_of_the_scroller(self):
+        """GUARD: sticky pins to the nearest scrolling ancestor; on the Charts page that is
+        #chart-heatmap-content itself (measured), so the bar must not be wrapped."""
+        self.assertIn("root.innerHTML = '<div class=\"hm-bar\">", _SRC)
+
+    def test_weekends_are_shaded_across_the_grid(self):
+        self.assertIn("type: 'matrix', plugins: [weekendRows(days, 'afterDatasetsDraw'), foldBands(days, p)],", _SRC)
+        self.assertIn("plugins: [weekendRows(days, 'beforeDatasetsDraw')],", _SRC)
+
+
+class ApiViewsRetired(unittest.TestCase):
+    """14 Oct 2026, settlement surfaces design §9.2: the API import / API export views are retired;
+    Import bill and Export bill carry what they showed. Discriminating."""
+
+    def test_the_api_views_are_gone(self):
+        for gone in ("API_METRICS", "apiColour", "API_PENDING_H", "isApi("):
+            self.assertNotIn(gone, _SRC)
+
+class OneWidthAFloatingAxis(unittest.TestCase):
+    """Heatmap issues design §4 (17 Oct 2026, the user's screenshot): the current month drew
+    narrower than the rest. Only the first panel drew the axes, and Chart.js shrinks a plot area to
+    fit tick labels that overhang it. Now no month draws an axis; one header floats under the
+    metric bar with them, and every month takes one cell size. All fail on the parent; the last
+    tests new code, so it fails there by name."""
+
+    def _draw(self):
+        i = _SRC.index("function drawMonth(key)")
+        return _SRC[i:_SRC.index("\n  function release(", i)]
+
+    def test_no_month_draws_the_axes(self):
+        body = self._draw()
+        self.assertNotIn("p.first", body)
+        self.assertNotIn("maxRotation", body)
+        self.assertIn("display: false},", body)          # the grid's time axis
+
+    def test_one_cell_size_for_every_month(self):
+        self.assertIn("function cellSize() {", _SRC)
+        self.assertIn("function rowWidth() {", _SRC)
+        self.assertNotIn("cellSize(p)", _SRC)
+
+    def test_the_axis_floats_under_the_bar(self):
+        css = _SRC[_SRC.index(".hm-axis {"):]
+        css = css[:css.index("}")]
+        self.assertIn("position:sticky", css)
+        self.assertIn("ax.style.top = (bar ? bar.offsetHeight : 0) + 'px'", _SRC)
+        self.assertIn("'<div class=\"hm-axis\"><div class=\"hm-axis-in\"></div></div>", _SRC)
+
+    def test_the_totals_share_one_range(self):
+        self.assertIn("min: Math.min(0, sc.tlo), max: Math.max(0, sc.thi)", self._draw())
+
+    def test_any_width_change_redraws(self):
+        self.assertIn("if (root.clientWidth === lastW) return;", _SRC)
+        self.assertNotIn("< 8) return;", _SRC)
+
+    def test_rows_scroll_together(self):
+        """GUARD (new code): a row scrolled sideways takes the others and the axis with it."""
+        self.assertIn("function syncRows(src)", _SRC)
+        self.assertIn("addEventListener('scroll', function (e) { syncRows(e.target); }", _SRC)
+
+
+class SplitViewRetired(unittest.TestCase):
+    """17 Oct 2026, the user: the Split view is retired; the Import bill carries the split (teal for
+    EMT's, red for a completed dispatch with none) and the detail panel names its state.
+    Discriminating: the first two. The third is a guard (the panel kept its split row)."""
+
+    def test_the_split_view_is_gone(self):
+        i = _SRC.index("var SETTLE_METRICS")
+        body = _SRC[i:_SRC.index("};", i)]
+        self.assertNotIn("split:", body)
+        self.assertNotIn("m === 'split'", _SRC)
+
+    def test_a_missing_split_turns_the_import_bill_red(self):
+        i = _SRC.index("function settleValue")
+        body = _SRC[i:_SRC.index("\n  }\n", i)]
+        self.assertIn("fl.indexOf('split_missing') >= 0", body)
+        self.assertIn("split_missing:", _SRC[_SRC.index("var FLAG_TEXT"):])
+
+    def test_the_detail_panel_keeps_the_split(self):
+        self.assertIn("CAT_TEXT.split[st.split]", _SRC)
+
+
+class AnEpochChangeRedrawsEveryMonth(unittest.TestCase):
+    """24 Oct 2026, Data Management's console: a bulk write (a fill, a re-import, a delete) moves the
+    data epoch, and `fetchMonthNow` dropped every month's grid but fetched only the one it was
+    asked for. The others stayed drawn with no grid, and every hover (`show`) and click (`hitCell`)
+    threw on `p.grid[day]` until the page was reloaded."""
+
+    def _fn(self, name):
+        i = _SRC.index("function " + name + "(")
+        return _SRC[i:_SRC.index("\n  }\n", i)]
+
+    def test_the_other_drawn_months_are_fetched_again(self):
+        body = self._fn("fetchMonthNow")
+        self.assertIn("return k !== key && state.panels[k].drawn;", body)
+        self.assertIn("stale.forEach(function (k) { loadMonth(k); });", body)
+
+    def test_hover_and_click_wait_for_the_grid(self):
+        self.assertIn("if (!p.drawn || !p.chart || !p.grid) { tip.style.display = 'none'; return; }", _SRC)
+        self.assertIn("if (!p.drawn || !p.chart || !p.grid) return null;", self._fn("hitCell"))
+
+
+class ThePageUsesIt(unittest.TestCase):
+
+    def test_it_is_included_and_the_iframe_path_is_gone(self):
+        self.assertIn('{% include "heatmap_module.html" %}', _PAGE)
+        self.assertNotIn("/api/charts/heatmap", _PAGE)
+        self.assertNotIn("heatmap_exists", _PAGE)
+
+    def test_every_loader_path_routes_the_heatmap_to_the_module(self):
+        fn = _PAGE[_PAGE.index("async function loadChartContent(name, force) {"):]
+        fn = fn[:fn.index("\n}\n")]
+        self.assertIn("if (name === 'heatmap') {", fn)
+        self.assertIn("EMTHeatmap.rerender()", fn)
+        self.assertIn("EMTHeatmap.refresh()", fn)
+
+
+if __name__ == "__main__":
+    unittest.main()

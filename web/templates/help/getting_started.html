@@ -1,0 +1,73 @@
+{% extends "help_base.html" %}
+{% set help_title = "Getting started" %}
+{% block help_body %}
+<div class="card help-section">
+  <div class="card-title">⚡ What Energy Meter Tracker does</div>
+  <p>
+    Energy Meter Tracker (EMT) is a Home Assistant add-on that keeps a record of your electricity a
+    <strong>half-hour at a time</strong> — the same half-hours your supplier bills you by. For each one
+    it keeps how much you imported and exported, what it cost at the rate you were charged, how much of
+    it went to each device you have told it about (a battery, an EV charger, a heat pump), and, with a
+    postcode, how much carbon it carried.
+  </p>
+  <p>
+    With your supplier connected, EMT checks every half-hour against your supplier's own figures as they
+    arrive, so the history ends up matching your bill.
+  </p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🚪 The first time</div>
+  <p>
+    The first time you open EMT it shows the <strong>Welcome</strong> page, with two ways in:
+  </p>
+  <ul>
+    <li><strong>Start fresh</strong> — the setup on Settings asks about your supplier and your meter,
+      then which Home Assistant sensors to read.</li>
+    <li><strong>Restore a backup</strong> — bring your history across from a backup, including one from
+      the previous version of EMT.</li>
+  </ul>
+  <p>Until setup is done, the other pages are locked.</p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🔌 Where your readings come from</div>
+  <p>The setup chooses one of four ways to feed EMT, from what you tell it about your meter:</p>
+  <ul>
+    <li><strong>Local meter (CAD)</strong> — a consumer access device (an in-home display that reports
+      to Home Assistant) gives your meter readings. No supplier account needed.</li>
+    <li><strong>Local meter (CAD) + Octopus settlement</strong> — the local readings, checked against
+      Octopus's settled half-hours.</li>
+    <li><strong>Octopus settlement</strong> — Octopus's half-hours alone, with no local meter.</li>
+    <li><strong>Octopus settlement + Octopus Mini</strong> — the same, with an Octopus Home Mini for
+      live readings.</li>
+  </ul>
+  <p>
+    With Octopus connected, EMT receives your meter's settled readings (usually a day or two later),
+    then Octopus's cost for each half-hour, and, on Intelligent Octopus Go, your smart-charge dispatches.
+    Your API key is entered on Settings.
+  </p>
+  <div class="warn-box">
+    With a local meter alone, EMT's figures are a close approximation from your sensor's readings — a
+    good guide, not your bill. With Octopus connected, the settled figures are the ones you are billed
+    from.
+  </div>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🏠 What it needs from Home Assistant</div>
+  <ul>
+    <li><strong>A cumulative import reading</strong> (kWh) for the main meter — a total that only goes
+      up — and an export one if you export. Not needed when Octopus is the only source.</li>
+    <li><strong>A rate</strong> per kWh, from a sensor or from Octopus.</li>
+    <li><strong>For each device</strong> you want split out, its own cumulative kWh sensor.</li>
+    <li><strong>Power sensors</strong> (W or kW), optional, for the live gauges on Overview.</li>
+    <li><strong>A UK postcode</strong> (the first half, e.g. <code>DE1</code>), optional, for carbon.</li>
+  </ul>
+  <p>
+    The <a href="{{ url_for('help_section', section='overview') }}">Overview</a>,
+    <a href="{{ url_for('help_section', section='charts') }}">Charts</a> and
+    <a href="{{ url_for('help_section', section='insights') }}">Insights</a> pages explain what EMT then shows.
+  </p>
+</div>
+{% endblock %}

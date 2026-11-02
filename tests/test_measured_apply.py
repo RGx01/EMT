@@ -1,0 +1,349 @@
+"""
+test_measured_apply.py — apply_measured_to_block: Octopus's band, the cost kWh × that band's
+clean rate (engine step 2b, 23 Oct 2026; until then the bill's cost was copied and its band read from
+cost ÷ kWh). The band is the carrying bucket's on IOG-SMB, else the label; rate_source='settled'.
+"""
+import os
+import sys
+import unittest
+from unittest import mock
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import engine
+import ev_split
+import pricing_segments as ps
+from block_store import BlockStore
+
+
+class _Sched:
+    def is_empty(self):
+        return False
+
+    def day_rate_bounds(self, ts):
+        return (5.493, 32.3092)   # pence (off, peak)
+
+
+class TestMeasuredApply(unittest.TestCase):
+
+    SLOT = "2026-08-23T10:00:00"
+
+    def setUp(self):
+        self._save = (engine._store, engine._kraken_rate_schedules)
+        self.st = BlockStore(":memory:")
+        engine._store = self.st
+        engine._kraken_rate_schedules = {"import": _Sched()}
+        # engine step 4b: settle() asks the tariff kind (the apply never did); no agreement is loaded
+        _tk = mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+        _tk.start()
+        self.addCleanup(_tk.stop)
+        self.st._conn.execute(
+            "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
+            "block_minutes, timezone) VALUES (1,'2020-01-01T00:00:00',1,30,'UTC')")
+
+    def tearDown(self):
+        (engine._store, engine._kraken_rate_schedules) = self._save
+
+    def _blk(self, kwh, evk, rate=0.05493):
+        self.st._conn.execute(
+            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
+            "imp_kwh, imp_kwh_api, imp_rate, imp_cost, rate_source) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (self.SLOT, self.SLOT, "electricity_main", 1, kwh, kwh, rate,   # DCC-settled
+             round(kwh*rate, 6), "reconciled"))
+        self.st._conn.commit()
+        # the stored EV split is the block's EV segment (step 5c, 10 Oct 2026); evk None = none
+        if evk is not None:
+            self.st.set_block_segments(self.SLOT, "electricity_main", [
+                (evk, rate, rate / 1.05, "off_peak", "ev"),
+                (kwh - evk, rate, rate / 1.05, "off_peak", "house")])
+
+    def _row(self):
+        # the EV split's £ / rate / bands are the segments' (the imp_*_ev columns went in step 5c)
+        return self.st._conn.execute(
+            "SELECT imp_rate, imp_cost, "
+            + ev_split.sql_cost("b") + " / " + ev_split.sql_kwh("b") + " AS imp_rate_ev, "
+            + ev_split.sql_cost("b") + " AS imp_cost_ev, "
+            + ev_split.sql_band("b", "ev") + " AS imp_ev_band, "
+            + ev_split.sql_band("b", "house") + " AS imp_home_band, "
+            "rate_source, imp_cost_exc FROM blocks b "
+            "WHERE block_start=?", (self.SLOT,)).fetchone()
+
+    def test_orphaned_ev_attributed_from_completed_dispatch(self):
+        # EV-split race: no EV segment but a COMPLETED dispatch exists -> the measured pass
+        # attributes the EV from the dispatch (grid-clipped), instead of writing house-only.
+        self._blk(3.0, None, rate=0.05493)
+        self.st.record_dispatch_history(self.SLOT, "completed", provider="Myenergi",
+                                        source="unknown", energy_kwh=-2.0)
+        res = engine.apply_measured_to_block(self.SLOT, cost_incl=round(3.0*0.05493, 6),
+                                             label="OFF_PEAK")
+        self.assertTrue(res)
+        r = self._row()
+        self.assertIsNotNone(r["imp_rate_ev"])                       # EV attributed, not house-only
+        self.assertAlmostEqual(r["imp_cost_ev"], round(2.0*0.05493, 6), places=5)
+
+    def test_no_dispatch_stays_house_only(self):
+        # no EV segment and NO dispatch -> house-only (never invents EV).
+        self._blk(3.0, None, rate=0.05493)
+        engine.apply_measured_to_block(self.SLOT, cost_incl=round(3.0*0.05493, 6),
+                                       label="OFF_PEAK")
+        self.assertIsNone(self._row()["imp_rate_ev"])
+
+    def test_peak_bill_writes_measured_and_splits_exact(self):
+        # 23rd bump: block currently off-peak; Octopus bills STANDARD £1.0294 / 3.186 kWh
+        self._blk(3.186, 2.24, rate=0.05493)
+        # 4.5.9: EV quantity is bounded by the car's completed dispatch (a boost lands in the
+        # completed feed). Without a session the slot is house-only (test_no_dispatch_stays_house_only).
+        self.st.record_dispatch_history(self.SLOT, "completed", source="unknown", energy_kwh=-2.24)
+        ok = engine.apply_measured_to_block(
+            self.SLOT, cost_incl=1.029372, cost_excl=0.980355, label="STANDARD_RATE")
+        self.assertTrue(ok)
+        r = self._row()
+        self.assertEqual(r["rate_source"], "settled")
+        self.assertAlmostEqual(r["imp_rate"], 0.323092, places=6)    # the clean day rate
+        # kWh × rate (step 2b): 3.186 × 0.323092 = 1.029371 — Octopus's 1.029372 is not copied
+        self.assertAlmostEqual(r["imp_cost"], 1.029371, places=6)
+        self.assertEqual(r["imp_ev_band"], "peak")       # the label: STANDARD_RATE
+        self.assertEqual(r["imp_home_band"], "day")
+        # ex-VAT: kWh × the clean rate through the VAT calendar (5%)
+        self.assertAlmostEqual(r["imp_cost_exc"], round(3.186 * round(0.323092 / 1.05, 6), 6), places=5)
+        segs = [ps.Segment(**x) for x in
+                self.st.get_block_segments(self.SLOT, "electricity_main")]
+        self.assertAlmostEqual(ps.total_cost(segs), r["imp_cost"], places=6)   # the segments' sum
+        self.assertAlmostEqual(ps.attribution_cost(segs, "ev"), round(2.24 * 0.323092, 6), places=5)
+
+    def test_the_bucket_beats_the_label(self):
+        """GUARD (the cost also read off-peak, so it passes on the parent): IOG-SMB, label STANDARD,
+        the carrying bucket at the off-peak rate (the 25/08 23:00 signature; until step 2b the cost
+        decided it). The bucket's band wins."""
+        self._blk(1.0, 0.5, rate=0.05493)
+        self.st.record_dispatch_history(self.SLOT, "completed", source="unknown", energy_kwh=-0.5)
+        self.st.upsert_measured_cost(self.SLOT, mpan="M", cost_incl=0.05493, label="STANDARD_RATE", kwh=1.0)
+        self.st.upsert_measured_breakdown(self.SLOT, mpan="M", home_kwh=0.5, home_rate=0.05493,
+                                          ev_kwh=0.5, ev_rate=0.05493)
+        with mock.patch.object(engine, "split_at", lambda bs: True):
+            self.assertTrue(engine.apply_measured_to_block(
+                self.SLOT, cost_incl=0.05493, cost_excl=0.052314, label="STANDARD_RATE"))
+        r = self._row()
+        self.assertEqual(r["imp_ev_band"], "off_peak")
+        self.assertEqual(r["imp_home_band"], "off_peak")
+        self.assertAlmostEqual(r["imp_rate"], 0.05493, places=6)
+
+    def test_an_smb_label_without_its_buckets_refuses(self):
+        """The same label with no breakdown cached settles nothing: the block keeps EMT's
+        prediction until the buckets arrive (dev's 2a report, 23 Oct 2026)."""
+        self._blk(1.0, 0.5, rate=0.05493)
+        with mock.patch.object(engine, "split_at", lambda bs: True):
+            self.assertFalse(engine.apply_measured_to_block(
+                self.SLOT, cost_incl=0.05493, label="STANDARD_RATE"))
+        self.assertEqual(engine._APPLY_REFUSAL, engine._REFUSE_NO_BAND)
+        self.assertEqual(self._row()["rate_source"], "reconciled")        # untouched
+
+    def test_the_label_bands_an_earlier_tariff(self):
+        """Before IOG-SMB the label is Octopus's band, whatever the cost reads."""
+        self._blk(1.0, None, rate=0.05493)
+        with mock.patch.object(engine, "split_at", lambda bs: False):
+            self.assertTrue(engine.apply_measured_to_block(
+                self.SLOT, cost_incl=0.05493, label="STANDARD_RATE"))
+        r = self._row()
+        self.assertAlmostEqual(r["imp_rate"], 0.323092, places=6)
+        self.assertAlmostEqual(r["imp_cost"], 0.323092, places=6)
+
+    def test_mixed_uses_4band_clean_no_rescale(self):
+        # A genuine over-cap boundary slot (label='mixed'): keep the true 4-band split at the
+        # schedule's CLEAN per-band rates — NOT rescaled to the bill (clean-rate invariant).
+        # imp_cost stays the bill; the house is what is left of it after the EV.
+        import iog_cap
+        self._blk(3.0, 2.0, rate=0.05493)          # 2 kWh EV, 1 kWh house
+        self.st.record_dispatch_history(self.SLOT, "completed", source="unknown", energy_kwh=-2.0)
+        class _Ev(_Sched):
+            def resolve(self, ts): return 5.493
+        engine._kraken_rate_schedules = {
+            "import": _Sched(),
+            "ev_device_off_peak": _Ev(), "ev_device_peak": _Ev()}
+        # EV 1@off_peak(0.055) + 1@peak(0.323), house 1@day(0.323) — CLEAN rates
+        _raw = [(1.0, 0.055, "off_peak", "ev"),
+                (1.0, 0.323, "peak", "ev"),
+                (1.0, 0.323, "day", "house")]
+        # settle() builds a capped half-hour's legs with iog_cap.price_slot (engine step 4b)
+        _save = iog_cap.price_slot
+        iog_cap.price_slot = lambda *a, **k: {
+            "segments": _raw, "classification": {"ev": "mixed", "house": "day"}}
+        _cap = mock.patch.object(engine, "capped_at", lambda bs: True)
+        _cap.start()
+        try:
+            bill_incl, bill_excl = 0.900, 0.857
+            # the buckets at both bands: Octopus's "mixed"
+            self.st.upsert_measured_cost(self.SLOT, mpan="M", cost_incl=bill_incl, label="mixed", kwh=3.0)
+            self.st.upsert_measured_breakdown(self.SLOT, mpan="M", home_kwh=1.0, home_rate=0.323092,
+                                              ev_kwh=2.0, ev_rate=0.05493)
+            with mock.patch.object(engine, "split_at", lambda bs: True):
+                ok = engine.apply_measured_to_block(
+                    self.SLOT, cost_incl=bill_incl, cost_excl=bill_excl, label="mixed")
+        finally:
+            iog_cap.price_slot = _save
+            _cap.stop()
+        self.assertTrue(ok)
+        segs = [ps.Segment(**x) for x in
+                self.st.get_block_segments(self.SLOT, "electricity_main")]
+        self.assertEqual(len(segs), 3)
+        self.assertEqual({s.band for s in segs}, {"off_peak", "peak", "day"})
+        # CLEAN rates preserved (NOT rescaled) — every segment rate is a stub band value
+        for sg in segs:
+            self.assertIn(round(sg.inc_rate, 3), (0.055, 0.323))
+        r = self._row()
+        self.assertEqual(r["rate_source"], "settled")
+        # the cost is the legs' kWh × rate (step 2b), not the bill's 0.900
+        self.assertAlmostEqual(r["imp_cost"], round(0.055 + 0.323 + 0.323, 6), places=6)
+        self.assertEqual(r["imp_ev_band"], "mixed")
+        self.assertAlmostEqual(r["imp_cost_ev"], round(0.055 + 0.323, 6), places=6)
+
+    def test_no_kwh_is_noop(self):
+        self._blk(0.0, 0.0, rate=0.05493)
+        self.assertFalse(engine.apply_measured_to_block(
+            self.SLOT, cost_incl=0.5, cost_excl=0.48, label="STANDARD_RATE"))
+        self.assertEqual(self._row()["rate_source"], "reconciled")  # untouched
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class TestMeasuredApplyDeviceRecost(unittest.TestCase):
+    """Settlement re-costs devices from the GRID-ATTRIBUTED kWh, not the raw draw (#473).
+
+    `apply_measured_to_block` re-costs the slot's sub-meters to the settled rate, because
+    PASS 2 costs every device at its parent's rate and settlement moves that rate. It priced
+    from raw `imp_kwh`, which silently re-based the cost onto a different quantity than PASS 2
+    had used: a device that ran off solar or battery was billed as though the grid supplied
+    all of it.
+
+    That reaches the BILL, not just the device line. `compute_period_net` builds each day as
+    `max(0, main - SUM(devices)) + SUM(devices)` — algebraically `main`, except the clamp
+    stops the device terms cancelling once they exceed the main. So an over-costed device
+    becomes the period total.
+
+    The kWh COLUMNS were always correct, which is why this hid: the comment above the
+    statement promises "kWh is untouched; only the priced rate layer moves", and that is true
+    of the columns while being false of the cost.
+    """
+
+    SLOT = "2026-08-23T02:00:00"
+    OFF = 0.05493          # the off-peak band _Sched returns, in £
+
+    def setUp(self):
+        self._save = (engine._store, engine._kraken_rate_schedules)
+        self.st = BlockStore(":memory:")
+        engine._store = self.st
+        engine._kraken_rate_schedules = {"import": _Sched()}
+        # engine step 4b: settle() asks the tariff kind (the apply never did); no agreement is loaded
+        _tk = mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+        _tk.start()
+        self.addCleanup(_tk.stop)
+        self.st._conn.execute(
+            "INSERT OR IGNORE INTO config_periods (id, effective_from, billing_day, "
+            "block_minutes, timezone) VALUES (1,'2020-01-01T00:00:00',1,30,'UTC')")
+        # Main: 3 kWh settled, priced into the off-peak band. Deliberately started on the
+        # PEAK rate so settlement genuinely moves it and the device re-cost fires.
+        self.st._conn.execute(
+            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
+            "imp_kwh, imp_kwh_api, imp_rate, imp_cost, rate_source) "
+            "VALUES (?,?,?,?,?,?,?,?,?)",
+            (self.SLOT, self.SLOT, "electricity_main", 1, 3.0, 3.0, 0.323092,
+             round(3.0*0.323092, 6), "reconciled"))
+        self.st._conn.commit()
+
+    def tearDown(self):
+        (engine._store, engine._kraken_rate_schedules) = self._save
+
+    def _device(self, mid, kwh, kwh_grid, meter_type=None):
+        # engine step 4b: settle() takes the devices from the meters config (parent, type), as PASS
+        # 2 does; the old re-cost re-priced every non-main row in the slot
+        self.st._conn.execute(
+            "INSERT INTO meters (config_period_id, meter_id, is_sub_meter, parent_meter_id, "
+            "meter_type) VALUES (1, ?, 1, 'electricity_main', ?)", (mid, meter_type))
+        self.st._conn.execute(
+            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
+            "imp_kwh, imp_kwh_grid, imp_rate, imp_cost) VALUES (?,?,?,?,?,?,?,?)",
+            (self.SLOT, self.SLOT, mid, 1, kwh, kwh_grid, 0.323092,
+             round((kwh if kwh_grid is None else kwh_grid) * 0.323092, 6)))
+        self.st._conn.commit()
+
+    def _settle(self):
+        ok = engine.apply_measured_to_block(
+            self.SLOT, cost_incl=round(3.0 * self.OFF, 6), label="OFF_PEAK")
+        self.assertTrue(ok, "settlement did not apply")
+        return ok
+
+    def _dev_row(self, mid):
+        return self.st._conn.execute(
+            "SELECT imp_kwh, imp_kwh_grid, imp_rate, imp_cost, imp_cost_exc "
+            "FROM blocks WHERE block_start=? AND meter_id=?", (self.SLOT, mid)).fetchone()
+
+    def _battery_behind_the_car(self):
+        """4 kWh drawn by the battery, only 0.01 of it from the grid: the car (an EV meter, which
+        claims the grid first) took 2.99 of the main's 3.0. Since engine step 4b the grid share is
+        settle()'s clip of these facts, so the 0.01 is made by them, not written in by hand."""
+        self._device("ev_charger", 2.99, 2.99, meter_type="ev")
+        self._device("battery", 4.0, 0.01)
+
+    def test_device_cost_uses_grid_attributed_kwh(self):
+        """4 kWh drawn, only 0.01 of it from the grid — bill the 0.01."""
+        self._battery_behind_the_car()
+        self._settle()
+        r = self._dev_row("battery")
+        self.assertAlmostEqual(r["imp_rate"], self.OFF, places=6)        # rate did move
+        self.assertAlmostEqual(r["imp_cost"], round(0.01 * self.OFF, 6), places=6)
+        # and emphatically NOT the raw-kWh figure the old expression produced
+        self.assertNotAlmostEqual(r["imp_cost"], round(4.0 * self.OFF, 6), places=4)
+
+    def test_the_read_is_untouched_and_the_grid_share_is_the_clips(self):
+        """The device's own read stays; its grid share is settle()'s clip of the facts (engine step
+        4b — until then the column was left as it was)."""
+        self._battery_behind_the_car()
+        self._settle()
+        r = self._dev_row("battery")
+        self.assertEqual(r["imp_kwh"], 4.0)
+        self.assertAlmostEqual(r["imp_kwh_grid"], 0.01, places=6)
+
+    def test_exc_follows_the_same_quantity(self):
+        """inc and exc must derive from the same kWh or the ex-VAT view disagrees."""
+        self._battery_behind_the_car()
+        self._settle()
+        r, m = self._dev_row("battery"), self._dev_row("electricity_main")
+        self.assertIsNotNone(r["imp_cost_exc"])
+        # imp_rate_exc dropped (step 5b, 10 Oct 2026): the ex-VAT rate is the settled main's,
+        # derived from its pair.
+        rate_exc = m["imp_rate"] * m["imp_cost_exc"] / m["imp_cost"]
+        # exact: cost_exc is the SAME 0.01 kWh priced at the ex-VAT rate
+        self.assertAlmostEqual(r["imp_cost_exc"], round(0.01 * rate_exc, 6), places=6)
+        self.assertNotAlmostEqual(r["imp_cost_exc"], round(4.0 * rate_exc, 6), places=4)
+
+    def test_unclipped_device_still_costs_from_raw_kwh(self):
+        """imp_kwh_grid NULL means PASS 2 never clipped — the COALESCE fallback.
+
+        A production database carries thousands of these; re-costing them to zero would be a
+        worse bug than the one being fixed.
+        """
+        self._device("nogrid", 0.5, None)
+        self._settle()
+        r = self._dev_row("nogrid")
+        # settle() writes the grid share, as PASS 2 does (engine step 4b): the whole 0.5 here, so
+        # the cost is still its raw draw's, and "never clipped" no longer exists
+        self.assertEqual(r["imp_kwh_grid"], 0.5)
+        self.assertAlmostEqual(r["imp_cost"], round(0.5 * self.OFF, 6), places=6)
+
+    def test_devices_no_longer_exceed_the_main(self):
+        """The property that makes the bill safe: with costs clipped, SUM(devices) <= main,
+        so the per-day clamp in compute_period_net cannot fire."""
+        self._device("battery", 4.0, 0.01)
+        self._device("ev", 2.5, 0.40)
+        self._settle()
+        main = self.st._conn.execute(
+            "SELECT imp_cost FROM blocks WHERE block_start=? AND meter_id='electricity_main'",
+            (self.SLOT,)).fetchone()["imp_cost"]
+        devs = self.st._conn.execute(
+            "SELECT COALESCE(SUM(imp_cost),0) s FROM blocks WHERE block_start=? "
+            "AND meter_id != 'electricity_main'", (self.SLOT,)).fetchone()["s"]
+        self.assertLessEqual(devs, main + 1e-9)
+        # the raw-kWh forms would NOT have fitted — that is the defect, stated as arithmetic
+        self.assertGreater(round(4.0*self.OFF, 6) + round(2.5*self.OFF, 6), main)

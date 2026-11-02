@@ -1,0 +1,196 @@
+"""
+BL-79 (1) — a settled kWh on a held-rate block refits the block's segments (8 Oct 2026).
+
+When the settlement re-run finds a corrected, reconciled or measured rate, it holds that rate and
+re-costs the block to the settled kWh — but re-derived nothing else, so the block's segments stayed
+at the kWh it was finalised with. On real databases 11–12 measured blocks per install (4 with EV)
+and a corrected one had segments that no longer summed to imp_kwh. The bill's EV/Home rows and
+every EV surface (ev_split) read the segments, so they no longer added up to the block.
+
+Now the segments are fitted to the settled kWh at the rates they carry: the house takes the
+change; only when the house is gone does the EV shrink, and the EV split (ev_split, read from the
+segments since step 5c dropped the imp_*_ev columns) follows it.
+
+Discriminating: test_its_segments_follow_the_settled_kwh, test_the_house_takes_a_rise and
+test_the_ev_shrinks_only_when_the_house_is_gone fail on the parent. No-re-price, the predicted
+band, no settlement and the helper's own cases are guards.
+"""
+import os
+import sys
+import unittest
+
+sys.path.insert(0, os.path.dirname(__file__))
+import test_rebuild_meter_type as H              # noqa: E402  (stubs, real engine, flat tariff)
+import pricing_segments as ps                    # noqa: E402
+import ev_split                                  # noqa: E402
+engine = H.engine
+
+MAIN = H.MAIN                                    # 7.058 kWh at the close
+
+
+class _Held(H._Harness):
+
+    def _segs(self):
+        return engine._store.get_block_segments(H.START, "electricity_main")
+
+    def _hold(self, word, segs=None):
+        """Mark the closed block's rate as held by `word`; optionally give it segments (an EV
+        split is its 'ev' segments)."""
+        c = engine._store._conn
+        with c:
+            c.execute("UPDATE blocks SET rate_source=? WHERE block_start=? "
+                      "AND meter_id='electricity_main'", (word, H.START))
+        if segs is not None:
+            engine._store.set_block_segments(H.START, "electricity_main", segs)
+
+    def _total(self, attr=None):
+        return round(sum(s["kwh"] for s in self._segs()
+                         if attr is None or s["attribution"] == attr), 6)
+
+    def _row(self):
+        return engine._store._conn.execute(
+            "SELECT b.imp_kwh, b.imp_rate, " + ev_split.sql_kwh("b") + " AS ev_kwh, "
+            + ev_split.sql_cost("b") + " AS ev_cost FROM blocks b WHERE b.block_start=? "
+            "AND b.meter_id='electricity_main'", (H.START,)).fetchone()
+
+
+class ACorrectedBlock(_Held):
+
+    def test_its_segments_follow_the_settled_kwh(self):
+        self._finalise()
+        self._hold("corrected")
+        self._settle(dcc=7.5)
+        self.assertAlmostEqual(self._row()["imp_kwh"], 7.5, places=6)
+        self.assertAlmostEqual(self._total(), 7.5, places=6)
+
+    def test_no_segment_is_re_priced(self):
+        """GUARD: a held rate stays held."""
+        self._finalise()
+        before = {s["inc_rate"] for s in self._segs()}
+        self._hold("corrected")
+        self._settle(dcc=7.5)
+        self.assertEqual({s["inc_rate"] for s in self._segs()}, before)
+
+
+class AMeasuredBlockWithAnEv(_Held):
+    """The half-hour split 3.0 EV + 4.058 house; a later settlement revises the kWh.
+
+    Since engine step 4b the re-run settles it with settle(), which reads no stored split: the EV is
+    a fact's — here a completed 3.0 kWh dispatch on an Intelligent half-hour, clipped to the settled
+    kWh. (Until then the fixture wrote the EV segment by hand on a published tariff, and the held
+    rate's refit kept it; settle() finds no fact for it there.)"""
+
+    def setUp(self):
+        super().setUp()
+        from unittest import mock
+        _tk = mock.patch.object(engine, "tariff_kind_at", lambda bs: "intelligent")
+        _tk.start()
+        self.addCleanup(_tk.stop)
+
+    def _ev_block(self):
+        self._finalise()
+        r = H.FLAT
+        self._hold("settled", segs=[
+            ps.Segment(3.0, r, round(r / 1.05, 6), "off_peak", "ev"),
+            ps.Segment(round(MAIN - 3.0, 6), r, round(r / 1.05, 6), "off_peak", "house")])
+        engine._store.record_dispatch_history(H.START, "completed", provider="Myenergi",
+                                              source="unknown", energy_kwh=-3.0)
+
+    def test_the_house_takes_a_rise(self):
+        self._ev_block()
+        self._settle(dcc=7.5)
+        self.assertAlmostEqual(self._total("ev"), 3.0, places=6)
+        self.assertAlmostEqual(self._total("house"), 4.5, places=6)
+
+    def test_the_ev_shrinks_only_when_the_house_is_gone(self):
+        self._ev_block()
+        self._settle(dcc=2.0)
+        self.assertAlmostEqual(self._total("ev"), 2.0, places=6)
+        self.assertAlmostEqual(self._total("house"), 0.0, places=6)
+        self.assertAlmostEqual(self._row()["ev_kwh"], 2.0, places=6)        # the split follows
+        self.assertAlmostEqual(self._row()["ev_cost"], round(2.0 * H.FLAT, 6), places=6)
+
+
+class APredictedBlockIsSettled(_Held):
+    """BL-79 (part 2, 8 Oct 2026) kept a held PREDICTION's stored bands through a settlement (the
+    #475 hold). Engine step 4b settles it instead (design §4 (d)): the legs are the tariff's for
+    the half-hour's band, on the settled kWh — here the flat tariff's one rate, whatever was stored.
+    REVERSED: the parent kept the stored two bands."""
+    OFF, DAY = 0.07, 0.30
+
+    def _two_bands(self):
+        self._finalise()
+        c = engine._store._conn
+        cost = round(3.0 * self.OFF + (MAIN - 3.0) * self.DAY, 6)
+        with c:
+            c.execute("UPDATE blocks SET imp_rate=?, imp_cost=? WHERE block_start=? "
+                      "AND meter_id='electricity_main'", (round(cost / MAIN, 6), cost, H.START))
+        engine._store.set_block_segments(H.START, "electricity_main", [
+            ps.Segment(3.0, self.OFF, None, "off_peak", "house"),
+            ps.Segment(round(MAIN - 3.0, 6), self.DAY, None, "day", "house")])
+
+    def test_its_legs_are_the_tariffs(self):
+        self._two_bands()
+        self._settle(dcc=MAIN)
+        self.assertEqual([(s["band"], s["inc_rate"]) for s in self._segs()], [("standard", H.FLAT)])
+
+    def test_on_the_settled_kwh(self):
+        self._two_bands()
+        self._settle(dcc=7.5)
+        self.assertAlmostEqual(self._total(), 7.5, places=6)
+        self.assertAlmostEqual(self._row()["imp_rate"] * 7.5, round(7.5 * H.FLAT, 6), places=6)
+
+    def test_a_block_with_no_segments_is_still_given_them(self):
+        """GUARD: with nothing stored, the half-hour still gets its segments."""
+        self._finalise()
+        with engine._store._conn as c:
+            c.execute("DELETE FROM block_segments WHERE block_start=?", (H.START,))
+        self._settle(dcc=7.5)
+        self.assertAlmostEqual(self._total(), 7.5, places=6)
+
+
+class TheGuards(_Held):
+
+    def test_a_predicted_band_was_already_refitted(self):
+        """GUARD: a predicted half-hour's segments follow the settled kWh (the held PREDICTION,
+        4.5.15, did; settle() does since engine step 4b)."""
+        self._finalise()
+        self._settle(dcc=7.5)
+        self.assertAlmostEqual(self._total(), 7.5, places=6)
+
+    def test_no_settled_kwh_changes_nothing(self):
+        """GUARD: with no settled import the chosen kWh is the stored one; nothing moves."""
+        self._finalise()
+        self._hold("corrected")
+        before = self._segs()
+        blk = engine._store.get_block_dict_by_start(H.START)
+        engine._rerun_pass2_for_settled_block(blk, billing_source="api", standing_resolver=None)
+        engine.append_block_replace(blk)
+        self.assertEqual(self._segs(), before)
+
+
+class TheFit(unittest.TestCase):
+    """GUARD: pricing_segments.refit_to_kwh's shapes (new code)."""
+    S = ps.Segment
+
+    def _fit(self, segs, kwh):
+        return ps.refit_to_kwh(segs, kwh, rate=0.30, exc_rate=None, band="day")
+
+    def test_a_house_less_block_gains_a_house_segment_at_the_held_rate(self):
+        out = self._fit([self.S(2.0, 0.07, None, "off_peak", "ev")], 3.0)
+        self.assertEqual([(s.kwh, s.inc_rate, s.attribution) for s in out],
+                         [(2.0, 0.07, "ev"), (1.0, 0.30, "house")])
+
+    def test_two_house_bands_keep_their_mix(self):
+        out = self._fit([self.S(1.0, 0.07, None, "off_peak", "house"),
+                         self.S(1.0, 0.30, None, "day", "house")], 3.0)
+        self.assertEqual([s.kwh for s in out], [1.5, 1.5])
+
+    def test_it_sums_to_the_kwh(self):
+        out = self._fit([self.S(1.0 / 3, 0.07, None, "off_peak", "house"),
+                         self.S(2.0 / 3, 0.30, None, "day", "house")], 1.234567)
+        self.assertAlmostEqual(sum(s.kwh for s in out), 1.234567, places=6)
+
+
+if __name__ == "__main__":
+    unittest.main()
