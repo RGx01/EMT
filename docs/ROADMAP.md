@@ -1209,6 +1209,19 @@ it is populated (the watch's own stated boundary).
 
 *Recorded 5 Oct 2026. Nothing in the additions is a removal or a deprecation, so there is time.*
 
+**2 Nov 2026 — items 1 and 2 done in EMT** (going public). The baseline is refreshed (97 watched types).
+Since 5 Oct, beside the three above: nothing removed; Octopus's flex-device capability surface
+(`capabilitySupport`, `supportType`, `FlexCapabilitySupportType`, `ThirdPartyServiceCapabilitySupport`), and
+**`HP_DEVICE`** added to `AllBandSubCategories` and both rate-type enums — where `EV_BOOST` appeared on
+28 Sep, before the bucket relabelling (#481). An `HP_DEVICE…` bucket would reach `bucket_side`'s pre-SMB
+catch-all and be booked to the **house** — the right side for the house/EV split, but silently; a heat-pump
+tariff's breakdown is the first place to look if one appears (flagged, not acted on). The workflow now opens
+an issue for a schema change (it only reddened the run) and one issue per deprecated FIELD (it would have
+opened one per type: eight for `provider`); the actions are pinned to SHAs. The weekly run starts once the
+workflow is on the new repository's `main`. Item 3 (the `timeOfUseUsage` probe) is still open. The
+deprecation check finds 9 today: `provider` on eight SmartFlex types (removal 15 Apr 2027) and
+`TerminationFeeType.amount` (1 Jun 2027) — the first run opens two issues.
+
 ---
 
 ## Open questions

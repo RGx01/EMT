@@ -21,6 +21,7 @@
     "enum:GREEN_UNIT",
     "enum:HMC_GUARANTEE_ADVANCE",
     "enum:HMC_GUARANTEE_FULL",
+    "enum:HP_DEVICE",
     "enum:NUCLEAR_RAB",
     "enum:REACTIVE",
     "enum:RED_UNIT",
@@ -52,6 +53,7 @@
     "isSalesTax",
     "name",
     "overridePrice",
+    "params",
     "pricePerUnit",
     "rateId",
     "sourceSystem",
@@ -76,6 +78,7 @@
     "enum:EV_DEVICE_PEAK",
     "enum:HMC_GUARANTEE_ADVANCE",
     "enum:HMC_GUARANTEE_FULL",
+    "enum:HP_DEVICE",
     "enum:NUCLEAR_RAB",
     "enum:OFF_PEAK",
     "enum:OFF_PEAK_WEEKENDS",
@@ -197,6 +200,11 @@
     "enum:cubicMetres",
     "enum:kWh"
   ],
+  "ContractedVolumeMeasurementPeriod": [
+    "enum:DAILY",
+    "enum:HOURLY",
+    "enum:WHOLE_PERIOD"
+  ],
   "CostOfUsageBandInterval": [
     "bandSubcategory",
     "consumption",
@@ -284,10 +292,44 @@
     "reason",
     "type"
   ],
+  "FlexCancelBoostChargeCapability": [
+    "capabilitySupport"
+  ],
+  "FlexCapChargingDurationCapability": [
+    "capabilitySupport"
+  ],
+  "FlexCapabilitySupportInterface": [
+    "supportType"
+  ],
+  "FlexCapabilitySupportType": [
+    "enum:FLEX_SERVICE",
+    "enum:THIRD_PARTY_SERVICE"
+  ],
+  "FlexDeauthenticateDeviceCapability": [
+    "capabilitySupport"
+  ],
+  "FlexDeviceCapabilityInterface": [
+    "capabilitySupport"
+  ],
   "FlexIsChargingDurationCapped": [
     "enum:DISABLED",
     "enum:ENABLED",
     "enum:NOT_APPLICABLE"
+  ],
+  "FlexReauthenticateDeviceCapability": [
+    "capabilitySupport"
+  ],
+  "FlexServiceCapabilitySupport": [
+    "supportType"
+  ],
+  "FlexSuspendDeviceCapability": [
+    "capabilitySupport"
+  ],
+  "FlexTriggerBoostChargeCapability": [
+    "capabilitySupport"
+  ],
+  "FlexUpdatePreferencesCapability": [
+    "capabilitySupport"
   ],
   "ForecastConsumptionEntryType": [
     "consumptionSplit",
@@ -397,6 +439,7 @@
     "enum:EV_DEVICE_PEAK",
     "enum:HMC_GUARANTEE_ADVANCE",
     "enum:HMC_GUARANTEE_FULL",
+    "enum:HP_DEVICE",
     "enum:NUCLEAR_RAB",
     "enum:OFF_PEAK",
     "enum:OFF_PEAK_WEEKENDS",
@@ -500,11 +543,22 @@
     "enum:FAILED",
     "enum:TRIGGERED"
   ],
+  "ThirdPartyServiceCapabilitySupport": [
+    "androidUri",
+    "iosUri",
+    "supportType"
+  ],
   "ThirdPartyTariffIntervalType": [
     "daysOfWeek",
     "endTime",
     "startTime",
     "tariffType"
+  ],
+  "TimeOfUseBandUsageType": [
+    "band",
+    "qualities",
+    "units",
+    "value"
   ],
   "UpdateDCAProceeding": [
     "dcaProceedingUpdateStatus"
