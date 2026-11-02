@@ -99,6 +99,7 @@
   "read": [
     "_apply_pragmas",
     "_count_blocks_and_local_dates",
+    "_csv_cost_for_settled",
     "_export_settlement_expected",
     "_imported_config_period_id",
     "_local_date_of",
@@ -107,6 +108,7 @@
     "_resolve_delete_meters",
     "_savepoint",
     "_select_blocks",
+    "_settled_import_kwh",
     "_tx",
     "ask_candidate_facts",
     "ask_record",

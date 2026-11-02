@@ -49,7 +49,7 @@ class TheCard(unittest.TestCase):
 
     def test_a_state_a_swatch_and_what_to_do(self):
         s = _section()
-        self.assertEqual(s.count("{{ sw('"), 15)            # nine Import bill states, six Export bill
+        self.assertEqual(s.count("{{ sw('"), 16)            # nine Import bill states, six Export bill, the CSV's grey
         for words in ("Re-fetch from Octopus</strong> asks now", "Fill this\n      gap</strong>",
                       "Fill the missing export</strong> from your PDF bills or a CSV"):
             self.assertIn(words, s)
@@ -62,7 +62,7 @@ class TheCard(unittest.TestCase):
 
     def test_the_uncosted_days_and_the_refetch_reds(self):
         s = _section()
-        self.assertIn("only Octopus can supply it", s)
+        self.assertIn("A re-fetch may still get it; or <a href=\"#csv-cost\">import the day's CSV or PDF bill</a>", s)
         self.assertIn("a re-fetch never takes away a cost", s)
         self.assertIn("outside EMT's\n    control", s)
 

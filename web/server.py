@@ -5450,7 +5450,8 @@ def _settle_after_csv(result) -> None:
     """A CSV import wrote blocks: what follows an API import or a gap fill follows it too — the
     history sweeps (settle() over every half-hour, engine step 4d), the cached bills, the ask.
     Started on the engine loop, not waited for. Never raises."""
-    if not ((result or {}).get("blocks_written") or (result or {}).get("blocks_replaced")):
+    if not ((result or {}).get("blocks_written") or (result or {}).get("blocks_replaced")
+            or (result or {}).get("costs_taken")):
         return
     try:
         import engine as _eng
@@ -6046,17 +6047,18 @@ def api_historical_csv_apply():
         except Exception as be:
             logger.warning("csv apply: backup failed (continuing): %s", be)
         store = store_access.store()      # reads only; the writes go through _engine_write
-        # Spans a previous API import proved the supplier does not cost. Inside those,
-        # and ONLY there, a bill may replace what the API import left behind (usage x
-        # published rate) instead of being skipped by first-man-wins. Live/settled
-        # readings and user corrections are still protected inside them.
-        try:
-            import engine as _eng
-            replace_ranges = _eng._uncostable_ranges("import")
-        except Exception as _rr:
-            logger.warning("csv apply: uncostable ranges unavailable (%s) — "
-                           "first-man-wins everywhere", _rr)
-            replace_ranges = []
+        # (The spans an API import proved Octopus does not cost, where a CSV could replace an
+        # imported block, went with the import's cost coverage in engine step 2d-1, 23 Oct 2026;
+        # the call stayed, failed and logged on every import until 2 Nov 2026. A CSV now gives a
+        # settled half-hour with no bill its cost instead — `cost_band` below.)
+        import engine as _eng
+
+        def _cost_band(bs, cost, kwh):
+            # the CSV's cost as a settled half-hour's bill: on an Intelligent tariff, banded as
+            # settle() bands an IMPORTED bill (2 Nov 2026, the user)
+            if _eng.tariff_kind_at(bs) != "intelligent":
+                return None
+            return _eng._imported_cost_band(bs, cost, kwh, kwh)
         # On the engine thread. This endpoint already zips the whole database for
         # a pre-import backup before it gets here, so it is a long request either
         # way; the hop only stops the write going through the connection four
@@ -6070,15 +6072,16 @@ def api_historical_csv_apply():
         result = _engine_write(
             lambda st: st.apply_csv_import(
                 texts, meter_id=meter_id, overrides=overrides,
-                replace_ranges=replace_ranges, bill_mpan=bill_mpan),
+                bill_mpan=bill_mpan, cost_band=_cost_band),
             timeout=1800.0)
         _rebuild_devices_after_csv(result)
         _settle_after_csv(result)
-        if result.get("blocks_replaced"):
-            logger.info("csv apply: replaced %d block(s) inside %d uncostable tariff "
-                        "period(s); %d protected (live or user-corrected)",
-                        result.get("blocks_replaced"), len(replace_ranges),
-                        result.get("blocks_protected") or 0)
+        if any(result.get(k) for k in ("costs_taken", "costs_kwh_differs", "costs_no_band",
+                                        "costs_corrected")):
+            logger.info("csv apply: a cost for %d settled half-hour(s) with no bill; not taken: %d "
+                        "kWh differs, %d no band, %d corrected", result.get("costs_taken") or 0,
+                        result.get("costs_kwh_differs") or 0, result.get("costs_no_band") or 0,
+                        result.get("costs_corrected") or 0)
         result["backup"] = backup
         # Offer a region/site confirmation for the imported span. CSV carries no
         # provenance, so the user names the site AND sets the region; skipping

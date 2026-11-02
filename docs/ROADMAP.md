@@ -736,6 +736,15 @@ priced the EV's bucket at peak, or (no EV bucket billed) that is outside the win
 verdict peak — the rule `predicted_band` prices it by. On the user's support file the cap-day from noon on 31 Oct
 2026 went from 2.09 h to 1.21 h (the 11:00–12:00 bump).
 
+**BL-107 — a CSV or PDF bill gives a settled half-hour with no bill its cost.** ✅ *Done 2 Nov 2026 (the user: "As
+long as we aren't replacing the settled kWh and were using the csv or pdf to understand the cost/rate I think it's
+fair the csv can be used").* A CSV import is first-man-wins, so a settled half-hour Octopus never costed could not
+take the day's CSV or PDF bill's cost. Now, on an Intelligent tariff, where the kWh has settled, there is no bill and
+no correction, and the CSV's kWh is the settled kWh, the CSV's cost is written as the half-hour's IMPORTED bill — the
+block untouched — and settle() prices it at the settled kWh × the band the cost gives; it reads `imported` and is
+no longer asked of Octopus. Refusals are counted (kWh differs, no band, corrected). The route's call to
+`engine._uncostable_ranges`, deleted in engine step 2d-1 (23 Oct 2026) and failing on every import since, is gone.
+
 ## D. Surfacing performance
 
 *Measure before optimising.* Target hardware is a Raspberry Pi 4 class box on SD storage.

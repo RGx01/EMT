@@ -87,7 +87,8 @@
     <li>{{ sw('red') }}<strong>Needs a look</strong> — one of:
       <ul>
         <li><em>Not final after 7 days</em>: Octopus has not given its cost yet. EMT keeps asking — hourly
-          for two days, then daily, for 30 days. <strong>Re-fetch from Octopus</strong> asks now.</li>
+          for two days, then daily, for 30 days. <strong>Re-fetch from Octopus</strong> asks now, or
+          <a href="#csv-cost">import the day's CSV or PDF bill</a>.</li>
         <li><em>Octopus's figures disagree</em>: its cost is not its kWh × its rate, it priced a different
           kWh from the one that settled, or its VAT is not the day's rate. These are Octopus's figures,
           outside EMT's control. When Octopus corrects them, a re-fetch takes the correction.</li>
@@ -99,8 +100,8 @@
       </ul></li>
     <li>{{ sw('abandoned') }}<strong>No cost from Octopus, no longer asked</strong> — asked for 30 days and
       never answered, so EMT has stopped asking. The cost shown is kWh × rate: an estimate, not your bill.
-      A re-fetch may still get it, but only Octopus can supply it. Some accounts have long stretches like
-      this — whole days Octopus has never costed.</li>
+      A re-fetch may still get it; or <a href="#csv-cost">import the day's CSV or PDF bill</a>. Some
+      accounts have long stretches like this — whole days Octopus has never costed.</li>
     <li>{{ sw('blue') }}<strong>Your correction</strong> — a rate you set. On an Intelligent tariff with
       Octopus connected, a re-fetch replaces it with Octopus's own cost.</li>
     <li>{{ sw('grey') }}<strong>Nothing to settle</strong> — nothing imported, imported history, or not on
@@ -119,6 +120,19 @@
     <li>{{ sw('grey') }}<strong>Nothing to settle</strong> — no export, or CSV history.</li>
     <li>{{ sw('missing') }}<strong>Missing</strong> — <strong>Fill this gap</strong>.</li>
   </ul>
+
+  <h3 id="csv-cost">A cost from a CSV or your PDF bills</h3>
+  <p>
+    <strong>Import a CSV</strong> or <strong>Import PDF bills</strong> (Whole history) fills missing
+    half-hours, and leaves every half-hour EMT already has as it is. One exception: a half-hour on an
+    Intelligent tariff whose kWh has settled and which Octopus has not costed takes the CSV's cost as
+    its bill. Its kWh — Octopus's settled figure — is not changed; the cost tells EMT which of the
+    day's rates applied, and the half-hour is priced at the settled kWh × that rate. It then reads
+    {{ sw('grey') }}grey: final, but your bill's figure rather than Octopus's own answer, so EMT no
+    longer asks Octopus for it.
+  </p>
+  <p>Not taken, and counted after the import: a half-hour whose CSV kWh is not the settled kWh, one
+    whose cost is neither of the day's rates (a half-hour split between them), and one you corrected.</p>
 
   <h3>A costed half-hour turning red after a re-fetch</h3>
   <p>

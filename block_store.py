@@ -3438,6 +3438,40 @@ class BlockStore:
             return row["id"], int(row["block_minutes"] or 30)
         return cp["id"], int(cp.get("block_minutes") or 30)
 
+    def _settled_import_kwh(self, block_start: str, meter_id: str):
+        """The half-hour's settled import kWh: DCC's, or an import's own (it came from Octopus's
+        API, or is CSV history); None while it has not settled."""
+        r = self._conn.execute(
+            "SELECT imp_kwh, imp_kwh_api, source FROM blocks WHERE block_start = ? AND meter_id = ?",
+            (block_start, meter_id)).fetchone()
+        if r is None:
+            return None
+        if r["imp_kwh_api"] is not None:
+            return float(r["imp_kwh_api"])
+        return float(r["imp_kwh"]) if str(r["source"] or "").startswith("imported") and r["imp_kwh"] is not None \
+            else None
+
+    def _csv_cost_for_settled(self, b: dict, meter_id: str, cost_band) -> str:
+        """Whether a CSV row's cost becomes the bill of a half-hour already held (apply_csv_import):
+        'taken', or why not — 'billed' (a bill of any kind is cached), 'unsettled', 'corrected',
+        'kwh_differs' (the CSV's kWh is not the settled kWh, to the meter's 0.001 kWh), 'no_band'."""
+        bs = b["block_start"]
+        if self._conn.execute("SELECT 1 FROM measured_cost WHERE slot_start = ? AND "
+                              "direction = 'CONSUMPTION' LIMIT 1", (bs,)).fetchone():
+            return "billed"
+        kw = self._settled_import_kwh(bs, meter_id)
+        if kw is None or kw <= 1e-9:
+            return "unsettled"
+        r = self._conn.execute("SELECT rate_corrected, rate_source FROM blocks WHERE block_start = ? "
+                               "AND meter_id = ?", (bs, meter_id)).fetchone()
+        if r is not None and (r["rate_corrected"] or str(r["rate_source"] or "") == "corrected"):
+            return "corrected"
+        if abs(float(b["kwh"]) - kw) > 0.0005:
+            return "kwh_differs"
+        if cost_band(bs, float(b["cost"]), kw) is None:
+            return "no_band"
+        return "taken"
+
     def imported_block_replaceable(self, block_start: str, meter_id: str,
                                    channel: str) -> tuple:
         """May a bill/CSV import REPLACE this block? Returns (ok, reason).
@@ -4049,6 +4083,7 @@ class BlockStore:
         self, channel_csvs: dict, meter_id: str = "electricity_main", *,
         periods_by_channel: dict | None = None, overrides: dict | None = None,
         replace_ranges: list | None = None, bill_mpan: str = "",
+        cost_band=None,
     ) -> dict:
         """Parse Octopus per-channel CSV(s), derive rates (rate-from-cost), and
         write reconstructed `imported_csv` blocks + one `rate` derivation per
@@ -4072,6 +4107,16 @@ class BlockStore:
         and ex-VAT, its kWh, under `bill_mpan` — where it has none (engine step 4d, design §6 (e):
         what the import heard is a bill, as the v4 importer's transform 3c writes). settle() bands
         it by its cost ÷ kWh; a bill Octopus gives later replaces it as the latest.
+
+        A half-hour already held, whose kWh has SETTLED and which has no bill, takes the CSV's cost as
+        its bill and nothing else (2 Nov 2026, the user: "As long as we aren't replacing the settled kWh
+        and were using the csv or pdf to understand the cost/rate"): the block — kWh, rate, source,
+        devices — is not touched; settle() bands the half-hour from the bill and prices it at the
+        settled kWh x that band's rate. `cost_band(block_start, cost, kwh)` (the caller's, from the
+        engine) gives the band, or None — not an Intelligent tariff (a published one's settled kWh x
+        rate is its bill already), or a cost that is neither rate's (a blend). Not taken, and counted:
+        the CSV's kWh not the settled kWh (`costs_kwh_differs`), no band (`costs_no_band`), a
+        correction (`costs_corrected`). Without `cost_band`, none is taken.
 
         Import is written before export so both settle onto the shared row.
         Returns a per-channel summary with blocks written, period rate derivations,
@@ -4142,6 +4187,7 @@ class BlockStore:
                 day_standing[ld] = day_standing.get(ld, 0.0) + (b.get("standing") or 0.0)
 
             written = 0
+            costs = {"taken": 0, "kwh_differs": 0, "no_band": 0, "corrected": 0}
             skipped = 0                 # first-man-wins: slot already held data
             replaced = 0                # inside an uncostable span: usable bill data won
             protected = 0               # inside one, but live/settled or user-corrected
@@ -4184,6 +4230,15 @@ class BlockStore:
                         and float(b.get("kwh") or 0.0) > 0.0:
                     bills.append((b["block_start"], bill_mpan or "", b["cost"], b.get("cost_exc"),
                                   b["kwh"], b["block_start"]))
+                elif (not wrote and bid is not None and channel == "import" and cost_band is not None
+                        and b.get("cost") is not None and float(b.get("kwh") or 0.0) > 0.0):
+                    why = self._csv_cost_for_settled(b, meter_id, cost_band)
+                    if why == "taken":
+                        kw = self._settled_import_kwh(b["block_start"], meter_id)
+                        bills.append((b["block_start"], bill_mpan or "", b["cost"], b.get("cost_exc"),
+                                      kw, b["block_start"]))
+                    if why in costs:
+                        costs[why] += 1
                 if wrote:
                     if _may_replace:
                         replaced += 1
@@ -4195,6 +4250,9 @@ class BlockStore:
                     else:
                         skipped += 1    # a block already existed here — left as-is
 
+            if channel == "import":
+                for k, v in costs.items():
+                    out["costs_" + k] = out.get("costs_" + k, 0) + v
             out["channels"][channel] = {
                 "ok": True, "blocks_written": written, "blocks_skipped": skipped,
                 "blocks_replaced": replaced, "blocks_protected": protected,
