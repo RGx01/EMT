@@ -77,9 +77,14 @@ class _Base(unittest.TestCase):
 class AcrossARestart(_Base):
 
     def test_only_the_young_month_is_counted_again(self):
-        self.count()
-        self.restart()
-        self.count()
+        # both counts in one 10-minute cache window: either side of a boundary the young months are
+        # rightly counted again (CI, 1 Nov 2026 23:50:01 UTC, on #400, which touched none of this)
+        import time as _t
+        mid = (_t.time() // self.server._HEALTH_TTL_S + 0.5) * self.server._HEALTH_TTL_S
+        with mock.patch.object(_t, "time", lambda: mid):
+            self.count()
+            self.restart()
+            self.count()
         self.assertEqual(self.server._health_cache["counted"], [])   # same window: nothing
 
     def test_the_file_holds_the_counts(self):
