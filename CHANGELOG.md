@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b2] — 2026-11-02
 
 - **Error messages say what happened, and nothing of yours.** When Octopus refuses or fails a
   request, the page now says so in plain words — *Octopus refused the API key — check it in
