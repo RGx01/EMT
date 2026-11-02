@@ -74,7 +74,9 @@ class TheRoutes(unittest.TestCase):
              unittest.mock.patch.object(server, "_event_loop", unittest.mock.MagicMock()):
             r = self._post("/api/settlement/refetch/apply", {"token": "t"}, run_refetch_apply=ran)
         self.assertEqual(r.status_code, 500)
-        self.assertIn("no safety backup", r.get_json()["error"])
+        err = r.get_json()["error"]
+        self.assertIn("no safety backup", err.lower())
+        self.assertNotIn("disk", err)               # the exception's text stays in the log
         ran.assert_not_called()
 
     def test_status_reports_the_job(self):
