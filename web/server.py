@@ -3662,7 +3662,8 @@ def api_detect_bcd():
         return jsonify(result)
     except Exception as e:
         # Detection failure must never block setup — fall back to pure-API path.
-        return jsonify({"found": False, "detail": str(e)})
+        logger.warning("api_detect_bcd: %s", e, exc_info=e)
+        return jsonify({"found": False, "detail": "detection_failed"})
 
 
 @app.route("/api/data-source-mode", methods=["GET"])
@@ -5689,7 +5690,7 @@ def api_attribute_backout():
             if err == "run_not_found":
                 return jsonify({"ok": False, "error": "that run was already undone "
                                 "(or no longer exists)"}), 409
-            return jsonify(res), 500
+            return jsonify({"ok": False, "error": "The undo failed — the log has the detail."}), 500
         return jsonify(res)
     except Exception as e:
         return _error_reply(e, {"ok": False})
