@@ -131,6 +131,9 @@ bs_mod.outward_code          = _bs_real.outward_code
 bs_mod.derive_region_periods = _bs_real.derive_region_periods
 bs_mod.EMT_SCHEMA            = _bs_real.EMT_SCHEMA         # the restore classifies by it
 bs_mod.read_emt_schema       = _bs_real.read_emt_schema
+# api_save_config's own import (3 Nov 2026): without it every save in this file failed, and the save
+# swallowed the error and replied ok — TestApiSaveConfigFreshInstall passed over a save that never ran.
+bs_mod.config_meta_significant = _bs_real.config_meta_significant
 sys.modules["block_store"] = bs_mod
 
 
@@ -3521,6 +3524,46 @@ class TestApiSaveConfigFreshInstall(unittest.TestCase):
         self.assertEqual(period_count, 1,
             "Fresh install wizard save should update existing period, not create a new one")
 
+    # 3 Nov 2026: a new install's first save is this in-place update (startup made the period), and it
+    # wrote the billing day, timezone and site but never the supplier. Fails on the parent.
+    def _save_supplier(self, supplier):
+        meta = {"billing_day": 1, "block_minutes": 30, "timezone": "Europe/London",
+                "currency_symbol": "£", "currency_code": "GBP", "site": "My Home"}
+        if supplier is not None:
+            meta["supplier"] = supplier
+        cfg = {"meters": {"electricity_main": {"meta": meta, "channels": {
+            "import": {"read": "", "rate": ""}, "export": {"read": "", "rate": ""}}}}}
+        with patch.object(server, "_create_backup_zip", return_value=None):
+            return self.client.post("/api/config", data=json.dumps(cfg),
+                                    content_type="application/json")
+
+    def _stored_supplier(self):
+        return self.store._conn.execute("SELECT supplier FROM config_periods").fetchone()[0]
+
+    def test_the_supplier_is_stored(self):
+        self.assertEqual(self._save_supplier("octopus").status_code, 200)
+        self.assertEqual(self._stored_supplier(), "octopus")
+
+    def test_a_save_without_one_keeps_it(self):
+        self._save_supplier("octopus")
+        self._save_supplier(None)
+        self.assertEqual(self._stored_supplier(), "octopus")
+
+    # 3 Nov 2026: a write that failed was logged as a warning, the JSON export written anyway and the
+    # reply `ok` — a page said Saved over a configuration that was not. Fails on the parent.
+    def test_a_save_that_fails_says_so(self):
+        def _boom(op, timeout=30.0):
+            raise RuntimeError("database is locked")
+        export = os.path.join(server.DATA_DIR, "meters_config.json")
+        if os.path.exists(export):
+            os.remove(export)
+        with patch.object(server, "_engine_write", _boom):
+            r = self._save_supplier("octopus")
+        self.assertEqual(r.status_code, 500)
+        self.assertNotIn("ok", r.get_json())
+        self.assertIn("the log has the detail", r.get_json()["error"])
+        self.assertFalse(os.path.exists(export), "no export of a configuration that was not saved")
+
 
 
 
@@ -5724,7 +5767,29 @@ class TestBackupDownloadDelete(unittest.TestCase):
             self.assertIsNone(server._staged_path("uploaded_restore-abc.db"))
             real = os.path.join(data, "uploaded_restore-def.db")
             open(real, "w").close()
-            self.assertEqual(server._staged_path("uploaded_restore-def.db"), real)
+            self.assertEqual(server._staged_path("uploaded_restore-def.db"), os.path.realpath(real))
+        finally:
+            server.DATA_DIR = "/tmp/emt_test_data"
+
+    def test_the_kept_stage_survives_a_linked_data_folder(self):
+        """GUARD — the resolved path _staged_path returns is still the one the sweep keeps, when
+        DATA_DIR is reached through a link (passes before the fix too, which returned the joined
+        path; pins the comparison the fix had to resolve)."""
+        import tempfile, time
+        make_client()
+        real_dir = tempfile.mkdtemp()
+        link = os.path.join(tempfile.mkdtemp(), "data")
+        os.symlink(real_dir, link)
+        server.DATA_DIR = link
+        f = os.path.join(link, "uploaded_restore-keep.db")
+        open(f, "w").close()
+        old = time.time() - 2 * server._STAGED_MAX_AGE_S
+        os.utime(f, (old, old))
+        try:
+            kept = server._staged_path("uploaded_restore-keep.db")
+            server._restore_job = {"status": "idle"}
+            server._remove_stale_stages(keep=kept)
+            self.assertTrue(os.path.exists(f), "the kept stage was swept")
         finally:
             server.DATA_DIR = "/tmp/emt_test_data"
 

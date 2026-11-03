@@ -747,7 +747,8 @@ def save_config(data: dict):
                                timezone        = ?,
                                currency_symbol = ?,
                                currency_code   = ?,
-                               site_name       = ?
+                               site_name       = ?,
+                               supplier        = COALESCE(?, supplier)
                            WHERE id = ?""",
                         (
                             int(main_meta.get("billing_day") or 1),
@@ -756,6 +757,9 @@ def save_config(data: dict):
                             main_meta.get("currency_symbol", "£"),
                             main_meta.get("currency_code", "GBP"),
                             main_meta.get("site"),
+                            # A new install's first save lands here — startup made its period — and
+                            # the supplier was never written (3 Nov 2026). A save without one keeps it.
+                            main_meta.get("supplier") or None,
                             period_id,
                         )
                     )
@@ -2165,7 +2169,9 @@ def _config_token(store) -> str:
             "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS mx, "
             "COALESCE(GROUP_CONCAT(billing_day || '@' || effective_from, ','), '') AS bd "
             "FROM config_periods").fetchone()
-        _mc = store._conn.execute("SELECT COUNT(*) AS n FROM meters").fetchone()
+        _mc = store._conn.execute(      # the EV's style (BL-97) in the same statement: the poll runs every minute
+            "SELECT COUNT(*) AS n, (SELECT value FROM store_meta WHERE key = 'ev_style') AS ev "
+            "FROM meters").fetchone()
         _st = store._conn.execute(
             "SELECT COALESCE(GROUP_CONCAT(s, ','), '') AS s FROM ("
             "  SELECT m.meter_id || '.' || mc.channel || '=' || COALESCE(mc.bar_color, '') || '/' "
@@ -2177,6 +2183,11 @@ def _config_token(store) -> str:
         _cfgf = "%s/%s/%d/%d" % (_cp["n"], _cp["mx"], _zlib.crc32(_cp["bd"].encode()), _mc["n"])
         if _st["s"]:                            # unchanged for a config with no style set
             _cfgf += "/%d" % _zlib.crc32(_st["s"].encode())
+        # BL-97: the EV of an account with no EV device keeps its style in the store's meta, not
+        # on a channel — until 3 Nov 2026 a colour chosen on its tab reached Usage Stats only when
+        # something else moved the token.
+        if _mc["ev"] and _mc["ev"] != "null":       # set_meta(None) stores 'null': cleared
+            _cfgf += "/ev%d" % _zlib.crc32(_mc["ev"].encode())
     except Exception:
         _cfgf = "0"
     return _cfgf
@@ -2798,18 +2809,11 @@ def api_save_config():
                 save_config(data)
                 logger.info("server: config saved — no billing meta change, period unchanged")
         except Exception as _e:
-            logger.warning("server: config save failed: %s", _e)
-            # Fallback: always attempt file export so UI isn't left stale
-            try:
-                p = config_path()
-                os.makedirs(os.path.dirname(p), exist_ok=True)
-                import json as _j2
-                tmp = p + ".tmp"
-                with open(tmp, "w") as _f:
-                    _j2.dump(data, _f, indent=2)
-                os.replace(tmp, p)
-            except Exception:
-                pass
+            # The database is the config; meters_config.json beside it is an export, never read back
+            # as state. A write that failed is a save that failed: it was logged as a warning, the JSON
+            # written anyway ("so UI isn't left stale" — v4's, when the page read the JSON) and the
+            # reply `ok`, so a page said Saved over a configuration that was not (3 Nov 2026).
+            return _error_reply(_e)
 
         logger.info("server: config saved (%d meters)", len(data["meters"]))
 
@@ -8027,8 +8031,13 @@ def _staged_path(token):
     the file must still be in DATA_DIR (first-run design §2.2)."""
     if not isinstance(token, str) or not _STAGED_RE.match(token):
         return None
-    p = os.path.join(DATA_DIR, token)
-    return p if _in_data_dir(p) and os.path.isfile(p) else None
+    # Resolved and contained here, before the file is asked about — CodeQL does not see the
+    # check inside _in_data_dir as a guard (as _resolve_backup_zip, #29).
+    folder = os.path.realpath(DATA_DIR)
+    p = os.path.realpath(os.path.join(folder, token))
+    if not p.startswith(folder + os.sep) or os.path.dirname(p) != folder:
+        return None
+    return p if os.path.isfile(p) else None
 
 
 def _remove_stale_stages(max_age=_STAGED_MAX_AGE_S, keep=None):
@@ -8044,7 +8053,9 @@ def _remove_stale_stages(max_age=_STAGED_MAX_AGE_S, keep=None):
         if not (_STAGED_RE.match(n) or _PART_RE.match(n)):    # an abandoned upload's pieces too
             continue
         p = os.path.join(DATA_DIR, n)
-        if p == keep or running:
+        # Resolved both sides: _staged_path / _part_path return the real path, and DATA_DIR may
+        # be reached through a link.
+        if (keep and os.path.realpath(p) == os.path.realpath(keep)) or running:
             continue
         try:
             if now - os.path.getmtime(p) > max_age:
@@ -8260,8 +8271,11 @@ _PART_MAX_BYTES = 1024 * 1024 * 1024          # a backup over 1 GB is not one
 def _part_path(upload_id):
     if not isinstance(upload_id, str) or not _PART_RE.match(upload_id):
         return None
-    p = os.path.join(DATA_DIR, upload_id)
-    return p if _in_data_dir(p) and os.path.isfile(p) else None
+    folder = os.path.realpath(DATA_DIR)              # contained before asked about (_staged_path)
+    p = os.path.realpath(os.path.join(folder, upload_id))
+    if not p.startswith(folder + os.sep) or os.path.dirname(p) != folder:
+        return None
+    return p if os.path.isfile(p) else None
 
 
 @app.route("/api/restore/upload/begin", methods=["POST"])

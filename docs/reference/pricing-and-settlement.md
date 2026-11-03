@@ -14,7 +14,10 @@ half-hour you corrected is skipped.
   imported half-hour's own.
 - **The tariff kind** comes from the half-hour's own agreement (`tariff_kind_at`): *intelligent*,
   *published* or *none*. Published is one leg at the schedule's rate; none is `no_agreement`, priced at
-  the configured rate. Rates come from the stitched schedule of each agreement.
+  the configured rate. Rates come from the stitched schedule of each agreement. The current tariff's own schedule
+  (an account with one agreement, the standing charge, export) is fetched from a day before the earlier
+  of the channel's first agreement and the first half-hour stored (`_rate_history_from`) — not from the
+  product's launch, which on Agile is years of half-hours.
 - **Cost** = Σ legs kWh × rate; `imp_rate` is the blend. Ex-VAT is from the VAT calendar
   (`vat_calendar.py`). Devices are priced on their grid shares at the legs their kWh sits in.
 

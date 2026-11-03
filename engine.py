@@ -160,6 +160,9 @@ _REDISCOVERY_RETRY_S = 3600              # after a failed re-discovery
 # started once at boot and exits permanently if the API wasn't yet configured.
 _engine_ha = None              # HAClient | None
 _kraken_poll_task_handle = None  # asyncio.Task | None
+# The rate schedules connect_kraken_now() builds after it has answered (3 Nov 2026): cancelled with the
+# poll task, before engine_startup or a disconnect closes the client it reads.
+_kraken_rates_task_handle = None  # asyncio.Task | None
 # True once the first (cold) engine_startup has completed in this process. The
 # rogue-total guard (clearing the in-progress block's carried reads) is valid
 # ONLY on a cold start, where those reads are stale leftovers from a previous
@@ -5670,11 +5673,11 @@ async def connect_kraken_now() -> dict:
         return {"ok": False, "connected": False, "detail": "discovery_failed"}
     imp = _kraken_discovery.get("import") or {}
     exp = _kraken_discovery.get("export") or {}
-    # Also (re)build rate schedules so reconcile has them without waiting a poll.
-    try:
-        await _refresh_kraken_rate_schedules()
-    except Exception:
-        pass
+    # Also (re)build rate schedules so reconcile has them without waiting a poll — after answering.
+    # The page waits 45 s for this reply, and an Agile tariff's schedule is its whole price history:
+    # a beta tester's Agile Outgoing export was 137,588 half-hours from 2018, the wizard timed out on
+    # its credentials step, and it never reached the meter (3 Nov 2026).
+    _start_rate_refresh()
     # Mode promotion (#381): a live in-app connect just SUCCEEDED. If the
     # persisted data-source mode does not use the API — e.g. a prior disconnect
     # or a DB-swap left it parked on 'cad'/'unset' while the credentials
@@ -5737,6 +5740,7 @@ async def disconnect_kraken() -> dict:
         #    api_key' path only deleted the file and left the in-memory client
         #    polling.
         _cancel_kraken_poll_task()
+        _cancel_rate_refresh()
         _kraken_client = None
         _kraken_mini_reader = None
         _kraken_discovery = None
@@ -5777,6 +5781,34 @@ def _cancel_kraken_poll_task() -> None:
         h.cancel()
         logger.info("_cancel_kraken_poll_task: cancelled in-flight poll")
     _kraken_poll_task_handle = None
+
+
+def _start_rate_refresh() -> None:
+    """connect_kraken_now()'s rate schedules, built on the engine loop after it has answered; a
+    refresh already running is replaced."""
+    global _kraken_rates_task_handle
+    _cancel_rate_refresh()
+
+    async def _run():
+        try:
+            await _refresh_kraken_rate_schedules()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("connect_kraken_now: rate schedules not built: %s", e)
+
+    _kraken_rates_task_handle = asyncio.ensure_future(_run())
+
+
+def _cancel_rate_refresh() -> None:
+    """Cancel the rate refresh connect_kraken_now() started, if it is still running — before the
+    client it reads is closed."""
+    global _kraken_rates_task_handle
+    h = _kraken_rates_task_handle
+    if h is not None and not h.done():
+        h.cancel()
+        logger.info("_cancel_rate_refresh: cancelled the rate refresh in flight")
+    _kraken_rates_task_handle = None
 
 
 def _ensure_kraken_poll_task_running() -> bool:
@@ -7247,7 +7279,13 @@ def settle_history_in_progress() -> bool:
     if _isched is None or _isched.is_empty():
         return False
     m = _reader().get_meta(_SETTLE_HISTORY_MARKER, {}) or {}        # a request thread asks too
-    return not (m.get("done") and int(m.get("version") or 0) >= _SETTLE_HISTORY_VERSION)
+    if m.get("done") and int(m.get("version") or 0) >= _SETTLE_HISTORY_VERSION:
+        return False
+    # No history, nothing to walk: a new install connected to Octopus before its meter was set up
+    # read "Finishing your upgrade … (null days left)" — the sweep that would mark it done runs only
+    # with a meter (3 Nov 2026).
+    first, _last = _reader().block_span("electricity_main")
+    return bool(first)
 
 
 def _settle_history_restart(state: dict) -> dict:
@@ -9039,6 +9077,28 @@ def agile_prices(now=None, back_hours: int = 24, ahead_hours: int = 24) -> dict:
     return out
 
 
+def _rate_history_from(channel: str) -> "str | None":
+    """Where `channel`'s single-tariff rate fetch starts, as Octopus's `period_from` (3 Nov 2026): a
+    day before the earlier of the channel's first agreement and the first half-hour stored, so every
+    half-hour EMT holds is covered as it was. It fetched the product's whole price history — a beta
+    tester's Agile Outgoing from 2018, 137,588 half-hours, ~92 requests at every refresh. None (the
+    whole history, as before) where neither is known."""
+    starts = [vf for _tc, vf, _vt in _agreement_windows(channel) if vf]
+    try:
+        first, _last = _reader().block_span("electricity_main")
+    except Exception:
+        first = None
+    if first:
+        starts.append(first)
+    if not starts:
+        return None
+    try:
+        since = datetime.fromisoformat(min(starts)[:19]) - timedelta(days=1)
+    except ValueError:
+        return None
+    return since.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 async def _refresh_kraken_rate_schedules() -> None:
     """Build/refresh the cached rate schedules for import and export from the
     discovered tariffs. Cheap (fixed tariffs ≈ 1 record). Failures leave the
@@ -9067,7 +9127,8 @@ async def _refresh_kraken_rate_schedules() -> None:
             continue
         try:
             sched = await build_rate_schedule(
-                _kraken_client, product, tariff, vat=_vat_context(ch), raise_on_error=True)
+                _kraken_client, product, tariff, vat=_vat_context(ch),
+                period_from=_rate_history_from(ch), raise_on_error=True)
         except RateFetchError as e:
             # The fetch FAILED (transport / HTTP / edge 403) — this is NOT an
             # unsupported tariff. Keep the last-known schedule and the previous
@@ -9165,7 +9226,7 @@ async def _refresh_kraken_rate_schedules() -> None:
             from kraken_rates import build_ev_device_schedules
             _ev_off, _ev_peak = await build_ev_device_schedules(
                 _kraken_client, _imp["product_code"], _imp_tariff,
-                vat=_vat_context("import"))
+                vat=_vat_context("import"), period_from=_rate_history_from("import"))
             if not _ev_off.is_empty():
                 new_cache["ev_device_off_peak"] = _ev_off
             if not _ev_peak.is_empty():
@@ -9195,7 +9256,7 @@ async def _refresh_kraken_rate_schedules() -> None:
         try:
             sc = await build_standing_charge_schedule(
                 _kraken_client, imp["product_code"], imp["tariff_code"],
-                vat=_vat_context("import"))
+                vat=_vat_context("import"), period_from=_rate_history_from("import"))
             if not sc.is_empty():
                 _kraken_standing_schedule = sc
                 _keep_current_tariff_prices("import", imp["tariff_code"], "standing", sc)
@@ -12881,8 +12942,10 @@ async def _engine_startup_impl(ha: HAClient):
     # Cancel any in-flight DCC poll BEFORE we tear down the store and Kraken
     # client below. A long backfill reading the DB / HTTP session while we close
     # them throws "Cannot operate on a closed database" / "Connector is closed".
-    # The poll is relaunched at the end of startup once resources are rebuilt.
+    # The poll is relaunched at the end of startup once resources are rebuilt. The connect's rate
+    # refresh goes too: startup's poll cycle builds the schedules again.
     _cancel_kraken_poll_task()
+    _cancel_rate_refresh()
     # CRITICAL: engine_startup runs again on every config save. Reopening the
     # store without closing the previous connection leaves an orphaned WAL
     # connection that holds locks indefinitely — the engine loop's writes then
