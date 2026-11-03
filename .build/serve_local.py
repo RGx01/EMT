@@ -2,9 +2,10 @@
 """EMT's pages on this machine, against a database you choose — no Home Assistant, no Octopus.
 
 For looking at a change in the browser: the demo household (`.build/demo_db.py`), or a COPY of a
-backup's `blocks.db` (never the live file — the pages write to it). The engine's loop runs, so the
-pages' writes work as they do on an install, but nothing reads a sensor or asks a supplier: what you
-see is what is in the database.
+backup's `blocks.db` (never the live file — the pages write to it). An event loop stands in for the
+engine's, so the pages' writes work as they do on an install, but nothing reads a sensor or asks a
+supplier: what you see is what is in the database. No `engine_startup` and no engine tick run, so a
+new install's first run is not what this shows — tests/test_fresh_install.py is.
 
     python .build/serve_local.py <data dir> [port]     # <data dir>/blocks.db; port 8766 by default
 
