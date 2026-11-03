@@ -131,6 +131,9 @@ bs_mod.outward_code          = _bs_real.outward_code
 bs_mod.derive_region_periods = _bs_real.derive_region_periods
 bs_mod.EMT_SCHEMA            = _bs_real.EMT_SCHEMA         # the restore classifies by it
 bs_mod.read_emt_schema       = _bs_real.read_emt_schema
+# api_save_config's own import (3 Nov 2026): without it every save in this file failed, and the save
+# swallowed the error and replied ok — TestApiSaveConfigFreshInstall passed over a save that never ran.
+bs_mod.config_meta_significant = _bs_real.config_meta_significant
 sys.modules["block_store"] = bs_mod
 
 
@@ -3520,6 +3523,46 @@ class TestApiSaveConfigFreshInstall(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(period_count, 1,
             "Fresh install wizard save should update existing period, not create a new one")
+
+    # 3 Nov 2026: a new install's first save is this in-place update (startup made the period), and it
+    # wrote the billing day, timezone and site but never the supplier. Fails on the parent.
+    def _save_supplier(self, supplier):
+        meta = {"billing_day": 1, "block_minutes": 30, "timezone": "Europe/London",
+                "currency_symbol": "£", "currency_code": "GBP", "site": "My Home"}
+        if supplier is not None:
+            meta["supplier"] = supplier
+        cfg = {"meters": {"electricity_main": {"meta": meta, "channels": {
+            "import": {"read": "", "rate": ""}, "export": {"read": "", "rate": ""}}}}}
+        with patch.object(server, "_create_backup_zip", return_value=None):
+            return self.client.post("/api/config", data=json.dumps(cfg),
+                                    content_type="application/json")
+
+    def _stored_supplier(self):
+        return self.store._conn.execute("SELECT supplier FROM config_periods").fetchone()[0]
+
+    def test_the_supplier_is_stored(self):
+        self.assertEqual(self._save_supplier("octopus").status_code, 200)
+        self.assertEqual(self._stored_supplier(), "octopus")
+
+    def test_a_save_without_one_keeps_it(self):
+        self._save_supplier("octopus")
+        self._save_supplier(None)
+        self.assertEqual(self._stored_supplier(), "octopus")
+
+    # 3 Nov 2026: a write that failed was logged as a warning, the JSON export written anyway and the
+    # reply `ok` — a page said Saved over a configuration that was not. Fails on the parent.
+    def test_a_save_that_fails_says_so(self):
+        def _boom(op, timeout=30.0):
+            raise RuntimeError("database is locked")
+        export = os.path.join(server.DATA_DIR, "meters_config.json")
+        if os.path.exists(export):
+            os.remove(export)
+        with patch.object(server, "_engine_write", _boom):
+            r = self._save_supplier("octopus")
+        self.assertEqual(r.status_code, 500)
+        self.assertNotIn("ok", r.get_json())
+        self.assertIn("the log has the detail", r.get_json()["error"])
+        self.assertFalse(os.path.exists(export), "no export of a configuration that was not saved")
 
 
 

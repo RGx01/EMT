@@ -747,7 +747,8 @@ def save_config(data: dict):
                                timezone        = ?,
                                currency_symbol = ?,
                                currency_code   = ?,
-                               site_name       = ?
+                               site_name       = ?,
+                               supplier        = COALESCE(?, supplier)
                            WHERE id = ?""",
                         (
                             int(main_meta.get("billing_day") or 1),
@@ -756,6 +757,9 @@ def save_config(data: dict):
                             main_meta.get("currency_symbol", "£"),
                             main_meta.get("currency_code", "GBP"),
                             main_meta.get("site"),
+                            # A new install's first save lands here — startup made its period — and
+                            # the supplier was never written (3 Nov 2026). A save without one keeps it.
+                            main_meta.get("supplier") or None,
                             period_id,
                         )
                     )
@@ -2805,18 +2809,11 @@ def api_save_config():
                 save_config(data)
                 logger.info("server: config saved — no billing meta change, period unchanged")
         except Exception as _e:
-            logger.warning("server: config save failed: %s", _e)
-            # Fallback: always attempt file export so UI isn't left stale
-            try:
-                p = config_path()
-                os.makedirs(os.path.dirname(p), exist_ok=True)
-                import json as _j2
-                tmp = p + ".tmp"
-                with open(tmp, "w") as _f:
-                    _j2.dump(data, _f, indent=2)
-                os.replace(tmp, p)
-            except Exception:
-                pass
+            # The database is the config; meters_config.json beside it is an export, never read back
+            # as state. A write that failed is a save that failed: it was logged as a warning, the JSON
+            # written anyway ("so UI isn't left stale" — v4's, when the page read the JSON) and the
+            # reply `ok`, so a page said Saved over a configuration that was not (3 Nov 2026).
+            return _error_reply(_e)
 
         logger.info("server: config saved (%d meters)", len(data["meters"]))
 

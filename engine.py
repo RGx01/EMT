@@ -7279,7 +7279,13 @@ def settle_history_in_progress() -> bool:
     if _isched is None or _isched.is_empty():
         return False
     m = _reader().get_meta(_SETTLE_HISTORY_MARKER, {}) or {}        # a request thread asks too
-    return not (m.get("done") and int(m.get("version") or 0) >= _SETTLE_HISTORY_VERSION)
+    if m.get("done") and int(m.get("version") or 0) >= _SETTLE_HISTORY_VERSION:
+        return False
+    # No history, nothing to walk: a new install connected to Octopus before its meter was set up
+    # read "Finishing your upgrade … (null days left)" — the sweep that would mark it done runs only
+    # with a meter (3 Nov 2026).
+    first, _last = _reader().block_span("electricity_main")
+    return bool(first)
 
 
 def _settle_history_restart(state: dict) -> dict:
