@@ -45,9 +45,13 @@ python .build/demo_db.py ~/emt-demo                  # a made-up household, the 
 python .build/serve_local.py ~/emt-demo              # http://127.0.0.1:8766
 ```
 
-`serve_local.py` runs the web server and the engine's loop against `<dir>/blocks.db` — no Home
-Assistant, no Octopus, so nothing new arrives: the pages show what the database holds, and their
-writes work. Point it at a **copy** of a backup's `blocks.db` to see real history; never the live file.
+`serve_local.py` runs the web server against `<dir>/blocks.db`, with an event loop for the engine's
+writes — no Home Assistant, no Octopus, so nothing new arrives: the pages show what the database
+holds, and their writes work. Point it at a **copy** of a backup's `blocks.db` to see real history;
+never the live file. It runs **no `engine_startup` and no engine tick**, so it cannot show what a new
+install does: startup makes a fresh install's config period, which decides the setup wizard's save.
+That path is `tests/test_fresh_install.py` — the real startup on an empty folder, the wizard's
+requests through the real routes.
 For EMT reading real sensors, run it standalone against a Home Assistant (the README's *Standalone
 Docker*) or as a local add-on (below).
 
