@@ -5,6 +5,14 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **The EV's colour reaches the charts straight away.** On an account with no EV device, a colour
+  chosen on Settings' EV tab now redraws an open Usage Stats page at its next check, as a device's
+  colour always did. Before, it waited until something else changed.
+- **The Running total spiral has a legend** — each year in its colour, above the cards and in the
+  enlarged view, and in the PDF.
+
 ## [2026.11.0b2] — 2026-11-02
 
 - **Error messages say what happened, and nothing of yours.** When Octopus refuses or fails a

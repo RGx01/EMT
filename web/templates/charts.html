@@ -408,6 +408,7 @@
   <div class="eras-panel" role="dialog" aria-modal="true" aria-labelledby="acc-exp-title" style="max-width:680px;">
     <div class="eras-head"><h3 id="acc-exp-title"></h3>
       <button class="btn btn-secondary btn-sm" onclick="barAccExpandClose()" aria-label="Close">✕</button></div>
+    <div id="acc-exp-legend" style="display:flex; gap:16px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-bottom:8px;"></div>
     <div class="bar-acc" style="display:block;height:auto;overflow:visible;"><div class="bar-acc-plot bar-acc-spiral" id="acc-exp-plot"></div></div>
   </div>
 </div>
@@ -3612,7 +3613,7 @@ function barAccSyncUI() {
   vis('bar-acc-wrap', on, 'flex');
   vis('bar-period-seg', !on, '');
   vis('bar-metric-seg', !on, '');
-  vis('bar-legend', !on, 'flex');
+  vis('bar-legend', !on || barAccView === 'spiral', 'flex');   // the spiral's years (the line has its own)
   vis('barChart', !on, '');
   vis('bar-acc', on, 'grid');
   // its own standing charge box is with the toggles now, outside bar-acc-wrap: hidden with the view
@@ -3657,6 +3658,7 @@ function barAccRender() {
       (spiral ? '<div class="bar-acc-plot bar-acc-spiral" id="bar-acc-s-' + i + '"></div>'
               : '<div class="bar-acc-plot"><canvas id="bar-acc-c-' + i + '"></canvas></div>') + '</div>';
   }).join('');
+  if (spiral) document.getElementById('bar-legend').innerHTML = barAccLegend(rows, yearsShown);
   var all = {};
   kinds.forEach(function(k, i) {
     var s = barAccSeriesOf(rows, k.kind);
@@ -4010,13 +4012,26 @@ function barAccSpiral(host, rows, k, years) {
   svg.onpointerleave = function() { tip.style.opacity = 0; dot.setAttribute('opacity', 0); };
   return svg;
 }
+// The spiral's years in their colours (3 Nov 2026, the user: the line has Chart.js's legend, the spiral had
+// none) — a year's colour is its place among the years shown, as barAccSpiral draws it; a year it does not
+// draw (under two days) is not listed. Above the cards, so the PDF takes it with #bar-legend.
+function barAccLegend(rows, years) {
+  var n = {};
+  rows.forEach(function(r) { var y = barAccYearOf(r); n[y] = (n[y] || 0) + 1; });
+  return years.map(function(y, yi) {
+    if ((n[y] || 0) < 2) return '';
+    return '<span style="display:flex;align-items:center;gap:5px;"><span style="display:inline-block;width:16px;height:3px;' +
+      'border-radius:2px;background:' + BAR_ACC_YC[yi % BAR_ACC_YC.length] + ';"></span>' + barAccYearLabel(y) + '</span>';
+  }).join('');
+}
 // The spiral larger, in a modal, as the Spiral tab's expand
 function barAccExpand(i) {
   var k = barAccKinds()[i]; if (!k) return;
   document.getElementById('acc-exp-title').textContent = k.title;
   document.getElementById('acc-backdrop').classList.add('open');
   var rows = barAccRows(), years = Array.from(new Set(rows.map(function(r) { return barAccYearOf(r); }))).sort();
-  var host = document.getElementById('acc-exp-plot'); host.style.height = Math.min(600, window.innerHeight - 140) + 'px';
+  document.getElementById('acc-exp-legend').innerHTML = barAccLegend(rows, years);
+  var host = document.getElementById('acc-exp-plot'); host.style.height = Math.min(600, window.innerHeight - 170) + 'px';
   barAccSpiral(host, rows, k, years);
 }
 function barAccExpandClose() { document.getElementById('acc-backdrop').classList.remove('open'); }
