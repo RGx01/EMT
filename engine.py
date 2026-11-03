@@ -160,6 +160,9 @@ _REDISCOVERY_RETRY_S = 3600              # after a failed re-discovery
 # started once at boot and exits permanently if the API wasn't yet configured.
 _engine_ha = None              # HAClient | None
 _kraken_poll_task_handle = None  # asyncio.Task | None
+# The rate schedules connect_kraken_now() builds after it has answered (3 Nov 2026): cancelled with the
+# poll task, before engine_startup or a disconnect closes the client it reads.
+_kraken_rates_task_handle = None  # asyncio.Task | None
 # True once the first (cold) engine_startup has completed in this process. The
 # rogue-total guard (clearing the in-progress block's carried reads) is valid
 # ONLY on a cold start, where those reads are stale leftovers from a previous
@@ -5670,11 +5673,11 @@ async def connect_kraken_now() -> dict:
         return {"ok": False, "connected": False, "detail": "discovery_failed"}
     imp = _kraken_discovery.get("import") or {}
     exp = _kraken_discovery.get("export") or {}
-    # Also (re)build rate schedules so reconcile has them without waiting a poll.
-    try:
-        await _refresh_kraken_rate_schedules()
-    except Exception:
-        pass
+    # Also (re)build rate schedules so reconcile has them without waiting a poll — after answering.
+    # The page waits 45 s for this reply, and an Agile tariff's schedule is its whole price history:
+    # a beta tester's Agile Outgoing export was 137,588 half-hours from 2018, the wizard timed out on
+    # its credentials step, and it never reached the meter (3 Nov 2026).
+    _start_rate_refresh()
     # Mode promotion (#381): a live in-app connect just SUCCEEDED. If the
     # persisted data-source mode does not use the API — e.g. a prior disconnect
     # or a DB-swap left it parked on 'cad'/'unset' while the credentials
@@ -5737,6 +5740,7 @@ async def disconnect_kraken() -> dict:
         #    api_key' path only deleted the file and left the in-memory client
         #    polling.
         _cancel_kraken_poll_task()
+        _cancel_rate_refresh()
         _kraken_client = None
         _kraken_mini_reader = None
         _kraken_discovery = None
@@ -5777,6 +5781,34 @@ def _cancel_kraken_poll_task() -> None:
         h.cancel()
         logger.info("_cancel_kraken_poll_task: cancelled in-flight poll")
     _kraken_poll_task_handle = None
+
+
+def _start_rate_refresh() -> None:
+    """connect_kraken_now()'s rate schedules, built on the engine loop after it has answered; a
+    refresh already running is replaced."""
+    global _kraken_rates_task_handle
+    _cancel_rate_refresh()
+
+    async def _run():
+        try:
+            await _refresh_kraken_rate_schedules()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning("connect_kraken_now: rate schedules not built: %s", e)
+
+    _kraken_rates_task_handle = asyncio.ensure_future(_run())
+
+
+def _cancel_rate_refresh() -> None:
+    """Cancel the rate refresh connect_kraken_now() started, if it is still running — before the
+    client it reads is closed."""
+    global _kraken_rates_task_handle
+    h = _kraken_rates_task_handle
+    if h is not None and not h.done():
+        h.cancel()
+        logger.info("_cancel_rate_refresh: cancelled the rate refresh in flight")
+    _kraken_rates_task_handle = None
 
 
 def _ensure_kraken_poll_task_running() -> bool:
@@ -12881,8 +12913,10 @@ async def _engine_startup_impl(ha: HAClient):
     # Cancel any in-flight DCC poll BEFORE we tear down the store and Kraken
     # client below. A long backfill reading the DB / HTTP session while we close
     # them throws "Cannot operate on a closed database" / "Connector is closed".
-    # The poll is relaunched at the end of startup once resources are rebuilt.
+    # The poll is relaunched at the end of startup once resources are rebuilt. The connect's rate
+    # refresh goes too: startup's poll cycle builds the schedules again.
     _cancel_kraken_poll_task()
+    _cancel_rate_refresh()
     # CRITICAL: engine_startup runs again on every config save. Reopening the
     # store without closing the previous connection leaves an orphaned WAL
     # connection that holds locks indefinitely — the engine loop's writes then
