@@ -13,7 +13,8 @@ What they pin:
 - **The store:** a channel's style is saved and loaded with the config; junk is dropped at the
   write; an older database gains the columns on open.
 - **The config token moves on a style change,** so the Charts page's kept rows (colours with them)
-  are re-fetched. With no style set it is unchanged.
+  are re-fetched — the EV's style in the store's meta too (BL-97; 3 Nov 2026). With no style set it
+  is unchanged.
 - **The surfaces** take the style: the Billing day chart's rate line draws `rate_dashed`, and the
   settings page offers a style on each device tab and two on Main meter.
 
@@ -164,6 +165,21 @@ class TheConfigToken(unittest.TestCase):
         dashed = self._token(st)
         self.assertEqual(len({plain, green, dashed}), 3)
         self._restyle(st, _cfg())
+        self.assertEqual(self._token(st), plain)
+
+    def test_the_ev_style_moves_it_too(self):
+        """BL-97's EV (no EV device) keeps its style in the store's meta, not on a channel: a colour
+        chosen on its tab reached Usage Stats only when something else moved the token (the user,
+        3 Nov 2026). Unset, the token keeps its shape."""
+        st = BlockStore(":memory:")
+        st.insert_config_period(_cfg(), effective_from=PERIOD)
+        plain = self._token(st)
+        st.set_meta("ev_style", {"bar_color": "#2e8b57"})
+        green = self._token(st)
+        st.set_meta("ev_style", {"bar_color": "#2e8b57", "rate_line": "dashed"})
+        dashed = self._token(st)
+        self.assertEqual(len({plain, green, dashed}), 3)
+        st.set_meta("ev_style", None)
         self.assertEqual(self._token(st), plain)
 
 

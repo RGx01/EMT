@@ -2165,7 +2165,9 @@ def _config_token(store) -> str:
             "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS mx, "
             "COALESCE(GROUP_CONCAT(billing_day || '@' || effective_from, ','), '') AS bd "
             "FROM config_periods").fetchone()
-        _mc = store._conn.execute("SELECT COUNT(*) AS n FROM meters").fetchone()
+        _mc = store._conn.execute(      # the EV's style (BL-97) in the same statement: the poll runs every minute
+            "SELECT COUNT(*) AS n, (SELECT value FROM store_meta WHERE key = 'ev_style') AS ev "
+            "FROM meters").fetchone()
         _st = store._conn.execute(
             "SELECT COALESCE(GROUP_CONCAT(s, ','), '') AS s FROM ("
             "  SELECT m.meter_id || '.' || mc.channel || '=' || COALESCE(mc.bar_color, '') || '/' "
@@ -2177,6 +2179,11 @@ def _config_token(store) -> str:
         _cfgf = "%s/%s/%d/%d" % (_cp["n"], _cp["mx"], _zlib.crc32(_cp["bd"].encode()), _mc["n"])
         if _st["s"]:                            # unchanged for a config with no style set
             _cfgf += "/%d" % _zlib.crc32(_st["s"].encode())
+        # BL-97: the EV of an account with no EV device keeps its style in the store's meta, not
+        # on a channel — until 3 Nov 2026 a colour chosen on its tab reached Usage Stats only when
+        # something else moved the token.
+        if _mc["ev"] and _mc["ev"] != "null":       # set_meta(None) stores 'null': cleared
+            _cfgf += "/ev%d" % _zlib.crc32(_mc["ev"].encode())
     except Exception:
         _cfgf = "0"
     return _cfgf
