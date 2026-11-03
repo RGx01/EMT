@@ -9071,6 +9071,28 @@ def agile_prices(now=None, back_hours: int = 24, ahead_hours: int = 24) -> dict:
     return out
 
 
+def _rate_history_from(channel: str) -> "str | None":
+    """Where `channel`'s single-tariff rate fetch starts, as Octopus's `period_from` (3 Nov 2026): a
+    day before the earlier of the channel's first agreement and the first half-hour stored, so every
+    half-hour EMT holds is covered as it was. It fetched the product's whole price history — a beta
+    tester's Agile Outgoing from 2018, 137,588 half-hours, ~92 requests at every refresh. None (the
+    whole history, as before) where neither is known."""
+    starts = [vf for _tc, vf, _vt in _agreement_windows(channel) if vf]
+    try:
+        first, _last = _reader().block_span("electricity_main")
+    except Exception:
+        first = None
+    if first:
+        starts.append(first)
+    if not starts:
+        return None
+    try:
+        since = datetime.fromisoformat(min(starts)[:19]) - timedelta(days=1)
+    except ValueError:
+        return None
+    return since.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 async def _refresh_kraken_rate_schedules() -> None:
     """Build/refresh the cached rate schedules for import and export from the
     discovered tariffs. Cheap (fixed tariffs ≈ 1 record). Failures leave the
@@ -9099,7 +9121,8 @@ async def _refresh_kraken_rate_schedules() -> None:
             continue
         try:
             sched = await build_rate_schedule(
-                _kraken_client, product, tariff, vat=_vat_context(ch), raise_on_error=True)
+                _kraken_client, product, tariff, vat=_vat_context(ch),
+                period_from=_rate_history_from(ch), raise_on_error=True)
         except RateFetchError as e:
             # The fetch FAILED (transport / HTTP / edge 403) — this is NOT an
             # unsupported tariff. Keep the last-known schedule and the previous
@@ -9197,7 +9220,7 @@ async def _refresh_kraken_rate_schedules() -> None:
             from kraken_rates import build_ev_device_schedules
             _ev_off, _ev_peak = await build_ev_device_schedules(
                 _kraken_client, _imp["product_code"], _imp_tariff,
-                vat=_vat_context("import"))
+                vat=_vat_context("import"), period_from=_rate_history_from("import"))
             if not _ev_off.is_empty():
                 new_cache["ev_device_off_peak"] = _ev_off
             if not _ev_peak.is_empty():
@@ -9227,7 +9250,7 @@ async def _refresh_kraken_rate_schedules() -> None:
         try:
             sc = await build_standing_charge_schedule(
                 _kraken_client, imp["product_code"], imp["tariff_code"],
-                vat=_vat_context("import"))
+                vat=_vat_context("import"), period_from=_rate_history_from("import"))
             if not sc.is_empty():
                 _kraken_standing_schedule = sc
                 _keep_current_tariff_prices("import", imp["tariff_code"], "standing", sc)

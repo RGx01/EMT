@@ -12,6 +12,10 @@ internal name for everything before the first public release and never appears i
   up after 45 seconds, so the wizard stayed on its first page with "Could not connect" and never
   set up your meter. It now answers as soon as Octopus has, and fetches the prices after. The same
   applies to reconnecting in Settings.
+- **Fewer requests to Octopus for your prices.** EMT fetched your tariff's prices from the day the
+  tariff launched — on Agile, back to 2018, close to a hundred requests each time it refreshed them.
+  It now starts from when your account joined the tariff, or your oldest recorded half-hour if that
+  is earlier.
 
 - **The EV's colour reaches the charts straight away.** On an account with no EV device, a colour
   chosen on Settings' EV tab now redraws an open Usage Stats page at its next check, as a device's
