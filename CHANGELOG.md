@@ -16,6 +16,12 @@ internal name for everything before the first public release and never appears i
   tariff launched — on Agile, back to 2018, close to a hundred requests each time it refreshed them.
   It now starts from when your account joined the tariff, or your oldest recorded half-hour if that
   is earlier.
+- **A new account keeps its supplier.** Setting up from scratch saved the meter and the site but
+  not the supplier you chose.
+- **A configuration that could not be saved says so.** Saving Settings could report *Saved* when
+  the database refused the change; it now shows the error.
+- **No "Finishing your upgrade" on a new install.** Connecting to Octopus before your meter was set
+  up showed the upgrade banner, with "null days left".
 
 - **The EV's colour reaches the charts straight away.** On an account with no EV device, a colour
   chosen on Settings' EV tab now redraws an open Usage Stats page at its next check, as a device's
