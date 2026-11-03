@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b3] — 2026-11-03
 
 - **Setting up a new account on Agile works.** Connecting to Octopus in the setup wizard waited for
   your tariff's whole price history before it answered — on Agile, years of half-hours — and gave
@@ -22,7 +22,6 @@ internal name for everything before the first public release and never appears i
   the database refused the change; it now shows the error.
 - **No "Finishing your upgrade" on a new install.** Connecting to Octopus before your meter was set
   up showed the upgrade banner, with "null days left".
-
 - **The EV's colour reaches the charts straight away.** On an account with no EV device, a colour
   chosen on Settings' EV tab now redraws an open Usage Stats page at its next check, as a device's
   colour always did. Before, it waited until something else changed.
