@@ -7,6 +7,11 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **The tariff you're on, when Octopus lists a blip.** EMT took the latest-starting agreement as
+  your current tariff when every agreement had an end date — so on a fixed-term tariff, a
+  zero-length agreement Octopus lists after it (an Agile blip on one tester's account) became the
+  "current" one, and new half-hours took its standing charge. It now takes the agreement in force
+  today.
 - **Flow and Rate brackets agree with Devices on an EV charger.** With an EV device, the Devices view
   shows Octopus's split of the car where it has one; Flow and Rate brackets showed the charger's own
   reading, a little off, with the house off the other way. They show the same as Devices now.
