@@ -78,6 +78,10 @@ missing and where it stands; the done history, with every decision's story, is i
   (#43–#46); the record is [history/design/EMT-v5_flow_design.md](history/design/EMT-v5_flow_design.md).
   Export by rate band and negative prices drawn in £ (the user, 4 Nov 2026): the record is
   [history/design/EMT-v5_flow_export_bands_design.md](history/design/EMT-v5_flow_export_bands_design.md).
+- **A new device's history on the import** (the user, 4 Nov 2026) — Octopus's or a CSV import rebuilds
+  each device whose history EMT never had from Home Assistant, after the sensor check; it reverses part
+  of BL-87's closure, as the first-setup import offer had broken its chain. The record is
+  [history/design/EMT-v5_device_history_on_import_design.md](history/design/EMT-v5_device_history_on_import_design.md).
 - **Going public** — the repository public on 2 Nov 2026, with: rulesets on `main` (a PR, signed
   commits, no force push or deletion) and `dev` (the same without signatures); no required check,
   because a docs-only PR skips the tests and a required check that never reports would block it;

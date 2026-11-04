@@ -1456,6 +1456,13 @@ function _renderHistoryState() {
       pr.innerHTML = '✓ Rebuilt ' + (run.written || 0) + ' half-hours' + (run.gaps ? ' · ' + run.gaps + ' with no HA data' : '') + '.';
     } else if (st === 'error') {
       pr.innerHTML = '<span style="color:var(--danger);">Rebuild error: ' + esc(run.error || '') + '</span>';
+    } else if (st === 'held') {
+      // the import's own rebuild of a new device, held by the sensor check (device history on
+      // first import design §3): nothing written; Rebuild history asks before it goes ahead
+      pr.innerHTML = '<span style="color:#b45309;">⚠ Not rebuilt after the import: this sensor reads about ' +
+        esc(String(run.device_kwh)) + ' kWh against the house\u2019s ' + esc(String(run.house_kwh)) + ' kWh, ' +
+        (run.verdict === 'device_exceeds_house' ? 'more than the house drew' : 'far less than expected') +
+        ' \u2014 check the sensor, then use Rebuild history.</span>';
     } else if (!pr.dataset.keep) { pr.innerHTML = ''; }
     ly.innerHTML = layer
       ? '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;">' +
@@ -3352,6 +3359,7 @@ function wizCollectStep() {
       var readEl = document.getElementById('wiz-sub-' + devId + '-read');
       var socEl  = document.getElementById('wiz-sub-' + devId + '-soc');
       var invEl  = document.getElementById('wiz-sub-' + devId + '-inverter-power');
+      var pvEl   = document.getElementById('wiz-sub-' + devId + '-pv-power');
       var invertEl   = document.getElementById('wiz-sub-' + devId + '-invert');
       var devPwrEl   = document.getElementById('wiz-sub-' + devId + '-device-power');
       var v2xEl      = document.getElementById('wiz-sub-' + devId + '-v2x');
@@ -3359,6 +3367,7 @@ function wizCollectStep() {
       if (readEl)   wiz.data.subMeters[devId].read = readEl.value;
       if (socEl && socEl.value) wiz.data.subMeters[devId].soc = socEl.value;
       if (invEl && invEl.value) wiz.data.subMeters[devId].inverter_power = invEl.value;
+      if (pvEl && pvEl.value)   wiz.data.subMeters[devId].pv_power = pvEl.value;
       if (invertEl) wiz.data.subMeters[devId].inverter_power_invert = invertEl.checked;
       if (devPwrEl && devPwrEl.value) wiz.data.subMeters[devId].device_power = devPwrEl.value;
       if (v2xEl)    wiz.data.subMeters[devId].v2x_capable = v2xEl.checked;
@@ -3703,6 +3712,9 @@ function _offerHistory(firstSetup, mode) {
   return true;
 }
 function _historyOfferImport() {
+  // the import rebuilds the new devices itself, once the house's history is in (device history on
+  // first import design §4): the offer queued for the reload would only ask again
+  try { sessionStorage.removeItem(EMT.lsKey(_REBUILD_KEY)); } catch (e) {}
   window.location.href = apiUrl('/data-management?open=import');
 }
 function _historyOfferNotNow() {
