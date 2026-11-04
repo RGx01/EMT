@@ -459,6 +459,18 @@ def _engine_call(fn, *args, timeout: float = 30.0, **kwargs):
     return _run_on_engine_loop(_do(), timeout=timeout)
 
 
+def _recompute_on_engine(parent: str, lo: str, hi: str, timeout: float = 1800.0) -> int:
+    """Re-derive a parent meter over [lo, hi) after device rows went — on the ENGINE thread (its
+    store may not be used from this one) and yielding to the loop
+    (`recompute_remainders_for_window_async`), so a whole history does not stall HA's WebSocket.
+    Without an engine loop (tests, pre-startup), straight through here."""
+    import engine as _eng
+    if _event_loop is not None and _event_loop.is_running():
+        return _run_on_engine_loop(_eng.recompute_remainders_for_window_async(parent, lo, hi),
+                                   timeout=timeout)
+    return _eng.recompute_remainders_for_window(parent, lo, hi)
+
+
 def _reset_engine_store(timeout: float = 30.0):
     """Reopen the engine's store on the ENGINE thread after the database file was
     replaced or its meters changed.
@@ -1856,6 +1868,8 @@ def _meter_delete_data(meter_id: str):
         # over blocks, and the one loop inside iterates METERS — a handful. The
         # loop stalls for as long as SQLite takes, which is not the same problem
         # a chunked sweep exists to solve.
+        _rc = {}          # the window the house is recomputed over, after the delete (below)
+
         def _do_delete_and_recompute(st):
             deleted = {}
 
@@ -1926,21 +1940,17 @@ def _meter_delete_data(meter_id: str):
 
             logger.info("api_meter_delete_data: deleted %s for meter %s", deleted, meter_id)
 
-            # BL-46: re-derive the parent's house/EV remainder over the deleted window
-            # (re-runs PASS 2 over the surviving devices; the house is derived where read).
-            try:
-                if _bl46_parent and _bl46_lo and _bl46_hi:
-                    from datetime import datetime as _dt46, timedelta as _td46
-                    try:
-                        _hi_excl = (_dt46.fromisoformat(_bl46_hi)
-                                    + _td46(minutes=int(_eng_d.get_block_minutes() or 30))).isoformat()
-                    except Exception:
-                        _hi_excl = _bl46_hi
-                    _n46 = _eng_d.recompute_remainders_for_window(_bl46_parent, _bl46_lo, _hi_excl)
-                    logger.info("api_meter_delete_data: recomputed %s parent block(s) after removing %s",
-                                _n46, meter_id)
-            except Exception as _re46:
-                logger.warning("api_meter_delete_data: parent recompute failed: %s", _re46)
+            # BL-46: the parent's window, for the recompute after this (below) — not here: this
+            # runs on the engine loop in one piece, and over a device's whole history the
+            # recompute held the loop long enough to drop HA's WebSocket (4 Nov 2026).
+            if _bl46_parent and _bl46_lo and _bl46_hi:
+                from datetime import datetime as _dt46, timedelta as _td46
+                try:
+                    _hi_excl = (_dt46.fromisoformat(_bl46_hi)
+                                + _td46(minutes=int(_eng_d.get_block_minutes() or 30))).isoformat()
+                except Exception:
+                    _hi_excl = _bl46_hi
+                _rc.update(parent=_bl46_parent, lo=_bl46_lo, hi=_hi_excl)
 
             return deleted
 
@@ -1948,11 +1958,11 @@ def _meter_delete_data(meter_id: str):
         # A no-op run under the tick lock waits for the current tick to finish; the
         # engine is paused, so no NEW tick does DB work (it returns at the pause check
         # before touching the connection). With the in-flight tick drained and new ones
-        # inert, the web thread has the SQLite connection to itself. We deliberately do
-        # NOT run the recompute on the engine loop — a whole-history device delete can
-        # touch tens of thousands of blocks and take minutes; on the loop that would
-        # freeze HA comms and blow the request timeout (observed: WS reconnect storm +
-        # queue backlog + a spurious empty-message 500 while the job actually finished).
+        # inert. The delete runs on the engine thread (`_engine_write`); the recompute
+        # after it runs there too, but yielding (`_recompute_on_engine`): a whole-history
+        # device delete touches tens of thousands of blocks, and run straight through on the
+        # loop it froze HA comms (observed: WS reconnect storm + queue backlog; and 4 Nov
+        # 2026, a 104 s stall from a replace's recompute).
         if _event_loop and _event_loop.is_running():
             try:
                 import asyncio as _asyncio
@@ -1961,6 +1971,15 @@ def _meter_delete_data(meter_id: str):
             except Exception as _de:
                 logger.warning("api_meter_delete_data: tick-drain barrier failed: %s", _de)
         deleted = _engine_write(_do_delete_and_recompute, timeout=600.0)
+        # BL-46: re-derive the parent over the deleted window (PASS 2 over the surviving
+        # devices; the house is derived where read) — on the engine loop, yielding to it.
+        if _rc:
+            try:
+                _n46 = _recompute_on_engine(_rc["parent"], _rc["lo"], _rc["hi"])
+                logger.info("api_meter_delete_data: recomputed %s parent block(s) after removing %s",
+                            _n46, meter_id)
+            except Exception as _re46:
+                logger.warning("api_meter_delete_data: parent recompute failed: %s", _re46)
 
         # Data is committed & consistent → clear the pause so the tick runs again.
         # (engine_startup does NOT resume on its own — every pause caller must.)
@@ -5733,9 +5752,20 @@ def api_attribute_backout():
             return jsonify({"ok": False, "error": "an undo is already in progress",
                             "status": _eng.api_backout_status()}), 409
         body = request.get_json(force=True, silent=True) or {}
-        res = _eng.backout_recorder_attribution(
-            run_id=body.get("run_id"), meter_id=body.get("meter_id"),
-            from_date=body.get("from"), to_date=body.get("to"))
+        kw = dict(run_id=body.get("run_id"), meter_id=body.get("meter_id"),
+                  from_date=body.get("from"), to_date=body.get("to"))
+        # on the engine thread — its store cannot be used from this one, and Remove failed
+        # every time it ran here ("SQLite objects created in a thread…", 4 Nov 2026) — and
+        # yielding to the loop over a whole history
+        # — started, not waited for: over a long history it takes minutes, so the page polls
+        # /backout/status for its result (`last`)
+        if _event_loop is not None and _event_loop.is_running():
+            import asyncio as _asyncio
+            _eng.backout_forget_last()
+            _asyncio.run_coroutine_threadsafe(_eng.backout_recorder_attribution_async(**kw),
+                                              _event_loop)
+            return jsonify({"ok": True, "status": "running"})
+        res = _eng.backout_recorder_attribution(**kw)
         if not res.get("ok"):
             err = res.get("error")
             if err == "backout_in_progress":
@@ -8672,7 +8702,9 @@ def _delete_worker(from_date, from_time_utc, to_date, to_time_utc,
             try:
                 import engine as _eng
                 _delete_step("recomputing meter remainders")
-                result["remainders_recomputed"] = _eng.recompute_remainders_for_window(
+                # on the engine loop, yielding: this worker's thread cannot use the engine's
+                # store (it raised here, caught as "remainder recompute failed")
+                result["remainders_recomputed"] = _recompute_on_engine(
                     result["recompute_parent"], result["recompute_from"],
                     result["recompute_to"])
             except Exception as _re:

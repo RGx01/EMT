@@ -3060,8 +3060,27 @@ def _recompute_pass3_totals(block: dict) -> None:
                 block["totals"]["export_cost"] += channel.get("cost") or 0.0
 
 
+async def recompute_remainders_for_window_async(parent_meter_id: str, utc_start: str,
+                                                utc_end: str, *, every: int = 50) -> int:
+    """`recompute_remainders_for_window`, yielding to the loop every `every` blocks: over a
+    device's whole history it is tens of thousands of blocks, and run straight through it held
+    the loop for 104 s on an SSD — long enough for HA's WebSocket to drop (4 Nov 2026, b7)."""
+    if not parent_meter_id:
+        return 0
+    starts = get_store().get_block_starts_in_range(parent_meter_id, utc_start, utc_end)
+    done = 0
+    for i in range(0, len(starts), every):
+        chunk = starts[i:i + every]
+        done += recompute_remainders_for_window(parent_meter_id, chunk[0],
+                                                (chunk[-1] + "\x7f"), quiet_total=True)
+        await asyncio.sleep(0)
+    logger.info("recompute_remainders_for_window: recomputed %d block(s) for parent %s",
+                done, parent_meter_id)
+    return done
+
+
 def recompute_remainders_for_window(parent_meter_id: str, utc_start: str,
-                                    utc_end: str) -> int:
+                                    utc_end: str, *, quiet_total: bool = False) -> int:
     """Re-run PASS 2 over a main meter's blocks after one of its sub-meters' blocks were
     deleted, so the surviving devices' grid shares, the totals and carbon are re-derived.
     (Step 5, 10 Oct 2026: the main no longer stores a remainder to reset; the house is
@@ -3102,9 +3121,10 @@ def recompute_remainders_for_window(parent_meter_id: str, utc_start: str,
             logger.error(
                 "recompute_remainders_for_window: block %s failed: %s", bs, e)
     _pass2_quiet = _prev_quiet
-    logger.info(
-        "recompute_remainders_for_window: recomputed %d block(s) for parent %s",
-        done, parent_meter_id)
+    if not quiet_total:
+        logger.info(
+            "recompute_remainders_for_window: recomputed %d block(s) for parent %s",
+            done, parent_meter_id)
     return done
 
 
@@ -3117,12 +3137,30 @@ def api_backout_status() -> dict:
     return dict(_backout_job)
 
 
+def backout_forget_last() -> None:
+    """A new undo is starting: the page polls for ITS result, not the one before."""
+    _backout_job.pop("last", None)
+
+
 def backout_running() -> bool:
     return _backout_job.get("status") == "running"
 
 
-def backout_recorder_attribution(*, run_id=None, meter_id=None,
-                                  from_date=None, to_date=None) -> dict:
+def backout_recorder_attribution(**kw) -> dict:
+    """`backout_recorder_attribution_async`, run to completion here — for a caller with no
+    running loop (tests, a script). The route runs the async one on the engine loop."""
+    return asyncio.run(backout_recorder_attribution_async(**kw))
+
+
+async def backout_recorder_attribution_async(**kw) -> dict:
+    """The undo, its result kept on the status (`last`) for a page that started it and polls."""
+    res = await _backout_impl(**kw)
+    if res.get("error") != "backout_in_progress":
+        _backout_job["last"] = dict(res, meter_id=kw.get("meter_id"), run_id=kw.get("run_id"))
+    return res
+
+
+async def _backout_impl(*, run_id=None, meter_id=None, from_date=None, to_date=None) -> dict:
     """Undo a recorder-attribution run (or an explicit device + range): delete the
     reconstructed 'recorder_attributed' device blocks, re-derive each affected parent
     meter's remainder over the span, and drop the run from the ledger. The reversible
@@ -3169,7 +3207,10 @@ def backout_recorder_attribution(*, run_id=None, meter_id=None,
             except Exception:
                 hi_excl = hi
             for parent in (res.get("parents") or []):
-                recomputed += recompute_remainders_for_window(parent, lo, hi_excl)
+                # yielding: over a whole history, straight through, it stalled the loop
+                # long enough to drop HA's WebSocket (4 Nov 2026)
+                recomputed += await recompute_remainders_for_window_async(parent, lo, hi_excl)
+                store = get_store()          # never held across an await: a reconnect reopens it
         if run_id:
             store.remove_attribution_run(run_id)
         logger.info("backout_recorder_attribution: deleted %d device block(s), "
@@ -3183,51 +3224,84 @@ def backout_recorder_attribution(*, run_id=None, meter_id=None,
         # A code, not the exception's text: the route answers the page with it (CodeQL, 2 Nov 2026).
         return {"ok": False, "error": "backout_failed"}
     finally:
+        _last = _backout_job.get("last")
         _backout_job.clear()
         _backout_job.update({"status": "idle"})
+        if _last:
+            _backout_job["last"] = _last
         _backout_lock.release()
+
+
+def _replace_state(meter_id: str, **fields) -> None:
+    """The replace's own state on its run entry, for the card: `phase` while it is still the
+    claim (fetching, dropping, the house), or the error that ended it."""
+    with _attribution_lock:
+        j = _attribution_jobs.setdefault(meter_id, {"device": meter_id})
+        j.update(fields)
+
+
+def _replace_refused(meter_id: str, error: str, code: str) -> dict:
+    """End a replace before its run, nothing dropped: the error on the card, the claim freed."""
+    _replace_state(meter_id, status="error", error=error, phase=None)
+    _coord.release("attribution", meter_id)            # the claim never became a run
+    return {"ok": False, "error": code}
 
 
 async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
     """Replace a device's history from the sensors it uses now (replace device history design
-    §2) — the route has claimed the device and checked those sensors. Drop what a rebuild made
-    and what the sensors it no longer uses recorded (`drop_device_history`), give the house its
-    remainder back over the span, drop the device's runs from the ledger (what they wrote is
-    gone), then rebuild its whole history from HA's recorder as *Rebuild history* does.
+    §2) — the route has claimed the device and checked those sensors.
+
+    1. **Fetch first.** HA's statistics for the sensors in use, kept as recorder hours. A fetch
+       that fails, or finds nothing, ends it there: nothing dropped (4 Nov 2026, b7 — the drop
+       ran first, the fetch then went out on a WebSocket the drop's stall had dropped, and the
+       device was left with no history).
+    2. **The drop** (`drop_device_history`): the rebuilt half-hours, and what the sensors it no
+       longer uses recorded.
+    3. **The house** over the span, again — yielding, so the loop and HA's WebSocket keep going
+       (`recompute_remainders_for_window_async`); the device's runs leave the ledger.
+    4. **The rebuild** from the kept hours (`run_attribution_job`, no second fetch).
+
     Never raises; a failure is the run's error, on its card."""
     from datetime import datetime as _dt, timedelta as _td
     if _engine_ha is None:
-        # nothing dropped: a replace that could not rebuild would only delete
-        with _attribution_lock:
-            j = _attribution_jobs.setdefault(meter_id, {"device": meter_id})
-            j.update({"status": "error", "error": "Home Assistant is not connected — nothing was "
-                                                  "replaced"})
-        _coord.release("attribution", meter_id)
-        return {"ok": False, "error": "no_ha"}
+        return _replace_refused(meter_id, "Home Assistant is not connected — nothing was replaced",
+                                "no_ha")
     try:
+        _replace_state(meter_id, phase="Asking Home Assistant for the history of " +
+                       ", ".join(sensor_ids) + "…")
+        now = datetime.now(timezone.utc)
+        series, failed = await _fetch_device_series(
+            sensor_ids, (now - timedelta(days=3660)).isoformat(), now.isoformat())
+        if failed:
+            return _replace_refused(meter_id, "Home Assistant didn't answer for " + ", ".join(failed) +
+                                    " — nothing was replaced; try again", "fetch_failed")
+        src_of: dict = {}
+        fetched = _stitch_hourly_energy(series, list(sensor_ids), sources=src_of)
+        if not fetched:
+            return _replace_refused(meter_id, "Home Assistant has no history for " +
+                                    ", ".join(sensor_ids) + " — nothing was replaced", "no_data")
+        get_store().record_recorder_hours(meter_id, "import", fetched, src_of)
+        _replace_state(meter_id, phase="Dropping the old history…")
         off = get_store().device_off_stitch_sensors(meter_id)
         res = get_store().drop_device_history(meter_id, [o["id"] for o in off])
         lo, hi = res.get("from"), res.get("to")
         if lo and hi:
+            _replace_state(meter_id, phase="Giving the house back its share…")
             hi_excl = (_dt.fromisoformat(hi) + _td(minutes=int(get_block_minutes() or 30))).isoformat()
             for parent in res.get("parents") or []:
-                recompute_remainders_for_window(parent, lo, hi_excl)
+                await recompute_remainders_for_window_async(parent, lo, hi_excl)
         for r in get_store().get_attribution_runs():
             if r.get("meter_id") == meter_id and r.get("run_id"):
                 get_store().remove_attribution_run(r["run_id"])
-        logger.info("replace_device_history: %s — dropped %d half-hour(s) and %d read(s) "
-                    "(%s), rebuilding from %s", meter_id, res.get("deleted_blocks", 0),
-                    res.get("deleted_reads", 0),
-                    ", ".join(o["entity_id"] for o in off) or "no sensor it no longer uses",
-                    ", ".join(sensor_ids))
+        logger.info("replace_device_history: %s — %d hour(s) kept from %s; dropped %d half-hour(s) "
+                    "and %d read(s) (%s); rebuilding", meter_id, len(fetched), ", ".join(sensor_ids),
+                    res.get("deleted_blocks", 0), res.get("deleted_reads", 0),
+                    ", ".join(o["entity_id"] for o in off) or "no sensor it no longer uses")
     except Exception as e:
         logger.error("replace_device_history failed (%s): %s", meter_id, e, exc_info=e)
-        with _attribution_lock:
-            j = _attribution_jobs.setdefault(meter_id, {"device": meter_id})
-            j.update({"status": "error", "error": "the history could not be replaced"})
-        _coord.release("attribution", meter_id)        # the claim never became a run
-        return {"ok": False, "error": "replace_failed"}
-    return await run_attribution_job(meter_id, sensor_ids, pace_s=0.05)
+        return _replace_refused(meter_id, "the history could not be replaced", "replace_failed")
+    _replace_state(meter_id, phase=None)
+    return await run_attribution_job(meter_id, sensor_ids, pace_s=0.05, fetch=False)
 
 
 def _stitch_hourly_energy(series_by_sensor: dict, priority: list,
@@ -3566,6 +3640,21 @@ async def attribution_preflight(device_meter_id: str, sensor_ids: list) -> dict:
         return {"ok": True, "verdict": "error", "device_kwh": None, "house_kwh": None}
 
 
+async def _fetch_device_series(sensor_ids: list, start: str, end: str) -> tuple:
+    """HA's hourly statistics for each sensor: ({sensor: rows}, [sensors whose fetch failed]).
+    A sensor with no statistics is not a failure — its rows are []."""
+    series, failed = {}, []
+    for sid in (sensor_ids or []):
+        try:
+            res = await _engine_ha.get_statistics([sid], start, end, period="hour", timeout=180.0)
+            series[sid] = res.get(sid) or []
+        except Exception as e:
+            logger.warning("run_attribution_job: stats fetch %s failed: %r", sid, e)
+            series[sid] = []
+            failed.append(sid)
+    return series, failed
+
+
 @job("attribution", depends_on=("import",),
      exclusive_with=("delete",), on_conflict=WAIT)
 async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
@@ -3609,15 +3698,15 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
         parent = get_store().get_parent_meter_id(device_meter_id) or "electricity_main"
         now = datetime.now(timezone.utc)
         start = (now - timedelta(days=3660)).isoformat()
-        series = {}
-        for sid in (sensor_ids or []) if fetch else []:
-            try:
-                res = await _engine_ha.get_statistics([sid], start, now.isoformat(),
-                                                      period="hour", timeout=180.0)
-                series[sid] = res.get(sid) or []
-            except Exception as e:
-                logger.warning("run_attribution_job: stats fetch %s failed: %s", sid, e)
-                series[sid] = []
+        series, failed = (await _fetch_device_series(sensor_ids, start, now.isoformat())
+                          if fetch else ({}, []))
+        if fetch and sensor_ids and len(failed) == len(sensor_ids):
+            # every sensor's fetch failed: not a rebuild that found nothing (4 Nov 2026, a
+            # replace whose fetch went out on a WebSocket that had just dropped, and said "done")
+            j.update({"status": "error", "error": "Home Assistant didn't answer for " +
+                      ", ".join(failed) + " — try again"})
+            _coord.mark("attribution", device_meter_id, status="error")
+            return {"ok": False, "error": "fetch_failed"}
         src_of: dict = {}
         fetched = _stitch_hourly_energy(series, list(sensor_ids or []), sources=src_of) \
             if fetch else {}

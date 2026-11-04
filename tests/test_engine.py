@@ -3318,11 +3318,20 @@ class TestBackoutRecorderAttribution(unittest.TestCase):
 
     def setUp(self):
         self._saved = (engine.get_store, engine.recompute_remainders_for_window,
-                       engine.get_block_minutes)
+                       engine.recompute_remainders_for_window_async, engine.get_block_minutes)
 
     def tearDown(self):
         (engine.get_store, engine.recompute_remainders_for_window,
-         engine.get_block_minutes) = self._saved
+         engine.recompute_remainders_for_window_async, engine.get_block_minutes) = self._saved
+
+    @staticmethod
+    def _recompute(calls, n):
+        """The parent recompute Remove runs — the yielding one since 4 Nov 2026 (a whole
+        history straight through stalled the loop)."""
+        async def _rc(p, lo, hi, **kw):
+            calls.append((p, lo, hi))
+            return n
+        return _rc
 
     def test_backout_by_run_deletes_and_recomputes_parent(self):
         calls = []
@@ -3335,7 +3344,7 @@ class TestBackoutRecorderAttribution(unittest.TestCase):
             "from": "2025-03-01T00:00:00", "to": "2025-03-01T00:30:00"}
         engine.get_store = lambda: store
         engine.get_block_minutes = lambda: 30
-        engine.recompute_remainders_for_window = lambda p, lo, hi: calls.append((p, lo, hi)) or 2
+        engine.recompute_remainders_for_window_async = self._recompute(calls, 2)
 
         res = engine.backout_recorder_attribution(run_id="r1")
         self.assertTrue(res["ok"])
@@ -3358,7 +3367,7 @@ class TestBackoutRecorderAttribution(unittest.TestCase):
             "from": "2024-07-01T00:00:00", "to": "2026-01-31T23:30:00"}
         engine.get_store = lambda: store
         engine.get_block_minutes = lambda: 30
-        engine.recompute_remainders_for_window = lambda p, lo, hi: calls.append((p, lo, hi)) or 40
+        engine.recompute_remainders_for_window_async = self._recompute(calls, 40)
         res = engine.backout_recorder_attribution(meter_id="ev_charger")
         self.assertTrue(res["ok"])
         self.assertEqual(res["deleted"], 40)
