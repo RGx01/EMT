@@ -39,8 +39,10 @@ def _server_ns():
     src = open(os.path.join(_here, "usage_view.py")).read()
     ns = {}
     for n in ast.parse(src).body:
+        # its per-half-hour rule is `_ev_slot_share` since 4 Nov 2026 (Flow design §5), shared with the
+        # rate brackets; a tuple, not the string it was, whose `in` matched by substring
         if isinstance(n, ast.FunctionDef) and n.name in (
-                "_dispatch_ev_split_by_bucket"):
+                "_ev_slot_share", "_dispatch_ev_split_by_bucket"):
             exec(compile(ast.Module([n], []), "<s>", "exec"), ns)
     return ns
 

@@ -69,7 +69,8 @@ def _totals(rows):
     out = {}
     for row in rows:
         for s, nb in row["b"].items():
-            for n, (k, c) in nb.items():
+            for n, v in nb.items():          # [kWh, £, g] since 4 Nov 2026 (Flow): the first two
+                k, c = v[0], v[1]
                 a = out.setdefault(s, {}).setdefault(int(n), [0.0, 0.0])
                 a[0] += k
                 a[1] += c

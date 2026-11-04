@@ -7,6 +7,8 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Rate brackets shows the car on an account with no devices.** Octopus's split of your EV was
+  counted in the house there; it is a series of its own now, as in the Devices view.
 - **A new account is offered its history.** Finishing the setup wizard on Octopus's API now asks,
   once, whether to bring in your history — up to the two years Octopus keeps. *Import my history*
   opens the import, which shows what it will fetch before it starts.
