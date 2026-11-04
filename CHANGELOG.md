@@ -15,6 +15,13 @@ internal name for everything before the first public release and never appears i
   sensor, but never saved it, so the battery's card in Setup came up without it and the PV dial didn't
   appear. It is saved now. If you set up a battery before this, add the sensor on its card in Setup.
 
+- **Importing your history rebuilds your devices' history too.** After you set up a device and import
+  your history from Octopus or a CSV, EMT now fetches the device's history from Home Assistant and fits
+  it into the imported half-hours, without asking. Before, it only offered to, the next time you opened
+  Setup. It checks the sensor first, as *Rebuild history* does: if it reads more than your house drew, or
+  far less, nothing is written and the device's card in Setup says why. Devices that already have
+  history are left as they are.
+
 ## [2026.11.0b6] — 2026-11-04
 
 - **IOG-SMB history imported from Octopus gets its House/EV split.** After you import your history on

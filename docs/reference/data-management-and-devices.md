@@ -128,6 +128,11 @@ key is never in it. A size estimate warns over 10 MB.
 - **A refill rebuilds the devices** (`rebuild_devices_after_refill`): after a gap fill, an Octopus
   import or a CSV import, each device is rebuilt over the span from `ha_reads`, without asking Home
   Assistant.
+- **An import rebuilds a new device from Home Assistant** (`fetch_new`): after an Octopus or a CSV
+  import (not a gap fill), a device whose history EMT never had (`devices_without_history`: no recorder
+  hours kept, no device row before its first live half-hour) is rebuilt over its whole history from
+  HA's recorder, as *Rebuild history* does. The sensor check runs first; a sensor reading more than the
+  house drew, or far less, is held — nothing written, a note on its card.
 - **Sensors:** `device_sensors` holds a device's primary sensor and its history sensors; each block
   records the sensor that wrote it. *Rebuild history* and the history sensors are on the device's card
   in Settings.

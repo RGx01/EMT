@@ -6513,6 +6513,23 @@ class BlockStore:
             "ORDER BY effective_from DESC LIMIT 1) WHERE m.is_sub_meter = 1 AND "
             "h.period_start >= ? AND h.period_start < ? ORDER BY h.meter_id", (lo, hi))]
 
+    def devices_without_history(self) -> list:
+        """The active sub-meters of the current config period whose history EMT has never had:
+        no recorder hours kept in `ha_reads` (Home Assistant was never asked), and no device row
+        before the first half-hour HA recorded live — so not a device whose history came from
+        v4, a rebuild, or anywhere else (device history on first import design §2). A device
+        with no live half-hour yet counts from now."""
+        return [r[0] for r in self._conn.execute(
+            "SELECT m.meter_id FROM meters m WHERE m.is_sub_meter = 1 AND m.retired_at IS NULL "
+            "AND m.config_period_id = (SELECT id FROM config_periods WHERE effective_to IS NULL "
+            "ORDER BY effective_from DESC LIMIT 1) "
+            "AND NOT EXISTS (SELECT 1 FROM ha_reads h WHERE h.meter_id = m.meter_id "
+            "                AND h.origin = 'recorder') "
+            "AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.meter_id = m.meter_id AND "
+            "    b.block_start < COALESCE((SELECT MIN(h.period_start) FROM ha_reads h "
+            "        WHERE h.meter_id = m.meter_id AND h.origin = 'live'), '9999')) "
+            "ORDER BY m.meter_id")]
+
     def point_block_at_sensor(self, block_start: str, meter_id: str, sensor_id) -> None:
         """A device half-hour put back from `ha_reads` names the sensor that recorded it, not
         today's primary (the new row's default) — or none, `sensor_id` None, where that is not

@@ -5477,7 +5477,8 @@ def _rebuild_devices_after_csv(result) -> None:
     try:
         import engine as _eng
         result["devices_rebuilding"] = _run_on_engine_loop(
-            _eng.rebuild_devices_after_refill(span["from"], span["to"]), timeout=30.0) or []
+            _eng.rebuild_devices_after_refill(span["from"], span["to"], fetch_new=True),
+            timeout=30.0) or []
     except Exception as e:
         logger.warning("csv apply: device rebuild not started: %s", e)
 
