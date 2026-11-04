@@ -2,7 +2,7 @@ name: "EMT — Energy Meter Tracker"
 description: "Half-hourly electricity cost for Octopus Energy accounts: devices split out of the meter, Intelligent tariffs' smart charging, and history settled against Octopus's own bill"
 # CalVer, YYYY.M.PATCH; a beta is 2026.11.0b1 (Home Assistant's own style). EMT's own version, never a
 # v4 one: the v4 import floor is in v4's numbers (v4import/gate.py FLOOR_VERSION).
-version: "2026.11.0b6"
+version: "2026.11.0b7"
 # The add-on's identity: a different slug is a different add-on, whose data does not follow. v4 is
 # `energy_meter_tracker`, so the two run side by side.
 slug: "emt"
