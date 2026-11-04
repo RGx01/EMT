@@ -571,9 +571,9 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
       </div>
       <span class="bar-tb-sep" aria-hidden="true"></span>
       <div class="bar-seg" id="bar-period-seg">
-        <button class="bar-seg-btn"        onclick="barSetPeriod('hh',this)" title="Half-hourly breakdown of a single day">HH</button>
-        <button class="bar-seg-btn active" onclick="barSetPeriod('daily',this)">Daily</button>
-        <button class="bar-seg-btn"        onclick="barSetPeriod('monthly',this)">Monthly</button>
+        <button class="bar-seg-btn"        onclick="barSetPeriod('hh',this)" id="bar-hh-btn" title="Half-hourly breakdown of a single day">HH</button>
+        <button class="bar-seg-btn active" onclick="barSetPeriod('daily',this)" id="bar-daily-btn">Daily</button>
+        <button class="bar-seg-btn"        onclick="barSetPeriod('monthly',this)" id="bar-monthly-btn">Monthly</button>
         <button class="bar-seg-btn"        onclick="barSetPeriod('yearly',this)" id="bar-yearly-btn">Yearly</button>
         <button class="bar-seg-btn"        onclick="barSetPeriod('span',this)" id="bar-span-btn" style="display:none"
                 title="A stretch you pick: a chapter of your home (an era's start to the next era's) or a tariff">Span</button>
@@ -1712,10 +1712,9 @@ async function barInit() {
 
 function barSyncUI() {
   // Sync period/metric/view segment buttons to current state vars
-  ['hh','daily','monthly','yearly','span'].forEach(function(v) {
-    document.querySelectorAll('#bar-period-seg .bar-seg-btn').forEach(function(b){
-      if (b.textContent.toLowerCase() === v) b.classList.toggle('active', barPeriod === v);
-    });
+  // by the period each button sets, not its words: Flow names them by the span they total
+  document.querySelectorAll('#bar-period-seg .bar-seg-btn').forEach(function(b){
+    b.classList.toggle('active', (b.getAttribute('onclick') || '').indexOf("'" + barPeriod + "'") !== -1);
   });
   // Billing/Calendar toggle is meaningless for the HH (single-day) view — hide it.
   var calSeg = document.getElementById('bar-cal-seg');
@@ -2891,6 +2890,8 @@ function barSetBrPct(on) { barBrPct = !!on; barSaveState(); barRender(); }
 
 // What the view shows and hides: the series picker and % in Rate brackets; the Net line, the
 // standing charge, CO₂ and the period sort only with the devices.
+// [period, its name in the bar views, its name in Flow]
+var FLOW_PERIOD_NAMES = [['hh', 'HH', 'Daily'], ['daily', 'Daily', 'Monthly'], ['monthly', 'Monthly', 'Yearly']];
 function barBrSyncUI() {
   var on = barBrackets(), fl = barFlow();
   function vis(id, show, how) { var e = document.getElementById(id); if (e) e.style.display = show ? (how || '') : 'none'; }
@@ -2899,6 +2900,14 @@ function barBrSyncUI() {
   vis('bar-sort-btn', !on && !fl);
   vis('bar-flow-head', fl, 'flex');
   var spanOk = barSpans().length > 0;
+  // Flow totals the span the bars would show, so its buttons are named by that span (4 Nov 2026, the
+  // user): HH is a day, Daily a month, Monthly the years ticked
+  FLOW_PERIOD_NAMES.forEach(function(p) {
+    var b = document.getElementById('bar-' + p[0] + '-btn');
+    if (!b) return;
+    b.textContent = fl ? p[2] : p[1];
+    if (p[0] === 'hh') b.title = fl ? "A day's flow" : 'Half-hourly breakdown of a single day';
+  });
   vis('bar-yearly-btn', !fl);
   vis('bar-span-btn', spanOk);
   // not before the eras and tariffs are known: a remembered Span is drawn when they land

@@ -5,6 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **Flow's periods are named by what it shows.** In Flow, the period buttons now read *Daily*,
+  *Monthly* and *Yearly*: a day's flow, a month's, and the years you've ticked. They were HH, Daily and
+  Monthly, named after the bars the other views draw. Devices, Rate brackets and Running total keep
+  theirs.
+
 ## [2026.11.0b6] — 2026-11-04
 
 - **IOG-SMB history imported from Octopus gets its House/EV split.** After you import your history on
