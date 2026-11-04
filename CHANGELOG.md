@@ -7,6 +7,7 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Data Management's *Whole history* menu is *History*.**
 - **Running total: one legend, and a year keeps its colour.** The line view had a legend on each
   card; it now has the spiral's, one above the cards. And a year's colour no longer changes when you
   hide another year: each year has its own, on the line, the spiral and the legend.
