@@ -2,15 +2,19 @@
 The Lifetime line a stretch a year, in the spiral's year colours (1 Nov 2026, the user: "lifetime spiral vs
 lifetime line, line should hold the same principles with colouring as spiral").
 
-The line was one colour. Now each year's points are a dataset in that year's colour — the spiral's, by the
-year's place among the years shown — and each stretch starts at the year before's last point, so the line
-stays one line. A point carries its year (the year its year began in, so a "Year from" choice re-cuts it).
-The legend names the years, as on Year by year.
+The line was one colour. Now each year's points are a dataset in that year's colour — the spiral's — and
+each stretch starts at the year before's last point, so the line stays one line. A point carries its year
+(the year its year began in, so a "Year from" choice re-cuts it).
+
+4 Nov 2026 (the user): a year's colour is its place among all the data's years (`barAccYearColor`), not
+the years shown — hiding a year re-coloured every year after it — and the years are one legend above the
+cards (`#bar-legend`, `barAccLegend`), as the spiral's, not Chart.js's on each card.
 
 Checked in the local preview on 1 Nov 2026 (a scratch copy of staging): 2023–2026 in teal, violet, amber
 and blue, as on the spiral, each joined to the last.
 
-Discriminating: every test fails on the parent tree.
+Discriminating: every test failed on its parent tree; test_hiding_a_year_keeps_the_others_colours and
+test_one_legend_above_the_cards fail on the tree before 4 Nov 2026.
 """
 import json
 import os
@@ -36,7 +40,12 @@ class TheYears(unittest.TestCase):
 
     def _run(self, expr):
         yc = PAGE[PAGE.index("var BAR_ACC_YC = "):].split("\n", 1)[0]
-        js = yc + "\n" + _fn("barAccLifeYears") + "\nconsole.log(JSON.stringify(" + expr + "));"
+        js = (yc + "\nvar _barAccYc = {data: null, anchor: '', years: []};\n"
+              # the data's years, 2024–2026; a year from 1 January
+              "var barData = [{year: 2024}, {year: 2025}, {year: 2026}];\n"
+              "function barAccAnchor() { return {m: 1, d: 1}; }\n"
+              "function barAccYearOf(r) { return r.year; }\n" + _fn("barAccYearColor") + _fn("barAccLifeYears") +
+              "\nconsole.log(JSON.stringify(" + expr + "));")
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
             fh.write(js)
             path = fh.name
@@ -61,10 +70,17 @@ class TheYears(unittest.TestCase):
     def test_a_point_carries_its_year(self):
         self.assertIn("pts.push({x: barAccMs(r), y: Math.round(life * 1000) / 1000, yr: y});", _fn("barAccSeriesOf"))
 
-    def test_the_line_draws_them_with_a_legend(self):
+    def test_hiding_a_year_keeps_the_others_colours(self):
+        out = self._run("barAccLifeYears(%s, [2025, 2026]).map(function (d) { return d.color; })" % self.LIFE)
+        self.assertEqual(out, ["#7c6af7", "#f9a825"])          # 2025 and 2026's own, with 2024 hidden
+
+    def test_one_legend_above_the_cards(self):
         f = _fn("barAccRender")
         self.assertIn("? barAccLifeYears(s.life, yearsShown).map(function(d) {", f)
-        self.assertIn("legend: {display: true,", f)
+        self.assertIn("legend: {display: false},", f)                       # no card's own
+        self.assertIn("  document.getElementById('bar-legend').innerHTML = barAccLegend(rows, yearsShown);", f)
+        self.assertNotIn("if (spiral) document.getElementById('bar-legend')", f)
+        self.assertIn("vis('bar-legend', true, 'flex');", _fn("barAccSyncUI"))
 
 
 if __name__ == "__main__":
