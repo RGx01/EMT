@@ -57,7 +57,7 @@ class TheKey(unittest.TestCase):
 
     def test_a_swatch_a_state_in_its_colour(self):
         html = self._run("keyHtml('bill')")
-        self.assertEqual(html.count('class="hm-sw"'), 9)
+        self.assertEqual(html.count('class="hm-sw"'), 10)          # split_pending since 4 Nov 2026
         self.assertIn('<span class="hm-sw" style="background:#2e9e5b;"></span>final', html)
         self.assertIn('<span class="hm-sw" style="background:#2a9d9f;"></span>Octopus’s cost, EMT’s House/EV split', html)
 

@@ -79,6 +79,7 @@ From `settlement_state.classify`, drawn by `heatmap_module.html`:
 | `applied_emt_split` | teal | Octopus's cost, EMT's house/EV split |
 | `estimate_dcc` | light amber | settled kWh × rate, Octopus's cost not in yet |
 | `estimate_cad` | amber | kWh not settled yet |
+| `split_pending` | light amber | an API-imported IOG-SMB half-hour: Octopus's cost is cached, waiting for its House/EV breakdown to settle the band and apply it |
 | `overdue`, `differs`, `flagged` | red | not final 9 days after the half-hour (7 after its kWh); Octopus's figures disagreeing; or a flag (the bill's kWh, its VAT, a missing split, devices costing more than the meter) |
 | `abandoned` | red, hatched yellow | asked 30 days, no cost — kWh × rate |
 | `corrected` | blue | your correction |

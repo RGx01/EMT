@@ -7,8 +7,12 @@ then its bill (Octopus's cost for it), then on IOG-SMB its House/EV split. The k
 on the payload (`kwh_authoritative`); this decides the other two, once, so every surface says the
 same thing. Pure: facts in (BlockStore.get_settlement_facts), states out.
 
-    bill   applied | applied_emt_split | estimate_dcc | estimate_cad | overdue | differs |
-           corrected | imported | abandoned | none                           (design §9.3)
+    bill   applied | applied_emt_split | estimate_dcc | estimate_cad | split_pending | overdue |
+           differs | corrected | imported | abandoned | none                 (design §9.3)
+           split_pending — an API-imported half-hour on IOG-SMB whose cached bill (the import's cost
+           and label) is not EMT's cost yet, waiting for Octopus's House/EV breakdown to settle its
+           band and apply it (4 Nov 2026, a beta tester: 35 daytime dispatches read red `differs`
+           while the asker had not reached them)
            imported  — not Octopus's cost, and final: CSV history, an import's own cost as a bill
            (label IMPORTED), or no bill past Octopus's two years (27 Oct 2026, the user)
            abandoned — EMT's kWh x rate, and EMT no longer asks Octopus for the cost: a bill
@@ -203,7 +207,15 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
         # Octopus's bill is cached for it: whatever the import's no-cost record says, the cost is
         # Octopus's (21 Oct 2026, staging: 15 half-hours of 21 Jul read "no cost, no longer asked"
         # with their bills cached and applied — the record was never cleared)
-        bill = "applied" if cost is not None and abs(cost - bill_cost) <= _EPS_GBP else "differs"
+        if cost is not None and abs(cost - bill_cost) <= _EPS_GBP:
+            bill = "applied"
+        elif ((split_at(start) if split_at else smb) and f.get("bill_ev_kwh") is None
+              and f.get("bill_home_kwh") is None and start not in given_up):
+            # IOG-SMB: the import caches the cost and label, not the breakdown, and the band waits
+            # for the breakdown (the asker fetches it) — not a disagreement yet (4 Nov 2026)
+            bill = "split_pending"
+        else:
+            bill = "differs"
     elif src == "imported_api" and kind == "intelligent":
         # no bill yet: the one asker asks Octopus for it as for a live half-hour (engine step 3,
         # decided (b), 24 Oct 2026), so it waits as one does — on its settled kWh (the import's) —
