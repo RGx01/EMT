@@ -964,6 +964,8 @@ document.addEventListener('DOMContentLoaded', function () {
   var o = new URLSearchParams(window.location.search).get('open');
   if (o === 'backups') openBackups();
   else if (o === 'support') openSupport();
+  // Settings' offer of a new account's history (4 Nov 2026): the import, where there is an API
+  else if (o === 'import' && {{ uses_api|tojson }}) dmWhole('api:whole_history', 'Import history from Octopus');
 });
 
 // A backup dropped anywhere on the page opens the restore — the drop row is in a modal now.

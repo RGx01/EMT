@@ -361,6 +361,22 @@
   </div>
 </div>
 
+<!-- A new account on Octopus's API: the offer of its history, once, as the first setup finishes (4 Nov 2026) -->
+<div id="history-offer-overlay" style="display:none;position:fixed;inset:0;z-index:1100;background:rgba(0,0,0,0.55);align-items:center;justify-content:center;">
+  <div role="dialog" aria-modal="true" aria-labelledby="history-offer-title" style="background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:24px;max-width:440px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+    <div id="history-offer-title" style="font-size:15px;font-weight:600;margin-bottom:10px;color:var(--text);">Bring in your history from Octopus?</div>
+    <div style="font-size:13px;color:var(--muted);margin-bottom:20px;line-height:1.6;">
+      Octopus keeps up to <strong>two years</strong> of your half-hours. EMT can import them now, in the
+      background, paced to Octopus&rsquo;s limits &mdash; you see what it will fetch before it starts.
+      You can do this later from Data Management&rsquo;s <strong>History</strong> menu.
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;">
+      <button class="btn" style="font-size:13px;" onclick="_historyOfferNotNow()">Not now</button>
+      <button class="btn btn-primary" style="font-size:13px;" onclick="_historyOfferImport()">Import my history</button>
+    </div>
+  </div>
+</div>
+
 {% endblock %}
 
 {% block scripts %}
@@ -3531,6 +3547,9 @@ async function wizApplyAndClose() {
   }
   var d      = wiz.data;
   var mainId = d.mainId || 'electricity_main';
+  // The first setup — no main meter saved before this Finish — is the one time the history is offered.
+  // The server's copy as the page loaded: `config` holds a draft main meter while the wizard runs.
+  var firstSetup = !(_serverConfig.meters || {})[mainId];
 
   // Build main meter
   var mainMeter = {
@@ -3661,12 +3680,34 @@ async function wizApplyAndClose() {
       show('alert-success');
       // device sensors design §4: offer to rebuild the new devices' history once the engine,
       // restarted by the save, is back — on the reload, as a device-screen save does
-      if (_queueRebuildOffer()) setTimeout(function() { window.location.reload(); }, 1200);
+      var rebuild = _queueRebuildOffer();
+      if (_offerHistory(firstSetup, wiz.data.mode)) _historyOffer.reload = rebuild;
+      else if (rebuild) setTimeout(function() { window.location.reload(); }, 1200);
     }
     else showError(data.error || 'Save failed — please press Save Config manually');
   } catch(e) {
     showError('Auto-save failed — please press Save Config manually');
   }
+}
+
+// A new account on Octopus's API is offered its history once, as its first setup finishes (4 Nov 2026,
+// the user): Octopus keeps about two years, and a new user did not find the import in Data Management.
+// The offer opens the import there (?open=import), which shows its plan before anything is asked of
+// Octopus. Once: a later Finish (Change Setup) starts from a saved main meter, so it is not asked again.
+var _historyOffer = {reload: false, shown: false};
+function _offerHistory(firstSetup, mode) {
+  // `shown`: a second Finish on the same page, before a reload refreshes _serverConfig
+  if (!firstSetup || _historyOffer.shown || (mode || '').indexOf('api') === -1) return false;
+  _historyOffer.shown = true;
+  document.getElementById('history-offer-overlay').style.display = 'flex';
+  return true;
+}
+function _historyOfferImport() {
+  window.location.href = apiUrl('/data-management?open=import');
+}
+function _historyOfferNotNow() {
+  document.getElementById('history-offer-overlay').style.display = 'none';
+  if (_historyOffer.reload) window.location.reload();       // the devices' rebuild offer waits on it
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
