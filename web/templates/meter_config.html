@@ -3352,6 +3352,7 @@ function wizCollectStep() {
       var readEl = document.getElementById('wiz-sub-' + devId + '-read');
       var socEl  = document.getElementById('wiz-sub-' + devId + '-soc');
       var invEl  = document.getElementById('wiz-sub-' + devId + '-inverter-power');
+      var pvEl   = document.getElementById('wiz-sub-' + devId + '-pv-power');
       var invertEl   = document.getElementById('wiz-sub-' + devId + '-invert');
       var devPwrEl   = document.getElementById('wiz-sub-' + devId + '-device-power');
       var v2xEl      = document.getElementById('wiz-sub-' + devId + '-v2x');
@@ -3359,6 +3360,7 @@ function wizCollectStep() {
       if (readEl)   wiz.data.subMeters[devId].read = readEl.value;
       if (socEl && socEl.value) wiz.data.subMeters[devId].soc = socEl.value;
       if (invEl && invEl.value) wiz.data.subMeters[devId].inverter_power = invEl.value;
+      if (pvEl && pvEl.value)   wiz.data.subMeters[devId].pv_power = pvEl.value;
       if (invertEl) wiz.data.subMeters[devId].inverter_power_invert = invertEl.checked;
       if (devPwrEl && devPwrEl.value) wiz.data.subMeters[devId].device_power = devPwrEl.value;
       if (v2xEl)    wiz.data.subMeters[devId].v2x_capable = v2xEl.checked;

@@ -11,6 +11,9 @@ internal name for everything before the first public release and never appears i
   *Monthly* and *Yearly*: a day's flow, a month's, and the years you've ticked. They were HH, Daily and
   Monthly, named after the bars the other views draw. Devices, Rate brackets and Running total keep
   theirs.
+- **Setup keeps a battery's Solar / PV power sensor.** The setup wizard asks for a battery's PV power
+  sensor, but never saved it, so the battery's card in Setup came up without it and the PV dial didn't
+  appear. It is saved now. If you set up a battery before this, add the sensor on its card in Setup.
 
 ## [2026.11.0b6] — 2026-11-04
 
