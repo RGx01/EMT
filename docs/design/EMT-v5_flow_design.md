@@ -85,11 +85,10 @@ below 0p and earns a negative £.
 - **The period:** as the other views' (HH, Daily, Monthly, Yearly), and the same navigator. Flow
   totals the span those bars show: HH a day, Daily a month, Monthly a year, Yearly all years. The
   billing/calendar choice and the standing charge box apply as they do there.
-- **Hover:**
-  - a flow: "7.5–10p → EV: 120 kWh, £10.80" — kWh × the band's average rate, so the two figures
-    reconcile;
-  - a node: its total.
-  - The house adds: "Export is energy EMT did not meter coming in: solar or a battery."
+- **Hover:** a flow's (the plugin's hover is per flow; built, 4 Nov 2026):
+  - "7.5–10p → EV: 120 kWh · £10.80 · 9.0p/kWh" — kWh × the band's average rate, so the figures
+    reconcile — and its kg where there is carbon;
+  - house → export adds: "Export is energy EMT did not meter coming in: solar or a battery."
 - **Small bands:** on Agile a month can touch a dozen brackets. A bracket under 2% of the span's
   import, in the metric shown, is folded into one band, **Other**. Other is grey, last in the column,
   and its hover lists the brackets it holds with their figures, so nothing is hidden. The threshold is
@@ -118,7 +117,9 @@ device retired mid-span keeps it that way.
 
 **Reconciliation (the tests):** over any span,
 - Σ a device's flows = the Devices view's figure for it (kWh, £, CO₂);
-- Σ every band = the meter's import;
+- Σ every band = the meter's import, where no device's one rate sits beside the meter's two in a
+  half-hour (the house is clipped at 0 there). A band's inflow is drawn as what leaves it, so every
+  node balances;
 - export = the Devices view's export.
 
 These are asserted against a fixture with an Intelligent day, an Agile day, a device and an API EV.
@@ -128,13 +129,15 @@ These are asserted against a fixture with an Intelligent day, an Agile day, a de
 1. **The brackets:** the `ev_dispatch` series and carbon by bracket (§5), with the reconciliation
    tests, including a device retired mid-span. No page change. The brackets are no soak surface; the
    surfaces' query counts are unchanged.
-2. **Flow, kWh and £:** the view, the plugin (version checked first), hover, the table, the totals,
-   in the local preview on the demo household.
-3. **CO₂, the PDF, the help page** (Usage Stats → Flow), and the reference page.
+2. **Flow:** the view, the plugin (0.19.1, checked against Chart.js 4.4.1 in the preview), hover, the
+   table, the totals, and CO₂ and the PDF with them — the brackets carried the grams, and the PDF's
+   canvas is read at once (built, 4 Nov 2026).
+3. **The help page** (Usage Stats → Flow) and the reference page.
 
 ## 7. Open
 
 Nothing. Decided on 4 Nov 2026:
 - **Small bands on Agile:** grouped into Other (§4).
-- **The house's export caveat:** a note in the house node's hover (§4), not a line under the chart.
+- **The house's export caveat:** a note in the hover (§4) — the export flow's, as the plugin's hover
+  is per flow — not a line under the chart.
 - **Retired devices** in the span: shown under their name, as the Devices view shows them.
