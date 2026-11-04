@@ -48,14 +48,14 @@ def _fn_plain(name):
 class TheOverlays(unittest.TestCase):
 
     def _run(self, mode, years, tariffs_on=True, eras_on=True):
-        js = ("var barAccMode = %s, barAccView = 'line', barAccStart = 'jan', barData = [], barBillingDay = 1,"
+        js = ("var barAccMode = %s, barAccView = 'line', barAccStart = 'jan', barData = [{year: 2023, month: 6, day: 1}, {year: 2024, month: 6, day: 1}], barBillingDay = 1,"
               " BAR_ACC_YC = ['#a', '#b', '#c'], BAR_ACC_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n"
               "var barTariffs = [{direction: 'import', name: 'Go', from: '2023-06-01'}, {direction: 'export', name: 'Out', from: '2023-06-01'}];\n"
               "var barEras = [{id: 'a1b2c3d4', label: 'Battery', kind: 'battery', start: '2024-06-12', end: '2025-01-01'}];\n"
               "var document = {getElementById: function (id) { return {checked: id === 'bar-tariff-cb' ? %s : %s}; }};\n") % (
             json.dumps(mode), "true" if tariffs_on else "false", "true" if eras_on else "false") + \
-            "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
-                                        "barAccYearOf", "barAccDoy", "barAccShowEras", "barAccShowTariffs", "barAccTariffDays",
+            "var _barAccYc = {data: null, anchor: '', years: []};\n" + "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
+                                        "barAccYearOf", "barAccYearColor", "barAccDoy", "barAccShowEras", "barAccShowTariffs", "barAccTariffDays",
                                         "barAccOverlays")) + \
             "\nconsole.log(JSON.stringify(barAccOverlays(%s)));" % json.dumps(years)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:

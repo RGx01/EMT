@@ -5,6 +5,12 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **Running total: one legend, and a year keeps its colour.** The line view had a legend on each
+  card; it now has the spiral's, one above the cards. And a year's colour no longer changes when you
+  hide another year: each year has its own, on the line, the spiral and the legend.
+
 ## [2026.11.0b3] — 2026-11-03
 
 - **Setting up a new account on Agile works.** Connecting to Octopus in the setup wizard waited for

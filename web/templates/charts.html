@@ -3415,6 +3415,18 @@ function barMakeRolodex(lbl) {
 var BAR_ACC_YC = ['#00d4aa', '#7c6af7', '#f9a825', '#38bdf8', '#ef4444', '#fb7185'];   // the spiral's year colours
 var BAR_ACC_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
 function barRunning() { return barShow === 'running'; }
+// A year's colour: its place among ALL the data's years, not the years shown (4 Nov 2026, the user: hiding
+// a year re-coloured every year after it, on the legend and the lines alike). Kept per rows and year start.
+var _barAccYc = {data: null, anchor: '', years: []};
+function barAccYearColor(y) {
+  var a = barAccAnchor(), at = a.m + '/' + a.d;
+  if (_barAccYc.data !== barData || _barAccYc.anchor !== at) {
+    _barAccYc = {data: barData, anchor: at,
+                 years: Array.from(new Set((barData || []).map(function(r) { return barAccYearOf(r, a); }))).sort()};
+  }
+  var i = _barAccYc.years.indexOf(y);
+  return BAR_ACC_YC[(i < 0 ? 0 : i) % BAR_ACC_YC.length];
+}
 function barAccSeriesList() {
   var out = [{id: 'net', label: 'Net (import − export)'}, {id: 'import', label: 'Import'}];
   if ((barData || []).some(function(r) { return (r.exp_kwh || 0) > 0; })) out.push({id: 'export', label: 'Export'});
@@ -3598,7 +3610,7 @@ function barAccLifeYears(life, years) {
       if (p.yr === y) { if (!data.length && prev) data.push(prev); data.push(p); }
       else if (!data.length) prev = p;
     });
-    return {y: y, color: BAR_ACC_YC[yi % BAR_ACC_YC.length], data: data};
+    return {y: y, color: barAccYearColor(y), data: data};
   }).filter(function(d) { return d.data.length; });
 }
 function barAccFmt(v, unit) {
@@ -3613,7 +3625,7 @@ function barAccSyncUI() {
   vis('bar-acc-wrap', on, 'flex');
   vis('bar-period-seg', !on, '');
   vis('bar-metric-seg', !on, '');
-  vis('bar-legend', !on || barAccView === 'spiral', 'flex');   // the spiral's years (the line has its own)
+  vis('bar-legend', true, 'flex');          // on Running total, the years: one legend for every card, line or spiral
   vis('barChart', !on, '');
   vis('bar-acc', on, 'grid');
   // its own standing charge box is with the toggles now, outside bar-acc-wrap: hidden with the view
@@ -3658,7 +3670,7 @@ function barAccRender() {
       (spiral ? '<div class="bar-acc-plot bar-acc-spiral" id="bar-acc-s-' + i + '"></div>'
               : '<div class="bar-acc-plot"><canvas id="bar-acc-c-' + i + '"></canvas></div>') + '</div>';
   }).join('');
-  if (spiral) document.getElementById('bar-legend').innerHTML = barAccLegend(rows, yearsShown);
+  document.getElementById('bar-legend').innerHTML = barAccLegend(rows, yearsShown);
   var all = {};
   kinds.forEach(function(k, i) {
     var s = barAccSeriesOf(rows, k.kind);
@@ -3681,7 +3693,7 @@ function barAccRender() {
                   borderWidth: 2, pointRadius: 0};
         })
       : yearsShown.map(function(y, yi) {
-          var c = BAR_ACC_YC[yi % BAR_ACC_YC.length];
+          var c = barAccYearColor(y);
           return {label: barAccYearLabel(y), data: s.years[y] || [], borderColor: c, backgroundColor: c, borderWidth: 2, pointRadius: 0};
         });
     var monthStarts = barAccMonthOffsets();     // the first of each month, days from the year's start
@@ -3695,7 +3707,7 @@ function barAccRender() {
         layout: {padding: {top: (ov.tariffs ? BAR_TARIFF_LANE + 4 : 0) + (ov.eras.length ? BAR_ERA_CHIP + 4 : 0)}},
         interaction: {mode: 'nearest', axis: 'x', intersect: false},
         plugins: {
-          legend: {display: true, labels: {color: th.axisC, boxWidth: 10, font: {size: 10}}},   // the years, on both
+          legend: {display: false},                // the years are #bar-legend, above the cards (barAccLegend)
           tooltip: {backgroundColor: th.tooltipBg, borderColor: th.tooltipBorder, borderWidth: 1,
                     titleColor: th.tooltipTitle, bodyColor: th.tooltipBody,
                     callbacks: {
@@ -3787,7 +3799,7 @@ function barAccOverlays(years, s) {
         var pts = yi >= 0 ? s.years[y] || [] : [], pt = null;
         pts.forEach(function(p) { if (p.x <= x) pt = p; });
         if (!pt || pts[pts.length - 1].x < x) return;      // before the year's data, or after it
-        out.dots.push({a: t.a, iso: t.iso, x: x, y: pt.y, change: t.change, color: BAR_ACC_YC[yi % BAR_ACC_YC.length]});
+        out.dots.push({a: t.a, iso: t.iso, x: x, y: pt.y, change: t.change, color: barAccYearColor(y)});
       });
     }
   }
@@ -3798,7 +3810,7 @@ function barAccOverlays(years, s) {
       out.eras.push({e: e, x: barAccMs(r), end: e.end ? Date.parse(e.end + 'T00:00:00Z') : null, color: null});
     } else {
       var y = barAccYearOf(r), yi = years.indexOf(y);
-      if (yi >= 0) out.eras.push({e: e, x: barAccDoy(r), end: null, color: BAR_ACC_YC[yi % BAR_ACC_YC.length]});
+      if (yi >= 0) out.eras.push({e: e, x: barAccDoy(r), end: null, color: barAccYearColor(y)});
     }
   });
   return out;
@@ -3914,7 +3926,7 @@ function barAccSpiralDots(pts, years) {
       if (barAccMs(q.r) <= ms) p = q; else after = true;
     });
     if (!p || (!after && barAccMs(p.r) < ms)) return;   // before the year's data, or after it
-    out.push({a: t.a, iso: t.iso, change: t.change, p: p, color: BAR_ACC_YC[yi % BAR_ACC_YC.length]});
+    out.push({a: t.a, iso: t.iso, change: t.change, p: p, color: barAccYearColor(y)});
   });
   return out;
 }
@@ -3958,7 +3970,7 @@ function barAccSpiral(host, rows, k, years) {
     if (seg.length < 2) return;
     var d = 'M ' + seg[0].x.toFixed(2) + ' ' + seg[0].y.toFixed(2);
     for (var j = 1; j < seg.length; j++) d += ' L ' + seg[j].x.toFixed(2) + ' ' + seg[j].y.toFixed(2);
-    var c = BAR_ACC_YC[yi % BAR_ACC_YC.length], L = seg[seg.length - 1];
+    var c = barAccYearColor(y), L = seg[seg.length - 1];
     svg.appendChild(_spEl('path', {d: d, fill: 'none', stroke: c, 'stroke-width': 2.6, 'stroke-linecap': 'round', 'stroke-linejoin': 'round', opacity: .95}));
     svg.appendChild(_spEl('circle', {cx: L.x, cy: L.y, r: 3.2, fill: c}));
   });
@@ -4012,16 +4024,17 @@ function barAccSpiral(host, rows, k, years) {
   svg.onpointerleave = function() { tip.style.opacity = 0; dot.setAttribute('opacity', 0); };
   return svg;
 }
-// The spiral's years in their colours (3 Nov 2026, the user: the line has Chart.js's legend, the spiral had
-// none) — a year's colour is its place among the years shown, as barAccSpiral draws it; a year it does not
-// draw (under two days) is not listed. Above the cards, so the PDF takes it with #bar-legend.
+// The years in their colours, above the cards — one legend for every card, line or spiral (the spiral's
+// from 3 Nov 2026; the line's, which was Chart.js's on each card, from 4 Nov 2026, the user). A year's
+// colour is barAccYearColor's, as every drawing's; a year with under two days drawn is not listed. In
+// #bar-legend, so the PDF takes it.
 function barAccLegend(rows, years) {
   var n = {};
   rows.forEach(function(r) { var y = barAccYearOf(r); n[y] = (n[y] || 0) + 1; });
   return years.map(function(y, yi) {
     if ((n[y] || 0) < 2) return '';
     return '<span style="display:flex;align-items:center;gap:5px;"><span style="display:inline-block;width:16px;height:3px;' +
-      'border-radius:2px;background:' + BAR_ACC_YC[yi % BAR_ACC_YC.length] + ';"></span>' + barAccYearLabel(y) + '</span>';
+      'border-radius:2px;background:' + barAccYearColor(y) + ';"></span>' + barAccYearLabel(y) + '</span>';
   }).join('');
 }
 // The spiral larger, in a modal, as the Spiral tab's expand

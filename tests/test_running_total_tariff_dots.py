@@ -58,14 +58,14 @@ SERIES = {"years": {"2023": [{"x": d, "y": d} for d in range(0, 365)],
 class TheDots(unittest.TestCase):
 
     def _run(self, mode="year", years=(2023, 2024), view="line", on=True, series=SERIES):
-        js = ("var barAccMode = %s, barAccView = %s, barAccStart = 'jan', barData = [], barBillingDay = 1,"
+        js = ("var barAccMode = %s, barAccView = %s, barAccStart = 'jan', barData = [{year: 2023, month: 6, day: 1}, {year: 2024, month: 6, day: 1}], barBillingDay = 1,"
               " BAR_ACC_YC = ['#a', '#b', '#c'], BAR_ACC_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n"
               "var barTariffs = %s, barEras = [];\n"
               "var document = {getElementById: function (id) { return {checked: id === 'bar-tariff-cb' ? %s : false}; }};\n") % (
             json.dumps(mode), json.dumps(view), json.dumps(TARIFFS), "true" if on else "false") + _kinds() + \
-            "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts",
+            "var _barAccYc = {data: null, anchor: '', years: []};\n" + "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts",
                                        "barTariffChangeDays", "barTariffVatOnly", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
-                                       "barAccYearOf", "barAccDoy", "barAccShowEras", "barAccShowTariffs", "barAccTariffDays",
+                                       "barAccYearOf", "barAccYearColor", "barAccDoy", "barAccShowEras", "barAccShowTariffs", "barAccTariffDays",
                                        "barAccOverlays")) + \
             "\nconsole.log(JSON.stringify(barAccOverlays(%s, %s)));" % (json.dumps(list(years)), json.dumps(series))
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
