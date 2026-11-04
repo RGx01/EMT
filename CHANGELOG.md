@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b8] — 2026-11-04
 
 - **Replace history no longer loses a device's history when Home Assistant doesn't answer.** In b7,
   *Replace history* dropped the old history first and then asked Home Assistant for the new sensor's.
