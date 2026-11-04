@@ -57,7 +57,7 @@ class TheToolbar(unittest.TestCase):
         save, load = _fn("barSaveState"), _fn("barLoadState")
         for k in ("show:     barShow,", "brSeries: barBrSeries,", "brPct:    barBrPct,"):
             self.assertIn(k, save)
-        self.assertIn("if (['devices','brackets','running'].indexOf(st.show) !== -1) barShow = st.show;", load)
+        self.assertIn("if (['devices','brackets','flow','running'].indexOf(st.show) !== -1) barShow = st.show;", load)
 
 
 class TheData(unittest.TestCase):
@@ -71,8 +71,8 @@ class TheData(unittest.TestCase):
 
     def test_render_waits_for_them(self):
         r = _fn("barRender")
-        self.assertIn("if (barBrackets() && !barBrReady()) return;", r)
-        self.assertLess(r.index("if (barBrackets() && !barBrReady()) return;"), r.index("var pd = barGetDataForPeriod();"))
+        self.assertIn("if ((barBrackets() || barFlow()) && !barBrReady()) return;", r)
+        self.assertLess(r.index("if ((barBrackets() || barFlow()) && !barBrReady()) return;"), r.index("var pd = barGetDataForPeriod();"))
 
     def test_summed_into_each_bucket_as_the_meters_are(self):
         agg = _fn("barAggRows")
@@ -165,8 +165,8 @@ class WhatTheViewHides(unittest.TestCase):
         self.assertIn("if (sw) sw.style.display = barMetric === 'cost' && !barBrackets() ? 'flex' : 'none';",
                       _fn("barRender"))
         ui = _fn("barBrSyncUI")
-        self.assertIn("vis('bar-net-wrap', !on, 'flex');", ui)
-        self.assertIn("vis('bar-sort-btn', !on);", ui)
+        self.assertIn("vis('bar-net-wrap', !on && !fl, 'flex');", ui)
+        self.assertIn("vis('bar-sort-btn', !on && !fl);", ui)
         self.assertIn("if (co2 && on) co2.style.display = 'none';", ui)
         self.assertIn("if (v === 'brackets' && barMetric === 'co2') barMetric = 'kwh';", _fn("barSetShow"))
 

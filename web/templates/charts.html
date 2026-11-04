@@ -566,6 +566,7 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
       <div class="bar-seg bar-show" id="bar-show-seg" title="The devices' import and export, or grid import by the price it was charged">
         <button class="bar-seg-btn active" onclick="barSetShow('devices',this)">Devices</button>
         <button class="bar-seg-btn"        onclick="barSetShow('brackets',this)">Rate brackets</button>
+        <button class="bar-seg-btn"        onclick="barSetShow('flow',this)" title="Where the grid's import went: by the price it was charged, to the house and each device">Flow</button>
         <button class="bar-seg-btn"        onclick="barSetShow('running',this)">Running total</button>
       </div>
       <span class="bar-tb-sep" aria-hidden="true"></span>
@@ -646,6 +647,8 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
   </div>
 
   <!-- Legend -->
+  <!-- Flow: the span's import, export and net, above its Sankey (Flow design §1) -->
+  <div id="bar-flow-head" style="display:none; gap:18px; margin-bottom:8px; font-size:12px; color:var(--muted); flex-wrap:wrap; padding: 0 24px; flex-shrink:0;"></div>
   <div id="bar-legend" style="display:flex; gap:16px; margin-bottom:12px; font-size:12px; color:var(--muted); flex-wrap:wrap; padding: 0 24px; flex-shrink:0;"></div>
 
   <!-- Chart canvas -->
@@ -1580,7 +1583,7 @@ function barLoadState(availableYears) {
     if (tc) tc.checked = st.tariffs === true;
     var ec = document.getElementById('bar-eras-cb');
     if (ec) ec.checked = st.eras !== false;              // on until turned off: an era is there to be seen
-    if (['devices','brackets','running'].indexOf(st.show) !== -1) barShow = st.show;
+    if (['devices','brackets','flow','running'].indexOf(st.show) !== -1) barShow = st.show;
     if (typeof st.accSeries === 'string') barAccSeries = st.accSeries;
     if (st.accMode === 'lifetime' || st.accMode === 'year') barAccMode = st.accMode;
     if (st.accView === 'line' || st.accView === 'spiral') barAccView = st.accView;
@@ -2409,10 +2412,10 @@ function barBrLabel(n) {
 // carries the order; the legend and hover name the bracket. Blue to purple is money in, green to red
 // money out: an import plunge is blue; export, earned, runs blue to purple, the best-paid bracket the
 // deepest purple; a negative export price, paid to export, is red.
-function barBrColor(n, ns) {
+function barBrColor(n, ns, asImport) {
   var dark = barIsDark();
   var i = ns.indexOf(n), alt = i % 2 ? (dark ? 14 : 13) : 0;
-  var ex = barBrSign() < 0;
+  var ex = !asImport && barBrSign() < 0;             // Flow's bands are import's, whatever Rate brackets shows
   if (n < 0) return ex ? 'hsl(0, ' + (dark ? 62 : 68) + '%, ' + ((dark ? 48 : 40) + alt) + '%)'
                        : 'hsl(215, 70%, ' + ((dark ? 50 : 40) + alt) + '%)';
   var pos = ns.filter(function(x) { return x >= 0; });
@@ -2540,6 +2543,196 @@ function barBrBuildTable(tbl, aggList) {
   tbl.innerHTML = html + '</tbody>';
 }
 
+// ── Flow (docs/design/EMT-v5_flow_design.md) ─────────────────────────────────────────────────────
+// The span on screen as one Sankey: grid → rate band → the house and each device, export out of the
+// house, and in £ the standing charge — from the rate brackets the view's buckets already sum (`agg.br`,
+// [kWh, £, g] per series and bracket). The bands are Rate brackets' 2.5p brackets in its colours; one
+// under FLOW_OTHER_SHARE of the span's import, in the metric shown, goes into Other. A flow is drawn
+// where it is above 0: a plunge's credit is told in the head, not drawn.
+var FLOW_OTHER_SHARE = 0.02;
+var FLOW_PLUGIN = 'https://cdn.jsdelivr.net/npm/chartjs-chart-sankey@0.19.1/dist/chartjs-chart-sankey.min.js';
+var _barFlowLib = null;
+function barFlow() { return barShow === 'flow'; }
+// The plugin, once, after Chart.js (it registers itself on window.Chart)
+function barFlowLib() {
+  if (window.Chart && Chart.registry.controllers.get('sankey')) return Promise.resolve();
+  if (_barFlowLib) return _barFlowLib;
+  _barFlowLib = new Promise(function(ok, fail) {
+    var s = document.createElement('script');
+    s.src = FLOW_PLUGIN; s.onload = ok; s.onerror = function() { _barFlowLib = null; fail(new Error('the Sankey chart did not load')); };
+    document.head.appendChild(s);
+  });
+  return _barFlowLib;
+}
+function barFlowIndex() { return barMetric === 'cost' ? 1 : barMetric === 'co2' ? 2 : 0; }
+function barFlowFmt(v, i) {
+  if (i === 1) return (v < 0 ? '-' : '') + barCurrency + Math.abs(v).toFixed(2);
+  if (i === 2) return (v / 1000).toFixed(v >= 100000 ? 0 : 1) + ' kg';
+  return v.toFixed(v >= 100 ? 0 : 1) + ' kWh';
+}
+function barFlowSeriesLabel(id) {
+  if (id === 'electricity_main') {
+    var main = barMeters.find(function(m) { return m.id === 'electricity_main'; });
+    return (main ? main.label : 'Direct') + ' (house)';
+  }
+  var m = barMeters.find(function(x) { return x.id === id; });
+  return m ? m.label : id === 'ev_dispatch' ? 'EV' : id;
+}
+function barFlowSeriesColor(id) {
+  var m = barMeters.find(function(x) { return x.id === id; });
+  return m ? m.color : id === 'ev_dispatch' ? '#8b5cf6' : '#64748b';
+}
+// {nodes: {key: {label, color, column, priority, v: [kWh, £, g]}}, flows: [{from, to, v}], other: [n…],
+//  totals: {imp, exp, standing, credit}} for the buckets in view, every metric at once (the hover says all three)
+function barFlowData(aggList) {
+  var br = {};
+  aggList.forEach(function(agg) {
+    Object.keys((agg && agg.br) || {}).forEach(function(sr) {
+      var o = br[sr] || (br[sr] = {});
+      Object.keys(agg.br[sr]).forEach(function(n) {
+        var a = o[n] || (o[n] = [0, 0, 0]), v = agg.br[sr][n];
+        a[0] += v[0]; a[1] += v[1]; a[2] += v[2] || 0;
+      });
+    });
+  });
+  var i = barFlowIndex();
+  var dest = Object.keys(br).filter(function(s) { return s !== 'meter' && s !== 'export'; });
+  // the right column in the Devices view's order, the house first
+  var order = ['electricity_main'].concat(barMeters.filter(function(m) { return m.is_sub; }).map(function(m) { return m.id; }));
+  dest.sort(function(a, b) { var x = order.indexOf(a), y = order.indexOf(b); return (x < 0 ? 99 : x) - (y < 0 ? 99 : y); });
+  var band = {};                              // a bracket's inflow: what leaves it, so every node balances
+  dest.forEach(function(s) {
+    Object.keys(br[s]).forEach(function(n) {
+      var a = band[n] || (band[n] = [0, 0, 0]);
+      for (var k = 0; k < 3; k++) a[k] += br[s][n][k];
+    });
+  });
+  var ns = Object.keys(band).map(Number).sort(function(a, b) { return a - b; });
+  var total = ns.reduce(function(t, n) { return t + Math.max(0, band[n][i]); }, 0);
+  var other = ns.filter(function(n) { return band[n][i] > 0 && band[n][i] < FLOW_OTHER_SHARE * total; });
+  var shown = ns.filter(function(n) { return other.indexOf(n) < 0; });
+  function key(n) { return other.indexOf(n) >= 0 ? 'b:other' : 'b:' + n; }
+  var nodes = {grid: {label: 'Grid', color: '#64748b', column: 0, priority: 0}};
+  shown.forEach(function(n, j) { nodes['b:' + n] = {label: barBrLabel(n), color: barBrColor(n, ns, true), column: 1, priority: j}; });
+  if (other.length) nodes['b:other'] = {label: 'Other', color: '#9ca3af', column: 1, priority: 999};
+  dest.forEach(function(s, j) { nodes['s:' + s] = {label: barFlowSeriesLabel(s), color: barFlowSeriesColor(s), column: 2, priority: j}; });
+  var flows = {};
+  function add(from, to, v) {
+    var f = flows[from + '|' + to] || (flows[from + '|' + to] = {from: from, to: to, v: [0, 0, 0]});
+    for (var k = 0; k < 3; k++) f.v[k] += v[k];
+  }
+  dest.forEach(function(s) {
+    Object.keys(br[s]).forEach(function(n) { add('grid', key(+n), br[s][n]); add(key(+n), 's:' + s, br[s][n]); });
+  });
+  var ex = [0, 0, 0];
+  Object.values(br.export || {}).forEach(function(v) { for (var k = 0; k < 3; k++) ex[k] += v[k]; });
+  if (ex[0] > 0) {
+    nodes.export = {label: 'Export', color: barExportColor, column: 3, priority: 0};
+    add('s:electricity_main', 'export', ex);
+  }
+  var standing = barIncStanding() ? aggList.reduce(function(t, agg) { return t + barStandingVal(agg); }, 0) : 0;
+  if (standing > 0) {
+    nodes.standing = {label: 'Standing charge', color: '#4b5563', column: 2, priority: 998};
+    add('grid', 'standing', [0, standing, 0]);
+  }
+  var imp = [0, 0, 0];
+  ns.forEach(function(n) { for (var k = 0; k < 3; k++) imp[k] += band[n][k]; });
+  var credit = ns.reduce(function(t, n) { return t + Math.min(0, band[n][1]); }, 0);
+  return {nodes: nodes, flows: Object.values(flows), other: other, ns: ns, band: band,
+          totals: {imp: imp, exp: ex, standing: standing, credit: credit}};
+}
+function barFlowHead(d) {
+  var i = barFlowIndex(), t = d.totals, el = document.getElementById('bar-flow-head');
+  if (!el) return;
+  var imp = t.imp[i] + (i === 1 ? t.standing : 0), net = imp - t.exp[i];
+  var bits = ['<span>Import <strong style="color:var(--text);">' + barFlowFmt(imp, i) + '</strong>' +
+              (i === 1 && t.standing > 0 ? ' incl. ' + barFlowFmt(t.standing, 1) + ' standing' : '') + '</span>',
+              '<span>Export <strong style="color:var(--text);">' + barFlowFmt(t.exp[i], i) + '</strong></span>',
+              '<span>Net <strong style="color:var(--text);">' + barFlowFmt(net, i) + '</strong></span>'];
+  if (i === 1 && t.credit < 0) bits.push('<span>' + barFlowFmt(-t.credit, 1) + ' earned at negative prices is in the net, not drawn</span>');
+  el.innerHTML = bits.join('');
+}
+function barFlowRender(aggList) {
+  if (barChartInstance) { barChartInstance.destroy(); barChartInstance = null; }
+  barBuildSubBar();
+  barBuildTable();
+  // At once when the plugin is in: the PDF reads the canvas straight after barRender()
+  if (window.Chart && Chart.registry.controllers.get('sankey')) { barFlowDraw(aggList); return; }
+  barFlowLib().then(function() {
+    if (barFlow()) barFlowDraw(aggList);          // not if the view changed while the plugin loaded
+  }).catch(function(e) {
+    var el = document.getElementById('bar-flow-head');
+    if (el) el.textContent = "Couldn't draw the flow: " + e.message;
+  });
+}
+function barFlowDraw(aggList) {
+  var ctx = document.getElementById('barChart');
+  if (barChartInstance) { barChartInstance.destroy(); barChartInstance = null; }
+  var d = barFlowData(aggList), i = barFlowIndex(), th = barGetTheme();
+  barFlowHead(d);
+  var data = d.flows.filter(function(f) { return f.v[i] > 1e-9; })
+    .map(function(f) { return {from: f.from, to: f.to, flow: f.v[i], _v: f.v}; });
+  function col(k) { return (d.nodes[k] || {}).color || '#64748b'; }
+  var labels = {}, column = {}, priority = {};
+  Object.keys(d.nodes).forEach(function(k) {
+    var n = d.nodes[k];
+    labels[k] = n.label; column[k] = n.column; priority[k] = n.priority;
+  });
+  ctx.style.width = ''; ctx.style.height = '';
+  ctx.removeAttribute('width'); ctx.removeAttribute('height');
+  barChartInstance = new Chart(ctx, {
+    type: 'sankey',
+    data: {datasets: [{
+      data: data, labels: labels, column: column, priority: priority, size: 'max',
+      colorFrom: function(c) { return c.raw ? col(c.raw.from) : '#64748b'; },
+      colorTo: function(c) { return c.raw ? col(c.raw.to) : '#64748b'; },
+      colorMode: 'gradient', alpha: 0.55, borderWidth: 0, nodeWidth: 12, nodePadding: 14,
+      nodeLabels: {color: th.tooltipTitle, font: {size: 11}},
+      font: {size: 11}
+    }]},
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: barPdfLight ? false : undefined,
+      plugins: {legend: {display: false}, tooltip: {
+        backgroundColor: th.tooltipBg, borderColor: th.tooltipBorder, borderWidth: 1,
+        titleColor: th.tooltipTitle, bodyColor: th.tooltipBody,
+        callbacks: {
+          title: function(it) { var r = it[0] && it[0].raw; return r ? (labels[r.from] || r.from) + ' → ' + (labels[r.to] || r.to) : ''; },
+          label: function(it) {
+            var v = it.raw._v, out = [barFlowFmt(v[0], 0), barFlowFmt(v[1], 1)];
+            if (v[2] > 0) out.push(barFlowFmt(v[2], 2));
+            if (v[0] > 0 && it.raw.from !== 's:electricity_main' && it.raw.to !== 'standing')
+              out.push((v[1] / v[0] * 100).toFixed(1) + 'p/kWh');
+            return ' ' + out.join(' · ');
+          },
+          afterLabel: function(it) {
+            var r = it.raw;
+            if (r.to === 'export') return 'Export is energy EMT did not meter coming in: solar or a battery.';
+            if (r.to === 'b:other' || r.from === 'b:other') {
+              return 'Other: ' + d.other.map(function(n) { return barBrLabel(n) + ' ' + barFlowFmt(d.band[n][i], i); }).join(', ');
+            }
+            return '';
+          }
+        }}}
+    }
+  });
+}
+function barFlowBuildTable(tbl, aggList) {
+  var d = barFlowData(aggList);
+  var html = '<thead><tr><th>From</th><th>To</th><th>kWh</th><th>Cost</th><th>CO₂</th></tr></thead><tbody>';
+  function name(k) { return (d.nodes[k] || {}).label || k; }
+  function at(k) { var n = d.nodes[k] || {}; return (n.column || 0) * 1000 + (n.priority || 0); }
+  // left to right as drawn: the grid's flows, then each band's, then the house's export
+  d.flows.slice().sort(function(a, b) { return at(a.from) - at(b.from) || at(a.to) - at(b.to); })
+    .forEach(function(f) {
+      if (Math.abs(f.v[0]) < 1e-9 && Math.abs(f.v[1]) < 1e-9) return;
+      html += '<tr><td><span class="bar-legend-dot" style="background:' + ((d.nodes[f.from] || {}).color || '#64748b') +
+        ';margin-right:5px;"></span>' + name(f.from) + '</td><td>' + name(f.to) + '</td><td>' + f.v[0].toFixed(3) +
+        ' kWh</td><td>' + barFlowFmt(f.v[1], 1) + '</td><td>' + (f.v[2] > 0 ? barFlowFmt(f.v[2], 2) : '—') + '</td></tr>';
+    });
+  if (!d.flows.length) html += '<tr><td colspan="5" style="color:var(--muted);">No grid import in this range.</td></tr>';
+  tbl.innerHTML = html + '</tbody>';
+}
+
 function barSetShow(v, el) {
   barShow = v;
   barBrError = null;
@@ -2562,11 +2755,13 @@ function barSetBrPct(on) { barBrPct = !!on; barSaveState(); barRender(); }
 // What the view shows and hides: the series picker and % in Rate brackets; the Net line, the
 // standing charge, CO₂ and the period sort only with the devices.
 function barBrSyncUI() {
-  var on = barBrackets();
+  var on = barBrackets(), fl = barFlow();
   function vis(id, show, how) { var e = document.getElementById(id); if (e) e.style.display = show ? (how || '') : 'none'; }
   vis('bar-br-wrap', on, 'flex');
-  vis('bar-net-wrap', !on, 'flex');
-  vis('bar-sort-btn', !on);
+  vis('bar-net-wrap', !on && !fl, 'flex');
+  vis('bar-sort-btn', !on && !fl);
+  vis('bar-flow-head', fl, 'flex');
+  if (fl) { vis('bar-legend', false); vis('bar-tariff-wrap', false); vis('bar-eras-wrap', false); }
   var co2 = document.getElementById('bar-co2-btn');
   if (co2 && on) co2.style.display = 'none';
   else if (co2 && barHasPostcode) co2.style.display = '';
@@ -2681,8 +2876,8 @@ function barAggRows(filterFn) {
       Object.keys(_b).forEach(function(sr) {
         var _o = result.br[sr] || (result.br[sr] = {});
         Object.keys(_b[sr]).forEach(function(n) {
-          var _a = _o[n] || (_o[n] = [0, 0]);
-          _a[0] += _b[sr][n][0]; _a[1] += _b[sr][n][1];
+          var _a = _o[n] || (_o[n] = [0, 0, 0]);
+          _a[0] += _b[sr][n][0]; _a[1] += _b[sr][n][1]; _a[2] += _b[sr][n][2] || 0;
         });
       });
     }
@@ -2736,7 +2931,7 @@ function barGetDataForPeriod() {
     // 48 (or n) half-hour slots for one local day. Rows come pre-aggregated from
     // /api/energy (resolution=block, fields=stats) in exactly the barAggRows shape, so no re-aggregation.
     var rows = barHHRows || [];
-    if (barBrackets() && barBrHH) {
+    if ((barBrackets() || barFlow()) && barBrHH) {          // Flow reads the brackets too
       rows = rows.map(function(r) { return Object.assign({}, r, { br: barBrHH[r.slot] || {} }); });
     }
     // Every half-hour's dates are the day's: agreements change at local midnight, so a day is
@@ -2922,7 +3117,7 @@ function barRender() {
   } else if (_calSeg) {
     _calSeg.style.display = '';
   }
-  if (barBrackets() && !barBrReady()) return;     // the brackets' read renders again when it lands
+  if ((barBrackets() || barFlow()) && !barBrReady()) return;     // the brackets' read renders again when it lands
   barBrSyncUI();
   // Order toggle (Date/Month) is only meaningful for the monthly view
   var _orderSeg = document.getElementById('bar-order-seg');
@@ -2979,6 +3174,7 @@ function barRender() {
   }
 
   var pd = barGetDataForPeriod();
+  if (barFlow()) { barFlowRender(pd.aggList); return; }    // Flow: one Sankey for the span (Flow design)
   // Set consistent CO2 unit for this render before building datasets or labels
   if (barMetric === 'co2') barCo2SetUnit(pd.aggList);
   var datasets = barGetDatasets(pd.labels, pd.aggList, pd.isHH);
@@ -4235,6 +4431,7 @@ function barBuildTable() {
   var labels  = pd.labels;
   barBrNote(aggList);
   if (barBrackets()) { barBrBuildTable(tbl, aggList); return; }
+  if (barFlow()) { barFlowBuildTable(tbl, aggList); return; }
 
   // Build column headers
   // Each meter's import, the standing charge, then — when there are devices — the whole import (the
