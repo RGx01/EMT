@@ -7,7 +7,7 @@ this page is fixed.*
 
 `/data-management` is a topbar and two things below it:
 
-- **Topbar:** a *Whole history ▾* menu (the Octopus import and *Recover every gap* with the supplier
+- **Topbar:** a *History ▾* menu (the Octopus import and *Recover every gap* with the supplier
   API; *Import a CSV*, *Import PDF bills*; *Delete all imported history* when there is some), a
   *Backup & restore* modal (the backups, restore, compact, the support file) and *Backup now*.
 - **The health strip** (`/api/data-health`): per view, the Import bill's and Export bill's half-hours
@@ -35,7 +35,7 @@ Drag (whole days across rows) or shift-click to select; right-click or long-pres
 | **Delete the imported export…** | an import's export over whole local days, recorded in `export_deleted` | `pre-delete-export` |
 | **Make a support file…** | nothing — a download | — |
 
-*Delete all imported history* (Whole history) removes imported blocks and their devices' rows after a
+*Delete all imported history* (History) removes imported blocks and their devices' rows after a
 required `pre-purge-import` backup, and keeps `ha_reads`.
 
 ## Backups

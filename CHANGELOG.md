@@ -5,6 +5,22 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b4] — 2026-11-04
+
+- **Usage Stats → Flow.** Where the grid's electricity went, as a Sankey: from the grid, through the
+  price it was charged (in 2.5p bands, the small ones together as *Other*), to the house and each
+  device, with export leaving the house — in kWh, £ or CO₂, for the day, month or year on screen.
+  Hover a flow for its kWh, cost and price; the table below lists every flow.
+- **Rate brackets shows the car on an account with no devices.** Octopus's split of your EV was
+  counted in the house there; it is a series of its own now, as in the Devices view.
+- **A new account is offered its history.** Finishing the setup wizard on Octopus's API now asks,
+  once, whether to bring in your history — up to the two years Octopus keeps. *Import my history*
+  opens the import, which shows what it will fetch before it starts.
+- **Data Management's *Whole history* menu is *History*.**
+- **Running total: one legend, and a year keeps its colour.** The line view had a legend on each
+  card; it now has the spiral's, one above the cards. And a year's colour no longer changes when you
+  hide another year: each year has its own, on the line, the spiral and the legend.
+
 ## [2026.11.0b3] — 2026-11-03
 
 - **Setting up a new account on Agile works.** Connecting to Octopus in the setup wizard waited for

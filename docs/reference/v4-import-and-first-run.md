@@ -9,6 +9,10 @@ disagree, the code is right and this page is fixed.*
 - With no meters configured, `/` goes to `/welcome`, and `_first_run_guard` sends every other page
   there too, except Settings (the setup wizard), Help and Logs.
 - **Set up a new account** opens the wizard: the supplier, the main meter, where the readings come from.
+  Its first Finish in an API mode — no main meter saved before it — offers the account's history once:
+  *Import my history* opens Data Management on *Import history from Octopus* (`?open=import`), which
+  shows its plan (up to Octopus's two years) before it asks Octopus anything; *Not now* leaves it in
+  the History menu.
 - **Restore from an Energy Meter Tracker backup** is two steps:
   1. **Upload** — in 512 KiB pieces (`/api/restore/upload/begin|chunk|finish`), because Home Assistant's
      ingress refuses large bodies. The backup is staged and phase 1 runs (the gate, below), before

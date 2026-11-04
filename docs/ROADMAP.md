@@ -1,6 +1,6 @@
 # Roadmap
 
-*What is open, as of 2026.11.0b3 (3 Nov 2026). Each item says what is wrong or
+*What is open, as of 2026.11.0b4 (4 Nov 2026). Each item says what is wrong or
 missing and where it stands; the done history, with every decision's story, is in
 [history/ROADMAP-done.md](history/ROADMAP-done.md), and what users see is in the
 [changelog](../CHANGELOG.md). Numbers like BL-80 carry over from that record. A PR number written
@@ -54,15 +54,6 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Code to tidy
 
-- **CodeQL's first scan: what is left** (2 Nov 2026; 213 alerts, triaged). Fixed on `dev` and
-  closing when they reach `main`: the backup and upload path checks (#22), unexpected errors
-  answered with where and when instead of the exception's text (#23, #24, and the BottleCapDave
-  detection and attribution undo after them), the tests' temporary files (#24). Dismissed with a reason each (27): replies carrying EMT's own messages,
-  the support file's diagnostics, the outward code and site name in logs, the page cookie. And
-  beyond what CodeQL traces: the engine's job statuses and replies (18 sites) now say an Octopus
-  error in plain words (`kraken_api_client.person_message`) — the error's own text named the URL,
-  with the account number, MPAN and serial — and anything else as where and when. Left: the
-  fixed alerts close when `dev` reaches `main`.
 - **`WriteStore` and `store_access.writer()` have no production caller.** The engine writes through
   its own `BlockStore` and pages hand writes to it (`_engine_write`); the typed write path is unused.
   A candidate for the deletion protocol.
@@ -82,13 +73,24 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Resolved since the record
 
+- **Flow, a Usage Stats Sankey** (the user, 4 Nov 2026) — grid → rate band → house and devices, export
+  out of the house, in kWh, £ and CO₂, for the span on screen; small bands as Other. Built 4 Nov 2026
+  (#43–#46); the record is [history/design/EMT-v5_flow_design.md](history/design/EMT-v5_flow_design.md).
 - **Going public** — the repository public on 2 Nov 2026, with: rulesets on `main` (a PR, signed
   commits, no force push or deletion) and `dev` (the same without signatures); no required check,
   because a docs-only PR skips the tests and a required check that never reports would block it;
   secret scanning with push protection (0 alerts on the rewritten history); Dependabot alerts and
   security updates (all 30 alerts were against the old pins, already fixed); private vulnerability
-  reporting; CodeQL's default setup (its alerts are under *Code to tidy*); the labels `bug`,
+  reporting; CodeQL's default setup (its first scan's alerts below); the labels `bug`,
   `v4-import`, `beta-feedback`. 2026.11.0b1 tagged and released as a pre-release the same day.
+- **CodeQL's first scan** — 213 alerts on 2 Nov 2026, each fixed or dismissed with a reason. Fixed:
+  the backup and upload paths checked inside the function that uses them (#22, #29, #31), unexpected
+  errors answered with where and when instead of the exception's text (#23, #24), the tests'
+  temporary files (#24). Dismissed: replies carrying EMT's own messages, the support file's
+  diagnostics, the outward code and site name in logs, the page cookie (8 of them again after the
+  code they were on moved). Beyond what CodeQL traces, an Octopus error is told in plain words, never
+  by its URL, which named the account number, MPAN and serial (#26). Closed by `main`'s scan of
+  2026.11.0b3 (3 Nov 2026): 186 fixed, 35 dismissed, none open.
 - **The licence** — EMT is under the PolyForm Noncommercial License 1.0.0 from 2 Nov 2026 (it was
   v4's Business Source License 1.1): no commercial use without permission, and no date on which that
   lifts — BUSL's 4-year change to GPL would have let any version be sold four years on.

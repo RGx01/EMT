@@ -5,7 +5,7 @@ Four kinds of document, kept apart so each can be trusted for what it is:
 | Where | What it is | Kept true by |
 |---|---|---|
 | [reference/](reference/README.md) | **How EMT works today** — how it is built, pricing and settlement, Data Management and devices, the v4 import and first run, the pages and the API | Fixed in the same PR as the code it describes; when a page and the code disagree, the code is right |
-| [design/](design/) | Living contracts: [the import spec](design/EMT-v5_import_spec.md) (how a v4 database is brought across, and the floor), and [the writer thread](design/EMT-v5_A1_writer_thread_design.md), designed and held in reserve | Versioned; changed with the code |
+| [design/](design/) | Living contracts, and designs being decided: [the import spec](design/EMT-v5_import_spec.md) (how a v4 database is brought across, and the floor), [the writer thread](design/EMT-v5_A1_writer_thread_design.md), designed and held in reserve | Versioned; changed with the code |
 | [history/](history/) | **Records**: each design as it was decided ([history/design/](history/design/)), and the done half of the roadmap ([ROADMAP-done.md](history/ROADMAP-done.md)). Each says what it was and where today's account is. `#NNN` there is in the private archive. | Not updated: a record stays as it stood |
 | [ROADMAP.md](ROADMAP.md) | What is open: before the first release, the backlog, code to tidy, open questions | Items leave when they are done |
 

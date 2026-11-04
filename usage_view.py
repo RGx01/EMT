@@ -288,6 +288,39 @@ def _dispatch_derived_ev_kwh(dispatch_rows) -> dict:
     return out
 
 
+def _ev_slot_share(slot, main_by_slot, ev_by_slot, stored_by_slot, bill_split_slots):
+    """One half-hour's EV of an account with no EV device: (kWh, £, from_stored) or None — the
+    rule `_dispatch_ev_split_by_bucket` explains below, for it and the rate brackets (Flow design
+    §5, 4 Nov 2026), so the two cannot disagree. `from_stored`: the stored EV slices, scaled by
+    kWh / their kWh (the clip to the meter), are the share; else a pro-rata carve at the
+    half-hour's blended rate."""
+    _e = ev_by_slot.get(slot, 0.0)
+    _mk, _mc = main_by_slot.get(slot, (0.0, 0.0))
+    _sv = stored_by_slot.get(slot)
+    _bill_spoke = ((_sv is not None) if bill_split_slots is None
+                   else (slot in bill_split_slots))
+    if _bill_spoke:
+        if _sv is None or _sv[0] <= 1e-9:
+            return None                                   # the bill billed no EV this slot
+        _ek = min(_sv[0], _mk) if _mk > 0 else 0.0
+        _ec = _sv[1] * (_ek / _sv[0]) if _sv[0] > 0 else 0.0
+        _stored = True
+    else:
+        if slot not in ev_by_slot:
+            return None                                   # no dispatch -> no predicted EV
+        if _sv is not None and _sv[0] > 1e-9:
+            _ek = min(_sv[0], _mk) if _mk > 0 else 0.0
+            _ec = _sv[1] * (_ek / _sv[0]) if _sv[0] > 0 else 0.0
+            _stored = True
+        else:
+            _ek = min(_e, _mk) if _mk > 0 else 0.0        # can't exceed the grid that slot
+            _ec = _mc * (_ek / _mk) if _mk > 0 else 0.0
+            _stored = False
+    if _ek <= 1e-9:
+        return None
+    return _ek, _ec, _stored
+
+
 def _dispatch_ev_split_by_bucket(main_by_slot, ev_by_slot, bucket_fn,
                                  stored_by_slot=None, bill_split_slots=None) -> dict:
     """Grid-clip the per-slot dispatch EV to that slot's main import and apportion its
@@ -324,27 +357,10 @@ def _dispatch_ev_split_by_bucket(main_by_slot, ev_by_slot, bucket_fn,
     # bill_split_slots=None means the caller cannot say; a stored split is then taken at
     # face value, which is the pre-existing behaviour. Sorted walk keeps sums order-stable.
     for _slot in sorted(set(ev_by_slot) | set(stored_by_slot)):
-        _e = ev_by_slot.get(_slot, 0.0)
-        _mk, _mc = main_by_slot.get(_slot, (0.0, 0.0))
-        _sv = stored_by_slot.get(_slot)
-        _bill_spoke = ((_sv is not None) if bill_split_slots is None
-                       else (_slot in bill_split_slots))
-        if _bill_spoke:
-            if _sv is None or _sv[0] <= 1e-9:
-                continue                                  # the bill billed no EV this slot
-            _ek = min(_sv[0], _mk) if _mk > 0 else 0.0
-            _ec = _sv[1] * (_ek / _sv[0]) if _sv[0] > 0 else 0.0
-        else:
-            if _slot not in ev_by_slot:
-                continue                                  # no dispatch -> no predicted EV
-            if _sv is not None and _sv[0] > 1e-9:
-                _ek = min(_sv[0], _mk) if _mk > 0 else 0.0
-                _ec = _sv[1] * (_ek / _sv[0]) if _sv[0] > 0 else 0.0
-            else:
-                _ek = min(_e, _mk) if _mk > 0 else 0.0    # can't exceed the grid that slot
-                _ec = _mc * (_ek / _mk) if _mk > 0 else 0.0
-        if _ek <= 1e-9:
+        _share = _ev_slot_share(_slot, main_by_slot, ev_by_slot, stored_by_slot, bill_split_slots)
+        if _share is None:
             continue
+        _ek, _ec, _stored = _share
         _b = bucket_fn(_slot)
         _acc = out.setdefault(_b, {"kwh": 0.0, "cost": 0.0})
         _acc["kwh"]  += _ek
@@ -894,25 +910,52 @@ def rate_bracket(rate: float) -> int:
     return math.floor(round(float(rate) * 100.0, 4) / RATE_BRACKET_P)
 
 
-def _add(acc, n, k, c):
+EV_SERIES = "ev_dispatch"       # an account with no devices: Octopus's EV split, as the Devices view's
+
+
+def _add(acc, n, k, c, g=0.0):
     v = acc.get(n)
     if v is None:
-        acc[n] = [k, c]
+        acc[n] = [k, c, g]
     else:
         v[0] += k
         v[1] += c
+        v[2] += g
+
+
+def _import_intensity(imp, exp, cg):
+    """g/kWh of a main half-hour from its stored NET carbon, as the day rows split it into import
+    and export (`_aggregate_tuples`): |carbon| ÷ |import − export|, or all of it on the side that
+    has kWh. 0 where the half-hour has no carbon."""
+    if cg is None:
+        return 0.0
+    net = imp - exp
+    if net != 0:
+        return abs(cg / net)
+    if exp == 0 and imp > 0:
+        return abs(cg) / imp
+    if imp == 0 and exp > 0:
+        return abs(cg) / exp
+    return 0.0
 
 
 def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
-    """{bucket: {series: {n: [kWh, £]}}} over [utc_start, utc_end) (design §3):
+    """{bucket: {series: {n: [kWh, £, g]}}} over [utc_start, utc_end) (design §3):
 
     - `meter`: each of the main's import slices (`block_segments`) at its own rate — on IOG-SMB
       the car's and the house's rates in one half-hour stay apart;
     - a device: its grid kWh (`COALESCE(imp_kwh_grid, imp_kwh)`) at its stored rate, with its
       stored £, so its brackets sum to its device cost;
+    - `ev_dispatch`, on an account with no devices: the car as the Devices view has it
+      (`_ev_slot_share`) — its stored EV slices at their own rates, or a pro-rata share at the
+      half-hour's blended rate (Flow design §5, 4 Nov 2026);
     - `electricity_main` (the house, Direct): per half-hour, the meter's bracket less the devices'
-      in it, clipped at 0 where a device's one rate sits beside the meter's two;
+      (and the car's) in it, clipped at 0 where a device's one rate sits beside the meter's two;
     - `export`: the main's export kWh at its export rate, with its stored £ (the credit).
+
+    `g`, the grams of CO₂ (Flow design §5): a main slice's and the export's at the half-hour's
+    intensity (`_import_intensity`); a device's its stored carbon scaled to its grid share, as the
+    day rows'; the car's its kWh at the half-hour's intensity. 0 where a half-hour has no carbon.
 
     A negative rate keeps its sign through all of it: an Agile plunge's kWh earn a negative £."""
     c = store._conn
@@ -920,30 +963,39 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
     subs = [r[0] for r in c.execute(
         "SELECT meter_id FROM meters WHERE config_period_id = ? AND is_sub_meter",
         (act[0] if act else None,))]
+    intensity, main_slot, exp = {}, {}, {}
+    for bs, ik, ic, ek, er, ec, cg in c.execute(
+            "SELECT block_start, imp_kwh, imp_cost, exp_kwh, exp_rate, exp_cost, carbon_g FROM blocks "
+            "WHERE meter_id = 'electricity_main' AND block_start >= ? AND block_start < ? "
+            "ORDER BY block_start",
+            (utc_start, utc_end)):
+        ik, ek = float(ik or 0.0), float(ek or 0.0)
+        g_per = _import_intensity(ik, ek, None if cg is None else float(cg))
+        intensity[bs] = g_per
+        main_slot[bs] = (ik, float(ic or 0.0))
+        if ek > 0:
+            cost = float(ec or 0.0)
+            rate = float(er) if er is not None else cost / ek
+            _add(exp.setdefault(bs, {}), rate_bracket(rate), ek, cost, ek * g_per)
     main: dict = {}
-    for bs, k, r in c.execute(
-            "SELECT block_start, kwh, inc_rate FROM block_segments "
+    ev_slices: dict = {}
+    for bs, k, r, att in c.execute(
+            "SELECT block_start, kwh, inc_rate, attribution FROM block_segments "
             "WHERE meter_id = 'electricity_main' AND channel = 'import' "
             "AND block_start >= ? AND block_start < ? ORDER BY block_start, seq",
             (utc_start, utc_end)):
         k = float(k or 0.0)
         if k <= 0.0:
             continue
-        _add(main.setdefault(bs, {}), rate_bracket(r), k, k * float(r))
-    exp: dict = {}
-    for bs, k, r, cost in c.execute(
-            "SELECT block_start, exp_kwh, exp_rate, exp_cost FROM blocks "
-            "WHERE meter_id = 'electricity_main' AND exp_kwh > 0 "
-            "AND block_start >= ? AND block_start < ? ORDER BY block_start",
-            (utc_start, utc_end)):
-        k = float(k)
-        cost = float(cost or 0.0)
-        rate = float(r) if r is not None else cost / k
-        _add(exp.setdefault(bs, {}), rate_bracket(rate), k, cost)
+        g_per = intensity.get(bs, 0.0)
+        _add(main.setdefault(bs, {}), rate_bracket(r), k, k * float(r), k * g_per)
+        if att == "ev":
+            ev_slices.setdefault(bs, []).append((k, float(r)))
     devs: dict = {}
     if subs:
-        for bs, mid, k, r, cost in c.execute(
-                "SELECT block_start, meter_id, COALESCE(imp_kwh_grid, imp_kwh), imp_rate, imp_cost "
+        for bs, mid, k, raw, r, cost, cg in c.execute(
+                "SELECT block_start, meter_id, COALESCE(imp_kwh_grid, imp_kwh), imp_kwh, imp_rate, "
+                "imp_cost, carbon_g "
                 "FROM blocks WHERE meter_id IN (%s) AND block_start >= ? AND block_start < ? "
                 "ORDER BY block_start, id" % ",".join("?" * len(subs)),
                 list(subs) + [utc_start, utc_end]):
@@ -952,38 +1004,65 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
                 continue
             cost = float(cost or 0.0)
             rate = float(r) if r is not None else cost / k
-            _add(devs.setdefault(bs, {}).setdefault(mid, {}), rate_bracket(rate), k, cost)
+            raw = float(raw or 0.0)
+            g = float(cg) * (k / raw) if cg is not None and raw > 1e-9 else 0.0
+            _add(devs.setdefault(bs, {}).setdefault(mid, {}), rate_bracket(rate), k, cost, g)
+    else:
+        # The car of an account with no devices, half-hour by half-hour as the Devices view splits
+        # it (`_apply_ev`): its dispatches, its stored split, and whether the bill has spoken.
+        ev_by_slot = _dispatch_derived_ev_kwh([
+            {"slot_start": r[0], "kind": r[1], "energy_kwh": r[2]} for r in c.execute(
+                "SELECT slot_start, kind, energy_kwh FROM dispatch_history "
+                "WHERE kind = 'completed' AND slot_start >= ? AND slot_start < ?",
+                (utc_start, utc_end))])
+        stored = {bs: (sum(k for k, _r in sl), sum(k * r for k, r in sl)) for bs, sl in ev_slices.items()}
+        bill_slot = store.slots_with_bill_split(utc_start, utc_end)
+        for bs in sorted(set(ev_by_slot) | set(stored)):
+            share = _ev_slot_share(bs, main_slot, ev_by_slot, stored, bill_slot)
+            if share is None:
+                continue
+            ek, ecost, from_stored = share
+            g_per = intensity.get(bs, 0.0)
+            acc = devs.setdefault(bs, {}).setdefault(EV_SERIES, {})
+            if from_stored:
+                f = ek / stored[bs][0]
+                for k, r in ev_slices[bs]:
+                    _add(acc, rate_bracket(r), k * f, k * r * f, k * f * g_per)
+            else:
+                _add(acc, rate_bracket(ecost / ek), ek, ecost, ek * g_per)
     out: dict = {}
     for bs in sorted(set(main) | set(devs) | set(exp)):
         b = out.setdefault(bucket_of(bs), {})
         m = main.get(bs) or {}
         d = devs.get(bs) or {}
-        for n, (k, cost) in m.items():
-            _add(b.setdefault(METER_SERIES, {}), n, k, cost)
+        for n, (k, cost, g) in m.items():
+            _add(b.setdefault(METER_SERIES, {}), n, k, cost, g)
             dk = sum(x[n][0] for x in d.values() if n in x)
             dc = sum(x[n][1] for x in d.values() if n in x)
+            dg = sum(x[n][2] for x in d.values() if n in x)
             if k - dk > 1e-9:
-                _add(b.setdefault("electricity_main", {}), n, k - dk, cost - dc)
+                _add(b.setdefault("electricity_main", {}), n, k - dk, cost - dc, max(0.0, g - dg))
         for mid, nb in d.items():
-            for n, (k, cost) in nb.items():
-                _add(b.setdefault(mid, {}), n, k, cost)
-        for n, (k, cost) in (exp.get(bs) or {}).items():
-            _add(b.setdefault(EXPORT_SERIES, {}), n, k, cost)
+            for n, (k, cost, g) in nb.items():
+                _add(b.setdefault(mid, {}), n, k, cost, g)
+        for n, (k, cost, g) in (exp.get(bs) or {}).items():
+            _add(b.setdefault(EXPORT_SERIES, {}), n, k, cost, g)
     return out
 
 
 def _bracket_values(b):
-    return {s: {str(n): [round(v[0], 4), round(v[1], 4)] for n, v in sorted(nb.items())}
+    return {s: {str(n): [round(v[0], 4), round(v[1], 4), round(v[2], 4)] for n, v in sorted(nb.items())}
             for s, nb in b.items()}
 
 
 def day_brackets(store, tz_name, utc_start, utc_end) -> dict:
     """The rate brackets per LOCAL day in [utc_start, utc_end): `rows` [{day, b: {series:
-    {n: [kWh, £]}}}], `n` the bracket index (`width_p` × n pence and up). Kept at 4 dp so the
-    page sums days into months and years without per-day rounding."""
+    {n: [kWh, £, g]}}}], `n` the bracket index (`width_p` × n pence and up), `g` grams of CO₂ (Flow
+    design §5). Kept at 4 dp so the page sums days into months and years without per-day rounding."""
     data = _rate_brackets(store, utc_start, utc_end,
                           _local_day_of(utc_start, utc_end, ZoneInfo(tz_name)))
     return {"width_p": RATE_BRACKET_P, "meter_series": METER_SERIES, "export_series": EXPORT_SERIES,
+            "ev_series": EV_SERIES,
             "rows": [{"day": d, "b": _bracket_values(data[d])} for d in sorted(data)]}
 
 
@@ -992,4 +1071,5 @@ def slot_brackets(store, utc_start, utc_end) -> dict:
     (`slot`, as slot_stats). Only half-hours with grid import appear."""
     data = _rate_brackets(store, utc_start, utc_end, lambda bs: bs)
     return {"width_p": RATE_BRACKET_P, "meter_series": METER_SERIES, "export_series": EXPORT_SERIES,
+            "ev_series": EV_SERIES,
             "rows": [{"slot": s, "b": _bracket_values(data[s])} for s in sorted(data)]}
