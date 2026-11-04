@@ -5,6 +5,14 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **Flow shows your export by price, and plunges in Cost.** Your export now leaves the house through
+  the price it earned, in the same 2.5p bands as your import, so on Agile Outgoing or Flux you can see
+  what each price paid. In Cost, an Agile plunge's credit is drawn too: from whatever used the energy to
+  *Plunge credit*, and paying to export at a negative price to *Paid to export*. Before, the credit
+  was only in the figures above the chart.
+
 ## [2026.11.0b5] — 2026-11-04
 
 - **IOG-SMB history waiting for its split is amber, not red.** After importing your history on

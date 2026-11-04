@@ -21,6 +21,12 @@ house's kWh and £ equal to the Devices view's, the meter's 645.576 kWh and the 
 hover's kWh × p/kWh its £; the standing charge's £14.50 in the head; HH and Yearly (Other on Yearly);
 the PDF's canvas read at once.
 
+Export by rate band, and a negative price drawn in £ (Flow export bands design, 4 Nov 2026, the user:
+"can they handle plunge pricing? I think we need to rate band the export too"): the house's export goes
+out through its own bands (Other under 2% of the export), and in £ a plunge's credit goes from whoever
+used it to Plunge credit, a negative export price's cost to Paid to export — `credit` flows, £ only.
+Those tests fail on the tree before them; test_GUARD_no_negative_price_no_credit_nodes passes on both.
+
 Every test fails on the parent tree, where none of it existed. TheEraChapters, TheSpans and the Span
 wiring (4 Nov 2026, later; eras on their own and "now" for a future end the same day, from staging's data)
 fail on the tree before them: Flow had Yearly, which totalled what Monthly
@@ -96,10 +102,14 @@ class TheData(unittest.TestCase):
         self.assertEqual([d["nodes"][k]["column"] for k in ("grid", "b:3", "s:heat_pump")], [0, 1, 2])
         self.assertEqual(d["nodes"]["s:electricity_main"]["label"], "Direct (house)")
 
-    def test_export_leaves_the_house(self):
+    def test_export_leaves_the_house_by_its_rate_band(self):
+        # export bands design: the house's export through its own bands, in export's colours
         d = self._run(self.AGG)
-        self.assertEqual(self._flows(d)[("s:electricity_main", "export")], [3.0, 0.45, 600])
-        self.assertEqual(d["nodes"]["export"]["column"], 3)
+        self.assertEqual(self._flows(d)[("s:electricity_main", "x:6")], [3.0, 0.45, 600])
+        self.assertEqual(d["nodes"]["x:6"]["column"], 3)
+        self.assertEqual(d["nodes"]["x:6"]["label"], "Export 15–17.5p")
+        self.assertNotIn("export", d["nodes"])
+        self.assertEqual(d["totals"]["exp"], [3.0, 0.45, 600])
 
     def test_the_standing_charge_in_pounds_with_the_box(self):
         self.assertNotIn(("grid", "standing"), self._flows(self._run(self.AGG, "cost")))
@@ -122,6 +132,55 @@ class TheData(unittest.TestCase):
         agg[0]["br"]["electricity_main"]["10"] = [1.0, 0.27, 0]          # 1% of the kWh, 12% of the £
         self.assertEqual(self._run(agg, "kwh")["other"], [10])
         self.assertEqual(self._run(agg, "cost")["other"], [])
+
+    def test_export_bands_and_their_other(self):
+        # Agile Outgoing: a month across three export bands, one of them under 2% of the export
+        agg = [{"br": {"electricity_main": {"3": [10.0, 0.8, 0]},
+                       "export": {"4": [60.0, 6.6, 0], "6": [39.0, 6.0, 0], "9": [1.0, 0.30, 0]}}}]
+        d = self._run(agg)
+        self.assertEqual(d["xother"], [9])
+        self.assertEqual([k for k in d["nodes"] if k.startswith("x:")], ["x:4", "x:6", "x:other"])
+        self.assertEqual(d["nodes"]["x:other"]["label"], "Other export")
+        self.assertAlmostEqual(self._flows(d)[("s:electricity_main", "x:other")][0], 1.0)
+        # the export's colours, not the import's: blue to purple, the best-paid the deepest
+        self.assertTrue(d["nodes"]["x:4"]["color"].startswith("hsl(205,"))
+        self.assertTrue(d["nodes"]["b:3"]["color"].startswith("hsl(130,"))
+        # in £ the 9 band is 2.3% of the credit (£0.30 of £12.90), so not Other there
+        self.assertEqual(self._run(agg, "cost")["xother"], [])
+
+    def test_a_plunge_s_credit_turned_round(self):
+        # an Agile plunge at -2.5 to 0p: the house used 4 kWh and earned 4p, the heat pump 2 kWh and 2p
+        agg = [{"br": {"meter": {"-1": [6.0, -0.06, 900], "3": [10.0, 0.8, 1500]},
+                       "electricity_main": {"-1": [4.0, -0.04, 600], "3": [10.0, 0.8, 1500]},
+                       "heat_pump": {"-1": [2.0, -0.02, 300]}}}]
+        d = self._run(agg, "cost")
+        f = self._flows(d)
+        self.assertEqual(f[("s:electricity_main", "plunge")], [4.0, 0.04, 600])
+        self.assertEqual(f[("s:heat_pump", "plunge")], [2.0, 0.02, 300])
+        credits = {(x["from"], x["to"]) for x in d["flows"] if x.get("credit")}
+        self.assertEqual(credits, {("s:electricity_main", "plunge"), ("s:heat_pump", "plunge")})
+        self.assertEqual(d["nodes"]["plunge"]["label"], "Plunge credit")
+        self.assertEqual(d["nodes"]["plunge"]["column"], 3)
+        self.assertAlmostEqual(d["totals"]["credit"], -0.06)
+        # the band's own flows keep their negative £, so its rows in the table say what it earned
+        self.assertAlmostEqual(f[("b:-1", "s:heat_pump")][1], -0.02)
+
+    def test_paying_to_export_is_a_cost_out_of_the_house(self):
+        agg = [{"br": {"electricity_main": {"3": [10.0, 0.8, 0]},
+                       "export": {"-1": [2.0, -0.03, 0], "4": [5.0, 0.55, 0]}}}]
+        d = self._run(agg, "cost")
+        f = self._flows(d)
+        self.assertEqual(f[("s:electricity_main", "paid_export")], [2.0, 0.03, 0])
+        self.assertEqual(d["nodes"]["paid_export"]["label"], "Paid to export")
+        self.assertTrue(d["nodes"]["paid_export"]["color"].startswith("hsl(0,"))
+        self.assertAlmostEqual(d["totals"]["paid"], -0.03)
+        self.assertAlmostEqual(d["totals"]["exp"][1], 0.52)
+
+    def test_GUARD_no_negative_price_no_credit_nodes(self):
+        d = self._run(self.AGG, "cost")
+        self.assertNotIn("plunge", d["nodes"])
+        self.assertNotIn("paid_export", d["nodes"])
+        self.assertFalse(any(x.get("credit") for x in d["flows"]))
 
     def test_the_car_without_a_device_is_ev(self):
         agg = [{"br": {"electricity_main": {"3": [1.0, 0.08, 0]}, "ev_dispatch": {"2": [5.0, 0.35, 0]}}}]
@@ -295,8 +354,18 @@ class TheWiring(unittest.TestCase):
         self.assertLess(f.index("barFlowDraw(aggList); return;"), f.index("barFlowLib().then("))
 
     def test_the_bands_are_imports_colours(self):
-        self.assertIn("var ex = !asImport && barBrSign() < 0;", _fn("barBrColor"))
-        self.assertIn("barBrColor(n, ns, true)", _fn("barFlowData"))
+        self.assertIn("var ex = side ? side === 'export' : barBrSign() < 0;", _fn("barBrColor"))
+        self.assertIn("barBrColor(n, ns, 'import')", _fn("barFlowData"))
+        self.assertIn("barBrColor(n, xns, 'export')", _fn("barFlowData"))
+
+    def test_a_credit_flow_is_drawn_in_pounds_only(self):
+        self.assertIn("f.v[i] > 1e-9 && (!f.credit || i === 1)", _fn("barFlowDraw"))
+        self.assertIn("if (f.credit || (Math.abs(f.v[0]) < 1e-9", _fn("barFlowBuildTable"))
+
+    def test_the_head_says_what_the_net_holds(self):
+        h = _fn("barFlowHead")
+        self.assertIn("'<span>Import is net of ' + barFlowFmt(-t.credit, 1) + ' earned at negative prices: Plunge credit</span>'", h)
+        self.assertIn("'<span>Export is net of ' + barFlowFmt(-t.paid, 1) + ' paid to export at negative prices</span>'", h)
 
     def test_span_in_the_bar_views_yearly_but_in_flow(self):
         self.assertIn("onclick=\"barSetPeriod('span',this)\" id=\"bar-span-btn\"", PAGE)
@@ -321,7 +390,9 @@ class TheWiring(unittest.TestCase):
         self.assertIn("|| barPeriod === 'span';", _fn("barErasAvailable"))
 
     def test_export_says_where_emt_cannot_see(self):
-        self.assertIn("Export is energy EMT did not meter coming in: solar or a battery.", _fn("barFlowDraw"))
+        f = _fn("barFlowDraw")
+        self.assertIn("if (r.to.indexOf('x:') === 0) return 'Export is energy EMT did not meter coming in: solar or a battery.';", f)
+        self.assertIn("if (r.to === 'plunge') return 'Paid to use ' + barFlowFmt(r._v[0], 0) + ' at negative prices.';", f)
 
 
 if __name__ == "__main__":
