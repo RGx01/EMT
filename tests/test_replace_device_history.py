@@ -17,7 +17,12 @@ its live half-hours put back as they were. Now:
 
 The figures are made up.
 
-Discriminating: every test here fails on the parent but one. test_GUARD_rebuild_alone_would_have_kept_
+b7 (4 Nov 2026) dropped first and fetched after: the drop's house recompute held the loop for 104 s,
+HA's WebSocket dropped, the fetch never came back, and the run said "done" with nothing written — the
+device left with no history; and the card showed nothing while the replace was still its claim.
+FetchFirst, ARebuildWhoseFetchFails and ThePage's first two fail on b7.
+
+Discriminating (as first built, #64): every test here fails on the parent but one. test_GUARD_rebuild_alone_would_have_kept_
 the_wrong_sensor passes there: it pins the defect, what *Rebuild history* alone does. The store's GUARD
 (the sensors in use keep their rows) calls the new drop, so cannot run on the parent.
 """
@@ -125,7 +130,7 @@ class FakeHA:
         return {i: ([{"start": H1 + "+00:00", "change": 1.0}] if i == RIGHT else []) for i in ids}
 
 
-class TheReplace(unittest.TestCase):
+class _ReplaceBase(unittest.TestCase):
 
     def setUp(self):
         self.st = _household()
@@ -146,6 +151,10 @@ class TheReplace(unittest.TestCase):
     def _replace(self):
         self.assertTrue(engine.attribution_claim("ev_charger", [RIGHT]))
         return asyncio.run(engine.replace_device_history("ev_charger", [RIGHT]))
+
+
+
+class TheReplace(_ReplaceBase):
 
     def test_the_history_is_the_new_sensor_s_alone(self):
         res = self._replace()
@@ -176,6 +185,77 @@ class TheReplace(unittest.TestCase):
         asyncio.run(engine.run_attribution_job("ev_charger", [RIGHT], pace_s=0.0))
         self.assertEqual(self.st.ha_reads_for("ev_charger")[0], {H1: 1.0, H2: 2.4})
         self.assertEqual(_rows(self.st)["2026-10-01T11:30:00"][2], 1.2)
+
+
+class SilentHA:
+    """HA's recorder not answering: the WebSocket dropped under the request (b7, 4 Nov 2026)."""
+    def __init__(self):
+        self.calls = 0
+
+    async def get_statistics(self, ids, start, end, period="hour", timeout=0):
+        self.calls += 1
+        raise asyncio.TimeoutError()
+
+
+class CountingHA(FakeHA):
+    def __init__(self, rows=True):
+        self.calls, self.rows = 0, rows
+
+    async def get_statistics(self, ids, start, end, period="hour", timeout=0):
+        self.calls += 1
+        return await super().get_statistics(ids, start, end) if self.rows else {i: [] for i in ids}
+
+
+class FetchFirst(_ReplaceBase):
+    """b7's replace dropped first and fetched after; the fetch failed, and the device was left with
+    no history. Now the fetch comes first: nothing is dropped unless HA answered with hours."""
+
+    def _with(self, ha):
+        with mock.patch.object(engine, "_engine_ha", ha):
+            return self._replace()
+
+    def test_a_fetch_that_fails_drops_nothing(self):
+        res = self._with(SilentHA())
+        self.assertEqual(res["error"], "fetch_failed")
+        self.assertEqual(len(_rows(self.st)), 4)
+        self.assertEqual(self.st.ha_reads_for("ev_charger")[0], {H1: 2.4, H2: 2.4})
+        j = engine._attribution_jobs["ev_charger"]
+        self.assertEqual(j["status"], "error")
+        self.assertIn("nothing was replaced", j["error"])
+        self.assertTrue(engine.attribution_claim("ev_charger", [RIGHT]))      # the claim is free
+
+    def test_no_statistics_drops_nothing(self):
+        res = self._with(CountingHA(rows=False))
+        self.assertEqual(res["error"], "no_data")
+        self.assertEqual(len(_rows(self.st)), 4)
+
+    def test_GUARD_ha_is_asked_once(self):
+        ha = CountingHA()
+        res = self._with(ha)
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(ha.calls, 1)                    # the rebuild uses the hours just kept
+
+    def test_the_house_is_given_back_in_steps(self):
+        seen, real = [], engine.recompute_remainders_for_window
+
+        def spy(parent, lo, hi, **kw):
+            seen.append((lo, hi))
+            return real(parent, lo, hi, **kw)
+        with mock.patch.object(engine, "recompute_remainders_for_window", spy):
+            n = asyncio.run(engine.recompute_remainders_for_window_async(
+                "electricity_main", "2026-10-01T10:00:00", "2026-10-01T12:00:00", every=2))
+        self.assertEqual(n, 4)
+        self.assertEqual([lo for lo, _ in seen], ["2026-10-01T10:00:00", "2026-10-01T11:00:00"])
+
+
+class ARebuildWhoseFetchFails(_ReplaceBase):
+
+    def test_is_an_error_not_done(self):
+        with mock.patch.object(engine, "_engine_ha", SilentHA()):
+            self.assertTrue(engine.attribution_claim("ev_charger", [RIGHT]))
+            res = asyncio.run(engine.run_attribution_job("ev_charger", [RIGHT]))
+        self.assertFalse(res["ok"])
+        self.assertEqual(engine._attribution_jobs["ev_charger"]["status"], "error")
 
 
 def _scheduler(started):
@@ -255,6 +335,17 @@ class ThePage(unittest.TestCase):
     def test_the_wrong_sensor_s_replace_is_offered_after_the_reload(self):
         self.assertIn("fresh = fresh.concat(_replaceAfterSave);", _fn("_queueRebuildOffer"))
         self.assertIn("'/api/historical/attribute/replace'", _fn("_maybeOfferRebuild"))
+
+    def test_a_run_shows_from_its_claim(self):
+        body = _fn("_renderHistoryState")
+        self.assertIn("var busy = st === 'claimed' || st === 'running' || st === 'paused';", body)
+        self.assertIn("b.disabled = busy;", body)
+        self.assertIn("if (st === 'claimed' || (st === 'running' && run.phase === 'fetching')) {", body)
+        self.assertIn("return t === 'claimed' || t === 'running' || t === 'paused';", _fn("_loadHistoryState"))
+
+    def test_a_second_click_shows_the_run(self):
+        for fn in ("_histRebuild", "_histReplace"):
+            self.assertIn("if (d.status && d.status.status) { _loadHistoryState(); return; }", _fn(fn))
 
     def test_the_card_replaces_and_says_where_from(self):
         self.assertIn("js-hist-replace", _fn("buildHistorySection"))

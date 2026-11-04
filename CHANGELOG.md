@@ -5,6 +5,22 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **Replace history no longer loses a device's history when Home Assistant doesn't answer.** In b7,
+  *Replace history* dropped the old history first and then asked Home Assistant for the new sensor's.
+  Dropping it held EMT busy for over a minute, long enough for Home Assistant's connection to drop, so
+  the request went unanswered and the device was left with no history. Now EMT asks Home Assistant
+  first and drops nothing unless it gets an answer, and it no longer holds everything up while it works.
+  The device's card shows the replace from the moment you click, and its buttons wait until it's done.
+  **If this happened to you:** press *Rebuild history* on the device's card. Your old history is also in
+  the `pre-replace-history` backup.
+- **Removing a device's rebuilt history works.** *Remove* on a device's card in Setup failed every time
+  with "The undo failed". It now runs in the background, and the card says when it's done. Deleting a
+  range of a device's data now also corrects the other devices' share of the house, which it was
+  meant to and didn't. And removing a device no longer holds EMT busy while it tidies up, which could
+  drop its connection to Home Assistant.
+
 ## [2026.11.0b7] — 2026-11-04
 
 - **Flow's periods are named by what it shows.** In Flow, the period buttons now read *Daily*,

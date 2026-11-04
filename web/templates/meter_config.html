@@ -1449,7 +1449,14 @@ function _renderHistoryState() {
     var m = box.dataset.meter, run = _hist.runs[m] || {}, layer = _hist.layer[m];
     var pr = box.querySelector('.js-hist-progress'), ly = box.querySelector('.js-hist-layer');
     var st = run.status;
-    if (st === 'running' || st === 'paused') {
+    // a run is under way from its claim (4 Nov 2026, b7: a replace's fetch and drop ran as the
+    // claim, the card showed nothing, and a second click was told "already active")
+    var busy = st === 'claimed' || st === 'running' || st === 'paused';
+    [].slice.call(box.querySelectorAll('.js-hist-rebuild, .js-hist-replace')).forEach(function(b) { b.disabled = busy; });
+    if (busy) delete pr.dataset.keep;
+    if (st === 'claimed' || (st === 'running' && run.phase === 'fetching')) {
+      pr.innerHTML = '⏳ ' + esc(run.phase && run.phase !== 'fetching' ? run.phase : 'Asking Home Assistant…');
+    } else if (st === 'running' || st === 'paused') {
       var pct = run.total_hours ? Math.round(100 * (run.done_hours || 0) / run.total_hours) : 0;
       pr.innerHTML = (st === 'paused' ? '⏸ ' : '⏳ ') + 'Rebuilding… ' + (run.done_hours || 0) + '/' +
         (run.total_hours || 0) + ' hours (' + pct + '%) · ' + (run.written || 0) + ' half-hours written ' +
@@ -1506,7 +1513,7 @@ function _loadHistoryState() {
       if (!r.device) return;
       var was = prev[r.device];
       // a "done" shown only once it was seen running on this page
-      r._fresh = (was && (was.status === 'running' || was.status === 'paused')) || (was && was._fresh);
+      r._fresh = (was && (was.status === 'claimed' || was.status === 'running' || was.status === 'paused')) || (was && was._fresh);
       _hist.runs[r.device] = r;
     });
     _hist.layer = {};
@@ -1514,7 +1521,7 @@ function _loadHistoryState() {
     _hist.sources = (res[1] || {}).sources || {};
     _renderHistoryState();
     var active = Object.keys(_hist.runs).some(function(k) {
-      return _hist.runs[k].status === 'running' || _hist.runs[k].status === 'paused'; });
+      var t = _hist.runs[k].status; return t === 'claimed' || t === 'running' || t === 'paused'; });
     clearTimeout(_hist.timer);
     if (active) _hist.timer = setTimeout(_loadHistoryState, 2000);
   }).catch(function() {});
@@ -1567,6 +1574,7 @@ function _histRebuild(m, override) {
             ' <button class="btn btn-sm js-hist-override" data-meter="' + m + '">Rebuild anyway</button>');
           return;
         }
+        if (d.status && d.status.status) { _loadHistoryState(); return; }   // already running: its progress shows
         _histNote(m, '<span style="color:var(--danger);">' + esc(d.error || 'not started') + '</span>');
         return;
       }
@@ -1595,6 +1603,7 @@ function _histReplace(m, override) {
             ' <button class="btn btn-sm js-hist-replace-override" data-meter="' + m + '">Replace anyway</button>');
           return;
         }
+        if (d.status && d.status.status) { _loadHistoryState(); return; }   // already running: its progress shows
         _histNote(m, '<span style="color:var(--danger);">' + esc(d.error || 'not started') + '</span>');
         return;
       }
@@ -1603,17 +1612,32 @@ function _histReplace(m, override) {
       _loadHistoryState();
     }).catch(function(e) { _histNote(m, 'Request failed: ' + esc(e.message)); });
 }
+function _pollBackout(m) {
+  return new Promise(function(resolve) {
+    (function tick() {
+      fetch(apiUrl('/api/historical/attribute/backout/status')).then(function(r) { return r.json(); }).then(function(st) {
+        var last = st.last || {};
+        if (st.status !== 'running' && last.meter_id === m) { resolve(last); return; }
+        setTimeout(tick, 2000);
+      }).catch(function() { setTimeout(tick, 4000); });
+    })();
+  });
+}
 function _histRemoveLayer(m) {
   if (_hist.removing) return;
   var label = ((config.meters[m] || {}).meta || {}).device || m;
   if (!window.confirm('Remove the rebuilt history for ' + label + '?\n\nIts rebuilt half-hours are cleared and that usage ' +
                       'returns to the house. Live and imported data are untouched; you can rebuild again.')) return;
   _hist.removing = true; _renderHistoryState();
-  _histNote(m, '⏳ Removing the rebuilt history…');
+  _histNote(m, '⏳ Removing the rebuilt history… (over a long history this takes a few minutes)');
   fetch(apiUrl('/api/historical/attribute/backout'), {method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({meter_id: m})})
     .then(function(r) { return r.json(); }).then(function(d) {
-      _histNote(m, d.ok ? '✓ Removed ' + (d.deleted || 0) + ' half-hours.' : '<span style="color:var(--danger);">' + esc(d.error || 'failed') + '</span>');
+      // started on the engine: its result comes on the status, polled (4 Nov 2026)
+      return (d.ok && d.status === 'running') ? _pollBackout(m) : d;
+    }).then(function(d) {
+      _histNote(m, d.ok ? '✓ Removed ' + (d.deleted || 0) + ' half-hours.' : '<span style="color:var(--danger);">' +
+        esc(d.error === 'backout_failed' ? 'The undo failed — the log has the detail.' : (d.error || 'failed')) + '</span>');
     }).catch(function(e) { _histNote(m, 'Request failed: ' + esc(e.message)); })
     .then(function() { _hist.removing = false; _loadHistoryState(); });
 }
