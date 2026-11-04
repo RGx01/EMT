@@ -135,8 +135,10 @@ class TheScreen(unittest.TestCase):
         self.assertIn("'/api/historical/attribute/start'", _fn("_maybeOfferRebuild"))
 
     def test_the_wizard_reloads_for_the_offer(self):
-        self.assertIn("if (_queueRebuildOffer()) setTimeout(function() { window.location.reload(); }, 1200);",
-                      _PAGE)
+        # since 4 Nov 2026 the history offer (tests/test_history_offer.py) goes first, and its Not now
+        # reloads for this one; without it, the reload is as before
+        self.assertIn("var rebuild = _queueRebuildOffer();", _PAGE)
+        self.assertIn("else if (rebuild) setTimeout(function() { window.location.reload(); }, 1200);", _PAGE)
 
     def test_the_delete_warning_says_what_goes(self):
         body = _fn("openDeleteModal")
