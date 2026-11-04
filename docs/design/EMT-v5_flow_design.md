@@ -1,8 +1,16 @@
 # Flow — where the grid's energy, cost and carbon went (design)
 
-*Draft, 4 Nov 2026. A Usage Stats view beside Devices, Rate brackets and Running total. Decided with the
-user on 4 Nov: three columns (grid → rate band → device), the period as the other views have it, the
-Chart.js Sankey plugin, and export as a flow out of the house. What is still open is §7.*
+*Decided, 4 Nov 2026. A Usage Stats view beside Devices, Rate brackets and Running total. Decided with
+the user on 4 Nov 2026:*
+- *three columns (grid → rate band → device);*
+- *the period as the other views have it;*
+- *the Chart.js Sankey plugin;*
+- *export as a flow out of the house;*
+- *small bands grouped into "Other";*
+- *export's caveat as a note in the hover;*
+- *retired devices under their name.*
+
+*Nothing is open (§7).*
 
 ## 1. What it shows
 
@@ -82,7 +90,10 @@ below 0p and earns a negative £.
     reconcile;
   - a node: its total.
   - The house adds: "Export is energy EMT did not meter coming in: solar or a battery."
-- **Small bands:** on Agile a month can touch a dozen brackets. Open (§7).
+- **Small bands:** on Agile a month can touch a dozen brackets. A bracket under 2% of the span's
+  import, in the metric shown, is folded into one band, **Other**. Other is grey, last in the column,
+  and its hover lists the brackets it holds with their figures, so nothing is hidden. The threshold is
+  a constant (`FLOW_OTHER_SHARE = 0.02`). A span whose brackets all clear it shows no Other.
 - **The PDF:** the canvas, as the other Usage Stats charts are taken.
 - **The table below:** a row a flow (from, to, kWh, £, kg), with Copy to clipboard as the other views.
 
@@ -100,6 +111,11 @@ Two gaps in the rate brackets, both server-side, both testable against a store:
    A third value, `[kWh, £, g]`, is added to each bracket. The Rate brackets view reads the first two
    and is unchanged.
 
+**Retired devices** need nothing new. Retiring one sets `retired_at` on its row (`retire_meter`), and
+the meter stays in the active config period. The brackets read that period's sub-meters, so they
+already include it, and Flow names it as the Devices view does, from the same config. A test with a
+device retired mid-span keeps it that way.
+
 **Reconciliation (the tests):** over any span,
 - Σ a device's flows = the Devices view's figure for it (kWh, £, CO₂);
 - Σ every band = the meter's import;
@@ -110,15 +126,14 @@ These are asserted against a fixture with an Intelligent day, an Agile day, a de
 ## 6. PRs
 
 1. **The brackets:** the `ev_dispatch` series and carbon by bracket (§5), with the reconciliation
-   tests. No page change; the query budgets are re-measured (the soak surface for brackets).
+   tests, including a device retired mid-span. No page change; the query budgets are re-measured (the soak surface for brackets).
 2. **Flow, kWh and £:** the view, the plugin (version checked first), hover, the table, the totals,
    in the local preview on the demo household.
 3. **CO₂, the PDF, the help page** (Usage Stats → Flow), and the reference page.
 
 ## 7. Open
 
-- **Small bands:** on Agile, fold brackets under a share of the span (say 2%) into "other", or merge
-  neighbours into wider bands, or show them all?
-- **The house's export caveat:** a hover note is proposed. Or a visible line under the chart?
-- **Retired devices** in the span: shown under their name, as the Devices view does — assumed, to
-  confirm.
+Nothing. Decided on 4 Nov 2026:
+- **Small bands on Agile:** grouped into Other (§4).
+- **The house's export caveat:** a note in the house node's hover (§4), not a line under the chart.
+- **Retired devices** in the span: shown under their name, as the Devices view shows them.
