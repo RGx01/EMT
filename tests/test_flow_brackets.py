@@ -15,7 +15,8 @@ BL-93). They gave each series kWh and £ per 2.5p bracket. Two things Flow needs
 What Flow will rest on, asserted against the Devices view's day rows (`day_stats`): a device's brackets
 sum to its kWh, £ and carbon there; the car's to its EV there; the meter's to the main's import.
 
-Every test fails on the parent, whose brackets were [kWh, £] with no `ev_dispatch`. Those marked GUARD
+Every test fails on the parent, whose brackets were [kWh, £] with no `ev_dispatch`. TheHybridEV (4 Nov
+2026, later) fails on the tree before it, whose brackets gave an EV meter its own reading. Those marked GUARD
 fail there only for that: what they check held there too.
 """
 import os
@@ -214,6 +215,47 @@ class TheCar(unittest.TestCase):
 
     def test_the_reply_names_the_series(self):
         self.assertEqual(uv.day_brackets(self.st, TZ, *ALL)["ev_series"], "ev_dispatch")
+
+
+class TheHybridEV(unittest.TestCase):
+    """An account WITH an EV meter (4 Nov 2026, staging): the Devices view shows the hybrid EV —
+    Octopus's split where a half-hour has one, else the charger's own reading — and moves the
+    difference to or from the house (`_hybrid_ev_slot_folds`). The brackets gave the car the
+    charger's reading, ~0.04% off over staging's solar era, the house off the other way. Now its
+    brackets are the fold's, at the EV slices' rates.
+
+    The EV meter sits before another device: the first build found it with a comprehension that kept
+    only the last sub-meter (house_battery on staging), and changed nothing."""
+
+    DEVICES = ("ev_charger", "house_battery")
+
+    def setUp(self):
+        self.st = _store(devices=self.DEVICES)
+        self.st._conn.execute("UPDATE meters SET meter_type = 'ev' WHERE meter_id = 'ev_charger'")
+        self.st._conn.execute("UPDATE meters SET meter_type = 'battery' WHERE meter_id = 'house_battery'")
+        self.addCleanup(self.st.close)
+        # Octopus split this half-hour: the car 1.0 kWh at 7p; the charger read 1.3
+        _main(self.st, "2026-09-10T01:00:00", [(1.0, 0.07, "ev"), (0.5, 0.28, "house")])
+        _block(self.st, "2026-09-10T01:00:00", "ev_charger", 1.3, 0.07)
+        # no split: the charger's reading stands
+        _main(self.st, "2026-09-10T13:00:00", [(1.5, 0.28, "house")])
+        _block(self.st, "2026-09-10T13:00:00", "ev_charger", 0.4, 0.28)
+        _block(self.st, "2026-09-10T13:00:00", "house_battery", 0.2, 0.28)
+
+    def test_the_split_half_hour_is_octopuss(self):
+        t = _totals(uv.slot_brackets(self.st, *ALL)["rows"])
+        self.assertAlmostEqual(t["ev_charger"][2][0], 1.0)
+        self.assertAlmostEqual(t["ev_charger"][2][1], 0.07)
+        self.assertAlmostEqual(t["ev_charger"][11][0], 0.4)            # the unsplit one, as read
+        self.assertAlmostEqual(t["electricity_main"][11][0], 0.5 + 1.5 - 0.4 - 0.2)
+
+    def test_it_sums_to_the_devices_view(self):
+        t = _totals(uv.day_brackets(self.st, TZ, *ALL)["rows"])
+        rows = uv.day_stats(self.st, _cfg(devices=self.DEVICES), TZ, *ALL)["rows"]
+        for s in ("ev_charger", "electricity_main", "house_battery"):
+            with self.subTest(series=s):
+                self.assertAlmostEqual(_sum(t, s, 0), sum(r["meters"][s]["imp_kwh"] for r in rows), places=3)
+                self.assertAlmostEqual(_sum(t, s, 1), sum(r["meters"][s]["imp_cost"] for r in rows), places=3)
 
 
 class ARetiredDevice(unittest.TestCase):

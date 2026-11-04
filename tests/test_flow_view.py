@@ -21,7 +21,10 @@ house's kWh and £ equal to the Devices view's, the meter's 645.576 kWh and the 
 hover's kWh × p/kWh its £; the standing charge's £14.50 in the head; HH and Yearly (Other on Yearly);
 the PDF's canvas read at once.
 
-Every test fails on the parent tree, where none of it existed.
+Every test fails on the parent tree, where none of it existed. TheEraChapters, TheSpans and the Span
+wiring (4 Nov 2026, later; eras on their own and "now" for a future end the same day, from staging's data)
+fail on the tree before them: Flow had Yearly, which totalled what Monthly
+did, and no view had a span.
 """
 import json
 import os
@@ -126,6 +129,150 @@ class TheData(unittest.TestCase):
         self.assertEqual(d["nodes"]["s:ev_dispatch"]["label"], "EV")
 
 
+@unittest.skipUnless(shutil.which("node"), "node not available")
+class TheEraChapters(unittest.TestCase):
+    """4 Nov 2026, the user: in Flow Yearly totalled what Monthly did (the years ticked), so Flow has Era
+    there — a chapter of the home, from an era's start to the next era's start, of any kind."""
+
+    def _run(self, eras, days):
+        rows = [{"year": int(d[:4]), "month": int(d[5:7]), "day": int(d[8:])} for d in days]
+        kinds = PAGE[PAGE.index("var ERA_KINDS = {"):PAGE.index("\n};\n", PAGE.index("var ERA_KINDS = {")) + 3]
+        js = (kinds + "var barEras = %s, barData = %s;\n" % (json.dumps(eras), json.dumps(rows)) +
+              "".join(_fn(n) for n in ("barAddDay", "barFlowYmd", "barFlowChapters")) +
+              "\nconsole.log(JSON.stringify(barFlowChapters().map(function (c) {"
+              " return [c.id, c.label, c.from, c.to, !!c.latest]; })));")
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+            fh.write(js)
+            path = fh.name
+        try:
+            res = subprocess.run(["node", path], capture_output=True, text=True, timeout=30)
+        finally:
+            os.unlink(path)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return json.loads(res.stdout)
+
+    DAYS = ["2024-06-01", "2025-01-01", "2026-10-31"]
+
+    def test_chapters_from_start_to_next_start(self):
+        eras = [{"kind": "ev", "label": "First EV", "start": "2024-09-14"},
+                {"kind": "solar", "label": "Solar", "start": "2025-03-08"}]
+        self.assertEqual(self._run(eras, self.DAYS), [
+            ["before", "Before the first era", "2024-06-01", "2024-09-14", False],
+            ["era:2024-09-14", "\U0001f697 First EV", "2024-09-14", "2025-03-08", False],
+            ["era:2025-03-08", "\u2600\ufe0f Solar", "2025-03-08", "2026-11-01", True]])
+
+    def test_eras_on_one_day_are_one_chapter(self):
+        eras = [{"kind": "solar", "label": "Solar", "start": "2025-03-08"},
+                {"kind": "battery", "label": "Battery", "start": "2025-03-08", "end": "2025-06-01"}]
+        out = self._run(eras, self.DAYS)
+        self.assertEqual([c[0] for c in out], ["before", "era:2025-03-08"])
+        self.assertEqual(out[1][1], "\u2600\ufe0f Solar + \U0001f50b Battery")
+        self.assertEqual(out[1][3], "2026-11-01", "to the next era's start, not its own end")
+
+    def test_an_era_before_the_data_starts_with_it(self):
+        out = self._run([{"kind": "other", "label": "Moved in", "start": "2020-01-01"}], self.DAYS)
+        self.assertEqual(out, [["era:2020-01-01", "\u2022 Moved in", "2024-06-01", "2026-11-01", True]])
+
+    def test_one_after_the_data_is_not_a_chapter(self):
+        out = self._run([{"kind": "ev", "label": "EV", "start": "2024-09-14"},
+                         {"kind": "other", "label": "Planned", "start": "2027-01-01"}], self.DAYS)
+        self.assertEqual([c[0] for c in out], ["before", "era:2024-09-14"])
+        self.assertTrue(out[-1][4])
+
+    def test_no_eras_no_chapters(self):
+        self.assertEqual(self._run([], self.DAYS), [])
+
+
+@unittest.skipUnless(shutil.which("node"), "node not available")
+class TheSpans(unittest.TestCase):
+    """4 Nov 2026, the user: the spans are the eras' chapters and the tariffs, with their price changes;
+    in Devices, Rate brackets and Flow. A span's bars: a day up to 62 days, else a month."""
+
+    DAYS = ["2024-06-01", "2024-12-15", "2025-01-10", "2025-02-20", "2025-06-30"]
+
+    def _js(self, tail, eras=(), tariffs=(), flow=False):
+        rows = [{"year": int(d[:4]), "month": int(d[5:7]), "day": int(d[8:]), "imp_kwh": 1.0} for d in self.DAYS]
+        kinds = PAGE[PAGE.index("var ERA_KINDS = {"):PAGE.index("\n};\n", PAGE.index("var ERA_KINDS = {")) + 3]
+        js = (kinds + "var BAR_ACC_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n"
+              "var barEras = %s, barTariffs = %s, barData = %s, FLOW_SPAN_DAILY_MAX = 62;\n" % (
+                  json.dumps(list(eras)), json.dumps(list(tariffs)), json.dumps(rows)) +
+              "function barFlow() { return %s; }\n" % ("true" if flow else "false") +
+              "function barAggRows(f) { return {imp_kwh: barData.filter(f).reduce(function (t, r) { return t + r.imp_kwh; }, 0)}; }\n" +
+              "".join(_fn(n) for n in ("barAddDay", "barAddMonth", "barDayNo", "barFlowYmd", "barFlowChapters",
+                                       "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly", "barAccDateLabel",
+                                       "barSpans", "barSpanData")) + tail)
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+            fh.write(js)
+            path = fh.name
+        try:
+            res = subprocess.run(["node", path], capture_output=True, text=True, timeout=30)
+        finally:
+            os.unlink(path)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return json.loads(res.stdout)
+
+    @staticmethod
+    def _p(frm):
+        return {"kind": "unit", "band": "flat", "from": frm, "inc": 20, "exc": 19}
+
+    def _tariffs(self):
+        return [{"direction": "import", "name": "Flexible", "from": "2024-06-01", "to": "2025-01-01",
+                 "prices": [self._p("2024-06-01"), self._p("2024-10-01")]},
+                {"direction": "import", "name": "Go", "from": "2025-01-01", "to": None, "prices": [self._p("2025-01-01")]},
+                {"direction": "export", "name": "Outgoing", "from": "2024-06-01", "to": None, "prices": []}]
+
+    def test_tariffs_with_their_price_changes(self):
+        out = self._js("\nconsole.log(JSON.stringify(barSpans().map(function (o) {"
+                       " return [o.group, !!o.sub, o.label, o.from, o.to, !!o.latest]; })));", tariffs=self._tariffs())
+        self.assertEqual(out, [
+            ["Tariffs", False, "Tariff: Go", "2025-01-01", "2025-07-01", True],
+            ["Tariffs", False, "Tariff: Flexible", "2024-06-01", "2025-01-01", False],
+            ["Tariffs", True, "Flexible \u2014 price change 1 Oct 2024", "2024-10-01", "2025-01-01", False],
+            ["Tariffs", True, "Flexible \u2014 from its start", "2024-06-01", "2024-10-01", False]])
+
+    def test_chapters_then_eras_then_tariffs(self):
+        out = self._js("\nconsole.log(JSON.stringify(barSpans().map(function (o) { return o.group; })));",
+                       eras=[{"kind": "solar", "label": "Solar", "start": "2025-01-01"}], tariffs=self._tariffs())
+        self.assertEqual(out, ["Chapters", "Chapters", "Eras", "Tariffs", "Tariffs", "Tariffs", "Tariffs"])
+
+    def test_an_era_on_its_own_runs_to_its_own_end(self):
+        # 4 Nov 2026, the user: the solar era without the chapter's cut at the battery's change; an era's
+        # end is exclusive (a replaced battery ends the day the next starts)
+        eras = [{"id": "s", "kind": "solar", "label": "Solar", "start": "2024-07-14"},
+                {"id": "b1", "kind": "battery", "label": "Battery", "start": "2024-07-14", "end": "2025-02-20"},
+                {"id": "b2", "kind": "battery", "label": "Battery", "start": "2025-02-20"}]
+        out = self._js("\nconsole.log(JSON.stringify(barSpans().filter(function (o) { return o.group === 'Eras'; })"
+                       ".map(function (o) { return [o.id, o.from, o.to, !!o.latest]; })));", eras=eras)
+        self.assertEqual(out, [["own:b2", "2025-02-20", "2025-07-01", True],
+                               ["own:s", "2024-07-14", "2025-07-01", True],
+                               ["own:b1", "2024-07-14", "2025-02-20", False]])
+
+    def test_a_span_reaching_the_last_day_is_now(self):
+        # a running fixed-term tariff has its end in the future (staging's IOG-SMB fixed, 4 Nov 2026)
+        t = [{"direction": "import", "name": "Fixed", "from": "2025-01-01", "to": "2027-03-18", "prices": []}]
+        out = self._js("\nconsole.log(JSON.stringify(barSpans().map(function (o) { return [o.to, !!o.latest]; })));",
+                       tariffs=t)
+        self.assertEqual(out, [["2025-07-01", True]])
+
+    def test_a_short_span_a_bar_a_day(self):
+        out = self._js("\nvar d = barSpanData({from: '2025-01-01', to: '2025-03-01'});"
+                       "\nconsole.log(JSON.stringify([d.labels, d.aggList.map(function (a) { return a.imp_kwh; })]));")
+        self.assertEqual(out, [["10 Jan", "20 Feb"], [1.0, 1.0]])
+
+    def test_a_long_span_a_bar_a_month_clipped_to_its_dates(self):
+        out = self._js("\nvar d = barSpanData({from: '2024-06-15', to: '2025-07-01'});"
+                       "\nconsole.log(JSON.stringify([d.labels, d.bucketRanges[0], d.aggList.map(function (a) { return a.imp_kwh; })]));")
+        labels, first, kwh = out
+        self.assertEqual(labels, ["Dec 2024", "Jan 2025", "Feb 2025", "Jun 2025"])     # 1 Jun 2024 is before it
+        self.assertEqual(first, {"from": "2024-12-01", "to": "2025-01-01"})
+        self.assertEqual(sum(kwh), 4.0)
+
+    def test_flow_one_bucket(self):
+        out = self._js("\nvar d = barSpanData({from: '2024-06-01', to: '2025-07-01', label: 'All'});"
+                       "\nconsole.log(JSON.stringify([d.labels, d.aggList[0].imp_kwh]));", flow=True)
+        self.assertEqual(out, [["All"], 5.0])
+
+
 class TheWiring(unittest.TestCase):
 
     def test_the_plugin_is_pinned(self):
@@ -135,7 +282,7 @@ class TheWiring(unittest.TestCase):
     def test_flow_is_a_view(self):
         self.assertIn("onclick=\"barSetShow('flow',this)\"", PAGE)
         self.assertIn("['devices','brackets','flow','running'].indexOf(st.show)", PAGE)
-        self.assertIn("if (barFlow()) { barFlowRender(pd.aggList); return; }", _fn("barRender"))
+        self.assertIn("if (barFlow()) { barLoadEras(); barLoadTariffs(); barFlowRender(pd.aggList); return; }", _fn("barRender"))
         self.assertIn("if (barFlow()) { barFlowBuildTable(tbl, aggList); return; }", _fn("barBuildTable"))
 
     def test_the_hh_rows_carry_their_brackets_for_flow(self):
@@ -150,6 +297,28 @@ class TheWiring(unittest.TestCase):
     def test_the_bands_are_imports_colours(self):
         self.assertIn("var ex = !asImport && barBrSign() < 0;", _fn("barBrColor"))
         self.assertIn("barBrColor(n, ns, true)", _fn("barFlowData"))
+
+    def test_span_in_the_bar_views_yearly_but_in_flow(self):
+        self.assertIn("onclick=\"barSetPeriod('span',this)\" id=\"bar-span-btn\"", PAGE)
+        f = _fn("barSetShow")
+        self.assertIn("if (v === 'flow' && barPeriod === 'yearly') barPeriod = barSpansPending() || barSpans().length ? 'span' : 'monthly';", f)
+        self.assertIn("else if (v === 'running' && barPeriod === 'span') barPeriod = 'yearly';", f)
+        ui = _fn("barBrSyncUI")
+        self.assertIn("vis('bar-yearly-btn', !fl);", ui)
+        self.assertIn("vis('bar-span-btn', spanOk);", ui)
+        load = _fn("barLoadState")
+        self.assertIn("if (st.period === 'era') barPeriod = 'span';", load)
+        self.assertIn("if (barPeriod === 'span' && barShow === 'running') barPeriod = 'yearly';", load)
+
+    def test_a_remembered_span_waits_for_the_eras_and_tariffs(self):
+        # a reload restored the period before the eras were read, and fell back to Monthly (the preview)
+        self.assertIn("if (barPeriod === 'span' && !spanOk && !barSpansPending()) barPeriod = 'monthly';", _fn("barBrSyncUI"))
+        self.assertIn("if ((barEras.length || barPeriod === 'span') && barInited && barData) barRender();", _fn("barLoadEras"))
+        self.assertIn("if ((barTariffs.length || barPeriod === 'span') && barInited && barData) barRender();", _fn("barLoadTariffs"))
+
+    def test_the_overlays_on_a_span(self):
+        self.assertIn("|| barPeriod === 'span';", _fn("barTariffsAvailable"))
+        self.assertIn("|| barPeriod === 'span';", _fn("barErasAvailable"))
 
     def test_export_says_where_emt_cannot_see(self):
         self.assertIn("Export is energy EMT did not meter coming in: solar or a battery.", _fn("barFlowDraw"))

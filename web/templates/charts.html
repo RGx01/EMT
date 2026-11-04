@@ -574,7 +574,9 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
         <button class="bar-seg-btn"        onclick="barSetPeriod('hh',this)" title="Half-hourly breakdown of a single day">HH</button>
         <button class="bar-seg-btn active" onclick="barSetPeriod('daily',this)">Daily</button>
         <button class="bar-seg-btn"        onclick="barSetPeriod('monthly',this)">Monthly</button>
-        <button class="bar-seg-btn"        onclick="barSetPeriod('yearly',this)">Yearly</button>
+        <button class="bar-seg-btn"        onclick="barSetPeriod('yearly',this)" id="bar-yearly-btn">Yearly</button>
+        <button class="bar-seg-btn"        onclick="barSetPeriod('span',this)" id="bar-span-btn" style="display:none"
+                title="A stretch you pick: a chapter of your home (an era's start to the next era's) or a tariff">Span</button>
       </div>
       <div class="bar-seg" id="bar-cal-seg">
         <button class="bar-seg-btn active" onclick="barSetCalendar(false,this)">Billing</button>
@@ -1536,6 +1538,7 @@ function barSaveState() {
       accView:     barAccView,
       accStart:    barAccStart,
       accStanding: barAccIncStanding,
+      span:        barSpanId,
     }));
   } catch(e) {}
 }
@@ -1555,7 +1558,10 @@ function barLoadState(availableYears) {
     var raw = localStorage.getItem(EMT.lsKey('emt_bar_state'));
     if (!raw) { barShowFromUrl(); barFromSpiral(); return; }
     var st = JSON.parse(raw);
-    if (['daily','monthly','yearly','hh'].indexOf(st.period) !== -1) barPeriod = st.period;
+    if (['daily','monthly','yearly','hh','span'].indexOf(st.period) !== -1) barPeriod = st.period;
+    if (st.period === 'era') barPeriod = 'span';                     // its name before 4 Nov 2026's rework
+    if (typeof st.span === 'string') barSpanId = st.span;
+    else if (typeof st.flowEra === 'string') barSpanId = st.flowEra;
     if (['kwh','cost','co2'].indexOf(st.metric) !== -1)       barMetric = st.metric;
     if (['date','month'].indexOf(st.order) !== -1)             barMonthOrder = st.order;
     if (typeof st.calendar === 'boolean')                      barCalendar = st.calendar;
@@ -1592,6 +1598,7 @@ function barLoadState(availableYears) {
     if (typeof st.brSeries === 'string') barBrSeries = st.brSeries;
     barBrPct = st.brPct === true;
     if (barShow === 'brackets' && barMetric === 'co2') barMetric = 'kwh';
+    if (barPeriod === 'span' && barShow === 'running') barPeriod = 'yearly';   // Running total has its own year
   } catch(e) {}
   barShowFromUrl();
   barFromSpiral();
@@ -1705,14 +1712,14 @@ async function barInit() {
 
 function barSyncUI() {
   // Sync period/metric/view segment buttons to current state vars
-  ['hh','daily','monthly','yearly'].forEach(function(v) {
+  ['hh','daily','monthly','yearly','span'].forEach(function(v) {
     document.querySelectorAll('#bar-period-seg .bar-seg-btn').forEach(function(b){
       if (b.textContent.toLowerCase() === v) b.classList.toggle('active', barPeriod === v);
     });
   });
   // Billing/Calendar toggle is meaningless for the HH (single-day) view — hide it.
   var calSeg = document.getElementById('bar-cal-seg');
-  if (calSeg) calSeg.style.display = (barPeriod === 'hh') ? 'none' : '';
+  if (calSeg) calSeg.style.display = (barPeriod === 'hh' || barPeriod === 'span') ? 'none' : '';
   document.querySelectorAll('#bar-cal-seg .bar-seg-btn').forEach(function(b){
     var isCal = b.getAttribute('onclick') && b.getAttribute('onclick').indexOf('true') !== -1;
     b.classList.toggle('active', isCal === barCalendar);
@@ -1870,13 +1877,14 @@ function barLoadTariffs() {
   _barTariffsAsked = true;
   fetch(apiUrl('/api/tariff-agreements')).then(function(r) { return r.json(); }).then(function(j) {
     barTariffs = j.agreements || [];
-    if (barTariffs.length && barInited && barData) barRender();
+    // a remembered Span may be a tariff's, drawn when they land
+    if ((barTariffs.length || barPeriod === 'span') && barInited && barData) barRender();
   }).catch(function() { barTariffs = []; });
 }
 
 // Where a bar is one stretch of time: Monthly by Date, Daily, HH (not Yearly, nor Monthly by Month)
 function barTariffsAvailable() {
-  var view = (barPeriod === 'monthly' && barMonthOrder === 'date') || barPeriod === 'daily' || barPeriod === 'hh';
+  var view = (barPeriod === 'monthly' && barMonthOrder === 'date') || barPeriod === 'daily' || barPeriod === 'hh' || barPeriod === 'span';
   return view && !!barTariffs && barTariffs.length > 0;
 }
 
@@ -2155,11 +2163,12 @@ function barLoadEras() {
   _barErasAsked = true;
   fetch(apiUrl('/api/home-eras')).then(function(r) { return r.json(); }).then(function(j) {
     barEras = j.eras || [];
-    if (barEras.length && barInited && barData) barRender();
+    // and with none, a remembered Era (Flow's) falls back to Monthly
+    if ((barEras.length || barPeriod === 'span') && barInited && barData) barRender();
   }).catch(function() { barEras = []; });
 }
 function barErasAvailable() {
-  var view = (barPeriod === 'monthly' && barMonthOrder === 'date') || barPeriod === 'daily';
+  var view = (barPeriod === 'monthly' && barMonthOrder === 'date') || barPeriod === 'daily' || barPeriod === 'span';
   return view && !!barEras && barEras.length > 0;
 }
 function barShowEras() {
@@ -2553,6 +2562,97 @@ var FLOW_OTHER_SHARE = 0.02;
 var FLOW_PLUGIN = 'https://cdn.jsdelivr.net/npm/chartjs-chart-sankey@0.19.1/dist/chartjs-chart-sankey.min.js';
 var _barFlowLib = null;
 function barFlow() { return barShow === 'flow'; }
+// ── Flow's Era (4 Nov 2026, the user) ──
+// A chapter of the home: from an era's start to the next era's start, of any kind; the latest to the
+// last day of data; "Before the first era" from the first day. Eras starting the same day are one
+// chapter. [{id, label, from, to}] oldest first, `to` exclusive, local dates.
+var barSpanId = null;               // the span shown (Span): its id; null, the latest chapter
+function barFlowYmd(r) { return r.year + '-' + String(r.month).padStart(2, '0') + '-' + String(r.day).padStart(2, '0'); }
+function barFlowChapters() {
+  var eras = (barEras || []).filter(function(e) { return e.start; });
+  var days = (barData || []).map(barFlowYmd).sort();
+  if (!eras.length || !days.length) return [];
+  var first = days[0], end = barAddDay(days[days.length - 1]);
+  var starts = {};
+  eras.forEach(function(e) { (starts[e.start] || (starts[e.start] = [])).push(e); });
+  var keys = Object.keys(starts).sort().filter(function(d) { return d < end; });
+  var out = [];
+  if (keys.length && first < keys[0]) out.push({id: 'before', label: 'Before the first era', from: first, to: keys[0]});
+  keys.forEach(function(d, i) {
+    var es = starts[d];
+    out.push({id: 'era:' + d, from: d < first ? first : d, to: keys[i + 1] || end, latest: !keys[i + 1],
+              label: es.map(function(e) { return (ERA_KINDS[e.kind] || ERA_KINDS.other).icon + ' ' + e.label; }).join(' + ')});
+  });
+  return out.filter(function(c) { return c.from < c.to; });
+}
+// ── Span (4 Nov 2026, the user): the stretches a Span shows, in Devices, Rate brackets and Flow ──
+// The eras' chapters (above); each era on its own, from its start to its own end or now; and each import
+// tariff from its start to its end (or the last day), with the stretches between its price changes
+// under it, as Running total's year-start picker lists them. Clipped to the data; `latest` where a span
+// reaches its last day. [{id, group, label, from, to, latest, sub}] in the picker's order — Chapters,
+// Eras, Tariffs — each newest first, a tariff followed by its stretches newest first.
+function barSpans() {
+  var days = (barData || []).map(barFlowYmd).sort();
+  if (!days.length) return [];
+  var first = days[0], end = barAddDay(days[days.length - 1]), today = new Date().toISOString().slice(0, 10);
+  // a span reaching the data's last day is "now": a running fixed-term tariff has its end in the future
+  function clip(o) { o.from = o.from < first ? first : o.from; if (o.to >= end) { o.to = end; o.latest = true; } return o; }
+  var out = barFlowChapters().slice().reverse().map(function(c) { return Object.assign({group: 'Chapters'}, c); });
+  // each era on its own, to its own end (exclusive: a battery replaced ends the day the next starts) or now
+  // (4 Nov 2026, the user: the solar era without the chapter's cut at the battery's change)
+  (barEras || []).filter(function(e) { return e.start; })
+    .slice().sort(function(a, b) { return a.start < b.start ? 1 : a.start > b.start ? -1 : 0; })
+    .forEach(function(e) {
+      out.push(clip({id: 'own:' + (e.id || e.start + ':' + e.label), group: 'Eras', from: e.start, to: e.end || end,
+                     label: (ERA_KINDS[e.kind] || ERA_KINDS.other).icon + ' ' + e.label}));
+    });
+  (barTariffs || []).filter(function(a) { return a.direction !== 'export' && a.from; })
+    .sort(function(a, b) { return a.from < b.from ? 1 : a.from > b.from ? -1 : 0; })
+    .forEach(function(a) {
+      var to = a.to || end;
+      out.push(clip({id: 'tariff:' + a.from, group: 'Tariffs', label: 'Tariff: ' + a.name, from: a.from, to: to}));
+      var cuts = barTariffChangeDays(a, today);
+      if (!cuts.length) return;
+      var bounds = [a.from].concat(cuts).concat([to]);
+      for (var i = bounds.length - 2; i >= 0; i--) {
+        out.push(clip({id: 'tariff:' + a.from + '@' + bounds[i], group: 'Tariffs', sub: true,
+                       label: a.name + ' \u2014 ' + (i === 0 ? 'from its start' :
+                              (barTariffVatOnly(a, bounds[i]) ? 'VAT' : 'price') + ' change ' + barAccDateLabel(bounds[i])),
+                       from: bounds[i], to: bounds[i + 1]}));
+      }
+    });
+  return out.filter(function(o) { return o.from < o.to; });
+}
+function barSpanCurrent() {
+  var sp = barSpans();
+  return sp.filter(function(o) { return o.id === barSpanId; })[0] || sp[0] || null;
+}
+// Whether the spans are not known yet: the eras or the tariffs still being read
+function barSpansPending() { return barEras === null || barTariffs === null; }
+function barSetSpan(v) { barSpanId = v; barSaveState(); barRender(); }
+// A span's buckets: Flow's one; the bars a day up to FLOW_SPAN_DAILY_MAX days, else a month (the user),
+// each month clipped to the span's dates
+var FLOW_SPAN_DAILY_MAX = 62;
+function barSpanData(sp) {
+  if (!sp) return {labels: [], aggList: [], bucketRanges: []};
+  function inSpan(r) { var d = barFlowYmd(r); return d >= sp.from && d < sp.to; }
+  if (barFlow()) return {labels: [sp.label], aggList: [barAggRows(inSpan)], bucketRanges: [{from: sp.from, to: sp.to}]};
+  var n = barDayNo(sp.to) - barDayNo(sp.from);
+  if (n <= FLOW_SPAN_DAILY_MAX) {
+    var days = [...new Set((barData || []).filter(inSpan).map(barFlowYmd))].sort();
+    return {labels: days.map(function(d) { return +d.slice(8, 10) + ' ' + BAR_ACC_MON[+d.slice(5, 7) - 1]; }),
+            aggList: days.map(function(d) { return barAggRows(function(r) { return barFlowYmd(r) === d; }); }),
+            bucketRanges: days.map(function(d) { return {from: d, to: barAddDay(d)}; }),
+            rawDates: days.map(function(d) { return {year: +d.slice(0, 4), month: +d.slice(5, 7), day: +d.slice(8, 10)}; })};
+  }
+  var months = [...new Set((barData || []).filter(inSpan).map(function(r) { return barFlowYmd(r).slice(0, 7); }))].sort();
+  return {labels: months.map(function(m) { return BAR_ACC_MON[+m.slice(5, 7) - 1] + ' ' + m.slice(0, 4); }),
+          aggList: months.map(function(m) { return barAggRows(function(r) { return inSpan(r) && barFlowYmd(r).slice(0, 7) === m; }); }),
+          bucketRanges: months.map(function(m) {
+            var f = m + '-01', t = barAddMonth(f);
+            return {from: f < sp.from ? sp.from : f, to: t > sp.to ? sp.to : t};
+          })};
+}
 // The plugin, once, after Chart.js (it registers itself on window.Chart)
 function barFlowLib() {
   if (window.Chart && Chart.registry.controllers.get('sankey')) return Promise.resolve();
@@ -2735,6 +2835,10 @@ function barFlowBuildTable(tbl, aggList) {
 
 function barSetShow(v, el) {
   barShow = v;
+  // Flow has Era where the others have Yearly (4 Nov 2026, the user: in Flow, Yearly totalled what
+  // Monthly did — the years ticked); each turns into the other on the way in and out
+  if (v === 'flow' && barPeriod === 'yearly') barPeriod = barSpansPending() || barSpans().length ? 'span' : 'monthly';
+  else if (v === 'running' && barPeriod === 'span') barPeriod = 'yearly';
   barBrError = null;
   if (v === 'brackets' && barMetric === 'co2') barMetric = 'kwh';   // brackets carry no carbon
   barSetActive('bar-show-seg', el);
@@ -2761,6 +2865,11 @@ function barBrSyncUI() {
   vis('bar-net-wrap', !on && !fl, 'flex');
   vis('bar-sort-btn', !on && !fl);
   vis('bar-flow-head', fl, 'flex');
+  var spanOk = barSpans().length > 0;
+  vis('bar-yearly-btn', !fl);
+  vis('bar-span-btn', spanOk);
+  // not before the eras and tariffs are known: a remembered Span is drawn when they land
+  if (barPeriod === 'span' && !spanOk && !barSpansPending()) barPeriod = 'monthly';
   if (fl) { vis('bar-legend', false); vis('bar-tariff-wrap', false); vis('bar-eras-wrap', false); }
   var co2 = document.getElementById('bar-co2-btn');
   if (co2 && on) co2.style.display = 'none';
@@ -2944,6 +3053,7 @@ function barGetDataForPeriod() {
       bucketRanges: rows.map(function(){ return { from: barHHDate, to: _hhTo }; })
     };
   }
+  if (barPeriod === 'span') return barSpanData(barSpanCurrent());
   if (barPeriod === 'daily') {
     var filtered;
     if (barCalendar) {
@@ -3115,7 +3225,7 @@ function barRender() {
     if (_calSeg) _calSeg.style.display = 'none';
     if (barHHDataDate !== barHHDate) { barLoadHH(); return; }
   } else if (_calSeg) {
-    _calSeg.style.display = '';
+    _calSeg.style.display = barPeriod === 'span' ? 'none' : '';   // a span is its own dates
   }
   if ((barBrackets() || barFlow()) && !barBrReady()) return;     // the brackets' read renders again when it lands
   barBrSyncUI();
@@ -3174,7 +3284,7 @@ function barRender() {
   }
 
   var pd = barGetDataForPeriod();
-  if (barFlow()) { barFlowRender(pd.aggList); return; }    // Flow: one Sankey for the span (Flow design)
+  if (barFlow()) { barLoadEras(); barLoadTariffs(); barFlowRender(pd.aggList); return; }    // Flow: one Sankey for the span (Flow design)
   // Set consistent CO2 unit for this render before building datasets or labels
   if (barMetric === 'co2') barCo2SetUnit(pd.aggList);
   var datasets = barGetDatasets(pd.labels, pd.aggList, pd.isHH);
@@ -4248,6 +4358,23 @@ function barAccExpandClose() { document.getElementById('acc-backdrop').classList
 function barBuildSubBar() {
   var bar = document.getElementById('bar-sub-bar');
   bar.innerHTML = '';
+  if (barPeriod === 'span' && !barRunning()) {
+    var cur = barSpanCurrent(), chs = barSpans(), open = null, html = '';
+    var sel = document.createElement('select');
+    sel.setAttribute('aria-label', 'Which span');
+    sel.style.cssText = 'font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;';
+    chs.forEach(function(c) {
+      if (c.group !== open) { html += (open ? '</optgroup>' : '') + '<optgroup label="' + _eraEsc(c.group) + '">'; open = c.group; }
+      var lastDay = new Date(Date.parse(c.to + 'T00:00:00Z') - 864e5).toISOString().slice(0, 10);
+      var span = _eraDate(c.from) + ' \u2192 ' + (c.latest ? 'now' : _eraDate(lastDay));
+      html += '<option value="' + _eraEsc(c.id) + '"' + (cur && c.id === cur.id ? ' selected' : '') + '>' +
+        (c.sub ? '\u00a0\u00a0\u00a0' : '') + _eraEsc(c.label) + ' \u00b7 ' + span + '</option>';
+    });
+    sel.innerHTML = html + (open ? '</optgroup>' : '');
+    sel.onchange = function() { barSetSpan(sel.value); };
+    bar.appendChild(sel);
+    return;
+  }
   if (barPeriod === 'hh' && !barRunning()) {
     // Day navigator using the SAME shared rolodex (PeriodSpinner) as the other
     // periods — so hover-scroll shows the ±4-day preview and scrolls in the same

@@ -5,6 +5,27 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b5] — 2026-11-04
+
+- **IOG-SMB history waiting for its split is amber, not red.** After importing your history on
+  IOG-SMB, a half-hour Octopus billed off-peak in the day showed red on the heatmap until EMT had
+  fetched its House/EV breakdown. It is light amber now — *Octopus's cost is in, waiting for its
+  split* — and turns green when the breakdown arrives.
+- **The tariff you're on, when Octopus lists a blip.** EMT took the latest-starting agreement as
+  your current tariff when every agreement had an end date — so on a fixed-term tariff, a
+  zero-length agreement Octopus lists after it (an Agile blip on one tester's account) became the
+  "current" one, and new half-hours took its standing charge. It now takes the agreement in force
+  today.
+- **Flow and Rate brackets agree with Devices on an EV charger.** With an EV device, the Devices view
+  shows Octopus's split of the car where it has one; Flow and Rate brackets showed the charger's own
+  reading, a little off, with the house off the other way. They show the same as Devices now.
+- **Span, in Devices, Rate brackets and Flow.** Pick a stretch to look at: a chapter of your home,
+  from one era's start to the next era's (and *Before the first era*); an era on its own, from its
+  start to its own end or today; or a tariff, from its start to its end, with each stretch between its
+  price changes under it. Devices and Rate brackets draw a bar a
+  day for a span of up to two months, a bar a month beyond; Flow draws the span as one flow. In Flow,
+  Span takes Yearly's place, which showed the same as Monthly.
+
 ## [2026.11.0b4] — 2026-11-04
 
 - **Usage Stats → Flow.** Where the grid's electricity went, as a Sankey: from the grid, through the

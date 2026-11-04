@@ -43,7 +43,7 @@ window.EMTHeatmap = (function () {
             tot: 'To look at', settle: 'bill',
             sub: 'Green: final — Octopus\u2019s cost (a bill, or an API import), or on a published-rate ' +
                  'tariff the settled kWh \u00d7 rate · teal: Octopus\u2019s cost, EMT\u2019s House/EV split · ' +
-                 'light amber: settled kWh \u00d7 rate, Octopus\u2019s cost not in yet · amber: kWh not ' +
+                 'light amber: settled kWh \u00d7 rate, Octopus\u2019s cost not in yet, or (IOG-SMB) its cost in and its House/EV split awaited · amber: kWh not ' +
                  'settled yet · red: not final after 7 days, the stored cost is not the bill, or a ' +
                  'completed dispatch with no House/EV split · red, hatched yellow: no cost from Octopus, ' +
                  'and EMT no longer asks — kWh \u00d7 rate · blue: ' +
@@ -55,6 +55,7 @@ window.EMTHeatmap = (function () {
                   ['applied_emt_split', 'Octopus\u2019s cost, EMT\u2019s House/EV split'],
                   ['estimate_dcc', 'settled kWh \u00d7 rate, Octopus\u2019s cost not in yet'],
                   ['estimate_cad', 'kWh not settled yet'],
+                  ['split_pending', 'Octopus\u2019s cost is in \u2014 waiting for its House/EV split to apply it'],
                   ['overdue', 'needs a look: not final after 7 days, Octopus\u2019s figures disagreeing (its cost, kWh, VAT ' +
                  'or split), or the devices costing more than the meter'],
                   ['abandoned', 'no cost from Octopus, and EMT no longer asks \u2014 kWh \u00d7 rate'],
@@ -88,7 +89,7 @@ window.EMTHeatmap = (function () {
   var MISSING_TEXT = 'no block for this half-hour \u2014 missing';
   var CAT_RANK = {
     bill:  {none: 0, imported: 0, no_agreement: 0, applied: 1, applied_emt_split: 1, corrected: 1, estimate_dcc: 2,
-            estimate_cad: 2, overdue: 3, abandoned: 3, differs: 3, flagged: 3, missing: 3},
+            estimate_cad: 2, split_pending: 2, overdue: 3, abandoned: 3, differs: 3, flagged: 3, missing: 3},
     export: {none: 0, imported: 0, no_agreement: 0, applied: 1, waiting: 2, overdue: 3, no_data: 3, missing: 3},
     presence: {present: 0, missing: 3}
   };
@@ -99,6 +100,8 @@ window.EMTHeatmap = (function () {
            corrected: 'your rate correction',
            estimate_dcc: 'settled kWh \u00d7 rate — Octopus\u2019s cost not in yet',
            estimate_cad: 'kWh not settled yet \u00d7 rate',
+           split_pending: 'Octopus\u2019s cost is in, not applied yet: on IOG-SMB its band waits for Octopus\u2019s ' +
+                          'House/EV breakdown, which EMT is asking for \u2014 until then kWh \u00d7 rate',
            overdue: 'not final after 7 days — kWh \u00d7 rate',
            abandoned: 'no cost from Octopus, and EMT no longer asks for it — kWh \u00d7 rate. ' +
                       'Re-fetch may still get it; a CSV or PDF bill for the day can supply it',
@@ -180,7 +183,7 @@ window.EMTHeatmap = (function () {
   // except CSV history and `none` (nothing imported or exported — nothing to settle). One rule for
   // the "To look at" totals and the collapse. On the energy views, only a missing half-hour.
   var ISSUE = {
-    bill: {applied_emt_split: 1, corrected: 1, estimate_dcc: 1, estimate_cad: 1,
+    bill: {applied_emt_split: 1, corrected: 1, estimate_dcc: 1, estimate_cad: 1, split_pending: 1,
            overdue: 1, abandoned: 1, differs: 1, flagged: 1, missing: 1},
     // no_agreement is not an issue (22 Oct 2026, the user): nothing is paid, nothing to fix
     export: {waiting: 1, overdue: 1, no_data: 1, missing: 1},
@@ -201,6 +204,7 @@ window.EMTHeatmap = (function () {
       ? {applied: C.green, waiting: C.amber, overdue: C.red, imported: C.grey, no_agreement: C.grey,
          none: C.grey}
       : {applied: C.green, applied_emt_split: C.teal, estimate_dcc: C.lamber, estimate_cad: C.amber,
+         split_pending: C.lamber,
          overdue: C.red, differs: C.red, flagged: C.red,
          corrected: C.blue, imported: C.grey, no_agreement: C.grey, none: C.grey};
     return by[v] || 'rgba(0,0,0,0)';
