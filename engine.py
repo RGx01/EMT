@@ -3188,6 +3188,48 @@ def backout_recorder_attribution(*, run_id=None, meter_id=None,
         _backout_lock.release()
 
 
+async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
+    """Replace a device's history from the sensors it uses now (replace device history design
+    §2) — the route has claimed the device and checked those sensors. Drop what a rebuild made
+    and what the sensors it no longer uses recorded (`drop_device_history`), give the house its
+    remainder back over the span, drop the device's runs from the ledger (what they wrote is
+    gone), then rebuild its whole history from HA's recorder as *Rebuild history* does.
+    Never raises; a failure is the run's error, on its card."""
+    from datetime import datetime as _dt, timedelta as _td
+    if _engine_ha is None:
+        # nothing dropped: a replace that could not rebuild would only delete
+        with _attribution_lock:
+            j = _attribution_jobs.setdefault(meter_id, {"device": meter_id})
+            j.update({"status": "error", "error": "Home Assistant is not connected — nothing was "
+                                                  "replaced"})
+        _coord.release("attribution", meter_id)
+        return {"ok": False, "error": "no_ha"}
+    try:
+        off = get_store().device_off_stitch_sensors(meter_id)
+        res = get_store().drop_device_history(meter_id, [o["id"] for o in off])
+        lo, hi = res.get("from"), res.get("to")
+        if lo and hi:
+            hi_excl = (_dt.fromisoformat(hi) + _td(minutes=int(get_block_minutes() or 30))).isoformat()
+            for parent in res.get("parents") or []:
+                recompute_remainders_for_window(parent, lo, hi_excl)
+        for r in get_store().get_attribution_runs():
+            if r.get("meter_id") == meter_id and r.get("run_id"):
+                get_store().remove_attribution_run(r["run_id"])
+        logger.info("replace_device_history: %s — dropped %d half-hour(s) and %d read(s) "
+                    "(%s), rebuilding from %s", meter_id, res.get("deleted_blocks", 0),
+                    res.get("deleted_reads", 0),
+                    ", ".join(o["entity_id"] for o in off) or "no sensor it no longer uses",
+                    ", ".join(sensor_ids))
+    except Exception as e:
+        logger.error("replace_device_history failed (%s): %s", meter_id, e, exc_info=e)
+        with _attribution_lock:
+            j = _attribution_jobs.setdefault(meter_id, {"device": meter_id})
+            j.update({"status": "error", "error": "the history could not be replaced"})
+        _coord.release("attribution", meter_id)        # the claim never became a run
+        return {"ok": False, "error": "replace_failed"}
+    return await run_attribution_job(meter_id, sensor_ids, pace_s=0.05)
+
+
 def _stitch_hourly_energy(series_by_sensor: dict, priority: list,
                           sources: dict | None = None) -> dict:
     """Combine one or more cumulative-kWh statistic series into a single hourly
@@ -3707,12 +3749,21 @@ _REFILL_REBUILD_POLL_S = 5.0         # how often a queued refill rebuild asks to
 _REFILL_REBUILD_WAIT_S = 3600.0      # and for how long, before it gives up (logged)
 
 
-async def _rebuild_when_admitted(mid: str, sensors: list, lo: str, hi: str) -> None:
+_SANITY_HELD = ("device_exceeds_house", "suspiciously_small")
+
+
+async def _rebuild_when_admitted(mid: str, sensors: list, lo: str, hi: str, *,
+                                 fetch: bool = False) -> None:
     """Claim `mid`'s attribution run once the coordinator admits it, then run it from `ha_reads`.
     The claim is refused while a member it depends on runs — the refill's own import, then the
     pricing verify — so it is retried, not given up on (staging, 20 Oct 2026: the gap fill's
     finish runs while its fill still holds "import", and every device's rebuild was refused).
-    A run of the device's own that starts meanwhile is left to finish the job."""
+    A run of the device's own that starts meanwhile is left to finish the job.
+
+    `fetch`: a device whose history EMT never had, after an import (device history on first
+    import design §3) — its whole history from HA's recorder, not the span from `ha_reads`. The
+    sensor is checked against the house first, as *Rebuild history* checks it; a sensor that
+    fails is not rebuilt but held, on the device's card, for the user to look at."""
     waited = 0.0
     while True:
         cur = (_attribution_jobs.get(mid) or {}).get("status")
@@ -3728,21 +3779,60 @@ async def _rebuild_when_admitted(mid: str, sensors: list, lo: str, hi: str) -> N
             return
         await asyncio.sleep(_REFILL_REBUILD_POLL_S)
         waited += _REFILL_REBUILD_POLL_S
+    if fetch:
+        pf = await attribution_preflight(mid, sensors)
+        if pf.get("verdict") in _SANITY_HELD:
+            attribution_release(mid)
+            with _attribution_lock:
+                _attribution_jobs[mid] = {"status": "held", "device": mid, "sensors": list(sensors),
+                                          "verdict": pf.get("verdict"),
+                                          "device_kwh": pf.get("device_kwh"),
+                                          "house_kwh": pf.get("house_kwh"),
+                                          "started_at": _dt_now_iso_safe()}
+            logger.warning("rebuild_devices_after_refill: %s not rebuilt — its sensor reads %s kWh "
+                           "against the house's %s kWh (%s); held for Rebuild history on its card",
+                           mid, pf.get("device_kwh"), pf.get("house_kwh"), pf.get("verdict"))
+            return
+        logger.info("rebuild_devices_after_refill: %s — its history EMT never had, from HA's "
+                    "recorder", mid)
+        await run_attribution_job(mid, sensors, pace_s=0.05)
+        return
     logger.info("rebuild_devices_after_refill: %s %s..%s — rebuilding from HA's reads", mid, lo, hi)
     await run_attribution_job(mid, sensors, pace_s=0.05, window=(lo, hi), fetch=False)
 
 
-async def rebuild_devices_after_refill(lo: str, hi: str) -> list:
+async def rebuild_devices_after_refill(lo: str, hi: str, *, fetch_new: bool = False) -> list:
     """After a refill of [lo, hi) — a gap fill or a CSV import, the main meter only — rebuild
     each device `ha_reads` holds figures for there, from those alone (soft delete design §3): no
     call to HA's recorder. Each device is queued (`_rebuild_when_admitted`): its run is the
     attribution job, claimed once the coordinator admits it — after the import and the pricing
-    verify — and it fills only absent device rows. Returns the devices queued. Never raises."""
+    verify — and it fills only absent device rows. Returns the devices queued. Never raises.
+
+    `fetch_new` (an import — Octopus's or a CSV — not a gap fill): a device whose history EMT
+    never had (`devices_without_history`) is rebuilt from HA's recorder over its whole history
+    instead, as *Rebuild history* would (device history on first import design §2)."""
     queued = []
+    fresh = []
+    if fetch_new:
+        try:
+            fresh = [m for m in get_store().devices_without_history()
+                     if get_store().device_stitch_sensors(m)]
+        except Exception as e:
+            logger.warning("rebuild_devices_after_refill: devices without history: %s", e)
+            fresh = []
+    for mid in fresh:
+        asyncio.create_task(_rebuild_when_admitted(mid, get_store().device_stitch_sensors(mid),
+                                                   lo, hi, fetch=True))
+        queued.append(mid)
+    if fresh:
+        logger.info("rebuild_devices_after_refill: %s — no history in EMT; queued from HA's "
+                    "recorder, once the import and the pricing verify are done", ", ".join(fresh))
     try:
-        devices = get_store().ha_read_devices(lo, hi)
+        devices = [m for m in get_store().ha_read_devices(lo, hi) if m not in fresh]
     except Exception as e:
         logger.warning("rebuild_devices_after_refill: %s", e)
+        return queued
+    if not devices and fresh:
         return queued
     if not devices:
         # said, so a refill whose devices stay empty can be told from one that never ran this
@@ -3757,7 +3847,7 @@ async def rebuild_devices_after_refill(lo: str, hi: str) -> list:
         asyncio.create_task(_rebuild_when_admitted(mid, sensors, lo, hi))
         queued.append(mid)
     logger.info("rebuild_devices_after_refill: %s..%s — %s queued, from HA's reads, once the "
-                "import and the pricing verify are done", lo, hi, ", ".join(queued))
+                "import and the pricing verify are done", lo, hi, ", ".join(devices))
     return queued
 
 
@@ -8952,7 +9042,8 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
                         _ih = _store.count_imported_history()
                         if _ih.get("from") and _ih.get("to"):
                             _hi = (datetime.fromisoformat(_ih["to"]) + timedelta(minutes=30)).isoformat()
-                            j["devices_rebuilding"] = await rebuild_devices_after_refill(_ih["from"], _hi)
+                            j["devices_rebuilding"] = await rebuild_devices_after_refill(
+                                _ih["from"], _hi, fetch_new=True)
                     except Exception as _e:
                         logger.warning("run_api_import_job: device rebuild not started: %s", _e)
                 j["status"] = "done"

@@ -5,6 +5,31 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b7] — 2026-11-04
+
+- **Flow's periods are named by what it shows.** In Flow, the period buttons now read *Daily*,
+  *Monthly* and *Yearly*: a day's flow, a month's, and the years you've ticked. They were HH, Daily and
+  Monthly, named after the bars the other views draw. Devices, Rate brackets and Running total keep
+  theirs.
+- **Setup keeps a battery's Solar / PV power sensor.** The setup wizard asks for a battery's PV power
+  sensor, but never saved it, so the battery's card in Setup came up without it and the PV dial didn't
+  appear. It is saved now. If you set up a battery before this, add the sensor on its card in Setup.
+
+- **Importing your history rebuilds your devices' history too.** After you set up a device and import
+  your history from Octopus or a CSV, EMT now fetches the device's history from Home Assistant and fits
+  it into the imported half-hours, without asking. Before, it only offered to, the next time you opened
+  Setup. It checks the sensor first, as *Rebuild history* does: if it reads more than your house drew, or
+  far less, nothing is written and the device's card in Setup says why. Devices that already have
+  history are left as they are.
+
+- **You can replace a device's history after picking the wrong sensor.** Changing a device's sensor
+  now asks why: Home Assistant renamed it, it's a new device, or it was the wrong sensor. Before, EMT
+  assumed a rename. If it was the wrong sensor, EMT offers to replace the device's history once you've
+  saved. It takes a backup, drops what the wrong sensor recorded and the history rebuilt from it, and
+  rebuilds the device from the new sensor. The device's card in Setup has a *Replace history* button
+  for the same thing, and shows which sensors its history came from, flagging any it no longer uses.
+  Before, the wrong sensor's figures stayed: *Rebuild history* only fills half-hours that have none.
+
 ## [2026.11.0b6] — 2026-11-04
 
 - **IOG-SMB history imported from Octopus gets its House/EV split.** After you import your history on

@@ -5650,6 +5650,7 @@ class TestAttributionEndpoints(unittest.TestCase):
         store = MagicMock()
         store.get_attribution_runs.return_value = [{"run_id": "r1", "meter_id": "ev", "blocks_written": 10}]
         store.count_recorder_attributed.return_value = {"total": 10, "meters": []}
+        store.device_history_sources.return_value = {}
         d = make_client(store=store).get("/api/historical/attribute/runs").get_json()
         self.assertTrue(d["ok"])
         self.assertEqual(d["runs"][0]["run_id"], "r1")

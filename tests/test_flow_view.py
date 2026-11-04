@@ -26,6 +26,9 @@ Export by rate band, and a negative price drawn in £ (Flow export bands design,
 out through its own bands (Other under 2% of the export), and in £ a plunge's credit goes from whoever
 used it to Plunge credit, a negative export price's cost to Paid to export — `credit` flows, £ only.
 Those tests fail on the tree before them; test_GUARD_no_negative_price_no_credit_nodes passes on both.
+Flow's period buttons named by the span they total (Daily, Monthly, Yearly for HH, Daily, Monthly; the
+user, 4 Nov 2026), and the active button found by its period, not its words: those two fail on the tree
+before them.
 
 Every test fails on the parent tree, where none of it existed. TheEraChapters, TheSpans and the Span
 wiring (4 Nov 2026, later; eras on their own and "now" for a future end the same day, from staging's data)
@@ -388,6 +391,22 @@ class TheWiring(unittest.TestCase):
     def test_the_overlays_on_a_span(self):
         self.assertIn("|| barPeriod === 'span';", _fn("barTariffsAvailable"))
         self.assertIn("|| barPeriod === 'span';", _fn("barErasAvailable"))
+
+    def test_flow_names_its_periods_by_what_it_totals(self):
+        # 4 Nov 2026, the user: in Flow HH is a day, Daily a month, Monthly the years ticked
+        self.assertIn("var FLOW_PERIOD_NAMES = [['hh', 'HH', 'Daily'], ['daily', 'Daily', 'Monthly'], "
+                      "['monthly', 'Monthly', 'Yearly']];", PAGE)
+        f = _fn("barBrSyncUI")
+        self.assertIn("var b = document.getElementById('bar-' + p[0] + '-btn');", f)
+        self.assertIn("b.textContent = fl ? p[2] : p[1];", f)
+        for p in ("hh", "daily", "monthly"):
+            self.assertIn("onclick=\"barSetPeriod('%s',this)\" id=\"bar-%s-btn\"" % (p, p), PAGE)
+
+    def test_the_active_period_by_what_it_sets_not_its_words(self):
+        # renamed in Flow, a button's words no longer name its period
+        f = _fn("barSyncUI")
+        self.assertIn("b.classList.toggle('active', (b.getAttribute('onclick') || '').indexOf(\"'\" + barPeriod + \"'\") !== -1);", f)
+        self.assertNotIn("b.textContent.toLowerCase() === v", f)
 
     def test_export_says_where_emt_cannot_see(self):
         f = _fn("barFlowDraw")

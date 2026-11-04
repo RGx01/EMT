@@ -6513,6 +6513,74 @@ class BlockStore:
             "ORDER BY effective_from DESC LIMIT 1) WHERE m.is_sub_meter = 1 AND "
             "h.period_start >= ? AND h.period_start < ? ORDER BY h.meter_id", (lo, hi))]
 
+    def devices_without_history(self) -> list:
+        """The active sub-meters of the current config period whose history EMT has never had:
+        no recorder hours kept in `ha_reads` (Home Assistant was never asked), and no device row
+        before the first half-hour HA recorded live — so not a device whose history came from
+        v4, a rebuild, or anywhere else (device history on first import design §2). A device
+        with no live half-hour yet counts from now."""
+        return [r[0] for r in self._conn.execute(
+            "SELECT m.meter_id FROM meters m WHERE m.is_sub_meter = 1 AND m.retired_at IS NULL "
+            "AND m.config_period_id = (SELECT id FROM config_periods WHERE effective_to IS NULL "
+            "ORDER BY effective_from DESC LIMIT 1) "
+            "AND NOT EXISTS (SELECT 1 FROM ha_reads h WHERE h.meter_id = m.meter_id "
+            "                AND h.origin = 'recorder') "
+            "AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.meter_id = m.meter_id AND "
+            "    b.block_start < COALESCE((SELECT MIN(h.period_start) FROM ha_reads h "
+            "        WHERE h.meter_id = m.meter_id AND h.origin = 'live'), '9999')) "
+            "ORDER BY m.meter_id")]
+
+    def device_history_sources(self) -> dict:
+        """{meter_id: [{entity_id, on_stitch, hours, half_hours, from, to}]} — for each device, the
+        sensors its kept history came from (replace device history design §4): the recorder hours
+        and the live half-hours in `ha_reads` that name each. `on_stitch` is whether a rebuild
+        still uses the sensor (the primary, or a history sensor); one off it is a sensor the
+        device no longer uses, whose readings are still in its history."""
+        out: dict = {}
+        for r in self._conn.execute(
+                "SELECT h.meter_id, d.entity_id, (d.role = 'primary' OR d.position IS NOT NULL) AS on_stitch, "
+                "SUM(h.origin = 'recorder') AS hours, SUM(h.origin = 'live') AS half_hours, "
+                "MIN(h.period_start) AS lo, MAX(h.period_start) AS hi "
+                "FROM ha_reads h JOIN device_sensors d ON d.id = h.sensor_id "
+                "WHERE h.channel = 'import' GROUP BY h.meter_id, d.id ORDER BY h.meter_id, lo"):
+            out.setdefault(r["meter_id"], []).append(
+                {"entity_id": r["entity_id"], "on_stitch": bool(r["on_stitch"]), "hours": r["hours"],
+                 "half_hours": r["half_hours"], "from": r["lo"], "to": r["hi"]})
+        return out
+
+    def device_off_stitch_sensors(self, meter_id: str, channel: str = "import") -> list:
+        """A device's sensors a rebuild no longer uses — secondaries kept off the stitch
+        (`position` NULL) only because a block or a read still names them."""
+        return [dict(r) for r in self._conn.execute(
+            "SELECT id, entity_id FROM device_sensors WHERE meter_id = ? AND channel = ? AND "
+            "role = 'secondary' AND position IS NULL ORDER BY id", (meter_id, channel))]
+
+    def drop_device_history(self, meter_id: str, sensor_ids: list) -> dict:
+        """Replace history's first half (replace device history design §2), one transaction: the
+        device's rebuilt half-hours (all — the rebuild that follows makes them again from the
+        sensors it uses now); its live half-hours, and every `ha_reads` row, recorded by
+        `sensor_ids` (sensors it no longer uses); and then those sensors' entries, nothing naming
+        them. Imported device rows are not touched. Returns {deleted_blocks, deleted_reads,
+        parents, from, to} — the caller recomputes each parent's remainder over [from, to]."""
+        ids = [int(i) for i in (sensor_ids or [])]
+        q = ",".join("?" * len(ids)) or "NULL"
+        c = self._conn
+        span = c.execute(
+            f"SELECT MIN(block_start), MAX(block_start) FROM blocks WHERE meter_id = ? AND "
+            f"(source = ? OR imp_sensor_id IN ({q}))",
+            [meter_id, self.RECORDER_ATTRIBUTED_SOURCE] + ids).fetchone()
+        with c:
+            nb = c.execute(
+                f"DELETE FROM blocks WHERE meter_id = ? AND (source = ? OR imp_sensor_id IN ({q}))",
+                [meter_id, self.RECORDER_ATTRIBUTED_SOURCE] + ids).rowcount
+            nr = c.execute(f"DELETE FROM ha_reads WHERE meter_id = ? AND sensor_id IN ({q})",
+                           [meter_id] + ids).rowcount
+            for i in ids:
+                self._drop_unpointed_sensor(i)
+        parent = self.get_parent_meter_id(meter_id)
+        return {"deleted_blocks": nb, "deleted_reads": nr, "parents": [parent] if parent else [],
+                "from": span[0], "to": span[1]}
+
     def point_block_at_sensor(self, block_start: str, meter_id: str, sensor_id) -> None:
         """A device half-hour put back from `ha_reads` names the sensor that recorded it, not
         today's primary (the new row's default) — or none, `sensor_id` None, where that is not

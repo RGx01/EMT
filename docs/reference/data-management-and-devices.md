@@ -128,9 +128,21 @@ key is never in it. A size estimate warns over 10 MB.
 - **A refill rebuilds the devices** (`rebuild_devices_after_refill`): after a gap fill, an Octopus
   import or a CSV import, each device is rebuilt over the span from `ha_reads`, without asking Home
   Assistant.
+- **An import rebuilds a new device from Home Assistant** (`fetch_new`): after an Octopus or a CSV
+  import (not a gap fill), a device whose history EMT never had (`devices_without_history`: no recorder
+  hours kept, no device row before its first live half-hour) is rebuilt over its whole history from
+  HA's recorder, as *Rebuild history* does. The sensor check runs first; a sensor reading more than the
+  house drew, or far less, is held — nothing written, a note on its card.
 - **Sensors:** `device_sensors` holds a device's primary sensor and its history sensors; each block
   records the sensor that wrote it. *Rebuild history* and the history sensors are on the device's card
-  in Settings.
+  in Settings, with the sensors its kept history came from (`device_history_sources`).
+- **A sensor change asks why:** renamed (the old one kept as a history sensor), a new device (its
+  history stays, the old sensor off the stitch), or the wrong sensor — which offers a replace after the
+  save's reload.
+- **Replace history** (`/api/historical/attribute/replace`): the sensor check, a backup (none, no
+  replace), then the device's rebuilt half-hours and everything a sensor it no longer uses recorded
+  (`ha_reads`, live half-hours) are dropped (`drop_device_history`), the house's remainder redone, and
+  the device rebuilt whole from the sensors it uses now (`replace_device_history`).
 - **A battery counting solar** (`check_battery_sensors`, at start-up and hourly): a half-hour counts
   against a battery when it reads over 1.5× the grid import and over 0.25 kWh above it; on 5 days in 30
   the sensor is flagged. Data is never changed — a banner and a card note, and *Keep this sensor

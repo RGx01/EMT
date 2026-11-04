@@ -160,12 +160,13 @@
 
 <!-- ── A device's live sensor changed: keep the old one for history? (device sensors §3) ── -->
 <div id="rename-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
-  <div style="background:var(--surface);border-radius:8px;padding:24px;max-width:460px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.3);">
+  <div style="background:var(--surface);border-radius:8px;padding:24px;max-width:520px;width:90%;box-shadow:0 8px 32px rgba(0,0,0,0.3);">
     <h3 style="margin:0 0 8px;font-size:16px;" id="rename-title">Keep the old sensor?</h3>
     <p style="font-size:13px;color:var(--muted);margin:0 0 16px;line-height:1.6;" id="rename-body"></p>
-    <div style="display:flex;gap:8px;justify-content:flex-end;">
-      <button id="rename-no" class="btn btn-sm">No, drop it</button>
-      <button id="rename-yes" class="btn btn-sm" style="background:var(--accent);color:#000;font-weight:600;">Keep for history</button>
+    <div style="display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;">
+      <button id="rename-wrong" class="btn btn-sm">It was the wrong sensor</button>
+      <button id="rename-no" class="btn btn-sm">A new device</button>
+      <button id="rename-yes" class="btn btn-sm" style="background:var(--accent);color:#000;font-weight:600;">Renamed — keep for history</button>
     </div>
   </div>
 </div>
@@ -1426,16 +1427,19 @@ function buildHistorySection(meterId, retired) {
         '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px;">' +
           '<button class="btn btn-sm js-hist-check" data-meter="' + meterId + '">Check sensors</button>' +
           '<button class="btn btn-sm js-hist-rebuild" data-meter="' + meterId + '">▶ Rebuild history</button>' +
+          '<button class="btn btn-sm js-hist-replace" data-meter="' + meterId + '">↻ Replace history</button>' +
         '</div>' +
         '<small style="color:var(--muted);display:block;margin-bottom:6px;">Rebuilds the half-hours this device ' +
         'has no data for, from its live sensor then its history sensors, split by the house import and never above it. ' +
-        'A backup is taken first; live and imported data are untouched; it can be removed below.</small>') +
+        'A backup is taken first; live and imported data are untouched; it can be removed below. ' +
+        '<strong>Replace history</strong> rebuilds it all again from the sensors above, dropping what a sensor ' +
+        'this device no longer uses recorded — for a sensor that turned out to be wrong.</small>') +
       '<div class="js-hist-progress" style="font-size:13px;"></div>' +
       '<div class="js-hist-check-out" style="font-size:12px;"></div>' +
       '<div class="js-hist-layer" style="font-size:13px;"></div>' +
     '</div>';
 }
-var _hist = {runs: {}, layer: {}, timer: null, removing: false};
+var _hist = {runs: {}, layer: {}, sources: {}, timer: null, removing: false};
 function _histEl(m, cls) {
   var box = document.querySelector('.dev-history[data-meter="' + m + '"]');
   return box ? box.querySelector('.' + cls) : null;
@@ -1456,15 +1460,40 @@ function _renderHistoryState() {
       pr.innerHTML = '✓ Rebuilt ' + (run.written || 0) + ' half-hours' + (run.gaps ? ' · ' + run.gaps + ' with no HA data' : '') + '.';
     } else if (st === 'error') {
       pr.innerHTML = '<span style="color:var(--danger);">Rebuild error: ' + esc(run.error || '') + '</span>';
+    } else if (st === 'held') {
+      // the import's own rebuild of a new device, held by the sensor check (device history on
+      // first import design §3): nothing written; Rebuild history asks before it goes ahead
+      pr.innerHTML = '<span style="color:#b45309;">⚠ Not rebuilt after the import: this sensor reads about ' +
+        esc(String(run.device_kwh)) + ' kWh against the house\u2019s ' + esc(String(run.house_kwh)) + ' kWh, ' +
+        (run.verdict === 'device_exceeds_house' ? 'more than the house drew' : 'far less than expected') +
+        ' \u2014 check the sensor, then use Rebuild history.</span>';
     } else if (!pr.dataset.keep) { pr.innerHTML = ''; }
-    ly.innerHTML = layer
+    ly.innerHTML = (layer
       ? '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;">' +
           '<span>Rebuilt history: ' + esc((layer.from || '?').substr(0, 10)) + ' → ' + esc((layer.to || '?').substr(0, 10)) +
           ' · ' + (layer.blocks || 0).toLocaleString() + ' half-hours</span>' +
           '<button class="btn btn-sm js-hist-remove-layer" data-meter="' + m + '" style="color:var(--danger);"' +
           (_hist.removing ? ' disabled' : '') + '>🗑 Remove</button></div>'
-      : '';
+      : '') + _histSourcesHtml(m);
   });
+}
+// replace device history design §4: which sensors the device's kept history came from, and a
+// warning where some is from a sensor it no longer uses
+function _histSourcesHtml(m) {
+  var src = _hist.sources[m] || [];
+  if (!src.length) return '';
+  var off = src.filter(function(x) { return !x.on_stitch; });
+  return '<div style="font-size:12px;color:var(--muted);padding:2px 0 6px;">From Home Assistant: ' +
+    src.map(function(x) {
+      var parts = [];
+      if (x.hours) parts.push(x.hours.toLocaleString() + (x.hours === 1 ? ' hour' : ' hours'));
+      if (x.half_hours) parts.push(x.half_hours.toLocaleString() + (x.half_hours === 1 ? ' live half-hour' : ' live half-hours'));
+      return '<code style="word-break:break-all;">' + esc(x.entity_id) + '</code> (' + parts.join(', ') + ', ' + esc((x.from || '?').substr(0, 10)) +
+             ' → ' + esc((x.to || '?').substr(0, 10)) + ')' + (x.on_stitch ? '' : ' — <strong>no longer used</strong>');
+    }).join('; ') + '</div>' +
+    (off.length ? '<div style="font-size:12px;color:#b45309;padding:0 0 6px;">⚠ Part of this device\u2019s history ' +
+      'is from a sensor it no longer uses. If that sensor was wrong, <strong>Replace history</strong> rebuilds it from ' +
+      'the sensors it uses now.</div>' : '');
 }
 function _loadHistoryState() {
   return Promise.all([
@@ -1482,6 +1511,7 @@ function _loadHistoryState() {
     });
     _hist.layer = {};
     (((res[1] || {}).summary || {}).meters || []).forEach(function(m) { _hist.layer[m.meter_id] = m; });
+    _hist.sources = (res[1] || {}).sources || {};
     _renderHistoryState();
     var active = Object.keys(_hist.runs).some(function(k) {
       return _hist.runs[k].status === 'running' || _hist.runs[k].status === 'paused'; });
@@ -1535,6 +1565,34 @@ function _histRebuild(m, override) {
         if (d.sanity) {
           _histNote(m, '⚠ ' + esc(d.warn || 'This sensor may not be right.') +
             ' <button class="btn btn-sm js-hist-override" data-meter="' + m + '">Rebuild anyway</button>');
+          return;
+        }
+        _histNote(m, '<span style="color:var(--danger);">' + esc(d.error || 'not started') + '</span>');
+        return;
+      }
+      var el = _histEl(m, 'js-hist-progress'); if (el) delete el.dataset.keep;
+      _hist.runs[m] = {status: 'running', device: m};
+      _loadHistoryState();
+    }).catch(function(e) { _histNote(m, 'Request failed: ' + esc(e.message)); });
+}
+// replace device history design §2: drop the rebuilt half-hours and what sensors the device no
+// longer uses recorded, then rebuild it all from its sensors now — after a backup and the sensor check
+function _histReplace(m, override) {
+  if (_histUnsaved(m)) { _histNote(m, '<span style="color:#b45309;">Save Config first — the replace uses the saved sensors.</span>'); return; }
+  var label = ((config.meters[m] || {}).meta || {}).device || m;
+  var off = (_hist.sources[m] || []).filter(function(x) { return !x.on_stitch; }).map(function(x) { return x.entity_id; });
+  if (!override && !window.confirm('Replace the history of ' + label + '?\n\n' +
+      'Its rebuilt half-hours are dropped' + (off.length ? ', and everything recorded by ' + off.join(', ') +
+      ' (a sensor it no longer uses)' : '') + '. Then its history is rebuilt from ' + _histSensors(m).join(', ') +
+      '.\n\nA backup is taken first. Imported data and the house are untouched.')) return;
+  _histNote(m, '⏳ Checking, backing up and starting…');
+  fetch(apiUrl('/api/historical/attribute/replace'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({meter_id: m, confirm_override: !!override})})
+    .then(function(r) { return r.json(); }).then(function(d) {
+      if (!d.ok) {
+        if (d.sanity) {
+          _histNote(m, '⚠ ' + esc(d.warn || 'This sensor may not be right.') +
+            ' <button class="btn btn-sm js-hist-replace-override" data-meter="' + m + '">Replace anyway</button>');
           return;
         }
         _histNote(m, '<span style="color:var(--danger);">' + esc(d.error || 'not started') + '</span>');
@@ -1803,6 +1861,8 @@ function onContainerClick(e) {
   if (el.classList.contains('js-hist-check'))        { _histCheck(el.dataset.meter); return; }
   if (el.classList.contains('js-hist-rebuild'))      { _histRebuild(el.dataset.meter, false); return; }
   if (el.classList.contains('js-hist-override'))     { _histRebuild(el.dataset.meter, true); return; }
+  if (el.classList.contains('js-hist-replace'))      { _histReplace(el.dataset.meter, false); return; }
+  if (el.classList.contains('js-hist-replace-override')) { _histReplace(el.dataset.meter, true); return; }
   if (el.classList.contains('js-hist-remove-layer')) { _histRemoveLayer(el.dataset.meter); return; }
   if (el.classList.contains('js-hist-ctl')) {
     fetch(apiUrl('/api/historical/attribute/control'), {method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -2508,6 +2568,7 @@ function _queueRebuildOffer() {
     return (m.meta || {}).sub_meter && !(_serverConfig.meters || {})[id] && !(m.meta || {}).retired_at &&
            (imp.read || (imp.history_reads || []).some(Boolean));
   }).map(function(id) { return {id: id, label: (config.meters[id].meta || {}).device || id}; });
+  fresh = fresh.concat(_replaceAfterSave);
   if (!fresh.length) return false;
   try { sessionStorage.setItem(EMT.lsKey(_REBUILD_KEY), JSON.stringify(fresh)); } catch (e) { return false; }
   return true;
@@ -2522,22 +2583,29 @@ function _maybeOfferRebuild() {
   if (!list.length) return;
   var modal = document.getElementById('rebuild-modal'), st = document.getElementById('rebuild-status');
   document.getElementById('rebuild-list').innerHTML = list.map(function(d) {
-    return '<label style="display:flex;gap:8px;align-items:center;margin-bottom:4px;">' +
-      '<input type="checkbox" class="js-rebuild" value="' + esc(d.id) + '" checked> ' + esc(d.label) + '</label>';
+    return '<label style="display:flex;gap:8px;align-items:flex-start;margin-bottom:4px;text-transform:none;' +
+      'letter-spacing:normal;font-weight:400;font-size:13px;color:var(--text);">' +
+      '<input type="checkbox" class="js-rebuild" value="' + esc(d.id) + '"' + (d.replace ? ' data-replace="1"' : '') +
+      ' checked><span style="flex:1;min-width:0;">' + esc(d.label) +
+      (d.replace ? ' \u2014 <strong>replace</strong> its history from its new sensor: what <code style="word-break:break-all;">' +
+      esc(d.old || '') + '</code> recorded, and its rebuilt half-hours, are dropped' : '') + '</span></label>';
   }).join('');
   document.getElementById('rebuild-later').onclick = function() { modal.style.display = 'none'; };
   document.getElementById('rebuild-now').onclick = function() {
-    var ids = [].slice.call(document.querySelectorAll('.js-rebuild:checked')).map(function(c) { return c.value; });
+    var boxes = [].slice.call(document.querySelectorAll('.js-rebuild:checked'));
+    var ids = boxes.map(function(c) { return c.value; });
+    var repl = {}; boxes.forEach(function(c) { if (c.dataset.replace) repl[c.value] = true; });
     if (!ids.length) { modal.style.display = 'none'; return; }
     st.textContent = 'Starting…';
     var notes = [];
     ids.reduce(function(p, id) {
       return p.then(function() {
-        return fetch(apiUrl('/api/historical/attribute/start'), {
+        return fetch(apiUrl(repl[id] ? '/api/historical/attribute/replace' : '/api/historical/attribute/start'), {
           method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({meter_id: id})
         }).then(function(r) { return r.json(); }).then(function(d) {
           var label = (config.meters[id].meta || {}).device || id;
-          notes.push(d.ok ? '✓ ' + label + ' — rebuilding in the background'
+          notes.push(d.ok ? '✓ ' + label + (repl[id] ? ' — replacing its history in the background'
+                                                     : ' — rebuilding in the background')
                           : '⚠ ' + label + ' — ' + (d.warn || d.error || 'not started') + ' (see its card)');
         });
       });
@@ -2580,21 +2648,29 @@ function _renamedDevices() {
   });
   return out;
 }
+var _replaceAfterSave = [];      // devices whose old sensor was wrong: their replace, offered on the reload
 function _askRenames(list, done) {
   if (!list.length) { done(); return; }
   var r = list.shift(), modal = document.getElementById('rename-modal');
-  document.getElementById('rename-title').textContent = 'Keep the old sensor of ' + r.label + '?';
+  document.getElementById('rename-title').textContent = 'Why did ' + r.label + '\u2019s sensor change?';
   document.getElementById('rename-body').innerHTML =
-    'Its live sensor was <code>' + esc(r.old) + '</code>. If Home Assistant renamed it, keep the old name ' +
-    'as a <strong>history sensor</strong>: rebuilding the device\'s history then reaches back past the rename. ' +
-    'The half-hours it recorded are kept either way.';
-  function answer(keep) {
+    'Its sensor was <code style="word-break:break-all;">' + esc(r.old) + '</code>.<br>' +
+    '<strong>Renamed</strong> — Home Assistant renamed it: the old name is kept as a history sensor, so ' +
+    'rebuilding the device\'s history reaches back past the rename.<br>' +
+    '<strong>A new device</strong> — what the old sensor recorded stays, and the new one carries on from here.<br>' +
+    '<strong>The wrong sensor</strong> — what the old sensor recorded is wrong: after saving, EMT offers to ' +
+    'replace the device\'s history from the new sensor (a backup is taken first).';
+  // replace device history design §3: the answer travels with the save as keep_old_read; the
+  // wrong sensor's replace is offered once the save's reload is back
+  function answer(keep, wrong) {
     modal.style.display = 'none';
     config.meters[r.id].channels.import.keep_old_read = keep;
+    if (wrong) _replaceAfterSave.push({id: r.id, label: r.label, replace: true, old: r.old});
     _askRenames(list, done);
   }
   document.getElementById('rename-yes').onclick = function() { answer(true); };
   document.getElementById('rename-no').onclick = function() { answer(false); };
+  document.getElementById('rename-wrong').onclick = function() { answer(false, true); };
   modal.style.display = 'flex';
   setTimeout(function() { document.getElementById('rename-yes').focus(); }, 50);
 }
@@ -3352,6 +3428,7 @@ function wizCollectStep() {
       var readEl = document.getElementById('wiz-sub-' + devId + '-read');
       var socEl  = document.getElementById('wiz-sub-' + devId + '-soc');
       var invEl  = document.getElementById('wiz-sub-' + devId + '-inverter-power');
+      var pvEl   = document.getElementById('wiz-sub-' + devId + '-pv-power');
       var invertEl   = document.getElementById('wiz-sub-' + devId + '-invert');
       var devPwrEl   = document.getElementById('wiz-sub-' + devId + '-device-power');
       var v2xEl      = document.getElementById('wiz-sub-' + devId + '-v2x');
@@ -3359,6 +3436,7 @@ function wizCollectStep() {
       if (readEl)   wiz.data.subMeters[devId].read = readEl.value;
       if (socEl && socEl.value) wiz.data.subMeters[devId].soc = socEl.value;
       if (invEl && invEl.value) wiz.data.subMeters[devId].inverter_power = invEl.value;
+      if (pvEl && pvEl.value)   wiz.data.subMeters[devId].pv_power = pvEl.value;
       if (invertEl) wiz.data.subMeters[devId].inverter_power_invert = invertEl.checked;
       if (devPwrEl && devPwrEl.value) wiz.data.subMeters[devId].device_power = devPwrEl.value;
       if (v2xEl)    wiz.data.subMeters[devId].v2x_capable = v2xEl.checked;
@@ -3703,6 +3781,9 @@ function _offerHistory(firstSetup, mode) {
   return true;
 }
 function _historyOfferImport() {
+  // the import rebuilds the new devices itself, once the house's history is in (device history on
+  // first import design §4): the offer queued for the reload would only ask again
+  try { sessionStorage.removeItem(EMT.lsKey(_REBUILD_KEY)); } catch (e) {}
   window.location.href = apiUrl('/data-management?open=import');
 }
 function _historyOfferNotNow() {

@@ -49,8 +49,9 @@ class TheOrderInEachMember(unittest.TestCase):
 
     def test_attribution(self):
         """GUARD: the original window, fixed before B."""
-        self._before(_fn("api_attribute_start"), "attribution_claim(",
-                     "attribution_preflight(", '_create_backup_zip(label="pre-attribution")')
+        # the start and replace routes share one path since 4 Nov 2026 (replace device history §2)
+        self._before(_fn("_attribution_start"), "attribution_claim(",
+                     "attribution_preflight(", "_create_backup_zip(")
 
     def test_the_api_import(self):
         self._before(_fn("api_historical_api_start"), "api_import_claim()",
