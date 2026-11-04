@@ -248,7 +248,8 @@ class TestAttributionStartWindow(unittest.TestCase):
         src = _src()
         tree = ast.parse(src)
         self.fn = next(n for n in ast.walk(tree)
-                       if isinstance(n, ast.FunctionDef) and n.name == "api_attribute_start")
+                       # the start and replace routes' shared path (replace device history §2)
+                       if isinstance(n, ast.FunctionDef) and n.name == "_attribution_start")
         self.lines = src.split("\n")
 
     def _line_of(self, needle):

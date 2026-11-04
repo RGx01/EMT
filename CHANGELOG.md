@@ -22,6 +22,14 @@ internal name for everything before the first public release and never appears i
   far less, nothing is written and the device's card in Setup says why. Devices that already have
   history are left as they are.
 
+- **You can replace a device's history after picking the wrong sensor.** Changing a device's sensor
+  now asks why: Home Assistant renamed it, it's a new device, or it was the wrong sensor. Before, EMT
+  assumed a rename. If it was the wrong sensor, EMT offers to replace the device's history once you've
+  saved. It takes a backup, drops what the wrong sensor recorded and the history rebuilt from it, and
+  rebuilds the device from the new sensor. The device's card in Setup has a *Replace history* button
+  for the same thing, and shows which sensors its history came from, flagging any it no longer uses.
+  Before, the wrong sensor's figures stayed: *Rebuild history* only fills half-hours that have none.
+
 ## [2026.11.0b6] — 2026-11-04
 
 - **IOG-SMB history imported from Octopus gets its House/EV split.** After you import your history on
