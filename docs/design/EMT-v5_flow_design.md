@@ -126,7 +126,8 @@ These are asserted against a fixture with an Intelligent day, an Agile day, a de
 ## 6. PRs
 
 1. **The brackets:** the `ev_dispatch` series and carbon by bracket (§5), with the reconciliation
-   tests, including a device retired mid-span. No page change; the query budgets are re-measured (the soak surface for brackets).
+   tests, including a device retired mid-span. No page change. The brackets are no soak surface; the
+   surfaces' query counts are unchanged.
 2. **Flow, kWh and £:** the view, the plugin (version checked first), hover, the table, the totals,
    in the local preview on the demo household.
 3. **CO₂, the PDF, the help page** (Usage Stats → Flow), and the reference page.
