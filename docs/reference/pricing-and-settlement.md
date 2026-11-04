@@ -61,7 +61,8 @@ The bill wins over the prediction; where they disagree the detail panel notes it
 
 - **One asker**, `run_measured_history_drain`, fed by `_ask_queue`: settled, not corrected,
   Intelligent, older than 6 hours, within Octopus's two years. Kinds: a bill, a split (an IOG-SMB
-  breakdown), an imported half-hour's own (asked after everything else).
+  breakdown, where the cached bill is cost-only and a completed dispatch drew — or the half-hour is an
+  API import's, which has no dispatch to say), an imported half-hour's own (asked after everything else).
 - Newest first, a page at a time (3 local days of costs, or 48 breakdown half-hours); it stops when
   under 25% of the API allowance is left. Runs from the 5-minute dispatch tick and after an import.
 - **Unanswered**: hourly for 2 days, then daily; given up 30 days after the first unanswered ask
