@@ -7,6 +7,10 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **IOG-SMB history waiting for its split is amber, not red.** After importing your history on
+  IOG-SMB, a half-hour Octopus billed off-peak in the day showed red on the heatmap until EMT had
+  fetched its House/EV breakdown. It is light amber now — *Octopus's cost is in, waiting for its
+  split* — and turns green when the breakdown arrives.
 - **The tariff you're on, when Octopus lists a blip.** EMT took the latest-starting agreement as
   your current tariff when every agreement had an end date — so on a fixed-term tariff, a
   zero-length agreement Octopus lists after it (an Agile blip on one tester's account) became the
