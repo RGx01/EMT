@@ -1612,17 +1612,32 @@ function _histReplace(m, override) {
       _loadHistoryState();
     }).catch(function(e) { _histNote(m, 'Request failed: ' + esc(e.message)); });
 }
+function _pollBackout(m) {
+  return new Promise(function(resolve) {
+    (function tick() {
+      fetch(apiUrl('/api/historical/attribute/backout/status')).then(function(r) { return r.json(); }).then(function(st) {
+        var last = st.last || {};
+        if (st.status !== 'running' && last.meter_id === m) { resolve(last); return; }
+        setTimeout(tick, 2000);
+      }).catch(function() { setTimeout(tick, 4000); });
+    })();
+  });
+}
 function _histRemoveLayer(m) {
   if (_hist.removing) return;
   var label = ((config.meters[m] || {}).meta || {}).device || m;
   if (!window.confirm('Remove the rebuilt history for ' + label + '?\n\nIts rebuilt half-hours are cleared and that usage ' +
                       'returns to the house. Live and imported data are untouched; you can rebuild again.')) return;
   _hist.removing = true; _renderHistoryState();
-  _histNote(m, '⏳ Removing the rebuilt history…');
+  _histNote(m, '⏳ Removing the rebuilt history… (over a long history this takes a few minutes)');
   fetch(apiUrl('/api/historical/attribute/backout'), {method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({meter_id: m})})
     .then(function(r) { return r.json(); }).then(function(d) {
-      _histNote(m, d.ok ? '✓ Removed ' + (d.deleted || 0) + ' half-hours.' : '<span style="color:var(--danger);">' + esc(d.error || 'failed') + '</span>');
+      // started on the engine: its result comes on the status, polled (4 Nov 2026)
+      return (d.ok && d.status === 'running') ? _pollBackout(m) : d;
+    }).then(function(d) {
+      _histNote(m, d.ok ? '✓ Removed ' + (d.deleted || 0) + ' half-hours.' : '<span style="color:var(--danger);">' +
+        esc(d.error === 'backout_failed' ? 'The undo failed — the log has the detail.' : (d.error || 'failed')) + '</span>');
     }).catch(function(e) { _histNote(m, 'Request failed: ' + esc(e.message)); })
     .then(function() { _hist.removing = false; _loadHistoryState(); });
 }

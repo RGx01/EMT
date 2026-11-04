@@ -136,6 +136,11 @@ key is never in it. A size estimate warns over 10 MB.
 - **Sensors:** `device_sensors` holds a device's primary sensor and its history sensors; each block
   records the sensor that wrote it. *Rebuild history* and the history sensors are on the device's card
   in Settings, with the sensors its kept history came from (`device_history_sources`).
+- **After device rows go** — *Remove* on a device's rebuilt history, a range delete, removing a
+  device, a replace — the parent meter is re-derived over the span (`recompute_remainders_for_window_async`)
+  on the engine's thread, yielding to its loop every 50 blocks, so a whole history does not stall Home
+  Assistant's connection. *Remove* (`/api/historical/attribute/backout`) is started on the engine and
+  answers at once; the card polls `/backout/status` for its result (`last`).
 - **A sensor change asks why:** renamed (the old one kept as a history sensor), a new device (its
   history stays, the old sensor off the stitch), or the wrong sensor — which offers a replace after the
   save's reload.

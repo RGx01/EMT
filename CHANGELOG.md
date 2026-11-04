@@ -15,6 +15,11 @@ internal name for everything before the first public release and never appears i
   The device's card shows the replace from the moment you click, and its buttons wait until it's done.
   **If this happened to you:** press *Rebuild history* on the device's card. Your old history is also in
   the `pre-replace-history` backup.
+- **Removing a device's rebuilt history works.** *Remove* on a device's card in Setup failed every time
+  with "The undo failed". It now runs in the background, and the card says when it's done. Deleting a
+  range of a device's data now also corrects the other devices' share of the house, which it was
+  meant to and didn't. And removing a device no longer holds EMT busy while it tidies up, which could
+  drop its connection to Home Assistant.
 
 ## [2026.11.0b7] — 2026-11-04
 

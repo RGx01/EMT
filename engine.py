@@ -3137,12 +3137,30 @@ def api_backout_status() -> dict:
     return dict(_backout_job)
 
 
+def backout_forget_last() -> None:
+    """A new undo is starting: the page polls for ITS result, not the one before."""
+    _backout_job.pop("last", None)
+
+
 def backout_running() -> bool:
     return _backout_job.get("status") == "running"
 
 
-def backout_recorder_attribution(*, run_id=None, meter_id=None,
-                                  from_date=None, to_date=None) -> dict:
+def backout_recorder_attribution(**kw) -> dict:
+    """`backout_recorder_attribution_async`, run to completion here — for a caller with no
+    running loop (tests, a script). The route runs the async one on the engine loop."""
+    return asyncio.run(backout_recorder_attribution_async(**kw))
+
+
+async def backout_recorder_attribution_async(**kw) -> dict:
+    """The undo, its result kept on the status (`last`) for a page that started it and polls."""
+    res = await _backout_impl(**kw)
+    if res.get("error") != "backout_in_progress":
+        _backout_job["last"] = dict(res, meter_id=kw.get("meter_id"), run_id=kw.get("run_id"))
+    return res
+
+
+async def _backout_impl(*, run_id=None, meter_id=None, from_date=None, to_date=None) -> dict:
     """Undo a recorder-attribution run (or an explicit device + range): delete the
     reconstructed 'recorder_attributed' device blocks, re-derive each affected parent
     meter's remainder over the span, and drop the run from the ledger. The reversible
@@ -3189,7 +3207,10 @@ def backout_recorder_attribution(*, run_id=None, meter_id=None,
             except Exception:
                 hi_excl = hi
             for parent in (res.get("parents") or []):
-                recomputed += recompute_remainders_for_window(parent, lo, hi_excl)
+                # yielding: over a whole history, straight through, it stalled the loop
+                # long enough to drop HA's WebSocket (4 Nov 2026)
+                recomputed += await recompute_remainders_for_window_async(parent, lo, hi_excl)
+                store = get_store()          # never held across an await: a reconnect reopens it
         if run_id:
             store.remove_attribution_run(run_id)
         logger.info("backout_recorder_attribution: deleted %d device block(s), "
@@ -3203,8 +3224,11 @@ def backout_recorder_attribution(*, run_id=None, meter_id=None,
         # A code, not the exception's text: the route answers the page with it (CodeQL, 2 Nov 2026).
         return {"ok": False, "error": "backout_failed"}
     finally:
+        _last = _backout_job.get("last")
         _backout_job.clear()
         _backout_job.update({"status": "idle"})
+        if _last:
+            _backout_job["last"] = _last
         _backout_lock.release()
 
 
