@@ -7,10 +7,11 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
-- **Flow by era.** In Flow, Yearly showed the same as Monthly (the years ticked); it is **Era**
-  there now — a chapter of your home, from one era's start to the next era's, the latest to today, and
-  *Before the first era* for the time before any. Pick one to see where the grid's import went while,
-  say, you had solar but no battery.
+- **Span, in Devices, Rate brackets and Flow.** Pick a stretch to look at: a chapter of your home,
+  from one era's start to the next era's (and *Before the first era*), or a tariff, from its start to
+  its end, with each stretch between its price changes under it. Devices and Rate brackets draw a bar a
+  day for a span of up to two months, a bar a month beyond; Flow draws the span as one flow. In Flow,
+  Span takes Yearly's place, which showed the same as Monthly.
 
 ## [2026.11.0b4] — 2026-11-04
 
