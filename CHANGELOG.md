@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b5] — 2026-11-04
 
 - **IOG-SMB history waiting for its split is amber, not red.** After importing your history on
   IOG-SMB, a half-hour Octopus billed off-peak in the day showed red on the heatmap until EMT had
