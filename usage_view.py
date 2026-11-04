@@ -734,6 +734,32 @@ def _slot_rows_for(store, slots):
     return out
 
 
+def _hybrid_ev_slot_folds(store, ev_mid, hyb_slot, phys_ev) -> dict:
+    """The hybrid EV fold of each half-hour it changes: {slot: (EV kWh, £ before, EV kWh, £ after)},
+    each folded as the HH view folds it (`_apply_hybrid_ev_to_summary_rows` on the slot's own row,
+    its Direct capping the move). Shared by `_apply_hybrid_ev_by_slot` and the rate brackets (4 Nov
+    2026), so the Devices view's EV and the brackets' cannot disagree."""
+    slots = {bs for bs in set(hyb_slot) | set(phys_ev)
+             if abs(float((hyb_slot.get(bs) or {}).get("kwh", 0.0))
+                    - float((phys_ev.get(bs) or (0.0, 0.0))[0])) > 1e-9
+             or abs(float((hyb_slot.get(bs) or {}).get("cost", 0.0))
+                    - float((phys_ev.get(bs) or (0.0, 0.0))[1])) > 1e-9}
+    out = {}
+    if slots:
+        data = _aggregate_block_rows(_slot_rows_for(store, slots), lambda bs: bs,
+                                     standing_scope="global")
+        for bs, dd in data.items():
+            row = {"slot": bs}
+            row.update(_bucket_to_row_values(dd))
+            before = dict(row["meters"].get(ev_mid) or {"imp_kwh": 0.0, "imp_cost": 0.0})
+            _apply_hybrid_ev_to_summary_rows([row], [], ev_mid, hyb_slot,
+                                             key_fn=lambda r: r["slot"])
+            after = row["meters"].get(ev_mid) or before
+            out[bs] = (float(before.get("imp_kwh") or 0.0), float(before.get("imp_cost") or 0.0),
+                       float(after["imp_kwh"]), float(after["imp_cost"]))
+    return out
+
+
 def _apply_hybrid_ev_by_slot(store, rows, meters, ev_mid, hyb_slot, phys_ev, bucket_of,
                              key_fn):
     """The hybrid EV fold for buckets coarser than a half-hour (day, month, year), done PER
@@ -747,25 +773,11 @@ def _apply_hybrid_ev_by_slot(store, rows, meters, ev_mid, hyb_slot, phys_ev, buc
     exactly as the HH view folds it — its Direct from `_aggregate_block_rows` bucketed by
     slot, the move from `_apply_hybrid_ev_to_summary_rows` itself — and the moves are added to
     the slot's bucket. Bucket totals still never move; a day now equals its slots."""
-    slots = {bs for bs in set(hyb_slot) | set(phys_ev)
-             if abs(float((hyb_slot.get(bs) or {}).get("kwh", 0.0))
-                    - float((phys_ev.get(bs) or (0.0, 0.0))[0])) > 1e-9
-             or abs(float((hyb_slot.get(bs) or {}).get("cost", 0.0))
-                    - float((phys_ev.get(bs) or (0.0, 0.0))[1])) > 1e-9}
     moves = {}
-    if slots:
-        data = _aggregate_block_rows(_slot_rows_for(store, slots), lambda bs: bs,
-                                     standing_scope="global")
-        for bs, dd in data.items():
-            row = {"slot": bs}
-            row.update(_bucket_to_row_values(dd))
-            before = dict(row["meters"].get(ev_mid) or {"imp_kwh": 0.0, "imp_cost": 0.0})
-            _apply_hybrid_ev_to_summary_rows([row], [], ev_mid, hyb_slot,
-                                             key_fn=lambda r: r["slot"])
-            after = row["meters"].get(ev_mid) or before
-            acc = moves.setdefault(bucket_of(bs), [0.0, 0.0])
-            acc[0] += float(after["imp_kwh"]) - float(before.get("imp_kwh") or 0.0)
-            acc[1] += float(after["imp_cost"]) - float(before.get("imp_cost") or 0.0)
+    for bs, (bk, bc, ak, ac) in _hybrid_ev_slot_folds(store, ev_mid, hyb_slot, phys_ev).items():
+        acc = moves.setdefault(bucket_of(bs), [0.0, 0.0])
+        acc[0] += ak - bk
+        acc[1] += ac - bc
     for row in rows:
         mv = moves.get(key_fn(row))
         _meters = row.get("meters")
@@ -960,9 +972,13 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
     A negative rate keeps its sign through all of it: an Agile plunge's kWh earn a negative £."""
     c = store._conn
     act = c.execute(_ACTIVE_PERIOD).fetchone()
-    subs = [r[0] for r in c.execute(
-        "SELECT meter_id FROM meters WHERE config_period_id = ? AND is_sub_meter",
-        (act[0] if act else None,))]
+    sub_rows = c.execute(
+        "SELECT meter_id, meter_type FROM meters WHERE config_period_id = ? AND is_sub_meter ORDER BY id",
+        (act[0] if act else None,)).fetchall()
+    subs = [r[0] for r in sub_rows]
+    # the EV meter, as the Devices view finds it in the config: its hybrid EV is the car's (below)
+    ev_mid = _configured_ev_meter_id({"meters": {r[0]: {"meta": {"sub_meter": True, "meter_type": r[1]}}
+                                                 for r in sub_rows}})
     intensity, main_slot, exp = {}, {}, {}
     for bs, ik, ic, ek, er, ec, cg in c.execute(
             "SELECT block_start, imp_kwh, imp_cost, exp_kwh, exp_rate, exp_cost, carbon_g FROM blocks "
@@ -979,12 +995,16 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
             _add(exp.setdefault(bs, {}), rate_bracket(rate), ek, cost, ek * g_per)
     main: dict = {}
     ev_slices: dict = {}
+    ev_main: dict = {}              # the main's EV split, as `ev_split`'s SQL sums it (a 0 kWh split too)
     for bs, k, r, att in c.execute(
             "SELECT block_start, kwh, inc_rate, attribution FROM block_segments "
             "WHERE meter_id = 'electricity_main' AND channel = 'import' "
             "AND block_start >= ? AND block_start < ? ORDER BY block_start, seq",
             (utc_start, utc_end)):
         k = float(k or 0.0)
+        if att == "ev":
+            e = ev_main.get(bs, (0.0, 0.0))
+            ev_main[bs] = (e[0] + k, e[1] + k * float(r or 0.0))
         if k <= 0.0:
             continue
         g_per = intensity.get(bs, 0.0)
@@ -993,6 +1013,7 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
             ev_slices.setdefault(bs, []).append((k, float(r)))
     devs: dict = {}
     if subs:
+        phys_ev: dict = {}
         for bs, mid, k, raw, r, cost, cg in c.execute(
                 "SELECT block_start, meter_id, COALESCE(imp_kwh_grid, imp_kwh), imp_kwh, imp_rate, "
                 "imp_cost, carbon_g "
@@ -1000,6 +1021,8 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
                 "ORDER BY block_start, id" % ",".join("?" * len(subs)),
                 list(subs) + [utc_start, utc_end]):
             k = float(k or 0.0)
+            if mid == ev_mid:
+                phys_ev[bs] = (k, float(cost or 0.0))
             if k <= 0.0:
                 continue
             cost = float(cost or 0.0)
@@ -1007,6 +1030,8 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
             raw = float(raw or 0.0)
             g = float(cg) * (k / raw) if cg is not None and raw > 1e-9 else 0.0
             _add(devs.setdefault(bs, {}).setdefault(mid, {}), rate_bracket(rate), k, cost, g)
+        if ev_mid is not None:
+            _hybrid_ev_brackets(store, ev_mid, ev_main, phys_ev, ev_slices, devs)
     else:
         # The car of an account with no devices, half-hour by half-hour as the Devices view splits
         # it (`_apply_ev`): its dispatches, its stored split, and whether the bill has spoken.
@@ -1048,6 +1073,34 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
         for n, (k, cost, g) in (exp.get(bs) or {}).items():
             _add(b.setdefault(EXPORT_SERIES, {}), n, k, cost, g)
     return out
+
+
+def _hybrid_ev_brackets(store, ev_mid, ev_main, phys_ev, ev_slices, devs):
+    """An account WITH an EV meter: the car's brackets are the Devices view's hybrid EV (4 Nov 2026,
+    staging: Flow's EV was the charger's own reading, ~0.04% off the Devices view, the house the
+    other way). Each half-hour the fold changes (`_hybrid_ev_slot_folds`, the Devices view's own)
+    takes its folded kWh and £: over the main's EV slices at their own rates where the half-hour is
+    synthetic (Octopus's split), else in one bracket at its rate. Its carbon stays the charger's, as
+    the Devices view keeps it. The house, the meter less the devices, follows. In place on `devs`."""
+    hyb = _hybrid_ev_by_block(ev_main, phys_ev)
+    for bs, (_bk, _bc, ak, ac) in _hybrid_ev_slot_folds(store, ev_mid, hyb, phys_ev).items():
+        was = (devs.get(bs) or {}).get(ev_mid) or {}
+        g = sum(v[2] for v in was.values())
+        new: dict = {}
+        sl = ev_slices.get(bs) or []
+        sk, sc = sum(k for k, _r in sl), sum(k * r for k, r in sl)
+        if ak > 1e-9 and (hyb.get(bs) or {}).get("source") == "synthetic" and sk > 1e-9:
+            for k, r in sl:
+                kk = k * ak / sk
+                _add(new, rate_bracket(r), kk, k * r * ac / sc if abs(sc) > 1e-12 else kk * ac / ak, g * kk / ak)
+        elif ak > 1e-9:
+            _add(new, rate_bracket(ac / ak), ak, ac, g)
+        elif g > 0 and was:
+            _add(new, min(was), 0.0, 0.0, g)               # no grid left to it: its carbon still its own
+        if new:
+            devs.setdefault(bs, {})[ev_mid] = new
+        elif bs in devs:
+            devs[bs].pop(ev_mid, None)
 
 
 def _bracket_values(b):

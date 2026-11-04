@@ -7,6 +7,9 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Flow and Rate brackets agree with Devices on an EV charger.** With an EV device, the Devices view
+  shows Octopus's split of the car where it has one; Flow and Rate brackets showed the charger's own
+  reading, a little off, with the house off the other way. They show the same as Devices now.
 - **Span, in Devices, Rate brackets and Flow.** Pick a stretch to look at: a chapter of your home,
   from one era's start to the next era's (and *Before the first era*); an era on its own, from its
   start to its own end or today; or a tariff, from its start to its end, with each stretch between its
