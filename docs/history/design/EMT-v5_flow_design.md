@@ -1,5 +1,12 @@
 # Flow — where the grid's energy, cost and carbon went (design)
 
+> **History — a design record.** What was decided, when and why, as it stood then; parts describe code
+> that has since changed. How the feature works today: its help page in the app (Usage Stats → Flow),
+> and the code. PR numbers (`#NNN`) are in this repository, `RGx01/EMT`.
+
+*Status: built, 4 Nov 2026: #43 the design, #44 the rate brackets' carbon and car, #45 the view (with
+CO₂ and the PDF), #46 the help page.*
+
 *Decided, 4 Nov 2026. A Usage Stats view beside Devices, Rate brackets and Running total. Decided with
 the user on 4 Nov 2026:*
 - *three columns (grid → rate band → device);*
