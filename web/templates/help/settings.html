@@ -43,7 +43,11 @@
       Rebuild history</strong> rebuilds the device's past from Home Assistant's recorder, with them.
       Importing your history from Octopus or a CSV does this for a device with no history yet, once the
       import is done — unless its sensor reads more than the house drew, or far less, which the card
-      then says.</li>
+      then says. The card lists the sensors its history came from. <strong>↻ Replace history</strong> is
+      for a sensor that turned out to be wrong: after a backup, it drops what the device's rebuilt
+      history and any sensor it no longer uses recorded, and rebuilds it all from the sensors it uses
+      now. Changing a device's sensor asks why — renamed, a new device, or the wrong sensor, which
+      offers the replace.</li>
     <li><strong>Its colour and rate line</strong> on the charts.</li>
     <li><strong>Archive</strong> — stop recording it from a date, keeping its history (<strong>↩ Unretire</strong>
       brings it back). <strong>✕ Remove</strong> deletes it and its history, after a backup.</li>

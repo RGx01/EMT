@@ -3188,6 +3188,48 @@ def backout_recorder_attribution(*, run_id=None, meter_id=None,
         _backout_lock.release()
 
 
+async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
+    """Replace a device's history from the sensors it uses now (replace device history design
+    §2) — the route has claimed the device and checked those sensors. Drop what a rebuild made
+    and what the sensors it no longer uses recorded (`drop_device_history`), give the house its
+    remainder back over the span, drop the device's runs from the ledger (what they wrote is
+    gone), then rebuild its whole history from HA's recorder as *Rebuild history* does.
+    Never raises; a failure is the run's error, on its card."""
+    from datetime import datetime as _dt, timedelta as _td
+    if _engine_ha is None:
+        # nothing dropped: a replace that could not rebuild would only delete
+        with _attribution_lock:
+            j = _attribution_jobs.setdefault(meter_id, {"device": meter_id})
+            j.update({"status": "error", "error": "Home Assistant is not connected — nothing was "
+                                                  "replaced"})
+        _coord.release("attribution", meter_id)
+        return {"ok": False, "error": "no_ha"}
+    try:
+        off = get_store().device_off_stitch_sensors(meter_id)
+        res = get_store().drop_device_history(meter_id, [o["id"] for o in off])
+        lo, hi = res.get("from"), res.get("to")
+        if lo and hi:
+            hi_excl = (_dt.fromisoformat(hi) + _td(minutes=int(get_block_minutes() or 30))).isoformat()
+            for parent in res.get("parents") or []:
+                recompute_remainders_for_window(parent, lo, hi_excl)
+        for r in get_store().get_attribution_runs():
+            if r.get("meter_id") == meter_id and r.get("run_id"):
+                get_store().remove_attribution_run(r["run_id"])
+        logger.info("replace_device_history: %s — dropped %d half-hour(s) and %d read(s) "
+                    "(%s), rebuilding from %s", meter_id, res.get("deleted_blocks", 0),
+                    res.get("deleted_reads", 0),
+                    ", ".join(o["entity_id"] for o in off) or "no sensor it no longer uses",
+                    ", ".join(sensor_ids))
+    except Exception as e:
+        logger.error("replace_device_history failed (%s): %s", meter_id, e, exc_info=e)
+        with _attribution_lock:
+            j = _attribution_jobs.setdefault(meter_id, {"device": meter_id})
+            j.update({"status": "error", "error": "the history could not be replaced"})
+        _coord.release("attribution", meter_id)        # the claim never became a run
+        return {"ok": False, "error": "replace_failed"}
+    return await run_attribution_job(meter_id, sensor_ids, pace_s=0.05)
+
+
 def _stitch_hourly_energy(series_by_sensor: dict, priority: list,
                           sources: dict | None = None) -> dict:
     """Combine one or more cumulative-kWh statistic series into a single hourly

@@ -82,6 +82,10 @@ missing and where it stands; the done history, with every decision's story, is i
   each device whose history EMT never had from Home Assistant, after the sensor check; it reverses part
   of BL-87's closure, as the first-setup import offer had broken its chain. The record is
   [history/design/EMT-v5_device_history_on_import_design.md](history/design/EMT-v5_device_history_on_import_design.md).
+- **Replacing a device's history after a wrong sensor** (the user, 4 Nov 2026) — a sensor change asks
+  why; *Replace history* drops the rebuilt layer and what sensors the device no longer uses recorded,
+  then rebuilds it whole; the card says where the history came from. The record is
+  [history/design/EMT-v5_replace_device_history_design.md](history/design/EMT-v5_replace_device_history_design.md).
 - **Going public** — the repository public on 2 Nov 2026, with: rulesets on `main` (a PR, signed
   commits, no force push or deletion) and `dev` (the same without signatures); no required check,
   because a docs-only PR skips the tests and a required check that never reports would block it;

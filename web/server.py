@@ -5501,6 +5501,12 @@ def _settle_after_csv(result) -> None:
         logger.warning("csv apply: the settle after it was not started: %s", e)
 
 
+async def _off_stitch(meter_id: str) -> list:
+    """The sensors a device no longer uses, read on the engine's store."""
+    import engine as _eng
+    return _eng.get_store().device_off_stitch_sensors(meter_id)
+
+
 def _device_sensor_list(meter_id: str):
     """A device's sensors in Device History's stitch order: its primary, then its history
     sensors (device sensors design §2). [] when it has none."""
@@ -5564,6 +5570,20 @@ def api_attribute_start():
     confirm_override?}. The sensors are the DEVICE's — its primary, then its history sensors
     (device sensors design §2, PR 3) — not the request's. Takes a backup, schedules the worker
     on the engine loop, returns at once. Poll /status, drive /control, undo via /backout."""
+    return _attribution_start(replace=False)
+
+
+@app.route("/api/historical/attribute/replace", methods=["POST"])
+def api_attribute_replace():
+    """Replace a device's history from the sensors it uses now (replace device history design
+    §2): as /start — the claim, the sensor check, a backup — then drop its rebuilt half-hours and
+    what sensors it no longer uses recorded, and rebuild it whole. Body: {meter_id,
+    confirm_override?}. Answers with the sensors whose readings go."""
+    return _attribution_start(replace=True)
+
+
+def _attribution_start(*, replace: bool):
+    meter_id = ""
     try:
         import engine as _eng
         import asyncio as _asyncio
@@ -5605,6 +5625,14 @@ def api_attribute_start():
                 logger.warning("attribution preflight failed (continuing): %s", _pe)
                 pf = {"verdict": "error"}
             _v = pf.get("verdict")
+            if replace and _v in ("no_ha", "no_data", "error"):
+                # a replace drops before it rebuilds: with nothing to rebuild from, it would only
+                # delete (replace device history design §2)
+                _eng.attribution_release(meter_id)
+                return jsonify({"ok": False, "error": (
+                    "Home Assistant isn't connected" if _v == "no_ha" else
+                    "Home Assistant has no history for this device's sensors" if _v == "no_data" else
+                    "the sensor check failed") + " — nothing was replaced"}), 409
             if _v in ("device_exceeds_house", "suspiciously_small"):
                 _dk, _hk = pf.get("device_kwh"), pf.get("house_kwh")
                 _sp = ((pf.get("from") or "")[:10] + " → " + (pf.get("to") or "")[:10])
@@ -5620,17 +5648,29 @@ def api_attribute_start():
                                 "device_kwh": _dk, "house_kwh": _hk}), 409
         backup = None
         try:
-            backup = os.path.basename(_create_backup_zip(label="pre-attribution"))
+            backup = os.path.basename(_create_backup_zip(
+                label="pre-replace-history" if replace else "pre-attribution"))
         except Exception as be:
+            if replace:        # it deletes: never without the backup
+                _eng.attribution_release(meter_id)
+                logger.warning("attribution replace: backup failed, not started: %s", be)
+                return jsonify({"ok": False, "error": "the backup failed, so nothing was "
+                                                      "replaced"}), 500
             logger.warning("attribution: backup failed (continuing): %s", be)
+        dropped = []
         try:
-            _asyncio.run_coroutine_threadsafe(
-                _eng.run_attribution_job(meter_id, sensor_ids, pace_s=0.05), _event_loop)
+            if replace:
+                dropped = [o["entity_id"] for o in _run_on_engine_loop(
+                    _off_stitch(meter_id), timeout=30.0) or []]
+                job = _eng.replace_device_history(meter_id, sensor_ids)
+            else:
+                job = _eng.run_attribution_job(meter_id, sensor_ids, pace_s=0.05)
+            _asyncio.run_coroutine_threadsafe(job, _event_loop)
         except Exception:
             _eng.attribution_release(meter_id)
             raise
         return jsonify({"ok": True, "status": "running", "backup": backup,
-                        "device": meter_id})
+                        "device": meter_id, "replaced": dropped if replace else None})
     except Exception as e:
         logger.error("api_attribute_start: %s", e)
         try:
@@ -5674,7 +5714,9 @@ def api_attribute_runs():
     for the runs/undo list."""
     store = store_access.store()
     return jsonify({"ok": True, "runs": store.get_attribution_runs(),
-                    "summary": store.count_recorder_attributed()})
+                    "summary": store.count_recorder_attributed(),
+                    # the sensors each device's kept history came from (replace device history §4)
+                    "sources": store.device_history_sources()})
 
 
 @app.route("/api/historical/attribute/backout", methods=["POST"])
