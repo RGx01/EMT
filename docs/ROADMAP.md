@@ -76,6 +76,8 @@ missing and where it stands; the done history, with every decision's story, is i
 - **Flow, a Usage Stats Sankey** (the user, 4 Nov 2026) — grid → rate band → house and devices, export
   out of the house, in kWh, £ and CO₂, for the span on screen; small bands as Other. Built 4 Nov 2026
   (#43–#46); the record is [history/design/EMT-v5_flow_design.md](history/design/EMT-v5_flow_design.md).
+  Export by rate band and negative prices drawn in £ (the user, 4 Nov 2026): the record is
+  [history/design/EMT-v5_flow_export_bands_design.md](history/design/EMT-v5_flow_export_bands_design.md).
 - **Going public** — the repository public on 2 Nov 2026, with: rulesets on `main` (a PR, signed
   commits, no force push or deletion) and `dev` (the same without signatures); no required check,
   because a docs-only PR skips the tests and a required check that never reports would block it;
