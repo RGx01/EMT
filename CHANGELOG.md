@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b4] — 2026-11-04
 
 - **Usage Stats → Flow.** Where the grid's electricity went, as a Sankey: from the grid, through the
   price it was charged (in 2.5p bands, the small ones together as *Other*), to the house and each
