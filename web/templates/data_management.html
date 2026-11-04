@@ -8,11 +8,11 @@
     <div class="sub">Your data, half-hour by half-hour</div>
   </div>
   <!-- The jobs off the heatmap, in the topbar (21 Oct 2026, the user): below it they moved as its
-       months loaded. Whole history's items are decided here, so the menu is whole at first paint. -->
+       months loaded. The History menu's items are decided here, so the menu is whole at first paint. -->
   <div class="dm-top-actions">
     <div class="dm-menu-wrap">
       <button class="btn btn-secondary" id="btn-whole" onclick="dmToggleWhole(event)"
-              aria-haspopup="menu" aria-expanded="false">🗂️ <span class="dm-long">Whole history</span><span class="dm-short">History</span> ▾</button>
+              aria-haspopup="menu" aria-expanded="false">🗂️ History ▾</button>
       <div id="dm-whole-menu" class="dm-menu" role="menu" style="display:none;">
         <div class="dm-menu-note">For a range, select it on the heatmap.</div>
         {% if uses_api %}<button role="menuitem" onclick="dmWhole('api:whole_history', 'Import history from Octopus')">📥 Import history from Octopus</button>{% endif %}
@@ -797,7 +797,7 @@ function loadHealth() {
   });
 }
 
-// ── Whole history (§1 (4)) ─────────────────────────────────────────────────────
+// ── The History menu (§1 (4), "Whole history" until 4 Nov 2026) ─────────────────────────────────────────────────────
 // Historical Import's own flows, on a task (?task=), as a modal over this page; a close re-counts.
 function dmToggleWhole(e) {
   e.stopPropagation();
