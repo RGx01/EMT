@@ -132,7 +132,7 @@ class ThePage(unittest.TestCase):
 
     def test_where_a_bar_is_one_stretch_of_time_with_agreements(self):
         avail = _fn("barTariffsAvailable")
-        self.assertIn("var view = (barPeriod === 'monthly' && barMonthOrder === 'date') || barPeriod === 'daily' || barPeriod === 'hh';",
+        self.assertIn("var view = (barPeriod === 'monthly' && barMonthOrder === 'date') || barPeriod === 'daily' || barPeriod === 'hh' || barPeriod === 'span';",
                       avail)
         self.assertIn("return view && !!barTariffs && barTariffs.length > 0;", avail)
         self.assertIn("if (_tw) _tw.style.display = barTariffsAvailable() ? 'flex' : 'none';", _fn("barRender"))
