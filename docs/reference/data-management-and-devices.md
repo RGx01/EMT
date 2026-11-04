@@ -139,10 +139,13 @@ key is never in it. A size estimate warns over 10 MB.
 - **A sensor change asks why:** renamed (the old one kept as a history sensor), a new device (its
   history stays, the old sensor off the stitch), or the wrong sensor — which offers a replace after the
   save's reload.
-- **Replace history** (`/api/historical/attribute/replace`): the sensor check, a backup (none, no
-  replace), then the device's rebuilt half-hours and everything a sensor it no longer uses recorded
-  (`ha_reads`, live half-hours) are dropped (`drop_device_history`), the house's remainder redone, and
-  the device rebuilt whole from the sensors it uses now (`replace_device_history`).
+- **Replace history** (`/api/historical/attribute/replace`, `replace_device_history`): the sensor
+  check and a backup (none, no replace); then **HA's statistics first**, kept as recorder hours — a
+  fetch that fails or finds nothing ends it, nothing dropped; then the device's rebuilt half-hours and
+  everything a sensor it no longer uses recorded (`ha_reads`, live half-hours) are dropped
+  (`drop_device_history`); the house over the span again, yielding to the loop every 50 blocks
+  (`recompute_remainders_for_window_async`); and the rebuild from the kept hours, with no second
+  fetch. A rebuild whose every fetch failed is an error, not "done".
 - **A battery counting solar** (`check_battery_sensors`, at start-up and hourly): a half-hour counts
   against a battery when it reads over 1.5× the grid import and over 0.25 kWh above it; on 5 days in 30
   the sensor is flagged. Data is never changed — a banner and a card note, and *Keep this sensor
