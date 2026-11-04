@@ -8,8 +8,9 @@ internal name for everything before the first public release and never appears i
 ## [Unreleased]
 
 - **Span, in Devices, Rate brackets and Flow.** Pick a stretch to look at: a chapter of your home,
-  from one era's start to the next era's (and *Before the first era*), or a tariff, from its start to
-  its end, with each stretch between its price changes under it. Devices and Rate brackets draw a bar a
+  from one era's start to the next era's (and *Before the first era*); an era on its own, from its
+  start to its own end or today; or a tariff, from its start to its end, with each stretch between its
+  price changes under it. Devices and Rate brackets draw a bar a
   day for a span of up to two months, a bar a month beyond; Flow draws the span as one flow. In Flow,
   Span takes Yearly's place, which showed the same as Monthly.
 
