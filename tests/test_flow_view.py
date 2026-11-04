@@ -21,7 +21,8 @@ house's kWh and £ equal to the Devices view's, the meter's 645.576 kWh and the 
 hover's kWh × p/kWh its £; the standing charge's £14.50 in the head; HH and Yearly (Other on Yearly);
 the PDF's canvas read at once.
 
-Every test fails on the parent tree, where none of it existed.
+Every test fails on the parent tree, where none of it existed. TheEraChapters and the Era wiring (4 Nov
+2026, later) fail on the tree before it: Flow had Yearly, which totalled what Monthly did.
 """
 import json
 import os
@@ -126,6 +127,60 @@ class TheData(unittest.TestCase):
         self.assertEqual(d["nodes"]["s:ev_dispatch"]["label"], "EV")
 
 
+@unittest.skipUnless(shutil.which("node"), "node not available")
+class TheEraChapters(unittest.TestCase):
+    """4 Nov 2026, the user: in Flow Yearly totalled what Monthly did (the years ticked), so Flow has Era
+    there — a chapter of the home, from an era's start to the next era's start, of any kind."""
+
+    def _run(self, eras, days):
+        rows = [{"year": int(d[:4]), "month": int(d[5:7]), "day": int(d[8:])} for d in days]
+        kinds = PAGE[PAGE.index("var ERA_KINDS = {"):PAGE.index("\n};\n", PAGE.index("var ERA_KINDS = {")) + 3]
+        js = (kinds + "var barEras = %s, barData = %s;\n" % (json.dumps(eras), json.dumps(rows)) +
+              "".join(_fn(n) for n in ("barAddDay", "barFlowYmd", "barFlowChapters")) +
+              "\nconsole.log(JSON.stringify(barFlowChapters().map(function (c) {"
+              " return [c.id, c.label, c.from, c.to, !!c.latest]; })));")
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+            fh.write(js)
+            path = fh.name
+        try:
+            res = subprocess.run(["node", path], capture_output=True, text=True, timeout=30)
+        finally:
+            os.unlink(path)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return json.loads(res.stdout)
+
+    DAYS = ["2024-06-01", "2025-01-01", "2026-10-31"]
+
+    def test_chapters_from_start_to_next_start(self):
+        eras = [{"kind": "ev", "label": "First EV", "start": "2024-09-14"},
+                {"kind": "solar", "label": "Solar", "start": "2025-03-08"}]
+        self.assertEqual(self._run(eras, self.DAYS), [
+            ["before", "Before the first era", "2024-06-01", "2024-09-14", False],
+            ["era:2024-09-14", "\U0001f697 First EV", "2024-09-14", "2025-03-08", False],
+            ["era:2025-03-08", "\u2600\ufe0f Solar", "2025-03-08", "2026-11-01", True]])
+
+    def test_eras_on_one_day_are_one_chapter(self):
+        eras = [{"kind": "solar", "label": "Solar", "start": "2025-03-08"},
+                {"kind": "battery", "label": "Battery", "start": "2025-03-08", "end": "2025-06-01"}]
+        out = self._run(eras, self.DAYS)
+        self.assertEqual([c[0] for c in out], ["before", "era:2025-03-08"])
+        self.assertEqual(out[1][1], "\u2600\ufe0f Solar + \U0001f50b Battery")
+        self.assertEqual(out[1][3], "2026-11-01", "to the next era's start, not its own end")
+
+    def test_an_era_before_the_data_starts_with_it(self):
+        out = self._run([{"kind": "other", "label": "Moved in", "start": "2020-01-01"}], self.DAYS)
+        self.assertEqual(out, [["era:2020-01-01", "\u2022 Moved in", "2024-06-01", "2026-11-01", True]])
+
+    def test_one_after_the_data_is_not_a_chapter(self):
+        out = self._run([{"kind": "ev", "label": "EV", "start": "2024-09-14"},
+                         {"kind": "other", "label": "Planned", "start": "2027-01-01"}], self.DAYS)
+        self.assertEqual([c[0] for c in out], ["before", "era:2024-09-14"])
+        self.assertTrue(out[-1][4])
+
+    def test_no_eras_no_chapters(self):
+        self.assertEqual(self._run([], self.DAYS), [])
+
+
 class TheWiring(unittest.TestCase):
 
     def test_the_plugin_is_pinned(self):
@@ -135,7 +190,7 @@ class TheWiring(unittest.TestCase):
     def test_flow_is_a_view(self):
         self.assertIn("onclick=\"barSetShow('flow',this)\"", PAGE)
         self.assertIn("['devices','brackets','flow','running'].indexOf(st.show)", PAGE)
-        self.assertIn("if (barFlow()) { barFlowRender(pd.aggList); return; }", _fn("barRender"))
+        self.assertIn("if (barFlow()) { barLoadEras(); barFlowRender(pd.aggList); return; }", _fn("barRender"))
         self.assertIn("if (barFlow()) { barFlowBuildTable(tbl, aggList); return; }", _fn("barBuildTable"))
 
     def test_the_hh_rows_carry_their_brackets_for_flow(self):
@@ -150,6 +205,25 @@ class TheWiring(unittest.TestCase):
     def test_the_bands_are_imports_colours(self):
         self.assertIn("var ex = !asImport && barBrSign() < 0;", _fn("barBrColor"))
         self.assertIn("barBrColor(n, ns, true)", _fn("barFlowData"))
+
+    def test_flow_has_era_where_the_others_have_yearly(self):
+        self.assertIn("onclick=\"barSetPeriod('era',this)\" id=\"bar-era-btn\"", PAGE)
+        f = _fn("barSetShow")
+        self.assertIn("if (v === 'flow' && barPeriod === 'yearly') barPeriod = barEras === null || barFlowChapters().length ? 'era' : 'monthly';", f)
+        self.assertIn("else if (v !== 'flow' && barPeriod === 'era') barPeriod = 'yearly';", f)
+        ui = _fn("barBrSyncUI")
+        self.assertIn("vis('bar-yearly-btn', !fl);", ui)
+        self.assertIn("vis('bar-era-btn', eraOk);", ui)
+        self.assertIn("if (barPeriod === 'era' && barShow !== 'flow') barPeriod = 'yearly';", _fn("barLoadState"))
+
+    def test_an_era_is_one_bucket_of_its_dates(self):
+        f = _fn("barGetDataForPeriod")
+        self.assertIn("aggList: [barAggRows(function(r) { var d = barFlowYmd(r); return d >= ch.from && d < ch.to; })],", f)
+
+    def test_a_remembered_era_waits_for_the_eras(self):
+        # a reload restored Era before the eras were read, and fell back to Monthly (seen in the preview)
+        self.assertIn("if (fl && barPeriod === 'era' && !eraOk && barEras !== null) barPeriod = 'monthly';", _fn("barBrSyncUI"))
+        self.assertIn("if ((barEras.length || barPeriod === 'era') && barInited && barData) barRender();", _fn("barLoadEras"))
 
     def test_export_says_where_emt_cannot_see(self):
         self.assertIn("Export is energy EMT did not meter coming in: solar or a battery.", _fn("barFlowDraw"))

@@ -574,7 +574,9 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
         <button class="bar-seg-btn"        onclick="barSetPeriod('hh',this)" title="Half-hourly breakdown of a single day">HH</button>
         <button class="bar-seg-btn active" onclick="barSetPeriod('daily',this)">Daily</button>
         <button class="bar-seg-btn"        onclick="barSetPeriod('monthly',this)">Monthly</button>
-        <button class="bar-seg-btn"        onclick="barSetPeriod('yearly',this)">Yearly</button>
+        <button class="bar-seg-btn"        onclick="barSetPeriod('yearly',this)" id="bar-yearly-btn">Yearly</button>
+        <button class="bar-seg-btn"        onclick="barSetPeriod('era',this)" id="bar-era-btn" style="display:none"
+                title="A chapter of your home: from an era's start to the next era's">Era</button>
       </div>
       <div class="bar-seg" id="bar-cal-seg">
         <button class="bar-seg-btn active" onclick="barSetCalendar(false,this)">Billing</button>
@@ -1536,6 +1538,7 @@ function barSaveState() {
       accView:     barAccView,
       accStart:    barAccStart,
       accStanding: barAccIncStanding,
+      flowEra:     barFlowEra,
     }));
   } catch(e) {}
 }
@@ -1555,7 +1558,8 @@ function barLoadState(availableYears) {
     var raw = localStorage.getItem(EMT.lsKey('emt_bar_state'));
     if (!raw) { barShowFromUrl(); barFromSpiral(); return; }
     var st = JSON.parse(raw);
-    if (['daily','monthly','yearly','hh'].indexOf(st.period) !== -1) barPeriod = st.period;
+    if (['daily','monthly','yearly','hh','era'].indexOf(st.period) !== -1) barPeriod = st.period;
+    if (typeof st.flowEra === 'string') barFlowEra = st.flowEra;
     if (['kwh','cost','co2'].indexOf(st.metric) !== -1)       barMetric = st.metric;
     if (['date','month'].indexOf(st.order) !== -1)             barMonthOrder = st.order;
     if (typeof st.calendar === 'boolean')                      barCalendar = st.calendar;
@@ -1592,6 +1596,7 @@ function barLoadState(availableYears) {
     if (typeof st.brSeries === 'string') barBrSeries = st.brSeries;
     barBrPct = st.brPct === true;
     if (barShow === 'brackets' && barMetric === 'co2') barMetric = 'kwh';
+    if (barPeriod === 'era' && barShow !== 'flow') barPeriod = 'yearly';   // Era is Flow's alone
   } catch(e) {}
   barShowFromUrl();
   barFromSpiral();
@@ -1705,14 +1710,14 @@ async function barInit() {
 
 function barSyncUI() {
   // Sync period/metric/view segment buttons to current state vars
-  ['hh','daily','monthly','yearly'].forEach(function(v) {
+  ['hh','daily','monthly','yearly','era'].forEach(function(v) {
     document.querySelectorAll('#bar-period-seg .bar-seg-btn').forEach(function(b){
       if (b.textContent.toLowerCase() === v) b.classList.toggle('active', barPeriod === v);
     });
   });
   // Billing/Calendar toggle is meaningless for the HH (single-day) view — hide it.
   var calSeg = document.getElementById('bar-cal-seg');
-  if (calSeg) calSeg.style.display = (barPeriod === 'hh') ? 'none' : '';
+  if (calSeg) calSeg.style.display = (barPeriod === 'hh' || barPeriod === 'era') ? 'none' : '';
   document.querySelectorAll('#bar-cal-seg .bar-seg-btn').forEach(function(b){
     var isCal = b.getAttribute('onclick') && b.getAttribute('onclick').indexOf('true') !== -1;
     b.classList.toggle('active', isCal === barCalendar);
@@ -2155,7 +2160,8 @@ function barLoadEras() {
   _barErasAsked = true;
   fetch(apiUrl('/api/home-eras')).then(function(r) { return r.json(); }).then(function(j) {
     barEras = j.eras || [];
-    if (barEras.length && barInited && barData) barRender();
+    // and with none, a remembered Era (Flow's) falls back to Monthly
+    if ((barEras.length || barPeriod === 'era') && barInited && barData) barRender();
   }).catch(function() { barEras = []; });
 }
 function barErasAvailable() {
@@ -2553,6 +2559,34 @@ var FLOW_OTHER_SHARE = 0.02;
 var FLOW_PLUGIN = 'https://cdn.jsdelivr.net/npm/chartjs-chart-sankey@0.19.1/dist/chartjs-chart-sankey.min.js';
 var _barFlowLib = null;
 function barFlow() { return barShow === 'flow'; }
+// ── Flow's Era (4 Nov 2026, the user) ──
+// A chapter of the home: from an era's start to the next era's start, of any kind; the latest to the
+// last day of data; "Before the first era" from the first day. Eras starting the same day are one
+// chapter. [{id, label, from, to}] oldest first, `to` exclusive, local dates.
+var barFlowEra = null;              // the chapter shown: its id; null, the latest
+function barFlowYmd(r) { return r.year + '-' + String(r.month).padStart(2, '0') + '-' + String(r.day).padStart(2, '0'); }
+function barFlowChapters() {
+  var eras = (barEras || []).filter(function(e) { return e.start; });
+  var days = (barData || []).map(barFlowYmd).sort();
+  if (!eras.length || !days.length) return [];
+  var first = days[0], end = barAddDay(days[days.length - 1]);
+  var starts = {};
+  eras.forEach(function(e) { (starts[e.start] || (starts[e.start] = [])).push(e); });
+  var keys = Object.keys(starts).sort().filter(function(d) { return d < end; });
+  var out = [];
+  if (keys.length && first < keys[0]) out.push({id: 'before', label: 'Before the first era', from: first, to: keys[0]});
+  keys.forEach(function(d, i) {
+    var es = starts[d];
+    out.push({id: 'era:' + d, from: d < first ? first : d, to: keys[i + 1] || end, latest: !keys[i + 1],
+              label: es.map(function(e) { return (ERA_KINDS[e.kind] || ERA_KINDS.other).icon + ' ' + e.label; }).join(' + ')});
+  });
+  return out.filter(function(c) { return c.from < c.to; });
+}
+function barFlowChapter() {
+  var chs = barFlowChapters();
+  return chs.filter(function(c) { return c.id === barFlowEra; })[0] || chs[chs.length - 1] || null;
+}
+function barSetFlowEra(v) { barFlowEra = v; barSaveState(); barRender(); }
 // The plugin, once, after Chart.js (it registers itself on window.Chart)
 function barFlowLib() {
   if (window.Chart && Chart.registry.controllers.get('sankey')) return Promise.resolve();
@@ -2735,6 +2769,10 @@ function barFlowBuildTable(tbl, aggList) {
 
 function barSetShow(v, el) {
   barShow = v;
+  // Flow has Era where the others have Yearly (4 Nov 2026, the user: in Flow, Yearly totalled what
+  // Monthly did — the years ticked); each turns into the other on the way in and out
+  if (v === 'flow' && barPeriod === 'yearly') barPeriod = barEras === null || barFlowChapters().length ? 'era' : 'monthly';
+  else if (v !== 'flow' && barPeriod === 'era') barPeriod = 'yearly';
   barBrError = null;
   if (v === 'brackets' && barMetric === 'co2') barMetric = 'kwh';   // brackets carry no carbon
   barSetActive('bar-show-seg', el);
@@ -2761,6 +2799,11 @@ function barBrSyncUI() {
   vis('bar-net-wrap', !on && !fl, 'flex');
   vis('bar-sort-btn', !on && !fl);
   vis('bar-flow-head', fl, 'flex');
+  var eraOk = fl && barFlowChapters().length > 0;
+  vis('bar-yearly-btn', !fl);
+  vis('bar-era-btn', eraOk);
+  // not before the eras are known (barEras null): a remembered Era is drawn when they land
+  if (fl && barPeriod === 'era' && !eraOk && barEras !== null) barPeriod = 'monthly';
   if (fl) { vis('bar-legend', false); vis('bar-tariff-wrap', false); vis('bar-eras-wrap', false); }
   var co2 = document.getElementById('bar-co2-btn');
   if (co2 && on) co2.style.display = 'none';
@@ -2944,6 +2987,13 @@ function barGetDataForPeriod() {
       bucketRanges: rows.map(function(){ return { from: barHHDate, to: _hhTo }; })
     };
   }
+  if (barPeriod === 'era') {
+    var ch = barFlowChapter();
+    if (!ch) return {labels: [], aggList: [], bucketRanges: []};
+    return {labels: [ch.label],
+            aggList: [barAggRows(function(r) { var d = barFlowYmd(r); return d >= ch.from && d < ch.to; })],
+            bucketRanges: [{from: ch.from, to: ch.to}]};
+  }
   if (barPeriod === 'daily') {
     var filtered;
     if (barCalendar) {
@@ -3115,7 +3165,7 @@ function barRender() {
     if (_calSeg) _calSeg.style.display = 'none';
     if (barHHDataDate !== barHHDate) { barLoadHH(); return; }
   } else if (_calSeg) {
-    _calSeg.style.display = '';
+    _calSeg.style.display = barPeriod === 'era' ? 'none' : '';   // an era is its own dates
   }
   if ((barBrackets() || barFlow()) && !barBrReady()) return;     // the brackets' read renders again when it lands
   barBrSyncUI();
@@ -3174,7 +3224,7 @@ function barRender() {
   }
 
   var pd = barGetDataForPeriod();
-  if (barFlow()) { barFlowRender(pd.aggList); return; }    // Flow: one Sankey for the span (Flow design)
+  if (barFlow()) { barLoadEras(); barFlowRender(pd.aggList); return; }    // Flow: one Sankey for the span (Flow design)
   // Set consistent CO2 unit for this render before building datasets or labels
   if (barMetric === 'co2') barCo2SetUnit(pd.aggList);
   var datasets = barGetDatasets(pd.labels, pd.aggList, pd.isHH);
@@ -4248,6 +4298,21 @@ function barAccExpandClose() { document.getElementById('acc-backdrop').classList
 function barBuildSubBar() {
   var bar = document.getElementById('bar-sub-bar');
   bar.innerHTML = '';
+  if (barPeriod === 'era' && barFlow()) {
+    var cur = barFlowChapter(), chs = barFlowChapters().slice().reverse();      // newest first
+    var sel = document.createElement('select');
+    sel.setAttribute('aria-label', 'Which chapter of your home');
+    sel.style.cssText = 'font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;';
+    sel.innerHTML = chs.map(function(c) {
+      var lastDay = new Date(Date.parse(c.to + 'T00:00:00Z') - 864e5).toISOString().slice(0, 10);
+      var span = _eraDate(c.from) + ' \u2192 ' + (c.latest ? 'now' : _eraDate(lastDay));
+      return '<option value="' + _eraEsc(c.id) + '"' + (cur && c.id === cur.id ? ' selected' : '') + '>' +
+        _eraEsc(c.label) + ' \u00b7 ' + span + '</option>';
+    }).join('');
+    sel.onchange = function() { barSetFlowEra(sel.value); };
+    bar.appendChild(sel);
+    return;
+  }
   if (barPeriod === 'hh' && !barRunning()) {
     // Day navigator using the SAME shared rolodex (PeriodSpinner) as the other
     // periods — so hover-scroll shows the ±4-day preview and scrolls in the same

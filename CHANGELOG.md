@@ -5,6 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **Flow by era.** In Flow, Yearly showed the same as Monthly (the years ticked); it is **Era**
+  there now — a chapter of your home, from one era's start to the next era's, the latest to today, and
+  *Before the first era* for the time before any. Pick one to see where the grid's import went while,
+  say, you had solar but no battery.
+
 ## [2026.11.0b4] — 2026-11-04
 
 - **Usage Stats → Flow.** Where the grid's electricity went, as a Sankey: from the grid, through the
