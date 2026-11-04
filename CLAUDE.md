@@ -7,7 +7,7 @@ devices, and reconciles against the supplier's settled figures.
 
 ## Where we are
 
-**v4 is at 4.5.24** (repo `RGx01/energy-meter-tracker-addon`). 4.5.14 was the last feature
+**v4 is at 4.5.25** (repo `RGx01/energy-meter-tracker-addon`). 4.5.14 was the last feature
 release; since then it accepts **critical fixes only** — data loss, crash-on-start, or a pricing
 error. 4.5.15 shipped #473 (device cost from raw `imp_kwh` instead of the grid-clipped
 `imp_kwh_grid`, with a heal) and #475 (a settled kWh re-banding an unpriced block). 4.5.16 shipped
@@ -24,7 +24,10 @@ settled breakdown with no EV where EMT's split has the car (Octopus's first answ
 house, and corrected it days later), for up to 28 days, and re-fetches the ones already cached — a heal. 4.5.24 (18 Oct 2026, v4
 #513) rebuilds a running fixed-term agreement's rates at every refresh: the stitch cached any agreement with a
 `valid_to`, and IOG-SMB's windows reach only now + 2 days, so two days after a restart the bill apply refused every
-bill, silently — no heal, so the floor does not move. The EV_BOOST band is still expected.
+bill, silently — no heal, so the floor does not move. 4.5.25 (4 Nov 2026, v4 #523) is v5's #53 ported back:
+`_current_agreement` takes the agreement in force now, never a zero-length blip — a blip after an IOG-SMB fixed read
+the account as on Agile, stopping the bill passes and taking the blip's standing charge — no heal, so the floor does
+not move. The EV_BOOST band is still expected.
 
 **4.5.23 is the v5 import floor** (raised 12 Oct 2026). It carries a heal, and the rule is that a fix adding a heal
 raises the floor EMT will import from. A below-floor database must be **refused** with "open
@@ -33,7 +36,8 @@ the floor is what makes that safe — so a v4 fix is ported as its forward fix o
 
 **The work now is v5**, in this repo (`RGx01/EMT`, public). It was seeded from v4 4.5.14 and
 deconstructed in the open; the forward fixes from 4.5.15 (#473, #475) and 4.5.16 (#481) were
-ported afterwards, and 4.5.17–4.5.19's VAT forward fixes with them, 4.5.20's gap-fill fix, 4.5.21's four, 4.5.22's VAT resync (as forward code: it waits on Octopus, so the floor alone cannot guarantee it ran; removed in engine step 2d-3, 23 Oct 2026 — a v4 backup from before 13 Oct is opened in v4 first, import spec v26), 4.5.23's hold-back, and 4.5.24's stitch cache (EMT #209, found here first). **Each new v4 release:** port its forward fixes, not its heal, and raise the
+ported afterwards, and 4.5.17–4.5.19's VAT forward fixes with them, 4.5.20's gap-fill fix, 4.5.21's four, 4.5.22's VAT resync (as forward code: it waits on Octopus, so the floor alone cannot guarantee it ran; removed in engine step 2d-3, 23 Oct 2026 — a v4 backup from before 13 Oct is opened in v4 first, import spec v26), 4.5.23's hold-back, 4.5.24's stitch cache (EMT-archive #209, found here first), and 4.5.25's current agreement (#53, found here first: the
+fix went v5 → v4). **Each new v4 release:** port its forward fixes, not its heal, and raise the
 floor if it carries a heal (`v4import/gate.py` `FLOOR_VERSION`, the import spec, `docs/reference/v4-import-and-first-run.md`,
 README, BETA.md, the v4-import issue form, this file — `git grep 4.5.23` finds them).
 The deconstruction (steps 1–7, workstreams A–E) is done; its record is `docs/history/design/` and
@@ -46,7 +50,7 @@ account details; the work before it, with its issues and PRs, is the private `RG
 in a commit message, is there. **Never push from the archive clone to `RGx01/EMT`.**
 
 **Versions:** CalVer `YYYY.M.PATCH`, betas `2026.11.0b1`, `b2`, …; `main` holds the latest beta,
-2026.11.0b5. The slug is `emt`, the direct port 8098. Releasing: `docs/DEVELOPMENT.md`.
+2026.11.0b6. The slug is `emt`, the direct port 8098. Releasing: `docs/DEVELOPMENT.md`.
 
 **Soaking on the Pi:** `.build/soak_prepare_db.py` → restore via Data Management (through ingress
 since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-management` still works) → `.build/soak.py run` → save the log with

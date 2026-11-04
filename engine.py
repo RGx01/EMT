@@ -11117,7 +11117,8 @@ def _ask_queue(facts: list, store, mpan: str, now, considered: "dict | None" = N
     """{slot: "bill" | "split"} the one selector (design §3) would ask: settled kWh (DCC, or an
     imported block's own), not corrected, on an Intelligent agreement of its own, under the 6-hour
     gate and above Octopus's two years; a bill where none is cached for this MPAN, a split where an
-    IOG-SMB bill is cost-only and a completed dispatch drew; less what is kept, given up or resting.
+    IOG-SMB bill is cost-only and a completed dispatch drew, or the half-hour is an API import's (it
+    has no dispatch to say); less what is kept, given up or resting.
     Imported history is asked like any other (decided (b)). `considered`, if given, is filled with
     why each half-hour read is left out (the first reason that holds), so a zero says why."""
     from datetime import timedelta as _td
@@ -11156,9 +11157,16 @@ def _ask_queue(facts: list, store, mpan: str, now, considered: "dict | None" = N
         # its price at Octopus's label, on most of it): asked for Octopus's, after everything else
         # (28 Oct 2026, the user). Octopus's replaces it; where Octopus has no cost it stays, grey.
         # A CSV's is its own bill, and older history is under the floor.
+        # A split where an IOG-SMB bill is cost-only and the car drew: a completed dispatch says so on
+        # a live half-hour; an API import's has none (Octopus keeps a short dispatch window), and since
+        # engine step 2c it arrives with its cost-only bill, so it is asked for its split whatever it
+        # drew — as v4's drain asked every imported capped half-hour (4 Nov 2026, a beta tester: a
+        # new IOG-SMB install's 2,730 imported half-hours were never asked, and 35 daytime smart
+        # charges Octopus billed off-peak stayed at the day rate).
         kind = ("bill" if not f["bill_mpan"]
                 else "imported" if (f.get("bill_imported") and f["source"] == "imported_api")
-                else "split" if (split_at(sl) and f["cost_only"] and f["completed"]) else None)
+                else "split" if (split_at(sl) and f["cost_only"]
+                                 and (f["completed"] or f["source"] == "imported_api")) else None)
         if kind is None:
             _out("bill cached"); continue
         if sl in gone[kind]:
