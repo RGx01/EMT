@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b6] — 2026-11-04
 
 - **IOG-SMB history imported from Octopus gets its House/EV split.** After you import your history on
   IOG-SMB, EMT is meant to ask Octopus for each half-hour's House/EV breakdown, which is what settles
@@ -13,7 +13,6 @@ internal name for everything before the first public release and never appears i
   has no record of that, so it asked for none. The half-hours stayed light amber, and a smart charge
   Octopus billed off-peak in the day stayed at the day rate. EMT now asks for every imported IOG-SMB
   half-hour, newest first and paced, and settles each one as its answer arrives.
-
 - **Flow shows your export by price, and plunges in Cost.** Your export now leaves the house through
   the price it earned, in the same 2.5p bands as your import, so on Agile Outgoing or Flux you can see
   what each price paid. In Cost, an Agile plunge's credit is drawn too: from whatever used the energy to
