@@ -20,10 +20,6 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Open
 
-- **Flow, a Usage Stats Sankey** (the user, 4 Nov 2026) — grid → rate band → house and devices, export out
-  of the house, in kWh, £ and CO₂, for the span on screen. Drafted in
-  [design/EMT-v5_flow_design.md](design/EMT-v5_flow_design.md): three PRs, the first giving the rate
-  brackets the API EV and carbon. Decided 4 Nov 2026; nothing open.
 - **EV_BOOST, when Octopus bills it.** Octopus added `EV_BOOST` to its band enums on 28 Sep 2026.
   `bucket_side` books any boost bucket to the EV and logs the first one it sees
   (kraken_api_client.py `bucket_side`), but no reader knows a `boost` band: when one appears in a bill,
@@ -77,6 +73,9 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Resolved since the record
 
+- **Flow, a Usage Stats Sankey** (the user, 4 Nov 2026) — grid → rate band → house and devices, export
+  out of the house, in kWh, £ and CO₂, for the span on screen; small bands as Other. Built 4 Nov 2026
+  (#43–#46); the record is [history/design/EMT-v5_flow_design.md](history/design/EMT-v5_flow_design.md).
 - **Going public** — the repository public on 2 Nov 2026, with: rulesets on `main` (a PR, signed
   commits, no force push or deletion) and `dev` (the same without signatures); no required check,
   because a docs-only PR skips the tests and a required check that never reports would block it;
