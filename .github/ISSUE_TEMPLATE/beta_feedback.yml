@@ -6,7 +6,7 @@ body:
     id: version
     attributes:
       label: EMT version
-      placeholder: 2026.11.0b7
+      placeholder: 2026.11.0b8
   - type: textarea
     id: feedback
     attributes:
