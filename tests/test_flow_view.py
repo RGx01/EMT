@@ -22,7 +22,8 @@ hover's kWh × p/kWh its £; the standing charge's £14.50 in the head; HH and Y
 the PDF's canvas read at once.
 
 Every test fails on the parent tree, where none of it existed. TheEraChapters, TheSpans and the Span
-wiring (4 Nov 2026, later) fail on the tree before them: Flow had Yearly, which totalled what Monthly
+wiring (4 Nov 2026, later; eras on their own and "now" for a future end the same day, from staging's data)
+fail on the tree before them: Flow had Yearly, which totalled what Monthly
 did, and no view had a span.
 """
 import json
@@ -229,10 +230,29 @@ class TheSpans(unittest.TestCase):
             ["Tariffs", True, "Flexible \u2014 price change 1 Oct 2024", "2024-10-01", "2025-01-01", False],
             ["Tariffs", True, "Flexible \u2014 from its start", "2024-06-01", "2024-10-01", False]])
 
-    def test_eras_first_then_tariffs(self):
+    def test_chapters_then_eras_then_tariffs(self):
         out = self._js("\nconsole.log(JSON.stringify(barSpans().map(function (o) { return o.group; })));",
                        eras=[{"kind": "solar", "label": "Solar", "start": "2025-01-01"}], tariffs=self._tariffs())
-        self.assertEqual(out, ["Eras", "Eras", "Tariffs", "Tariffs", "Tariffs", "Tariffs"])
+        self.assertEqual(out, ["Chapters", "Chapters", "Eras", "Tariffs", "Tariffs", "Tariffs", "Tariffs"])
+
+    def test_an_era_on_its_own_runs_to_its_own_end(self):
+        # 4 Nov 2026, the user: the solar era without the chapter's cut at the battery's change; an era's
+        # end is exclusive (a replaced battery ends the day the next starts)
+        eras = [{"id": "s", "kind": "solar", "label": "Solar", "start": "2024-07-14"},
+                {"id": "b1", "kind": "battery", "label": "Battery", "start": "2024-07-14", "end": "2025-02-20"},
+                {"id": "b2", "kind": "battery", "label": "Battery", "start": "2025-02-20"}]
+        out = self._js("\nconsole.log(JSON.stringify(barSpans().filter(function (o) { return o.group === 'Eras'; })"
+                       ".map(function (o) { return [o.id, o.from, o.to, !!o.latest]; })));", eras=eras)
+        self.assertEqual(out, [["own:b2", "2025-02-20", "2025-07-01", True],
+                               ["own:s", "2024-07-14", "2025-07-01", True],
+                               ["own:b1", "2024-07-14", "2025-02-20", False]])
+
+    def test_a_span_reaching_the_last_day_is_now(self):
+        # a running fixed-term tariff has its end in the future (staging's IOG-SMB fixed, 4 Nov 2026)
+        t = [{"direction": "import", "name": "Fixed", "from": "2025-01-01", "to": "2027-03-18", "prices": []}]
+        out = self._js("\nconsole.log(JSON.stringify(barSpans().map(function (o) { return [o.to, !!o.latest]; })));",
+                       tariffs=t)
+        self.assertEqual(out, [["2025-07-01", True]])
 
     def test_a_short_span_a_bar_a_day(self):
         out = self._js("\nvar d = barSpanData({from: '2025-01-01', to: '2025-03-01'});"
