@@ -542,6 +542,7 @@
 let config   = {{ config | tojson }};
 // batteries whose sensor is found counting solar (battery sensor design §3) — {meter_id: flag}
 let batteryFlagged = {};
+let wholeHouseFlagged = {};   // BL-108: devices whose sensor reads the whole house's import
 // Snapshot of server config for detecting billing-significant changes
 var _serverConfig = JSON.parse(JSON.stringify(config));
 let entities = [];
@@ -734,7 +735,8 @@ function _cfgTabList() {
   tabs.push({key: 'main', label: '⚡ Main meter'});
   live.concat(gone).forEach(function(id) {
     var meta = meters[id].meta || {}, t = meta.meter_type;
-    var flag = batteryFlagged[id] && !batteryFlagged[id].confirmed_at;
+    var flag = (batteryFlagged[id] && !batteryFlagged[id].confirmed_at) ||
+               (wholeHouseFlagged[id] && !wholeHouseFlagged[id].confirmed_at);
     tabs.push({key: 'device-' + id, archived: !!meta.retired_at, flag: !!flag,
                label: (t === 'battery' ? '🔋' : t === 'ev' ? '🚗' : t === 'heat_pump' ? '♨️' : '⚡') + ' ' +
                       (meta.device || 'Device')});
@@ -781,7 +783,7 @@ function renderTabs() {
       (t.key === 'add' ? ' add' : '') + '" data-tab="' + esc(t.key) + '"' +
       (t.archived ? ' title="Archived"' : '') + '>' + esc(t.label) +
       (t.archived ? ' <span class="cfg-tab-note">archived</span>' : '') +
-      (t.flag ? ' <span class="cfg-tab-flag" title="This battery\'s sensor counts solar charging">⚠</span>' : '') +
+      (t.flag ? ' <span class="cfg-tab-flag" title="This device\'s sensor looks wrong: see its card">⚠</span>' : '') +
       '</button>';
   }).join('');
 }
@@ -1039,10 +1041,11 @@ var BATTERY_SENSOR_HINT = 'Cumulative kWh the battery charged <strong>from the g
 
 function loadBatteryFlags() {
   return fetch(apiUrl('/api/battery-sensor/flagged')).then(function (r) { return r.json(); }).then(function (d) {
-    var had = Object.keys(batteryFlagged).length;
-    batteryFlagged = {};
+    var had = Object.keys(batteryFlagged).length + Object.keys(wholeHouseFlagged).length;
+    batteryFlagged = {}; wholeHouseFlagged = {};
     ((d && d.flagged) || []).forEach(function (b) { batteryFlagged[b.meter_id] = b; });
-    if (had || Object.keys(batteryFlagged).length) renderAll();
+    ((d && d.whole_house) || []).forEach(function (b) { wholeHouseFlagged[b.meter_id] = b; });
+    if (had || Object.keys(batteryFlagged).length || Object.keys(wholeHouseFlagged).length) renderAll();
   }).catch(function () {});
 }
 
@@ -1069,6 +1072,32 @@ function batteryFlagNote(meterId, b) {
     'remove the battery: its charge then counts in the house. ' + BATTERY_CLAMP_NOTE + '<br><br>' +
     '<button class="btn btn-sm js-battery-confirm" data-meter="' + esc(meterId) + '" data-confirmed="1" ' +
     'style="font-size:12px;">Keep this sensor anyway</button>' +
+    '</div>';
+}
+
+// BL-108: a device whose sensor reads the whole house's grid import — why, what it gets wrong, how to
+// fix it, or, kept, a quiet note with the way back
+function wholeHouseFlagNote(meterId, b) {
+  var ex = b.example || [];
+  if (b.confirmed_at) {
+    return '<div style="padding:8px 0;font-size:12px;color:var(--muted);">' +
+      'EMT found this sensor matching the whole house\'s import in ' + (+b.matched || 0) + ' of ' + (+b.n || 0) +
+      ' half-hours; you chose to keep it on ' + esc(String(b.confirmed_at).slice(0, 10)) + '. ' +
+      '<button class="btn btn-sm js-battery-confirm" data-kind="whole_house" data-meter="' + esc(meterId) + '" ' +
+      'data-confirmed="0" style="font-size:11px;">Show the warning again</button></div>';
+  }
+  return '<div class="info-box" style="border-left:3px solid #e0a020;">' +
+    '<strong>⚠ This sensor reads what your whole house imports</strong><br>' +
+    'In the last 30 days it was within 5% of the meter\'s import in ' + (+b.matched || 0) + ' of the ' + (+b.n || 0) +
+    ' half-hours the house imported' + (ex[0] ? ' — on ' + esc(String(ex[0]).slice(0, 10)) + ', ' + (+ex[1]).toFixed(2) +
+    ' kWh against the meter\'s ' + (+ex[2]).toFixed(2) + ' kWh' : '') + '. A device on its own does not follow the ' +
+    'whole house like that: this is the house\'s grid import, read at the inverter or a clamp on the incoming cable.<br><br>' +
+    '<strong>What it gets wrong:</strong> this device takes the house\'s usage, so its cost reads far too high and ' +
+    'the rest of the house\'s near nothing. Your bill total is not affected.<br>' +
+    '<strong>To fix it:</strong> choose this device\'s own sensor, save, and answer <em>It was the wrong sensor</em> ' +
+    '— EMT then offers to replace its history.' + helpPoint('fixing-a-sensor', 'Fixing a device\'s sensor') + '<br><br>' +
+    '<button class="btn btn-sm js-battery-confirm" data-kind="whole_house" data-meter="' + esc(meterId) + '" ' +
+    'data-confirmed="1" style="font-size:12px;">Keep this sensor anyway</button>' +
     '</div>';
 }
 
@@ -1128,6 +1157,7 @@ function buildSubCard(meterId, meter) {
     ) : '') +
 
     (batteryFlagged[meterId] ? batteryFlagNote(meterId, batteryFlagged[meterId]) : '') +
+    (wholeHouseFlagged[meterId] ? wholeHouseFlagNote(meterId, wholeHouseFlagged[meterId]) : '') +
 
     (!meta.retired_at ? '<div class="info-box">' +
       '<strong>Device sensor requirements</strong>' +
@@ -1762,8 +1792,12 @@ function onContainerClick(e) {
   if (el.classList.contains('js-battery-confirm')) {
     el.disabled = true;
     fetch(apiUrl('/api/battery-sensor/confirm'), {method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({meter_id: el.dataset.meter, confirmed: el.dataset.confirmed === '1'})})
-      .then(function () { loadBatteryFlags(); EMT.dismiss('battery-flagged-' + el.dataset.meter); })
+          body: JSON.stringify({meter_id: el.dataset.meter, confirmed: el.dataset.confirmed === '1',
+                                kind: el.dataset.kind || 'battery'})})
+      .then(function () {
+        loadBatteryFlags();
+        EMT.dismiss((el.dataset.kind === 'whole_house' ? 'whole-house-' : 'battery-flagged-') + el.dataset.meter);
+      })
       .catch(function () { el.disabled = false; });
     return;
   }

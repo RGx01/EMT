@@ -6555,6 +6555,36 @@ class BlockStore:
             "ORDER BY d.block_start", (main_id, meter_id, 1 if unnamed else 0, sensor_id, ratio,
                                        floor_kwh))]
 
+    def device_primary_sensors(self) -> list:
+        """[(meter_id, primary import sensor's device_sensors id or None)] of every sub-meter, in any
+        config period — the whole-house sensor check's devices (BL-108)."""
+        return [(r[0], r[1]) for r in self._conn.execute(
+            "SELECT DISTINCT m.meter_id, (SELECT d.id FROM device_sensors d WHERE d.meter_id = m.meter_id "
+            "AND d.channel = 'import' AND d.role = 'primary') FROM meters m "
+            "WHERE m.is_sub_meter = 1 ORDER BY m.meter_id")]
+
+    def whole_house_evidence(self, meter_id: str, sensor_id, *, days: int, tol: float, floor_kwh: float,
+                             main_id: str = "electricity_main", unnamed: bool = True) -> dict:
+        """How often a device's sensor read what the whole house imported (BL-108): over the last
+        `days` of the main meter's half-hours, those where the meter imported more than `floor_kwh`
+        and the device has a reading — {n, matched (within `tol` of the meter), example [half-hour,
+        device kWh, meter kWh] (the largest matched)}. The meter's settled kWh where it has one. Rows
+        that name `sensor_id`, or none (imported or rebuilt history) unless `unnamed` is False — a
+        device whose flagged sensor was replaced."""
+        q = ("FROM blocks d JOIN blocks m ON m.block_start = d.block_start AND m.meter_id = ? "
+             "WHERE d.meter_id = ? AND ((? AND d.imp_sensor_id IS NULL) OR d.imp_sensor_id IS ?) "
+             "  AND d.imp_kwh IS NOT NULL AND COALESCE(m.imp_kwh_api, m.imp_kwh) > ? "
+             "  AND d.block_start >= (SELECT strftime('%Y-%m-%dT%H:%M:%S', MAX(block_start), ?) "
+             "                        FROM blocks WHERE meter_id = ?)")
+        args = (main_id, meter_id, 1 if unnamed else 0, sensor_id, floor_kwh, "-%d days" % int(days), main_id)
+        match = " AND ABS(d.imp_kwh - COALESCE(m.imp_kwh_api, m.imp_kwh)) <= ? * COALESCE(m.imp_kwh_api, m.imp_kwh)"
+        n = self._conn.execute("SELECT COUNT(*) " + q, args).fetchone()[0]
+        matched = self._conn.execute("SELECT COUNT(*) " + q + match, args + (tol,)).fetchone()[0]
+        ex = self._conn.execute(
+            "SELECT d.block_start, d.imp_kwh, COALESCE(m.imp_kwh_api, m.imp_kwh) " + q + match +
+            " ORDER BY COALESCE(m.imp_kwh_api, m.imp_kwh) DESC LIMIT 1", args + (tol,)).fetchone()
+        return {"n": n, "matched": matched, "example": list(ex) if ex else None}
+
     def ha_read_devices(self, lo: str, hi: str) -> list:
         """The sub-meters with `ha_reads` in [lo, hi) — a refill's devices to rebuild. An hour
         row is counted from its start: one starting before `lo` is not."""

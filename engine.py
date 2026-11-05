@@ -13261,14 +13261,115 @@ def confirm_battery_sensor(meter_id: str, confirmed: bool = True) -> bool:
     return True
 
 
+# ── A device sensor that reads the whole house (BL-108) ─────────────────────────────────────────
+# 5 Nov 2026, a tester's support file: a battery set up with the inverter's reading of the house's grid
+# import matched the main meter at every hour, the car's charging included, so the battery took
+# everything but the car and the house read near zero. Any device, any type: its sensor is judged to
+# read the whole house where, over the meter's last 30 days, it is within 5% of the meter's import in at
+# least 75% of the half-hours the house imported over 0.1 kWh, on 200 of them or more. That battery:
+# 86%; every other device in the databases to hand: 9% at most. As the battery check, EMT changes
+# nothing on it: it says so, until the sensor is changed or the user keeps it anyway.
+_WHOLE_HOUSE_DAYS = 30
+_WHOLE_HOUSE_TOL = 0.05
+_WHOLE_HOUSE_FLOOR_KWH = 0.1
+_WHOLE_HOUSE_SHARE = 0.75
+_WHOLE_HOUSE_MIN = 200
+_WHOLE_HOUSE_EVIDENCE_KEY = "whole_house_sensor_evidence"     # store_meta: {meter_id: the evidence}
+_WHOLE_HOUSE_FLAGGED_KEY = "whole_house_sensor_flagged"       # store_meta: {meter_id: [sensor ids found]}
+_WHOLE_HOUSE_CONFIRMED_KEY = "whole_house_sensor_confirmed"   # store_meta: {meter_id: {sensor_id, at}}
+
+
+def whole_house_verdict(n: int, matched: int) -> bool:
+    """Whether a device's evidence says its sensor reads the whole house (BL-108)."""
+    return n >= _WHOLE_HOUSE_MIN and matched >= _WHOLE_HOUSE_SHARE * n
+
+
+def check_whole_house_sensors() -> dict:
+    """Each device's evidence that its sensor reads the whole house's grid import, into store_meta
+    (`_WHOLE_HOUSE_EVIDENCE_KEY`): {meter_id: {sensor_id, n, matched, share, example, whole_house}}. A
+    sensor found so is flagged (`_WHOLE_HOUSE_FLAGGED_KEY`) and warned of once, unless the user has kept
+    it (`_WHOLE_HOUSE_CONFIRMED_KEY`). A device whose flagged sensor was replaced counts only the rows
+    naming its new one. Nothing in the blocks changes. Never raises."""
+    if _store is None:
+        return {}
+    try:
+        flagged = _store.get_meta(_WHOLE_HOUSE_FLAGGED_KEY, {}) or {}
+        confirmed = _store.get_meta(_WHOLE_HOUSE_CONFIRMED_KEY, {}) or {}
+        out = {}
+        for mid, sid in _store.device_primary_sensors():
+            replaced = any(f != sid for f in flagged.get(mid) or [])
+            ev = _store.whole_house_evidence(mid, sid, days=_WHOLE_HOUSE_DAYS, tol=_WHOLE_HOUSE_TOL,
+                                             floor_kwh=_WHOLE_HOUSE_FLOOR_KWH, unnamed=not replaced)
+            n, matched = ev["n"], ev["matched"]
+            found = whole_house_verdict(n, matched)
+            out[mid] = {"sensor_id": sid, "n": n, "matched": matched,
+                        "share": round(matched / n, 3) if n else None,
+                        "example": [ev["example"][0], round(ev["example"][1], 3), round(ev["example"][2], 3)]
+                                   if ev["example"] else None,
+                        "whole_house": found}
+            if not found or sid in (flagged.get(mid) or []):
+                continue
+            flagged.setdefault(mid, []).append(sid)
+            if (confirmed.get(mid) or {}).get("sensor_id") == sid:
+                continue
+            logger.warning(
+                "device sensor: %s's sensor reads what the whole house imports — within %d%% of the meter "
+                "in %d of %d half-hours over the last %d days: it is the house's grid import, not the "
+                "device's, so the device takes the house's usage (the bill is not affected); choose the "
+                "device's own sensor", mid, int(_WHOLE_HOUSE_TOL * 100), matched, n, _WHOLE_HOUSE_DAYS)
+        _store.set_meta(_WHOLE_HOUSE_EVIDENCE_KEY, out)
+        _store.set_meta(_WHOLE_HOUSE_FLAGGED_KEY, flagged)
+        return out
+    except Exception as e:
+        logger.warning("device sensor: the whole-house check failed (%s)", e)
+        return {}
+
+
+def whole_house_sensor_flags() -> dict:
+    """The devices whose sensor is found reading the whole house, for the page: {meter_id: {n,
+    matched, share, example [half-hour, device kWh, meter kWh], confirmed_at}} — only while the sensor
+    judged is still the device's primary. `confirmed_at` where the user has kept it anyway."""
+    rd = _reader()
+    ev = rd.get_meta(_WHOLE_HOUSE_EVIDENCE_KEY, {}) or {}
+    confirmed = rd.get_meta(_WHOLE_HOUSE_CONFIRMED_KEY, {}) or {}
+    out = {}
+    for mid, sid in rd.device_primary_sensors():
+        e = ev.get(mid) or {}
+        if not e.get("whole_house") or e.get("sensor_id") != sid:
+            continue
+        c = confirmed.get(mid) or {}
+        out[mid] = {"n": e.get("n"), "matched": e.get("matched"), "share": e.get("share"),
+                    "example": e.get("example"),
+                    "confirmed_at": c.get("at") if c.get("sensor_id") == sid else None}
+    return out
+
+
+def confirm_whole_house_sensor(meter_id: str, confirmed: bool = True) -> bool:
+    """The user's choice on a sensor found reading the whole house: keep it anyway, or (False) take
+    that back. Held for the sensor confirmed. False when the device has no primary sensor."""
+    sid = dict(_store.device_primary_sensors()).get(meter_id)
+    if sid is None:
+        return False
+    rec = _store.get_meta(_WHOLE_HOUSE_CONFIRMED_KEY, {}) or {}
+    if confirmed:
+        rec[meter_id] = {"sensor_id": sid, "at": datetime.utcnow().replace(microsecond=0).isoformat()}
+        logger.info("device sensor: %s's whole-house sensor kept by the user", meter_id)
+    else:
+        rec.pop(meter_id, None)
+    _store.set_meta(_WHOLE_HOUSE_CONFIRMED_KEY, rec)
+    return True
+
+
 def _maybe_check_battery_sensors(now: "float | None" = None) -> None:
-    """The battery sensor check at most hourly, from the engine tick (and at start-up)."""
+    """The device sensor checks at most hourly, from the engine tick (and at start-up): a battery
+    counting solar, and any device reading the whole house (BL-108)."""
     global _battery_check_at
     t = time.monotonic() if now is None else now
     if _battery_check_at is not None and t - _battery_check_at < _BATTERY_CHECK_S:
         return
     _battery_check_at = t
     check_battery_sensors()
+    check_whole_house_sensors()
 
 
 def seconds_since_startup() -> float:
