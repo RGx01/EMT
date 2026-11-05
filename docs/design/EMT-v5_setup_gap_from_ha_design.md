@@ -1,6 +1,6 @@
 # The setup gap, from Home Assistant's recorder (design)
 
-*Design, 5 Nov 2026. **Not built.** Decided with the user that day: the half-hours between a new
+*Design, 5 Nov 2026. **Not built**; its two open questions answered the same day (§8). Decided with the user that day: the half-hours between a new
 install's history import and its first live reading should go through the same three stages as every
 other day — predicted, then kWh settled, then cost settled — rather than appearing a day or two later
 already kWh-settled. ("that 2 day window gets the 'predicted view' that we see rolling forward every
@@ -55,8 +55,8 @@ sensor's statistics and can tell).
 
 **What it writes.** One store method, after `create_backfill_block`: a main-meter block with `imp_kwh`
 (and `exp_kwh`), **`imp_kwh_api` left NULL** — not settled — `needs_pass2_rerun = 1`, a `source` of its
-own (`ha_recorder`), and an `interpolated` value of its own, so it can be told from a locally
-interpolated (1) or a supplier-backfilled (2) half-hour. One transaction.
+own (`ha_recorder`), and `interpolated = 3`, so it can be told from a locally interpolated (1) or a
+supplier-backfilled (2) half-hour (§8). One transaction.
 
 **Then the devices.** The fill runs before the import's device rebuild, and that rebuild's span is
 widened to the fill's end, so the devices are split over the filled half-hours in the same pass (from
@@ -121,9 +121,11 @@ Against an in-memory store and a fake HA client, each failing on the parent:
 - the device rebuild that follows covers the filled span;
 - the poll then stores Octopus's figure on a filled block as `stored`, not `missing_block`.
 
-## 8. Open
+## 8. Decided, 5 Nov 2026
 
-1. **The marker.** A new `interpolated` value (3), or `source` alone? `interpolated` is read by the
-   import page and by `count_backfilled_blocks`; a new value needs each reader checked.
-2. **CSV imports.** A CSV import on `cad+api` bounds a gap the same way. In scope (the default here), or
-   Octopus's import only?
+1. **The marker:** a new `interpolated` value, **3** (`RECORDER_INTERPOLATED`), beside 1 (locally
+   interpolated) and 2 (`BACKFILL_INTERPOLATED`), so the three kinds of filled half-hour stay distinct.
+   Each reader of `interpolated` is checked when it is built — the import page and
+   `count_backfilled_blocks` among them.
+2. **CSV imports are in scope:** a CSV import on `cad+api` fills the gap it bounds, as Octopus's import
+   does.
