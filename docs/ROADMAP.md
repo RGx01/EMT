@@ -20,6 +20,16 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Open
 
+- **BL-108: a device sensor that reads the whole house** (5 Nov 2026, a tester's support file; the user:
+  "add the BL item then build it"). A GivEnergy battery set up with GivTCP's `import_energy_today_kwh`
+  — the house's grid import at the inverter's meter, not the battery's grid charge — matched the main
+  meter at every hour of the day; in the 44 half-hours its Zappi charged, the "battery" read 261.5 kWh
+  of the meter's 262.0, the car's 139.9 among them. The battery took everything but the car and the
+  house read near zero. The battery check (`check_battery_sensors`) looks for a sensor reading
+  *more* than the grid, and this one read the same, so nothing said so. To build: a check, flag only,
+  for any device whose sensor reads the meter's import within 5% in most of the half-hours the house
+  imported over the last 30 days — 86% for that battery, 9% at most for every other device in the
+  databases to hand — warned of as the battery's is (banner, card note, *Keep this sensor anyway*).
 - **EV_BOOST, when Octopus bills it.** Octopus added `EV_BOOST` to its band enums on 28 Sep 2026.
   `bucket_side` books any boost bucket to the EV and logs the first one it sees
   (kraken_api_client.py `bucket_side`), but no reader knows a `boost` band: when one appears in a bill,
