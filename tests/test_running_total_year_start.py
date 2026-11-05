@@ -39,7 +39,7 @@ def _kinds():
     return PAGE[i:PAGE.index("\n};\n", i) + 3] + "\n"
 
 
-NAMES = ("barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly", "barAccDateLabel", "barAccAnchor", "barAccStartMs", "barAccYearOf",
+NAMES = ("barAccMs", "barAccStartChoices", "erasGroups", "barEraLabel", "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly", "barAccDateLabel", "barAccAnchor", "barAccStartMs", "barAccYearOf",
          "barAccDoy", "barAccYearDays", "barAccYearLabel", "barAccDayLabel", "barAccMonthOffsets", "_spLbl")
 
 
@@ -101,7 +101,7 @@ class TheStart(unittest.TestCase):
 class TheView(unittest.TestCase):
 
     def test_the_picker_and_its_state(self):
-        self.assertIn('<select id="bar-acc-start" onchange="barSetAccStart(this.value)"', PAGE)
+        self.assertIn("ss.onchange = function() { barSetAccStart(ss.value); };", PAGE)
         self.assertIn("accStart:    barAccStart,", _fn("barSaveState"))
         self.assertIn("barActiveYears = new Set(barGetYears());", _fn("barSetAccStart"))
 
