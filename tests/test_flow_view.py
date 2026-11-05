@@ -30,7 +30,7 @@ Flow's period buttons named by the span they total (Daily, Monthly, Yearly for H
 user, 4 Nov 2026), and the active button found by its period, not its words: those two fail on the tree
 before them.
 
-Every test fails on the parent tree, where none of it existed. TheEraChapters, TheSpans and the Span
+Every test fails on the parent tree, where none of it existed. TheSpans and the Span
 wiring (4 Nov 2026, later; eras on their own and "now" for a future end the same day, from staging's data)
 fail on the tree before them: Flow had Yearly, which totalled what Monthly
 did, and no view had a span.
@@ -63,13 +63,14 @@ class TheData(unittest.TestCase):
 
     def _run(self, agg_list, metric="kwh", standing=False, meters=METERS):
         js = ("var FLOW_OTHER_SHARE = 0.02, barBrWidth = 2.5, barCurrency = '£', barExportColor = '#ff7f0e';\n"
+              "var FLOW_DISPLACED_COLOR = '#16a34a';\n"
               "var barMetric = %s, barMeters = %s, barBrSeries = 'meter';\n"
               "function barIsDark() { return true; }\n"
               "function barIncStanding() { return %s; }\n"
               "function barStandingVal(agg) { return agg.standing || 0; }\n" % (
                   json.dumps(metric), json.dumps(meters), "true" if standing else "false") +
               "".join(_fn(n) for n in ("barBrPence", "barBrLabel", "barBrSign", "barBrColor", "barFlowIndex",
-                                       "barFlowSeriesLabel", "barFlowSeriesColor", "barFlowPlain", "barFlowData")) +
+                                       "barFlowFmt", "barFlowSeriesLabel", "barFlowSeriesColor", "barFlowPlain", "barFlowData")) +
               "\nconsole.log(JSON.stringify(barFlowData(%s)));" % json.dumps(agg_list))
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
             fh.write(js)
@@ -103,7 +104,7 @@ class TheData(unittest.TestCase):
         into_series = sum(v[0] for (a, b), v in f.items() if b.startswith("s:"))
         self.assertAlmostEqual(grid_out, into_series)
         self.assertEqual([d["nodes"][k]["column"] for k in ("grid", "b:3", "s:heat_pump")], [0, 1, 2])
-        self.assertEqual(d["nodes"]["s:electricity_main"]["label"], "Direct (house)")
+        self.assertEqual(d["nodes"]["s:electricity_main"]["name"], "Direct (house)")
 
     def test_export_leaves_the_house_by_its_rate_band(self):
         # export bands design: the house's export through its own bands, in export's colours
@@ -166,6 +167,36 @@ class TheData(unittest.TestCase):
         # the band's own flows keep their negative £, so its rows in the table say what it earned
         self.assertAlmostEqual(f[("b:-1", "s:heat_pump")][1], -0.02)
 
+    def test_in_pounds_each_destination_is_named_with_its_net(self):
+        # 5 Nov 2026, the user: the plunge's credit leaves the device, so the block is its cost before the
+        # credit; its name says the net. The house 80p less 4p, the heat pump nothing less 2p
+        agg = [{"br": {"electricity_main": {"-1": [4.0, -0.04, 600], "3": [10.0, 0.8, 1500]},
+                       "heat_pump": {"-1": [2.0, -0.02, 300]}}}]
+        n = self._run(agg, "cost")["nodes"]
+        self.assertEqual(n["s:electricity_main"]["label"], "Direct (house) \u00b7 \u00a30.76")
+        self.assertEqual(n["s:heat_pump"]["label"], "Heat Pump \u00b7 -\u00a30.02")
+        self.assertEqual(n["s:electricity_main"]["name"], "Direct (house)")
+        self.assertEqual([round(n["s:electricity_main"][k], 6) for k in ("gross", "credit", "net")], [0.8, 0.04, 0.76])
+
+    def test_the_net_is_the_pence_shown_less_the_pence_shown(self):
+        # the demo's EV, a month: £13.115 at 7.5-10p, £0.443 earned in plunges. Rounded on its own the net is
+        # £12.67, and the hover read £13.12 − £0.44 = £12.67
+        agg = [{"br": {"electricity_main": {"-2": [14.77, -0.443, 0], "3": [163.958, 13.115, 0]}}}]
+        n = self._run(agg, "cost")["nodes"]["s:electricity_main"]
+        self.assertEqual((n["gross"], n["credit"], n["net"]), (13.12, 0.44, 12.68))
+        self.assertTrue(n["label"].endswith("\u00a312.68"))
+
+    def test_GUARD_in_kwh_the_names_are_plain(self):
+        agg = [{"br": {"electricity_main": {"-1": [4.0, -0.04, 600], "3": [10.0, 0.8, 1500]}}}]
+        self.assertEqual(self._run(agg, "kwh")["nodes"]["s:electricity_main"]["label"], "Direct (house)")
+
+    def test_the_credit_s_hover_does_the_sum_and_the_table_keeps_the_plain_name(self):
+        draw = _fn("barFlowDraw")
+        self.assertIn("' used ' + barFlowFmt(r._v[0], 0) + ' at negative prices and was paid '", draw)
+        self.assertIn("' = ' + barFlowFmt(dn.net, 1) + ', its net cost.'", draw)
+        self.assertIn("return n.name || n.label || k;", _fn("barFlowBuildTable"))
+        self.assertIn("return r ? nm(r.from) + ' → ' + nm(r.to) : '';", draw)
+
     def test_paying_to_export_is_a_cost_out_of_the_house(self):
         agg = [{"br": {"electricity_main": {"3": [10.0, 0.8, 0]},
                        "export": {"-1": [2.0, -0.03, 0], "4": [5.0, 0.55, 0]}}}]
@@ -197,13 +228,18 @@ class TheData(unittest.TestCase):
         self.assertEqual([d["nodes"][k]["column"] for k in ("grid", "s:heat_pump", "export")], [0, 1, 2])
         self.assertEqual([round(x, 6) for x in d["totals"]["imp"]], [16.0, 2.36, 3200])
 
-    def test_in_co2_the_export_is_kept_but_not_drawn(self):
+    def test_in_co2_the_export_is_drawn_as_what_it_displaced(self):
+        # 5 Nov 2026, the user: "shouldn't it show export displacement?" — until then kept but not drawn
         d = self._run(self.AGG, "co2")
-        x = [x for x in d["flows"] if x["to"] == "export"]
-        self.assertEqual(len(x), 1)
-        self.assertTrue(x[0].get("hide"))
+        self.assertEqual(self._flows(d)[("s:electricity_main", "export")], [3.0, 0.45, 600])
+        self.assertFalse(any(x.get("hide") for x in d["flows"]))
+        self.assertEqual((d["nodes"]["export"]["label"], d["nodes"]["export"]["color"]),
+                         ("Displaced by export", "#16a34a"))
         self.assertEqual(d["totals"]["exp"], [3.0, 0.45, 600])
-        self.assertFalse(any(x.get("hide") for x in self._run(self.AGG, "kwh")["flows"]))
+
+    def test_GUARD_in_kwh_the_export_is_export(self):
+        d = self._run(self.AGG, "kwh")
+        self.assertEqual((d["nodes"]["export"]["label"], d["nodes"]["export"]["color"]), ("Export", "#ff7f0e"))
 
     def test_no_credit_flows_outside_pounds(self):
         agg = [{"br": {"electricity_main": {"-1": [4.0, -0.04, 600], "3": [10.0, 0.8, 1500]},
@@ -226,63 +262,11 @@ class TheData(unittest.TestCase):
 
 
 @unittest.skipUnless(shutil.which("node"), "node not available")
-class TheEraChapters(unittest.TestCase):
-    """4 Nov 2026, the user: in Flow Yearly totalled what Monthly did (the years ticked), so Flow has Era
-    there — a chapter of the home, from an era's start to the next era's start, of any kind."""
-
-    def _run(self, eras, days):
-        rows = [{"year": int(d[:4]), "month": int(d[5:7]), "day": int(d[8:])} for d in days]
-        kinds = PAGE[PAGE.index("var ERA_KINDS = {"):PAGE.index("\n};\n", PAGE.index("var ERA_KINDS = {")) + 3]
-        js = (kinds + "var barEras = %s, barData = %s;\n" % (json.dumps(eras), json.dumps(rows)) +
-              "".join(_fn(n) for n in ("barAddDay", "barFlowYmd", "barFlowChapters")) +
-              "\nconsole.log(JSON.stringify(barFlowChapters().map(function (c) {"
-              " return [c.id, c.label, c.from, c.to, !!c.latest]; })));")
-        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
-            fh.write(js)
-            path = fh.name
-        try:
-            res = subprocess.run(["node", path], capture_output=True, text=True, timeout=30)
-        finally:
-            os.unlink(path)
-        self.assertEqual(res.returncode, 0, res.stderr)
-        return json.loads(res.stdout)
-
-    DAYS = ["2024-06-01", "2025-01-01", "2026-10-31"]
-
-    def test_chapters_from_start_to_next_start(self):
-        eras = [{"kind": "ev", "label": "First EV", "start": "2024-09-14"},
-                {"kind": "solar", "label": "Solar", "start": "2025-03-08"}]
-        self.assertEqual(self._run(eras, self.DAYS), [
-            ["before", "Before the first era", "2024-06-01", "2024-09-14", False],
-            ["era:2024-09-14", "\U0001f697 First EV", "2024-09-14", "2025-03-08", False],
-            ["era:2025-03-08", "\u2600\ufe0f Solar", "2025-03-08", "2026-11-01", True]])
-
-    def test_eras_on_one_day_are_one_chapter(self):
-        eras = [{"kind": "solar", "label": "Solar", "start": "2025-03-08"},
-                {"kind": "battery", "label": "Battery", "start": "2025-03-08", "end": "2025-06-01"}]
-        out = self._run(eras, self.DAYS)
-        self.assertEqual([c[0] for c in out], ["before", "era:2025-03-08"])
-        self.assertEqual(out[1][1], "\u2600\ufe0f Solar + \U0001f50b Battery")
-        self.assertEqual(out[1][3], "2026-11-01", "to the next era's start, not its own end")
-
-    def test_an_era_before_the_data_starts_with_it(self):
-        out = self._run([{"kind": "other", "label": "Moved in", "start": "2020-01-01"}], self.DAYS)
-        self.assertEqual(out, [["era:2020-01-01", "\u2022 Moved in", "2024-06-01", "2026-11-01", True]])
-
-    def test_one_after_the_data_is_not_a_chapter(self):
-        out = self._run([{"kind": "ev", "label": "EV", "start": "2024-09-14"},
-                         {"kind": "other", "label": "Planned", "start": "2027-01-01"}], self.DAYS)
-        self.assertEqual([c[0] for c in out], ["before", "era:2024-09-14"])
-        self.assertTrue(out[-1][4])
-
-    def test_no_eras_no_chapters(self):
-        self.assertEqual(self._run([], self.DAYS), [])
-
-
-@unittest.skipUnless(shutil.which("node"), "node not available")
 class TheSpans(unittest.TestCase):
-    """4 Nov 2026, the user: the spans are the eras' chapters and the tariffs, with their price changes;
-    in Devices, Rate brackets and Flow. A span's bars: a day up to 62 days, else a month."""
+    """4 Nov 2026, the user: the spans are the tariffs, with their price changes, and the eras; in Devices,
+    Rate brackets and Flow. A span's bars: a day up to 62 days, else a month. 5 Nov 2026, the user: the
+    chapters (an era's start to the next era's) dropped, and the picker in Running total's year-start
+    order — tariffs, then the eras by kind."""
 
     DAYS = ["2024-06-01", "2024-12-15", "2025-01-10", "2025-02-20", "2025-06-30"]
 
@@ -294,7 +278,7 @@ class TheSpans(unittest.TestCase):
                   json.dumps(list(eras)), json.dumps(list(tariffs)), json.dumps(rows)) +
               "function barFlow() { return %s; }\n" % ("true" if flow else "false") +
               "function barAggRows(f) { return {imp_kwh: barData.filter(f).reduce(function (t, r) { return t + r.imp_kwh; }, 0)}; }\n" +
-              "".join(_fn(n) for n in ("barAddDay", "barAddMonth", "barDayNo", "barFlowYmd", "barFlowChapters",
+              "".join(_fn(n) for n in ("barAddDay", "barAddMonth", "barDayNo", "barFlowYmd", "erasGroups", "barEraLabel",
                                        "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly", "barAccDateLabel",
                                        "barSpans", "barSpanData")) + tail)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
@@ -326,21 +310,25 @@ class TheSpans(unittest.TestCase):
             ["Tariffs", True, "Flexible \u2014 price change 1 Oct 2024", "2024-10-01", "2025-01-01", False],
             ["Tariffs", True, "Flexible \u2014 from its start", "2024-06-01", "2024-10-01", False]])
 
-    def test_chapters_then_eras_then_tariffs(self):
-        out = self._js("\nconsole.log(JSON.stringify(barSpans().map(function (o) { return o.group; })));",
-                       eras=[{"kind": "solar", "label": "Solar", "start": "2025-01-01"}], tariffs=self._tariffs())
-        self.assertEqual(out, ["Chapters", "Chapters", "Eras", "Tariffs", "Tariffs", "Tariffs", "Tariffs"])
+    def test_tariffs_then_eras_by_kind_no_chapters(self):
+        eras = [{"id": "c", "kind": "ev", "label": "Car", "start": "2024-09-01"},
+                {"id": "s", "kind": "solar", "label": "Solar", "start": "2024-07-14"},
+                {"id": "b", "kind": "battery", "label": "Battery", "start": "2025-01-01"}]
+        out = self._js("\nconsole.log(JSON.stringify(barSpans().map(function (o) { return [o.group, o.label]; })));",
+                       eras=eras, tariffs=self._tariffs())
+        self.assertEqual([g for g, _ in out], ["Tariffs"] * 4 + ["Eras: Solar", "Eras: Battery", "Eras: EV"])
+        self.assertEqual([l for _, l in out[4:]], ["\u2600\ufe0f Solar", "\U0001f50b Battery", "\U0001f697 Car"])
 
     def test_an_era_on_its_own_runs_to_its_own_end(self):
-        # 4 Nov 2026, the user: the solar era without the chapter's cut at the battery's change; an era's
-        # end is exclusive (a replaced battery ends the day the next starts)
+        # 4 Nov 2026, the user: the solar era on its own, through the battery's change; an era's end is
+        # exclusive (a replaced battery ends the day the next starts). By kind, newest first in each
         eras = [{"id": "s", "kind": "solar", "label": "Solar", "start": "2024-07-14"},
                 {"id": "b1", "kind": "battery", "label": "Battery", "start": "2024-07-14", "end": "2025-02-20"},
                 {"id": "b2", "kind": "battery", "label": "Battery", "start": "2025-02-20"}]
-        out = self._js("\nconsole.log(JSON.stringify(barSpans().filter(function (o) { return o.group === 'Eras'; })"
+        out = self._js("\nconsole.log(JSON.stringify(barSpans().filter(function (o) { return o.group.indexOf('Eras') === 0; })"
                        ".map(function (o) { return [o.id, o.from, o.to, !!o.latest]; })));", eras=eras)
-        self.assertEqual(out, [["own:b2", "2025-02-20", "2025-07-01", True],
-                               ["own:s", "2024-07-14", "2025-07-01", True],
+        self.assertEqual(out, [["own:s", "2024-07-14", "2025-07-01", True],
+                               ["own:b2", "2025-02-20", "2025-07-01", True],
                                ["own:b1", "2024-07-14", "2025-02-20", False]])
 
     def test_a_span_reaching_the_last_day_is_now(self):
@@ -445,22 +433,24 @@ class TheWiring(unittest.TestCase):
     def test_export_says_where_emt_cannot_see(self):
         f = _fn("barFlowDraw")
         self.assertIn("if (r.to.indexOf('x:') === 0 || r.to === 'export') return 'Export is energy EMT did not meter coming in: solar or a battery.';", f)
-        self.assertIn("if (r.to === 'plunge') return 'Paid to use ' + barFlowFmt(r._v[0], 0) + ' at negative prices.';", f)
+        self.assertIn("if (r.to === 'plunge') {", f)
 
 
 
 class ThePlainDraw(unittest.TestCase):
-    """kWh and CO₂ (5 Nov 2026): the hidden export not drawn, the head's CO₂ export what it displaced,
-    the hover's g/kWh."""
-
-    def test_a_hidden_flow_is_not_drawn(self):
-        self.assertIn("(!f.credit || i === 1) && !f.hide; })", _fn("barFlowDraw"))
+    """kWh and CO₂ (5 Nov 2026): the head's CO₂ export what it displaced, the hover's g/kWh; later the
+    same day the CO₂ export drawn, as Displaced by export, where it had been hidden."""
 
     def test_the_head_says_what_export_displaced(self):
         self.assertIn("(i === 2 ? 'Displaced by export' : 'Export')", _fn("barFlowHead"))
 
     def test_the_hover_gives_grams_a_kwh(self):
         self.assertIn("Math.round(v[2] / v[0]) + ' g/kWh'", _fn("barFlowDraw"))
+
+    def test_the_draw_hides_nothing_and_its_hover_says_displaced(self):
+        draw = _fn("barFlowDraw")
+        self.assertNotIn("f.hide", draw)
+        self.assertIn("Grid carbon your export displaced", draw)
 
 
 if __name__ == "__main__":

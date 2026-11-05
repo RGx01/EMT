@@ -15,15 +15,15 @@ What they pin:
 - **The config token moves on a style change,** so the Charts page's kept rows (colours with them)
   are re-fetched — the EV's style in the store's meta too (BL-97; 3 Nov 2026). With no style set it
   is unchanged.
-- **The surfaces** take the style: the Billing day chart's rate line draws `rate_dashed`, and the
-  settings page offers a style on each device tab and two on Main meter.
+- **The surfaces** take the style: the Billing day chart's rate line draws `rate_dashed`. The settings
+  page offered a style on each device tab and two on Main meter until 5 Nov 2026, when they went: the
+  Charts page's Bar colours sets every meter's.
 
 Every test fails on the parent, where chart_style.py, the columns and the section do not exist.
 test_unset_keeps_the_palette_by_position is a GUARD in substance: the colours it expects are the
 parent's own, so no one's charts change until a style is chosen.
 """
 import os
-import re
 import sqlite3
 import sys
 import tempfile
@@ -195,11 +195,13 @@ class TheSurfaces(unittest.TestCase):
         self.assertIn("borderDash: m.rate_dashed ? [6, 4] : []", self.bill)
         self.assertIn('rate_dashed=ctx["meter_rate_dashed"]', self.view)
 
-    def test_each_device_and_the_main_meter_offer_a_style(self):
-        self.assertIn("buildChartStyle(meterId, 'import', meta.device || 'Device')", self.page)
-        self.assertIn("buildChartStyle(meterId, 'import', 'Direct import (the house)')", self.page)
-        self.assertIn("buildChartStyle(meterId, 'export', 'Export')", self.page)
-        self.assertTrue(re.search(r"var CHART_PALETTE = \{\{ chart_palette \| tojson \}\};", self.page))
+    def test_settings_offers_no_style_the_charts_bar_colours_do(self):
+        # 5 Nov 2026, the user: the chart style sections on Settings' tabs went — every meter's style is in
+        # the Charts page's Bar colours (its own home, BL-101 PR 4), so Settings had a second copy
+        self.assertNotIn("buildChartStyle", self.page)
+        self.assertNotIn('section-divider">Chart style', self.page)
+        charts = open(os.path.join(_ROOT, "web", "templates", "charts.html"), encoding="utf-8").read()
+        self.assertIn("['\\ud83c\\udfa8 Bar colours\\u2026', coloursOpen]", charts)
 
 
 if __name__ == "__main__":

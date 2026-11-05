@@ -576,7 +576,7 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
         <button class="bar-seg-btn"        onclick="barSetPeriod('monthly',this)" id="bar-monthly-btn">Monthly</button>
         <button class="bar-seg-btn"        onclick="barSetPeriod('yearly',this)" id="bar-yearly-btn">Yearly</button>
         <button class="bar-seg-btn"        onclick="barSetPeriod('span',this)" id="bar-span-btn" style="display:none"
-                title="A stretch you pick: a chapter of your home (an era's start to the next era's) or a tariff">Span</button>
+                title="A stretch you pick: a tariff, a stretch between its price changes, or an era">Span</button>
       </div>
       <div class="bar-seg" id="bar-cal-seg">
         <button class="bar-seg-btn active" onclick="barSetCalendar(false,this)">Billing</button>
@@ -602,9 +602,6 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
           <button class="bar-seg-btn active" onclick="barSetAccMode('lifetime',this)">Lifetime</button>
           <button class="bar-seg-btn"        onclick="barSetAccMode('year',this)">Year by year</button>
         </span>
-        <select id="bar-acc-start" onchange="barSetAccStart(this.value)" aria-label="When the year starts"
-                title="When each year starts: 1 January, the billing anniversary, a tariff's start or an era's"
-                style="font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;"></select>
       </span>
       <span id="bar-br-wrap" style="display:none; align-items:center; gap:8px; font-size:12px; color:var(--muted);">
         <select id="bar-br-series" onchange="barSetBrSeries(this.value)" aria-label="Whose import, or the export"
@@ -2565,50 +2562,23 @@ var FLOW_OTHER_SHARE = 0.02;
 var FLOW_PLUGIN = 'https://cdn.jsdelivr.net/npm/chartjs-chart-sankey@0.19.1/dist/chartjs-chart-sankey.min.js';
 var _barFlowLib = null;
 function barFlow() { return barShow === 'flow'; }
-// ── Flow's Era (4 Nov 2026, the user) ──
-// A chapter of the home: from an era's start to the next era's start, of any kind; the latest to the
-// last day of data; "Before the first era" from the first day. Eras starting the same day are one
-// chapter. [{id, label, from, to}] oldest first, `to` exclusive, local dates.
-var barSpanId = null;               // the span shown (Span): its id; null, the latest chapter
+var barSpanId = null;               // the span shown (Span): its id; null, the first in the picker
 function barFlowYmd(r) { return r.year + '-' + String(r.month).padStart(2, '0') + '-' + String(r.day).padStart(2, '0'); }
-function barFlowChapters() {
-  var eras = (barEras || []).filter(function(e) { return e.start; });
-  var days = (barData || []).map(barFlowYmd).sort();
-  if (!eras.length || !days.length) return [];
-  var first = days[0], end = barAddDay(days[days.length - 1]);
-  var starts = {};
-  eras.forEach(function(e) { (starts[e.start] || (starts[e.start] = [])).push(e); });
-  var keys = Object.keys(starts).sort().filter(function(d) { return d < end; });
-  var out = [];
-  if (keys.length && first < keys[0]) out.push({id: 'before', label: 'Before the first era', from: first, to: keys[0]});
-  keys.forEach(function(d, i) {
-    var es = starts[d];
-    out.push({id: 'era:' + d, from: d < first ? first : d, to: keys[i + 1] || end, latest: !keys[i + 1],
-              label: es.map(function(e) { return (ERA_KINDS[e.kind] || ERA_KINDS.other).icon + ' ' + e.label; }).join(' + ')});
-  });
-  return out.filter(function(c) { return c.from < c.to; });
-}
 // ── Span (4 Nov 2026, the user): the stretches a Span shows, in Devices, Rate brackets and Flow ──
-// The eras' chapters (above); each era on its own, from its start to its own end or now; and each import
-// tariff from its start to its end (or the last day), with the stretches between its price changes
-// under it, as Running total's year-start picker lists them. Clipped to the data; `latest` where a span
-// reaches its last day. [{id, group, label, from, to, latest, sub}] in the picker's order — Chapters,
-// Eras, Tariffs — each newest first, a tariff followed by its stretches newest first.
+// Each import tariff from its start to its end (or the last day), with the stretches between its price
+// changes under it; and each era on its own, from its start to its own end or now. Clipped to the data;
+// `latest` where a span reaches its last day. [{id, group, label, from, to, latest, sub}] in the picker's
+// order, Running total's year-start picker's (5 Nov 2026, the user): the tariffs newest first, each
+// followed by its stretches newest first; then the eras by kind as the eras modal lists them, newest
+// first in each. The chapters (an era's start to the next era's, of any kind) were dropped the same day,
+// the user: a chapter was named by what started it, not what the home had, and was hard to read.
 function barSpans() {
   var days = (barData || []).map(barFlowYmd).sort();
   if (!days.length) return [];
   var first = days[0], end = barAddDay(days[days.length - 1]), today = new Date().toISOString().slice(0, 10);
   // a span reaching the data's last day is "now": a running fixed-term tariff has its end in the future
   function clip(o) { o.from = o.from < first ? first : o.from; if (o.to >= end) { o.to = end; o.latest = true; } return o; }
-  var out = barFlowChapters().slice().reverse().map(function(c) { return Object.assign({group: 'Chapters'}, c); });
-  // each era on its own, to its own end (exclusive: a battery replaced ends the day the next starts) or now
-  // (4 Nov 2026, the user: the solar era without the chapter's cut at the battery's change)
-  (barEras || []).filter(function(e) { return e.start; })
-    .slice().sort(function(a, b) { return a.start < b.start ? 1 : a.start > b.start ? -1 : 0; })
-    .forEach(function(e) {
-      out.push(clip({id: 'own:' + (e.id || e.start + ':' + e.label), group: 'Eras', from: e.start, to: e.end || end,
-                     label: (ERA_KINDS[e.kind] || ERA_KINDS.other).icon + ' ' + e.label}));
-    });
+  var out = [];
   (barTariffs || []).filter(function(a) { return a.direction !== 'export' && a.from; })
     .sort(function(a, b) { return a.from < b.from ? 1 : a.from > b.from ? -1 : 0; })
     .forEach(function(a) {
@@ -2624,8 +2594,17 @@ function barSpans() {
                        from: bounds[i], to: bounds[i + 1]}));
       }
     });
+  // each era on its own, to its own end (exclusive: a battery replaced ends the day the next starts) or now
+  erasGroups((barEras || []).filter(function(e) { return e.start; })).forEach(function(g) {
+    g.eras.forEach(function(e) {
+      out.push(clip({id: 'own:' + (e.id || e.start + ':' + e.label), group: 'Eras: ' + ERA_KINDS[g.kind].name,
+                     from: e.start, to: e.end || end, label: barEraLabel(e)}));
+    });
+  });
   return out.filter(function(o) { return o.from < o.to; });
 }
+// An era as both pickers name it: its kind's icon and its name
+function barEraLabel(e) { return (ERA_KINDS[e.kind] || ERA_KINDS.other).icon + ' ' + e.label; }
 function barSpanCurrent() {
   var sp = barSpans();
   return sp.filter(function(o) { return o.id === barSpanId; })[0] || sp[0] || null;
@@ -2720,7 +2699,18 @@ function barFlowData(aggList) {
   var nodes = {grid: {label: 'Grid', color: '#64748b', column: 0, priority: 0}};
   shown.forEach(function(n, j) { nodes['b:' + n] = {label: barBrLabel(n), color: barBrColor(n, ns, 'import'), column: 1, priority: j}; });
   if (other.length) nodes['b:other'] = {label: 'Other', color: '#9ca3af', column: 1, priority: 999};
-  dest.forEach(function(s, j) { nodes['s:' + s] = {label: barFlowSeriesLabel(s), color: barFlowSeriesColor(s), column: 2, priority: j}; });
+  // each destination named with its net £ (5 Nov 2026, the user: a plunge's credit leaves the device as a
+  // flow, so the block drawn is what it cost before the credit; the net was written nowhere). `name` is the
+  // plain name, for the table; gross, credit and net for the credit flow's hover.
+  dest.forEach(function(s, j) {
+    var gross = 0, credit = 0, nm = barFlowSeriesLabel(s);
+    Object.keys(br[s]).forEach(function(n) { var c = br[s][n][1]; if (c > 0) gross += c; else credit -= c; });
+    // in pence, each before the sum, so the hover's gross − credit = net as written (a penny out otherwise)
+    gross = Math.round(gross * 100) / 100; credit = Math.round(credit * 100) / 100;
+    var net = Math.round((gross - credit) * 100) / 100;
+    nodes['s:' + s] = {label: nm + ' \u00b7 ' + barFlowFmt(net, 1), name: nm, color: barFlowSeriesColor(s),
+                       column: 2, priority: j, gross: gross, credit: credit, net: net};
+  });
   var flows = {};
   function add(from, to, v, credit) {
     var f = flows[from + '|' + to] || (flows[from + '|' + to] = {from: from, to: to, v: [0, 0, 0]});
@@ -2771,8 +2761,11 @@ function barFlowData(aggList) {
 // kWh and CO₂ (5 Nov 2026, the user: "should we really care about cost rate bands or just show the flow
 // of kWh (and Carbon)"): the grid straight to the house and each device, summed over the brackets, and
 // the house's export as one flow — a price says nothing about kWh or grams. The hover keeps all three
-// measures, summed. In CO₂ the export is not drawn (`hide`): its grams are grid carbon it displaced,
-// not carbon through the house; the head says them, the table keeps the row.
+// measures, summed. In CO₂ the export goes out of the house to "Displaced by export", green (5 Nov
+// 2026, the user: "shouldn't it show export displacement?"): its grams are grid carbon it displaced —
+// at each half-hour's grid average, or Settings' custom figure — not carbon through the house, and the
+// hover says so. (Until then it was kept but not drawn.)
+var FLOW_DISPLACED_COLOR = '#16a34a';
 function barFlowPlain(br, dest, i, standing) {
   function sum(o) {
     var a = [0, 0, 0];
@@ -2791,10 +2784,9 @@ function barFlowPlain(br, dest, i, standing) {
     if (!nodes['s:electricity_main'])
       nodes['s:electricity_main'] = {label: barFlowSeriesLabel('electricity_main'),
                                      color: barFlowSeriesColor('electricity_main'), column: 1, priority: -1};
-    nodes.export = {label: 'Export', color: barExportColor, column: 2, priority: 0};
-    var xf = {from: 's:electricity_main', to: 'export', v: ex};
-    if (i === 2) xf.hide = true;
-    flows.push(xf);
+    nodes.export = i === 2 ? {label: 'Displaced by export', color: FLOW_DISPLACED_COLOR, column: 2, priority: 0}
+                           : {label: 'Export', color: barExportColor, column: 2, priority: 0};
+    flows.push({from: 's:electricity_main', to: 'export', v: ex});
   }
   return {nodes: nodes, flows: flows, other: [], ns: [], band: {}, xother: [], xb: {}, plain: true,
           totals: {imp: imp, exp: ex, standing: standing, credit: 0, paid: 0}};
@@ -2831,7 +2823,7 @@ function barFlowDraw(aggList) {
   var d = barFlowData(aggList), i = barFlowIndex(), th = barGetTheme();
   barFlowHead(d);
   // a credit flow is the £ of a negative price, turned round: drawn in £ only
-  var data = d.flows.filter(function(f) { return f.v[i] > 1e-9 && (!f.credit || i === 1) && !f.hide; })
+  var data = d.flows.filter(function(f) { return f.v[i] > 1e-9 && (!f.credit || i === 1); })
     .map(function(f) { return {from: f.from, to: f.to, flow: f.v[i], _v: f.v, credit: !!f.credit}; });
   function col(k) { return (d.nodes[k] || {}).color || '#64748b'; }
   var labels = {}, column = {}, priority = {};
@@ -2857,7 +2849,11 @@ function barFlowDraw(aggList) {
         backgroundColor: th.tooltipBg, borderColor: th.tooltipBorder, borderWidth: 1,
         titleColor: th.tooltipTitle, bodyColor: th.tooltipBody,
         callbacks: {
-          title: function(it) { var r = it[0] && it[0].raw; return r ? (labels[r.from] || r.from) + ' → ' + (labels[r.to] || r.to) : ''; },
+          title: function(it) {
+            var r = it[0] && it[0].raw;
+            function nm(k) { var n = d.nodes[k] || {}; return n.name || n.label || k; }
+            return r ? nm(r.from) + ' → ' + nm(r.to) : '';
+          },
           label: function(it) {
             var r = it.raw, v = r._v, out = [barFlowFmt(v[0], 0), barFlowFmt(v[1], 1)];
             if (v[2] > 0) out.push(barFlowFmt(v[2], 2));
@@ -2869,10 +2865,18 @@ function barFlowDraw(aggList) {
           },
           afterLabel: function(it) {
             var r = it.raw;
-            if (r.to === 'plunge') return 'Paid to use ' + barFlowFmt(r._v[0], 0) + ' at negative prices.';
+            if (r.to === 'plunge') {
+              var dn = d.nodes[r.from] || {};
+              return (dn.name || r.from) + ' used ' + barFlowFmt(r._v[0], 0) + ' at negative prices and was paid ' +
+                barFlowFmt(dn.credit, 1) + ' back:\n' + barFlowFmt(dn.gross, 1) + ' \u2212 ' + barFlowFmt(dn.credit, 1) +
+                ' = ' + barFlowFmt(dn.net, 1) + ', its net cost.';
+            }
             if (r.to === 'paid_export') return 'Paid to export ' + barFlowFmt(r._v[0], 0) + ' at a negative export price.';
             if (r.to === 'x:other') return 'Other export: ' + d.xother.map(function(n) { return barBrLabel(n) + ' ' + barFlowFmt(d.xb[n][i], i); }).join(', ') +
               '\nExport is energy EMT did not meter coming in: solar or a battery.';
+            if (r.to === 'export' && i === 2)
+              return 'Grid carbon your export displaced: its kWh at the grid\'s average for each half-hour,\n' +
+                     'or at the figure set in Settings → Export Carbon Offset. Not carbon through your house.';
             if (r.to.indexOf('x:') === 0 || r.to === 'export') return 'Export is energy EMT did not meter coming in: solar or a battery.';
             if (r.to === 'b:other' || r.from === 'b:other') {
               return 'Other: ' + d.other.map(function(n) { return barBrLabel(n) + ' ' + barFlowFmt(d.band[n][i], i); }).join(', ');
@@ -2886,7 +2890,7 @@ function barFlowDraw(aggList) {
 function barFlowBuildTable(tbl, aggList) {
   var d = barFlowData(aggList);
   var html = '<thead><tr><th>From</th><th>To</th><th>kWh</th><th>Cost</th><th>CO₂</th></tr></thead><tbody>';
-  function name(k) { return (d.nodes[k] || {}).label || k; }
+  function name(k) { var n = d.nodes[k] || {}; return n.name || n.label || k; }
   function at(k) { var n = d.nodes[k] || {}; return (n.column || 0) * 1000 + (n.priority || 0); }
   // left to right as drawn: the grid's flows, then each band's, then the house's export by its bands. A
   // credit flow is left out: its £ is already in its band's row, negative
@@ -3880,7 +3884,7 @@ function barAccStartChoices() {
     });
   erasGroups(barEras || []).forEach(function(g) {
     g.eras.forEach(function(e) {
-      out.push({id: 'era:' + e.id, label: 'Era: ' + e.label + ' (' + barAccDateLabel(e.start) + ')',
+      out.push({id: 'era:' + e.id, label: barEraLabel(e) + ' (' + barAccDateLabel(e.start) + ')',
                 m: +e.start.slice(5, 7), d: +e.start.slice(8, 10), group: 'Eras: ' + ERA_KINDS[g.kind].name});
     });
   });
@@ -4027,9 +4031,6 @@ function barAccSyncUI() {
   document.querySelectorAll('#bar-acc-view .bar-seg-btn').forEach(function(b) {
     b.classList.toggle('active', (b.getAttribute('onclick') || '').indexOf("'" + barAccView + "'") !== -1);
   });
-  var ss = document.getElementById('bar-acc-start'), starts = barAccStartChoices();
-  if (!starts.some(function(o) { return o.id === barAccStart; })) barAccStart = 'jan';
-  if (ss) ss.innerHTML = barAccStartOptions(starts, barAccStart);
   var sel = document.getElementById('bar-acc-series'), list = barAccSeriesList();
   if (!list.some(function(o) { return o.id === barAccSeries; })) barAccSeries = 'net';
   if (sel) {
@@ -4571,6 +4572,19 @@ function barBuildSubBar() {
       next.onclick = function() { barStepDaily(1); };
       bar.appendChild(prev); bar.appendChild(lbl); bar.appendChild(next);
     }  } else {
+    if (barRunning()) {
+      // the year's start, where Span's picker sits in the other views (5 Nov 2026, the user)
+      var starts = barAccStartChoices();
+      if (!starts.some(function(o) { return o.id === barAccStart; })) barAccStart = 'jan';
+      var ss = document.createElement('select');
+      ss.id = 'bar-acc-start';
+      ss.setAttribute('aria-label', 'When the year starts');
+      ss.title = "When each year starts: 1 January, the billing anniversary, a tariff's start or an era's";
+      ss.style.cssText = 'font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;';
+      ss.innerHTML = barAccStartOptions(starts, barAccStart);
+      ss.onchange = function() { barSetAccStart(ss.value); };
+      bar.appendChild(ss);
+    }
     var lbl2 = document.createElement('span');
     lbl2.style.cssText = 'font-size:12px;color:var(--muted);margin-right:4px;';
     lbl2.textContent = 'Years:';

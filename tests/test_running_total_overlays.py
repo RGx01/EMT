@@ -54,7 +54,7 @@ class TheOverlays(unittest.TestCase):
               "var barEras = [{id: 'a1b2c3d4', label: 'Battery', kind: 'battery', start: '2024-06-12', end: '2025-01-01'}];\n"
               "var document = {getElementById: function (id) { return {checked: id === 'bar-tariff-cb' ? %s : %s}; }};\n") % (
             json.dumps(mode), "true" if tariffs_on else "false", "true" if eras_on else "false") + \
-            "var _barAccYc = {data: null, anchor: '', years: []};\n" + "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
+            "var _barAccYc = {data: null, anchor: '', years: []};\n" + "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barEraLabel", "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
                                         "barAccYearOf", "barAccYearColor", "barAccDoy", "barAccShowEras", "barAccShowTariffs", "barAccTariffDays",
                                         "barAccOverlays")) + \
             "\nconsole.log(JSON.stringify(barAccOverlays(%s)));" % json.dumps(years)

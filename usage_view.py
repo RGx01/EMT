@@ -28,7 +28,7 @@ logger = logging.getLogger("usage_view")
 
 
 def _aggregate_block_rows(raw_rows, bucket_of, standing_scope="bucket",
-                          billing_day_fallback=1):
+                          billing_day_fallback=1, export_g=None):
     """Billing-accurate per-block aggregation shared by the Usage Stats endpoints
     (/blocks-summary buckets by local day; /blocks-day by half-hour slot). Buckets
     by ``bucket_of(block_start)`` and applies the SAME rate-keyed direct-cost
@@ -54,10 +54,11 @@ def _aggregate_block_rows(raw_rows, bucket_of, standing_scope="bucket",
                      _r["imp_kwh"], _g("imp_kwh_grid"), _r["imp_rate"],
                      _r["imp_cost"], _r["exp_kwh"], _r["exp_cost"], _r["standing_charge"],
                      _r["carbon_g"]))
-    return _aggregate_tuples(rows, bucket_of, standing_scope, billing_day_fallback)
+    return _aggregate_tuples(rows, bucket_of, standing_scope, billing_day_fallback, export_g=export_g)
 
 
-def _aggregate_tuples(rows, bucket_of, standing_scope="bucket", billing_day_fallback=1):
+def _aggregate_tuples(rows, bucket_of, standing_scope="bucket", billing_day_fallback=1,
+                      export_g=None):
     """`_aggregate_block_rows` over plain tuples — the one implementation of its rules.
 
     Each row is `(block_start, meter_id, is_sub_meter, billing_day, imp_kwh, imp_kwh_grid,
@@ -121,10 +122,12 @@ def _aggregate_tuples(rows, bucket_of, standing_scope="bucket", billing_day_fall
             if _cg is not None:
                 _m["carbon_g"] = (_m["carbon_g"] or 0.0) + _cg
                 _b_net = _imp - _exp
+                _e_grid = 0.0                    # the export's grams at the half-hour's grid average
                 if _b_net != 0:
                     _b_int = abs(_cg / _b_net)
                     _m["cg_imp"] = (_m["cg_imp"] or 0.0) + _imp * _b_int
-                    _m["cg_exp"] = (_m["cg_exp"] or 0.0) + _exp * _b_int
+                    _e_grid = _exp * _b_int
+                    _m["cg_exp"] = (_m["cg_exp"] or 0.0) + _e_grid
                     _m["ci_abs_carbon"]  += abs(_cg)
                     _m["ci_abs_net_kwh"] += abs(_b_net)
                 elif _exp == 0:
@@ -132,9 +135,16 @@ def _aggregate_tuples(rows, bucket_of, standing_scope="bucket", billing_day_fall
                     _m["ci_abs_carbon"]  += abs(_cg)
                     _m["ci_abs_net_kwh"] += _imp
                 else:
-                    _m["cg_exp"] = (_m["cg_exp"] or 0.0) + abs(_cg)
+                    _e_grid = abs(_cg)
+                    _m["cg_exp"] = (_m["cg_exp"] or 0.0) + _e_grid
                     _m["ci_abs_carbon"]  += abs(_cg)
                     _m["ci_abs_net_kwh"] += _exp
+                if export_g is not None and _exp > 0:
+                    # Settings' custom displacement intensity: the export's grams at it, and the
+                    # net (import − export) moved by the same amount, so Net = Import − Export holds
+                    _d = _exp * export_g - _e_grid
+                    _m["cg_exp"] = (_m["cg_exp"] or 0.0) + _d
+                    _m["carbon_g"] -= _d
         else:
             _s = _dd["subs"].get(_mid)
             if _s is None:
@@ -511,6 +521,16 @@ def _apply_hybrid_ev_to_summary_rows(rows, meters_list, ev_meter_id, hybrid_by_b
 
 # ── The rows, for /api/energy and (until deleted) the two /api/charts routes ──────────
 
+def _export_g(store):
+    """Settings' custom export displacement intensity (g/kWh), or None for the grid average
+    (carbon.export_g_per_kwh)."""
+    import carbon as _carbon
+    try:
+        return _carbon.export_g_per_kwh(store.get_settings())
+    except Exception:
+        return None
+
+
 def _main_meta(cfg) -> dict:
     """The first non-sub-meter's meta: currency, billing day, block size (the site's)."""
     for md in (cfg.get("meters") or {}).values():
@@ -839,7 +859,8 @@ def day_stats(store, cfg, tz_name, utc_start, utc_end) -> dict:
     _day = _local_day_of(utc_start, utc_end, tz)
 
     data = _aggregate_tuples(_day_tuples(store, utc_start, utc_end), _day,
-                             standing_scope="bucket", billing_day_fallback=meta["billing_day"])
+                             standing_scope="bucket", billing_day_fallback=meta["billing_day"],
+                             export_g=_export_g(store))
     bp = {}
     try:
         for ps, pe in _ec.get_billing_periods_from_config_periods(store.get_config_periods(), tz=tz):
@@ -878,7 +899,8 @@ def slot_stats(store, cfg, tz_name, utc_start, utc_end) -> dict:
     utc = ZoneInfo("UTC")
     raw = _raw_rows(store, utc_start, utc_end)
     data = _aggregate_block_rows(raw, lambda bs: bs, standing_scope="global",
-                                 billing_day_fallback=meta["billing_day"])
+                                 billing_day_fallback=meta["billing_day"],
+                                 export_g=_export_g(store))
     rows = []
     t, end = datetime.fromisoformat(utc_start), datetime.fromisoformat(utc_end)
     while t < end:
@@ -969,8 +991,11 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
     intensity (`_import_intensity`); a device's its stored carbon scaled to its grid share, as the
     day rows'; the car's its kWh at the half-hour's intensity. 0 where a half-hour has no carbon.
 
+    The export's grams are at Settings' custom displacement intensity where chosen (`_export_g`).
+
     A negative rate keeps its sign through all of it: an Agile plunge's kWh earn a negative £."""
     c = store._conn
+    export_g = _export_g(store)
     act = c.execute(_ACTIVE_PERIOD).fetchone()
     sub_rows = c.execute(
         "SELECT meter_id, meter_type FROM meters WHERE config_period_id = ? AND is_sub_meter ORDER BY id",
@@ -992,7 +1017,8 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
         if ek > 0:
             cost = float(ec or 0.0)
             rate = float(er) if er is not None else cost / ek
-            _add(exp.setdefault(bs, {}), rate_bracket(rate), ek, cost, ek * g_per)
+            _add(exp.setdefault(bs, {}), rate_bracket(rate), ek, cost,
+                 ek * (g_per if export_g is None else export_g))
     main: dict = {}
     ev_slices: dict = {}
     ev_main: dict = {}              # the main's EV split, as `ev_split`'s SQL sums it (a 0 kWh split too)
