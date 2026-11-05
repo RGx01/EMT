@@ -5,6 +5,14 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **A history import no longer skips its newest months when Octopus fails once.** If Octopus didn't
+  answer for the newest two months of your usage but did for your export, the import moved on and
+  never asked for those months again: they came in with export and no usage, and your devices' share
+  of them showed as nothing. Each side of the meter now keeps its own place and asks again for what it
+  missed, and the log says when Octopus didn't answer.
+
 ## [2026.11.0b11] — 2026-11-05
 
 - **A history import keeps going when Octopus is slow.** On some accounts Octopus takes too long to

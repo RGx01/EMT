@@ -8371,10 +8371,12 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
         ck_key = _API_IMPORT_CHECKPOINT + "_" + channel
         done_key = "api_import_done_" + channel
         gaps_key = "import_gaps_" + channel
+        top_key = "api_import_top_" + channel
         if restart and not dry_run and not bounded:
             _store.set_kraken_state(ck_key, "")
             _store.set_kraken_state(done_key, "")
             _store.set_kraken_state(gaps_key, "")
+            _store.set_kraken_state(top_key, "")
         if not dry_run and not bounded and _store.get_kraken_state(done_key) == "1":
             out["channels"][channel] = {"ok": True, "done": True,
                                         "reason": "already_done", "written": 0}
@@ -8405,7 +8407,18 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
             if floor < _rf:
                 floor = _rf
         checkpoint = (_store.get_kraken_state(ck_key) or None) if (not dry_run and not bounded) else None
-        hi = until_ts if bounded else (checkpoint or go_live)
+        # The channel's own top, kept from its first call (5 Nov 2026, a fresh install's support file):
+        # until a chunk lands the channel has no checkpoint, and the ceiling is the oldest block of
+        # ANY source — so when the import's first chunk failed and the export's landed, the export's
+        # rows became the import's ceiling and its 60 days were never asked again (September and
+        # October imported with no import kWh). The checkpoint keeps its meaning (the gaps use it).
+        top = None
+        if not dry_run and not bounded and not checkpoint:
+            top = _store.get_kraken_state(top_key) or None
+            if not top and go_live:
+                top = go_live
+                _store.set_kraken_state(top_key, go_live)
+        hi = until_ts if bounded else (checkpoint or top or go_live)
         window = _ai.clamp_window(floor, hi)
         if not window.get("ok"):
             if not dry_run:
@@ -8437,6 +8450,8 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
                     mpan, c["from"] + "Z", c["to"] + "Z", direction=direction)
             except Exception as e:
                 fetch_error = str(e)
+                logger.warning("import [%s]: Octopus did not answer %s..%s (%s) — asked again on the next pass",
+                               channel, c["from"], c["to"], fetch_error or type(e).__name__)
                 break
             for r in (rows or []):
                 if r.get("start"):
