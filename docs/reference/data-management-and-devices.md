@@ -127,7 +127,9 @@ key is never in it. A size estimate warns over 10 MB.
   recorder hours as hours. Deleting half-hours keeps it; only removing a device removes its rows.
 - **A refill rebuilds the devices** (`rebuild_devices_after_refill`): after a gap fill, an Octopus
   import or a CSV import, each device is rebuilt over the span from `ha_reads`, without asking Home
-  Assistant.
+  Assistant. So is a poll that creates half-hours Octopus settled and EMT had none of (BL-8,
+  `rebuild_devices_after_backfill`) — on a new install, the day or two between the import's end and the
+  first live tick, which the import's own rebuild could not reach.
 - **An import rebuilds a new device from Home Assistant** (`fetch_new`): after an Octopus or a CSV
   import (not a gap fill), a device whose history EMT never had (`devices_without_history`: no recorder
   hours kept, no device row before its first live half-hour) is rebuilt over its whole history from

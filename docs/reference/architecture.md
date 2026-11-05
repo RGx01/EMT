@@ -86,6 +86,6 @@ query budgets, reachability (`check_reachability.py`, whose headline the archite
 the GraphQL deprecation and field watch. A change that moves one of these updates its baseline in the
 same PR.
 
-**Reachability today: 40 of 1,533 definitions unreachable** (`check_reachability.py`). The suite
+**Reachability today: 40 of 1,535 definitions unreachable** (`check_reachability.py`). The suite
 asserts this line (`tests/test_b_design_figures.py`): a PR that adds or removes a definition updates it.
 The history of the figure is in the [architecture record](../history/design/EMT-v5_architecture.md) §4.

@@ -3940,6 +3940,27 @@ async def rebuild_devices_after_refill(lo: str, hi: str, *, fetch_new: bool = Fa
     return queued
 
 
+async def rebuild_devices_after_backfill(summary: dict) -> list:
+    """After a poll that created half-hours (BL-8: Octopus settled them, EMT had none), rebuild
+    the devices over them from `ha_reads`, as a gap fill does (`rebuild_devices_after_refill`).
+    The backfill writes the main meter only; with nothing after it, a device's use there stayed
+    the house's — the half-hours between an import's end and the first live tick on a new
+    install, which the import's own rebuild cannot reach: they did not exist yet (5 Nov 2026).
+    The rebuild fills only absent device rows, from HA's recorder hours EMT already keeps; no
+    call to HA. Returns the devices queued. Never raises."""
+    try:
+        sp = (summary or {}).get("backfilled_span")
+        if not (summary or {}).get("backfilled") or not sp:
+            return []
+        # an hour row is a device's from its start (`ha_read_devices`): from the hour
+        lo = datetime.fromisoformat(sp[0]).replace(minute=0, second=0, microsecond=0)
+        hi = datetime.fromisoformat(sp[1]) + timedelta(minutes=30)
+        return await rebuild_devices_after_refill(lo.isoformat(), hi.isoformat())
+    except Exception as e:
+        logger.warning("rebuild_devices_after_backfill: %s", e)
+        return []
+
+
 def _rerun_settle(block: dict, main_meter_id: str = "electricity_main"):
     """settle() for the PASS 2 re-run: (Facts, Settled), or None where the half-hour is the user's
     (corrected) or settle() cannot price it (no rate, no band, nothing drawn). The kWh and the
@@ -6799,6 +6820,7 @@ async def retry_settlement_for_unsettled(now=None, max_lookback_days=None) -> di
 
     summary = await ingester.poll(window=(period_from, period_to),
                                   advance_cursor=False)
+    await rebuild_devices_after_backfill(summary)
     after = _store.count_unsettled_blocks()
     logger.info("retry_settlement: window=%s..%s settled_import=%d "
                 "settled_export=%d unsettled %d→%d",
@@ -12701,6 +12723,7 @@ async def resolve_history_gaps(now=None, meter_id: str = "electricity_main",
             logger.warning("resolve_history_gaps: window %s failed: %s", window, e)
             continue
         made = summary.get("backfilled", 0)
+        await rebuild_devices_after_backfill(summary)
         total_backfilled += made
         runs_done.append({"start": g["start"], "end": g["end"],
                           "slots": g["slots"], "backfilled": made})
@@ -12799,6 +12822,7 @@ async def kraken_poll_task(ha: HAClient):
             # G2b: a closed agreement's prices not kept yet, a few a cycle, once ever
             await _fetch_closed_agreement_prices()
             summary = await ingester.poll()
+            await rebuild_devices_after_backfill(summary)
             logger.info(
                 "kraken_poll_task: %s window=%s..%s import_rows=%d "
                 "store_import=%d export_rows=%d store_export=%d "
