@@ -2771,8 +2771,11 @@ function barFlowData(aggList) {
 // kWh and CO₂ (5 Nov 2026, the user: "should we really care about cost rate bands or just show the flow
 // of kWh (and Carbon)"): the grid straight to the house and each device, summed over the brackets, and
 // the house's export as one flow — a price says nothing about kWh or grams. The hover keeps all three
-// measures, summed. In CO₂ the export is not drawn (`hide`): its grams are grid carbon it displaced,
-// not carbon through the house; the head says them, the table keeps the row.
+// measures, summed. In CO₂ the export goes out of the house to "Displaced by export", green (5 Nov
+// 2026, the user: "shouldn't it show export displacement?"): its grams are grid carbon it displaced —
+// at each half-hour's grid average, or Settings' custom figure — not carbon through the house, and the
+// hover says so. (Until then it was kept but not drawn.)
+var FLOW_DISPLACED_COLOR = '#16a34a';
 function barFlowPlain(br, dest, i, standing) {
   function sum(o) {
     var a = [0, 0, 0];
@@ -2791,10 +2794,9 @@ function barFlowPlain(br, dest, i, standing) {
     if (!nodes['s:electricity_main'])
       nodes['s:electricity_main'] = {label: barFlowSeriesLabel('electricity_main'),
                                      color: barFlowSeriesColor('electricity_main'), column: 1, priority: -1};
-    nodes.export = {label: 'Export', color: barExportColor, column: 2, priority: 0};
-    var xf = {from: 's:electricity_main', to: 'export', v: ex};
-    if (i === 2) xf.hide = true;
-    flows.push(xf);
+    nodes.export = i === 2 ? {label: 'Displaced by export', color: FLOW_DISPLACED_COLOR, column: 2, priority: 0}
+                           : {label: 'Export', color: barExportColor, column: 2, priority: 0};
+    flows.push({from: 's:electricity_main', to: 'export', v: ex});
   }
   return {nodes: nodes, flows: flows, other: [], ns: [], band: {}, xother: [], xb: {}, plain: true,
           totals: {imp: imp, exp: ex, standing: standing, credit: 0, paid: 0}};
@@ -2831,7 +2833,7 @@ function barFlowDraw(aggList) {
   var d = barFlowData(aggList), i = barFlowIndex(), th = barGetTheme();
   barFlowHead(d);
   // a credit flow is the £ of a negative price, turned round: drawn in £ only
-  var data = d.flows.filter(function(f) { return f.v[i] > 1e-9 && (!f.credit || i === 1) && !f.hide; })
+  var data = d.flows.filter(function(f) { return f.v[i] > 1e-9 && (!f.credit || i === 1); })
     .map(function(f) { return {from: f.from, to: f.to, flow: f.v[i], _v: f.v, credit: !!f.credit}; });
   function col(k) { return (d.nodes[k] || {}).color || '#64748b'; }
   var labels = {}, column = {}, priority = {};
@@ -2873,6 +2875,9 @@ function barFlowDraw(aggList) {
             if (r.to === 'paid_export') return 'Paid to export ' + barFlowFmt(r._v[0], 0) + ' at a negative export price.';
             if (r.to === 'x:other') return 'Other export: ' + d.xother.map(function(n) { return barBrLabel(n) + ' ' + barFlowFmt(d.xb[n][i], i); }).join(', ') +
               '\nExport is energy EMT did not meter coming in: solar or a battery.';
+            if (r.to === 'export' && i === 2)
+              return 'Grid carbon your export displaced: its kWh at the grid\'s average for each half-hour,\n' +
+                     'or at the figure set in Settings → Export Carbon Offset. Not carbon through your house.';
             if (r.to.indexOf('x:') === 0 || r.to === 'export') return 'Export is energy EMT did not meter coming in: solar or a battery.';
             if (r.to === 'b:other' || r.from === 'b:other') {
               return 'Other: ' + d.other.map(function(n) { return barBrLabel(n) + ' ' + barFlowFmt(d.band[n][i], i); }).join(', ');

@@ -5,6 +5,17 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **The export carbon setting works.** Settings has always let you count the carbon your export saves
+  at a fixed intensity of your own instead of the grid's average, but nothing used it: every figure
+  stayed at the grid's average. Now, if you choose *Custom fixed intensity*, your export's carbon in
+  Usage Stats, Running total, Flow and Insights is counted at your figure, and the net carbon follows.
+  With the default, *Grid average*, nothing changes.
+- **Flow's CO₂ view shows what your export saved.** The export now flows out of the house, in green,
+  to *Displaced by export*: the grid carbon your export saved. Before, it was left off the chart and
+  only the figures above it gave it.
+
 ## [2026.11.0b9] — 2026-11-05
 
 - **A new install's first day or two get their devices.** After the history import, EMT records live from

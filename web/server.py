@@ -265,6 +265,7 @@ _sys.path.insert(0, _os.path.dirname(_os.path.dirname(__file__)))
 
 import store_access                 # workstream A: store() / writer()
 import chart_style as _chart_style   # a meter's bar colour and rate line (Settings)
+import carbon as _carbon             # the export displacement intensity (Settings)
 from job_coordinator import job     # workstream B: coordinator membership
 from block_store import BlockStore, open_block_store
 _store: BlockStore | None = None
@@ -571,7 +572,7 @@ SETTINGS_DEFAULTS = {
     "distance_unit":              "miles", # miles | km
     # ── Export methodology ─────────────────────────────────────────────────
     "co2_export_method":       "grid_average",  # grid_average | custom
-    "co2_export_custom_intensity":  200.0, # gCO₂/kWh — only if method=custom
+    "co2_export_custom_intensity":  _carbon.EXPORT_CUSTOM_DEFAULT_G,  # gCO₂/kWh — only if method=custom
     # ── EV ─────────────────────────────────────────────────────────────────
     "ev_efficiency":                  3.2, # miles/kWh or km/kWh (distance_unit)
     "ev_charge_efficiency":          0.88, # AC→DC charge efficiency (IEA 2022, typical Type 2)
@@ -2188,8 +2189,9 @@ def _config_token(store) -> str:
             "SELECT COUNT(*) AS n, COALESCE(MAX(id), 0) AS mx, "
             "COALESCE(GROUP_CONCAT(billing_day || '@' || effective_from, ','), '') AS bd "
             "FROM config_periods").fetchone()
-        _mc = store._conn.execute(      # the EV's style (BL-97) in the same statement: the poll runs every minute
-            "SELECT COUNT(*) AS n, (SELECT value FROM store_meta WHERE key = 'ev_style') AS ev "
+        _mc = store._conn.execute(      # the EV's style (BL-97) and the settings in the same statement:
+            "SELECT COUNT(*) AS n, (SELECT value FROM store_meta WHERE key = 'ev_style') AS ev, "
+            "(SELECT value FROM store_meta WHERE key = 'settings') AS st "   # the poll runs every minute
             "FROM meters").fetchone()
         _st = store._conn.execute(
             "SELECT COALESCE(GROUP_CONCAT(s, ','), '') AS s FROM ("
@@ -2207,6 +2209,14 @@ def _config_token(store) -> str:
         # something else moved the token.
         if _mc["ev"] and _mc["ev"] != "null":       # set_meta(None) stores 'null': cleared
             _cfgf += "/ev%d" % _zlib.crc32(_mc["ev"].encode())
+        # Settings' custom export displacement intensity changes every export carbon figure; only
+        # where chosen, so the grid-average install's token is as it was
+        try:
+            _xg = _carbon.export_g_per_kwh(json.loads(_mc["st"]) if _mc["st"] else {})
+        except (TypeError, ValueError):
+            _xg = None
+        if _xg is not None:
+            _cfgf += "/xg%g" % _xg
     except Exception:
         _cfgf = "0"
     return _cfgf
@@ -7056,8 +7066,11 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
     Core aggregation for Insights — works for any UTC time range.
     Uses a direct lightweight SQL query rather than get_blocks_for_range
     to avoid fetching unnecessary columns and joining reads.
+    The export's grams are at Settings' custom displacement intensity where chosen.
     """
     from datetime import datetime as _dt
+    import usage_view as _uv
+    export_g = _uv._export_g(store)
 
     meters_cfg = cfg.get("meters") or {}
     sub_meter_ids = {
@@ -7165,11 +7178,13 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
         main_ci_imp_kwh += b_imp
         main_ci_exp_kwh += b_exp
 
+        _e_grid = 0.0                        # the export's grams at the half-hour's grid average
         if b_net != 0:
             b_intensity = abs(cg_f / b_net)
             cg_imp += b_imp * b_intensity
             _pb[2] += b_imp * b_intensity
-            cg_exp += b_exp * b_intensity
+            _e_grid = b_exp * b_intensity
+            cg_exp += _e_grid
             ci_kwh_weighted += b_intensity * block_minutes
             ci_duration     += block_minutes
             eff_carbon += abs(cg_f)
@@ -7178,7 +7193,13 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
             cg_imp += abs(cg_f)
             _pb[2] += abs(cg_f)
         else:
-            cg_exp += abs(cg_f)
+            _e_grid = abs(cg_f)
+            cg_exp += _e_grid
+        if export_g is not None and b_exp > 0:
+            # Settings' custom displacement intensity, the net moved with it (usage_view's rule)
+            _d = b_exp * export_g - _e_grid
+            cg_exp += _d
+            cg_net -= _d
 
     effective_intensity  = round(eff_carbon / eff_kwh, 1) if eff_kwh > 0 else None
     grid_avg_intensity   = round(ci_kwh_weighted / ci_duration, 1) if ci_duration > 0 else None
