@@ -14,8 +14,10 @@ this page is fixed.*
   "to look at" — counted by the heatmap's own `isIssue` — the missing half-hours and gaps, the last
   backup and what made it, the database's size. It refreshes every 60 s (30 s while a job runs), and
   its counts wait while a job rewrites history. Counts are kept per month in `health_counts.json`.
-- **The data heatmap** (`heatmap_module.html`, data mode): the **Import bill** and **Export bill**
-  views with the supplier API, else **Missing** only; a half-hour a cell, a day a row. *Issues only*
+- **The data heatmap** (`heatmap_module.html`, data mode): the **Import bill** view with the supplier
+  API, and **Export bill** beside it where the main meter exports — a live export read sensor, or an
+  export MPAN Octopus knows (`_main_has_export`; setup's export channel holding only its rate sources
+  is not one) — else **Missing** only; a half-hour a cell, a day a row. *Issues only*
   folds clean days and clean months. `?day=` and `?issues=1` open it there. The states and colours are
   in [pricing-and-settlement.md](pricing-and-settlement.md).
 
