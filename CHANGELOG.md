@@ -19,6 +19,10 @@ internal name for everything before the first public release and never appears i
   then your eras grouped by kind, in the same order as Running total's year-start list. The chapters
   are gone: each was named after what started it, not what your home had then, so they were hard to
   read. Running total's year-start list now sits where Span's does, in the row under the buttons.
+- **Flow's £ view shows each device's net cost.** On Agile, when a price goes below zero, each device
+  that used power then is paid back, drawn as a flow out of it to *Plunge credit*. The device's block is
+  its cost before that credit, so the net was nowhere on the chart. Now each device is named with its
+  net cost, and hovering its *Plunge credit* flow does the sum: what it cost, less what it was paid back.
 
 ## [2026.11.0b9] — 2026-11-05
 
