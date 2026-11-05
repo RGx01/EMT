@@ -5,6 +5,17 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **A battery is no longer flagged for counting solar because of missing usage.** The battery check
+  compares what the battery charged with what the house took from the grid. Where EMT had no usage
+  figure for a half-hour, it read that as nothing taken from the grid, so a battery charging from the
+  grid overnight looked like it had charged from the panels, and its sensor was flagged. Half-hours
+  with no usage figure are now left out of the check, and a flag they caused clears within the hour.
+- **No more repeated errors for half-hours with no usage figure.** EMT re-checks a half-hour once Octopus
+  settles it, and for one holding only its export that re-check failed, logged an error, and was tried
+  again every time, without changing anything. It now runs.
+
 ## [2026.11.0b12] — 2026-11-05
 
 - **A history import no longer skips its newest months when Octopus fails once.** If Octopus didn't
