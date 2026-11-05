@@ -12,6 +12,12 @@ internal name for everything before the first public release and never appears i
   meter's figures but no devices, so an EV's charging there counted as the house's. Now, when Octopus
   fills half-hours in, EMT splits out the devices from what Home Assistant recorded. **On b8 or
   earlier:** press *Rebuild history* on each device's card to fill those days.
+- **With a CAD, a new install's first day or two are there from the start.** If EMT reads your meter
+  through a CAD in Home Assistant as well as Octopus's API, the history import now fills the half-hours
+  between its last day and EMT's first live reading from what Home Assistant recorded. They show EMT's
+  prediction, like every other day, until Octopus's figures and then the bill settle them, rather than
+  appearing a day or two later. Any half-hour Home Assistant didn't record in full is left for Octopus
+  to fill, as before. A CSV import does the same.
 
 ## [2026.11.0b8] — 2026-11-04
 

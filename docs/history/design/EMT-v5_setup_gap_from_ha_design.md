@@ -1,6 +1,11 @@
 # The setup gap, from Home Assistant's recorder (design)
 
-*Design, 5 Nov 2026. **Not built**; its two open questions answered the same day (§8). Decided with the user that day: the half-hours between a new
+> **History — a design record.** What was decided, when and why, as it stood then; parts describe code
+> that has since changed. How it works today: [reference/data-management-and-devices.md](../../reference/data-management-and-devices.md)
+> (The setup gap) and the code. PR numbers (`#NNN`) are in this repository, `RGx01/EMT`.
+
+*Design, 5 Nov 2026 (#71); its two open questions answered the same day (§8). **Built** 5 Nov 2026, in
+the PR that carries this record (§9). Decided with the user that day: the half-hours between a new
 install's history import and its first live reading should go through the same three stages as every
 other day — predicted, then kWh settled, then cost settled — rather than appearing a day or two later
 already kWh-settled. ("that 2 day window gets the 'predicted view' that we see rolling forward every
@@ -129,3 +134,22 @@ Against an in-memory store and a fake HA client, each failing on the parent:
    `count_backfilled_blocks` among them.
 2. **CSV imports are in scope:** a CSV import on `cad+api` fills the gap it bounds, as Octopus's import
    does.
+
+## 9. Built
+
+As §2–§8, with what building it found:
+
+- **The marker did not survive a rewrite.** The store wrote `interpolated` as `1 if … else 0` and read
+  it back as a bool, so a round trip (`get_block_dict_by_start` → `append_block_replace`) turned 2 or
+  3 into 1 — and the PASS 2 drain is such a round trip, the first thing to touch a filled or
+  backfilled half-hour. On the scratch install all 48 of 3 Nov's backfilled half-hours read 1 once the
+  drain had run, so `count_backfilled_blocks` had lost them. The store now reads and writes the integer
+  (`_interp_marker`).
+- **The clamp.** `settle_facts` turned the device clamp off for any interpolated half-hour without
+  Octopus's figure, which is right for a restart gap's evenly spread kWh but not for a reading: a
+  filled half-hour (3) is clamped as a live one. `was_online` stays false for it — EMT did not see
+  the dispatch lifecycle.
+- **"The row before".** The fill asks HA from five minutes before the gap's first half-hour, so that
+  half-hour can be judged by the same rule as the rest.
+- The CAD's `change` is taken as kWh, as the live path takes the register.
+

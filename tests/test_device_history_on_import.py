@@ -172,7 +172,7 @@ class TheCallers(unittest.TestCase):
         src = open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read()
         body = src[src.index("def _rebuild_devices_after_csv"):]
         body = body[:body.index("\ndef ", 1)]
-        self.assertIn('span["to"], fetch_new=True)', body)
+        self.assertIn('span["from"], hi, fetch_new=True)', body)   # hi: widened by the setup gap fill
 
     def test_GUARD_a_gap_fill_does_not(self):
         src = open(engine.__file__, encoding="utf-8").read()
