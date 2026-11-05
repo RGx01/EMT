@@ -30,7 +30,7 @@ import engine                                       # noqa: E402
 import kraken_rates                                 # noqa: E402
 from kraken_api_client import KrakenAPIError        # noqa: E402
 
-CLOSED = {"tariff_code": "E-2R-VAR-22-11-01-A", "valid_from": "2023-03-31T23:00:00Z",
+CLOSED = {"tariff_code": "E-1R-VAR-22-11-01-A", "valid_from": "2023-03-31T23:00:00Z",
           "valid_to": "2023-07-25T23:00:00Z"}
 OPEN = {"tariff_code": "E-1R-GO-FIX-12M-26-10-30-A", "valid_from": "2026-11-04T00:00:00Z",
         "valid_to": None}

@@ -32,29 +32,6 @@ missing and where it stands; the done history, with every decision's story, is i
   (`.github/workflows/graphql-deprecations.yml`); the REST products API, where tariff rates come from,
   has no schema to introspect. A refresh that suddenly returns nothing, or a different shape, for a
   tariff that had rates is the signal to surface.
-- **BL-102: Economy 7 is not priced** (after the first release). A two-rate tariff (`E-2R-…`)
-  answers `standard-unit-rates` with HTTP 400 ("This tariff has day and night rates, not standard").
-  EMT tries day and night rates only when standard comes back empty (the IOG-SMB shape), so an
-  Economy 7 agreement has had no rate schedule, the running one included. The history import is
-  unaffected (it takes Octopus's half-hourly cost); live and settled half-hours on `cad+api` / `api`
-  are left unpriced. Day and night rates alone are prices by date, not times of day: which half-hours
-  are night depends on the meter. Seen on a tester's 2022–23 agreements, before their imported
-  history; since 5 Nov 2026 a closed one Octopus refuses is not asked again (`agreement_schedules`).
-  - *Found, 5 Nov 2026:* no Octopus or Kraken API gives the window as times. Kraken's schema has
-    `DayNightTariff.dayRate` / `nightRate` (no times), `ElectricityMeterPointType.ssc` / `mtc` /
-    `profileClass`, and `ElectricityMeterRegisterType.timePatternRegime` / `unitRateType`. SSC and TPR
-    map to switching times only through Elexon's Market Domain Data (Clock Interval), which is not a
-    public API, and a radio-teleswitched meter's times are not in it at all. Octopus publishes a rule:
-    a smart meter's night is 00:30–07:30 **UTC** (01:30–08:30 in summer), a non-smart one's usually
-    00:00–07:00 UK time. BottlecapDave's integration hardcodes exactly that (`__is_night_rate`: smart
-    when the meter type starts `S1` / `S2`), fetching `day-unit-rates` and `night-unit-rates`. Forum
-    reports say some smart meters switch up to ~30 minutes late (a SMETS2 randomised offset;
-    unconfirmed by Octopus).
-  - *Proposed:* on a `2R` tariff (or the 400), fetch day and night rates; place them by Octopus's
-    rule; check the rule against the account's own imported half-hourly costs (cost ÷ kWh says which
-    rate a half-hour got) and let the costs win where they disagree, logged; the user's window as the
-    last fallback. Read `ssc` and `timePatternRegime` in the discovery query EMT already sends, for
-    the support file only.
 - **`timeOfUseUsage`, unprobed** (BL-77 item 3). Kraken added per-band usage
   (`TimeOfUseBandUsageType`, 5 Oct 2026). Whether a domestic IOG account may query it, whether it is
   populated, and whether its band totals match the bill would make it a settlement cross-check. Needs
@@ -96,6 +73,22 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Resolved since the record
 
+- **BL-102: Economy 7 priced** (5 Nov 2026, for 2026.11.0b9; the user: "mirroring what bcd has done") —
+  a two-rate tariff (`E-2R-…`) answers `standard-unit-rates` with HTTP 400, so an Economy 7 agreement
+  had no rate schedule. No Octopus or Kraken API gives the night as times (Kraken's `DayNightTariff`
+  has `dayRate` / `nightRate`; the meter point's `ssc` and a register's `timePatternRegime` map to times
+  only through Elexon's Market Domain Data, not a public API). Octopus publishes a smart meter's night
+  as 00:30–07:30 UTC all year, and BottlecapDave's integration applies it (`__is_night_rate`); every
+  account EMT reads half-hourly from Octopus has a smart meter, so EMT applies that rule:
+  `build_rate_schedule` fetches `day-unit-rates` and `night-unit-rates` for an `E-2R` code (or on that
+  400) and places them with the IOG synthesis, its window and zone now arguments. After an API import,
+  `check_e7_window` compares the rule with what Octopus charged (its cached bills, the import's own
+  costs) and only says so — a meter that switches otherwise shows as disagreements at the window's
+  edges. Checked against the real `E-2R-VAR-22-11-01-A` (public product rates, Apr–Jul 2023): night
+  00:30–07:30 UTC at the night rate, both price changes followed, the direct-debit rate as the
+  one-rate path picks. An old-meter Economy 7 account has no half-hourly data from Octopus and prices
+  from Home Assistant's rate sensor in `cad` mode, as before. No tester is on Economy 7 yet; the first
+  account's import log ("Economy 7: …") is the check.
 - **Flow, a Usage Stats Sankey** (the user, 4 Nov 2026) — grid → rate band → house and devices, export
   out of the house, in kWh, £ and CO₂, for the span on screen; small bands as Other. Built 4 Nov 2026
   (#43–#46); the record is [history/design/EMT-v5_flow_design.md](history/design/EMT-v5_flow_design.md).

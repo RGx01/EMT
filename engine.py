@@ -3992,6 +3992,63 @@ def _recorder_half_hours(rows: list, lo: datetime, hi: datetime) -> tuple:
     return out, refused
 
 
+_E7_CHECK_MIN_KWH = 0.05      # a half-hour's price is read from its cost only above this
+_E7_CHECK_TOL = 0.15          # a price this far (relative) from the rule's is the other band
+
+
+def check_e7_window(store, sched) -> "dict | None":
+    """BL-102: does Economy 7's rule (night 00:30-07:30 UTC, kraken_rates) match what Octopus charged?
+    Over the account's two-rate agreements, each half-hour with a cost from Octopus — its cached bill,
+    or an API import's own cost — above `_E7_CHECK_MIN_KWH` is priced by the stitched schedule and the
+    two compared (`sched`: the stitched import schedule, `_kraken_rate_schedules["import"]`). Says so in the log and changes nothing (flag, do not act): a meter that switches at
+    other times shows as disagreements bunched at the window's edges. Returns {checked, disagree,
+    at: {HH:MM UTC: n}} or None where there is nothing to check. Never raises."""
+    try:
+        from kraken_rates import _is_two_rate
+        wins = [(vf, vt) for code, vf, vt in _agreement_windows("import") if _is_two_rate(code)]
+        if not wins or sched is None or sched.is_empty():
+            return None
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+        checked, disagree, at = 0, 0, {}
+        for vf, vt in wins:
+            for f in store.get_settlement_facts(vf, vt or now):
+                bk, bc = f.get("bill_kwh"), f.get("bill_cost")
+                if bk is not None and bc is not None and bk > _E7_CHECK_MIN_KWH:
+                    kwh, cost = float(bk), float(bc)
+                elif (str(f.get("source") or "") == "imported_api" and f.get("imp_cost") is not None
+                      and (f.get("imp_kwh") or 0) > _E7_CHECK_MIN_KWH):
+                    kwh, cost = float(f["imp_kwh"]), float(f["imp_cost"])
+                else:
+                    continue
+                try:
+                    want = sched.resolve(f["block_start"])
+                except Exception:
+                    want = None
+                if not want:
+                    continue
+                checked += 1
+                got = cost / kwh * 100.0                 # p/kWh, as the schedule
+                if abs(got - want) / want > _E7_CHECK_TOL:
+                    disagree += 1
+                    hm = f["block_start"][11:16]
+                    at[hm] = at.get(hm, 0) + 1
+        if not checked:
+            return None
+        res = {"checked": checked, "disagree": disagree,
+               "at": dict(sorted(at.items(), key=lambda x: -x[1])[:8])}
+        if disagree > max(2, 0.02 * checked):
+            logger.warning("Economy 7: %d of %d half-hours Octopus charged at the other rate from "
+                           "the night 00:30-07:30 UTC rule — the meter may switch at other times "
+                           "(most at, UTC: %s). Nothing changed.", disagree, checked, res["at"])
+        else:
+            logger.info("Economy 7: the night 00:30-07:30 UTC rule matches Octopus's costs "
+                        "(%d of %d half-hours disagree)", disagree, checked)
+        return res
+    except Exception as e:
+        logger.warning("Economy 7 check not run: %s", e)
+        return None
+
+
 def _setup_gap_hi(fill: dict, hi: str) -> str:
     """A device rebuild's end, widened to take in the half-hours the setup gap fill wrote."""
     sp = (fill or {}).get("span")
@@ -9289,6 +9346,8 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
                     _finalise_after_import()
                 except Exception as _e:
                     logger.warning("run_api_import_job: post-import finalise failed: %s", _e)
+                # BL-102: the rule against what Octopus charged; says only
+                check_e7_window(_store, _kraken_rate_schedules.get("import"))
                 try:
                     _persist_run_status(j)     # durable status for reload (poll-on-load)
                 except Exception as _e:

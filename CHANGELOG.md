@@ -25,9 +25,13 @@ internal name for everything before the first public release and never appears i
   chart now give as *Displaced by export*.
 - **EMT stops asking Octopus questions it can't answer.** On a tariff that isn't Intelligent, EMT no
   longer asks for smart-charging dispatches every five minutes; Octopus could only say there's no
-  device. An old tariff whose rates Octopus refuses, such as an Economy 7 tariff from years ago, is asked
-  once, not at every rate refresh. And a slow history import no longer fetches your tariff's rates
-  again each time it retries. (EMT can't price Economy 7 yet.)
+  device. An old tariff whose rates Octopus refuses is asked once, not at every rate refresh. And a slow
+  history import no longer fetches your tariff's rates again each time it retries.
+- **Economy 7 is priced.** With Octopus's API, an Economy 7 tariff had no rates, because Octopus gives
+  its day and night prices without saying which hours are night. EMT now uses Octopus's own rule for
+  smart meters: night is 00:30 to 07:30 UTC all year, which is 01:30 to 08:30 in summer. After a
+  history import, EMT checks the rule against what Octopus actually charged you and says in its log
+  if your meter seems to switch at other times.
 
 ## [2026.11.0b8] — 2026-11-04
 
