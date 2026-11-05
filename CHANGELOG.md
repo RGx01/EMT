@@ -19,6 +19,17 @@ internal name for everything before the first public release and never appears i
   then your eras grouped by kind, in the same order as Running total's year-start list. The chapters
   are gone: each was named after what started it, not what your home had then, so they were hard to
   read. Running total's year-start list now sits where Span's does, in the row under the buttons.
+- **Flow's £ view shows each device's net cost.** On Agile, when a price goes below zero, each device
+  that used power then is paid back, drawn as a flow out of it to *Plunge credit*. The device's block is
+  its cost before that credit, so the net was nowhere on the chart. Now each device is named with its
+  net cost, and hovering its *Plunge credit* flow does the sum: what it cost, less what it was paid back.
+- **Help on a device's sensor.** A *?* on a device's *Import Channel* and *History from Home Assistant*
+  headings opens new help: what EMT needs from a sensor, and how to fix one, from a sensor Home
+  Assistant renamed to one that was wrong from the start. For a wrong one, it goes step by step: put in
+  the right sensor, answer *It was the wrong sensor*, and replace the device's history from it.
+- **Colours are set in one place.** The *Chart style* sections on Settings' device, Main meter and EV
+  tabs are gone: every meter's colour and rate line is set on the Charts page, from its ⚙︎ menu, *Bar
+  colours*, where they already were. Colours you chose are kept.
 
 ## [2026.11.0b9] — 2026-11-05
 

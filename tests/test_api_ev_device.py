@@ -192,11 +192,12 @@ class TheSettingsTab(unittest.TestCase):
 
 class TheWiring(unittest.TestCase):
 
-    def test_its_card_saves_to_its_own_route(self):
-        f = _fn("setChartStyle")
-        self.assertIn("if (ch === 'ev') {", f)
-        self.assertIn("_saveEvStyle();", f)
-        self.assertIn("fetch(apiUrl('/api/ev-style'), {method: 'POST'", _fn("_saveEvStyle"))
+    def test_its_card_points_to_bar_colours(self):
+        # 5 Nov 2026: the colour picker on its card went with Settings' other chart styles; the Charts
+        # page's Bar colours sets it, with every meter's
+        f = _fn("buildApiEvPanel")
+        self.assertIn("Bar colours", f)
+        self.assertNotIn("buildChartStyle", f)
 
     def test_both_ways_to_add_an_ev_device_inherit(self):
         self.assertIn("if (type === 'ev') _inheritEvStyle(config.meters[id].channels.import, evShown);", PAGE)

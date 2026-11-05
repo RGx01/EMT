@@ -70,7 +70,7 @@ class TheData(unittest.TestCase):
               "function barStandingVal(agg) { return agg.standing || 0; }\n" % (
                   json.dumps(metric), json.dumps(meters), "true" if standing else "false") +
               "".join(_fn(n) for n in ("barBrPence", "barBrLabel", "barBrSign", "barBrColor", "barFlowIndex",
-                                       "barFlowSeriesLabel", "barFlowSeriesColor", "barFlowPlain", "barFlowData")) +
+                                       "barFlowFmt", "barFlowSeriesLabel", "barFlowSeriesColor", "barFlowPlain", "barFlowData")) +
               "\nconsole.log(JSON.stringify(barFlowData(%s)));" % json.dumps(agg_list))
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
             fh.write(js)
@@ -104,7 +104,7 @@ class TheData(unittest.TestCase):
         into_series = sum(v[0] for (a, b), v in f.items() if b.startswith("s:"))
         self.assertAlmostEqual(grid_out, into_series)
         self.assertEqual([d["nodes"][k]["column"] for k in ("grid", "b:3", "s:heat_pump")], [0, 1, 2])
-        self.assertEqual(d["nodes"]["s:electricity_main"]["label"], "Direct (house)")
+        self.assertEqual(d["nodes"]["s:electricity_main"]["name"], "Direct (house)")
 
     def test_export_leaves_the_house_by_its_rate_band(self):
         # export bands design: the house's export through its own bands, in export's colours
@@ -166,6 +166,36 @@ class TheData(unittest.TestCase):
         self.assertAlmostEqual(d["totals"]["credit"], -0.06)
         # the band's own flows keep their negative £, so its rows in the table say what it earned
         self.assertAlmostEqual(f[("b:-1", "s:heat_pump")][1], -0.02)
+
+    def test_in_pounds_each_destination_is_named_with_its_net(self):
+        # 5 Nov 2026, the user: the plunge's credit leaves the device, so the block is its cost before the
+        # credit; its name says the net. The house 80p less 4p, the heat pump nothing less 2p
+        agg = [{"br": {"electricity_main": {"-1": [4.0, -0.04, 600], "3": [10.0, 0.8, 1500]},
+                       "heat_pump": {"-1": [2.0, -0.02, 300]}}}]
+        n = self._run(agg, "cost")["nodes"]
+        self.assertEqual(n["s:electricity_main"]["label"], "Direct (house) \u00b7 \u00a30.76")
+        self.assertEqual(n["s:heat_pump"]["label"], "Heat Pump \u00b7 -\u00a30.02")
+        self.assertEqual(n["s:electricity_main"]["name"], "Direct (house)")
+        self.assertEqual([round(n["s:electricity_main"][k], 6) for k in ("gross", "credit", "net")], [0.8, 0.04, 0.76])
+
+    def test_the_net_is_the_pence_shown_less_the_pence_shown(self):
+        # the demo's EV, a month: £13.115 at 7.5-10p, £0.443 earned in plunges. Rounded on its own the net is
+        # £12.67, and the hover read £13.12 − £0.44 = £12.67
+        agg = [{"br": {"electricity_main": {"-2": [14.77, -0.443, 0], "3": [163.958, 13.115, 0]}}}]
+        n = self._run(agg, "cost")["nodes"]["s:electricity_main"]
+        self.assertEqual((n["gross"], n["credit"], n["net"]), (13.12, 0.44, 12.68))
+        self.assertTrue(n["label"].endswith("\u00a312.68"))
+
+    def test_GUARD_in_kwh_the_names_are_plain(self):
+        agg = [{"br": {"electricity_main": {"-1": [4.0, -0.04, 600], "3": [10.0, 0.8, 1500]}}}]
+        self.assertEqual(self._run(agg, "kwh")["nodes"]["s:electricity_main"]["label"], "Direct (house)")
+
+    def test_the_credit_s_hover_does_the_sum_and_the_table_keeps_the_plain_name(self):
+        draw = _fn("barFlowDraw")
+        self.assertIn("' used ' + barFlowFmt(r._v[0], 0) + ' at negative prices and was paid '", draw)
+        self.assertIn("' = ' + barFlowFmt(dn.net, 1) + ', its net cost.'", draw)
+        self.assertIn("return n.name || n.label || k;", _fn("barFlowBuildTable"))
+        self.assertIn("return r ? nm(r.from) + ' → ' + nm(r.to) : '';", draw)
 
     def test_paying_to_export_is_a_cost_out_of_the_house(self):
         agg = [{"br": {"electricity_main": {"3": [10.0, 0.8, 0]},
@@ -403,7 +433,7 @@ class TheWiring(unittest.TestCase):
     def test_export_says_where_emt_cannot_see(self):
         f = _fn("barFlowDraw")
         self.assertIn("if (r.to.indexOf('x:') === 0 || r.to === 'export') return 'Export is energy EMT did not meter coming in: solar or a battery.';", f)
-        self.assertIn("if (r.to === 'plunge') return 'Paid to use ' + barFlowFmt(r._v[0], 0) + ' at negative prices.';", f)
+        self.assertIn("if (r.to === 'plunge') {", f)
 
 
 
