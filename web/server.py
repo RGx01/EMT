@@ -4458,12 +4458,26 @@ def _settle_views(_eng) -> list:
 
 
 def _main_has_export() -> bool:
-    """The main meter has an export channel (the Export bill view, and what an unsettled export
-    half-hour means)."""
+    """The main meter exports (the Export bill view, the gap fill's export channel, and what an
+    unsettled export half-hour means): its export channel has a live read sensor, or Octopus knows
+    an export MPAN. Not the channel's key alone — setup writes an export channel holding only its
+    rate and standing-charge sources, and on an import-only account (5 Nov 2026, a tester's support
+    file: no export MPAN, no sensor) every half-hour of two years read as export with no data, 35,058
+    "to look at"."""
     try:
         main = next((m for m in (load_config().get("meters") or {}).values()
                      if not (m.get("meta") or {}).get("sub_meter")), {})
-        return "export" in (main.get("channels") or {})
+        ch = (main.get("channels") or {}).get("export")
+        if not isinstance(ch, dict):
+            return False
+        if ch.get("read"):
+            return True
+        import engine as _eng
+        # the stored agreements' export meter point, or discovery's (an MPAN with no agreement —
+        # the FIT-like case — is not stored)
+        mpan = ((_eng._agreement_info("export") or {}).get("mpan")
+                or ((getattr(_eng, "_kraken_discovery", None) or {}).get("export") or {}).get("mpan"))
+        return bool(mpan)
     except Exception:
         return False
 
@@ -4813,13 +4827,7 @@ def api_backfill_gaps():
         # Does the main meter export? A whole missing BLOCK then needs BOTH channels
         # filled (import AND export), not just import — otherwise the CSV template and
         # the API fill silently omit export for that window.
-        try:
-            _cfg = load_config()
-            _main = next((m for m in _cfg.get("meters", {}).values()
-                          if not (m.get("meta") or {}).get("sub_meter")), {})
-            has_export = "export" in (_main.get("channels") or {})
-        except Exception:
-            has_export = False
+        has_export = _main_has_export()
         block_channels = ["import", "export"] if has_export else ["import"]
         gaps = []
         # (1) Missing block rows — the whole block is absent, so it needs every
@@ -5495,8 +5503,18 @@ def _rebuild_devices_after_csv(result) -> None:
         return
     try:
         import engine as _eng
+        hi = span["to"]
+        # the half-hours up to the first live one, from HA's recorder, first: the devices are
+        # split over them in the same rebuild (setup gap design §2)
+        try:
+            fill = _run_on_engine_loop(_eng.fill_setup_gap_from_ha(), timeout=180.0) or {}
+            hi = _eng._setup_gap_hi(fill, hi)
+            if fill.get("filled"):
+                result["setup_gap_filled"] = fill["filled"]
+        except Exception as e:
+            logger.warning("csv apply: setup gap not filled: %s", e)
         result["devices_rebuilding"] = _run_on_engine_loop(
-            _eng.rebuild_devices_after_refill(span["from"], span["to"], fetch_new=True),
+            _eng.rebuild_devices_after_refill(span["from"], hi, fetch_new=True),
             timeout=30.0) or []
     except Exception as e:
         logger.warning("csv apply: device rebuild not started: %s", e)

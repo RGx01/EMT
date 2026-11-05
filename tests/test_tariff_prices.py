@@ -167,7 +167,7 @@ class WhereItIsKept(unittest.TestCase):
         import kraken_rates as kr
         built = []
 
-        async def fake_build(client, pc, tc, *, vat, period_from=None, period_to=None):
+        async def fake_build(client, pc, tc, *, vat, period_from=None, period_to=None, **kw):
             return kr.RateSchedule([(period_from, period_to, 20.0)], [(period_from, period_to, 19.0)])
         ags = [{"tariff_code": GO, "valid_from": "2023-01-01T00:00:00Z", "valid_to": "2023-06-01T00:00:00Z"}]
         orig = kr.build_rate_schedule

@@ -3667,8 +3667,9 @@ class TestDispatchCaptureThrottle(unittest.TestCase):
         self._orig_disc = engine._kraken_discovery
         self._orig_last = engine._last_dispatch_capture
         engine._store = BlockStore(":memory:")
+        # dispatches are Intelligent Octopus's: asked only on an Intelligent tariff (5 Nov 2026)
         engine._kraken_discovery = {"import": {"product_code": "X",
-                                               "tariff_code": "Y"}}
+                                               "tariff_code": "E-1R-INTELLI-VAR-22-10-14-A"}}
         engine._last_dispatch_capture = None
 
         class _FC:

@@ -18,6 +18,19 @@ half-hour you corrected is skipped.
   (an account with one agreement, the standing charge, export) is fetched from a day before the earlier
   of the channel's first agreement and the first half-hour stored (`_rate_history_from`) — not from the
   product's launch, which on Agile is years of half-hours.
+- **Fetching an agreement's rates** (`kraken_rates.agreement_schedules`): a closed agreement is cached
+  for the process once fetched, and so is one Octopus **refuses** with a 4xx (not 401/403 or 429) — an
+  empty schedule, not asked again until a restart. The running agreement
+  is fetched at every refresh (v4 #513). An API import builds its segments once a job
+  (`import_api_history(segs=…)`), not on every retry of a chunk.
+- **Economy 7** (BL-102): a two-rate tariff (`E-2R-…`) has no standard rates — Octopus answers 400 —
+  so its `day-unit-rates` and `night-unit-rates` are fetched and placed by Octopus's smart-meter rule,
+  night **00:30–07:30 UTC** all year (01:30–08:30 in summer; `kraken_rates._E7_*`, the IOG synthesis
+  with its window and zone passed). No API gives the times; every account EMT reads half-hourly from
+  Octopus has a smart meter. After an API import `check_e7_window` compares the rule with what Octopus
+  charged and logs the result; it changes nothing.
+- **Dispatches** are asked for every 5 minutes only while the import tariff is Intelligent
+  (`_tick_dispatch_capture`); on another tariff the account has no device to ask about.
 - **Cost** = Σ legs kWh × rate; `imp_rate` is the blend. Ex-VAT is from the VAT calendar
   (`vat_calendar.py`). Devices are priced on their grid shares at the legs their kWh sits in.
 

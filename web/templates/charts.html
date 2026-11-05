@@ -2703,6 +2703,8 @@ function barFlowData(aggList) {
   // the right column in the Devices view's order, the house first
   var order = ['electricity_main'].concat(barMeters.filter(function(m) { return m.is_sub; }).map(function(m) { return m.id; }));
   dest.sort(function(a, b) { var x = order.indexOf(a), y = order.indexOf(b); return (x < 0 ? 99 : x) - (y < 0 ? 99 : y); });
+  var standingAll = barIncStanding() ? aggList.reduce(function(t, agg) { return t + barStandingVal(agg); }, 0) : 0;
+  if (i !== 1) return barFlowPlain(br, dest, i, standingAll);
   var band = {};                              // a bracket's inflow: what leaves it, so every node balances
   dest.forEach(function(s) {
     Object.keys(br[s]).forEach(function(n) {
@@ -2754,7 +2756,7 @@ function barFlowData(aggList) {
     nodes.plunge = {label: 'Plunge credit', color: barBrColor(-1, [-1], 'import'), column: 3, priority: 900};
   if (Object.keys(flows).some(function(k) { return flows[k].to === 'paid_export'; }))
     nodes.paid_export = {label: 'Paid to export', color: barBrColor(-1, [-1], 'export'), column: 3, priority: 901};
-  var standing = barIncStanding() ? aggList.reduce(function(t, agg) { return t + barStandingVal(agg); }, 0) : 0;
+  var standing = standingAll;
   if (standing > 0) {
     nodes.standing = {label: 'Standing charge', color: '#4b5563', column: 2, priority: 998};
     add('grid', 'standing', [0, standing, 0]);
@@ -2766,13 +2768,45 @@ function barFlowData(aggList) {
   return {nodes: nodes, flows: Object.values(flows), other: other, ns: ns, band: band,
           xother: xother, xb: xb, totals: {imp: imp, exp: ex, standing: standing, credit: credit, paid: paid}};
 }
+// kWh and CO₂ (5 Nov 2026, the user: "should we really care about cost rate bands or just show the flow
+// of kWh (and Carbon)"): the grid straight to the house and each device, summed over the brackets, and
+// the house's export as one flow — a price says nothing about kWh or grams. The hover keeps all three
+// measures, summed. In CO₂ the export is not drawn (`hide`): its grams are grid carbon it displaced,
+// not carbon through the house; the head says them, the table keeps the row.
+function barFlowPlain(br, dest, i, standing) {
+  function sum(o) {
+    var a = [0, 0, 0];
+    Object.keys(o || {}).forEach(function(n) { for (var k = 0; k < 3; k++) a[k] += o[n][k] || 0; });
+    return a;
+  }
+  var nodes = {grid: {label: 'Grid', color: '#64748b', column: 0, priority: 0}}, flows = [], imp = [0, 0, 0];
+  dest.forEach(function(s, j) {
+    var v = sum(br[s]);
+    for (var k = 0; k < 3; k++) imp[k] += v[k];
+    nodes['s:' + s] = {label: barFlowSeriesLabel(s), color: barFlowSeriesColor(s), column: 1, priority: j};
+    flows.push({from: 'grid', to: 's:' + s, v: v});
+  });
+  var ex = sum(br.export);
+  if (ex[0] > 0 || ex[1] !== 0) {
+    if (!nodes['s:electricity_main'])
+      nodes['s:electricity_main'] = {label: barFlowSeriesLabel('electricity_main'),
+                                     color: barFlowSeriesColor('electricity_main'), column: 1, priority: -1};
+    nodes.export = {label: 'Export', color: barExportColor, column: 2, priority: 0};
+    var xf = {from: 's:electricity_main', to: 'export', v: ex};
+    if (i === 2) xf.hide = true;
+    flows.push(xf);
+  }
+  return {nodes: nodes, flows: flows, other: [], ns: [], band: {}, xother: [], xb: {}, plain: true,
+          totals: {imp: imp, exp: ex, standing: standing, credit: 0, paid: 0}};
+}
 function barFlowHead(d) {
   var i = barFlowIndex(), t = d.totals, el = document.getElementById('bar-flow-head');
   if (!el) return;
   var imp = t.imp[i] + (i === 1 ? t.standing : 0), net = imp - t.exp[i];
   var bits = ['<span>Import <strong style="color:var(--text);">' + barFlowFmt(imp, i) + '</strong>' +
               (i === 1 && t.standing > 0 ? ' incl. ' + barFlowFmt(t.standing, 1) + ' standing' : '') + '</span>',
-              '<span>Export <strong style="color:var(--text);">' + barFlowFmt(t.exp[i], i) + '</strong></span>',
+              '<span>' + (i === 2 ? 'Displaced by export' : 'Export') + ' <strong style="color:var(--text);">' +
+                barFlowFmt(t.exp[i], i) + '</strong></span>',
               '<span>Net <strong style="color:var(--text);">' + barFlowFmt(net, i) + '</strong></span>'];
   if (i === 1 && t.credit < 0) bits.push('<span>Import is net of ' + barFlowFmt(-t.credit, 1) + ' earned at negative prices: Plunge credit</span>');
   if (i === 1 && t.paid < 0) bits.push('<span>Export is net of ' + barFlowFmt(-t.paid, 1) + ' paid to export at negative prices</span>');
@@ -2797,7 +2831,7 @@ function barFlowDraw(aggList) {
   var d = barFlowData(aggList), i = barFlowIndex(), th = barGetTheme();
   barFlowHead(d);
   // a credit flow is the £ of a negative price, turned round: drawn in £ only
-  var data = d.flows.filter(function(f) { return f.v[i] > 1e-9 && (!f.credit || i === 1); })
+  var data = d.flows.filter(function(f) { return f.v[i] > 1e-9 && (!f.credit || i === 1) && !f.hide; })
     .map(function(f) { return {from: f.from, to: f.to, flow: f.v[i], _v: f.v, credit: !!f.credit}; });
   function col(k) { return (d.nodes[k] || {}).color || '#64748b'; }
   var labels = {}, column = {}, priority = {};
@@ -2829,6 +2863,8 @@ function barFlowDraw(aggList) {
             if (v[2] > 0) out.push(barFlowFmt(v[2], 2));
             if (v[0] > 0 && !r.credit && r.to !== 'standing')
               out.push((v[1] / v[0] * 100).toFixed(1) + 'p/kWh');
+            if (v[0] > 0 && v[2] > 0 && !r.credit && r.to !== 'standing')
+              out.push(Math.round(v[2] / v[0]) + ' g/kWh');
             return ' ' + out.join(' · ');
           },
           afterLabel: function(it) {
@@ -2837,7 +2873,7 @@ function barFlowDraw(aggList) {
             if (r.to === 'paid_export') return 'Paid to export ' + barFlowFmt(r._v[0], 0) + ' at a negative export price.';
             if (r.to === 'x:other') return 'Other export: ' + d.xother.map(function(n) { return barBrLabel(n) + ' ' + barFlowFmt(d.xb[n][i], i); }).join(', ') +
               '\nExport is energy EMT did not meter coming in: solar or a battery.';
-            if (r.to.indexOf('x:') === 0) return 'Export is energy EMT did not meter coming in: solar or a battery.';
+            if (r.to.indexOf('x:') === 0 || r.to === 'export') return 'Export is energy EMT did not meter coming in: solar or a battery.';
             if (r.to === 'b:other' || r.from === 'b:other') {
               return 'Other: ' + d.other.map(function(n) { return barBrLabel(n) + ' ' + barFlowFmt(d.band[n][i], i); }).join(', ');
             }

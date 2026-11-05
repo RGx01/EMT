@@ -418,6 +418,17 @@ def _build_schedule_and_diag(records, product_code, tariff_code, vat):
 _AGREEMENT_SCHED_CACHE: dict = {}
 
 
+def _refused(e) -> bool:
+    """Whether a fetch failed because Octopus refused the request itself — an HTTP 4xx that asking
+    again cannot change (not 401/403, a key's problem, nor 429, a limit's) — rather than in transit."""
+    while e is not None:
+        st = getattr(e, "status", None)
+        if isinstance(st, int):
+            return 400 <= st < 500 and st not in (401, 403, 429)
+        e = e.__cause__
+    return False
+
+
 def _agreement_ended(ag_vt) -> bool:
     """Whether an agreement is over — its `valid_to` (naive-UTC iso) is in the past — so its
     schedule can no longer change and may be cached for the life of the process.
@@ -498,10 +509,19 @@ async def agreement_schedules(client, agreements, *, kind: str = "rate", product
                         client, pc, tc, vat=NO_VAT, period_from=vf_raw, period_to=vt_raw)
                 else:
                     sched = await build_rate_schedule(
-                        client, pc, tc, vat=NO_VAT, period_from=vf_raw, period_to=vt_raw)
+                        client, pc, tc, vat=NO_VAT, period_from=vf_raw, period_to=vt_raw,
+                        raise_on_error=True)
             except Exception as e:
-                logger.warning("agreement_schedules: %s %s fetch failed (%s) — span uncovered",
-                               kind, tc, e)
+                if not is_open and _refused(e):
+                    # Octopus refuses this closed agreement's rates for good (a 4xx: a two-rate
+                    # tariff's standard rates, 5 Nov 2026) — remembered for the process as an empty
+                    # schedule, so a refresh or an import retry does not ask again
+                    _AGREEMENT_SCHED_CACHE[ckey] = RateSchedule([])
+                    logger.warning("agreement_schedules: %s %s refused by Octopus (%s) — span "
+                                   "uncovered; not asked again until a restart", kind, tc, e)
+                else:
+                    logger.warning("agreement_schedules: %s %s fetch failed (%s) — span uncovered",
+                                   kind, tc, e)
                 continue
             if not is_open and not sched.is_empty():
                 _AGREEMENT_SCHED_CACHE[ckey] = sched
@@ -545,19 +565,41 @@ _IOG_OFFPEAK_START = (23, 30)   # local (UK) time the off-peak (night) band begi
 _IOG_OFFPEAK_END   = (5, 30)    # local (UK) time it ends (day band begins)
 _IOG_TZ_NAME       = "Europe/London"   # IOG is UK-only; the window is UK local time
 _IOG_SYNTH_HORIZON_DAYS = 2
+# Economy 7 (BL-102, 5 Nov 2026): Octopus's day and night rates carry no times of day. On a smart meter —
+# every account EMT reads half-hourly from Octopus has one — the night is 00:30-07:30 UTC all year
+# (01:30-08:30 in summer), as Octopus publishes and BottlecapDave's integration applies
+# (`__is_night_rate`). A meter that switches otherwise is caught by the cost check (engine,
+# `check_e7_window`), which only says so.
+_E7_NIGHT_START = (0, 30)
+_E7_NIGHT_END = (7, 30)
+_E7_TZ_NAME = "UTC"
+
+
+def _is_two_rate(tariff_code) -> bool:
+    """An Economy 7-style two-rate tariff: `E-2R-…` (not Intelligent's own day/night shape)."""
+    parts = (tariff_code or "").upper().split("-")
+    return len(parts) > 2 and parts[1] == "2R" and "IOG" not in parts and "INTELLI" not in (tariff_code or "").upper()
+
+
+def _day_and_night_refused(e) -> bool:
+    """Octopus's answer to a two-rate tariff's standard rates: HTTP 400, "has day and night rates"."""
+    return getattr(e, "status", None) == 400 and "day and night" in str(e).lower()
 
 
 def _synthesize_iog_tou_windowed(day_records, night_records,
                                  *, tz_name: str,
                                  horizon_days: int = _IOG_SYNTH_HORIZON_DAYS,
-                                 now: "datetime | None" = None) -> list:
+                                 now: "datetime | None" = None,
+                                 night_start=_IOG_OFFPEAK_START,
+                                 night_end=_IOG_OFFPEAK_END) -> list:
     """Rebuild time-windowed day/night unit-rate records from IOG's flat 4-rate
     day/night buckets, so the schedule has the SAME shape the old
     standard-unit-rates feed produced. Night rate inside 23:30-05:30 local, day
     rate outside; DST-aware; across the span the buckets cover. Returns records in
     the shape RateSchedule.from_api_records consumes. On ANY problem returns the
     plain concatenation (windowless) so pricing degrades to the rates, never to
-    nothing."""
+    nothing. `night_start` / `night_end` (hour, minute) in `tz_name`: IOG's by default;
+    Economy 7 on a smart meter passes 00:30-07:30 in UTC (`_E7_*`)."""
     day_records = day_records or []
     night_records = night_records or []
     try:
@@ -591,9 +633,9 @@ def _synthesize_iog_tou_windowed(day_records, night_records,
         while guard < 4000:    # safety cap (~5.5 yr of day/night boundaries)
             guard += 1
             day_begin = datetime(d.year, d.month, d.day,
-                                 _IOG_OFFPEAK_END[0], _IOG_OFFPEAK_END[1], tzinfo=tz)
+                                 night_end[0], night_end[1], tzinfo=tz)
             night_begin = datetime(d.year, d.month, d.day,
-                                   _IOG_OFFPEAK_START[0], _IOG_OFFPEAK_START[1], tzinfo=tz)
+                                   night_start[0], night_start[1], tzinfo=tz)
             bounds.append((day_begin.astimezone(timezone.utc).replace(tzinfo=None), "day"))
             bounds.append((night_begin.astimezone(timezone.utc).replace(tzinfo=None), "night"))
             d = d + timedelta(days=1)
@@ -660,20 +702,55 @@ async def build_rate_schedule(
     """
     if not product_code or not tariff_code:
         return RateSchedule([])
-    try:
-        records = await client.get_unit_rates(
-            product_code, tariff_code,
-            period_from=period_from, period_to=period_to)
-    except Exception as e:
-        _msg = str(e) or type(e).__name__   # timeouts can stringify empty
-        logger.warning("build_rate_schedule: fetch failed for %s/%s: %s",
-                       product_code, tariff_code, _msg)
-        if raise_on_error:
-            raise RateFetchError(
-                f"unit-rate fetch failed for {product_code}/{tariff_code}: {_msg}"
-            ) from e
-        return RateSchedule([])
-    if not records:
+    two_rate = _is_two_rate(tariff_code)
+    records = None
+    if not two_rate:
+        try:
+            records = await client.get_unit_rates(
+                product_code, tariff_code,
+                period_from=period_from, period_to=period_to)
+        except Exception as e:
+            if _day_and_night_refused(e):
+                two_rate = True          # a two-rate tariff whose code did not say so
+            else:
+                _msg = str(e) or type(e).__name__   # timeouts can stringify empty
+                logger.warning("build_rate_schedule: fetch failed for %s/%s: %s",
+                               product_code, tariff_code, _msg)
+                if raise_on_error:
+                    raise RateFetchError(
+                        f"unit-rate fetch failed for {product_code}/{tariff_code}: {_msg}"
+                    ) from e
+                return RateSchedule([])
+    if two_rate:
+        # BL-102: Economy 7 has no standard rates (Octopus answers 400); its day and night rates,
+        # placed by Octopus's smart-meter rule — night 00:30-07:30 UTC
+        try:
+            day = await client.get_unit_rates(
+                product_code, tariff_code, rate_type="day-unit-rates",
+                period_from=period_from, period_to=period_to)
+            night = await client.get_unit_rates(
+                product_code, tariff_code, rate_type="night-unit-rates",
+                period_from=period_from, period_to=period_to)
+        except Exception as e:
+            _msg = str(e) or type(e).__name__
+            logger.warning("build_rate_schedule: day/night fetch failed for %s/%s: %s",
+                           product_code, tariff_code, _msg)
+            if raise_on_error:
+                raise RateFetchError(
+                    f"day/night rate fetch failed for {product_code}/{tariff_code}: {_msg}"
+                ) from e
+            return RateSchedule([])
+        records = []
+        if day and night:
+            records = _synthesize_iog_tou_windowed(
+                day, night, tz_name=_E7_TZ_NAME,
+                night_start=_E7_NIGHT_START, night_end=_E7_NIGHT_END)
+            logger.info("build_rate_schedule: %s — Economy 7: %d period(s) from day(%d)+night(%d), "
+                        "night 00:30-07:30 UTC", tariff_code, len(records), len(day), len(night))
+        else:
+            logger.warning("build_rate_schedule: %s — Economy 7 without both day (%d) and night (%d) "
+                           "rates: not priced", tariff_code, len(day or []), len(night or []))
+    if not records and not two_rate:
         # New IOG time-of-use / 6-hour-cap tariff (IOG-SMB-TOU) drops
         # `standard-unit-rates` for split `day` + `night` (general usage) and
         # `ev-device-*` (EV charging) buckets. Reconstruct the base TOU schedule

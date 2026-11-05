@@ -6268,7 +6268,9 @@ class TestBackfillGaps(unittest.TestCase):
             {"start": "2026-05-01T00:00:00", "end": "2026-05-01T00:30:00", "slots": 2}]
         _orig = server.load_config
         server.load_config = lambda: {"meters": {"electricity_main": {
-            "meta": {}, "channels": {c: {} for c in main_channels}}}}
+            # a channel with a read sensor: an export channel holding only its rate sources is not
+            # an export meter (_main_has_export, 5 Nov 2026)
+            "meta": {}, "channels": {c: {"read": "sensor.%s" % c} for c in main_channels}}}}
         try:
             j = self.client.get("/api/backfill/gaps").get_json()
         finally:

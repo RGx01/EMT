@@ -5,6 +5,38 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b9] — 2026-11-05
+
+- **A new install's first day or two get their devices.** After the history import, EMT records live from
+  its first reading, and Octopus fills the gap between a day or two later. Those half-hours had the
+  meter's figures but no devices, so an EV's charging there counted as the house's. Now, when Octopus
+  fills half-hours in, EMT splits out the devices from what Home Assistant recorded. **On b8 or
+  earlier:** press *Rebuild history* on each device's card to fill those days.
+- **With a CAD, a new install's first day or two are there from the start.** If EMT reads your meter
+  through a CAD in Home Assistant as well as Octopus's API, the history import now fills the half-hours
+  between its last day and EMT's first live reading from what Home Assistant recorded. They show EMT's
+  prediction, like every other day, until Octopus's figures and then the bill settle them, rather than
+  appearing a day or two later. Any half-hour Home Assistant didn't record in full is left for Octopus
+  to fill, as before. A CSV import does the same.
+- **Flow in kWh and CO₂ shows where the energy went, without price bands.** The price bands now appear
+  only in Cost, where they mean something. In kWh and CO₂ the grid goes straight to the house and each
+  device. Hover a flow for its kWh, cost and carbon together, with its average price and grams per kWh.
+  In CO₂, export isn't drawn: its carbon is what it displaced on the grid, which the figures above the
+  chart now give as *Displaced by export*.
+- **EMT stops asking Octopus questions it can't answer.** On a tariff that isn't Intelligent, EMT no
+  longer asks for smart-charging dispatches every five minutes; Octopus could only say there's no
+  device. An old tariff whose rates Octopus refuses is asked once, not at every rate refresh. And a slow
+  history import no longer fetches your tariff's rates again each time it retries.
+- **Economy 7 is priced.** With Octopus's API, an Economy 7 tariff had no rates, because Octopus gives
+  its day and night prices without saying which hours are night. EMT now uses Octopus's own rule for
+  smart meters: night is 00:30 to 07:30 UTC all year, which is 01:30 to 08:30 in summer. After a
+  history import, EMT checks the rule against what Octopus actually charged you and says in its log
+  if your meter seems to switch at other times.
+- **No Export bill without an export meter.** On an account that only imports, Data Management showed an
+  Export bill with every half-hour of your history "to look at", because setup had given the main
+  meter an export channel with nothing to read. Export now appears only where there's an export
+  sensor or Octopus knows an export meter.
+
 ## [2026.11.0b8] — 2026-11-04
 
 - **Replace history no longer loses a device's history when Home Assistant doesn't answer.** In b7,

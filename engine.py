@@ -3940,6 +3940,222 @@ async def rebuild_devices_after_refill(lo: str, hi: str, *, fetch_new: bool = Fa
     return queued
 
 
+# ── The setup gap, from HA's recorder (docs/design/EMT-v5_setup_gap_from_ha_design.md) ─────────
+_RECORDER_INTERPOLATED = 3      # BlockStore.RECORDER_INTERPOLATED
+_SETUP_GAP_MODES = ("cad+api",)
+_SETUP_GAP_STATS_TIMEOUT_S = 120.0
+
+
+def _recorder_half_hours(rows: list, lo: datetime, hi: datetime) -> tuple:
+    """HA's 5-minute statistics rows for one sensor → ({half-hour start: kWh}, {reason: count}).
+    A half-hour is taken only with all six of its rows and the row before it (HA's first row after
+    a hole carries the whole hole's energy), each change not negative, the total under the live
+    path's ceiling. `change`, else the difference of `sum` from the row before. Naive UTC keys."""
+    import statistics_probe as _sp
+    by5: dict = {}
+    for r in rows or []:
+        t = _sp._to_utc(r.get("start"))
+        if t is None:
+            continue
+        by5[t.replace(tzinfo=None, second=0, microsecond=0)] = r
+    step5 = timedelta(minutes=5)
+    energy: dict = {}
+    for t in sorted(by5):
+        r = by5[t]
+        e = r.get("change")
+        if e is None:
+            prev = by5.get(t - step5)
+            if prev is not None and r.get("sum") is not None and prev.get("sum") is not None:
+                e = float(r["sum"]) - float(prev["sum"])
+        if e is not None:
+            energy[t] = float(e)
+    out, refused = {}, {}
+
+    def _no(why):
+        refused[why] = refused.get(why, 0) + 1
+    hh = lo
+    while hh < hi:
+        slots = [hh + step5 * i for i in range(6)]
+        if any(x not in energy for x in slots):
+            _no("incomplete")
+        elif (hh - step5) not in by5:
+            _no("after_hole")
+        elif any(energy[x] < 0 for x in slots):
+            _no("negative")
+        else:
+            kwh = sum(energy[x] for x in slots)
+            if kwh > _ROGUE_BLOCK_KWH_CEILING:
+                _no("ceiling")
+            else:
+                out[hh.isoformat()] = round(kwh, 6)
+        hh += timedelta(minutes=30)
+    return out, refused
+
+
+_E7_CHECK_MIN_KWH = 0.05      # a half-hour's price is read from its cost only above this
+_E7_CHECK_TOL = 0.15          # a price this far (relative) from the rule's is the other band
+
+
+def check_e7_window(store, sched) -> "dict | None":
+    """BL-102: does Economy 7's rule (night 00:30-07:30 UTC, kraken_rates) match what Octopus charged?
+    Over the account's two-rate agreements, each half-hour with a cost from Octopus — its cached bill,
+    or an API import's own cost — above `_E7_CHECK_MIN_KWH` is priced by the stitched schedule and the
+    two compared (`sched`: the stitched import schedule, `_kraken_rate_schedules["import"]`). Says so in the log and changes nothing (flag, do not act): a meter that switches at
+    other times shows as disagreements bunched at the window's edges. Returns {checked, disagree,
+    at: {HH:MM UTC: n}} or None where there is nothing to check. Never raises."""
+    try:
+        from kraken_rates import _is_two_rate
+        wins = [(vf, vt) for code, vf, vt in _agreement_windows("import") if _is_two_rate(code)]
+        if not wins or sched is None or sched.is_empty():
+            return None
+        now = datetime.now(timezone.utc).replace(tzinfo=None).isoformat(timespec="seconds")
+        checked, disagree, at = 0, 0, {}
+        for vf, vt in wins:
+            for f in store.get_settlement_facts(vf, vt or now):
+                bk, bc = f.get("bill_kwh"), f.get("bill_cost")
+                if bk is not None and bc is not None and bk > _E7_CHECK_MIN_KWH:
+                    kwh, cost = float(bk), float(bc)
+                elif (str(f.get("source") or "") == "imported_api" and f.get("imp_cost") is not None
+                      and (f.get("imp_kwh") or 0) > _E7_CHECK_MIN_KWH):
+                    kwh, cost = float(f["imp_kwh"]), float(f["imp_cost"])
+                else:
+                    continue
+                try:
+                    want = sched.resolve(f["block_start"])
+                except Exception:
+                    want = None
+                if not want:
+                    continue
+                checked += 1
+                got = cost / kwh * 100.0                 # p/kWh, as the schedule
+                if abs(got - want) / want > _E7_CHECK_TOL:
+                    disagree += 1
+                    hm = f["block_start"][11:16]
+                    at[hm] = at.get(hm, 0) + 1
+        if not checked:
+            return None
+        res = {"checked": checked, "disagree": disagree,
+               "at": dict(sorted(at.items(), key=lambda x: -x[1])[:8])}
+        if disagree > max(2, 0.02 * checked):
+            logger.warning("Economy 7: %d of %d half-hours Octopus charged at the other rate from "
+                           "the night 00:30-07:30 UTC rule — the meter may switch at other times "
+                           "(most at, UTC: %s). Nothing changed.", disagree, checked, res["at"])
+        else:
+            logger.info("Economy 7: the night 00:30-07:30 UTC rule matches Octopus's costs "
+                        "(%d of %d half-hours disagree)", disagree, checked)
+        return res
+    except Exception as e:
+        logger.warning("Economy 7 check not run: %s", e)
+        return None
+
+
+def _setup_gap_hi(fill: dict, hi: str) -> str:
+    """A device rebuild's end, widened to take in the half-hours the setup gap fill wrote."""
+    sp = (fill or {}).get("span")
+    if not sp:
+        return hi
+    end = (datetime.fromisoformat(sp[1]) + timedelta(minutes=30)).isoformat()
+    return max(hi, end)
+
+
+async def fill_setup_gap_from_ha() -> dict:
+    """Fill the main meter's half-hours between the imported history's end and the first live one
+    — a new install's setup gap — from HA's 5-minute statistics for its CAD sensors, so they are
+    predicted like every other half-hour until Octopus settles them (setup gap design §2). On
+    `cad+api` only; only half-hours with no block; what HA cannot vouch for is left to the poll's
+    BL-8 backfill, as before. Returns {filled, span [first, last] or None, refused, reason}.
+    Never raises."""
+    res = {"filled": 0, "span": None, "refused": {}, "reason": None}
+    try:
+        if get_data_source_mode() not in _SETUP_GAP_MODES:
+            res["reason"] = "mode"
+            return res
+        if _engine_ha is None:
+            res["reason"] = "no_ha"
+            return res
+        mid = _main_meter_id()
+        meter = ((load_config().get("meters") or {}).get(mid) or {}) if mid else {}
+        chans = meter.get("channels") or {}
+        imp_sensor = (chans.get("import") or {}).get("read")
+        exp_sensor = (chans.get("export") or {}).get("read")
+        if not imp_sensor:
+            res["reason"] = "no_sensor"
+            return res
+        store = get_store()
+        ih = store.count_imported_history()
+        if not ih.get("to"):
+            res["reason"] = "no_import"
+            return res
+        lo = datetime.fromisoformat(ih["to"]) + timedelta(minutes=30)
+        first_live = store.first_live_read_start(mid)
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        cur = now.replace(minute=(now.minute // 30) * 30, second=0, microsecond=0)
+        hi = min(datetime.fromisoformat(first_live), cur) if first_live else cur
+        if hi <= lo:
+            res["reason"] = "no_gap"
+            return res
+        have = set(store.get_block_starts_in_range(mid, lo.isoformat(), hi.isoformat()))
+        empty = []
+        hh = lo
+        while hh < hi:
+            if hh.isoformat() not in have:
+                empty.append(hh)
+            hh += timedelta(minutes=30)
+        if not empty:
+            res["reason"] = "no_gap"
+            return res
+        f_lo, f_hi = empty[0], empty[-1] + timedelta(minutes=30)
+        start = (f_lo - timedelta(minutes=5)).isoformat() + "+00:00"   # the row before the first
+        end = f_hi.isoformat() + "+00:00"
+        series = {}
+        for ch, sid in (("import", imp_sensor), ("export", exp_sensor)):
+            if not sid:
+                continue
+            got = await _engine_ha.get_statistics([sid], start, end, period="5minute",
+                                                  types=["change", "sum"],
+                                                  timeout=_SETUP_GAP_STATS_TIMEOUT_S)
+            series[ch] = (got or {}).get(sid) or []
+        imp, refused = _recorder_half_hours(series.get("import"), f_lo, f_hi)
+        exp = None
+        if exp_sensor:
+            exp, _ = _recorder_half_hours(series.get("export"), f_lo, f_hi)
+        want = {x.isoformat() for x in empty}
+        half_hours = {bs: {"import": k, "export": (exp or {}).get(bs)}
+                      for bs, k in imp.items() if bs in want}
+        written = store.create_recorder_blocks(mid, half_hours)
+        res.update(filled=len(written), refused=refused,
+                   span=[written[0], written[-1]] if written else None)
+        logger.info("setup gap: %s..%s — %d of %d empty half-hour(s) filled from HA's recorder "
+                    "(%s); the rest wait for Octopus", f_lo.isoformat(), f_hi.isoformat(),
+                    len(written), len(empty), refused or "none refused")
+        return res
+    except Exception as e:
+        logger.warning("setup gap: not filled from HA's recorder: %s", e)
+        res["reason"] = "error"
+        return res
+
+
+async def rebuild_devices_after_backfill(summary: dict) -> list:
+    """After a poll that created half-hours (BL-8: Octopus settled them, EMT had none), rebuild
+    the devices over them from `ha_reads`, as a gap fill does (`rebuild_devices_after_refill`).
+    The backfill writes the main meter only; with nothing after it, a device's use there stayed
+    the house's — the half-hours between an import's end and the first live tick on a new
+    install, which the import's own rebuild cannot reach: they did not exist yet (5 Nov 2026).
+    The rebuild fills only absent device rows, from HA's recorder hours EMT already keeps; no
+    call to HA. Returns the devices queued. Never raises."""
+    try:
+        sp = (summary or {}).get("backfilled_span")
+        if not (summary or {}).get("backfilled") or not sp:
+            return []
+        # an hour row is a device's from its start (`ha_read_devices`): from the hour
+        lo = datetime.fromisoformat(sp[0]).replace(minute=0, second=0, microsecond=0)
+        hi = datetime.fromisoformat(sp[1]) + timedelta(minutes=30)
+        return await rebuild_devices_after_refill(lo.isoformat(), hi.isoformat())
+    except Exception as e:
+        logger.warning("rebuild_devices_after_backfill: %s", e)
+        return []
+
+
 def _rerun_settle(block: dict, main_meter_id: str = "electricity_main"):
     """settle() for the PASS 2 re-run: (Facts, Settled), or None where the half-hour is the user's
     (corrected) or settle() cannot price it (no rate, no band, nothing drawn). The kWh and the
@@ -6799,6 +7015,7 @@ async def retry_settlement_for_unsettled(now=None, max_lookback_days=None) -> di
 
     summary = await ingester.poll(window=(period_from, period_to),
                                   advance_cursor=False)
+    await rebuild_devices_after_backfill(summary)
     after = _store.count_unsettled_blocks()
     logger.info("retry_settlement: window=%s..%s settled_import=%d "
                 "settled_export=%d unsettled %d→%d",
@@ -8099,8 +8316,14 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
                              restart: bool = False,
                              meter_id: str = "electricity_main",
                              until_ts=None,
-                             channels=("import", "export")) -> dict:
+                             channels=("import", "export"),
+                             segs: dict | None = None) -> dict:
     """API import route apply — INCREMENTAL and rate-limit-aware.
+
+    `segs`: the caller's {(channel, kind): segments}, kept across its calls — the import job's, so
+    its rate and standing segments are built once a job, not on every call (5 Nov 2026: a slow
+    account's import retried a chunk about every three minutes for seven hours, each retry
+    building them again, the running agreement fetched from Octopus each time).
 
     Fetches half-hourly GraphQL Measurements (kWh + billed cost + Octopus's own
     OFF_PEAK/STANDARD_RATE label) newest→oldest and writes `imported_api` blocks.
@@ -8162,8 +8385,13 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
         # returns without cost; the standing charge (authoritative, complete — see
         # _standing_for). Through the one per-agreement fetch: closed agreements are cached for
         # the process, the running one fetched each run (engine step 5c).
-        rate_segs = await _build_channel_rate_segs(channel)
-        standing_segs = await _build_channel_standing_segs(channel)
+        if segs is not None and (channel, "rate") in segs:
+            rate_segs, standing_segs = segs[(channel, "rate")], segs[(channel, "standing")]
+        else:
+            rate_segs = await _build_channel_rate_segs(channel)
+            standing_segs = await _build_channel_standing_segs(channel)
+            if segs is not None:
+                segs[(channel, "rate")], segs[(channel, "standing")] = rate_segs, standing_segs
 
         floor = requested_from or await _cached_data_floor(channel, info,
                                                             restart=restart)
@@ -9057,6 +9285,7 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
     if _cancelled_while_claimed:
         j["control"] = "cancel"
     first = True
+    _segs: dict = {}            # the job's rate and standing segments, built once (import_api_history)
     try:
         while True:
             ctl = j.get("control")
@@ -9072,7 +9301,7 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
             j["phase"] = "importing"
             res = await import_api_history(
                 requested_from, chunk_days=chunk_days, max_chunks=max_chunks,
-                pace_s=pace_s, headroom_frac=headroom_frac, restart=first)
+                pace_s=pace_s, headroom_frac=headroom_frac, restart=first, segs=_segs)
             first = False
             if not res.get("ok"):
                 j["status"] = "error"
@@ -9117,6 +9346,8 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
                     _finalise_after_import()
                 except Exception as _e:
                     logger.warning("run_api_import_job: post-import finalise failed: %s", _e)
+                # BL-102: the rule against what Octopus charged; says only
+                check_e7_window(_store, _kraken_rate_schedules.get("import"))
                 try:
                     _persist_run_status(j)     # durable status for reload (poll-on-load)
                 except Exception as _e:
@@ -9131,6 +9362,9 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
                         _ih = _store.count_imported_history()
                         if _ih.get("from") and _ih.get("to"):
                             _hi = (datetime.fromisoformat(_ih["to"]) + timedelta(minutes=30)).isoformat()
+                            # the half-hours up to the first live one, from HA's recorder, first:
+                            # the devices are split over them in the same rebuild (setup gap design)
+                            _hi = _setup_gap_hi(await fill_setup_gap_from_ha(), _hi)
                             j["devices_rebuilding"] = await rebuild_devices_after_refill(
                                 _ih["from"], _hi, fetch_new=True)
                     except Exception as _e:
@@ -10010,6 +10244,9 @@ async def _capture_dispatch_slots() -> int:
     return captured
 
 
+_dispatch_skip_said = False     # the not-Intelligent skip, logged once
+
+
 async def _tick_dispatch_capture() -> None:
     """5-minute-throttled dispatch-slot capture. Called from _engine_tick (every
     ~10s) but only fetches every 5 minutes.
@@ -10033,10 +10270,25 @@ async def _tick_dispatch_capture() -> None:
         return
     _last_dispatch_capture = now
     _capture_completed_slots.clear()
+    global _dispatch_skip_said
     try:
-        await _capture_dispatch_slots()
-    except Exception as e:
-        logger.warning("_tick_dispatch_capture: failed: %s", e)
+        _iog = tariff_kind_at(now.replace(microsecond=0).isoformat()) == "intelligent"
+    except Exception:
+        _iog = True                 # not known: asked, as before
+    if not _iog:
+        # Dispatches are Intelligent Octopus's: on another tariff the account has no device and
+        # Octopus answers "Unable to find device for given account" — asked every five minutes,
+        # a tester's Go account logged it 217 times (5 Nov 2026). Said once.
+        if not _dispatch_skip_said:
+            logger.info("_tick_dispatch_capture: the import tariff is not Intelligent — "
+                        "dispatches not asked")
+            _dispatch_skip_said = True
+    else:
+        _dispatch_skip_said = False
+        try:
+            await _capture_dispatch_slots()
+        except Exception as e:
+            logger.warning("_tick_dispatch_capture: failed: %s", e)
     # A completed record is the carve's input: split those slots now, not at the next hourly pass.
     # Local and additive; a slot already carved, or settled, does not match. Only the slots this
     # capture saw, so it never scans history.
@@ -11455,7 +11707,10 @@ def settle_facts(m: dict, subs: list, store, vat_cal=None, *, kwh=None):
                   devices=[_st.Device(s["meter_id"], max(float(s["imp_kwh"] or 0.0), 0.0),
                                       (s.get("meter_type") or "") in _st.EV_METER_TYPES)
                            for s in (subs or [])],
-                  clamp=bool(m.get("imp_kwh_api") is not None or not m.get("interpolated")))
+                  # unclamped only where the main is itself an estimate: a half-hour filled
+                  # from HA's recorder is a reading, clamped as a live one (setup gap design)
+                  clamp=bool(m.get("imp_kwh_api") is not None
+                             or int(m.get("interpolated") or 0) in (0, _RECORDER_INTERPOLATED)))
     sched = _kraken_rate_schedules.get("import")
     if not _agreement_priced_ok(bs):
         # BL-54: a half-hour before the current agreement on a schedule that is not stitched would
@@ -12701,6 +12956,7 @@ async def resolve_history_gaps(now=None, meter_id: str = "electricity_main",
             logger.warning("resolve_history_gaps: window %s failed: %s", window, e)
             continue
         made = summary.get("backfilled", 0)
+        await rebuild_devices_after_backfill(summary)
         total_backfilled += made
         runs_done.append({"start": g["start"], "end": g["end"],
                           "slots": g["slots"], "backfilled": made})
@@ -12799,6 +13055,7 @@ async def kraken_poll_task(ha: HAClient):
             # G2b: a closed agreement's prices not kept yet, a few a cycle, once ever
             await _fetch_closed_agreement_prices()
             summary = await ingester.poll()
+            await rebuild_devices_after_backfill(summary)
             logger.info(
                 "kraken_poll_task: %s window=%s..%s import_rows=%d "
                 "store_import=%d export_rows=%d store_export=%d "

@@ -14,8 +14,10 @@ this page is fixed.*
   "to look at" — counted by the heatmap's own `isIssue` — the missing half-hours and gaps, the last
   backup and what made it, the database's size. It refreshes every 60 s (30 s while a job runs), and
   its counts wait while a job rewrites history. Counts are kept per month in `health_counts.json`.
-- **The data heatmap** (`heatmap_module.html`, data mode): the **Import bill** and **Export bill**
-  views with the supplier API, else **Missing** only; a half-hour a cell, a day a row. *Issues only*
+- **The data heatmap** (`heatmap_module.html`, data mode): the **Import bill** view with the supplier
+  API, and **Export bill** beside it where the main meter exports — a live export read sensor, or an
+  export MPAN Octopus knows (`_main_has_export`; setup's export channel holding only its rate sources
+  is not one) — else **Missing** only; a half-hour a cell, a day a row. *Issues only*
   folds clean days and clean months. `?day=` and `?issues=1` open it there. The states and colours are
   in [pricing-and-settlement.md](pricing-and-settlement.md).
 
@@ -104,6 +106,23 @@ and, optionally, `Unit Rate Exc. Tax (p/kWh)` and `Estimated Cost Exc. Tax (p)`.
 - A `pre-csv-import` backup is taken first; the import's half-hours can be deleted as imported
   history.
 
+## The setup gap
+
+On `cad+api`, after an Octopus or a CSV import, the main meter's empty half-hours between the imported
+history's last and the first live one are filled from Home Assistant's 5-minute statistics for the CAD
+sensors (`fill_setup_gap_from_ha`), so a new install's first day or two are predicted like any other
+half-hour until Octopus settles them. Each is written unsettled (`imp_kwh_api` NULL), `source =
+'ha_recorder'`, `interpolated = 3`, flagged for PASS 2; the import's device rebuild then takes them in.
+A half-hour without all six 5-minute rows, the first after a hole in HA's rows, a negative change, or
+one over `_ROGUE_BLOCK_KWH_CEILING` is left for the poll's BL-8 backfill, as is everything when HA
+does not answer. A filled half-hour's devices are clipped to the grid as on a live one.
+
+`interpolated` says where a half-hour's main-meter kWh came from: 0 a live reading or an import, 1
+interpolated locally (a restart gap), 2 backfilled from Octopus's settled figure (BL-8), 3 filled from
+HA's recorder. A rewrite keeps it.
+
+Design: [history/design/EMT-v5_setup_gap_from_ha_design.md](../history/design/EMT-v5_setup_gap_from_ha_design.md).
+
 ## The support file
 
 `support_file.py`: one zip of `emt.log`, `support.json` (the configuration without secrets, counts, the
@@ -127,7 +146,9 @@ key is never in it. A size estimate warns over 10 MB.
   recorder hours as hours. Deleting half-hours keeps it; only removing a device removes its rows.
 - **A refill rebuilds the devices** (`rebuild_devices_after_refill`): after a gap fill, an Octopus
   import or a CSV import, each device is rebuilt over the span from `ha_reads`, without asking Home
-  Assistant.
+  Assistant. So is a poll that creates half-hours Octopus settled and EMT had none of (BL-8,
+  `rebuild_devices_after_backfill`) — on a new install, the day or two between the import's end and the
+  first live tick, which the import's own rebuild could not reach.
 - **An import rebuilds a new device from Home Assistant** (`fetch_new`): after an Octopus or a CSV
   import (not a gap fill), a device whose history EMT never had (`devices_without_history`: no recorder
   hours kept, no device row before its first live half-hour) is rebuilt over its whole history from

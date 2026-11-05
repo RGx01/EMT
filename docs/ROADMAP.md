@@ -1,6 +1,6 @@
 # Roadmap
 
-*What is open, as of 2026.11.0b8 (4 Nov 2026). Each item says what is wrong or
+*What is open, as of 2026.11.0b9 (5 Nov 2026). Each item says what is wrong or
 missing and where it stands; the done history, with every decision's story, is in
 [history/ROADMAP-done.md](history/ROADMAP-done.md), and what users see is in the
 [changelog](../CHANGELOG.md). Numbers like BL-80 carry over from that record. A PR number written
@@ -73,6 +73,22 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Resolved since the record
 
+- **BL-102: Economy 7 priced** (5 Nov 2026, for 2026.11.0b9; the user: "mirroring what bcd has done") —
+  a two-rate tariff (`E-2R-…`) answers `standard-unit-rates` with HTTP 400, so an Economy 7 agreement
+  had no rate schedule. No Octopus or Kraken API gives the night as times (Kraken's `DayNightTariff`
+  has `dayRate` / `nightRate`; the meter point's `ssc` and a register's `timePatternRegime` map to times
+  only through Elexon's Market Domain Data, not a public API). Octopus publishes a smart meter's night
+  as 00:30–07:30 UTC all year, and BottlecapDave's integration applies it (`__is_night_rate`); every
+  account EMT reads half-hourly from Octopus has a smart meter, so EMT applies that rule:
+  `build_rate_schedule` fetches `day-unit-rates` and `night-unit-rates` for an `E-2R` code (or on that
+  400) and places them with the IOG synthesis, its window and zone now arguments. After an API import,
+  `check_e7_window` compares the rule with what Octopus charged (its cached bills, the import's own
+  costs) and only says so — a meter that switches otherwise shows as disagreements at the window's
+  edges. Checked against the real `E-2R-VAR-22-11-01-A` (public product rates, Apr–Jul 2023): night
+  00:30–07:30 UTC at the night rate, both price changes followed, the direct-debit rate as the
+  one-rate path picks. An old-meter Economy 7 account has no half-hourly data from Octopus and prices
+  from Home Assistant's rate sensor in `cad` mode, as before. No tester is on Economy 7 yet; the first
+  account's import log ("Economy 7: …") is the check.
 - **Flow, a Usage Stats Sankey** (the user, 4 Nov 2026) — grid → rate band → house and devices, export
   out of the house, in kWh, £ and CO₂, for the span on screen; small bands as Other. Built 4 Nov 2026
   (#43–#46); the record is [history/design/EMT-v5_flow_design.md](history/design/EMT-v5_flow_design.md).
