@@ -337,7 +337,10 @@ window.EMTHeatmap = (function () {
     var M = state.months[key], b = state.bounds || {};
     if (!M || !M.range || !b.earliest_block) return;
     var have = {};
-    (M.blocks || []).forEach(function (x) { if (x.meter_id === 'electricity_main') have[x.block_start] = 1; });
+    // a block with no import kWh is missing too (5 Nov 2026: an import that kept only the export)
+    (M.blocks || []).forEach(function (x) {
+      if (x.meter_id === 'electricity_main' && x.imp_kwh !== null && x.imp_kwh !== undefined) have[x.block_start] = 1;
+    });
     var HH = 1800000, ms = function (s) { return Date.parse(s + 'Z'); };
     // the last FINISHED half-hour starts here — with two minutes' grace after a boundary, while
     // the engine waits for the post-boundary read and writes the block that just ended

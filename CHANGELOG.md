@@ -12,6 +12,10 @@ internal name for everything before the first public release and never appears i
   never asked for those months again: they came in with export and no usage, and your devices' share
   of them showed as nothing. Each side of the meter now keeps its own place and asks again for what it
   missed, and the log says when Octopus didn't answer.
+- **Half-hours with no usage figure show as missing, so you can fill them.** Where history already came
+  in that way, it had a row for each half-hour, so Data Management showed no gap and nothing would ask
+  Octopus again. A half-hour with no usage figure is now missing on the heatmap, in the gaps list and
+  in Data health, and filling it fetches the usage from Octopus.
 
 ## [2026.11.0b11] — 2026-11-05
 

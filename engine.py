@@ -9159,9 +9159,9 @@ def gap_bounds(store, ats, *, now=None, meter_id: str = "electricity_main") -> l
         except (TypeError, ValueError):
             continue
         iso = t.isoformat()
-        if store.get_block_starts_in_range(meter_id, iso, (t + HH).isoformat()):
+        if store.get_block_starts_in_range(meter_id, iso, (t + HH).isoformat(), with_import=True):
             continue
-        prev, nxt = store.get_neighbour_block_starts(meter_id, iso)
+        prev, nxt = store.get_neighbour_block_starts(meter_id, iso, with_import=True)
         if prev is None:
             continue
         a = (datetime.fromisoformat(prev) + HH).isoformat()
@@ -9176,7 +9176,7 @@ def gap_fill_plan(store, runs, *, channels=("import", "export"), now=None,
     """What a heatmap gap fill would do over the selection's runs, counted from the STORE, not
     taken from the client (gap fill design §2). Read-only: `store` may be the request thread's
     reader. Each run [from, to) (naive-UTC half-hour starts) is walked half-hour by half-hour:
-    a half-hour with no main-meter block is missing — deleted where a tombstone covers it,
+    a half-hour with no main-meter block, or one with no import kWh (5 Nov 2026), is missing — deleted where a tombstone covers it,
     too recent inside the last 48 h (DCC has not settled it, so Octopus has nothing yet; decided
     (b): left out), too old beyond Octopus's two years (decided (a): the only bound), else
     fillable. Returns per-run and total counts, the fillable runs, and the size per channel."""
@@ -9191,7 +9191,8 @@ def gap_fill_plan(store, runs, *, channels=("import", "export"), now=None,
             t, end = datetime.fromisoformat(str(a)), datetime.fromisoformat(str(b))
         except (TypeError, ValueError):
             continue
-        have = set(store.get_block_starts_in_range(meter_id, t.isoformat(), end.isoformat()))
+        have = set(store.get_block_starts_in_range(meter_id, t.isoformat(), end.isoformat(),
+                                                   with_import=True))
         tombs = store.tombstoned_slots_in(meter_id, t.isoformat(), end.isoformat())
         c = {"from": t.isoformat(), "to": end.isoformat(), "missing": 0, "deleted": 0,
              "too_recent": 0, "too_old": 0, "fillable": 0}

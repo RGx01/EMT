@@ -4214,7 +4214,8 @@ def api_gap_fill_apply():
     """Fill a preview's runs. Body {token}. Refused if the preview is gone or over an hour old,
     if the store no longer gives the same fillable runs, or while an import or a restore runs.
     No safety backup (decided 24 Oct 2026, the user): a fill writes only half-hours EMT has no
-    block for, so it overwrites nothing a backup would be needed to bring back."""
+    block for, or none with an import kWh (5 Nov 2026) — there it adds the import and writes the
+    export Octopus's own figure again — so it overwrites nothing a backup would be needed to bring back."""
     try:
         import engine as _eng
         import asyncio as _asyncio

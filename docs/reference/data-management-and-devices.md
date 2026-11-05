@@ -11,7 +11,9 @@ this page is fixed.*
   API; *Import a CSV*, *Import PDF bills*; *Delete all imported history* when there is some), a
   *Backup & restore* modal (the backups, restore, compact, the support file) and *Backup now*.
 - **The health strip** (`/api/data-health`): per view, the Import bill's and Export bill's half-hours
-  "to look at" — counted by the heatmap's own `isIssue` — the missing half-hours and gaps, the last
+  "to look at" — counted by the heatmap's own `isIssue` — the missing half-hours and gaps (a main
+  block with no import kWh is missing too, `block_store._HAS_IMPORT`: the gaps list, the gap fill
+  and the heatmap ask the same, and a fill writes its import and the export again), the last
   backup and what made it, the database's size. It refreshes every 60 s (30 s while a job runs), and
   its counts wait while a job rewrites history. Counts are kept per month in `health_counts.json`.
 - **The data heatmap** (`heatmap_module.html`, data mode): the **Import bill** view with the supplier
