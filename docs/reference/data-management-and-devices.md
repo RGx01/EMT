@@ -175,8 +175,8 @@ key is never in it. A size estimate warns over 10 MB.
   (`recompute_remainders_for_window_async`); and the rebuild from the kept hours, with no second
   fetch. A rebuild whose every fetch failed is an error, not "done".
 - **A battery counting solar** (`check_battery_sensors`, at start-up and hourly): a half-hour counts
-  against a battery when it reads over 1.5× the grid import and over 0.25 kWh above it; on 5 days in 30
-  the sensor is flagged. Data is never changed — a banner and a card note, and *Keep this sensor
+  against a battery when it reads over 1.5× the grid import and over 0.25 kWh above it — only where the
+  main block has an import kWh (one with none is not a zero import); on 5 days in 30 the sensor is flagged. Data is never changed — a banner and a card note, and *Keep this sensor
   anyway* per sensor.
 - **A device sensor reading the whole house** (BL-108, `check_whole_house_sensors`, hourly with the
   battery check): any device whose sensor is within 5% of the meter's import in at least 75% of the
