@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b13] — 2026-11-05
 
 - **A battery is no longer flagged for counting solar because of missing usage.** The battery check
   compares what the battery charged with what the house took from the grid. Where EMT had no usage
