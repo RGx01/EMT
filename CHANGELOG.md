@@ -18,6 +18,11 @@ internal name for everything before the first public release and never appears i
   prediction, like every other day, until Octopus's figures and then the bill settle them, rather than
   appearing a day or two later. Any half-hour Home Assistant didn't record in full is left for Octopus
   to fill, as before. A CSV import does the same.
+- **Flow in kWh and CO₂ shows where the energy went, without price bands.** The price bands now appear
+  only in Cost, where they mean something. In kWh and CO₂ the grid goes straight to the house and each
+  device. Hover a flow for its kWh, cost and carbon together, with its average price and grams per kWh.
+  In CO₂, export isn't drawn: its carbon is what it displaced on the grid, which the figures above the
+  chart now give as *Displaced by export*.
 
 ## [2026.11.0b8] — 2026-11-04
 
