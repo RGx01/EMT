@@ -104,6 +104,10 @@ def _in_span(spans, start: str) -> bool:
 
 
 IMPORTED_SOURCE_API     = "imported_api"       # from the Octopus consumption API
+# A block that holds an import kWh: the gap reads count one without as missing (5 Nov 2026, a fresh
+# install's import kept the export of two months and lost the import — the rows were there, so no
+# gap showed, and neither the import nor the gap fill would ask Octopus for them again).
+_HAS_IMPORT = "(imp_kwh IS NOT NULL OR imp_kwh_api IS NOT NULL)"
 IMPORTED_SOURCE_CSV     = "imported_csv"        # from a supplied CSV (rate-from-cost)
 IMPORTED_SOURCE_BLENDED = "imported_blended"    # go-live period straddling live capture
 IMPORTED_SOURCES        = (IMPORTED_SOURCE_API, IMPORTED_SOURCE_CSV, IMPORTED_SOURCE_BLENDED)
@@ -5040,10 +5044,13 @@ class BlockStore:
         Returns contiguous runs: [{"start", "end", "slots"}], where `end` is the
         start of the last missing slot. Skips anything newer than `min_age_hours`
         (DCC has not settled it yet, so a fetch would return nothing).
+
+        A block with no import kWh is missing too (`_HAS_IMPORT`; 5 Nov 2026, a fresh install's
+        import kept the export of two months and lost the import, and no gap showed).
         """
         rows = [r[0] for r in self._conn.execute(
-            "SELECT block_start FROM blocks WHERE meter_id = ? ORDER BY block_start",
-            (meter_id,))]
+            "SELECT block_start FROM blocks WHERE meter_id = ? AND " + _HAS_IMPORT
+            + " ORDER BY block_start", (meter_id,))]
         if len(rows) < 2:
             return []
         cp = self.get_config_period_for_date(rows[0]) or {}
@@ -8526,27 +8533,31 @@ class BlockStore:
         return dict(row) if row else {"earliest": None, "latest": None,
                                       "carbon_earliest": None, "carbon_latest": None}
 
-    def get_neighbour_block_starts(self, meter_id: str, at: str) -> tuple:
+    def get_neighbour_block_starts(self, meter_id: str, at: str, *, with_import: bool = False) -> tuple:
         """The meter's last block start before `at` and first after it, (None where there is
-        none) — the bounds of the gap a missing half-hour sits in (gap fill, 18 Oct 2026)."""
+        none) — the bounds of the gap a missing half-hour sits in (gap fill, 18 Oct 2026).
+        `with_import`: only blocks with an import kWh count (`_HAS_IMPORT`)."""
+        w = (" AND " + _HAS_IMPORT) if with_import else ""
         row = self._conn.execute(
-            "SELECT (SELECT MAX(block_start) FROM blocks WHERE meter_id = ? AND block_start < ?) "
+            "SELECT (SELECT MAX(block_start) FROM blocks WHERE meter_id = ? AND block_start < ?" + w + ") "
             "       AS prev, "
-            "       (SELECT MIN(block_start) FROM blocks WHERE meter_id = ? AND block_start > ?) "
+            "       (SELECT MIN(block_start) FROM blocks WHERE meter_id = ? AND block_start > ?" + w + ") "
             "       AS next", (meter_id, at, meter_id, at)).fetchone()
         return (row["prev"], row["next"]) if row else (None, None)
 
     def get_block_starts_in_range(self, meter_id: str, utc_start: str,
-                                  utc_end: str) -> list:
+                                  utc_end: str, *, with_import: bool = False) -> list:
         """Distinct block starts for a meter in [utc_start, utc_end), ascending.
 
         DISTINCT because a whole-history delete walks the parent's slots to
-        recompute remainders, and only needs each slot once.
+        recompute remainders, and only needs each slot once. `with_import`: only
+        blocks with an import kWh (`_HAS_IMPORT`) — the gap fill's question.
         """
         rows = self._conn.execute(
             "SELECT DISTINCT block_start FROM blocks "
             "WHERE meter_id = ? AND block_start >= ? AND block_start < ? "
-            "ORDER BY block_start", (meter_id, utc_start, utc_end)).fetchall()
+            + ((" AND " + _HAS_IMPORT) if with_import else "")
+            + " ORDER BY block_start", (meter_id, utc_start, utc_end)).fetchall()
         return [r["block_start"] for r in rows]
 
     def get_block_rate_authority(self, block_start: str,

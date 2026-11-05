@@ -8371,10 +8371,12 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
         ck_key = _API_IMPORT_CHECKPOINT + "_" + channel
         done_key = "api_import_done_" + channel
         gaps_key = "import_gaps_" + channel
+        top_key = "api_import_top_" + channel
         if restart and not dry_run and not bounded:
             _store.set_kraken_state(ck_key, "")
             _store.set_kraken_state(done_key, "")
             _store.set_kraken_state(gaps_key, "")
+            _store.set_kraken_state(top_key, "")
         if not dry_run and not bounded and _store.get_kraken_state(done_key) == "1":
             out["channels"][channel] = {"ok": True, "done": True,
                                         "reason": "already_done", "written": 0}
@@ -8405,7 +8407,18 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
             if floor < _rf:
                 floor = _rf
         checkpoint = (_store.get_kraken_state(ck_key) or None) if (not dry_run and not bounded) else None
-        hi = until_ts if bounded else (checkpoint or go_live)
+        # The channel's own top, kept from its first call (5 Nov 2026, a fresh install's support file):
+        # until a chunk lands the channel has no checkpoint, and the ceiling is the oldest block of
+        # ANY source — so when the import's first chunk failed and the export's landed, the export's
+        # rows became the import's ceiling and its 60 days were never asked again (September and
+        # October imported with no import kWh). The checkpoint keeps its meaning (the gaps use it).
+        top = None
+        if not dry_run and not bounded and not checkpoint:
+            top = _store.get_kraken_state(top_key) or None
+            if not top and go_live:
+                top = go_live
+                _store.set_kraken_state(top_key, go_live)
+        hi = until_ts if bounded else (checkpoint or top or go_live)
         window = _ai.clamp_window(floor, hi)
         if not window.get("ok"):
             if not dry_run:
@@ -8437,6 +8450,8 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
                     mpan, c["from"] + "Z", c["to"] + "Z", direction=direction)
             except Exception as e:
                 fetch_error = str(e)
+                logger.warning("import [%s]: Octopus did not answer %s..%s (%s) — asked again on the next pass",
+                               channel, c["from"], c["to"], fetch_error or type(e).__name__)
                 break
             for r in (rows or []):
                 if r.get("start"):
@@ -9144,9 +9159,9 @@ def gap_bounds(store, ats, *, now=None, meter_id: str = "electricity_main") -> l
         except (TypeError, ValueError):
             continue
         iso = t.isoformat()
-        if store.get_block_starts_in_range(meter_id, iso, (t + HH).isoformat()):
+        if store.get_block_starts_in_range(meter_id, iso, (t + HH).isoformat(), with_import=True):
             continue
-        prev, nxt = store.get_neighbour_block_starts(meter_id, iso)
+        prev, nxt = store.get_neighbour_block_starts(meter_id, iso, with_import=True)
         if prev is None:
             continue
         a = (datetime.fromisoformat(prev) + HH).isoformat()
@@ -9161,7 +9176,7 @@ def gap_fill_plan(store, runs, *, channels=("import", "export"), now=None,
     """What a heatmap gap fill would do over the selection's runs, counted from the STORE, not
     taken from the client (gap fill design §2). Read-only: `store` may be the request thread's
     reader. Each run [from, to) (naive-UTC half-hour starts) is walked half-hour by half-hour:
-    a half-hour with no main-meter block is missing — deleted where a tombstone covers it,
+    a half-hour with no main-meter block, or one with no import kWh (5 Nov 2026), is missing — deleted where a tombstone covers it,
     too recent inside the last 48 h (DCC has not settled it, so Octopus has nothing yet; decided
     (b): left out), too old beyond Octopus's two years (decided (a): the only bound), else
     fillable. Returns per-run and total counts, the fillable runs, and the size per channel."""
@@ -9176,7 +9191,8 @@ def gap_fill_plan(store, runs, *, channels=("import", "export"), now=None,
             t, end = datetime.fromisoformat(str(a)), datetime.fromisoformat(str(b))
         except (TypeError, ValueError):
             continue
-        have = set(store.get_block_starts_in_range(meter_id, t.isoformat(), end.isoformat()))
+        have = set(store.get_block_starts_in_range(meter_id, t.isoformat(), end.isoformat(),
+                                                   with_import=True))
         tombs = store.tombstoned_slots_in(meter_id, t.isoformat(), end.isoformat())
         c = {"from": t.isoformat(), "to": end.isoformat(), "missing": 0, "deleted": 0,
              "too_recent": 0, "too_old": 0, "fillable": 0}
