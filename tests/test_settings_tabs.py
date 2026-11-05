@@ -37,7 +37,7 @@ class TheTabList(unittest.TestCase):
     def _tabs(self, meters, flagged=None):
         # BL-97's EV tab: no EV here (test_api_ev_device covers it)
         js = (_fn("_cfgTabList") + "\n" + _fn("_hasEvDevice") + "\n" + _fn("_showApiEv") + "\nvar HAS_HAD_EV = false;" +
-              "\nvar config = " + json.dumps({"meters": meters}) + ";\nvar batteryFlagged = " +
+              "\nvar config = " + json.dumps({"meters": meters}) + ";\nvar wholeHouseFlagged = {};\nvar batteryFlagged = " +
               json.dumps(flagged or {}) + ";\nconsole.log(JSON.stringify(_cfgTabList()));")
         out = subprocess.run(["node", "-e", js], capture_output=True, text=True, check=True).stdout
         return json.loads(out)

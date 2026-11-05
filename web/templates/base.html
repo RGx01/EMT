@@ -917,6 +917,24 @@ window.EMT = window.EMT || {};
                   '<strong>grid-charge</strong> sensor</a>, or remove the battery if your inverter has none.'
           });
         });
+        // BL-108: a device whose sensor reads the whole house's grid import
+        ((d && d.whole_house) || []).forEach(function (b) {
+          var id = 'whole-house-' + b.meter_id;
+          if (b.confirmed_at) { EMT.dismiss(id); return; }
+          var ex = b.example || [];
+          EMT.notify({
+            id: id,
+            level: 'warn',
+            html: '⚠ <strong>' + esc(b.device) + '’s sensor reads what your whole house imports</strong>' +
+                  (ex[0] ? ' — on ' + esc(when(ex[0])) + ' it recorded ' + (+ex[1]).toFixed(2) + ' kWh while the ' +
+                           'house imported ' + (+ex[2]).toFixed(2) + ' kWh' : '') +
+                  '. It matched the meter in ' + (+b.matched || 0) + ' of ' + (+b.n || 0) + ' half-hours in the last ' +
+                  '30 days, so it is the house’s grid import, not ' + esc(b.device) + '’s own. Until it is fixed ' +
+                  'the device breakdown is wrong: ' + esc(b.device) + ' takes the house’s usage. Your bill total is ' +
+                  'not affected. <a href="{{ url_for('settings_page') }}#device-' + encodeURIComponent(b.meter_id) +
+                  '">Choose its own sensor</a>.'
+          });
+        });
       })
       .catch(function () {});
   }

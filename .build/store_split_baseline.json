@@ -141,6 +141,7 @@
     "delete_span_preview",
     "device_history_sources",
     "device_off_stitch_sensors",
+    "device_primary_sensors",
     "device_stitch_sensors",
     "devices_without_history",
     "emt_recording_continuously",
@@ -244,7 +245,8 @@
     "sum_meter_import_kwh",
     "tombstoned_slots_in",
     "vat_rate_at",
-    "vat_rate_lookup"
+    "vat_rate_lookup",
+    "whole_house_evidence"
   ],
   "no_sql": [
     "_ask_rows",

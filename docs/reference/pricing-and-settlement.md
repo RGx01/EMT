@@ -22,7 +22,9 @@ half-hour you corrected is skipped.
   for the process once fetched, and so is one Octopus **refuses** with a 4xx (not 401/403 or 429) — an
   empty schedule, not asked again until a restart. The running agreement
   is fetched at every refresh (v4 #513). An API import builds its segments once a job
-  (`import_api_history(segs=…)`), not on every retry of a chunk.
+  (`import_api_history(segs=…)`), not on every retry of a chunk. A chunk Octopus does not answer
+  halves the days the job asks at a time — 60, 30, 15, then 7, one page of measurements — for the
+  rest of the job (`_import_chunk_after`), so a slow account's import keeps each part that lands.
 - **Economy 7** (BL-102): a two-rate tariff (`E-2R-…`) has no standard rates — Octopus answers 400 —
   so its `day-unit-rates` and `night-unit-rates` are fetched and placed by Octopus's smart-meter rule,
   night **00:30–07:30 UTC** all year (01:30–08:30 in summer; `kraken_rates._E7_*`, the IOG synthesis

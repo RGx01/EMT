@@ -73,6 +73,18 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Resolved since the record
 
+- **BL-108: a device sensor that reads the whole house** (5 Nov 2026, for 2026.11.0b11; a tester's support
+  file; the user: "add the BL item then build it"). A GivEnergy battery set up with GivTCP's `import_energy_today_kwh`
+  — the house's grid import at the inverter's meter, not the battery's grid charge — matched the main
+  meter at every hour of the day; in the 44 half-hours its Zappi charged, the "battery" read 261.5 kWh
+  of the meter's 262.0, the car's 139.9 among them. The battery took everything but the car and the
+  house read near zero. The battery check (`check_battery_sensors`) looks for a sensor reading
+  *more* than the grid, and this one read the same, so nothing said so. To build: a check, flag only,
+  for any device whose sensor reads the meter's import within 5% in most of the half-hours the house
+  imported over the last 30 days — 86% for that battery, 9% at most for every other device in the
+  databases to hand — warned of as the battery's is (banner, card note, *Keep this sensor anyway*).
+  Built: `check_whole_house_sensors`, hourly with the battery check; `whole_house_evidence` in the
+  store; the evidence in the support file; the flags in `/api/battery-sensor/flagged`'s `whole_house`.
 - **BL-102: Economy 7 priced** (5 Nov 2026, for 2026.11.0b9; the user: "mirroring what bcd has done") —
   a two-rate tariff (`E-2R-…`) answers `standard-unit-rates` with HTTP 400, so an Economy 7 agreement
   had no rate schedule. No Octopus or Kraken API gives the night as times (Kraken's `DayNightTariff`

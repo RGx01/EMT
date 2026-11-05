@@ -176,3 +176,10 @@ key is never in it. A size estimate warns over 10 MB.
   against a battery when it reads over 1.5× the grid import and over 0.25 kWh above it; on 5 days in 30
   the sensor is flagged. Data is never changed — a banner and a card note, and *Keep this sensor
   anyway* per sensor.
+- **A device sensor reading the whole house** (BL-108, `check_whole_house_sensors`, hourly with the
+  battery check): any device whose sensor is within 5% of the meter's import in at least 75% of the
+  half-hours the house imported over 0.1 kWh, over the meter's last 30 days and on 200 or more, is
+  flagged — the house's grid import, read at an inverter or a clamp, not the device's. As the battery
+  check: rows naming its sensor or none, only the new sensor's once a flagged one is replaced; a banner
+  and a card note from `/api/battery-sensor/flagged`'s `whole_house`; *Keep this sensor anyway*
+  (`kind: "whole_house"`); nothing in the data changes.
