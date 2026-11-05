@@ -23,6 +23,11 @@ internal name for everything before the first public release and never appears i
   device. Hover a flow for its kWh, cost and carbon together, with its average price and grams per kWh.
   In CO₂, export isn't drawn: its carbon is what it displaced on the grid, which the figures above the
   chart now give as *Displaced by export*.
+- **EMT stops asking Octopus questions it can't answer.** On a tariff that isn't Intelligent, EMT no
+  longer asks for smart-charging dispatches every five minutes; Octopus could only say there's no
+  device. An old tariff whose rates Octopus refuses, such as an Economy 7 tariff from years ago, is asked
+  once, not at every rate refresh. And a slow history import no longer fetches your tariff's rates
+  again each time it retries. (EMT can't price Economy 7 yet.)
 
 ## [2026.11.0b8] — 2026-11-04
 
