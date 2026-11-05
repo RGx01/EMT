@@ -48,15 +48,73 @@
       history and any sensor it no longer uses recorded, and rebuilds it all from the sensors it uses
       now. Changing a device's sensor asks why — renamed, a new device, or the wrong sensor, which
       offers the replace.</li>
-    <li><strong>Its colour and rate line</strong> on the charts.</li>
+    <li><strong>Its colour and rate line</strong> on the charts are set on the Charts page, with every
+      meter's: its ⚙︎ menu, <strong>Bar colours</strong>.</li>
     <li><strong>Archive</strong> — stop recording it from a date, keeping its history (<strong>↩ Unretire</strong>
       brings it back). <strong>✕ Remove</strong> deletes it and its history, after a backup.</li>
   </ul>
   <p>
     <strong>🚗 EV</strong> — with Octopus connected and an EV that smart-charges but no EV device, your
-    car still appears in the charts, from Octopus's bills and dispatches. Its tab sets its colour; an EV
-    device added later takes it on.
+    car still appears in the charts, from Octopus's bills and dispatches. Its colour is set with the
+    others, in the Charts page's <strong>Bar colours</strong>; an EV device added later takes it on.
   </p>
+</div>
+
+<div class="card help-section" id="device-sensors">
+  <div class="card-title">🧭 Choosing a device's sensor</div>
+  <p>A device's <strong>Read Sensor</strong> is what EMT splits out of your import, every half-hour, and
+    what it rebuilds the device's past from. What it needs:</p>
+  <ul>
+    <li><strong>Energy, in kWh, as a running total</strong> — the kind Home Assistant's Energy dashboard
+      takes. Not a power sensor (W or kW): power is only for the Overview's gauges, below it.</li>
+    <li><strong>History in Home Assistant's long-term statistics</strong>, or there is nothing to rebuild
+      the past from. <strong>Check sensors</strong> on the device's card asks Home Assistant: <em>✓ usable</em>,
+      the dates it has, how much of them, and roughly how many kWh in all.</li>
+    <li><strong>The right thing counted.</strong> An EV charger or a heat pump: the energy it used — some
+      of it from solar is fine, EMT takes only what the grid gave. A <strong>battery</strong>: the energy
+      it took <strong>from the grid</strong>, not all it charged, since EMT cannot tell its solar charging
+      apart. EMT warns where a battery's sensor looks to be counting solar.</li>
+    <li><strong>A believable size.</strong> A device cannot use more than the house drew. Before a rebuild
+      EMT compares the sensor with the house; one reading more, or far less, is held with a warning and
+      written only if you say so. About 1,000 times too much is usually a sensor in Wh, not kWh.</li>
+  </ul>
+</div>
+
+<div class="card help-section" id="fixing-a-sensor">
+  <div class="card-title">🔧 Fixing a device's sensor</div>
+  <p>When you change a device's Read Sensor and press <strong>Save Config</strong>, EMT asks why. Answer
+    for what happened:</p>
+  <ul>
+    <li><strong>Home Assistant renamed it</strong> (or you replaced a deleted sensor with the same
+      device's new one) — <em>Renamed — keep for history</em>. The old name is kept as a history sensor,
+      so rebuilding reaches back past the change, as long as Home Assistant still holds its statistics.</li>
+    <li><strong>The device itself changed</strong> — a new charger, a new battery — <em>A new device</em>.
+      What the old sensor recorded stays; the new one carries on from here.</li>
+    <li><strong>You picked the wrong sensor</strong> — <em>It was the wrong sensor</em>, below.</li>
+  </ul>
+  <h3>The wrong sensor, step by step</h3>
+  <ul style="list-style:none;margin-left:4px;">
+    <li><strong>1.</strong> On the device's tab, put the right sensor in <strong>Read Sensor</strong>
+      (<strong>Check sensors</strong> first if you are not sure). If the wrong one is under
+      <strong>History sensors</strong>, take it out there with ✕.</li>
+    <li><strong>2.</strong> <strong>Save Config</strong>, and answer <em>It was the wrong sensor</em>.</li>
+    <li><strong>3.</strong> Once saved, EMT offers to <strong>replace the device's history</strong>. Say
+      yes — or press <strong>↻ Replace history</strong> on the card later.</li>
+    <li><strong>4.</strong> EMT takes a backup, then reads the right sensor's history from Home Assistant
+      first: if that fails, nothing is removed. Then it removes everything the wrong sensor recorded —
+      its rebuilt history and its live half-hours — gives that usage back to the house, and rebuilds the
+      device from the right sensor.</li>
+    <li><strong>5.</strong> The card then lists the sensors the device's history came from: only the right
+      one.</li>
+  </ul>
+  <h3>Other fixes</h3>
+  <ul>
+    <li><strong>Undo a rebuild</strong> — <strong>🗑 Remove</strong> beside <em>Rebuilt history</em> on the
+      card clears the rebuilt half-hours and gives that usage back to the house. What was recorded live,
+      and your imported history, stay. <strong>▶ Rebuild history</strong> can then run again.</li>
+    <li><strong>A device that should not be there at all</strong> — <strong>✕ Remove</strong> deletes it and
+      all its history, after a backup. To stop recording it but keep its past, <strong>Archive</strong> it.</li>
+  </ul>
 </div>
 
 <div class="card help-section">
