@@ -5,6 +5,14 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **A new install's first day or two get their devices.** After the history import, EMT records live from
+  its first reading, and Octopus fills the gap between a day or two later. Those half-hours had the
+  meter's figures but no devices, so an EV's charging there counted as the house's. Now, when Octopus
+  fills half-hours in, EMT splits out the devices from what Home Assistant recorded. **On b8 or
+  earlier:** press *Rebuild history* on each device's card to fill those days.
+
 ## [2026.11.0b8] — 2026-11-04
 
 - **Replace history no longer loses a device's history when Home Assistant doesn't answer.** In b7,

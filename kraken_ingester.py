@@ -77,6 +77,13 @@ def normalise_to_naive_utc(ts: str) -> str:
     return dt.isoformat()
 
 
+def _widen_span(summary: dict, block_start: str) -> None:
+    """Widen the summary's `backfilled_span` to take in `block_start`."""
+    sp = summary.get("backfilled_span")
+    summary["backfilled_span"] = ([block_start, block_start] if not sp else
+                                  [min(sp[0], block_start), max(sp[1], block_start)])
+
+
 class KrakenIngester:
     """DCC consumption ingester core.
 
@@ -230,6 +237,9 @@ class KrakenIngester:
             "skipped_no_block": 0, "drifted": 0,
             "drifted_interpolated": 0,
             "backfilled": 0,
+            # the first and last half-hour BL-8 created (naive UTC): the engine rebuilds the
+            # devices over them, which the backfill cannot split (5 Nov 2026)
+            "backfilled_span": None,
             "latest_interval": None, "dry_run": dry_run, "errors": [],
             # Diagnostic: first few drifted blocks per channel, with both
             # figures, so a dry-run reveals WHY drift was counted (units / zeros /
@@ -315,6 +325,7 @@ class KrakenIngester:
                             channel="import", source="kraken_api")
                         if new_id:
                             summary["backfilled"] += 1
+                            _widen_span(summary, block_start)
                         else:
                             summary["skipped_no_block"] += 1
                     else:
@@ -383,6 +394,7 @@ class KrakenIngester:
                                     channel="export", source="kraken_api")
                                 if new_id:
                                     summary["backfilled"] += 1
+                                    _widen_span(summary, block_start)
                                 else:
                                     summary["skipped_no_block"] += 1
                             else:
@@ -414,6 +426,6 @@ class KrakenIngester:
             logger.info(
                 "poll: BL-8 backfill — created %d block(s) from settled data for "
                 "period(s) with no local block (outage recovery). PASS 2 will "
-                "price them; they carry no sub-meter split.",
+                "price them; the engine rebuilds their devices from HA's reads.",
                 summary["backfilled"])
         return summary
