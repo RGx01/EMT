@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b10] — 2026-11-05
 
 - **The export carbon setting works.** Settings has always let you count the carbon your export saves
   at a fixed intensity of your own instead of the grid's average, but nothing used it: every figure
