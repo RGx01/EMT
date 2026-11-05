@@ -38,10 +38,23 @@ missing and where it stands; the done history, with every decision's story, is i
   Economy 7 agreement has had no rate schedule, the running one included. The history import is
   unaffected (it takes Octopus's half-hourly cost); live and settled half-hours on `cad+api` / `api`
   are left unpriced. Day and night rates alone are prices by date, not times of day: which half-hours
-  are night depends on the meter, often fixed in GMT. Proposed (5 Nov 2026): learn the window from
-  the imported half-hourly costs, the user's entry as the fallback. Seen on a tester's 2022–23
-  agreements, before their imported history; since 5 Nov 2026 a closed one Octopus refuses is not
-  asked again (`agreement_schedules`).
+  are night depends on the meter. Seen on a tester's 2022–23 agreements, before their imported
+  history; since 5 Nov 2026 a closed one Octopus refuses is not asked again (`agreement_schedules`).
+  - *Found, 5 Nov 2026:* no Octopus or Kraken API gives the window as times. Kraken's schema has
+    `DayNightTariff.dayRate` / `nightRate` (no times), `ElectricityMeterPointType.ssc` / `mtc` /
+    `profileClass`, and `ElectricityMeterRegisterType.timePatternRegime` / `unitRateType`. SSC and TPR
+    map to switching times only through Elexon's Market Domain Data (Clock Interval), which is not a
+    public API, and a radio-teleswitched meter's times are not in it at all. Octopus publishes a rule:
+    a smart meter's night is 00:30–07:30 **UTC** (01:30–08:30 in summer), a non-smart one's usually
+    00:00–07:00 UK time. BottlecapDave's integration hardcodes exactly that (`__is_night_rate`: smart
+    when the meter type starts `S1` / `S2`), fetching `day-unit-rates` and `night-unit-rates`. Forum
+    reports say some smart meters switch up to ~30 minutes late (a SMETS2 randomised offset;
+    unconfirmed by Octopus).
+  - *Proposed:* on a `2R` tariff (or the 400), fetch day and night rates; place them by Octopus's
+    rule; check the rule against the account's own imported half-hourly costs (cost ÷ kWh says which
+    rate a half-hour got) and let the costs win where they disagree, logged; the user's window as the
+    last fallback. Read `ssc` and `timePatternRegime` in the discovery query EMT already sends, for
+    the support file only.
 - **`timeOfUseUsage`, unprobed** (BL-77 item 3). Kraken added per-band usage
   (`TimeOfUseBandUsageType`, 5 Oct 2026). Whether a domestic IOG account may query it, whether it is
   populated, and whether its band totals match the bill would make it a settlement cross-check. Needs
