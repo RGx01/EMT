@@ -63,6 +63,7 @@ class TheData(unittest.TestCase):
 
     def _run(self, agg_list, metric="kwh", standing=False, meters=METERS):
         js = ("var FLOW_OTHER_SHARE = 0.02, barBrWidth = 2.5, barCurrency = '£', barExportColor = '#ff7f0e';\n"
+              "var FLOW_DISPLACED_COLOR = '#16a34a';\n"
               "var barMetric = %s, barMeters = %s, barBrSeries = 'meter';\n"
               "function barIsDark() { return true; }\n"
               "function barIncStanding() { return %s; }\n"
@@ -197,13 +198,18 @@ class TheData(unittest.TestCase):
         self.assertEqual([d["nodes"][k]["column"] for k in ("grid", "s:heat_pump", "export")], [0, 1, 2])
         self.assertEqual([round(x, 6) for x in d["totals"]["imp"]], [16.0, 2.36, 3200])
 
-    def test_in_co2_the_export_is_kept_but_not_drawn(self):
+    def test_in_co2_the_export_is_drawn_as_what_it_displaced(self):
+        # 5 Nov 2026, the user: "shouldn't it show export displacement?" — until then kept but not drawn
         d = self._run(self.AGG, "co2")
-        x = [x for x in d["flows"] if x["to"] == "export"]
-        self.assertEqual(len(x), 1)
-        self.assertTrue(x[0].get("hide"))
+        self.assertEqual(self._flows(d)[("s:electricity_main", "export")], [3.0, 0.45, 600])
+        self.assertFalse(any(x.get("hide") for x in d["flows"]))
+        self.assertEqual((d["nodes"]["export"]["label"], d["nodes"]["export"]["color"]),
+                         ("Displaced by export", "#16a34a"))
         self.assertEqual(d["totals"]["exp"], [3.0, 0.45, 600])
-        self.assertFalse(any(x.get("hide") for x in self._run(self.AGG, "kwh")["flows"]))
+
+    def test_GUARD_in_kwh_the_export_is_export(self):
+        d = self._run(self.AGG, "kwh")
+        self.assertEqual((d["nodes"]["export"]["label"], d["nodes"]["export"]["color"]), ("Export", "#ff7f0e"))
 
     def test_no_credit_flows_outside_pounds(self):
         agg = [{"br": {"electricity_main": {"-1": [4.0, -0.04, 600], "3": [10.0, 0.8, 1500]},
@@ -450,17 +456,19 @@ class TheWiring(unittest.TestCase):
 
 
 class ThePlainDraw(unittest.TestCase):
-    """kWh and CO₂ (5 Nov 2026): the hidden export not drawn, the head's CO₂ export what it displaced,
-    the hover's g/kWh."""
-
-    def test_a_hidden_flow_is_not_drawn(self):
-        self.assertIn("(!f.credit || i === 1) && !f.hide; })", _fn("barFlowDraw"))
+    """kWh and CO₂ (5 Nov 2026): the head's CO₂ export what it displaced, the hover's g/kWh; later the
+    same day the CO₂ export drawn, as Displaced by export, where it had been hidden."""
 
     def test_the_head_says_what_export_displaced(self):
         self.assertIn("(i === 2 ? 'Displaced by export' : 'Export')", _fn("barFlowHead"))
 
     def test_the_hover_gives_grams_a_kwh(self):
         self.assertIn("Math.round(v[2] / v[0]) + ' g/kWh'", _fn("barFlowDraw"))
+
+    def test_the_draw_hides_nothing_and_its_hover_says_displaced(self):
+        draw = _fn("barFlowDraw")
+        self.assertNotIn("f.hide", draw)
+        self.assertIn("Grid carbon your export displaced", draw)
 
 
 if __name__ == "__main__":

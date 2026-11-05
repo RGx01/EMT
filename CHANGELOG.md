@@ -12,6 +12,9 @@ internal name for everything before the first public release and never appears i
   stayed at the grid's average. Now, if you choose *Custom fixed intensity*, your export's carbon in
   Usage Stats, Running total, Flow and Insights is counted at your figure, and the net carbon follows.
   With the default, *Grid average*, nothing changes.
+- **Flow's CO₂ view shows what your export saved.** The export now flows out of the house, in green,
+  to *Displaced by export*: the grid carbon your export saved. Before, it was left off the chart and
+  only the figures above it gave it.
 
 ## [2026.11.0b9] — 2026-11-05
 
