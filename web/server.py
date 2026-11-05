@@ -5495,8 +5495,18 @@ def _rebuild_devices_after_csv(result) -> None:
         return
     try:
         import engine as _eng
+        hi = span["to"]
+        # the half-hours up to the first live one, from HA's recorder, first: the devices are
+        # split over them in the same rebuild (setup gap design §2)
+        try:
+            fill = _run_on_engine_loop(_eng.fill_setup_gap_from_ha(), timeout=180.0) or {}
+            hi = _eng._setup_gap_hi(fill, hi)
+            if fill.get("filled"):
+                result["setup_gap_filled"] = fill["filled"]
+        except Exception as e:
+            logger.warning("csv apply: setup gap not filled: %s", e)
         result["devices_rebuilding"] = _run_on_engine_loop(
-            _eng.rebuild_devices_after_refill(span["from"], span["to"], fetch_new=True),
+            _eng.rebuild_devices_after_refill(span["from"], hi, fetch_new=True),
             timeout=30.0) or []
     except Exception as e:
         logger.warning("csv apply: device rebuild not started: %s", e)

@@ -850,6 +850,16 @@ _HA_READS_UPSERT = """
 """
 
 
+def _interp_marker(v) -> int:
+    """A block's `interpolated` as stored: 0, 1 (interpolated locally), 2 (backfilled from Octopus's
+    settled figure) or 3 (filled from HA's recorder). Read back as the integer, so a round trip
+    (`get_block_dict_by_start` → `append_block_replace`) keeps it: written as `1 if … else 0`, the
+    PASS 2 drain turned every backfilled half-hour's 2 into 1 (setup gap design §8, 5 Nov 2026)."""
+    if isinstance(v, int) and not isinstance(v, bool) and v in (1, 2, 3):
+        return v
+    return 1 if v else 0
+
+
 def _block_rows(block: dict, config_period_id: int, tz_name: str) -> list[dict]:
     """
     Decompose a finalised block dict (as written to blocks.json) into a list
@@ -857,7 +867,7 @@ def _block_rows(block: dict, config_period_id: int, tz_name: str) -> list[dict]:
     """
     block_start = block.get("start", "")
     block_end   = block.get("end", "")
-    interpolated = 1 if block.get("interpolated") else 0
+    interpolated = _interp_marker(block.get("interpolated"))
 
 
     rows = []
@@ -931,7 +941,7 @@ def _row_to_block(rows: list[sqlite3.Row]) -> dict:
     block = {
         "start":       first["block_start"],
         "end":         first["block_end"],
-        "interpolated": bool(first["interpolated"]),
+        "interpolated": _interp_marker(first["interpolated"]),
         "meters":      {},
         "totals": {
             "import_kwh":  0.0,
@@ -1015,7 +1025,7 @@ def _row_to_block(rows: list[sqlite3.Row]) -> dict:
 
         meter_block = {
             "meta": meta,
-            "interpolated":   bool(row["interpolated"]),
+            "interpolated":   _interp_marker(row["interpolated"]),
             "standing_charge": row["standing_charge"] or 0.0,
             "carbon_g":        row["carbon_g"],  # None when no CI data (pre-2.3.0)
             "channels":       {},
@@ -4818,6 +4828,8 @@ class BlockStore:
     # ── BL-8: outage backfill ────────────────────────────────────────────────
 
     BACKFILL_INTERPOLATED = 2   # blocks materialised from settled supplier data
+    RECORDER_INTERPOLATED = 3   # blocks filled from HA's recorder (setup gap design)
+    RECORDER_FILL_SOURCE = "ha_recorder"
 
     def create_backfill_block(self, block_start: str, meter_id: str,
                               settled_kwh: float, *,
@@ -4893,6 +4905,45 @@ class BlockStore:
                 (block_start, block_end, meter_id, cp["id"],
                  self.BACKFILL_INTERPOLATED, settled_kwh, settled_kwh, source))
         return cur.lastrowid
+
+    def first_live_read_start(self, meter_id: str) -> Optional[str]:
+        """The first half-hour HA recorded live for `meter_id` (`ha_reads`), or None."""
+        row = self._conn.execute(
+            "SELECT MIN(period_start) FROM ha_reads WHERE meter_id = ? AND origin = 'live'",
+            (meter_id,)).fetchone()
+        return row[0] if row else None
+
+    def create_recorder_blocks(self, meter_id: str, half_hours: dict) -> list:
+        """Fill half-hours EMT has no block for from HA's recorder (setup gap design §2):
+        `half_hours` {block_start: {"import": kWh, "export": kWh or None}}. Each is written with
+        the reading as its kWh and Octopus's (`imp_kwh_api`) left NULL — not settled — marked
+        `RECORDER_INTERPOLATED`, `source` `ha_recorder`, and `needs_pass2_rerun` so PASS 2 prices
+        it. A half-hour with a block, tombstoned, or with no config period is skipped. One
+        transaction. Returns the starts written."""
+        written = []
+        with self._conn:
+            for bs in sorted(half_hours or {}):
+                v = half_hours[bs] or {}
+                if v.get("import") is None:
+                    continue
+                if self.is_slot_tombstoned(meter_id, bs):
+                    continue
+                if self._conn.execute("SELECT 1 FROM blocks WHERE block_start = ? AND meter_id = ?",
+                                      (bs, meter_id)).fetchone():
+                    continue
+                cp = self.get_config_period_for_date(bs)
+                if not cp:
+                    continue
+                be = (datetime.fromisoformat(bs)
+                      + timedelta(minutes=int(cp.get("block_minutes") or 30))).isoformat()
+                self._conn.execute(
+                    "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, "
+                    "interpolated, imp_kwh, exp_kwh, source, needs_pass2_rerun, is_provisional, "
+                    "finalised_from_cad) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, 0, 0)",
+                    (bs, be, meter_id, cp["id"], self.RECORDER_INTERPOLATED, v["import"],
+                     v.get("export"), self.RECORDER_FILL_SOURCE))
+                written.append(bs)
+        return written
 
     def count_backfilled_blocks(self) -> int:
         """How many blocks were materialised from settled supplier data."""
