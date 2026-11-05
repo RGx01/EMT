@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b11] — 2026-11-05
 
 - **A history import keeps going when Octopus is slow.** On some accounts Octopus takes too long to
   answer for two months of half-hours at once, and the import asked for the same two months again and
