@@ -28,6 +28,10 @@ internal name for everything before the first public release and never appears i
   device. An old tariff whose rates Octopus refuses, such as an Economy 7 tariff from years ago, is asked
   once, not at every rate refresh. And a slow history import no longer fetches your tariff's rates
   again each time it retries. (EMT can't price Economy 7 yet.)
+- **No Export bill without an export meter.** On an account that only imports, Data Management showed an
+  Export bill with every half-hour of your history "to look at", because setup had given the main
+  meter an export channel with nothing to read. Export now appears only where there's an export
+  sensor or Octopus knows an export meter.
 
 ## [2026.11.0b8] — 2026-11-04
 
