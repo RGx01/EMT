@@ -9256,6 +9256,31 @@ async def run_gap_fill_runs(runs, *, channels=("import", "export"), chunk_days: 
         _coord.mark("import", status="done")
 
 
+# The fewest days an import asks at a time: 7 days of half-hours (336) is one page of Octopus's
+# measurements (500 a page), so a page that fails loses that page alone.
+_IMPORT_CHUNK_MIN_DAYS = 7
+
+
+def _import_chunk_after(chunk_days: int, res: dict) -> int:
+    """The days the import asks at a time after `res`: halved (60 → 30 → 15 → 7) when a channel's
+    chunk failed to fetch, else unchanged; kept for the rest of the job.
+
+    5 Nov 2026, a tester's support file (b8 and b9): on one account nearly every measurements page
+    timed out at 30 s, and a chunk is fetched as up to six pages, all thrown away when one fails after
+    its retries. Each 60-day chunk took 7–23 minutes, then none got through for two hours; the same
+    query took 9 minutes, whole, on another account. A smaller chunk loses less to a failure, and each
+    one that lands is kept (the checkpoint moves), so the import goes on rather than starting the six
+    pages again."""
+    failed = any(isinstance(c, dict) and c.get("reason") == "fetch_error"
+                 for c in (res.get("channels") or {}).values())
+    if not failed or chunk_days <= _IMPORT_CHUNK_MIN_DAYS:
+        return chunk_days
+    smaller = max(_IMPORT_CHUNK_MIN_DAYS, chunk_days // 2)
+    logger.info("import: Octopus did not answer a %d-day chunk — asking %d days at a time from here",
+                chunk_days, smaller)
+    return smaller
+
+
 @job("import", exclusive_with=("delete",))
 async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
                              max_chunks: int = 1, pace_s: float = 1.5,
@@ -9286,6 +9311,7 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
         j["control"] = "cancel"
     first = True
     _segs: dict = {}            # the job's rate and standing segments, built once (import_api_history)
+    _chunk = chunk_days         # the days asked at a time, halved after a chunk Octopus did not answer
     try:
         while True:
             ctl = j.get("control")
@@ -9300,7 +9326,7 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
             j["status"] = "running"
             j["phase"] = "importing"
             res = await import_api_history(
-                requested_from, chunk_days=chunk_days, max_chunks=max_chunks,
+                requested_from, chunk_days=_chunk, max_chunks=max_chunks,
                 pace_s=pace_s, headroom_frac=headroom_frac, restart=first, segs=_segs)
             first = False
             if not res.get("ok"):
@@ -9319,6 +9345,7 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
                     j["oldest"][ch] = c["oldest"]
                 if c.get("reason") == "rate_limit":
                     rate_limited = True
+            _chunk = _import_chunk_after(_chunk, res)
             if res.get("done"):
                 # Block-writing is finished, but a calm tail (region probe →
                 # price recovery → chart rebuild) still runs. Surface it as phases

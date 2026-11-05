@@ -5,6 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **A history import keeps going when Octopus is slow.** On some accounts Octopus takes too long to
+  answer for two months of half-hours at once, and the import asked for the same two months again and
+  again, sometimes for hours without getting further. Now, each time a stretch fails, it asks for half
+  as many days (down to a week), and keeps every stretch that arrives.
+
 ## [2026.11.0b10] — 2026-11-05
 
 - **The export carbon setting works.** Settings has always let you count the carbon your export saves
