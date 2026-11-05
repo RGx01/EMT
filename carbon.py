@@ -32,6 +32,23 @@ from __future__ import annotations
 from typing import Optional
 
 
+EXPORT_CUSTOM_DEFAULT_G = 200.0     # gCO₂/kWh, the custom displacement intensity's default
+
+
+def export_g_per_kwh(settings) -> "float | None":
+    """The export's displacement intensity the user chose (Settings → Export Carbon Offset): the custom
+    g/kWh where the method is `custom`, else None — the half-hour's grid average, as stored. The
+    setting was saved and never read, in v4 (2.6.0, 20 Apr 2026) and v5, until 5 Nov 2026."""
+    s = settings or {}
+    if s.get("co2_export_method") != "custom":
+        return None
+    try:
+        v = float(s.get("co2_export_custom_intensity", EXPORT_CUSTOM_DEFAULT_G))
+    except (TypeError, ValueError):
+        v = EXPORT_CUSTOM_DEFAULT_G
+    return v if v > 0 else None
+
+
 def ev_carbon(*, unclipped_kwh: float, clipped_kwh: float,
               intensity_g: float) -> dict:
     """Per-EV carbon from the dispatch draw gap at a grid intensity (gCO2/kWh).
