@@ -148,7 +148,7 @@ class TheSettingsTab(unittest.TestCase):
 
     def _run(self, meters, had, ev_style=None, add=None):
         js = "\n".join(_fn(n) for n in ("_cfgTabList", "_hasEvDevice", "_showApiEv", "_inheritEvStyle")) + \
-            "\nvar HAS_HAD_EV = %s, EV_STYLE = %s, EV_DEFAULT = '#8b5cf6', batteryFlagged = {};" % (
+            "\nvar HAS_HAD_EV = %s, EV_STYLE = %s, EV_DEFAULT = '#8b5cf6', batteryFlagged = {}, wholeHouseFlagged = {};" % (
                 json.dumps(had), json.dumps(ev_style or {})) + \
             "\nvar config = %s;" % json.dumps({"meters": meters}) + \
             "\nvar out = {tabs: _cfgTabList().map(function (t) { return t.key; })};" + \

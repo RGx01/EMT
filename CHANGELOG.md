@@ -5,6 +5,20 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b11] — 2026-11-05
+
+- **A history import keeps going when Octopus is slow.** On some accounts Octopus takes too long to
+  answer for two months of half-hours at once, and the import asked for the same two months again and
+  again, sometimes for hours without getting further. Now, each time a stretch fails, it asks for half
+  as many days (down to a week), and keeps every stretch that arrives.
+- **EMT says when a device's sensor is reading the whole house.** A device's sensor has to measure that
+  device. Some inverters and clamps offer a reading of the house's whole grid import, which looks right
+  but makes the device take the house's usage — and the battery check, which looks for a battery
+  reading *more* than the grid, could not see it. EMT now compares each device with the meter: where it
+  matches the meter's import in most half-hours over the last 30 days, it says so at the top of every
+  page and on the device's card, and how to fix it. It changes nothing in your data, and *Keep this
+  sensor anyway* clears the warning.
+
 ## [2026.11.0b10] — 2026-11-05
 
 - **The export carbon setting works.** Settings has always let you count the carbon your export saves

@@ -5270,6 +5270,7 @@ def _support_summary(store) -> dict:
                  ("bill_ask", lambda: store.ask_record("bill")),
                  # a battery sensor's evidence of counting solar (battery sensor design §3)
                  ("battery_sensor_evidence", lambda: store.get_meta("battery_sensor_evidence")),
+                 ("whole_house_sensor_evidence", lambda: store.get_meta("whole_house_sensor_evidence")),   # BL-108
                  ("battery_sensor_flagged", lambda: store.get_meta("battery_sensor_flagged")),
                  ("battery_sensor_confirmed", lambda: store.get_meta("battery_sensor_confirmed")),
                  ("missing", lambda: _missing_half_hours(store, _config_timezone())),
@@ -6360,28 +6361,41 @@ def _settle_sweep_cause(store) -> str:
 def api_battery_sensor_flagged():
     """The batteries whose sensor is found counting solar (battery sensor and device split design §3):
     {flagged: [{meter_id, device, conclusive_on, half_hours, days, example [half-hour, battery kWh,
-    grid kWh], confirmed_at}]}. Read-only."""
+    grid kWh], confirmed_at}], whole_house: [{meter_id, device, n, matched, share, example [half-hour,
+    device kWh, meter kWh], confirmed_at}]} — `whole_house` the devices of any type whose sensor reads
+    the house's grid import (BL-108). One reply, as every page asks it. Read-only."""
     try:
         import engine as _eng
         meters = (load_config().get("meters") or {})
-        out = [dict(r, meter_id=m, device=((meters.get(m) or {}).get("meta") or {}).get("device") or m)
-               for m, r in sorted(_eng.battery_sensor_flags().items())]
-        return jsonify({"flagged": out})
+
+        def _named(flags):
+            return [dict(r, meter_id=m, device=((meters.get(m) or {}).get("meta") or {}).get("device") or m)
+                    for m, r in sorted(flags.items())]
+        flagged = _named(_eng.battery_sensor_flags())
+        try:                    # each check on its own: one failing does not hide the other
+            whole = _named(_eng.whole_house_sensor_flags())
+        except Exception as e:
+            logger.debug("api_battery_sensor_flagged: whole house: %s", e)
+            whole = []
+        return jsonify({"flagged": flagged, "whole_house": whole})
     except Exception as e:
         logger.debug("api_battery_sensor_flagged: %s", e)
-        return jsonify({"flagged": []})
+        return jsonify({"flagged": [], "whole_house": []})
 
 
 @app.route("/api/battery-sensor/confirm", methods=["POST"])
 def api_battery_sensor_confirm():
     """The user's word on a flagged battery sensor: {meter_id, confirmed: true} — it reports grid
-    charge only — or false to take that back. → {ok}."""
+    charge only — or false to take that back; with `kind: "whole_house"`, on a device's sensor found
+    reading the whole house (BL-108). → {ok}."""
     body = request.get_json(silent=True) or {}
     mid = (body.get("meter_id") or "").strip()
     yes = body.get("confirmed", True) is not False
+    whole = body.get("kind") == "whole_house"
     try:
         import engine as _eng
-        ok = bool(mid) and _engine_write(lambda st: _eng.confirm_battery_sensor(mid, yes))
+        fn = _eng.confirm_whole_house_sensor if whole else _eng.confirm_battery_sensor
+        ok = bool(mid) and _engine_write(lambda st: fn(mid, yes))
         return jsonify({"ok": bool(ok)}), (200 if ok else 404)
     except Exception as e:
         return _error_reply(e, {"ok": False})
