@@ -6552,13 +6552,19 @@ class BlockStore:
         half-hour's whole grid import and more than `floor_kwh` above it — what a grid-only charge
         cannot do (battery sensor and device split design §3). Rows that name `sensor_id`, or none
         (imported or rebuilt history, the device's sensor of the day) unless `unnamed` is False — a
-        battery whose flagged sensor was replaced; never another sensor's."""
+        battery whose flagged sensor was replaced; never another sensor's.
+
+        Only half-hours whose main block has an import kWh (`_HAS_IMPORT`): one with none is not a
+        zero import (5 Nov 2026, a fresh install's import that kept only the export of two months —
+        every night's grid charge read as more than the house imported, and the battery was flagged)."""
+        g = "MAX(COALESCE(m.imp_kwh, m.imp_kwh_api), 0)"
         return [tuple(r) for r in self._conn.execute(
-            "SELECT d.block_start, d.imp_kwh, MAX(COALESCE(m.imp_kwh, 0), 0) AS g FROM blocks d "
+            "SELECT d.block_start, d.imp_kwh, " + g + " AS g FROM blocks d "
             "JOIN blocks m ON m.block_start = d.block_start AND m.meter_id = ? "
             "WHERE d.meter_id = ? AND ((? AND d.imp_sensor_id IS NULL) OR d.imp_sensor_id IS ?) "
-            "  AND d.imp_kwh > ? * MAX(COALESCE(m.imp_kwh, 0), 0) "
-            "  AND d.imp_kwh - MAX(COALESCE(m.imp_kwh, 0), 0) > ? "
+            "  AND COALESCE(m.imp_kwh, m.imp_kwh_api) IS NOT NULL "
+            "  AND d.imp_kwh > ? * " + g + " "
+            "  AND d.imp_kwh - " + g + " > ? "
             "ORDER BY d.block_start", (main_id, meter_id, 1 if unnamed else 0, sensor_id, ratio,
                                        floor_kwh))]
 

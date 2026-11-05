@@ -4213,6 +4213,10 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
         return block
     _rate_repaired = False
     use_dcc = (billing_source != "cad")
+    # settle()'s answer for the import, read again after PASS 2 below: set here, not only where the
+    # main has an import channel (5 Nov 2026: a main block holding only its export raised
+    # UnboundLocalError at every drain, the block left flagged and retried)
+    _settled = None
 
     imp_ch = (main.get("channels") or {}).get("import")
     if imp_ch is not None:
@@ -4224,7 +4228,6 @@ def _rerun_pass2_for_settled_block(block: dict, main_meter_id: str = "electricit
             imp_ch["kwh_cad"] = cad_kwh
         dcc_kwh = main.get("imp_kwh_api")
         chosen = dcc_kwh if (use_dcc and dcc_kwh is not None) else cad_kwh
-        _settled = None
         if chosen is not None and use_dcc and dcc_kwh is not None:
             # Engine step 4b (EMT-v5_engine_step4_settle_design.md §3, §4 (d)): the settled kWh is a
             # fact; the half-hour is settle()'s from its facts — a bill's band if Octopus has given
