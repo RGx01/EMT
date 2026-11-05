@@ -418,6 +418,17 @@ def _build_schedule_and_diag(records, product_code, tariff_code, vat):
 _AGREEMENT_SCHED_CACHE: dict = {}
 
 
+def _refused(e) -> bool:
+    """Whether a fetch failed because Octopus refused the request itself — an HTTP 4xx that asking
+    again cannot change (not 401/403, a key's problem, nor 429, a limit's) — rather than in transit."""
+    while e is not None:
+        st = getattr(e, "status", None)
+        if isinstance(st, int):
+            return 400 <= st < 500 and st not in (401, 403, 429)
+        e = e.__cause__
+    return False
+
+
 def _agreement_ended(ag_vt) -> bool:
     """Whether an agreement is over — its `valid_to` (naive-UTC iso) is in the past — so its
     schedule can no longer change and may be cached for the life of the process.
@@ -498,10 +509,19 @@ async def agreement_schedules(client, agreements, *, kind: str = "rate", product
                         client, pc, tc, vat=NO_VAT, period_from=vf_raw, period_to=vt_raw)
                 else:
                     sched = await build_rate_schedule(
-                        client, pc, tc, vat=NO_VAT, period_from=vf_raw, period_to=vt_raw)
+                        client, pc, tc, vat=NO_VAT, period_from=vf_raw, period_to=vt_raw,
+                        raise_on_error=True)
             except Exception as e:
-                logger.warning("agreement_schedules: %s %s fetch failed (%s) — span uncovered",
-                               kind, tc, e)
+                if not is_open and _refused(e):
+                    # Octopus refuses this closed agreement's rates for good (a 4xx: a two-rate
+                    # tariff's standard rates, 5 Nov 2026) — remembered for the process as an empty
+                    # schedule, so a refresh or an import retry does not ask again
+                    _AGREEMENT_SCHED_CACHE[ckey] = RateSchedule([])
+                    logger.warning("agreement_schedules: %s %s refused by Octopus (%s) — span "
+                                   "uncovered; not asked again until a restart", kind, tc, e)
+                else:
+                    logger.warning("agreement_schedules: %s %s fetch failed (%s) — span uncovered",
+                                   kind, tc, e)
                 continue
             if not is_open and not sched.is_empty():
                 _AGREEMENT_SCHED_CACHE[ckey] = sched

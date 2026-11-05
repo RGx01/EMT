@@ -32,6 +32,12 @@ missing and where it stands; the done history, with every decision's story, is i
   (`.github/workflows/graphql-deprecations.yml`); the REST products API, where tariff rates come from,
   has no schema to introspect. A refresh that suddenly returns nothing, or a different shape, for a
   tariff that had rates is the signal to surface.
+- **Economy 7 is not priced.** A two-rate tariff (`E-2R-…`) answers `standard-unit-rates` with HTTP
+  400 ("This tariff has day and night rates, not standard"); EMT tries day and night rates only when
+  standard comes back empty (the IOG-SMB shape), and Octopus's day and night rates do not say which
+  hours are night — that depends on the meter. Since 5 Nov 2026 a closed one is not asked again
+  (`agreement_schedules`); a customer on Economy 7 now has no rates. Seen on a tester's 2022–23
+  agreements, before their imported history.
 - **`timeOfUseUsage`, unprobed** (BL-77 item 3). Kraken added per-band usage
   (`TimeOfUseBandUsageType`, 5 Oct 2026). Whether a domestic IOG account may query it, whether it is
   populated, and whether its band totals match the bill would make it a settlement cross-check. Needs

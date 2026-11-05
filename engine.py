@@ -8259,8 +8259,14 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
                              restart: bool = False,
                              meter_id: str = "electricity_main",
                              until_ts=None,
-                             channels=("import", "export")) -> dict:
+                             channels=("import", "export"),
+                             segs: dict | None = None) -> dict:
     """API import route apply — INCREMENTAL and rate-limit-aware.
+
+    `segs`: the caller's {(channel, kind): segments}, kept across its calls — the import job's, so
+    its rate and standing segments are built once a job, not on every call (5 Nov 2026: a slow
+    account's import retried a chunk about every three minutes for seven hours, each retry
+    building them again, the running agreement fetched from Octopus each time).
 
     Fetches half-hourly GraphQL Measurements (kWh + billed cost + Octopus's own
     OFF_PEAK/STANDARD_RATE label) newest→oldest and writes `imported_api` blocks.
@@ -8322,8 +8328,13 @@ async def import_api_history(requested_from=None, *, chunk_days: int = 60,
         # returns without cost; the standing charge (authoritative, complete — see
         # _standing_for). Through the one per-agreement fetch: closed agreements are cached for
         # the process, the running one fetched each run (engine step 5c).
-        rate_segs = await _build_channel_rate_segs(channel)
-        standing_segs = await _build_channel_standing_segs(channel)
+        if segs is not None and (channel, "rate") in segs:
+            rate_segs, standing_segs = segs[(channel, "rate")], segs[(channel, "standing")]
+        else:
+            rate_segs = await _build_channel_rate_segs(channel)
+            standing_segs = await _build_channel_standing_segs(channel)
+            if segs is not None:
+                segs[(channel, "rate")], segs[(channel, "standing")] = rate_segs, standing_segs
 
         floor = requested_from or await _cached_data_floor(channel, info,
                                                             restart=restart)
@@ -9217,6 +9228,7 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
     if _cancelled_while_claimed:
         j["control"] = "cancel"
     first = True
+    _segs: dict = {}            # the job's rate and standing segments, built once (import_api_history)
     try:
         while True:
             ctl = j.get("control")
@@ -9232,7 +9244,7 @@ async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
             j["phase"] = "importing"
             res = await import_api_history(
                 requested_from, chunk_days=chunk_days, max_chunks=max_chunks,
-                pace_s=pace_s, headroom_frac=headroom_frac, restart=first)
+                pace_s=pace_s, headroom_frac=headroom_frac, restart=first, segs=_segs)
             first = False
             if not res.get("ok"):
                 j["status"] = "error"
@@ -10173,6 +10185,9 @@ async def _capture_dispatch_slots() -> int:
     return captured
 
 
+_dispatch_skip_said = False     # the not-Intelligent skip, logged once
+
+
 async def _tick_dispatch_capture() -> None:
     """5-minute-throttled dispatch-slot capture. Called from _engine_tick (every
     ~10s) but only fetches every 5 minutes.
@@ -10196,10 +10211,25 @@ async def _tick_dispatch_capture() -> None:
         return
     _last_dispatch_capture = now
     _capture_completed_slots.clear()
+    global _dispatch_skip_said
     try:
-        await _capture_dispatch_slots()
-    except Exception as e:
-        logger.warning("_tick_dispatch_capture: failed: %s", e)
+        _iog = tariff_kind_at(now.replace(microsecond=0).isoformat()) == "intelligent"
+    except Exception:
+        _iog = True                 # not known: asked, as before
+    if not _iog:
+        # Dispatches are Intelligent Octopus's: on another tariff the account has no device and
+        # Octopus answers "Unable to find device for given account" — asked every five minutes,
+        # a tester's Go account logged it 217 times (5 Nov 2026). Said once.
+        if not _dispatch_skip_said:
+            logger.info("_tick_dispatch_capture: the import tariff is not Intelligent — "
+                        "dispatches not asked")
+            _dispatch_skip_said = True
+    else:
+        _dispatch_skip_said = False
+        try:
+            await _capture_dispatch_slots()
+        except Exception as e:
+            logger.warning("_tick_dispatch_capture: failed: %s", e)
     # A completed record is the carve's input: split those slots now, not at the next hourly pass.
     # Local and additive; a slot already carved, or settled, does not match. Only the slots this
     # capture saw, so it never scans history.
