@@ -32,6 +32,10 @@ internal name for everything before the first public release and never appears i
   smart meters: night is 00:30 to 07:30 UTC all year, which is 01:30 to 08:30 in summer. After a
   history import, EMT checks the rule against what Octopus actually charged you and says in its log
   if your meter seems to switch at other times.
+- **No Export bill without an export meter.** On an account that only imports, Data Management showed an
+  Export bill with every half-hour of your history "to look at", because setup had given the main
+  meter an export channel with nothing to read. Export now appears only where there's an export
+  sensor or Octopus knows an export meter.
 
 ## [2026.11.0b8] — 2026-11-04
 
