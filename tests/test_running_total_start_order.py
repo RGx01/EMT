@@ -52,7 +52,7 @@ class TheOrder(unittest.TestCase):
               "var barTariffs = %s, barEras = %s;\n") % (
             json.dumps(["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]),
             json.dumps(TARIFFS), json.dumps(ERAS)) + _kinds() + \
-            "\n".join(_fn(n) for n in ("barAccMs", "barAccDateLabel", "erasGroups", "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly", "barAccStartChoices",
+            "\n".join(_fn(n) for n in ("barAccMs", "barAccDateLabel", "erasGroups", "barEraLabel", "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly", "barAccStartChoices",
                                        "barAccStartOptions")) + \
             "\nconsole.log(JSON.stringify(" + expr + "));"
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
@@ -78,7 +78,7 @@ class TheOrder(unittest.TestCase):
         html = self._run("barAccStartOptions(barAccStartChoices(), 'era:bat1')")
         self.assertEqual(html.count("<optgroup"), 5)
         self.assertEqual(html.count("</optgroup>"), 5)
-        self.assertIn('<optgroup label="Eras: Battery"><option value="era:bat2">Era: Bigger battery (20 Aug 2025)'
+        self.assertIn('<optgroup label="Eras: Battery"><option value="era:bat2">\U0001f50b Bigger battery (20 Aug 2025)'
                       '</option><option value="era:bat1" selected>', html)
 
     def test_a_label_is_escaped(self):
@@ -88,10 +88,13 @@ class TheOrder(unittest.TestCase):
 
 class TheView(unittest.TestCase):
 
-    def test_the_picker_draws_them(self):
-        i = PAGE.index("function barAccSyncUI(")
+    def test_the_picker_draws_them_where_span_s_sits(self):
+        # 5 Nov 2026, the user: the year's start in the row under the toolbar, as Span's picker, not in it
+        i = PAGE.index("function barBuildSubBar(")
         body = PAGE[i:PAGE.index("\n}\n", i)]
         self.assertIn("ss.innerHTML = barAccStartOptions(starts, barAccStart);", body)
+        self.assertIn("if (barRunning()) {", body)
+        self.assertNotIn('<select id="bar-acc-start"', PAGE)
 
 
 if __name__ == "__main__":

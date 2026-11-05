@@ -15,6 +15,10 @@ internal name for everything before the first public release and never appears i
 - **Flow's CO₂ view shows what your export saved.** The export now flows out of the house, in green,
   to *Displaced by export*: the grid carbon your export saved. Before, it was left off the chart and
   only the figures above it gave it.
+- **Span's list is simpler.** *Span* (in Devices, Rate brackets and Flow) now lists your tariffs first,
+  then your eras grouped by kind, in the same order as Running total's year-start list. The chapters
+  are gone: each was named after what started it, not what your home had then, so they were hard to
+  read. Running total's year-start list now sits where Span's does, in the row under the buttons.
 
 ## [2026.11.0b9] — 2026-11-05
 

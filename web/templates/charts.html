@@ -576,7 +576,7 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
         <button class="bar-seg-btn"        onclick="barSetPeriod('monthly',this)" id="bar-monthly-btn">Monthly</button>
         <button class="bar-seg-btn"        onclick="barSetPeriod('yearly',this)" id="bar-yearly-btn">Yearly</button>
         <button class="bar-seg-btn"        onclick="barSetPeriod('span',this)" id="bar-span-btn" style="display:none"
-                title="A stretch you pick: a chapter of your home (an era's start to the next era's) or a tariff">Span</button>
+                title="A stretch you pick: a tariff, a stretch between its price changes, or an era">Span</button>
       </div>
       <div class="bar-seg" id="bar-cal-seg">
         <button class="bar-seg-btn active" onclick="barSetCalendar(false,this)">Billing</button>
@@ -602,9 +602,6 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
           <button class="bar-seg-btn active" onclick="barSetAccMode('lifetime',this)">Lifetime</button>
           <button class="bar-seg-btn"        onclick="barSetAccMode('year',this)">Year by year</button>
         </span>
-        <select id="bar-acc-start" onchange="barSetAccStart(this.value)" aria-label="When the year starts"
-                title="When each year starts: 1 January, the billing anniversary, a tariff's start or an era's"
-                style="font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;"></select>
       </span>
       <span id="bar-br-wrap" style="display:none; align-items:center; gap:8px; font-size:12px; color:var(--muted);">
         <select id="bar-br-series" onchange="barSetBrSeries(this.value)" aria-label="Whose import, or the export"
@@ -2565,50 +2562,23 @@ var FLOW_OTHER_SHARE = 0.02;
 var FLOW_PLUGIN = 'https://cdn.jsdelivr.net/npm/chartjs-chart-sankey@0.19.1/dist/chartjs-chart-sankey.min.js';
 var _barFlowLib = null;
 function barFlow() { return barShow === 'flow'; }
-// ── Flow's Era (4 Nov 2026, the user) ──
-// A chapter of the home: from an era's start to the next era's start, of any kind; the latest to the
-// last day of data; "Before the first era" from the first day. Eras starting the same day are one
-// chapter. [{id, label, from, to}] oldest first, `to` exclusive, local dates.
-var barSpanId = null;               // the span shown (Span): its id; null, the latest chapter
+var barSpanId = null;               // the span shown (Span): its id; null, the first in the picker
 function barFlowYmd(r) { return r.year + '-' + String(r.month).padStart(2, '0') + '-' + String(r.day).padStart(2, '0'); }
-function barFlowChapters() {
-  var eras = (barEras || []).filter(function(e) { return e.start; });
-  var days = (barData || []).map(barFlowYmd).sort();
-  if (!eras.length || !days.length) return [];
-  var first = days[0], end = barAddDay(days[days.length - 1]);
-  var starts = {};
-  eras.forEach(function(e) { (starts[e.start] || (starts[e.start] = [])).push(e); });
-  var keys = Object.keys(starts).sort().filter(function(d) { return d < end; });
-  var out = [];
-  if (keys.length && first < keys[0]) out.push({id: 'before', label: 'Before the first era', from: first, to: keys[0]});
-  keys.forEach(function(d, i) {
-    var es = starts[d];
-    out.push({id: 'era:' + d, from: d < first ? first : d, to: keys[i + 1] || end, latest: !keys[i + 1],
-              label: es.map(function(e) { return (ERA_KINDS[e.kind] || ERA_KINDS.other).icon + ' ' + e.label; }).join(' + ')});
-  });
-  return out.filter(function(c) { return c.from < c.to; });
-}
 // ── Span (4 Nov 2026, the user): the stretches a Span shows, in Devices, Rate brackets and Flow ──
-// The eras' chapters (above); each era on its own, from its start to its own end or now; and each import
-// tariff from its start to its end (or the last day), with the stretches between its price changes
-// under it, as Running total's year-start picker lists them. Clipped to the data; `latest` where a span
-// reaches its last day. [{id, group, label, from, to, latest, sub}] in the picker's order — Chapters,
-// Eras, Tariffs — each newest first, a tariff followed by its stretches newest first.
+// Each import tariff from its start to its end (or the last day), with the stretches between its price
+// changes under it; and each era on its own, from its start to its own end or now. Clipped to the data;
+// `latest` where a span reaches its last day. [{id, group, label, from, to, latest, sub}] in the picker's
+// order, Running total's year-start picker's (5 Nov 2026, the user): the tariffs newest first, each
+// followed by its stretches newest first; then the eras by kind as the eras modal lists them, newest
+// first in each. The chapters (an era's start to the next era's, of any kind) were dropped the same day,
+// the user: a chapter was named by what started it, not what the home had, and was hard to read.
 function barSpans() {
   var days = (barData || []).map(barFlowYmd).sort();
   if (!days.length) return [];
   var first = days[0], end = barAddDay(days[days.length - 1]), today = new Date().toISOString().slice(0, 10);
   // a span reaching the data's last day is "now": a running fixed-term tariff has its end in the future
   function clip(o) { o.from = o.from < first ? first : o.from; if (o.to >= end) { o.to = end; o.latest = true; } return o; }
-  var out = barFlowChapters().slice().reverse().map(function(c) { return Object.assign({group: 'Chapters'}, c); });
-  // each era on its own, to its own end (exclusive: a battery replaced ends the day the next starts) or now
-  // (4 Nov 2026, the user: the solar era without the chapter's cut at the battery's change)
-  (barEras || []).filter(function(e) { return e.start; })
-    .slice().sort(function(a, b) { return a.start < b.start ? 1 : a.start > b.start ? -1 : 0; })
-    .forEach(function(e) {
-      out.push(clip({id: 'own:' + (e.id || e.start + ':' + e.label), group: 'Eras', from: e.start, to: e.end || end,
-                     label: (ERA_KINDS[e.kind] || ERA_KINDS.other).icon + ' ' + e.label}));
-    });
+  var out = [];
   (barTariffs || []).filter(function(a) { return a.direction !== 'export' && a.from; })
     .sort(function(a, b) { return a.from < b.from ? 1 : a.from > b.from ? -1 : 0; })
     .forEach(function(a) {
@@ -2624,8 +2594,17 @@ function barSpans() {
                        from: bounds[i], to: bounds[i + 1]}));
       }
     });
+  // each era on its own, to its own end (exclusive: a battery replaced ends the day the next starts) or now
+  erasGroups((barEras || []).filter(function(e) { return e.start; })).forEach(function(g) {
+    g.eras.forEach(function(e) {
+      out.push(clip({id: 'own:' + (e.id || e.start + ':' + e.label), group: 'Eras: ' + ERA_KINDS[g.kind].name,
+                     from: e.start, to: e.end || end, label: barEraLabel(e)}));
+    });
+  });
   return out.filter(function(o) { return o.from < o.to; });
 }
+// An era as both pickers name it: its kind's icon and its name
+function barEraLabel(e) { return (ERA_KINDS[e.kind] || ERA_KINDS.other).icon + ' ' + e.label; }
 function barSpanCurrent() {
   var sp = barSpans();
   return sp.filter(function(o) { return o.id === barSpanId; })[0] || sp[0] || null;
@@ -3885,7 +3864,7 @@ function barAccStartChoices() {
     });
   erasGroups(barEras || []).forEach(function(g) {
     g.eras.forEach(function(e) {
-      out.push({id: 'era:' + e.id, label: 'Era: ' + e.label + ' (' + barAccDateLabel(e.start) + ')',
+      out.push({id: 'era:' + e.id, label: barEraLabel(e) + ' (' + barAccDateLabel(e.start) + ')',
                 m: +e.start.slice(5, 7), d: +e.start.slice(8, 10), group: 'Eras: ' + ERA_KINDS[g.kind].name});
     });
   });
@@ -4032,9 +4011,6 @@ function barAccSyncUI() {
   document.querySelectorAll('#bar-acc-view .bar-seg-btn').forEach(function(b) {
     b.classList.toggle('active', (b.getAttribute('onclick') || '').indexOf("'" + barAccView + "'") !== -1);
   });
-  var ss = document.getElementById('bar-acc-start'), starts = barAccStartChoices();
-  if (!starts.some(function(o) { return o.id === barAccStart; })) barAccStart = 'jan';
-  if (ss) ss.innerHTML = barAccStartOptions(starts, barAccStart);
   var sel = document.getElementById('bar-acc-series'), list = barAccSeriesList();
   if (!list.some(function(o) { return o.id === barAccSeries; })) barAccSeries = 'net';
   if (sel) {
@@ -4576,6 +4552,19 @@ function barBuildSubBar() {
       next.onclick = function() { barStepDaily(1); };
       bar.appendChild(prev); bar.appendChild(lbl); bar.appendChild(next);
     }  } else {
+    if (barRunning()) {
+      // the year's start, where Span's picker sits in the other views (5 Nov 2026, the user)
+      var starts = barAccStartChoices();
+      if (!starts.some(function(o) { return o.id === barAccStart; })) barAccStart = 'jan';
+      var ss = document.createElement('select');
+      ss.id = 'bar-acc-start';
+      ss.setAttribute('aria-label', 'When the year starts');
+      ss.title = "When each year starts: 1 January, the billing anniversary, a tariff's start or an era's";
+      ss.style.cssText = 'font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;';
+      ss.innerHTML = barAccStartOptions(starts, barAccStart);
+      ss.onchange = function() { barSetAccStart(ss.value); };
+      bar.appendChild(ss);
+    }
     var lbl2 = document.createElement('span');
     lbl2.style.cssText = 'font-size:12px;color:var(--muted);margin-right:4px;';
     lbl2.textContent = 'Years:';
