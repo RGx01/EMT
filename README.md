@@ -1,6 +1,6 @@
 # EMT — Energy Meter Tracker
 
-[![Release](https://img.shields.io/github/v/release/RGx01/EMT?include_prereleases&label=release)](https://github.com/RGx01/EMT/releases)
+[![Release](https://img.shields.io/badge/dynamic/yaml?url=https%3A%2F%2Fraw.githubusercontent.com%2FRGx01%2FEMT%2Fmain%2Fconfig.yaml&query=%24.version&label=release&prefix=v&color=orange)](https://github.com/RGx01/EMT/releases)
 ![Stage: beta](https://img.shields.io/badge/stage-beta-orange)
 [![Licence: PolyForm Noncommercial 1.0.0](https://img.shields.io/badge/licence-PolyForm%20Noncommercial-blue)](LICENSE)
 ![aarch64](https://img.shields.io/badge/aarch64-yes-green)
