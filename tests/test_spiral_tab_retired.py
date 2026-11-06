@@ -51,7 +51,7 @@ class TheWayIn(unittest.TestCase):
 
     def test_a_remembered_tab_or_the_link_opens_the_running_totals_spiral(self):
         self.assertIn("if (saved === 'spiral') { _barFromSpiral = true; saved = 'bar'; }", PAGE)
-        self.assertIn("else if (saved === 'bar') { showChart('bar', tabs[2]); }", PAGE)
+        self.assertIn("else if (saved === 'bar') { showChart('bar', tabs[2]); _restoreUsagePlace(); }", PAGE)
 
     def test_carried_over_on_both_load_paths(self):
         f = _fn("barLoadState")

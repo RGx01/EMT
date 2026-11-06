@@ -790,7 +790,7 @@ async function loadChartContent(name, force) {
   // The Billing tab likewise (billing_module.html) — same contract.
   if (name === 'daily') {
     if (!window.EMTBilling) return;
-    if (!EMTBilling._state.inited) return EMTBilling.init(document.getElementById('chart-daily-content'), {corrections: true});
+    if (!EMTBilling._state.inited) return EMTBilling.init(document.getElementById('chart-daily-content'), {corrections: true, remember: true});
     return force ? EMTBilling.rerender() : EMTBilling.refresh();
   }
 }
@@ -1671,7 +1671,10 @@ async function _barFetchFresh() {
     var json = Object.assign({}, await EMTDayRows.get(ver), {data_version: ver});
     _applyBarJson(json);
     barLastFetch = Date.now();
+    // Read at the redraw, not before the fetch: the reader may have scrolled while it ran.
+    var _place = _captureChartScroll();
     barRender();
+    _restoreChartScroll(_place);
   } catch(e) {
     _setBarLoading(false);
     var _errDiv = document.getElementById('bar-load-error') || document.createElement('div');
@@ -5148,28 +5151,46 @@ document.addEventListener('DOMContentLoaded', function() {
     // the Running total's spiral, its saved view carried over once (barFromSpiral)
     if (saved === 'spiral') { _barFromSpiral = true; saved = 'bar'; }
     if (saved === 'heatmap') { showChart('heatmap', tabs[1]); }
-    else if (saved === 'bar') { showChart('bar', tabs[2]); }
+    else if (saved === 'bar') { showChart('bar', tabs[2]); _restoreUsagePlace(); }
     else { loadChartContent('daily'); updateToggleLabel('daily'); }
   }, 350);
 });
 
-// Refresh the active chart whenever the page becomes visible again
-// (handles tab switching, browser tab focus, and ingress navigation).
-// The refresh rebuilds the chart's DOM, which would otherwise snap scroll back
-// to the top every time you switch apps/tabs and return — so we capture the
-// scroll position first and restore it once the (async) rebuild has laid out.
+// Usage Stats' place: the page's own scroller and the table's. A redraw keeps it (_barFetchFresh), and
+// because every visit is a whole page load, it is saved on leaving and given back on arriving
+// (6 Nov 2026), unless the reader has already started moving.
 function _captureChartScroll() {
-  var bw = document.getElementById('bar-table-wrap');
-  return {
-    win: window.scrollY || document.documentElement.scrollTop || 0,
-    bar: bw ? bw.scrollTop : 0
-  };
+  var c = document.querySelector('.content'), bw = document.getElementById('bar-table-wrap');
+  return {content: c ? c.scrollTop : 0, bar: bw ? bw.scrollTop : 0};
 }
 function _restoreChartScroll(s) {
   if (!s) return;
-  if (s.win) window.scrollTo(0, s.win);
-  var bw = document.getElementById('bar-table-wrap');
-  if (bw && s.bar) bw.scrollTop = s.bar;
+  var c = document.querySelector('.content'), bw = document.getElementById('bar-table-wrap');
+  if (c) c.scrollTop = s.content || 0;
+  if (bw) bw.scrollTop = s.bar || 0;
+}
+function _usagePlaceKey() { return 'emt_usage_place::' + EMT.instanceKey; }
+function _saveUsagePlace() {
+  if (_activeChart !== 'bar') return;
+  try { sessionStorage.setItem(_usagePlaceKey(), JSON.stringify(_captureChartScroll())); } catch (e) {}
+}
+window.addEventListener('pagehide', _saveUsagePlace);
+document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') _saveUsagePlace(); });
+function _restoreUsagePlace() {
+  var want = null;
+  try { want = JSON.parse(sessionStorage.getItem(_usagePlaceKey()) || 'null'); } catch (e) {}
+  if (!want || !(want.content || want.bar)) return;
+  var moved = false, tries = 0, evs = ['wheel', 'touchmove', 'keydown', 'mousedown'];
+  function onMove() { moved = true; }
+  evs.forEach(function (ev) { document.addEventListener(ev, onMove, {passive: true, capture: true, once: true}); });
+  // The table is drawn when its data lands, and its height is only known then.
+  var iv = setInterval(function () {
+    var now = moved ? null : (_restoreChartScroll(want), _captureChartScroll());
+    if (moved || ++tries > 40 || (Math.abs(now.content - (want.content || 0)) < 2 && Math.abs(now.bar - (want.bar || 0)) < 2)) {
+      clearInterval(iv);
+      evs.forEach(function (ev) { document.removeEventListener(ev, onMove, {capture: true}); });
+    }
+  }, 100);
 }
 // Lightweight change token — /api/energy's global fingerprint (blocks, segments,
 // billing periods, meters, bulk epoch); null on failure.
@@ -5224,16 +5245,9 @@ function _refreshSettleNote() {
 
 document.addEventListener('visibilitychange', async function() {
   if (document.visibilityState !== 'visible') return;
-  var _scroll = _captureChartScroll();
   var _changed = false;
-  try { _changed = await _refreshIfChanged(false); } catch (e) { /* leave scroll as-is on failure */ }
+  try { _changed = await _refreshIfChanged(false); } catch (e) { /* a failed refresh changes nothing */ }
   if (!_changed) _refreshSettleNote();   // a bill can arrive without the blocks changing
-  // Restore after layout settles (rebuild + lazy day-chart render).
-  requestAnimationFrame(function() {
-    _restoreChartScroll(_scroll);
-    setTimeout(function() { _restoreChartScroll(_scroll); }, 80);
-    setTimeout(function() { _restoreChartScroll(_scroll); }, 250);
-  });
 });
 
 // While the page is visible, quietly refresh only when new data has landed — keeps
