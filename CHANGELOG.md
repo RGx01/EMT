@@ -7,6 +7,8 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **The half-hours with no usage figure can be filled, this time from a click.** They showed as missing, but
+  clicking one showed its details and only Re-fetch, which cannot add the figure. It now offers Fill this gap.
 - **A device can go without a read sensor.** A battery whose inverter reports no grid charge can now be
   set up with the read sensor empty, or have a wrong one removed. It keeps its Overview card and its charge
   counts in the house. EMT no longer warns about a sensor that has gone, and **Clear history** on the

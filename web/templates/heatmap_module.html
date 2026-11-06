@@ -172,7 +172,10 @@ window.EMTHeatmap = (function () {
         return '<span class="hm-key-item"><span class="hm-sw" style="' + swatchCss(m, k[0]) + '"></span>' + esc(k[1]) + '</span>';
       }).join('') + '</div>';
   }
-  function isMissing(c) { return !!(c && c.missing && c.kwh === null); }
+  // No block, or (6 Nov 2026) a block with no usage figure: it holds its export, so kWh is not null, and
+  // a click on it offered the block's details and no way to fill it. `kwh === null` itself is for the
+  // clocks going back, where one of a cell's two half-hours can be missing and the other held.
+  function isMissing(c) { return !!(c && c.missing && (c.kwh === null || c.noImport)); }
   function isData() { return state.mode === 'data'; }
   // `opts.onChange` (data mode): called when a tool has written — the health strip re-counts
   function changed() { try { if (state.onChange) state.onChange(); } catch (e) {} }
@@ -354,7 +357,9 @@ window.EMTHeatmap = (function () {
       var d = days[lp.day] || (days[lp.day] = {slots: new Array(n).fill(null), total: {kwh: 0, co2: 0, bill: 0, export: 0, presence: 0}});
       var c = d.slots[lp.slot] || (d.slots[lp.slot] = {kwh: null, co2: null, int: null});
       c.missing = (c.missing || 0) + 1;
-      (c.starts || (c.starts = [])).push(iso);
+      // a block with no usage figure is listed already: twice read as the clocks going back
+      if ((c.starts || []).indexOf(iso) >= 0) c.noImport = true;
+      else (c.starts || (c.starts = [])).push(iso);
       (c.gaps || (c.gaps = [])).push(iso);                     // which of them: what a fill asks for
       var del = (M.deleted || []).filter(function (r) { return iso >= r.start_utc && iso < r.end_utc; })[0];
       if (del) c.deleted = (del.created_at || '').slice(0, 10) || 'yes';
@@ -364,6 +369,7 @@ window.EMTHeatmap = (function () {
     }
   }
   function missingText(c) {
+    if (c && c.noImport) return 'no usage figure for this half-hour \u2014 missing';
     return MISSING_TEXT + (c && c.deleted ? '<br>deleted ' + c.deleted : '');
   }
   function metricOf(c, m) {
@@ -1630,7 +1636,8 @@ window.EMTHeatmap = (function () {
     var day = g.length ? localParts(g[0]).day : null;
     el.innerHTML = '<div class="hm-panel-box"><div class="hm-panel-head"><b>' + esc(label) +
                    '</b><button class="hm-x" data-close="1" aria-label="Close">\u2715</button></div>' +
-                   '<p>' + (c && c.deleted ? 'Deleted on ' + esc(c.deleted) + ' \u2014 there is no block for this ' +
+                   '<p>' + (c && c.noImport ? 'EMT has this half-hour\u2019s export but no usage figure for it, ' +
+                   'so its kWh is in none of your totals.' : c && c.deleted ? 'Deleted on ' + esc(c.deleted) + ' \u2014 there is no block for this ' +
                    'half-hour.' : 'EMT holds no block for this half-hour: it was never recorded, or not ' +
                    'imported.') + '</p>' +
                    (fc ? '<div class="hm-actions"><button class="hm-btn" data-close="1">Close</button>' +
