@@ -11,6 +11,12 @@ internal name for everything before the first public release and never appears i
   figure but no usage of its own showed as missing on the heatmap, while the gap fill said there was
   nothing to fill, and its kWh was left out of your totals. Both now agree it is missing, and filling
   it puts the kWh back.
+- **Billing charts mark a rate with a line.** In the legend and the hover, a rate was a box, and a bar
+  was a box with a white outline, so they were hard to tell apart. A rate is now a line, dashed where
+  its line is, and a bar a plain block.
+- **Billing charts keep your place when new data arrives.** The page redraws itself when data changes,
+  often as you come back to it. It used to jump back to where you were when the redraw began, and close
+  any data tables you had open, which moved you further still. It now stays where you are, tables open.
 
 ## [2026.11.0b13] — 2026-11-05
 

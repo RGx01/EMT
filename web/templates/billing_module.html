@@ -230,11 +230,28 @@ window.EMTBilling = (function () {
     out.y1 = [y1min, y1top]; out.y2 = [y2min, y2max]; out.ticks = ticks;
     return out;
   }
+  var KEY_W = 22, KEY_H = 12;
   var plotBg = {id: 'emtPlotBg', beforeDraw: function (ch) {
     var a = ch.chartArea; if (!a) return;
     ch.ctx.save(); ch.ctx.fillStyle = ch.options.plugins.emtPlotBg.color;
     ch.ctx.fillRect(a.left, a.top, a.width, a.height); ch.ctx.restore();
   }};
+  // A dataset's key, the same in the legend and the hover: a rate is a line (dashed where its line
+  // is), a bar a plain block. Chart.js draws a line dataset's key as a box, in the colour of a fill
+  // it does not have, and the hover outlines every key in white.
+  var keyMarks = {};
+  function keyMark(ds) {
+    var rate = !!ds._rate, color = rate ? ds.borderColor : ds.backgroundColor, dash = rate ? ds.borderDash || [] : [];
+    var k = (rate ? 'r' : 'b') + color + dash.join();
+    if (keyMarks[k]) return keyMarks[k];
+    var c = document.createElement('canvas'); c.width = KEY_W; c.height = KEY_H;
+    var x = c.getContext('2d');
+    if (rate) {
+      x.strokeStyle = color; x.lineWidth = 2; x.setLineDash(dash);
+      x.beginPath(); x.moveTo(0, KEY_H / 2); x.lineTo(KEY_W, KEY_H / 2); x.stroke();
+    } else { x.fillStyle = color; x.fillRect((KEY_W - 14) / 2, 1, 14, KEY_H - 2); }
+    return (keyMarks[k] = c);
+  }
   function buildChart(day) {
     var row = state.cur && state.cur.dayRows[day], el = state.section && state.section.querySelector('[data-day="' + day + '"] .chart-container');
     if (!row || !el || state.charts[day]) return;
@@ -272,9 +289,14 @@ window.EMTBilling = (function () {
         layout: {padding: {top: 8}},
         plugins: {
           emtPlotBg: {color: tc.plotBg},
-          legend: {position: 'bottom', labels: {color: tc.axisC, font: {size: 11}, boxWidth: 12,
+          legend: {position: 'bottom', labels: {color: tc.axisC, font: {size: 11}, usePointStyle: true, pointStyleWidth: KEY_W,
+                   generateLabels: function (ch) {
+                     return Chart.defaults.plugins.legend.labels.generateLabels(ch).map(function (it) {
+                       it.pointStyle = keyMark(ch.data.datasets[it.datasetIndex]); return it; });
+                   },
                    sort: function (a, b) { return a.datasetIndex - b.datasetIndex; }}},
-          tooltip: {callbacks: {
+          tooltip: {usePointStyle: true, boxWidth: KEY_W, boxHeight: KEY_H, multiKeyBackground: 'transparent', callbacks: {
+            labelPointStyle: function (it) { return {pointStyle: keyMark(it.dataset), rotation: 0}; },
             title: function (items) {
               if (!items.length) return '';
               var x = items[0].raw.x, i = items[0].dataset._rate ? Math.round(x + 0.5) : x;
@@ -525,8 +547,9 @@ window.EMTBilling = (function () {
       var row = byDay[day]; sec.dayRows[day] = row; wrap._filled = true;
       wrap.querySelector('.chart-summary').outerHTML = renderPanel(day, row.panel_lines);
       var tbl = wrap.querySelector('.day-data-tables');
-      if (state.showData) { buildTable(tbl, row.chart); tbl.style.display = 'flex';
+      if (state.showData || wrap._keepTable) { buildTable(tbl, row.chart); tbl.style.display = 'flex';
                             wrap.querySelector('.day-tbl-toggle').classList.add('active'); }
+      wrap.style.minHeight = '';                   // its own height now (keepView held it)
       if (wrap._near) buildChart(day);
     }).catch(function (e) {
       var el = wrap.querySelector('.chart-container');
@@ -785,7 +808,32 @@ window.EMTBilling = (function () {
     });
     return el;
   }
-  function show() {
+  // A refresh swaps the whole section. What the reader had is read at the swap, not before the fetch:
+  // they may have scrolled while it ran. A day holds its height until it is filled again (and its
+  // data table, if open, with it), so the page keeps its length and the position still means the
+  // same place. Only for the same period: another one has nothing to keep.
+  function keepView(mode, p) {
+    var c = state.cur, sec = state.section;
+    if (!c || !sec || c.mode !== mode || c.start !== p.start) return null;
+    var days = {};
+    sec.querySelectorAll('.day-chart-wrap').forEach(function (w) {
+      var t = w.querySelector('.day-data-tables');
+      days[w.dataset.day] = {h: w.offsetHeight, table: t.style.display === 'flex'};
+    });
+    return {y: state.root.scrollTop, days: days, bill: sec.querySelector('.bill-toggle').open};
+  }
+  function restoreView(sec, kept) {
+    if (!kept) return;
+    sec.querySelector('.bill-toggle').open = kept.bill;
+    sec.querySelectorAll('.day-chart-wrap').forEach(function (w) {
+      var d = kept.days[w.dataset.day];
+      if (!d) return;
+      if (d.h) w.style.minHeight = d.h + 'px';
+      w._keepTable = d.table;
+    });
+    state.root.scrollTop = kept.y;
+  }
+  function show(keep) {
     var mode = state.mode, root = state.root, token = {};
     state.showToken = token;
     return loadList(mode).then(function (lst) {
@@ -800,10 +848,12 @@ window.EMTBilling = (function () {
         .then(function (r) {
           if (state.showToken !== token) return;
           state.currency = r[0].currency;
+          var kept = keep ? keepView(mode, p) : null;
           releaseAll();
           var sec = renderSection(mode, p, r[0], prev && {p: prev, b: r[1]}, year && {p: year, b: r[2]}, lst);
           state.cur = {mode: mode, start: p.start, dayRows: {}};
           mount(sec);
+          restoreView(sec, kept);
           observeDays(sec);
           attachSticky();
           syncNav();
@@ -857,12 +907,11 @@ window.EMTBilling = (function () {
   // Called when the data has moved (charts.html's data-version poll) and on a
   // dashboard card's timer. Everything cached is dropped, not only the current
   // period: a billing-day change re-cuts every period, and a re-price can touch any month. Each is one
-  // small request again when next shown; the scroll position is kept.
+  // small request again when next shown; what the reader had is kept (keepView).
   function refresh() {
     if (!state.inited) return;
     state.lists = {}; state.bills = {}; state.months = {};
-    var y = state.root.scrollTop;
-    return show().then(function () { state.root.scrollTop = y; });
+    return show(true);
   }
   // PDF: every filled day's chart drawn on white, as a PNG. Not only the built ones: a chart is built
   // within 600px of the view and released past 4000px, so a PDF of those held only the days near
