@@ -141,7 +141,7 @@ class TheBillingModule(unittest.TestCase):
         self.assertIn("if (state.corr) bindCorrect(canvas, day)", self.mod)
 
     def test_the_charts_page_offers_it_and_the_card_does_not(self):
-        self.assertIn("EMTBilling.init(document.getElementById('chart-daily-content'), {corrections: true})",
+        self.assertIn("EMTBilling.init(document.getElementById('chart-daily-content'), {corrections: true, remember: true})",
                       self.charts)
         self.assertNotIn("corrections", re.sub(r"<!--.*?-->", "", self.card, flags=re.S))
 

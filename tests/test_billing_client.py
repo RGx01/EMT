@@ -88,7 +88,7 @@ class ThePageUsesIt(unittest.TestCase):
         fn = _PAGE[_PAGE.index("async function loadChartContent(name, force) {"):]
         fn = fn[:fn.index("\n}\n")]
         self.assertIn("if (name === 'daily') {", fn)
-        self.assertIn("EMTBilling.init(document.getElementById('chart-daily-content'), {corrections: true})", fn)
+        self.assertIn("EMTBilling.init(document.getElementById('chart-daily-content'), {corrections: true, remember: true})", fn)
         self.assertIn("EMTBilling.rerender()", fn)
         self.assertIn("EMTBilling.refresh()", fn)
 

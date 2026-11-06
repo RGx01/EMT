@@ -5,6 +5,25 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b14] — 2026-11-06
+
+- **The last half-hours with no usage figure can be filled too.** A half-hour that had Octopus's settled
+  figure but no usage of its own showed as missing on the heatmap, while the gap fill said there was
+  nothing to fill, and its kWh was left out of your totals. Both now agree it is missing, and filling
+  it puts the kWh back.
+- **Billing charts mark a rate with a line.** In the legend and the hover, a rate was a box, and a bar
+  was a box with a white outline, so they were hard to tell apart. A rate is now a line, dashed where
+  its line is, and a bar a plain block.
+- **Billing charts keep your place when new data arrives.** The page redraws itself when data changes,
+  often as you come back to it. It used to jump back to where you were when the redraw began, and close
+  any data tables you had open, which moved you further still. It now stays where you are, tables open.
+- **Billing charts stop pushing you back as they load, in Safari above all.** A day grows when its figures
+  arrive. If that day was above where you were reading, everything moved down the screen, so scrolling
+  straight after arriving could throw you back. What you are reading now stays still.
+- **Billing and Usage Stats remember your place.** EMT rebuilds these pages each time you visit them, so
+  you always started at the top, with your data tables shut. Come back now and you are where you left
+  off, tables open, unless you have already started scrolling. This lasts as long as the browser tab.
+
 ## [2026.11.0b13] — 2026-11-05
 
 - **A battery is no longer flagged for counting solar because of missing usage.** The battery check
