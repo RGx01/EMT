@@ -20,6 +20,9 @@ internal name for everything before the first public release and never appears i
 - **Billing charts stop pushing you back as they load, in Safari above all.** A day grows when its figures
   arrive. If that day was above where you were reading, everything moved down the screen, so scrolling
   straight after arriving could throw you back. What you are reading now stays still.
+- **Billing and Usage Stats remember your place.** EMT rebuilds these pages each time you visit them, so
+  you always started at the top, with your data tables shut. Come back now and you are where you left
+  off, tables open, unless you have already started scrolling. This lasts as long as the browser tab.
 
 ## [2026.11.0b13] — 2026-11-05
 

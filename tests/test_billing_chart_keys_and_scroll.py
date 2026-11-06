@@ -67,6 +67,7 @@ var KEY_W = 22, KEY_H = 12, keyMarks = {};
 %s
 %s
 %s
+%s
 """
 
 
@@ -74,7 +75,7 @@ var KEY_W = 22, KEY_H = 12, keyMarks = {};
 class TheFunctions(unittest.TestCase):
 
     def _run(self, body):
-        src = HARNESS % (_fn("keepView"), _fn("restoreView"), _fn("keyMark"), body)
+        src = HARNESS % (_fn("keepView"), _fn("restoreView"), _fn("keyMark"), _fn("takePlace"), body)
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "t.js")
             with open(p, "w", encoding="utf-8") as f:
@@ -89,8 +90,8 @@ class TheFunctions(unittest.TestCase):
           state.cur = {mode: 'month', start: 'a'}; state.section = section(w, false);
           state.root.scrollTop = 3400;
           console.log(JSON.stringify(keepView('month', {start: 'a'})));""")
-        self.assertEqual(out, {"y": 3400, "bill": False, "days": {"d1": {"h": 351, "table": True},
-                                                                  "d2": {"h": 350, "table": False}}})
+        self.assertEqual(out, {"mode": "month", "start": "a", "y": 3400, "showData": False, "bill": False,
+                               "days": {"d1": {"h": 351, "table": True}, "d2": {"h": 350, "table": False}}})
 
     def test_another_period_keeps_nothing(self):
         out = self._run("""
@@ -102,17 +103,27 @@ class TheFunctions(unittest.TestCase):
         out = self._run("""
           var w = [wrap('d1', 0, false), wrap('d2', 0, false), wrap('new', 0, false)];
           var s = section(w, true);
-          restoreView(s, {y: 3400, bill: false, days: {d1: {h: 351, table: true}, d2: {h: 0, table: false}}});
-          console.log(JSON.stringify({top: state.root.scrollTop, bill: s._bill.open,
+          restoreView(s, {y: 3400, bill: false, showData: true, days: {d1: {h: 351, table: true}, d2: {h: 0, table: false}}});
+          console.log(JSON.stringify({top: state.root.scrollTop, bill: s._bill.open, all: state.showData,
             h: w.map(function (x) { return x.style.minHeight || null; }),
             t: w.map(function (x) { return x._keepTable === undefined ? null : x._keepTable; })}));""")
-        self.assertEqual(out, {"top": 3400, "bill": False, "h": ["351px", None, None], "t": [True, False, None]})
+        self.assertEqual(out, {"top": 3400, "bill": False, "all": True, "h": ["351px", None, None], "t": [True, False, None]})
 
     def test_nothing_kept_changes_nothing(self):
         out = self._run("""
           state.root.scrollTop = 7; restoreView(section([], true), null);
           console.log(JSON.stringify(state.root.scrollTop));""")
         self.assertEqual(out, 7)
+
+    def test_the_place_is_given_back_once_for_its_period_and_not_after_moving(self):
+        out = self._run("""
+          var p = {mode: 'month', start: 'a', y: 900}, res = [];
+          state.place = p; res.push(takePlace('month', {start: 'a'}) === p); res.push(takePlace('month', {start: 'a'}));
+          state.place = p; res.push(takePlace('month', {start: 'b'}));
+          state.place = p; res.push(takePlace('year', {start: 'a'}));
+          state.place = p; state.moved = true; res.push(takePlace('month', {start: 'a'}));
+          console.log(JSON.stringify(res));""")
+        self.assertEqual(out, [True, None, None, None, None])
 
     def test_a_rate_is_a_line_dashed_as_its_line_and_a_bar_a_plain_block(self):
         out = self._run("""
@@ -168,6 +179,25 @@ class TheFill(unittest.TestCase):
 
 
 class TheWiring(unittest.TestCase):
+
+    def test_billing_remembers_only_on_the_charts_page(self):
+        page = open(os.path.join(_ROOT, "web", "templates", "charts.html"), encoding="utf-8").read()
+        self.assertIn("{corrections: true, remember: true}", page)
+        self.assertIn("if (opts && opts.remember) rememberPlace(root);", SRC)
+        self.assertIn("window.addEventListener('pagehide', savePlace);", SRC)
+        self.assertIn("keep ? keepView(mode, p) : takePlace(mode, p)", _fn("show"))
+
+    def test_usage_stats_remembers_and_a_redraw_reads_the_place_at_the_redraw(self):
+        page = open(os.path.join(_ROOT, "web", "templates", "charts.html"), encoding="utf-8").read()
+        self.assertIn("window.addEventListener('pagehide', _saveUsagePlace);", page)
+        self.assertIn("showChart('bar', tabs[2]); _restoreUsagePlace();", page)
+        i = page.index("async function _barFetchFresh()")
+        body = page[i:page.index("async function barInit()")]
+        self.assertLess(body.index("EMTDayRows.get(ver)"), body.index("_captureChartScroll()"))
+        self.assertLess(body.index("_captureChartScroll()"), body.index("barRender()"))
+        self.assertLess(body.index("barRender()"), body.index("_restoreChartScroll(_place)"))
+        # a return to the tab no longer puts back a position read before its fetch
+        self.assertNotIn("var _scroll = _captureChartScroll()", page)
 
     def test_chrome_does_not_correct_it_a_second_time(self):
         self.assertIn(".emt-bill { overflow-anchor: none; }", SRC)

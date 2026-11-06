@@ -827,10 +827,12 @@ window.EMTBilling = (function () {
       var t = w.querySelector('.day-data-tables');
       days[w.dataset.day] = {h: w.offsetHeight, table: t.style.display === 'flex'};
     });
-    return {y: state.root.scrollTop, days: days, bill: sec.querySelector('.bill-toggle').open};
+    return {mode: mode, start: p.start, y: state.root.scrollTop, days: days, showData: !!state.showData,
+            bill: sec.querySelector('.bill-toggle').open};
   }
   function restoreView(sec, kept) {
     if (!kept) return;
+    state.showData = kept.showData;
     sec.querySelector('.bill-toggle').open = kept.bill;
     sec.querySelectorAll('.day-chart-wrap').forEach(function (w) {
       var d = kept.days[w.dataset.day];
@@ -839,6 +841,27 @@ window.EMTBilling = (function () {
       w._keepTable = d.table;
     });
     state.root.scrollTop = kept.y;
+  }
+  // Every visit is a whole page load, so the place is saved on leaving and given back on arriving
+  // (6 Nov 2026), once, for the same period, unless the reader has already started moving.
+  function placeKey() { try { return 'place.' + EMT.lsKey('bill'); } catch (e) { return 'place'; } }
+  function savePlace() {
+    if (!state.remember || !state.cur || !state.root.getClientRects().length) return;
+    var k = keepView(state.cur.mode, {start: state.cur.start});
+    if (k) sset(placeKey(), JSON.stringify(k));
+  }
+  function takePlace(mode, p) {
+    var k = state.place; state.place = null;
+    return k && !state.moved && k.mode === mode && k.start === p.start ? k : null;
+  }
+  function rememberPlace(root) {
+    state.remember = true;
+    try { state.place = JSON.parse(sget(placeKey(), 'null')); } catch (e) { state.place = null; }
+    ['wheel', 'touchmove', 'keydown', 'mousedown'].forEach(function (ev) {
+      root.addEventListener(ev, function () { state.moved = true; }, {passive: true, once: true});
+    });
+    window.addEventListener('pagehide', savePlace);
+    document.addEventListener('visibilitychange', function () { if (document.visibilityState === 'hidden') savePlace(); });
   }
   function show(keep) {
     var mode = state.mode, root = state.root, token = {};
@@ -855,7 +878,7 @@ window.EMTBilling = (function () {
         .then(function (r) {
           if (state.showToken !== token) return;
           state.currency = r[0].currency;
-          var kept = keep ? keepView(mode, p) : null;
+          var kept = keep ? keepView(mode, p) : takePlace(mode, p);
           releaseAll();
           var sec = renderSection(mode, p, r[0], prev && {p: prev, b: r[1]}, year && {p: year, b: r[2]}, lst);
           state.cur = {mode: mode, start: p.start, dayRows: {}};
@@ -883,6 +906,7 @@ window.EMTBilling = (function () {
       if (state.corr) rerender();
     }, function () {});
     root.classList.add('emt-bill');
+    if (opts && opts.remember) rememberPlace(root);
     state.mode = sget('mode', 'month'); if (!MODES[state.mode]) state.mode = 'month';
     state.view = sget('view', 'vanilla');
     if (state.mode === 'year' && state.view === 'vs-year') state.view = 'vanilla';
