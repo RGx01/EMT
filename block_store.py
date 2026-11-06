@@ -107,7 +107,9 @@ IMPORTED_SOURCE_API     = "imported_api"       # from the Octopus consumption AP
 # A block that holds an import kWh: the gap reads count one without as missing (5 Nov 2026, a fresh
 # install's import kept the export of two months and lost the import — the rows were there, so no
 # gap showed, and neither the import nor the gap fill would ask Octopus for them again).
-_HAS_IMPORT = "(imp_kwh IS NOT NULL OR imp_kwh_api IS NOT NULL)"
+# A settled figure alone does not count: the totals read imp_kwh, so that half-hour's kWh is in none of
+# them, and only a fill writes it (the poll's settled figure reached the tail a fill left under 48 h).
+_HAS_IMPORT = "imp_kwh IS NOT NULL"
 IMPORTED_SOURCE_CSV     = "imported_csv"        # from a supplied CSV (rate-from-cost)
 IMPORTED_SOURCE_BLENDED = "imported_blended"    # go-live period straddling live capture
 IMPORTED_SOURCES        = (IMPORTED_SOURCE_API, IMPORTED_SOURCE_CSV, IMPORTED_SOURCE_BLENDED)

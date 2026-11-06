@@ -5,7 +5,7 @@ The install's import kept the export of September and October and lost the impor
 chunk failed; fixed in `test_import_channel_keeps_its_window`). The rows were there, so nothing called them
 missing: the heatmap, Data health and the gaps list showed no gap, the gap fill had nothing to fill, and a
 whole-history import had nothing below its ceiling — no way to ask Octopus for them again. The gap reads
-now count a main block with no import kWh (`imp_kwh` and `imp_kwh_api` both NULL) as missing:
+now count a main block with no `imp_kwh` as missing, a settled figure alone included:
 `find_block_gaps`, and with `with_import` the gap fill's `get_block_starts_in_range` and
 `get_neighbour_block_starts` (`gap_fill_plan`, `gap_bounds`); the heatmap's Missing marking likewise.
 
@@ -55,11 +55,17 @@ class TheGaps(unittest.TestCase):
         body = HEATMAP[i:i + 1500]
         self.assertTrue(re.search(r"x\.imp_kwh !== null", body), "a block with no import is not 'have'")
 
-    def test_a_settled_import_counts(self):
+    def test_a_settled_figure_alone_is_still_a_gap(self):
+        """6 Nov 2026, the same install: the tail a fill left under 48 h took the poll's `imp_kwh_api`.
+        The totals read `imp_kwh`, so its kWh was in none of them; the heatmap marked it missing and
+        the server, which accepted the settled figure, had nothing to fill."""
         st = _store()
         st._conn.execute("UPDATE blocks SET imp_kwh_api=0.5 WHERE block_start=?", (NO_IMPORT[0],))
+        st._conn.commit()
         g = st.find_block_gaps(min_age_hours=0, now=NOW)
-        self.assertEqual([x["slots"] for x in g], [5])
+        self.assertEqual([x["slots"] for x in g], [6])
+        p = real_engine.gap_fill_plan(st, [[DAY[0], "2026-10-11T00:00:00"]], now=NOW)
+        self.assertEqual(p["fill_runs"], [[NO_IMPORT[0], DAY[26]]])
 
     def test_GUARD_the_deletes_still_see_every_block(self):
         self.assertEqual(len(_store().get_block_starts_in_range("electricity_main", DAY[0],

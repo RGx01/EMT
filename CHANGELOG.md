@@ -5,6 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **The last half-hours with no usage figure can be filled too.** A half-hour that had Octopus's settled
+  figure but no usage of its own showed as missing on the heatmap, while the gap fill said there was
+  nothing to fill, and its kWh was left out of your totals. Both now agree it is missing, and filling
+  it puts the kWh back.
+
 ## [2026.11.0b13] — 2026-11-05
 
 - **A battery is no longer flagged for counting solar because of missing usage.** The battery check
