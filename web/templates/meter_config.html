@@ -1037,7 +1037,7 @@ var BATTERY_CLAMP_NOTE = 'A clamp meter (a CT, e.g. a Shelly EM) on the battery\
 var BATTERY_SENSOR_HINT = 'Cumulative kWh the battery charged <strong>from the grid</strong> only — not its total ' +
   'charge. Many inverters report the total, solar included, which makes the device breakdown wrong; EMT can ' +
   'only tell in sunny months, and warns you if it finds it. If your inverter has no grid-charge sensor, ' +
-  'leave the battery out: its charge then counts in the house. ' + BATTERY_CLAMP_NOTE;
+  'leave this blank: the battery keeps its Overview card, and its charge counts in the house. ' + BATTERY_CLAMP_NOTE;
 
 function loadBatteryFlags() {
   return fetch(apiUrl('/api/battery-sensor/flagged')).then(function (r) { return r.json(); }).then(function (d) {
@@ -1069,7 +1069,8 @@ function batteryFlagNote(meterId, b) {
     'and the rest of the house\'s too low. Your bill total is not affected.<br>' +
     '<strong>To fix it:</strong> choose the sensor that reports the battery\'s charge <strong>from the grid</strong> ' +
     'only, and save; the half-hours already recorded keep this sensor\'s readings. If your inverter has none, ' +
-    'remove the battery: its charge then counts in the house. ' + BATTERY_CLAMP_NOTE + '<br><br>' +
+    'empty the Read Sensor and save: the battery keeps its Overview card, its charge counts in the house, and ' +
+    '<strong>Clear history</strong> on this card removes what this sensor recorded. ' + BATTERY_CLAMP_NOTE + '<br><br>' +
     '<button class="btn btn-sm js-battery-confirm" data-meter="' + esc(meterId) + '" data-confirmed="1" ' +
     'style="font-size:12px;">Keep this sensor anyway</button>' +
     '</div>';
@@ -1167,7 +1168,8 @@ function buildSubCard(meterId, meter) {
           ? '<li>A battery\'s sensor must be its charge <strong>from the grid</strong> only. Many inverters (GivEnergy, ' +
             'Powerwall, Solax) also offer a total charge, solar included — that one makes the device breakdown wrong. ' +
             'EMT can only tell in sunny months, when the battery charges more than the house imports, and warns you ' +
-            'if it finds it. No grid-charge sensor? Leave the battery out: its charge then counts in the house.</li>' +
+            'if it finds it. No grid-charge sensor? Leave this blank: the battery keeps its Overview card, and its ' +
+            'charge counts in the house.</li>' +
             '<li>' + BATTERY_CLAMP_NOTE + '</li>' +
             '<li>Add the SoC and inverter power sensors below to enable the Live Power battery card</li>'
           : isEV
@@ -1314,8 +1316,14 @@ function buildHistorySection(meterId, retired) {
           '<button class="btn btn-sm js-hist-check" data-meter="' + meterId + '">Check sensors</button>' +
           '<button class="btn btn-sm js-hist-rebuild" data-meter="' + meterId + '">▶ Rebuild history</button>' +
           '<button class="btn btn-sm js-hist-replace" data-meter="' + meterId + '">↻ Replace history</button>' +
+          '<button class="btn btn-sm js-hist-clear" data-meter="' + meterId + '" style="display:none;color:var(--danger);">🗑 Clear history</button>' +
         '</div>' +
-        '<small style="color:var(--muted);display:block;margin-bottom:6px;">Rebuilds the half-hours this device ' +
+        '<small class="js-hist-none" style="display:none;color:var(--muted);margin-bottom:6px;">This device has no read ' +
+        'sensor, so EMT records nothing for it from here on and its usage counts in the house. Its live cards on the ' +
+        'Overview still work. <strong>Clear history</strong> removes everything it already holds, after a backup, and ' +
+        'gives that usage back to the house.</small>' +
+        '<small class="js-hist-has" style="color:var(--muted);display:block;margin-bottom:6px;">' +
+        'Rebuilds the half-hours this device ' +
         'has no data for, from its live sensor then its history sensors, split by the house import and never above it. ' +
         'A backup is taken first; live and imported data are untouched; it can be removed below. ' +
         '<strong>Replace history</strong> rebuilds it all again from the sensors above, dropping what a sensor ' +
@@ -1334,6 +1342,12 @@ function _renderHistoryState() {
   [].slice.call(document.querySelectorAll('.dev-history')).forEach(function(box) {
     var m = box.dataset.meter, run = _hist.runs[m] || {}, layer = _hist.layer[m];
     var pr = box.querySelector('.js-hist-progress'), ly = box.querySelector('.js-hist-layer');
+    // no sensor saved: nothing to rebuild from, and what it holds can only be cleared
+    var noSensor = !_histSensors(m).length && !_histUnsaved(m);
+    function _shown(b, on) { b.style.display = !on ? 'none' : (b.tagName === 'SMALL' ? 'block' : ''); }
+    [].slice.call(box.querySelectorAll('.js-hist-check, .js-hist-rebuild, .js-hist-replace, .js-hist-has')).forEach(function(b) { _shown(b, !noSensor); });
+    [].slice.call(box.querySelectorAll('.js-hist-clear, .js-hist-none')).forEach(function(b) { _shown(b, noSensor); });
+    [].slice.call(box.querySelectorAll('.js-hist-clear')).forEach(function(b) { b.disabled = _hist.removing; });
     var st = run.status;
     // a run is under way from its claim (4 Nov 2026, b7: a replace's fetch and drop ran as the
     // claim, the card showed nothing, and a second click was told "already active")
@@ -1385,8 +1399,9 @@ function _histSourcesHtml(m) {
              ' → ' + esc((x.to || '?').substr(0, 10)) + ')' + (x.on_stitch ? '' : ' — <strong>no longer used</strong>');
     }).join('; ') + '</div>' +
     (off.length ? '<div style="font-size:12px;color:#b45309;padding:0 0 6px;">⚠ Part of this device\u2019s history ' +
-      'is from a sensor it no longer uses. If that sensor was wrong, <strong>Replace history</strong> rebuilds it from ' +
-      'the sensors it uses now.</div>' : '');
+      'is from a sensor it no longer uses. If that sensor was wrong, ' + (_histSensors(m).length
+        ? '<strong>Replace history</strong> rebuilds it from the sensors it uses now.'
+        : '<strong>Clear history</strong> removes it.') + '</div>' : '');
 }
 function _loadHistoryState() {
   return Promise.all([
@@ -1524,6 +1539,27 @@ function _histRemoveLayer(m) {
     }).then(function(d) {
       _histNote(m, d.ok ? '✓ Removed ' + (d.deleted || 0) + ' half-hours.' : '<span style="color:var(--danger);">' +
         esc(d.error === 'backout_failed' ? 'The undo failed — the log has the detail.' : (d.error || 'failed')) + '</span>');
+    }).catch(function(e) { _histNote(m, 'Request failed: ' + esc(e.message)); })
+    .then(function() { _hist.removing = false; _loadHistoryState(); });
+}
+
+function _histClear(m) {
+  if (_hist.removing) return;
+  if (_histUnsaved(m) || _histSensors(m).length) { _histNote(m, '<span style="color:#b45309;">Save Config first.</span>'); return; }
+  var label = ((config.meters[m] || {}).meta || {}).device || m;
+  if (!window.confirm('Clear all the history of ' + label + '?\n\nEverything it holds goes: rebuilt, live and imported ' +
+                      'half-hours, and the readings kept for them. That usage returns to the house.\n\n' +
+                      'A backup is taken first. The device and its Overview card stay.')) return;
+  _hist.removing = true; _renderHistoryState();
+  _histNote(m, '⏳ Backing up and clearing… (over a long history this takes a few minutes)');
+  fetch(apiUrl('/api/historical/attribute/clear'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({meter_id: m})})
+    .then(function(r) { return r.json(); }).then(function(d) {
+      return (d.ok && d.status === 'running') ? _pollBackout(m) : d;
+    }).then(function(d) {
+      _histNote(m, d.ok ? '✓ Cleared ' + (d.deleted || 0) + ' half-hours.' : '<span style="color:var(--danger);">' +
+        esc(d.error === 'backout_failed' ? 'That failed \u2014 the log has the detail.' :
+            d.error === 'has_sensor' ? 'This device still has a sensor.' : (d.error || 'failed')) + '</span>');
     }).catch(function(e) { _histNote(m, 'Request failed: ' + esc(e.message)); })
     .then(function() { _hist.removing = false; _loadHistoryState(); });
 }
@@ -1774,6 +1810,7 @@ function onContainerClick(e) {
   if (el.classList.contains('js-hist-replace'))      { _histReplace(el.dataset.meter, false); return; }
   if (el.classList.contains('js-hist-replace-override')) { _histReplace(el.dataset.meter, true); return; }
   if (el.classList.contains('js-hist-remove-layer')) { _histRemoveLayer(el.dataset.meter); return; }
+  if (el.classList.contains('js-hist-clear'))        { _histClear(el.dataset.meter); return; }
   if (el.classList.contains('js-hist-ctl')) {
     fetch(apiUrl('/api/historical/attribute/control'), {method: 'POST', headers: {'Content-Type': 'application/json'},
           body: JSON.stringify({action: el.dataset.act, meter_id: el.dataset.meter})})
@@ -2558,7 +2595,11 @@ function _renamedDevices() {
     if (!was || !(m.meta || {}).sub_meter) return;
     var oldRead = ((was.channels || {}).import || {}).read || '';
     var imp = (m.channels || {}).import || {};
-    if (oldRead && oldRead !== (imp.read || '')) out.push({id: id, label: (m.meta || {}).device || id, old: oldRead});
+    if (!oldRead || oldRead === (imp.read || '')) return;
+    // emptied, not changed (6 Nov 2026): there is no new sensor to ask about, and no way back to the old
+    // one is wanted. What it recorded stays until Clear history on the card.
+    if (!(imp.read || '').trim()) { imp.keep_old_read = false; return; }
+    out.push({id: id, label: (m.meta || {}).device || id, old: oldRead});
   });
   return out;
 }
