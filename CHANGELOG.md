@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b15] — 2026-11-06
 
 - **Save Config shows when there is something to save.** It is dimmed until you change a setting, then lights up.
 - **Rate brackets' legend takes one row on Agile.** More than a dozen brackets now show as a single colour scale
