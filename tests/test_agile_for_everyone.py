@@ -10,7 +10,7 @@ aside. Shown by default (the user).
 The Octopus calls, within the API rule (capped, paced, persisted): the product list once a week, for
 the current Agile products (their codes change); the prices once a day after Octopus publishes
 tomorrow's — from 16:30 local, 90 minutes apart, at most four times a day — from where the record
-ends (31 days back the first time) to the end of tomorrow, one call a direction; kept in the store's
+ends (31 days back the first time) to 23:00 tomorrow, one call a direction; kept in the store's
 meta, so a restart asks for nothing it has. Not for a direction the account is on Agile for itself
 (its own schedule has those). REST, so the account's GraphQL points are not spent. Display only.
 
@@ -56,8 +56,8 @@ class TheRules(unittest.TestCase):
     def test_tomorrows_from_half_past_four(self):
         before = datetime(2026, 11, 1, 16, 0, tzinfo=LON)
         after = datetime(2026, 11, 1, 16, 30, tzinfo=LON)
-        self.assertEqual(A.target_through(before, LON), datetime(2026, 11, 2, 0, 0))
-        self.assertEqual(A.target_through(after, LON), datetime(2026, 11, 3, 0, 0))
+        self.assertEqual(A.target_through(before, LON), datetime(2026, 11, 1, 23, 0))
+        self.assertEqual(A.target_through(after, LON), datetime(2026, 11, 2, 23, 0))
 
     def test_due_short_paced_and_capped(self):
         now_l = datetime(2026, 11, 1, 16, 40, tzinfo=LON)
@@ -150,8 +150,8 @@ class TheCard(unittest.TestCase):
         self.assertIn("or bool(_ap_ag.region_of((_disc.get(\"import\") or {}).get(\"tariff_code\") or \"\")))", self.SERVER)
 
     def test_named_for_the_region_with_the_comparison(self):
-        self.assertIn("'\\u26a1 Agile in your region' + (reg ? ' (' + reg + ')' : '')", self.PAGE)
-        self.assertIn("' at Agile\\u2019s unit rates: ' +", self.PAGE)
+        self.assertIn("(rec.public ? ' in your region' + (rec.region ? ' (' + rec.region + ')' : '') : '')", self.PAGE)
+        self.assertIn("' at Agile\\u2019s unit rates: ' +", self.PAGE.replace("\u2019", "\\u2019"))
 
     def test_the_route_falls_back_to_the_regions_prices(self):
         i = self.SERVER.index("def api_agile_prices(")

@@ -6576,13 +6576,19 @@ _agile_public_running = False
 
 def _agile_public_channels() -> list:
     """The directions to fetch Agile's public prices for: import unless the account is on Agile
-    itself (its own schedule has them), export where it exports and is not on Agile Outgoing."""
+    itself (its own schedule has them), export where it exports and is not on Agile Outgoing; not
+    a direction whose card is hidden."""
+    import agile_public as _ap
     import tariff_prices as _tp
     disc = _kraken_discovery or {}
+    try:
+        hidden = _ap.hidden_channels(_reader().get_settings())
+    except Exception:
+        hidden = set()                      # read in the tick: a bad read must not stop it
     out = []
     for ch in ("import", "export"):
         d = disc.get(ch) or {}
-        if ch == "export" and not d:
+        if ch in hidden or (ch == "export" and not d):
             continue
         if not _tp.is_dynamic_code(d.get("tariff_code") or ""):
             out.append(ch)
@@ -6638,6 +6644,7 @@ async def _fetch_agile_public() -> dict:
     minutes apart (agile_public.due). Returns the record; never raises."""
     import agile_public as _ap
     from zoneinfo import ZoneInfo
+    rec = None
     try:
         rec = dict(_reader().get_meta(_ap.META_KEY) or {})
         tz = ZoneInfo(_store.site_timezone() or "Europe/London")
@@ -6679,7 +6686,8 @@ async def _fetch_agile_public() -> dict:
     except Exception as e:
         logger.warning("agile prices: the fetch failed (%s) — asked again later", e)
         try:
-            r = dict(_reader().get_meta(_ap.META_KEY) or {})
+            # `rec`, so a failure counts against the day's tries and keeps the direction it did fetch
+            r = rec if rec is not None else dict(_reader().get_meta(_ap.META_KEY) or {})
             r["asked"] = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
             _store.set_meta(_ap.META_KEY, r)
         except Exception:

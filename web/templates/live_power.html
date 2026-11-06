@@ -1027,25 +1027,41 @@ function setMiniSource(enabled){
 
 {% if has_agile %}
 <!-- ── BL-100: Agile prices — the 48-hour history card's style and size: 24 h back, and as far ahead
-     as Octopus has published. Emitted only where the import or export tariff is dynamic. ── -->
-<div class="wide-row">
-  <div class="card power-history-card" id="agile-card-wrap">
-    <div class="card-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;">
-      <span id="agile-title">⚡ Agile Prices</span>
-      <span id="agile-now" style="font-size:12px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--muted);"></span>
+     as Octopus has published. A card each for import and export (6 Nov 2026, the user), so each has its
+     own scale and can be hidden. Export shows once there are prices: not every account exports. ── -->
+{% for ch in ('import', 'export') %}
+<div class="wide-row" id="agile-row-{{ ch }}"{% if agile_hidden[ch] or ch == 'export' %} style="display:none;"{% endif %}>
+  <div class="card power-history-card expandable-card" id="agile-card-{{ ch }}">
+    <button class="expand-btn" title="Hide this card" aria-label="Hide this card" style="right:40px;" onclick="_agileSetHidden('{{ ch }}', true)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/><path d="M3 13L13 3"/>
+      </svg>
+    </button>
+    <button class="expand-btn" title="Expand" aria-label="Expand" onclick="_expandCard('agile-{{ ch }}')">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4"/>
+      </svg>
+    </button>
+    <div class="card-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding-right:64px;">
+      <span id="agile-title-{{ ch }}">⚡ Agile {{ ch }}</span>
+      <span id="agile-now-{{ ch }}" style="font-size:12px;font-weight:400;text-transform:none;letter-spacing:normal;color:var(--muted);"></span>
     </div>
     <div class="power-history-wrap">
-      <canvas id="agile-canvas"></canvas>
-      <div class="ph-tooltip" id="agile-tooltip"></div>
+      <canvas id="agile-canvas-{{ ch }}"></canvas>
+      <div class="ph-tooltip" id="agile-tooltip-{{ ch }}"></div>
     </div>
     <div class="power-history-legend">
-      <span id="agile-legend-import"><i style="background:linear-gradient(to right,#22c55e,#f59e0b,#ff6b6b);"></i>Import, inc VAT</span>
-      <span id="agile-legend-export"><i style="background:#a78bfa;"></i>Export</span>
-      <span id="agile-status" style="margin-left:auto;font-size:11px;color:var(--muted);"></span>
+      {% if ch == 'import' %}
+      <span><i style="background:linear-gradient(to right,#22c55e,#f59e0b,#ff6b6b);"></i>Import, inc VAT</span>
+      {% else %}
+      <span><i style="background:linear-gradient(to right,hsl(205,62%,54%),hsl(275,62%,46%));"></i>Export</span>
+      {% endif %}
+      <span id="agile-status-{{ ch }}" style="margin-left:auto;font-size:11px;color:var(--muted);"></span>
     </div>
-    <div id="agile-compare" style="display:none;font-size:12px;color:var(--muted);margin-top:6px;"></div>
+    <div id="agile-compare-{{ ch }}" style="display:none;font-size:12px;color:var(--muted);margin-top:6px;"></div>
   </div>
 </div>
+{% endfor %}
 {% endif %}
 </div><!-- /.live-power-page -->
 
@@ -1082,6 +1098,13 @@ function setMiniSource(enabled){
   {{ billing_card("📆 This Year", year_total, year_rows, year_period, "year") }}
 </div>
 
+{% if has_agile %}
+<div id="agile-restore" style="display:none;margin-top:16px;font-size:12px;color:var(--muted);text-align:center;">
+  <a href="#" id="agile-restore-import" style="color:inherit;" onclick="_agileSetHidden('import', false); return false;">Show Agile import prices</a>
+  <span id="agile-restore-gap"> · </span>
+  <a href="#" id="agile-restore-export" style="color:inherit;" onclick="_agileSetHidden('export', false); return false;">Show Agile export prices</a>
+</div>
+{% endif %}
 {% endblock %}
 
 {% block scripts %}
@@ -1338,29 +1361,38 @@ function loadChargeSessions(){
 }
 document.addEventListener('DOMContentLoaded', loadChargeSessions);
 
-// ── BL-100 (1 Nov 2026): Agile prices, drawn as the 48-hour history is ──────────────────────────
-// Import a bar a half-hour, green to red by price across the day shown, blue below 0p; export a line.
-// Now is a dashed line; the time not yet published is left empty, with when it comes.
+// ── BL-100 (1 Nov 2026): Agile prices, drawn as the 48-hour history is ──────────────
+// A card each for import and export (6 Nov 2026, the user), each a bar a half-hour on its own scale: import
+// green to red by price, blue below 0p; export blue to purple as it pays more, red below 0p. Now is a dashed
+// line; the time not yet published is left empty, with when it comes.
 var _agile = null;
+var _agileHidden = {{ agile_hidden|default({'import': False, 'export': False})|tojson }};
+var _AGILE_CHS = ['import', 'export'];
 function _agileColor(p, lo, hi){
   if (p < 0) return '#3b82f6';
   var t = hi > lo ? Math.max(0, Math.min(1, (p - Math.max(lo, 0)) / (hi - Math.max(lo, 0)))) : 0;
   return 'hsl(' + Math.round(130 * (1 - t)) + ', 65%, 48%)';
 }
+function _agileExportColor(p, lo, hi){
+  if (p < 0) return '#ef4444';
+  var t = hi > lo ? Math.max(0, Math.min(1, (p - Math.max(lo, 0)) / (hi - Math.max(lo, 0)))) : 0;
+  return 'hsl(' + Math.round(205 + 70 * t) + ', 62%, ' + Math.round(54 - 8 * t) + '%)';
+}
 function _agileMs(iso){ return new Date(iso + (iso.slice(-1) === 'Z' ? '' : 'Z')).getTime(); }
 function _agileHHMM(ms){ var d = new Date(ms); return ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2); }
-function _agileDraw(){
-  var cv = document.getElementById('agile-canvas'); if (!cv || !_agile) return;
+function _agilePrices(ch){ return ((_agile || {})[ch] || {}).prices || []; }
+function _agileDraw(ch){
+  var cv = document.getElementById('agile-canvas-' + ch); if (!cv || !_agile) return;
   var dpr = window.devicePixelRatio || 1, rect = cv.getBoundingClientRect();
   var W = rect.width || 600, H = rect.height || 120;
   cv.width = W * dpr; cv.height = H * dpr;
   var ctx = cv.getContext('2d'); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, W, H);
   var dark = document.documentElement.getAttribute('data-theme') !== 'light';
   var txt = dark ? '#6b7080' : '#555566', grid = dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.08)';
-  var imp = (_agile.import || {}).prices || [], exp = (_agile.export || {}).prices || [];
+  var list = _agilePrices(ch), color = ch === 'export' ? _agileExportColor : _agileColor;
   var now = _agileMs(_agile.now), t0 = now - 24 * 3600000, span = 48 * 3600000;
   var PAD_L = 42, PAD_T = 12, PAD_B = 24, CW = W - PAD_L, CH = H - PAD_T - PAD_B;
-  var all = imp.concat(exp).map(function(x){ return x[1]; });
+  var all = list.map(function(x){ return x[1]; });
   if (!all.length) { ctx.fillStyle = txt; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
                      ctx.fillText('No prices yet — EMT fetches them at its next poll', W / 2, H / 2); return; }
   var vmax = Math.max(5, Math.max.apply(null, all)), vmin = Math.min(0, Math.min.apply(null, all));
@@ -1375,27 +1407,16 @@ function _agileDraw(){
     ctx.beginPath(); ctx.moveTo(PAD_L, y(v)); ctx.lineTo(W, y(v)); ctx.stroke();
     ctx.fillStyle = txt; ctx.fillText(v + 'p', PAD_L - 4, y(v));
   }
-  // the day's import, a bar a half-hour
-  var ilo = Math.min.apply(null, imp.map(function(p){ return p[1]; }).concat([0]));
-  var ihi = Math.max.apply(null, imp.map(function(p){ return p[1]; }).concat([1]));
+  // a bar a half-hour
+  var lo = Math.min.apply(null, all.concat([0])), hi = Math.max.apply(null, all.concat([1]));
   var bw = Math.max(1, CW / 96 - 1);
-  imp.forEach(function(p){
+  list.forEach(function(p){
     var ms = _agileMs(p[0]), top = Math.min(y(p[1]), y(0)), h = Math.abs(y(p[1]) - y(0));
     ctx.globalAlpha = ms + 1800000 <= now ? 0.45 : 1;          // the past fainter
-    ctx.fillStyle = _agileColor(p[1], ilo, ihi);
+    ctx.fillStyle = color(p[1], lo, hi);
     ctx.fillRect(x(ms) + 0.5, top, bw, Math.max(1, h));
   });
   ctx.globalAlpha = 1;
-  // export, a stepped line
-  if (exp.length) {
-    ctx.strokeStyle = '#a78bfa'; ctx.lineWidth = 1.5; ctx.beginPath();
-    exp.forEach(function(p, i){
-      var ms = _agileMs(p[0]);
-      if (i) ctx.lineTo(x(ms), y(p[1])); else ctx.moveTo(x(ms), y(p[1]));
-      ctx.lineTo(x(ms + 1800000), y(p[1]));
-    });
-    ctx.stroke();
-  }
   // now
   ctx.strokeStyle = txt; ctx.setLineDash([3, 3]); ctx.beginPath();
   ctx.moveTo(x(now), PAD_T); ctx.lineTo(x(now), PAD_T + CH); ctx.stroke(); ctx.setLineDash([]);
@@ -1409,71 +1430,111 @@ function _agileAt(list, ms){
   for (var i = 0; i < list.length; i++) { var s = _agileMs(list[i][0]); if (ms >= s && ms < s + 1800000) return list[i][1]; }
   return null;
 }
-// The cheapest upcoming hour's start (two half-hours together), from the import published
-function _agileCheapest(imp, now){
+// The cheapest upcoming hour's start (two half-hours together), or with `dearest` the best-paid
+function _agileCheapest(list, now, dearest){
   var best = null;
-  for (var i = 0; i + 1 < imp.length; i++) {
-    var a = _agileMs(imp[i][0]); if (a < now - 1800000 + 1) continue;
-    if (_agileMs(imp[i + 1][0]) !== a + 1800000) continue;
-    var avg = (imp[i][1] + imp[i + 1][1]) / 2;
-    if (!best || avg < best.avg) best = {ms: a, avg: avg};
+  for (var i = 0; i + 1 < list.length; i++) {
+    var a = _agileMs(list[i][0]); if (a < now - 1800000 + 1) continue;
+    if (_agileMs(list[i + 1][0]) !== a + 1800000) continue;
+    var avg = (list[i][1] + list[i + 1][1]) / 2;
+    if (!best || (dearest ? avg > best.avg : avg < best.avg)) best = {ms: a, avg: avg};
   }
   return best;
 }
-function _agileSummary(){
-  var imp = (_agile.import || {}).prices || [], exp = (_agile.export || {}).prices || [];
-  var now = _agileMs(_agile.now), out = [];
-  var pi = _agileAt(imp, now), pe = _agileAt(exp, now);
-  function pp(v) { return (v < 0 ? '\u2212' : '') + Math.abs(v).toFixed(1) + 'p'; }   // a minus sign, not a hyphen
-  if (pi != null) out.push('Now ' + pp(pi) + ' import');
-  if (pe != null) out.push(pp(pe) + ' export');
-  var c = _agileCheapest(imp, now);
-  if (c) out.push('cheapest hour ' + _agileHHMM(c.ms) + ', ' + pp(c.avg));
-  document.getElementById('agile-now').textContent = out.join(' · ');
-  var last = imp.length ? _agileMs(imp[imp.length - 1][0]) + 1800000 : null;
-  document.getElementById('agile-status').textContent = last
-    ? ('Published to ' + _agileHHMM(last) + (last < now + 24 * 3600000 ? ' · tomorrow’s from about 4pm' : '')) : '';
-  document.getElementById('agile-legend-import').style.display = imp.length ? '' : 'none';
-  document.getElementById('agile-legend-export').style.display = exp.length ? '' : 'none';
+// What the footer says. The prices sent stop 24 h ahead, the chart's edge, so reaching it means tomorrow's are
+// in, not that they stop there.
+function _agileStatus(list, now){
+  if (!list.length) return '';
+  var last = _agileMs(list[list.length - 1][0]) + 1800000;
+  if (last >= now + 24 * 3600000 - 1800000) return 'Tomorrow\u2019s published';
+  return 'Published to ' + _agileHHMM(last) + ' \u00b7 tomorrow\u2019s from about 4pm';
+}
+// An hour's name: its time, and "tomorrow" if it is not today
+function _agileWhen(ms, now){
+  return _agileHHMM(ms) + (new Date(ms).getDate() !== new Date(now).getDate() ? ' tomorrow' : '');
+}
+function _agileSummary(ch){
+  var list = _agilePrices(ch), rec = _agile[ch] || {};
+  var now = _agileMs(_agile.now), out = [], ex = ch === 'export';
+  function pp(v) { return (v < 0 ? '−' : '') + Math.abs(v).toFixed(1) + 'p'; }   // a minus sign, not a hyphen
+  var p = _agileAt(list, now);
+  if (p != null) out.push('Now ' + pp(p));
+  var c = _agileCheapest(list, now, ex);
+  if (c) out.push((ex ? 'best hour ' : 'cheapest hour ') + _agileWhen(c.ms, now) + ', ' + pp(c.avg));
+  document.getElementById('agile-now-' + ch).textContent = out.join(' · ');
+  document.getElementById('agile-status-' + ch).textContent = _agileStatus(list, now);
   // BL-103: on an account not on Agile, Agile's prices in its region, and its last 30 days at them
-  var pub = (_agile.import || {}).public || (_agile.export || {}).public;
-  var reg = (_agile.import || {}).region || (_agile.export || {}).region;
-  document.getElementById('agile-title').textContent = pub ? '\u26a1 Agile in your region' + (reg ? ' (' + reg + ')' : '') : '\u26a1 Agile Prices';
-  var cmp = document.getElementById('agile-compare'), parts = [];
-  var ci = (_agile.import || {}).compare, ce = (_agile.export || {}).compare;
-  function gbp(v) { return (v < 0 ? '\u2212' : '') + '\u00a3' + Math.abs(v).toFixed(2); }
-  if (ci) parts.push('import ' + gbp(ci.agile) + ' against ' + gbp(ci.actual) + ' paid');
-  if (ce) parts.push('export ' + gbp(ce.agile) + ' against ' + gbp(ce.actual) + ' earned');
-  var days = (ci || ce || {}).days;
-  cmp.style.display = parts.length ? '' : 'none';
-  cmp.textContent = parts.length ? 'Your last ' + days + (days === 1 ? ' day' : ' days') + ' at Agile\u2019s unit rates: ' +
-    parts.join(' \u00b7 ') + ' (standing charges aside)' : '';
+  document.getElementById('agile-title-' + ch).textContent = '⚡ Agile ' + ch +
+    (rec.public ? ' in your region' + (rec.region ? ' (' + rec.region + ')' : '') : '');
+  var cmp = document.getElementById('agile-compare-' + ch), ci = rec.compare;
+  function gbp(v) { return (v < 0 ? '−' : '') + '£' + Math.abs(v).toFixed(2); }
+  cmp.style.display = ci ? '' : 'none';
+  cmp.textContent = ci ? 'Your last ' + ci.days + (ci.days === 1 ? ' day' : ' days') + ' at Agile’s unit rates: ' +
+    gbp(ci.agile) + ' against ' + gbp(ci.actual) + (ex ? ' earned' : ' paid') + ' (standing charges aside)' : '';
+}
+// Which cards show: not a hidden one; export only with prices, and import unless only export has any. With
+// none at all, import alone says so. Pure, so the page and its tests read one rule.
+function _agileShown(data, hidden){
+  function has(ch){ return !!(data && data[ch] && (data[ch].prices || []).length); }
+  return {'import': !hidden['import'] && (has('import') || !has('export')),
+          'export': !hidden['export'] && has('export')};
+}
+function _agileApply(){
+  var shown = _agileShown(_agile, _agileHidden);
+  _AGILE_CHS.forEach(function(ch){
+    var row = document.getElementById('agile-row-' + ch);
+    if (row) row.style.display = shown[ch] ? '' : 'none';
+    var link = document.getElementById('agile-restore-' + ch);
+    if (link) link.style.display = _agileHidden[ch] ? '' : 'none';
+  });
+  var foot = document.getElementById('agile-restore'), gap = document.getElementById('agile-restore-gap');
+  if (foot) foot.style.display = _agileHidden['import'] || _agileHidden['export'] ? '' : 'none';
+  if (gap) gap.style.display = _agileHidden['import'] && _agileHidden['export'] ? '' : 'none';
+}
+function _agileRender(){
+  _agileApply();
+  _AGILE_CHS.forEach(function(ch){
+    if (!_agileShown(_agile, _agileHidden)[ch]) return;
+    _agileSummary(ch); _agileDraw(ch);
+  });
+}
+function _agileSetHidden(ch, hide){
+  var body = {}; body['agile_hide_' + ch] = hide;
+  fetch(apiUrl('/api/settings'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+    .then(function(r){ return r.json(); }).then(function(d){
+      if (!d.ok) throw new Error(d.error || 'not saved');
+      _agileHidden[ch] = hide;
+      if (hide) { _agileRender(); } else { _agileApply(); loadAgilePrices(); }
+    }).catch(function(e){
+      if (window.EMT && EMT.notify) EMT.notify({id: 'agile-hide-failed', level: 'critical', dismissible: true,
+        html: 'Could not ' + (hide ? 'hide' : 'show') + ' the Agile card. Please try again.'});
+    });
 }
 function loadAgilePrices(){
-  if (!document.getElementById('agile-card-wrap')) return;
+  if (!document.getElementById('agile-card-import')) return;
+  if (_agileHidden['import'] && _agileHidden['export']) { _agileApply(); return; }
   fetch(apiUrl('/api/agile-prices')).then(function(r){ return r.json(); }).then(function(d){
     if (!d || d.error) return;
-    _agile = d; _agileSummary(); _agileDraw();
+    _agile = d; _agileRender();
   }).catch(function(){});
 }
-(function(){
-  var cv = document.getElementById('agile-canvas'), tip = document.getElementById('agile-tooltip');
+_AGILE_CHS.forEach(function(ch){
+  var cv = document.getElementById('agile-canvas-' + ch), tip = document.getElementById('agile-tooltip-' + ch);
   if (!cv) return;
   cv.addEventListener('mousemove', function(e){
     if (!_agile) return;
     var r = cv.getBoundingClientRect(), now = _agileMs(_agile.now), t0 = now - 24 * 3600000;
     var ms = t0 + (e.clientX - r.left - 42) / (r.width - 42) * 48 * 3600000;
-    var pi = _agileAt((_agile.import || {}).prices || [], ms), pe = _agileAt((_agile.export || {}).prices || [], ms);
-    if (pi == null && pe == null) { tip.style.display = 'none'; return; }
+    var p = _agileAt(_agilePrices(ch), ms);
+    if (p == null) { tip.style.display = 'none'; return; }
     var s = Math.floor(ms / 1800000) * 1800000;
-    tip.innerHTML = _agileHHMM(s) + '–' + _agileHHMM(s + 1800000) +
-      (pi != null ? '<br>Import ' + pi.toFixed(2) + 'p' : '') + (pe != null ? '<br>Export ' + pe.toFixed(2) + 'p' : '');
+    tip.innerHTML = _agileHHMM(s) + '–' + _agileHHMM(s + 1800000) + '<br>' + p.toFixed(2) + 'p';
     tip.style.display = 'block';
     tip.style.left = Math.min(e.clientX - r.left + 10, r.width - 120) + 'px'; tip.style.top = '8px';
   });
   cv.addEventListener('mouseleave', function(){ tip.style.display = 'none'; });
-  window.addEventListener('resize', _agileDraw);
-})();
+});
+window.addEventListener('resize', function(){ _AGILE_CHS.forEach(_agileDraw); });
 document.addEventListener('DOMContentLoaded', loadAgilePrices);
 // the prices move at the poll's rate refresh; every 10 minutes keeps "now" moving
 setInterval(loadAgilePrices, 600000);
@@ -1830,12 +1891,14 @@ _backdrop.appendChild(_expandModal);
 
 var _expandWhich = null;
 var _phOrigWrap = null; // original .power-history-wrap
+var _agileOrigWrap = null; // an expanded Agile card's own .power-history-wrap
 
 function _expandCard(which) {
   if (event) event.stopPropagation();
   _expandWhich = which;
 
-  var cardId = which === 'carbon' ? 'carbon-card-wrap' : 'power-history-card-wrap';
+  var agileCh = which === 'agile-import' ? 'import' : which === 'agile-export' ? 'export' : null;
+  var cardId = agileCh ? 'agile-card-' + agileCh : which === 'carbon' ? 'carbon-card-wrap' : 'power-history-card-wrap';
   var card = document.getElementById(cardId);
   if (!card) return;
 
@@ -1906,10 +1969,37 @@ function _expandCard(which) {
     }
   }
 
+  // An Agile card likewise: its own canvas, so its hover keeps working. The clone's ids are dropped, so
+  // the refresh goes on finding the card's own summary.
+  if (agileCh) {
+    Array.from(_expandModal.querySelectorAll('[id]')).forEach(function(el){ el.removeAttribute('id'); });
+    var acv = document.getElementById('agile-canvas-' + agileCh);
+    var aWrap = _expandModal.querySelector('.power-history-wrap');
+    if (acv && aWrap) {
+      _agileOrigWrap = acv.parentElement;
+      var aTip = _agileOrigWrap.querySelector('.ph-tooltip');
+      aWrap.innerHTML = '';
+      aWrap.appendChild(acv);
+      if (aTip) aWrap.appendChild(aTip);
+      setTimeout(function() {
+        acv.style.height = (aWrap.getBoundingClientRect().height || 500) + 'px';
+        _agileDraw(agileCh);
+      }, 150);
+    }
+  }
+
   _backdrop.classList.add('active');
 }
 
 function _collapseAll() {
+  if (_agileOrigWrap && _expandWhich) {
+    var aCh = _expandWhich === 'agile-import' ? 'import' : 'export';
+    var aCv = document.getElementById('agile-canvas-' + aCh), aT = document.getElementById('agile-tooltip-' + aCh);
+    if (aCv) { aCv.style.height = ''; _agileOrigWrap.appendChild(aCv); }
+    if (aT) _agileOrigWrap.appendChild(aT);
+    _agileOrigWrap = null;
+    setTimeout(function() { _agileDraw(aCh); }, 50);
+  }
   // Restore canvas to original wrap before clearing modal
   if (_expandWhich === 'ph' && _phOrigWrap && _phCanvas) {
     var tip = _expandModal.querySelector('.ph-tooltip');

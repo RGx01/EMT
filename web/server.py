@@ -583,6 +583,9 @@ SETTINGS_DEFAULTS = {
     "gas_co2_g_per_kwh":            203.0, # BEIS/DESNZ 2023 GHG conversion factors
     "gas_boiler_efficiency":         0.90, # typical modern condensing boiler
 }
+# Overview's Agile cards: hidden, and their public prices not fetched. Beside the defaults, not in them:
+# Insights' carbon answer carries the defaults whole, and these are nothing to do with it.
+SETTINGS_FLAGS = {"agile_hide_import": False, "agile_hide_export": False}
 
 SETTINGS_NUMERIC = {
     "co2_car_petrol_g_per_mile",
@@ -1082,11 +1085,19 @@ def live_power_page():
                      or bool(_ap_ag.region_of((_disc.get("import") or {}).get("tariff_code") or "")))
     except Exception:
         has_agile = False
+    agile_hidden = {"import": False, "export": False}
+    try:
+        import agile_public as _ap_h
+        _hid = _ap_h.hidden_channels(store_access.store().get_settings())
+        agile_hidden = {ch: ch in _hid for ch in agile_hidden}
+    except Exception:
+        pass
 
     return render_template(
         "live_power.html",
         has_dispatch_data=has_dispatch_data,
         has_agile=has_agile,
+        agile_hidden=agile_hidden,
         active="live_power",
         currency=currency,
         today_total=today_total,
@@ -3660,7 +3671,7 @@ def api_settings_get():
     store = store_access.store()
     saved = store.get_settings()
     # Merge saved over defaults — any missing key falls back to default
-    result = dict(SETTINGS_DEFAULTS)
+    result = dict(SETTINGS_DEFAULTS, **SETTINGS_FLAGS)
     result.update(saved)
     return jsonify(result)
 
@@ -3670,7 +3681,7 @@ def api_settings_post():
     """Save settings. Only known keys accepted."""
     data = request.get_json(force=True) or {}
     saved = store_access.store().get_settings()
-    for key in SETTINGS_DEFAULTS:
+    for key in list(SETTINGS_DEFAULTS) + list(SETTINGS_FLAGS):
         if key in data:
             val = data[key]
             # Numeric fields
@@ -9673,7 +9684,11 @@ def api_agile_prices():
         store = store_access.store()
         rec = store.get_meta(_ap.META_KEY) or {}
         lo = (now - _td(days=_ap.COMPARE_DAYS)).isoformat()
+        hidden = _ap.hidden_channels(store.get_settings())
         for ch in ("import", "export"):
+            if ch in hidden:
+                out.pop(ch, None)
+                continue
             if ch in out:
                 continue
             c = rec.get(ch) or {}
