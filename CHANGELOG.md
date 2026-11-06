@@ -5,6 +5,11 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **The half-hours with no usage figure can be filled, this time from a click.** They showed as missing, but
+  clicking one showed its details and only Re-fetch, which cannot add the figure. It now offers Fill this gap.
+
 ## [2026.11.0b14] — 2026-11-06
 
 - **The last half-hours with no usage figure can be filled too.** A half-hour that had Octopus's settled
