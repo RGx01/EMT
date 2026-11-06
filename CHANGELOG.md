@@ -7,6 +7,9 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Save Config shows when there is something to save.** It is dimmed until you change a setting, then lights up.
+- **Removing a device's read sensor asks if it was wrong.** If it was, the history it left is wrong too. After the
+  save, EMT says so and offers Clear history there and then.
 - **History imports ask Octopus for 30 days at a time, not 60.** The first 60-day ask often timed out on
   slower accounts, which cost one tester 8 minutes of a 20-minute import before EMT asked for less.
   Gap fills ask the same way.
