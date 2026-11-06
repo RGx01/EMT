@@ -8,6 +8,9 @@ internal name for everything before the first public release and never appears i
 ## [Unreleased]
 
 - **Save Config shows when there is something to save.** It is dimmed until you change a setting, then lights up.
+- **Rate brackets' legend takes one row on Agile.** More than a dozen brackets now show as a single colour scale
+  instead of a key each. Hover a colour to name its bracket and pick it out in the bars. Tariffs with fewer
+  brackets keep their named keys.
 - **Save Config says what it is doing.** A save takes a backup first, which took a moment with nothing on screen.
   EMT now says so while it works, and the button can't be pressed a second time, which took a second backup.
 - **Removing a device's read sensor asks if it was wrong.** If it was, the history it left is wrong too. After the
