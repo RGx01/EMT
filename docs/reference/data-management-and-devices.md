@@ -176,7 +176,8 @@ key is never in it. A size estimate warns over 10 MB.
   fetch. A rebuild whose every fetch failed is an error, not "done".
 - **A device with no read sensor** is allowed: nothing is read for it, its usage counts in the house,
   and its Overview cards (which read only its power and SoC sensors) still work. Emptying the sensor
-  skips the change dialog, and the old one comes off the stitch. Neither sensor check judges such a device.
+  skips the change dialog, and the old one comes off the stitch; after the save's reload the page asks
+  whether it was wrong and offers Clear history (`_maybeOfferClear`). Neither sensor check judges such a device.
   **Clear history** (`/api/historical/attribute/clear`, `_backout_impl(whole=True)`): refused while it
   has any sensor; after a backup, every row and `ha_reads` row of the device go, so a refill cannot
   bring them back, and the house is recomputed over the span. The page polls `/backout/status`.
