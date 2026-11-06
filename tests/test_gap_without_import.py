@@ -11,9 +11,13 @@ now count a main block with no `imp_kwh` as missing, a settled figure alone incl
 
 Discriminating: the tests not marked GUARD fail on the parent.
 """
+import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -27,6 +31,33 @@ DAY = _hh("2026-10-10T00:00:00", 48)
 NO_IMPORT = DAY[20:26]                     # 10:00–12:30: the export kept, the import lost
 
 
+def _fn(name):
+    i = HEATMAP.index("function %s(" % name)
+    depth, j = 0, HEATMAP.index("{", i)
+    while True:
+        depth += {"{": 1, "}": -1}.get(HEATMAP[j], 0)
+        if HEATMAP[j] == "}" and depth == 0:
+            return HEATMAP[i:j + 1]
+        j += 1
+
+
+def _node(body):
+    """The page's isMissing, missingText and markMissing's rule for a cell, run in node."""
+    m = HEATMAP.index("      c.missing = (c.missing || 0) + 1;")
+    rule = HEATMAP[m:HEATMAP.index("      var del = (M.deleted", m)]
+    src = ("var MISSING_TEXT = 'no block for this half-hour \\u2014 missing';\n" + _fn("isMissing") + "\n" + _fn("missingText")
+           + "\nfunction isMissingAfter(kwh) { var iso = '2026-11-03T21:00:00'; "
+             "var c = {kwh: kwh, starts: [iso]};\n" + rule + "\nreturn c; }\n" + body)
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "t.js")
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(src)
+        r = subprocess.run(["node", p], capture_output=True, text=True, timeout=30)
+    if r.returncode:
+        raise AssertionError(r.stderr)
+    return json.loads(r.stdout)
+
+
 def _store():
     st = _st(DAY)
     st._conn.execute("UPDATE blocks SET imp_kwh=NULL, exp_kwh=0.3 WHERE block_start IN (%s)"
@@ -35,6 +66,7 @@ def _store():
     return st
 
 
+@unittest.skipUnless(shutil.which("node"), "node not available")
 class TheGaps(unittest.TestCase):
 
     def test_the_gap_list_counts_them(self):
@@ -66,6 +98,29 @@ class TheGaps(unittest.TestCase):
         self.assertEqual([x["slots"] for x in g], [6])
         p = real_engine.gap_fill_plan(st, [[DAY[0], "2026-10-11T00:00:00"]], now=NOW)
         self.assertEqual(p["fill_runs"], [[NO_IMPORT[0], DAY[26]]])
+
+    def test_a_click_on_one_offers_the_fill(self):
+        """6 Nov 2026, b14: `isMissing` asked for `kwh === null`, and these cells hold their export, so a click
+        opened the block's details, with Re-fetch and no Fill. Run in node, as the page's own functions."""
+        out = _node("""
+          var cell = isMissingAfter(-2.551);
+          console.log(JSON.stringify({held: isMissing(cell), starts: cell.starts, gaps: cell.gaps, flag: cell.noImport,
+                                      text: missingText(cell)}));""")
+        self.assertEqual(out, {"held": True, "starts": ["2026-11-03T21:00:00"], "gaps": ["2026-11-03T21:00:00"],
+                               "flag": True, "text": "no usage figure for this half-hour \u2014 missing"})
+
+    def test_GUARD_a_half_hour_with_no_block_is_still_missing(self):
+        out = _node("""
+          var c = {kwh: null, missing: 1};
+          console.log(JSON.stringify([isMissing(c), missingText(c)]));""")
+        self.assertEqual(out, [True, "no block for this half-hour \u2014 missing"])
+
+    def test_GUARD_the_clocks_going_back_is_not_missing(self):
+        # one of a cell's two half-hours held with usage, the other missing: the cell has a figure
+        out = _node("""
+          var c = {kwh: 1.2, missing: 1, starts: ['a', 'b'], gaps: ['b']};
+          console.log(JSON.stringify(isMissing(c)));""")
+        self.assertEqual(out, False)
 
     def test_GUARD_the_deletes_still_see_every_block(self):
         self.assertEqual(len(_store().get_block_starts_in_range("electricity_main", DAY[0],
