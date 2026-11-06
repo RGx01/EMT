@@ -3489,6 +3489,95 @@ function barRender() {
   barBuildTable();
 }
 
+// Many brackets are one scale, not many keys (6 Nov 2026, the user: an Agile year's 38 took four rows above
+// the chart). Past BAR_BR_KEYS_MAX the legend is a strip from the cheapest bracket to the dearest, one
+// segment each in the bars' own colours, with a bracket nothing fell in faded so the scale stays even.
+// Hovering a segment names it and picks it out in the bars. Inline styles: the PDF copies this markup.
+var BAR_BR_KEYS_MAX = 12;
+
+// The strip's labels in pence: both ends, and round prices far enough from them to fit
+function barBrScaleTicks(lo, hi) {
+  var step = [5, 10, 25, 50, 100, 250].find(function(s) { return (hi - lo) / s <= 6; }) || 500;
+  var out = [lo];
+  for (var p = Math.ceil(lo / step) * step; p < hi; p += step) {
+    if (p - lo >= step / 2 && hi - p >= step / 2) out.push(p);
+  }
+  out.push(hi);
+  return out;
+}
+
+// Which labels to hide at this width, given each one's {left, right}: the two ends always stay, and a round
+// price goes if it would touch the label kept before it or the last one
+function barBrTicksHidden(boxes, gap) {
+  var last = boxes[boxes.length - 1], kept = boxes[0];
+  return boxes.map(function(b, i) {
+    if (i === 0 || i === boxes.length - 1) return false;
+    if (b.left - gap < kept.right || b.right + gap > last.left) return true;
+    kept = b;
+    return false;
+  });
+}
+
+function barBrFaded(color) { return color.replace('hsl(', 'hsla(').replace(')', ', 0.18)'); }
+
+// One bracket picked out in the bars, or none (null) for them all as drawn
+function barBrHighlight(n) {
+  var ch = barChartInstance;
+  if (!ch) return;
+  ch.data.datasets.forEach(function(d) {
+    if (d._bracket == null) return;
+    if (d._color == null) d._color = d.backgroundColor;
+    d.backgroundColor = n == null || d._bracket === n ? d._color : barBrFaded(d._color);
+  });
+  // Chart.js's hover mode. 'none' leaves a bar's shared options as they were, so the colour never reached the bars
+  ch.update('active');
+}
+
+function barBrScale(el, ds) {
+  var byN = {};
+  ds.forEach(function(d) { byN[d._bracket] = d; });
+  var ns = ds.map(function(d) { return d._bracket; });
+  var first = ns[0], last = ns[ns.length - 1];
+  var lo = first * barBrWidth, hi = (last + 1) * barBrWidth;
+  var segs = '';
+  for (var n = first; n <= last; n++) {
+    segs += '<span data-n="' + n + '" style="flex:1 1 0;min-width:0;height:10px;-webkit-print-color-adjust:exact;print-color-adjust:exact;background:'
+      + (byN[n] ? byN[n].backgroundColor : barBrColor(n, ns) + ';opacity:.25') + ';"></span>';
+  }
+  var ticks = barBrScaleTicks(lo, hi).map(function(p) {
+    var move = p === lo ? '0' : p === hi ? '-100%' : '-50%';
+    return '<span style="position:absolute;white-space:nowrap;left:' + ((p - lo) / (hi - lo) * 100) + '%;transform:translateX(' + move + ');">'
+      + barBrPence(p) + 'p</span>';
+  }).join('');
+  var rest = 'Rate, p/kWh';
+  // the readout wraps under the strip where there is no room beside it (a phone)
+  el.innerHTML = '<div style="display:flex;flex-wrap:wrap;align-items:flex-start;gap:0 12px;flex:1 1 100%;width:100%;">'
+    + '<div style="flex:1 1 300px;min-width:0;">'
+    +   '<div class="bar-br-strip" role="img" aria-label="Rate brackets from ' + barBrPence(lo) + 'p to ' + barBrPence(hi) + 'p" '
+    +     'style="display:flex;cursor:default;border-radius:2px;overflow:hidden;">' + segs + '</div>'
+    +   '<div class="bar-br-ticks" style="position:relative;height:16px;margin-top:3px;font-size:11px;">' + ticks + '</div>'
+    + '</div>'
+    + '<span class="bar-br-read" style="flex:none;min-width:92px;margin-left:auto;text-align:right;white-space:nowrap;line-height:10px;">' + rest + '</span>'
+    + '</div>';
+  var strip = el.querySelector('.bar-br-strip'), read = el.querySelector('.bar-br-read');
+  var tickRow = el.querySelector('.bar-br-ticks');
+  function fitTicks() {
+    var spans = Array.prototype.slice.call(tickRow.children);
+    spans.forEach(function(s) { s.style.display = ''; });
+    var hide = barBrTicksHidden(spans.map(function(s) { return s.getBoundingClientRect(); }), 4);
+    spans.forEach(function(s, i) { if (hide[i]) s.style.display = 'none'; });
+  }
+  if (window.ResizeObserver) new ResizeObserver(fitTicks).observe(tickRow);
+  strip.addEventListener('mouseover', function(e) {
+    var v = e.target.dataset && e.target.dataset.n;
+    if (v === undefined) return;
+    v = Number(v);
+    read.textContent = barBrLabel(v) + (byN[v] ? '' : ': none');
+    barBrHighlight(byN[v] ? v : null);
+  });
+  strip.addEventListener('mouseleave', function() { read.textContent = rest; barBrHighlight(null); });
+}
+
 function barBuildLegend() {
   var el = document.getElementById('bar-legend');
   el.innerHTML = '';
@@ -3502,8 +3591,9 @@ function barBuildLegend() {
   var net = barShowNet() ? line(barNetColor(), barNetLabel()) : '';
   if (barBrackets()) {
     // The brackets with usage in view, cheapest first
-    var _ds = barChartInstance ? barChartInstance.data.datasets : [];
-    _ds.forEach(function(d) { if (d._bracket != null) el.innerHTML += dot(d.backgroundColor, d.label); });
+    var _ds = (barChartInstance ? barChartInstance.data.datasets : []).filter(function(d) { return d._bracket != null; });
+    if (_ds.length > BAR_BR_KEYS_MAX) { barBrScale(el, _ds); return; }
+    _ds.forEach(function(d) { el.innerHTML += dot(d.backgroundColor, d.label); });
     return;
   }
   if (barMetric === 'co2') {
