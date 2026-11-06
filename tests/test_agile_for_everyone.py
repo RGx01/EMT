@@ -9,7 +9,7 @@ aside. Shown by default (the user).
 
 The Octopus calls, within the API rule (capped, paced, persisted): the product list once a week, for
 the current Agile products (their codes change); the prices once a day after Octopus publishes
-tomorrow's — from 16:30 local, 90 minutes apart, at most four times a day — from where the record
+tomorrow's — from 16:30 local, 90 minutes apart, at most four times either side of it — from where the record
 ends (31 days back the first time) to 23:00 tomorrow, one call a direction; kept in the store's
 meta, so a restart asks for nothing it has. Not for a direction the account is on Agile for itself
 (its own schedule has those). REST, so the account's GraphQL points are not spent. Display only.
@@ -67,7 +67,7 @@ class TheRules(unittest.TestCase):
         short = {"import": {"prices": [["2026-11-01T23:30:00", 10.0]]}}
         self.assertTrue(A.due(short, now_u, now_l, LON, ["import"]))
         self.assertFalse(A.due(dict(short, asked=(now_u - timedelta(minutes=30)).isoformat()), now_u, now_l, LON, ["import"]))
-        self.assertFalse(A.due(dict(short, tries={"2026-11-01": 4}), now_u, now_l, LON, ["import"]))
+        self.assertFalse(A.due(dict(short, tries={"2026-11-01-pm": 4}), now_u, now_l, LON, ["import"]))
 
     def test_merged_by_half_hour_the_old_dropped(self):
         now = datetime(2026, 11, 1, 12, 0)

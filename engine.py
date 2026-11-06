@@ -6640,7 +6640,7 @@ def _start_agile_public_fetch() -> None:
 async def _fetch_agile_public() -> dict:
     """BL-103: ask Octopus for Agile's prices in the account's region — the product list once a week,
     the prices from where the record ends (30 days back the first time) to the end of tomorrow — and
-    keep them in the store's meta. At most a call a direction, MAX_TRIES_A_DAY times a day, 90
+    keep them in the store's meta. At most a call a direction, MAX_TRIES times either side of 16:30, 90
     minutes apart (agile_public.due). Returns the record; never raises."""
     import agile_public as _ap
     from zoneinfo import ZoneInfo
@@ -6651,9 +6651,9 @@ async def _fetch_agile_public() -> dict:
         now = datetime.now(timezone.utc)
         now_utc, now_local = now.replace(tzinfo=None), now.astimezone(tz)
         region = _ap.region_of(((_kraken_discovery or {}).get("import") or {}).get("tariff_code") or "")
-        today = now_local.date().isoformat()
+        key = _ap.try_key(now_local)
         rec["asked"] = now_utc.isoformat()
-        rec["tries"] = {today: int((rec.get("tries") or {}).get(today, 0)) + 1}
+        rec["tries"] = {key: int((rec.get("tries") or {}).get(key, 0)) + 1}
         rec["region"] = region
         if _ap.products_due(rec, now_utc) or not all((rec.get(ch) or {}).get("product") for ch in _agile_public_channels()):
             products = await _kraken_client.get_products()

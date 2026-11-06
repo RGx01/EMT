@@ -42,7 +42,7 @@ def _day(rec, day, *, published_at):
         if A.due(rec, u, t, LON, ["import"]):
             asks.append(t.strftime("%H:%M"))
             rec["asked"] = u.isoformat()
-            k = t.date().isoformat()
+            k = A.try_key(t)
             rec["tries"] = {k: int((rec.get("tries") or {}).get(k, 0)) + 1}
             if (t.hour, t.minute) >= published_at:
                 end = datetime(day.year, day.month, day.day, 22, 30, tzinfo=LON) + timedelta(days=1)
@@ -68,6 +68,60 @@ class TheDay(unittest.TestCase):
     def test_the_same_in_summer_time(self):
         day = datetime(2026, 7, 6).date()
         self.assertEqual(_day(self._held_to_2300_today(day), day, published_at=(16, 0)), ["16:30"])
+
+    # Tries before 16:30 cannot spend the ones tomorrow's prices need.
+
+    def _end(self, day):
+        return datetime(day.year, day.month, day.day, 22, 30, tzinfo=LON).astimezone(UTC).replace(tzinfo=None).isoformat()
+
+    def _a_day_with(self, rec, channels, *, answers_from=(0, 0)):
+        """The local times asked. Import answers as Octopus publishes, from `answers_from`; export never does."""
+        day, asks = datetime(2026, 11, 10).date(), []
+        t = datetime(day.year, day.month, day.day, tzinfo=LON)
+        while t.date() == day:
+            u = t.astimezone(UTC).replace(tzinfo=None)
+            if A.due(rec, u, t, LON, channels):
+                asks.append(t.strftime("%H:%M"))
+                rec["asked"] = u.isoformat()
+                k = A.try_key(t)
+                rec["tries"] = {k: int((rec.get("tries") or {}).get(k, 0)) + 1}
+                if (t.hour, t.minute) >= answers_from:
+                    d = day + timedelta(days=1 if t.hour >= 16 else 0)
+                    rec["import"]["prices"] = [[self._end(d), 1.0]]
+            t += timedelta(minutes=10)
+        return asks
+
+    def test_a_direction_that_stays_short_leaves_imports_4pm(self):
+        day = datetime(2026, 11, 10).date()
+        rec = {"import": {"prices": [[self._end(day), 1.0]]}, "export": {"prices": []}}
+        asks = self._a_day_with(rec, ["import", "export"])
+        self.assertIn("16:30", asks)
+        self.assertEqual(rec["import"]["prices"][-1][0], self._end(day + timedelta(days=1)))
+
+    def test_a_nights_outage_leaves_the_4pm_ask(self):
+        day = datetime(2026, 11, 10).date()
+        rec = {"import": {"prices": [[self._end(day - timedelta(days=1)), 1.0]]}}
+        asks = self._a_day_with(rec, ["import"], answers_from=(6, 0))
+        self.assertEqual(asks, ["00:00", "01:30", "03:00", "04:30", "16:30"])
+        self.assertEqual(rec["import"]["prices"][-1][0], self._end(day + timedelta(days=1)))
+
+    def test_tries_spent_this_morning_by_an_older_version_do_not_count_this_evening(self):
+        # a record from before this: today's date, four tries
+        now = datetime(2026, 11, 6, 17, 40, tzinfo=LON)
+        u = now.astimezone(UTC).replace(tzinfo=None)
+        rec = {"asked": "2026-11-06T04:30:11", "tries": {"2026-11-06": 4},
+               "import": {"prices": [[self._end(now.date()), 1.0]]}}
+        self.assertTrue(A.due(rec, u, now, LON, ["import"]))
+
+    def test_the_cap_holds_each_side(self):
+        rec = {"import": {"prices": []}}
+        asks = self._a_day_with(rec, ["import"], answers_from=(99, 0))
+        self.assertEqual(asks, ["00:00", "01:30", "03:00", "04:30", "16:30", "18:00", "19:30", "21:00"])
+
+    def test_GUARD_a_healthy_day_still_asks_once(self):
+        day = datetime(2026, 11, 10).date()
+        rec = {"import": {"prices": [[self._end(day), 1.0]]}}
+        self.assertEqual(self._a_day_with(rec, ["import"]), ["16:30"])
 
     def test_after_23_00_it_still_wants_tomorrows_not_today(self):
         late = datetime(2026, 11, 6, 23, 30, tzinfo=LON)
