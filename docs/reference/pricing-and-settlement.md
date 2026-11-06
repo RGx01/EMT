@@ -22,9 +22,9 @@ half-hour you corrected is skipped.
   for the process once fetched, and so is one Octopus **refuses** with a 4xx (not 401/403 or 429) — an
   empty schedule, not asked again until a restart. The running agreement
   is fetched at every refresh (v4 #513). An API import builds its segments once a job
-  (`import_api_history(segs=…)`), not on every retry of a chunk. A chunk Octopus does not answer
-  halves the days the job asks at a time — 60, 30, 15, then 7, one page of measurements — for the
-  rest of the job (`_import_chunk_after`), so a slow account's import keeps each part that lands.
+  (`import_api_history(segs=…)`), not on every retry of a chunk. An import or a gap fill asks 30
+  days at a time (`api_import.CHUNK_DAYS`). A chunk Octopus does not answer halves that for an import
+  — 15, then 7, one page of measurements — for the rest of the job (`_import_chunk_after`), so a slow account's import keeps each part that lands.
   Each channel keeps its own top from its first call (`api_import_top_<channel>` in kraken_state,
   cleared on a restart): until a chunk lands a channel has no checkpoint, and the oldest block of any
   source — the other channel's rows — must not become its ceiling.

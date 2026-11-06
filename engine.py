@@ -7088,7 +7088,10 @@ async def probe_recorder_statistics(entity_ids: list, days: int = 800) -> dict:
                for eid in ids]
     return {"ok": True, "window": [start, end], "reports": reports}
 
-async def plan_api_import(requested_from=None, *, chunk_days: int = 60) -> dict:
+from api_import import CHUNK_DAYS as _IMPORT_CHUNK_DAYS   # noqa: E402  (a leaf: the days asked at a time)
+
+
+async def plan_api_import(requested_from=None, *, chunk_days: int = _IMPORT_CHUNK_DAYS) -> dict:
     """READ-ONLY preview for the API import route: compute, per channel, the window
     it would import — from the earliest agreement (~join) up to go-live (EMT's
     oldest block) — and the newest→oldest chunk count. Matches the apply, which
@@ -8328,7 +8331,7 @@ def api_import_gaps() -> dict:
     return out
 
 
-async def import_api_history(requested_from=None, *, chunk_days: int = 60,
+async def import_api_history(requested_from=None, *, chunk_days: int = _IMPORT_CHUNK_DAYS,
                              max_chunks: int = 6, pace_s: float = 0.0,
                              headroom_frac: float = 0.25, dry_run: bool = False,
                              restart: bool = False,
@@ -8956,7 +8959,7 @@ async def _probe_and_apply_region_periods() -> dict | None:
 
 @job("gap_fill")
 async def run_gap_fill_job(from_ts, to_ts, *, channels=("import", "export"),
-                           chunk_days: int = 60, max_chunks: int = 6,
+                           chunk_days: int = _IMPORT_CHUNK_DAYS, max_chunks: int = 6,
                            pace_s: float = 1.5,
                            meter_id: str = "electricity_main") -> None:
     """Background worker: fill ONE gap window [from_ts → to_ts] via the API, then
@@ -9158,7 +9161,7 @@ async def _gap_fill_finish(j, channels) -> None:
 
 
 _GAP_FILL_RECENT_H = 48          # DCC has not settled a younger half-hour: Octopus has nothing yet
-_GAP_FILL_CHUNK_DAYS = 60
+_GAP_FILL_CHUNK_DAYS = _IMPORT_CHUNK_DAYS
 
 
 def gap_bounds(store, ats, *, now=None, meter_id: str = "electricity_main") -> list:
@@ -9249,7 +9252,7 @@ def gap_fill_plan(store, runs, *, channels=("import", "export"), now=None,
             "days": round(days, 2)}
 
 
-async def run_gap_fill_runs(runs, *, channels=("import", "export"), chunk_days: int = 60,
+async def run_gap_fill_runs(runs, *, channels=("import", "export"), chunk_days: int = _IMPORT_CHUNK_DAYS,
                             max_chunks: int = 6, pace_s: float = 1.5,
                             meter_id: str = "electricity_main") -> None:
     """The heatmap's gap fill (gap fill design §3): several runs [[from, to), …] of missing
@@ -9296,7 +9299,7 @@ _IMPORT_CHUNK_MIN_DAYS = 7
 
 
 def _import_chunk_after(chunk_days: int, res: dict) -> int:
-    """The days the import asks at a time after `res`: halved (60 → 30 → 15 → 7) when a channel's
+    """The days the import asks at a time after `res`: halved (30 → 15 → 7) when a channel's
     chunk failed to fetch, else unchanged; kept for the rest of the job.
 
     5 Nov 2026, a tester's support file (b8 and b9): on one account nearly every measurements page
@@ -9316,7 +9319,7 @@ def _import_chunk_after(chunk_days: int, res: dict) -> int:
 
 
 @job("import", exclusive_with=("delete",))
-async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
+async def run_api_import_job(requested_from=None, *, chunk_days: int = _IMPORT_CHUNK_DAYS,
                              max_chunks: int = 1, pace_s: float = 1.5,
                              headroom_frac: float = 0.25) -> None:
     """Background worker: loop `import_api_history` slices until done, honouring

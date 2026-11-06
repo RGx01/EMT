@@ -5914,9 +5914,9 @@ def api_historical_api_plan():
             return jsonify({"ok": False, "error": "no API connected"}), 400
         body = request.get_json(force=True, silent=True) or {}
         try:
-            chunk_days = max(1, min(int(body.get("chunk_days", 60)), 120))
+            chunk_days = max(1, min(int(body.get("chunk_days", _eng._IMPORT_CHUNK_DAYS)), 120))
         except (TypeError, ValueError):
-            chunk_days = 60
+            chunk_days = _eng._IMPORT_CHUNK_DAYS
         result = _run_on_engine_loop(
             _eng.plan_api_import(body.get("from"), chunk_days=chunk_days), timeout=60.0)
         return jsonify(result), (200 if result.get("ok") else 400)
@@ -5940,9 +5940,9 @@ def api_historical_api_start():
         if not (_event_loop and _event_loop.is_running()):
             return jsonify({"ok": False, "error": "engine loop not running"}), 500
         try:
-            chunk_days = max(1, min(int(body.get("chunk_days", 60)), 120))
+            chunk_days = max(1, min(int(body.get("chunk_days", _eng._IMPORT_CHUNK_DAYS)), 120))
         except (TypeError, ValueError):
-            chunk_days = 60
+            chunk_days = _eng._IMPORT_CHUNK_DAYS
         try:
             max_chunks = max(1, min(int(body.get("max_chunks", 1)), 60))
         except (TypeError, ValueError):
