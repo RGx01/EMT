@@ -146,6 +146,10 @@ key is never in it. A size estimate warns over 10 MB.
   more than the meter (beyond a thousandth of a penny) is flagged red; a re-fetch prices them again.
 - **`ha_reads`** keeps what Home Assistant reported: each live half-hour (written at finalise), and
   recorder hours as hours. Deleting half-hours keeps it; only removing a device removes its rows.
+- **A gap fill settles its own half-hours** (`_gap_fill_spans`, `_queue_settle_spans`): an Octopus or
+  a CSV import walks the whole history afterwards, a gap fill queues only what it filled, and again
+  if its device rebuild wrote anything, since PASS 2 writes those rows at the main's single rate. The
+  re-pricing banner shows for a walk only (`settle_history_walking`), so a repair shows none.
 - **A refill rebuilds the devices** (`rebuild_devices_after_refill`): after a gap fill, an Octopus
   import or a CSV import, each device is rebuilt over the span from `ha_reads`, without asking Home
   Assistant. So is a poll that creates half-hours Octopus settled and EMT had none of (BL-8,

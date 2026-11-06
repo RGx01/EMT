@@ -3857,7 +3857,7 @@ _SANITY_HELD = ("device_exceeds_house", "suspiciously_small")
 
 
 async def _rebuild_when_admitted(mid: str, sensors: list, lo: str, hi: str, *,
-                                 fetch: bool = False) -> None:
+                                 fetch: bool = False, settle_after: bool = False) -> None:
     """Claim `mid`'s attribution run once the coordinator admits it, then run it from `ha_reads`.
     The claim is refused while a member it depends on runs — the refill's own import, then the
     pricing verify — so it is retried, not given up on (staging, 20 Oct 2026: the gap fill's
@@ -3867,7 +3867,11 @@ async def _rebuild_when_admitted(mid: str, sensors: list, lo: str, hi: str, *,
     `fetch`: a device whose history EMT never had, after an import (device history on first
     import design §3) — its whole history from HA's recorder, not the span from `ha_reads`. The
     sensor is checked against the house first, as *Rebuild history* checks it; a sensor that
-    fails is not rebuilt but held, on the device's card, for the user to look at."""
+    fails is not rebuilt but held, on the device's card, for the user to look at.
+
+    `settle_after` (a gap fill): what the rebuild wrote is settled. PASS 2 wrote those rows at the
+    main's single rate and settle() prices them by its legs; the fill's own pass starts as this does,
+    so it may already have been past them. An import's walk from the start needs no second pass."""
     waited = 0.0
     while True:
         cur = (_attribution_jobs.get(mid) or {}).get("status")
@@ -3902,10 +3906,14 @@ async def _rebuild_when_admitted(mid: str, sensors: list, lo: str, hi: str, *,
         await run_attribution_job(mid, sensors, pace_s=0.05)
         return
     logger.info("rebuild_devices_after_refill: %s %s..%s — rebuilding from HA's reads", mid, lo, hi)
-    await run_attribution_job(mid, sensors, pace_s=0.05, window=(lo, hi), fetch=False)
+    r = await run_attribution_job(mid, sensors, pace_s=0.05, window=(lo, hi), fetch=False)
+    if settle_after and (r or {}).get("written"):
+        _queue_settle_spans([[lo, hi]], "device rebuild")
+        asyncio.create_task(_settle_history_to_done())
 
 
-async def rebuild_devices_after_refill(lo: str, hi: str, *, fetch_new: bool = False) -> list:
+async def rebuild_devices_after_refill(lo: str, hi: str, *, fetch_new: bool = False,
+                                       settle_after: bool = False) -> list:
     """After a refill of [lo, hi) — a gap fill or a CSV import, the main meter only — rebuild
     each device `ha_reads` holds figures for there, from those alone (soft delete design §3): no
     call to HA's recorder. Each device is queued (`_rebuild_when_admitted`): its run is the
@@ -3948,7 +3956,7 @@ async def rebuild_devices_after_refill(lo: str, hi: str, *, fetch_new: bool = Fa
             sensors = get_store().device_stitch_sensors(mid)
         except Exception:
             sensors = []
-        asyncio.create_task(_rebuild_when_admitted(mid, sensors, lo, hi))
+        asyncio.create_task(_rebuild_when_admitted(mid, sensors, lo, hi, settle_after=settle_after))
         queued.append(mid)
     logger.info("rebuild_devices_after_refill: %s..%s — %s queued, from HA's reads, once the "
                 "import and the pricing verify are done", lo, hi, ", ".join(devices))
@@ -7671,10 +7679,10 @@ def _settle_history_done() -> bool:
 
 async def _settle_history_to_done(*, force: bool = False, wait_for_schedule: bool = False,
                                   max_passes: int = 500) -> None:
-    """The settle sweep's passes until it is done — `force` restarts it from the history's start
-    (after an import or a gap fill). A pass that stands aside resumes at its cursor. With no import
-    schedule yet it stops, unless `wait_for_schedule` (startup, where the schedule is built after
-    the sweep is scheduled)."""
+    """The settle sweep's passes until it and the queued spans are done — `force` restarts it from
+    the history's start (after an import). A pass that stands aside resumes at its cursor. With no
+    import schedule yet it stops, unless `wait_for_schedule` (startup, where the schedule is built
+    after the sweep is scheduled)."""
     global _settle_history_running, _settle_history_rearm
     if force:
         _settle_history_rearm = True
@@ -7685,7 +7693,8 @@ async def _settle_history_to_done(*, force: bool = False, wait_for_schedule: boo
         for _ in range(max_passes):
             if await _run_settle_history_sweep() < 0 and not wait_for_schedule:
                 return                      # no schedule yet: the next startup or import retries
-            if _store is None or (_settle_history_done() and not _settle_history_rearm):
+            if _store is None or (_settle_history_done() and not _settle_history_rearm
+                                  and not _settle_spans_pending()):
                 return
             await asyncio.sleep(_SETTLE_HISTORY_PASS_PACE)
     finally:
@@ -7713,6 +7722,18 @@ def settle_history_in_progress() -> bool:
     return bool(first)
 
 
+def settle_history_walking() -> bool:
+    """The sweep is walking the history, not only working off queued spans: what the banner asks.
+    A repair's few days are not a wait worth a notice, and a done marker has no cursor, so one read
+    "(732 days left)" while they ran. The daily share copy still waits for both."""
+    if not settle_history_in_progress():
+        return False
+    if _settle_history_rearm:
+        return True
+    m = _reader().get_meta(_SETTLE_HISTORY_MARKER, {}) or {}        # a request thread asks too
+    return not (m.get("done") and int(m.get("version") or 0) >= _SETTLE_HISTORY_VERSION)
+
+
 def _settle_history_restart(state: dict) -> dict:
     """A walk from the history's start: the rearm taken, the state cleared — and the re-settle spans a
     change of agreements queued before it, which the walk covers (staging, 28 Oct 2026: a restore
@@ -7734,7 +7755,7 @@ async def _run_settle_history_sweep(*, force: bool = False, max_days: int = 1000
     """settle() over the whole history, a day at a time (engine step 4d): what was priced before
     settle() decided it — finalise's live label, history imported before 4a-2, the importer's
     bill-split skip — becomes settle()'s, written only where it differs. Once per
-    _SETTLE_HISTORY_VERSION; `force` (after an import or a gap fill) walks it again from the start.
+    _SETTLE_HISTORY_VERSION; `force` (after an import) walks it again from the start.
     One transaction a day, the loop yielded between; stands aside for an import, a delete or a
     restore, and resumes from its cursor. Returns the half-hours written this pass; -1 where there
     is no import schedule to price from yet."""
@@ -7767,7 +7788,7 @@ async def _run_settle_history_sweep(*, force: bool = False, max_days: int = 1000
     written = 0
     for _ in range(max_days):
         if _settle_history_rearm:
-            # an import or a gap fill asked for the whole history again while this pass walked it
+            # an import asked for the whole history again while this pass walked it
             _settle_history_restart(state)
             first, last = _store.block_span("electricity_main")
             if not first:
@@ -8075,15 +8096,14 @@ def _agreement_change_spans(diff, first, end) -> list:
     return _merge_spans(out)
 
 
-def _queue_settle_spans(spans) -> None:
+def _queue_settle_spans(spans, why: str = "tariff agreements: changed") -> None:
     """Add `spans` to the re-settle queue, merged, and have the sweep's job take them."""
     if not spans or _store is None:
         return
     cur = _store.get_meta(_SETTLE_SPANS_KEY, []) or []
     q = _merge_spans(list(cur) + list(spans))
     _store.set_meta(_SETTLE_SPANS_KEY, q)
-    logger.info("tariff agreements: changed — %d span(s) queued to re-settle (%s to %s)",
-                len(q), q[0][0], q[-1][1])
+    logger.info("%s — %d span(s) queued to re-settle (%s to %s)", why, len(q), q[0][0], q[-1][1])
 
 
 def _settle_spans_pending() -> bool:
@@ -8114,7 +8134,7 @@ async def _settle_spans_pass(max_days: int = 100000) -> int:
                 logger.warning("settle spans: %s to %s failed (skipped): %s", lo, nxt, e)
             _store.set_meta(_SETTLE_SPANS_KEY, ([[nxt, hi]] if nxt < hi else []) + list(spans[1:]))
         if nxt >= hi and len(spans) == 1:
-            logger.info("settle spans: the changed agreements' history re-settled")
+            logger.info("settle spans: the queue re-settled")
         await _aio.sleep(_SETTLE_HISTORY_PACE_S)
     return written
 
@@ -9071,11 +9091,13 @@ async def _gap_fill_window(j, from_ts, to_ts, *, channels, chunk_days, max_chunk
     return True
 
 
-async def _after_import_settle() -> None:
+async def _after_import_settle(*, whole_history: bool = True) -> None:
     """What follows a finished import or gap fill that wrote blocks, once the import claim is
-    released (the import job's own finish runs while it holds it): the settle sweep, from the
-    start, so the new history gets settle()'s band, legs, ex-VAT and devices (engine step 4d; the
-    history reprice sweep that ran before it went in 4e); the cached bills applied, a page at a
+    released (the import job's own finish runs while it holds it): the settle sweep, so the new
+    history gets settle()'s band, legs, ex-VAT and devices (engine step 4d; the history reprice
+    sweep that ran before it went in 4e) — from the start after an import, or only the spans a gap
+    fill queued (`whole_history=False`; a repair of 13 half-hours walked two years of them, and
+    changed 5, all its own: the user, 6 Nov 2026); the cached bills applied, a page at a
     time (`_apply_bills_paced`); then the measured drain, so what has no bill yet is asked for now
     rather than at the next hourly tick. Detached.
 
@@ -9091,7 +9113,7 @@ async def _after_import_settle() -> None:
     except Exception as e:
         logger.warning("after import: waiting for the import claim failed (non-fatal): %s", e)
     try:
-        await _settle_history_to_done(force=True)       # engine step 4d
+        await _settle_history_to_done(force=whole_history)       # engine step 4d
     except Exception as e:
         logger.warning("after import: the settle sweep failed (non-fatal): %s", e)
     try:
@@ -9127,6 +9149,13 @@ async def _apply_bills_paced() -> int:
         await asyncio.sleep(_APPLY_PAGE_PAUSE_S)
 
 
+def _gap_fill_spans(j) -> list:
+    """The half-hours a gap fill was asked to fill, as [[from, to), …]: its runs, else its window."""
+    runs = j.get("runs") or ([j["gap"]] if j.get("gap") else [])
+    return _merge_spans([[str(r["from"])[:19], str(r["to"])[:19]]
+                         for r in runs if r.get("from") and r.get("to")])
+
+
 async def _gap_fill_finish(j, channels) -> None:
     """The finish a gap fill shares with the full import (bar the region/period extend, which an
     interior gap does not need): carbon re-arm, the export zero-fill, the device rebuild, and
@@ -9159,11 +9188,17 @@ async def _gap_fill_finish(j, channels) -> None:
     # the sweep and the drain kick the verify ran are `_after_import_settle`'s.)
     _wrote = _run_wrote_blocks(j)
     if _wrote:
-        asyncio.create_task(_after_import_settle())
+        # Queued now, so a restart before the claim is released still settles them. settle() reads
+        # the import side only, so the export zero-fill above, which reaches other days, needs none.
+        _spans = _gap_fill_spans(j)
+        if _spans:
+            _queue_settle_spans(_spans, "gap fill")
+        asyncio.create_task(_after_import_settle(whole_history=not _spans))
         _g = j.get("gap") or {}
         if _g.get("from") and _g.get("to"):
             # the main meter is back; its devices from what HA recorded (soft delete §3)
-            j["devices_rebuilding"] = await rebuild_devices_after_refill(_g["from"], _g["to"])
+            j["devices_rebuilding"] = await rebuild_devices_after_refill(_g["from"], _g["to"],
+                                                                         settle_after=True)
     j["status"] = "done"; j["phase"] = "done"
     _persist_run_status(j)     # durable summary for reload (poll-on-load)
 

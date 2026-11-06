@@ -7,6 +7,10 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Repairing a gap no longer re-prices your whole history.** Filling 13 half-hours started a walk over every day
+  you have, under a banner saying "Finishing your import". A repair now prices only what it filled, with no banner.
+- **The re-pricing banner no longer tells you to avoid restarting.** A restart is safe, because the walk carries on
+  from where it stopped. It also now says "days of history left", as that count is not a time estimate.
 - **Agile cards now show tomorrow's prices.** EMT looked for prices up to midnight, but Agile's day ends at 23:00,
   so it kept asking Octopus through the night and had used all its tries for the day by 04:30. When tomorrow's
   prices came out at about 4pm, it had none left, and the card stopped at 23:00 tonight. It now asks once they

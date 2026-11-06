@@ -280,7 +280,7 @@ class TheCallers(unittest.TestCase):
         src = open(engine.__file__, encoding="utf-8").read()
         body = src[src.index("async def _gap_fill_finish"):]
         body = body[:body.index("\ndef ")]
-        self.assertIn('await rebuild_devices_after_refill(_g["from"], _g["to"])', body)
+        self.assertIn('await rebuild_devices_after_refill(_g["from"], _g["to"],', body)
 
     def test_both_csv_applies_start_it(self):
         src = open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read()

@@ -6385,8 +6385,9 @@ def _settle_sweep_cause(store) -> str:
     The sweep has two triggers and the banner used to name only one, so a FRESH INSTALL
     that imported its history was told EMT was "finishing your upgrade" — on a box that
     had never run a previous version, and had just been asked to do exactly this work.
-    An import (or a gap fill) runs the sweep from the start, so a live or recently-finished
-    one is the cause; only in its absence is this an upgrade.
+    An import runs the sweep from the start, so a live or recently-finished one is the cause; a
+    gap fill settles only its own half-hours, so one that just finished is not. Only in the absence
+    of an import is this an upgrade.
     Read-only and fail-safe: anything unexpected reads as 'upgrade', the old wording."""
     try:
         import engine as _eng
@@ -6397,7 +6398,7 @@ def _settle_sweep_cause(store) -> str:
         raw = store.get_kraken_state(_eng._IMPORT_RUN_KEY)
         snap = _json.loads(raw) if raw else {}
         fin = snap.get("finished_at")
-        if fin:
+        if fin and not snap.get("gap"):
             age = _dt.utcnow() - _dt.fromisoformat(str(fin)[:19])
             if age < _td(hours=_SETTLE_CAUSE_WINDOW_H):
                 return "import"
@@ -6523,6 +6524,7 @@ def api_settle_history_status():
     """Read-only: is the settle sweep still walking the history? Drives the re-pricing banner
     (engine step 4e: it replaced the history reprice sweep and its /api/reprice-history-status).
     `read` / `written`: half-hours so far; `days_left`: from the sweep's cursor to the newest block.
+    Only a walk of the history counts: a repair's queued spans are quickly done, and not a wait.
     `cause` says whether an import or an upgrade armed it. Fails safe to not-in-progress so a
     hiccup never nags."""
     try:
@@ -6530,7 +6532,7 @@ def api_settle_history_status():
         from datetime import datetime as _dt
         store = store_access.store()
         m = store.get_meta(_eng._SETTLE_HISTORY_MARKER, {}) or {}
-        _ip = bool(_eng.settle_history_in_progress())
+        _ip = bool(_eng.settle_history_walking())
         days_left = None
         if _ip:
             first, last = store.block_span("electricity_main")
