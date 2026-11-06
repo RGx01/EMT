@@ -3160,7 +3160,8 @@ async def backout_recorder_attribution_async(**kw) -> dict:
     return res
 
 
-async def _backout_impl(*, run_id=None, meter_id=None, from_date=None, to_date=None) -> dict:
+async def _backout_impl(*, run_id=None, meter_id=None, from_date=None, to_date=None,
+                        whole: bool = False) -> dict:
     """Undo a recorder-attribution run (or an explicit device + range): delete the
     reconstructed 'recorder_attributed' device blocks, re-derive each affected parent
     meter's remainder over the span, and drop the run from the ledger. The reversible
@@ -3173,7 +3174,11 @@ async def _backout_impl(*, run_id=None, meter_id=None, from_date=None, to_date=N
         returns {ok:False, error:'backout_in_progress'} rather than racing it;
       • a run_id that isn't (or is no longer) in the ledger returns
         {ok:False, error:'run_not_found'} instead of falling through to an
-        all-None delete that would wipe the whole attributed layer."""
+        all-None delete that would wipe the whole attributed layer.
+
+    `whole` (Clear history, 6 Nov 2026): a device with no sensor left loses everything it holds,
+    live and imported half-hours and its kept readings too, so a later refill cannot bring them back.
+    The device stays, and so does its Overview card. Refused while it has any sensor."""
     from datetime import datetime as _dt, timedelta as _td
     # Atomic single-flight: if a back-out is already running, refuse rather than
     # race it on the store's single DB connection (the exact double-undo crash).
@@ -3196,8 +3201,18 @@ async def _backout_impl(*, run_id=None, meter_id=None, from_date=None, to_date=N
         _backout_job.clear()
         _backout_job.update({"status": "running", "run_id": run_id,
                              "meter_id": meter_id, "started_at": _dt_now_iso_safe()})
-        res = store.delete_recorder_attributed(
-            meter_id=meter_id, from_iso=from_iso, to_iso=to_iso)
+        if whole:
+            if not meter_id or store.device_stitch_sensors(meter_id):
+                return {"ok": False, "error": "has_sensor"}
+            off = store.device_off_stitch_sensors(meter_id)
+            d = store.drop_device_history(meter_id, [o["id"] for o in off], everything=True)
+            res = {"deleted": d["deleted_blocks"], "parents": d["parents"], "from": d["from"], "to": d["to"]}
+            for r in store.get_attribution_runs():
+                if r.get("meter_id") == meter_id and r.get("run_id"):
+                    store.remove_attribution_run(r["run_id"])
+        else:
+            res = store.delete_recorder_attributed(
+                meter_id=meter_id, from_iso=from_iso, to_iso=to_iso)
         lo, hi = res.get("from"), res.get("to")
         recomputed = 0
         if lo and hi:
@@ -7073,7 +7088,10 @@ async def probe_recorder_statistics(entity_ids: list, days: int = 800) -> dict:
                for eid in ids]
     return {"ok": True, "window": [start, end], "reports": reports}
 
-async def plan_api_import(requested_from=None, *, chunk_days: int = 60) -> dict:
+from api_import import CHUNK_DAYS as _IMPORT_CHUNK_DAYS   # noqa: E402  (a leaf: the days asked at a time)
+
+
+async def plan_api_import(requested_from=None, *, chunk_days: int = _IMPORT_CHUNK_DAYS) -> dict:
     """READ-ONLY preview for the API import route: compute, per channel, the window
     it would import — from the earliest agreement (~join) up to go-live (EMT's
     oldest block) — and the newest→oldest chunk count. Matches the apply, which
@@ -8313,7 +8331,7 @@ def api_import_gaps() -> dict:
     return out
 
 
-async def import_api_history(requested_from=None, *, chunk_days: int = 60,
+async def import_api_history(requested_from=None, *, chunk_days: int = _IMPORT_CHUNK_DAYS,
                              max_chunks: int = 6, pace_s: float = 0.0,
                              headroom_frac: float = 0.25, dry_run: bool = False,
                              restart: bool = False,
@@ -8941,7 +8959,7 @@ async def _probe_and_apply_region_periods() -> dict | None:
 
 @job("gap_fill")
 async def run_gap_fill_job(from_ts, to_ts, *, channels=("import", "export"),
-                           chunk_days: int = 60, max_chunks: int = 6,
+                           chunk_days: int = _IMPORT_CHUNK_DAYS, max_chunks: int = 6,
                            pace_s: float = 1.5,
                            meter_id: str = "electricity_main") -> None:
     """Background worker: fill ONE gap window [from_ts → to_ts] via the API, then
@@ -9143,7 +9161,7 @@ async def _gap_fill_finish(j, channels) -> None:
 
 
 _GAP_FILL_RECENT_H = 48          # DCC has not settled a younger half-hour: Octopus has nothing yet
-_GAP_FILL_CHUNK_DAYS = 60
+_GAP_FILL_CHUNK_DAYS = _IMPORT_CHUNK_DAYS
 
 
 def gap_bounds(store, ats, *, now=None, meter_id: str = "electricity_main") -> list:
@@ -9234,7 +9252,7 @@ def gap_fill_plan(store, runs, *, channels=("import", "export"), now=None,
             "days": round(days, 2)}
 
 
-async def run_gap_fill_runs(runs, *, channels=("import", "export"), chunk_days: int = 60,
+async def run_gap_fill_runs(runs, *, channels=("import", "export"), chunk_days: int = _IMPORT_CHUNK_DAYS,
                             max_chunks: int = 6, pace_s: float = 1.5,
                             meter_id: str = "electricity_main") -> None:
     """The heatmap's gap fill (gap fill design §3): several runs [[from, to), …] of missing
@@ -9281,7 +9299,7 @@ _IMPORT_CHUNK_MIN_DAYS = 7
 
 
 def _import_chunk_after(chunk_days: int, res: dict) -> int:
-    """The days the import asks at a time after `res`: halved (60 → 30 → 15 → 7) when a channel's
+    """The days the import asks at a time after `res`: halved (30 → 15 → 7) when a channel's
     chunk failed to fetch, else unchanged; kept for the rest of the job.
 
     5 Nov 2026, a tester's support file (b8 and b9): on one account nearly every measurements page
@@ -9301,7 +9319,7 @@ def _import_chunk_after(chunk_days: int, res: dict) -> int:
 
 
 @job("import", exclusive_with=("delete",))
-async def run_api_import_job(requested_from=None, *, chunk_days: int = 60,
+async def run_api_import_job(requested_from=None, *, chunk_days: int = _IMPORT_CHUNK_DAYS,
                              max_chunks: int = 1, pace_s: float = 1.5,
                              headroom_frac: float = 0.25) -> None:
     """Background worker: loop `import_api_history` slices until done, honouring
@@ -13214,6 +13232,10 @@ def check_battery_sensors() -> dict:
         confirmed = _store.get_meta(_BATTERY_CONFIRMED_KEY, {}) or {}
         out = {}
         for mid, sid in _store.battery_devices():
+            if sid is None:      # no sensor to judge: what an old one recorded is not this device's fault
+                out[mid] = {"sensor_id": None, "half_hours": 0, "days": 0, "first": None, "last": None,
+                            "conclusive_on": None, "recent": []}
+                continue
             replaced = any(f != sid for f in flagged.get(mid) or [])
             rows = _store.battery_evidence_rows(mid, sid, ratio=_BATTERY_RATIO, floor_kwh=_BATTERY_FLOOR_KWH,
                                                 unnamed=not replaced)
@@ -13253,7 +13275,7 @@ def battery_sensor_flags() -> dict:
     out = {}
     for mid, sid in rd.battery_devices():
         e = ev.get(mid) or {}
-        if not e.get("conclusive_on") or e.get("sensor_id") != sid:
+        if sid is None or not e.get("conclusive_on") or e.get("sensor_id") != sid:
             continue
         c = confirmed.get(mid) or {}
         out[mid] = {"conclusive_on": e["conclusive_on"], "half_hours": e.get("half_hours"),
@@ -13316,6 +13338,10 @@ def check_whole_house_sensors() -> dict:
         confirmed = _store.get_meta(_WHOLE_HOUSE_CONFIRMED_KEY, {}) or {}
         out = {}
         for mid, sid in _store.device_primary_sensors():
+            if sid is None:      # no sensor to judge
+                out[mid] = {"sensor_id": None, "n": 0, "matched": 0, "share": None, "example": None,
+                            "whole_house": False}
+                continue
             replaced = any(f != sid for f in flagged.get(mid) or [])
             ev = _store.whole_house_evidence(mid, sid, days=_WHOLE_HOUSE_DAYS, tol=_WHOLE_HOUSE_TOL,
                                              floor_kwh=_WHOLE_HOUSE_FLOOR_KWH, unnamed=not replaced)
@@ -13354,7 +13380,7 @@ def whole_house_sensor_flags() -> dict:
     out = {}
     for mid, sid in rd.device_primary_sensors():
         e = ev.get(mid) or {}
-        if not e.get("whole_house") or e.get("sensor_id") != sid:
+        if sid is None or not e.get("whole_house") or e.get("sensor_id") != sid:
             continue
         c = confirmed.get(mid) or {}
         out[mid] = {"n": e.get("n"), "matched": e.get("matched"), "share": e.get("share"),

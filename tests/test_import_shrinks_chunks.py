@@ -6,8 +6,8 @@ On one account nearly every page of Octopus's half-hourly measurements timed out
 is fetched as up to six pages of 500, and one page failing after its retries threw the whole chunk away, so
 the job asked the same six pages again: each chunk took 7–23 minutes, then none got through for two hours.
 Another account ran the same query whole in 9 minutes. `run_api_import_job` now halves the days it asks
-after a chunk that failed to fetch — 60, 30, 15, then 7 (one page) — and keeps that size for the rest of
-the job. Each smaller chunk that lands moves the checkpoint, so it is kept.
+after a chunk that failed to fetch — 15, then 7 (one page) — and keeps that size for the rest of the job. Each
+smaller chunk that lands moves the checkpoint, so it is kept. It starts at 30 since 6 Nov 2026 (`api_import.CHUNK_DAYS`).
 
 Discriminating: the tests not marked GUARD fail on the parent tree, which asked 60 days every time.
 """
@@ -71,22 +71,37 @@ class TheJob(unittest.TestCase):
     def test_each_failure_halves_the_days_to_one_page(self):
         with self.assertLogs("engine", level="INFO") as cm:
             asked = self._run([FAILED, FAILED, FAILED, FAILED, FAILED, DONE])
-        self.assertEqual(asked, [60, 30, 15, 7, 7, 7])
+        self.assertEqual(asked, [30, 15, 7, 7, 7, 7])
         said = [m for m in cm.output if "did not answer" in m]
-        self.assertEqual(len(said), 3, "said once a halving, not at every failure")
+        self.assertEqual(len(said), 2, "said once a halving, not at every failure")
 
     def test_the_smaller_size_holds_for_the_rest_of_the_job(self):
-        self.assertEqual(self._run([MORE, FAILED, MORE, MORE, DONE]), [60, 60, 30, 30, 30])
+        self.assertEqual(self._run([MORE, FAILED, MORE, MORE, DONE]), [30, 30, 15, 15, 15])
 
-    def test_GUARD_an_answered_import_keeps_its_60_days(self):
-        self.assertEqual(self._run([MORE, MORE, DONE]), [60, 60, 60])
+    def test_an_answered_import_keeps_its_30_days(self):
+        self.assertEqual(self._run([MORE, MORE, DONE]), [30, 30, 30])
 
-    def test_GUARD_a_rate_limit_is_not_a_failure(self):
+    def test_a_rate_limit_is_not_a_failure(self):
         rl = {"ok": True, "channels": {"import": {"reason": "rate_limit"}}}
-        self.assertEqual(self._run([rl, MORE, DONE]), [60, 60, 60])
+        self.assertEqual(self._run([rl, MORE, DONE]), [30, 30, 30])
 
 
 class TheRule(unittest.TestCase):
+
+    def test_everything_starts_at_30_days(self):
+        """6 Nov 2026: two of the last three installs' first 60-day ask timed out; every 30-day ask landed."""
+        import inspect
+        import api_import
+        self.assertEqual(api_import.CHUNK_DAYS, 30)
+        self.assertEqual(engine._GAP_FILL_CHUNK_DAYS, 30)
+        for f in (engine.plan_api_import, engine.import_api_history, engine.run_api_import_job,
+                  engine.run_gap_fill_job, engine.run_gap_fill_runs, api_import.plan_chunks):
+            self.assertEqual(inspect.signature(f).parameters["chunk_days"].default, 30, f.__name__)
+
+    def test_the_routes_start_there_too(self):
+        src = open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read()
+        self.assertEqual(src.count('body.get("chunk_days", _eng._IMPORT_CHUNK_DAYS)'), 2)
+        self.assertNotIn('body.get("chunk_days", 60)', src)
 
     def test_seven_days_fit_one_page(self):
         self.assertLessEqual(engine._IMPORT_CHUNK_MIN_DAYS * 48, 500)

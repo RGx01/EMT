@@ -6,7 +6,7 @@
   <p>
     A tab each: <strong>Site</strong>, <strong>Main meter</strong>, one for each device, and
     <strong>+ Add device</strong>. An edit on one tab survives moving to another, and
-    <strong>Save Config</strong> saves them all; the engine picks the change up within seconds.
+    <strong>Save Config</strong> takes a backup, then saves them all; the engine picks the change up within seconds.
   </p>
   <ul>
     <li><strong>↺ Refresh Entities</strong> — read Home Assistant's sensors again, after adding one.</li>
@@ -106,6 +106,11 @@
       device from the right sensor.</li>
     <li><strong>5.</strong> The card then lists the sensors the device's history came from: only the right
       one.</li>
+    <li><strong>No right sensor to move to?</strong> A battery whose inverter reports no grid charge, say. Empty
+      <strong>Read Sensor</strong> and <strong>Save Config</strong>. The device keeps its live cards on the
+      Overview, and from then on its usage counts in the house. EMT then asks whether the sensor was wrong: if it
+      was, press <strong>🗑 Clear history</strong> there or on the card later. After a backup, everything it holds goes and that usage returns to the house. Any warning
+      about its old sensor clears when you save.</li>
   </ul>
   <h3>Other fixes</h3>
   <ul>

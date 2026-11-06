@@ -61,7 +61,13 @@ def clamp_window(requested_from, go_live, *, earliest_reachable=None) -> dict:
             "note": "clamped to API retention" if "api_retention" in clamped_by else ""}
 
 
-def plan_chunks(window_from, window_to, *, chunk_days: int = 60) -> list:
+# The days an import or a gap fill asks Octopus at a time (6 Nov 2026; it was 60). Two of the last
+# three installs' first 60-day ask timed out, one after 8 of its 20 minutes, while every 30-day ask landed.
+# Measurements come in pages of 500 either way, so the pages asked are the same.
+CHUNK_DAYS = 30
+
+
+def plan_chunks(window_from, window_to, *, chunk_days: int = CHUNK_DAYS) -> list:
     """Split [window_from, window_to) into contiguous sub-windows, NEWEST→OLDEST.
 
     Each chunk is at most `chunk_days` long; they abut with no overlap or gap and
@@ -86,7 +92,7 @@ def plan_chunks(window_from, window_to, *, chunk_days: int = 60) -> list:
 
 
 def plan_import(requested_from, go_live, *, earliest_reachable=None,
-                chunk_days: int = 60) -> dict:
+                chunk_days: int = CHUNK_DAYS) -> dict:
     """Clamp + chunk in one step. Returns {ok, window, chunks, chunk_count, note}."""
     w = clamp_window(requested_from, go_live, earliest_reachable=earliest_reachable)
     if not w.get("ok"):

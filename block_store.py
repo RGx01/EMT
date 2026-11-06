@@ -6651,26 +6651,28 @@ class BlockStore:
             "SELECT id, entity_id FROM device_sensors WHERE meter_id = ? AND channel = ? AND "
             "role = 'secondary' AND position IS NULL ORDER BY id", (meter_id, channel))]
 
-    def drop_device_history(self, meter_id: str, sensor_ids: list) -> dict:
+    def drop_device_history(self, meter_id: str, sensor_ids: list, *, everything: bool = False) -> dict:
         """Replace history's first half (replace device history design §2), one transaction: the
         device's rebuilt half-hours (all — the rebuild that follows makes them again from the
         sensors it uses now); its live half-hours, and every `ha_reads` row, recorded by
         `sensor_ids` (sensors it no longer uses); and then those sensors' entries, nothing naming
         them. Imported device rows are not touched. Returns {deleted_blocks, deleted_reads,
-        parents, from, to} — the caller recomputes each parent's remainder over [from, to]."""
+        parents, from, to} — the caller recomputes each parent's remainder over [from, to].
+
+        `everything` (Clear history, a device with no sensor left): every row and every read of
+        the device, whatever recorded them."""
         ids = [int(i) for i in (sensor_ids or [])]
         q = ",".join("?" * len(ids)) or "NULL"
         c = self._conn
-        span = c.execute(
-            f"SELECT MIN(block_start), MAX(block_start) FROM blocks WHERE meter_id = ? AND "
-            f"(source = ? OR imp_sensor_id IN ({q}))",
-            [meter_id, self.RECORDER_ATTRIBUTED_SOURCE] + ids).fetchone()
+        which, which_args = (("1", []) if everything else
+                             (f"(source = ? OR imp_sensor_id IN ({q}))", [self.RECORDER_ATTRIBUTED_SOURCE] + ids))
+        span = c.execute(f"SELECT MIN(block_start), MAX(block_start) FROM blocks WHERE meter_id = ? AND {which}",
+                         [meter_id] + which_args).fetchone()
         with c:
-            nb = c.execute(
-                f"DELETE FROM blocks WHERE meter_id = ? AND (source = ? OR imp_sensor_id IN ({q}))",
-                [meter_id, self.RECORDER_ATTRIBUTED_SOURCE] + ids).rowcount
-            nr = c.execute(f"DELETE FROM ha_reads WHERE meter_id = ? AND sensor_id IN ({q})",
-                           [meter_id] + ids).rowcount
+            nb = c.execute(f"DELETE FROM blocks WHERE meter_id = ? AND {which}",
+                           [meter_id] + which_args).rowcount
+            nr = c.execute("DELETE FROM ha_reads WHERE meter_id = ?" + ("" if everything else
+                           f" AND sensor_id IN ({q})"), [meter_id] + ([] if everything else ids)).rowcount
             for i in ids:
                 self._drop_unpointed_sensor(i)
         parent = self.get_parent_meter_id(meter_id)

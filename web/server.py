@@ -5810,6 +5810,43 @@ def api_attribute_backout():
         return _error_reply(e, {"ok": False})
 
 
+@app.route("/api/historical/attribute/clear", methods=["POST"])
+def api_attribute_clear():
+    """Clear history: everything a device with no sensor left holds, its rows and kept readings,
+    after a backup; that usage returns to the house. The device stays. Refused while it has a
+    sensor or a run, or an import is running. Started on the engine, as Remove is: the page polls
+    /backout/status for its result (`last`)."""
+    try:
+        import engine as _eng
+        import asyncio as _asyncio
+        body = request.get_json(force=True, silent=True) or {}
+        meter_id = (body.get("meter_id") or "").strip()
+        meta = ((load_config().get("meters") or {}).get(meter_id) or {}).get("meta") or {}
+        if not meta.get("sub_meter"):
+            return jsonify({"ok": False, "error": "this applies to devices only"}), 400
+        if _device_sensor_list(meter_id):
+            return jsonify({"ok": False, "error": "this device still has a sensor \u2014 remove it, "
+                                                  "and any history sensors, and save first"}), 409
+        if _eng.attribution_running() or _eng.api_import_running():
+            return jsonify({"ok": False, "error": "wait for the running rebuild or import to finish"}), 409
+        if _eng.backout_running():
+            return jsonify({"ok": False, "error": "a removal is already in progress",
+                            "status": _eng.api_backout_status()}), 409
+        if not (_event_loop and _event_loop.is_running()):
+            return jsonify({"ok": False, "error": "engine loop not running"}), 500
+        try:
+            backup = os.path.basename(_create_backup_zip(label="pre-clear-history"))
+        except Exception as be:
+            logger.warning("clear history: backup failed, not started: %s", be)
+            return jsonify({"ok": False, "error": "the backup failed, so nothing was cleared"}), 500
+        _eng.backout_forget_last()
+        _asyncio.run_coroutine_threadsafe(
+            _eng.backout_recorder_attribution_async(meter_id=meter_id, whole=True), _event_loop)
+        return jsonify({"ok": True, "status": "running", "backup": backup})
+    except Exception as e:
+        return _error_reply(e, {"ok": False})
+
+
 @app.route("/api/historical/attribute/backout/status", methods=["GET"])
 def api_attribute_backout_status():
     """Poll whether an undo is in flight (UI disables the undo buttons)."""
@@ -5877,9 +5914,9 @@ def api_historical_api_plan():
             return jsonify({"ok": False, "error": "no API connected"}), 400
         body = request.get_json(force=True, silent=True) or {}
         try:
-            chunk_days = max(1, min(int(body.get("chunk_days", 60)), 120))
+            chunk_days = max(1, min(int(body.get("chunk_days", _eng._IMPORT_CHUNK_DAYS)), 120))
         except (TypeError, ValueError):
-            chunk_days = 60
+            chunk_days = _eng._IMPORT_CHUNK_DAYS
         result = _run_on_engine_loop(
             _eng.plan_api_import(body.get("from"), chunk_days=chunk_days), timeout=60.0)
         return jsonify(result), (200 if result.get("ok") else 400)
@@ -5903,9 +5940,9 @@ def api_historical_api_start():
         if not (_event_loop and _event_loop.is_running()):
             return jsonify({"ok": False, "error": "engine loop not running"}), 500
         try:
-            chunk_days = max(1, min(int(body.get("chunk_days", 60)), 120))
+            chunk_days = max(1, min(int(body.get("chunk_days", _eng._IMPORT_CHUNK_DAYS)), 120))
         except (TypeError, ValueError):
-            chunk_days = 60
+            chunk_days = _eng._IMPORT_CHUNK_DAYS
         try:
             max_chunks = max(1, min(int(body.get("max_chunks", 1)), 60))
         except (TypeError, ValueError):

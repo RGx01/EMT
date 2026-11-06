@@ -5,6 +5,26 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b15] — 2026-11-06
+
+- **Save Config shows when there is something to save.** It is dimmed until you change a setting, then lights up.
+- **Rate brackets' legend takes one row on Agile.** More than a dozen brackets now show as a single colour scale
+  instead of a key each. Hover a colour to name its bracket and pick it out in the bars. Tariffs with fewer
+  brackets keep their named keys.
+- **Save Config says what it is doing.** A save takes a backup first, which took a moment with nothing on screen.
+  EMT now says so while it works, and the button can't be pressed a second time, which took a second backup.
+- **Removing a device's read sensor asks if it was wrong.** If it was, the history it left is wrong too. After the
+  save, EMT says so and offers Clear history there and then.
+- **History imports ask Octopus for 30 days at a time, not 60.** The first 60-day ask often timed out on
+  slower accounts, which cost one tester 8 minutes of a 20-minute import before EMT asked for less.
+  Gap fills ask the same way.
+- **The half-hours with no usage figure can be filled, this time from a click.** They showed as missing, but
+  clicking one showed its details and only Re-fetch, which cannot add the figure. It now offers Fill this gap.
+- **A device can go without a read sensor.** A battery whose inverter reports no grid charge can now be
+  set up with the read sensor empty, or have a wrong one removed. It keeps its Overview card and its charge
+  counts in the house. EMT no longer warns about a sensor that has gone, and **Clear history** on the
+  device's card removes what the old sensor recorded, after a backup, and gives that usage back to the house.
+
 ## [2026.11.0b14] — 2026-11-06
 
 - **The last half-hours with no usage figure can be filled too.** A half-hour that had Octopus's settled
