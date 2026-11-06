@@ -17,6 +17,9 @@ internal name for everything before the first public release and never appears i
 - **Billing charts keep your place when new data arrives.** The page redraws itself when data changes,
   often as you come back to it. It used to jump back to where you were when the redraw began, and close
   any data tables you had open, which moved you further still. It now stays where you are, tables open.
+- **Billing charts stop pushing you back as they load, in Safari above all.** A day grows when its figures
+  arrive. If that day was above where you were reading, everything moved down the screen, so scrolling
+  straight after arriving could throw you back. What you are reading now stays still.
 
 ## [2026.11.0b13] — 2026-11-05
 

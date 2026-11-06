@@ -13,6 +13,8 @@ section had every data table shut, so the page shortened and the position clampe
 open. `keepView` now reads the position at the swap, and `restoreView` holds each day's height until
 `fillDay` fills it, its table open again.
 
+The fill: `fillDay` moves the position by what a day above the view grew, the same in every browser.
+
 Discriminating: every test here fails on the parent (the functions are new, or the source said otherwise).
 """
 import json
@@ -127,7 +129,48 @@ class TheFunctions(unittest.TestCase):
         self.assertEqual(out, [True, False])
 
 
+@unittest.skipUnless(shutil.which("node"), "node not available")
+class TheFill(unittest.TestCase):
+    """A filled day grows: from above the view that moved what is being read (Safari has no scroll anchoring,
+    so a real database at 1500 saw the top day go from -245 to -132 as the month's figures landed)."""
+
+    def _fill(self, wrap_top):
+        src = """
+          var state = {root: {scrollTop: 1500, getBoundingClientRect: function () { return {top: 100}; }}, showData: false};
+          var wrap = {dataset: {day: 'd1'}, style: {minHeight: '351px'}, offsetHeight: 386, _keepTable: false,
+                      getBoundingClientRect: function () { return {top: %d}; },
+                      querySelector: function (q) {
+                        if (q === '.chart-summary') return {set outerHTML(v) { wrap.offsetHeight = 498; }};
+                        return {style: {}, classList: {add: function () {}}};
+                      }};
+          state.cur = {dayRows: {}};
+          function monthKey(d) { return d; } function renderPanel() { return ''; } function buildTable() {}
+          function buildChart() {} function esc(x) { return x; }
+          function loadMonth() { return Promise.resolve({d1: {panel_lines: [], chart: {}}}); }
+          %s
+          fillDay(wrap).then(function () {
+            console.log(JSON.stringify({top: state.root.scrollTop, minH: wrap.style.minHeight}));
+          });""" % (wrap_top, _fn("fillDay"))
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.js")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(src)
+            res = subprocess.run(["node", p], capture_output=True, text=True, timeout=30)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return json.loads(res.stdout)
+
+    def test_a_day_starting_above_the_view_moves_the_position_with_it(self):
+        self.assertEqual(self._fill(-50), {"top": 1612, "minH": ""})
+
+    def test_GUARD_a_day_in_or_below_the_view_does_not(self):
+        # (the height it grows goes below what is being read: it moves nothing)
+        self.assertEqual(self._fill(300), {"top": 1500, "minH": ""})
+
+
 class TheWiring(unittest.TestCase):
+
+    def test_chrome_does_not_correct_it_a_second_time(self):
+        self.assertIn(".emt-bill { overflow-anchor: none; }", SRC)
 
     def test_the_legend_and_the_hover_use_the_key(self):
         chart = _fn("buildChart")

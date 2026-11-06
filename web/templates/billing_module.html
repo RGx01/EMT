@@ -544,12 +544,19 @@ window.EMTBilling = (function () {
     if (!sec || wrap._filled) return Promise.resolve();
     return loadMonth(monthKey(day)).then(function (byDay) {
       if (state.cur !== sec || !byDay[day]) return;
+      // A filled day is taller than its placeholder (6 Nov 2026: 386 to 498 px). One starting above
+      // the view would push what is being read down the screen, so the position moves with it.
+      // Safari has no scroll anchoring, so this is done here, the same in every browser (the CSS
+      // turns anchoring off, or Chrome would correct it twice).
+      var rootEl = state.root, above = wrap.getBoundingClientRect().top < rootEl.getBoundingClientRect().top;
+      var h0 = wrap.offsetHeight;
       var row = byDay[day]; sec.dayRows[day] = row; wrap._filled = true;
       wrap.querySelector('.chart-summary').outerHTML = renderPanel(day, row.panel_lines);
       var tbl = wrap.querySelector('.day-data-tables');
       if (state.showData || wrap._keepTable) { buildTable(tbl, row.chart); tbl.style.display = 'flex';
                             wrap.querySelector('.day-tbl-toggle').classList.add('active'); }
       wrap.style.minHeight = '';                   // its own height now (keepView held it)
+      if (above) rootEl.scrollTop += wrap.offsetHeight - h0;
       if (wrap._near) buildChart(day);
     }).catch(function (e) {
       var el = wrap.querySelector('.chart-container');
@@ -1020,6 +1027,7 @@ window.EMTBilling = (function () {
   .emt-bill .channel-header.submeter-indent td { padding-left: 12px; }
   .emt-bill .grand-total td { padding-top: 4px; font-size: 14px; font-weight: 700; color: var(--accent); border-top: 2px solid var(--accent); }
 
+  .emt-bill { overflow-anchor: none; }
   /* toggles */
   .emt-bill .bill-toggle, .emt-bill .day-charts-toggle { background: var(--surface); border-radius: 8px;
     border: 1px solid var(--border); margin-bottom: 12px; overflow: hidden; }
