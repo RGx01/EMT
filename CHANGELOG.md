@@ -7,6 +7,9 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **History imports ask Octopus for 30 days at a time, not 60.** The first 60-day ask often timed out on
+  slower accounts, which cost one tester 8 minutes of a 20-minute import before EMT asked for less.
+  Gap fills ask the same way.
 - **The half-hours with no usage figure can be filled, this time from a click.** They showed as missing, but
   clicking one showed its details and only Re-fetch, which cannot add the figure. It now offers Fill this gap.
 
