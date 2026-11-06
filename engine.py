@@ -3160,7 +3160,8 @@ async def backout_recorder_attribution_async(**kw) -> dict:
     return res
 
 
-async def _backout_impl(*, run_id=None, meter_id=None, from_date=None, to_date=None) -> dict:
+async def _backout_impl(*, run_id=None, meter_id=None, from_date=None, to_date=None,
+                        whole: bool = False) -> dict:
     """Undo a recorder-attribution run (or an explicit device + range): delete the
     reconstructed 'recorder_attributed' device blocks, re-derive each affected parent
     meter's remainder over the span, and drop the run from the ledger. The reversible
@@ -3173,7 +3174,11 @@ async def _backout_impl(*, run_id=None, meter_id=None, from_date=None, to_date=N
         returns {ok:False, error:'backout_in_progress'} rather than racing it;
       • a run_id that isn't (or is no longer) in the ledger returns
         {ok:False, error:'run_not_found'} instead of falling through to an
-        all-None delete that would wipe the whole attributed layer."""
+        all-None delete that would wipe the whole attributed layer.
+
+    `whole` (Clear history, 6 Nov 2026): a device with no sensor left loses everything it holds,
+    live and imported half-hours and its kept readings too, so a later refill cannot bring them back.
+    The device stays, and so does its Overview card. Refused while it has any sensor."""
     from datetime import datetime as _dt, timedelta as _td
     # Atomic single-flight: if a back-out is already running, refuse rather than
     # race it on the store's single DB connection (the exact double-undo crash).
@@ -3196,8 +3201,18 @@ async def _backout_impl(*, run_id=None, meter_id=None, from_date=None, to_date=N
         _backout_job.clear()
         _backout_job.update({"status": "running", "run_id": run_id,
                              "meter_id": meter_id, "started_at": _dt_now_iso_safe()})
-        res = store.delete_recorder_attributed(
-            meter_id=meter_id, from_iso=from_iso, to_iso=to_iso)
+        if whole:
+            if not meter_id or store.device_stitch_sensors(meter_id):
+                return {"ok": False, "error": "has_sensor"}
+            off = store.device_off_stitch_sensors(meter_id)
+            d = store.drop_device_history(meter_id, [o["id"] for o in off], everything=True)
+            res = {"deleted": d["deleted_blocks"], "parents": d["parents"], "from": d["from"], "to": d["to"]}
+            for r in store.get_attribution_runs():
+                if r.get("meter_id") == meter_id and r.get("run_id"):
+                    store.remove_attribution_run(r["run_id"])
+        else:
+            res = store.delete_recorder_attributed(
+                meter_id=meter_id, from_iso=from_iso, to_iso=to_iso)
         lo, hi = res.get("from"), res.get("to")
         recomputed = 0
         if lo and hi:
@@ -13217,6 +13232,10 @@ def check_battery_sensors() -> dict:
         confirmed = _store.get_meta(_BATTERY_CONFIRMED_KEY, {}) or {}
         out = {}
         for mid, sid in _store.battery_devices():
+            if sid is None:      # no sensor to judge: what an old one recorded is not this device's fault
+                out[mid] = {"sensor_id": None, "half_hours": 0, "days": 0, "first": None, "last": None,
+                            "conclusive_on": None, "recent": []}
+                continue
             replaced = any(f != sid for f in flagged.get(mid) or [])
             rows = _store.battery_evidence_rows(mid, sid, ratio=_BATTERY_RATIO, floor_kwh=_BATTERY_FLOOR_KWH,
                                                 unnamed=not replaced)
@@ -13256,7 +13275,7 @@ def battery_sensor_flags() -> dict:
     out = {}
     for mid, sid in rd.battery_devices():
         e = ev.get(mid) or {}
-        if not e.get("conclusive_on") or e.get("sensor_id") != sid:
+        if sid is None or not e.get("conclusive_on") or e.get("sensor_id") != sid:
             continue
         c = confirmed.get(mid) or {}
         out[mid] = {"conclusive_on": e["conclusive_on"], "half_hours": e.get("half_hours"),
@@ -13319,6 +13338,10 @@ def check_whole_house_sensors() -> dict:
         confirmed = _store.get_meta(_WHOLE_HOUSE_CONFIRMED_KEY, {}) or {}
         out = {}
         for mid, sid in _store.device_primary_sensors():
+            if sid is None:      # no sensor to judge
+                out[mid] = {"sensor_id": None, "n": 0, "matched": 0, "share": None, "example": None,
+                            "whole_house": False}
+                continue
             replaced = any(f != sid for f in flagged.get(mid) or [])
             ev = _store.whole_house_evidence(mid, sid, days=_WHOLE_HOUSE_DAYS, tol=_WHOLE_HOUSE_TOL,
                                              floor_kwh=_WHOLE_HOUSE_FLOOR_KWH, unnamed=not replaced)
@@ -13357,7 +13380,7 @@ def whole_house_sensor_flags() -> dict:
     out = {}
     for mid, sid in rd.device_primary_sensors():
         e = ev.get(mid) or {}
-        if not e.get("whole_house") or e.get("sensor_id") != sid:
+        if sid is None or not e.get("whole_house") or e.get("sensor_id") != sid:
             continue
         c = confirmed.get(mid) or {}
         out[mid] = {"n": e.get("n"), "matched": e.get("matched"), "share": e.get("share"),
