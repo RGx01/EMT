@@ -174,6 +174,12 @@ key is never in it. A size estimate warns over 10 MB.
   (`drop_device_history`); the house over the span again, yielding to the loop every 50 blocks
   (`recompute_remainders_for_window_async`); and the rebuild from the kept hours, with no second
   fetch. A rebuild whose every fetch failed is an error, not "done".
+- **A device with no read sensor** is allowed: nothing is read for it, its usage counts in the house,
+  and its Overview cards (which read only its power and SoC sensors) still work. Emptying the sensor
+  skips the change dialog, and the old one comes off the stitch. Neither sensor check judges such a device.
+  **Clear history** (`/api/historical/attribute/clear`, `_backout_impl(whole=True)`): refused while it
+  has any sensor; after a backup, every row and `ha_reads` row of the device go, so a refill cannot
+  bring them back, and the house is recomputed over the span. The page polls `/backout/status`.
 - **A battery counting solar** (`check_battery_sensors`, at start-up and hourly): a half-hour counts
   against a battery when it reads over 1.5× the grid import and over 0.25 kWh above it — only where the
   main block has an import kWh (one with none is not a zero import); on 5 days in 30 the sensor is flagged. Data is never changed — a banner and a card note, and *Keep this sensor

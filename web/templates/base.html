@@ -914,7 +914,7 @@ window.EMT = window.EMT || {};
                   '. Until it is fixed the device breakdown is wrong: the battery is given grid it did not take, ' +
                   'so its cost reads too high and the rest of the house’s too low. Your bill total is not affected. ' +
                   '<a href="{{ url_for('settings_page') }}#device-' + encodeURIComponent(b.meter_id) + '">Choose the battery’s ' +
-                  '<strong>grid-charge</strong> sensor</a>, or remove the battery if your inverter has none.'
+                  '<strong>grid-charge</strong> sensor</a>, or empty its read sensor if your inverter has none.'
           });
         });
         // BL-108: a device whose sensor reads the whole house's grid import

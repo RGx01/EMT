@@ -5,6 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **A device can go without a read sensor.** A battery whose inverter reports no grid charge can now be
+  set up with the read sensor empty, or have a wrong one removed. It keeps its Overview card and its charge
+  counts in the house. EMT no longer warns about a sensor that has gone, and **Clear history** on the
+  device's card removes what the old sensor recorded, after a backup, and gives that usage back to the house.
+
 ## [2026.11.0b14] — 2026-11-06
 
 - **The last half-hours with no usage figure can be filled too.** A half-hour that had Octopus's settled
