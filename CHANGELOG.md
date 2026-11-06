@@ -7,6 +7,14 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Agile cards now show tomorrow's prices.** EMT looked for prices up to midnight, but Agile's day ends at 23:00,
+  so it kept asking Octopus through the night and had used all its tries for the day by 04:30. When tomorrow's
+  prices came out at about 4pm, it had none left, and the card stopped at 23:00 tonight. It now asks once they
+  are out.
+- **Agile import and export have a card each.** Each has its own scale, the price now, its best hour, and what
+  your last 30 days would have come to.
+- **The Agile cards can be expanded and hidden.** Hiding one applies to everyone using this EMT, and it stops
+  asking Octopus for those prices. A link at the foot of the Overview brings it back.
 - **Billing History says when it is taking a backup.** Saving, adding or deleting a period, and applying a site
   change, all take a backup first. Each now says so while it works. Apply had shown nothing and could be pressed
   twice, and Escape could close the dialog during a save.

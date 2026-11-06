@@ -92,14 +92,14 @@ class TheRouteAndPage(unittest.TestCase):
 
     def test_the_card_on_a_dynamic_tariff_or_since_bl_103_any_with_a_region(self):
         self.assertIn("{% if has_agile %}", PAGE)
-        self.assertIn('id="agile-card-wrap"', PAGE)
+        self.assertIn('id="agile-card-{{ ch }}"', PAGE)
         i = SERVER.index("has_agile = (any(_tp_ag.is_dynamic_code(")
         self.assertLess(i, SERVER.index("has_agile=has_agile,"))
 
     def test_its_size_is_the_history_cards(self):
-        i = PAGE.index('id="agile-card-wrap"')
-        self.assertIn('class="card power-history-card"', PAGE[i - 60:i])
-        self.assertIn('<div class="power-history-wrap">\n      <canvas id="agile-canvas">', PAGE)
+        i = PAGE.index('id="agile-card-{{ ch }}"')
+        self.assertIn('class="card power-history-card expandable-card"', PAGE[i - 60:i])
+        self.assertIn('<div class="power-history-wrap">\n      <canvas id="agile-canvas-{{ ch }}">', PAGE)
 
 
 @unittest.skipUnless(shutil.which("node"), "node not available")
