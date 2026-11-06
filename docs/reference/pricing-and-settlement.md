@@ -103,7 +103,7 @@ From `settlement_state.classify`, drawn by `heatmap_module.html`:
 | `abandoned` | red, hatched yellow | asked 30 days, no cost — kWh × rate |
 | `corrected` | blue | your correction |
 | `imported`, `no_agreement`, `none` | grey | imported history (or past Octopus's two years); no Octopus agreement; nothing imported |
-| missing | black, hatched | no block for the half-hour, or one with no import kWh (`block_store._HAS_IMPORT`) |
+| missing | black, hatched | no block for the half-hour, or one with no `imp_kwh` (`block_store._HAS_IMPORT`) |
 
 **Export** has no bill: kWh × the export rate is final once the export kWh settles — `applied`,
 `waiting`, `overdue`, `no_data` (no export figure, hatched), `no_agreement`, `none`.
