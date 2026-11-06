@@ -10,6 +10,10 @@ internal name for everything before the first public release and never appears i
 - **Billing History says when it is taking a backup.** Saving, adding or deleting a period, and applying a site
   change, all take a backup first. Each now says so while it works. Apply had shown nothing and could be pressed
   twice, and Escape could close the dialog during a save.
+- **The rest of EMT says so too.** Finishing the setup wizard, saving a postcode, rebuilding a new device's
+  history, deleting a device, applying a re-fetch and saving sites before an import all now say they are backing up.
+  A postcode save and the rebuild could also be pressed twice, which took a second backup.
+- **Filling a gap no longer says it is backing up.** It said so, but a gap fill takes no backup.
 
 ## [2026.11.0b15] — 2026-11-06
 

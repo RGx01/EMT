@@ -88,7 +88,7 @@
       <input type="text" id="postcode-input" class="postcode-field"
              placeholder="e.g. DE1" maxlength="6"
              onkeydown="if(event.key==='Enter') savePostcode()">
-      <button class="btn btn-primary" onclick="savePostcode()">Save</button>
+      <button id="postcode-save" class="btn btn-primary" onclick="savePostcode()">Save</button>
     </div>
   </div>
 
@@ -306,7 +306,11 @@ async function checkPostcode() {
 
 async function savePostcode() {
   var val = (document.getElementById('postcode-input').value || '').trim().toUpperCase();
-  if (!val) return;
+  var btn = document.getElementById('postcode-save');
+  if (!val || btn.disabled) return;
+  // the save backs up the whole database first (6 Nov 2026, the user)
+  var label = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳ Backing up and saving…';
   try {
     var r   = await fetch(apiUrl('/api/config'));
     var cfg = await r.json();
@@ -327,6 +331,7 @@ async function savePostcode() {
       showSuccess('Postcode saved. Carbon intensity recording will begin on the next block.');
     } else { showError(sd.error || 'Save failed'); }
   } catch(e) { showError('Save failed: ' + e.message); }
+  btn.disabled = false; btn.textContent = label;
 }
 
 function updateEvUnitLabel(unit) {

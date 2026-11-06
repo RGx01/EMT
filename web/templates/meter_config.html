@@ -2266,7 +2266,7 @@ function executeDelete() {
   delete config.meters[mid];
   renderAll();
 
-  progress('⏳ Deleting "' + devName + '"…');
+  progress('⏳ Backing up, then deleting "' + devName + '"…');
 
   fetch(apiUrl('/api/meter/' + encodeURIComponent(mid) + '/delete-data'), {
     method:  'POST',
@@ -2672,7 +2672,10 @@ function _maybeOfferRebuild() {
     var ids = boxes.map(function(c) { return c.value; });
     var repl = {}; boxes.forEach(function(c) { if (c.dataset.replace) repl[c.value] = true; });
     if (!ids.length) { modal.style.display = 'none'; return; }
-    st.textContent = 'Starting…';
+    // each start takes its own backup: a second press would take them again (6 Nov 2026, the user)
+    var now = document.getElementById('rebuild-now'), later = document.getElementById('rebuild-later');
+    now.disabled = later.disabled = true;
+    st.textContent = '⏳ Checking, backing up and starting…';
     var notes = [];
     ids.reduce(function(p, id) {
       return p.then(function() {
@@ -2688,9 +2691,10 @@ function _maybeOfferRebuild() {
     }, Promise.resolve()).then(function() {
       st.innerHTML = notes.map(esc).join('<br>');
       _loadHistoryState();
-      document.getElementById('rebuild-now').style.display = 'none';
-      document.getElementById('rebuild-later').textContent = 'Close';
-    }).catch(function(e) { st.textContent = 'Could not start: ' + e.message; });
+      now.style.display = 'none';
+      later.textContent = 'Close';
+      later.disabled = false;
+    }).catch(function(e) { now.disabled = later.disabled = false; st.textContent = 'Could not start: ' + e.message; });
   };
   modal.style.display = 'flex';
 }
@@ -3827,6 +3831,7 @@ async function wizApplyAndClose() {
     });
   } catch (e) { /* non-fatal; mode defaults to cad */ }
   // Auto-save after wizard completes — no change reason for initial setup
+  progress('⏳ Saving: taking a backup first. On a large database this can take a little while.');
   try {
     var r = await fetch(apiUrl('/api/config'), {
       method: 'POST',
@@ -3834,6 +3839,7 @@ async function wizApplyAndClose() {
       body: JSON.stringify(config)
     });
     var data = await r.json();
+    progressDone();
     if (data.ok) {
       show('alert-success');
       // device sensors design §4: offer to rebuild the new devices' history once the engine,
@@ -3844,6 +3850,7 @@ async function wizApplyAndClose() {
     }
     else showError(data.error || 'Save failed — please press Save Config manually');
   } catch(e) {
+    progressDone();
     showError('Auto-save failed — please press Save Config manually');
   }
 }
