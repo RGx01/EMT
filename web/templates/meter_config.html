@@ -618,15 +618,23 @@ function _cfgCanon(v) {
   return (v === null || v === undefined || v === '' || v === false) ? undefined : v;
 }
 function _cfgKey(c) { return JSON.stringify(_cfgCanon(c)); }
-var _cfgBaseline = null, _cfgTyping = false;
+var _cfgBaseline = null, _cfgTyping = false, _cfgSaving = false;
 function _cfgSetBaseline() { _cfgBaseline = _cfgKey(config); _cfgTyping = false; _updateSaveState(); }
 function _cfgDirty() { return _cfgTyping || (_cfgBaseline !== null && _cfgKey(config) !== _cfgBaseline); }
 function _updateSaveState() {
   var b = document.getElementById('btn-save'); if (!b) return;
-  var dirty = _cfgDirty();
+  var dirty = !_cfgSaving && _cfgDirty();
   b.disabled = !dirty;
   b.classList.toggle('btn-save-dirty', dirty);
-  b.title = dirty ? 'You have changes that are not saved' : 'Nothing to save';
+  b.title = _cfgSaving ? 'Saving' : dirty ? 'You have changes that are not saved' : 'Nothing to save';
+}
+// The server backs up the whole database before it writes a save, inside the request (6 Nov 2026, the user:
+// nothing showed while it did, and a second press took a second backup). The button stays shut until the reload.
+function _saveBusy(label) {
+  _cfgSaving = !!label;
+  var b = document.getElementById('btn-save');
+  if (b) b.textContent = label || '💾 Save Config';
+  _updateSaveState();
 }
 // A field updates `config` when it loses focus, and some actions have no field: any of these may have
 // changed it. Typing in a settings panel counts at once, until the field's change says what it became.
@@ -2552,6 +2560,9 @@ function _doSave(changeReason) {
 
   var payload = Object.assign({}, config);
   if (changeReason) payload.change_reason = changeReason;
+  function failed(msg) { progressDone(); _saveBusy(null); showError(msg); }
+  _saveBusy('⏳ Saving…');
+  progress('⏳ Saving: taking a backup first. On a large database this can take a little while.');
   fetch(apiUrl('/api/config'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -2561,12 +2572,14 @@ function _doSave(changeReason) {
       _queueRebuildOffer();
       _queueClearOffer();
       // Brief flash then reload so new sensor fields appear for any updated meter_type
+      progressDone();
+      _saveBusy('✓ Saved');
       show('alert-success');
       window.scrollTo({ top: 0, behavior: 'smooth' });
       setTimeout(function() { window.location.reload(); }, 1200);
     }
-    else showError(data.error || 'Save failed');
-  }).catch(function(e) { showError(e.message); });
+    else failed(data.error || 'Save failed');
+  }).catch(function(e) { failed(e.message); });
 }
 
 // Device sensors design §4 (PR 4): saving a NEW device with a sensor offers to rebuild its history

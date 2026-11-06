@@ -6,7 +6,11 @@ Save Config shows when there is something to save, and removing a device's read 
 is no edit); empty values count as absent. `_emptiedDevices` lists what a save emptied, for `_maybeOfferClear`
 after its reload: Asked, not done, since a sensor can go for other reasons.
 
-Discriminating: every test here fails on the parent (it is new); the page was also driven by hand in a browser.
+While it saves: the server backs up the whole database inside the request, and nothing showed while it did. On a
+second press a second save and a second backup went. `_saveBusy` shuts the button and `_doSave` names the backup.
+
+Discriminating: every test here fails on the parent (it is new), except those marked GUARD; `WhileItSaves` fails on
+the commit before it, for want of `_saveBusy`. The page was also driven by hand in a browser.
 """
 import json
 import os
@@ -88,6 +92,90 @@ class TheRules(unittest.TestCase):
           console.log(JSON.stringify(_emptiedDevices()));""")
         self.assertEqual(out, [{"id": "gone", "label": "D", "old": "s1", "history": []},
                                {"id": "hist", "label": "D", "old": "s5", "history": ["old"]}])
+
+
+SAVING_HARNESS = """
+var log = [], btn = {classList: {toggle: function () {}}, textContent: '💾 Save Config', disabled: false, title: ''};
+var document = {getElementById: function () { return btn; }};
+var window = {scrollTo: function () {}, location: {reload: function () { log.push('reload'); }}};
+var config = {meters: {}}, _cfgBaseline = 'edited-from', _cfgTyping = false, _cfgSaving = false;
+function _cfgKey() { return 'edited-to'; }
+function hideAlerts() {}
+function validateDeviceNames() { return NAME_ERRORS; }
+function showError(m) { log.push('error: ' + m); }
+function show(id) { log.push('show ' + id); }
+function progress(t) { log.push('progress'); progressText = t; }
+function progressDone() { log.push('progressDone'); }
+function _queueRebuildOffer() {} function _queueClearOffer() {}
+function apiUrl(p) { return p; }
+var setTimeout = function (f, ms) { log.push('timer ' + ms); f(); };
+var progressText = null, NAME_ERRORS = [], asked = 0, during = null;
+function state() { return {text: btn.textContent, disabled: btn.disabled, log: log.slice()}; }
+function answer(reply) {
+  return function () {
+    asked += 1;
+    during = state();
+    return reply();
+  };
+}
+"""
+
+
+@unittest.skipUnless(shutil.which("node"), "node not available")
+class WhileItSaves(unittest.TestCase):
+    """The server backs up the database inside the request: the page says so, and takes no second press."""
+
+    def _save(self, reply, setup=""):
+        src = (SAVING_HARNESS + "\n".join(_fn(n) for n in ("_cfgDirty", "_updateSaveState", "_saveBusy", "_doSave"))
+               + "\nvar fetch = answer(function () { return %s; });\n" % reply + setup + """
+          _updateSaveState();
+          _doSave(null);
+          // every promise of the save has settled by the time this one's turn comes
+          var p = Promise.resolve(); for (var i = 0; i < 6; i++) p = p.then(function () {});
+          p.then(function () {
+            console.log(JSON.stringify({during: during, after: state(), asked: asked, text: progressText}));
+          });""")
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "t.js")
+            with open(p, "w", encoding="utf-8") as f:
+                f.write(src)
+            r = subprocess.run(["node", p], capture_output=True, text=True, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    OK = "Promise.resolve({json: function () { return Promise.resolve({ok: true}); }})"
+    REFUSED = "Promise.resolve({json: function () { return Promise.resolve({error: 'no'}); }})"
+
+    def test_the_request_goes_with_the_button_shut_and_the_backup_named(self):
+        out = self._save(self.OK)
+        self.assertEqual(out["during"], {"text": "⏳ Saving…", "disabled": True, "log": ["progress"]})
+        self.assertIn("taking a backup first", out["text"])
+
+    def test_a_save_that_worked_stays_shut_until_the_reload(self):
+        out = self._save(self.OK)
+        self.assertEqual(out["after"]["text"], "✓ Saved")
+        self.assertTrue(out["after"]["disabled"])
+        self.assertEqual(out["after"]["log"], ["progress", "progressDone", "show alert-success", "timer 1200", "reload"])
+
+    def test_a_refused_save_gives_the_button_back_and_keeps_the_edit_unsaved(self):
+        out = self._save(self.REFUSED)
+        self.assertEqual((out["after"]["text"], out["after"]["disabled"]), ("💾 Save Config", False))
+        self.assertEqual(out["after"]["log"], ["progress", "progressDone", "error: no"])
+
+    def test_a_lost_connection_gives_the_button_back(self):
+        out = self._save("Promise.reject(new Error('gone'))")
+        self.assertEqual((out["after"]["text"], out["after"]["disabled"]), ("💾 Save Config", False))
+        self.assertEqual(out["after"]["log"], ["progress", "progressDone", "error: gone"])
+
+    def test_a_click_elsewhere_during_the_save_does_not_reopen_the_button(self):
+        # _watchForEdits re-reads the button on every click, and the edit is still unsaved at that moment
+        out = self._save("(_updateSaveState(), %s)" % self.OK)
+        self.assertTrue(out["during"]["disabled"])
+
+    def test_GUARD_a_name_the_page_refuses_sends_nothing_and_shows_nothing(self):
+        out = self._save(self.OK, setup="NAME_ERRORS = ['bad'];")
+        self.assertEqual(out["asked"], 0)
+        self.assertEqual((out["after"]["text"], out["after"]["disabled"]), ("💾 Save Config", False))
 
 
 class TheWiring(unittest.TestCase):
