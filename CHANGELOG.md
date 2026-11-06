@@ -5,6 +5,12 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **Billing History says when it is taking a backup.** Saving, adding or deleting a period, and applying a site
+  change, all take a backup first. Each now says so while it works. Apply had shown nothing and could be pressed
+  twice, and Escape could close the dialog during a save.
+
 ## [2026.11.0b15] — 2026-11-06
 
 - **Save Config shows when there is something to save.** It is dimmed until you change a setting, then lights up.
