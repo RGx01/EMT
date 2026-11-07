@@ -9473,6 +9473,26 @@ def _ev_outside_runs(ev_by_slot, completed, day_min, bridge_min=_CHARGE_SESSION_
     return out
 
 
+def _split_charge_rows(ev_by_slot, first_record):
+    """Before EMT's dispatch record starts, Octopus's split of the bill says when the car charged, so
+    those half-hours read as completed dispatches (dispatch_history's shape), which puts them on the
+    card as ordinary charges and in the 6-hour count. Octopus returns only recent dispatches, so an
+    install built from the API has no record of the nights before its first poll, and they read as
+    "outside a smart charge". Tested on the user's 25 Aug - 28 Oct 2026: 476 half-hours in both, none
+    in the split alone. From the record's first half-hour on, the record decides. Pure."""
+    from datetime import datetime as _dt, timedelta as _td
+    if not first_record:
+        return []
+    rows = []
+    for k in sorted(ev_by_slot):
+        q = sum(p[0] for p in ev_by_slot[k])
+        if k < first_record and q > 1e-6:
+            rows.append({"slot_start": k, "kind": "completed", "provider": None, "source": None,
+                         "energy_kwh": q, "raw_start": k,
+                         "raw_end": (_dt.fromisoformat(k) + _td(minutes=30)).isoformat()})
+    return rows
+
+
 def _build_upcoming_dispatches(history, rates, day_peak, now_iso,
                                bridge_min=_CHARGE_SESSION_BRIDGE_MIN):
     """BL-10: fold *future planned* IOG dispatch slots into upcoming sessions.
@@ -9760,7 +9780,19 @@ def api_charge_sessions():
             "WHERE meter_id = ? AND block_start >= ? AND block_start < ? "
             "AND imp_rate IS NOT NULL GROUP BY d", (main_id, win_start, win_end))}
 
-        sessions = _build_charge_sessions(history, rates, day_peak)
+        # the EV's share from a day before the range, so the first cap-day is counted whole
+        ev_wide = {}
+        for r in store._conn.execute(
+                "SELECT block_start, kwh, inc_rate FROM block_segments WHERE meter_id = ? "
+                "AND channel = 'import' AND attribution = 'ev' AND kwh > 0 "
+                "AND block_start >= ? AND block_start < ?",
+                (main_id, (now - _t2(days=days + 1)).isoformat(), win_end)):
+            ev_wide.setdefault(r["block_start"], []).append((float(r["kwh"]), r["inc_rate"]))
+        ev_by_slot = {k: v for k, v in ev_wide.items() if k >= win_start}
+        first_record = store.first_dispatch_record()
+        split_rows = _split_charge_rows(ev_by_slot, first_record)
+
+        sessions = _build_charge_sessions(history + split_rows, rates, day_peak)
 
         # Attach local-time display strings (UTC→site tz), like the review list.
         try:
@@ -9781,12 +9813,6 @@ def api_charge_sessions():
         # 6-hour allowance per noon→noon cap-day, and the EV's charging outside any smart charge.
         import engine as _eng
         import iog_cap as _cap
-        ev_by_slot = {}
-        for r in store._conn.execute(
-                "SELECT block_start, kwh, inc_rate FROM block_segments WHERE meter_id = ? "
-                "AND channel = 'import' AND attribution = 'ev' AND kwh > 0 "
-                "AND block_start >= ? AND block_start < ?", (main_id, win_start, win_end)):
-            ev_by_slot.setdefault(r["block_start"], []).append((float(r["kwh"]), r["inc_rate"]))
         day_min = {r["d"]: r["m"] for r in store._conn.execute(
             "SELECT substr(block_start,1,10) d, MIN(inc_rate) m FROM block_segments "
             "WHERE meter_id = ? AND channel = 'import' AND kwh > 0 AND block_start >= ? "
@@ -9794,7 +9820,8 @@ def api_charge_sessions():
         sources = {r["slot_start"]: r.get("source") for r in history
                    if r.get("kind") in ("planned", "started") and r.get("source")}
         # the cap-days from a day before the range, so the first one is counted whole
-        cap_hist = store.get_dispatch_history((now - _t2(days=days + 1)).isoformat(), win_end)
+        cap_hist = (store.get_dispatch_history((now - _t2(days=days + 1)).isoformat(), win_end)
+                    + _split_charge_rows(ev_wide, first_record))
         bump = {r["slot_start"] for r in cap_hist if (r.get("source") or "") in _BUMP_SOURCES}
         # a bump Octopus labels `unknown`, or a peak-billed charge: the pricing's rule (engine.cap_excluded)
         cap = _cap.cap_usage([(r["raw_start"], r["raw_end"], r["energy_kwh"]) for r in cap_hist
@@ -9816,7 +9843,7 @@ def api_charge_sessions():
                 return False
         _charge_session_costs(sessions, ev_by_slot, day_min, rates, sources, cap, _capped,
                               bill_slots, _cap_day)
-        completed = {r["slot_start"] for r in history if r.get("kind") == "completed"}
+        completed = {r["slot_start"] for r in history + split_rows if r.get("kind") == "completed"}
         outside = _ev_outside_runs(ev_by_slot, completed, day_min)
         cap_days = {}
         for s in sessions:

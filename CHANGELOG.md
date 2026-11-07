@@ -7,6 +7,12 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **The Smart Charging card no longer calls your earlier charges "outside a smart charge".** Octopus only gives
+  recent dispatches, so after a fresh install every night before EMT's first check read that way, in red, and the
+  6-hour bar on the first night was far too low. Those nights now come from Octopus's split of your bill, as
+  ordinary charges with their bars, cost and share of the 6 hours.
+- **The card's "Also charged outside a smart charge" line stays with its charge.** It showed the latest such run in
+  the last 7 days, even under a charge days later. It now appears only for the same noon-to-noon day.
 - **Repairing a gap no longer re-prices your whole history.** Filling 13 half-hours started a walk over every day
   you have, under a banner saying "Finishing your import". A repair now prices only what it filled, with no banner.
 - **The re-pricing banner no longer tells you to avoid restarting.** A restart is safe, because the walk carries on
