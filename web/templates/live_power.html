@@ -946,7 +946,7 @@ function setMiniSource(enabled){
   <div class="expand-modal" role="dialog" aria-label="Smart charging detail">
     <button class="expand-modal-close" onclick="_closeChargeModal()">✕</button>
     <div class="card-title">🚗 Smart Charging</div>
-    <div style="font-size:12px;color:var(--muted);margin:2px 0 8px;">The car's energy from Octopus's dispatches; its cost from the car's share of the bill (est. until billed). On the capped tariff, each noon-to-noon day's 6 hours of smart charging, as EMT estimates it.</div>
+    <div style="font-size:12px;color:var(--muted);margin:2px 0 8px;">The car's energy from Octopus's dispatches, or from its split of the bill for nights before EMT's record of them starts; its cost from the car's share of the bill (est. until billed). On the capped tariff, each noon-to-noon day's 6 hours of smart charging, as EMT estimates it.</div>
     <div id="charge-range" style="display:flex;gap:6px;margin:2px 0 10px;">
       <button class="charge-range-btn" data-days="7"  onclick="_setChargeRange(7)">7 days</button>
       <button class="charge-range-btn" data-days="30" onclick="_setChargeRange(30)">30 days</button>
@@ -1199,6 +1199,13 @@ function _outsideText(o){
        + ' · '+_cesc(_dayName(o.local.start.date))+' '+_cesc(win);
 }
 
+// The face speaks of the charge it shows, so only that charge's cap-day: the newest such run, if any
+function _faceOutside(sessions, outside){
+  if(!sessions.length) return null;
+  var o=outside.filter(function(x){ return x.cap_day===sessions[0].cap_day; });
+  return o.length ? o[o.length-1] : null;
+}
+
 // The half-hours' bars; a gap the session bridged is drawn as a gap, so the window and the bars agree
 function _fillChartSVG(s){
   var f=s.fill||[]; if(!f.length) return '';
@@ -1347,8 +1354,9 @@ function loadChargeSessions(){
         card.style.display='none'; return; }
       card.style.display='';
       var sum = _chargeSessions.length ? _chargeSummaryHtml(_chargeSessions[0]) : '';
-      if(_chargeOutside.length){
-        sum += '<div style="margin-top:4px;color:#ff6b6b;">Also '+_outsideText(_chargeOutside[_chargeOutside.length-1])
+      var _also=_faceOutside(_chargeSessions, _chargeOutside);
+      if(_also){
+        sum += '<div style="margin-top:4px;color:#ff6b6b;">Also '+_outsideText(_also)
                  .replace(/^Charged/, 'charged')+'</div>';
       }
       if(_chargeUpcoming.length){
