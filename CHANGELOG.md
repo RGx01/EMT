@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b16] — 2026-11-07
 
 - **Any card on the Overview can be hidden.** Each one now has the hide button the Agile cards have, including the
   live gauges, your devices and the Today, This Bill and This Year cards. Hiding applies to everyone using this EMT,
