@@ -3,7 +3,19 @@
 <!-- EMT layout variant: WRAP-FILL (ACTIVE) — Cards wrap-and-fill: one filled row when wide; wraps left-aligned filling each row when narrow. -->
 
 {% block head %}
+<style id="ov-hidden-style"></style>
+<script>
+// Hidden Overview cards (7 Nov 2026, the user): one CSS rule from the saved list. Set before the cards exist, so a
+// hidden card never flashes, a device card built later is covered, and scripts setting a card's own display cannot
+// bring it back.
+var _ovHidden = {{ overview_hidden|default([])|tojson }};
+function _ovCss(hidden){
+  return hidden.length ? hidden.map(function(k){ return '[data-ov-card="'+k+'"]'; }).join(',')+'{display:none!important;}' : '';
+}
+document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
+</script>
 <style>
+[data-ov-card] { position: relative; }
 /* ── Summary page ── */
 /* Outer row — in layout-a contains both gauges and CI side by side */
 .gauge-ci-row {
@@ -857,7 +869,7 @@ function setMiniSource(enabled){
 
   <!-- Generation Mix card — first card, only shown when postcode configured -->
   {% if has_postcode %}
-  <div class="soc-card" id="mix-card" style="min-width:280px;align-items:flex-start;">
+  <div class="soc-card" id="mix-card" data-ov-card="mix" style="min-width:280px;align-items:flex-start;">
     <div class="card-title" style="font-size:12px;align-self:flex-start;">🌐 Current Grid Generation Mix</div>
     <div style="display:flex;gap:12px;align-items:center;width:100%;">
       <div id="mix-donut-wrap" style="position:relative;width:120px;height:120px;flex-shrink:0;">
@@ -877,7 +889,7 @@ function setMiniSource(enabled){
 
   {% if has_power_sensor %}
   <!-- Main gauge -->
-  <div class="power-card">
+  <div class="power-card" data-ov-card="power">
     <div class="card-title">⚡ Live Power</div>
     <div id="power-status" style="font-size:13px;font-weight:600;padding:6px 16px;border-radius:20px;background:var(--bg);border:1px solid var(--border);color:var(--muted);">—</div>
     <div class="gauge-wrap">
@@ -930,7 +942,7 @@ function setMiniSource(enabled){
 <!-- ── BL-10: IOG smart-charging card (full-width row; server-gated on dispatch
      data, so it sits outside the gauge-ci-row flex system and leaves no gap when
      absent). Hidden until the sessions API confirms data. ── -->
-<div class="card expandable-card" id="charge-card-wrap" style="display:none;margin-top:16px;">
+<div class="card expandable-card" id="charge-card-wrap" data-ov-card="charge" style="display:none;margin-top:16px;">
   <button class="expand-btn" title="Recent sessions" onclick="_openChargeModal()">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
       <path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4"/>
@@ -962,7 +974,7 @@ function setMiniSource(enabled){
 
   {% if has_postcode %}
   <!-- Carbon intensity card -->
-  <div class="carbon-card card expandable-card" id="carbon-card-wrap">
+  <div class="carbon-card card expandable-card" id="carbon-card-wrap" data-ov-card="carbon">
     <button class="expand-btn" id="carbon-expand-btn" title="Expand" onclick="_expandCard('carbon')">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4"/>
@@ -988,13 +1000,13 @@ function setMiniSource(enabled){
 
   {% if has_power_sensor or has_postcode %}
   <!-- Rolling Power Chart -->
-  <div class="card power-history-card expandable-card" id="power-history-card-wrap">
+  <div class="card power-history-card expandable-card" id="power-history-card-wrap" data-ov-card="history">
     <button class="expand-btn" id="ph-expand-btn" title="Expand" onclick="_expandCard('ph')">
       <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4"/>
       </svg>
     </button>
-    <div class="card-title" style="display:flex;align-items:center;gap:12px;">
+    <div class="card-title" style="display:flex;align-items:center;gap:12px;padding-right:64px;">
       <span id="ph-title">📈 48-Hour Power History</span>
       {% if has_postcode %}
       <div class="ph-toggle" id="ph-toggle">
@@ -1069,7 +1081,7 @@ function setMiniSource(enabled){
 
 {# Macro for a billing card #}
 {% macro billing_card(title, total, rows, period, card_id) %}
-<div class="billing-card">
+<div class="billing-card" data-ov-card="{{ card_id }}">
   <div class="card-title">{{ title }}</div>
   {% if total is not none %}
   <div class="billing-total" id="billing-total-{{ card_id }}">
@@ -1098,6 +1110,7 @@ function setMiniSource(enabled){
   {{ billing_card("📆 This Year", year_total, year_rows, year_period, "year") }}
 </div>
 
+<div id="ov-restore" style="display:none;margin-top:16px;font-size:12px;color:var(--muted);text-align:center;"></div>
 {% if has_agile %}
 <div id="agile-restore" style="display:none;margin-top:16px;font-size:12px;color:var(--muted);text-align:center;">
   <a href="#" id="agile-restore-import" style="color:inherit;" onclick="_agileSetHidden('import', false); return false;">Show Agile import prices</a>
@@ -1109,6 +1122,73 @@ function setMiniSource(enabled){
 
 {% block scripts %}
 <script>
+// ── Hide any Overview card (7 Nov 2026, the user, after the Agile cards' own). Every card marked `data-ov-card`
+// gets the button; the Agile cards keep theirs, as hiding those also stops fetching their prices. ──
+var _OV_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">'
+  + '<path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/><path d="M3 13L13 3"/></svg>';
+function _ovToggled(hidden, key, hide){
+  var rest = hidden.filter(function(k){ return k !== key; });
+  return hide ? rest.concat([key]) : rest;
+}
+function _ovCardLabel(el){
+  var t = el.querySelector('.card-title');
+  if (!t) return '';
+  return (t.querySelector('span') || t).textContent.trim();   // a title's span leaves out any buttons beside it
+}
+function _ovDecorate(){
+  document.querySelectorAll('[data-ov-card]').forEach(function(el){
+    if (el.querySelector(':scope > .ov-hide-btn')) return;
+    var b = document.createElement('button');
+    b.className = 'expand-btn ov-hide-btn';
+    b.title = 'Hide this card';
+    b.setAttribute('aria-label', 'Hide this card');
+    if (el.classList.contains('expandable-card')) b.style.right = '40px';
+    b.innerHTML = _OV_ICON;
+    b.onclick = function(){ _ovSet(el.getAttribute('data-ov-card'), true); };
+    el.insertBefore(b, el.firstChild);
+  });
+}
+function _ovFoot(){
+  var foot = document.getElementById('ov-restore');
+  if (!foot) return;
+  foot.textContent = '';
+  var shown = 0;
+  _ovHidden.forEach(function(key){
+    var el = document.querySelector('[data-ov-card="'+key+'"]');
+    if (!el) return;                       // a device no longer configured, or its card not built yet
+    if (shown++) foot.appendChild(document.createTextNode(' · '));
+    var a = document.createElement('a');
+    a.href = '#'; a.style.color = 'inherit';
+    a.textContent = 'Show ' + _ovCardLabel(el);
+    a.onclick = function(){ _ovSet(key, false); return false; };
+    foot.appendChild(a);
+  });
+  foot.style.display = shown ? '' : 'none';
+}
+// After a card is built or the list changes
+function _ovRefresh(){
+  document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
+  _ovDecorate();
+  _ovFoot();
+  if (typeof _applyLayout === 'function') _applyLayout();
+}
+function _ovSet(key, hide){
+  var next = _ovToggled(_ovHidden, key, hide);
+  fetch(apiUrl('/api/settings'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                  body: JSON.stringify({overview_hidden: next})})
+    .then(function(r){ return r.json(); }).then(function(d){
+      if (!d.ok) throw new Error(d.error || 'not saved');
+      _ovHidden = next;
+      _ovRefresh();
+      // charts drawn while hidden have no size
+      if (!hide) window.dispatchEvent(new Event('resize'));
+    }).catch(function(){
+      if (window.EMT && EMT.notify) EMT.notify({id: 'overview-hide-failed', level: 'critical', dismissible: true,
+        html: 'Could not ' + (hide ? 'hide' : 'show') + ' that card. Please try again.'});
+    });
+}
+document.addEventListener('DOMContentLoaded', _ovRefresh);
+
 // ── BL-10: IOG smart-charging card (unconditional — must render even for
 // API-only IOG users who have no power sensor, i.e. outside the has_power_sensor
 // gate below). Card visibility is decided at runtime by the sessions API. ──────
@@ -1874,7 +1954,7 @@ function buildSocCard(meterId, info) {
     gaugeSection = '<div class="soc-gauge-section" style="position:relative;min-height:64px;">' + pvGauge + '</div>';
   }
 
-  return '<div class="soc-card" id="soc-card-' + meterId + '" data-type="' + type + '" data-v2x="' + v2x + '">' +
+  return '<div class="soc-card" id="soc-card-' + meterId + '" data-ov-card="device-' + meterId + '" data-type="' + type + '" data-v2x="' + v2x + '">' +
     '<div class="card-title" style="font-size:12px;align-self:flex-start;">' + icon + ' ' + label + '</div>' +
     battSection +
     gaugeSection +
@@ -2052,6 +2132,7 @@ function updateSocCards(socSensors) {
       var tmp = document.createElement('div');
       tmp.innerHTML = buildSocCard(mid, info);
       container.appendChild(tmp.firstChild);
+      _ovRefresh();
       // Initialise gauge arc after DOM insertion
       if (info.power_entity) {
         setTimeout(function() { setInvGauge(mid, info.power_kw); }, 0);
@@ -2358,8 +2439,10 @@ function _applyLayout() {
   // Count the live-power gauge only when it's actually rendered — on API-only
   // setups (no main power source) there is no .power-card, so assuming +1 here
   // over-counted and flipped a 3-device page into the wide layout-b prematurely.
-  var hasLivePower = !!document.querySelector('.power-card');
-  var gaugeCount = (container ? container.children.length : 0) + (hasLivePower ? 1 : 0);
+  var hasLivePower = !!document.querySelector('.power-card') && _ovHidden.indexOf('power') < 0;
+  var devices = container ? Array.prototype.filter.call(container.children, function(el){
+    return _ovHidden.indexOf(el.getAttribute('data-ov-card')) < 0; }).length : 0;
+  var gaugeCount = devices + (hasLivePower ? 1 : 0);
   var page = document.querySelector('.live-power-page');
   if (!page) return;
 
