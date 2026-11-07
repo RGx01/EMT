@@ -788,9 +788,9 @@ window.EMT = window.EMT || {};
           level: 'info',
           dismissible: true,
           html: '\u23f3 ' + _lead + ' in the background (' + d.days_left + ' day' +
-                (d.days_left === 1 ? '' : 's') + ' left). This can take a while on a large ' +
-                'account \u2014 please be patient and <strong>avoid restarting or rebuilding</strong>. ' +
-                'Some figures may look off until it finishes.',
+                (d.days_left === 1 ? '' : 's') + ' of history left). This can take a while on a large ' +
+                'account, and some figures may look off until it finishes. A restart won\u2019t harm ' +
+                'it: it carries on from where it stopped.',
           onDismiss: function () { sessionStorage.setItem(DISMISS_KEY, '1'); }
         });
       })

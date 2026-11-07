@@ -269,7 +269,7 @@
         <input type="text" id="postcode-input" class="postcode-field"
                placeholder="e.g. DE1" maxlength="6"
                onkeydown="if(event.key==='Enter') savePostcode()">
-        <button class="btn btn-primary" onclick="savePostcode()">Enable carbon tracking</button>
+        <button id="postcode-save" class="btn btn-primary" onclick="savePostcode()">Enable carbon tracking</button>
       </div>
       <div id="postcode-error" style="font-size:12px; color:var(--danger); margin-top:8px; display:none;"></div>
     </div>
@@ -1996,7 +1996,11 @@ async function savePostcode() {
   var val = (document.getElementById('postcode-input').value || '').trim().toUpperCase();
   var errEl = document.getElementById('postcode-error');
   errEl.style.display = 'none';
-  if (!val) return;
+  var btn = document.getElementById('postcode-save');
+  if (!val || btn.disabled) return;
+  // the save backs up the whole database first (6 Nov 2026, the user)
+  var label = btn.textContent;
+  btn.disabled = true; btn.textContent = '⏳ Backing up and saving…';
   try {
     var r   = await fetch(apiUrl('/api/config'));
     var cfg = await r.json();
@@ -2023,6 +2027,7 @@ async function savePostcode() {
     errEl.textContent = 'Save failed: ' + e.message;
     errEl.style.display = 'block';
   }
+  btn.disabled = false; btn.textContent = label;
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────

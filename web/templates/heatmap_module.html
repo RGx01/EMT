@@ -1115,7 +1115,7 @@ window.EMTHeatmap = (function () {
       }).catch(fail);
     }
     function apply(token) {
-      box('<p>Applying' + part() + '\u2026</p><p class="hm-note2 hm-phase"></p>');
+      box('<p>Backing up, then applying' + part() + '\u2026</p><p class="hm-note2 hm-phase"></p>');
       postJSON('/api/settlement/refetch/apply', {token: token}).then(function (r) {
         if (!r.ok) throw new Error(r.error || 'the apply did not start');
         return pollRefetch(function (ph) { var x = el.querySelector('.hm-phase'); if (x) x.textContent = ph; });

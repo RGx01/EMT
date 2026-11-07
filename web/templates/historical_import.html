@@ -1178,7 +1178,7 @@ function startApi(){
 function applySitesThenStart(){
   var st = document.getElementById('api-apply-status');
   document.getElementById('btn-api-start').disabled = true;
-  st.textContent = 'Saving sites…';
+  st.textContent = 'Backing up & saving sites…';
   var sites = SITE_PLAN.sites.map(function(s, i){
     var out = { outcode: s.outcode, from: s.from, to: s.to };
     if(!s.is_current){
@@ -1206,7 +1206,7 @@ function applySitesThenStart(){
 
 function _doStart(){
   document.getElementById('btn-api-start').disabled = true;
-  document.getElementById('api-apply-status').textContent = 'Backing up & starting…';
+  document.getElementById('api-apply-status').textContent = PENDING_GAP ? 'Starting…' : 'Backing up & starting…';
   // Route by what's armed: a gap fill (bounded window + channel) → the fill-gap
   // endpoint; otherwise the whole/date import. Same panel, same confirm+Start.
   var url = PENDING_GAP ? '/api/backfill/fill-gap' : '/api/historical/api-import/start';

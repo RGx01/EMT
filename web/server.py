@@ -583,6 +583,22 @@ SETTINGS_DEFAULTS = {
     "gas_co2_g_per_kwh":            203.0, # BEIS/DESNZ 2023 GHG conversion factors
     "gas_boiler_efficiency":         0.90, # typical modern condensing boiler
 }
+# Overview's Agile cards: hidden, and their public prices not fetched. Beside the defaults, not in them:
+# Insights' carbon answer carries the defaults whole, and these are nothing to do with it.
+SETTINGS_FLAGS = {"agile_hide_import": False, "agile_hide_export": False}
+# The other Overview cards the user has hidden, by the page's `data-ov-card` key; a device's includes its meter id,
+# so these cannot be a fixed set of flags. Keys go into the page's CSS, hence the narrow alphabet.
+_OVERVIEW_CARD_KEY = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
+_OVERVIEW_HIDDEN_MAX = 64
+
+
+def _overview_hidden(settings):
+    """The hidden card keys in `settings`, keeping only well-formed ones. Pure."""
+    v = (settings or {}).get("overview_hidden")
+    if not isinstance(v, list):
+        return []
+    return [k for k in v if isinstance(k, str) and _OVERVIEW_CARD_KEY.match(k)][:_OVERVIEW_HIDDEN_MAX]
+
 
 SETTINGS_NUMERIC = {
     "co2_car_petrol_g_per_mile",
@@ -1082,11 +1098,23 @@ def live_power_page():
                      or bool(_ap_ag.region_of((_disc.get("import") or {}).get("tariff_code") or "")))
     except Exception:
         has_agile = False
+    agile_hidden = {"import": False, "export": False}
+    overview_hidden = []
+    try:
+        import agile_public as _ap_h
+        _saved = store_access.store().get_settings()
+        _hid = _ap_h.hidden_channels(_saved)
+        agile_hidden = {ch: ch in _hid for ch in agile_hidden}
+        overview_hidden = _overview_hidden(_saved)
+    except Exception:
+        pass
 
     return render_template(
         "live_power.html",
         has_dispatch_data=has_dispatch_data,
         has_agile=has_agile,
+        agile_hidden=agile_hidden,
+        overview_hidden=overview_hidden,
         active="live_power",
         currency=currency,
         today_total=today_total,
@@ -3660,8 +3688,9 @@ def api_settings_get():
     store = store_access.store()
     saved = store.get_settings()
     # Merge saved over defaults — any missing key falls back to default
-    result = dict(SETTINGS_DEFAULTS)
+    result = dict(SETTINGS_DEFAULTS, **SETTINGS_FLAGS)
     result.update(saved)
+    result["overview_hidden"] = _overview_hidden(saved)
     return jsonify(result)
 
 
@@ -3670,7 +3699,7 @@ def api_settings_post():
     """Save settings. Only known keys accepted."""
     data = request.get_json(force=True) or {}
     saved = store_access.store().get_settings()
-    for key in SETTINGS_DEFAULTS:
+    for key in list(SETTINGS_DEFAULTS) + list(SETTINGS_FLAGS):
         if key in data:
             val = data[key]
             # Numeric fields
@@ -3682,6 +3711,12 @@ def api_settings_post():
                 except (TypeError, ValueError):
                     return jsonify({"error": f"{key} must be a number"}), 400
             saved[key] = val
+    if "overview_hidden" in data:
+        val = data["overview_hidden"]
+        if (not isinstance(val, list) or len(val) > _OVERVIEW_HIDDEN_MAX
+                or not all(isinstance(k, str) and _OVERVIEW_CARD_KEY.match(k) for k in val)):
+            return jsonify({"error": "overview_hidden must be a list of card keys"}), 400
+        saved["overview_hidden"] = list(dict.fromkeys(val))
     _engine_write(lambda st: st.save_settings(saved))
     return jsonify({"ok": True})
 
@@ -6374,8 +6409,9 @@ def _settle_sweep_cause(store) -> str:
     The sweep has two triggers and the banner used to name only one, so a FRESH INSTALL
     that imported its history was told EMT was "finishing your upgrade" — on a box that
     had never run a previous version, and had just been asked to do exactly this work.
-    An import (or a gap fill) runs the sweep from the start, so a live or recently-finished
-    one is the cause; only in its absence is this an upgrade.
+    An import runs the sweep from the start, so a live or recently-finished one is the cause; a
+    gap fill settles only its own half-hours, so one that just finished is not. Only in the absence
+    of an import is this an upgrade.
     Read-only and fail-safe: anything unexpected reads as 'upgrade', the old wording."""
     try:
         import engine as _eng
@@ -6386,7 +6422,7 @@ def _settle_sweep_cause(store) -> str:
         raw = store.get_kraken_state(_eng._IMPORT_RUN_KEY)
         snap = _json.loads(raw) if raw else {}
         fin = snap.get("finished_at")
-        if fin:
+        if fin and not snap.get("gap"):
             age = _dt.utcnow() - _dt.fromisoformat(str(fin)[:19])
             if age < _td(hours=_SETTLE_CAUSE_WINDOW_H):
                 return "import"
@@ -6512,6 +6548,7 @@ def api_settle_history_status():
     """Read-only: is the settle sweep still walking the history? Drives the re-pricing banner
     (engine step 4e: it replaced the history reprice sweep and its /api/reprice-history-status).
     `read` / `written`: half-hours so far; `days_left`: from the sweep's cursor to the newest block.
+    Only a walk of the history counts: a repair's queued spans are quickly done, and not a wait.
     `cause` says whether an import or an upgrade armed it. Fails safe to not-in-progress so a
     hiccup never nags."""
     try:
@@ -6519,7 +6556,7 @@ def api_settle_history_status():
         from datetime import datetime as _dt
         store = store_access.store()
         m = store.get_meta(_eng._SETTLE_HISTORY_MARKER, {}) or {}
-        _ip = bool(_eng.settle_history_in_progress())
+        _ip = bool(_eng.settle_history_walking())
         days_left = None
         if _ip:
             first, last = store.block_span("electricity_main")
@@ -9460,6 +9497,26 @@ def _ev_outside_runs(ev_by_slot, completed, day_min, bridge_min=_CHARGE_SESSION_
     return out
 
 
+def _split_charge_rows(ev_by_slot, first_record):
+    """Before EMT's dispatch record starts, Octopus's split of the bill says when the car charged, so
+    those half-hours read as completed dispatches (dispatch_history's shape), which puts them on the
+    card as ordinary charges and in the 6-hour count. Octopus returns only recent dispatches, so an
+    install built from the API has no record of the nights before its first poll, and they read as
+    "outside a smart charge". Tested on the user's 25 Aug - 28 Oct 2026: 476 half-hours in both, none
+    in the split alone. From the record's first half-hour on, the record decides. Pure."""
+    from datetime import datetime as _dt, timedelta as _td
+    if not first_record:
+        return []
+    rows = []
+    for k in sorted(ev_by_slot):
+        q = sum(p[0] for p in ev_by_slot[k])
+        if k < first_record and q > 1e-6:
+            rows.append({"slot_start": k, "kind": "completed", "provider": None, "source": None,
+                         "energy_kwh": q, "raw_start": k,
+                         "raw_end": (_dt.fromisoformat(k) + _td(minutes=30)).isoformat()})
+    return rows
+
+
 def _build_upcoming_dispatches(history, rates, day_peak, now_iso,
                                bridge_min=_CHARGE_SESSION_BRIDGE_MIN):
     """BL-10: fold *future planned* IOG dispatch slots into upcoming sessions.
@@ -9673,7 +9730,11 @@ def api_agile_prices():
         store = store_access.store()
         rec = store.get_meta(_ap.META_KEY) or {}
         lo = (now - _td(days=_ap.COMPARE_DAYS)).isoformat()
+        hidden = _ap.hidden_channels(store.get_settings())
         for ch in ("import", "export"):
+            if ch in hidden:
+                out.pop(ch, None)
+                continue
             if ch in out:
                 continue
             c = rec.get(ch) or {}
@@ -9743,7 +9804,19 @@ def api_charge_sessions():
             "WHERE meter_id = ? AND block_start >= ? AND block_start < ? "
             "AND imp_rate IS NOT NULL GROUP BY d", (main_id, win_start, win_end))}
 
-        sessions = _build_charge_sessions(history, rates, day_peak)
+        # the EV's share from a day before the range, so the first cap-day is counted whole
+        ev_wide = {}
+        for r in store._conn.execute(
+                "SELECT block_start, kwh, inc_rate FROM block_segments WHERE meter_id = ? "
+                "AND channel = 'import' AND attribution = 'ev' AND kwh > 0 "
+                "AND block_start >= ? AND block_start < ?",
+                (main_id, (now - _t2(days=days + 1)).isoformat(), win_end)):
+            ev_wide.setdefault(r["block_start"], []).append((float(r["kwh"]), r["inc_rate"]))
+        ev_by_slot = {k: v for k, v in ev_wide.items() if k >= win_start}
+        first_record = store.first_dispatch_record()
+        split_rows = _split_charge_rows(ev_by_slot, first_record)
+
+        sessions = _build_charge_sessions(history + split_rows, rates, day_peak)
 
         # Attach local-time display strings (UTC→site tz), like the review list.
         try:
@@ -9764,12 +9837,6 @@ def api_charge_sessions():
         # 6-hour allowance per noon→noon cap-day, and the EV's charging outside any smart charge.
         import engine as _eng
         import iog_cap as _cap
-        ev_by_slot = {}
-        for r in store._conn.execute(
-                "SELECT block_start, kwh, inc_rate FROM block_segments WHERE meter_id = ? "
-                "AND channel = 'import' AND attribution = 'ev' AND kwh > 0 "
-                "AND block_start >= ? AND block_start < ?", (main_id, win_start, win_end)):
-            ev_by_slot.setdefault(r["block_start"], []).append((float(r["kwh"]), r["inc_rate"]))
         day_min = {r["d"]: r["m"] for r in store._conn.execute(
             "SELECT substr(block_start,1,10) d, MIN(inc_rate) m FROM block_segments "
             "WHERE meter_id = ? AND channel = 'import' AND kwh > 0 AND block_start >= ? "
@@ -9777,7 +9844,8 @@ def api_charge_sessions():
         sources = {r["slot_start"]: r.get("source") for r in history
                    if r.get("kind") in ("planned", "started") and r.get("source")}
         # the cap-days from a day before the range, so the first one is counted whole
-        cap_hist = store.get_dispatch_history((now - _t2(days=days + 1)).isoformat(), win_end)
+        cap_hist = (store.get_dispatch_history((now - _t2(days=days + 1)).isoformat(), win_end)
+                    + _split_charge_rows(ev_wide, first_record))
         bump = {r["slot_start"] for r in cap_hist if (r.get("source") or "") in _BUMP_SOURCES}
         # a bump Octopus labels `unknown`, or a peak-billed charge: the pricing's rule (engine.cap_excluded)
         cap = _cap.cap_usage([(r["raw_start"], r["raw_end"], r["energy_kwh"]) for r in cap_hist
@@ -9799,7 +9867,7 @@ def api_charge_sessions():
                 return False
         _charge_session_costs(sessions, ev_by_slot, day_min, rates, sources, cap, _capped,
                               bill_slots, _cap_day)
-        completed = {r["slot_start"] for r in history if r.get("kind") == "completed"}
+        completed = {r["slot_start"] for r in history + split_rows if r.get("kind") == "completed"}
         outside = _ev_outside_runs(ev_by_slot, completed, day_min)
         cap_days = {}
         for s in sessions:

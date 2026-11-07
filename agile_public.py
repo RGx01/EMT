@@ -6,7 +6,7 @@ account's region, for an account not on Agile — the Overview's Agile card on e
 Octopus publishes Agile's prices for anyone. The region is the letter that ends the account's own
 tariff code; the product (its code changes as Octopus launches versions) is read from the product
 list once a week. The prices are fetched once a day after Octopus publishes tomorrow's (about 4pm),
-kept in the store's meta, so a restart asks for nothing it has — within the API rule (capped,
+through 23:00 local, where Agile's day ends, kept in the store's meta, so a restart asks for nothing it has — within the API rule (capped,
 paced, persisted). Display only: nothing that prices a half-hour reads them.
 
 This module is the rules, pure; `engine._fetch_agile_public` asks Octopus and keeps the record.
@@ -19,9 +19,16 @@ KEEP_DAYS = 32                  # the comparison's 30 days, and a little over
 COMPARE_DAYS = 30
 PRODUCTS_EVERY = timedelta(days=7)
 PUBLISH_LOCAL = (16, 30)        # Octopus publishes tomorrow's about 4pm; asked at 16:30 local
+DAY_END_HOUR = 23               # Agile's day runs 23:00 to 23:00, so what is published stops there
 RETRY_AFTER = timedelta(minutes=90)
-MAX_TRIES_A_DAY = 4
+MAX_TRIES = 4                   # either side of PUBLISH_LOCAL, each counted alone (try_key)
 _REGION = re.compile(r"[A-P]")
+
+
+def hidden_channels(settings: dict) -> set:
+    """The directions whose Overview card the user has hidden (the settings `agile_hide_import`,
+    `agile_hide_export`). A hidden direction is neither shown nor, if public, fetched."""
+    return {ch for ch in ("import", "export") if (settings or {}).get("agile_hide_" + ch)}
 
 
 def region_of(tariff_code: str) -> "str | None":
@@ -74,10 +81,12 @@ def merge(kept: list, records: list, now_utc: datetime, price_key: str = "value_
 
 
 def target_through(now_local: datetime, tz) -> datetime:
-    """How far the prices should reach, naive UTC: the end of tomorrow once Octopus has published
-    (16:30 local), the end of today before."""
-    day = now_local.date() + timedelta(days=2 if (now_local.hour, now_local.minute) >= PUBLISH_LOCAL else 1)
-    end = datetime(day.year, day.month, day.day, tzinfo=tz)
+    """How far the prices should reach, naive UTC: 23:00 tomorrow once Octopus has published (16:30
+    local), 23:00 today before. Not midnight (6 Nov 2026): Agile's day ends at 23:00, so midnight was
+    never reached, every check found the prices short, and the day's four tries went by 04:30, none
+    left for tomorrow's at 4pm."""
+    day = now_local.date() + timedelta(days=1 if (now_local.hour, now_local.minute) >= PUBLISH_LOCAL else 0)
+    end = datetime(day.year, day.month, day.day, DAY_END_HOUR, tzinfo=tz)
     return end.astimezone(timezone.utc).replace(tzinfo=None)
 
 
@@ -86,9 +95,17 @@ def through_of(prices: list) -> "datetime | None":
     return datetime.fromisoformat(prices[-1][0]) + timedelta(minutes=30) if prices else None
 
 
+def try_key(now_local: datetime) -> str:
+    """What a try counts against: today before PUBLISH_LOCAL, today's publication after. Apart, so a
+    morning of asking cannot spend the tries tomorrow's prices need (6 Nov 2026): a direction that
+    stays short, or a night's outage, went through all four by 04:30, and nothing was asked at 16:30."""
+    day = now_local.date().isoformat()
+    return day + "-pm" if (now_local.hour, now_local.minute) >= PUBLISH_LOCAL else day
+
+
 def due(rec: dict, now_utc: datetime, now_local: datetime, tz, channels) -> bool:
     """Whether to ask Octopus now: a channel's prices short of `target_through`, and not asked in the
-    last 90 minutes, nor more than MAX_TRIES_A_DAY times today (local). Pure."""
+    last 90 minutes, nor more than MAX_TRIES times on this side of PUBLISH_LOCAL (try_key). Pure."""
     rec = rec or {}
     want = target_through(now_local, tz)
     short = any((through_of((rec.get(ch) or {}).get("prices") or []) or datetime.min) < want - timedelta(minutes=30)
@@ -98,8 +115,7 @@ def due(rec: dict, now_utc: datetime, now_local: datetime, tz, channels) -> bool
     last = rec.get("asked")
     if last and now_utc - datetime.fromisoformat(last) < RETRY_AFTER:
         return False
-    today = now_local.date().isoformat()
-    return int((rec.get("tries") or {}).get(today, 0)) < MAX_TRIES_A_DAY
+    return int((rec.get("tries") or {}).get(try_key(now_local), 0)) < MAX_TRIES
 
 
 def products_due(rec: dict, now_utc: datetime) -> bool:

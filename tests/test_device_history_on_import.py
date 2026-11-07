@@ -176,7 +176,8 @@ class TheCallers(unittest.TestCase):
 
     def test_GUARD_a_gap_fill_does_not(self):
         src = open(engine.__file__, encoding="utf-8").read()
-        self.assertIn('await rebuild_devices_after_refill(_g["from"], _g["to"])\n', src)
+        call = src[src.index('await rebuild_devices_after_refill(_g["from"], _g["to"]'):]
+        self.assertNotIn("fetch_new", call[:call.index(")\n")])
 
 
 class ThePage(unittest.TestCase):

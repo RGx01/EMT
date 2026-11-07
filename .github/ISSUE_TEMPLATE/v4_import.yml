@@ -20,7 +20,7 @@ body:
     id: emt
     attributes:
       label: EMT version
-      placeholder: 2026.11.0b15
+      placeholder: 2026.11.0b16
     validations:
       required: true
   - type: dropdown

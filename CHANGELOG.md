@@ -5,6 +5,37 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b16] — 2026-11-07
+
+- **Any card on the Overview can be hidden.** Each one now has the hide button the Agile cards have, including the
+  live gauges, your devices and the Today, This Bill and This Year cards. Hiding applies to everyone using this EMT,
+  and a link at the foot of the page brings a card back.
+- **The Smart Charging card no longer calls your earlier charges "outside a smart charge".** Octopus only gives
+  recent dispatches, so after a fresh install every night before EMT's first check read that way, in red, and the
+  6-hour bar on the first night was far too low. Those nights now come from Octopus's split of your bill, as
+  ordinary charges with their bars, cost and share of the 6 hours.
+- **The card's "Also charged outside a smart charge" line stays with its charge.** It showed the latest such run in
+  the last 7 days, even under a charge days later. It now appears only for the same noon-to-noon day.
+- **Repairing a gap no longer re-prices your whole history.** Filling 13 half-hours started a walk over every day
+  you have, under a banner saying "Finishing your import". A repair now prices only what it filled, with no banner.
+- **The re-pricing banner no longer tells you to avoid restarting.** A restart is safe, because the walk carries on
+  from where it stopped. It also now says "days of history left", as that count is not a time estimate.
+- **Agile cards now show tomorrow's prices.** EMT looked for prices up to midnight, but Agile's day ends at 23:00,
+  so it kept asking Octopus through the night and had used all its tries for the day by 04:30. When tomorrow's
+  prices came out at about 4pm, it had none left, and the card stopped at 23:00 tonight. It now asks once they
+  are out, and tries made earlier in the day can no longer use up the ones that fetch needs.
+- **Agile import and export have a card each.** Each has its own scale, the price now, its best hour, and what
+  your last 30 days would have come to.
+- **The Agile cards can be expanded and hidden.** Hiding one applies to everyone using this EMT, and it stops
+  asking Octopus for those prices. A link at the foot of the Overview brings it back.
+- **Billing History says when it is taking a backup.** Saving, adding or deleting a period, and applying a site
+  change, all take a backup first. Each now says so while it works. Apply had shown nothing and could be pressed
+  twice, and Escape could close the dialog during a save.
+- **The rest of EMT says so too.** Finishing the setup wizard, saving a postcode, rebuilding a new device's
+  history, deleting a device, applying a re-fetch and saving sites before an import all now say they are backing up.
+  A postcode save and the rebuild could also be pressed twice, which took a second backup.
+- **Filling a gap no longer says it is backing up.** It said so, but a gap fill takes no backup.
+
 ## [2026.11.0b15] — 2026-11-06
 
 - **Save Config shows when there is something to save.** It is dimmed until you change a setting, then lights up.
