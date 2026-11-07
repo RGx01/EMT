@@ -7,6 +7,9 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Any card on the Overview can be hidden.** Each one now has the hide button the Agile cards have, including the
+  live gauges, your devices and the Today, This Bill and This Year cards. Hiding applies to everyone using this EMT,
+  and a link at the foot of the page brings a card back.
 - **The Smart Charging card no longer calls your earlier charges "outside a smart charge".** Octopus only gives
   recent dispatches, so after a fresh install every night before EMT's first check read that way, in red, and the
   6-hour bar on the first night was far too low. Those nights now come from Octopus's split of your bill, as

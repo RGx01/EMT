@@ -586,6 +586,19 @@ SETTINGS_DEFAULTS = {
 # Overview's Agile cards: hidden, and their public prices not fetched. Beside the defaults, not in them:
 # Insights' carbon answer carries the defaults whole, and these are nothing to do with it.
 SETTINGS_FLAGS = {"agile_hide_import": False, "agile_hide_export": False}
+# The other Overview cards the user has hidden, by the page's `data-ov-card` key; a device's includes its meter id,
+# so these cannot be a fixed set of flags. Keys go into the page's CSS, hence the narrow alphabet.
+_OVERVIEW_CARD_KEY = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
+_OVERVIEW_HIDDEN_MAX = 64
+
+
+def _overview_hidden(settings):
+    """The hidden card keys in `settings`, keeping only well-formed ones. Pure."""
+    v = (settings or {}).get("overview_hidden")
+    if not isinstance(v, list):
+        return []
+    return [k for k in v if isinstance(k, str) and _OVERVIEW_CARD_KEY.match(k)][:_OVERVIEW_HIDDEN_MAX]
+
 
 SETTINGS_NUMERIC = {
     "co2_car_petrol_g_per_mile",
@@ -1086,10 +1099,13 @@ def live_power_page():
     except Exception:
         has_agile = False
     agile_hidden = {"import": False, "export": False}
+    overview_hidden = []
     try:
         import agile_public as _ap_h
-        _hid = _ap_h.hidden_channels(store_access.store().get_settings())
+        _saved = store_access.store().get_settings()
+        _hid = _ap_h.hidden_channels(_saved)
         agile_hidden = {ch: ch in _hid for ch in agile_hidden}
+        overview_hidden = _overview_hidden(_saved)
     except Exception:
         pass
 
@@ -1098,6 +1114,7 @@ def live_power_page():
         has_dispatch_data=has_dispatch_data,
         has_agile=has_agile,
         agile_hidden=agile_hidden,
+        overview_hidden=overview_hidden,
         active="live_power",
         currency=currency,
         today_total=today_total,
@@ -3673,6 +3690,7 @@ def api_settings_get():
     # Merge saved over defaults — any missing key falls back to default
     result = dict(SETTINGS_DEFAULTS, **SETTINGS_FLAGS)
     result.update(saved)
+    result["overview_hidden"] = _overview_hidden(saved)
     return jsonify(result)
 
 
@@ -3693,6 +3711,12 @@ def api_settings_post():
                 except (TypeError, ValueError):
                     return jsonify({"error": f"{key} must be a number"}), 400
             saved[key] = val
+    if "overview_hidden" in data:
+        val = data["overview_hidden"]
+        if (not isinstance(val, list) or len(val) > _OVERVIEW_HIDDEN_MAX
+                or not all(isinstance(k, str) and _OVERVIEW_CARD_KEY.match(k) for k in val)):
+            return jsonify({"error": "overview_hidden must be a list of card keys"}), 400
+        saved["overview_hidden"] = list(dict.fromkeys(val))
     _engine_write(lambda st: st.save_settings(saved))
     return jsonify({"ok": True})
 
