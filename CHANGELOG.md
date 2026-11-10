@@ -7,6 +7,9 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Home eras can be added again after closing the window mid-way.** Closing it with ✕, a click outside or
+  Escape while adding an era left "+ Add an era" hidden, so the next time it offered Edit only, until an edit was
+  cancelled. It now opens with the button every time.
 - **A v4 backup too old to restore now says what you can do whatever v4's add-on store offers.** It said to open
   the backup in the last v4 release first, which helps only while Home Assistant can still install v4. It now
   says to update v4 to 4.5.23 or later if the store still offers it, and otherwise to bring back about two years
