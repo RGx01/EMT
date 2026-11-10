@@ -5359,8 +5359,16 @@ def _support_worker(lo, hi, redact, summary):
                 os.remove(os.path.join(d, old))
         name = "emt-support-%s.zip" % __import__("datetime").datetime.utcnow().strftime("%Y%m%dT%H%M%S")
         _j["step"] = "copying and cutting the database"
+        # the site names the database may not hold: the live config's, and the Instance name option
+        extra = [os.environ.get("EMT_INSTANCE_NAME") or ""]
+        try:
+            extra += [(md.get("meta") or {}).get("site") or ""
+                      for md in ((summary.get("config") or {}).get("meters") or {}).values()]
+        except AttributeError:
+            pass
         r = _sf.build(os.path.join(DATA_DIR or _eng.DATA_DIR, "blocks.db"), os.path.join(d, name),
-                      lo=lo, hi=hi, redact=redact, log_text=log, summary=summary, work_dir=d)
+                      lo=lo, hi=hi, redact=redact, log_text=log, summary=summary, work_dir=d,
+                      site_extra=extra)
         logger.info("support file: %s, %.1f MB (span %s → %s, redacted %s)", name,
                     r["bytes"] / 1048576, lo or "the start", hi or "now", redact)
         _j.update({"status": "done", "name": name, "bytes": r["bytes"], "redacted": r["redacted"],

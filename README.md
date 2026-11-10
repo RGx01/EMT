@@ -170,8 +170,9 @@ Octopus account — run a second EMT. Each keeps its own database and backups; g
 
 - **In the app:** the **?** beside each page's title opens its help.
 - **Something wrong?** Open an [issue](https://github.com/RGx01/EMT/issues). A **support file** (Data
-  Management → Backup & restore) holds what is usually needed, with your meter and account details
-  replaced by placeholders.
+  Management → Backup & restore) holds what is usually needed, with your meter and account details and
+  site name replaced by placeholders. An issue is public, so anyone can download it; if you'd rather
+  not post yours, say so in the issue.
 - **A security problem?** See [SECURITY.md](SECURITY.md) — please don't open a public issue.
 
 ## For developers

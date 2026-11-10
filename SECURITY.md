@@ -19,8 +19,9 @@ Only the latest release, and the latest beta while there is one, gets fixes.
 - **Backups** are copies of that database, in `/share/energy_meter_tracker_backup_<site>/` — which
   other add-ons can read. Treat a backup like the database itself.
 - **A support file** carries the database for the span you choose, with *Hide my meter and account
-  details* (on by default) turning MPANs, meter serials, the account number and the postcode into
-  placeholders. It is downloaded by you; EMT sends it nowhere.
+  details* (on by default) turning MPANs, meter serials, the account number, the postcode and the site
+  name into placeholders. It is downloaded by you; EMT sends it nowhere. Attached to an issue, anyone can
+  download it, and it still holds the span's usage and costs, device names and the log.
 
 ## The direct port has no login
 

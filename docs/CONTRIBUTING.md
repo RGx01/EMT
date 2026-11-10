@@ -13,9 +13,11 @@ workable — and most of them pay for themselves solo.
 
 The most useful attachment is a **support file**: Data Management → **Backup & restore** → **Make a
 support file…**, for the days in question. Keep **Hide my meter and account details** ticked (it is by
-default): MPANs, meter serials, the account number and the postcode become placeholders, and the
-Octopus API key is never in it. Please don't paste MPANs, an account number or an address into an
-issue — an issue is public.
+default): MPANs, meter serials, the account number, the postcode and the site name become placeholders,
+and the Octopus API key is never in it. Please don't paste MPANs, an account number or an address into
+an issue — an issue is public, and so is what you attach: the support file still holds the half-hourly
+usage and costs for its days, device and sensor names, and EMT's log. If you'd rather not post it,
+open the issue without it and say so.
 
 A **security problem** is reported privately, not as an issue: see [SECURITY.md](../SECURITY.md).
 

@@ -5,6 +5,15 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **A support file hides your site name too.** People often name the site after the house. With *Hide my
+  meter and account details* ticked, every site name EMT holds, including your home eras' and an old
+  address's, now becomes a placeholder like the MPANs and account number.
+- **The support file says what it still holds.** The dialog, its help, BETA.md and the issue forms now say
+  that anything attached to a GitHub issue can be downloaded by anyone, and that the file still holds your
+  usage and costs, device names and the log, with a way to report a problem without posting it.
+
 ## [2026.11.0b17] — 2026-11-10
 
 - **EMT is now a public beta.** Anyone can add it to Home Assistant and try it before its first release; the
