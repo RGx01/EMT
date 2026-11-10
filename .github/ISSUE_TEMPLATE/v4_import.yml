@@ -50,4 +50,8 @@ body:
     id: support
     attributes:
       label: Support file
-      description: Data Management → Backup & restore → Make a support file…, with Hide my meter and account details ticked.
+      description: |
+        Data Management → Backup & restore → Make a support file…, with Hide my meter and account details
+        ticked. Anyone can download what you attach here: the file hides your meter and account details
+        and your site name, but holds your usage and costs, device names and EMT's log. If you'd rather
+        not post it, leave this empty and say so — we'll arrange another way.

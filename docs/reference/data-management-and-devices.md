@@ -130,8 +130,11 @@ Design: [history/design/EMT-v5_setup_gap_from_ha_design.md](../history/design/EM
 `support_file.py`: one zip of `emt.log`, `support.json` (the configuration without secrets, counts, the
 job coordinator's state, the host) and `blocks.db` cut to a chosen span (`VACUUM INTO`). *Hide my
 meter and account details*, on by default, replaces MPANs, meter serials, the account number and the
-postcode with placeholders (`MPAN-1` …) everywhere they appear, tariff agreements included. The API
-key is never in it. A size estimate warns over 10 MB.
+postcode with placeholders (`MPAN-1` …) everywhere they appear, tariff agreements included. Site names —
+every billing period's, each home era's, the live config's and the Instance name — become `SITE-1` …
+only where the name stands whole (a column holding exactly it, the name quoted in JSON or the log, the
+backup folder's slug), so a site called "Home" leaves "Home Assistant" alone. The API key is never in
+it. A size estimate warns over 10 MB.
 
 ## Devices
 
