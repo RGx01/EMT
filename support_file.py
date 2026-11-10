@@ -18,6 +18,13 @@ staging copy): `measured_cost.mpan`; `meter_channels.mpan`, which holds `serial-
 `kraken_state.kraken_account_number`; `meters.postcode_prefix` and `carbon_intensity.postcode`
 (the outward code only). The Octopus API key is not in the database (`kraken_credentials.json`).
 
+**Site names** (10 Nov 2026, the user: people often name the site after the house) become `SITE-1`,
+… — every billing period's `config_periods.site_name`, each home era's `site`, and the names the caller
+adds (the live config's site, the add-on's Instance name). Not by plain replacement like the
+identifiers above: a site called "Home" would rewrite "Home Assistant" and the `home_eras` key. Only
+where the name stands whole — a text column holding exactly it, the name as a quoted string (JSON, and
+the log's `site=%r`), and the backup folder's slug (`energy_meter_tracker_backup_<slug>`).
+
 Nothing here touches the live database: the copy is made with `VACUUM INTO` and cut and redacted
 on its own connection.
 """
@@ -80,9 +87,52 @@ def identifiers(conn) -> dict:
     return dict(sorted(out.items(), key=lambda kv: -len(kv[0])))
 
 
-def redact_text(text: str, mapping: dict) -> str:
+def site_names(conn, extra=()) -> dict:
+    """{site name: placeholder} — the billing periods', the home eras' and `extra` (see the module
+    docstring), in that order, each once."""
+    names = []
+
+    def add(v):
+        v = (v or "").strip() if isinstance(v, str) else ""
+        if v and v not in names:
+            names.append(v)
+    try:
+        for (v,) in conn.execute("SELECT site_name FROM config_periods WHERE site_name IS NOT NULL "
+                                 "ORDER BY effective_from"):
+            add(v)
+    except sqlite3.Error:
+        pass
+    try:
+        row = conn.execute("SELECT value FROM store_meta WHERE key = 'home_eras'").fetchone()
+        for e in (json.loads(row[0]) if row and row[0] else []) or []:
+            if isinstance(e, dict):
+                add(e.get("site"))
+    except (sqlite3.Error, TypeError, ValueError):
+        pass
+    for v in extra or ():
+        add(v)
+    return {v: "SITE-%d" % i for i, v in enumerate(names, 1)}
+
+
+def _site_forms(sites: dict) -> list:
+    """[(form, placeholder form)] for the text: each name quoted as JSON (both escapings) and as
+    Python's repr, and its backup folder's slug — longest name first."""
+    from instance import slugify_site
+    out = []
+    for v, ph in sorted((sites or {}).items(), key=lambda kv: -len(kv[0])):
+        for a, b in ((json.dumps(v), json.dumps(ph)), (json.dumps(v, ensure_ascii=False), json.dumps(ph)),
+                     (repr(v), repr(ph)),
+                     ("_backup_" + slugify_site(v), "_backup_" + slugify_site(ph))):
+            if (a, b) not in out:
+                out.append((a, b))
+    return out
+
+
+def redact_text(text: str, mapping: dict, sites: dict = None) -> str:
     for v, ph in (mapping or {}).items():
         text = text.replace(v, ph)
+    for a, b in _site_forms(sites):
+        text = text.replace(a, b)
     return text
 
 
@@ -126,9 +176,10 @@ def _span_where(col, lo, hi):
     return (" WHERE " + " AND ".join(parts)) if parts else "", args
 
 
-def cut(src_path: str, dst_path: str, lo=None, hi=None, mapping=None) -> dict:
+def cut(src_path: str, dst_path: str, lo=None, hi=None, mapping=None, sites=None) -> dict:
     """A copy of the database at `dst_path`, cut to [lo, hi) — `lo`/`hi` naive-UTC ISO, either
-    None for no bound — and redacted with `mapping`. {table: rows kept} for the cut tables."""
+    None for no bound — and redacted with `mapping` and `sites`. {table: rows kept} for the cut
+    tables."""
     if os.path.exists(dst_path):
         os.remove(dst_path)
     src = sqlite3.connect("file:%s?mode=ro" % os.path.abspath(src_path), uri=True)
@@ -160,6 +211,17 @@ def cut(src_path: str, dst_path: str, lo=None, hi=None, mapping=None) -> dict:
                         if typ in ("TEXT", "") or "CHAR" in typ:
                             db.execute('UPDATE "%s" SET "%s" = REPLACE("%s", ?, ?) WHERE "%s" LIKE ?'
                                        % (t, c, c, c), (v, ph, "%" + v + "%"))
+            if sites:
+                forms = _site_forms(sites)
+                for t in _tables(db):
+                    for c, typ in _cols(db, t):
+                        if not (typ in ("TEXT", "") or "CHAR" in typ):
+                            continue
+                        for v, ph in sites.items():             # a column holding exactly the name
+                            db.execute('UPDATE "%s" SET "%s" = ? WHERE "%s" = ?' % (t, c, c), (ph, v))
+                        for a, b in forms:                      # the name inside JSON, or a path
+                            db.execute('UPDATE "%s" SET "%s" = REPLACE("%s", ?, ?) WHERE instr("%s", ?) > 0'
+                                       % (t, c, c, c), (a, b, a))
         db.execute("VACUUM")
     finally:
         db.close()
@@ -167,30 +229,32 @@ def cut(src_path: str, dst_path: str, lo=None, hi=None, mapping=None) -> dict:
 
 
 def build(src_db: str, out_zip: str, *, lo=None, hi=None, redact: bool = True,
-          log_text: str = "", summary: dict = None, work_dir: str = None) -> dict:
+          log_text: str = "", summary: dict = None, work_dir: str = None, site_extra=()) -> dict:
     """The support zip at `out_zip`. {bytes, kept, redacted} — `redacted` counts the
-    identifiers replaced, never names them."""
+    identifiers and site names replaced, never names them. `site_extra`: site names the database
+    may not hold (the live config's, the Instance name)."""
     src = sqlite3.connect("file:%s?mode=ro" % os.path.abspath(src_db), uri=True)
     try:
         mapping = identifiers(src) if redact else {}
+        sites = site_names(src, site_extra) if redact else {}
     finally:
         src.close()
     work = work_dir or os.path.dirname(os.path.abspath(out_zip))
     tmp_db = os.path.join(work, "support_blocks.db")
     try:
-        kept = cut(src_db, tmp_db, lo, hi, mapping)
+        kept = cut(src_db, tmp_db, lo, hi, mapping, sites)
         body = dict(summary or {})
         body["support_file"] = {"span": {"from_utc": lo, "to_utc": hi}, "redacted": bool(redact),
                                 "rows_kept": kept}
         text = json.dumps(body, indent=1, sort_keys=True, default=str)
         with zipfile.ZipFile(out_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
-            zf.writestr("support.json", redact_text(text, mapping))
-            zf.writestr("emt.log", redact_text(log_text or "", mapping))
+            zf.writestr("support.json", redact_text(text, mapping, sites))
+            zf.writestr("emt.log", redact_text(log_text or "", mapping, sites))
             zf.write(tmp_db, "blocks.db")
     finally:
         if os.path.exists(tmp_db):
             os.remove(tmp_db)
-    return {"bytes": os.path.getsize(out_zip), "kept": kept, "redacted": len(mapping)}
+    return {"bytes": os.path.getsize(out_zip), "kept": kept, "redacted": len(mapping) + len(sites)}
 
 
 def _read(path, default=None):

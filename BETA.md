@@ -41,8 +41,12 @@ Data Management. Each page's **?** opens its help.
 
 Open an [issue](https://github.com/RGx01/EMT/issues), and attach a **support file**: Data
 Management → **Backup & restore** → **Make a support file…**, for the days in question. Keep **Hide
-my meter and account details** ticked (it is by default): your MPANs, meter serials, account number
-and postcode become placeholders, and your Octopus API key is never in it.
+my meter and account details** ticked (it is by default): your MPANs, meter serials, account number,
+postcode and site name become placeholders, and your Octopus API key is never in it.
+
+**An issue is public: anyone can download what you attach.** The support file still holds your
+half-hourly usage and costs for the days you choose, your device and sensor names, and EMT's log. If
+you'd rather not post it, open the issue without it and say so, and we'll arrange another way.
 
 Please don't paste MPANs, your account number or your address into an issue.
 

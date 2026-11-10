@@ -12,7 +12,7 @@ body:
     attributes:
       label: EMT version
       description: In the footer of any page, or on the add-on's page in Home Assistant.
-      placeholder: 2026.11.0b17
+      placeholder: 2026.11.0b18
     validations:
       required: true
   - type: textarea
@@ -56,6 +56,11 @@ body:
         Data Management → Backup & restore → **Make a support file…**, for the days in question, with
         **Hide my meter and account details** ticked. Drag the zip here. If it's too big for GitHub,
         say so and we'll arrange another way.
+
+        **Anyone can download what you attach here.** The file hides your meter and account details and
+        your site name, but holds your half-hourly usage and costs for those days, your device and sensor
+        names, and EMT's log. If you'd rather not post it, leave this empty and say so — we'll arrange
+        another way.
   - type: checkboxes
     id: privacy
     attributes:
