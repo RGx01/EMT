@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b18] — 2026-11-10
 
 - **A support file hides your site name too.** People often name the site after the house. With *Hide my
   meter and account details* ticked, every site name EMT holds, including your home eras' and an old
