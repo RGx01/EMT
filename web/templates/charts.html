@@ -916,7 +916,9 @@ function chartsCogMenu(btn) {
 }
 function erasOpen() {
   document.getElementById('eras-backdrop').classList.add('open');
-  document.getElementById('eras-form-wrap').innerHTML = '';
+  // A form left open by ✕, the backdrop or Escape kept "+ Add an era" hidden, so the next opening
+  // could only edit (10 Nov 2026, the user): every opening starts as Cancel leaves it.
+  erasCancel();
   document.getElementById('eras-list').innerHTML = '<div class="eras-sub">Loading…</div>';
   fetch(apiUrl('/api/home-eras')).then(function(r) { return r.json(); }).then(function(d) {
     _eras = d.eras || []; _erasSite = d.site || ''; erasRenderList();

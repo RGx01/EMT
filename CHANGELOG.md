@@ -5,6 +5,19 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b17] — 2026-11-10
+
+- **EMT is now a public beta.** Anyone can add it to Home Assistant and try it before its first release; the
+  README and BETA.md say how, and what to send back.
+- **Home eras can be added again after closing the window mid-way.** Closing it with ✕, a click outside or
+  Escape while adding an era left "+ Add an era" hidden, so the next time it offered Edit only, until an edit was
+  cancelled. It now opens with the button every time.
+- **A v4 backup too old to restore now says what you can do whatever v4's add-on store offers.** It said to open
+  the backup in the last v4 release first, which helps only while Home Assistant can still install v4. It now
+  says to update v4 to 4.5.23 or later if the store still offers it, and otherwise to bring back about two years
+  of your history from Octopus. A backup holding prices in pence now asks you to open it in v4 again, which works
+  with the v4 you have.
+
 ## [2026.11.0b16] — 2026-11-07
 
 - **Any card on the Overview can be hidden.** Each one now has the hide button the Agile cards have, including the

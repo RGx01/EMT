@@ -10,8 +10,8 @@ A Home Assistant add-on for Octopus Energy accounts: each half-hour's electricit
 (a car, a battery, a heat pump) split out of the meter, Intelligent Octopus Go's smart charging and
 its 6-hour cap, and your history settled against Octopus's own bill.
 
-> **Beta.** EMT is being tested by a few invited people before its first release. Expect rough
-> edges; please report them — see [BETA.md](BETA.md).
+> **Public beta.** EMT is open to anyone to try before its first release. Expect rough edges;
+> please report them — see [BETA.md](BETA.md).
 
 EMT is the successor to [Energy Meter Tracker v4](https://github.com/RGx01/energy-meter-tracker-addon).
 It is a **new add-on with its own slug** (`emt`), not an upgrade: it installs beside v4, runs beside
@@ -114,7 +114,9 @@ it your data, is kept.
 
 1. Keep v4 running — EMT never touches it.
 2. In v4, take a backup (its Data Management page). EMT needs one from **v4 4.5.23 or later**; an
-   older one is refused with the reason, so update v4 first.
+   older one is refused with the reason. Update v4 while Home Assistant's add-on store still offers
+   4.5.23 or later; if it doesn't, EMT can bring back about two years of your history from Octopus
+   instead (**Data Management → History → Import history from Octopus**).
 3. Install EMT and choose **Restore from an Energy Meter Tracker backup** on its welcome page. EMT
    checks the backup before anything is written, then brings the history across.
 4. Run both for as long as you like and compare. When you're happy, stop v4.

@@ -96,10 +96,12 @@ about 1440 × 900, dark theme, the page only.
 |---|---|
 | `RGx01/EMT` (this one, public) | EMT from 2 Nov 2026, when its history was rewritten clean of real account details |
 | `RGx01/EMT-archive` (private) | The same work before that: its issues and PRs. A `#NNN` in a history document, or `RGx01/EMT-archive#NNN` in a commit message, is there. |
-| `RGx01/energy-meter-tracker-addon` | v4. Critical fixes only. Its `docs/ROADMAP_archive.md` records why v4's decisions were made. |
+| `RGx01/energy-meter-tracker-addon` (public) | v4 from 10 Nov 2026, when it was recreated as one commit: 4.5.25's runtime files, no tests or docs. Critical fixes only. Issues and wiki are off; v4's reports come here. |
+| `RGx01/energy-meter-tracker-addon-archive` (private) | v4 before that: its history, issues, PRs, wiki and tests, and `docs/ROADMAP_archive.md`, which records why v4's decisions were made. A v4 `#NNN` is there. |
 
-Never push from a clone of the archive to this repository: the archive's history still holds what
-was scrubbed.
+Never push from a clone of either archive to a public repository: the archives' history still holds
+what was scrubbed. A v4 fix is tested in the v4 archive's clone, which has the tests, then carried to
+the public repository's files by a PR there.
 
 ## Releasing
 
@@ -111,7 +113,10 @@ A beta is Home Assistant's `bN` on the version it leads to: `2026.11.0b1`, `2026
    that version with its date. PR to `dev`, merge.
 2. PR `dev` → `main`; the PR body is the release note. Merge once its **CodeQL** check passes (below).
 3. Tag `main` and push the tag: `git tag -s v2026.11.0b1 -m 2026.11.0b1 && git push origin v2026.11.0b1`.
-4. A GitHub release on the tag, marked **pre-release** for a beta.
+4. A GitHub release on the tag. **Until the first release, `2026.11.0`, a beta is a full release marked
+   Latest** (from b17, 10 Nov 2026), so the repository page shows it; GitHub's sidebar shows only the latest
+   full release, and lists tags when there is none. **From `2026.11.0` on, a beta is a pre-release** — a
+   stable install asks for `/latest` (below), which would otherwise offer it a beta.
 
 A supervised install sees the update from `config.yaml` on `main` (the add-on store reads the default
 branch). A standalone install has no store: its *update available* notice reads this repository's

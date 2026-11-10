@@ -35,7 +35,8 @@ In order; the first that fails refuses the backup, with its reason:
 
 1. **Integrity** — no hot `-wal`; `quick_check` and `foreign_key_check` clean.
 2. **The floor** — `store_meta.written_by` present and ≥ `FLOOR_VERSION` (**4.5.23**), compared as
-   numbers. Below it: "Open this in the last v4 release first." EMT carries none of v4's heals; the
+   numbers. Below it the refusal names the floor and the way on: update v4 while Home Assistant's
+   add-on store still offers it, or bring about two years back from Octopus. EMT carries none of v4's heals; the
    floor is what guarantees they ran.
 3. **The supplier** — Octopus, not listed, or absent. Another supplier is refused.
 4. **Units** — rates stored in pence rather than pounds are refused.

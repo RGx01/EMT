@@ -7,7 +7,9 @@ devices, and reconciles against the supplier's settled figures.
 
 ## Where we are
 
-**v4 is at 4.5.25** (repo `RGx01/energy-meter-tracker-addon`). 4.5.14 was the last feature
+**v4 is at 4.5.25** (repo `RGx01/energy-meter-tracker-addon`, recreated 10 Nov 2026 as one commit of 4.5.25's
+runtime files; its history, issues, PRs and tests are the private `RGx01/energy-meter-tracker-addon-archive`,
+local clone `~/code/energy-meter-tracker-addon-archive`, where a v4 `#NNN` is). 4.5.14 was the last feature
 release; since then it accepts **critical fixes only** — data loss, crash-on-start, or a pricing
 error. 4.5.15 shipped #473 (device cost from raw `imp_kwh` instead of the grid-clipped
 `imp_kwh_grid`, with a heal) and #475 (a settled kWh re-banding an unpriced block). 4.5.16 shipped
@@ -30,8 +32,8 @@ the account as on Agile, stopping the bill passes and taking the blip's standing
 not move. The EV_BOOST band is still expected.
 
 **4.5.23 is the v5 import floor** (raised 12 Oct 2026). It carries a heal, and the rule is that a fix adding a heal
-raises the floor EMT will import from. A below-floor database must be **refused** with "open
-this in the last v4 release first", not imported with a warning. v5 carries **no v4 heals** —
+raises the floor EMT will import from. A below-floor database must be **refused** with the way on — update v4
+while the store still offers the floor, or bring the history back from Octopus — not imported with a warning. v5 carries **no v4 heals** —
 the floor is what makes that safe — so a v4 fix is ported as its forward fix only.
 
 **The work now is v5**, in this repo (`RGx01/EMT`, public). It was seeded from v4 4.5.14 and
@@ -47,10 +49,11 @@ after a restore or upgrade; the writer-thread design is held in reserve.
 **Repositories (2 Nov 2026).** This repo was created that day from a history rewritten clean of real
 account details; the work before it, with its issues and PRs, is the private `RGx01/EMT-archive`
 (local clone `~/code/EMT-archive`). A `#NNN` before 2 Nov in a history doc, or `RGx01/EMT-archive#NNN`
-in a commit message, is there. **Never push from the archive clone to `RGx01/EMT`.**
+in a commit message, is there. **Never push from the archive clone to `RGx01/EMT`,** nor from the v4
+archive clone to the public v4 repository.
 
 **Versions:** CalVer `YYYY.M.PATCH`, betas `2026.11.0b1`, `b2`, …; `main` holds the latest beta,
-2026.11.0b16. The slug is `emt`, the direct port 8098. Releasing: `docs/DEVELOPMENT.md`.
+2026.11.0b17. The slug is `emt`, the direct port 8098. Releasing: `docs/DEVELOPMENT.md`.
 
 **Soaking on the Pi:** `.build/soak_prepare_db.py` → restore via Data Management (through ingress
 since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-management` still works) → `.build/soak.py run` → save the log with
@@ -71,8 +74,8 @@ since 14 Oct 2026, when the upload went up in pieces; `http://<pi>:8098/data-man
 A new design is written in `docs/design/` while it is decided and built; once built it moves to
 `docs/history/design/` with the history header, and what it settled goes into `docs/reference/`.
 
-v4's `docs/ROADMAP_archive.md` records **why** past decisions were made; read it (in the v4 repo)
-before re-opening anything.
+v4's `docs/ROADMAP_archive.md` records **why** past decisions were made; read it (in the v4 archive,
+`~/code/energy-meter-tracker-addon-archive`) before re-opening anything.
 
 ## Working rules
 

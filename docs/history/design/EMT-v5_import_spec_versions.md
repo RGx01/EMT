@@ -1,6 +1,6 @@
-# The import specification's versions, v2–v32
+# The import specification's versions, v2–v33
 
-> **History.** How the import specification changed, version by version, from 17 Sep to 31 Oct 2026 —
+> **History.** How the import specification changed, version by version, from 17 Sep to 10 Nov 2026 —
 > what each revision decided and why. The contract itself is
 > [design/EMT-v5_import_spec.md](../../design/EMT-v5_import_spec.md); PR numbers (`#NNN`) are in the
 > private archive, `RGx01/EMT-archive`.
@@ -156,6 +156,13 @@ rate, and before v4 recorded dispatches the prediction can only be the clock, so
 no bill a smart charge outside the night window read peak. The importer keeps each such half-hour's
 stored rate in `sensor_rates`, the era dated by each database's own go-live stamp, and v5 bands by it
 below a bill (see SENSOR RATES, below). No bill is written; the asker still asks Octopus.*
+
+*Changes in v33 (10 Nov 2026): **a below-floor refusal's way on does not depend on v4 being offered.**
+Both gate-2 refusals said "Open this in the last v4 release first", which assumes v4 can always be
+installed from the add-on store. They now name `FLOOR_VERSION` (from the constant,
+so it moves with the floor) for while the add-on store still offers it, and Octopus's two years of
+history for when it doesn't. The units refusal asks for the v4 the user already has, since it runs
+after the floor. Nothing the gate admits or refuses changed.*
 
 *Changes in v32 (31 Oct 2026): **`tariff_prices` is v5's, and the import leaves it empty** (G2 tariff
 prices design §3). v4 has no such table. It fills on the first rate refresh after discovery has stored
