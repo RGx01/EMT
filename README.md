@@ -10,8 +10,8 @@ A Home Assistant add-on for Octopus Energy accounts: each half-hour's electricit
 (a car, a battery, a heat pump) split out of the meter, Intelligent Octopus Go's smart charging and
 its 6-hour cap, and your history settled against Octopus's own bill.
 
-> **Beta.** EMT is being tested by a few invited people before its first release. Expect rough
-> edges; please report them — see [BETA.md](BETA.md).
+> **Public beta.** EMT is open to anyone to try before its first release. Expect rough edges;
+> please report them — see [BETA.md](BETA.md).
 
 EMT is the successor to [Energy Meter Tracker v4](https://github.com/RGx01/energy-meter-tracker-addon).
 It is a **new add-on with its own slug** (`emt`), not an upgrade: it installs beside v4, runs beside
