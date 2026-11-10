@@ -86,7 +86,7 @@ class ImportCorpus(unittest.TestCase):
             with self.subTest(db=os.path.basename(p), written_by=v):
                 why = G.check(p)
                 self.assertIsNotNone(why)
-                self.assertIn("last v4 release", why)
+                self.assertIn("Import history from Octopus", why)
 
     def test_every_database_at_the_floor_imports_and_reconciles(self):
         if not self.admissible:

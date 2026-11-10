@@ -1011,7 +1011,7 @@ class TheRestore(unittest.TestCase):
     def test_a_below_floor_v4_backup_is_still_refused(self):
         """GUARD: the v4 gate runs before the importer, as before."""
         self._refused(v4_db(os.path.join(self.share, "old.db"), written_by="4.5.13"),
-                      "last v4 release")
+                      "Import history from Octopus")
 
     def test_a_staged_zip_imports_a_v4_backup(self):
         """Stage, then confirm (first-run design §2): the zip goes through the restore worker,

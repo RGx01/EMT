@@ -32,8 +32,8 @@ the account as on Agile, stopping the bill passes and taking the blip's standing
 not move. The EV_BOOST band is still expected.
 
 **4.5.23 is the v5 import floor** (raised 12 Oct 2026). It carries a heal, and the rule is that a fix adding a heal
-raises the floor EMT will import from. A below-floor database must be **refused** with "open
-this in the last v4 release first", not imported with a warning. v5 carries **no v4 heals** —
+raises the floor EMT will import from. A below-floor database must be **refused** with the way on — update v4
+while the store still offers the floor, or bring the history back from Octopus — not imported with a warning. v5 carries **no v4 heals** —
 the floor is what makes that safe — so a v4 fix is ported as its forward fix only.
 
 **The work now is v5**, in this repo (`RGx01/EMT`, public). It was seeded from v4 4.5.14 and

@@ -51,18 +51,26 @@ PENCE_RATIO = 10.0
 # mean anything: rounding a 0.00004 exc rate to four places can make it read 2.5.
 MIN_EXC = 0.001
 
+# The way on from a backup below the floor (import spec v33). "Update v4" holds only while Home
+# Assistant's add-on store still offers v4; past that, Octopus's history is what is left. Names the
+# floor from FLOOR_VERSION, so it moves with it.
+_BELOW_FLOOR_WAY_ON = (
+    "If Home Assistant's add-on store still offers Energy Meter Tracker v4 " + FLOOR_VERSION + " or "
+    "later, update v4 to it, open this history in v4, then take a backup and restore that. If it "
+    "doesn't, EMT can bring back about two years of your history from Octopus instead: set EMT up "
+    "with Octopus connected, then Data Management → History → Import history from Octopus.")
 OLDER_THAN_STAMPS = (
     "This backup does not say which version of Energy Meter Tracker wrote it, so it is "
-    "older than EMT can restore. Open this in the last v4 release first, then take a "
-    "backup and restore that.")
+    "older than EMT can restore. " + _BELOW_FLOOR_WAY_ON)
 BELOW_FLOOR = (
     "This backup was last opened by Energy Meter Tracker {version}, which is older than "
-    "EMT can restore. Open this in the last v4 release first, then take a backup and "
-    "restore that.")
+    "EMT can restore. " + _BELOW_FLOOR_WAY_ON)
+# Checked after the floor, so the backup is from v4 FLOOR_VERSION or later: the v4 the user
+# already has can finish the re-pricing, whatever the store offers.
 IN_PENCE = (
     "This backup holds prices in pence rather than pounds (the first is the half-hour "
-    "at {block_start}). Open this in the last v4 release first and let it finish "
-    "re-pricing, then take a backup and restore that.")
+    "at {block_start}). Open it in v4 again and let it finish re-pricing, then take a "
+    "backup and restore that.")
 UNREADABLE = "This file could not be read as an EMT database: {error}"
 HOT_WAL = (
     "This looks like a copy taken while Energy Meter Tracker was running, and some of "

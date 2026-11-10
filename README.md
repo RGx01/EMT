@@ -114,7 +114,9 @@ it your data, is kept.
 
 1. Keep v4 running — EMT never touches it.
 2. In v4, take a backup (its Data Management page). EMT needs one from **v4 4.5.23 or later**; an
-   older one is refused with the reason, so update v4 first.
+   older one is refused with the reason. Update v4 while Home Assistant's add-on store still offers
+   4.5.23 or later; if it doesn't, EMT can bring back about two years of your history from Octopus
+   instead (**Data Management → History → Import history from Octopus**).
 3. Install EMT and choose **Restore from an Energy Meter Tracker backup** on its welcome page. EMT
    checks the backup before anything is written, then brings the history across.
 4. Run both for as long as you like and compare. When you're happy, stop v4.

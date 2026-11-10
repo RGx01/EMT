@@ -4,11 +4,11 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v32 — revised 31 Oct 2026, the tariff prices table is v5's and the import leaves it empty (v31: an imported block's standing charge is its local day's; v30: the import reports devices that cost more than the meter; v29: the agreements table left empty by the import (G1); v28: v4's live rate from its sensor era kept as a fact, transform 3d; v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v33 — revised 10 Nov 2026, a below-floor refusal's way on does not depend on v4 being offered (v32: the tariff prices table is v5's and the import leaves it empty; v31: an imported block's standing charge is its local day's; v30: the import reports devices that cost more than the meter; v29: the agreements table left empty by the import (G1); v28: v4's live rate from its sensor era kept as a fact, transform 3d; v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
-## The contract today (v32, 31 Oct 2026)
+## The contract today (v33, 10 Nov 2026)
 
 *A summary; the sections below are the contract. How each change came about is in
 [the specification's versions](../history/design/EMT-v5_import_spec_versions.md), and how the import
@@ -19,7 +19,8 @@ runs today, step by step, in [reference/v4-import-and-first-run.md](../reference
   absent), units (pounds, not pence) — before the user is asked for anything (§3, §3a). EMT's own backups
   (with `store_meta.emt_schema`) are restored as they are, at `EMT_SCHEMA` 5.
 - **Why a floor:** EMT carries none of v4's heals; a database v4 has opened at the floor has had them all
-  run. Below it the answer is "open this in the last v4 release first" (§1.1).
+  run. Below it the refusal names the floor and the way on: update v4 while the add-on store still
+  offers it, or bring the history back from Octopus (§3, *Refusal*; v33).
 - **How:** into a fresh database with EMT's schema, the source attached read-only, in one transaction;
   every source table, column and state key has a rule or the import stops (§2, §8). The import replaces
   the live database; it never merges.
@@ -352,8 +353,8 @@ alone, so a live copy uploaded without its `-wal` is not detectable from the fil
    For each `electricity_main` import block with a rate and kWh: `ratio = imp_rate ÷ imp_rate_exc`
    (or `imp_cost ÷ imp_cost_exc`), and `expected = 1 + VAT` on the block's date, from the VAT calendar
    (seed plus the source's learned `vat_calendar`). **Refuse** if any block has `ratio ÷ expected > 10`,
-   naming the first such block and directing the user to open the database in the last v4 release and
-   let the re-price sweep finish. No fixed price: each block is judged against its own canonical £
+   naming the first such block and directing the user to open the database in v4 again and let the
+   re-price sweep finish — the v4 they have, which is at the floor or above since gate 2 passed (v33). No fixed price: each block is judged against its own canonical £
    figure, so it holds on any tariff, Agile included.
 
    *Measured, 4 Oct 2026:* on four real databases healthy blocks sit at `ratio ÷ expected` = 1.000 at
@@ -387,17 +388,22 @@ not own" below:
 
 **Refusal must be explicit and actionable**, never a partial import:
 
-- *no `written_by`* → "This backup is from a version of Energy Meter Tracker too old to say what
-  produced it. Update the old add-on, then take a backup and import that." The user is delayed, not
-  stranded — §1.1.
-- *`written_by` below `FLOOR_VERSION`* → "This backup was written by Energy Meter Tracker
-  `<written_by>`, which is older than EMT can import from. Update the old add-on, then back up
-  again."
+- *no `written_by`* → "This backup does not say which version of Energy Meter Tracker wrote it, so
+  it is older than EMT can restore." and the way on, below.
+- *`written_by` below `FLOOR_VERSION`* → "This backup was last opened by Energy Meter Tracker
+  `<written_by>`, which is older than EMT can restore." and the way on.
 
-  **Neither message names a target version.** The floor is whatever v4 ended at, which this document
-  does not know and the code must not assert — so the instruction is *"update the old add-on"*, not
-  *"update to 4.5.14"*. Both cases have the identical remedy, which is why they are two messages
-  only for accuracy about what was found, not because the user does anything different.
+  **The way on (v33, 10 Nov 2026):** "If Home Assistant's add-on store still offers Energy Meter
+  Tracker v4 `<FLOOR_VERSION>` or later, update v4 to it, open this history in v4, then take a backup
+  and restore that. If it doesn't, EMT can bring back about two years of your history from Octopus
+  instead: set EMT up with Octopus connected, then Data Management → History → Import history from
+  Octopus." Until v33 it read "Open this in the last v4 release first", which assumed v4 can always
+  be installed from the add-on store. So the user is delayed while v4 is offered, and after that keeps Octopus's two years rather than
+  nothing.
+
+  **The version is named from `FLOOR_VERSION`, never written as a number** (`_BELOW_FLOOR_WAY_ON`,
+  `v4import/gate.py`; the welcome page names it the same way), so it moves with the floor. Both cases
+  have the identical remedy; they are two messages only for accuracy about what was found.
 - *hot WAL present* → "This looks like a copy taken while Energy Meter Tracker was running, and
   some of your most recent half-hours are not in it yet. In the old add-on take a backup, then
   import the zip it writes."
