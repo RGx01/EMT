@@ -113,7 +113,10 @@ A beta is Home Assistant's `bN` on the version it leads to: `2026.11.0b1`, `2026
    that version with its date. PR to `dev`, merge.
 2. PR `dev` → `main`; the PR body is the release note. Merge once its **CodeQL** check passes (below).
 3. Tag `main` and push the tag: `git tag -s v2026.11.0b1 -m 2026.11.0b1 && git push origin v2026.11.0b1`.
-4. A GitHub release on the tag, marked **pre-release** for a beta.
+4. A GitHub release on the tag. **Until the first release, `2026.11.0`, a beta is a full release marked
+   Latest** (from b17, 10 Nov 2026), so the repository page shows it; GitHub's sidebar shows only the latest
+   full release, and lists tags when there is none. **From `2026.11.0` on, a beta is a pre-release** — a
+   stable install asks for `/latest` (below), which would otherwise offer it a beta.
 
 A supervised install sees the update from `config.yaml` on `main` (the add-on store reads the default
 branch). A standalone install has no store: its *update available* notice reads this repository's
