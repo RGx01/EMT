@@ -2201,7 +2201,7 @@ class TestApiRestoreStaged(unittest.TestCase):
         r = self._stage(open(p, "rb").read())
         os.remove(p)
         self.assertEqual(r.status_code, 400)
-        self.assertIn("last v4 release", r.get_json()["error"])
+        self.assertIn("Import history from Octopus", r.get_json()["error"])
         self.assertEqual(os.listdir(self.tmpdir), [])
 
     def test_stage_refused_when_restore_already_running(self):

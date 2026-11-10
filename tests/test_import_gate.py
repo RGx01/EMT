@@ -119,7 +119,24 @@ class TheFloor(_Dir):
     def test_below_the_floor_is_refused_and_named(self):
         r = G.check(self.db(written_by=BELOW))
         self.assertIn(BELOW, r)
-        self.assertIn("last v4 release", r)
+        self.assertIn("%s or later" % G.FLOOR_VERSION, r)
+
+    def test_the_way_on_does_not_depend_on_v4_being_offered(self):
+        # Import spec v33: "open this in the last v4 release" can't be done once Home Assistant's
+        # add-on store no longer offers v4, so both refusals
+        # name the floor for while it does, and Octopus's history for when it doesn't.
+        for r in (G.check(self.db("below.db", written_by=BELOW)), G.check(self.db("unstamped.db", written_by=None))):
+            with self.subTest(r[:40]):
+                self.assertIn("still offers Energy Meter Tracker v4 %s or later" % G.FLOOR_VERSION, r)
+                self.assertIn("Data Management → History → Import history from Octopus", r)
+                self.assertNotIn("last v4 release", r)
+
+    def test_the_pence_refusal_asks_only_for_the_v4_already_there(self):
+        # Gate 4 runs after the floor, so the backup is from FLOOR_VERSION or later: reopening it
+        # in that v4 finishes the re-pricing, whatever the store offers.
+        self.assertIn("Open it in v4 again and let it finish re-pricing", G.IN_PENCE)
+        self.assertNotIn("last v4 release", G.IN_PENCE)
+        self.assertNotIn("add-on store", G.IN_PENCE)
 
     def test_the_floor_itself_and_above_are_admitted(self):
         for v in (G.FLOOR_VERSION, "4.5.23-a24", "2026.1.0"):
@@ -345,7 +362,7 @@ class TheRestorePaths(unittest.TestCase):
         shutil.rmtree(self.share, ignore_errors=True)
         C.reset_for_tests()
 
-    def _refused_untouched(self, says="last v4 release"):
+    def _refused_untouched(self, says="Import history from Octopus"):
         j = self.srv._restore_job
         self.assertEqual(j["status"], "error", j)
         self.assertIn(says, j["error"])
@@ -402,7 +419,7 @@ class TheRestorePaths(unittest.TestCase):
     def test_a_pence_backup_zip_is_refused(self):
         src = make_db(os.path.join(self.share, "p.db"), written_by=G.FLOOR_VERSION, blocks=[PENCE])
         self.srv._restore_worker(self._zip("p.zip", src), None, False)
-        self._refused_untouched()
+        self._refused_untouched(says="let it finish re-pricing")
         self.assertIn(PENCE[0], self.srv._restore_job["error"])
 
     def test_a_below_floor_flat_copy_is_refused(self):
