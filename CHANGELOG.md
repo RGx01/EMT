@@ -5,8 +5,10 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b17] — 2026-11-10
 
+- **EMT is now a public beta.** Anyone can add it to Home Assistant and try it before its first release; the
+  README and BETA.md say how, and what to send back.
 - **Home eras can be added again after closing the window mid-way.** Closing it with ✕, a click outside or
   Escape while adding an era left "+ Add an era" hidden, so the next time it offered Edit only, until an edit was
   cancelled. It now opens with the button every time.
