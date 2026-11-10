@@ -96,10 +96,12 @@ about 1440 × 900, dark theme, the page only.
 |---|---|
 | `RGx01/EMT` (this one, public) | EMT from 2 Nov 2026, when its history was rewritten clean of real account details |
 | `RGx01/EMT-archive` (private) | The same work before that: its issues and PRs. A `#NNN` in a history document, or `RGx01/EMT-archive#NNN` in a commit message, is there. |
-| `RGx01/energy-meter-tracker-addon` | v4. Critical fixes only. Its `docs/ROADMAP_archive.md` records why v4's decisions were made. |
+| `RGx01/energy-meter-tracker-addon` (public) | v4 from 10 Nov 2026, when it was recreated as one commit: 4.5.25's runtime files, no tests or docs. Critical fixes only. Issues and wiki are off; v4's reports come here. |
+| `RGx01/energy-meter-tracker-addon-archive` (private) | v4 before that: its history, issues, PRs, wiki and tests, and `docs/ROADMAP_archive.md`, which records why v4's decisions were made. A v4 `#NNN` is there. |
 
-Never push from a clone of the archive to this repository: the archive's history still holds what
-was scrubbed.
+Never push from a clone of either archive to a public repository: the archives' history still holds
+what was scrubbed. A v4 fix is tested in the v4 archive's clone, which has the tests, then carried to
+the public repository's files by a PR there.
 
 ## Releasing
 
