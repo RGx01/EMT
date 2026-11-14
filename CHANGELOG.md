@@ -5,6 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **A device is the kind you set it to, whatever it's called.** Charts, Usage Stats and Settings told
+  the EV apart partly by its name, so a battery or heat pump whose name happened to contain "ev"
+  (`battery_level`) could be taken for the car, and a second car's price line on Billing followed the
+  house. Each device is now what its type says; the name is only read for a device with no type.
+
 ## [2026.11.0b20] — 2026-11-14
 
 - **The EV's price line on Billing no longer follows the house when the car isn't charging.** On an install
