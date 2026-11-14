@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b20] — 2026-11-14
 
 - **The EV's price line on Billing no longer follows the house when the car isn't charging.** On an install
   set up in v5, the day chart drew the car's line on the house's price all day on Intelligent Octopus Go,
