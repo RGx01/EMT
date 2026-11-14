@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b19] — 2026-11-14
 
 - **A v4 backup with Intelligent Octopus Go history is no longer refused over a sliver of house.** When EMT
   moved a half-hour's car/house split to Octopus's bill and the bill left almost nothing for the house, the
