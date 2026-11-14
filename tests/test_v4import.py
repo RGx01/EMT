@@ -435,6 +435,104 @@ class TheBillsSplit(_Dir):
         self.assertEqual(report["gates"]["bill_split"], {"moved": 2, "reported": 2, "ok": True})
 
 
+def _sliver_sql(house_rate_a="0.0549303", house_rate_b="0.054932"):
+    """#128 (14 Nov 2026): a v4 IOG-SMB backup refused on one moved block. v4 priced the house leg as
+    the residual absorber, a little off the EV leg's rate; where the bill gives the car nearly all
+    the kWh, the house leg that took the residual alone was a sliver, and its rate strayed past one
+    rate (A). Where the bill gives the car all of it, no house leg is left to take it and the cost
+    moved (B). Both in the era (a cached bill states a split)."""
+    rows = []
+    def block(n, bs, ev, house, house_rate, bill_ev):
+        kwh = ev + house
+        cost = ev * 0.05493 + house * float(house_rate)
+        rows.append("INSERT INTO blocks (id, block_start, block_end, meter_id, config_period_id, "
+                    "imp_kwh, imp_rate, imp_cost, imp_cost_exc, rate_source, rate_corrected, "
+                    "imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band) VALUES (%d, '%s', '%s', "
+                    "'electricity_main', 1, %s, 0.05493, %s, %s, 'measured', 0, %s, %s, 0.05493, "
+                    "'off_peak')" % (n, bs, bs, kwh, round(cost, 6), round(cost / 1.05, 6), ev,
+                                     round(ev * 0.05493, 6)))
+        rows.append("INSERT INTO block_segments (block_start, meter_id, channel, seq, kwh, inc_rate, "
+                    "exc_rate, band, attribution) VALUES ('%s', 'electricity_main', 'import', 0, %s, "
+                    "0.05493, 0.0523143, 'off_peak', 'ev'), ('%s', 'electricity_main', 'import', 1, "
+                    "%s, %s, %s, 'off_peak', 'house')" % (bs, ev, bs, house, house_rate,
+                                                          round(float(house_rate) / 1.05, 7)))
+        rows.append("INSERT INTO measured_cost (slot_start, mpan, direction, cost_incl, cost_excl, "
+                    "label, kwh, ev_kwh, home_kwh) VALUES ('%s', 'M1', 'CONSUMPTION', %s, %s, "
+                    "'OFF_PEAK', %s, %s, %s)" % (bs, round(cost, 6), round(cost / 1.05, 6), kwh,
+                                                 bill_ev, round(kwh - bill_ev, 6)))
+    block(130, SLIVER, 0.5, 5.5, house_rate_a, 5.95)
+    block(131, ALL_EV, 0.5, 5.5, house_rate_b, 6.0)
+    return tuple(rows)
+
+
+SLIVER, ALL_EV = "2026-09-20T02:00:00", "2026-09-21T02:00:00"
+
+
+class TheBillsSplitAtOneRate(_Dir):
+    """#128: a moved block's legs all take the block's own rate (its segments' cost ÷ its kWh), so
+    it carries one rate and costs what it did however little house the bill leaves. Discriminating:
+    on the parent both imports are refused ("1 not the bill's or not costing what they did")."""
+
+    def _legs(self, conn, bs):
+        return [tuple(r) for r in conn.execute(
+            "SELECT attribution, round(kwh, 6), inc_rate FROM block_segments WHERE block_start = ? "
+            "ORDER BY seq", (bs,))]
+
+    def _cost(self, conn, bs):
+        return conn.execute("SELECT SUM(kwh * inc_rate) FROM block_segments WHERE block_start = ?",
+                            (bs,)).fetchone()[0]
+
+    def test_a_sliver_of_house_is_moved_at_one_rate(self):
+        conn, report = self.imported(extra_sql=_sliver_sql())
+        legs = self._legs(conn, SLIVER)
+        self.assertEqual([(a, k) for a, k, _ in legs], [("ev", 5.95), ("house", 0.05)])
+        self.assertEqual(len({r for _, _, r in legs}), 1, legs)
+        self.assertAlmostEqual(self._cost(conn, SLIVER), 0.5 * 0.05493 + 5.5 * 0.0549303, delta=1e-6)
+
+    def test_a_whole_ev_bill_keeps_its_cost(self):
+        conn, report = self.imported(extra_sql=_sliver_sql())
+        self.assertEqual([(a, k) for a, k, _ in self._legs(conn, ALL_EV)], [("ev", 6.0)])
+        self.assertAlmostEqual(self._cost(conn, ALL_EV), 0.5 * 0.05493 + 5.5 * 0.054932, delta=1e-6)
+
+    def test_the_gates_hold(self):
+        _, report = self.imported(extra_sql=_sliver_sql())
+        self.assertTrue(all(g["ok"] for g in report["gates"].values()), report["gates"])
+        self.assertEqual(report["gates"]["bill_split"]["moved"], 2)
+
+
+class TheRefusalNamesItsHalfHours(_Dir):
+    """#128: a refusal said "1 kWh, 1 £" and "1 not the bill's", and nothing more. Each of the two
+    gates now names its first failing half-hours with their figures. Discriminating: on the parent
+    neither message holds a time."""
+
+    def test_a_split_the_columns_do_not_reproduce_is_named(self):
+        bs = "2026-08-30T02:00:00"           # before the era: nothing moves it
+        sql = ("INSERT INTO blocks (id, block_start, block_end, meter_id, config_period_id, imp_kwh, "
+               "imp_rate, imp_cost, rate_source, imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band) "
+               "VALUES (140, '%s', '%s', 'electricity_main', 1, 6.0, 0.05493, 0.32958, 'measured', "
+               "1.2, 0.065916, 0.05493, 'off_peak')" % (bs, bs),
+               "INSERT INTO block_segments (block_start, meter_id, channel, seq, kwh, inc_rate, "
+               "exc_rate, band, attribution) VALUES ('%s', 'electricity_main', 'import', 0, 1.0, "
+               "0.05493, 0.0523143, 'off_peak', 'ev'), ('%s', 'electricity_main', 'import', 1, 5.0, "
+               "0.05493, 0.0523143, 'off_peak', 'house')" % (bs, bs))
+        with self.assertRaises(v4import.ImportFailed) as e:
+            self.imported(extra_sql=sql)
+        self.assertIn("first: %s: the segments' EV 1.000000 kWh £0.054930, the columns' 1.200000 kWh "
+                      "£0.065916" % bs, str(e.exception))
+
+    def test_a_moved_block_off_the_bill_is_named(self):
+        import pricing_segments
+        real = pricing_segments.ev_house_at
+        def off(kwh, ev_kwh, **kw):                  # a move that misses the bill by 0.1 kWh
+            return real(kwh, ev_kwh - 0.1, **kw)
+        with mock.patch.object(pricing_segments, "ev_house_at", off):
+            with self.assertRaises(v4import.ImportFailed) as e:
+                self.imported(extra_sql=_sliver_sql())
+        msg = str(e.exception)
+        self.assertIn("first: %s: 6.000000 of 6.000000 kWh, EV 5.850000 (the bill's 5.950000)" % SLIVER,
+                      msg)
+
+
 def _refit_then_split_sql():
     """A settled block transform 3 refits (its segments miss its kWh) and 3b then moves to the
     bill's split — the staging import of prod's 4.5.24 database, 19 Oct 2026: 11 Sep 00:00's shape."""

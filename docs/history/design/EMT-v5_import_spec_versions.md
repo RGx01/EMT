@@ -1,6 +1,6 @@
-# The import specification's versions, v2–v33
+# The import specification's versions, v2–v34
 
-> **History.** How the import specification changed, version by version, from 17 Sep to 10 Nov 2026 —
+> **History.** How the import specification changed, version by version, from 17 Sep to 14 Nov 2026 —
 > what each revision decided and why. The contract itself is
 > [design/EMT-v5_import_spec.md](../../design/EMT-v5_import_spec.md); PR numbers (`#NNN`) are in the
 > private archive, `RGx01/EMT-archive`.
@@ -156,6 +156,13 @@ rate, and before v4 recorded dispatches the prediction can only be the clock, so
 no bill a smart charge outside the night window read peak. The importer keeps each such half-hour's
 stored rate in `sensor_rates`, the era dated by each database's own go-live stamp, and v5 bands by it
 below a bill (see SENSOR RATES, below). No bill is written; the asker still asks Octopus.*
+
+*Changes in v34 (14 Nov 2026, #128): **a moved block's legs take the block's own rate, and a refusal
+names its half-hours.** A tester's 4.5.25 backup was refused: one of 109 blocks BILL SPLIT moved failed
+gate `bill_split`. The house leg alone took v4's residual; a sliver of house made its rate stray past one
+rate, and a block the bill gave wholly to the car moved its cost. Every leg now takes the block's
+segments' cost ÷ its kWh. Gates `split_reproduced` and `bill_split` name their first three failing
+half-hours with their figures, since the count alone left nothing to look at.*
 
 *Changes in v33 (10 Nov 2026): **a below-floor refusal's way on does not depend on v4 being offered.**
 Both gate-2 refusals said "Open this in the last v4 release first", which assumes v4 can always be

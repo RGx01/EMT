@@ -335,9 +335,14 @@ def bill_split(conn, report):
     Reported, not moved: a block whose segments carry more than one rate (a capped boundary — moving
     kWh would change the cost, and only the runtime settle can rebuild it from the rate schedules),
     and the 4.5.23 case (a bill with no EV where EMT's split has the car). "One rate" is within
-    0.001p/kWh: v4's settle priced the house leg as the residual absorber, a few millionths off the
-    EV leg's rate; the moved block keeps that — the house leg takes the residual, so the segments
-    cost exactly what they did."""
+    0.001p/kWh: v4's settle priced the house leg as the residual absorber, a little off the EV
+    leg's rate (at most 3e-7 £/kWh on the 4.5.24 backups measured, 14 Nov 2026).
+
+    The moved block's legs all take the block's own rate, its segments' cost ÷ its kWh (to 7
+    places), so it costs what it did (within kWh × 5e-8 £) and carries one rate. Until import spec
+    v34 the house leg took the residual alone: where the bill left only a sliver of house, the
+    residual made its rate stray past 0.001p/kWh, and with no house at all the EV leg kept its own
+    rate and the cost moved by up to the residual — the import refused the backup (#128)."""
     import pricing_segments as ps
     era = conn.execute("SELECT MIN(slot_start) FROM main.measured_cost WHERE direction = "
                        "'CONSUMPTION' AND ev_kwh IS NOT NULL").fetchone()[0]
@@ -376,16 +381,15 @@ def bill_split(conn, report):
             new = ps.ev_house_at(
                 kwh, want, inc_rate=lead["inc_rate"], exc_rate=lead["exc_rate"],
                 ev_band=(ev_seg or house_seg)["band"], home_band=(house_seg or ev_seg)["band"])
-            # v4's settle priced the house leg as the residual absorber (its rate a few
-            # millionths off the EV leg's, so the legs sum to the bill exactly); keep that: the
-            # house leg takes whatever the source segments cost beyond the EV leg's
+            # one rate, the block's own: what its segments cost ÷ its kWh, for every leg (#128 —
+            # the house leg alone taking v4's residual strayed past one rate on a sliver of house)
             cost = sum(float(x["kwh"]) * float(x["inc_rate"] or 0.0) for x in segs)
-            if len(new) == 2 and new[1].kwh > _EPS:
-                hr = round((cost - new[0].kwh * float(new[0].inc_rate)) / new[1].kwh, 7)
-                ratio = (float(new[0].exc_rate) / float(new[0].inc_rate)
-                         if new[0].exc_rate is not None and new[0].inc_rate else None)
-                new[1] = new[1]._replace(inc_rate=hr, exc_rate=(round(hr * ratio, 7)
-                                                                if ratio is not None else None))
+            rate = round(cost / kwh, 7)
+            ratio = (float(lead["exc_rate"]) / float(lead["inc_rate"])
+                     if lead["exc_rate"] is not None and lead["inc_rate"] else None)
+            new = [s._replace(inc_rate=rate, exc_rate=(round(rate * ratio, 7)
+                                                       if ratio is not None else s.exc_rate))
+                   for s in new]
             # what this move started from — after transform 3's refit, where it ran — so the gate
             # can tell "the attribution moved, nothing else" from the refit's own change
             conn.execute("INSERT OR REPLACE INTO temp.v4i_split_from (block_start, k, c) "

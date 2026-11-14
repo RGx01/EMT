@@ -46,9 +46,22 @@ def _st(starts):
 class TheHealthByMonthCache(unittest.TestCase):
     """A month is counted again only when it needs to be."""
 
-    OLD, NEW = "2025-03-10T08:00:00", "2026-10-21T08:00:00"
+    @staticmethod
+    def _fixture_starts():
+        """(OLD, NEW) from the clock _health_views reads its age windows by (datetime.now, not the
+        time.time the tests patch). Literal dates broke when the calendar moved (14 Nov 2026:
+        2026-10 had left the ten-day young window). NEW is yesterday, inside the young window;
+        OLD is 19 months before this month — out of it, and short of Octopus's two-year line
+        (`_beyond`, 730 days), which counts its month again with age as the young window does.
+        OLD to now is then 20 months (21 when now + 30 min is next month): seven passes of three."""
+        from datetime import datetime, timedelta, timezone
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        new = (now - timedelta(days=1)).replace(hour=8, minute=0, second=0, microsecond=0)
+        y, m = divmod(now.year * 12 + now.month - 1 - 19, 12)
+        return datetime(y, m + 1, 10, 8).isoformat(), new.isoformat()
 
     def setUp(self):
+        self.OLD, self.NEW = self._fixture_starts()
         server = self.server = TS.server
         self.st = _st([self.OLD, self.NEW])
         server._health_cache.clear()
@@ -80,12 +93,12 @@ class TheHealthByMonthCache(unittest.TestCase):
         return self.server._health_views(self.st, ["bill"], self.OLD, "UTC")
 
     def test_the_first_count_is_one_pass(self):
-        """GUARD: the whole history — three months a pass since 22 Oct 2026 (20 months: 7)."""
+        """GUARD: the whole history — three months a pass since 22 Oct 2026 (20 or 21 months: 7)."""
         with mock.patch.object(self.server, "_HEALTH_PASS_PAUSE_S", 0):
             totals, months = self._count()
         self.assertEqual(len(self.spans), 7)
         self.assertEqual(totals, {"bill": {"applied": 2}})
-        self.assertEqual(sorted(months), ["2025-03", "2026-10"])
+        self.assertEqual(sorted(months), [self.OLD[:7], self.NEW[:7]])
 
     def test_nothing_moved_counts_no_month(self):
         self._count(); self.spans.clear()
@@ -97,7 +110,7 @@ class TheHealthByMonthCache(unittest.TestCase):
         self._count(); self.spans.clear()
         self.st._conn.execute("UPDATE blocks SET imp_kwh = 0.7 WHERE block_start = ?", (self.OLD,))
         self._count()
-        self.assertEqual(self.server._health_cache["counted"], ["2025-03"])
+        self.assertEqual(self.server._health_cache["counted"], [self.OLD[:7]])
 
     def test_the_young_month_turns_with_the_window(self):
         """GUARD on the age window: the newest month is counted again when the window moves."""
@@ -106,8 +119,8 @@ class TheHealthByMonthCache(unittest.TestCase):
         later = _t.time() + self.server._HEALTH_TTL_S
         with mock.patch.object(_t, "time", lambda: later):
             self._count()
-        self.assertIn("2026-10", self.server._health_cache["counted"])
-        self.assertNotIn("2025-03", self.server._health_cache["counted"])
+        self.assertIn(self.NEW[:7], self.server._health_cache["counted"])
+        self.assertNotIn(self.OLD[:7], self.server._health_cache["counted"])
 
 
 class TheSupervisorLog(unittest.TestCase):

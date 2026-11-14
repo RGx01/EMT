@@ -5,6 +5,15 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b19] — 2026-11-14
+
+- **A v4 backup with Intelligent Octopus Go history is no longer refused over a sliver of house.** When EMT
+  moved a half-hour's car/house split to Octopus's bill and the bill left almost nothing for the house, the
+  house share's price strayed by a fraction of a penny and the import refused the whole backup. Each such
+  half-hour now keeps one price for both shares, and costs what it did.
+- **A refused v4 import says which half-hours.** The log names the first few with their figures, so a report
+  is enough to look into without the backup.
+
 ## [2026.11.0b18] — 2026-11-10
 
 - **A support file hides your site name too.** People often name the site after the house. With *Hide my
