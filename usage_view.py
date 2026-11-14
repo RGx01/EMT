@@ -269,14 +269,11 @@ def _configured_ev_meter_id(cfg):
     """The configured EV sub-meter id, or None. The dispatch-derived EV device only
     applies when there's no real EV meter measuring it — so this gates the whole
     feature: any account WITH an EV sub-meter is unaffected (byte-identical)."""
-    for mid, md in (cfg.get("meters") or {}).items():
-        meta = md.get("meta") or {}
-        if not meta.get("sub_meter"):
-            continue
-        if (meta.get("meter_type") in ("ev", "ev_charger")   # BL-40: config UI writes 'ev'
-                or any(kw in mid.lower() for kw in ("ev", "charger"))):
-            return mid
-    return None
+    import meter_roles as _roles
+    # Its type when it has one, else the words of its id (14 Nov 2026: a typed battery whose id
+    # merely contained "ev" was taken for the EV).
+    evs = _roles.meters_of(cfg, "ev", sub_meters_only=True)
+    return evs[0] if evs else None
 
 
 def _dispatch_derived_ev_kwh(dispatch_rows) -> dict:

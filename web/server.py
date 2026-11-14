@@ -7175,16 +7175,15 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
         if (md.get("meta") or {}).get("sub_meter")
     }
 
+    import meter_roles as _roles
+
     def _meter_type(mid, md):
         explicit = (md.get("meta") or {}).get("meter_type", "")
         if explicit:
             return explicit
-        mid_l = mid.lower()
-        if any(k in mid_l for k in ("ev", "charger")):      return "ev_charger"
-        if any(k in mid_l for k in ("battery", "batt")):    return "battery"
-        if any(k in mid_l for k in ("heat", "pump")):       return "heat_pump"
-        if any(k in mid_l for k in ("solar", "pv", "inv")): return "inverter"
-        return "unknown"
+        # An untyped meter: the words of its id (meter_roles), not substrings ("devices" is no EV).
+        r = _roles.role_from_name(mid)
+        return ("ev_charger" if r == "ev" else r) if r else "unknown"
 
     # Lightweight direct query — only columns needed for carbon insights
     rows = store._conn.execute(

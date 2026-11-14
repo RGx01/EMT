@@ -138,6 +138,12 @@ it. A size estimate warns over 10 MB.
 
 ## Devices
 
+- **What a device is** comes from its `meter_type` (`ev`, `battery`, `heat_pump`; the derived EV is
+  `ev_charger`); its id only says which one. Pricing reads the type alone. Charts, Usage Stats and the
+  setup page ask `meter_roles` (`role`, `meters_of`; `_roleFromId` in `meter_config.html`), which
+  guesses from the whole words of the id only for a meter with no type: `ev_charger` is the EV,
+  `battery_level` and a wizard's `sub_meter_<n>` are not. Billing and Usage Stats still fold one EV
+  device into their EV line, the first in the config.
 - **One split rule**, `settle.device_grid_shares`, used by both `_apply_pass2` (at write) and
   `settle()`: an EV meter claims its reading of the grid first (with no EV meter, the dispatch's EV is
   reserved); the other devices share what is left in proportion to their readings, in whole Wh, never
