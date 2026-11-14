@@ -4,11 +4,11 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v33 — revised 10 Nov 2026, a below-floor refusal's way on does not depend on v4 being offered (v32: the tariff prices table is v5's and the import leaves it empty; v31: an imported block's standing charge is its local day's; v30: the import reports devices that cost more than the meter; v29: the agreements table left empty by the import (G1); v28: v4's live rate from its sensor era kept as a fact, transform 3d; v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v34 — revised 14 Nov 2026, a moved block's legs take the block's own rate, and a refusal names its half-hours (v33: a below-floor refusal's way on does not depend on v4 being offered; v32: the tariff prices table is v5's and the import leaves it empty; v31: an imported block's standing charge is its local day's; v30: the import reports devices that cost more than the meter; v29: the agreements table left empty by the import (G1); v28: v4's live rate from its sensor era kept as a fact, transform 3d; v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
-## The contract today (v33, 10 Nov 2026)
+## The contract today (v34, 14 Nov 2026)
 
 *A summary; the sections below are the contract. How each change came about is in
 [the specification's versions](../history/design/EMT-v5_import_spec_versions.md), and how the import
@@ -737,10 +737,17 @@ REFIT, for each MAIN block with segments where
     AND ABS(Σ EV segment kWh − MIN(ev_kwh, imp_kwh)) > 0.0005
 
 and whose segments carry one rate (within 0.001p/kWh — v4's settle priced the house leg as the
-residual absorber, a few millionths off the EV leg's), the importer writes EV + house
-(`pricing_segments.ev_house_at`): EV = `MIN(ev_kwh, imp_kwh)` at the EV leg's rate, the house the
-remainder taking the residual, so the segments cost exactly what they did; bands as they were. Every
-column is carried as it is. **Reported, not moved:** a block whose segments carry more than one rate
+residual absorber, a little off the EV leg's: at most 3e-7 £/kWh on the 4.5.24 backups measured), the
+importer writes EV + house (`pricing_segments.ev_house_at`): EV = `MIN(ev_kwh, imp_kwh)`, the house
+the remainder, **every leg at the block's own rate** — its segments' cost ÷ its kWh, to 7 places — so
+the block carries one rate and costs what it did (within kWh × 5e-8 £); bands as they were. Every
+column is carried as it is.
+
+*v34 (14 Nov 2026, #128):* until then the EV leg kept its rate and the house leg alone took the
+residual. Where the bill left the house a sliver, the residual made its rate stray past one rate (3 kWh
+of house at 3e-6 apart, left at 0.05 kWh: 1.8e-4 £/kWh), and where the bill took the whole block for the
+car no house leg was left to take it and the cost moved by up to the residual — gate `bill_split`
+refused the backup, "1 not the bill's or not costing what they did". **Reported, not moved:** a block whose segments carry more than one rate
 (a capped boundary — only v5's runtime settle can rebuild it from the rate schedules), and a bill with
 no EV where the block's segments have the car (v4 4.5.23's rule). The import report counts moved and
 reported, with their block starts; gate `bill_split` (§9) checks every moved block. A moved block must cost what its

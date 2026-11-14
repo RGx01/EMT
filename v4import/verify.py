@@ -47,6 +47,13 @@ def _one(conn, sql, *args):
     return conn.execute(sql, args).fetchone()[0]
 
 
+def _first(conn, sql, fmt, n=3):
+    """The first `n` failing half-hours, each as `fmt` % its row, for a refusal to name (#128: a
+    count alone left the user nothing to report and us nothing to look at)."""
+    rows = conn.execute(sql + " ORDER BY 1 LIMIT %d" % n).fetchall()
+    return (" — first: " + "; ".join(fmt % tuple(r) for r in rows)) if rows else ""
+
+
 def intact(conn):
     rows = [tuple(r) for r in conn.execute("PRAGMA main.quick_check").fetchall()]
     if rows != [("ok",)]:
@@ -196,8 +203,16 @@ def split_reproduced(conn, report):
     report["gates"]["split_reproduced"].update(
         worst_cost=round(worst or 0.0, 9), kwh_differ=kwh, cost_differ=cost, phantom=phantom)
     if kwh or cost or phantom:
+        which = ("(v.imp_kwh_ev > 1e-6 AND NOT " + shrunk + " AND NOT " + moved + " AND ("
+                 "ABS(COALESCE(g.ev, 0) - v.imp_kwh_ev) > 1e-6 OR (NOT " + rebuilt + " AND "
+                 "ABS(COALESCE(g.ec, 0) - COALESCE(v.imp_cost_ev, 0)) > 1e-5))) OR "
+                 "(COALESCE(v.imp_kwh_ev, 0) <= 1e-6 AND g.ev > 1e-6 AND NOT " + moved + ")")
         return ("the EV segments do not reproduce the EV-split columns: %d kWh, %d £, %d with EV "
-                "segments where the columns had none" % (kwh, cost, phantom))
+                "segments where the columns had none" % (kwh, cost, phantom)
+                + _first(conn, "SELECT b.block_start, COALESCE(g.ev, 0), COALESCE(g.ec, 0), "
+                               "COALESCE(v.imp_kwh_ev, 0), COALESCE(v.imp_cost_ev, 0) " + base
+                               + "AND (" + which + ")",
+                         "%s: the segments' EV %.6f kWh £%.6f, the columns' %.6f kWh £%.6f"))
     return None
 
 
@@ -279,8 +294,19 @@ def bill_split(conn, report):
             if _one(conn, "SELECT COUNT(*) FROM temp.v4i_resegmented WHERE block_start = ? "
                           "AND why = 'bill_split'", bs)]
     if n != t["moved"] or bad or kept:
+        spread = ("(SELECT MAX(s.inc_rate) - MIN(s.inc_rate) FROM main.block_segments s "
+                  "WHERE s.block_start = b.block_start AND s.meter_id = b.meter_id "
+                  "AND s.channel = 'import')")
         return ("the bill's split: %d moved, %d recorded, %d not the bill's or not costing what "
-                "they did, %d reported yet moved" % (t["moved"], n, bad, len(kept)))
+                "they did, %d reported yet moved" % (t["moved"], n, bad, len(kept))
+                + _first(conn, "SELECT b.block_start, g.k, b.imp_kwh, g.ev, MIN(m.ev_kwh, b.imp_kwh), "
+                               "g.c, " + before + ", " + spread + " " + sel
+                               + "AND (ABS(g.k - b.imp_kwh) > 1e-6 OR ABS(g.ev - MIN(m.ev_kwh, "
+                               "b.imp_kwh)) > 1e-6 OR ABS(g.c - " + before + ") > 1e-5 OR "
+                               + spread + " > 1e-5)",
+                         "%s: %.6f of %.6f kWh, EV %.6f (the bill's %.6f), £%.6f (was £%.6f), "
+                         "rates %.1e apart")
+                + ("" if not kept else " — reported yet moved: " + "; ".join(kept[:3])))
     return None
 
 

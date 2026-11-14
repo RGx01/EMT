@@ -47,9 +47,11 @@ In order; the first that fails refuses the backup, with its reason:
   stops and names it (`check_source`).
 - **A fresh target.** A new database with EMT's schema; the source attached read-only; one transaction:
   carry, transform, verify. The audit is kept in `store_meta.import_audit`. Any failure deletes the
-  target and leaves the live database untouched.
+  target and leaves the live database untouched; a check that fails names its first three half-hours
+  with their figures, in the refusal and the log.
 - **The transforms, in order** (`transforms.run`): provenance; EV segments; the held refit; the bill
-  split; imported bills (an import's cost as an `IMPORTED` bill); v4's sensor rates; the standing charge
+  split (a moved half-hour's legs all at its own rate, its cost ÷ its kWh, so it costs what it did);
+  imported bills (an import's cost as an `IMPORTED` bill); v4's sensor rates; the standing charge
   by local day; the meta keys; device sensors; `ha_reads`; devices costing more than the meter
   (reported, not changed). v4's `off_peak` band is kept as it is — no relabel.
 - **Not carried:** tariff agreements and prices start empty and fill from Octopus after discovery.
