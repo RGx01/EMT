@@ -1059,7 +1059,11 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
     for _mid in list(meter_rate.keys()):
         if _mid.endswith("_export"):
             continue
-        _is_ev = (_mid == "ev_dispatch" or "charger" in _mid.lower()
+        # The configured EV meter (the caller's ev_fold_meter, found by meter_type) first: a meter
+        # the setup wizard made is `sub_meter_<n>`, which the name tests miss, and its line took
+        # the house curve — the house's peak over every idle half-hour (14 Nov 2026, the user).
+        _is_ev = ((ev_fold_meter is not None and _mid == ev_fold_meter)
+                  or _mid == "ev_dispatch" or "charger" in _mid.lower()
                   or _mid.lower().startswith("ev_") or _mid.lower().startswith("ev "))
         _curve = _series["ev"] if _is_ev else _series["house"]
         for hh in range(slots):
