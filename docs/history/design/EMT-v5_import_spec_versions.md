@@ -1,6 +1,6 @@
-# The import specification's versions, v2–v34
+# The import specification's versions, v2–v35
 
-> **History.** How the import specification changed, version by version, from 17 Sep to 14 Nov 2026 —
+> **History.** How the import specification changed, version by version, from 17 Sep to 15 Nov 2026 —
 > what each revision decided and why. The contract itself is
 > [design/EMT-v5_import_spec.md](../../design/EMT-v5_import_spec.md); PR numbers (`#NNN`) are in the
 > private archive, `RGx01/EMT-archive`.
@@ -156,6 +156,14 @@ rate, and before v4 recorded dispatches the prediction can only be the clock, so
 no bill a smart charge outside the night window read peak. The importer keeps each such half-hour's
 stored rate in `sensor_rates`, the era dated by each database's own go-live stamp, and v5 bands by it
 below a bill (see SENSOR RATES, below). No bill is written; the asker still asks Octopus.*
+
+*Changes in v35 (15 Nov 2026, #128): **up to ten half-hours whose v4 segments miss its EV columns are
+carried and named.** With v34's names, the tester's refusal was one half-hour: v4's segments put 0.12 kWh
+on the car, its EV column 0.57, at one rate. Most likely v4 itself let the two drift (BL-27; unconfirmed,
+the backup is not ours), and the user could do nothing in v4 to clear it. Gate `split_reproduced` carries up to `SPLIT_CARRY_CAP` (10) such half-hours with
+their segments, naming each in the log and the audit with the backup's own segments and the transforms
+that touched it, so the next report says whether v4 or the import was at fault. Skipping the half-hours
+instead was rejected: it leaves gaps and needs every other gate to allow for them. Above the cap, refused.*
 
 *Changes in v34 (14 Nov 2026, #128): **a moved block's legs take the block's own rate, and a refusal
 names its half-hours.** A tester's 4.5.25 backup was refused: one of 109 blocks BILL SPLIT moved failed

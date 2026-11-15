@@ -505,21 +505,6 @@ class TheRefusalNamesItsHalfHours(_Dir):
     gates now names its first failing half-hours with their figures. Discriminating: on the parent
     neither message holds a time."""
 
-    def test_a_split_the_columns_do_not_reproduce_is_named(self):
-        bs = "2026-08-30T02:00:00"           # before the era: nothing moves it
-        sql = ("INSERT INTO blocks (id, block_start, block_end, meter_id, config_period_id, imp_kwh, "
-               "imp_rate, imp_cost, rate_source, imp_kwh_ev, imp_cost_ev, imp_rate_ev, imp_ev_band) "
-               "VALUES (140, '%s', '%s', 'electricity_main', 1, 6.0, 0.05493, 0.32958, 'measured', "
-               "1.2, 0.065916, 0.05493, 'off_peak')" % (bs, bs),
-               "INSERT INTO block_segments (block_start, meter_id, channel, seq, kwh, inc_rate, "
-               "exc_rate, band, attribution) VALUES ('%s', 'electricity_main', 'import', 0, 1.0, "
-               "0.05493, 0.0523143, 'off_peak', 'ev'), ('%s', 'electricity_main', 'import', 1, 5.0, "
-               "0.05493, 0.0523143, 'off_peak', 'house')" % (bs, bs))
-        with self.assertRaises(v4import.ImportFailed) as e:
-            self.imported(extra_sql=sql)
-        self.assertIn("first: %s: the segments' EV 1.000000 kWh £0.054930, the columns' 1.200000 kWh "
-                      "£0.065916" % bs, str(e.exception))
-
     def test_a_moved_block_off_the_bill_is_named(self):
         import pricing_segments
         real = pricing_segments.ev_house_at
@@ -531,6 +516,63 @@ class TheRefusalNamesItsHalfHours(_Dir):
         msg = str(e.exception)
         self.assertIn("first: %s: 6.000000 of 6.000000 kWh, EV 5.850000 (the bill's 5.950000)" % SLIVER,
                       msg)
+
+
+def _drifted_sql(n):
+    """`n` settled blocks before the IOG-SMB era (nothing moves them) whose v4 EV columns say
+    1.2 kWh and whose v4 segments say 1.0: v4's own drift (BL-27), the shape of #128's 19 Aug."""
+    out = []
+    for i in range(n):
+        bs = "2026-08-%02dT02:00:00" % (10 + i)
+        out.append("INSERT INTO blocks (id, block_start, block_end, meter_id, config_period_id, "
+                   "imp_kwh, imp_rate, imp_cost, rate_source, imp_kwh_ev, imp_cost_ev, imp_rate_ev, "
+                   "imp_ev_band) VALUES (%d, '%s', '%s', 'electricity_main', 1, 6.0, 0.05493, "
+                   "0.32958, 'measured', 1.2, 0.065916, 0.05493, 'off_peak')" % (140 + i, bs, bs))
+        out.append("INSERT INTO block_segments (block_start, meter_id, channel, seq, kwh, inc_rate, "
+                   "exc_rate, band, attribution) VALUES ('%s', 'electricity_main', 'import', 0, 1.0, "
+                   "0.05493, 0.0523143, 'off_peak', 'ev'), ('%s', 'electricity_main', 'import', 1, "
+                   "5.0, 0.05493, 0.0523143, 'off_peak', 'house')" % (bs, bs))
+    return tuple(out)
+
+
+class ADriftedV4SplitIsCarried(_Dir):
+    """#128 (15 Nov 2026): a v4 backup whose segments for a half-hour already disagreed with its EV
+    columns was refused, and its owner could do nothing about it in v4. Up to SPLIT_CARRY_CAP such
+    half-hours are now carried with their segments and named, in the audit (so a support file says
+    what happened) and the log; more is still refused. Discriminating: on the parent the first two
+    tests are refused."""
+
+    def test_one_is_carried_with_its_segments(self):
+        conn, report = self.imported(extra_sql=_drifted_sql(1))
+        bs = "2026-08-10T02:00:00"
+        self.assertEqual([tuple(r) for r in conn.execute(
+            "SELECT attribution, kwh FROM block_segments WHERE block_start = ? AND channel = 'import' "
+            "ORDER BY seq", (bs,)).fetchall()], [("ev", 1.0), ("house", 5.0)])
+        self.assertTrue(all(g["ok"] for g in report["gates"].values()), report["gates"])
+
+    def test_the_audit_names_it_for_a_support_file(self):
+        conn, _ = self.imported(extra_sql=_drifted_sql(1))
+        gate = json.loads(self.meta(conn, "import_audit"))["gates"]["split_reproduced"]
+        self.assertEqual(gate["carried"], [{
+            "start": "2026-08-10T02:00:00", "segments": [1.0, 0.05493], "columns": [1.2, 0.065916],
+            "source_segments": [1.0, 0.05493], "touched": []}])
+
+    def test_more_than_the_cap_is_refused_and_named(self):
+        with self.assertRaises(v4import.ImportFailed) as e:
+            self.imported(extra_sql=_drifted_sql(v4import.verify.SPLIT_CARRY_CAP + 1))
+        self.assertIn("first: 2026-08-10T02:00:00: the segments' EV 1.000000 kWh £0.054930, the "
+                      "columns' 1.200000 kWh £0.065916 (the backup's segments 1.000000 kWh "
+                      "£0.054930; carried as they were)", str(e.exception))
+
+    def test_the_restore_logs_each(self):
+        f = {"start": "2026-08-19T18:00:00", "segments": [0.12, 0.038725],
+             "columns": [0.57, 0.183944], "source_segments": None, "touched": ["refit"]}
+        self.assertEqual(v4import.verify.describe_split(f),
+                         "2026-08-19T18:00:00: the segments' EV 0.120000 kWh £0.038725, the "
+                         "columns' 0.570000 kWh £0.183944 (the backup's segments none; rewritten "
+                         "by refit)")
+        src = open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read()
+        self.assertIn('get("split_reproduced") or {}).get("carried")', src)
 
 
 def _refit_then_split_sql():
@@ -753,7 +795,10 @@ class TheGatesBite(_Dir):
         def _run(conn, report):
             real(conn, report)
             conn.execute(sql)
-        with mock.patch.object(v4import.transforms, "run", _run):
+        # each gate here must bite on one broken block: split_reproduced's carry of a few (#128)
+        # is tested in ADriftedV4SplitIsCarried
+        with mock.patch.object(v4import.transforms, "run", _run), \
+                mock.patch.object(v4import.verify, "SPLIT_CARRY_CAP", 0):
             with self.assertRaises(v4import.ImportFailed) as cm:
                 v4import.import_v4(self.src(), self.target)
         self.assertIn(says, str(cm.exception))
