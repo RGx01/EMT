@@ -173,6 +173,7 @@ def _palette_by_position(cfg: dict) -> dict:
 import bill_card as _bc
 import direct_import as _direct
 import ev_split as _evsplit
+import meter_roles as _roles
 _MAX_RATE_ROWS = _bc.MAX_RATE_ROWS
 _SPLIT_BAND_EPS = _bc.SPLIT_BAND_EPS
 
@@ -423,12 +424,10 @@ def _has_sub_meters(cfg):
 def _ev_meter_id(cfg):
     """The configured physical EV-charger meter_id (meter_type 'ev_charger', or an
     'ev'/'charger' id), or None. Used for the coverage-based synthetic-EV gate."""
-    for mid, md in ((cfg or {}).get("meters") or {}).items():
-        meta = md.get("meta") or {}
-        if (meta.get("meter_type") in ("ev", "ev_charger")   # BL-40: config UI writes 'ev'
-                or any(kw in str(mid).lower() for kw in ("ev", "charger"))):
-            return mid
-    return None
+    # Its type when it has one, else the words of its id (meter_roles): a battery whose id
+    # merely contains "ev" (`battery_level`) was taken for the EV until 14 Nov 2026.
+    evs = _roles.meters_of(cfg, "ev")
+    return evs[0] if evs else None
 
 
 def _has_stored_split(b):
@@ -783,6 +782,7 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
     summary_cost = defaultdict(float)
     summary_rates = defaultdict(lambda: defaultdict(float))
     meter_display_name = {}
+    _meter_meta = {}          # meter id -> its meta, for its role (meter_roles)
 
     def _f(v, default=0.0):
         try:
@@ -851,6 +851,7 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
             ti_cost = main_cost  # remainder cost; sub-meter costs added below
 
             for meter_name, meter in meters.items():
+                _meter_meta.setdefault(meter_name, (meter or {}).get("meta") or {})
                 if (meter or {}).get("meta", {}).get("sub_meter"):
                     sub      = ((meter.get("channels", {}) or {}).get("import", {}) or {})
                     sub_kwh      = _f(sub.get("kwh"))
@@ -1059,12 +1060,12 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
     for _mid in list(meter_rate.keys()):
         if _mid.endswith("_export"):
             continue
-        # The configured EV meter (the caller's ev_fold_meter, found by meter_type) first: a meter
-        # the setup wizard made is `sub_meter_<n>`, which the name tests miss, and its line took
-        # the house curve — the house's peak over every idle half-hour (14 Nov 2026, the user).
+        # Every EV meter by its role (meter_roles: its type, else its id's words), not its id: a
+        # meter the setup wizard made is `sub_meter_<n>`, which the old id tests missed, and its
+        # line took the house curve — the house's peak over every idle half-hour (14 Nov 2026,
+        # the user). `ev_dispatch`, the synthetic EV, has no meta and is the EV by its words.
         _is_ev = ((ev_fold_meter is not None and _mid == ev_fold_meter)
-                  or _mid == "ev_dispatch" or "charger" in _mid.lower()
-                  or _mid.lower().startswith("ev_") or _mid.lower().startswith("ev "))
+                  or _roles.role(_mid, _meter_meta.get(_mid)) == "ev")
         _curve = _series["ev"] if _is_ev else _series["house"]
         for hh in range(slots):
             if _curve[hh] is None:

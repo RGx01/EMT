@@ -4,11 +4,11 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v34 — revised 14 Nov 2026, a moved block's legs take the block's own rate, and a refusal names its half-hours (v33: a below-floor refusal's way on does not depend on v4 being offered; v32: the tariff prices table is v5's and the import leaves it empty; v31: an imported block's standing charge is its local day's; v30: the import reports devices that cost more than the meter; v29: the agreements table left empty by the import (G1); v28: v4's live rate from its sensor era kept as a fact, transform 3d; v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v35 — revised 15 Nov 2026, up to ten half-hours whose v4 segments miss its EV columns are carried and named (v34: a moved block's legs take the block's own rate, and a refusal names its half-hours; v33: a below-floor refusal's way on does not depend on v4 being offered; v32: the tariff prices table is v5's and the import leaves it empty; v31: an imported block's standing charge is its local day's; v30: the import reports devices that cost more than the meter; v29: the agreements table left empty by the import (G1); v28: v4's live rate from its sensor era kept as a fact, transform 3d; v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
-## The contract today (v34, 14 Nov 2026)
+## The contract today (v35, 15 Nov 2026)
 
 *A summary; the sections below are the contract. How each change came about is in
 [the specification's versions](../history/design/EMT-v5_import_spec_versions.md), and how the import
@@ -1171,6 +1171,16 @@ The import is not "done" when it completes; it is done when it **reconciles**. M
    one-shot offline job with the whole database to hand, and the reference set is 78 MB, so there is
    no budget argument for sampling. Report the worst absolute divergence, not just a pass/fail —
    a drift that is within tolerance but trending is the early warning.
+
+   *v35 (15 Nov 2026, #128):* **up to ten failing half-hours are carried, not refused**
+   (`verify.SPLIT_CARRY_CAP`). A tester's 4.5.25 backup held one half-hour whose v4 segments put
+   0.12 kWh on the car where its EV column said 0.57. The likeliest cause is v4's own BL-27 drift
+   between the columns and the segments (some v4 pages read one, some the other), which nothing in v4 lets
+   the user repair; unconfirmed, since we do not hold the backup. Only that half-hour's house/car split is at stake: its kWh and cost are held by gates 1, 2 and
+   11. v5 keeps the segments. Each carried half-hour is named in the log and in the audit
+   (`gates.split_reproduced.carried`: the segments', the columns' and the backup's own segments' EV kWh
+   and £, and which transforms rewrote it), so a support file says whether v4 drifted or the import did.
+   More than ten is the import's fault, and still refused, naming the first three the same way.
 
    *Method already proven:* the same comparison run across every measured block on 4.5.13 prod-dev
    returned 0 mismatches. Compare at **raw stored precision**; do not compare rounded display

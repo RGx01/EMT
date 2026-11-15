@@ -3213,6 +3213,9 @@ def _prepare_restore_db(candidate, step=None, checked=False):
         logger.warning("restore: %d half-hour(s) from v4 whose devices cost more than the meter "
                        "(first %s) — flagged on Data Management's heatmap; a re-fetch prices their "
                        "devices again", len(_dc), _dc[0])
+    for f in (report["gates"].get("split_reproduced") or {}).get("carried") or []:
+        logger.warning("restore: a v4 half-hour whose EV split did not match its EV columns, "
+                       "carried with its segments (#128): %s", v4import.verify.describe_split(f))
     _sr = ((report["transforms"].get("standing_by_day") or {}).get("csv") or {}).get("runs_reported") or []
     for r in _sr:
         logger.warning("restore: the standing charges of v4's CSV import %s – %s left as they were "
@@ -7175,16 +7178,15 @@ def _aggregate_insights(store, cfg, utc_start: str, utc_end: str) -> dict:
         if (md.get("meta") or {}).get("sub_meter")
     }
 
+    import meter_roles as _roles
+
     def _meter_type(mid, md):
         explicit = (md.get("meta") or {}).get("meter_type", "")
         if explicit:
             return explicit
-        mid_l = mid.lower()
-        if any(k in mid_l for k in ("ev", "charger")):      return "ev_charger"
-        if any(k in mid_l for k in ("battery", "batt")):    return "battery"
-        if any(k in mid_l for k in ("heat", "pump")):       return "heat_pump"
-        if any(k in mid_l for k in ("solar", "pv", "inv")): return "inverter"
-        return "unknown"
+        # An untyped meter: the words of its id (meter_roles), not substrings ("devices" is no EV).
+        r = _roles.role_from_name(mid)
+        return ("ev_charger" if r == "ev" else r) if r else "unknown"
 
     # Lightweight direct query — only columns needed for carbon insights
     rows = store._conn.execute(

@@ -5,6 +5,16 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b21] — 2026-11-15
+
+- **A v4 backup is no longer refused over a few half-hours whose car/house split doesn't add up.** v4 kept
+  the split twice, and the two could disagree. Up to ten such half-hours now come across with the split v5
+  uses, and each is named in the log and in a support file, so it can be looked into.
+- **A device is the kind you set it to, whatever it's called.** Charts, Usage Stats and Settings told
+  the EV apart partly by its name, so a battery or heat pump whose name happened to contain "ev"
+  (`battery_level`) could be taken for the car, and a second car's price line on Billing followed the
+  house. Each device is now what its type says; the name is only read for a device with no type.
+
 ## [2026.11.0b20] — 2026-11-14
 
 - **The EV's price line on Billing no longer follows the house when the car isn't charging.** On an install

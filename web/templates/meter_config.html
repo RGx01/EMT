@@ -812,15 +812,28 @@ function _cfgTabList() {
   return tabs;
 }
 
+// ── A meter's role (meter_roles.py) ─────────────────────────────────────────────
+// Its meter_type when it has one; only an untyped meter is guessed, from the whole words of its id
+// ("battery_level" is no EV, "ev_charger" is). Keep in step with meter_roles.role_from_name.
+function _roleFromId(id) {
+  var roles = [['ev', ['ev', 'charger', 'evcharger']], ['battery', ['battery', 'batt']],
+               ['heat', ['heat', 'pump', 'heatpump']], ['solar', ['solar', 'pv', 'inv', 'inverter']]];
+  var words = String(id || '').toLowerCase().split(/[^a-z0-9]+/);
+  for (var i = 0; i < roles.length; i++) {
+    if (roles[i][1].some(function(w) { return words.indexOf(w) !== -1; })) return roles[i][0];
+  }
+  return null;
+}
+
 // ── The EV with no device (BL-97) ──────────────────────────────────────────────
-// An EV device as the charts tell one (energy_charts._ev_meter_id): an EV meter type, or an id that
-// names a charger. With none, the charts draw Octopus's EV — and it has a tab for its colour, where
-// the account has ever had an EV.
+// An EV device as the charts tell one (energy_charts._ev_meter_id): an EV meter type, or an untyped
+// meter whose id names one. With none, the charts draw Octopus's EV — and it has a tab for its
+// colour, where the account has ever had an EV.
 function _hasEvDevice() {
   var meters = config.meters || {};
   return Object.keys(meters).some(function(id) {
     var t = (meters[id].meta || {}).meter_type;
-    return t === 'ev' || t === 'ev_charger' || /ev|charger/i.test(id);
+    return t ? (t === 'ev' || t === 'ev_charger') : _roleFromId(id) === 'ev';
   });
 }
 function _showApiEv() { return !!HAS_HAD_EV && !_hasEvDevice(); }
@@ -2904,12 +2917,11 @@ function startWizard() {
     // existed. Without the meter_type match, wizard-created sub-meters (IDs like
     // "sub_meter_1718…") aren't detected on Change Setup, so they appear
     // deselected and their sensors are dropped on the next save.
-    var mtMap = { ev: 'ev', battery: 'battery', heat_pump: 'heat' };
+    var mtMap = { ev: 'ev', ev_charger: 'ev', battery: 'battery', heat_pump: 'heat' };
     var devType = mtMap[m.meta.meter_type] || null;
-    if (!devType) {
-      if (id.indexOf('ev') !== -1 || id.indexOf('charger') !== -1)       devType = 'ev';
-      else if (id.indexOf('battery') !== -1 || id.indexOf('batt') !== -1) devType = 'battery';
-      else if (id.indexOf('heat') !== -1 || id.indexOf('pump') !== -1)    devType = 'heat';
+    if (!devType && !m.meta.meter_type) {
+      var r = _roleFromId(id);                       // an untyped meter: its id's words
+      if (r === 'ev' || r === 'battery' || r === 'heat') devType = r;
     }
     if (!devType) return;  // unmanaged types (e.g. solar) are left untouched
     if (wiz.devices.indexOf(devType) === -1) wiz.devices.push(devType);
