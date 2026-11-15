@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b21] — 2026-11-15
 
 - **A v4 backup is no longer refused over a few half-hours whose car/house split doesn't add up.** v4 kept
   the split twice, and the two could disagree. Up to ten such half-hours now come across with the split v5
