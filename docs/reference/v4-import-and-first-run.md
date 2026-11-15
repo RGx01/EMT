@@ -48,7 +48,9 @@ In order; the first that fails refuses the backup, with its reason:
 - **A fresh target.** A new database with EMT's schema; the source attached read-only; one transaction:
   carry, transform, verify. The audit is kept in `store_meta.import_audit`. Any failure deletes the
   target and leaves the live database untouched; a check that fails names its first three half-hours
-  with their figures, in the refusal and the log.
+  with their figures, in the refusal and the log. One exception: up to ten half-hours whose segments
+  do not reproduce v4's EV columns (`verify.SPLIT_CARRY_CAP`, v4's own drift) are carried with their
+  segments, each named in the log and in the audit's `gates.split_reproduced.carried`.
 - **The transforms, in order** (`transforms.run`): provenance; EV segments; the held refit; the bill
   split (a moved half-hour's legs all at its own rate, its cost ÷ its kWh, so it costs what it did);
   imported bills (an import's cost as an `IMPORTED` bill); v4's sensor rates; the standing charge

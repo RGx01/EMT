@@ -31,6 +31,9 @@ _UNTOUCHED = {"block_segments": "WHERE block_start NOT IN (SELECT block_start FR
                                 "temp.v4i_resegmented)",
               # transform 3c's bills (temp.v4i_bills) are new rows, checked by `imported_bills`
               "measured_cost": "WHERE slot_start NOT IN (SELECT slot_start FROM temp.v4i_bills)"}
+# split_reproduced: at most this many half-hours whose EV segments miss the v4 EV columns are
+# carried and named instead of refused (#128)
+SPLIT_CARRY_CAP = 10
 _HELD_SRC = ("(rate_source IN ('corrected', 'reconciled', 'measured') OR (rate_reconciled = 1 "
              "AND (rate_source IS NULL OR rate_source = 'schedule')))")
 _SEG = ("(SELECT block_start, SUM(kwh) AS k, SUM(kwh * inc_rate) AS c, "
@@ -202,18 +205,47 @@ def split_reproduced(conn, report):
                        + " AND NOT " + moved)
     report["gates"]["split_reproduced"].update(
         worst_cost=round(worst or 0.0, 9), kwh_differ=kwh, cost_differ=cost, phantom=phantom)
-    if kwh or cost or phantom:
-        which = ("(v.imp_kwh_ev > 1e-6 AND NOT " + shrunk + " AND NOT " + moved + " AND ("
-                 "ABS(COALESCE(g.ev, 0) - v.imp_kwh_ev) > 1e-6 OR (NOT " + rebuilt + " AND "
-                 "ABS(COALESCE(g.ec, 0) - COALESCE(v.imp_cost_ev, 0)) > 1e-5))) OR "
-                 "(COALESCE(v.imp_kwh_ev, 0) <= 1e-6 AND g.ev > 1e-6 AND NOT " + moved + ")")
-        return ("the EV segments do not reproduce the EV-split columns: %d kWh, %d £, %d with EV "
-                "segments where the columns had none" % (kwh, cost, phantom)
-                + _first(conn, "SELECT b.block_start, COALESCE(g.ev, 0), COALESCE(g.ec, 0), "
-                               "COALESCE(v.imp_kwh_ev, 0), COALESCE(v.imp_cost_ev, 0) " + base
-                               + "AND (" + which + ")",
-                         "%s: the segments' EV %.6f kWh £%.6f, the columns' %.6f kWh £%.6f"))
-    return None
+    if not (kwh or cost or phantom):
+        return None
+    which = ("(v.imp_kwh_ev > 1e-6 AND NOT " + shrunk + " AND NOT " + moved + " AND ("
+             "ABS(COALESCE(g.ev, 0) - v.imp_kwh_ev) > 1e-6 OR (NOT " + rebuilt + " AND "
+             "ABS(COALESCE(g.ec, 0) - COALESCE(v.imp_cost_ev, 0)) > 1e-5))) OR "
+             "(COALESCE(v.imp_kwh_ev, 0) <= 1e-6 AND g.ev > 1e-6 AND NOT " + moved + ")")
+    # each failing half-hour with what a support question needs: the backup's own segments
+    # (did v4 already hold them out of step with its columns?) and what the import did to it
+    rows = conn.execute(
+        "SELECT b.block_start, COALESCE(g.ev, 0), COALESCE(g.ec, 0), COALESCE(v.imp_kwh_ev, 0), "
+        "COALESCE(v.imp_cost_ev, 0), s.ev, s.ec, t.refit, t.moved, t.rebuilt " + base
+        .replace("WHERE b.meter_id", "LEFT JOIN " + _SEG % "src" + " s ON s.block_start = "
+                 "b.block_start WHERE b.meter_id") + "AND (" + which + ") ORDER BY 1").fetchall()
+    found = [{"start": r[0], "segments": [round(r[1], 6), round(r[2], 6)],
+              "columns": [round(r[3], 6), round(r[4], 6)],
+              "source_segments": None if r[5] is None else [round(r[5], 6), round(r[6], 6)],
+              "touched": [w for w, f in (("refit", r[7]), ("bill_split", r[8]),
+                                         ("ev_segments", r[9])) if f]} for r in rows]
+    # 15 Nov 2026 (#128): a few such half-hours are carried, not refused. v4 itself let its EV
+    # columns drift from its segments (BL-27's "segments drift": some v4 pages read one, some
+    # the other), the user can do nothing about it in v4, and only the house/car split of those
+    # half-hours is at stake — the block's kWh and cost are held by their own gates. v5 keeps
+    # the segments. Each is named in the log and the audit (so a support file says what went
+    # wrong); more than the cap is a fault of the import's, and still refused.
+    if len(found) <= SPLIT_CARRY_CAP:
+        report["gates"]["split_reproduced"]["carried"] = found
+        return None
+    return ("the EV segments do not reproduce the EV-split columns: %d kWh, %d £, %d with EV "
+            "segments where the columns had none" % (kwh, cost, phantom)
+            + " — first: " + "; ".join(describe_split(f) for f in found[:3]))
+
+
+def describe_split(f):
+    """One failing half-hour of `split_reproduced`, for the log or a refusal."""
+    src = f["source_segments"]
+    return ("%s: the segments' EV %.6f kWh £%.6f, the columns' %.6f kWh £%.6f (the backup's "
+            "segments %s; %s)" % (f["start"], f["segments"][0], f["segments"][1], f["columns"][0],
+                                  f["columns"][1], "none" if src is None else
+                                  "%.6f kWh £%.6f" % tuple(src),
+                                  "rewritten by " + ", ".join(f["touched"]) if f["touched"]
+                                  else "carried as they were"))
 
 
 def held_fit(conn, report):

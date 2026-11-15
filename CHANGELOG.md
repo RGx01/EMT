@@ -7,6 +7,9 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **A v4 backup is no longer refused over a few half-hours whose car/house split doesn't add up.** v4 kept
+  the split twice, and the two could disagree. Up to ten such half-hours now come across with the split v5
+  uses, and each is named in the log and in a support file, so it can be looked into.
 - **A device is the kind you set it to, whatever it's called.** Charts, Usage Stats and Settings told
   the EV apart partly by its name, so a battery or heat pump whose name happened to contain "ev"
   (`battery_level`) could be taken for the car, and a second car's price line on Billing followed the

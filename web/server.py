@@ -3213,6 +3213,9 @@ def _prepare_restore_db(candidate, step=None, checked=False):
         logger.warning("restore: %d half-hour(s) from v4 whose devices cost more than the meter "
                        "(first %s) — flagged on Data Management's heatmap; a re-fetch prices their "
                        "devices again", len(_dc), _dc[0])
+    for f in (report["gates"].get("split_reproduced") or {}).get("carried") or []:
+        logger.warning("restore: a v4 half-hour whose EV split did not match its EV columns, "
+                       "carried with its segments (#128): %s", v4import.verify.describe_split(f))
     _sr = ((report["transforms"].get("standing_by_day") or {}).get("csv") or {}).get("runs_reported") or []
     for r in _sr:
         logger.warning("restore: the standing charges of v4's CSV import %s – %s left as they were "
