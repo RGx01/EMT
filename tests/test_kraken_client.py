@@ -482,8 +482,8 @@ class TestGraphQLQueries(unittest.TestCase):
         self.assertEqual(len(c._session.post_calls), 2)          # followed the cursor
 
     def test_recover_asks_the_local_day(self):
-        # One query for the half-hour's local day, padded [midnight − 30 min, next midnight + 3 h)
-        # (22 Oct 2026: the narrow per-half-hour ladder is gone — test_measurement_day_windows.py).
+        # One query for the half-hour's local day, exactly — not padded, which Octopus answers
+        # without costs (16 Nov 2026; test_measurement_day_windows.py).
         slot = "2026-01-15T02:00:00"
         c = self._client([_gql_data(_meas_page([
             _meas_node("2026-01-15T02:00:00+00:00", "6.326", "OFF_PEAK", "34.7")]))])
@@ -492,8 +492,8 @@ class TestGraphQLQueries(unittest.TestCase):
         self.assertTrue(rec[slot]["off_peak"])
         self.assertEqual(len(c._session.post_calls), 1)
         _u, body, _h, _a = c._session.post_calls[0]
-        self.assertEqual(body["variables"]["start"], "2026-01-14T23:30:00Z")
-        self.assertEqual(body["variables"]["end"], "2026-01-16T03:00:00Z")
+        self.assertEqual(body["variables"]["start"], "2026-01-15T00:00:00Z")
+        self.assertEqual(body["variables"]["end"], "2026-01-16T00:00:00Z")
 
     def test_recover_keeps_the_days_standard(self):
         # The day's answer is the truth, STANDARD too: no second query to look for OFF_PEAK.
@@ -620,6 +620,28 @@ class TestGraphQLQueries(unittest.TestCase):
         self.assertEqual(p["source"], "smart")     # normalised from `type`
         self.assertEqual(p["delta"], "1.5")        # normalised from energyAddedKwh
         self.assertEqual(res["completed"][0]["source"], None)
+
+    def test_get_dispatches_reads_no_device_provider(self):
+        # #118: Octopus deprecated the devices' `provider` (removal on or after
+        # 2027-04-15). EMT no longer selects it, and a charging device without a make
+        # is still the one whose planned dispatches are fetched.
+        sent = []
+        c = self._client([_gql_data({"completedDispatches": [], "devices": [
+            {"id": "m-1", "make": None, "deviceType": "ELECTRICITY_METERS",
+             "__typename": "SmartFlexDevice", "status": {"current": "LIVE"}},
+            {"id": "cp-1", "make": None, "deviceType": "ELECTRIC_VEHICLES",
+             "__typename": "SmartFlexChargePoint", "status": {"current": "LIVE"}}]}),
+            _gql_data({"flexPlannedDispatches": []})])
+        c._deprecation_checked = True
+        orig = c._graphql
+        async def _spy(query, variables=None, *a, **k):
+            sent.append((query, variables))
+            return await orig(query, variables, *a, **k)
+        c._graphql = _spy
+        res = run(c.get_dispatches("A-123"))
+        self.assertNotIn("provider", sent[0][0])
+        self.assertEqual(sent[1][1], {"devId": "cp-1"})
+        self.assertIsNone(res["provider"])
 
     def test_get_dispatches_empty(self):
         c = self._client([_gql_data({"plannedDispatches": [],

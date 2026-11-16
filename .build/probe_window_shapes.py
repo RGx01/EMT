@@ -18,7 +18,8 @@ windows and the import's 60-day ones). No statement: it asks which shapes give a
 the --day's main-meter half-hours with consumption and no bill in DB —
   ladder    the narrow rungs ([slot-30m, slot+2h), then +3h) for up to --ladder-max of them a day
   day       the local day, 00:00-24:00 Europe/London
-  day+pad   EMT's day: [local midnight - 30m, next local midnight + 3h)
+  day+pad   [local midnight - 30m, next local midnight + 3h), EMT's day from 22 Oct to 16 Nov 2026;
+            Octopus answers it with no cost (0 of 34 on 1 Jan and 1 Apr 2025), so EMT asks the day
   month     the local month, paged (shared by the days in it)
   60-day    one window per cluster of days, 30 days either side, as EMT's import asks
 and prints, per half-hour, each shape's cost and label or "no cost".

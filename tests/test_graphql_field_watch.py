@@ -83,6 +83,16 @@ class TestEnumMembershipWatch(unittest.TestCase):
                   "BespokeNonHalfHourlyElectricityUnitRateRateType"):
             self.assertTrue(m._matches(t), f"{t} must be in scope — it carries the band vocabulary")
 
+    def test_tou_and_cap_match_only_at_the_start_of_a_word(self):
+        # #119: ConsentOutput was watched because "consenTOUtput" holds "tou"; so was every
+        # …Output and …Outcome type, and DCAProceeding through "dCAProceeding".
+        for t in ("ConsentOutput", "CreateContractOutput", "EnrolmentOutcome",
+                  "CloseDCAProceeding", "DCAProceedingUpdateStatus"):
+            self.assertFalse(fw._matches(t), t)
+        for t in ("TOUBandType", "TouRate", "FlexCapChargingDurationCapability",
+                  "FlexIsChargingDurationCapped", "TimeOfUseBandUsageType"):
+            self.assertTrue(fw._matches(t), t)
+
     def test_bare_rate_types_are_not_watched(self):
         """`rate` alone would match most of the tariff surface and drown the diff.
 
