@@ -1,7 +1,4 @@
 {
-  "ActualizeContractOutput": [
-    "contract"
-  ],
   "AllBandSubCategories": [
     "enum:AMBER_UNIT",
     "enum:BLACK_UNIT",
@@ -43,9 +40,6 @@
     "enum:WINTER_OFF_PEAK",
     "enum:WINTER_PEAK",
     "enum:YELLOW_UNIT"
-  ],
-  "AmendContractSubjectOutput": [
-    "contract"
   ],
   "ApplicableRateType": [
     "category",
@@ -94,30 +88,6 @@
     "enum:WINTER",
     "enum:WINTER_OFF_PEAK",
     "enum:WINTER_PEAK"
-  ],
-  "CancelRepaymentRequestOutputType": [
-    "requestId",
-    "status"
-  ],
-  "CloseDCAProceeding": [
-    "dcaProceedingClosureStatus"
-  ],
-  "CollectDepositOutput": [
-    "paymentDate",
-    "status"
-  ],
-  "CollectionProcessEventOutputType": [
-    "number"
-  ],
-  "CommenceDCAProceeding": [
-    "dcaProceedingCommencementStatus"
-  ],
-  "CompleteStandalonePaymentOutput": [
-    "status"
-  ],
-  "ConsentOutput": [
-    "code",
-    "value"
   ],
   "Consumption": [
     "endDate",
@@ -214,46 +184,6 @@
     "period",
     "rateApplied"
   ],
-  "CreateContractOutput": [
-    "identifier",
-    "wasCreated"
-  ],
-  "CreateDepositAgreementOutput": [
-    "depositAmount",
-    "depositRequired"
-  ],
-  "CreateOrUpdateSiteworksAppointmentOutput": [
-    "appointmentCreated",
-    "appointmentUpdated"
-  ],
-  "CreateProductOutput": [
-    "product"
-  ],
-  "DCAProceedingClosureStatus": [
-    "accountNumber",
-    "ledgerNumber"
-  ],
-  "DCAProceedingCommencementStatus": [
-    "accountNumber",
-    "agency",
-    "campaign",
-    "commencementStatus",
-    "ledgerNumber"
-  ],
-  "DCAProceedingUpdateStatus": [
-    "accountNumber",
-    "commencementStatus"
-  ],
-  "DepositAgreementOutput": [
-    "acceptedAt",
-    "collectionDate",
-    "currentEligibilityStatus",
-    "depositAmount",
-    "depositKey",
-    "dueDate",
-    "fulfilledAt",
-    "returnStrategy"
-  ],
   "ElectricityConsumptionLabelEco7": [
     "day",
     "isEstimate",
@@ -276,21 +206,10 @@
     "supplierEffectiveFromDate",
     "supplierName"
   ],
-  "EnrollFanClubAccountOutputType": [
-    "status"
-  ],
-  "EnrolmentOutcome": [
-    "octoplus"
-  ],
   "ExtendedElectricityConsumptionType": [
     "eacDay",
     "eacNight",
     "eacStandard"
-  ],
-  "FieldSalesVisitOutcomeType": [
-    "category",
-    "reason",
-    "type"
   ],
   "FlexCancelBoostChargeCapability": [
     "capabilitySupport"
@@ -349,18 +268,6 @@
     "aqEffectiveFromDate",
     "supplierEffectiveFromDate",
     "supplierName"
-  ],
-  "InitiateHostedStandalonePaymentOutput": [
-    "retrievalToken",
-    "url"
-  ],
-  "InitiateStandalonePaymentOutput": [
-    "retrievalToken",
-    "secretToken"
-  ],
-  "InitiateUnauthenticatedStandalonePaymentOutput": [
-    "retrievalToken",
-    "secretToken"
   ],
   "InstallationCapacityType": [
     "declaredNetCapacity",
@@ -456,9 +363,6 @@
     "enum:WINTER_OFF_PEAK",
     "enum:WINTER_PEAK"
   ],
-  "OctoplusEnrolmentOutcome": [
-    "hasEnrolled"
-  ],
   "ProductRateBands": [
     "enum:CONSUMPTION",
     "enum:FEE",
@@ -497,20 +401,6 @@
   "RequestConsumptionData": [
     "requestReference"
   ],
-  "RequestPasswordResetOutputType": [
-    "email",
-    "userNumber"
-  ],
-  "RequestRepaymentOutputType": [
-    "requestId",
-    "status"
-  ],
-  "RescindContractOutput": [
-    "contract"
-  ],
-  "RevokeContractOutput": [
-    "contract"
-  ],
   "SmartFlexDispatch": [
     "end",
     "energyAddedKwh",
@@ -524,9 +414,6 @@
     "label",
     "type",
     "value"
-  ],
-  "TerminateContractOutput": [
-    "contract"
   ],
   "TestDispatchAssessmentFailureReason": [
     "enum:ASSESSMENTS_FAILED",
@@ -559,9 +446,6 @@
     "qualities",
     "units",
     "value"
-  ],
-  "UpdateDCAProceeding": [
-    "dcaProceedingUpdateStatus"
   ],
   "UpsideDispatchMetaType": [
     "location",
