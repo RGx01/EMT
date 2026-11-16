@@ -83,17 +83,19 @@ class TheDots(unittest.TestCase):
         self.assertEqual(dots, [("2023-03-01", 59, 59, False, "#a"),      # 1 Mar 2023: day 59
                                 ("2023-10-01", 273, 273, True, "#a"),
                                 ("2024-02-01", 31, 62, False, "#b"),
-                                ("2024-06-01", 152, 304, True, "#b")])    # 2024 a leap year; no 2099, no export
+                                ("2024-06-01", 152, 304, True, "#b"),     # 2024 a leap year; no 2099
+                                ("2023-05-01", 120, 120, False, "#a")])   # export too (16 Nov 2026, the user)
 
     def test_none_in_a_year_not_shown_or_past_its_points(self):
         self.assertEqual([d["iso"] for d in self._run(years=(2024,))["dots"]], ["2024-02-01", "2024-06-01"])
         short = {"years": {"2023": [{"x": d, "y": d} for d in range(100, 200)], "2024": []}}
-        self.assertEqual(self._run(series=short)["dots"], [])            # 1 Mar before day 100; 1 Oct after 199
+        # 1 Mar before day 100; 1 Oct after 199; the export's 1 May (day 120) inside
+        self.assertEqual([d["iso"] for d in self._run(series=short)["dots"]], ["2023-05-01"])
 
     def test_the_box_hides_them_and_lifetime_keeps_its_band(self):
         self.assertEqual(self._run(on=False)["dots"], [])
         life = self._run(mode="lifetime")
-        self.assertEqual((life["dots"], [a["name"] for a in life["tariffs"]]), ([], ["Go", "Intelligent Go"]))
+        self.assertEqual((life["dots"], [a["name"] for a in life["tariffs"]]), ([], ["Go", "Intelligent Go", "Out"]))
         self.assertEqual(self._run(view="spiral")["dots"], [])          # the spiral draws its own
 
 

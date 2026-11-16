@@ -308,7 +308,9 @@ class TheSpans(unittest.TestCase):
             ["Tariffs", False, "Tariff: Go", "2025-01-01", "2025-07-01", True],
             ["Tariffs", False, "Tariff: Flexible", "2024-06-01", "2025-01-01", False],
             ["Tariffs", True, "Flexible \u2014 price change 1 Oct 2024", "2024-10-01", "2025-01-01", False],
-            ["Tariffs", True, "Flexible \u2014 from its start", "2024-06-01", "2024-10-01", False]])
+            ["Tariffs", True, "Flexible \u2014 from its start", "2024-06-01", "2024-10-01", False],
+            # 16 Nov 2026, the user: the export tariffs too, in their own group (until then import only)
+            ["Export tariffs", False, "Export tariff: Outgoing", "2024-06-01", "2025-07-01", True]])
 
     def test_tariffs_then_eras_by_kind_no_chapters(self):
         eras = [{"id": "c", "kind": "ev", "label": "Car", "start": "2024-09-01"},
@@ -316,8 +318,8 @@ class TheSpans(unittest.TestCase):
                 {"id": "b", "kind": "battery", "label": "Battery", "start": "2025-01-01"}]
         out = self._js("\nconsole.log(JSON.stringify(barSpans().map(function (o) { return [o.group, o.label]; })));",
                        eras=eras, tariffs=self._tariffs())
-        self.assertEqual([g for g, _ in out], ["Tariffs"] * 4 + ["Eras: Solar", "Eras: Battery", "Eras: EV"])
-        self.assertEqual([l for _, l in out[4:]], ["\u2600\ufe0f Solar", "\U0001f50b Battery", "\U0001f697 Car"])
+        self.assertEqual([g for g, _ in out], ["Tariffs"] * 4 + ["Export tariffs", "Eras: Solar", "Eras: Battery", "Eras: EV"])
+        self.assertEqual([l for _, l in out[5:]], ["\u2600\ufe0f Solar", "\U0001f50b Battery", "\U0001f697 Car"])
 
     def test_an_era_on_its_own_runs_to_its_own_end(self):
         # 4 Nov 2026, the user: the solar era on its own, through the battery's change; an era's end is
