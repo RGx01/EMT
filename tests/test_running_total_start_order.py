@@ -70,14 +70,15 @@ class TheOrder(unittest.TestCase):
         self.assertEqual(out, [["Year", "jan"], ["Year", "billing"],
                                ["Tariffs", "tariff:2025-07-01"], ["Tariffs", "tariff:2023-09-21"],
                                ["Tariffs", "tariff:2023-06-03"],
+                               ["Export tariffs", "tariff-exp:2024-05-01"],       # 16 Nov 2026, the user
                                ["Eras: Solar", "era:pv"],
                                ["Eras: Battery", "era:bat2"], ["Eras: Battery", "era:bat1"],
                                ["Eras: EV", "era:car2"], ["Eras: EV", "era:car1"]])
 
     def test_an_optgroup_a_group_the_current_selected(self):
         html = self._run("barAccStartOptions(barAccStartChoices(), 'era:bat1')")
-        self.assertEqual(html.count("<optgroup"), 5)
-        self.assertEqual(html.count("</optgroup>"), 5)
+        self.assertEqual(html.count("<optgroup"), 6)
+        self.assertEqual(html.count("</optgroup>"), 6)
         self.assertIn('<optgroup label="Eras: Battery"><option value="era:bat2">\U0001f50b Bigger battery (20 Aug 2025)'
                       '</option><option value="era:bat1" selected>', html)
 

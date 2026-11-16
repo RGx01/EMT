@@ -61,6 +61,20 @@ class TheLayout(unittest.TestCase):
             self.assertNotIn('id="%s"' % el, self.toolbar, el)
         self.assertIn('<div id="bar-sub-bar"', _block('<div id="bar-sub-row"', '<div id="bar-toggles"'))
 
+    def test_the_series_pickers_lead_the_years_row(self):
+        # 16 Nov 2026, the user: Rate brackets' and Running total's series in one place, before the Span
+        # or year-start picker (they were in the toolbar: Rate brackets' at its end, Running total's first)
+        row = _block('<div id="bar-sub-row"', '<div id="bar-toggles"')
+        for el in ("bar-br-series", "bar-acc-series"):
+            self.assertNotIn('id="%s"' % el, self.toolbar, el)
+            self.assertIn('id="%s"' % el, row, el)
+        self.assertLess(row.index('id="bar-series-slot"'), row.index('id="bar-sub-bar"'))
+        self.assertIn("vis('bar-series-slot', on || barRunning(), 'flex');", _fn("barBrSyncUI"))
+        self.assertIn("vis('bar-series-slot', on || barBrackets(), 'flex');", _fn("barAccSyncUI"))
+        self.assertIn("vis('bar-acc-series', on, '');", _fn("barAccSyncUI"))
+        self.assertIn("#bar-series-slot select { width: auto; max-width: 260px; }", PAGE)
+        self.assertIn("#bar-sub-bar select { width: auto; max-width: 100%; }", PAGE)
+
     def test_the_selects_are_as_wide_as_their_text(self):
         self.assertIn(".bar-toolbar select { width: auto;", PAGE)
 

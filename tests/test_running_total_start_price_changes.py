@@ -48,7 +48,7 @@ TARIFFS = [
     {"direction": "import", "name": "Intelligent Go", "from": "2024-06-12", "to": None,
      "prices": [_p("2024-06-12"), _p("2025-04-01"), _p("2099-04-01")]},  # a scheduled change: not listed
     {"direction": "export", "name": "Outgoing", "from": "2024-05-01", "to": None,
-     "prices": [_p("2025-01-01")]},                                     # export: never a start
+     "prices": [_p("2025-01-01")]},                                     # export: its own group (16 Nov 2026)
 ]
 
 
@@ -78,6 +78,13 @@ class TheChanges(unittest.TestCase):
                         ".map(function (o) { return o.id; })")
         self.assertEqual(ids, ["tariff:2024-06-12", "tariff:2025-04-01",
                                "tariff:2023-09-21", "tariff:2024-04-01", "tariff:2024-01-01", "tariff:2023-10-01"])
+
+    def test_an_export_tariffs_changes_under_it_in_its_own_group(self):
+        # 16 Nov 2026, the user: the export tariffs were left out
+        ids = self._run("barAccStartChoices().filter(function (o) { return o.group === 'Export tariffs'; })"
+                        ".map(function (o) { return [o.id, o.label]; })")
+        self.assertEqual(ids, [["tariff-exp:2024-05-01", "Export tariff: Outgoing (1 May 2024)"],
+                               ["tariff-exp:2025-01-01", "\u00a0\u00a0\u00a0Outgoing \u2014 price change 1 Jan 2025"]])
 
     def test_the_label_names_the_agreement_and_the_day(self):
         labels = self._run("barAccStartChoices().filter(function (o) { return o.id === 'tariff:2025-04-01'; })"
