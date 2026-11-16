@@ -131,8 +131,11 @@ _EMT_GRAPHQL_FIELDS = {
     "flexPlannedDispatches", "completedDispatches",
     "start", "end", "delta", "energyAddedKwh", "type",
     "meta", "source", "location",
-    # devices (provider / charge-point discovery)
-    "devices", "provider", "deviceType", "status", "current", "make", "model",
+    # devices (charge-point discovery; the manufacturer is `make`). `provider` is no
+    # longer selected: Octopus deprecated it (removal on or after 2027-04-15), and on
+    # every account seen the charging device carries `make` — only the house meter
+    # leaned on `provider`, and EMT never wanted the meter's.
+    "devices", "deviceType", "status", "current", "make", "model",
     # historical import — GraphQL Measurements API (get_measurements). These drive
     # the whole backfill (kWh + billed cost + off/peak label), so a silent upstream
     # deprecation must surface. (Relay-connection generics — edges/node/value/unit/
@@ -143,7 +146,9 @@ _EMT_GRAPHQL_FIELDS = {
     "estimatedAmount",
     # four-bucket device breakdown (get_device_breakdown): the applied unit rate on
     # each bucket's cost (value/edges/node are relay generics handled elsewhere).
-    "pricePerUnit", "amount",
+    # Its `amount` is typed below: `amount` is a name on many types, and Octopus
+    # deprecated Money.amount and TerminationFeeType.amount, neither of which EMT reads.
+    "pricePerUnit",
     # rate-limit pacing (import back-off watches the points allowance) + IOG state
     "pointsAllowanceRateLimit", "usedPoints", "remainingPoints", "isBlocked",
     "currentState",
@@ -156,6 +161,10 @@ _EMT_GRAPHQL_TYPED_FIELDS = {
     ("SmartFlexDevice", "id"),
     ("SmartFlexChargePoint", "id"),
     ("SmartFlexVehicle", "id"),
+    # pricePerUnit { amount } on a measurement statistic's cost: a Decimal in pence.
+    # Money.amount's successor, amountAsMinorUnits, is a whole number — a unit rate
+    # read through it would lose its fraction of a penny.
+    ("PricePerUnit", "amount"),
 }
 # Enum VALUES EMT passes or compares literally — a rename/removal silently
 # breaks logic (telemetry grouping, live-device test, charging-device match, and
@@ -186,17 +195,18 @@ def _pick_charging_device(devices: list) -> Optional[dict]:
     """Return the device dict best representing the IOG-controllable charging
     device — a LIVE EV / charge point wins over non-charging or non-LIVE ones.
 
-    Shared selection used by _pick_device_provider (reads make/provider) and
+    Shared selection used by _pick_device_provider (reads make) and
     _pick_device_id (reads id for flexPlannedDispatches), so both always agree on
-    WHICH device they describe. Returns None if no device carries a usable signal.
+    WHICH device they describe. Returns None for an empty list.
+
+    A device no longer needs a make or provider to be picked: `provider` is not
+    selected any more (deprecated by Octopus), and while it was, it was never null,
+    so every device was a candidate then too.
     """
     best_rank = -1
     best = None
     for dev in devices or []:
         if not dev:
-            continue
-        signal = dev.get("make") or dev.get("provider")
-        if not signal:
             continue
         dtype = dev.get("deviceType") or ""
         typename = dev.get("__typename") or ""
@@ -214,21 +224,20 @@ def _pick_device_provider(devices: list) -> Optional[str]:
     """Manufacturer/provider signal for the smart-charging device that drives
     dispatch behaviour, from the polymorphic `devices` query.
 
-    The `devices` API splits what the deprecated registeredKrakenflexDevice
-    conflated: ``provider`` is the flex/control provider (often 'OCTOPUS_ENERGY'),
-    while the device manufacturer (MYENERGI, OHME, TESLA, …) is in ``make`` on the
+    The device manufacturer (Myenergi, Ohme, Tesla, …) is in ``make`` on the
     vehicle/charge-point types. EMT's per-provider logic — notably OHME detection
-    via ``"OHME" in provider`` — keys on the manufacturer, so we surface ``make``
-    first and fall back to ``provider``.
+    via ``"OHME" in provider`` — keys on the manufacturer. The device's own
+    ``provider`` (the control provider) is no longer read: Octopus deprecated it
+    and points at ``capabilities``, which says what a device can do, not who made it.
 
     Ranks candidates so a LIVE charging device (EV / charge point) wins over a
-    non-charging or non-LIVE one; returns None when the account has no device
-    carrying a signal.
+    non-charging or non-LIVE one; returns None when the picked device has no make
+    (a meter-only account).
     """
     dev = _pick_charging_device(devices)
     if not dev:
         return None
-    return dev.get("make") or dev.get("provider")
+    return dev.get("make")
 
 
 def _pick_device_id(devices: list) -> Optional[str]:
@@ -1712,7 +1721,7 @@ class KrakenAPIClient:
         #    (normalised in _norm). meta.source / type carry the smart-vs-bump
         #    signal (smart-charge/smart vs bump-charge/boost).
         #  - provider comes from the `devices` query (polymorphic list; we read the
-        #    interface-level provider/deviceType/status{current}). This REPLACES the
+        #    interface-level deviceType/status{current} and the make). This REPLACES the
         #    deprecated registeredKrakenflexDevice. Shape confirmed against the
         #    Octopus GraphQL reference + the BottlecapDave integration.
         query = (
@@ -1720,7 +1729,7 @@ class KrakenAPIClient:
             "  completedDispatches(accountNumber: $acc) {"
             "    start end delta meta { source location } }"
             "  devices(accountNumber: $acc) {"
-            "    id provider deviceType status { current } __typename"
+            "    id deviceType status { current } __typename"
             "    ... on SmartFlexVehicle { make model }"
             "    ... on SmartFlexChargePoint { make model } } }"
         )
@@ -1741,7 +1750,7 @@ class KrakenAPIClient:
         if devices:
             logger.info("get_dispatches: devices=%s", [
                 {"type": d.get("deviceType"), "make": d.get("make"),
-                 "provider": d.get("provider"), "kind": d.get("__typename"),
+                 "kind": d.get("__typename"),
                  "status": (d.get("status") or {}).get("current")}
                 for d in devices if d])
         provider = _pick_device_provider(devices)

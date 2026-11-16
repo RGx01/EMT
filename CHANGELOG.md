@@ -11,6 +11,9 @@ internal name for everything before the first public release and never appears i
   check for bills, asked Octopus a window running from half an hour before the day to three hours
   after it, and Octopus answers a window like that with no costs. Both now ask exactly the day, then
   exactly the month, as the import always has, so the half-hours left waiting for a bill get one.
+- **EMT no longer reads a field Octopus is retiring.** Octopus is removing a smart device's `provider`
+  from April 2027. EMT used it only when a device had no make, so it now goes by the make alone; the
+  charger whose planned charges EMT reads is picked as before.
 
 ## [2026.11.0b22] — 2026-11-16
 
