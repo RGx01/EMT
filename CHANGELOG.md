@@ -13,6 +13,8 @@ internal name for everything before the first public release and never appears i
 - **Rate brackets and Running total pick what they show in the same place.** The choice of import,
   export or a device now sits first on the row below the toolbar, just before the Span or year-start
   picker, in both views; Rate brackets' "Whole meter" is now "Import", as Running total already said.
+- **A Span stays a Span after a look at Running total.** Going from Devices or Rate brackets on a Span to
+  Running total and back showed Yearly instead; it now comes back to the Span you left.
 
 ## [2026.11.0b21] — 2026-11-15
 

@@ -398,13 +398,35 @@ class TheWiring(unittest.TestCase):
         self.assertIn("onclick=\"barSetPeriod('span',this)\" id=\"bar-span-btn\"", PAGE)
         f = _fn("barSetShow")
         self.assertIn("if (v === 'flow' && barPeriod === 'yearly') barPeriod = barSpansPending() || barSpans().length ? 'span' : 'monthly';", f)
-        self.assertIn("else if (v === 'running' && barPeriod === 'span') barPeriod = 'yearly';", f)
         ui = _fn("barBrSyncUI")
         self.assertIn("vis('bar-yearly-btn', !fl);", ui)
         self.assertIn("vis('bar-span-btn', spanOk);", ui)
         load = _fn("barLoadState")
         self.assertIn("if (st.period === 'era') barPeriod = 'span';", load)
-        self.assertIn("if (barPeriod === 'span' && barShow === 'running') barPeriod = 'yearly';", load)
+        # Running total keeps the Span (16 Nov 2026): a reload in it no longer turns the period to Yearly
+        self.assertNotIn("barShow === 'running') barPeriod", load)
+
+    @unittest.skipUnless(shutil.which("node"), "node not available")
+    def test_running_total_keeps_the_span_of_the_view_left(self):
+        # 16 Nov 2026, the user: Devices or Rate brackets on a Span, to Running total and back, came back Yearly
+        js = ("var barShow = 'devices', barPeriod = 'span', barMetric = 'kwh', barBrError = null;\n"
+              "function barSetActive() {} function barSaveState() {} function barSyncUI() {} function barRender() {}\n"
+              "function barSpansPending() { return false; } function barSpans() { return [{id: 't'}]; }\n" +
+              _fn("barSetShow") +
+              "\nvar seen = [];\n['running', 'devices', 'running', 'brackets', 'running', 'flow', 'running', 'flow']"
+              ".forEach(function (v) { barSetShow(v, null); seen.push(v + ':' + barPeriod); });\n"
+              "console.log(JSON.stringify(seen));")
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+            fh.write(js)
+            path = fh.name
+        try:
+            res = subprocess.run(["node", path], capture_output=True, text=True, timeout=30)
+        finally:
+            os.unlink(path)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(json.loads(res.stdout),
+                         ["running:span", "devices:span", "running:span", "brackets:span", "running:span",
+                          "flow:span", "running:span", "flow:span"])
 
     def test_a_remembered_span_waits_for_the_eras_and_tariffs(self):
         # a reload restored the period before the eras were read, and fell back to Monthly (the preview)

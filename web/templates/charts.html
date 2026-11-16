@@ -1604,7 +1604,6 @@ function barLoadState(availableYears) {
     if (typeof st.brSeries === 'string') barBrSeries = st.brSeries;
     barBrPct = st.brPct === true;
     if (barShow === 'brackets' && barMetric === 'co2') barMetric = 'kwh';
-    if (barPeriod === 'span' && barShow === 'running') barPeriod = 'yearly';   // Running total has its own year
   } catch(e) {}
   barShowFromUrl();
   barFromSpiral();
@@ -2927,9 +2926,10 @@ function barFlowBuildTable(tbl, aggList) {
 function barSetShow(v, el) {
   barShow = v;
   // Flow has Era where the others have Yearly (4 Nov 2026, the user: in Flow, Yearly totalled what
-  // Monthly did — the years ticked); each turns into the other on the way in and out
+  // Monthly did — the years ticked); each turns into the other on the way in and out, Yearly to Span or
+  // monthly. Running total leaves the period alone (16 Nov 2026, the user: a Span came back as Yearly):
+  // it has its own year and reads no period, so the view left keeps its Span
   if (v === 'flow' && barPeriod === 'yearly') barPeriod = barSpansPending() || barSpans().length ? 'span' : 'monthly';
-  else if (v === 'running' && barPeriod === 'span') barPeriod = 'yearly';
   barBrError = null;
   if (v === 'brackets' && barMetric === 'co2') barMetric = 'kwh';   // brackets carry no carbon
   barSetActive('bar-show-seg', el);
