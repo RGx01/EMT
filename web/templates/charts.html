@@ -2341,7 +2341,7 @@ var barShow = 'devices';          // 'devices' | 'brackets' | 'running'
 var barAccSeries = 'net';         // 'net' | 'import' | 'export' | a device id | 'standing'
 var barAccMode = 'lifetime';      // 'lifetime' | 'year'
 var barAccView = 'line';          // 'line' | 'spiral' (PR 2)
-var barAccStart = 'jan';          // PR 3: 'jan' | 'billing' | 'tariff:<YYYY-MM-DD>' | 'era:<id>'
+var barAccStart = 'jan';          // PR 3: 'jan' | 'billing' | 'tariff:<YYYY-MM-DD>' | 'tariff-exp:<YYYY-MM-DD>' | 'era:<id>'
 var barAccIncStanding = false;
 var barAccCharts = [];
 var barBrSeries = 'meter';        // 'meter' (the whole meter) | 'electricity_main' (the house) | a device id | 'export'
@@ -2571,7 +2571,9 @@ var barSpanId = null;               // the span shown (Span): its id; null, the 
 function barFlowYmd(r) { return r.year + '-' + String(r.month).padStart(2, '0') + '-' + String(r.day).padStart(2, '0'); }
 // ── Span (4 Nov 2026, the user): the stretches a Span shows, in Devices, Rate brackets and Flow ──
 // Each import tariff from its start to its end (or the last day), with the stretches between its price
-// changes under it; and each era on its own, from its start to its own end or now. Clipped to the data;
+// changes under it; then each export tariff the same, in its own group, its ids 'tariff-exp:' (16 Nov 2026,
+// the user: the lists held the import tariffs only); and each era on its own, from its start to its own end
+// or now. Clipped to the data;
 // `latest` where a span reaches its last day. [{id, group, label, from, to, latest, sub}] in the picker's
 // order, Running total's year-start picker's (5 Nov 2026, the user): the tariffs newest first, each
 // followed by its stretches newest first; then the eras by kind as the eras modal lists them, newest
@@ -2584,21 +2586,25 @@ function barSpans() {
   // a span reaching the data's last day is "now": a running fixed-term tariff has its end in the future
   function clip(o) { o.from = o.from < first ? first : o.from; if (o.to >= end) { o.to = end; o.latest = true; } return o; }
   var out = [];
-  (barTariffs || []).filter(function(a) { return a.direction !== 'export' && a.from; })
-    .sort(function(a, b) { return a.from < b.from ? 1 : a.from > b.from ? -1 : 0; })
-    .forEach(function(a) {
-      var to = a.to || end;
-      out.push(clip({id: 'tariff:' + a.from, group: 'Tariffs', label: 'Tariff: ' + a.name, from: a.from, to: to}));
-      var cuts = barTariffChangeDays(a, today);
-      if (!cuts.length) return;
-      var bounds = [a.from].concat(cuts).concat([to]);
-      for (var i = bounds.length - 2; i >= 0; i--) {
-        out.push(clip({id: 'tariff:' + a.from + '@' + bounds[i], group: 'Tariffs', sub: true,
-                       label: a.name + ' \u2014 ' + (i === 0 ? 'from its start' :
-                              (barTariffVatOnly(a, bounds[i]) ? 'VAT' : 'price') + ' change ' + barAccDateLabel(bounds[i])),
-                       from: bounds[i], to: bounds[i + 1]}));
-      }
-    });
+  [false, true].forEach(function(exp) {
+    var key = exp ? 'tariff-exp:' : 'tariff:', group = exp ? 'Export tariffs' : 'Tariffs';
+    (barTariffs || []).filter(function(a) { return (a.direction === 'export') === exp && a.from; })
+      .sort(function(a, b) { return a.from < b.from ? 1 : a.from > b.from ? -1 : 0; })
+      .forEach(function(a) {
+        var to = a.to || end;
+        out.push(clip({id: key + a.from, group: group, label: (exp ? 'Export tariff: ' : 'Tariff: ') + a.name,
+                       from: a.from, to: to}));
+        var cuts = barTariffChangeDays(a, today);
+        if (!cuts.length) return;
+        var bounds = [a.from].concat(cuts).concat([to]);
+        for (var i = bounds.length - 2; i >= 0; i--) {
+          out.push(clip({id: key + a.from + '@' + bounds[i], group: group, sub: true,
+                         label: a.name + ' \u2014 ' + (i === 0 ? 'from its start' :
+                                (barTariffVatOnly(a, bounds[i]) ? 'VAT' : 'price') + ' change ' + barAccDateLabel(bounds[i])),
+                         from: bounds[i], to: bounds[i + 1]}));
+        }
+      });
+  });
   // each era on its own, to its own end (exclusive: a battery replaced ends the day the next starts) or now
   erasGroups((barEras || []).filter(function(e) { return e.start; })).forEach(function(g) {
     g.eras.forEach(function(e) {
@@ -3964,19 +3970,23 @@ function barAccStartChoices() {
     var f = rows[0], bd = Math.max(1, Math.min(28, barBillingDay || 1)), bm = f.day >= bd ? f.month : (f.month === 1 ? 12 : f.month - 1);
     out.push({id: 'billing', label: 'Billing anniversary (' + bd + ' ' + BAR_ACC_MON[bm - 1] + ')', m: bm, d: bd, group: 'Year'});
   }
-  (barTariffs || []).filter(function(a) { return a.direction !== 'export' && a.from; })
-    .sort(function(a, b) { return a.from < b.from ? 1 : a.from > b.from ? -1 : 0; })
-    .forEach(function(a) {
-      out.push({id: 'tariff:' + a.from, label: 'Tariff: ' + a.name + ' (' + barAccDateLabel(a.from) + ')',
-                m: +a.from.slice(5, 7), d: +a.from.slice(8, 10), group: 'Tariffs'});
-      barTariffChangeDays(a, today).reverse()
-        .forEach(function(d) {
-          if (out.some(function(o) { return o.id === 'tariff:' + d; })) return;
-          out.push({id: 'tariff:' + d, label: '\u00a0\u00a0\u00a0' + a.name + ' \u2014 ' + (barTariffVatOnly(a, d) ? 'VAT' : 'price') +
-                    ' change ' + barAccDateLabel(d),
-                    m: +d.slice(5, 7), d: +d.slice(8, 10), group: 'Tariffs'});
-        });
-    });
+  // the import tariffs, then the export tariffs in their own group, ids 'tariff-exp:' (16 Nov 2026, the user)
+  [false, true].forEach(function(exp) {
+    var key = exp ? 'tariff-exp:' : 'tariff:', group = exp ? 'Export tariffs' : 'Tariffs';
+    (barTariffs || []).filter(function(a) { return (a.direction === 'export') === exp && a.from; })
+      .sort(function(a, b) { return a.from < b.from ? 1 : a.from > b.from ? -1 : 0; })
+      .forEach(function(a) {
+        out.push({id: key + a.from, label: (exp ? 'Export tariff: ' : 'Tariff: ') + a.name + ' (' + barAccDateLabel(a.from) + ')',
+                  m: +a.from.slice(5, 7), d: +a.from.slice(8, 10), group: group});
+        barTariffChangeDays(a, today).reverse()
+          .forEach(function(d) {
+            if (out.some(function(o) { return o.id === key + d; })) return;
+            out.push({id: key + d, label: '\u00a0\u00a0\u00a0' + a.name + ' \u2014 ' + (barTariffVatOnly(a, d) ? 'VAT' : 'price') +
+                      ' change ' + barAccDateLabel(d),
+                      m: +d.slice(5, 7), d: +d.slice(8, 10), group: group});
+          });
+      });
+  });
   erasGroups(barEras || []).forEach(function(g) {
     g.eras.forEach(function(e) {
       out.push({id: 'era:' + e.id, label: barEraLabel(e) + ' (' + barAccDateLabel(e.start) + ')',
@@ -4184,7 +4194,8 @@ function barAccRender() {
       plugins: ov.tariffs || ov.eras.length || ov.dots.length ? [barAccOverlayPlugin(ov)] : [],
       options: {
         responsive: true, maintainAspectRatio: false, parsing: false, normalized: true,
-        layout: {padding: {top: (ov.tariffs ? BAR_TARIFF_LANE + 4 : 0) + (ov.eras.length ? BAR_ERA_CHIP + 4 : 0)}},
+        layout: {padding: {top: (ov.tariffs ? BAR_TARIFF_LANE + 4 : 0) + (barAccExportLane(ov) ? BAR_TARIFF_LANE + 2 : 0) +
+                                 (ov.eras.length ? BAR_ERA_CHIP + 4 : 0)}},
         interaction: {mode: 'nearest', axis: 'x', intersect: false},
         plugins: {
           legend: {display: false},                // the years are #bar-legend, above the cards (barAccLegend)
@@ -4240,7 +4251,7 @@ function barAccBuildTable(kinds, all, years) {
 }
 
 // ── Eras and tariffs on the running total (BL-104 PR 4) ────────────────────────────────────────────
-// Usage Stats' own Eras and Tariffs checkboxes. On the Lifetime line the import tariffs are a band
+// Usage Stats' own Eras and Tariffs checkboxes. On the Lifetime line the tariffs are bands, export's under import's,
 // above the plot, as on the bars, and each era a dashed line with its chip; on Year by year the eras
 // only, each in its year's colour at its day of the year (a band a year would be clutter); on the
 // spiral an era is a chip on the coil (barAccSpiral). The hovers are the bars' (barTariffShow,
@@ -4253,11 +4264,11 @@ function barAccShowTariffs() {
   var cb = document.getElementById('bar-tariff-cb');
   return !!(barTariffs && barTariffs.length) && !!cb && cb.checked;
 }
-// The days a tariff dot marks: each import agreement's start, and each price change inside it
-// (barTariffChangeDays) — [{a, iso, change}]
+// The days a tariff dot marks: each agreement's start, import and export (16 Nov 2026, the user), and each
+// price change inside it (barTariffChangeDays) — [{a, iso, change}]
 function barAccTariffDays() {
   var today = new Date().toISOString().slice(0, 10), out = [];
-  barTariffs.filter(function(a) { return a.direction !== 'export' && a.from; }).forEach(function(a) {
+  barTariffs.filter(function(a) { return a.from; }).forEach(function(a) {
     out.push({a: a, iso: a.from, change: false});
     barTariffChangeDays(a, today).forEach(function(d) { out.push({a: a, iso: d, change: true}); });
   });
@@ -4265,13 +4276,13 @@ function barAccTariffDays() {
 }
 // What a line chart draws: {tariffs: [agreements] | null, eras: [{e, x, end, color}], dots: [{a, iso, x,
 // y, change, color}]} in the x axis' own values (ms on Lifetime, days of the year on Year by year). On
-// Year by year the import tariffs are dots on the lines (1 Nov 2026, the user): one at each agreement's
+// Year by year the tariffs, import and export, are dots on the lines (1 Nov 2026, the user): one at each agreement's
 // start, a smaller hollow one at each price change inside it (barTariffChangeDays), on its year's line at
 // that day's total; none where the year has no point on or before it. `s` is the chart's series.
 function barAccOverlays(years, s) {
   var out = {tariffs: null, eras: [], dots: []};
   if (barAccShowTariffs() && barAccView === 'line') {
-    if (barAccMode === 'lifetime') out.tariffs = barTariffs.filter(function(a) { return a.direction !== 'export' && a.from; });
+    if (barAccMode === 'lifetime') out.tariffs = barTariffs.filter(function(a) { return a.from; });
     else if (s) {
       barAccTariffDays().forEach(function(t) {
         var r = {year: +t.iso.slice(0, 4), month: +t.iso.slice(5, 7), day: +t.iso.slice(8, 10)};
@@ -4295,6 +4306,10 @@ function barAccOverlays(years, s) {
   });
   return out;
 }
+// Whether the Lifetime line's tariffs need an export band (beside import's)
+function barAccExportLane(ov) {
+  return (ov.tariffs || []).some(function(a) { return a.direction === 'export'; });
+}
 function barAccOverlayPlugin(ov) {
   return {
     id: 'emtAccOverlays',
@@ -4304,8 +4319,12 @@ function barAccOverlayPlugin(ov) {
       c.save();
       c.font = '10px ' + (getComputedStyle(document.body).fontFamily || 'sans-serif');
       c.textBaseline = 'middle';
-      var laneY = ca.top - (ov.eras.length ? BAR_ERA_CHIP + 4 : 0) - BAR_TARIFF_LANE - 2;
-      (ov.tariffs || []).forEach(function(a, i) {
+      // import's band above export's (16 Nov 2026, the user), each alternating its own shades
+      var hasExp = barAccExportLane(ov), n = {imp: 0, exp: 0};
+      var expY = ca.top - (ov.eras.length ? BAR_ERA_CHIP + 4 : 0) - BAR_TARIFF_LANE - 2;
+      var impY = expY - (hasExp ? BAR_TARIFF_LANE + 2 : 0);
+      (ov.tariffs || []).forEach(function(a) {
+        var lane = a.direction === 'export' ? 'exp' : 'imp', laneY = lane === 'exp' ? expY : impY, i = n[lane]++;
         var x0 = Math.max(ca.left, xs.getPixelForValue(Date.parse(a.from + 'T00:00:00Z')));
         var x1 = Math.min(ca.right, a.to ? xs.getPixelForValue(Date.parse(a.to + 'T00:00:00Z')) : ca.right);
         if (x1 - x0 < 0.5) return;

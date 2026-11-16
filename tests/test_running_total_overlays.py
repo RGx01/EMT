@@ -68,9 +68,9 @@ class TheOverlays(unittest.TestCase):
         self.assertEqual(res.returncode, 0, res.stderr)
         return json.loads(res.stdout)
 
-    def test_lifetime_the_import_tariffs_and_the_era_by_its_date(self):
+    def test_lifetime_the_tariffs_and_the_era_by_its_date(self):
         out = self._run("lifetime", [2023, 2024])
-        self.assertEqual([a["name"] for a in out["tariffs"]], ["Go"])          # import only
+        self.assertEqual([a["name"] for a in out["tariffs"]], ["Go", "Out"])   # and export (16 Nov 2026)
         self.assertEqual(out["eras"][0]["x"], 1718150400000)                    # 12 Jun 2024, ms
         self.assertEqual(out["eras"][0]["end"], 1735689600000)
 
@@ -97,6 +97,14 @@ class TheView(unittest.TestCase):
     def test_the_line_charts_take_the_overlays(self):
         f = _fn("barAccRender")
         self.assertIn("plugins: ov.tariffs || ov.eras.length || ov.dots.length ? [barAccOverlayPlugin(ov)] : [],", f)
+
+    def test_lifetime_draws_export_in_its_own_band_under_imports(self):
+        # 16 Nov 2026, the user: the export tariffs too; their band sits between import's and the plot
+        i = PAGE.index("function barAccOverlayPlugin(")
+        body = PAGE[i:PAGE.index("\n}\n", i)]
+        self.assertIn("var impY = expY - (hasExp ? BAR_TARIFF_LANE + 2 : 0);", body)
+        self.assertIn("laneY = lane === 'exp' ? expY : impY", body)
+        self.assertIn("(barAccExportLane(ov) ? BAR_TARIFF_LANE + 2 : 0)", _fn("barAccRender"))
 
     def test_the_hovers_are_the_bars(self):
         i = PAGE.index("function barAccOverlayPlugin(")

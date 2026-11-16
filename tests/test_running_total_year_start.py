@@ -67,7 +67,11 @@ class TheStart(unittest.TestCase):
 
     def test_the_choices(self):
         ids = self._run("jan", "barAccStartChoices().map(function (o) { return o.id; })")
-        self.assertEqual(ids, ["jan", "billing", "tariff:2024-03-14", "era:abc12345"])   # import tariffs only
+        # 16 Nov 2026, the user: the export tariffs too (until then import only)
+        self.assertEqual(ids, ["jan", "billing", "tariff:2024-03-14", "tariff-exp:2024-05-01", "era:abc12345"])
+
+    def test_an_export_tariff_starts_a_year(self):
+        self.assertEqual(self._run("tariff-exp:2024-05-01", "barAccAnchor()"), {"m": 5, "d": 1})
 
     def test_the_billing_anniversary_is_the_first_bills_month(self):
         self.assertEqual(self._run("billing", "barAccAnchor()"), {"m": 6, "d": 3})

@@ -75,13 +75,14 @@ class TheDots(unittest.TestCase):
     def test_a_dot_at_each_start_and_change_at_its_days_point(self):
         self.assertEqual(self._run(("2023-01-01", "2025-01-01")),
                          [["2023-03-01", False, "#a", True], ["2023-10-01", True, "#a", True],
-                          ["2024-02-01", False, "#b", True], ["2024-06-01", True, "#b", True]])
+                          ["2024-02-01", False, "#b", True], ["2024-06-01", True, "#b", True],
+                          ["2023-05-01", False, "#a", True]])     # export too (16 Nov 2026, the user)
 
     def test_none_outside_the_days_shown(self):
         self.assertEqual([d[0] for d in self._run(("2023-01-01", "2025-01-01"), years=(2024,))],
                          ["2024-02-01", "2024-06-01"])
         self.assertEqual([d[0] for d in self._run(("2023-04-01", "2024-03-01"))],     # 1 Mar 2023 before; Jun 2024 after
-                         ["2023-10-01", "2024-02-01"])
+                         ["2023-10-01", "2024-02-01", "2023-05-01"])
 
 
 class TheView(unittest.TestCase):
