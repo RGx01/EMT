@@ -41,6 +41,7 @@ HONEST BOUNDARY — read this before trusting it:
 import argparse
 import json
 import os
+import re
 import sys
 import urllib.request
 
@@ -71,9 +72,20 @@ def fetch_schema(endpoint):
     return payload["data"]["__schema"]
 
 
+# Patterns too short to match as substrings: "tou" (time of use) is inside every `…Output` and
+# `…Outcome` type, and "cap" inside `DCAProceeding`. These two match only where a CamelCase word
+# starts with them — TOU…, Tou…, Cap…, Capped… — so ConsentOutput is not watched (#119 was its
+# `name` field arriving) while FlexCapChargingDurationCapability still is.
+WORD_START_PATTERNS = ("tou", "cap")
+_CAMEL_WORDS = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
+
+
 def _matches(type_name):
     n = (type_name or "").lower()
-    return any(p in n for p in WATCH_PATTERNS)
+    if any(p in n for p in WATCH_PATTERNS if p not in WORD_START_PATTERNS):
+        return True
+    words = [w.lower() for w in _CAMEL_WORDS.findall(type_name or "")]
+    return any(w.startswith(p) for w in words for p in WORD_START_PATTERNS)
 
 
 def watched_fields(schema):

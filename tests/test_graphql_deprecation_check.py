@@ -112,5 +112,36 @@ class TestFindDeprecations(unittest.TestCase):
         self.assertEqual(removals, sorted(removals))
 
 
+class TestNov2026Deprecations(unittest.TestCase):
+    """Issues #117 and #118 (9 Nov 2026). Octopus deprecated Money.amount and
+    TerminationFeeType.amount, which EMT never reads — it reads PricePerUnit.amount, a
+    Decimal in pence — and the devices' `provider`, which EMT read and now does not."""
+    _AMOUNT = "Please use 'amountAsMinorUnits' instead.\n- Scheduled for removal on or after 2027-05-01."
+    _PROVIDER = "Please use `capabilities`.\n- Scheduled for removal on or after 2027-04-15."
+
+    def _hits(self, types):
+        (names, typed, enums, ignore) = dep_check.extract_used_fields(_SOURCE)
+        schema = {"__schema": {"types": [
+            {"name": n, "kind": "OBJECT", "enumValues": None, "fields": f} for n, f in types]}}
+        return {(h["type"], h["field"]) for h in
+                dep_check.find_deprecations(schema, names, typed, enums, ignore)}
+
+    def test_the_amounts_emt_does_not_read_are_not_flagged(self):
+        self.assertEqual(self._hits([
+            ("Money", [_fld("amount", True, self._AMOUNT)]),
+            ("TerminationFeeType", [_fld("amount", True, self._AMOUNT)]),
+        ]), set())
+
+    def test_the_unit_rate_amount_emt_reads_is_still_watched(self):   # guard: passes before and after
+        self.assertEqual(self._hits([("PricePerUnit", [_fld("amount", True, self._AMOUNT)])]),
+                         {("PricePerUnit", "amount")})
+
+    def test_the_device_provider_is_no_longer_a_field_emt_uses(self):
+        self.assertEqual(self._hits([
+            ("SmartFlexChargePoint", [_fld("provider", True, self._PROVIDER)]),
+            ("SmartFlexDeviceInterface", [_fld("provider", True, self._PROVIDER)]),
+        ]), set())
+
+
 if __name__ == "__main__":
     unittest.main()

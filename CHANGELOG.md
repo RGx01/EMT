@@ -5,6 +5,12 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **EMT no longer reads a field Octopus is retiring.** Octopus is removing a smart device's `provider`
+  from April 2027. EMT used it only when a device had no make, so it now goes by the make alone; the
+  charger whose planned charges EMT reads is picked as before.
+
 ## [2026.11.0b22] — 2026-11-16
 
 - **Usage Stats lists your export tariffs as well as your import ones.** Span, the Running total's year

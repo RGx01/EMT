@@ -621,6 +621,28 @@ class TestGraphQLQueries(unittest.TestCase):
         self.assertEqual(p["delta"], "1.5")        # normalised from energyAddedKwh
         self.assertEqual(res["completed"][0]["source"], None)
 
+    def test_get_dispatches_reads_no_device_provider(self):
+        # #118: Octopus deprecated the devices' `provider` (removal on or after
+        # 2027-04-15). EMT no longer selects it, and a charging device without a make
+        # is still the one whose planned dispatches are fetched.
+        sent = []
+        c = self._client([_gql_data({"completedDispatches": [], "devices": [
+            {"id": "m-1", "make": None, "deviceType": "ELECTRICITY_METERS",
+             "__typename": "SmartFlexDevice", "status": {"current": "LIVE"}},
+            {"id": "cp-1", "make": None, "deviceType": "ELECTRIC_VEHICLES",
+             "__typename": "SmartFlexChargePoint", "status": {"current": "LIVE"}}]}),
+            _gql_data({"flexPlannedDispatches": []})])
+        c._deprecation_checked = True
+        orig = c._graphql
+        async def _spy(query, variables=None, *a, **k):
+            sent.append((query, variables))
+            return await orig(query, variables, *a, **k)
+        c._graphql = _spy
+        res = run(c.get_dispatches("A-123"))
+        self.assertNotIn("provider", sent[0][0])
+        self.assertEqual(sent[1][1], {"devId": "cp-1"})
+        self.assertIsNone(res["provider"])
+
     def test_get_dispatches_empty(self):
         c = self._client([_gql_data({"plannedDispatches": [],
                                      "completedDispatches": [],
