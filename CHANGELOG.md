@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b22] — 2026-11-16
 
 - **Usage Stats lists your export tariffs as well as your import ones.** Span, the Running total's year
   start, and the Running total's tariff band and dots showed only the import tariffs; each export tariff
