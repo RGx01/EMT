@@ -10,6 +10,9 @@ internal name for everything before the first public release and never appears i
 - **Usage Stats lists your export tariffs as well as your import ones.** Span, the Running total's year
   start, and the Running total's tariff band and dots showed only the import tariffs; each export tariff
   now has its own entries, under its own heading in the pickers and its own band on the Lifetime line.
+- **Rate brackets and Running total pick what they show in the same place.** The choice of import,
+  export or a device now sits first on the row below the toolbar, just before the Span or year-start
+  picker, in both views; Rate brackets' "Whole meter" is now "Import", as Running total already said.
 
 ## [2026.11.0b21] — 2026-11-15
 

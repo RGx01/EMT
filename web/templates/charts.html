@@ -145,6 +145,9 @@
   .bar-tb-sep { width: 1px; align-self: stretch; margin: 2px 4px; background: var(--border); }
   /* The page's selects are full width (base.html); here each is as wide as its text */
   .bar-toolbar select { width: auto; max-width: 260px; }
+  #bar-series-slot select { width: auto; max-width: 260px; }
+  /* The Span and year-start pickers: as wide as the choice shown, so the toggles keep their row */
+  #bar-sub-bar select { width: auto; max-width: 100%; }
   /* The toggles at the Years row's end, in the page's words (labels are capitals elsewhere) */
   .bar-toggles { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; margin-left: auto; }
   .bar-toggles label { text-transform: none; letter-spacing: normal; margin: 0; }
@@ -592,8 +595,6 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
         <button class="bar-seg-btn"        onclick="barSetOrder('month',this)">Month</button>
       </div>
       <span id="bar-acc-wrap" style="display:none; align-items:center; gap:8px; font-size:12px; color:var(--muted); flex-wrap:wrap;">
-        <select id="bar-acc-series" onchange="barSetAccSeries(this.value)" aria-label="Which running total"
-                style="font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;"></select>
         <span class="bar-seg" id="bar-acc-view" title="The running total along a time axis, or wound a year a turn">
           <button class="bar-seg-btn active" onclick="barSetAccView('line',this)">Line</button>
           <button class="bar-seg-btn"        onclick="barSetAccView('spiral',this)">Spiral</button>
@@ -604,8 +605,6 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
         </span>
       </span>
       <span id="bar-br-wrap" style="display:none; align-items:center; gap:8px; font-size:12px; color:var(--muted);">
-        <select id="bar-br-series" onchange="barSetBrSeries(this.value)" aria-label="Whose import, or the export"
-                style="font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;"></select>
         <label style="display:flex; align-items:center; gap:6px; cursor:pointer;" title="Each bracket's share of the bar's kWh">
           <input type="checkbox" id="bar-br-pct" onchange="barSetBrPct(this.checked)" style="width:14px;height:14px;accent-color:var(--accent);cursor:pointer;">
           %
@@ -616,6 +615,14 @@ try { localStorage.removeItem(EMT.lsKey('emt_bar_summary')); } catch (e) {}
 
   <!-- The Years row (or the day / range navigator), and the toggles at its end -->
   <div id="bar-sub-row" style="display:flex; align-items:center; gap:8px 16px; flex-wrap:wrap; margin-bottom:16px; min-height:28px; padding: 0 24px; flex-shrink:0;">
+    <!-- Rate brackets' and Running total's series: first on this row, before the Span or year-start picker
+         (16 Nov 2026, the user: one place in both views); shown by barBrSyncUI / barAccSyncUI -->
+    <div id="bar-series-slot" style="display:none; align-items:center; gap:8px; margin-right:-8px;">
+      <select id="bar-br-series" onchange="barSetBrSeries(this.value)" aria-label="Whose import, or the export"
+              style="display:none; font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;"></select>
+      <select id="bar-acc-series" onchange="barSetAccSeries(this.value)" aria-label="Which running total"
+              style="display:none; font-size:12px; padding:2px 4px; background:var(--surface); color:var(--text); border:1px solid var(--border); border-radius:4px;"></select>
+    </div>
     <div id="bar-sub-bar" style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; flex:1 1 auto; min-width:0;"></div>
     <div id="bar-toggles" class="bar-toggles">
       <label id="bar-standing-wrap" style="display:none; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer;">
@@ -2463,12 +2470,13 @@ function barBrDatasets(aggList) {
   });
 }
 
-// The series picker's choices: the whole meter, the house when there are devices, each device.
+// The series picker's choices: the whole meter (named Import, as Running total's is: 16 Nov 2026, the
+// user), the house when there are devices, each device.
 function barBrSeriesList() {
   var have = {};
   var src = barPeriod === 'hh' ? barBrHH : barBrDays;
   Object.values(src || {}).forEach(function(b) { Object.keys(b).forEach(function(s) { have[s] = true; }); });
-  var out = [{ id: 'meter', label: 'Whole meter' }];
+  var out = [{ id: 'meter', label: 'Import' }];
   var devs = barMeters.filter(function(m) { return m.is_sub && have[m.id]; });
   if (devs.length) {
     var main = barMeters.find(function(m) { return m.id === 'electricity_main'; });
@@ -2947,6 +2955,8 @@ function barBrSyncUI() {
   var on = barBrackets(), fl = barFlow();
   function vis(id, show, how) { var e = document.getElementById(id); if (e) e.style.display = show ? (how || '') : 'none'; }
   vis('bar-br-wrap', on, 'flex');
+  vis('bar-br-series', on, '');
+  vis('bar-series-slot', on || barRunning(), 'flex');
   vis('bar-net-wrap', !on && !fl, 'flex');
   vis('bar-sort-btn', !on && !fl);
   vis('bar-flow-head', fl, 'flex');
@@ -4116,6 +4126,8 @@ function barAccSyncUI() {
   var on = barRunning();
   function vis(id, show, how) { var e = document.getElementById(id); if (e) e.style.display = show ? (how || '') : 'none'; }
   vis('bar-acc-wrap', on, 'flex');
+  vis('bar-acc-series', on, '');
+  vis('bar-series-slot', on || barBrackets(), 'flex');
   vis('bar-period-seg', !on, '');
   vis('bar-metric-seg', !on, '');
   vis('bar-legend', true, 'flex');          // on Running total, the years: one legend for every card, line or spiral
@@ -4124,7 +4136,7 @@ function barAccSyncUI() {
   // its own standing charge box is with the toggles now, outside bar-acc-wrap: hidden with the view
   if (!on) { vis('bar-acc-standing-wrap', false); return; }
   ['bar-cal-seg', 'bar-order-seg', 'bar-standing-wrap', 'bar-net-wrap',
-   'bar-sort-btn', 'bar-br-wrap', 'bar-br-note'].forEach(function(id) { vis(id, false); });
+   'bar-sort-btn', 'bar-br-wrap', 'bar-br-series', 'bar-br-note'].forEach(function(id) { vis(id, false); });
   // PR 4: the eras on every drawing; the tariffs along the Lifetime line
   vis('bar-eras-wrap', !!(barEras && barEras.length), 'flex');
   vis('bar-tariff-wrap', !!(barTariffs && barTariffs.length), 'flex');
