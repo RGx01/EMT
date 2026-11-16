@@ -13,13 +13,20 @@ only when the window holds the whole charge, from its start to 2 h past the half
 The month step is kept for a half-hour the day leaves with kWh and no cost (the Pi, 15 Oct 2026:
 half-hours of a few Wh stripped in narrow windows, costed by the day or the month).
 
+16 Nov 2026: the day and the month are asked exactly, not padded. From 22 Oct each window ran 30 min
+before to 3 h after, and Octopus answers such a window with no cost at all — the probe's --costs on
+1 Jan and 1 Apr 2025: the padded day costed 0 of 34 half-hours, the exact day, the month, 60 days
+and the ladder all 34. The simulator does the same: a window over 4 h that does not start and end
+on a local midnight comes back without costs (TheWindow).
+
 Discriminating: every test here fails on the parent but the GUARDs.
 """
 import asyncio
 import os
 import sys
 import unittest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from kraken_api_client import KrakenAPIClient, KrakenAPIError
@@ -30,6 +37,16 @@ MID = "2025-03-06T19:30:00"
 
 def _dt(s):
     return datetime.fromisoformat(s.replace("Z", ""))
+
+
+def _local_midnight(t):
+    loc = t.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Europe/London"))
+    return (loc.hour, loc.minute, loc.second) == (0, 0, 0)
+
+
+def _costless_window(ws, we):
+    """Octopus, 16 Nov 2026: a long window off the local midnights answers with no costs."""
+    return (we - ws) > timedelta(hours=4) and not (_local_midnight(ws) and _local_midnight(we))
 
 
 class _Octopus(KrakenAPIClient):
@@ -54,7 +71,8 @@ class _Octopus(KrakenAPIClient):
                 continue
             in_run = _dt(RUN[0]) <= t < _dt(RUN[1])
             off = (not in_run) or (ws <= _dt(RUN[0]) and we >= t + timedelta(hours=2))
-            stripped = s in self.strip and (we - ws) < timedelta(days=20)
+            stripped = ((s in self.strip and (we - ws) < timedelta(days=20))
+                        or _costless_window(ws, we))
             out.append({"start": s, "kwh": 3.6, "off_peak": off, "standing_incl": None,
                         "standing_excl": None, "buckets": ["OFF_PEAK" if off else "STANDARD_RATE"],
                         "cost_incl": None if stripped else (0.2542 if off else 0.9223),
@@ -85,17 +103,17 @@ class TheDay(unittest.TestCase):
         self.assertEqual(sorted(rec), sorted(slots))
         self.assertEqual(len(c.windows), 1)
 
-    def test_the_window_is_the_local_day_padded(self):
-        """[local midnight − 30 min, next local midnight + 3 h), in UTC: 6 Mar is GMT."""
+    def test_the_window_is_the_local_day(self):
+        """Local midnight to local midnight, in UTC: 6 Mar is GMT."""
         c = _Octopus([MID])
         _run(c, [MID])
-        self.assertEqual(c.windows[0], ("2025-03-05T23:30:00Z", "2025-03-07T03:00:00Z"))
+        self.assertEqual(c.windows[0], ("2025-03-06T00:00:00Z", "2025-03-07T00:00:00Z"))
 
     def test_a_summer_day_is_bst(self):
         s = "2026-07-14T10:00:00"
         c = _Octopus([s])
         _run(c, [s])
-        self.assertEqual(c.windows[0], ("2026-07-13T22:30:00Z", "2026-07-15T02:00:00Z"))
+        self.assertEqual(c.windows[0], ("2026-07-13T23:00:00Z", "2026-07-14T23:00:00Z"))
 
     def test_a_standard_answer_from_the_day_stands(self):
         """GUARD: a genuine day-rate half-hour, outside any charge, keeps its STANDARD cost."""
@@ -115,6 +133,23 @@ def _standard(inner):
     return f
 
 
+class TheWindow(unittest.TestCase):
+    """16 Nov 2026, the support file's 1 Apr 2025: asked the padded day and month, 0 of 22 costed;
+    the gap fill asked the exact day two minutes later and costed all 22."""
+
+    def test_a_night_and_an_evening_charge_are_costed(self):
+        slots = ["2025-04-01T02:00:00", "2025-04-01T19:00:00", "2025-04-01T22:30:00"]
+        c = _Octopus(slots)
+        rec = _run(c, slots)
+        self.assertEqual(sorted(rec), slots)
+        self.assertEqual(len(c.windows), 1)          # the day answered: the month not asked
+
+    def test_a_winter_day_is_costed(self):
+        s = "2025-01-01T03:00:00"
+        rec = _run(_Octopus([s]), [s])
+        self.assertIn(s, rec)
+
+
 class TheMonth(unittest.TestCase):
 
     def test_a_half_hour_the_day_strips_is_asked_the_month(self):
@@ -122,8 +157,8 @@ class TheMonth(unittest.TestCase):
         rec = _run(c, [MID])
         self.assertIn(MID, rec)
         self.assertEqual(len(c.windows), 2)
-        # March's local month: 1 Mar 00:00 GMT − 30 min .. 1 Apr 00:00 BST (31 Mar 23:00 UTC) + 3 h
-        self.assertEqual(c.windows[1], ("2025-02-28T23:30:00Z", "2025-04-01T02:00:00Z"))
+        # March's local month: 1 Mar 00:00 GMT .. 1 Apr 00:00 BST (31 Mar 23:00 UTC)
+        self.assertEqual(c.windows[1], ("2025-03-01T00:00:00Z", "2025-03-31T23:00:00Z"))
 
     def test_nothing_anywhere_is_omitted(self):
         """GUARD: no cost is invented — the caller keeps its fallback."""

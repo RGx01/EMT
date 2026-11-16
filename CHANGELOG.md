@@ -5,6 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **Octopus's costs come back for half-hours EMT kept asking about.** Asking again, and the nightly
+  check for bills, asked Octopus a window running from half an hour before the day to three hours
+  after it, and Octopus answers a window like that with no costs. Both now ask exactly the day, then
+  exactly the month, as the import always has, so the half-hours left waiting for a bill get one.
+
 ## [2026.11.0b22] — 2026-11-16
 
 - **Usage Stats lists your export tariffs as well as your import ones.** Span, the Running total's year

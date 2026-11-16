@@ -1240,11 +1240,15 @@ class KrakenAPIClient:
         statement, none came back without a cost. The label wants the whole charge in view, not
         only the time after the half-hour.
 
-        A day's window is [local midnight - 30 min, next local midnight + 3 h): at least 3 h past
-        every half-hour it holds, so a charge running past midnight is in view too. A half-hour a
-        day leaves without a cost (Octopus has stripped a half-hour's statistics — kWh, no cost —
-        seen on the Pi, 15 Oct 2026, for half-hours of a few Wh) is asked its local month, padded
-        the same way, which costed all of August then."""
+        A day's window is exactly the local day, local midnight to local midnight, and a month's
+        exactly the local month. Not padded (16 Nov 2026): from 22 Oct each was widened to 30 min
+        before and 3 h after, to keep a charge running past midnight in view, and Octopus answers
+        such a window with no cost at all. .build/probe_window_shapes.py --costs on 1 Jan and
+        1 Apr 2025, 34 half-hours: the padded day costed 0; the exact day, the month, 60 days and
+        the narrow ladder each costed all 34, with the same labels — the evening charge off-peak
+        too. EMT's import asks whole local days and never had the fault. A half-hour a day leaves
+        without a cost (Octopus has stripped a half-hour's statistics — kWh, no cost — seen on the
+        Pi, 15 Oct 2026, for half-hours of a few Wh) is asked its local month."""
         from datetime import datetime as _dt, timedelta as _td
         try:
             from zoneinfo import ZoneInfo
@@ -1285,8 +1289,8 @@ class KrakenAPIClient:
             for a, b in sorted(windows, reverse=True):
                 if not pending:
                     break
-                ws = (a - _td(minutes=30)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
-                we = (b + _td(hours=3)).strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+                ws = a.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
+                we = b.strftime("%Y-%m-%dT%H:%M:%S") + "Z"
                 try:
                     rows = await self.get_measurements(
                         mpan, ws, we, account_number=account_number,
