@@ -22,6 +22,19 @@ the --day's main-meter half-hours with consumption and no bill in DB —
             Octopus answers it with no cost (0 of 34 on 1 Jan and 1 Apr 2025), so EMT asks the day
   month     the local month, paged (shared by the days in it)
   60-day    one window per cluster of days, 30 days either side, as EMT's import asks
+  single    each half-hour alone, [slot, slot+30m) — only with --shape single (one query a
+            half-hour). 18 Nov 2026: on 1, 5 and 9 Apr 2026 the day, month and 60-day windows
+            costed 0 of 55 and the ladder 7 of 9; this asks whether Octopus prices a window all or
+            nothing, and which half-hours it cannot price at all
+  window    a window given with --window FROM,TO (UTC; repeatable): 18 Nov 2026, dev's 5 Nov import
+            costed 24 Apr 2026 in a 30-day chunk [9 Apr 17:xx, 9 May 17:xx) that the day and the
+            month did not, on staging, two weeks later. Each window's own tally is printed on its
+            line, with its local edges, so a sweep of starts or ends shows which edge decides: on
+            24 Apr every window starting at 00:00 costed 0, every one starting 03:00 or later all
+            it held, whatever its end; noon to noon costed 57 of 72 half-hours of 1, 5, 9 and 24
+            Apr — all but 1 Apr's night (a charge across the 1 Apr rate change), which no window
+            costs. EMT asks noon to noon after the month since then
+--shape picks which to ask (repeatable); the default is all but single and window,
 and prints, per half-hour, each shape's cost and label or "no cost".
 
 --breakdown is for IOG-SMB days, where EMT reads the four-bucket Home/EV breakdown
@@ -335,6 +348,10 @@ def main():
     ap.add_argument("--ladder-max", type=int, default=3)
     ap.add_argument("--ladder-slot", action="append", default=None,
                     help="naive-UTC half-hour start to ask the ladder about, in place of the picks")
+    ap.add_argument("--shape", action="append", choices=COST_SHAPES, default=None,
+                    help="--costs: ask only these shapes (default all but single)")
+    ap.add_argument("--window", action="append", default=None, metavar="FROM,TO",
+                    help="--costs: also ask this UTC window, e.g. 2026-04-09T17:15:00Z,2026-05-09T17:15:00Z")
     ap.add_argument("--pace", type=float, default=1.0, help="seconds between requests")
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
@@ -418,7 +435,8 @@ def main():
 
 
 # ── --costs: which shapes give a cost for the half-hours EMT has no bill for ──
-COST_SHAPES = ("ladder", "day", "day+pad", "month", "60-day")
+COST_SHAPES = ("ladder", "day", "day+pad", "month", "60-day", "single", "window")
+COST_SHAPES_DEFAULT = COST_SHAPES[:-2]
 
 
 def unbilled(path, days):
@@ -451,30 +469,51 @@ def clusters(days, gap=45):
     return out
 
 
-def costs_plan(days, want, ladder_max):
+def costs_plan(days, want, ladder_max, shapes=COST_SHAPES_DEFAULT, extra=()):
     out = []
+    for a, b in extra:
+        out.append(("window", z(a), a, b, 500))
     for d in days:
         ks = want.get(d) or []
-        pick = ks if len(ks) <= ladder_max else sorted(
-            {ks[round(i * (len(ks) - 1) / max(1, ladder_max - 1))] for i in range(ladder_max)})
-        for s in pick:
-            for a, b in rungs(s):
-                out.append(("ladder", s, a, b, 100))
+        if "ladder" in shapes:
+            pick = ks if len(ks) <= ladder_max else sorted(
+                {ks[round(i * (len(ks) - 1) / max(1, ladder_max - 1))] for i in range(ladder_max)})
+            for s in pick:
+                for a, b in rungs(s):
+                    out.append(("ladder", s, a, b, 100))
+        if "single" in shapes:
+            for s in ks:
+                a = datetime.fromisoformat(s)
+                out.append(("single", s, a, a + timedelta(minutes=30), 10))
         a, b = local_day(d)
-        out.append(("day", d, a, b, 500))
-        out.append(("day+pad", d, a - timedelta(minutes=30), b + timedelta(hours=3), 500))
-    for ma, mb in sorted({local_month(d) for d in days}):
-        out.append(("month", ma.date(), ma, mb, 500))
-    for g in clusters(days):
-        a, b = wide(g)
-        out.append(("60-day", g[0], a, b, 500))
+        if "day" in shapes:
+            out.append(("day", d, a, b, 500))
+        if "day+pad" in shapes:
+            out.append(("day+pad", d, a - timedelta(minutes=30), b + timedelta(hours=3), 500))
+    if "month" in shapes:
+        for ma, mb in sorted({local_month(d) for d in days}):
+            out.append(("month", ma.date(), ma, mb, 500))
+    if "60-day" in shapes:
+        for g in clusters(days):
+            a, b = wide(g)
+            out.append(("60-day", g[0], a, b, 500))
     return out
+
+
+def _costed(x):
+    """A read_node answer that carries a cost (the report's "no cost" rule, inverted)."""
+    return x[1] is not None and not (x[1] == 0 and x[0] > 0.0005 and not x[2])
 
 
 def costs_main(a, days):
     acct, mpan = from_db(a.db)
     want = unbilled(a.db, days)
-    windows = costs_plan(days, want, a.ladder_max)
+    shapes = tuple(sh for sh in COST_SHAPES if sh in (a.shape or COST_SHAPES_DEFAULT))
+    extra = [tuple(datetime.fromisoformat(x.replace("Z", "")) for x in w.split(","))
+             for w in (a.window or [])]
+    if extra and "window" not in shapes:
+        shapes += ("window",)
+    windows = costs_plan(days, want, a.ladder_max, shapes, extra)
     print("%d day(s), %d half-hour(s) with no bill; %d window(s), about %d quer%s"
           % (len(days), sum(len(v) for v in want.values()), len(windows), queries_for(windows),
              "y" if queries_for(windows) == 1 else "ies"))
@@ -493,7 +532,7 @@ def costs_main(a, days):
         sys.exit("set KRAKEN_API_KEY in the environment")
     o = Octopus(key, acct, mpan, a.pace)
     slots = {s for v in want.values() for s in v}
-    got = {sh: {} for sh in COST_SHAPES}
+    got = {sh: {} for sh in shapes}
     rung_answers = {}
     for shape, what, ws, we, n in windows:
         nodes, pages, errs = o.window(ws, we, n)
@@ -503,23 +542,38 @@ def costs_main(a, days):
             node = nodes.get(what)
             rung_answers.setdefault(what, []).append(read_node(node) if node else None)
             continue
+        if shape == "single":
+            node = nodes.get(what)
+            if node:
+                got["single"][what] = read_node(node)
+            continue
         for k in slots & set(nodes):
-            got[shape].setdefault(k, read_node(nodes[k]))
-        print("  %-8s %-10s %d page(s), %d node(s)" % (shape, what, pages, len(nodes)))
+            x, have = read_node(nodes[k]), got[shape].get(k)
+            if have is None or (have[1] is None and x[1] is not None):
+                got[shape][k] = x    # several --window answers: the first that costs it
+        line = "  %-8s %-10s %d page(s), %d node(s)" % (shape, what, pages, len(nodes))
+        if shape == "window":    # each window's own answer, local edges: --window sweeps edges
+            mine = slots & set(nodes)
+            line += "  [%s .. %s local]  costed %d of %d node(s), %d of %d unbilled" % (
+                ws.replace(tzinfo=timezone.utc).astimezone(LONDON).strftime("%d %b %H:%M"),
+                we.replace(tzinfo=timezone.utc).astimezone(LONDON).strftime("%d %b %H:%M"),
+                sum(_costed(read_node(n)) for n in nodes.values()), len(nodes),
+                sum(_costed(read_node(nodes[k])) for k in mine), len(mine))
+        print(line)
     for s, rs in rung_answers.items():
         got["ladder"][s] = ladder_pick(rs) or next((r for r in rs if r), None)
-    print("\nhalf-hour (local)    kWh    " + "  ".join("%-22s" % sh for sh in COST_SHAPES))
-    tally = {sh: [0, 0] for sh in COST_SHAPES}
+    print("\nhalf-hour (local)    kWh    " + "  ".join("%-22s" % sh for sh in shapes))
+    tally = {sh: [0, 0] for sh in shapes}
     for k in sorted(slots):
         loc = datetime.fromisoformat(k).replace(tzinfo=timezone.utc).astimezone(LONDON)
         cells, kwh = [], None
-        for sh in COST_SHAPES:
+        for sh in shapes:
             x = got[sh].get(k)
             if x is None:
                 cells.append("%-22s" % ("" if sh == "ladder" else "absent")); continue
             kwh = x[0] if kwh is None else kwh
             tally[sh][1] += 1
-            if x[1] is None or (x[1] == 0 and x[0] > 0.0005 and not x[2]):
+            if not _costed(x):
                 cells.append("%-22s" % "no cost")
             else:
                 tally[sh][0] += 1
@@ -527,7 +581,7 @@ def costs_main(a, days):
         print("%s  %s  %s" % (loc.strftime("%Y-%m-%d %H:%M"),
                               ("%5.3f" % kwh) if kwh is not None else "  -  ", "  ".join(cells)))
     print("\nshape      costed / answered")
-    for sh in COST_SHAPES:
+    for sh in shapes:
         print("%-9s  %4d / %d" % (sh, tally[sh][0], tally[sh][1]))
     print("\n%d quer%s to Octopus." % (o.queries, "y" if o.queries == 1 else "ies"))
 

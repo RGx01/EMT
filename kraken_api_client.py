@@ -1234,7 +1234,8 @@ class KrakenAPIClient:
         pace_s: float = 0.4, max_attempts: int = 2,
     ) -> dict:
         """The billed cost and Octopus's off-peak / standard label for each half-hour in `starts`,
-        asked a LOCAL DAY at a time, then a month at a time for what a day leaves uncosted.
+        asked a LOCAL DAY at a time, then a month at a time for what a day leaves uncosted, then
+        noon to noon for what the month leaves.
         Returns {start: parsed_node} for the half-hours recovered WITH a cost; the rest are
         omitted, so the caller keeps its fallback. `starts` are naive-UTC iso strings. Read-only,
         paced.
@@ -1257,7 +1258,20 @@ class KrakenAPIClient:
         the narrow ladder each costed all 34, with the same labels — the evening charge off-peak
         too. EMT's import asks whole local days and never had the fault. A half-hour a day leaves
         without a cost (Octopus has stripped a half-hour's statistics — kWh, no cost — seen on the
-        Pi, 15 Oct 2026, for half-hours of a few Wh) is asked its local month."""
+        Pi, 15 Oct 2026, for half-hours of a few Wh) is asked its local month.
+
+        What the month leaves is asked noon to noon (18 Nov 2026): local noon the day before to
+        local noon for a half-hour before noon, else that noon to the next. On some days Octopus
+        costs nothing in a window that STARTS at the day's midnight, whatever its end, and
+        everything in one that starts later. .build/probe_window_shapes.py on 24 Apr 2026: every
+        window from 00:00 costed 0 (00:00-03:00, 6 half-hours of no charging, included), every one
+        from 03:00 or later, or from noon the day before, costed all it held; on 5 and 9 Apr too,
+        57 of 72 half-hours of four days that the day and the month had left. What is at that
+        midnight is not in the meter's kWh (20 and 22 Apr, charging across midnight, cost by the
+        day) — perhaps a dispatch in force; the padded day's 23:30 start (above) may be the same
+        fault. Noon is away from the night, and one night a window keeps a night Octopus cannot
+        price at all (1 Apr 2026, a charge across the 1 Apr rate change: no window costs it) from
+        taking its neighbours with it."""
         from datetime import datetime as _dt, timedelta as _td
         try:
             from zoneinfo import ZoneInfo
@@ -1327,15 +1341,26 @@ class KrakenAPIClient:
                 break
             if pace_s:
                 await asyncio.sleep(pace_s * attempt)
+        def _noon(s):
+            loc = _local(s)
+            d = loc.date() if loc.hour >= 12 else loc.date() - _td(days=1)
+            a = _dt(d.year, d.month, d.day, 12, tzinfo=tz)
+            n = d + _td(days=1)
+            return (_utc(a), _utc(_dt(n.year, n.month, n.day, 12, tzinfo=tz)))
+
         n_day = len(recovered)
         if pending:
             await _ask({_month(s) for s in pending})
         n_month = len(recovered) - n_day
+        if pending:
+            await _ask({_noon(s) for s in pending})
+        n_noon = len(recovered) - n_day - n_month
         if total:
             logger.info(
                 "recover_measurement_costs: mpan=%s recovered %d/%d slot(s) by the day %d, "
-                "the month %d (%d still missing)",
-                _mask(mpan), len(recovered), total, n_day, n_month, total - len(recovered))
+                "the month %d, noon to noon %d (%d still missing)",
+                _mask(mpan), len(recovered), total, n_day, n_month, n_noon,
+                total - len(recovered))
         return recovered
 
     async def get_device_breakdown(
