@@ -85,6 +85,16 @@ class TheWindows(unittest.TestCase):
         # 6 rungs, day/500 1, day/48 1, day/10 5, the 61-day window 6 pages of 500
         self.assertEqual(P.queries_for(P.plan(days, ladder)), 19)
 
+    def test_single_asks_each_half_hour_alone_and_only_when_named(self):
+        d = date(2026, 4, 1)
+        want = {d: ["2026-03-31T23:00:00", "2026-04-01T04:30:00"]}
+        self.assertNotIn("single", {w[0] for w in P.costs_plan([d], want, 3)})
+        got = P.costs_plan([d], want, 3, ("single",))
+        self.assertEqual([(w[0], P.z(w[2]), P.z(w[3])) for w in got],
+                         [("single", "2026-03-31T23:00:00Z", "2026-03-31T23:30:00Z"),
+                          ("single", "2026-04-01T04:30:00Z", "2026-04-01T05:00:00Z")])
+        self.assertEqual(P.queries_for(got), 2)
+
 
 class TheBreakdownMode(unittest.TestCase):
     """--breakdown: IOG-SMB days, Octopus against itself (22 Oct 2026)."""

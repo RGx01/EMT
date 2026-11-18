@@ -11404,7 +11404,8 @@ async def _fetch_bill_nodes(mpan: str, slots) -> dict:
     single billed cost for the rest. A breakdown half-hour the breakdown leaves unanswered is NOT
     asked the billed cost: a cost-only bill there would be cached with no split, and a cached slot
     is not asked again, so the split would freeze at EMT's (16 Oct 2026; #167 had that fallback for
-    every half-hour). The window is kraken_api_client's: the local day, then the month."""
+    every half-hour). The window is kraken_api_client's: the local day, the month, then noon to
+    noon."""
     global _bill_fetch_failures
     kinds = {s: bill_kind_at(s) for s in slots}
     on = [s for s in slots if kinds[s] == "breakdown"]
