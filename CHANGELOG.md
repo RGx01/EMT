@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b24] — 2026-11-18
 
 - **More of the half-hours left waiting for a bill get one.** On some days Octopus answers a request
   that starts at midnight with no costs, for the day and for the month alike, though it has them.
