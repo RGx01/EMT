@@ -83,6 +83,10 @@ The bill wins over the prediction; where they disagree the detail panel notes it
   API import's, which has no dispatch to say), an imported half-hour's own (asked after everything else).
 - Newest first, a page at a time (3 local days of costs, or 48 breakdown half-hours); it stops when
   under 25% of the API allowance is left. Runs from the 5-minute dispatch tick and after an import.
+- **Costs are asked** a local day at a time, then the local month for what the day leaves, then noon
+  to noon for what the month leaves (`recover_measurement_costs`). Octopus answers some windows
+  that start at a day's midnight with no costs at all, and the same half-hours in a window that
+  starts at noon. Breakdowns are asked in runs of under 12 half-hours (`recover_device_breakdown`).
 - **Unanswered**: hourly for 2 days, then daily; given up 30 days after the first unanswered ask
   (`abandoned`, red hatched).
 - **Hold-back**: a breakdown with no EV where EMT's split has the car is held and asked again on the

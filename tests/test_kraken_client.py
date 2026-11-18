@@ -506,18 +506,18 @@ class TestGraphQLQueries(unittest.TestCase):
         self.assertEqual(len(c._session.post_calls), 1)
 
     def test_recover_omits_genuinely_empty(self):
-        # The day and the month both come back empty (stripped/no cost) → the slot is omitted
-        # so the caller keeps its fallback; a price is never invented.
+        # The day, the month and noon to noon all come back empty (stripped/no cost) → the slot
+        # is omitted so the caller keeps its fallback; a price is never invented.
         empty = lambda: _gql_data(_meas_page([
             {"node": {"value": "3.0", "unit": "kwh",
                       "startAt": "2026-01-15T02:00:00+00:00",
                       "endAt": "2026-01-15T02:30:00+00:00",
                       "metaData": {"statistics": []}}}]))
-        c = self._client([empty(), empty()])
+        c = self._client([empty(), empty(), empty()])
         rec = run(c.recover_measurement_costs(
             "2600000000000", ["2026-01-15T02:00:00"], pace_s=0, max_attempts=2))
         self.assertEqual(rec, {})
-        self.assertEqual(len(c._session.post_calls), 2)   # the day, then the month
+        self.assertEqual(len(c._session.post_calls), 3)   # the day, the month, noon to noon
 
     def test_recover_one_query_a_day(self):
         # Two half-hours of 15 Jan and one of 10 Jan: two queries, newest day first.

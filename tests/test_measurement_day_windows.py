@@ -19,6 +19,12 @@ before to 3 h after, and Octopus answers such a window with no cost at all — t
 and the ladder all 34. The simulator does the same: a window over 4 h that does not start and end
 on a local midnight comes back without costs (TheWindow).
 
+18 Nov 2026: what the month leaves is asked noon to noon. On 24 Apr 2026 every window STARTING at
+the day's midnight came back without costs, whatever its end, and every one starting at 03:00 or
+later, or at noon the day before, costed all it held (the probe, 16 windows). The simulator's
+`poisoned` starts are that; the padded day's fault is now read the same way — a long window that
+starts in the night, off the midnight, answers with no costs — so a noon window is costed (TheNoon).
+
 Discriminating: every test here fails on the parent but the GUARDs.
 """
 import asyncio
@@ -45,8 +51,10 @@ def _local_midnight(t):
 
 
 def _costless_window(ws, we):
-    """Octopus, 16 Nov 2026: a long window off the local midnights answers with no costs."""
-    return (we - ws) > timedelta(hours=4) and not (_local_midnight(ws) and _local_midnight(we))
+    """Octopus, 16 Nov 2026: a long window starting in the night, off its midnight (the padded
+    day's 23:30), answers with no costs. A noon start is not in the night (18 Nov)."""
+    h = ws.replace(tzinfo=timezone.utc).astimezone(ZoneInfo("Europe/London")).hour
+    return (we - ws) > timedelta(hours=4) and (h >= 23 or h < 6) and not _local_midnight(ws)
 
 
 class _Octopus(KrakenAPIClient):
@@ -54,9 +62,10 @@ class _Octopus(KrakenAPIClient):
     start to 2 h past that half-hour; otherwise STANDARD_RATE at the day rate. `strip` half-hours
     come back with no cost in any window shorter than 20 days; `fail` windows raise."""
 
-    def __init__(self, slots, strip=(), fail=0):
+    def __init__(self, slots, strip=(), fail=0, poisoned=()):
         self.account_number = "A-TEST"
         self.slots, self.strip, self.fail, self.windows = list(slots), set(strip), fail, []
+        self.poisoned = {_dt(p) for p in poisoned}    # window starts Octopus answers without costs
 
     async def get_measurements(self, mpan, start, end, **kw):
         ws, we = _dt(start), _dt(end)
@@ -72,7 +81,7 @@ class _Octopus(KrakenAPIClient):
             in_run = _dt(RUN[0]) <= t < _dt(RUN[1])
             off = (not in_run) or (ws <= _dt(RUN[0]) and we >= t + timedelta(hours=2))
             stripped = ((s in self.strip and (we - ws) < timedelta(days=20))
-                        or _costless_window(ws, we))
+                        or _costless_window(ws, we) or ws in self.poisoned)
             out.append({"start": s, "kwh": 3.6, "off_peak": off, "standing_incl": None,
                         "standing_excl": None, "buckets": ["OFF_PEAK" if off else "STANDARD_RATE"],
                         "cost_incl": None if stripped else (0.2542 if off else 0.9223),
@@ -167,6 +176,51 @@ class TheMonth(unittest.TestCase):
             c.windows.append((start, end)); return []
         c.get_measurements = empty
         self.assertEqual(_run(c, [MID]), {})
+
+
+# 24 Apr 2026 (BST): the day starts 23 Apr 23:00 UTC, April's month 31 Mar 23:00 UTC
+APR24_DAY, APR_MONTH = "2026-04-23T23:00:00", "2026-03-31T23:00:00"
+
+
+class TheNoon(unittest.TestCase):
+
+    def test_a_morning_half_hour_is_asked_from_noon_the_day_before(self):
+        s = "2026-04-24T02:00:00"                       # 03:00 BST, the night's charge
+        c = _Octopus([s], poisoned={APR24_DAY, APR_MONTH})
+        rec = _run(c, [s])
+        self.assertIn(s, rec)
+        self.assertEqual(c.windows, [("2026-04-23T23:00:00Z", "2026-04-24T23:00:00Z"),
+                                     ("2026-03-31T23:00:00Z", "2026-04-30T23:00:00Z"),
+                                     ("2026-04-23T11:00:00Z", "2026-04-24T11:00:00Z")])
+
+    def test_an_afternoon_half_hour_is_asked_from_its_noon(self):
+        s = "2026-04-24T17:30:00"                       # 18:30 BST
+        c = _Octopus([s], poisoned={APR24_DAY, APR_MONTH})
+        rec = _run(c, [s])
+        self.assertIn(s, rec)
+        self.assertEqual(c.windows[-1], ("2026-04-24T11:00:00Z", "2026-04-25T11:00:00Z"))
+
+    def test_a_winter_noon_is_gmt(self):
+        s = "2025-03-06T19:30:00"
+        c = _Octopus([s], poisoned={"2025-03-06T00:00:00", "2025-03-01T00:00:00"})
+        rec = _run(c, [s])
+        self.assertIn(s, rec)
+        self.assertEqual(c.windows[-1], ("2025-03-06T12:00:00Z", "2025-03-07T12:00:00Z"))
+
+    def test_one_noon_window_for_a_nights_half_hours(self):
+        slots = ["2026-04-23T22:30:00", "2026-04-24T02:00:00", "2026-04-24T03:00:00"]
+        c = _Octopus(slots, poisoned={APR24_DAY, "2026-04-22T23:00:00", APR_MONTH})
+        rec = _run(c, slots)
+        self.assertEqual(sorted(rec), slots)
+        self.assertEqual(c.windows[-1], ("2026-04-23T11:00:00Z", "2026-04-24T11:00:00Z"))
+        self.assertEqual(sum(1 for w in c.windows if w[0].endswith("11:00:00Z")), 1)
+
+    def test_a_day_that_costs_asks_no_noon(self):
+        """GUARD: the day answered, so neither the month nor noon is asked."""
+        s = "2026-04-24T02:00:00"
+        c = _Octopus([s])
+        _run(c, [s])
+        self.assertEqual(len(c.windows), 1)
 
 
 class TheRetry(unittest.TestCase):
