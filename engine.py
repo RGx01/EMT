@@ -6,7 +6,6 @@ Energy Meter Tracker — ported from PyScript to HA add-on.
 PyScript → add-on mapping:
   log.info/error          →  logging module
   state.get(entity_id)    →  read_sensor(ha, entity_id)
-  state.set(...)          →  await ha.set_state(...)
   task.executor(fn, ...)  →  fn(...)  (direct call — we own the thread model)
   @state_trigger(eid)     →  ha.subscribe_state(eid, callback)
   @time_trigger startup   →  engine_startup() called from main()

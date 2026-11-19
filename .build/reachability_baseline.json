@@ -7,7 +7,6 @@
     "bankers_round",
     "bill_slots_from_blocks",
     "bind_object_for_tests",
-    "call_service",
     "clear_current_block",
     "count_backfilled_blocks",
     "count_block_segments",
@@ -16,7 +15,6 @@
     "count_meter_rows",
     "finalise_timed_out_provisionals",
     "get_all_blocks",
-    "get_all_entity_ids",
     "get_block_by_id",
     "get_blocks_for_utc_range",
     "get_blocks_missing_segments",
@@ -36,7 +34,6 @@
     "prune_dispatch_history",
     "prune_dispatch_slots",
     "set_block_exc",
-    "set_state",
     "supersede_historical_derivation",
     "tag_blocks_with_derivation",
     "utc_to_local_label"
