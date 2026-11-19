@@ -4503,12 +4503,6 @@ class BlockStore:
             (block_start, meter_id),
         ).fetchone()
 
-    def get_block_by_id(self, block_id: int):
-        """Return the block row for a given id, or None."""
-        return self._conn.execute(
-            "SELECT * FROM blocks WHERE id = ?", (block_id,)
-        ).fetchone()
-
     def get_oldest_block_start(self, meter_id: Optional[str] = None,
                                *, exclude_imported: bool = False) -> Optional[str]:
         """Return the earliest block_start in the store, or None if empty.
@@ -5404,61 +5398,6 @@ class BlockStore:
                         (r["meter_id"], end_utc, r["end_utc"],
                          r["created_at"], r["reason"]))
         return lifted
-
-    def get_timed_out_provisionals(
-        self, cutoff_utc: str,
-        sources: tuple = ("kraken_api", "kraken_mini"),
-    ) -> list:
-        """Provisional blocks older than cutoff whose DCC never arrived."""
-        placeholders = ",".join("?" for _ in sources)
-        return self._conn.execute(
-            f"""SELECT * FROM blocks
-                WHERE is_provisional = 1
-                  AND block_start < ?
-                  AND source IN ({placeholders})
-                ORDER BY block_start""",
-            (cutoff_utc, *sources),
-        ).fetchall()
-
-    def finalise_timed_out_provisionals(
-        self, cutoff_utc: str,
-        sources: tuple = ("kraken_api", "kraken_mini"),
-    ) -> int:
-        """Clear is_provisional on timed-out blocks. Returns rows affected.
-
-        In 'api+mini' the Mini imp_kwh becomes the permanent billing value via
-        COALESCE. In 'api' a block whose imp_kwh is still NULL finalises with
-        NULL and is excluded from billing aggregations permanently — safer than
-        writing a zero. The caller logs a WARNING per block (it has the list
-        from get_timed_out_provisionals); this method only flips the flag.
-        """
-        placeholders = ",".join("?" for _ in sources)
-        cur = self._conn.execute(
-            f"""UPDATE blocks SET is_provisional = 0
-                WHERE is_provisional = 1
-                  AND block_start < ?
-                  AND source IN ({placeholders})""",
-            (cutoff_utc, *sources),
-        )
-        self._conn.commit()
-        return cur.rowcount
-
-
-    def get_settled_to(self, main_meter_id: str) -> Optional[str]:
-        """Latest block_start that is fully DCC-settled for the main meter.
-
-        Powers the Overview "As of HH:MM" timestamp in 'api'/'api+mini' modes.
-        Returns None when nothing is settled yet.
-        """
-        row = self._conn.execute(
-            """SELECT MAX(block_start) AS settled_to FROM blocks
-               WHERE is_provisional = 0
-                 AND imp_cost IS NOT NULL
-                 AND meter_id = ?""",
-            (main_meter_id,),
-        ).fetchone()
-        return row["settled_to"] if row and row["settled_to"] else None
-
 
     # ── Current block (replaces current_block.json) ──────────────────────────
 

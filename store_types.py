@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """142 read-only methods of BlockStore, and nothing else.
+    """139 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -141,7 +141,6 @@ class ReadStore:
     get_bill_ev_kwh = _BS.get_bill_ev_kwh
     get_bill_rows = _BS.get_bill_rows
     get_block_bounds = _BS.get_block_bounds
-    get_block_by_id = _BS.get_block_by_id
     get_block_by_start = _BS.get_block_by_start
     get_block_dict_by_start = _BS.get_block_dict_by_start
     get_block_id = _BS.get_block_id
@@ -199,13 +198,11 @@ class ReadStore:
     get_retired_meters = _BS.get_retired_meters
     get_settings = _BS.get_settings
     get_settle_inputs = _BS.get_settle_inputs
-    get_settled_to = _BS.get_settled_to
     get_settlement_detail = _BS.get_settlement_detail
     get_settlement_facts = _BS.get_settlement_facts
     get_sub_meter_history = _BS.get_sub_meter_history
     get_tariff_agreements = _BS.get_tariff_agreements
     get_tariff_prices = _BS.get_tariff_prices
-    get_timed_out_provisionals = _BS.get_timed_out_provisionals
     get_vat_calendar = _BS.get_vat_calendar
     ha_read_devices = _BS.ha_read_devices
     ha_reads_for = _BS.ha_reads_for
@@ -235,7 +232,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 94 writers.
+    """The full store: every read method, plus the 93 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or
