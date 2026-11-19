@@ -5,6 +5,14 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **Running total's Lifetime line marks your tariffs' price changes.** With Tariffs ticked, a dot sits on
+  the line where each tariff started and where its unit rate or standing charge changed, import and
+  export, as on Year by year, and the tariff band above has a tick at each change. Hovering the band
+  shows the prices from the day under the pointer. Agile and Tracker, whose prices move every half-hour
+  or day, mark only where they started, on Year by year too.
+
 ## [2026.11.0b24] — 2026-11-18
 
 - **More of the half-hours left waiting for a bill get one.** On some days Octopus answers a request

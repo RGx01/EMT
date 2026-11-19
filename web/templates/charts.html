@@ -4277,14 +4277,27 @@ function barAccShowTariffs() {
   return !!(barTariffs && barTariffs.length) && !!cb && cb.checked;
 }
 // The days a tariff dot marks: each agreement's start, import and export (16 Nov 2026, the user), and each
-// price change inside it (barTariffChangeDays) — [{a, iso, change}]
+// price change inside it (barTariffChangeDays) — [{a, iso, change}]. A tariff whose prices move by the
+// half-hour or the day (Agile, Tracker) marks its start only (19 Nov 2026, the user): a dot a day says nothing.
 function barAccTariffDays() {
   var today = new Date().toISOString().slice(0, 10), out = [];
   barTariffs.filter(function(a) { return a.from; }).forEach(function(a) {
     out.push({a: a, iso: a.from, change: false});
+    if (barTariffPricesMove(a)) return;
     barTariffChangeDays(a, today).forEach(function(d) { out.push({a: a, iso: d, change: true}); });
   });
   return out;
+}
+// Whether an agreement's prices move by the half-hour or the day, so its price changes are not marked: a
+// unit rate stored as `dynamic` (Agile, Agile Outgoing — tariff_prices keeps no value for it), or price
+// changes on average under BAR_TARIFF_MOVING_DAYS apart (Tracker, a price a day). A fixed or variable
+// tariff changes a few times a year.
+var BAR_TARIFF_MOVING_DAYS = 7;
+function barTariffPricesMove(a) {
+  if ((a.prices || []).some(function(p) { return p.kind === 'unit' && p.band === 'dynamic'; })) return true;
+  var days = barTariffPriceStarts(a);
+  if (days.length < 3) return false;
+  return (barDayNo(days[days.length - 1]) - barDayNo(days[0])) / (days.length - 1) < BAR_TARIFF_MOVING_DAYS;
 }
 // What a line chart draws: {tariffs: [agreements] | null, eras: [{e, x, end, color}], dots: [{a, iso, x,
 // y, change, color}]} in the x axis' own values (ms on Lifetime, days of the year on Year by year). On
@@ -4294,8 +4307,19 @@ function barAccTariffDays() {
 function barAccOverlays(years, s) {
   var out = {tariffs: null, eras: [], dots: []};
   if (barAccShowTariffs() && barAccView === 'line') {
-    if (barAccMode === 'lifetime') out.tariffs = barTariffs.filter(function(a) { return a.from; });
-    else if (s) {
+    if (barAccMode === 'lifetime') {
+      out.tariffs = barTariffs.filter(function(a) { return a.from; });
+      // and the dots on the line, as Year by year's (19 Nov 2026, the user: mark where a tariff's unit rate
+      // or standing charge changed): at the day's running total, in its year's colour; none before the
+      // line's first point or after its last
+      var life = (s && s.life) || [];
+      if (life.length) barAccTariffDays().forEach(function(t) {
+        var r = {year: +t.iso.slice(0, 4), month: +t.iso.slice(5, 7), day: +t.iso.slice(8, 10)}, x = barAccMs(r), pt = null;
+        life.forEach(function(p) { if (p.x <= x) pt = p; });
+        if (!pt || life[life.length - 1].x < x) return;
+        out.dots.push({a: t.a, iso: t.iso, x: x, y: pt.y, change: t.change, color: barAccYearColor(pt.yr)});
+      });
+    } else if (s) {
       barAccTariffDays().forEach(function(t) {
         var r = {year: +t.iso.slice(0, 4), month: +t.iso.slice(5, 7), day: +t.iso.slice(8, 10)};
         var y = barAccYearOf(r), yi = years.indexOf(y), x = barAccDoy(r);
@@ -4332,7 +4356,7 @@ function barAccOverlayPlugin(ov) {
       c.font = '10px ' + (getComputedStyle(document.body).fontFamily || 'sans-serif');
       c.textBaseline = 'middle';
       // import's band above export's (16 Nov 2026, the user), each alternating its own shades
-      var hasExp = barAccExportLane(ov), n = {imp: 0, exp: 0};
+      var hasExp = barAccExportLane(ov), n = {imp: 0, exp: 0}, today = new Date().toISOString().slice(0, 10);
       var expY = ca.top - (ov.eras.length ? BAR_ERA_CHIP + 4 : 0) - BAR_TARIFF_LANE - 2;
       var impY = expY - (hasExp ? BAR_TARIFF_LANE + 2 : 0);
       (ov.tariffs || []).forEach(function(a) {
@@ -4346,6 +4370,15 @@ function barAccOverlayPlugin(ov) {
         while (label.length > 3 && c.measureText(label).width > room) label = label.slice(0, -2) + '…';
         if (room > 20 && c.measureText(label).width <= room) { c.fillStyle = th.tooltipTitle; c.fillText(label, x0 + 4, laneY + BAR_TARIFF_LANE / 2); }
         bands.push({a: a, x0: x0, x1: x1, y0: laneY, y1: laneY + BAR_TARIFF_LANE});
+        // a tick across the band at each price change inside it, as the bars' minor ticks (19 Nov 2026)
+        if (barTariffPricesMove(a)) return;
+        c.save(); c.globalAlpha = 0.55; c.strokeStyle = th.tooltipTitle; c.lineWidth = 1;
+        barTariffChangeDays(a, today).forEach(function(iso) {
+          var x = xs.getPixelForValue(Date.parse(iso + 'T00:00:00Z'));
+          if (x <= x0 + 1 || x >= x1 - 1) return;
+          c.beginPath(); c.moveTo(x, laneY); c.lineTo(x, laneY + BAR_TARIFF_LANE); c.stroke();
+        });
+        c.restore();
       });
       var cy = ca.top - BAR_ERA_CHIP / 2 - 2;
       ov.eras.forEach(function(m) {
@@ -4390,7 +4423,8 @@ function barAccOverlayPlugin(ov) {
         barTariffShow(dt.d.a, e.native, dt.d.iso); return false;
       }
       var b = (chart._emtAccBands || []).find(function(q) { return e.x >= q.x0 && e.x < q.x1 && e.y >= q.y0 && e.y <= q.y1; });
-      if (b) { barTariffShow(b.a, e.native, null); return false; }
+      // the prices in force on the day under the pointer: the band now marks where they change
+      if (b) { barTariffShow(b.a, e.native, new Date(chart.scales.x.getValueForPixel(e.x)).toISOString().slice(0, 10)); return false; }
       barTariffHide();
     }
   };

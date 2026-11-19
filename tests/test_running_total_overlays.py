@@ -54,8 +54,8 @@ class TheOverlays(unittest.TestCase):
               "var barEras = [{id: 'a1b2c3d4', label: 'Battery', kind: 'battery', start: '2024-06-12', end: '2025-01-01'}];\n"
               "var document = {getElementById: function (id) { return {checked: id === 'bar-tariff-cb' ? %s : %s}; }};\n") % (
             json.dumps(mode), "true" if tariffs_on else "false", "true" if eras_on else "false") + \
-            "var _barAccYc = {data: null, anchor: '', years: []};\n" + "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barEraLabel", "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
-                                        "barAccYearOf", "barAccYearColor", "barAccDoy", "barAccShowEras", "barAccShowTariffs", "barAccTariffDays",
+            "var _barAccYc = {data: null, anchor: '', years: []}, BAR_TARIFF_MOVING_DAYS = 7;\n" + "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "erasGroups", "barEraLabel", "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly", "barAccDateLabel", "barAccAnchor", "barAccStartMs",
+                                        "barAccYearOf", "barAccYearColor", "barAccDoy", "barAccShowEras", "barAccShowTariffs", "barDayNo", "barTariffPricesMove", "barAccTariffDays",
                                         "barAccOverlays")) + \
             "\nconsole.log(JSON.stringify(barAccOverlays(%s)));" % json.dumps(years)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
@@ -110,7 +110,8 @@ class TheView(unittest.TestCase):
         i = PAGE.index("function barAccOverlayPlugin(")
         body = PAGE[i:PAGE.index("\n}\n", i)]
         self.assertIn("barEraShow(m.e, e.native);", body)
-        self.assertIn("barTariffShow(b.a, e.native, null);", body)
+        # since 19 Nov 2026 with the day under the pointer: the band marks the price changes inside it
+        self.assertIn("barTariffShow(b.a, e.native, new Date(chart.scales.x.getValueForPixel(e.x))", body)
 
     def test_the_spiral_s_era_chips(self):
         self.assertIn("if (barAccShowEras()) {", _fn("barAccSpiral"))
