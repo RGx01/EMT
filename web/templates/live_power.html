@@ -631,6 +631,11 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
   align-items: center;
   gap: 5px;
 }
+.agile-pw-key { height: 2px !important; }
+.agile-pw-key-import { background: #b45309; }
+.agile-pw-key-export { background: #0f766e; }
+[data-theme="dark"] .agile-pw-key-import, :root:not([data-theme="light"]) .agile-pw-key-import { background: #fbbf24; }
+[data-theme="dark"] .agile-pw-key-export, :root:not([data-theme="light"]) .agile-pw-key-export { background: #5eead4; }
 .power-history-legend i {
   display: inline-block;
   width: 20px;
@@ -1068,6 +1073,9 @@ function setMiniSource(enabled){
       {% else %}
       <span><i style="background:linear-gradient(to right,hsl(205,62%,54%),hsl(275,62%,46%));"></i>Export</span>
       {% endif %}
+      {% if has_power_sensor %}
+      <span><i class="agile-pw-key agile-pw-key-{{ ch }}"></i>{{ 'Export' if ch == 'export' else 'Import' }} power (kW, right)</span>
+      {% endif %}
       <span id="agile-status-{{ ch }}" style="margin-left:auto;font-size:11px;color:var(--muted);"></span>
     </div>
     <div id="agile-compare-{{ ch }}" style="display:none;font-size:12px;color:var(--muted);margin-top:6px;"></div>
@@ -1469,6 +1477,31 @@ function _agileExportColor(p, lo, hi){
 function _agileMs(iso){ return new Date(iso + (iso.slice(-1) === 'Z' ? '' : 'Z')).getTime(); }
 function _agileHHMM(ms){ var d = new Date(ms); return ('0'+d.getHours()).slice(-2) + ':' + ('0'+d.getMinutes()).slice(-2); }
 function _agilePrices(ch){ return ((_agile || {})[ch] || {}).prices || []; }
+// The power under the prices (19 Nov 2026, the user: "show the power history (split by import power/export
+// power appropriately) on y2 axis"): the 48-hour history card's readings (`_phData`, net kW, import positive),
+// import's side on the import card and export's on the export card, averaged a bucket at a time, from t0 to
+// now. [[bucket start ms, kW]], a bucket with no reading left out. Pure.
+var AGILE_PW_BUCKET = 300000;            // 5 minutes: 288 points over the 24 h shown
+function _agilePowerSeries(rows, ch, t0, now, bucket){
+  var acc = {};
+  (rows || []).forEach(function(r){
+    if (!r || r.captured_at == null || r.net_kw == null) return;
+    var ms = _agileMs(String(r.captured_at)); if (!(ms >= t0 && ms <= now)) return;
+    var kw = ch === 'export' ? Math.max(0, -r.net_kw) : Math.max(0, r.net_kw);
+    var k = Math.floor(ms / bucket) * bucket, a = acc[k] || (acc[k] = [0, 0]);
+    a[0] += kw; a[1] += 1;
+  });
+  return Object.keys(acc).map(Number).sort(function(a, b){ return a - b; })
+    .map(function(k){ return [k, acc[k][0] / acc[k][1]]; });
+}
+// The y2 axis' top and step: 0.5, 1, 2, 5 or 10 kW, the smallest giving four lines or fewer. Pure.
+function _agilePowerScale(series){
+  var top = Math.max(0.5, Math.max.apply(null, series.map(function(p){ return p[1]; }).concat([0])));
+  var step = [0.5, 1, 2, 5, 10].filter(function(s){ return top / s <= 4; })[0] || 20;
+  return {max: Math.ceil(top / step) * step, step: step};
+}
+var AGILE_PAD_L = 42, AGILE_PAD_R = 40;
+var AGILE_PW_COLOR = {'import': ['#b45309', '#fbbf24'], 'export': ['#0f766e', '#5eead4']};   // [light, dark]
 function _agileDraw(ch){
   var cv = document.getElementById('agile-canvas-' + ch); if (!cv || !_agile) return;
   var dpr = window.devicePixelRatio || 1, rect = cv.getBoundingClientRect();
@@ -1479,7 +1512,8 @@ function _agileDraw(ch){
   var txt = dark ? '#6b7080' : '#555566', grid = dark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.08)';
   var list = _agilePrices(ch), color = ch === 'export' ? _agileExportColor : _agileColor;
   var now = _agileMs(_agile.now), t0 = now - 24 * 3600000, span = 48 * 3600000;
-  var PAD_L = 42, PAD_T = 12, PAD_B = 24, CW = W - PAD_L, CH = H - PAD_T - PAD_B;
+  var pw = _agilePowerSeries(typeof _phData !== 'undefined' ? _phData : [], ch, t0, now, AGILE_PW_BUCKET);
+  var PAD_L = AGILE_PAD_L, PAD_R = pw.length ? AGILE_PAD_R : 0, PAD_T = 12, PAD_B = 24, CW = W - PAD_L - PAD_R, CH = H - PAD_T - PAD_B;
   var all = list.map(function(x){ return x[1]; });
   if (!all.length) { ctx.fillStyle = txt; ctx.font = '12px sans-serif'; ctx.textAlign = 'center';
                      ctx.fillText('No prices yet — EMT fetches them at its next poll', W / 2, H / 2); return; }
@@ -1492,7 +1526,7 @@ function _agileDraw(ch){
   for (var v = Math.ceil(vmin / step) * step; v <= vmax; v += step) {
     ctx.strokeStyle = v === 0 ? (dark ? 'rgba(255,255,255,0.25)' : 'rgba(0,0,0,0.25)') : grid;
     ctx.lineWidth = v === 0 ? 1 : 0.5;
-    ctx.beginPath(); ctx.moveTo(PAD_L, y(v)); ctx.lineTo(W, y(v)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(PAD_L, y(v)); ctx.lineTo(PAD_L + CW, y(v)); ctx.stroke();
     ctx.fillStyle = txt; ctx.fillText(v + 'p', PAD_L - 4, y(v));
   }
   // a bar a half-hour
@@ -1505,6 +1539,21 @@ function _agileDraw(ch){
     ctx.fillRect(x(ms) + 0.5, top, bw, Math.max(1, h));
   });
   ctx.globalAlpha = 1;
+  // the power on y2, its 0 at the foot of the plot: labels on the right, the line over the bars
+  if (pw.length) {
+    var ps = _agilePowerScale(pw);
+    function y2(kw){ return PAD_T + (1 - kw / ps.max) * CH; }
+    ctx.textAlign = 'left'; ctx.textBaseline = 'middle'; ctx.fillStyle = txt;
+    for (var kv = 0; kv <= ps.max + 1e-9; kv += ps.step) ctx.fillText((+kv.toFixed(1)) + ' kW', PAD_L + CW + 4, y2(kv));
+    ctx.strokeStyle = AGILE_PW_COLOR[ch][dark ? 1 : 0]; ctx.lineWidth = 1.5; ctx.lineJoin = 'round';
+    ctx.beginPath();
+    pw.forEach(function(p, k){
+      var px = x(p[0] + AGILE_PW_BUCKET / 2), py = y2(p[1]);
+      // a gap of more than three buckets (no readings) breaks the line
+      if (k && p[0] - pw[k - 1][0] > 3 * AGILE_PW_BUCKET) ctx.moveTo(px, py); else if (k) ctx.lineTo(px, py); else ctx.moveTo(px, py);
+    });
+    ctx.stroke(); ctx.lineWidth = 1;
+  }
   // now
   ctx.strokeStyle = txt; ctx.setLineDash([3, 3]); ctx.beginPath();
   ctx.moveTo(x(now), PAD_T); ctx.lineTo(x(now), PAD_T + CH); ctx.stroke(); ctx.setLineDash([]);
@@ -1612,11 +1661,17 @@ _AGILE_CHS.forEach(function(ch){
   cv.addEventListener('mousemove', function(e){
     if (!_agile) return;
     var r = cv.getBoundingClientRect(), now = _agileMs(_agile.now), t0 = now - 24 * 3600000;
-    var ms = t0 + (e.clientX - r.left - 42) / (r.width - 42) * 48 * 3600000;
+    var pw = _agilePowerSeries(typeof _phData !== 'undefined' ? _phData : [], ch, t0, now, AGILE_PW_BUCKET);
+    var padR = pw.length ? AGILE_PAD_R : 0;
+    var ms = t0 + (e.clientX - r.left - AGILE_PAD_L) / (r.width - AGILE_PAD_L - padR) * 48 * 3600000;
     var p = _agileAt(_agilePrices(ch), ms);
     if (p == null) { tip.style.display = 'none'; return; }
     var s = Math.floor(ms / 1800000) * 1800000;
-    tip.innerHTML = _agileHHMM(s) + '–' + _agileHHMM(s + 1800000) + '<br>' + p.toFixed(2) + 'p';
+    // the half-hour's average power, where it has readings
+    var inHH = pw.filter(function(q){ return q[0] >= s && q[0] < s + 1800000; });
+    var kw = inHH.length ? inHH.reduce(function(t, q){ return t + q[1]; }, 0) / inHH.length : null;
+    tip.innerHTML = _agileHHMM(s) + '–' + _agileHHMM(s + 1800000) + '<br>' + p.toFixed(2) + 'p' +
+      (kw != null ? '<br>' + (ch === 'export' ? 'Exporting ' : 'Importing ') + kw.toFixed(2) + ' kW avg' : '');
     tip.style.display = 'block';
     tip.style.left = Math.min(e.clientX - r.left + 10, r.width - 120) + 'px'; tip.style.top = '8px';
   });
@@ -3218,6 +3273,9 @@ async function _phLoad() {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     var d = await r.json();
     _phData = d.rows || [];
+    if (typeof _agile !== 'undefined' && _agile) _AGILE_CHS.forEach(function(ch){
+      if (_agileShown(_agile, _agileHidden)[ch]) _agileDraw(ch);           // the power on the Agile cards' y2
+    });
     {% endif %}
     // Also load mix data
     if (_phHasCI) {
