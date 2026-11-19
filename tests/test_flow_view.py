@@ -1,6 +1,12 @@
 """
 Flow, Usage Stats' Sankey (Flow design, PR 2; 4 Nov 2026): grid → rate band → the house and each device,
-export out of the house, and in £ the standing charge, for the span on screen.
+the export through its own bands, and in £ the standing charge, for the span on screen.
+
+19 Nov 2026, the user: kWh and CO₂ show the bands cost shows (they had none from 5 Nov), and export's
+height on import's scale — the export left the house, which the plugin then drew as tall as the export;
+it leaves a node of its own. test_bands_in_every_metric_other_in_the_metric_shown,
+test_the_house_is_drawn_at_its_own_import_not_its_export and the tests rewritten for the export's node fail
+on the tree before them.
 
 `barFlowData` turns the buckets' summed rate brackets (`agg.br`, [kWh, £, g] per series and bracket,
 PR 1) into nodes and flows, every metric at once. What it must hold:
@@ -8,7 +14,7 @@ PR 1) into nodes and flows, every metric at once. What it must hold:
 - a band's inflow is what leaves it, so every node balances and the grid's total is the series' total
   (the Devices view's figures, checked in the local preview to the 0.001 kWh and 1p);
 - a bracket under FLOW_OTHER_SHARE (2%) of the span's import in the metric shown is folded into Other;
-- export leaves the house; the standing charge, in £ with the box ticked, is the grid's own flow;
+- export leaves its own node; the standing charge, in £ with the box ticked, is the grid's own flow;
 - the car of an account with no devices (`ev_dispatch`) is "EV".
 
 And the wiring: the plugin pinned to an exact version on jsdelivr, as the heatmap's; Flow in the view
@@ -70,7 +76,7 @@ class TheData(unittest.TestCase):
               "function barStandingVal(agg) { return agg.standing || 0; }\n" % (
                   json.dumps(metric), json.dumps(meters), "true" if standing else "false") +
               "".join(_fn(n) for n in ("barBrPence", "barBrLabel", "barBrSign", "barBrColor", "barFlowIndex",
-                                       "barFlowFmt", "barFlowSeriesLabel", "barFlowSeriesColor", "barFlowPlain", "barFlowData")) +
+                                       "barFlowFmt", "barFlowSeriesLabel", "barFlowSeriesColor", "barFlowData")) +
               "\nconsole.log(JSON.stringify(barFlowData(%s)));" % json.dumps(agg_list))
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
             fh.write(js)
@@ -106,14 +112,25 @@ class TheData(unittest.TestCase):
         self.assertEqual([d["nodes"][k]["column"] for k in ("grid", "b:3", "s:heat_pump")], [0, 1, 2])
         self.assertEqual(d["nodes"]["s:electricity_main"]["name"], "Direct (house)")
 
-    def test_export_leaves_the_house_by_its_rate_band(self):
-        # export bands design: the house's export through its own bands, in export's colours
+    def test_export_leaves_its_own_node_by_its_rate_band(self):
+        # export bands design: the export through its own bands, in export's colours; since 19 Nov 2026 out
+        # of a node of its own at the foot of the destinations' column, not out of the house
         d = self._run(self.AGG, "cost")
-        self.assertEqual(self._flows(d)[("s:electricity_main", "x:6")], [3.0, 0.45, 600])
+        self.assertEqual(self._flows(d)[("export", "x:6")], [3.0, 0.45, 600])
+        self.assertEqual((d["nodes"]["export"]["label"], d["nodes"]["export"]["column"]), ("Export", 2))
         self.assertEqual(d["nodes"]["x:6"]["column"], 3)
         self.assertEqual(d["nodes"]["x:6"]["label"], "Export 15–17.5p")
-        self.assertNotIn("export", d["nodes"])
         self.assertEqual(d["totals"]["exp"], [3.0, 0.45, 600])
+
+    def test_the_house_is_drawn_at_its_own_import_not_its_export(self):
+        # 19 Nov 2026, the user: export's height was not on import's scale. The plugin draws a node at the
+        # larger of its in and out, so with the export leaving the house, a house that imported 8 kWh and
+        # exported 30 stood 30 tall. Nothing leaves a destination now, in any metric
+        agg = [{"br": {"electricity_main": {"3": [8.0, 0.6, 1000]}, "export": {"6": [30.0, 4.5, 6000]}}}]
+        for metric in ("kwh", "cost", "co2"):
+            f = self._flows(self._run(agg, metric))
+            self.assertFalse([k for k in f if k[0].startswith("s:")], metric)
+            self.assertEqual(f[("export", "x:6")], [30.0, 4.5, 6000], metric)
 
     def test_the_standing_charge_in_pounds_with_the_box(self):
         self.assertNotIn(("grid", "standing"), self._flows(self._run(self.AGG, "cost")))
@@ -128,14 +145,17 @@ class TheData(unittest.TestCase):
         self.assertNotIn("b:10", d["nodes"])
         self.assertAlmostEqual(self._flows(d)[("b:other", "s:electricity_main")][0], 0.5)
 
-    def test_bands_and_other_are_pounds_only(self):
-        # the user, 5 Nov 2026: a price says nothing about kWh or grams — no bands there, so no Other
-        agg = [{"br": {"electricity_main": {"1": [97.0, 2.0, 0], "10": [1.0, 0.27, 0]}}}]
+    def test_bands_in_every_metric_other_in_the_metric_shown(self):
+        # 19 Nov 2026, the user: kWh and CO₂ show the breakdowns cost does (they had none from 5 Nov). A
+        # band's Other share is taken in the metric shown: 1 kWh of 98 is under 2%, its 27p of £2.27 is not
+        agg = [{"br": {"electricity_main": {"1": [97.0, 2.0, 9700], "10": [1.0, 0.27, 100]},
+                       "export": {"4": [5.0, 0.5, 900]}}}]
         for metric in ("kwh", "co2"):
             d = self._run(agg, metric)
-            self.assertEqual(d["other"], [])
-            self.assertFalse([k for k in d["nodes"] if k.startswith(("b:", "x:"))], metric)
-        self.assertIn("b:10", self._run(agg, "cost")["nodes"])
+            self.assertEqual(d["other"], [10], metric)
+            self.assertEqual([k for k in d["nodes"] if k.startswith(("b:", "x:"))], ["b:1", "b:other", "x:4"], metric)
+            self.assertEqual(self._flows(d)[("b:1", "s:electricity_main")], [97.0, 2.0, 9700])
+        self.assertEqual(self._run(agg, "cost")["other"], [])
 
     def test_export_bands_and_their_other(self):
         # Agile Outgoing: a month across three export bands, one of them under 2% of the credit
@@ -145,7 +165,7 @@ class TheData(unittest.TestCase):
         self.assertEqual(d["xother"], [9])
         self.assertEqual([k for k in d["nodes"] if k.startswith("x:")], ["x:4", "x:6", "x:other"])
         self.assertEqual(d["nodes"]["x:other"]["label"], "Other export")
-        self.assertAlmostEqual(self._flows(d)[("s:electricity_main", "x:other")][0], 1.0)
+        self.assertAlmostEqual(self._flows(d)[("export", "x:other")][0], 1.0)
         # the export's colours, not the import's: blue to purple, the best-paid the deepest
         self.assertTrue(d["nodes"]["x:4"]["color"].startswith("hsl(205,"))
         self.assertTrue(d["nodes"]["b:3"]["color"].startswith("hsl(130,"))
@@ -197,12 +217,12 @@ class TheData(unittest.TestCase):
         self.assertIn("return n.name || n.label || k;", _fn("barFlowBuildTable"))
         self.assertIn("return r ? nm(r.from) + ' → ' + nm(r.to) : '';", draw)
 
-    def test_paying_to_export_is_a_cost_out_of_the_house(self):
+    def test_paying_to_export_is_a_cost_out_of_the_export(self):
         agg = [{"br": {"electricity_main": {"3": [10.0, 0.8, 0]},
                        "export": {"-1": [2.0, -0.03, 0], "4": [5.0, 0.55, 0]}}}]
         d = self._run(agg, "cost")
         f = self._flows(d)
-        self.assertEqual(f[("s:electricity_main", "paid_export")], [2.0, 0.03, 0])
+        self.assertEqual(f[("export", "paid_export")], [2.0, 0.03, 0])
         self.assertEqual(d["nodes"]["paid_export"]["label"], "Paid to export")
         self.assertTrue(d["nodes"]["paid_export"]["color"].startswith("hsl(0,"))
         self.assertAlmostEqual(d["totals"]["paid"], -0.03)
@@ -214,24 +234,25 @@ class TheData(unittest.TestCase):
         self.assertNotIn("paid_export", d["nodes"])
         self.assertFalse(any(x.get("credit") for x in d["flows"]))
 
-    # ── kWh and CO₂ without the bands (5 Nov 2026, the user) ──
+    # ── kWh and CO₂ through the bands, as cost (19 Nov 2026, the user; without them from 5 Nov) ──
 
-    def test_in_kwh_the_grid_goes_straight_to_each_destination(self):
+    def test_in_kwh_the_grid_goes_through_the_bands_as_in_pounds(self):
         d = self._run(self.AGG, "kwh", standing=True)
         f = self._flows(d)
-        # every bracket summed: the heat pump's 4 + 3 + the second bucket's 1, its £ and grams with them
-        self.assertEqual(f[("grid", "s:heat_pump")], [8.0, 1.36, 1600])
-        self.assertEqual(f[("grid", "s:electricity_main")], [8.0, 1.0, 1600])
-        self.assertEqual(f[("s:electricity_main", "export")], [3.0, 0.45, 600])
-        self.assertEqual(set(f), {("grid", "s:heat_pump"), ("grid", "s:electricity_main"),
-                                  ("s:electricity_main", "export")})     # no band, no standing charge
-        self.assertEqual([d["nodes"][k]["column"] for k in ("grid", "s:heat_pump", "export")], [0, 1, 2])
+        self.assertEqual(f[("grid", "b:3")], [10.0, 0.8, 2000])
+        self.assertAlmostEqual(f[("b:10", "s:heat_pump")][0], 4.0)
+        self.assertEqual(f[("export", "x:6")], [3.0, 0.45, 600])
+        self.assertEqual(set(f), {("grid", "b:3"), ("grid", "b:10"), ("b:3", "s:electricity_main"),
+                                  ("b:10", "s:electricity_main"), ("b:3", "s:heat_pump"), ("b:10", "s:heat_pump"),
+                                  ("export", "x:6")})                     # no standing charge outside £
+        self.assertEqual([d["nodes"][k]["column"] for k in ("grid", "b:3", "s:heat_pump", "export", "x:6")],
+                         [0, 1, 2, 2, 3])
         self.assertEqual([round(x, 6) for x in d["totals"]["imp"]], [16.0, 2.36, 3200])
 
     def test_in_co2_the_export_is_drawn_as_what_it_displaced(self):
         # 5 Nov 2026, the user: "shouldn't it show export displacement?" — until then kept but not drawn
         d = self._run(self.AGG, "co2")
-        self.assertEqual(self._flows(d)[("s:electricity_main", "export")], [3.0, 0.45, 600])
+        self.assertEqual(self._flows(d)[("export", "x:6")], [3.0, 0.45, 600])
         self.assertFalse(any(x.get("hide") for x in d["flows"]))
         self.assertEqual((d["nodes"]["export"]["label"], d["nodes"]["export"]["color"]),
                          ("Displaced by export", "#16a34a"))
@@ -248,12 +269,13 @@ class TheData(unittest.TestCase):
             d = self._run(agg, metric)
             self.assertFalse(any(x.get("credit") for x in d["flows"]), metric)
             self.assertNotIn("plunge", d["nodes"])
-            self.assertEqual(self._flows(d)[("grid", "s:electricity_main")], [14.0, 0.76, 2100])
+            self.assertEqual(self._flows(d)[("b:-1", "s:electricity_main")], [4.0, -0.04, 600])
+            self.assertNotIn("paid_export", d["nodes"])
 
-    def test_export_with_no_house_import_still_has_its_house(self):
+    def test_export_with_no_house_import_draws_no_empty_house(self):
         d = self._run([{"br": {"heat_pump": {"3": [1.0, 0.08, 0]}, "export": {"6": [2.0, 0.3, 0]}}}])
-        self.assertIn("s:electricity_main", d["nodes"])
-        self.assertEqual(self._flows(d)[("s:electricity_main", "export")], [2.0, 0.3, 0])
+        self.assertNotIn("s:electricity_main", d["nodes"])
+        self.assertEqual(self._flows(d)[("export", "x:6")], [2.0, 0.3, 0])
 
     def test_the_car_without_a_device_is_ev(self):
         agg = [{"br": {"electricity_main": {"3": [1.0, 0.08, 0]}, "ev_dispatch": {"2": [5.0, 0.35, 0]}}}]
@@ -456,7 +478,7 @@ class TheWiring(unittest.TestCase):
 
     def test_export_says_where_emt_cannot_see(self):
         f = _fn("barFlowDraw")
-        self.assertIn("if (r.to.indexOf('x:') === 0 || r.to === 'export') return 'Export is energy EMT did not meter coming in: solar or a battery.';", f)
+        self.assertIn("if (r.to.indexOf('x:') === 0) return 'Export is energy EMT did not meter coming in: solar or a battery.';", f)
         self.assertIn("if (r.to === 'plunge') {", f)
 
 
@@ -475,6 +497,7 @@ class ThePlainDraw(unittest.TestCase):
         draw = _fn("barFlowDraw")
         self.assertNotIn("f.hide", draw)
         self.assertIn("Grid carbon your export displaced", draw)
+        self.assertIn("if (r.from === 'export' && i === 2)", draw)
 
 
 if __name__ == "__main__":

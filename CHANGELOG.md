@@ -7,6 +7,13 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Flow shows the price bands in kWh and CO₂ too.** Usage Stats → Flow showed your import by the
+  price it was charged, and your export by the price it earned, only in Cost; kWh and CO₂ now go
+  through the same bands, each sized in its own measure.
+- **Flow draws export on the same scale as import.** Export flowed out of the house, and the chart
+  drew the house as tall as whichever was larger, its import or the export, so a house that imported
+  little looked as big as the export. Export now has a box of its own below the devices, and every
+  box is as tall as its own figure.
 - **Your eras and chart colours can go to a file and come back.** Data Management → Backup & restore can
   download your home's eras and every chart colour and rate line as a small `.json` file, from the
   database or from any kept backup, and import one on any EMT, on this machine or another. An import
