@@ -89,16 +89,3 @@ def plan_chunks(window_from, window_to, *, chunk_days: int = CHUNK_DAYS) -> list
                        "days": round((cursor - lo).total_seconds() / 86400.0, 2)})
         cursor = lo
     return chunks
-
-
-def plan_import(requested_from, go_live, *, earliest_reachable=None,
-                chunk_days: int = CHUNK_DAYS) -> dict:
-    """Clamp + chunk in one step. Returns {ok, window, chunks, chunk_count, note}."""
-    w = clamp_window(requested_from, go_live, earliest_reachable=earliest_reachable)
-    if not w.get("ok"):
-        return {"ok": False, "window": w, "chunks": [], "chunk_count": 0,
-                "note": w.get("note")}
-    chunks = plan_chunks(w["from"], w["to"], chunk_days=chunk_days)
-    return {"ok": True, "window": {"from": w["from"], "to": w["to"],
-                                   "clamped_by": w["clamped_by"]},
-            "chunks": chunks, "chunk_count": len(chunks), "note": w.get("note")}
