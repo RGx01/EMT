@@ -19,6 +19,12 @@ internal name for everything before the first public release and never appears i
   export, as on Year by year, and the tariff band above has a tick at each change. Hovering the band
   shows the prices from the day under the pointer. Agile and Tracker, whose prices move every half-hour
   or day, mark only where they started, on Year by year too.
+- **Your eras and chart colours can go to a file and come back.** Data Management → Backup & restore can
+  download your home's eras and every chart colour and rate line as a small `.json` file, from the
+  database or from any kept backup, and import one on any EMT, on this machine or another. An import
+  shows what it will change first; its eras replace yours, and each colour goes to the meter of the
+  same kind (the house, export, an EV, a battery; the first of a kind to the first), so a theme can be
+  shared between homes whose devices have different names.
 
 ## [2026.11.0b24] — 2026-11-18
 
