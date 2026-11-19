@@ -4453,7 +4453,8 @@ class TestHistoricalImportFoundation(unittest.TestCase):
             subject="zappi_ev", sensor_ids=["sensor.a", "sensor.b"],
             sensor_kind="energy_total", params={"eps": 0.02},
             source=IMPORTED_SOURCE_CSV)
-        d = self.store.get_historical_derivation(did)
+        d = next(x for x in self.store.list_historical_derivations(current_only=False)
+                 if x["id"] == did)
         self.assertEqual(d["scope"], "device_attribution")
         self.assertEqual(d["sensor_ids"], ["sensor.a", "sensor.b"])   # JSON decoded
         self.assertEqual(d["params"], {"eps": 0.02})
@@ -4462,31 +4463,6 @@ class TestHistoricalImportFoundation(unittest.TestCase):
     def test_invalid_scope_raises(self):
         with self.assertRaises(ValueError):
             self.store.insert_historical_derivation("nonsense", "a", "b")
-
-    def test_supersede_hides_from_current(self):
-        old = self.store.insert_historical_derivation(
-            "rate", "2024-01-01", "2024-06-01", subject="import", derived_value=7.0)
-        new = self.store.insert_historical_derivation(
-            "rate", "2024-01-01", "2024-06-01", subject="import", derived_value=7.5)
-        self.store.supersede_historical_derivation(old, new)
-        current = self.store.list_historical_derivations(scope="rate", current_only=True)
-        self.assertEqual([d["id"] for d in current], [new])
-        allrows = self.store.list_historical_derivations(scope="rate", current_only=False)
-        self.assertEqual({d["id"] for d in allrows}, {old, new})   # audit trail kept
-
-    # ── block tagging ───────────────────────────────────────────────────────
-    def test_tag_blocks_over_span(self):
-        self._insert_block("2024-07-01T00:00:00", source=IMPORTED_SOURCE_CSV)
-        self._insert_block("2024-07-01T00:30:00", source=IMPORTED_SOURCE_CSV)
-        self._insert_block("2025-02-01T00:00:00", source=IMPORTED_SOURCE_CSV)   # outside span
-        did = self.store.insert_historical_derivation(
-            "rate", "2024-07-01T00:00:00", "2025-01-01T00:00:00", subject="import")
-        n = self.store.tag_blocks_with_derivation(
-            did, "electricity_main", "2024-07-01T00:00:00", "2025-01-01T00:00:00")
-        self.assertEqual(n, 2)
-        tagged = self.store._conn.execute(
-            "SELECT COUNT(*) FROM blocks WHERE derivation_id = ?", (did,)).fetchone()[0]
-        self.assertEqual(tagged, 2)
 
     def test_imported_blocks_skip_carbon_backfill(self):
         # A native NULL-carbon block IS a carbon-backfill candidate; a

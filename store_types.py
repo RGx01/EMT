@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """143 read-only methods of BlockStore, and nothing else.
+    """142 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -176,7 +176,6 @@ class ReadStore:
     get_generation_mix = _BS.get_generation_mix
     get_generation_mix_for_range = _BS.get_generation_mix_for_range
     get_generation_mix_since = _BS.get_generation_mix_since
-    get_historical_derivation = _BS.get_historical_derivation
     get_imp_kwh = _BS.get_imp_kwh
     get_kraken_state = _BS.get_kraken_state
     get_last_block = _BS.get_last_block
@@ -236,7 +235,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 96 writers.
+    """The full store: every read method, plus the 94 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or

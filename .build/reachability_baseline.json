@@ -13,7 +13,6 @@
     "get_cumulative_totals",
     "get_dispatch_slots_in_range",
     "get_generation_mix",
-    "get_historical_derivation",
     "get_measured_cost",
     "get_retired_meters",
     "get_settled_to",
@@ -21,8 +20,6 @@
     "list_historical_derivations",
     "prune_dispatch_history",
     "prune_dispatch_slots",
-    "supersede_historical_derivation",
-    "tag_blocks_with_derivation",
     "utc_to_local_label"
   ]
 }

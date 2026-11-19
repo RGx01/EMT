@@ -3394,12 +3394,6 @@ class BlockStore:
         self._conn.commit()
         return cur.lastrowid
 
-    def get_historical_derivation(self, derivation_id: int) -> Optional[dict]:
-        row = self._conn.execute(
-            "SELECT * FROM historical_derivation WHERE id = ?",
-            (derivation_id,)).fetchone()
-        return self._row_to_derivation(row) if row else None
-
     def list_historical_derivations(
         self, *, scope: str | None = None, subject: str | None = None,
         current_only: bool = True,
@@ -3418,27 +3412,6 @@ class BlockStore:
             f"SELECT * FROM historical_derivation{where} "
             "ORDER BY derived_at DESC, id DESC", params).fetchall()
         return [self._row_to_derivation(r) for r in rows]
-
-    def supersede_historical_derivation(self, old_id: int, new_id: int) -> None:
-        """Mark `old_id` replaced by `new_id` (rebuild). Keeps the old row for
-        audit; list_historical_derivations(current_only=True) then hides it."""
-        self._conn.execute(
-            "UPDATE historical_derivation SET superseded_by = ? WHERE id = ?",
-            (new_id, old_id))
-        self._conn.commit()
-
-    def tag_blocks_with_derivation(
-        self, derivation_id: int, meter_id: str, period_from: str, period_to: str,
-    ) -> int:
-        """Point a meter's blocks in [period_from, period_to) at a derivation.
-        Returns the number of blocks tagged. Used after writing reconstructed
-        blocks so each can answer 'which sensor/rate produced this'."""
-        cur = self._conn.execute(
-            """UPDATE blocks SET derivation_id = ?
-               WHERE meter_id = ? AND block_start >= ? AND block_start < ?""",
-            (derivation_id, meter_id, period_from, period_to))
-        self._conn.commit()
-        return cur.rowcount
 
     def _imported_config_period_id(self, block_start: str):
         """Config period id for a reconstructed block: the covering period, or —
