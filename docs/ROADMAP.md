@@ -57,9 +57,6 @@ missing and where it stands; the done history, with every decision's story, is i
 - **`WriteStore` and `store_access.writer()` have no production caller.** The engine writes through
   its own `BlockStore` and pages hand writes to it (`_engine_write`); the typed write path is unused.
   A candidate for the deletion protocol.
-- **A test that passes on a docstring.** `test_run_exclusive_is_still_the_unused_primitive` finds
-  `run_exclusive(lambda: None)` in a docstring (engine.py, near `drain_tick`); `run_exclusive` itself
-  is gone. Delete it, or make it assert something.
 
 ## Open questions
 

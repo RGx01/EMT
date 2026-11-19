@@ -52,22 +52,6 @@ def cap_day_key(ts_utc: str, tz_name: str) -> str:
     return anchor.date().isoformat()
 
 
-def merge_intervals(intervals: Iterable[tuple]) -> list:
-    """Merge overlapping/adjacent [start, end) intervals (naive-UTC ISO strings)
-    into a sorted, disjoint list of (start, end) tuples. Overlapping durations are
-    unioned, never summed — this is what keeps the cap honest when two dispatch
-    rows cover the same wall-clock time."""
-    ivs = sorted((s, e) for s, e in intervals if s and e and s < e)
-    out: list = []
-    for s, e in ivs:
-        if out and s <= out[-1][1]:
-            if e > out[-1][1]:
-                out[-1] = (out[-1][0], e)
-        else:
-            out.append((s, e))
-    return out
-
-
 def cap_usage(completed_slots: Iterable[tuple], tz_name: str,
               cap_hours: "float | None") -> dict:
     """Cap usage per noon→noon cap-day, measured in ACTUAL CHARGING TIME.

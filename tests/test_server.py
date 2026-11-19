@@ -3234,32 +3234,6 @@ class TestNewRoutesRegistered270(unittest.TestCase):
 # 2.7.0 — api_meter_delete_data
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestDeleteWindowToUtcTimes(unittest.TestCase):
-    """Regression: a whole-day delete (00:00–23:59) must NOT be converted to a UTC
-    time-of-day filter. Under BST that turned 23:59 local into 22:59 UTC →
-    TIME(block_start) <= '22:59', leaving the 23:00/23:30 UTC (local-midnight)
-    blocks — 2 per day — undeleted every time."""
-
-    def test_whole_day_passes_through_unchanged(self):
-        # Even on a BST date, the full-day window must stay 00:00–23:59 (no filter).
-        self.assertEqual(
-            server._delete_window_to_utc_times("00:00", "23:59",
-                                               "Europe/London", "2026-06-04", "2026-06-04"),
-            ("00:00", "23:59"))
-
-    def test_whole_day_passes_through_in_utc_too(self):
-        self.assertEqual(
-            server._delete_window_to_utc_times("00:00", "23:59",
-                                               "UTC", "2026-01-01", "2026-01-01"),
-            ("00:00", "23:59"))
-
-    def test_partial_window_is_converted(self):
-        # An explicit partial window IS converted to UTC (BST −1h), so it differs.
-        f, t = server._delete_window_to_utc_times(
-            "01:00", "03:00", "Europe/London", "2026-06-04", "2026-06-04")
-        self.assertEqual((f, t), ("00:00", "02:00"))
-
-
 class TestApiMeterDeleteData(unittest.TestCase):
     """Tests for the atomic cascade delete endpoint."""
 

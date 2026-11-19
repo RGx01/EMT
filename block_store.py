@@ -2151,15 +2151,6 @@ class BlockStore:
         ).fetchone()
         return dict(row) if row else None
 
-    def get_dispatch_slots_in_range(self, start_iso: str, end_iso: str) -> list:
-        """All dispatch_slots with slot_start in [start_iso, end_iso). Ordered."""
-        return [dict(r) for r in self._conn.execute(
-            "SELECT slot_start, off_peak, provider, source, captured_at, "
-            "state, energy_planned, energy_completed, raw_start, raw_end "
-            "FROM dispatch_slots WHERE slot_start >= ? AND slot_start < ? "
-            "ORDER BY slot_start", (start_iso, end_iso)
-        ).fetchall()]
-
     # ── IOG 6-hour cap boundary (shared by settlement pricing + the day chart) ──
     _BUMP_SOURCES = ("bump-charge", "boost")
 
@@ -2199,19 +2190,6 @@ class BlockStore:
                 for r in rows if r["slot_start"] not in boost
                 and not (exclude is not None and exclude(r["slot_start"]))]
         return iog_cap.cap_day_boundaries(feed, tz_name, iog_cap.CAP_HOURS).get(key)
-
-    def prune_dispatch_slots(self, days: int = 90) -> int:
-        """Delete dispatch_slots older than `days` days. Generous retention (90d)
-        — these are small and the overlay may reprice historical blocks during a
-        billing-period review. Returns rows deleted.
-        """
-        cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
-                  - timedelta(days=days)).isoformat()
-        with self._conn:
-            cur = self._conn.execute(
-                "DELETE FROM dispatch_slots WHERE slot_start < ?", (cutoff,)
-            )
-        return cur.rowcount
 
     def emt_recording_continuously(self, slot_start: str, hours: float = 4.0,
                                    block_minutes: int = 30) -> bool:
@@ -2458,15 +2436,6 @@ class BlockStore:
                 "WHERE slot_start = ? ORDER BY kind", (slot_start,)).fetchall()
         return [dict(r) for r in rows]
 
-    def prune_dispatch_history(self, days: int = 90) -> int:
-        """Delete dispatch_history older than `days`. Returns rows deleted."""
-        cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
-                  - timedelta(days=days)).isoformat()
-        with self._conn:
-            cur = self._conn.execute(
-                "DELETE FROM dispatch_history WHERE slot_start < ?", (cutoff,))
-        return cur.rowcount
-
     # ── Generation mix ────────────────────────────────────────────────────────
 
     def upsert_mix_history(self, captured_at: str, mix: list[dict]) -> None:
@@ -2565,14 +2534,6 @@ class BlockStore:
                 "UPDATE meters SET retired_at = NULL, retired_reason = NULL WHERE meter_id = ?",
                 (meter_id,)
             )
-
-    def get_retired_meters(self) -> list:
-        """Return all meters with a retirement date set."""
-        rows = self._conn.execute(
-            """SELECT meter_id, device_label, meter_type, retired_at, retired_reason
-               FROM meters WHERE retired_at IS NOT NULL ORDER BY retired_at DESC"""
-        ).fetchall()
-        return [dict(r) for r in rows]
 
     def is_meter_retired(self, meter_id: str, as_of: str | None = None) -> bool:
         """Return True if the meter is retired as of the given date (default: today)."""
@@ -3374,8 +3335,8 @@ class BlockStore:
     ) -> int:
         """Record one reconstruction (a device-attribution span, or a rate for a
         tariff-period×tier) and return its id. `sensor_ids`/`params` may be lists
-        or dicts (stored as JSON). Pure insert — linking blocks is a separate
-        step (tag_blocks_with_derivation)."""
+        or dicts (stored as JSON). Pure insert: a block points at it through the
+        imported-block upsert's `derivation_id`."""
         if scope not in ("device_attribution", "rate"):
             raise ValueError(f"invalid derivation scope: {scope!r}")
         cur = self._conn.execute(
@@ -3393,12 +3354,6 @@ class BlockStore:
         )
         self._conn.commit()
         return cur.lastrowid
-
-    def get_historical_derivation(self, derivation_id: int) -> Optional[dict]:
-        row = self._conn.execute(
-            "SELECT * FROM historical_derivation WHERE id = ?",
-            (derivation_id,)).fetchone()
-        return self._row_to_derivation(row) if row else None
 
     def list_historical_derivations(
         self, *, scope: str | None = None, subject: str | None = None,
@@ -3418,27 +3373,6 @@ class BlockStore:
             f"SELECT * FROM historical_derivation{where} "
             "ORDER BY derived_at DESC, id DESC", params).fetchall()
         return [self._row_to_derivation(r) for r in rows]
-
-    def supersede_historical_derivation(self, old_id: int, new_id: int) -> None:
-        """Mark `old_id` replaced by `new_id` (rebuild). Keeps the old row for
-        audit; list_historical_derivations(current_only=True) then hides it."""
-        self._conn.execute(
-            "UPDATE historical_derivation SET superseded_by = ? WHERE id = ?",
-            (new_id, old_id))
-        self._conn.commit()
-
-    def tag_blocks_with_derivation(
-        self, derivation_id: int, meter_id: str, period_from: str, period_to: str,
-    ) -> int:
-        """Point a meter's blocks in [period_from, period_to) at a derivation.
-        Returns the number of blocks tagged. Used after writing reconstructed
-        blocks so each can answer 'which sensor/rate produced this'."""
-        cur = self._conn.execute(
-            """UPDATE blocks SET derivation_id = ?
-               WHERE meter_id = ? AND block_start >= ? AND block_start < ?""",
-            (derivation_id, meter_id, period_from, period_to))
-        self._conn.commit()
-        return cur.rowcount
 
     def _imported_config_period_id(self, block_start: str):
         """Config period id for a reconstructed block: the covering period, or —
@@ -3769,64 +3703,13 @@ class BlockStore:
                     "WHERE block_start = ? AND meter_id = ?", (ig, cg, bs, mid)).rowcount > 0
         return n
 
-    def get_import_blocks_missing_exc(self, limit: int = 2000,
-                                      after_start: str | None = None) -> list:
-        """4.2 exc historical backfill: page IMPORT blocks that carry energy but no
-        ex-VAT cost yet (imp_cost_exc IS NULL, imp_kwh > 0). Covers both historically
-        IMPORTED blocks (source LIKE 'imported%') AND SETTLED live blocks
-        (imp_kwh_api IS NOT NULL) — the latter were captured live before ex-VAT
-        existed and have already settled via DCC, so settlement capture will never
-        re-stamp them; without this they stay on the inc÷VAT approximation forever.
-        Truly-unsettled live blocks are excluded — they get real exc at settlement.
-        Ordered by block_start; pass the last start back as `after_start` to continue.
-        Returns [{start, meter_id, kwh, rate}]."""
-        sql = ("SELECT block_start, meter_id, imp_kwh, imp_rate FROM blocks "
-               "WHERE imp_cost_exc IS NULL AND imp_kwh IS NOT NULL AND imp_kwh > 0 "
-               "AND (source LIKE 'imported%' OR imp_kwh_api IS NOT NULL)")
-        params: list = []
-        if after_start is not None:
-            sql += " AND block_start > ?"
-            params.append(after_start)
-        sql += " ORDER BY block_start LIMIT ?"
-        params.append(int(limit))
-        rows = self._conn.execute(sql, params).fetchall()
-        return [{"start": r["block_start"], "meter_id": r["meter_id"],
-                 "kwh": r["imp_kwh"], "rate": r["imp_rate"]} for r in rows]
-
-    def count_import_blocks_missing_exc(self) -> int:
-        """Count of import blocks still lacking ex-VAT cost — the backfill's
-        remaining-work signal (0 ⇒ mark the pass done). Same coverage as
-        get_import_blocks_missing_exc: imported OR settled live blocks."""
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM blocks WHERE imp_cost_exc IS NULL "
-            "AND imp_kwh IS NOT NULL AND imp_kwh > 0 "
-            "AND (source LIKE 'imported%' OR imp_kwh_api IS NOT NULL)"
-        ).fetchone()
-        return int(row["n"]) if row else 0
-
-    def set_block_exc(self, block_start: str, meter_id: str, cost_exc) -> bool:
-        """Write ex-VAT import figures IN PLACE for one block+meter — a targeted
-        UPDATE of only the exc columns (mirrors set_block_carbon; no row round-trip,
-        so source / imp_kwh_api / derivation_id are preserved). Only fills a NULL
-        imp_cost_exc (idempotent — never overwrites captured exc) and NEVER touches
-        the inc columns, so billing figures are unchanged. Returns True if a row
-        changed."""
-        with self._conn:
-            cur = self._conn.execute(
-                "UPDATE blocks SET imp_cost_exc = ? "
-                "WHERE block_start = ? AND meter_id = ? AND imp_cost_exc IS NULL "
-                "AND (source LIKE 'imported%' OR imp_kwh_api IS NOT NULL)",
-                (cost_exc, block_start, meter_id))
-        return cur.rowcount > 0
-
     def set_blocks_exc(self, updates) -> int:
-        """Batch ex-VAT writer: apply many `set_block_exc` UPDATEs inside ONE
+        """Batch ex-VAT writer: fill each block's NULL ex-VAT cost inside ONE
         transaction (a single commit/fsync for the whole chunk, not one per block —
-        the per-block commit made the historical backfill a minutes-long fsync storm
+        a per-block commit made v4's historical backfill a minutes-long fsync storm
         that blocked the event loop). `updates` = iterable of
-        (block_start, meter_id, cost_exc). Same NULL-only
-        guard and coverage (imported OR settled live) as set_block_exc. Returns the
-        number of rows changed."""
+        (block_start, meter_id, cost_exc). Writes only where the ex-VAT cost is NULL,
+        on an imported or a settled live block. Returns the number of rows changed."""
         changed = 0
         with self._tx():
             for bs, mid, ce in updates:
@@ -3877,44 +3760,6 @@ class BlockStore:
             (block_start, meter_id, channel)).fetchall()
         return [{"kwh": r["kwh"], "inc_rate": r["inc_rate"], "exc_rate": r["exc_rate"],
                  "band": r["band"], "attribution": r["attribution"]} for r in rows]
-
-    def count_block_segments(self) -> int:
-        """Total stored segment rows — the segment backfill's remaining-work signal."""
-        return int(self._conn.execute(
-            "SELECT COUNT(*) AS n FROM block_segments").fetchone()["n"])
-
-    def get_blocks_missing_segments(self, limit: int = 2000,
-                                    after_start: str | None = None) -> list:
-        """Page MAIN-meter import blocks that carry energy but have no priced segments yet
-        (BL-27 backfill). Sub-meters are excluded — segments live on the main import; a
-        device's share is attributed from them at read time. Ordered by block_start; pass
-        the last start back as `after_start` to continue."""
-        sql = ("SELECT b.block_start, b.meter_id, b.imp_kwh, b.imp_cost, b.imp_rate, "
-               "b.source, b.imp_kwh_api FROM blocks b "
-               "WHERE b.imp_kwh IS NOT NULL AND b.imp_kwh > 0 "
-               "AND b.meter_id NOT IN (SELECT meter_id FROM meters WHERE is_sub_meter = 1) "
-               "AND NOT EXISTS (SELECT 1 FROM block_segments s "
-               "                WHERE s.block_start = b.block_start AND s.meter_id = b.meter_id "
-               "                AND s.channel = 'import')")
-        params: list = []
-        if after_start is not None:
-            sql += " AND b.block_start > ?"
-            params.append(after_start)
-        sql += " ORDER BY b.block_start LIMIT ?"
-        params.append(int(limit))
-        rows = self._conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
-
-    def count_blocks_missing_segments(self) -> int:
-        """Count of MAIN-meter blocks still lacking priced segments — remaining-work signal."""
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM blocks b "
-            "WHERE b.imp_kwh IS NOT NULL AND b.imp_kwh > 0 "
-            "AND b.meter_id NOT IN (SELECT meter_id FROM meters WHERE is_sub_meter = 1) "
-            "AND NOT EXISTS (SELECT 1 FROM block_segments s "
-            "                WHERE s.block_start = b.block_start AND s.meter_id = b.meter_id "
-            "                AND s.channel = 'import')").fetchone()
-        return int(row["n"]) if row else 0
 
     def get_vat_calendar(self) -> list:
         """Learned VAT-rate boundaries [(effective_from, rate), …] from store_meta.
@@ -4617,12 +4462,6 @@ class BlockStore:
         return self._conn.execute(
             "SELECT * FROM blocks WHERE block_start = ? AND meter_id = ?",
             (block_start, meter_id),
-        ).fetchone()
-
-    def get_block_by_id(self, block_id: int):
-        """Return the block row for a given id, or None."""
-        return self._conn.execute(
-            "SELECT * FROM blocks WHERE id = ?", (block_id,)
         ).fetchone()
 
     def get_oldest_block_start(self, meter_id: Optional[str] = None,
@@ -5521,61 +5360,6 @@ class BlockStore:
                          r["created_at"], r["reason"]))
         return lifted
 
-    def get_timed_out_provisionals(
-        self, cutoff_utc: str,
-        sources: tuple = ("kraken_api", "kraken_mini"),
-    ) -> list:
-        """Provisional blocks older than cutoff whose DCC never arrived."""
-        placeholders = ",".join("?" for _ in sources)
-        return self._conn.execute(
-            f"""SELECT * FROM blocks
-                WHERE is_provisional = 1
-                  AND block_start < ?
-                  AND source IN ({placeholders})
-                ORDER BY block_start""",
-            (cutoff_utc, *sources),
-        ).fetchall()
-
-    def finalise_timed_out_provisionals(
-        self, cutoff_utc: str,
-        sources: tuple = ("kraken_api", "kraken_mini"),
-    ) -> int:
-        """Clear is_provisional on timed-out blocks. Returns rows affected.
-
-        In 'api+mini' the Mini imp_kwh becomes the permanent billing value via
-        COALESCE. In 'api' a block whose imp_kwh is still NULL finalises with
-        NULL and is excluded from billing aggregations permanently — safer than
-        writing a zero. The caller logs a WARNING per block (it has the list
-        from get_timed_out_provisionals); this method only flips the flag.
-        """
-        placeholders = ",".join("?" for _ in sources)
-        cur = self._conn.execute(
-            f"""UPDATE blocks SET is_provisional = 0
-                WHERE is_provisional = 1
-                  AND block_start < ?
-                  AND source IN ({placeholders})""",
-            (cutoff_utc, *sources),
-        )
-        self._conn.commit()
-        return cur.rowcount
-
-
-    def get_settled_to(self, main_meter_id: str) -> Optional[str]:
-        """Latest block_start that is fully DCC-settled for the main meter.
-
-        Powers the Overview "As of HH:MM" timestamp in 'api'/'api+mini' modes.
-        Returns None when nothing is settled yet.
-        """
-        row = self._conn.execute(
-            """SELECT MAX(block_start) AS settled_to FROM blocks
-               WHERE is_provisional = 0
-                 AND imp_cost IS NOT NULL
-                 AND meter_id = ?""",
-            (main_meter_id,),
-        ).fetchone()
-        return row["settled_to"] if row and row["settled_to"] else None
-
-
     # ── Current block (replaces current_block.json) ──────────────────────────
 
     def save_current_block(self, block: dict) -> None:
@@ -5773,49 +5557,6 @@ class BlockStore:
             }
 
         return block
-
-    def clear_current_block(self) -> None:
-        """Clear the in-progress block state (e.g. after a reset)."""
-        with self._conn:
-            self._conn.execute("DELETE FROM current_block")
-            self._conn.execute("DELETE FROM current_reads")
-
-    def get_cumulative_totals(self) -> dict:
-        """
-        Return lifetime cumulative totals for HA sensor publishing.
-
-        import_kwh is the MAIN METER's import: the grid boundary (step 5, 8 Oct 2026). It was
-        the stored remainder plus every device's grid share — the main, wherever the remainder
-        was right, and short of it wherever a device's rows had gone and its remainder stayed
-        (95.8 kWh on one real database, 21.1 on another; identical on six). Sub-meters are an
-        attribution of the main's import, never an addition to it.
-
-        export_kwh/imp_cost/exp_cost: main meter only (sub-meters don't
-        have independent costs or export).
-        """
-        active_period_sq = (
-            "SELECT id FROM config_periods "
-            "WHERE effective_to IS NULL ORDER BY effective_from DESC LIMIT 1"
-        )
-        cur = self._conn.execute(
-            f"""SELECT
-                 COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.imp_kwh ELSE 0 END), 0.0) as import_kwh,
-                 COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.exp_kwh  ELSE 0 END), 0.0) as export_kwh,
-                 COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.imp_cost ELSE 0 END), 0.0) as import_cost,
-                 COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.exp_cost ELSE 0 END), 0.0) as export_cost
-               FROM blocks b
-               JOIN meters m
-                 ON m.meter_id = b.meter_id
-                AND m.config_period_id = ({active_period_sq})"""
-        )
-        row = cur.fetchone()
-        return {
-            "import_kwh":  round(float(row["import_kwh"]),  6),
-            "export_kwh":  round(float(row["export_kwh"]),  6),
-            "import_cost": round(float(row["import_cost"]), 6),
-            "export_cost": round(float(row["export_cost"]), 6),
-        }
-
 
     def _local_date_of(self, block_start: str, cache: dict) -> str:
         """The local date of a naive-UTC block start, in the timezone of the config period then in

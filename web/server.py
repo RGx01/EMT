@@ -8725,22 +8725,6 @@ def api_db_vacuum():
 
 # ── Block deletion ────────────────────────────────────────────────────────────────────────────────
 
-def _delete_window_to_utc_times(from_time, to_time, tz_name, from_date, to_date):
-    """Resolve the delete's time-of-day window to the UTC HH:MM the store filters on.
-
-    A WHOLE-DAY window (00:00–23:59) must NOT become a UTC time-of-day filter: the
-    local-date→UTC bounds (local_date_range_to_utc_bounds) already cover complete
-    local days. Converting the day boundaries to UTC under BST turns 23:59 local
-    into 22:59 UTC → `TIME(block_start) <= '22:59'`, which excludes the 23:00–23:59
-    UTC band that IS local midnight — so 2 blocks/day (00:00 & 00:30 local) survive
-    every delete. Only an EXPLICIT partial window is converted for the filter.
-    """
-    if from_time == "00:00" and to_time == "23:59":
-        return "00:00", "23:59"            # whole day → rely on the date bounds only
-    return (_corrections_time_to_utc(from_time, tz_name, from_date),
-            _corrections_time_to_utc(to_time, tz_name, to_date))
-
-
 @app.route("/api/blocks/delete/preview", methods=["POST"])
 def api_blocks_delete_preview():
     """

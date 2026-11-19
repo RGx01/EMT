@@ -20,9 +20,6 @@ logger = logging.getLogger("energy_charts")
 from billing import (                                     # noqa: F401
     _utc_to_local,
     _parse_block_start,
-    bankers_round,
-    bill_slots_from_blocks,
-    octopus_bill_total,
     get_billing_periods_from_config_periods,
     calculate_billing_summary_for_period,
     summarise_bill_rows,
@@ -409,16 +406,6 @@ def _bill_method_breakdown(blocks, period_vat=None, standing_inc_by_day=None, va
         "inc_total":         round(inc_raw, 2),
         "coverage":          round(with_exc / tot_kwh, 3) if tot_kwh else 0.0,
     }
-
-
-def _has_sub_meters(cfg):
-    """True if any configured meter is a sub-meter (EV, battery, heat-pump, …). The
-    derived-EV billing breakdown only applies to accounts with NONE, so a real EV meter
-    always wins."""
-    for md in ((cfg or {}).get("meters") or {}).values():
-        if (md.get("meta") or {}).get("sub_meter"):
-            return True
-    return False
 
 
 def _ev_meter_id(cfg):

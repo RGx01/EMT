@@ -19,7 +19,7 @@ __all__ = ["ReadStore", "WriteStore"]
 
 
 class ReadStore:
-    """148 read-only methods of BlockStore, and nothing else.
+    """136 read-only methods of BlockStore, and nothing else.
 
     No `__getattr__`: a catch-all would restore every attribute this type exists
     to remove. No fallback to a writable store either — see the generator's
@@ -117,11 +117,8 @@ class ReadStore:
     config_from_db = _BS.config_from_db
     count_awaiting_bill = _BS.count_awaiting_bill
     count_backfilled_blocks = _BS.count_backfilled_blocks
-    count_block_segments = _BS.count_block_segments
     count_blocks = _BS.count_blocks
     count_blocks_for_date_range = _BS.count_blocks_for_date_range
-    count_blocks_missing_segments = _BS.count_blocks_missing_segments
-    count_import_blocks_missing_exc = _BS.count_import_blocks_missing_exc
     count_imported_export = _BS.count_imported_export
     count_imported_history = _BS.count_imported_history
     count_meter_rows = _BS.count_meter_rows
@@ -144,7 +141,6 @@ class ReadStore:
     get_bill_ev_kwh = _BS.get_bill_ev_kwh
     get_bill_rows = _BS.get_bill_rows
     get_block_bounds = _BS.get_block_bounds
-    get_block_by_id = _BS.get_block_by_id
     get_block_by_start = _BS.get_block_by_start
     get_block_dict_by_start = _BS.get_block_dict_by_start
     get_block_id = _BS.get_block_id
@@ -157,13 +153,11 @@ class ReadStore:
     get_blocks_for_range = _BS.get_blocks_for_range
     get_blocks_for_utc_range = _BS.get_blocks_for_utc_range
     get_blocks_lightweight = _BS.get_blocks_lightweight
-    get_blocks_missing_segments = _BS.get_blocks_missing_segments
     get_blocks_needing_pass2_rerun = _BS.get_blocks_needing_pass2_rerun
     get_blocks_off_dispatch_split = _BS.get_blocks_off_dispatch_split
     get_config_period = _BS.get_config_period
     get_config_period_for_date = _BS.get_config_period_for_date
     get_config_periods = _BS.get_config_periods
-    get_cumulative_totals = _BS.get_cumulative_totals
     get_current_config_period_id = _BS.get_current_config_period_id
     get_data_epoch = _BS.get_data_epoch
     get_day_live_rollups = _BS.get_day_live_rollups
@@ -173,16 +167,13 @@ class ReadStore:
     get_dispatch_history = _BS.get_dispatch_history
     get_dispatch_history_for_slot = _BS.get_dispatch_history_for_slot
     get_dispatch_slot = _BS.get_dispatch_slot
-    get_dispatch_slots_in_range = _BS.get_dispatch_slots_in_range
     get_energy_blocks = _BS.get_energy_blocks
     get_energy_segments = _BS.get_energy_segments
     get_ev_split_kwh = _BS.get_ev_split_kwh
     get_generation_mix = _BS.get_generation_mix
     get_generation_mix_for_range = _BS.get_generation_mix_for_range
     get_generation_mix_since = _BS.get_generation_mix_since
-    get_historical_derivation = _BS.get_historical_derivation
     get_imp_kwh = _BS.get_imp_kwh
-    get_import_blocks_missing_exc = _BS.get_import_blocks_missing_exc
     get_kraken_state = _BS.get_kraken_state
     get_last_block = _BS.get_last_block
     get_last_block_before = _BS.get_last_block_before
@@ -202,16 +193,13 @@ class ReadStore:
     get_power_history = _BS.get_power_history
     get_provisional_sub_meter_blocks = _BS.get_provisional_sub_meter_blocks
     get_reconcile_candidates = _BS.get_reconcile_candidates
-    get_retired_meters = _BS.get_retired_meters
     get_settings = _BS.get_settings
     get_settle_inputs = _BS.get_settle_inputs
-    get_settled_to = _BS.get_settled_to
     get_settlement_detail = _BS.get_settlement_detail
     get_settlement_facts = _BS.get_settlement_facts
     get_sub_meter_history = _BS.get_sub_meter_history
     get_tariff_agreements = _BS.get_tariff_agreements
     get_tariff_prices = _BS.get_tariff_prices
-    get_timed_out_provisionals = _BS.get_timed_out_provisionals
     get_vat_calendar = _BS.get_vat_calendar
     ha_read_devices = _BS.ha_read_devices
     ha_reads_for = _BS.ha_reads_for
@@ -241,7 +229,7 @@ class ReadStore:
 
 
 class WriteStore(_BS):
-    """The full store: every read method, plus the 97 writers.
+    """The full store: every read method, plus the 90 writers.
 
     Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
     write methods (43%) need read access, either running their own SELECT or

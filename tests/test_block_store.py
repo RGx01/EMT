@@ -413,51 +413,6 @@ class TestSchema(unittest.TestCase):
         self.assertAlmostEqual(row["imp_cost_exc"], 0.40, places=4)
         store.close()
 
-    def test_exc_backfill_pager_and_count(self):
-        # 4.2 exc backfill: the pager lists only import blocks with energy and NO exc,
-        # ordered by start and resumable via after_start; count agrees.
-        store = BlockStore(":memory:")
-        store.insert_config_period(EXAMPLE_CONFIG)
-        store.upsert_imported_blocks(
-            [dict(start="2026-03-01T00:00:00", kwh=2.0, rate=0.21, cost=0.42),          # NULL exc
-             dict(start="2026-03-01T00:30:00", kwh=1.0, rate=0.21, cost=0.21,
-                  cost_exc=0.20),                                                       # has exc → skip
-             dict(start="2026-03-01T01:00:00", kwh=0.0, rate=0.21, cost=0.0)],          # zero kWh → skip
-            "electricity_main", "import", source="imported_api")
-        self.assertEqual(store.count_import_blocks_missing_exc(), 1)
-        rows = store.get_import_blocks_missing_exc(limit=10)
-        self.assertEqual([r["start"] for r in rows], ["2026-03-01T00:00:00"])
-        self.assertAlmostEqual(rows[0]["kwh"], 2.0, places=4)
-        self.assertAlmostEqual(rows[0]["rate"], 0.21, places=4)
-        # resume: nothing after the last start
-        self.assertEqual(
-            store.get_import_blocks_missing_exc(after_start="2026-03-01T00:00:00"), [])
-        store.close()
-
-    def test_set_block_exc_fills_only_and_preserves_inc(self):
-        # set_block_exc writes exc IN PLACE, never touches inc, and won't overwrite
-        # an existing (captured) exc.
-        store = BlockStore(":memory:")
-        store.insert_config_period(EXAMPLE_CONFIG)
-        store.upsert_imported_blocks(
-            [dict(start="2026-03-02T00:00:00", kwh=2.0, rate=0.21, cost=0.42)],
-            "electricity_main", "import", source="imported_api")
-        self.assertTrue(store.set_block_exc(
-            "2026-03-02T00:00:00", "electricity_main", 0.40))
-        row = store._conn.execute(
-            "SELECT imp_cost, imp_cost_exc FROM blocks "
-            "WHERE block_start='2026-03-02T00:00:00'").fetchone()
-        self.assertAlmostEqual(row["imp_cost"], 0.42, places=4)        # inc untouched
-        self.assertAlmostEqual(row["imp_cost_exc"], 0.40, places=4)
-        # idempotent: a second call finds no NULL-exc row to fill
-        self.assertFalse(store.set_block_exc(
-            "2026-03-02T00:00:00", "electricity_main", 0.99))
-        row2 = store._conn.execute(
-            "SELECT imp_cost_exc FROM blocks "
-            "WHERE block_start='2026-03-02T00:00:00'").fetchone()
-        self.assertAlmostEqual(row2["imp_cost_exc"], 0.40, places=4)   # not overwritten
-        self.assertEqual(store.count_import_blocks_missing_exc(), 0)
-        store.close()
 
     def test_export_only_merges_onto_import_only_row(self):
         # The FIT/export-backfill case: a later export CSV must fill the export column
@@ -544,49 +499,7 @@ class TestSchema(unittest.TestCase):
         self.assertAlmostEqual(rows["2026-03-03T00:00:00"]["imp_cost_exc"], 0.40, places=4)
         self.assertAlmostEqual(rows["2026-03-03T00:00:00"]["imp_cost"], 0.42, places=4)  # inc kept
         self.assertAlmostEqual(rows["2026-03-03T01:00:00"]["imp_cost_exc"], 0.19, places=4)  # not clobbered
-        self.assertEqual(store.count_import_blocks_missing_exc(), 0)
-        store.close()
-
-    def test_exc_backfill_covers_settled_live_blocks(self):
-        # Scope 2: blocks captured LIVE before ex-VAT existed and already DCC-settled
-        # (imp_kwh_api set, source not 'imported%') must be reachable by the backfill.
-        # Settlement capture only stamps exc when a block re-settles, and these settled
-        # months ago — so without this they stay on the inc÷VAT approximation forever
-        # (the prod 12-Feb-onward "approximate" report). A truly-unsettled live block
-        # (imp_kwh_api NULL) is deliberately left for settlement capture.
-        store = BlockStore(":memory:")
-        store.insert_config_period(EXAMPLE_CONFIG)
-        store.upsert_imported_blocks(
-            [dict(start="2026-02-12T00:00:00", kwh=2.0, rate=0.21, cost=0.42),   # settled live
-             dict(start="2026-02-12T00:30:00", kwh=1.0, rate=0.21, cost=0.21)],  # unsettled live
-            "electricity_main", "import", source="imported_api")
-        # Make them look live (not imported), one settled and one not.
-        store._conn.execute(
-            "UPDATE blocks SET source='kraken_api', imp_kwh_api=2.0 "
-            "WHERE block_start='2026-02-12T00:00:00'")
-        store._conn.execute(
-            "UPDATE blocks SET source='kraken_api', imp_kwh_api=NULL "
-            "WHERE block_start='2026-02-12T00:30:00'")
-        store._conn.commit()
-
-        # Only the settled live block is in scope.
-        self.assertEqual(store.count_import_blocks_missing_exc(), 1)
-        self.assertEqual(
-            [r["start"] for r in store.get_import_blocks_missing_exc(limit=10)],
-            ["2026-02-12T00:00:00"])
-        # The writer fills the settled live block…
-        self.assertTrue(store.set_block_exc(
-            "2026-02-12T00:00:00", "electricity_main", 0.40))
-        # …but refuses the unsettled live block (left for settlement capture).
-        self.assertFalse(store.set_block_exc(
-            "2026-02-12T00:30:00", "electricity_main", 0.20))
-        got = {r["block_start"]: r for r in store._conn.execute(
-            "SELECT block_start, imp_cost, imp_cost_exc FROM blocks "
-            "WHERE block_start LIKE '2026-02-12%'").fetchall()}
-        self.assertAlmostEqual(got["2026-02-12T00:00:00"]["imp_cost_exc"], 0.40, places=4)
-        self.assertAlmostEqual(got["2026-02-12T00:00:00"]["imp_cost"], 0.42, places=4)  # inc kept
-        self.assertIsNone(got["2026-02-12T00:30:00"]["imp_cost_exc"])   # untouched
-        self.assertEqual(store.count_import_blocks_missing_exc(), 0)
+        self.assertAlmostEqual(rows["2026-03-03T00:30:00"]["imp_cost_exc"], 0.20, places=4)
         store.close()
 
     def test_lightweight_surfaces_exvat(self):
@@ -1696,7 +1609,7 @@ if __name__ == "__main__":
 
 
 class TestCurrentBlock(unittest.TestCase):
-    """Tests for save_current_block / load_current_block / clear_current_block."""
+    """Tests for save_current_block / load_current_block."""
 
     def setUp(self):
         import sys, types
@@ -1889,44 +1802,6 @@ class TestCurrentBlock(unittest.TestCase):
         loaded = self.store.load_current_block()
         self.assertEqual(loaded, {})
 
-    def test_clear_removes_state(self):
-        self.store.save_current_block(self._make_block())
-        self.store.clear_current_block()
-        loaded = self.store.load_current_block()
-        self.assertEqual(loaded, {})
-
-    def test_get_cumulative_totals_empty(self):
-        totals = self.store.get_cumulative_totals()
-        self.assertEqual(totals["import_kwh"], 0.0)
-        self.assertEqual(totals["export_kwh"], 0.0)
-
-    def test_get_cumulative_totals_no_sub_meters(self):
-        """Without sub-meters, totals equal direct SUM of main meter blocks."""
-        self.store.insert_config_period({"meters": {"electricity_main": {"meta": {
-            "billing_day": 1, "block_minutes": 30, "timezone": "UTC",
-            "currency_symbol": "£", "currency_code": "GBP",
-        }}}})
-        cp_id = self.store._conn.execute(
-            "SELECT id FROM config_periods LIMIT 1"
-        ).fetchone()["id"]
-        self.store._conn.execute("""
-            INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_cost, exp_kwh, exp_cost, standing_charge)
-            VALUES ('2026-01-01T00:00:00','2026-01-01T00:30:00','electricity_main',?,0, 1.5,0.368, 0.3,0.024, 0.5)
-        """, (cp_id,))
-        self.store._conn.execute("""
-            INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_cost, exp_kwh, exp_cost, standing_charge)
-            VALUES ('2026-01-01T00:30:00','2026-01-01T01:00:00','electricity_main',?,0, 2.0,0.490, 0.0,0.0, 0.5)
-        """, (cp_id,))
-        self.store._conn.commit()
-
-        totals = self.store.get_cumulative_totals()
-        self.assertAlmostEqual(totals["import_kwh"],  3.5,   places=4)
-        self.assertAlmostEqual(totals["import_cost"], 0.858, places=4)
-        self.assertAlmostEqual(totals["export_kwh"],  0.3,   places=4)
-        self.assertAlmostEqual(totals["export_cost"], 0.024, places=4)
-
     def test_billing_totals_no_double_counting(self):
         """
         get_billing_totals_for_utc_range must not double-count sub-meters.
@@ -1980,61 +1855,6 @@ class TestCurrentBlock(unittest.TestCase):
         # standing from main meter only
         self.assertAlmostEqual(t["standing"], 0.5, places=3)
 
-    def test_get_cumulative_totals_with_sub_meters(self):
-        """
-        With sub-meters, totals must NOT double-count.
-        electricity_main.imp_kwh already includes sub-meter consumption, so the total grid
-        import is the main meter's own (step 5, 8 Oct 2026 — it was remainder + sub grid, which
-        is the same figure wherever the remainder is right). GUARD.
-        """
-        cfg = {"meters": {
-            "electricity_main": {"meta": {
-                "billing_day": 1, "block_minutes": 30, "timezone": "UTC",
-                "currency_symbol": "£", "currency_code": "GBP",
-            }, "channels": {
-                "import": {"read": "sensor.main", "rate": "sensor.rate"},
-                "export": {"read": "sensor.exp",  "rate": "sensor.exprate"},
-            }},
-            "ev_charger": {"meta": {
-                "sub_meter": True, "parent_meter": "electricity_main",
-            }, "channels": {
-                "import": {"read": "sensor.ev", "rate": "sensor.rate"},
-            }},
-        }}
-        self.store.insert_config_period(cfg)
-        cp_id = self.store._conn.execute(
-            "SELECT id FROM config_periods LIMIT 1"
-        ).fetchone()["id"]
-
-        # One block: main draws 3.0 kWh total, EV uses 2.0, house uses 1.0
-        # main: imp_kwh=3.0 (house 1.0, derived), imp_cost=0.735
-        # ev:   imp_kwh=2.0, imp_kwh_grid=2.0 (all from grid), no independent cost
-        self.store._conn.execute("""
-            INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_cost, exp_kwh, exp_cost, standing_charge)
-            VALUES ('2026-01-01T00:00:00','2026-01-01T00:30:00','electricity_main',?,0, 3.0,0.735, 0.0,0.0, 0.5)
-        """, (cp_id,))
-        self.store._conn.execute("""
-            INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_kwh_grid, imp_cost, exp_kwh, exp_cost, standing_charge)
-            VALUES ('2026-01-01T00:00:00','2026-01-01T00:30:00','ev_charger',?,0, 2.0,2.0,0.0, 0.0,0.0, 0.0)
-        """, (cp_id,))
-        self.store._conn.commit()
-
-        totals = self.store.get_cumulative_totals()
-
-        # Correct: remainder(1.0) + ev_grid(2.0) = 3.0 kWh total grid import
-        self.assertAlmostEqual(totals["import_kwh"], 3.0, places=4,
-            msg="Sub-meter must not double-count: total grid = house(1) + ev_grid(2) = 3")
-        # Cost only from main meter
-        self.assertAlmostEqual(totals["import_cost"], 0.735, places=4,
-            msg="Import cost must come from main meter only")
-        # NOT 5.0 (3.0 + 2.0 double-counted)
-        self.assertNotAlmostEqual(totals["import_kwh"], 5.0, places=1,
-            msg="5.0 would indicate double-counting bug")
-
-    # test_get_cumulative_totals_ignores_a_stale_remainder went with imp_kwh_remainder (dropped,
-    # step 5, 10 Oct 2026): there is no stored remainder left to go stale.
 
 
 class TestUpgradePaths(unittest.TestCase):
@@ -2148,16 +1968,6 @@ class TestUpgradePaths(unittest.TestCase):
         reads = loaded["meters"]["electricity_main"]["channels"]["import"]["reads"]
         self.assertEqual(len(reads), 1)
         self.assertAlmostEqual(reads[0]["value"], 28000.0, places=3)
-
-    def test_cumulative_totals_from_empty_db(self):
-        """Fresh DB (or 2.1.0 after removing file): totals are all zero."""
-        store = BlockStore(":memory:")
-        totals = store.get_cumulative_totals()
-        self.assertEqual(totals["import_kwh"], 0.0)
-        self.assertEqual(totals["export_kwh"], 0.0)
-        self.assertEqual(totals["import_cost"], 0.0)
-        self.assertEqual(totals["export_cost"], 0.0)
-
 
 class TestNormalisedMeters(unittest.TestCase):
     """Tests for the normalised meters/meter_channels tables."""
@@ -4152,19 +3962,6 @@ class TestDeviceRetirement(unittest.TestCase):
         """is_meter_retired returns False for an active meter."""
         self.assertFalse(self.store.is_meter_retired('ev_charger'))
 
-    def test_get_retired_meters(self):
-        """get_retired_meters returns only meters with retirement dates."""
-        self.store.retire_meter('ev_charger', '2026-05-01', 'EV sold')
-        retired = self.store.get_retired_meters()
-        self.assertEqual(len(retired), 1)
-        self.assertEqual(retired[0]['meter_id'], 'ev_charger')
-        self.assertEqual(retired[0]['retired_at'], '2026-05-01')
-
-    def test_get_retired_meters_empty(self):
-        """get_retired_meters returns empty list when no meters are retired."""
-        retired = self.store.get_retired_meters()
-        self.assertEqual(retired, [])
-
     def test_unretire_raises_on_sensor_conflict(self):
         """unretire_meter raises ValueError if the sensor is already in use by an active meter."""
         cp_id = self.store._conn.execute(
@@ -4540,7 +4337,8 @@ class TestHistoricalImportFoundation(unittest.TestCase):
             subject="zappi_ev", sensor_ids=["sensor.a", "sensor.b"],
             sensor_kind="energy_total", params={"eps": 0.02},
             source=IMPORTED_SOURCE_CSV)
-        d = self.store.get_historical_derivation(did)
+        d = next(x for x in self.store.list_historical_derivations(current_only=False)
+                 if x["id"] == did)
         self.assertEqual(d["scope"], "device_attribution")
         self.assertEqual(d["sensor_ids"], ["sensor.a", "sensor.b"])   # JSON decoded
         self.assertEqual(d["params"], {"eps": 0.02})
@@ -4549,31 +4347,6 @@ class TestHistoricalImportFoundation(unittest.TestCase):
     def test_invalid_scope_raises(self):
         with self.assertRaises(ValueError):
             self.store.insert_historical_derivation("nonsense", "a", "b")
-
-    def test_supersede_hides_from_current(self):
-        old = self.store.insert_historical_derivation(
-            "rate", "2024-01-01", "2024-06-01", subject="import", derived_value=7.0)
-        new = self.store.insert_historical_derivation(
-            "rate", "2024-01-01", "2024-06-01", subject="import", derived_value=7.5)
-        self.store.supersede_historical_derivation(old, new)
-        current = self.store.list_historical_derivations(scope="rate", current_only=True)
-        self.assertEqual([d["id"] for d in current], [new])
-        allrows = self.store.list_historical_derivations(scope="rate", current_only=False)
-        self.assertEqual({d["id"] for d in allrows}, {old, new})   # audit trail kept
-
-    # ── block tagging ───────────────────────────────────────────────────────
-    def test_tag_blocks_over_span(self):
-        self._insert_block("2024-07-01T00:00:00", source=IMPORTED_SOURCE_CSV)
-        self._insert_block("2024-07-01T00:30:00", source=IMPORTED_SOURCE_CSV)
-        self._insert_block("2025-02-01T00:00:00", source=IMPORTED_SOURCE_CSV)   # outside span
-        did = self.store.insert_historical_derivation(
-            "rate", "2024-07-01T00:00:00", "2025-01-01T00:00:00", subject="import")
-        n = self.store.tag_blocks_with_derivation(
-            did, "electricity_main", "2024-07-01T00:00:00", "2025-01-01T00:00:00")
-        self.assertEqual(n, 2)
-        tagged = self.store._conn.execute(
-            "SELECT COUNT(*) FROM blocks WHERE derivation_id = ?", (did,)).fetchone()[0]
-        self.assertEqual(tagged, 2)
 
     def test_imported_blocks_skip_carbon_backfill(self):
         # A native NULL-carbon block IS a carbon-backfill candidate; a

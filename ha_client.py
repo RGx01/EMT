@@ -6,13 +6,12 @@ Replaces all PyScript HA primitives for the add-on:
   PyScript              →  Here
   ─────────────────────────────────────────────────
   state.get(entity_id)  →  client.get_state(entity_id)
-  state.set(...)        →  await client.set_state(...)
   @state_trigger(...)   →  client.subscribe_state(entity_id, callback)
   log.info/error        →  standard Python logging
 
 Communicates with HA via:
   - WebSocket API  (ws://supervisor/core/websocket)  — state triggers + subscriptions
-  - REST API       (http://supervisor/core/api)       — get/set state
+  - REST API       (http://supervisor/core/api)       — reads states
 """
 
 import asyncio
@@ -57,9 +56,6 @@ class HAClient:
 
         # Read a sensor
         val = client.get_state("sensor.my_sensor")
-
-        # Write a synthetic sensor
-        await client.set_state("sensor.my_sensor", 42.0, {...attrs...})
 
         # Subscribe to state changes
         client.subscribe_state("sensor.my_sensor", my_callback)
@@ -255,14 +251,6 @@ class HAClient:
 
         logger.info("ha_client: preloaded %d states", loaded)
 
-    async def get_all_entity_ids(self) -> list[str]:
-        """Return all entity IDs known to HA (used by the config UI)."""
-        async with self._session.get(f"{HA_REST_URL}/states") as resp:
-            if resp.status != 200:
-                return []
-            all_states = await resp.json()
-        return sorted(s.get("entity_id", "") for s in all_states)
-
     async def get_all_states(self) -> list[dict]:
         """Return the full states list: dicts of {entity_id, state, attributes}.
 
@@ -298,67 +286,6 @@ class HAClient:
         except Exception as e:
             logger.warning("ha_client: get_entity_attributes %s error: %s", entity_id, e)
             return {}
-
-    # ──────────────────────────────────────────────────────────────────────
-    # State — set (async, REST API)
-    # ──────────────────────────────────────────────────────────────────────
-
-    async def set_state(
-        self,
-        entity_id:  str,
-        state:      float | str,
-        attributes: dict | None = None,
-    ):
-        """
-        Create or update a synthetic HA sensor via REST.
-        Replaces PyScript's state.set().
-        """
-        payload = {
-            "state":      str(state),
-            "attributes": attributes or {},
-        }
-        url = f"{HA_REST_URL}/states/{entity_id}"
-        try:
-            async with self._session.post(url, json=payload) as resp:
-                if resp.status not in (200, 201):
-                    body = await resp.text()
-                    logger.error(
-                        "ha_client: set_state %s failed (%d): %s",
-                        entity_id, resp.status, body
-                    )
-                else:
-                    logger.debug("ha_client: set_state %s = %s", entity_id, state)
-        except Exception as e:
-            logger.error("ha_client: set_state exception for %s: %s", entity_id, e)
-
-    async def call_service(
-        self,
-        domain:  str,
-        service: str,
-        data:    dict | None = None,
-    ) -> bool:
-        """Call a Home Assistant service via REST (e.g. persistent_notification
-        create/dismiss). Returns True on success. Best-effort: logs and returns
-        False on failure rather than raising, so callers can fire-and-forget.
-        """
-        url = f"{HA_REST_URL}/services/{domain}/{service}"
-        try:
-            async with self._session.post(url, json=data or {}) as resp:
-                if resp.status not in (200, 201):
-                    body = await resp.text()
-                    logger.error(
-                        "ha_client: call_service %s.%s failed (%d): %s",
-                        domain, service, resp.status, body
-                    )
-                    return False
-                logger.debug("ha_client: call_service %s.%s ok", domain, service)
-                return True
-        except Exception as e:
-            logger.error(
-                "ha_client: call_service exception for %s.%s: %s",
-                domain, service, e
-            )
-            return False
 
     # ──────────────────────────────────────────────────────────────────────
     # Subscriptions — replaces @state_trigger
