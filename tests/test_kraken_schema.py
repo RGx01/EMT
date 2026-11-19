@@ -1384,14 +1384,6 @@ class TestDispatchSlots(_StoreBase):
             self.store.get_dispatch_slot("2026-06-06T15:00:00")["source"],
             "bump-charge")
 
-    def test_range_query(self):
-        for s in ("2026-06-06T14:00:00", "2026-06-06T15:00:00",
-                  "2026-06-07T00:00:00"):
-            self.store.upsert_dispatch_slot(s, source="smart-charge")
-        got = self.store.get_dispatch_slots_in_range(
-            "2026-06-06T00:00:00", "2026-06-07T00:00:00")
-        self.assertEqual(len(got), 2)  # 14:00 and 15:00, not the 6-07 one
-
 
 if __name__ == "__main__":
     unittest.main()
@@ -1527,12 +1519,6 @@ class TestDispatchHistoryAccumulation(_StoreBase):
         both = self.store.get_dispatch_history(
             "2026-07-07T00:00:00", "2026-07-07T03:00:00")
         self.assertEqual({r["kind"] for r in both}, {"planned", "completed"})
-
-    def test_prune(self):
-        self.store.record_dispatch_history(
-            "2020-01-01T00:00:00", "completed", energy_kwh=-1.0)
-        deleted = self.store.prune_dispatch_history(days=90)
-        self.assertEqual(deleted, 1)
 
 
 class TestBackfillBlock(_StoreBase):

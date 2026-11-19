@@ -50,7 +50,7 @@ class TestClassifier(unittest.TestCase):
     def test_obvious_writers(self):
         self._is("write", "set_meta", "append_block", "upsert_imported_bills",
                  "set_block_segments", "upsert_measured_cost", "add_deleted_range",
-                 "prune_dispatch_slots")
+                 "set_blocks_exc")
 
     def test_obvious_readers(self):
         self._is("read", "get_meta", "get_blocks_for_range", "get_settings",

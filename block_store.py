@@ -2151,15 +2151,6 @@ class BlockStore:
         ).fetchone()
         return dict(row) if row else None
 
-    def get_dispatch_slots_in_range(self, start_iso: str, end_iso: str) -> list:
-        """All dispatch_slots with slot_start in [start_iso, end_iso). Ordered."""
-        return [dict(r) for r in self._conn.execute(
-            "SELECT slot_start, off_peak, provider, source, captured_at, "
-            "state, energy_planned, energy_completed, raw_start, raw_end "
-            "FROM dispatch_slots WHERE slot_start >= ? AND slot_start < ? "
-            "ORDER BY slot_start", (start_iso, end_iso)
-        ).fetchall()]
-
     # ── IOG 6-hour cap boundary (shared by settlement pricing + the day chart) ──
     _BUMP_SOURCES = ("bump-charge", "boost")
 
@@ -2199,19 +2190,6 @@ class BlockStore:
                 for r in rows if r["slot_start"] not in boost
                 and not (exclude is not None and exclude(r["slot_start"]))]
         return iog_cap.cap_day_boundaries(feed, tz_name, iog_cap.CAP_HOURS).get(key)
-
-    def prune_dispatch_slots(self, days: int = 90) -> int:
-        """Delete dispatch_slots older than `days` days. Generous retention (90d)
-        — these are small and the overlay may reprice historical blocks during a
-        billing-period review. Returns rows deleted.
-        """
-        cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
-                  - timedelta(days=days)).isoformat()
-        with self._conn:
-            cur = self._conn.execute(
-                "DELETE FROM dispatch_slots WHERE slot_start < ?", (cutoff,)
-            )
-        return cur.rowcount
 
     def emt_recording_continuously(self, slot_start: str, hours: float = 4.0,
                                    block_minutes: int = 30) -> bool:
@@ -2457,15 +2435,6 @@ class BlockStore:
                 "first_seen, last_seen, raw_start, raw_end FROM dispatch_history "
                 "WHERE slot_start = ? ORDER BY kind", (slot_start,)).fetchall()
         return [dict(r) for r in rows]
-
-    def prune_dispatch_history(self, days: int = 90) -> int:
-        """Delete dispatch_history older than `days`. Returns rows deleted."""
-        cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
-                  - timedelta(days=days)).isoformat()
-        with self._conn:
-            cur = self._conn.execute(
-                "DELETE FROM dispatch_history WHERE slot_start < ?", (cutoff,))
-        return cur.rowcount
 
     # ── Generation mix ────────────────────────────────────────────────────────
 

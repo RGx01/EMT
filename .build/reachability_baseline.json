@@ -9,13 +9,10 @@
     "get_all_blocks",
     "get_blocks_for_utc_range",
     "get_cumulative_totals",
-    "get_dispatch_slots_in_range",
     "get_generation_mix",
     "get_measured_cost",
     "get_retired_meters",
     "list_historical_derivations",
-    "prune_dispatch_history",
-    "prune_dispatch_slots",
     "utc_to_local_label"
   ]
 }
