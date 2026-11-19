@@ -89,27 +89,5 @@ class TestJobGuards(unittest.TestCase):
         self.assertEqual(self.d["live_jobs"], 7)
         self.assertTrue(all(j["live"] for j in self.d["jobs"].values()))
 
-    def test_run_exclusive_is_still_only_a_barrier(self):
-        """`run_exclusive` is v4's one real mutual-exclusion primitive. Its single
-        caller passes `lambda: None` — it is used to DRAIN the in-flight tick, not
-        to run anything under the lock. The mechanism exists and coordinates
-        nothing, which is the same shape as the read companion at 0% adoption.
-        """
-        hits = []
-        for dirpath, dirnames, files in os.walk(_ROOT):
-            dirnames[:] = [d for d in dirnames
-                           if d not in (".git", "__pycache__", "tests", "docs",
-                                        ".build", "scratch")]
-            for f in files:
-                if f.endswith(".py"):
-                    p = os.path.join(dirpath, f)
-                    with open(p, encoding="utf-8") as fh:
-                        for i, line in enumerate(fh, 1):
-                            if "run_exclusive(" in line and "def " not in line:
-                                hits.append((os.path.relpath(p, _ROOT), line.strip()))
-        self.assertEqual(len(hits), 1, "callers of run_exclusive: %s" % hits)
-        self.assertIn("lambda: None", hits[0][1])
-
-
 if __name__ == "__main__":
     unittest.main()

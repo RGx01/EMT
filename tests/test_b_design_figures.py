@@ -182,22 +182,30 @@ class TestDocFiguresMatchTheTools(unittest.TestCase):
                          ["run_attribution_job", "run_gap_fill_job"])
         self.assertIn("**Two jobs take a scope**", self.doc)
 
-    def test_run_exclusive_is_still_the_unused_primitive(self):
-        """The coordinator record §6 q5 rests on this."""
-        hits = []
+    def test_run_exclusive_is_gone(self):
+        """The coordinator record §6 q5–q6: `run_exclusive` was the coordinator's unused primitive,
+        then removed. No production module defines or calls it. (Until 19 Nov 2026 this test
+        counted `run_exclusive(` lines and passed on engine.py's docstring naming the call it
+        replaced; it also walked into .claude/worktrees, where a stray worktree doubled the count.)"""
+        found = []
         for dirpath, dirnames, files in os.walk(_ROOT):
-            dirnames[:] = [d for d in dirnames if d not in
-                           (".git", "__pycache__", "tests", "docs", ".build", "scratch")]
+            dirnames[:] = [d for d in dirnames if not d.startswith(".") and d not in
+                           ("__pycache__", "tests", "docs", "scratch")]
             for f in files:
-                if f.endswith(".py"):
-                    p = os.path.join(dirpath, f)
-                    with open(p, encoding="utf-8") as fh:
-                        for line in fh.read().split("\n"):
-                            if "run_exclusive(" in line and "def " not in line:
-                                hits.append(line.strip())
-        self.assertEqual(len(hits), 1)
-        self.assertIn("lambda: None", hits[0])
-
+                if not f.endswith(".py"):
+                    continue
+                p = os.path.join(dirpath, f)
+                with open(p, encoding="utf-8") as fh:
+                    tree = ast.parse(fh.read())
+                for n in ast.walk(tree):
+                    if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == "run_exclusive":
+                        found.append("def in " + os.path.relpath(p, _ROOT))
+                    elif isinstance(n, ast.Call):
+                        fn = n.func
+                        name = fn.id if isinstance(fn, ast.Name) else getattr(fn, "attr", None)
+                        if name == "run_exclusive":
+                            found.append("call in " + os.path.relpath(p, _ROOT))
+        self.assertEqual(found, [])
 
 if __name__ == "__main__":
     unittest.main()
