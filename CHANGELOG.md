@@ -5,6 +5,12 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **A device renamed on Settings is renamed on the charts.** Usage Stats, Flow, Running total and Spiral
+  kept the old name until some day's figures changed, which on an Octopus-only setup could be a day. They
+  now redraw with the new name as soon as you save.
+
 ## [2026.11.0b26] — 2026-11-19
 
 - **Yesterday's export no longer reads as a gap after an import.** Importing your history before Octopus
