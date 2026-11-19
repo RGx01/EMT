@@ -89,3 +89,10 @@ same PR.
 **Reachability today: 10 of 1,554 definitions unreachable** (`check_reachability.py`). The suite
 asserts this line (`tests/test_b_design_figures.py`): a PR that adds or removes a definition updates it.
 The history of the figure is in the [architecture record](../history/design/EMT-v5_architecture.md) §4.
+
+The 10 are kept on purpose (19 Nov 2026, when 30 were removed): `store_access.bind_object_for_tests`
+is the tests' one way into the store boundary, and nine `BlockStore` methods are how tests set up or read
+back the database around the live code they test — `add_deleted_range`, `append_blocks`,
+`get_all_blocks`, `get_blocks_for_utc_range`, `count_meter_rows`, `count_backfilled_blocks`,
+`get_measured_cost`, `list_historical_derivations`, and `get_generation_mix`, which the reachability
+tool's own tests use as a known-dead case. A new unreachable definition is not one of these.
