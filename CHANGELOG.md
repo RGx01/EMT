@@ -5,6 +5,16 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **Flow shows the price bands in kWh and CO₂ too.** Usage Stats → Flow showed your import by the
+  price it was charged, and your export by the price it earned, only in Cost; kWh and CO₂ now go
+  through the same bands, each sized in its own measure.
+- **Flow draws export on the same scale as import.** Export flowed out of the house, and the chart
+  drew the house as tall as whichever was larger, its import or the export, so a house that imported
+  little looked as big as the export. Export now has a box of its own below the devices, and every
+  box is as tall as its own figure.
+
 ## [2026.11.0b24] — 2026-11-18
 
 - **More of the half-hours left waiting for a bill get one.** On some days Octopus answers a request
