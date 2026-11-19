@@ -138,11 +138,16 @@ class Defs(ast.NodeVisitor):
 
 def names_used(node):
     """Every name this subtree could possibly be invoking. Over-approximating by
-    design: calls, bare references, attribute access, and string literals (which
-    covers getattr and any dispatch table keyed by name)."""
+    design: calls, bare references, attribute access, string literals (which
+    covers getattr and any dispatch table keyed by name), and every name imported,
+    because `from m import f as _g` then `_g()` never writes `f` anywhere else
+    (block_store.utc_to_local_label, live in the gaps route, was reported dead
+    that way until 19 Nov 2026)."""
     used = set()
     for n in ast.walk(node):
-        if isinstance(n, ast.Name):
+        if isinstance(n, (ast.Import, ast.ImportFrom)):
+            used.update(a.name.rsplit(".", 1)[-1] for a in n.names)
+        elif isinstance(n, ast.Name):
             used.add(n.id)
         elif isinstance(n, ast.Attribute):
             used.add(n.attr)
