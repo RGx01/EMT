@@ -5,6 +5,12 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **The Data Management heatmap's key is easier to read.** It now starts at the left, and hovering an item
+  shows that colour as a cell of the grid, at the grid's own size, so a hatch looks as it does on the
+  heatmap.
+
 ## [2026.11.0b26] — 2026-11-19
 
 - **Yesterday's export no longer reads as a gap after an import.** Importing your history before Octopus
