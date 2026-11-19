@@ -7,6 +7,9 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **The Agile cards show your power under the prices.** On the Overview, with a power sensor, the Agile
+  import card draws what you imported over the last 24 hours, and the export card what you exported, as a
+  line on its own kW scale on the right. Hovering a half-hour gives its price and its average power.
 - **Flow shows the house at its own size, and the export growing out of it.** The house's box was
   drawn as tall as the export when the export was larger, so a house that imported little looked as
   big as what it exported. The house is now as tall as its own import, and the export flows out of it,
