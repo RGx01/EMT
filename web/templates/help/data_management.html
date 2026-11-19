@@ -115,7 +115,8 @@
     <li>{{ sw('green') }}<strong>Settled</strong> — final. Nothing to do.</li>
     <li>{{ sw('amber') }}<strong>Not settled, under 7 days</strong> — wait.</li>
     <li>{{ sw('red') }}<strong>Not settled after 7 days</strong> — <strong>Re-fetch from Octopus</strong>.</li>
-    <li>{{ sw('abandoned') }}<strong>No export figure</strong> — neither Octopus nor the CSV gave one. A
+    <li>{{ sw('abandoned') }}<strong>No export figure</strong> — neither Octopus nor the CSV gave one, and
+      it is older than Octopus takes to settle (an imported day too recent for that waits, amber). A
       re-fetch may get it; otherwise <strong>Fill the missing export</strong> from your PDF bills or a CSV.</li>
     <li>{{ sw('grey') }}<strong>Nothing to settle</strong> — no export, or CSV history.</li>
     <li>{{ sw('missing') }}<strong>Missing</strong> — <strong>Fill this gap</strong>.</li>

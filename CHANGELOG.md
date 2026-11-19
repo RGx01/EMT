@@ -5,6 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b26] — 2026-11-19
+
+- **Yesterday's export no longer reads as a gap after an import.** Importing your history before Octopus
+  had settled yesterday's export brought that day in with no export figure, and Data Management showed it
+  hatched red, night included, as if Octopus would never send it. It now waits, amber, like any half-hour
+  Octopus hasn't settled yet, and only reads as a gap once it's older than Octopus takes.
+
 ## [2026.11.0b25] — 2026-11-19
 
 - **The Agile cards show your power under the prices.** On the Overview, with a power sensor, the Agile
