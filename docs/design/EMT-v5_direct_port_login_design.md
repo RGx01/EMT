@@ -1,7 +1,14 @@
 # A login on the direct port (design)
 
-*Status: proposed, 19 Nov 2026. Not decided. A blocker for the first release (ROADMAP, Before the first
-release). The user, 19 Nov 2026: "could we just use users HA's login?"*
+*Status: decided in outline, 19 Nov 2026; §6's checks come before the build. A blocker for the first
+release (ROADMAP, Before the first release). The user, 19 Nov 2026: "could we just use users HA's login?"*
+
+*Decided with the user on 19 Nov 2026:*
+- *administrators only, on the direct port;*
+- *existing dashboard cards stop working until their URL carries a key (§3.4);*
+- *the build order of §7.*
+
+*Asked: "what about docker users?" — §3.5.*
 
 ## 1. The problem
 
@@ -40,7 +47,8 @@ From Home Assistant's developer documentation (read 19 Nov 2026, contributors.ho
 ### 3.1 Tell ingress from the direct port by address, never by header
 
 A request is **ingress** when, on an add-on install, it arrives from `172.30.32.2`. Every other request is
-**direct**. EMT reads `X-Ingress-Path` from any client today (`IngressMiddleware`, web/server.py). That is
+**direct**. "An add-on install" is the mode EMT runs in (`EMT_MODE`), never the address: standalone, every
+request is direct, whatever its Docker network's addresses happen to be (§3.5). EMT reads `X-Ingress-Path` from any client today (`IngressMiddleware`, web/server.py). That is
 harmless while nothing hangs on it, but a login that trusted the header would be open to anyone who sent
 it. So the middleware honours the ingress headers only from that address. Ingress itself is unchanged:
 Home Assistant has already signed the user in.
@@ -72,8 +80,7 @@ the same host (Home Assistant itself, another add-on), and the `Origin` check cl
 **Which Home Assistant address the browser is sent to:**
 - **Add-on:** Home Assistant's configured internal URL, from the Supervisor's core API; failing that,
   the host the browser used, on port 8123.
-- **Standalone:** a new `HA_PUBLIC_URL`, defaulting to `HA_URL`. `HA_URL` is how the container reaches
-  Home Assistant, which a browser may not.
+- **Standalone:** see §3.5.
 
 The token exchange goes from the container to Home Assistant: `homeassistant:8123` on an add-on, `HA_URL`
 standalone.
@@ -104,9 +111,40 @@ but the card should not offer what it cannot do.
   days.
 - **Existing dashboard cards stop working until their URL has the key.** The update's changelog says so,
   and Settings shows the new URLs. This is the cost of closing the hole: an unkeyed card is the hole.
-- **Standalone:** the same sign-in. A setup that cannot reach Home Assistant's sign-in from the browser
-  can set `EMT_DIRECT_LOGIN=off`. The README says plainly that this puts it back as it is today, so a
-  misconfigured URL cannot lock a standalone user out of their own data.
+- **Standalone:** the same sign-in, §3.5.
+
+### 3.5 Standalone Docker
+
+Standalone has no Supervisor, so no ingress: the direct port is the whole UI, and everything in it signs in
+as in §3.2. Three things differ.
+
+- **Nothing is ingress.** Only an add-on install treats `172.30.32.2` as the Supervisor (§3.1). A user's
+  Docker network can use any range, `172.30.32.x` included.
+- **The Home Assistant address the browser is sent to.** `HA_URL` is how the *container* reaches Home
+  Assistant, and is often a name only other containers resolve (`http://homeassistant:8123`, as the README's
+  example has it). So the browser's address is:
+  - `HA_PUBLIC_URL` when set;
+  - otherwise, the host the browser used to reach EMT, on `HA_URL`'s port (EMT and Home Assistant on one
+    machine, the usual case).
+
+  If that address does not answer, EMT's sign-in page says which address it tried and to set
+  `HA_PUBLIC_URL`, instead of sending the browser to a dead link. The token exchange stays server-side on
+  `HA_URL`. The long-lived token in `HA_TOKEN` plays no part in signing in: it is EMT's, not the user's.
+- **EMT in Home Assistant's sidebar.** The README has standalone users add EMT as a Webpage dashboard,
+  which frames the whole UI. The session cookie reaches the frame when the dashboard and EMT share a host
+  name: ports do not count, so `http://192.168.1.10:8123` framing `http://192.168.1.10:8098` works, and
+  `homeassistant.local` framing the IP address does not. Home Assistant's own sign-in may also refuse to run
+  inside a frame (§6). So a framed EMT that is not signed in shows **Open EMT in a new tab to sign in**
+  rather than a sign-in that fails inside the frame. Once signed in there, the frame works. The README says
+  to use the same host name in the Webpage dashboard as for Home Assistant.
+
+**The way out.** A setup that cannot reach Home Assistant's sign-in from the browser can set
+`EMT_DIRECT_LOGIN=off`. The README says plainly that this puts it back as it is today, so a misconfigured
+URL cannot lock a standalone user out of their own data. On an add-on there is no switch: ingress is always
+there.
+
+**On updating**, a standalone user meets the sign-in after `docker compose up -d --build`. The changelog
+says so, with `HA_PUBLIC_URL` and the switch.
 
 ## 4. Alternatives
 
@@ -129,7 +167,10 @@ but the card should not offer what it cannot do.
 ## 5. Tests the build carries
 
 Each fails on the tree before it:
-- a request with `X-Ingress-Path` from any address but `172.30.32.2` is treated as direct;
+- a request with `X-Ingress-Path` from any address but `172.30.32.2` is treated as direct, and standalone
+  one from `172.30.32.2` is too;
+- standalone, the browser is sent to `HA_PUBLIC_URL` when set, else the request's host on `HA_URL`'s port;
+  `EMT_DIRECT_LOGIN=off` admits every request as today;
 - every route on the direct port without a session redirects (a page) or answers 401 (an API), apart
   from `/signin`, `/signin/done`, the card pages and APIs with a valid key, and static files;
 - a card key admits GET on its allow-list and nothing else: no POST, no other GET, no other page;
@@ -143,7 +184,7 @@ by accident.
 
 ## 6. To check on a real install before building
 
-These decide between §3.2 and the fallback, so they come first:
+These decide between §3.2 and the fallback, and how §3.5 behaves, so they come first:
 
 1. The address a direct-port request arrives from, on the Pi: the client's own, or Docker's gateway
    (`172.30.32.1`)? It must not be `172.30.32.2`. Logged once, for both paths.
@@ -153,10 +194,12 @@ These decide between §3.2 and the fallback, so they come first:
    is the likely answer; the documentation read does not cover it).
 5. The add-on container reaches `http://homeassistant:8123/auth/token`.
 6. A card with its key still loads inside a dashboard opened by hostname, and in Safari.
+7. Whether Home Assistant's sign-in page runs inside a frame (a Webpage dashboard), and whether a signed-in
+   EMT works framed from the same host name: on a standalone Docker setup.
 
 ## 7. Build order
 
-1. **The ingress check (§3.1), and the six questions answered.** Small, and it decides the rest.
+1. **The ingress check (§3.1), and §6's questions answered.** Small, and it decides the rest.
 2. **The session**: the secret kept in `/data`, `/signin` and its callback, the guard on every direct
    route, the `Origin` check, signing out.
 3. **Card keys**: Settings → Dashboard cards, and the read-only allow-list.
