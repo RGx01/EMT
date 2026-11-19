@@ -33,7 +33,6 @@ the same function object.
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
-from decimal import Decimal as _Decimal, ROUND_HALF_EVEN as _ROUND_HALF_EVEN
 # Module level, not per-function. The moved functions each imported this locally,
 # which is why the three rewritten wrappers below raised NameError the moment they
 # stopped carrying their own copy — caught by tests/test_periods_endpoint.py.
@@ -808,51 +807,3 @@ def _summarise(records, period_start, period_end, store=None, *, tz_name):
         "total_cost":        total_cost,
         "meter_meta":        meter_meta,
     }
-
-
-def bankers_round(x, ndigits=0):
-    """Round half-to-even (banker's rounding) — how Octopus rounds a bill (0.015→0.02,
-    0.025→0.02). Uses Decimal(str(x)) so exact decimal halves round correctly, which
-    the float built-in round() cannot (0.015 is 0.01499… in binary). BL-24 groundwork."""
-    q = _Decimal(1).scaleb(-int(ndigits))
-    return float(_Decimal(str(x)).quantize(q, rounding=_ROUND_HALF_EVEN))
-
-
-def octopus_bill_total(slots, vat_rate):
-    """Ex-VAT energy total for a set of (kwh, exc_rate) slots (exc_rate £/kWh), rounding
-    only at the TOTAL (whole penny); VAT on top. Empirically — verified against a real
-    Octopus bill — the per-half-hour figures are summed RAW; Octopus does NOT round each
-    half-hour's kWh/cost (that would zero the many sub-0.01 kWh slots). See
-    _bill_method_breakdown, which is what the Billing summary uses. Returns pence + £."""
-    exc_pence = bankers_round(sum(kwh * float(exc_rate) * 100.0 for kwh, exc_rate in slots), 0)
-    inc_pence = bankers_round(exc_pence * (1.0 + vat_rate), 0)
-    return {"exc_pence": exc_pence, "inc_pence": inc_pence,
-            "exc_gbp": round(exc_pence / 100.0, 2),
-            "inc_gbp": round(inc_pence / 100.0, 2)}
-
-
-def bill_slots_from_blocks(blocks, vat_rate):
-    """Extract (kwh, exc_rate) main-import slots from block dicts for octopus_bill_total.
-    Uses the stored exc-VAT cost (BL-23 imp_cost_exc → channel 'cost_exc') to derive the
-    exc rate when present; otherwise falls back to the inc rate ÷ (1+VAT) — an
-    approximation until a re-import captures the real exc figure."""
-    slots = []
-    for b in blocks or []:
-        imp = (((b or {}).get("meters") or {}).get("electricity_main") or {})
-        imp = (imp.get("channels") or {}).get("import") or {}
-        kwh = imp.get("kwh")
-        if not kwh:
-            continue
-        # Prefer the stored published ex-VAT rate, then the ex-VAT cost, then the
-        # inc rate ÷ (1+VAT) approximation (until a re-import captures real exc).
-        if imp.get("rate_exc") is not None:
-            exc_rate = float(imp["rate_exc"])
-        elif imp.get("cost_exc") is not None:
-            exc_rate = float(imp["cost_exc"]) / float(kwh)
-        else:
-            rate = imp.get("rate")
-            if rate is None:
-                continue
-            exc_rate = float(rate) / (1.0 + vat_rate)
-        slots.append((float(kwh), exc_rate))
-    return slots

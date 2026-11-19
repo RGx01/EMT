@@ -20,9 +20,6 @@ logger = logging.getLogger("energy_charts")
 from billing import (                                     # noqa: F401
     _utc_to_local,
     _parse_block_start,
-    bankers_round,
-    bill_slots_from_blocks,
-    octopus_bill_total,
     get_billing_periods_from_config_periods,
     calculate_billing_summary_for_period,
     summarise_bill_rows,
