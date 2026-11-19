@@ -413,51 +413,6 @@ class TestSchema(unittest.TestCase):
         self.assertAlmostEqual(row["imp_cost_exc"], 0.40, places=4)
         store.close()
 
-    def test_exc_backfill_pager_and_count(self):
-        # 4.2 exc backfill: the pager lists only import blocks with energy and NO exc,
-        # ordered by start and resumable via after_start; count agrees.
-        store = BlockStore(":memory:")
-        store.insert_config_period(EXAMPLE_CONFIG)
-        store.upsert_imported_blocks(
-            [dict(start="2026-03-01T00:00:00", kwh=2.0, rate=0.21, cost=0.42),          # NULL exc
-             dict(start="2026-03-01T00:30:00", kwh=1.0, rate=0.21, cost=0.21,
-                  cost_exc=0.20),                                                       # has exc → skip
-             dict(start="2026-03-01T01:00:00", kwh=0.0, rate=0.21, cost=0.0)],          # zero kWh → skip
-            "electricity_main", "import", source="imported_api")
-        self.assertEqual(store.count_import_blocks_missing_exc(), 1)
-        rows = store.get_import_blocks_missing_exc(limit=10)
-        self.assertEqual([r["start"] for r in rows], ["2026-03-01T00:00:00"])
-        self.assertAlmostEqual(rows[0]["kwh"], 2.0, places=4)
-        self.assertAlmostEqual(rows[0]["rate"], 0.21, places=4)
-        # resume: nothing after the last start
-        self.assertEqual(
-            store.get_import_blocks_missing_exc(after_start="2026-03-01T00:00:00"), [])
-        store.close()
-
-    def test_set_block_exc_fills_only_and_preserves_inc(self):
-        # set_block_exc writes exc IN PLACE, never touches inc, and won't overwrite
-        # an existing (captured) exc.
-        store = BlockStore(":memory:")
-        store.insert_config_period(EXAMPLE_CONFIG)
-        store.upsert_imported_blocks(
-            [dict(start="2026-03-02T00:00:00", kwh=2.0, rate=0.21, cost=0.42)],
-            "electricity_main", "import", source="imported_api")
-        self.assertTrue(store.set_block_exc(
-            "2026-03-02T00:00:00", "electricity_main", 0.40))
-        row = store._conn.execute(
-            "SELECT imp_cost, imp_cost_exc FROM blocks "
-            "WHERE block_start='2026-03-02T00:00:00'").fetchone()
-        self.assertAlmostEqual(row["imp_cost"], 0.42, places=4)        # inc untouched
-        self.assertAlmostEqual(row["imp_cost_exc"], 0.40, places=4)
-        # idempotent: a second call finds no NULL-exc row to fill
-        self.assertFalse(store.set_block_exc(
-            "2026-03-02T00:00:00", "electricity_main", 0.99))
-        row2 = store._conn.execute(
-            "SELECT imp_cost_exc FROM blocks "
-            "WHERE block_start='2026-03-02T00:00:00'").fetchone()
-        self.assertAlmostEqual(row2["imp_cost_exc"], 0.40, places=4)   # not overwritten
-        self.assertEqual(store.count_import_blocks_missing_exc(), 0)
-        store.close()
 
     def test_export_only_merges_onto_import_only_row(self):
         # The FIT/export-backfill case: a later export CSV must fill the export column
@@ -544,49 +499,7 @@ class TestSchema(unittest.TestCase):
         self.assertAlmostEqual(rows["2026-03-03T00:00:00"]["imp_cost_exc"], 0.40, places=4)
         self.assertAlmostEqual(rows["2026-03-03T00:00:00"]["imp_cost"], 0.42, places=4)  # inc kept
         self.assertAlmostEqual(rows["2026-03-03T01:00:00"]["imp_cost_exc"], 0.19, places=4)  # not clobbered
-        self.assertEqual(store.count_import_blocks_missing_exc(), 0)
-        store.close()
-
-    def test_exc_backfill_covers_settled_live_blocks(self):
-        # Scope 2: blocks captured LIVE before ex-VAT existed and already DCC-settled
-        # (imp_kwh_api set, source not 'imported%') must be reachable by the backfill.
-        # Settlement capture only stamps exc when a block re-settles, and these settled
-        # months ago — so without this they stay on the inc÷VAT approximation forever
-        # (the prod 12-Feb-onward "approximate" report). A truly-unsettled live block
-        # (imp_kwh_api NULL) is deliberately left for settlement capture.
-        store = BlockStore(":memory:")
-        store.insert_config_period(EXAMPLE_CONFIG)
-        store.upsert_imported_blocks(
-            [dict(start="2026-02-12T00:00:00", kwh=2.0, rate=0.21, cost=0.42),   # settled live
-             dict(start="2026-02-12T00:30:00", kwh=1.0, rate=0.21, cost=0.21)],  # unsettled live
-            "electricity_main", "import", source="imported_api")
-        # Make them look live (not imported), one settled and one not.
-        store._conn.execute(
-            "UPDATE blocks SET source='kraken_api', imp_kwh_api=2.0 "
-            "WHERE block_start='2026-02-12T00:00:00'")
-        store._conn.execute(
-            "UPDATE blocks SET source='kraken_api', imp_kwh_api=NULL "
-            "WHERE block_start='2026-02-12T00:30:00'")
-        store._conn.commit()
-
-        # Only the settled live block is in scope.
-        self.assertEqual(store.count_import_blocks_missing_exc(), 1)
-        self.assertEqual(
-            [r["start"] for r in store.get_import_blocks_missing_exc(limit=10)],
-            ["2026-02-12T00:00:00"])
-        # The writer fills the settled live block…
-        self.assertTrue(store.set_block_exc(
-            "2026-02-12T00:00:00", "electricity_main", 0.40))
-        # …but refuses the unsettled live block (left for settlement capture).
-        self.assertFalse(store.set_block_exc(
-            "2026-02-12T00:30:00", "electricity_main", 0.20))
-        got = {r["block_start"]: r for r in store._conn.execute(
-            "SELECT block_start, imp_cost, imp_cost_exc FROM blocks "
-            "WHERE block_start LIKE '2026-02-12%'").fetchall()}
-        self.assertAlmostEqual(got["2026-02-12T00:00:00"]["imp_cost_exc"], 0.40, places=4)
-        self.assertAlmostEqual(got["2026-02-12T00:00:00"]["imp_cost"], 0.42, places=4)  # inc kept
-        self.assertIsNone(got["2026-02-12T00:30:00"]["imp_cost_exc"])   # untouched
-        self.assertEqual(store.count_import_blocks_missing_exc(), 0)
+        self.assertAlmostEqual(rows["2026-03-03T00:30:00"]["imp_cost_exc"], 0.20, places=4)
         store.close()
 
     def test_lightweight_surfaces_exvat(self):

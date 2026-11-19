@@ -3769,64 +3769,13 @@ class BlockStore:
                     "WHERE block_start = ? AND meter_id = ?", (ig, cg, bs, mid)).rowcount > 0
         return n
 
-    def get_import_blocks_missing_exc(self, limit: int = 2000,
-                                      after_start: str | None = None) -> list:
-        """4.2 exc historical backfill: page IMPORT blocks that carry energy but no
-        ex-VAT cost yet (imp_cost_exc IS NULL, imp_kwh > 0). Covers both historically
-        IMPORTED blocks (source LIKE 'imported%') AND SETTLED live blocks
-        (imp_kwh_api IS NOT NULL) — the latter were captured live before ex-VAT
-        existed and have already settled via DCC, so settlement capture will never
-        re-stamp them; without this they stay on the inc÷VAT approximation forever.
-        Truly-unsettled live blocks are excluded — they get real exc at settlement.
-        Ordered by block_start; pass the last start back as `after_start` to continue.
-        Returns [{start, meter_id, kwh, rate}]."""
-        sql = ("SELECT block_start, meter_id, imp_kwh, imp_rate FROM blocks "
-               "WHERE imp_cost_exc IS NULL AND imp_kwh IS NOT NULL AND imp_kwh > 0 "
-               "AND (source LIKE 'imported%' OR imp_kwh_api IS NOT NULL)")
-        params: list = []
-        if after_start is not None:
-            sql += " AND block_start > ?"
-            params.append(after_start)
-        sql += " ORDER BY block_start LIMIT ?"
-        params.append(int(limit))
-        rows = self._conn.execute(sql, params).fetchall()
-        return [{"start": r["block_start"], "meter_id": r["meter_id"],
-                 "kwh": r["imp_kwh"], "rate": r["imp_rate"]} for r in rows]
-
-    def count_import_blocks_missing_exc(self) -> int:
-        """Count of import blocks still lacking ex-VAT cost — the backfill's
-        remaining-work signal (0 ⇒ mark the pass done). Same coverage as
-        get_import_blocks_missing_exc: imported OR settled live blocks."""
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM blocks WHERE imp_cost_exc IS NULL "
-            "AND imp_kwh IS NOT NULL AND imp_kwh > 0 "
-            "AND (source LIKE 'imported%' OR imp_kwh_api IS NOT NULL)"
-        ).fetchone()
-        return int(row["n"]) if row else 0
-
-    def set_block_exc(self, block_start: str, meter_id: str, cost_exc) -> bool:
-        """Write ex-VAT import figures IN PLACE for one block+meter — a targeted
-        UPDATE of only the exc columns (mirrors set_block_carbon; no row round-trip,
-        so source / imp_kwh_api / derivation_id are preserved). Only fills a NULL
-        imp_cost_exc (idempotent — never overwrites captured exc) and NEVER touches
-        the inc columns, so billing figures are unchanged. Returns True if a row
-        changed."""
-        with self._conn:
-            cur = self._conn.execute(
-                "UPDATE blocks SET imp_cost_exc = ? "
-                "WHERE block_start = ? AND meter_id = ? AND imp_cost_exc IS NULL "
-                "AND (source LIKE 'imported%' OR imp_kwh_api IS NOT NULL)",
-                (cost_exc, block_start, meter_id))
-        return cur.rowcount > 0
-
     def set_blocks_exc(self, updates) -> int:
-        """Batch ex-VAT writer: apply many `set_block_exc` UPDATEs inside ONE
+        """Batch ex-VAT writer: fill each block's NULL ex-VAT cost inside ONE
         transaction (a single commit/fsync for the whole chunk, not one per block —
-        the per-block commit made the historical backfill a minutes-long fsync storm
+        a per-block commit made v4's historical backfill a minutes-long fsync storm
         that blocked the event loop). `updates` = iterable of
-        (block_start, meter_id, cost_exc). Same NULL-only
-        guard and coverage (imported OR settled live) as set_block_exc. Returns the
-        number of rows changed."""
+        (block_start, meter_id, cost_exc). Writes only where the ex-VAT cost is NULL,
+        on an imported or a settled live block. Returns the number of rows changed."""
         changed = 0
         with self._tx():
             for bs, mid, ce in updates:

@@ -7,7 +7,6 @@
     "count_backfilled_blocks",
     "count_block_segments",
     "count_blocks_missing_segments",
-    "count_import_blocks_missing_exc",
     "count_meter_rows",
     "finalise_timed_out_provisionals",
     "get_all_blocks",
@@ -18,7 +17,6 @@
     "get_dispatch_slots_in_range",
     "get_generation_mix",
     "get_historical_derivation",
-    "get_import_blocks_missing_exc",
     "get_measured_cost",
     "get_retired_meters",
     "get_settled_to",
@@ -26,7 +24,6 @@
     "list_historical_derivations",
     "prune_dispatch_history",
     "prune_dispatch_slots",
-    "set_block_exc",
     "supersede_historical_derivation",
     "tag_blocks_with_derivation",
     "utc_to_local_label"
