@@ -411,16 +411,6 @@ def _bill_method_breakdown(blocks, period_vat=None, standing_inc_by_day=None, va
     }
 
 
-def _has_sub_meters(cfg):
-    """True if any configured meter is a sub-meter (EV, battery, heat-pump, …). The
-    derived-EV billing breakdown only applies to accounts with NONE, so a real EV meter
-    always wins."""
-    for md in ((cfg or {}).get("meters") or {}).values():
-        if (md.get("meta") or {}).get("sub_meter"):
-            return True
-    return False
-
-
 def _ev_meter_id(cfg):
     """The configured physical EV-charger meter_id (meter_type 'ev_charger', or an
     'ev'/'charger' id), or None. Used for the coverage-based synthetic-EV gate."""
