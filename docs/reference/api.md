@@ -36,6 +36,7 @@ refetch only what changed.
 | `/api/config*`, `/api/settings`, `/api/kraken-config` | the configuration; the Octopus connection |
 | `/api/tariff-agreements*` | the account's agreements and their prices (display only); accepting a changed answer |
 | `/api/home-eras`, `/api/battery-sensor/*`, `/api/update-check` | home eras; the battery-sensor flag; whether a newer release is out |
+| `/api/customisations`, `/api/customisations/import` | the eras and chart colours as a file, from this database or a kept backup; a file applied (a preview without `apply`) |
 
 The retired sub-pages (`/bill-rounding`, `/delete-blocks`, `/corrections`, `/historical-probe`)
 redirect to where their tools now are.

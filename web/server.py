@@ -9694,6 +9694,76 @@ def api_chart_styles():
     return jsonify({"ok": True, "written": n})
 
 
+def _theme_ev_shown(store, cfg) -> bool:
+    """Whether a database draws the EV without a device (BL-97): no EV device, and an EV in its history.
+    `api_chart_styles`' rule, for the eras and colours file."""
+    import energy_charts as _ec
+    return not _ec._ev_meter_id(cfg) and _ec.has_had_ev(store)
+
+
+@app.route("/api/customisations", methods=["GET"])
+def api_customisations_export():
+    """The eras and chart colours as a file to download (customisations.py): from this database, or with
+    `?backup=<zip>` from one of the backups Data Management keeps (its blocks.db read from a temp copy,
+    read-only). Read-only."""
+    import customisations as _cz
+    try:
+        name = request.args.get("backup") or ""
+        if name:
+            path, err = _resolve_backup_zip(name)
+            if err:
+                return jsonify({"ok": False, "error": err[0]}), err[1]
+            data = _cz.collect_from_backup(path, _theme_ev_shown)
+            stem = os.path.splitext(os.path.basename(path))[0]
+        else:
+            store = store_access.store()
+            cfg = load_config()
+            data = _cz.collect(store, cfg, _theme_ev_shown(store, cfg))
+            from datetime import datetime as _dt
+            stem = _dt.now().strftime("%Y%m%d")
+    except _cz.ThemeError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        return _error_reply(e, {"ok": False})
+    resp = make_response(json.dumps(data, indent=2, ensure_ascii=False))
+    resp.headers["Content-Type"] = "application/json; charset=utf-8"
+    resp.headers["Content-Disposition"] = 'attachment; filename="emt-eras-and-colours-%s.json"' % (
+        re.sub(r"[^A-Za-z0-9_.-]", "_", stem))
+    return resp
+
+
+@app.route("/api/customisations/import", methods=["POST"])
+def api_customisations_import():
+    """An eras and colours file applied to this database (customisations.py): {file: <its JSON>, apply:
+    bool}. Without `apply`, what it would do and nothing written — {ok, eras, eras_now, styles: [{from,
+    to, …}], skipped, kept}; with it, the eras replaced and each matched style written, on the engine
+    thread, without a restart. 400 with the reason for a file that is not one, or an era it cannot keep."""
+    import customisations as _cz
+    import home_eras as _he
+    if (request.content_length or 0) > _cz.MAX_BYTES:
+        return jsonify({"ok": False, "error": "That file is too large to be an eras and colours file"}), 400
+    body = request.get_json(force=True, silent=True) or {}
+    try:
+        parsed = _cz.parse(body.get("file"))
+    except _cz.ThemeError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    try:
+        store = store_access.store()
+        cfg = load_config()
+        tgts = _cz.targets(cfg, _theme_ev_shown(store, cfg))
+        p = _cz.plan(parsed, tgts)
+        out = dict(_cz.summary(parsed, p, len(_he.load(store))), ok=True, applied=False)
+        if body.get("apply"):
+            if p["pairs"] and store.get_current_config_period_id() is None:
+                return jsonify({"ok": False, "error": "no configuration yet"}), 409
+            period = store.get_current_config_period_id()
+            _engine_write(lambda st: _cz.apply(st, parsed, p, period))
+            out["applied"] = True
+        return jsonify(out)
+    except Exception as e:
+        return _error_reply(e, {"ok": False})
+
+
 @app.route("/api/home-eras", methods=["GET", "POST"])
 def api_home_eras():
     """BL-101 (home eras design): the home's eras — dated notes for display, never read for pricing.

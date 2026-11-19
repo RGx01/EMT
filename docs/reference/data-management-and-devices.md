@@ -77,6 +77,34 @@ machine is routine (a test install restored from the real one), and a backup car
   its backups are still on `/share` and can be restored by hand. Standalone keeps backups in its own
   data volume, so none of this applies.
 
+## Eras and colours to a file
+
+*Backup & restore* downloads the home's eras and every chart colour and rate line as a `.json` file —
+this database's (*Download eras & colours*), or a kept backup's (its row's 🎨: the zip's `blocks.db`
+read from a temp copy, read-only) — and imports one (*Import eras & colours…*, or a `.json` dropped on
+the page). `customisations.py`; routes `GET /api/customisations[?backup=<zip>]` and
+`POST /api/customisations/import`.
+
+- **What it holds** (`format: "emt-customisations"`, `version: 1`): the eras (`home_eras`, the store's
+  meta) and a style per meter that draws — the house (the main meter's import), its export, each
+  device's import, and the EV without a device (`ev_style`) where the account has had one — each
+  `{role, label, bar_color, rate_line}`, the colour **as drawn** (chosen, else the palette's by
+  position), so a theme looks the same wherever it lands. No MPAN, account or meter id.
+- **Roles, not ids.** `house`, `export`, and each device's `meter_roles.role` (its `meter_type`, else a
+  guess from its id); the EV without a device is `ev`. Two of a role pair in config order: the file's
+  first battery to the first battery here. A style with nothing to land on is reported *not used*; a
+  meter the file has nothing for keeps its own.
+- **The eras are replaced** by the file's (`home_eras.save`: a found era no longer there is dismissed,
+  as a delete on the eras modal does). A file with no `eras` key leaves them; an empty list clears them.
+- **Preview first.** The import posts the file without `apply` and shows what replaces what; *Import*
+  posts it again with `apply`, written on the engine thread (`chart_style.apply_styles` for the
+  channels of the current config period, `ev_style` for the car), with no engine restart. A file that
+  is not one, from a newer EMT, or with an era that cannot be kept is refused (400) before anything is
+  written.
+- **Not in the file:** Usage Stats' view — period, metric, series pickers, Running total's mode and
+  start, Flow's span — is per browser (`localStorage`, `emt_bar_state`); spans are not stored, they are
+  the tariffs and the eras.
+
 ## The CSV import format
 
 One file per channel (import, export); the bill parser (`bill_parser.py`) writes the same format from

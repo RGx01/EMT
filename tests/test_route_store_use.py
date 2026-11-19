@@ -78,7 +78,8 @@ class TestRouteStoreUse(unittest.TestCase):
         # +1: /api/home-eras, the home's eras (BL-101, 1 Nov 2026).
         # +1: /api/chart-styles, the bar colours modal (BL-101 PR 4, 1 Nov 2026).
         # +1: /api/agile-prices, now reading the region's prices kept in the store (BL-103, 1 Nov 2026).
-        self.assertEqual(len(self.d["get_on_companion"]), 40)
+        # +1: /api/customisations, the eras and colours file (19 Nov 2026).
+        self.assertEqual(len(self.d["get_on_companion"]), 41)
 
     def test_adoption_is_total(self):
         """Measured at 0% before the port: v4 credited one route with the read
