@@ -167,6 +167,26 @@ class TheConfigToken(unittest.TestCase):
         self._restyle(st, _cfg())
         self.assertEqual(self._token(st), plain)
 
+    def test_a_device_rename_moves_it(self):
+        """A rename on Settings updates the active period in place (no style, no billing change), and
+        the Charts page's kept rows carry the names they were drawn with: until the token moved, the
+        charts kept the old name (the user, 19 Nov 2026). Renaming back gives the old token."""
+        st = BlockStore(":memory:")
+        st.insert_config_period(_cfg(), effective_from=PERIOD)
+        plain = self._token(st)
+        renamed = _cfg()
+        renamed["meters"]["heat_pump"]["meta"]["device"] = "Heat pump"
+        self._restyle(st, renamed)
+        self.assertNotEqual(self._token(st), plain)
+        self._restyle(st, _cfg())
+        self.assertEqual(self._token(st), plain)
+
+    def test_the_page_refetches_whole_when_it_moves(self):
+        """GUARD: the kept rows are re-fetched whole when the config token differs, so the token is
+        what carries a rename to the page."""
+        page = open(os.path.join(_ROOT, "web", "templates", "charts.html"), encoding="utf-8").read()
+        self.assertIn("f.config !== c.config", page)
+
     def test_the_ev_style_moves_it_too(self):
         """BL-97's EV (no EV device) keeps its style in the store's meta, not on a channel: a colour
         chosen on its tab reached Usage Stats only when something else moved the token (the user,

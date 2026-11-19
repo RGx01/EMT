@@ -2207,8 +2207,8 @@ def lovelace_heatmap():
 
 def _config_token(store) -> str:
     """What a page shows beyond the blocks that a write can change: the billing periods
-    (a billing-day change or an added/removed meter re-cuts them), and each channel's chart
-    style (a colour or rate line chosen on Settings: the Charts page keeps its rows, colours
+    (a billing-day change or an added/removed meter re-cuts them), each device's name, and each
+    channel's chart style (a colour or rate line chosen on Settings: the Charts page keeps its rows, colours
     with them, until this moves). Part of `_blocks_data_version`, and `/api/energy`'s
     `fingerprint.config` — the per-day fingerprint cannot see it. (The bill-rounding option was
     here until it was retired, 28 Oct 2026.)"""
@@ -2219,7 +2219,13 @@ def _config_token(store) -> str:
             "FROM config_periods").fetchone()
         _mc = store._conn.execute(      # the EV's style (BL-97) and the settings in the same statement:
             "SELECT COUNT(*) AS n, (SELECT value FROM store_meta WHERE key = 'ev_style') AS ev, "
-            "(SELECT value FROM store_meta WHERE key = 'settings') AS st "   # the poll runs every minute
+            "(SELECT value FROM store_meta WHERE key = 'settings') AS st, "   # the poll runs every minute
+            # Each device's name: the kept rows carry the names they were drawn with, and a rename
+            # on Settings moved nothing else here, so the charts kept the old name until some day's
+            # figures moved (the user, 19 Nov 2026).
+            "(SELECT COALESCE(GROUP_CONCAT(l, char(31)), '') FROM ("
+            "  SELECT meter_id || '=' || COALESCE(device_label, '') AS l FROM meters"
+            "  ORDER BY config_period_id, meter_id)) AS lb "
             "FROM meters").fetchone()
         _st = store._conn.execute(
             "SELECT COALESCE(GROUP_CONCAT(s, ','), '') AS s FROM ("
@@ -2229,7 +2235,8 @@ def _config_token(store) -> str:
             "  WHERE mc.bar_color IS NOT NULL OR mc.rate_line IS NOT NULL "
             "  ORDER BY m.config_period_id, m.meter_id, mc.channel)").fetchone()
         import zlib as _zlib
-        _cfgf = "%s/%s/%d/%d" % (_cp["n"], _cp["mx"], _zlib.crc32(_cp["bd"].encode()), _mc["n"])
+        _cfgf = "%s/%s/%d/%d.%d" % (_cp["n"], _cp["mx"], _zlib.crc32(_cp["bd"].encode()), _mc["n"],
+                                    _zlib.crc32(_mc["lb"].encode()))
         if _st["s"]:                            # unchanged for a config with no style set
             _cfgf += "/%d" % _zlib.crc32(_st["s"].encode())
         # BL-97: the EV of an account with no EV device keeps its style in the store's meta, not

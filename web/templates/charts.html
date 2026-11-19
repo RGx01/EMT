@@ -475,7 +475,7 @@
 //   * The fingerprint's days are UTC dates; the rows are local days — a moved UTC date D
 //     re-fetches local D−1..D+1, whatever the offset.
 //   * Anything before `since` changing (a re-price sweep), the bulk epoch (an import,
-//     delete or restore) or the config token (billing periods, meters) means
+//     delete or restore) or the config token (billing periods, meters, device names) means
 //     a whole re-fetch, as does a recent window grown past RECENT_MAX days (which moves
 //     `since` on).
 //   * One request at a time: Spiral and Usage Stats asking together share it.
