@@ -5566,49 +5566,6 @@ class BlockStore:
 
         return block
 
-    def clear_current_block(self) -> None:
-        """Clear the in-progress block state (e.g. after a reset)."""
-        with self._conn:
-            self._conn.execute("DELETE FROM current_block")
-            self._conn.execute("DELETE FROM current_reads")
-
-    def get_cumulative_totals(self) -> dict:
-        """
-        Return lifetime cumulative totals for HA sensor publishing.
-
-        import_kwh is the MAIN METER's import: the grid boundary (step 5, 8 Oct 2026). It was
-        the stored remainder plus every device's grid share — the main, wherever the remainder
-        was right, and short of it wherever a device's rows had gone and its remainder stayed
-        (95.8 kWh on one real database, 21.1 on another; identical on six). Sub-meters are an
-        attribution of the main's import, never an addition to it.
-
-        export_kwh/imp_cost/exp_cost: main meter only (sub-meters don't
-        have independent costs or export).
-        """
-        active_period_sq = (
-            "SELECT id FROM config_periods "
-            "WHERE effective_to IS NULL ORDER BY effective_from DESC LIMIT 1"
-        )
-        cur = self._conn.execute(
-            f"""SELECT
-                 COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.imp_kwh ELSE 0 END), 0.0) as import_kwh,
-                 COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.exp_kwh  ELSE 0 END), 0.0) as export_kwh,
-                 COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.imp_cost ELSE 0 END), 0.0) as import_cost,
-                 COALESCE(SUM(CASE WHEN m.is_sub_meter = 0 THEN b.exp_cost ELSE 0 END), 0.0) as export_cost
-               FROM blocks b
-               JOIN meters m
-                 ON m.meter_id = b.meter_id
-                AND m.config_period_id = ({active_period_sq})"""
-        )
-        row = cur.fetchone()
-        return {
-            "import_kwh":  round(float(row["import_kwh"]),  6),
-            "export_kwh":  round(float(row["export_kwh"]),  6),
-            "import_cost": round(float(row["import_cost"]), 6),
-            "export_cost": round(float(row["export_cost"]), 6),
-        }
-
-
     def _local_date_of(self, block_start: str, cache: dict) -> str:
         """The local date of a naive-UTC block start, in the timezone of the config period then in
         force (the latest where none covers it). `cache`: the caller's, by UTC date, for one pass."""

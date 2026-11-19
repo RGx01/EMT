@@ -654,10 +654,9 @@ class TestDrainPass2Queue(_StoreBase):
         import engine
         self.engine = engine
         # Point the engine module's _store at our in-memory store, and stub
-        # cumulative totals / sensor update so the drain runs without HA.
+        # the sensor update so the drain runs without HA.
         self._orig_store = getattr(engine, "_store", None)
         engine._store = self.store
-        self.store.get_cumulative_totals = lambda: {}
         self._ha = type("HA", (), {})()
 
     def tearDown(self):

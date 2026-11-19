@@ -1609,7 +1609,7 @@ if __name__ == "__main__":
 
 
 class TestCurrentBlock(unittest.TestCase):
-    """Tests for save_current_block / load_current_block / clear_current_block."""
+    """Tests for save_current_block / load_current_block."""
 
     def setUp(self):
         import sys, types
@@ -1802,44 +1802,6 @@ class TestCurrentBlock(unittest.TestCase):
         loaded = self.store.load_current_block()
         self.assertEqual(loaded, {})
 
-    def test_clear_removes_state(self):
-        self.store.save_current_block(self._make_block())
-        self.store.clear_current_block()
-        loaded = self.store.load_current_block()
-        self.assertEqual(loaded, {})
-
-    def test_get_cumulative_totals_empty(self):
-        totals = self.store.get_cumulative_totals()
-        self.assertEqual(totals["import_kwh"], 0.0)
-        self.assertEqual(totals["export_kwh"], 0.0)
-
-    def test_get_cumulative_totals_no_sub_meters(self):
-        """Without sub-meters, totals equal direct SUM of main meter blocks."""
-        self.store.insert_config_period({"meters": {"electricity_main": {"meta": {
-            "billing_day": 1, "block_minutes": 30, "timezone": "UTC",
-            "currency_symbol": "£", "currency_code": "GBP",
-        }}}})
-        cp_id = self.store._conn.execute(
-            "SELECT id FROM config_periods LIMIT 1"
-        ).fetchone()["id"]
-        self.store._conn.execute("""
-            INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_cost, exp_kwh, exp_cost, standing_charge)
-            VALUES ('2026-01-01T00:00:00','2026-01-01T00:30:00','electricity_main',?,0, 1.5,0.368, 0.3,0.024, 0.5)
-        """, (cp_id,))
-        self.store._conn.execute("""
-            INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_cost, exp_kwh, exp_cost, standing_charge)
-            VALUES ('2026-01-01T00:30:00','2026-01-01T01:00:00','electricity_main',?,0, 2.0,0.490, 0.0,0.0, 0.5)
-        """, (cp_id,))
-        self.store._conn.commit()
-
-        totals = self.store.get_cumulative_totals()
-        self.assertAlmostEqual(totals["import_kwh"],  3.5,   places=4)
-        self.assertAlmostEqual(totals["import_cost"], 0.858, places=4)
-        self.assertAlmostEqual(totals["export_kwh"],  0.3,   places=4)
-        self.assertAlmostEqual(totals["export_cost"], 0.024, places=4)
-
     def test_billing_totals_no_double_counting(self):
         """
         get_billing_totals_for_utc_range must not double-count sub-meters.
@@ -1893,61 +1855,6 @@ class TestCurrentBlock(unittest.TestCase):
         # standing from main meter only
         self.assertAlmostEqual(t["standing"], 0.5, places=3)
 
-    def test_get_cumulative_totals_with_sub_meters(self):
-        """
-        With sub-meters, totals must NOT double-count.
-        electricity_main.imp_kwh already includes sub-meter consumption, so the total grid
-        import is the main meter's own (step 5, 8 Oct 2026 — it was remainder + sub grid, which
-        is the same figure wherever the remainder is right). GUARD.
-        """
-        cfg = {"meters": {
-            "electricity_main": {"meta": {
-                "billing_day": 1, "block_minutes": 30, "timezone": "UTC",
-                "currency_symbol": "£", "currency_code": "GBP",
-            }, "channels": {
-                "import": {"read": "sensor.main", "rate": "sensor.rate"},
-                "export": {"read": "sensor.exp",  "rate": "sensor.exprate"},
-            }},
-            "ev_charger": {"meta": {
-                "sub_meter": True, "parent_meter": "electricity_main",
-            }, "channels": {
-                "import": {"read": "sensor.ev", "rate": "sensor.rate"},
-            }},
-        }}
-        self.store.insert_config_period(cfg)
-        cp_id = self.store._conn.execute(
-            "SELECT id FROM config_periods LIMIT 1"
-        ).fetchone()["id"]
-
-        # One block: main draws 3.0 kWh total, EV uses 2.0, house uses 1.0
-        # main: imp_kwh=3.0 (house 1.0, derived), imp_cost=0.735
-        # ev:   imp_kwh=2.0, imp_kwh_grid=2.0 (all from grid), no independent cost
-        self.store._conn.execute("""
-            INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_cost, exp_kwh, exp_cost, standing_charge)
-            VALUES ('2026-01-01T00:00:00','2026-01-01T00:30:00','electricity_main',?,0, 3.0,0.735, 0.0,0.0, 0.5)
-        """, (cp_id,))
-        self.store._conn.execute("""
-            INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, interpolated,
-            imp_kwh, imp_kwh_grid, imp_cost, exp_kwh, exp_cost, standing_charge)
-            VALUES ('2026-01-01T00:00:00','2026-01-01T00:30:00','ev_charger',?,0, 2.0,2.0,0.0, 0.0,0.0, 0.0)
-        """, (cp_id,))
-        self.store._conn.commit()
-
-        totals = self.store.get_cumulative_totals()
-
-        # Correct: remainder(1.0) + ev_grid(2.0) = 3.0 kWh total grid import
-        self.assertAlmostEqual(totals["import_kwh"], 3.0, places=4,
-            msg="Sub-meter must not double-count: total grid = house(1) + ev_grid(2) = 3")
-        # Cost only from main meter
-        self.assertAlmostEqual(totals["import_cost"], 0.735, places=4,
-            msg="Import cost must come from main meter only")
-        # NOT 5.0 (3.0 + 2.0 double-counted)
-        self.assertNotAlmostEqual(totals["import_kwh"], 5.0, places=1,
-            msg="5.0 would indicate double-counting bug")
-
-    # test_get_cumulative_totals_ignores_a_stale_remainder went with imp_kwh_remainder (dropped,
-    # step 5, 10 Oct 2026): there is no stored remainder left to go stale.
 
 
 class TestUpgradePaths(unittest.TestCase):
@@ -2061,16 +1968,6 @@ class TestUpgradePaths(unittest.TestCase):
         reads = loaded["meters"]["electricity_main"]["channels"]["import"]["reads"]
         self.assertEqual(len(reads), 1)
         self.assertAlmostEqual(reads[0]["value"], 28000.0, places=3)
-
-    def test_cumulative_totals_from_empty_db(self):
-        """Fresh DB (or 2.1.0 after removing file): totals are all zero."""
-        store = BlockStore(":memory:")
-        totals = store.get_cumulative_totals()
-        self.assertEqual(totals["import_kwh"], 0.0)
-        self.assertEqual(totals["export_kwh"], 0.0)
-        self.assertEqual(totals["import_cost"], 0.0)
-        self.assertEqual(totals["export_cost"], 0.0)
-
 
 class TestNormalisedMeters(unittest.TestCase):
     """Tests for the normalised meters/meter_channels tables."""

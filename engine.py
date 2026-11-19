@@ -47,7 +47,6 @@ KRAKEN_CREDS_PATH  = f"{DATA_DIR}/kraken_credentials.json"
 # current_block.json removed in 2.1.0 — state stored in DB current_block table
 BLOCKS_PATH        = f"{DATA_DIR}/blocks.json"    # legacy pre-SQLite store; detected only to warn (no longer auto-migrated)
 BLOCKS_DB_PATH     = f"{DATA_DIR}/blocks.db"
-# cumulative_totals.json removed in 2.1.0 — totals derived from blocks table
 
 import os as _os_engine
 # BL-5: the supervised backup dir is namespaced by site slug once the DB is open
