@@ -9,7 +9,6 @@
     "get_blocks_for_utc_range",
     "get_generation_mix",
     "get_measured_cost",
-    "get_retired_meters",
     "list_historical_derivations",
     "utc_to_local_label"
   ]

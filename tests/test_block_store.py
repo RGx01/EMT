@@ -3962,19 +3962,6 @@ class TestDeviceRetirement(unittest.TestCase):
         """is_meter_retired returns False for an active meter."""
         self.assertFalse(self.store.is_meter_retired('ev_charger'))
 
-    def test_get_retired_meters(self):
-        """get_retired_meters returns only meters with retirement dates."""
-        self.store.retire_meter('ev_charger', '2026-05-01', 'EV sold')
-        retired = self.store.get_retired_meters()
-        self.assertEqual(len(retired), 1)
-        self.assertEqual(retired[0]['meter_id'], 'ev_charger')
-        self.assertEqual(retired[0]['retired_at'], '2026-05-01')
-
-    def test_get_retired_meters_empty(self):
-        """get_retired_meters returns empty list when no meters are retired."""
-        retired = self.store.get_retired_meters()
-        self.assertEqual(retired, [])
-
     def test_unretire_raises_on_sensor_conflict(self):
         """unretire_meter raises ValueError if the sensor is already in use by an active meter."""
         cp_id = self.store._conn.execute(

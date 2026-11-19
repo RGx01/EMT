@@ -2535,14 +2535,6 @@ class BlockStore:
                 (meter_id,)
             )
 
-    def get_retired_meters(self) -> list:
-        """Return all meters with a retirement date set."""
-        rows = self._conn.execute(
-            """SELECT meter_id, device_label, meter_type, retired_at, retired_reason
-               FROM meters WHERE retired_at IS NOT NULL ORDER BY retired_at DESC"""
-        ).fetchall()
-        return [dict(r) for r in rows]
-
     def is_meter_retired(self, meter_id: str, as_of: str | None = None) -> bool:
         """Return True if the meter is retired as of the given date (default: today)."""
         from datetime import datetime, timezone
