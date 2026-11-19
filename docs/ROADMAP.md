@@ -17,6 +17,9 @@ missing and where it stands; the done history, with every decision's story, is i
   card (importer design §8a); no target has been agreed, so this is not yet called met.
 - **A login on the direct port.** Port 8098 (published by default, for the dashboard cards) has none:
   anyone on the network reaches every tool (SECURITY.md). Ingress is behind Home Assistant's login.
+  Proposed: sign in with Home Assistant's own page, and a read-only key for the dashboard cards
+  ([design/EMT-v5_direct_port_login_design.md](design/EMT-v5_direct_port_login_design.md)), decided in
+  outline 19 Nov 2026: administrators only; checks on a real install first.
 
 ## Open
 
