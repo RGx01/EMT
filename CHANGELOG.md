@@ -7,6 +7,9 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **A device renamed on Settings is renamed on the charts.** Usage Stats, Flow, Running total and Spiral
+  kept the old name until some day's figures changed, which on an Octopus-only setup could be a day. They
+  now redraw with the new name as soon as you save.
 - **The Data Management heatmap's key is easier to read.** It now starts at the left, and hovering an item
   shows that colour as a cell of the grid, at the grid's own size, so a hatch looks as it does on the
   heatmap.
