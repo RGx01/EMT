@@ -5,6 +5,32 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b25] — 2026-11-19
+
+- **The Agile cards show your power under the prices.** On the Overview, with a power sensor, the Agile
+  import card draws what you imported over the last 24 hours, and the export card what you exported, as a
+  line on its own kW scale on the right. Hovering a half-hour gives its price and its average power.
+- **Flow shows the house at its own size, and the export growing out of it.** The house's box was
+  drawn as tall as the export when the export was larger, so a house that imported little looked as
+  big as what it exported. The house is now as tall as its own import, and the export flows out of it,
+  widening or narrowing to the export's size. In Cost the export's price bands come back together in
+  one Export bar; in kWh and CO₂ the export goes straight to it. The bar and the Grid are each named
+  with their total.
+- **Flow shows the standing charge by its daily rate.** With Inc. standing charge, a span where the
+  standing charge changed showed it as one amount; it now goes through each rate it was charged at,
+  as the import goes through its price, and hovering a rate says how many days it was charged.
+- **Running total's Lifetime line marks your tariffs' price changes.** With Tariffs ticked, a dot sits on
+  the line where each tariff started and where its unit rate or standing charge changed, import and
+  export, as on Year by year, and the tariff band above has a tick at each change. Hovering the band
+  shows the prices from the day under the pointer. Agile and Tracker, whose prices move every half-hour
+  or day, mark only where they started, on Year by year too.
+- **Your eras and chart colours can go to a file and come back.** Data Management → Backup & restore can
+  download your home's eras and every chart colour and rate line as a small `.json` file, from the
+  database or from any kept backup, and import one on any EMT, on this machine or another. An import
+  shows what it will change first; its eras replace yours, and each colour goes to the meter of the
+  same kind (the house, export, an EV, a battery; the first of a kind to the first), so a theme can be
+  shared between homes whose devices have different names.
+
 ## [2026.11.0b24] — 2026-11-18
 
 - **More of the half-hours left waiting for a bill get one.** On some days Octopus answers a request

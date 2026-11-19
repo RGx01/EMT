@@ -2757,8 +2757,9 @@ function barFlowData(aggList) {
   });
   if (xother.length) nodes['x:other'] = {label: 'Other export', color: '#9ca3af', column: 3, priority: 899};
   xns.forEach(function(n) {
-    add('s:electricity_main', xkey(n), xb[n]);
-    if (xb[n][1] < 0) add('s:electricity_main', 'paid_export', flip(xb[n]), true);
+    add('xsrc', xkey(n), xb[n]);
+    add(xkey(n), 'export', xb[n]);                   // the bands come back together in one Export bar
+    if (xb[n][1] < 0) add('xsrc', 'paid_export', flip(xb[n]), true);
   });
   if (Object.keys(flows).some(function(k) { return flows[k].to === 'plunge'; }))
     nodes.plunge = {label: 'Plunge credit', color: barBrColor(-1, [-1], 'import'), column: 3, priority: 900};
@@ -2766,15 +2767,59 @@ function barFlowData(aggList) {
     nodes.paid_export = {label: 'Paid to export', color: barBrColor(-1, [-1], 'export'), column: 3, priority: 901};
   var standing = standingAll;
   if (standing > 0) {
-    nodes.standing = {label: 'Standing charge', color: '#4b5563', column: 2, priority: 998};
-    add('grid', 'standing', [0, standing, 0]);
+    nodes.standing = {label: 'Standing charge \u00b7 ' + barFlowFmt(standing, 1), name: 'Standing charge',
+                      color: '#4b5563', column: 2, priority: 998};
+    // by its daily rate, as the import goes through its price (19 Nov 2026, the user: "standing charges …
+    // are not banded as they change"): the grid → each rate in the bands' column → the standing charge.
+    // A bucket without its days' rates (a day's half-hours, HH: one day, one rate) goes straight there.
+    var sby = {}, rest = 0;
+    aggList.forEach(function(agg) {
+      var by = agg && agg.standingBy;
+      if (!by) { rest += barStandingVal(agg); return; }
+      Object.keys(by).forEach(function(r) { var a = sby[r] || (sby[r] = [0, 0]); a[0] += by[r][0]; a[1] += by[r][1]; });
+    });
+    var rates = Object.keys(sby).sort(function(a, b) { return +a - +b; });
+    rates.forEach(function(r, j) {
+      nodes['sb:' + r] = {label: 'Standing ' + r + 'p/day', color: '#4b5563', column: 1, priority: 1000 + j,
+                          days: sby[r][1], rate: r};
+      add('grid', 'sb:' + r, [0, sby[r][0], 0]);
+      add('sb:' + r, 'standing', [0, sby[r][0], 0]);
+    });
+    if (rest > 1e-9 || !rates.length) add('grid', 'standing', [0, rates.length ? rest : standing, 0]);
   }
   var imp = [0, 0, 0];
   ns.forEach(function(n) { for (var k = 0; k < 3; k++) imp[k] += band[n][k]; });
   var credit = ns.reduce(function(t, n) { return t + Math.min(0, band[n][1]); }, 0);
   var paid = xns.reduce(function(t, n) { return t + Math.min(0, xb[n][1]); }, 0);
+  var totals = {imp: imp, exp: ex, standing: standing, credit: credit, paid: paid};
+  if (xns.length) barFlowExportEnds(nodes, br, i, ex, 2, 4);
+  barFlowGridLabel(nodes, totals, i);
   return {nodes: nodes, flows: Object.values(flows), other: other, ns: ns, band: band,
-          xother: xother, xb: xb, totals: {imp: imp, exp: ex, standing: standing, credit: credit, paid: paid}};
+          xother: xother, xb: xb, totals: totals};
+}
+// The export's two ends (19 Nov 2026, the user: "the export should come from the house flow … it should
+// start as the house size and expand or contract to the export size", and "for export the rates come back
+// together with a bar"). The plugin draws a flow one width end to end and a node at the larger of its in
+// and out, so a house that exported more than it imported stood as tall as its export. The export's flows
+// leave `xsrc` instead: a stand-in at the foot of the house's column, sized at the export so the layout
+// and the one scale hold it, drawn by no one — barFlowTaper draws each of its flows from the house's own
+// box, its slice of the house's height, widening or narrowing to where it lands. Where the house imported
+// nothing in the metric shown there is no box to start from, so the stand-in is drawn as the house.
+// `export` is the bar the export ends in, named with its total; `col` the house's column, `last` the bar's.
+function barFlowExportEnds(nodes, br, i, ex, col, last) {
+  var nm = barFlowSeriesLabel('electricity_main'), h = 0;
+  Object.keys(br.electricity_main || {}).forEach(function(n) { h += br.electricity_main[n][i] || 0; });
+  var drawn = nodes['s:electricity_main'] && h > 0;
+  nodes.xsrc = drawn ? {label: '', name: nm, color: barFlowSeriesColor('electricity_main'), column: col + 0.5, priority: 999, proxy: true}
+                     : {label: nm, name: nm, color: barFlowSeriesColor('electricity_main'), column: col, priority: -1};
+  nodes.export = {label: (i === 2 ? 'Displaced by export' : 'Export') + ' \u00b7 ' + barFlowFmt(ex[i], i),
+                  name: i === 2 ? 'Displaced by export' : 'Export',
+                  color: i === 2 ? FLOW_DISPLACED_COLOR : barExportColor, column: last, priority: 0};
+}
+// The grid named with the import it brought, in the metric shown, as the head says it (19 Nov 2026, the user)
+function barFlowGridLabel(nodes, t, i) {
+  nodes.grid.name = 'Grid';
+  nodes.grid.label = 'Grid \u00b7 ' + barFlowFmt(t.imp[i] + (i === 1 ? t.standing : 0), i);
 }
 // kWh and CO₂ (5 Nov 2026, the user: "should we really care about cost rate bands or just show the flow
 // of kWh (and Carbon)"): the grid straight to the house and each device, summed over the brackets, and
@@ -2799,15 +2844,12 @@ function barFlowPlain(br, dest, i, standing) {
   });
   var ex = sum(br.export);
   if (ex[0] > 0 || ex[1] !== 0) {
-    if (!nodes['s:electricity_main'])
-      nodes['s:electricity_main'] = {label: barFlowSeriesLabel('electricity_main'),
-                                     color: barFlowSeriesColor('electricity_main'), column: 1, priority: -1};
-    nodes.export = i === 2 ? {label: 'Displaced by export', color: FLOW_DISPLACED_COLOR, column: 2, priority: 0}
-                           : {label: 'Export', color: barExportColor, column: 2, priority: 0};
-    flows.push({from: 's:electricity_main', to: 'export', v: ex});
+    barFlowExportEnds(nodes, br, i, ex, 1, 2);
+    flows.push({from: 'xsrc', to: 'export', v: ex});
   }
-  return {nodes: nodes, flows: flows, other: [], ns: [], band: {}, xother: [], xb: {}, plain: true,
-          totals: {imp: imp, exp: ex, standing: standing, credit: 0, paid: 0}};
+  var totals = {imp: imp, exp: ex, standing: standing, credit: 0, paid: 0};
+  barFlowGridLabel(nodes, totals, i);
+  return {nodes: nodes, flows: flows, other: [], ns: [], band: {}, xother: [], xb: {}, plain: true, totals: totals};
 }
 function barFlowHead(d) {
   var i = barFlowIndex(), t = d.totals, el = document.getElementById('bar-flow-head');
@@ -2855,12 +2897,14 @@ function barFlowDraw(aggList) {
     type: 'sankey',
     data: {datasets: [{
       data: data, labels: labels, column: column, priority: priority, size: 'max',
-      colorFrom: function(c) { return c.raw ? col(c.raw.from) : '#64748b'; },
+      // the stand-in for the export's start is drawn by no one: barFlowTaper draws its flows from the house
+      colorFrom: function(c) { return !c.raw ? '#64748b' : (d.nodes[c.raw.from] || {}).proxy ? 'rgba(0,0,0,0)' : col(c.raw.from); },
       colorTo: function(c) { return c.raw ? col(c.raw.to) : '#64748b'; },
       colorMode: 'gradient', alpha: 0.55, borderWidth: 0, nodeWidth: 12, nodePadding: 14,
       nodeLabels: {color: th.tooltipTitle, font: {size: 11}},
       font: {size: 11}
     }]},
+    plugins: d.nodes.xsrc && d.nodes.xsrc.proxy ? [barFlowTaper(col('s:electricity_main'), col)] : [],
     options: {
       responsive: true, maintainAspectRatio: false, animation: barPdfLight ? false : undefined,
       plugins: {legend: {display: false}, tooltip: {
@@ -2889,6 +2933,10 @@ function barFlowDraw(aggList) {
                 barFlowFmt(dn.credit, 1) + ' back:\n' + barFlowFmt(dn.gross, 1) + ' \u2212 ' + barFlowFmt(dn.credit, 1) +
                 ' = ' + barFlowFmt(dn.net, 1) + ', its net cost.';
             }
+            if (r.to.indexOf('sb:') === 0 || r.from.indexOf('sb:') === 0) {
+              var sbn = d.nodes[r.to.indexOf('sb:') === 0 ? r.to : r.from];
+              return sbn.days + ' day' + (sbn.days === 1 ? '' : 's') + ' at ' + sbn.rate + 'p a day, inc VAT.';
+            }
             if (r.to === 'paid_export') return 'Paid to export ' + barFlowFmt(r._v[0], 0) + ' at a negative export price.';
             if (r.to === 'x:other') return 'Other export: ' + d.xother.map(function(n) { return barBrLabel(n) + ' ' + barFlowFmt(d.xb[n][i], i); }).join(', ') +
               '\nExport is energy EMT did not meter coming in: solar or a battery.';
@@ -2905,6 +2953,62 @@ function barFlowDraw(aggList) {
     }
   });
 }
+// The export's flows drawn from the house's own box (barFlowExportEnds): each flow out of the stand-in
+// `xsrc` starts on its share of the house's height — the house's slices in the flows' order, top to
+// bottom — and ends where the plugin put it, on its band or the Export bar, the edges curved as the
+// plugin curves its own. Drawn before the plugin's nodes and labels, so a label stays on top; the
+// plugin's own drawing of these flows is turned off, and their hover follows the shape drawn.
+// `house` is the house's colour, `col(key)` a node's.
+var FLOW_TAPER_STEPS = 24;
+function barFlowTaperPath(xs, ys0, ys1, xt, yt0, yt1) {
+  // [[x, y]…]: the top edge out, the bottom edge back; each a cubic with both handles at the mid x
+  var top = [], bot = [], mx = (xs + xt) / 2;
+  function at(t, a, b) {
+    var u = 1 - t;
+    return [u * u * u * xs + 3 * u * u * t * mx + 3 * u * t * t * mx + t * t * t * xt,
+            u * u * u * a + 3 * u * u * t * a + 3 * u * t * t * b + t * t * t * b];
+  }
+  for (var k = 0; k <= FLOW_TAPER_STEPS; k++) { top.push(at(k / FLOW_TAPER_STEPS, ys0, yt0)); bot.push(at(k / FLOW_TAPER_STEPS, ys1, yt1)); }
+  return top.concat(bot.reverse());
+}
+function barFlowInPoly(p, x, y) {
+  for (var k = 0, j = p.length - 1, inside = false; k < p.length; j = k++) {
+    if ((p[k][1] > y) !== (p[j][1] > y) && x < (p[j][0] - p[k][0]) * (y - p[k][1]) / (p[j][1] - p[k][1]) + p[k][0]) inside = !inside;
+  }
+  return inside;
+}
+function barFlowTaper(house, col) {
+  return {
+    id: 'emtFlowTaper',
+    beforeDatasetsDraw: function(chart) {
+      var meta = chart.getDatasetMeta(0), nodes = (meta.controller && meta.controller._nodes) || new Map();
+      var hn = nodes.get('s:electricity_main'), ys = meta.yScale;
+      var into = (meta.data || []).filter(function(el) { return el.to && el.to.key === 's:electricity_main'; })[0];
+      var outs = (meta.data || []).filter(function(el) { return el.from && el.from.key === 'xsrc'; })
+        .sort(function(a, b) { return a.y2 - b.y2; });
+      if (!hn || !into || !outs.length || !ys) return;
+      var x = into.x2 + 12, top = ys.getPixelForValue(hn.y);
+      var h = Math.abs(ys.getPixelForValue(hn.y + Math.max(hn.in, hn.out)) - top);
+      var sum = outs.reduce(function(t, el) { return t + el.height; }, 0) || 1, at = top, c = chart.ctx;
+      c.save();
+      outs.forEach(function(el) {
+        var dh = h * el.height / sum, poly = barFlowTaperPath(x, at, at + dh, el.x2, el.y2, el.y2 + el.height);
+        at += dh;
+        var g = c.createLinearGradient(x, 0, el.x2, 0);
+        g.addColorStop(0, house); g.addColorStop(1, col(el.to.key));
+        c.globalAlpha = 0.55; c.fillStyle = g;
+        c.beginPath(); c.moveTo(poly[0][0], poly[0][1]);
+        poly.forEach(function(q) { c.lineTo(q[0], q[1]); });
+        c.closePath(); c.fill();
+        var mid = poly[FLOW_TAPER_STEPS >> 1], mid2 = poly[poly.length - 1 - (FLOW_TAPER_STEPS >> 1)];
+        el.draw = function() {};
+        el.inRange = function(mx, my) { return barFlowInPoly(poly, mx, my); };
+        el.getCenterPoint = el.tooltipPosition = function() { return {x: mid[0], y: (mid[1] + mid2[1]) / 2}; };
+      });
+      c.restore();
+    }
+  };
+}
 function barFlowBuildTable(tbl, aggList) {
   var d = barFlowData(aggList);
   var html = '<thead><tr><th>From</th><th>To</th><th>kWh</th><th>Cost</th><th>CO₂</th></tr></thead><tbody>';
@@ -2914,7 +3018,8 @@ function barFlowBuildTable(tbl, aggList) {
   // credit flow is left out: its £ is already in its band's row, negative
   d.flows.slice().sort(function(a, b) { return at(a.from) - at(b.from) || at(a.to) - at(b.to); })
     .forEach(function(f) {
-      if (f.credit || (Math.abs(f.v[0]) < 1e-9 && Math.abs(f.v[1]) < 1e-9)) return;
+      if (f.credit || (f.to === 'export' && f.from.indexOf('x:') === 0) || (f.to === 'standing' && f.from.indexOf('sb:') === 0) ||
+          (Math.abs(f.v[0]) < 1e-9 && Math.abs(f.v[1]) < 1e-9)) return;
       html += '<tr><td><span class="bar-legend-dot" style="background:' + ((d.nodes[f.from] || {}).color || '#64748b') +
         ';margin-right:5px;"></span>' + name(f.from) + '</td><td>' + name(f.to) + '</td><td>' + f.v[0].toFixed(3) +
         ' kWh</td><td>' + barFlowFmt(f.v[1], 1) + '</td><td>' + (f.v[2] > 0 ? barFlowFmt(f.v[2], 2) : '—') + '</td></tr>';
@@ -3066,6 +3171,12 @@ function barAggRows(filterFn) {
   var _aiNum = 0, _aiTp = 0, _aiHasData = false;
   filtered.forEach(function(row) {
     result.standing  += row.standing  || 0;
+    // the day's standing charge by its rate, p/day to the hundredth: Flow bands it (19 Nov 2026) — {rate: [£, days]}
+    if (row.standing > 0) {
+      var _sk = (Math.round(row.standing * 10000) / 100).toFixed(2), _sb = result.standingBy || (result.standingBy = {});
+      var _sa = _sb[_sk] || (_sb[_sk] = [0, 0]);
+      _sa[0] += row.standing; _sa[1] += 1;
+    }
     result.imp_kwh   += row.imp_kwh   || 0;
     result.exp_kwh   += row.exp_kwh   || 0;
     result.imp_cost  += row.imp_cost  || 0;
@@ -4277,14 +4388,27 @@ function barAccShowTariffs() {
   return !!(barTariffs && barTariffs.length) && !!cb && cb.checked;
 }
 // The days a tariff dot marks: each agreement's start, import and export (16 Nov 2026, the user), and each
-// price change inside it (barTariffChangeDays) — [{a, iso, change}]
+// price change inside it (barTariffChangeDays) — [{a, iso, change}]. A tariff whose prices move by the
+// half-hour or the day (Agile, Tracker) marks its start only (19 Nov 2026, the user): a dot a day says nothing.
 function barAccTariffDays() {
   var today = new Date().toISOString().slice(0, 10), out = [];
   barTariffs.filter(function(a) { return a.from; }).forEach(function(a) {
     out.push({a: a, iso: a.from, change: false});
+    if (barTariffPricesMove(a)) return;
     barTariffChangeDays(a, today).forEach(function(d) { out.push({a: a, iso: d, change: true}); });
   });
   return out;
+}
+// Whether an agreement's prices move by the half-hour or the day, so its price changes are not marked: a
+// unit rate stored as `dynamic` (Agile, Agile Outgoing — tariff_prices keeps no value for it), or price
+// changes on average under BAR_TARIFF_MOVING_DAYS apart (Tracker, a price a day). A fixed or variable
+// tariff changes a few times a year.
+var BAR_TARIFF_MOVING_DAYS = 7;
+function barTariffPricesMove(a) {
+  if ((a.prices || []).some(function(p) { return p.kind === 'unit' && p.band === 'dynamic'; })) return true;
+  var days = barTariffPriceStarts(a);
+  if (days.length < 3) return false;
+  return (barDayNo(days[days.length - 1]) - barDayNo(days[0])) / (days.length - 1) < BAR_TARIFF_MOVING_DAYS;
 }
 // What a line chart draws: {tariffs: [agreements] | null, eras: [{e, x, end, color}], dots: [{a, iso, x,
 // y, change, color}]} in the x axis' own values (ms on Lifetime, days of the year on Year by year). On
@@ -4294,8 +4418,19 @@ function barAccTariffDays() {
 function barAccOverlays(years, s) {
   var out = {tariffs: null, eras: [], dots: []};
   if (barAccShowTariffs() && barAccView === 'line') {
-    if (barAccMode === 'lifetime') out.tariffs = barTariffs.filter(function(a) { return a.from; });
-    else if (s) {
+    if (barAccMode === 'lifetime') {
+      out.tariffs = barTariffs.filter(function(a) { return a.from; });
+      // and the dots on the line, as Year by year's (19 Nov 2026, the user: mark where a tariff's unit rate
+      // or standing charge changed): at the day's running total, in its year's colour; none before the
+      // line's first point or after its last
+      var life = (s && s.life) || [];
+      if (life.length) barAccTariffDays().forEach(function(t) {
+        var r = {year: +t.iso.slice(0, 4), month: +t.iso.slice(5, 7), day: +t.iso.slice(8, 10)}, x = barAccMs(r), pt = null;
+        life.forEach(function(p) { if (p.x <= x) pt = p; });
+        if (!pt || life[life.length - 1].x < x) return;
+        out.dots.push({a: t.a, iso: t.iso, x: x, y: pt.y, change: t.change, color: barAccYearColor(pt.yr)});
+      });
+    } else if (s) {
       barAccTariffDays().forEach(function(t) {
         var r = {year: +t.iso.slice(0, 4), month: +t.iso.slice(5, 7), day: +t.iso.slice(8, 10)};
         var y = barAccYearOf(r), yi = years.indexOf(y), x = barAccDoy(r);
@@ -4332,7 +4467,7 @@ function barAccOverlayPlugin(ov) {
       c.font = '10px ' + (getComputedStyle(document.body).fontFamily || 'sans-serif');
       c.textBaseline = 'middle';
       // import's band above export's (16 Nov 2026, the user), each alternating its own shades
-      var hasExp = barAccExportLane(ov), n = {imp: 0, exp: 0};
+      var hasExp = barAccExportLane(ov), n = {imp: 0, exp: 0}, today = new Date().toISOString().slice(0, 10);
       var expY = ca.top - (ov.eras.length ? BAR_ERA_CHIP + 4 : 0) - BAR_TARIFF_LANE - 2;
       var impY = expY - (hasExp ? BAR_TARIFF_LANE + 2 : 0);
       (ov.tariffs || []).forEach(function(a) {
@@ -4346,6 +4481,15 @@ function barAccOverlayPlugin(ov) {
         while (label.length > 3 && c.measureText(label).width > room) label = label.slice(0, -2) + '…';
         if (room > 20 && c.measureText(label).width <= room) { c.fillStyle = th.tooltipTitle; c.fillText(label, x0 + 4, laneY + BAR_TARIFF_LANE / 2); }
         bands.push({a: a, x0: x0, x1: x1, y0: laneY, y1: laneY + BAR_TARIFF_LANE});
+        // a tick across the band at each price change inside it, as the bars' minor ticks (19 Nov 2026)
+        if (barTariffPricesMove(a)) return;
+        c.save(); c.globalAlpha = 0.55; c.strokeStyle = th.tooltipTitle; c.lineWidth = 1;
+        barTariffChangeDays(a, today).forEach(function(iso) {
+          var x = xs.getPixelForValue(Date.parse(iso + 'T00:00:00Z'));
+          if (x <= x0 + 1 || x >= x1 - 1) return;
+          c.beginPath(); c.moveTo(x, laneY); c.lineTo(x, laneY + BAR_TARIFF_LANE); c.stroke();
+        });
+        c.restore();
       });
       var cy = ca.top - BAR_ERA_CHIP / 2 - 2;
       ov.eras.forEach(function(m) {
@@ -4390,7 +4534,8 @@ function barAccOverlayPlugin(ov) {
         barTariffShow(dt.d.a, e.native, dt.d.iso); return false;
       }
       var b = (chart._emtAccBands || []).find(function(q) { return e.x >= q.x0 && e.x < q.x1 && e.y >= q.y0 && e.y <= q.y1; });
-      if (b) { barTariffShow(b.a, e.native, null); return false; }
+      // the prices in force on the day under the pointer: the band now marks where they change
+      if (b) { barTariffShow(b.a, e.native, new Date(chart.scales.x.getValueForPixel(e.x)).toISOString().slice(0, 10)); return false; }
       barTariffHide();
     }
   };

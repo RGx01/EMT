@@ -206,6 +206,11 @@
               title="Rebuild the database file to reclaim the space deleted or updated rows left. The engine pauses briefly.">🗜️ Compact now</button>
       <button class="btn btn-secondary" onclick="openSupport()"
               title="One zip to send to whoever is helping you: the log, a summary and your data for a span">🩺 Make a support file…</button>
+      <button class="btn btn-secondary" onclick="themeDownload('')" id="btn-theme-down"
+              title="Your home's eras and every chart colour and rate line, as a file to keep, share, or import on another EMT">🎨 Download eras &amp; colours</button>
+      <button class="btn btn-secondary" onclick="document.getElementById('theme-input').click()" id="btn-theme-up"
+              title="Apply an eras and colours file: its eras replace yours; each colour goes to the meter of the same kind">🎨 Import eras &amp; colours…</button>
+      <input type="file" id="theme-input" accept=".json,application/json" style="display:none" onchange="themeImport(this.files[0]); this.value='';">
     </div>
   </div>
   <div id="dm-storage-line" style="font-size:12px;color:var(--muted);margin-bottom:10px;">Loading…</div>
@@ -215,8 +220,9 @@
        margin-top:12px;text-align:center;font-size:13px;color:var(--muted);cursor:pointer;transition:border-color 0.15s;"
        ondragover="onDragOver(event)" ondragleave="onDragLeave(event)" ondrop="onDrop(event)"
        onclick="document.getElementById('file-input').click()">
-    📂 Drop a backup zip or <code>blocks.db</code> here to restore it, or click to choose one
-    <input type="file" id="file-input" accept=".zip,.db" style="display:none" onchange="onFileSelect(this.files); this.value='';">
+    📂 Drop a backup zip or <code>blocks.db</code> here to restore it, or an eras &amp; colours <code>.json</code> to
+    import it, or click to choose one
+    <input type="file" id="file-input" accept=".zip,.db,.json" style="display:none" onchange="onFileSelect(this.files); this.value='';">
   </div>
   <div style="font-size:11px;color:var(--muted);margin-top:8px;">
     Kept in <code id="backup-path-display" style="font-family:var(--mono);">/share/energy_meter_tracker_backup/backups/</code>
@@ -283,9 +289,69 @@ let _pendingZipFile = null;
 // A dropped or chosen file opens the restore at once (21 Oct 2026, the user: a blocks.db waited
 // for an Import button below the fold) — a backup zip or a blocks.db alike.
 function onFileSelect(files) {
+  var j = Array.from(files || []).filter(function (x) { return /\.json$/i.test(x.name); })[0];
+  if (j) { themeImport(j); return; }              // an eras and colours file: not a restore
   var f = Array.from(files || []).filter(function (x) { return /\.(zip|db)$/i.test(x.name); })[0];
-  if (!f) { if ((files || []).length) showError('Choose a backup .zip or a blocks.db.'); return; }
+  if (!f) { if ((files || []).length) showError('Choose a backup .zip, a blocks.db, or an eras & colours .json.'); return; }
   showZipConfirm(f);
+}
+
+// ── Eras and colours (19 Nov 2026, the user: "share themes to import"; customisations.py) ──
+// Download: this database's, or a kept backup's (`name`), as a .json file. Import: what the file would
+// change, shown first; its eras replace these, each colour goes to the meter of the same kind.
+async function themeDownload(name) {
+  try {
+    var r = await fetch(apiUrl('/api/customisations' + (name ? '?backup=' + encodeURIComponent(name) : '')));
+    if (!r.ok) {
+      var e = await r.json().catch(function () { return {}; });
+      throw new Error(e.error || ('HTTP ' + r.status));
+    }
+    var m = /filename="([^"]+)"/.exec(r.headers.get('Content-Disposition') || '');
+    var url = URL.createObjectURL(await r.blob()), a = document.createElement('a');
+    a.href = url; a.download = m ? m[1] : 'emt-eras-and-colours.json';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 10000);
+    showSuccess('⬇ Eras & colours downloaded' + (name ? ' from ' + _backupLabel(name) : '') + '.');
+  } catch (e) { showError('Could not make the eras & colours file: ' + e.message); }
+}
+function _backupLabel(name) { var w = _backupWhat(name); return w ? 'the backup ' + w : name; }
+function _themePost(file, apply) {
+  return fetch(apiUrl('/api/customisations/import'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({file: file, apply: !!apply})}).then(function (r) { return r.json(); });
+}
+// The preview's words: what replaces what
+function themePlanHtml(p) {
+  var h = '';
+  if (p.eras == null) h += '<p>Eras: the file has none, so yours stay as they are.</p>';
+  else h += '<p>Eras: your ' + p.eras_now + ' era' + (p.eras_now === 1 ? '' : 's') + ' will be replaced by the file\'s ' +
+            p.eras + '.</p>';
+  if (p.styles.length) {
+    h += '<p style="margin-bottom:4px;">Colours:</p><ul style="margin:0 0 8px 18px;padding:0;">' + p.styles.map(function (s) {
+      return '<li><span style="display:inline-block;width:10px;height:10px;border-radius:2px;vertical-align:middle;margin-right:6px;background:' +
+             _hEsc(s.bar_color || 'transparent') + ';"></span>' + _hEsc(s.to) + (s.from !== s.to ? ' ← ' + _hEsc(s.from) : '') +
+             (s.rate_line ? ' · ' + _hEsc(s.rate_line) + ' rate line' : '') + '</li>';
+    }).join('') + '</ul>';
+  } else h += '<p>Colours: nothing in the file matches a meter here.</p>';
+  if (p.skipped.length) h += '<p style="color:var(--muted);">Not here, so not used: ' + p.skipped.map(_hEsc).join(', ') + '.</p>';
+  if (p.kept.length) h += '<p style="color:var(--muted);">Keep their own colours: ' + p.kept.map(_hEsc).join(', ') + '.</p>';
+  return h;
+}
+async function themeImport(f) {
+  if (!f) return;
+  hideAlerts();
+  var file;
+  try { file = JSON.parse(await f.text()); }
+  catch (e) { showError(f.name + ' is not an eras & colours file.'); return; }
+  var p = await _themePost(file, false).catch(function (e) { return {ok: false, error: e.message}; });
+  if (!p.ok) { showError(p.error || 'That file could not be read.'); return; }
+  showConfirm({title: 'Import eras & colours from ' + f.name + '?', message: themePlanHtml(p), okLabel: 'Import',
+    onConfirm: function () {
+      _themePost(file, true).then(function (r) {
+        if (!r.ok) throw new Error(r.error || 'The import failed');
+        showSuccess('🎨 Imported: ' + (r.eras == null ? '' : r.eras + ' era' + (r.eras === 1 ? '' : 's') + ', ') +
+                    r.styles.length + ' colour' + (r.styles.length === 1 ? '' : 's') + '. Charts shows them when it next loads.');
+      }).catch(function (e) { showError(e.message); });
+    }});
 }
 
 function showZipConfirm(zipFile) {
@@ -590,6 +656,7 @@ async function loadBackupList() {
         '<td style="' + td + 'text-align:right;font-family:var(--mono);white-space:nowrap;">' + _fmtBytes(z.size) + '</td>' +
         '<td style="' + td + 'text-align:right;white-space:nowrap;">' +
           '<button class="btn btn-secondary btn-sm" onclick="downloadBackup(\'' + zq + '\')">⬇ Download</button> ' +
+          '<button class="btn btn-secondary btn-sm" title="Download this backup\'s eras and chart colours" onclick="themeDownload(\'' + zq + '\')">🎨</button> ' +
           '<button class="btn btn-secondary btn-sm" onclick="restoreFromZip(\'' + zq + '\')">↩ Restore</button> ' +
           '<button class="btn btn-secondary btn-sm" style="color:var(--danger);" onclick="deleteBackup(\'' + zq + '\')">🗑 Delete</button>' +
         '</td></tr>';
