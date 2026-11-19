@@ -13,6 +13,10 @@ internal name for everything before the first public release and never appears i
 - **The Data Management heatmap's key is easier to read.** It now starts at the left, and hovering an item
   shows that colour as a cell of the grid, at the grid's own size, so a hatch looks as it does on the
   heatmap.
+- **The direct port no longer takes Home Assistant's sidebar headers from just anyone.** EMT believed a
+  request came through Home Assistant's sidebar if it said so. Now it believes that only from Home
+  Assistant's own Supervisor; a request to port 8098 is always a direct one. This is the first step
+  towards a login on that port.
 
 ## [2026.11.0b26] — 2026-11-19
 
