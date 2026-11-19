@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b25] — 2026-11-19
 
 - **The Agile cards show your power under the prices.** On the Overview, with a power sensor, the Agile
   import card draws what you imported over the last 24 hours, and the export card what you exported, as a
