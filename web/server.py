@@ -218,15 +218,59 @@ def _first_run_guard():
     return redirect(url_for("welcome_page"))
 
 
+# Home Assistant's ingress reaches an add-on only through the Supervisor, at this address; the
+# Supervisor sets X-Ingress-Path and the X-Remote-User-* headers itself and strips any a client sent,
+# so they can be trusted only on a connection from it (Home Assistant's ingress guide, read 19 Nov 2026).
+SUPERVISOR_ADDR = "172.30.32.2"
+_INGRESS_HEADERS = ("HTTP_X_INGRESS_PATH", "HTTP_X_REMOTE_USER_ID", "HTTP_X_REMOTE_USER_NAME",
+                    "HTTP_X_REMOTE_USER_DISPLAY_NAME")
+
+
+def is_ingress_peer(remote_addr, mode=None) -> bool:
+    """A request is ingress when, on an add-on install, it comes from the Supervisor. Standalone has
+    no Supervisor, so nothing is ingress there, whatever its Docker network's addresses (direct port
+    login design §3.1, §3.5)."""
+    if (mode if mode is not None else os.environ.get("EMT_MODE", "supervised")) == "standalone":
+        return False
+    return (remote_addr or "") == SUPERVISOR_ADDR
+
+
+def _peer_kind(remote_addr) -> str:
+    """What a peer is, for the log, without the address itself: a LAN address is the user's."""
+    a = remote_addr or ""
+    if a == SUPERVISOR_ADDR:
+        return "the Supervisor"
+    if a.startswith("172.30.32.") or a.startswith("172.30.33."):
+        return "the add-on network (%s)" % a          # Home Assistant's own, not the user's
+    if a in ("127.0.0.1", "::1"):
+        return "this machine"
+    return "another address"
+
+
 class IngressMiddleware:
     """
     WSGI middleware that rewrites the PATH_INFO to strip the ingress prefix
     and sets SCRIPT_NAME so Flask url_for() generates correct URLs.
+
+    Only for a request from the Supervisor (`is_ingress_peer`). From anywhere else the ingress
+    headers are dropped before the app sees them: a client on the direct port could send its own,
+    and SCRIPT_NAME is written into every page's links. `environ["emt.ingress"]` says which it was.
     """
     def __init__(self, app):
         self.app = app
+        self._seen = set()
 
     def __call__(self, environ, start_response):
+        peer = environ.get("REMOTE_ADDR", "")
+        ingress = is_ingress_peer(peer)
+        environ["emt.ingress"] = ingress
+        kind = ("ingress" if ingress else "direct", _peer_kind(peer))
+        if kind not in self._seen:                  # once a kind per start: login design §6 check 1
+            self._seen.add(kind)
+            logging.getLogger(__name__).info("server: first %s request from %s", *kind)
+        if not ingress:
+            for h in _INGRESS_HEADERS:
+                environ.pop(h, None)
         ingress_path = environ.get("HTTP_X_INGRESS_PATH", "")
         if ingress_path:
             environ["SCRIPT_NAME"] = ingress_path
