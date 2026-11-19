@@ -4978,7 +4978,8 @@ _HEALTH_TTL_S = 600
 # 7: an IMPORTED bill, or no bill past Octopus's two years, is `imported` (27 Oct 2026).
 # 8: a published tariff's half-hour is final by its agreement's rate, at any age (28 Oct 2026).
 # 9: a half-hour on no Octopus agreement, or another supplier's period, is `no_agreement` (G1c).
-_HEALTH_FILE_V = 9
+# 10: an imported half-hour with no export figure waits until the window passes, then `no_data`.
+_HEALTH_FILE_V = 10
 # While the data keeps moving — a refill rebuilding the devices writes for minutes — every page
 # poll found the token moved and counted again, two more waiting behind it to do the same
 # (staging, 21 Oct 2026: three requests in the count, the engine loop held 11.4 s). A request that
