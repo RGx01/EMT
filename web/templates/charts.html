@@ -2562,15 +2562,14 @@ function barBrBuildTable(tbl, aggList) {
 }
 
 // ── Flow (docs/history/design/EMT-v5_flow_design.md) ─────────────────────────────────────────────────────
-// The span on screen as one Sankey: grid → rate band → the house and each device, export from a node of
-// its own through its rate bands, and in £ the standing charge — from the rate brackets the view's buckets already sum (`agg.br`,
+// The span on screen as one Sankey: grid → rate band → the house and each device, export out of the
+// house, and in £ the standing charge — from the rate brackets the view's buckets already sum (`agg.br`,
 // [kWh, £, g] per series and bracket). The bands are Rate brackets' 2.5p brackets in its colours; one
 // under FLOW_OTHER_SHARE of the span's import, in the metric shown, goes into Other. The house's export
-// goes out through its own rate bands (export's colours; Other under 2% of the export), in every metric
-// (19 Nov 2026; £ only before). A flow is drawn
+// goes out through its own rate bands (export's colours; Other under 2% of the export). A flow is drawn
 // where it is above 0, so in £ a negative price is turned round (Flow export bands design, 4 Nov 2026):
 // the credit a plunge paid goes from whoever used it to Plunge credit, and a negative export price's
-// cost from the export to Paid to export — `credit` flows, £ only, beside the export bands.
+// cost from the house to Paid to export — `credit` flows, £ only, beside the export bands.
 var FLOW_OTHER_SHARE = 0.02;
 var FLOW_PLUGIN = 'https://cdn.jsdelivr.net/npm/chartjs-chart-sankey@0.19.1/dist/chartjs-chart-sankey.min.js';
 var _barFlowLib = null;
@@ -2696,12 +2695,13 @@ function barFlowData(aggList) {
       });
     });
   });
-  var i = barFlowIndex(), pounds = i === 1;
+  var i = barFlowIndex();
   var dest = Object.keys(br).filter(function(s) { return s !== 'meter' && s !== 'export'; });
   // the right column in the Devices view's order, the house first
   var order = ['electricity_main'].concat(barMeters.filter(function(m) { return m.is_sub; }).map(function(m) { return m.id; }));
   dest.sort(function(a, b) { var x = order.indexOf(a), y = order.indexOf(b); return (x < 0 ? 99 : x) - (y < 0 ? 99 : y); });
   var standingAll = barIncStanding() ? aggList.reduce(function(t, agg) { return t + barStandingVal(agg); }, 0) : 0;
+  if (i !== 1) return barFlowPlain(br, dest, i, standingAll);
   var band = {};                              // a bracket's inflow: what leaves it, so every node balances
   dest.forEach(function(s) {
     Object.keys(br[s]).forEach(function(n) {
@@ -2719,15 +2719,14 @@ function barFlowData(aggList) {
   if (other.length) nodes['b:other'] = {label: 'Other', color: '#9ca3af', column: 1, priority: 999};
   // each destination named with its net £ (5 Nov 2026, the user: a plunge's credit leaves the device as a
   // flow, so the block drawn is what it cost before the credit; the net was written nowhere). `name` is the
-  // plain name, for the table; gross, credit and net for the credit flow's hover. In kWh and CO₂, the name.
+  // plain name, for the table; gross, credit and net for the credit flow's hover.
   dest.forEach(function(s, j) {
     var gross = 0, credit = 0, nm = barFlowSeriesLabel(s);
-    if (!pounds) { nodes['s:' + s] = {label: nm, name: nm, color: barFlowSeriesColor(s), column: 2, priority: j}; return; }
     Object.keys(br[s]).forEach(function(n) { var c = br[s][n][1]; if (c > 0) gross += c; else credit -= c; });
     // in pence, each before the sum, so the hover's gross − credit = net as written (a penny out otherwise)
     gross = Math.round(gross * 100) / 100; credit = Math.round(credit * 100) / 100;
     var net = Math.round((gross - credit) * 100) / 100;
-    nodes['s:' + s] = {label: nm + ' · ' + barFlowFmt(net, 1), name: nm, color: barFlowSeriesColor(s),
+    nodes['s:' + s] = {label: nm + ' \u00b7 ' + barFlowFmt(net, 1), name: nm, color: barFlowSeriesColor(s),
                        column: 2, priority: j, gross: gross, credit: credit, net: net};
   });
   var flows = {};
@@ -2736,21 +2735,16 @@ function barFlowData(aggList) {
     for (var k = 0; k < 3; k++) f.v[k] += v[k];
     if (credit) f.credit = true;
   }
-  // a negative £, turned round: its kWh and grams with the £ it moved, drawn in £ only — in kWh and CO₂
-  // a credit flow would count the band's kWh and grams twice, so none is made there
+  // a negative £, turned round: its kWh and grams with the £ it moved, drawn in £ only
   function flip(v) { return [v[0], -v[1], v[2]]; }
   dest.forEach(function(s) {
     Object.keys(br[s]).forEach(function(n) {
       var v = br[s][n];
       add('grid', key(+n), v); add(key(+n), 's:' + s, v);
-      if (pounds && v[1] < 0) add('s:' + s, 'plunge', flip(v), true);
+      if (v[1] < 0) add('s:' + s, 'plunge', flip(v), true);
     });
   });
-  // the export, by its own rate bands, out of its own node (19 Nov 2026, the user: export's height was not
-  // on import's scale). It left the house until then, and a node is drawn at the larger of its in and out,
-  // so the house stood as tall as the export, not its own import. Export is energy EMT did not meter
-  // coming in, so it has no inflow: a node of its own, at the foot of the destinations' column. In CO₂ it
-  // is what the export displaced (5 Nov 2026, the user), green.
+  // the export, by its own rate bands
   var xb = br.export || {};
   var xns = Object.keys(xb).map(Number).sort(function(a, b) { return a - b; });
   var ex = [0, 0, 0];
@@ -2758,23 +2752,21 @@ function barFlowData(aggList) {
   var xtotal = xns.reduce(function(t, n) { return t + Math.max(0, xb[n][i]); }, 0);
   var xother = xns.filter(function(n) { return xb[n][i] > 0 && xb[n][i] < FLOW_OTHER_SHARE * xtotal; });
   function xkey(n) { return xother.indexOf(n) >= 0 ? 'x:other' : 'x:' + n; }
-  if (xns.length)
-    nodes.export = i === 2 ? {label: 'Displaced by export', color: FLOW_DISPLACED_COLOR, column: 2, priority: 999}
-                           : {label: 'Export', color: barExportColor, column: 2, priority: 999};
   xns.filter(function(n) { return xother.indexOf(n) < 0; }).forEach(function(n, j) {
     nodes['x:' + n] = {label: 'Export ' + barBrLabel(n), color: barBrColor(n, xns, 'export'), column: 3, priority: j};
   });
   if (xother.length) nodes['x:other'] = {label: 'Other export', color: '#9ca3af', column: 3, priority: 899};
   xns.forEach(function(n) {
-    add('export', xkey(n), xb[n]);
-    if (pounds && xb[n][1] < 0) add('export', 'paid_export', flip(xb[n]), true);
+    add('xsrc', xkey(n), xb[n]);
+    add(xkey(n), 'export', xb[n]);                   // the bands come back together in one Export bar
+    if (xb[n][1] < 0) add('xsrc', 'paid_export', flip(xb[n]), true);
   });
   if (Object.keys(flows).some(function(k) { return flows[k].to === 'plunge'; }))
     nodes.plunge = {label: 'Plunge credit', color: barBrColor(-1, [-1], 'import'), column: 3, priority: 900};
   if (Object.keys(flows).some(function(k) { return flows[k].to === 'paid_export'; }))
     nodes.paid_export = {label: 'Paid to export', color: barBrColor(-1, [-1], 'export'), column: 3, priority: 901};
   var standing = standingAll;
-  if (pounds && standing > 0) {
+  if (standing > 0) {
     nodes.standing = {label: 'Standing charge', color: '#4b5563', column: 2, priority: 998};
     add('grid', 'standing', [0, standing, 0]);
   }
@@ -2782,15 +2774,66 @@ function barFlowData(aggList) {
   ns.forEach(function(n) { for (var k = 0; k < 3; k++) imp[k] += band[n][k]; });
   var credit = ns.reduce(function(t, n) { return t + Math.min(0, band[n][1]); }, 0);
   var paid = xns.reduce(function(t, n) { return t + Math.min(0, xb[n][1]); }, 0);
+  var totals = {imp: imp, exp: ex, standing: standing, credit: credit, paid: paid};
+  if (xns.length) barFlowExportEnds(nodes, br, i, ex, 2, 4);
+  barFlowGridLabel(nodes, totals, i);
   return {nodes: nodes, flows: Object.values(flows), other: other, ns: ns, band: band,
-          xother: xother, xb: xb, totals: {imp: imp, exp: ex, standing: standing, credit: credit, paid: paid}};
+          xother: xother, xb: xb, totals: totals};
 }
-// kWh and CO₂ were drawn without the bands from 5 Nov 2026 (the user then: "should we really care about
-// cost rate bands or just show the flow of kWh"); on 19 Nov 2026 the user asked for the breakdowns cost
-// shows in them too, so every metric is drawn through the same bands, each sized in its own measure — a
-// band's kWh, or its grams. The hover keeps all three measures. In CO₂ the export is what it displaced:
-// at each half-hour's grid average, or Settings' custom figure — not carbon through the house.
+// The export's two ends (19 Nov 2026, the user: "the export should come from the house flow … it should
+// start as the house size and expand or contract to the export size", and "for export the rates come back
+// together with a bar"). The plugin draws a flow one width end to end and a node at the larger of its in
+// and out, so a house that exported more than it imported stood as tall as its export. The export's flows
+// leave `xsrc` instead: a stand-in at the foot of the house's column, sized at the export so the layout
+// and the one scale hold it, drawn by no one — barFlowTaper draws each of its flows from the house's own
+// box, its slice of the house's height, widening or narrowing to where it lands. Where the house imported
+// nothing in the metric shown there is no box to start from, so the stand-in is drawn as the house.
+// `export` is the bar the export ends in, named with its total; `col` the house's column, `last` the bar's.
+function barFlowExportEnds(nodes, br, i, ex, col, last) {
+  var nm = barFlowSeriesLabel('electricity_main'), h = 0;
+  Object.keys(br.electricity_main || {}).forEach(function(n) { h += br.electricity_main[n][i] || 0; });
+  var drawn = nodes['s:electricity_main'] && h > 0;
+  nodes.xsrc = drawn ? {label: '', name: nm, color: barFlowSeriesColor('electricity_main'), column: col + 0.5, priority: 999, proxy: true}
+                     : {label: nm, name: nm, color: barFlowSeriesColor('electricity_main'), column: col, priority: -1};
+  nodes.export = {label: (i === 2 ? 'Displaced by export' : 'Export') + ' \u00b7 ' + barFlowFmt(ex[i], i),
+                  name: i === 2 ? 'Displaced by export' : 'Export',
+                  color: i === 2 ? FLOW_DISPLACED_COLOR : barExportColor, column: last, priority: 0};
+}
+// The grid named with the import it brought, in the metric shown, as the head says it (19 Nov 2026, the user)
+function barFlowGridLabel(nodes, t, i) {
+  nodes.grid.name = 'Grid';
+  nodes.grid.label = 'Grid \u00b7 ' + barFlowFmt(t.imp[i] + (i === 1 ? t.standing : 0), i);
+}
+// kWh and CO₂ (5 Nov 2026, the user: "should we really care about cost rate bands or just show the flow
+// of kWh (and Carbon)"): the grid straight to the house and each device, summed over the brackets, and
+// the house's export as one flow — a price says nothing about kWh or grams. The hover keeps all three
+// measures, summed. In CO₂ the export goes out of the house to "Displaced by export", green (5 Nov
+// 2026, the user: "shouldn't it show export displacement?"): its grams are grid carbon it displaced —
+// at each half-hour's grid average, or Settings' custom figure — not carbon through the house, and the
+// hover says so. (Until then it was kept but not drawn.)
 var FLOW_DISPLACED_COLOR = '#16a34a';
+function barFlowPlain(br, dest, i, standing) {
+  function sum(o) {
+    var a = [0, 0, 0];
+    Object.keys(o || {}).forEach(function(n) { for (var k = 0; k < 3; k++) a[k] += o[n][k] || 0; });
+    return a;
+  }
+  var nodes = {grid: {label: 'Grid', color: '#64748b', column: 0, priority: 0}}, flows = [], imp = [0, 0, 0];
+  dest.forEach(function(s, j) {
+    var v = sum(br[s]);
+    for (var k = 0; k < 3; k++) imp[k] += v[k];
+    nodes['s:' + s] = {label: barFlowSeriesLabel(s), color: barFlowSeriesColor(s), column: 1, priority: j};
+    flows.push({from: 'grid', to: 's:' + s, v: v});
+  });
+  var ex = sum(br.export);
+  if (ex[0] > 0 || ex[1] !== 0) {
+    barFlowExportEnds(nodes, br, i, ex, 1, 2);
+    flows.push({from: 'xsrc', to: 'export', v: ex});
+  }
+  var totals = {imp: imp, exp: ex, standing: standing, credit: 0, paid: 0};
+  barFlowGridLabel(nodes, totals, i);
+  return {nodes: nodes, flows: flows, other: [], ns: [], band: {}, xother: [], xb: {}, plain: true, totals: totals};
+}
 function barFlowHead(d) {
   var i = barFlowIndex(), t = d.totals, el = document.getElementById('bar-flow-head');
   if (!el) return;
@@ -2837,12 +2880,14 @@ function barFlowDraw(aggList) {
     type: 'sankey',
     data: {datasets: [{
       data: data, labels: labels, column: column, priority: priority, size: 'max',
-      colorFrom: function(c) { return c.raw ? col(c.raw.from) : '#64748b'; },
+      // the stand-in for the export's start is drawn by no one: barFlowTaper draws its flows from the house
+      colorFrom: function(c) { return !c.raw ? '#64748b' : (d.nodes[c.raw.from] || {}).proxy ? 'rgba(0,0,0,0)' : col(c.raw.from); },
       colorTo: function(c) { return c.raw ? col(c.raw.to) : '#64748b'; },
       colorMode: 'gradient', alpha: 0.55, borderWidth: 0, nodeWidth: 12, nodePadding: 14,
       nodeLabels: {color: th.tooltipTitle, font: {size: 11}},
       font: {size: 11}
     }]},
+    plugins: d.nodes.xsrc && d.nodes.xsrc.proxy ? [barFlowTaper(col('s:electricity_main'), col)] : [],
     options: {
       responsive: true, maintainAspectRatio: false, animation: barPdfLight ? false : undefined,
       plugins: {legend: {display: false}, tooltip: {
@@ -2874,10 +2919,10 @@ function barFlowDraw(aggList) {
             if (r.to === 'paid_export') return 'Paid to export ' + barFlowFmt(r._v[0], 0) + ' at a negative export price.';
             if (r.to === 'x:other') return 'Other export: ' + d.xother.map(function(n) { return barBrLabel(n) + ' ' + barFlowFmt(d.xb[n][i], i); }).join(', ') +
               '\nExport is energy EMT did not meter coming in: solar or a battery.';
-            if (r.from === 'export' && i === 2)
+            if (r.to === 'export' && i === 2)
               return 'Grid carbon your export displaced: its kWh at the grid\'s average for each half-hour,\n' +
                      'or at the figure set in Settings → Export Carbon Offset. Not carbon through your house.';
-            if (r.to.indexOf('x:') === 0) return 'Export is energy EMT did not meter coming in: solar or a battery.';
+            if (r.to.indexOf('x:') === 0 || r.to === 'export') return 'Export is energy EMT did not meter coming in: solar or a battery.';
             if (r.to === 'b:other' || r.from === 'b:other') {
               return 'Other: ' + d.other.map(function(n) { return barBrLabel(n) + ' ' + barFlowFmt(d.band[n][i], i); }).join(', ');
             }
@@ -2886,6 +2931,62 @@ function barFlowDraw(aggList) {
         }}}
     }
   });
+}
+// The export's flows drawn from the house's own box (barFlowExportEnds): each flow out of the stand-in
+// `xsrc` starts on its share of the house's height — the house's slices in the flows' order, top to
+// bottom — and ends where the plugin put it, on its band or the Export bar, the edges curved as the
+// plugin curves its own. Drawn before the plugin's nodes and labels, so a label stays on top; the
+// plugin's own drawing of these flows is turned off, and their hover follows the shape drawn.
+// `house` is the house's colour, `col(key)` a node's.
+var FLOW_TAPER_STEPS = 24;
+function barFlowTaperPath(xs, ys0, ys1, xt, yt0, yt1) {
+  // [[x, y]…]: the top edge out, the bottom edge back; each a cubic with both handles at the mid x
+  var top = [], bot = [], mx = (xs + xt) / 2;
+  function at(t, a, b) {
+    var u = 1 - t;
+    return [u * u * u * xs + 3 * u * u * t * mx + 3 * u * t * t * mx + t * t * t * xt,
+            u * u * u * a + 3 * u * u * t * a + 3 * u * t * t * b + t * t * t * b];
+  }
+  for (var k = 0; k <= FLOW_TAPER_STEPS; k++) { top.push(at(k / FLOW_TAPER_STEPS, ys0, yt0)); bot.push(at(k / FLOW_TAPER_STEPS, ys1, yt1)); }
+  return top.concat(bot.reverse());
+}
+function barFlowInPoly(p, x, y) {
+  for (var k = 0, j = p.length - 1, inside = false; k < p.length; j = k++) {
+    if ((p[k][1] > y) !== (p[j][1] > y) && x < (p[j][0] - p[k][0]) * (y - p[k][1]) / (p[j][1] - p[k][1]) + p[k][0]) inside = !inside;
+  }
+  return inside;
+}
+function barFlowTaper(house, col) {
+  return {
+    id: 'emtFlowTaper',
+    beforeDatasetsDraw: function(chart) {
+      var meta = chart.getDatasetMeta(0), nodes = (meta.controller && meta.controller._nodes) || new Map();
+      var hn = nodes.get('s:electricity_main'), ys = meta.yScale;
+      var into = (meta.data || []).filter(function(el) { return el.to && el.to.key === 's:electricity_main'; })[0];
+      var outs = (meta.data || []).filter(function(el) { return el.from && el.from.key === 'xsrc'; })
+        .sort(function(a, b) { return a.y2 - b.y2; });
+      if (!hn || !into || !outs.length || !ys) return;
+      var x = into.x2 + 12, top = ys.getPixelForValue(hn.y);
+      var h = Math.abs(ys.getPixelForValue(hn.y + Math.max(hn.in, hn.out)) - top);
+      var sum = outs.reduce(function(t, el) { return t + el.height; }, 0) || 1, at = top, c = chart.ctx;
+      c.save();
+      outs.forEach(function(el) {
+        var dh = h * el.height / sum, poly = barFlowTaperPath(x, at, at + dh, el.x2, el.y2, el.y2 + el.height);
+        at += dh;
+        var g = c.createLinearGradient(x, 0, el.x2, 0);
+        g.addColorStop(0, house); g.addColorStop(1, col(el.to.key));
+        c.globalAlpha = 0.55; c.fillStyle = g;
+        c.beginPath(); c.moveTo(poly[0][0], poly[0][1]);
+        poly.forEach(function(q) { c.lineTo(q[0], q[1]); });
+        c.closePath(); c.fill();
+        var mid = poly[FLOW_TAPER_STEPS >> 1], mid2 = poly[poly.length - 1 - (FLOW_TAPER_STEPS >> 1)];
+        el.draw = function() {};
+        el.inRange = function(mx, my) { return barFlowInPoly(poly, mx, my); };
+        el.getCenterPoint = el.tooltipPosition = function() { return {x: mid[0], y: (mid[1] + mid2[1]) / 2}; };
+      });
+      c.restore();
+    }
+  };
 }
 function barFlowBuildTable(tbl, aggList) {
   var d = barFlowData(aggList);
@@ -2896,7 +2997,8 @@ function barFlowBuildTable(tbl, aggList) {
   // credit flow is left out: its £ is already in its band's row, negative
   d.flows.slice().sort(function(a, b) { return at(a.from) - at(b.from) || at(a.to) - at(b.to); })
     .forEach(function(f) {
-      if (f.credit || (Math.abs(f.v[0]) < 1e-9 && Math.abs(f.v[1]) < 1e-9)) return;
+      if (f.credit || (f.to === 'export' && f.from.indexOf('x:') === 0) ||
+          (Math.abs(f.v[0]) < 1e-9 && Math.abs(f.v[1]) < 1e-9)) return;
       html += '<tr><td><span class="bar-legend-dot" style="background:' + ((d.nodes[f.from] || {}).color || '#64748b') +
         ';margin-right:5px;"></span>' + name(f.from) + '</td><td>' + name(f.to) + '</td><td>' + f.v[0].toFixed(3) +
         ' kWh</td><td>' + barFlowFmt(f.v[1], 1) + '</td><td>' + (f.v[2] > 0 ? barFlowFmt(f.v[2], 2) : '—') + '</td></tr>';

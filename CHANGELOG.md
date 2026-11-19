@@ -7,13 +7,12 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
-- **Flow shows the price bands in kWh and CO₂ too.** Usage Stats → Flow showed your import by the
-  price it was charged, and your export by the price it earned, only in Cost; kWh and CO₂ now go
-  through the same bands, each sized in its own measure.
-- **Flow draws export on the same scale as import.** Export flowed out of the house, and the chart
-  drew the house as tall as whichever was larger, its import or the export, so a house that imported
-  little looked as big as the export. Export now has a box of its own below the devices, and every
-  box is as tall as its own figure.
+- **Flow shows the house at its own size, and the export growing out of it.** The house's box was
+  drawn as tall as the export when the export was larger, so a house that imported little looked as
+  big as what it exported. The house is now as tall as its own import, and the export flows out of it,
+  widening or narrowing to the export's size. In Cost the export's price bands come back together in
+  one Export bar; in kWh and CO₂ the export goes straight to it. The bar and the Grid are each named
+  with their total.
 - **Running total's Lifetime line marks your tariffs' price changes.** With Tariffs ticked, a dot sits on
   the line where each tariff started and where its unit rate or standing charge changed, import and
   export, as on Year by year, and the tariff band above has a tick at each change. Hovering the band
