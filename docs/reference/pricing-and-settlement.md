@@ -110,7 +110,10 @@ From `settlement_state.classify`, drawn by `heatmap_module.html`:
 | missing | black, hatched | no block for the half-hour, or one with no `imp_kwh` (`block_store._HAS_IMPORT`) |
 
 **Export** has no bill: kWh × the export rate is final once the export kWh settles — `applied`,
-`waiting`, `overdue`, `no_data` (no export figure, hatched), `no_agreement`, `none`.
+`waiting`, `overdue`, `no_data` (no export figure, hatched), `no_agreement`, `none`. An imported
+half-hour with no export figure is `waiting` until a live one would be `overdue` (7 days + the 2-day
+lag), then `no_data`: an import run before Octopus settles the latest export brings those days in with
+none, and the settlement poll fills them later.
 
 ## The re-fetch
 

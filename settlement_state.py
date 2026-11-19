@@ -252,8 +252,11 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
             and not any(lo <= start < hi for lo, hi in export_deleted)):
         # an imported half-hour with no export figure at all, where the meter exports: a gap, not a
         # quiet half-hour (21 Oct 2026, staging: three days of March 2025 Octopus returned import
-        # for and no export read grey, as nothing exported)
-        export = "no_data"
+        # for and no export read grey, as nothing exported). But only once Octopus has had its time:
+        # an import run before Octopus settles yesterday's export brings that day in with no export
+        # figure, and it is waiting like a live one, not a gap (19 Nov 2026, prod: the day before a
+        # fresh setup's import read hatched red all day, night included)
+        export = "no_data" if _clock(start, now) == "overdue" else "waiting"
     elif exp_api is not None or src == "imported_api":
         export = "applied" if exp > 1e-9 else "none"
     elif src.startswith("imported"):
@@ -268,7 +271,8 @@ def classify(f: dict, *, smb: bool, now: datetime, held=frozenset(), kept=frozen
     # had turned grey `no_agreement` and, then an issue, filled the day bars); and a missing export
     # figure there is not a gap — with no agreement there was nothing to miss.
     if (export_agreement_at is not None and export_agreement_at(start) is False
-            and (export == "no_data" or (export not in ("none", "imported") and src != "imported_api"))):
+            and (export == "no_data" or (src.startswith("imported") and export == "waiting")
+                 or (export not in ("none", "imported") and src != "imported_api"))):
         export = "no_agreement"
 
     if bill_cost is not None:

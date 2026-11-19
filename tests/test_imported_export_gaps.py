@@ -1,5 +1,6 @@
 """
-An imported half-hour with no export figure is a gap, not a quiet half-hour (21 Oct 2026, staging).
+An imported half-hour with no export figure is a gap, not a quiet half-hour (21 Oct 2026, staging) —
+once Octopus has had its time to settle it (19 Nov 2026, prod).
 
 After an Octopus import, three days of March 2025 had import and no export at all. The Export bill
 read them `none`, grey, as nothing exported. With the meter exporting, they are `no_data`: red,
@@ -56,6 +57,40 @@ class TheExportState(unittest.TestCase):
     def test_no_export_channel_is_not_a_gap(self):
         """GUARD: an import-only meter has no export to miss."""
         self.assertEqual(_export(_f(), export_channel=False), "none")
+
+
+class TheRecentImport(unittest.TestCase):
+    """19 Nov 2026, prod: a fresh setup's history import ran before Octopus had settled yesterday's
+    export, so yesterday came in with import and no export figure, and read `no_data`, hatched red,
+    all day and night. Octopus settles export a day or two later, and the settlement poll reaches
+    imported half-hours: until the window a live half-hour has (7 days + the 2-day lag) is past,
+    the half-hour is waiting, not a gap. Discriminating but the GUARDs."""
+
+    def _at(self, start, **kw):
+        return _export(_f(block_start=start, **kw))
+
+    def test_yesterday_with_no_export_is_waiting(self):
+        self.assertEqual(self._at("2026-10-20T12:00:00"), "waiting")
+
+    def test_a_recent_csv_import_too(self):
+        self.assertEqual(self._at("2026-10-20T12:00:00", source="imported_csv"), "waiting")
+
+    def test_inside_the_window_it_still_waits(self):
+        self.assertEqual(self._at("2026-10-12T12:30:00"), "waiting")          # 8 days 23.5 h
+
+    def test_past_the_window_it_is_a_gap(self):
+        self.assertEqual(self._at("2026-10-12T12:00:00"), "no_data")          # 9 days exactly
+
+    def test_GUARD_with_no_export_agreement_it_is_none_of_ours(self):
+        self.assertEqual(_export(_f(block_start="2026-10-20T12:00:00"),
+                                 export_agreement_at=lambda s: False), "no_agreement")
+
+    def test_GUARD_a_recent_figure_is_settled(self):
+        self.assertEqual(self._at("2026-10-20T12:00:00", exp_kwh=0.4), "applied")
+
+    def test_GUARD_a_recent_deleted_export_stays_grey(self):
+        self.assertEqual(_export(_f(block_start="2026-10-20T12:00:00"),
+                                 export_deleted=[("2026-10-20T00:00:00", "2026-10-21T00:00:00")]), "none")
 
 
 class TheDelete(unittest.TestCase):
