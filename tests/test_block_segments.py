@@ -63,7 +63,6 @@ class TestBlockSegments(unittest.TestCase):
 
     def test_empty_when_none_stored(self):
         self.assertEqual(self.st.get_block_segments("2020-01-01T00:00:00", MID), [])
-        self.assertEqual(self.st.count_block_segments(), 0)
 
     def test_channel_isolation(self):
         self.st.set_block_segments(SLOT, MID, self._segs(), channel="import")

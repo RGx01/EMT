@@ -3827,44 +3827,6 @@ class BlockStore:
         return [{"kwh": r["kwh"], "inc_rate": r["inc_rate"], "exc_rate": r["exc_rate"],
                  "band": r["band"], "attribution": r["attribution"]} for r in rows]
 
-    def count_block_segments(self) -> int:
-        """Total stored segment rows — the segment backfill's remaining-work signal."""
-        return int(self._conn.execute(
-            "SELECT COUNT(*) AS n FROM block_segments").fetchone()["n"])
-
-    def get_blocks_missing_segments(self, limit: int = 2000,
-                                    after_start: str | None = None) -> list:
-        """Page MAIN-meter import blocks that carry energy but have no priced segments yet
-        (BL-27 backfill). Sub-meters are excluded — segments live on the main import; a
-        device's share is attributed from them at read time. Ordered by block_start; pass
-        the last start back as `after_start` to continue."""
-        sql = ("SELECT b.block_start, b.meter_id, b.imp_kwh, b.imp_cost, b.imp_rate, "
-               "b.source, b.imp_kwh_api FROM blocks b "
-               "WHERE b.imp_kwh IS NOT NULL AND b.imp_kwh > 0 "
-               "AND b.meter_id NOT IN (SELECT meter_id FROM meters WHERE is_sub_meter = 1) "
-               "AND NOT EXISTS (SELECT 1 FROM block_segments s "
-               "                WHERE s.block_start = b.block_start AND s.meter_id = b.meter_id "
-               "                AND s.channel = 'import')")
-        params: list = []
-        if after_start is not None:
-            sql += " AND b.block_start > ?"
-            params.append(after_start)
-        sql += " ORDER BY b.block_start LIMIT ?"
-        params.append(int(limit))
-        rows = self._conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
-
-    def count_blocks_missing_segments(self) -> int:
-        """Count of MAIN-meter blocks still lacking priced segments — remaining-work signal."""
-        row = self._conn.execute(
-            "SELECT COUNT(*) AS n FROM blocks b "
-            "WHERE b.imp_kwh IS NOT NULL AND b.imp_kwh > 0 "
-            "AND b.meter_id NOT IN (SELECT meter_id FROM meters WHERE is_sub_meter = 1) "
-            "AND NOT EXISTS (SELECT 1 FROM block_segments s "
-            "                WHERE s.block_start = b.block_start AND s.meter_id = b.meter_id "
-            "                AND s.channel = 'import')").fetchone()
-        return int(row["n"]) if row else 0
-
     def get_vat_calendar(self) -> list:
         """Learned VAT-rate boundaries [(effective_from, rate), …] from store_meta.
         Merged with the statutory seed by vat_calendar.resolve_vat; empty until the
