@@ -7,6 +7,10 @@ or narrowing to the export's (barFlowTaper, from a stand-in node out of the layo
 back together in one Export bar named with its total; the Grid named with its import. The tests rewritten for
 the stand-in, and the taper's, house-size and Grid tests, fail on the tree before them.
 
+The standing charge through its daily rates, as the import through its price (19 Nov 2026, the user): its two
+tests fail on the tree before them; test_the_standing_charge_in_pounds_with_the_box, a bucket without its days'
+rates going straight to the charge, passes on both.
+
 `barFlowData` turns the buckets' summed rate brackets (`agg.br`, [kWh, £, g] per series and bracket,
 PR 1) into nodes and flows, every metric at once. What it must hold:
 
@@ -145,6 +149,25 @@ class TheData(unittest.TestCase):
         self.assertNotIn(("grid", "standing"), self._flows(self._run(self.AGG, "cost")))
         f = self._flows(self._run(self.AGG, "cost", standing=True))
         self.assertEqual(f[("grid", "standing")], [0, 1.0, 0])
+
+    def test_the_standing_charge_through_its_daily_rates(self):
+        # 19 Nov 2026, the user: "standing charges … are not banded as they change". Two buckets across a
+        # change, 16 days at 47.63p then 14 at 50.46p: grid → each rate in the bands' column → the charge
+        agg = [{"br": {"electricity_main": {"3": [10.0, 0.8, 0]}}, "standing": 7.6208, "standingBy": {"47.63": [7.6208, 16]}},
+               {"br": {"electricity_main": {"3": [10.0, 0.8, 0]}}, "standing": 7.0644,
+                "standingBy": {"50.46": [7.0644, 14]}}]
+        d = self._run(agg, "cost", standing=True)
+        f = self._flows(d)
+        self.assertEqual(f[("grid", "sb:47.63")], [0, 7.6208, 0])
+        self.assertEqual(f[("sb:50.46", "standing")], [0, 7.0644, 0])
+        self.assertNotIn(("grid", "standing"), f)
+        n = d["nodes"]
+        self.assertEqual((n["sb:47.63"]["label"], n["sb:47.63"]["column"], n["sb:47.63"]["days"]), ("Standing 47.63p/day", 1, 16))
+        self.assertEqual(n["standing"]["label"], "Standing charge \u00b7 \u00a314.69")
+        self.assertAlmostEqual(d["totals"]["standing"], 14.6852)
+        # not in kWh or CO₂, nor without the box
+        for metric, on in (("kwh", True), ("cost", False)):
+            self.assertFalse([k for k in self._run(agg, metric, standing=on)["nodes"] if k.startswith("sb:")])
 
     def test_a_small_band_goes_into_other(self):
         agg = [{"br": {"electricity_main": {"3": [100.0, 8.0, 0], "10": [0.5, 0.135, 0], "-1": [0.5, -0.01, 0]}}}]
@@ -413,6 +436,13 @@ class TheWiring(unittest.TestCase):
         self.assertIn("var ex = side ? side === 'export' : barBrSign() < 0;", _fn("barBrColor"))
         self.assertIn("barBrColor(n, ns, 'import')", _fn("barFlowData"))
         self.assertIn("barBrColor(n, xns, 'export')", _fn("barFlowData"))
+
+    def test_the_buckets_carry_each_days_standing_rate(self):
+        f = _fn("barAggRows")
+        self.assertIn("var _sk = (Math.round(row.standing * 10000) / 100).toFixed(2)", f)
+        self.assertIn("_sa[0] += row.standing; _sa[1] += 1;", f)
+        self.assertIn("(f.to === 'standing' && f.from.indexOf('sb:') === 0)", _fn("barFlowBuildTable"))
+        self.assertIn("' at ' + sbn.rate + 'p a day, inc VAT.'", _fn("barFlowDraw"))
 
     def test_a_credit_flow_is_drawn_in_pounds_only(self):
         self.assertIn("f.v[i] > 1e-9 && (!f.credit || i === 1)", _fn("barFlowDraw"))

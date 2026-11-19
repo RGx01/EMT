@@ -2767,8 +2767,25 @@ function barFlowData(aggList) {
     nodes.paid_export = {label: 'Paid to export', color: barBrColor(-1, [-1], 'export'), column: 3, priority: 901};
   var standing = standingAll;
   if (standing > 0) {
-    nodes.standing = {label: 'Standing charge', color: '#4b5563', column: 2, priority: 998};
-    add('grid', 'standing', [0, standing, 0]);
+    nodes.standing = {label: 'Standing charge \u00b7 ' + barFlowFmt(standing, 1), name: 'Standing charge',
+                      color: '#4b5563', column: 2, priority: 998};
+    // by its daily rate, as the import goes through its price (19 Nov 2026, the user: "standing charges …
+    // are not banded as they change"): the grid → each rate in the bands' column → the standing charge.
+    // A bucket without its days' rates (a day's half-hours, HH: one day, one rate) goes straight there.
+    var sby = {}, rest = 0;
+    aggList.forEach(function(agg) {
+      var by = agg && agg.standingBy;
+      if (!by) { rest += barStandingVal(agg); return; }
+      Object.keys(by).forEach(function(r) { var a = sby[r] || (sby[r] = [0, 0]); a[0] += by[r][0]; a[1] += by[r][1]; });
+    });
+    var rates = Object.keys(sby).sort(function(a, b) { return +a - +b; });
+    rates.forEach(function(r, j) {
+      nodes['sb:' + r] = {label: 'Standing ' + r + 'p/day', color: '#4b5563', column: 1, priority: 1000 + j,
+                          days: sby[r][1], rate: r};
+      add('grid', 'sb:' + r, [0, sby[r][0], 0]);
+      add('sb:' + r, 'standing', [0, sby[r][0], 0]);
+    });
+    if (rest > 1e-9 || !rates.length) add('grid', 'standing', [0, rates.length ? rest : standing, 0]);
   }
   var imp = [0, 0, 0];
   ns.forEach(function(n) { for (var k = 0; k < 3; k++) imp[k] += band[n][k]; });
@@ -2916,6 +2933,10 @@ function barFlowDraw(aggList) {
                 barFlowFmt(dn.credit, 1) + ' back:\n' + barFlowFmt(dn.gross, 1) + ' \u2212 ' + barFlowFmt(dn.credit, 1) +
                 ' = ' + barFlowFmt(dn.net, 1) + ', its net cost.';
             }
+            if (r.to.indexOf('sb:') === 0 || r.from.indexOf('sb:') === 0) {
+              var sbn = d.nodes[r.to.indexOf('sb:') === 0 ? r.to : r.from];
+              return sbn.days + ' day' + (sbn.days === 1 ? '' : 's') + ' at ' + sbn.rate + 'p a day, inc VAT.';
+            }
             if (r.to === 'paid_export') return 'Paid to export ' + barFlowFmt(r._v[0], 0) + ' at a negative export price.';
             if (r.to === 'x:other') return 'Other export: ' + d.xother.map(function(n) { return barBrLabel(n) + ' ' + barFlowFmt(d.xb[n][i], i); }).join(', ') +
               '\nExport is energy EMT did not meter coming in: solar or a battery.';
@@ -2997,7 +3018,7 @@ function barFlowBuildTable(tbl, aggList) {
   // credit flow is left out: its £ is already in its band's row, negative
   d.flows.slice().sort(function(a, b) { return at(a.from) - at(b.from) || at(a.to) - at(b.to); })
     .forEach(function(f) {
-      if (f.credit || (f.to === 'export' && f.from.indexOf('x:') === 0) ||
+      if (f.credit || (f.to === 'export' && f.from.indexOf('x:') === 0) || (f.to === 'standing' && f.from.indexOf('sb:') === 0) ||
           (Math.abs(f.v[0]) < 1e-9 && Math.abs(f.v[1]) < 1e-9)) return;
       html += '<tr><td><span class="bar-legend-dot" style="background:' + ((d.nodes[f.from] || {}).color || '#64748b') +
         ';margin-right:5px;"></span>' + name(f.from) + '</td><td>' + name(f.to) + '</td><td>' + f.v[0].toFixed(3) +
@@ -3150,6 +3171,12 @@ function barAggRows(filterFn) {
   var _aiNum = 0, _aiTp = 0, _aiHasData = false;
   filtered.forEach(function(row) {
     result.standing  += row.standing  || 0;
+    // the day's standing charge by its rate, p/day to the hundredth: Flow bands it (19 Nov 2026) — {rate: [£, days]}
+    if (row.standing > 0) {
+      var _sk = (Math.round(row.standing * 10000) / 100).toFixed(2), _sb = result.standingBy || (result.standingBy = {});
+      var _sa = _sb[_sk] || (_sb[_sk] = [0, 0]);
+      _sa[0] += row.standing; _sa[1] += 1;
+    }
     result.imp_kwh   += row.imp_kwh   || 0;
     result.exp_kwh   += row.exp_kwh   || 0;
     result.imp_cost  += row.imp_cost  || 0;

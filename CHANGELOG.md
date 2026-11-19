@@ -13,6 +13,9 @@ internal name for everything before the first public release and never appears i
   widening or narrowing to the export's size. In Cost the export's price bands come back together in
   one Export bar; in kWh and CO₂ the export goes straight to it. The bar and the Grid are each named
   with their total.
+- **Flow shows the standing charge by its daily rate.** With Inc. standing charge, a span where the
+  standing charge changed showed it as one amount; it now goes through each rate it was charged at,
+  as the import goes through its price, and hovering a rate says how many days it was charged.
 - **Running total's Lifetime line marks your tariffs' price changes.** With Tariffs ticked, a dot sits on
   the line where each tariff started and where its unit rate or standing charge changed, import and
   export, as on Year by year, and the tariff band above has a tick at each change. Hovering the band
