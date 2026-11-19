@@ -53,9 +53,9 @@ class TheDots(unittest.TestCase):
         js = ("var barAccStart = 'jan', barData = [{year: 2023, month: 6, day: 1}, {year: 2024, month: 6, day: 1}], barBillingDay = 1, barEras = [], BAR_ACC_YC = ['#a', '#b'],"
               " BAR_ACC_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n"
               "var barTariffs = %s;\n") % json.dumps(TARIFFS) + \
-            "var _barAccYc = {data: null, anchor: '', years: []};\n" + "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly",
+            "var _barAccYc = {data: null, anchor: '', years: []}, BAR_TARIFF_MOVING_DAYS = 7;\n" + "\n".join(_fn(n) for n in ("barAccMs", "barAccStartChoices", "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly",
                                        "barAccDateLabel", "barAccAnchor", "barAccStartMs", "barAccYearOf", "barAccYearColor",
-                                       "barAccTariffDays", "barAccSpiralDots")) + \
+                                       "barDayNo", "barTariffPricesMove", "barAccTariffDays", "barAccSpiralDots")) + \
             "\nfunction erasGroups() { return []; }\n" \
             "var pts = [], t = Date.parse(%s + 'T00:00:00Z'), end = Date.parse(%s + 'T00:00:00Z');\n" \
             "for (; t < end; t += 864e5) { var d = new Date(t); var r = {year: d.getUTCFullYear(), month: d.getUTCMonth() + 1, day: d.getUTCDate()};" \
