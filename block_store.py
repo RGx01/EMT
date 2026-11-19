@@ -3335,8 +3335,8 @@ class BlockStore:
     ) -> int:
         """Record one reconstruction (a device-attribution span, or a rate for a
         tariff-period×tier) and return its id. `sensor_ids`/`params` may be lists
-        or dicts (stored as JSON). Pure insert — linking blocks is a separate
-        step (tag_blocks_with_derivation)."""
+        or dicts (stored as JSON). Pure insert: a block points at it through the
+        imported-block upsert's `derivation_id`."""
         if scope not in ("device_attribution", "rate"):
             raise ValueError(f"invalid derivation scope: {scope!r}")
         cur = self._conn.execute(
