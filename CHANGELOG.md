@@ -5,6 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **Signing in to one EMT no longer signs you out of another on the same machine.** A browser keeps one
+  set of cookies for a machine, whatever the port, so two EMTs on one box (a test copy beside the real one)
+  shared their sign-in cookie, and each sign-in replaced the other's. Each EMT now keeps a cookie of its
+  own. After updating, sign in on EMT's own port once more.
+
 ## [2026.11.0b28] — 2026-11-20
 
 - **Signing in on EMT's own port works when Home Assistant's local address is set wrong.** EMT sent your

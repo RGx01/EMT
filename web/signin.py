@@ -35,7 +35,7 @@ from itsdangerous import BadSignature, URLSafeTimedSerializer
 log = logging.getLogger(__name__)
 bp = Blueprint("signin", __name__)
 
-COOKIE = "emt_session"
+COOKIE = "emt_session"                # the stem: each install's cookie is `cookie_name()`
 MAX_AGE = 30 * 24 * 3600              # a sign-in lasts 30 days in a browser
 SECRET_FILE = "session_secret"        # beside blocks.db; not in a backup (blocks.db only) or support file
 _STATE_TTL = 600                      # an unfinished sign-in is forgotten after 10 minutes
@@ -84,6 +84,10 @@ def configure(data_dir: str, mode: str = None, login: str = None, preview: bool 
         return False
     _cfg["secret"] = load_secret(data_dir) if _cfg["required"] else None
     if _cfg["required"]:
+        import instance as _inst
+        _cfg["cookie"] = "%s_%s" % (COOKIE, hashlib.sha256(
+            ("emt-session-cookie|" + _inst.get_instance_id(data_dir)).encode()).hexdigest()[:10])
+    if _cfg["required"]:
         log.info("signin: the direct port asks for Home Assistant's sign-in (administrators only)")
     else:
         log.warning("signin: EMT_DIRECT_LOGIN=off — the direct port has NO login: anyone who can reach it "
@@ -114,8 +118,18 @@ def read_session(value) -> dict | None:
         return None
 
 
+def cookie_name() -> str:
+    """The session cookie's name: `emt_session_<10 hex>`, this install's own (20 Nov 2026, the user: signing in
+    to staging on the same box signed prod out). A browser keeps a cookie by host — not by port, nor by the
+    path a proxy puts EMT under — so two EMTs reached at one host shared `emt_session`: each sign-in replaced
+    the other's cookie with one signed by its own secret, which the other cannot read. The suffix is a hash of
+    the install's id (`instance.get_instance_id`, kept in its data folder), set by `configure`, so each install
+    keeps its own whatever the address. A cookie of the old name is left alone: it may be another EMT's."""
+    return _cfg.get("cookie") or COOKIE
+
+
 def _set_cookie(resp, value, max_age=MAX_AGE):
-    resp.set_cookie(COOKIE, value, max_age=max_age, httponly=True, samesite="Lax", path="/",
+    resp.set_cookie(cookie_name(), value, max_age=max_age, httponly=True, samesite="Lax", path="/",
                     secure=request.scheme == "https")
     return resp
 
@@ -159,7 +173,7 @@ def guard():
     path = request.path or "/"
     if exempt(path):
         return None
-    if read_session(request.cookies.get(COOKIE)) is None:
+    if read_session(request.cookies.get(cookie_name())) is None:
         if path.startswith("/api/") or request.method not in ("GET", "HEAD"):
             return jsonify({"error": "Sign in with Home Assistant first.", "signin": "/signin"}), 401
         nxt = request.full_path if request.query_string else path
@@ -173,7 +187,7 @@ def guard():
 def signed_in() -> bool:
     """For the page: a direct-port session is open (the sidebar shows Sign out)."""
     return (_cfg["required"] and not request.environ.get("emt.ingress")
-            and read_session(request.cookies.get(COOKIE)) is not None)
+            and read_session(request.cookies.get(cookie_name())) is not None)
 
 
 # ── where Home Assistant is ───────────────────────────────────────────────────
@@ -412,7 +426,7 @@ def signin_check():
     """After the cookie is set: did the browser keep it? In a frame on another address it does not (§6), and
     another sign-in would loop; this page says why instead."""
     nxt = safe_next(request.args.get("next"))
-    if not _cfg["required"] or read_session(request.cookies.get(COOKIE)) is not None:
+    if not _cfg["required"] or read_session(request.cookies.get(cookie_name())) is not None:
         return redirect(nxt)
     body = ("<p>You signed in, but this browser didn't keep EMT's sign-in. That happens when EMT is shown "
             "inside a Home Assistant page opened at a different address from EMT's: one by name "

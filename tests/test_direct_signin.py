@@ -14,6 +14,7 @@ has no sign-in: there, every request on the direct port goes through.
 """
 import os
 import re
+import shutil
 import stat
 import sys
 import tempfile
@@ -76,13 +77,13 @@ class _Base(unittest.TestCase):
         return self.app.test_client(use_cookies=False)
 
     def get(self, path, cookie=None, **env):
-        h = {"Cookie": "%s=%s" % (signin.COOKIE, cookie)} if cookie is not None else {}
+        h = {"Cookie": "%s=%s" % (signin.cookie_name(), cookie)} if cookie is not None else {}
         return self._client().get(path, base_url="http://" + HOST, headers=h, environ_base=dict(self.base, **env))
 
     def post(self, path, origin=None, cookie=None):
         h = {"Origin": origin} if origin else {}
         if cookie is not None:
-            h["Cookie"] = "%s=%s" % (signin.COOKIE, cookie)
+            h["Cookie"] = "%s=%s" % (signin.cookie_name(), cookie)
         return self._client().post(path, base_url="http://" + HOST, headers=h, environ_base=self.base)
 
 
@@ -135,7 +136,7 @@ class TheGuard(_Base):
         self.assertEqual(self.post("/signin/out", origin="http://evil.test", cookie=good).status_code, 403)
         r = self.post("/signin/out", origin="http://" + HOST, cookie=good)
         self.assertEqual(r.status_code, 200)
-        self.assertRegex(r.headers["Set-Cookie"], r"emt_session=;.*(Max-Age=0|Expires=Thu, 01 Jan 1970)")
+        self.assertRegex(r.headers["Set-Cookie"], r"emt_session_[0-9a-f]{10}=;.*(Max-Age=0|Expires=Thu, 01 Jan 1970)")
 
 
 class TheSecret(_Base):
@@ -151,7 +152,8 @@ class TheSecret(_Base):
 
     def test_it_is_not_in_the_database(self):
         """A backup is blocks.db only (server._create_backup_zip), so the secret is a file of its own."""
-        self.assertEqual(os.listdir(self.dir), [signin.SECRET_FILE])
+        # beside it, the install's id (instance.py), which names the cookie (20 Nov 2026); no database
+        self.assertEqual(sorted(os.listdir(self.dir)), sorted([signin.SECRET_FILE, "instance_id"]))
 
 
 class TheSignin(_Base):
@@ -202,6 +204,32 @@ class TheSignin(_Base):
     def test_nothing_in_an_address_can_close_the_script(self):
         self.assertNotIn("<", signin._js(["http://a</script><script>alert(1)//"]))
 
+    def test_two_emts_on_one_host_keep_their_own_cookies(self):
+        # 20 Nov 2026, the user: signing in to staging signed prod out, on the same box. A browser sends a host's
+        # cookies to every port and path on it; each install now names its own by a hash of its id
+        name = signin.cookie_name()
+        self.assertRegex(name, r"^emt_session_[0-9a-f]{10}$")
+        r = self._done(user={"id": "u1", "is_admin": True})
+        self.assertTrue(r.headers["Set-Cookie"].startswith(name + "="))
+        good = re.search(name + r"=([^;]+)", r.headers["Set-Cookie"]).group(1)
+        # another install, in another data folder, names its cookie otherwise
+        other = tempfile.mkdtemp()
+        try:
+            mine = dict(signin._cfg)
+            signin.configure(other, mode=self.mode)
+            theirs = signin.cookie_name()
+            self.assertNotEqual(theirs, name)
+            signin.configure(other, mode=self.mode)
+            self.assertEqual(signin.cookie_name(), theirs)               # a restart keeps the install's name
+            signin._cfg.update(mine)
+        finally:
+            shutil.rmtree(other, ignore_errors=True)
+        # this install's cookie under another name — the old shared one, or another install's — opens nothing
+        for n in ("emt_session", "emt_session_0123456789"):
+            r2 = self._client().get("/data-management", base_url="http://" + HOST,
+                                    headers={"Cookie": "%s=%s" % (n, good)}, environ_base=self.base)
+            self.assertEqual(r2.status_code, 302, n)
+
     def _done(self, user=None, exc=None, state=None):
         loc, q = self._start()
 
@@ -217,7 +245,7 @@ class TheSignin(_Base):
         r = self._done(user={"id": "u1", "is_admin": True})
         self.assertEqual(r.status_code, 302)
         self.assertTrue(r.headers["Location"].startswith("/signin/check?"))
-        cookie = re.search(r"emt_session=([^;]+)", r.headers["Set-Cookie"]).group(1)
+        cookie = re.search(r"emt_session_[0-9a-f]{10}=([^;]+)", r.headers["Set-Cookie"]).group(1)
         self.assertEqual(signin.read_session(cookie)["u"], "u1")
         self.assertIn("HttpOnly", r.headers["Set-Cookie"])
         self.assertIn("SameSite=Lax", r.headers["Set-Cookie"])

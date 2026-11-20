@@ -18,7 +18,9 @@ refetch only what changed.
 
 Through Home Assistant's sidebar (ingress, a request from the Supervisor) every page and route is open:
 Home Assistant has signed the user in. On the **direct port** (8098) every request needs EMT's session
-cookie, `emt_session` (`web/signin.py`), apart from `/signin`, `/signin/start`, `/signin/done`,
+cookie, `emt_session_<10 hex>` (`web/signin.py`, `cookie_name()`: a hash of the install's id, so two EMTs at
+one host — a browser keeps cookies by host, not port or path — keep a cookie each; until 20 Nov 2026 it was
+`emt_session` for every install, and signing in to one signed the other out), apart from `/signin`, `/signin/start`, `/signin/done`,
 `/signin/check` and `/static/…`:
 
 - without it, a page redirects to `/signin?next=…` and an API, or any write, answers 401;
