@@ -1,7 +1,8 @@
 # A login on the direct port (design)
 
-*Status: decided in outline, 19 Nov 2026; §6's checks come before the build. A blocker for the first
-release (ROADMAP, Before the first release). The user, 19 Nov 2026: "could we just use users HA's login?"*
+*Status: decided, 20 Nov 2026. Step 1 built (#167); §6's checks answered on the owner's Pi, 19–20 Nov
+2026, and they confirm §3.2. A blocker for the first release (ROADMAP, Before the first release). The user,
+19 Nov 2026: "could we just use users HA's login?"*
 
 *Decided with the user on 19 Nov 2026:*
 - *administrators only, on the direct port;*
@@ -61,8 +62,10 @@ browser to Home Assistant's `/auth/authorize`:
 - `redirect_uri` is `…/signin/done` on the same origin;
 - there is a `state`, and a PKCE challenge (S256).
 
-Home Assistant shows its login, with the user's two-factor step, and redirects back. EMT exchanges the
-code server-side and asks Home Assistant who the user is. It admits **administrators only**: EMT's tools
+Home Assistant shows its login, with the user's two-factor step, and redirects back (§6: a plain-`http`
+LAN origin is accepted, and a user with an authenticator app is asked for its code). EMT exchanges the
+code server-side and asks Home Assistant who the user is: the WebSocket's `auth/current_user`, with the new
+access token, answers `id`, `name`, `is_admin`, `is_owner`, `credentials` and `mfa_modules` (§6). It admits **administrators only**: EMT's tools
 delete and restore, and the add-on's sidebar panel is administrators' by default (`panel_admin`). Then it
 **revokes Home Assistant's tokens** (`/auth/revoke`), because EMT needs to know who you are, not to act as
 you.
@@ -79,19 +82,28 @@ the same host (Home Assistant itself, another add-on), and the `Origin` check cl
 
 **Which Home Assistant address the browser is sent to:**
 - **Add-on:** Home Assistant's configured internal URL, from the Supervisor's core API; failing that,
-  the host the browser used, on port 8123.
+  the host the browser used, on port 8123. (On the Pi only the fallback was offered, and it worked; why
+  the internal URL was not, unset or unread, was not established.)
 - **Standalone:** see §3.5.
 
-The token exchange goes from the container to Home Assistant: `homeassistant:8123` on an add-on, `HA_URL`
-standalone.
+The token exchange goes from the container to Home Assistant: `http://homeassistant:8123` on an add-on
+(§6), `HA_URL` standalone.
+
+**A sign-in that cannot stick.** In a frame on a different address from EMT (§3.3), the sign-in itself
+completes (§6), but the cookie it sets is a third-party one and is not kept, so the next page would ask
+again, forever. So `/signin/done` sets the cookie and sends the browser to a check: if the cookie came back,
+on to the page; if it did not, a page that says why (Home Assistant and EMT opened on different addresses)
+and offers **Open EMT in a new tab**, instead of another sign-in.
 
 ### 3.3 The dashboard cards: a read-only card key
 
 A card is an iframe inside a Home Assistant dashboard, so the session cookie is not a reliable way in:
 - a dashboard opened as `homeassistant.local` showing a card at the host's IP address is **cross-site**,
-  and a `Lax` cookie is not sent to it;
-- Safari blocks third-party cookies in frames outright;
+  and the cookie is not sent to it (§6: Safari, a fresh cookie, not sent);
 - a dashboard on `https` (Nabu Casa, a reverse proxy) cannot frame an `http` card at all, today as after.
+
+Opened on the same address as the card, the cookie was sent (§6). But a card must not depend on how
+someone happens to open their dashboard.
 
 So the card pages take a **card key** in their URL: `/lovelace/heatmap?key=…`. Settings → Dashboard cards
 shows each card's URL with the key, to paste into the card, and **New key** replaces it, which revokes
@@ -133,10 +145,11 @@ as in §3.2. Three things differ.
 - **EMT in Home Assistant's sidebar.** The README has standalone users add EMT as a Webpage dashboard,
   which frames the whole UI. The session cookie reaches the frame when the dashboard and EMT share a host
   name: ports do not count, so `http://192.168.1.10:8123` framing `http://192.168.1.10:8098` works, and
-  `homeassistant.local` framing the IP address does not. Home Assistant's own sign-in may also refuse to run
-  inside a frame (§6). So a framed EMT that is not signed in shows **Open EMT in a new tab to sign in**
-  rather than a sign-in that fails inside the frame. Once signed in there, the frame works. The README says
-  to use the same host name in the Webpage dashboard as for Home Assistant.
+  `homeassistant.local` framing the IP address does not (§6). Home Assistant's own sign-in runs inside a
+  frame (§6), so a framed EMT signs in where it is. On a different address the cookie never reaches the
+  frame, whoever signs in, and the sign-in's check (§3.2) says so and offers a new tab. **The README makes
+  the same address a requirement**: the Webpage dashboard's URL uses the same host name, or IP address, that
+  Home Assistant is opened at.
 
 **The way out.** A setup that cannot reach Home Assistant's sign-in from the browser can set
 `EMT_DIRECT_LOGIN=off`. The README says plainly that this puts it back as it is today, so a misconfigured
@@ -155,7 +168,8 @@ says so, with `HA_PUBLIC_URL` and the switch.
   - the password is typed into EMT's page, so EMT must rate-limit guesses itself;
   - it does not exist standalone.
 
-  Kept as the fallback if Home Assistant refuses a plain-`http` `client_id` on a LAN address (§6).
+  It was the fallback if Home Assistant refused a plain-`http` `client_id` on a LAN address; it accepts
+  one (§6), so it is not needed.
 - **EMT's own password.** Another secret to set, forget and recover, on a port the user has to remember
   is there. No.
 - **Turn the direct port off by default.** That breaks every card, and leaves standalone with no UI.
@@ -175,6 +189,7 @@ Each fails on the tree before it:
   from `/signin`, `/signin/done`, the card pages and APIs with a valid key, and static files;
 - a card key admits GET on its allow-list and nothing else: no POST, no other GET, no other page;
 - a write with a foreign `Origin` is refused, even with a session;
+- a sign-in whose cookie does not come back ends on the page that says why, not on another sign-in;
 - the sign-in callback refuses a bad `state`, a non-administrator, and a `403` from Home Assistant, and
   revokes Home Assistant's tokens on success;
 - the session secret survives a restart.
@@ -182,24 +197,28 @@ Each fails on the tree before it:
 Every existing route test runs as ingress or with a session, so the suite says nothing about the login
 by accident.
 
-## 6. To check on a real install before building
+## 6. Checked on a real install
 
-These decide between §3.2 and the fallback, and how §3.5 behaves, so they come first:
+On the owner's Pi (Home Assistant OS, the soak add-on), 19–20 Nov 2026, with a probe on a branch that was
+never merged (`probe/login-checks`, deleted after): pages on the direct port that ran the sign-in and
+reported what came back, revoking Home Assistant's tokens at once and logging no name or token.
 
-1. The address a direct-port request arrives from, on the Pi: the client's own, or Docker's gateway
-   (`172.30.32.1`)? It must not be `172.30.32.2`. Logged once, for both paths.
-2. Home Assistant accepts `http://<LAN address>:8098/` as a `client_id`, and its redirect back.
-3. Two-factor is asked on that sign-in, for a user who has it on.
-4. How EMT learns the user is an administrator from the access token (the WebSocket `auth/current_user`
-   is the likely answer; the documentation read does not cover it).
-5. The add-on container reaches `http://homeassistant:8123/auth/token`.
-6. A card with its key still loads inside a dashboard opened by hostname, and in Safari.
-7. Whether Home Assistant's sign-in page runs inside a frame (a Webpage dashboard), and whether a signed-in
-   EMT works framed from the same host name: on a standalone Docker setup.
+| | Check | Found |
+|---|---|---|
+| 1 | Where requests come from | Ingress from the Supervisor (`server: first ingress request from the Supervisor`); the direct port from the browser's own address, not Docker's gateway. #167 is safe: the sidebar keeps its links. |
+| 2 | `http://<LAN address>:8098/` as a `client_id` | Accepted, and the redirect back to it. |
+| 3 | Two-factor | A user with an authenticator app (`totp`) was asked for its code. |
+| 4 | Who signed in, and an administrator? | `auth/current_user` with the new token: `id`, `name`, `is_admin`, `is_owner`, `credentials` (`homeassistant` provider), `mfa_modules`. |
+| 5 | The container to `/auth/token` | `http://homeassistant:8123` answered. Revoking the refresh token answered 200. |
+| 6 | The cookie in a dashboard frame | Same address as the card: sent. Home Assistant opened by host name, card on the IP address: **not sent** (Safari, a fresh cookie). |
+| 7 | Home Assistant's sign-in inside a frame | Runs, and completes. |
+
+Not established: the browser of check 6's same-address case, and why the probe offered only "this host,
+port 8123" and not Home Assistant's internal URL.
 
 ## 7. Build order
 
-1. **The ingress check (§3.1), and §6's questions answered.** Small, and it decides the rest.
+1. **The ingress check (§3.1), and §6's questions answered.** Done: #167, and §6.
 2. **The session**: the secret kept in `/data`, `/signin` and its callback, the guard on every direct
    route, the `Origin` check, signing out.
 3. **Card keys**: Settings → Dashboard cards, and the read-only allow-list.
