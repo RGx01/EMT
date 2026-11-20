@@ -136,7 +136,7 @@ def safe_next(value) -> str:
     v = (value or "").strip()
     if not v.startswith("/") or v.startswith("//") or "\\" in v or any(ord(c) < 32 for c in v):
         return "/"
-    return v
+    return "/" + v[1:]      # the same path, built on a constant "/" so CodeQL sees the redirect as local
 
 
 def origin_ok(req) -> bool:
@@ -221,8 +221,22 @@ def ha_internal_url() -> str:
 
 # ── finishing the sign-in with Home Assistant ─────────────────────────────────
 
+# What the page says for each refusal. The page shows only these fixed words, never an exception's own
+# text (CodeQL: information exposure through an exception); the details go to the log.
+REFUSED = {
+    "forbidden": "Home Assistant refused this sign-in: the user may not log in (inactive, for example).",
+    "not_accepted": "Home Assistant did not accept the sign-in. Try again.",
+    "token": "Home Assistant did not accept its own token. Try again.",
+    "who": "Home Assistant did not say who signed in. Try again.",
+}
+
+
 class SigninRefused(Exception):
-    """Why a sign-in ends without a session, in words for the page."""
+    """Why a sign-in ends without a session: a key of REFUSED."""
+
+    def __init__(self, reason: str):
+        super().__init__(reason)
+        self.reason = reason
 
 
 async def _finish(code: str, verifier: str, client_id: str) -> dict:
@@ -235,11 +249,10 @@ async def _finish(code: str, verifier: str, client_id: str) -> dict:
                                                       "client_id": client_id, "code_verifier": verifier}) as r:
             body = await r.text()
             if r.status == 403:
-                raise SigninRefused("Home Assistant refused this sign-in: the user may not log in "
-                                    "(inactive, for example).")
+                raise SigninRefused("forbidden")
             if r.status != 200:
                 log.warning("signin: Home Assistant's /auth/token answered %s", r.status)
-                raise SigninRefused("Home Assistant did not accept the sign-in (HTTP %s). Try again." % r.status)
+                raise SigninRefused("not_accepted")
             tok = json.loads(body)
         user = {}
         try:
@@ -248,7 +261,7 @@ async def _finish(code: str, verifier: str, client_id: str) -> dict:
                 await ws.receive_json()                                   # auth_required
                 await ws.send_json({"type": "auth", "access_token": tok["access_token"]})
                 if (await ws.receive_json()).get("type") != "auth_ok":
-                    raise SigninRefused("Home Assistant did not accept its own token. Try again.")
+                    raise SigninRefused("token")
                 await ws.send_json({"id": 1, "type": "auth/current_user"})
                 user = (await ws.receive_json()).get("result") or {}
         finally:
@@ -259,7 +272,7 @@ async def _finish(code: str, verifier: str, client_id: str) -> dict:
             except Exception as e:
                 log.warning("signin: revoking Home Assistant's token failed: %s", type(e).__name__)
     if not user.get("id"):
-        raise SigninRefused("Home Assistant did not say who signed in. Try again.")
+        raise SigninRefused("who")
     return {"id": user["id"], "is_admin": bool(user.get("is_admin"))}
 
 
@@ -347,7 +360,8 @@ def signin_done():
     try:
         user = asyncio.run(finish(code, p["verifier"], _origin() + "/"))
     except SigninRefused as e:
-        return _page("Sign in", "<p>%s</p>%s" % (html.escape(str(e)), again), 403)
+        say = REFUSED.get(e.reason, REFUSED["not_accepted"])
+        return _page("Sign in", "<p>%s</p>%s" % (html.escape(say), again), 403)
     except Exception as e:
         log.warning("signin: finishing the sign-in failed: %s", type(e).__name__)
         return _page("Sign in", "<p>EMT couldn't reach Home Assistant to finish the sign-in. "

@@ -196,10 +196,17 @@ class TheSignin(_Base):
         self.assertNotIn("Set-Cookie", r.headers)
 
     def test_home_assistant_refusing_is_said_and_no_session(self):
-        r = self._done(exc=signin.SigninRefused("Home Assistant refused this sign-in"))
+        r = self._done(exc=signin.SigninRefused("forbidden"))
         self.assertEqual(r.status_code, 403)
         self.assertIn(b"refused this sign-in", r.data)
         self.assertNotIn("Set-Cookie", r.headers)
+
+    def test_the_page_says_only_emts_own_words(self):
+        """GUARD (CodeQL, 20 Nov 2026): a refusal shows a fixed message, never the exception's text."""
+        r = self._done(exc=signin.SigninRefused("<b>not a reason</b>"))
+        self.assertEqual(r.status_code, 403)
+        self.assertNotIn(b"not a reason", r.data)
+        self.assertIn(signin.REFUSED["not_accepted"].encode(), r.data)
 
     def test_a_bad_or_reused_state_is_refused(self):
         self.assertEqual(self._done(user={"id": "u1", "is_admin": True}, state="nope").status_code, 400)
