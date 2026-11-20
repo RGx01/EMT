@@ -305,7 +305,8 @@ class TheCardKey(_Base):
         self.assertEqual(self.get("/api/energy?resolution=day&key=" + self.key).status_code, 200)
 
     def test_a_wrong_key_does_not(self):
-        self.assertEqual(self.get("/lovelace/heatmap?key=x" + self.key[1:]).status_code, 302)
+        wrong = ("A" if self.key[0] != "A" else "B") + self.key[1:]     # never the key itself
+        self.assertEqual(self.get("/lovelace/heatmap?key=" + wrong).status_code, 302)
         self.assertEqual(self.get("/api/energy?key=").status_code, 401)
 
     def test_the_key_opens_nothing_else(self):
