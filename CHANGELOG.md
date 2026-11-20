@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b27] — 2026-11-20
 
 - **A device renamed on Settings is renamed on the charts.** Usage Stats, Flow, Running total and Spiral
   kept the old name until some day's figures changed, which on an Octopus-only setup could be a day. They
@@ -21,8 +21,8 @@ internal name for everything before the first public release and never appears i
   Home Assistant's sidebar, now takes you to Home Assistant's own sign-in, two-factor included, and only a
   Home Assistant administrator gets in. You stay signed in on that browser for 30 days, through restarts
   and updates, and **Sign out** is at the foot of the sidebar. Every change made on that port must come from
-  EMT's own pages. The sidebar is unchanged. On standalone Docker, set `HA_PUBLIC_URL` if your browser
-  reaches Home Assistant at a different address from EMT's; `EMT_DIRECT_LOGIN=off` turns the sign-in off.
+  EMT's own pages. The sidebar is unchanged. On standalone Docker, set `HA_PUBLIC_URL` if Home Assistant
+  runs on another machine or port from EMT's; `EMT_DIRECT_LOGIN=off` turns the sign-in off.
 
 ## [2026.11.0b26] — 2026-11-19
 
