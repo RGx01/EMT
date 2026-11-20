@@ -94,6 +94,7 @@ services:
       - HA_URL=http://homeassistant:8123   # your Home Assistant, by name or address
       - HA_TOKEN=your_long_lived_access_token
       # - HA_PUBLIC_URL=http://192.168.1.20:8123   # only if Home Assistant is on another machine (sign-in)
+      # - EMT_DIRECT_LOGIN=off                     # no sign-in at all: anyone who can reach the port gets in
       - LOG_LEVEL=info
     volumes:
       - ~/emt-data:/data/energy_meter_tracker
@@ -115,8 +116,8 @@ administrators only. Your browser is sent to the machine you opened EMT at, on `
 with Home Assistant and EMT on one machine there is nothing to set, whatever name `HA_URL` uses. If Home
 Assistant is on another machine, or your browser reaches it at another port or over `https`, set
 `HA_PUBLIC_URL` to the address you open it at. `HA_URL` is only how EMT itself reaches Home Assistant. If
-you can't sign in at all, `EMT_DIRECT_LOGIN=off` turns the sign-in off; anyone who can reach the port
-can then use every tool.
+you can't sign in at all, `EMT_DIRECT_LOGIN=off` in `environment:` turns the sign-in off (then
+`docker compose up -d emt`; no rebuild); anyone who can reach the port can then use every tool.
 
 **In Home Assistant's sidebar:** Settings → Dashboards → **Add dashboard → Webpage**, with the URL
 `http://<host>:8098`. (The sidebar's own add-on panel is the Supervisor's, so standalone has none.)
