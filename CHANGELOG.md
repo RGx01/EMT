@@ -23,10 +23,6 @@ internal name for everything before the first public release and never appears i
   and updates, and **Sign out** is at the foot of the sidebar. Every change made on that port must come from
   EMT's own pages. The sidebar is unchanged. On standalone Docker, set `HA_PUBLIC_URL` if your browser
   reaches Home Assistant at a different address from EMT's; `EMT_DIRECT_LOGIN=off` turns the sign-in off.
-- **The dashboard cards are gone.** EMT's `/lovelace/billing` and `/lovelace/heatmap` pages, for showing
-  the Billing chart or the heatmap in a Home Assistant Webpage card, have been removed: port 8098 now serves
-  only EMT itself, behind its sign-in. A card that used one shows an error; delete it from the dashboard and
-  open EMT from the sidebar.
 
 ## [2026.11.0b26] — 2026-11-19
 
