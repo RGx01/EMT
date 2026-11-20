@@ -25,7 +25,12 @@ cookie, `emt_session` (`web/signin.py`), apart from `/signin`, `/signin/start`, 
 - with it, a write (anything but GET, HEAD and OPTIONS) must carry an `Origin` (else `Referer`) on EMT's
   own host, or it answers 403.
 
-`/signin` sends the browser to Home Assistant's sign-in (OAuth, PKCE); `/signin/done` finishes it with Home
+`/signin` sends the browser to Home Assistant's sign-in (OAuth, PKCE). Where to send it is
+`signin.ha_addresses()`: Home Assistant's own local address (its core config's `internal_url`; standalone,
+`HA_PUBLIC_URL` or `HA_URL`'s port on this host), then plain HTTP and HTTPS at this host's port 8123. The page
+tries each from the browser and takes the first that answers; `/signin/start?ha=N` goes to the list's
+place N, and to the first for anything else — never to an address the request names. (A local address set
+to `https://` while Home Assistant serves plain HTTP left the browser unable to connect, 20 Nov 2026.) `/signin/done` finishes it with Home
 Assistant, admits an administrator only, revokes Home Assistant's tokens and sets the cookie for 30 days;
 `/signin/check` says so when the browser did not keep it; `POST /signin/out` signs out. The cookie is signed
 with `session_secret`, a file beside `blocks.db`.

@@ -212,6 +212,22 @@ def ha_public_url() -> str:
     return _ha_cfg_cache["internal_url"] or "http://%s:8123" % host
 
 
+def ha_addresses() -> list:
+    """Every address the sign-in page may send the browser to, best first (20 Nov 2026, the user's staging:
+    Home Assistant's local address said `https://…:8123` while Home Assistant served plain HTTP there, so the
+    browser could not connect). The address `ha_public_url` finds, then plain HTTP and HTTPS at this host's
+    port 8123, once each. The page tries them from the browser and takes the first that answers; the server
+    sends the browser only to one of these, by its place in the list — never to an address a request names."""
+    host = urlsplit(_origin()).hostname or "localhost"
+    if ":" in host:
+        host = "[%s]" % host
+    out = []
+    for a in (ha_public_url(), "http://%s:8123" % host, "https://%s:8123" % host):
+        if a and a not in out:
+            out.append(a)
+    return out
+
+
 def ha_internal_url() -> str:
     """Where EMT itself reaches Home Assistant to finish the sign-in (§6: homeassistant:8123 on an add-on)."""
     if _cfg["mode"] == "standalone":
@@ -302,12 +318,19 @@ def _page(title, body, status=200):
     return resp
 
 
+def _js(v) -> str:
+    """A value as a JavaScript literal inside <script>: JSON, with `<` escaped so nothing in it (a Host
+    header, say) can close the element."""
+    return json.dumps(v).replace("<", "\\u003c")
+
+
 @bp.route("/signin")
 def signin_page():
     nxt = safe_next(request.args.get("next"))
     if not _cfg["required"]:
         return redirect(nxt)
-    ha = ha_public_url()
+    addrs = ha_addresses()
+    ha = addrs[0]
     standalone = _cfg["mode"] == "standalone"
     fix = ("Set <code>HA_PUBLIC_URL</code> to the address you open Home Assistant at, and restart EMT."
            if standalone else
@@ -315,13 +338,19 @@ def signin_page():
            "(Settings → System → Network).")
     body = ("<p>EMT on this port asks you to sign in with your Home Assistant account. "
             "Only Home Assistant administrators can use it.</p>"
-            "<a class=btn href='/signin/start?%s'>Sign in with Home Assistant</a>"
-            "<p class=muted>Home Assistant at <code>%s</code></p>"
+            "<a class=btn id=go href='/signin/start?%s'>Sign in with Home Assistant</a>"
+            "<p class=muted>Home Assistant at <code id=at>%s</code></p>"
             "<p id=unreach>Home Assistant doesn't answer at that address from this browser. %s</p>"
-            "<script>(function(){var c=new AbortController();setTimeout(function(){c.abort()},6000);"
-            "fetch(%s+'/manifest.json',{mode:'no-cors',signal:c.signal}).catch(function(){"
-            "document.getElementById('unreach').style.display='block'})})();</script>") % (
-        urlencode({"next": nxt}), html.escape(ha), fix, json.dumps(ha))
+            # each address tried from this browser at once; the first in the list that answers is used
+            "<script>(function(){var a=%s,q=%s,ok=a.map(function(){return null});"
+            "function pick(){for(var i=0;i<a.length;i++){if(ok[i]===null)return;if(ok[i]){"
+            "document.getElementById('at').textContent=a[i];"
+            "document.getElementById('go').href='/signin/start?'+q+'&ha='+i;return}}"
+            "document.getElementById('unreach').style.display='block'}"
+            "a.forEach(function(u,i){var c=new AbortController();setTimeout(function(){c.abort()},6000);"
+            "fetch(u+'/manifest.json',{mode:'no-cors',signal:c.signal}).then(function(){ok[i]=true;pick()},"
+            "function(){ok[i]=false;pick()})})})();</script>") % (
+        urlencode({"next": nxt}), html.escape(ha), fix, _js(addrs), _js(urlencode({"next": nxt})))
     return _page("Sign in", body)
 
 
@@ -342,7 +371,10 @@ def signin_start():
     origin = _origin()
     q = {"response_type": "code", "client_id": origin + "/", "redirect_uri": origin + "/signin/done",
          "state": state, "code_challenge": challenge, "code_challenge_method": "S256"}
-    return redirect(ha_public_url() + "/auth/authorize?" + urlencode(q))
+    addrs = ha_addresses()
+    i = request.args.get("ha", "0")
+    i = int(i) if i.isdigit() and int(i) < len(addrs) else 0       # a place in EMT's own list, nothing else
+    return redirect(addrs[i] + "/auth/authorize?" + urlencode(q))
 
 
 @bp.route("/signin/done")
