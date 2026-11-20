@@ -1879,30 +1879,52 @@ class BlockStore:
     RECORDER_ATTRIBUTED_SOURCE = "recorder_attributed"
     _ATTRIBUTION_RUNS_KEY = "recorder_attribution_runs"   # store_meta ledger
 
-    def get_missing_carbon_date_range(self) -> tuple | None:
+    def get_missing_carbon_date_range(self, exclude=None) -> tuple | None:
         """(min_block_start, max_block_start) over energy-bearing blocks whose
         carbon_intensity_g IS NULL AND that are region-eligible (see
         _CARBON_ELIGIBLE). None when there are no such blocks.
 
         Bounds the historical carbon backfill: every block before CI first became
         available carries a NULL intensity; imported history joins the span once
-        its period's region is known."""
-        row = self._conn.execute(
-            "SELECT MIN(block_start) AS lo, MAX(block_start) AS hi FROM blocks "
-            "WHERE carbon_intensity_g IS NULL "
-            "  AND (imp_kwh IS NOT NULL OR exp_kwh IS NOT NULL) "
-            "  AND " + self._CARBON_ELIGIBLE
-        ).fetchone()
-        if row and row["lo"] and row["hi"]:
-            return (row["lo"], row["hi"])
-        return None
+        its period's region is known.
+
+        `exclude` is a set of block_start values to leave out — the half-hours the
+        backfill has recorded as unavailable at the source. With it the bounds are
+        the first and last NULL starts NOT in the set (read in order, so at most
+        len(exclude) + 1 rows each way)."""
+        where = ("WHERE carbon_intensity_g IS NULL "
+                 "  AND (imp_kwh IS NOT NULL OR exp_kwh IS NOT NULL) "
+                 "  AND " + self._CARBON_ELIGIBLE)
+        if not exclude:
+            row = self._conn.execute(
+                "SELECT MIN(block_start) AS lo, MAX(block_start) AS hi FROM blocks "
+                + where
+            ).fetchone()
+            if row and row["lo"] and row["hi"]:
+                return (row["lo"], row["hi"])
+            return None
+        ends = []
+        for order in ("ASC", "DESC"):
+            sql = ("SELECT DISTINCT block_start FROM blocks " + where
+                   + " ORDER BY block_start " + order)
+            found = None
+            for r in self._conn.execute(sql):
+                if r["block_start"] not in exclude:
+                    found = r["block_start"]
+                    break
+            if found is None:
+                return None
+            ends.append(found)
+        return (ends[0], ends[1])
 
     def get_block_starts_missing_carbon_in_range(
-        self, from_iso: str, to_iso: str, limit: Optional[int] = None
+        self, from_iso: str, to_iso: str, limit: Optional[int] = None,
+        exclude=None
     ) -> list:
         """Distinct NULL-carbon, region-eligible block_start values within
         [from_iso, to_iso), oldest-first. Used per fetched window by the
-        historical backfill."""
+        historical backfill. `exclude`: block_start values to leave out (see
+        get_missing_carbon_date_range)."""
         sql = (
             "SELECT DISTINCT block_start FROM blocks "
             "WHERE carbon_intensity_g IS NULL "
@@ -1912,11 +1934,16 @@ class BlockStore:
             "ORDER BY block_start"
         )
         params: list = [from_iso, to_iso]
-        if limit is not None:
+        if limit is not None and not exclude:
             sql += " LIMIT ?"
             params.append(limit)
-        return [r["block_start"]
-                for r in self._conn.execute(sql, params).fetchall()]
+        out = [r["block_start"]
+               for r in self._conn.execute(sql, params).fetchall()]
+        if exclude:
+            out = [s for s in out if s not in exclude]
+            if limit is not None:
+                out = out[:limit]
+        return out
 
     def extend_earliest_period_to(self, block_start_iso: str) -> bool:
         """Move the earliest config period's `effective_from` back to cover
