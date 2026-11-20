@@ -1,8 +1,13 @@
 # A login on the direct port (design)
 
-*Status: decided, 20 Nov 2026. Steps 1–3 built (#167, #169, card keys); §6's checks answered on the owner's Pi, 19–20 Nov
-2026, and they confirm §3.2. A blocker for the first release (ROADMAP, Before the first release). The user,
-19 Nov 2026: "could we just use users HA's login?"*
+> **History — a design record.** What was decided, when and why, as it stood then; parts describe code
+> that has since changed. How it works today: [api.md, Who may ask](../../reference/api.md#who-may-ask),
+> SECURITY.md, and `web/signin.py`. PR numbers (`#NNN`) are in this repository, `RGx01/EMT`.
+
+*Status: built, 20 Nov 2026: #166 the design, #167 ingress told by address, #168 the checks on a real
+install (§6), #169 the sign-in, #170 the card keys, and the documents after. A blocker for the first
+release, closed but for one run on the soak Pi (ROADMAP). The user, 19 Nov 2026: "could we just use users
+HA's login?"*
 
 *Decided with the user on 19 Nov 2026:*
 - *administrators only, on the direct port;*

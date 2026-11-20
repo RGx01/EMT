@@ -12,9 +12,9 @@ and what to send back.
   Home Assistant's add-on store still offers 4.5.23 or later, then back it up again. If the store
   doesn't, start from scratch (below) and bring back your history from Octopus instead.
 - **Ports.** EMT's page is in Home Assistant's sidebar (**EMT**). It is also published directly on
-  port **8098** (v4 uses 8099), for the dashboard cards. That direct port has **no login** — anyone on
-  your network can open it. Turn it off in the add-on's **Network** settings if you only use the
-  sidebar.
+  port **8098** (v4 uses 8099), where it asks you to sign in with Home Assistant (administrators only).
+  Dashboard cards take their address, with a card key, from **Settings → Dashboard cards**. Turn the
+  port off in the add-on's **Network** settings if you only use the sidebar.
 
 ## What to try
 

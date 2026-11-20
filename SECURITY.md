@@ -23,17 +23,33 @@ Only the latest release, and the latest beta while there is one, gets fixes.
   name into placeholders. It is downloaded by you; EMT sends it nowhere. Attached to an issue, anyone can
   download it, and it still holds the span's usage and costs, device names and the log.
 
-## The direct port has no login
+## Who can open EMT
 
 EMT is reached two ways:
 
-- **Through Home Assistant's sidebar** (ingress): behind Home Assistant's own login.
-- **Directly**, at `http://<your Home Assistant host>:8098`, for the dashboard cards. This port has
-  **no login**: anyone who can reach it on your network can see your data and use every tool —
-  delete, restore, download a backup.
+- **Through Home Assistant's sidebar** (ingress): behind Home Assistant's own login. EMT believes a
+  request came this way only when it comes from Home Assistant's Supervisor.
+- **Directly**, at `http://<your Home Assistant host>:8098`. This port asks you to **sign in with Home
+  Assistant**, on Home Assistant's own page, two-factor included, and lets in **administrators only**.
+  EMT then keeps its own sign-in for 30 days on that browser and throws Home Assistant's tokens away: it
+  needs to know who you are, not to act as you. A change made on this port must come from EMT's own
+  pages.
 
-If you don't use the dashboard cards, turn the direct port off: the add-on's page → **Network** →
-clear the port → **Save**, then restart the add-on. Never expose the direct port to the internet.
+**Dashboard cards** use a **card key** in their address instead of a sign-in (Settings → Dashboard
+cards). A key lets a card show its chart and nothing else: no other page, no other figures, no changes.
+Anyone who has a card's address can see that chart, so treat it like a password; **Make a new key**
+stops every card using the old one.
+
+EMT's own secrets (the sign-in's signing secret, the card key) are files beside its database, not in it:
+a backup or a support file carries neither.
+
+If you don't use the dashboard cards or the direct port, turn it off: the add-on's page → **Network** →
+clear the port → **Save**, then restart the add-on. Never expose the direct port to the internet: it
+is plain `http`.
+
+**Standalone Docker** has no sidebar: the direct port is the whole of EMT and signs in the same way.
+`EMT_DIRECT_LOGIN=off` turns the sign-in off, for a setup whose browser cannot reach Home Assistant's
+sign-in; then anyone who can reach the port can use every tool, as before this sign-in existed.
 
 ## What EMT talks to
 

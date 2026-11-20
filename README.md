@@ -61,9 +61,11 @@ three years of half-hours with a few devices; keep a few times that free for bac
 3. The welcome page offers two ways in: **Set up a new account** (from scratch), or **Restore from
    an Energy Meter Tracker backup** (a v4 backup's `.zip`, or its `blocks.db`).
 
-EMT's page is also published on **port 8098** for the dashboard cards. That port has **no login** —
-see [SECURITY.md](SECURITY.md); turn it off in the add-on's **Network** settings if you only use the
-sidebar.
+EMT's page is also published on **port 8098**. Opened there, it asks you to **sign in with Home
+Assistant** (administrators only). Its Billing chart and heatmap can go on a dashboard as Webpage cards:
+**Settings → Dashboard cards** gives each card's address, with a key that lets it show that chart and
+nothing else. See [SECURITY.md](SECURITY.md); turn the port off in the add-on's **Network** settings if
+you only use the sidebar.
 
 ### Standalone Docker
 
@@ -91,6 +93,7 @@ services:
     environment:
       - HA_URL=http://homeassistant:8123   # your Home Assistant, by name or address
       - HA_TOKEN=your_long_lived_access_token
+      # - HA_PUBLIC_URL=http://192.168.1.10:8123   # only if your browser reaches HA at another address
       - LOG_LEVEL=info
     volumes:
       - ~/emt-data:/data/energy_meter_tracker
@@ -107,8 +110,17 @@ In standalone mode the backups are kept inside it, in `backup/`, and the log in 
 **To update:** `git pull` in your clone, then `docker compose up -d --build emt`. The volume, and with
 it your data, is kept.
 
+**Signing in.** EMT asks you to sign in with Home Assistant, on Home Assistant's own page, and lets in
+administrators only. Your browser is sent to `HA_PUBLIC_URL` if set, otherwise to the host you opened
+EMT at, on `HA_URL`'s port (8123): set `HA_PUBLIC_URL` if your browser reaches Home Assistant somewhere
+else, as it will if `HA_URL` is a name only Docker knows, such as `homeassistant`. If you can't sign in at
+all, `EMT_DIRECT_LOGIN=off` turns the sign-in off; anyone who can reach the port can then use every tool.
+
 **In Home Assistant's sidebar:** Settings → Dashboards → **Add dashboard → Webpage**, with the URL
 `http://<host>:8098`. (The sidebar's own add-on panel is the Supervisor's, so standalone has none.)
+**Use the same address for EMT as you open Home Assistant at** — both by IP address, or both by name.
+A browser keeps EMT's sign-in inside Home Assistant's page only when they match; otherwise EMT says so
+and offers to open in a tab of its own. Dashboard cards work either way: they use their card key.
 
 ## Coming from v4
 

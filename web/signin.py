@@ -1,6 +1,6 @@
 """
 The direct port's sign-in: Home Assistant's own login, administrators only (direct port login design,
-docs/design/EMT-v5_direct_port_login_design.md, §3.2 and §3.5; checked on a real install, §6).
+docs/history/design/EMT-v5_direct_port_login_design.md, §3.2 and §3.5; checked on a real install, §6).
 
 Ingress (the sidebar) is untouched: the Supervisor has already signed the user in, and IngressMiddleware
 marks those requests `emt.ingress`. On the direct port, every request needs EMT's session cookie, apart

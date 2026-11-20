@@ -36,7 +36,7 @@ port, POST a new one, which stops every card with the old) is Settings → Dashb
 sidebar or a session, never a card key. `.build/serve_local.py` runs with no sign-in unless
 `EMT_PREVIEW_SIGNIN=1`. Standalone, `EMT_DIRECT_LOGIN=off` turns all of this off,
 and `HA_PUBLIC_URL` says where the browser reaches Home Assistant. The design:
-[EMT-v5_direct_port_login_design.md](../design/EMT-v5_direct_port_login_design.md).
+[EMT-v5_direct_port_login_design.md](../history/design/EMT-v5_direct_port_login_design.md).
 
 ## The main read: `/api/energy`
 
