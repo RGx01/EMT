@@ -12,6 +12,12 @@ internal name for everything before the first public release and never appears i
   year ticked before the first calendar year of your data came back unticked, and Rate brackets' device or
   Export went back to Import. They now stay where you left them.
 
+- **The carbon backfill stops warning every day about half-hours that have no carbon figure.** The Carbon
+  Intensity API has nothing for some old stretches, so EMT asked for them again each day, filled nothing and
+  logged a warning, for ever. A half-hour that comes back empty on three days is now set aside: EMT stops
+  asking for it, says so once in the log, naming the stretches, and charts show it as missing, as before.
+  Newer half-hours without carbon are still fetched, and changing your region asks again.
+
 ## [2026.11.0b29] — 2026-11-20
 
 - **Signing in to one EMT no longer signs you out of another on the same machine.** A browser keeps one
