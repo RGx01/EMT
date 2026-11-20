@@ -63,9 +63,10 @@
     number to move it.
   </p>
   <p>
-    EMT asks you to sign in with Home Assistant. Your browser is sent to <code>HA_PUBLIC_URL</code> if
-    set, otherwise to the host you opened EMT at, on <code>HA_URL</code>'s port: set
-    <code>HA_PUBLIC_URL</code> when your browser reaches Home Assistant at another address.
+    EMT asks you to sign in with Home Assistant. Your browser is sent to the machine you opened EMT at,
+    on <code>HA_URL</code>'s port, so with both on one machine there is nothing to set. If Home
+    Assistant is on another machine, or at another port, set <code>HA_PUBLIC_URL</code> to the address
+    you open it at.
     <code>EMT_DIRECT_LOGIN=off</code> turns the sign-in off, leaving the port open to anyone who can reach it.
     Shown in Home Assistant as a Webpage dashboard, EMT keeps its sign-in only when both are opened at the
     same address, both by IP or both by name.
