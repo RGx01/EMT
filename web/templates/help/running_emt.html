@@ -22,9 +22,11 @@
   <div class="card-title">🌐 Opening EMT</div>
   <ul>
     <li>From Home Assistant's sidebar (<strong>Show in sidebar</strong> on the add-on's page).</li>
-    <li>Directly, at <code>http://&lt;your HA host&gt;:8098</code>. Change the port in the add-on's
-      <strong>Network</strong> settings to run a second copy beside it, or clear it to use the sidebar
-      only.</li>
+    <li>Directly, at <code>http://&lt;your HA host&gt;:8098</code>, where EMT asks you to
+      <strong>sign in with Home Assistant</strong>: Home Assistant's own sign-in, two-factor included,
+      for administrators only. It keeps you signed in on that browser for 30 days; <strong>Sign out</strong>
+      is at the foot of EMT's sidebar. Change the port in the add-on's <strong>Network</strong> settings
+      to run a second copy beside it, or clear it to use the sidebar only.</li>
   </ul>
   <p><strong>Logs</strong>, in EMT's own sidebar, shows what it is doing — and is the first thing to
     look at when something seems wrong.</p>
@@ -32,9 +34,12 @@
 
 <div class="card help-section">
   <div class="card-title">🧩 EMT's charts in a dashboard</div>
-  <p>Two pages are made for a Home Assistant dashboard's webpage card:</p>
-  <pre class="help-pre">http://&lt;host&gt;:8098/lovelace/billing   # the Billing chart
-http://&lt;host&gt;:8098/lovelace/heatmap   # the heatmap</pre>
+  <p>EMT's Billing chart and its heatmap can go on a Home Assistant dashboard as <strong>Webpage</strong>
+    cards. <strong>Settings → Dashboard cards</strong> gives each card's address to copy: it carries a
+    <strong>card key</strong>, which lets the card show that chart and nothing else, with no sign-in.
+    <strong>Make a new key</strong> there stops every card using the old one.</p>
+  <p>A card works when Home Assistant is opened over <code>http</code> on your network; a browser won't
+    show it inside Home Assistant opened over <code>https</code>.</p>
   <p>EMT adds no sensors to Home Assistant: its figures change as half-hours settle, and a sensor's
     history cannot.</p>
 </div>
@@ -56,6 +61,14 @@ http://&lt;host&gt;:8098/lovelace/heatmap   # the heatmap</pre>
     Then open <code>http://&lt;host&gt;:8098</code>. EMT listens on 8099 inside the container and is
     published on 8098, as the add-on is, so it runs beside v4 (8099) without a clash; change the first
     number to move it.
+  </p>
+  <p>
+    EMT asks you to sign in with Home Assistant. Your browser is sent to <code>HA_PUBLIC_URL</code> if
+    set, otherwise to the host you opened EMT at, on <code>HA_URL</code>'s port: set
+    <code>HA_PUBLIC_URL</code> when your browser reaches Home Assistant at another address.
+    <code>EMT_DIRECT_LOGIN=off</code> turns the sign-in off, leaving the port open to anyone who can reach it.
+    Shown in Home Assistant as a Webpage dashboard, EMT keeps its sign-in only when both are opened at the
+    same address, both by IP or both by name.
   </p>
   <div class="warn-box">
     ⚠️ <strong>The volume is essential</strong> — without it your data goes with the container. In
