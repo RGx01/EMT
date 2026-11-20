@@ -46,6 +46,9 @@ dir.txt
 *.patch
 *.log
 test_results.json
+# The symlinks run_tests.sh creates (its _MODULES, plus web/server.py/templates) and removes
+# on exit. tests/test_run_tests_scaffolding.py keeps this list and _MODULES in step.
+tests/billing.py
 tests/block_store.py
 tests/energy_charts.py
 tests/energy_engine_io.py
