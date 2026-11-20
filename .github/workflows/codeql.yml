@@ -1,0 +1,43 @@
+name: CodeQL
+
+# CodeQL on pull requests to dev as well as to main (20 Nov 2026, the user: "run CodeQL on PRs to dev
+# too"). GitHub's default setup ran it only on PRs to main, so three alerts in the sign-in (#169) were
+# first seen on the b27 release PR (#176) and fixed in #177 on the way out. This advanced setup replaces
+# the default one, which must be off (Settings → Advanced Security → CodeQL analysis): GitHub refuses an
+# advanced analysis while the default setup is on. Its categories are the default setup's own
+# (/language:python, /language:actions), so the alerts already open or dismissed carry over.
+#
+# A medium alert does not turn this check red (the repository's threshold is High); it shows on the PR.
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  schedule:
+    - cron: "17 4 * * 1"          # weekly, as the default setup was
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python, actions]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1   # v7.0.1
+      - uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066   # v4.39.3
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+      - uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066   # v4.39.3
+        with:
+          category: /language:${{ matrix.language }}
