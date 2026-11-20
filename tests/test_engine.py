@@ -1957,6 +1957,33 @@ class TestBlockStoreProvisionalColumn(unittest.TestCase):
         self.assertEqual(prov[0]["start"], "2026-05-01T09:30:00",
                          "Must return the most recent provisional block, not the oldest")
 
+    def test_the_query_reads_the_provisional_rows_not_the_history(self):
+        """Every engine tick runs it. It read every row of `blocks` (no index on imp_provisional), and on
+        the soak Pi's SD card that read held the tick in 38 of 111 engine-loop stalls, up to 186 s, with no
+        provisional row in the database (16-20 Nov 2026). Now it starts from idx_blocks_imp_provisional:
+        a long history with one provisional row costs about what a short one does. Fails on the parent,
+        whose work grew with the history."""
+        def steps():
+            n = [0]
+            self.store._conn.set_progress_handler(lambda: n.__setitem__(0, n[0] + 1) or 0, 10)
+            try:
+                prov = self.store.get_provisional_sub_meter_blocks()
+            finally:
+                self.store._conn.set_progress_handler(None, 0)
+            return prov, n[0]
+        self.store.append_block(self._make_block(ev_provisional=True))
+        _, short = steps()
+        from datetime import datetime, timedelta
+        t0 = datetime(2026, 5, 2)
+        for i in range(400):                                   # 400 settled half-hours after it
+            b = self._make_block(ev_provisional=False)
+            b["start"] = (t0 + timedelta(minutes=30 * i)).isoformat()
+            b["end"] = (t0 + timedelta(minutes=30 * (i + 1))).isoformat()
+            self.store.append_block(b)
+        prov, long_ = steps()
+        self.assertEqual([p["start"] for p in prov], ["2026-05-01T09:00:00"])
+        self.assertLess(long_, short * 2 + 20, (short, long_))
+
 
 class TestObservedDeviceIntervalS(unittest.TestCase):
     """Unit tests for _observed_device_interval_s."""
