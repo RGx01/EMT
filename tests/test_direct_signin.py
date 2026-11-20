@@ -47,10 +47,6 @@ def _app():
     def css():
         return "css"
 
-    @app.route("/lovelace/heatmap")
-    def card():
-        return "the card"
-
     @app.route("/api/energy", methods=["GET", "POST"])
     def energy():
         return {"ok": True}
@@ -286,60 +282,17 @@ class ThePreview(unittest.TestCase):
             self.assertTrue(signin.configure(d, mode="supervised", login="", preview=True))
 
 
-class TheCardKey(_Base):
-    """Design §3.3: a card's URL carries a key that admits GET on the two card pages and their two reads,
-    nothing else. Checked in the browser pane on the demo household with the sign-in on (20 Nov 2026): both
-    cards draw with the key; a wrong key, another API, another page, a write and /api/card-key are refused."""
+class NoCardKey(_Base):
+    """The dashboard cards are gone (20 Nov 2026, before b27 shipped them): no key in an address opens
+    anything on the direct port. Discriminating: on the parent, a `card_key` file beside the secret let
+    `?key=` read /api/energy with no session; an install that made one keeps the file, and it opens nothing."""
 
-    def setUp(self):
-        super().setUp()
-        self.key = signin.new_card_key()
-
-    def test_none_until_made(self):
-        os.remove(os.path.join(self.dir, signin.CARD_KEY_FILE))
-        self.assertIsNone(signin.card_key())
-        self.assertEqual(self.get("/lovelace/heatmap?key=anything").status_code, 302)
-
-    def test_the_key_opens_the_cards_reads(self):
-        self.assertEqual(self.get("/lovelace/heatmap?key=" + self.key).status_code, 200)
-        self.assertEqual(self.get("/api/energy?resolution=day&key=" + self.key).status_code, 200)
-
-    def test_a_wrong_key_does_not(self):
-        wrong = ("A" if self.key[0] != "A" else "B") + self.key[1:]     # never the key itself
-        self.assertEqual(self.get("/lovelace/heatmap?key=" + wrong).status_code, 302)
-        self.assertEqual(self.get("/api/energy?key=").status_code, 401)
-
-    def test_the_key_opens_nothing_else(self):
-        self.assertEqual(self.get("/data-management?key=" + self.key).status_code, 302)
-        self.assertEqual(self.get("/api/thing?key=" + self.key).status_code, 401)
-        self.assertEqual(self.post("/api/energy?key=" + self.key, origin="http://" + HOST).status_code, 401)
-        self.assertEqual(self.get("/api/card-key?key=" + self.key).status_code, 401)
-
-    def test_a_new_key_stops_the_old(self):
-        new = signin.new_card_key()
-        self.assertNotEqual(new, self.key)
-        self.assertEqual(self.get("/lovelace/heatmap?key=" + self.key).status_code, 302)
-        self.assertEqual(self.get("/lovelace/heatmap?key=" + new).status_code, 200)
-
-    def test_kept_private_beside_the_secret(self):
-        mode = stat.S_IMODE(os.stat(os.path.join(self.dir, signin.CARD_KEY_FILE)).st_mode)
-        self.assertEqual(mode, 0o600)
-
-    def test_settings_reads_and_makes_it_behind_a_session(self):
-        self.assertEqual(self.get("/api/card-key").status_code, 401)
-        good = signin.make_session("u1")
-        j = self.get("/api/card-key", cookie=good).get_json()
-        self.assertEqual((j["key"], j["port"], j["known"]), (self.key, 8098, True))
-        self.assertEqual([c["path"] for c in j["cards"]], ["/lovelace/billing", "/lovelace/heatmap"])
-        made = self.post("/api/card-key", origin="http://" + HOST, cookie=good).get_json()["key"]
-        self.assertNotEqual(made, self.key)
-        self.assertEqual(signin.card_key(), made)
-
-    def test_the_card_pages_pass_their_key_on(self):
-        for page in ("lovelace_billing.html", "lovelace_heatmap.html"):
-            src = open(os.path.join(_ROOT, "web", "templates", page), encoding="utf-8").read()
-            self.assertIn("new URLSearchParams(location.search).get('key')", src, page)
-            self.assertIn("'key=' + encodeURIComponent(CARD_KEY)", src, page)
+    def test_a_key_in_the_address_opens_nothing(self):
+        key = "k" * 43
+        with open(os.path.join(self.dir, "card_key"), "w", encoding="ascii") as f:
+            f.write(key)
+        self.assertEqual(self.get("/api/energy?resolution=day&key=" + key).status_code, 401)
+        self.assertEqual(self.get("/data-management?key=" + key).status_code, 302)
 
 
 class TheServerWiring(unittest.TestCase):

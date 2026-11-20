@@ -34,12 +34,11 @@ except ImportError:
     import signin as _signin                     # the tests load server.py by path
 app.register_blueprint(_signin.bp)
 app.before_request(_signin.guard)
-_signin.data_dir_fn = lambda: DATA_DIR      # the cards' key lives beside blocks.db, even with the sign-in off
 
 
 # ── Response compression ──────────────────────────────────────────────────────
 # HA's ingress proxy gzips responses, but the add-on's own web server (direct
-# :8099 access, and Lovelace iframe/webpage cards) does not — so large text
+# :8099 access) does not — so large text
 # responses like the multi-MB daily chart HTML transferred uncompressed and took
 # 15-20s to download on the direct port. Compress compressible text bodies when
 # the client advertises gzip. Safe under ingress: a body already carrying
@@ -55,7 +54,7 @@ def _pages_revalidate(response):
     """A page is asked for again each time, not reused from the browser's cache: its script is
     inline, so a stale page is stale code (21 Oct 2026, staging: Data Management after an upgrade
     needed a hard refresh). `no-cache` still lets the browser keep it, it just checks first. A
-    response that set its own header keeps it (the Lovelace pages: no-store)."""
+    response that set its own header keeps it."""
     try:
         ctype = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype == "text/html" and "Cache-Control" not in response.headers:
@@ -213,7 +212,7 @@ def inject_globals():
 # get back to it — only "/" sent an unconfigured install there). Until then a page is the welcome
 # screen, except the pages the fork itself uses (Settings: the setup wizard, and where a restore
 # without a key lands) and the two that help when something goes wrong (Help, Logs). APIs, static
-# files and the Lovelace cards are not pages and are not touched.
+# files are not pages and are not touched.
 _OPEN_BEFORE_SETUP = frozenset({"welcome_page", "settings_page", "help_page", "help_section", "logs_page"})
 
 
@@ -2230,39 +2229,6 @@ def fill_history_page():
     return redirect(url_for("data_management_page"))
 
 
-# ── Lovelace (Home Assistant dashboard) pages ─────────────────────────────────
-# A bare page per chart, for an iframe/webpage card. The URLs predate C and are
-# kept so existing cards keep working; both now draw in the browser from the API.
-
-_LOVELACE_REFRESH = 130  # seconds between fingerprint-checked refreshes
-
-
-@app.route("/lovelace/billing")
-def lovelace_billing():
-    """The Billing tab on its own, for a Home Assistant dashboard card.
-
-    Same URL as ever; it served the pre-rendered daily_usage.html until C deleted
-    it (30 Sep 2026) and now serves billing_module.html on a bare page, which
-    refreshes itself every _LOVELACE_REFRESH seconds from /api/energy."""
-    resp = make_response(render_template("lovelace_billing.html", refresh_s=_LOVELACE_REFRESH))
-    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    return resp
-
-
-@app.route("/lovelace/heatmap")
-def lovelace_heatmap():
-    """Net energy heatmap — Lovelace-friendly URL, for a Home Assistant dashboard card.
-
-    Same URL as ever, so existing cards keep working; it now serves the in-browser
-    heatmap (heatmap_module.html, drawing from /api/energy) instead of the
-    pre-rendered net_heatmap.html, which no longer exists. The module refreshes the
-    current month on a timer, so the page needs no meta refresh."""
-    resp = make_response(render_template("lovelace_heatmap.html",
-                                         refresh_s=_LOVELACE_REFRESH))
-    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    return resp
-
-
 def _config_token(store) -> str:
     """What a page shows beyond the blocks that a write can change: the billing periods
     (a billing-day change or an added/removed meter re-cuts them), each device's name, and each
@@ -3675,8 +3641,6 @@ def settings_page():
     tab = request.args.get("tab", "meter-config")
     if tab == "carbon":
         return render_template("settings.html", active="settings")
-    if tab == "cards":                   # the dashboard cards' addresses and key (login design §3.3)
-        return render_template("dashboard_cards.html", active="settings")
     # Default: Meter Config tab
     store = store_access.store()
     cfg   = load_config()

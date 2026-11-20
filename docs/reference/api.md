@@ -7,10 +7,11 @@ code is right and this page is fixed.*
 
 Each page (`/live-power` — the Overview — `/charts`, `/insights`, `/data-management`,
 `/historical-import`, `/settings`, `/billing-history`, `/logs`, `/help/…`, `/welcome`) is a Jinja
-template that renders no figures: it fetches JSON from the routes below and draws it in the browser (Chart.js). Nothing is pre-rendered. The Lovelace cards (`/lovelace/billing`,
-`/lovelace/heatmap`) are pages of the same kind.
+template that renders no figures: it fetches JSON from the routes below and draws it in the browser (Chart.js). Nothing is pre-rendered.
+There are no dashboard-card pages: v4's `/lovelace/billing` and `/lovelace/heatmap` were removed on
+20 Nov 2026, so the direct port serves the signed-in app and nothing else.
 
-Charts, its heatmap and the Lovelace heatmap poll a fingerprint (`/api/energy?fields=fingerprint`) and
+Charts and its heatmap poll a fingerprint (`/api/energy?fields=fingerprint`) and
 refetch only what changed.
 
 ## Who may ask
@@ -29,11 +30,7 @@ Assistant, admits an administrator only, revokes Home Assistant's tokens and set
 `/signin/check` says so when the browser did not keep it; `POST /signin/out` signs out. The cookie is signed
 with `session_secret`, a file beside `blocks.db`.
 
-A **dashboard card** is let in by the key in its URL (`?key=…`, `card_key` beside `blocks.db`), on GET and
-HEAD only, to `/lovelace/billing`, `/lovelace/heatmap`, `/api/energy` and `/api/periods`
-(`signin.CARD_PATHS`); the card pages pass it on to their reads. `/api/card-key` (GET the key and the direct
-port, POST a new one, which stops every card with the old) is Settings → Dashboard cards', behind the
-sidebar or a session, never a card key. `.build/serve_local.py` runs with no sign-in unless
+`.build/serve_local.py` runs with no sign-in unless
 `EMT_PREVIEW_SIGNIN=1`. Standalone, `EMT_DIRECT_LOGIN=off` turns all of this off,
 and `HA_PUBLIC_URL` says where the browser reaches Home Assistant. The design:
 [EMT-v5_direct_port_login_design.md](../history/design/EMT-v5_direct_port_login_design.md).

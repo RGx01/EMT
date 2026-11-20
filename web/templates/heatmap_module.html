@@ -227,7 +227,7 @@ window.EMTHeatmap = (function () {
     return v;
   }
   var AXIS_LEFT = 30, CELL_MAX = 22, CELL_MIN = 6;
-  // Two modes (data management design §1 (1), 21 Oct 2026): `chart` — Charts and the Lovelace card,
+  // Two modes (data management design §1 (1), 21 Oct 2026): `chart` — Charts,
   // the energy views, read-only — and `data` — Data Management, the data views and every tool.
   var state = {metric: 'kwh', tz: null, bm: 30, months: {}, keys: [], panels: {}, epoch: null,
                mode: 'chart', collapse: false, expanded: {}, dayWanted: null, mhealth: null, mexpanded: {},
@@ -1904,7 +1904,7 @@ window.EMTHeatmap = (function () {
     }, function () { state.mhealth = null; });
   }
 
-  // `opts.mode`: 'chart' (the default — Charts, the Lovelace card) or 'data' (Data Management);
+  // `opts.mode`: 'chart' (the default — Charts) or 'data' (Data Management);
   // `opts.day`: in data mode, 'YYYY-MM-DD' to open that day's month and mark the day.
   // `opts.issues`: in data mode, Issues only on for this visit.
   function init(root, opts) {

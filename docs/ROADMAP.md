@@ -72,10 +72,10 @@ missing and where it stands; the done history, with every decision's story, is i
 - **A login on the direct port** (20 Nov 2026, a blocker for the first release; the user: "could we just
   use users HA's login?"). Port 8098 had none: anyone on the network reached every tool. Now a request is
   ingress only from the Supervisor (#167); the direct port signs in with Home Assistant's own page,
-  administrators only, for a 30-day EMT session (#169); dashboard cards take a read-only card key from
-  Settings → Dashboard cards (#170). Run whole on the owner's soak Pi on `dev`, 20 Nov 2026: signed in
-  with Home Assistant on the direct port, used a page and saved a change, signed out, made a card key and a
-  keyed Webpage card drew. The record:
+  administrators only, for a 30-day EMT session (#169). Run whole on the owner's soak Pi on `dev`, 20 Nov
+  2026: signed in with Home Assistant on the direct port, used a page and saved a change, signed out. The
+  dashboard cards' read-only key (#170) worked there too, and the cards were then removed before b27
+  shipped them (the user: "I don't want the dashboard cards functionality"). The record:
   [history/design/EMT-v5_direct_port_login_design.md](history/design/EMT-v5_direct_port_login_design.md).
 - **BL-108: a device sensor that reads the whole house** (5 Nov 2026, for 2026.11.0b11; a tester's support
   file; the user: "add the BL item then build it"). A GivEnergy battery set up with GivTCP's `import_energy_today_kwh`
