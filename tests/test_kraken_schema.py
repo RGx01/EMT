@@ -129,7 +129,8 @@ class TestSchemaColumns(_StoreBase):
         idx = {r[0] for r in self.store._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='index'").fetchall()}
         for name in ("idx_blocks_start_meter", "idx_blocks_provisional",
-                     "idx_blocks_pass2_rerun", "idx_blocks_needs_review"):
+                     "idx_blocks_pass2_rerun", "idx_blocks_needs_review",
+                     "idx_blocks_imp_provisional"):
             self.assertIn(name, idx)
 
     def test_unique_index_is_unique(self):
