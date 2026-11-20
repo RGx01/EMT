@@ -35,15 +35,10 @@ EMT is reached two ways:
   needs to know who you are, not to act as you. A change made on this port must come from EMT's own
   pages.
 
-**Dashboard cards** use a **card key** in their address instead of a sign-in (Settings → Dashboard
-cards). A key lets a card show its chart and nothing else: no other page, no other figures, no changes.
-Anyone who has a card's address can see that chart, so treat it like a password; **Make a new key**
-stops every card using the old one.
+The sign-in's signing secret is a file beside EMT's database, not in it: a backup or a support file
+never carries it.
 
-EMT's own secrets (the sign-in's signing secret, the card key) are files beside its database, not in it:
-a backup or a support file carries neither.
-
-If you don't use the dashboard cards or the direct port, turn it off: the add-on's page → **Network** →
+If you don't use the direct port, turn it off: the add-on's page → **Network** →
 clear the port → **Save**, then restart the add-on. Never expose the direct port to the internet: it
 is plain `http`.
 

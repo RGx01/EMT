@@ -2,7 +2,7 @@
 The heatmap's two modes, the Missing view and `?day=` (data management design §1 (1), PR 1;
 21 Oct 2026).
 
-- **chart** (Charts, the Lovelace card; the default): the energy views — kWh, gCO₂, gCO₂/kWh —
+- **chart** (Charts; the default): the energy views — kWh, gCO₂, gCO₂/kWh —
   read-only. No Issues only, no drag, no tools; a cell's detail, a missing half-hour and the day
   column offer *Open in Data Management* for the day.
 - **data** (Data Management): the Import bill and Export bill where they show today, and the
@@ -120,11 +120,9 @@ class TheDay(unittest.TestCase):
 
 class TheHosts(unittest.TestCase):
 
-    def test_charts_and_lovelace_are_chart_mode(self):
+    def test_charts_is_chart_mode(self):
         self.assertIn("EMTHeatmap.init(document.getElementById('chart-heatmap-content'), {mode: 'chart'})",
                       _page("charts.html"))
-        self.assertIn("EMTHeatmap.init(document.getElementById('chart-heatmap-content'), {mode: 'chart'})",
-                      _page("lovelace_heatmap.html"))
 
     def test_data_management_is_data_mode_with_the_day(self):
         dm = _page("data_management.html")

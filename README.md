@@ -62,10 +62,8 @@ three years of half-hours with a few devices; keep a few times that free for bac
    an Energy Meter Tracker backup** (a v4 backup's `.zip`, or its `blocks.db`).
 
 EMT's page is also published on **port 8098**. Opened there, it asks you to **sign in with Home
-Assistant** (administrators only). Its Billing chart and heatmap can go on a dashboard as Webpage cards:
-**Settings → Dashboard cards** gives each card's address, with a key that lets it show that chart and
-nothing else. See [SECURITY.md](SECURITY.md); turn the port off in the add-on's **Network** settings if
-you only use the sidebar.
+Assistant** (administrators only). See [SECURITY.md](SECURITY.md); turn the port off in the add-on's
+**Network** settings if you only use the sidebar.
 
 ### Standalone Docker
 
@@ -123,7 +121,7 @@ you can't sign in at all, `EMT_DIRECT_LOGIN=off` in `environment:` turns the sig
 `http://<host>:8098`. (The sidebar's own add-on panel is the Supervisor's, so standalone has none.)
 **Use the same address for EMT as you open Home Assistant at** — both by IP address, or both by name.
 A browser keeps EMT's sign-in inside Home Assistant's page only when they match; otherwise EMT says so
-and offers to open in a tab of its own. Dashboard cards work either way: they use their card key.
+and offers to open in a tab of its own.
 
 ## Coming from v4
 

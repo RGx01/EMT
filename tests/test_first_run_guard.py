@@ -4,7 +4,7 @@ Before a configuration is in place, the welcome screen is the only way in (19 Oc
 Only "/" sent an unconfigured install to /welcome: a user who opened Charts (or any page) instead of
 following it could not get back. Now `_first_run_guard` redirects every page to /welcome until there
 is a configuration — except the pages the fork itself uses (Settings: the setup wizard, and where a
-restore without a key lands) and Help and Logs. APIs, static files and the Lovelace cards are left
+restore without a key lands) and Help and Logs. APIs and static files are left
 alone; a failed config read never locks the user out. The sidebar dims the links that would bounce.
 
 Discriminating (fail on the parent: no guard), except the GUARDs marked.

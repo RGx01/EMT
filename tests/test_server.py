@@ -627,16 +627,6 @@ class TestApiChartEndpoints(unittest.TestCase):
         for url in ("/api/charts/heatmap", "/charts/net_heatmap.html"):
             self.assertEqual(self.client.get(url).status_code, 404, url)
 
-    def test_lovelace_heatmap_serves_the_in_browser_module(self):
-        """Same URL as ever, so a dashboard card keeps working — no file needed."""
-        with patch("os.path.exists", return_value=False):
-            r = self.client.get("/lovelace/heatmap")
-        self.assertEqual(r.status_code, 200)
-        body = r.get_data(as_text=True)
-        self.assertIn("window.EMTHeatmap", body)
-        self.assertIn("EMTHeatmap.init(", body)
-        self.assertIn("setInterval(", body)
-
     def test_the_charts_page_draws_the_heatmap_in_the_page(self):
         body = self.client.get("/charts").get_data(as_text=True)
         self.assertIn("window.EMTHeatmap", body)
@@ -648,16 +638,11 @@ class TestApiChartEndpoints(unittest.TestCase):
             self.assertEqual(self.client.get(url).status_code, 404, url)
         self.assertEqual(self.client.post("/api/charts/regenerate").status_code, 404)
 
-    def test_lovelace_billing_serves_the_in_browser_module(self):
-        """Same URL as ever, so a dashboard card keeps working — no file needed."""
-        with patch("os.path.exists", return_value=False):
-            r = self.client.get("/lovelace/billing")
-        self.assertEqual(r.status_code, 200)
-        body = r.get_data(as_text=True)
-        self.assertIn("window.EMTBilling", body)
-        self.assertIn("EMTBilling.init(", body)
-        self.assertIn("window.PeriodSpinner", body)
-        self.assertIn("setInterval(", body)
+    def test_the_dashboard_card_pages_are_gone(self):
+        """Removed on 20 Nov 2026: the direct port serves the signed-in app and nothing else."""
+        for url in ("/lovelace/heatmap", "/lovelace/billing", "/api/card-key"):
+            self.assertEqual(self.client.get(url).status_code, 404, url)
+        self.assertNotIn("tab=cards", self.client.get("/settings?tab=carbon").get_data(as_text=True))
 
     def test_the_charts_page_draws_the_billing_tab_in_the_page(self):
         body = self.client.get("/charts").get_data(as_text=True)

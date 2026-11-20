@@ -77,10 +77,10 @@ class IngressByAddress(unittest.TestCase):
         self.assertNotIn("HTTP_X_REMOTE_USER_ID", env)
 
     def test_a_plain_direct_request_is_unchanged(self):
-        """GUARD: the dashboard card's request, with no ingress headers, reaches the app as before."""
-        env = _through(LAN, path="/lovelace/heatmap")
+        """GUARD: a direct request, with no ingress headers, reaches the app as before."""
+        env = _through(LAN, path="/charts")
         self.assertFalse(env["emt.ingress"])
-        self.assertEqual((env["SCRIPT_NAME"], env["PATH_INFO"]), ("", "/lovelace/heatmap"))
+        self.assertEqual((env["SCRIPT_NAME"], env["PATH_INFO"]), ("", "/charts"))
 
 
 class ThePeerInTheLog(unittest.TestCase):

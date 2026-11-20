@@ -133,17 +133,14 @@ class TheBillingModule(unittest.TestCase):
             cls.mod = f.read()
         with open(os.path.join(ROOT, "web", "templates", "charts.html")) as f:
             cls.charts = f.read()
-        with open(os.path.join(ROOT, "web", "templates", "lovelace_billing.html")) as f:
-            cls.card = f.read()
 
     def test_cad_only(self):
         self.assertIn("state.corr = !j.uses_api", self.mod)
         self.assertIn("if (state.corr) bindCorrect(canvas, day)", self.mod)
 
-    def test_the_charts_page_offers_it_and_the_card_does_not(self):
+    def test_the_charts_page_offers_it(self):
         self.assertIn("EMTBilling.init(document.getElementById('chart-daily-content'), {corrections: true, remember: true})",
                       self.charts)
-        self.assertNotIn("corrections", re.sub(r"<!--.*?-->", "", self.card, flags=re.S))
 
     def test_right_click_and_long_press(self):
         self.assertIn("'contextmenu'", self.mod)
