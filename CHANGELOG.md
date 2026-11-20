@@ -5,6 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **Signing in on EMT's own port works when Home Assistant's local address is set wrong.** EMT sent your
+  browser to the local address set in Home Assistant (Settings → System → Network). Where that said
+  `https://` but Home Assistant answers plain HTTP, the browser could not connect. The sign-in page now
+  tries that address, then this machine's port 8123 over HTTP and HTTPS, and uses the first that answers.
+
 ## [2026.11.0b27] — 2026-11-20
 
 - **A device renamed on Settings is renamed on the charts.** Usage Stats, Flow, Running total and Spiral
