@@ -41,6 +41,7 @@ INTROSPECTION_QUERY = (
 
 _WANTED_CONSTS = (
     "_CHARGING_DEVICE_TYPES",
+    "_ONBOARDED_DEVICE_STATES",
     "_EMT_GRAPHQL_FIELDS",
     "_EMT_GRAPHQL_TYPED_FIELDS",
     "_EMT_GRAPHQL_ENUMS",
@@ -51,7 +52,7 @@ _WANTED_CONSTS = (
 def _eval_const(node, ns):
     """Evaluate a constant expression node, resolving Names against already-seen
     constants and supporting set-union (`a | b`) — enough for EMT's declarations
-    (e.g. `_EMT_GRAPHQL_ENUMS = _CHARGING_DEVICE_TYPES | {"TEN_SECONDS", "LIVE"}`).
+    (e.g. `_EMT_GRAPHQL_ENUMS = _CHARGING_DEVICE_TYPES | _ONBOARDED_DEVICE_STATES | {...}`).
     """
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         return _eval_const(node.left, ns) | _eval_const(node.right, ns)

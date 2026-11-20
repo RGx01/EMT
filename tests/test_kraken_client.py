@@ -586,7 +586,7 @@ class TestGraphQLQueries(unittest.TestCase):
     def test_get_dispatches_normalises_fields(self):
         # Current API surface (post-3.0.3/3.0.4 migration):
         #   • provider comes from the polymorphic `devices` query (make first,
-        #     then provider) for a LIVE charging device — replaces the deprecated
+        #     then provider) for an onboarded charging device — replaces the deprecated
         #     registeredKrakenflexDevice.provider.
         #   • planned dispatches come from a SECOND query, flexPlannedDispatches,
         #     keyed by that device's id, carrying start/end + type + energyAddedKwh
@@ -599,7 +599,7 @@ class TestGraphQLQueries(unittest.TestCase):
             "devices": [
                 {"id": "cp-1", "make": "MYENERGI", "provider": "OCTOPUS_ENERGY",
                  "deviceType": "ELECTRIC_VEHICLES", "__typename": "SmartFlexVehicle",
-                 "status": {"current": "LIVE"}}],
+                 "status": {"currentState": "SMART_CONTROL_CAPABLE"}}],
         }
         flex_resp = {
             "flexPlannedDispatches": [
@@ -628,9 +628,9 @@ class TestGraphQLQueries(unittest.TestCase):
         sent = []
         c = self._client([_gql_data({"completedDispatches": [], "devices": [
             {"id": "m-1", "make": None, "deviceType": "ELECTRICITY_METERS",
-             "__typename": "SmartFlexDevice", "status": {"current": "LIVE"}},
+             "__typename": "SmartFlexDevice", "status": {"currentState": "SMART_CONTROL_CAPABLE"}},
             {"id": "cp-1", "make": None, "deviceType": "ELECTRIC_VEHICLES",
-             "__typename": "SmartFlexChargePoint", "status": {"current": "LIVE"}}]}),
+             "__typename": "SmartFlexChargePoint", "status": {"currentState": "SMART_CONTROL_CAPABLE"}}]}),
             _gql_data({"flexPlannedDispatches": []})])
         c._deprecation_checked = True
         orig = c._graphql
@@ -1056,6 +1056,89 @@ class TestConnectionMessageForEdgeBlock(unittest.TestCase):
         res = run(self._client(FakeResp(401, text="nope")).test_connection())
         self.assertFalse(res["ok"])
         self.assertIn("check API key", res["detail"])
+
+
+def _dev(dev_id, state, dtype="ELECTRIC_VEHICLES", typename="SmartFlexVehicle", make=None):
+    return {"id": dev_id, "deviceType": dtype, "__typename": typename, "make": make,
+            "status": {"currentState": state}}
+
+
+class TestPickChargingDeviceByCurrentState(unittest.TestCase):
+    """Octopus deprecated `status { current }` (SmartFlexDeviceLifecycleStatus; removal on or
+    after 2027-05-17) for `status { currentState }` (SmartFlexDeviceState). The charging device
+    is chosen as it was under `current == "LIVE"`: an onboarded one wins, and onboarded does not
+    mean plugged in — SMART_CONTROL_NOT_AVAILABLE (away or unplugged) is still the account's
+    charger, as LIVE was."""
+
+    # Every SmartFlexDeviceState value in the live schema (20 Nov 2026), split by whether the
+    # device has finished onboarding — what LIVE said.
+    ONBOARDED = ["SETUP_COMPLETE", "SMART_CONTROL_CAPABLE", "SMART_CONTROL_IN_PROGRESS",
+                 "SMART_CONTROL_OFF", "SMART_CONTROL_NOT_AVAILABLE", "BOOSTING",
+                 "LOST_CONNECTION", "PENDING_RETIREMENT"]
+    NOT_ONBOARDED = ["AUTHENTICATION_PENDING", "AUTHENTICATION_FAILED", "AUTHENTICATION_COMPLETE",
+                     "TEST_CHARGE_IN_PROGRESS", "TEST_CHARGE_FAILED", "TEST_CHARGE_NOT_AVAILABLE",
+                     "RETIRED", None]
+
+    def test_the_split_covers_the_schema_enum(self):
+        self.assertEqual(kc._ONBOARDED_DEVICE_STATES, set(self.ONBOARDED))
+        self.assertFalse(kc._ONBOARDED_DEVICE_STATES & set(self.NOT_ONBOARDED))
+
+    def test_an_onboarded_charger_wins_over_one_still_onboarding_listed_first(self):
+        # A second car being added: the new one is mid-test, the old one is the live charger.
+        for new_state in self.NOT_ONBOARDED:
+            for live_state in self.ONBOARDED:
+                with self.subTest(new=new_state, live=live_state):
+                    devices = [_dev("new-car", new_state), _dev("old-car", live_state)]
+                    self.assertEqual(kc._pick_device_id(devices), "old-car")
+
+    def test_an_unplugged_charger_is_still_the_live_one(self):
+        # The soak's account shape: meter + charger. Unplugged is NOT_AVAILABLE, which is not
+        # what the deprecated LIVE meant by "not live"; a retired charger listed first loses.
+        devices = [_dev("m-1", "SMART_CONTROL_CAPABLE", "ELECTRICITY_METERS", "SmartFlexDevice"),
+                   _dev("cp-old", "RETIRED", "CHARGE_POINTS", "SmartFlexChargePoint", "OHME"),
+                   _dev("cp-1", "SMART_CONTROL_NOT_AVAILABLE", "CHARGE_POINTS",
+                        "SmartFlexChargePoint", "MYENERGI")]
+        self.assertEqual(kc._pick_device_id(devices), "cp-1")
+        self.assertEqual(kc._pick_device_provider(devices), "MYENERGI")
+
+    def test_the_deprecated_field_alone_no_longer_makes_a_device_live(self):
+        # A response still carrying `current` (it is no longer selected) does not rank.
+        devices = [_dev("a", "TEST_CHARGE_IN_PROGRESS"), _dev("b", "SETUP_COMPLETE")]
+        devices[0]["status"]["current"] = "LIVE"
+        self.assertEqual(kc._pick_device_id(devices), "b")
+
+    def test_a_charger_beats_an_onboarded_meter_whatever_its_state(self):   # guard: passes before and after
+        for state in self.NOT_ONBOARDED:
+            with self.subTest(state=state):
+                devices = [_dev("m-1", "SMART_CONTROL_CAPABLE", "ELECTRICITY_METERS",
+                                "SmartFlexDevice"), _dev("cp-1", state)]
+                self.assertEqual(kc._pick_device_id(devices), "cp-1")
+
+    def test_a_meter_only_account_has_no_charging_device(self):   # guard: passes before and after
+        devices = [_dev("m-1", "SMART_CONTROL_CAPABLE", "ELECTRICITY_METERS", "SmartFlexDevice")]
+        self.assertIsNone(kc._pick_device_id(devices))
+
+    def test_get_dispatches_selects_current_state_not_current(self):
+        sent = []
+        c = KrakenAPIClient("test-key", "A-0000ABC7")
+        async def _fake(query, variables=None, *a, **k):
+            sent.append((query, variables))
+            if "flexPlannedDispatches" in query:
+                return {"flexPlannedDispatches": []}
+            return {"completedDispatches": [], "devices": [
+                _dev("new-car", "AUTHENTICATION_COMPLETE"),
+                _dev("cp-1", "SMART_CONTROL_IN_PROGRESS", "CHARGE_POINTS",
+                     "SmartFlexChargePoint", "OHME")]}
+        c._graphql = _fake
+        c._deprecation_checked = True
+        res = run(c.get_dispatches("A-0000ABC7"))
+        import re
+        devices_q = sent[0][0]
+        self.assertIn("status { currentState }", devices_q)
+        self.assertIsNone(re.search(r"\bcurrent\b", devices_q))
+        self.assertEqual(sent[1][1], {"devId": "cp-1"})
+        self.assertEqual(res["provider"], "OHME")
+        self.assertEqual(len(sent), 2)        # no call added: devices + flexPlanned, as before
 
 
 class TestGraphqlDeprecationSetCompleteness(unittest.TestCase):
