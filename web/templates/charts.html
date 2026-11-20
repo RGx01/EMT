@@ -4133,6 +4133,13 @@ function barTariffVatOnly(a, iso) {
     return !!prev && prev.exc === p.exc;
   });
 }
+// The year's start to show: the remembered one while the tariffs and eras are still on their way, since a
+// tariff's or an era's start is not among the choices until they land (20 Nov 2026, the user: back from
+// the Overview, Year by year had gone back to 1 January); 1 January once they are known and it is gone.
+function barAccStartKept(starts) {
+  if (barSpansPending() || starts.some(function(o) { return o.id === barAccStart; })) return barAccStart;
+  return 'jan';
+}
 // The picker's options, an <optgroup> a run of one group
 function barAccStartOptions(starts, cur) {
   var esc = function(v) { return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); };
@@ -4846,7 +4853,7 @@ function barBuildSubBar() {
     if (barRunning()) {
       // the year's start, where Span's picker sits in the other views (5 Nov 2026, the user)
       var starts = barAccStartChoices();
-      if (!starts.some(function(o) { return o.id === barAccStart; })) barAccStart = 'jan';
+      barAccStart = barAccStartKept(starts);
       var ss = document.createElement('select');
       ss.id = 'bar-acc-start';
       ss.setAttribute('aria-label', 'When the year starts');

@@ -40,7 +40,8 @@ def _kinds():
 
 
 NAMES = ("barAccMs", "barAccStartChoices", "erasGroups", "barEraLabel", "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly", "barAccDateLabel", "barAccAnchor", "barAccStartMs", "barAccYearOf",
-         "barAccDoy", "barAccYearDays", "barAccYearLabel", "barAccDayLabel", "barAccMonthOffsets", "_spLbl")
+         "barAccDoy", "barAccYearDays", "barAccYearLabel", "barAccDayLabel", "barAccMonthOffsets", "_spLbl",
+         "barSpansPending", "barAccStartKept")
 
 
 @unittest.skipUnless(shutil.which("node"), "node not available")
@@ -93,6 +94,17 @@ class TheStart(unittest.TestCase):
 
     def test_a_choice_that_is_gone_is_1_january(self):
         self.assertEqual(self._run("era:gone0000", "barAccAnchor()"), {"m": 1, "d": 1})
+
+    def test_a_remembered_era_waits_for_the_eras(self):
+        """20 Nov 2026, the user: back from the Overview, Year by year's era start had gone to 1 January. The
+        page draws before the eras and tariffs land, so the choice was missing and replaced. Now it is kept
+        until they are known, and only then is a gone one 1 January."""
+        kept = "barAccStartKept(barAccStartChoices())"
+        self.assertEqual(self._run("era:abc12345", "(barEras = null, %s)" % kept), "era:abc12345")
+        self.assertEqual(self._run("tariff:2024-03-14", "(barTariffs = null, %s)" % kept), "tariff:2024-03-14")
+        self.assertEqual(self._run("era:abc12345", kept), "era:abc12345")
+        self.assertEqual(self._run("era:gone0000", kept), "jan")
+        self.assertIn("barAccStart = barAccStartKept(starts);", _fn("barBuildSubBar"))
 
     def test_the_months_from_the_start(self):
         out = self._run("billing", "barAccMonthOffsets().slice(0, 2)")
