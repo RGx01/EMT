@@ -68,9 +68,10 @@ class TestExtractUsedFields(unittest.TestCase):
         self.assertIn(("SmartFlexDevice", "id"), self.typed)
 
     def test_enums_include_union(self):
-        # _EMT_GRAPHQL_ENUMS = _CHARGING_DEVICE_TYPES | {"TEN_SECONDS", "LIVE"}
+        # _EMT_GRAPHQL_ENUMS = _CHARGING_DEVICE_TYPES | _ONBOARDED_DEVICE_STATES | {...}
         self.assertIn("ELECTRIC_VEHICLES", self.enums)   # from the union member
-        self.assertIn("LIVE", self.enums)
+        self.assertIn("SMART_CONTROL_NOT_AVAILABLE", self.enums)
+        self.assertIn("TEN_SECONDS", self.enums)
 
     def test_ignore_set(self):
         self.assertIn(("DeviceStatusType", "status"), self.ignore)
@@ -141,6 +142,34 @@ class TestNov2026Deprecations(unittest.TestCase):
             ("SmartFlexChargePoint", [_fld("provider", True, self._PROVIDER)]),
             ("SmartFlexDeviceInterface", [_fld("provider", True, self._PROVIDER)]),
         ]), set())
+
+
+class TestSmartFlexCurrentDeprecation(unittest.TestCase):
+    """Octopus deprecated `current` on the five SmartFlex*Status types on 2026-11-17 (removal on
+    or after 2027-05-17) for `currentState`. EMT selects `currentState` now, so the weekly check
+    and the start-up warning stop flagging `current`, and a deprecated SmartFlexDeviceState value
+    EMT compares (an onboarded state) is flagged."""
+    _REASON = "Please use `currentState` instead.\n- Scheduled for removal on or after 2027-05-17."
+    _STATUS = ["SmartFlexDeviceStatusInterface", "SmartFlexDeviceStatus",
+               "SmartFlexChargePointStatus", "SmartFlexVehicleStatus", "SmartFlexHeatPumpStatus"]
+
+    def _hits(self, types):
+        (names, typed, enums, ignore) = dep_check.extract_used_fields(_SOURCE)
+        return {(h["type"], h["field"]) for h in
+                dep_check.find_deprecations({"__schema": {"types": types}},
+                                            names, typed, enums, ignore)}
+
+    def test_status_current_is_no_longer_a_field_emt_uses(self):
+        self.assertEqual(self._hits([
+            {"name": n, "kind": "OBJECT", "enumValues": None,
+             "fields": [_fld("current", True, self._REASON), _fld("currentState")]}
+            for n in self._STATUS]), set())
+
+    def test_a_deprecated_onboarded_state_is_flagged(self):
+        self.assertEqual(self._hits([
+            {"name": "SmartFlexDeviceState", "kind": "ENUM", "fields": None, "enumValues": [
+                _fld("SMART_CONTROL_NOT_AVAILABLE", True, self._REASON), _fld("RETIRED")]}]),
+            {("SmartFlexDeviceState", "SMART_CONTROL_NOT_AVAILABLE")})
 
 
 if __name__ == "__main__":

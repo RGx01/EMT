@@ -401,6 +401,23 @@
   "RequestConsumptionData": [
     "requestReference"
   ],
+  "SmartFlexDeviceState": [
+    "enum:AUTHENTICATION_COMPLETE",
+    "enum:AUTHENTICATION_FAILED",
+    "enum:AUTHENTICATION_PENDING",
+    "enum:BOOSTING",
+    "enum:LOST_CONNECTION",
+    "enum:PENDING_RETIREMENT",
+    "enum:RETIRED",
+    "enum:SETUP_COMPLETE",
+    "enum:SMART_CONTROL_CAPABLE",
+    "enum:SMART_CONTROL_IN_PROGRESS",
+    "enum:SMART_CONTROL_NOT_AVAILABLE",
+    "enum:SMART_CONTROL_OFF",
+    "enum:TEST_CHARGE_FAILED",
+    "enum:TEST_CHARGE_IN_PROGRESS",
+    "enum:TEST_CHARGE_NOT_AVAILABLE"
+  ],
   "SmartFlexDispatch": [
     "end",
     "energyAddedKwh",

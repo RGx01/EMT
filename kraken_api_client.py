@@ -102,6 +102,23 @@ def _iso_naive_utc(s) -> Optional[str]:
 # manufacturer/provider drives dispatch behaviour (vs meters, batteries, heat pumps).
 _CHARGING_DEVICE_TYPES = {"ELECTRIC_VEHICLES", "CHARGE_POINTS"}
 _CHARGING_TYPENAMES = {"SmartFlexVehicle", "SmartFlexChargePoint"}
+# A device's `status { currentState }` (enum SmartFlexDeviceState) once it has finished
+# onboarding. It replaces the test on `status { current } == "LIVE"`: Octopus deprecated
+# `current` (enum SmartFlexDeviceLifecycleStatus) on 2026-11-17, removal on or after
+# 2027-05-17. LIVE meant "completed the onboarding process and is ready for control" and held
+# until the device was RETIRED, whether or not the car was plugged in. These are the states with
+# the same meaning, read from the schema's own descriptions: SETUP_COMPLETE ("test is complete
+# … and device is live"), the four smart-control states, BOOSTING, LOST_CONNECTION (registered,
+# awaiting re-auth) and PENDING_RETIREMENT (not retired yet). Left out, as LIVE left them out:
+# AUTHENTICATION_* and TEST_CHARGE_* (ONBOARDING / ONBOARDING_TEST_IN_PROGRESS / PENDING_LIVE /
+# FAILED_ONBOARDING_TEST) and RETIRED. A value Octopus adds later counts as not onboarded, as
+# a missing `current` did; the field watch (`SmartFlexDeviceState`) flags any new value.
+_ONBOARDED_DEVICE_STATES = {
+    "SETUP_COMPLETE",
+    "SMART_CONTROL_CAPABLE", "SMART_CONTROL_IN_PROGRESS",
+    "SMART_CONTROL_OFF", "SMART_CONTROL_NOT_AVAILABLE",
+    "BOOSTING", "LOST_CONNECTION", "PENDING_RETIREMENT",
+}
 # Smart-charge source/type vocabulary across API versions (legacy meta.source =
 # 'smart-charge'; flex type = 'smart'). Used only for the flex-vs-legacy parity
 # diagnostic; the engine owns the authoritative capture filter.
@@ -135,7 +152,9 @@ _EMT_GRAPHQL_FIELDS = {
     # longer selected: Octopus deprecated it (removal on or after 2027-04-15), and on
     # every account seen the charging device carries `make` — only the house meter
     # leaned on `provider`, and EMT never wanted the meter's.
-    "devices", "deviceType", "status", "current", "make", "model",
+    # `status { currentState }`: the deprecated `current` is not selected (see
+    # _ONBOARDED_DEVICE_STATES).
+    "devices", "deviceType", "status", "make", "model",
     # historical import — GraphQL Measurements API (get_measurements). These drive
     # the whole backfill (kWh + billed cost + off/peak label), so a silent upstream
     # deprecation must surface. (Relay-connection generics — edges/node/value/unit/
@@ -167,19 +186,19 @@ _EMT_GRAPHQL_TYPED_FIELDS = {
     ("PricePerUnit", "amount"),
 }
 # Enum VALUES EMT passes or compares literally — a rename/removal silently
-# breaks logic (telemetry grouping, live-device test, charging-device match, and
+# breaks logic (telemetry grouping, onboarded-device test, charging-device match, and
 # the historical-import Measurements filter: reading frequency + direction).
-_EMT_GRAPHQL_ENUMS = _CHARGING_DEVICE_TYPES | {
-    "TEN_SECONDS", "LIVE",
+_EMT_GRAPHQL_ENUMS = _CHARGING_DEVICE_TYPES | _ONBOARDED_DEVICE_STATES | {
+    "TEN_SECONDS",
     "THIRTY_MIN_INTERVAL", "CONSUMPTION", "GENERATION",
 }
 
 # Known same-NAME collisions: a deprecated field whose name is in the set above
 # but which sits on a (type, position) EMT never selects. Kept at (type, field)
 # granularity — NOT type-wide — so a real future deprecation of another field on
-# the same type (e.g. DeviceStatusType.current, which EMT *does* read) still
-# fires. Seeded from observed introspection; extend as new collisions surface.
-#   - DeviceStatusType.status   : EMT reads status{current} on the DEVICE, not
+# the same type still fires. Seeded from observed introspection; extend as new
+# collisions surface.
+#   - DeviceStatusType.status   : EMT reads status{currentState} on the DEVICE, not
 #                                 the status field of DeviceStatusType itself.
 #   - HeatPumpDeviceType.deviceType : EMT reads deviceType at the device
 #                                 interface level; it has no heat pump.
@@ -193,7 +212,8 @@ _DEPRECATION_IGNORE = {
 
 def _pick_charging_device(devices: list) -> Optional[dict]:
     """Return the device dict best representing the IOG-controllable charging
-    device — a LIVE EV / charge point wins over non-charging or non-LIVE ones.
+    device — an onboarded EV / charge point wins over non-charging or not-onboarded
+    ones (onboarded: `status.currentState` in _ONBOARDED_DEVICE_STATES).
 
     Shared selection used by _pick_device_provider (reads make) and
     _pick_device_id (reads id for flexPlannedDispatches), so both always agree on
@@ -212,8 +232,9 @@ def _pick_charging_device(devices: list) -> Optional[dict]:
         typename = dev.get("__typename") or ""
         is_charging = (dtype in _CHARGING_DEVICE_TYPES
                        or typename in _CHARGING_TYPENAMES)
-        is_live = ((dev.get("status") or {}).get("current") or "").upper() == "LIVE"
-        rank = (2 if is_charging else 0) + (1 if is_live else 0)
+        state = ((dev.get("status") or {}).get("currentState") or "").upper()
+        is_onboarded = state in _ONBOARDED_DEVICE_STATES
+        rank = (2 if is_charging else 0) + (1 if is_onboarded else 0)
         if rank > best_rank:
             best_rank = rank
             best = dev
@@ -230,8 +251,8 @@ def _pick_device_provider(devices: list) -> Optional[str]:
     ``provider`` (the control provider) is no longer read: Octopus deprecated it
     and points at ``capabilities``, which says what a device can do, not who made it.
 
-    Ranks candidates so a LIVE charging device (EV / charge point) wins over a
-    non-charging or non-LIVE one; returns None when the picked device has no make
+    Ranks candidates so an onboarded charging device (EV / charge point) wins over a
+    non-charging or not-onboarded one; returns None when the picked device has no make
     (a meter-only account).
     """
     dev = _pick_charging_device(devices)
@@ -1746,7 +1767,7 @@ class KrakenAPIClient:
         #    (normalised in _norm). meta.source / type carry the smart-vs-bump
         #    signal (smart-charge/smart vs bump-charge/boost).
         #  - provider comes from the `devices` query (polymorphic list; we read the
-        #    interface-level deviceType/status{current} and the make). This REPLACES the
+        #    interface-level deviceType/status{currentState} and the make). This REPLACES the
         #    deprecated registeredKrakenflexDevice. Shape confirmed against the
         #    Octopus GraphQL reference + the BottlecapDave integration.
         query = (
@@ -1754,7 +1775,7 @@ class KrakenAPIClient:
             "  completedDispatches(accountNumber: $acc) {"
             "    start end delta meta { source location } }"
             "  devices(accountNumber: $acc) {"
-            "    id deviceType status { current } __typename"
+            "    id deviceType status { currentState } __typename"
             "    ... on SmartFlexVehicle { make model }"
             "    ... on SmartFlexChargePoint { make model } } }"
         )
@@ -1776,7 +1797,7 @@ class KrakenAPIClient:
             logger.info("get_dispatches: devices=%s", [
                 {"type": d.get("deviceType"), "make": d.get("make"),
                  "kind": d.get("__typename"),
-                 "status": (d.get("status") or {}).get("current")}
+                 "status": (d.get("status") or {}).get("currentState")}
                 for d in devices if d])
         provider = _pick_device_provider(devices)
         device_id = _pick_device_id(devices)

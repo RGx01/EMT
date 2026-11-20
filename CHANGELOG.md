@@ -15,6 +15,10 @@ internal name for everything before the first public release and never appears i
   choices could quietly reset: Running total's year start (a tariff or an era) went back to 1 January, a
   year ticked before the first calendar year of your data came back unticked, and Rate brackets' device or
   Export went back to Import. They now stay where you left them.
+- **EMT no longer reads a field Octopus is retiring.** From May 2027 Octopus is removing the field
+  that said whether a smart charger or car was set up, and EMT has warned about it at every start
+  since 17 November. It now reads the device's state instead, and still picks the same charger
+  for your planned charges, plugged in or not, when the account lists more than one device.
 
 ## [2026.11.0b29] — 2026-11-20
 
