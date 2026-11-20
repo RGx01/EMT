@@ -33,7 +33,6 @@ import energy_charts                              # noqa: E402
 # on 30 Sep 2026; /api/periods uses calendar_periods and the config-period chain.
 _MOVED = ("calculate_billing_summary_for_period",
           "get_billing_periods_from_config_periods",
-          "bill_slots_from_blocks", "octopus_bill_total", "bankers_round",
           "_parse_block_start", "_utc_to_local")
 
 
@@ -139,12 +138,6 @@ class NothingWasLostInTheMove(unittest.TestCase):
                      "build_day_chart_html", "render_billing_summary", "day_chart_data"):
             self.assertFalse(hasattr(billing, name),
                              "billing picked up presentation: %s" % name)
-
-    def test_bankers_round_still_rounds_half_to_even(self):
-        """One behavioural spot-check, so 'it imports' is not the only evidence
-        the code arrived intact."""
-        self.assertEqual(billing.bankers_round(2.5, 0), 2)
-        self.assertEqual(billing.bankers_round(3.5, 0), 4)
 
 
 if __name__ == "__main__":

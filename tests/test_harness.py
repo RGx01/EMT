@@ -364,9 +364,9 @@ NEVER run against a production installation.
             log("     Verify: net view (single bar), totals view (import above / export below)")
             log("     Verify: data table columns match chart, gCO₂ / kgCO₂ auto-scaling")
         elif heatmap_only:
-            url = f"{base_url}/lovelace/heatmap"
+            url = f"{base_url}/charts?tab=heatmap"
         elif daily_only:
-            url = f"{base_url}/lovelace/billing"
+            url = f"{base_url}/charts?tab=daily"
         else:
             url = f"{base_url}/charts"
 

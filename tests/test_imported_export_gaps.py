@@ -126,12 +126,6 @@ class TheRoutes(unittest.TestCase):
         r = client.get("/data-management")
         self.assertEqual(r.headers.get("Cache-Control"), "no-cache")
 
-    def test_a_page_that_sets_its_own_keeps_it(self):
-        """GUARD: the Lovelace pages send no-store, as before."""
-        from tests import test_server as TS
-        r = TS.make_client().get("/lovelace/heatmap")
-        self.assertEqual(r.headers.get("Cache-Control"), "no-cache, no-store, must-revalidate")
-
 
 class TheKeptCounts(unittest.TestCase):
 

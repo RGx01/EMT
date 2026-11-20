@@ -66,23 +66,6 @@ class TestCapDayKey(unittest.TestCase):
                          "2026-07-02")
 
 
-class TestMergeIntervals(unittest.TestCase):
-    def test_overlap_unioned_not_summed(self):
-        m = cap.merge_intervals([("2026-01-01T01:00:00", "2026-01-01T02:00:00"),
-                                 ("2026-01-01T01:30:00", "2026-01-01T03:00:00")])
-        self.assertEqual(m, [("2026-01-01T01:00:00", "2026-01-01T03:00:00")])
-
-    def test_adjacent_merged(self):
-        m = cap.merge_intervals([("2026-01-01T01:00:00", "2026-01-01T01:30:00"),
-                                 ("2026-01-01T01:30:00", "2026-01-01T02:00:00")])
-        self.assertEqual(m, [("2026-01-01T01:00:00", "2026-01-01T02:00:00")])
-
-    def test_disjoint_kept(self):
-        m = cap.merge_intervals([("2026-01-01T01:00:00", "2026-01-01T01:30:00"),
-                                 ("2026-01-01T05:00:00", "2026-01-01T05:30:00")])
-        self.assertEqual(len(m), 2)
-
-
 class TestCapUsage(unittest.TestCase):
     # Charged-time basis: a 7 kW car delivers 3.5 kWh in a full half-hour (0.5 h of
     # charging); charge power is inferred as 2x the cap-day's fullest delivered slot.

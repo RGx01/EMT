@@ -105,6 +105,13 @@ class TestAgreesWithHandEstablishedCases(unittest.TestCase):
         unreferenced. Both are live."""
         self._live("_hybrid_ev_by_block", "_dispatch_ev_split_by_bucket")
 
+    def test_a_name_imported_under_an_alias_is_live(self):
+        """`from block_store import utc_to_local_label as _lbl` in the gaps route, then
+        `_lbl(...)`: the function's name is written only in the import. The tool reported
+        it dead, and the dead-code PR of 19 Nov 2026 deleted it; the suite caught it. This
+        is the tool lying about DEAD, the direction that deletes working code."""
+        self._live("utc_to_local_label")
+
     def test_dunders_are_never_reported_dead(self):
         """Found by the first real use of this tool. `IngressMiddleware.__call__`
         is the WSGI entry point — EVERY request goes through it — but nothing

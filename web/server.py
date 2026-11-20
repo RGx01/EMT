@@ -25,10 +25,20 @@ logger = logging.getLogger("server")
 
 app = Flask(__name__, template_folder="templates")
 
+# The direct port's sign-in (direct port login design §3.2): Home Assistant's own login, administrators
+# only; ingress is untouched. Registered first, so no other hook runs for a request it refuses. Off until
+# init() switches it on, which only main.py calls.
+try:
+    from web import signin as _signin            # the add-on: main imports web.server
+except ImportError:
+    import signin as _signin                     # the tests load server.py by path
+app.register_blueprint(_signin.bp)
+app.before_request(_signin.guard)
+
 
 # ── Response compression ──────────────────────────────────────────────────────
 # HA's ingress proxy gzips responses, but the add-on's own web server (direct
-# :8099 access, and Lovelace iframe/webpage cards) does not — so large text
+# :8099 access) does not — so large text
 # responses like the multi-MB daily chart HTML transferred uncompressed and took
 # 15-20s to download on the direct port. Compress compressible text bodies when
 # the client advertises gzip. Safe under ingress: a body already carrying
@@ -44,7 +54,7 @@ def _pages_revalidate(response):
     """A page is asked for again each time, not reused from the browser's cache: its script is
     inline, so a stale page is stale code (21 Oct 2026, staging: Data Management after an upgrade
     needed a hard refresh). `no-cache` still lets the browser keep it, it just checks first. A
-    response that set its own header keeps it (the Lovelace pages: no-store)."""
+    response that set its own header keeps it."""
     try:
         ctype = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype == "text/html" and "Cache-Control" not in response.headers:
@@ -193,7 +203,8 @@ def inject_globals():
     return {"app_version": APP_VERSION, "build_id": BUILD_ID,
             "has_power_sensor": has_power_sensor, "has_postcode": has_postcode,
             "server_port": int(os.environ.get("EMT_PORT") or "8099"),
-            "instance_label": _instance_label(), "unconfigured": unconfigured}
+            "instance_label": _instance_label(), "unconfigured": unconfigured,
+            "signed_in_direct": _signin.signed_in()}
 
 
 # The first-run fork (first-run design §1) is the only way in until a configuration is in place
@@ -201,7 +212,7 @@ def inject_globals():
 # get back to it — only "/" sent an unconfigured install there). Until then a page is the welcome
 # screen, except the pages the fork itself uses (Settings: the setup wizard, and where a restore
 # without a key lands) and the two that help when something goes wrong (Help, Logs). APIs, static
-# files and the Lovelace cards are not pages and are not touched.
+# files are not pages and are not touched.
 _OPEN_BEFORE_SETUP = frozenset({"welcome_page", "settings_page", "help_page", "help_section", "logs_page"})
 
 
@@ -218,15 +229,59 @@ def _first_run_guard():
     return redirect(url_for("welcome_page"))
 
 
+# Home Assistant's ingress reaches an add-on only through the Supervisor, at this address; the
+# Supervisor sets X-Ingress-Path and the X-Remote-User-* headers itself and strips any a client sent,
+# so they can be trusted only on a connection from it (Home Assistant's ingress guide, read 19 Nov 2026).
+SUPERVISOR_ADDR = "172.30.32.2"
+_INGRESS_HEADERS = ("HTTP_X_INGRESS_PATH", "HTTP_X_REMOTE_USER_ID", "HTTP_X_REMOTE_USER_NAME",
+                    "HTTP_X_REMOTE_USER_DISPLAY_NAME")
+
+
+def is_ingress_peer(remote_addr, mode=None) -> bool:
+    """A request is ingress when, on an add-on install, it comes from the Supervisor. Standalone has
+    no Supervisor, so nothing is ingress there, whatever its Docker network's addresses (direct port
+    login design §3.1, §3.5)."""
+    if (mode if mode is not None else os.environ.get("EMT_MODE", "supervised")) == "standalone":
+        return False
+    return (remote_addr or "") == SUPERVISOR_ADDR
+
+
+def _peer_kind(remote_addr) -> str:
+    """What a peer is, for the log, without the address itself: a LAN address is the user's."""
+    a = remote_addr or ""
+    if a == SUPERVISOR_ADDR:
+        return "the Supervisor"
+    if a.startswith("172.30.32.") or a.startswith("172.30.33."):
+        return "the add-on network (%s)" % a          # Home Assistant's own, not the user's
+    if a in ("127.0.0.1", "::1"):
+        return "this machine"
+    return "another address"
+
+
 class IngressMiddleware:
     """
     WSGI middleware that rewrites the PATH_INFO to strip the ingress prefix
     and sets SCRIPT_NAME so Flask url_for() generates correct URLs.
+
+    Only for a request from the Supervisor (`is_ingress_peer`). From anywhere else the ingress
+    headers are dropped before the app sees them: a client on the direct port could send its own,
+    and SCRIPT_NAME is written into every page's links. `environ["emt.ingress"]` says which it was.
     """
     def __init__(self, app):
         self.app = app
+        self._seen = set()
 
     def __call__(self, environ, start_response):
+        peer = environ.get("REMOTE_ADDR", "")
+        ingress = is_ingress_peer(peer)
+        environ["emt.ingress"] = ingress
+        kind = ("ingress" if ingress else "direct", _peer_kind(peer))
+        if kind not in self._seen:                  # once a kind per start: login design §6 check 1
+            self._seen.add(kind)
+            logging.getLogger(__name__).info("server: first %s request from %s", *kind)
+        if not ingress:
+            for h in _INGRESS_HEADERS:
+                environ.pop(h, None)
         ingress_path = environ.get("HTTP_X_INGRESS_PATH", "")
         if ingress_path:
             environ["SCRIPT_NAME"] = ingress_path
@@ -392,12 +447,14 @@ def _cluster_nearby_rates(rows, eps: float = _RATE_CLUSTER_EPS):
     return [{"rate": rr, "count": cc} for rr, cc in reps]
 
 
-def init(data_dir: str, ha_client):
+def init(data_dir: str, ha_client, preview: bool = False):
     global DATA_DIR, _ha_client, _event_loop
     import asyncio as _asyncio
     _event_loop = _asyncio.get_event_loop()
     DATA_DIR   = data_dir
     _ha_client = ha_client
+    # the direct port's sign-in: on, unless standalone turns it off or this is .build/serve_local.py
+    _signin.configure(data_dir, preview=preview)
     # A staged upload is only ever confirmed by the page that staged it, in this process:
     # after a restart none can be, so none is kept (first-run design §2.2).
     _remove_stale_stages(max_age=0)
@@ -2172,43 +2229,10 @@ def fill_history_page():
     return redirect(url_for("data_management_page"))
 
 
-# ── Lovelace (Home Assistant dashboard) pages ─────────────────────────────────
-# A bare page per chart, for an iframe/webpage card. The URLs predate C and are
-# kept so existing cards keep working; both now draw in the browser from the API.
-
-_LOVELACE_REFRESH = 130  # seconds between fingerprint-checked refreshes
-
-
-@app.route("/lovelace/billing")
-def lovelace_billing():
-    """The Billing tab on its own, for a Home Assistant dashboard card.
-
-    Same URL as ever; it served the pre-rendered daily_usage.html until C deleted
-    it (30 Sep 2026) and now serves billing_module.html on a bare page, which
-    refreshes itself every _LOVELACE_REFRESH seconds from /api/energy."""
-    resp = make_response(render_template("lovelace_billing.html", refresh_s=_LOVELACE_REFRESH))
-    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    return resp
-
-
-@app.route("/lovelace/heatmap")
-def lovelace_heatmap():
-    """Net energy heatmap — Lovelace-friendly URL, for a Home Assistant dashboard card.
-
-    Same URL as ever, so existing cards keep working; it now serves the in-browser
-    heatmap (heatmap_module.html, drawing from /api/energy) instead of the
-    pre-rendered net_heatmap.html, which no longer exists. The module refreshes the
-    current month on a timer, so the page needs no meta refresh."""
-    resp = make_response(render_template("lovelace_heatmap.html",
-                                         refresh_s=_LOVELACE_REFRESH))
-    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    return resp
-
-
 def _config_token(store) -> str:
     """What a page shows beyond the blocks that a write can change: the billing periods
-    (a billing-day change or an added/removed meter re-cuts them), and each channel's chart
-    style (a colour or rate line chosen on Settings: the Charts page keeps its rows, colours
+    (a billing-day change or an added/removed meter re-cuts them), each device's name, and each
+    channel's chart style (a colour or rate line chosen on Settings: the Charts page keeps its rows, colours
     with them, until this moves). Part of `_blocks_data_version`, and `/api/energy`'s
     `fingerprint.config` — the per-day fingerprint cannot see it. (The bill-rounding option was
     here until it was retired, 28 Oct 2026.)"""
@@ -2219,7 +2243,13 @@ def _config_token(store) -> str:
             "FROM config_periods").fetchone()
         _mc = store._conn.execute(      # the EV's style (BL-97) and the settings in the same statement:
             "SELECT COUNT(*) AS n, (SELECT value FROM store_meta WHERE key = 'ev_style') AS ev, "
-            "(SELECT value FROM store_meta WHERE key = 'settings') AS st "   # the poll runs every minute
+            "(SELECT value FROM store_meta WHERE key = 'settings') AS st, "   # the poll runs every minute
+            # Each device's name: the kept rows carry the names they were drawn with, and a rename
+            # on Settings moved nothing else here, so the charts kept the old name until some day's
+            # figures moved (the user, 19 Nov 2026).
+            "(SELECT COALESCE(GROUP_CONCAT(l, char(31)), '') FROM ("
+            "  SELECT meter_id || '=' || COALESCE(device_label, '') AS l FROM meters"
+            "  ORDER BY config_period_id, meter_id)) AS lb "
             "FROM meters").fetchone()
         _st = store._conn.execute(
             "SELECT COALESCE(GROUP_CONCAT(s, ','), '') AS s FROM ("
@@ -2229,7 +2259,8 @@ def _config_token(store) -> str:
             "  WHERE mc.bar_color IS NOT NULL OR mc.rate_line IS NOT NULL "
             "  ORDER BY m.config_period_id, m.meter_id, mc.channel)").fetchone()
         import zlib as _zlib
-        _cfgf = "%s/%s/%d/%d" % (_cp["n"], _cp["mx"], _zlib.crc32(_cp["bd"].encode()), _mc["n"])
+        _cfgf = "%s/%s/%d/%d.%d" % (_cp["n"], _cp["mx"], _zlib.crc32(_cp["bd"].encode()), _mc["n"],
+                                    _zlib.crc32(_mc["lb"].encode()))
         if _st["s"]:                            # unchanged for a config with no style set
             _cfgf += "/%d" % _zlib.crc32(_st["s"].encode())
         # BL-97: the EV of an account with no EV device keeps its style in the store's meta, not
@@ -8717,22 +8748,6 @@ def api_db_vacuum():
 
 
 # ── Block deletion ────────────────────────────────────────────────────────────────────────────────
-
-def _delete_window_to_utc_times(from_time, to_time, tz_name, from_date, to_date):
-    """Resolve the delete's time-of-day window to the UTC HH:MM the store filters on.
-
-    A WHOLE-DAY window (00:00–23:59) must NOT become a UTC time-of-day filter: the
-    local-date→UTC bounds (local_date_range_to_utc_bounds) already cover complete
-    local days. Converting the day boundaries to UTC under BST turns 23:59 local
-    into 22:59 UTC → `TIME(block_start) <= '22:59'`, which excludes the 23:00–23:59
-    UTC band that IS local midnight — so 2 blocks/day (00:00 & 00:30 local) survive
-    every delete. Only an EXPLICIT partial window is converted for the filter.
-    """
-    if from_time == "00:00" and to_time == "23:59":
-        return "00:00", "23:59"            # whole day → rely on the date bounds only
-    return (_corrections_time_to_utc(from_time, tz_name, from_date),
-            _corrections_time_to_utc(to_time, tz_name, to_date))
-
 
 @app.route("/api/blocks/delete/preview", methods=["POST"])
 def api_blocks_delete_preview():

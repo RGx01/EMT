@@ -208,45 +208,6 @@ class TestDispatchEvSlotMap(unittest.TestCase):
                       ec._dispatch_ev_slot_map(store, [retired], cfg))
 
 
-class TestBankersRoundingLadder(unittest.TestCase):
-    """BL-24 groundwork: the pure Octopus-style rounding ladder. Wired to nothing —
-    proves the mechanics only."""
-
-    def test_bankers_round_half_to_even(self):
-        # Exact decimal halves round to the nearest EVEN — the float built-in can't
-        # (0.015 is 0.01499… in binary); Decimal(str(x)) fixes that.
-        self.assertEqual(ec.bankers_round(0.015, 2), 0.02)   # 2 is even
-        self.assertEqual(ec.bankers_round(0.025, 2), 0.02)   # 2 is even
-        self.assertEqual(ec.bankers_round(0.035, 2), 0.04)   # 4 is even
-        self.assertEqual(ec.bankers_round(0.005, 2), 0.00)   # 0 is even
-        self.assertEqual(ec.bankers_round(2.5, 0), 2.0)
-        self.assertEqual(ec.bankers_round(3.5, 0), 4.0)
-
-    def test_sums_slots_and_rounds_total(self):
-        # Two slots at 10p/kWh exc: 2 kWh + 1.5 kWh → 35p exc; VAT on top.
-        out = ec.octopus_bill_total([(2.0, 0.10), (1.5, 0.10)], vat_rate=0.05)
-        self.assertEqual(out["exc_pence"], 35.0)
-        self.assertEqual(out["inc_pence"], round(35 * 1.05))   # 36.75 → 37
-        self.assertEqual(out["exc_gbp"], 0.35)
-
-    def test_sums_raw_no_per_slot_rounding(self):
-        # Corrected method (verified vs a real bill): tiny slots are summed RAW, not
-        # rounded per half-hour. 0.005 kWh @ £1/kWh × 2 = 1.0p — NOT 0p.
-        out = ec.octopus_bill_total([(0.005, 1.0), (0.005, 1.0)], vat_rate=0.05)
-        self.assertEqual(out["exc_pence"], 1.0)
-
-    def test_bill_slots_prefers_stored_exc_else_falls_back(self):
-        blocks = [
-            {"meters": {"electricity_main": {"channels": {"import": {
-                "kwh": 2.0, "rate": 0.2100, "cost_exc": 0.40}}}}},   # exc stored → 0.20/kWh
-            {"meters": {"electricity_main": {"channels": {"import": {
-                "kwh": 1.0, "rate": 0.2100}}}}},                     # no exc → 0.21/1.05 = 0.20
-        ]
-        slots = ec.bill_slots_from_blocks(blocks, vat_rate=0.05)
-        self.assertAlmostEqual(slots[0][1], 0.20, places=6)   # from stored exc
-        self.assertAlmostEqual(slots[1][1], 0.20, places=6)   # from inc ÷ 1.05
-
-
 class TestBillMethodBreakdown(unittest.TestCase):
     """BL-24: the opt-in ex-VAT bill-method breakdown on the Billing summary — per-rate
     exc rows (Guy Lipman ladder), ex-VAT standing, a VAT row, the inc total. Additive:
@@ -293,10 +254,6 @@ class TestBillMethodBreakdown(unittest.TestCase):
         kwhs = sorted(r["kwh"] for r in bm["rows"])
         self.assertAlmostEqual(kwhs[0], 3.001, places=3)              # off-peak 3.0+0.001
         self.assertAlmostEqual(kwhs[1], 4.136, places=3)              # peak 4.0+0.032+0.104
-
-    def test_bill_slots_prefers_stored_rate_exc(self):
-        slots = ec.bill_slots_from_blocks([self._blk(2.0, 0.42, rate_exc=0.20)], vat_rate=0.05)
-        self.assertAlmostEqual(slots[0][1], 0.20, places=6)        # stored ex rate wins
 
     def test_breakdown_bands_standing_vat_and_total(self):
         # band 0.20: 2 kWh → 40.00p; band 0.60: 1 kWh → 60.00p; energy £1.00.

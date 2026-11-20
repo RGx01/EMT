@@ -58,20 +58,5 @@ class TestClampWindow(unittest.TestCase):
         self.assertEqual(w["from"], "2025-05-31T23:30:00")     # → UTC
 
 
-class TestPlanImport(unittest.TestCase):
-    def test_end_to_end(self):
-        p = ai.plan_import("2023-01-01T00:00:00", "2024-07-19T00:00:00",
-                           earliest_reachable="2024-01-01T00:00:00", chunk_days=60)
-        self.assertTrue(p["ok"])
-        self.assertEqual(p["window"]["from"], "2024-01-01T00:00:00")
-        self.assertEqual(p["window"]["to"], "2024-07-19T00:00:00")
-        self.assertEqual(p["chunk_count"], 4)
-
-    def test_empty_reports_not_ok(self):
-        p = ai.plan_import("2026-08-01T00:00:00", "2026-07-01T00:00:00")
-        self.assertFalse(p["ok"])
-        self.assertEqual(p["chunk_count"], 0)
-
-
 if __name__ == "__main__":
     unittest.main()

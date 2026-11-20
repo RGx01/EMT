@@ -169,7 +169,8 @@ window.EMTHeatmap = (function () {
     if (!M.key) return esc(M.sub);
     return (M.intro ? '<div class="hm-key-intro">' + esc(M.intro) + '</div>' : '') +
       '<div class="hm-key">' + M.key.map(function (k) {
-        return '<span class="hm-key-item"><span class="hm-sw" style="' + swatchCss(m, k[0]) + '"></span>' + esc(k[1]) + '</span>';
+        return '<span class="hm-key-item" data-k="' + esc(k[0]) + '"><span class="hm-sw" style="' + swatchCss(m, k[0]) +
+               '"></span>' + esc(k[1]) + '</span>';
       }).join('') + '</div>';
   }
   // No block, or (6 Nov 2026) a block with no usage figure: it holds its export, so kWh is not null, and
@@ -226,7 +227,7 @@ window.EMTHeatmap = (function () {
     return v;
   }
   var AXIS_LEFT = 30, CELL_MAX = 22, CELL_MIN = 6;
-  // Two modes (data management design §1 (1), 21 Oct 2026): `chart` — Charts and the Lovelace card,
+  // Two modes (data management design §1 (1), 21 Oct 2026): `chart` — Charts,
   // the energy views, read-only — and `data` — Data Management, the data views and every tool.
   var state = {metric: 'kwh', tz: null, bm: 30, months: {}, keys: [], panels: {}, epoch: null,
                mode: 'chart', collapse: false, expanded: {}, dayWanted: null, mhealth: null, mexpanded: {},
@@ -678,6 +679,36 @@ window.EMTHeatmap = (function () {
     state.keys.forEach(function (k) { if (state.panels[k] && state.panels[k].drawn) drawMonth(k); });
     var t = state.root && state.root.querySelector('.hm-title');
     if (t) { t.textContent = METRICS[state.metric].title; state.root.querySelector('.hm-sub').innerHTML = keyHtml(state.metric); }
+  }
+
+  // A key item hovered shows its state as one cell of the grid, at the grid's own size and drawn
+  // with the grid's own fill (a hatch at its true scale), beside its words (the user, 19 Nov 2026:
+  // the key's small squares do not show what a cell looks like).
+  function attachKeyHover(root) {
+    var sub = root.querySelector('.hm-sub');
+    if (!sub || sub._hmKey) return; sub._hmKey = true;
+    function hide() { tipEl().style.display = 'none'; }
+    sub.addEventListener('mousemove', function (ev) {
+      var it = ev.target.closest && ev.target.closest('.hm-key-item');
+      if (!it) return hide();
+      var tip = tipEl();
+      if (tip._hmKey !== it) {
+        tip._hmKey = it;
+        var cs = Math.max(1, cellSize() - 1), dpr = Math.min(2, window.devicePixelRatio || 1);
+        var c = document.createElement('canvas');
+        c.width = c.height = Math.round(cs * dpr); c.style.width = c.style.height = cs + 'px';
+        c.className = 'hm-tip-cell';
+        var x = c.getContext('2d');
+        x.scale(dpr, dpr);          // as Chart.js draws the grid, so a hatch keeps its scale
+        x.fillStyle = settleColour(state.metric, it.dataset.k); x.fillRect(0, 0, cs, cs);
+        tip.innerHTML = '<div class="hm-tip-key"></div>';
+        var row = tip.firstChild; row.appendChild(c);
+        var t = document.createElement('span'); t.textContent = it.textContent; row.appendChild(t);
+      }
+      tip.style.display = 'block';
+      tip.style.left = (ev.clientX + 12) + 'px'; tip.style.top = (ev.clientY + 12) + 'px';
+    });
+    sub.addEventListener('mouseleave', function () { tipEl()._hmKey = null; hide(); });
   }
 
   // ── hover: arithmetic on the grid, an HTML tooltip — the canvas is never repainted ──
@@ -1746,6 +1777,7 @@ window.EMTHeatmap = (function () {
       '<span class="hm-note">Local time · newest first</span></div>' +
       '<div class="hm-head"><div class="hm-title"></div><div class="hm-sub"></div></div>' +
       '<div class="hm-axis"><div class="hm-axis-in"></div></div><div class="hm-months"></div>';
+    attachKeyHover(root);
     var mb = root.querySelector('.hm-metrics');
     Object.keys(METRICS).forEach(function (k) {
       var b = document.createElement('button'); b.className = 'hm-metric-btn' + (k === state.metric ? ' active' : '');
@@ -1872,7 +1904,7 @@ window.EMTHeatmap = (function () {
     }, function () { state.mhealth = null; });
   }
 
-  // `opts.mode`: 'chart' (the default — Charts, the Lovelace card) or 'data' (Data Management);
+  // `opts.mode`: 'chart' (the default — Charts) or 'data' (Data Management);
   // `opts.day`: in data mode, 'YYYY-MM-DD' to open that day's month and mark the day.
   // `opts.issues`: in data mode, Issues only on for this visit.
   function init(root, opts) {
@@ -2044,11 +2076,14 @@ window.EMTHeatmap = (function () {
   .hm-head { text-align:center; margin:4px 0 6px; }
   .hm-title { font-size:15px; font-weight:600; }
   .hm-sub { font-size:12px; color:var(--muted, #6b7080); margin-top:2px; }
-  .hm-key { display:flex; flex-wrap:wrap; justify-content:center; gap:3px 14px; margin-top:3px; }
+  .hm-key { display:flex; flex-wrap:wrap; justify-content:flex-start; gap:3px 14px; margin-top:3px; }
   .hm-key-item { display:inline-flex; align-items:flex-start; gap:5px; max-width:100%; text-align:left; }
   .hm-sw { flex:none; width:11px; height:11px; margin-top:2px; border-radius:2px;
            border:1px solid rgba(127,127,127,0.45); box-sizing:border-box; }
-  .hm-key-intro { margin-bottom:1px; }
+  .hm-key-intro { margin-bottom:1px; text-align:left; }
+  .hm-key-item { cursor:default; }
+  .hm-tip-key { display:flex; align-items:center; gap:8px; }
+  .hm-tip-cell { flex:none; }
   /* the floating axis (heatmap issues design §4): under the bar, sticky as it is */
   .hm-axis { position:sticky; z-index:8; height:46px; margin-bottom:2px; pointer-events:none;
              background:var(--surface, var(--card, #1a1d27)); }

@@ -5,6 +5,25 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b27] — 2026-11-20
+
+- **A device renamed on Settings is renamed on the charts.** Usage Stats, Flow, Running total and Spiral
+  kept the old name until some day's figures changed, which on an Octopus-only setup could be a day. They
+  now redraw with the new name as soon as you save.
+- **The Data Management heatmap's key is easier to read.** It now starts at the left, and hovering an item
+  shows that colour as a cell of the grid, at the grid's own size, so a hatch looks as it does on the
+  heatmap.
+- **The direct port no longer takes Home Assistant's sidebar headers from just anyone.** EMT believed a
+  request came through Home Assistant's sidebar if it said so. Now it believes that only from Home
+  Assistant's own Supervisor; a request to port 8098 is always a direct one. This is the first step
+  towards a login on that port.
+- **Port 8098 asks you to sign in with Home Assistant.** Opening EMT directly on its port, rather than from
+  Home Assistant's sidebar, now takes you to Home Assistant's own sign-in, two-factor included, and only a
+  Home Assistant administrator gets in. You stay signed in on that browser for 30 days, through restarts
+  and updates, and **Sign out** is at the foot of the sidebar. Every change made on that port must come from
+  EMT's own pages. The sidebar is unchanged. On standalone Docker, set `HA_PUBLIC_URL` if Home Assistant
+  runs on another machine or port from EMT's; `EMT_DIRECT_LOGIN=off` turns the sign-in off.
+
 ## [2026.11.0b26] — 2026-11-19
 
 - **Yesterday's export no longer reads as a gap after an import.** Importing your history before Octopus

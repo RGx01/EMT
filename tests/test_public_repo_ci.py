@@ -95,7 +95,9 @@ class TheRepository(unittest.TestCase):
 
     def test_security_and_issue_templates(self):
         self.assertIn("security/advisories/new", _read("SECURITY.md"))
-        self.assertIn("no login", _read("SECURITY.md"))
+        sec = _read("SECURITY.md")                     # the direct port's account (login design, 20 Nov 2026)
+        self.assertIn("sign in with Home", sec)
+        self.assertIn("EMT_DIRECT_LOGIN=off", sec)
         self.assertIn("blank_issues_enabled: false", _read(".github", "ISSUE_TEMPLATE", "config.yml"))
         for t in ("bug_report.yml", "v4_import.yml", "beta_feedback.yml"):
             self.assertTrue(os.path.exists(os.path.join(_ROOT, ".github", "ISSUE_TEMPLATE", t)), t)

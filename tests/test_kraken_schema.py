@@ -6,11 +6,9 @@ Covers:
   - kraken_state table + get/set
   - Named unique index and partial sweep indexes present
   - Duplicate detection is a clean no-op on a constrained DB
-  - get_block_by_start / get_block_by_id
+  - get_block_by_start
   - upsert_kraken_block classification (positive / over-threshold / zero / cad)
   - PASS 2 re-run queue: get_blocks_needing_pass2_rerun / clear_pass2_rerun_flag
-  - Provisional timeout: get_timed_out_provisionals / finalise_timed_out_provisionals
-  - get_settled_to
 
 These methods touch only 3.0.0 columns/tables; the pre-3.0.0 suites
 (test_block_store, test_engine, test_server, test_usage_stats_vs_billing)
@@ -205,12 +203,6 @@ class TestBlockAccessors(_StoreBase):
         self.assertEqual(row["imp_kwh"], 2.0)
         self.assertIsNone(self.store.get_block_by_start("2026-05-01T01:00:00", "main"))
 
-    def test_get_block_by_id(self):
-        self._insert_block("2026-05-01T00:00:00", imp_kwh=2.0)
-        row = self.store.get_block_by_start("2026-05-01T00:00:00", "main")
-        self.assertEqual(self.store.get_block_by_id(row["id"])["imp_kwh"], 2.0)
-        self.assertIsNone(self.store.get_block_by_id(99999))
-
 
 class TestUpsertKrakenBlock(_StoreBase):
 
@@ -358,49 +350,6 @@ class TestPass2RerunQueue(_StoreBase):
         for i in range(3):
             self._insert_block(f"2026-05-01T0{i}:00:00", needs_pass2_rerun=1)
         self.assertEqual(len(self.store.get_blocks_needing_pass2_rerun(limit=2)), 2)
-
-
-class TestProvisionalTimeout(_StoreBase):
-
-    def test_get_and_finalise(self):
-        old = "2026-04-01T00:00:00"
-        recent = "2026-05-27T00:00:00"
-        self._insert_block(old, is_provisional=1, source="kraken_api")
-        self._insert_block(recent, is_provisional=1, source="kraken_mini")
-        cutoff = "2026-05-01T00:00:00"
-        timed_out = self.store.get_timed_out_provisionals(cutoff)
-        self.assertEqual(len(timed_out), 1)
-        self.assertEqual(timed_out[0]["block_start"], old)
-        n = self.store.finalise_timed_out_provisionals(cutoff)
-        self.assertEqual(n, 1)
-        self.assertEqual(
-            self.store.get_block_by_start(old, "main")["is_provisional"], 0)
-        # recent provisional untouched
-        self.assertEqual(
-            self.store.get_block_by_start(recent, "main")["is_provisional"], 1)
-
-    def test_source_filter_excludes_ha_sensor(self):
-        self._insert_block("2026-04-01T00:00:00", is_provisional=1, source="ha_sensor")
-        self.assertEqual(
-            len(self.store.get_timed_out_provisionals("2026-05-01T00:00:00")), 0)
-
-
-class TestSettledTo(_StoreBase):
-
-    def test_settled_to(self):
-        # provisional block — should not count
-        self._insert_block("2026-05-28T10:00:00", imp_cost=0.5, is_provisional=1)
-        # settled with cost
-        self._insert_block("2026-05-28T09:00:00", imp_cost=0.4, is_provisional=0)
-        # settled, later, with cost
-        self._insert_block("2026-05-28T09:30:00", imp_cost=0.45, is_provisional=0)
-        # settled but no cost — should not count
-        self._insert_block("2026-05-28T11:00:00", imp_cost=None, is_provisional=0)
-        self.assertEqual(self.store.get_settled_to("main"), "2026-05-28T09:30:00")
-
-    def test_settled_to_none_when_all_provisional(self):
-        self._insert_block("2026-05-28T09:00:00", imp_cost=0.4, is_provisional=1)
-        self.assertIsNone(self.store.get_settled_to("main"))
 
 
 class TestFinalisedOnly(_StoreBase):
@@ -705,10 +654,9 @@ class TestDrainPass2Queue(_StoreBase):
         import engine
         self.engine = engine
         # Point the engine module's _store at our in-memory store, and stub
-        # cumulative totals / sensor update so the drain runs without HA.
+        # the sensor update so the drain runs without HA.
         self._orig_store = getattr(engine, "_store", None)
         engine._store = self.store
-        self.store.get_cumulative_totals = lambda: {}
         self._ha = type("HA", (), {})()
 
     def tearDown(self):
@@ -1435,14 +1383,6 @@ class TestDispatchSlots(_StoreBase):
             self.store.get_dispatch_slot("2026-06-06T15:00:00")["source"],
             "bump-charge")
 
-    def test_range_query(self):
-        for s in ("2026-06-06T14:00:00", "2026-06-06T15:00:00",
-                  "2026-06-07T00:00:00"):
-            self.store.upsert_dispatch_slot(s, source="smart-charge")
-        got = self.store.get_dispatch_slots_in_range(
-            "2026-06-06T00:00:00", "2026-06-07T00:00:00")
-        self.assertEqual(len(got), 2)  # 14:00 and 15:00, not the 6-07 one
-
 
 if __name__ == "__main__":
     unittest.main()
@@ -1578,12 +1518,6 @@ class TestDispatchHistoryAccumulation(_StoreBase):
         both = self.store.get_dispatch_history(
             "2026-07-07T00:00:00", "2026-07-07T03:00:00")
         self.assertEqual({r["kind"] for r in both}, {"planned", "completed"})
-
-    def test_prune(self):
-        self.store.record_dispatch_history(
-            "2020-01-01T00:00:00", "completed", energy_kwh=-1.0)
-        deleted = self.store.prune_dispatch_history(days=90)
-        self.assertEqual(deleted, 1)
 
 
 class TestBackfillBlock(_StoreBase):

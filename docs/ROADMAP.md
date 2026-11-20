@@ -1,6 +1,6 @@
 # Roadmap
 
-*What is open, as of 2026.11.0b26 (19 Nov 2026). Each item says what is wrong or
+*What is open, as of 2026.11.0b27 (20 Nov 2026). Each item says what is wrong or
 missing and where it stands; the done history, with every decision's story, is in
 [history/ROADMAP-done.md](history/ROADMAP-done.md), and what users see is in the
 [changelog](../CHANGELOG.md). Numbers like BL-80 carry over from that record. A PR number written
@@ -13,10 +13,6 @@ missing and where it stands; the done history, with every decision's story, is i
 - **The import floor, pinned on release day.** `v4import/gate.py` `FLOOR_VERSION` is 4.5.23, the last
   v4 release that added a heal. It is set again from what v4 has reached when EMT's first release is
   cut, and the positive import fixture retaken at that version.
-- **The importer's time on a Pi.** The soak's v4 backup imported in about 80 s on the Pi from an SD
-  card (importer design §8a); no target has been agreed, so this is not yet called met.
-- **A login on the direct port.** Port 8098 (published by default, for the dashboard cards) has none:
-  anyone on the network reaches every tool (SECURITY.md). Ingress is behind Home Assistant's login.
 
 ## Open
 
@@ -57,9 +53,6 @@ missing and where it stands; the done history, with every decision's story, is i
 - **`WriteStore` and `store_access.writer()` have no production caller.** The engine writes through
   its own `BlockStore` and pages hand writes to it (`_engine_write`); the typed write path is unused.
   A candidate for the deletion protocol.
-- **A test that passes on a docstring.** `test_run_exclusive_is_still_the_unused_primitive` finds
-  `run_exclusive(lambda: None)` in a docstring (engine.py, near `drain_tick`); `run_exclusive` itself
-  is gone. Delete it, or make it assert something.
 
 ## Open questions
 
@@ -73,6 +66,17 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Resolved since the record
 
+- **The importer's time on a Pi** (20 Nov 2026). The soak's v4 backup imports in about 80 s on the Pi
+  from an SD card (importer design §8a); there was no target, and the user accepted that time: "80 secs
+  is acceptable".
+- **A login on the direct port** (20 Nov 2026, a blocker for the first release; the user: "could we just
+  use users HA's login?"). Port 8098 had none: anyone on the network reached every tool. Now a request is
+  ingress only from the Supervisor (#167); the direct port signs in with Home Assistant's own page,
+  administrators only, for a 30-day EMT session (#169). Run whole on the owner's soak Pi on `dev`, 20 Nov
+  2026: signed in with Home Assistant on the direct port, used a page and saved a change, signed out. The
+  dashboard cards' read-only key (#170) worked there too, and the cards were then removed before b27
+  shipped them (the user: "I don't want the dashboard cards functionality"). The record:
+  [history/design/EMT-v5_direct_port_login_design.md](history/design/EMT-v5_direct_port_login_design.md).
 - **BL-108: a device sensor that reads the whole house** (5 Nov 2026, for 2026.11.0b11; a tester's support
   file; the user: "add the BL item then build it"). A GivEnergy battery set up with GivTCP's `import_energy_today_kwh`
   — the house's grid import at the inverter's meter, not the battery's grid charge — matched the main
