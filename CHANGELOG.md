@@ -5,6 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **Charts keeps what you chose when you come back to it.** Returning to Charts from another page, three
+  choices could quietly reset: Running total's year start (a tariff or an era) went back to 1 January, a
+  year ticked before the first calendar year of your data came back unticked, and Rate brackets' device or
+  Export went back to Import. They now stay where you left them.
+
 ## [2026.11.0b29] — 2026-11-20
 
 - **Signing in to one EMT no longer signs you out of another on the same machine.** A browser keeps one

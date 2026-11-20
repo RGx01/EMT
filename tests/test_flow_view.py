@@ -500,8 +500,8 @@ class TheWiring(unittest.TestCase):
     def test_a_remembered_span_waits_for_the_eras_and_tariffs(self):
         # a reload restored the period before the eras were read, and fell back to Monthly (the preview)
         self.assertIn("if (barPeriod === 'span' && !spanOk && !barSpansPending()) barPeriod = 'monthly';", _fn("barBrSyncUI"))
-        self.assertIn("if ((barEras.length || barPeriod === 'span') && barInited && barData) barRender();", _fn("barLoadEras"))
-        self.assertIn("if ((barTariffs.length || barPeriod === 'span') && barInited && barData) barRender();", _fn("barLoadTariffs"))
+        self.assertIn("if ((barEras.length || barPeriod === 'span' || barAccYearsWanted) && barInited && barData) barRender();", _fn("barLoadEras"))
+        self.assertIn("if ((barTariffs.length || barPeriod === 'span' || barAccYearsWanted) && barInited && barData) barRender();", _fn("barLoadTariffs"))
 
     def test_the_overlays_on_a_span(self):
         self.assertIn("|| barPeriod === 'span';", _fn("barTariffsAvailable"))
