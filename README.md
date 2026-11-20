@@ -17,6 +17,9 @@ EMT is the successor to [Energy Meter Tracker v4](https://github.com/RGx01/energ
 It is a **new add-on with its own slug** (`emt`), not an upgrade: it installs beside v4, runs beside
 it for as long as you like, and can bring v4's history across from a v4 backup.
 
+**▶ [Watch the video](https://streamable.com/q39hz3)**: EMT set up from scratch on a real install, and a
+tour of what it shows.
+
 | | |
 |---|---|
 | ![The bill for a billing period](docs/screenshots/charts-billing.webp) | ![Usage Stats: each device's import, month by month](docs/screenshots/usage-devices.webp) |
