@@ -15,9 +15,6 @@ missing and where it stands; the done history, with every decision's story, is i
   cut, and the positive import fixture retaken at that version.
 - **The importer's time on a Pi.** The soak's v4 backup imported in about 80 s on the Pi from an SD
   card (importer design §8a); no target has been agreed, so this is not yet called met.
-- **The direct port's sign-in, run once on a real install.** Built (#167, #169, #170) and checked in
-  parts on the owner's Pi; the whole of it, on `dev`, not yet: sign in on `:8098`, use a page, sign out,
-  and a keyed card on a dashboard, on the soak Pi.
 
 ## Open
 
@@ -75,7 +72,9 @@ missing and where it stands; the done history, with every decision's story, is i
   use users HA's login?"). Port 8098 had none: anyone on the network reached every tool. Now a request is
   ingress only from the Supervisor (#167); the direct port signs in with Home Assistant's own page,
   administrators only, for a 30-day EMT session (#169); dashboard cards take a read-only card key from
-  Settings → Dashboard cards (#170). The record:
+  Settings → Dashboard cards (#170). Run whole on the owner's soak Pi on `dev`, 20 Nov 2026: signed in
+  with Home Assistant on the direct port, used a page and saved a change, signed out, made a card key and a
+  keyed Webpage card drew. The record:
   [history/design/EMT-v5_direct_port_login_design.md](history/design/EMT-v5_direct_port_login_design.md).
 - **BL-108: a device sensor that reads the whole house** (5 Nov 2026, for 2026.11.0b11; a tester's support
   file; the user: "add the BL item then build it"). A GivEnergy battery set up with GivTCP's `import_energy_today_kwh`
