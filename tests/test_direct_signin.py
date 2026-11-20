@@ -170,6 +170,38 @@ class TheSignin(_Base):
         self.assertEqual(q["code_challenge_method"], ["S256"])
         self.assertTrue(q["state"][0] and q["code_challenge"][0])
 
+    # 20 Nov 2026, the user's staging: Home Assistant's local address said https://…:8123, Home Assistant served
+    # plain HTTP there, and the browser could not connect. The page tries a short list from the browser; the
+    # server sends it only to one of that list, by its place
+
+    def test_the_addresses_tried_after_home_assistants_own(self):
+        with mock.patch.object(signin, "ha_public_url", return_value="https://emt.test:8123"):
+            with self.app.test_request_context("/signin", base_url="http://" + HOST):
+                self.assertEqual(signin.ha_addresses(), ["https://emt.test:8123", "http://emt.test:8123"])
+        with mock.patch.object(signin, "ha_public_url", return_value="http://ha.lan:8123"):
+            with self.app.test_request_context("/signin", base_url="http://" + HOST):
+                self.assertEqual(signin.ha_addresses(),
+                                 ["http://ha.lan:8123", "http://emt.test:8123", "https://emt.test:8123"])
+
+    def test_the_page_tries_each_and_takes_the_first_that_answers(self):
+        with mock.patch.object(signin, "ha_public_url", return_value="https://emt.test:8123"):
+            body = self.get("/signin?next=/charts").get_data(as_text=True)
+        self.assertIn('var a=["https://emt.test:8123", "http://emt.test:8123"]', body)
+        self.assertIn("document.getElementById('go').href='/signin/start?'+q+'&ha='+i;", body)
+        self.assertIn("href='/signin/start?next=%2Fcharts'", body)        # without script: the first, as before
+
+    def test_start_goes_only_to_a_place_in_its_own_list(self):
+        def to(ha):
+            with mock.patch.object(signin, "ha_public_url", return_value="https://emt.test:8123"):
+                loc = urlsplit(self.get("/signin/start?next=/&ha=" + ha).headers["Location"])
+            return "%s://%s" % (loc.scheme, loc.netloc)
+        self.assertEqual(to("1"), "http://emt.test:8123")
+        for bad in ("0", "2", "-1", "x", "http%3A%2F%2Fevil.test"):
+            self.assertEqual(to(bad), "https://emt.test:8123", bad)
+
+    def test_nothing_in_an_address_can_close_the_script(self):
+        self.assertNotIn("<", signin._js(["http://a</script><script>alert(1)//"]))
+
     def _done(self, user=None, exc=None, state=None):
         loc, q = self._start()
 
