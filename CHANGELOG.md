@@ -7,8 +7,10 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
-- **Running total keeps the year's start you chose.** On Year by year, a year starting at a tariff or an
-  era went back to 1 January when you came back to Charts from another page. It now stays where you left it.
+- **Charts keeps what you chose when you come back to it.** Returning to Charts from another page, three
+  choices could quietly reset: Running total's year start (a tariff or an era) went back to 1 January, a
+  year ticked before the first calendar year of your data came back unticked, and Rate brackets' device or
+  Export went back to Import. They now stay where you left them.
 
 ## [2026.11.0b29] — 2026-11-20
 
