@@ -111,7 +111,7 @@ A beta is Home Assistant's `bN` on the version it leads to: `2026.11.0b1`, `2026
 
 1. On a branch from `dev`: `config.yaml`'s `version:`, and `CHANGELOG.md`'s `[Unreleased]` becomes
    that version with its date. PR to `dev`, merge.
-2. PR `dev` → `main`; the PR body is the release note. Merge once its **CodeQL** check passes (below).
+2. PR `dev` → `main`; the PR body is the release note. Merge once its **CodeQL** check is green with no new alerts (below).
 3. Tag `main` and push the tag: `git tag -s v2026.11.0b1 -m 2026.11.0b1 && git push origin v2026.11.0b1`.
 4. A GitHub release on the tag. **Until the first release, `2026.11.0`, a beta is a full release marked
    Latest** (from b17, 10 Nov 2026), so the repository page shows it; GitHub's sidebar shows only the latest
@@ -125,18 +125,22 @@ including pre-releases. So step 4 is what tells standalone users.
 
 ## CodeQL
 
-GitHub's default CodeQL setup (Python and the workflows) scans `main`, a weekly schedule, and pull
-requests **into `main`** only. A PR into `dev` gets the tests and no scan, so a new alert in a
-`dev` PR first shows at the `dev` → `main` PR, as a failed **CodeQL** check: "N new alerts in code
-changed by this pull request" (2 Nov 2026, #28 — an `exists()` ahead of the backup-name check from
-#22; fixed in #29, which #28 then picked up).
+CodeQL (Python and the workflows) runs from our own workflow, `.github/workflows/codeql.yml`: on pull
+requests **into `dev` and `main`**, pushes to both, and weekly. Until 20 Nov 2026 it was GitHub's default
+setup, which scans PRs into `main` only, so a new alert first showed at the `dev` → `main` PR (2 Nov 2026,
+#28, fixed in #29; 20 Nov 2026, three in the sign-in on #176, fixed in #177). The default setup must stay
+**off** (Settings → Advanced Security → CodeQL analysis): GitHub refuses the workflow's results while it is
+on. The workflow uses the default setup's categories, so its alerts carried over.
 
-When it fails: read the alert (the check's annotation, or Security → Code scanning, filtered to the
-PR), fix it on a branch from `dev`, and merge that; the `dev` → `main` PR re-runs. CodeQL does not
-count a check made inside a helper function as a guard on the caller's path — put the containment
-check (resolved path, `startswith` the folder) in the function that uses the path. Dismiss an alert
-only with a reason (Security → Code scanning → the alert → *Dismiss alert*). Scanning `dev` too would
-need the advanced setup — a CodeQL workflow of our own — which the default setup cannot do.
+A **medium** alert does not fail the check: the repository's failure threshold is High, so the check is
+green and the alert is an annotation on the PR ("N new alerts in code changed by this pull request"). Read
+the check's summary, not only its colour.
+
+When there is one: read the alert (the check's annotation, or Security → Code scanning, filtered to the
+PR) and fix it on the PR's own branch. CodeQL does not count a check made inside a helper function as a
+guard on the caller's path — put the containment check (resolved path, `startswith` the folder) in the
+function that uses the path; for a redirect, build the target on a constant (`"/" + path[1:]`). Dismiss an
+alert only with a reason (Security → Code scanning → the alert → *Dismiss alert*).
 
 ## Dependabot
 

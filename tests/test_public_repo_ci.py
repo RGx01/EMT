@@ -88,6 +88,14 @@ class TheRepository(unittest.TestCase):
             for use in re.findall(r"uses:\s*(\S+)", _read(".github", "workflows", wf)):
                 self.assertRegex(use, r"@[0-9a-f]{40}$", wf)
 
+    def test_codeql_runs_on_prs_to_dev_and_main(self):
+        """20 Nov 2026, the user: CodeQL on PRs to dev too, not first on the release PR. The categories are
+        the default setup's, so its alerts carry over."""
+        w = _read(".github", "workflows", "codeql.yml")
+        self.assertIn("pull_request:\n    branches: [main, dev]", w)
+        self.assertIn("category: /language:${{ matrix.language }}", w)
+        self.assertIn("language: [python, actions]", w)
+
     def test_dependabot_raises_against_dev_and_keeps_the_actions(self):
         d = _read(".github", "dependabot.yml")
         self.assertEqual(d.count('target-branch: "dev"'), 2)
