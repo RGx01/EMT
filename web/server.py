@@ -34,6 +34,7 @@ except ImportError:
     import signin as _signin                     # the tests load server.py by path
 app.register_blueprint(_signin.bp)
 app.before_request(_signin.guard)
+_signin.data_dir_fn = lambda: DATA_DIR      # the cards' key lives beside blocks.db, even with the sign-in off
 
 
 # ── Response compression ──────────────────────────────────────────────────────
@@ -447,13 +448,14 @@ def _cluster_nearby_rates(rows, eps: float = _RATE_CLUSTER_EPS):
     return [{"rate": rr, "count": cc} for rr, cc in reps]
 
 
-def init(data_dir: str, ha_client):
+def init(data_dir: str, ha_client, preview: bool = False):
     global DATA_DIR, _ha_client, _event_loop
     import asyncio as _asyncio
     _event_loop = _asyncio.get_event_loop()
     DATA_DIR   = data_dir
     _ha_client = ha_client
-    _signin.configure(data_dir)          # the direct port's sign-in: on, unless standalone turns it off
+    # the direct port's sign-in: on, unless standalone turns it off or this is .build/serve_local.py
+    _signin.configure(data_dir, preview=preview)
     # A staged upload is only ever confirmed by the page that staged it, in this process:
     # after a restart none can be, so none is kept (first-run design §2.2).
     _remove_stale_stages(max_age=0)
@@ -3673,6 +3675,8 @@ def settings_page():
     tab = request.args.get("tab", "meter-config")
     if tab == "carbon":
         return render_template("settings.html", active="settings")
+    if tab == "cards":                   # the dashboard cards' addresses and key (login design §3.3)
+        return render_template("dashboard_cards.html", active="settings")
     # Default: Meter Config tab
     store = store_access.store()
     cfg   = load_config()

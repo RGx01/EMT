@@ -27,7 +27,14 @@ cookie, `emt_session` (`web/signin.py`), apart from `/signin`, `/signin/start`, 
 `/signin` sends the browser to Home Assistant's sign-in (OAuth, PKCE); `/signin/done` finishes it with Home
 Assistant, admits an administrator only, revokes Home Assistant's tokens and sets the cookie for 30 days;
 `/signin/check` says so when the browser did not keep it; `POST /signin/out` signs out. The cookie is signed
-with `session_secret`, a file beside `blocks.db`. Standalone, `EMT_DIRECT_LOGIN=off` turns all of this off,
+with `session_secret`, a file beside `blocks.db`.
+
+A **dashboard card** is let in by the key in its URL (`?key=…`, `card_key` beside `blocks.db`), on GET and
+HEAD only, to `/lovelace/billing`, `/lovelace/heatmap`, `/api/energy` and `/api/periods`
+(`signin.CARD_PATHS`); the card pages pass it on to their reads. `/api/card-key` (GET the key and the direct
+port, POST a new one, which stops every card with the old) is Settings → Dashboard cards', behind the
+sidebar or a session, never a card key. `.build/serve_local.py` runs with no sign-in unless
+`EMT_PREVIEW_SIGNIN=1`. Standalone, `EMT_DIRECT_LOGIN=off` turns all of this off,
 and `HA_PUBLIC_URL` says where the browser reaches Home Assistant. The design:
 [EMT-v5_direct_port_login_design.md](../design/EMT-v5_direct_port_login_design.md).
 

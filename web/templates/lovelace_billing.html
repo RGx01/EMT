@@ -14,7 +14,13 @@
   <script>
     // Ingress-aware base path, exactly as base.html sets it.
     var BASE_PATH = "{{ request.environ.get('SCRIPT_NAME', '') }}";
-    function apiUrl(path) { return BASE_PATH + path; }
+    // On the direct port a card is let in by the key in its own URL (Settings → Dashboard cards), and
+    // passes it on to the reads it makes; a key admits nothing else (direct port login design §3.3).
+    var CARD_KEY = new URLSearchParams(location.search).get('key');
+    function apiUrl(path) {
+      var u = BASE_PATH + path;
+      return CARD_KEY ? u + (u.indexOf('?') < 0 ? '?' : '&') + 'key=' + encodeURIComponent(CARD_KEY) : u;
+    }
     // A dashboard card has no EMT theme toggle: follow the viewer's system setting,
     // or ?theme=light|dark when the card wants to force one.
     (function () {

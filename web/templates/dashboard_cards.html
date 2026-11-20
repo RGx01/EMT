@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% from "_help_q.html" import help_q %}
+
+{% block topbar %}
+<div class="topbar">
+  <div>
+    <h2>Settings {{ help_q('settings') }}</h2>
+    <div class="sub">EMT's charts on your Home Assistant dashboards</div>
+  </div>
+  <div class="settings-tabs">
+    <a href="{{ url_for('settings_page') }}" class="settings-tab">⚙️ Meter Config</a>
+    <a href="{{ url_for('settings_page') }}?tab=carbon" class="settings-tab">🌿 Carbon</a>
+    <a href="{{ url_for('settings_page') }}?tab=cards" class="settings-tab active">🖼️ Dashboard cards</a>
+  </div>
+</div>
+{% endblock %}
+
+{% block content %}
+<style>
+  .dc-lead { font-size:13px; color:var(--muted); line-height:1.7; margin-bottom:16px; }
+  .dc-row { padding:14px 0; border-bottom:1px solid var(--border); }
+  .dc-row:last-child { border-bottom:none; }
+  .dc-name { font-size:13px; font-weight:600; margin-bottom:6px; }
+  .dc-url { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .dc-url input { flex:1; min-width:0; padding:7px 10px; border:1px solid var(--border); border-radius:var(--radius);
+                  background:var(--bg); color:var(--text); font:12px var(--mono); }
+  .dc-note { font-size:12px; color:var(--muted); line-height:1.6; margin-top:12px; }
+  .dc-warn { font-size:13px; color:var(--warning, #e0a020); line-height:1.6; margin:8px 0; }
+  .dc-steps { font-size:13px; line-height:1.8; margin:8px 0 0 18px; padding:0; }
+</style>
+
+<div id="alert-success" class="alert alert-success"></div>
+<div id="alert-error"   class="alert alert-danger"></div>
+
+<div class="card">
+  <div class="card-title">Dashboard cards</div>
+  <div class="dc-lead">
+    Show EMT's Billing tab or its heatmap on a Home Assistant dashboard, as a <b>Webpage</b> card.
+    Each card's address carries a <b>card key</b>: it lets the card read those two charts and nothing else,
+    so a card needs no sign-in and can't change anything.
+  </div>
+  <div id="dc-body">Loading…</div>
+  <ol class="dc-steps">
+    <li>Copy a card's address.</li>
+    <li>On a dashboard: <b>⋮ → Edit dashboard → Add card → Webpage</b>, and paste it as the URL.</li>
+  </ol>
+  <div class="dc-note">
+    Add <code>&amp;theme=light</code> or <code>&amp;theme=dark</code> to a card's address to fix its colours.
+    A card works when Home Assistant is opened over <code>http</code> on your network; a browser won't show
+    it inside Home Assistant opened over <code>https</code>.
+  </div>
+  <div style="margin-top:16px;">
+    <button class="btn btn-secondary" id="dc-new" onclick="dcNewKey()">Make a new key</button>
+    <div class="dc-note" id="dc-new-note">
+      A new key replaces the old one: every card using the old one stops until you paste its new address.
+      Do this if a card's address has been shared where it shouldn't have been.
+    </div>
+  </div>
+</div>
+
+<script>
+function dcEsc(t) { return String(t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); }
+
+function dcRender(j) {
+  var body = document.getElementById('dc-body');
+  var html = '';
+  if (!j.known) {
+    html += '<div class="dc-warn">EMT couldn’t read which port it is published on. The addresses below '
+          + 'assume 8098; if you changed it on the add-on’s Network settings, use yours.</div>';
+  } else if (j.port === null) {
+    html += '<div class="dc-warn">EMT’s direct port is off (the add-on’s <b>Network</b> settings). '
+          + 'Cards need it: set it (8098 by default), restart the add-on, and come back here.</div>';
+  }
+  if (!j.key) {
+    html += '<div class="dc-lead">No card key yet. Make one to get the cards’ addresses.</div>';
+    document.getElementById('dc-new').textContent = 'Make a key';
+    document.getElementById('dc-new-note').style.display = 'none';
+    body.innerHTML = html; return;
+  }
+  document.getElementById('dc-new').textContent = 'Make a new key';
+  document.getElementById('dc-new-note').style.display = '';
+  var port = j.known ? j.port : 8098;
+  var origin = location.protocol + '//' + location.hostname + (port ? ':' + port : '');
+  j.cards.forEach(function (c, i) {
+    var url = origin + c.path + '?key=' + encodeURIComponent(j.key);
+    html += '<div class="dc-row"><div class="dc-name">' + dcEsc(c.name) + '</div><div class="dc-url">'
+          + '<input readonly id="dc-u' + i + '" value="' + dcEsc(url) + '" onclick="this.select()">'
+          + '<button class="btn btn-secondary" onclick="dcCopy(' + i + ', this)">Copy</button></div></div>';
+  });
+  if (!j.required) {
+    html += '<div class="dc-note">EMT’s sign-in is off on this install, so a card works with or without '
+          + 'its key.</div>';
+  }
+  body.innerHTML = html;
+}
+
+function dcCopy(i, btn) {
+  var el = document.getElementById('dc-u' + i);
+  el.select();
+  var done = function () { btn.textContent = 'Copied'; setTimeout(function () { btn.textContent = 'Copy'; }, 1500); };
+  if (navigator.clipboard && window.isSecureContext) navigator.clipboard.writeText(el.value).then(done, function () {
+    document.execCommand('copy'); done(); });
+  else { document.execCommand('copy'); done(); }
+}
+
+function dcAlert(id, msg) {
+  ['alert-success', 'alert-error'].forEach(function (a) { document.getElementById(a).classList.remove('show'); });
+  var el = document.getElementById(id); el.textContent = msg; el.classList.add('show');
+}
+
+async function dcLoad() {
+  try {
+    var r = await fetch(apiUrl('/api/card-key'));
+    var j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.status);
+    dcRender(j);
+  } catch (e) {
+    document.getElementById('dc-body').textContent = 'Couldn’t load the cards: ' + e.message;
+  }
+}
+
+async function dcNewKey() {
+  var had = document.querySelector('.dc-url');
+  if (had && !confirm('Make a new card key? Every card using the old key stops until you paste its new address.')) return;
+  try {
+    var r = await fetch(apiUrl('/api/card-key'), {method: 'POST'});
+    var j = await r.json();
+    if (!r.ok) throw new Error(j.error || r.status);
+    dcRender(j);
+    dcAlert('alert-success', had ? '✓ New key made. Paste the new addresses into your cards.'
+                                 : '✓ Key made. Copy a card’s address below.');
+  } catch (e) {
+    dcAlert('alert-error', 'Couldn’t make a key: ' + e.message);
+  }
+}
+
+dcLoad();
+</script>
+{% endblock %}

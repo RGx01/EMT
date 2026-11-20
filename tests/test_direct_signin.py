@@ -46,6 +46,14 @@ def _app():
     @app.route("/static/x.css")
     def css():
         return "css"
+
+    @app.route("/lovelace/heatmap")
+    def card():
+        return "the card"
+
+    @app.route("/api/energy", methods=["GET", "POST"])
+    def energy():
+        return {"ok": True}
     return app
 
 
@@ -259,6 +267,80 @@ class AnAddonCannotTurnItOff(_Base):
         self.assertEqual(self.get("/data-management").status_code, 302)
 
 
+class ThePreview(unittest.TestCase):
+    """.build/serve_local.py, bound to 127.0.0.1 with no Home Assistant to sign in to: off unless asked.
+    (#169 switched the sign-in on in server.init(), which the preview also calls: it asked for a sign-in it
+    could never finish.)"""
+
+    def setUp(self):
+        self._cfg = dict(signin._cfg)
+
+    def tearDown(self):
+        signin._cfg.update(self._cfg)
+
+    def test_off_unless_asked(self):
+        d = tempfile.mkdtemp()
+        with mock.patch.dict(os.environ, {"EMT_PREVIEW_SIGNIN": ""}):
+            self.assertFalse(signin.configure(d, mode="supervised", login="", preview=True))
+        with mock.patch.dict(os.environ, {"EMT_PREVIEW_SIGNIN": "1"}):
+            self.assertTrue(signin.configure(d, mode="supervised", login="", preview=True))
+
+
+class TheCardKey(_Base):
+    """Design §3.3: a card's URL carries a key that admits GET on the two card pages and their two reads,
+    nothing else. Checked in the browser pane on the demo household with the sign-in on (20 Nov 2026): both
+    cards draw with the key; a wrong key, another API, another page, a write and /api/card-key are refused."""
+
+    def setUp(self):
+        super().setUp()
+        self.key = signin.new_card_key()
+
+    def test_none_until_made(self):
+        os.remove(os.path.join(self.dir, signin.CARD_KEY_FILE))
+        self.assertIsNone(signin.card_key())
+        self.assertEqual(self.get("/lovelace/heatmap?key=anything").status_code, 302)
+
+    def test_the_key_opens_the_cards_reads(self):
+        self.assertEqual(self.get("/lovelace/heatmap?key=" + self.key).status_code, 200)
+        self.assertEqual(self.get("/api/energy?resolution=day&key=" + self.key).status_code, 200)
+
+    def test_a_wrong_key_does_not(self):
+        self.assertEqual(self.get("/lovelace/heatmap?key=x" + self.key[1:]).status_code, 302)
+        self.assertEqual(self.get("/api/energy?key=").status_code, 401)
+
+    def test_the_key_opens_nothing_else(self):
+        self.assertEqual(self.get("/data-management?key=" + self.key).status_code, 302)
+        self.assertEqual(self.get("/api/thing?key=" + self.key).status_code, 401)
+        self.assertEqual(self.post("/api/energy?key=" + self.key, origin="http://" + HOST).status_code, 401)
+        self.assertEqual(self.get("/api/card-key?key=" + self.key).status_code, 401)
+
+    def test_a_new_key_stops_the_old(self):
+        new = signin.new_card_key()
+        self.assertNotEqual(new, self.key)
+        self.assertEqual(self.get("/lovelace/heatmap?key=" + self.key).status_code, 302)
+        self.assertEqual(self.get("/lovelace/heatmap?key=" + new).status_code, 200)
+
+    def test_kept_private_beside_the_secret(self):
+        mode = stat.S_IMODE(os.stat(os.path.join(self.dir, signin.CARD_KEY_FILE)).st_mode)
+        self.assertEqual(mode, 0o600)
+
+    def test_settings_reads_and_makes_it_behind_a_session(self):
+        self.assertEqual(self.get("/api/card-key").status_code, 401)
+        good = signin.make_session("u1")
+        j = self.get("/api/card-key", cookie=good).get_json()
+        self.assertEqual((j["key"], j["port"], j["known"]), (self.key, 8098, True))
+        self.assertEqual([c["path"] for c in j["cards"]], ["/lovelace/billing", "/lovelace/heatmap"])
+        made = self.post("/api/card-key", origin="http://" + HOST, cookie=good).get_json()["key"]
+        self.assertNotEqual(made, self.key)
+        self.assertEqual(signin.card_key(), made)
+
+    def test_the_card_pages_pass_their_key_on(self):
+        for page in ("lovelace_billing.html", "lovelace_heatmap.html"):
+            src = open(os.path.join(_ROOT, "web", "templates", page), encoding="utf-8").read()
+            self.assertIn("new URLSearchParams(location.search).get('key')", src, page)
+            self.assertIn("'key=' + encodeURIComponent(CARD_KEY)", src, page)
+
+
 class TheServerWiring(unittest.TestCase):
 
     def test_the_guard_runs_first_and_init_switches_it_on(self):
@@ -268,7 +350,9 @@ class TheServerWiring(unittest.TestCase):
         self.assertIn("signin", server.app.blueprints)
         src = open(os.path.join(_ROOT, "web", "server.py"), encoding="utf-8").read()
         init = src[src.index("def init(data_dir"):src.index("def _run_on_engine_loop")]
-        self.assertIn("_signin.configure(data_dir)", init)
+        self.assertIn("_signin.configure(data_dir, preview=preview)", init)
+        local = open(os.path.join(_ROOT, ".build", "serve_local.py"), encoding="utf-8").read()
+        self.assertIn("server.init(data, None, preview=True)", local)
         main = open(os.path.join(_ROOT, "main.py"), encoding="utf-8").read()
         self.assertIn("server.init(DATA_DIR, ha)", main)
 
