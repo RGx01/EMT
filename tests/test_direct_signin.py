@@ -65,16 +65,21 @@ class _Base(unittest.TestCase):
         signin._cfg.update(self._cfg)
         signin._pending.clear()
 
+    # Each request carries exactly the cookie given, as a header: never the test client's jar, which kept an
+    # earlier cookie beside a later one and sent them in an order that differs between Werkzeug versions
+    # (CI, 20 Nov 2026: a cookie signed with another secret "passed" on the valid one sent with it).
+    def _client(self):
+        return self.app.test_client(use_cookies=False)
+
     def get(self, path, cookie=None, **env):
-        if cookie is not None:
-            self.c.set_cookie(signin.COOKIE, cookie, domain="emt.test")
-        return self.c.get(path, base_url="http://" + HOST, environ_base=dict(self.base, **env))
+        h = {"Cookie": "%s=%s" % (signin.COOKIE, cookie)} if cookie is not None else {}
+        return self._client().get(path, base_url="http://" + HOST, headers=h, environ_base=dict(self.base, **env))
 
     def post(self, path, origin=None, cookie=None):
-        if cookie is not None:
-            self.c.set_cookie(signin.COOKIE, cookie, domain="emt.test")
         h = {"Origin": origin} if origin else {}
-        return self.c.post(path, base_url="http://" + HOST, headers=h, environ_base=self.base)
+        if cookie is not None:
+            h["Cookie"] = "%s=%s" % (signin.COOKIE, cookie)
+        return self._client().post(path, base_url="http://" + HOST, headers=h, environ_base=self.base)
 
 
 class TheGuard(_Base):
@@ -103,7 +108,9 @@ class TheGuard(_Base):
     def test_a_valid_session_passes_and_a_forged_one_does_not(self):
         good = signin.make_session("u1")
         self.assertEqual(self.get("/data-management", cookie=good).status_code, 200)
-        self.assertEqual(self.get("/data-management", cookie=good[:-2] + "xx").status_code, 302)
+        body, sig = good.rsplit(".", 1)
+        forged = body + "." + ("A" if sig[0] != "A" else "B") + sig[1:]      # the signature's first character
+        self.assertEqual(self.get("/data-management", cookie=forged).status_code, 302)
         other = signin.URLSafeTimedSerializer(b"x" * 64, salt="emt-direct-session").dumps({"u": "u1"})
         self.assertEqual(self.get("/data-management", cookie=other).status_code, 302)
 
