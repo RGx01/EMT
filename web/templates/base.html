@@ -559,6 +559,9 @@
     </nav>
     <div class="sidebar-footer">
       <span>{% if app_version %}v{{ app_version }}{% endif %}{% if instance_label %} &middot; {{ instance_label }}{% elif server_port %} &middot; port {{ server_port }}{% endif %}</span>
+      {% if signed_in_direct %}<form method="post" action="/signin/out" style="margin-top:6px">
+        <button type="submit" style="background:none;border:0;padding:0;color:inherit;font:inherit;text-decoration:underline;cursor:pointer">Sign out</button>
+      </form>{% endif %}
     </div>
   </aside>
 

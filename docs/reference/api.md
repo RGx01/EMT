@@ -13,6 +13,24 @@ template that renders no figures: it fetches JSON from the routes below and draw
 Charts, its heatmap and the Lovelace heatmap poll a fingerprint (`/api/energy?fields=fingerprint`) and
 refetch only what changed.
 
+## Who may ask
+
+Through Home Assistant's sidebar (ingress, a request from the Supervisor) every page and route is open:
+Home Assistant has signed the user in. On the **direct port** (8098) every request needs EMT's session
+cookie, `emt_session` (`web/signin.py`), apart from `/signin`, `/signin/start`, `/signin/done`,
+`/signin/check` and `/static/…`:
+
+- without it, a page redirects to `/signin?next=…` and an API, or any write, answers 401;
+- with it, a write (anything but GET, HEAD and OPTIONS) must carry an `Origin` (else `Referer`) on EMT's
+  own host, or it answers 403.
+
+`/signin` sends the browser to Home Assistant's sign-in (OAuth, PKCE); `/signin/done` finishes it with Home
+Assistant, admits an administrator only, revokes Home Assistant's tokens and sets the cookie for 30 days;
+`/signin/check` says so when the browser did not keep it; `POST /signin/out` signs out. The cookie is signed
+with `session_secret`, a file beside `blocks.db`. Standalone, `EMT_DIRECT_LOGIN=off` turns all of this off,
+and `HA_PUBLIC_URL` says where the browser reaches Home Assistant. The design:
+[EMT-v5_direct_port_login_design.md](../design/EMT-v5_direct_port_login_design.md).
+
 ## The main read: `/api/energy`
 
 - `resolution` = `period` | `day` | `block`.

@@ -25,6 +25,16 @@ logger = logging.getLogger("server")
 
 app = Flask(__name__, template_folder="templates")
 
+# The direct port's sign-in (direct port login design §3.2): Home Assistant's own login, administrators
+# only; ingress is untouched. Registered first, so no other hook runs for a request it refuses. Off until
+# init() switches it on, which only main.py calls.
+try:
+    from web import signin as _signin            # the add-on: main imports web.server
+except ImportError:
+    import signin as _signin                     # the tests load server.py by path
+app.register_blueprint(_signin.bp)
+app.before_request(_signin.guard)
+
 
 # ── Response compression ──────────────────────────────────────────────────────
 # HA's ingress proxy gzips responses, but the add-on's own web server (direct
@@ -193,7 +203,8 @@ def inject_globals():
     return {"app_version": APP_VERSION, "build_id": BUILD_ID,
             "has_power_sensor": has_power_sensor, "has_postcode": has_postcode,
             "server_port": int(os.environ.get("EMT_PORT") or "8099"),
-            "instance_label": _instance_label(), "unconfigured": unconfigured}
+            "instance_label": _instance_label(), "unconfigured": unconfigured,
+            "signed_in_direct": _signin.signed_in()}
 
 
 # The first-run fork (first-run design §1) is the only way in until a configuration is in place
@@ -442,6 +453,7 @@ def init(data_dir: str, ha_client):
     _event_loop = _asyncio.get_event_loop()
     DATA_DIR   = data_dir
     _ha_client = ha_client
+    _signin.configure(data_dir)          # the direct port's sign-in: on, unless standalone turns it off
     # A staged upload is only ever confirmed by the page that staged it, in this process:
     # after a restart none can be, so none is kept (first-run design §2.2).
     _remove_stale_stages(max_age=0)

@@ -17,6 +17,12 @@ internal name for everything before the first public release and never appears i
   request came through Home Assistant's sidebar if it said so. Now it believes that only from Home
   Assistant's own Supervisor; a request to port 8098 is always a direct one. This is the first step
   towards a login on that port.
+- **Port 8098 asks you to sign in with Home Assistant.** Opening EMT directly on its port, rather than from
+  Home Assistant's sidebar, now takes you to Home Assistant's own sign-in, two-factor included, and only a
+  Home Assistant administrator gets in. You stay signed in on that browser for 30 days, through restarts
+  and updates, and **Sign out** is at the foot of the sidebar. Every change made on that port must come from
+  EMT's own pages. The sidebar is unchanged. On standalone Docker, set `HA_PUBLIC_URL` if your browser
+  reaches Home Assistant at a different address from EMT's; `EMT_DIRECT_LOGIN=off` turns the sign-in off.
 
 ## [2026.11.0b26] — 2026-11-19
 
