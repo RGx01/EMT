@@ -48,7 +48,7 @@ def main(argv):
     from waitress import serve
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
-    server.init(data, None)
+    server.init(data, None, preview=True)   # no sign-in on 127.0.0.1 (EMT_PREVIEW_SIGNIN=1 for one)
     threading.Thread(target=serve, args=(server.app,), daemon=True, name="flask",
                      kwargs={"host": "127.0.0.1", "port": port, "threads": 4}).start()
     print("EMT on http://127.0.0.1:%d — Ctrl-C to stop" % port)

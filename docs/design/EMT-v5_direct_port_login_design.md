@@ -1,6 +1,6 @@
 # A login on the direct port (design)
 
-*Status: decided, 20 Nov 2026. Step 1 built (#167); §6's checks answered on the owner's Pi, 19–20 Nov
+*Status: decided, 20 Nov 2026. Steps 1–3 built (#167, #169, card keys); §6's checks answered on the owner's Pi, 19–20 Nov
 2026, and they confirm §3.2. A blocker for the first release (ROADMAP, Before the first release). The user,
 19 Nov 2026: "could we just use users HA's login?"*
 
@@ -107,12 +107,14 @@ someone happens to open their dashboard.
 
 So the card pages take a **card key** in their URL: `/lovelace/heatmap?key=…`. Settings → Dashboard cards
 shows each card's URL with the key, to paste into the card, and **New key** replaces it, which revokes
-every card using the old one. A key is a random 32-byte token, kept hashed.
+every card using the old one. A key is a random 32-byte token, kept in its own file beside the session
+secret. *Built (20 Nov 2026) kept as it is, not hashed as first written: Settings shows the cards'
+addresses whenever it is opened, and the secret beside it is no less sensitive.*
 
 A key admits **GET requests only, to an allow-list**: the two card pages, their static files, and the
-read APIs they call. Today that is `/api/energy`, `/api/periods`, `/api/billing-source`,
-`/api/data-health` and `/api/blocks/settlement`; the build fixes the list by loading each card and recording
-what it asks for. It never admits a write. The billing and heatmap modules carry tools (delete, gap fill,
+read APIs they call. *Built: loading each card on the demo household (20 Nov 2026) recorded
+`/api/energy` and `/api/periods` only; the others first listed belong to the modules' tools, which a card
+does not show (the billing card is built without corrections, the heatmap card in chart mode).* It never admits a write. The billing and heatmap modules carry tools (delete, gap fill,
 corrections); on a card they must not appear. A tool's request without a session would be refused anyway,
 but the card should not offer what it cannot do.
 

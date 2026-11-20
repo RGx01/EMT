@@ -20,6 +20,7 @@ the local preview (`.build/serve_local.py`, bound to 127.0.0.1) run without it u
 import asyncio
 import base64
 import hashlib
+import hmac
 import html
 import json
 import logging
@@ -36,12 +37,17 @@ log = logging.getLogger(__name__)
 bp = Blueprint("signin", __name__)
 
 COOKIE = "emt_session"
+CARD_KEY_FILE = "card_key"            # the dashboard cards' read-only key, beside the secret (§3.3)
+# What a card key admits, GET and HEAD only: the two card pages and the two reads they make. Recorded by
+# loading each card on the demo household (20 Nov 2026): the billing card asks /api/periods and
+# /api/energy; the heatmap card (chart mode, where clicks and health checks are off) the same.
+CARD_PATHS = frozenset({"/lovelace/billing", "/lovelace/heatmap", "/api/energy", "/api/periods"})
 MAX_AGE = 30 * 24 * 3600              # a sign-in lasts 30 days in a browser
 SECRET_FILE = "session_secret"        # beside blocks.db; not in a backup (blocks.db only) or support file
 _STATE_TTL = 600                      # an unfinished sign-in is forgotten after 10 minutes
 _STATE_MAX = 200
 
-_cfg = {"required": False, "mode": "supervised", "secret": None}
+_cfg = {"required": False, "mode": "supervised", "secret": None, "data_dir": None}
 _pending = {}                         # state -> {verifier, next, at}
 _lock = threading.Lock()
 _ha_cfg_cache = {"at": 0.0, "internal_url": None}
@@ -68,14 +74,21 @@ def load_secret(data_dir: str) -> bytes:
     return s
 
 
-def configure(data_dir: str, mode: str = None, login: str = None) -> bool:
+def configure(data_dir: str, mode: str = None, login: str = None, preview: bool = False) -> bool:
     """Switch the sign-in on for this process. Standalone may turn it off (`EMT_DIRECT_LOGIN=off`, the way
     out of a Home Assistant address that cannot be reached, §3.5); an add-on cannot, as its sidebar is
-    always there. Returns whether it is on."""
+    always there. `preview`: `.build/serve_local.py`, bound to 127.0.0.1 with no Home Assistant to sign in
+    to, is off unless EMT_PREVIEW_SIGNIN=1 asks for it. Returns whether it is on."""
     mode = mode if mode is not None else os.environ.get("EMT_MODE", "supervised")
     login = (login if login is not None else os.environ.get("EMT_DIRECT_LOGIN", "")).strip().lower()
     _cfg["mode"] = mode
+    _cfg["data_dir"] = data_dir
     _cfg["required"] = not (mode == "standalone" and login == "off")
+    if preview and os.environ.get("EMT_PREVIEW_SIGNIN") != "1":
+        _cfg["required"] = False
+        _cfg["secret"] = None
+        log.info("signin: local preview, bound to this machine: no sign-in (EMT_PREVIEW_SIGNIN=1 for one)")
+        return False
     _cfg["secret"] = load_secret(data_dir) if _cfg["required"] else None
     if _cfg["required"]:
         log.info("signin: the direct port asks for Home Assistant's sign-in (administrators only)")
@@ -112,6 +125,47 @@ def _set_cookie(resp, value, max_age=MAX_AGE):
     resp.set_cookie(COOKIE, value, max_age=max_age, httponly=True, samesite="Lax", path="/",
                     secure=request.scheme == "https")
     return resp
+
+
+# ── the dashboard cards' key ──────────────────────────────────────────────────
+
+data_dir_fn = None    # set by web/server.py: its DATA_DIR, for when configure() was not called (the preview)
+
+
+def _data_dir():
+    return _cfg["data_dir"] or (data_dir_fn() if data_dir_fn else None)
+
+
+def card_key() -> str | None:
+    """The cards' key, or None until one is made on Settings → Dashboard cards. Kept as it is, not hashed
+    (the design said hashed): Settings shows the card URLs again whenever it is opened, and the session
+    secret beside it is no less sensitive."""
+    d = _data_dir()
+    if not d:
+        return None
+    try:
+        with open(os.path.join(d, CARD_KEY_FILE), encoding="ascii") as f:
+            k = f.read().strip()
+        return k if len(k) >= 32 else None
+    except (FileNotFoundError, UnicodeDecodeError):
+        return None
+
+
+def new_card_key() -> str:
+    """Make a new key, replacing the old: every card with the old one stops."""
+    k = secrets.token_urlsafe(32)
+    path = os.path.join(_data_dir(), CARD_KEY_FILE)
+    fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="ascii") as f:
+        f.write(k)
+    os.replace(path + ".tmp", path)
+    log.info("signin: a new dashboard card key was made; cards with the old one stop")
+    return k
+
+
+def card_key_ok(given) -> bool:
+    k = card_key()
+    return bool(k and given) and hmac.compare_digest(str(given).encode(), k.encode())
 
 
 # ── the rules ─────────────────────────────────────────────────────────────────
@@ -154,6 +208,10 @@ def guard():
     if exempt(path):
         return None
     if read_session(request.cookies.get(COOKIE)) is None:
+        if (request.method in ("GET", "HEAD") and path in CARD_PATHS
+                and card_key_ok(request.args.get("key"))):
+            request.environ["emt.card"] = True                  # a dashboard card: read only (§3.3)
+            return None
         if path.startswith("/api/") or request.method not in ("GET", "HEAD"):
             return jsonify({"error": "Sign in with Home Assistant first.", "signin": "/signin"}), 401
         nxt = request.full_path if request.query_string else path
@@ -369,6 +427,41 @@ def signin_check():
             "<a class=btn target=_blank rel=noopener href='%s'>Open EMT in a new tab</a>") % html.escape(
                 _origin() + nxt, quote=True)
     return _page("Signed in, but not kept", body)
+
+
+async def _published_port():
+    """The host port the add-on's web server is published on (8098 unless the user moved it), or None when
+    the direct port is off."""
+    import aiohttp
+    tok = os.environ.get("SUPERVISOR_TOKEN", "")
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=5)) as s:
+        async with s.get("http://supervisor/addons/self/info", headers={"Authorization": "Bearer " + tok}) as r:
+            if r.status != 200:
+                raise RuntimeError("HTTP %s" % r.status)
+            net = ((await r.json(content_type=None)).get("data") or {}).get("network") or {}
+    return net.get("8099/tcp")
+
+
+def direct_port():
+    """{"port": int|None, "known": bool}: where the cards reach EMT. On the direct port itself, the port in
+    use; through the sidebar, the add-on's published port from the Supervisor."""
+    if not request.environ.get("emt.ingress"):
+        return {"port": urlsplit(_origin()).port or (443 if request.scheme == "https" else 80), "known": True}
+    try:
+        return {"port": asyncio.run(_published_port()), "known": True}
+    except Exception as e:
+        log.info("signin: the add-on's published port not read (%s)", type(e).__name__)
+        return {"port": None, "known": False}
+
+
+@bp.route("/api/card-key", methods=["GET", "POST"])
+def api_card_key():
+    """Settings → Dashboard cards. GET: the key (None until made) and where the cards reach EMT; POST: a new
+    key. Behind the sidebar or a session like every other route; never a card key's (not in CARD_PATHS)."""
+    k = new_card_key() if request.method == "POST" else card_key()
+    return jsonify(dict(direct_port(), key=k, required=_cfg["required"],
+                        cards=[{"name": "Billing", "path": "/lovelace/billing"},
+                               {"name": "Heatmap", "path": "/lovelace/heatmap"}]))
 
 
 @bp.route("/signin/out", methods=["POST"])
