@@ -14,7 +14,7 @@ fixed.*
 | Storage | `block_store.py`, `store_access.py`, `store_types.py` | One SQLite database, `blocks.db`; the schema (`EMT_SCHEMA = 5`); typed readers. |
 | Suppliers | `kraken_api_client.py`, `kraken_ingester.py`, `kraken_mini.py`, `agile_public.py`, `suppliers.py` | Octopus's GraphQL and REST APIs; the Home Mini; public Agile prices. |
 | Import | `v4import/` | Bringing a v4 database across: the gate, the carry, the transforms, the checks. See [v4-import-and-first-run.md](v4-import-and-first-run.md). |
-| Web | `web/server.py`, `web/templates/` | Flask: Jinja pages (each an HTML shell), and JSON routes they fetch from. See [api.md](api.md). A request is ingress only from the Supervisor (`172.30.32.2`) on an add-on install; from anywhere else, or standalone, the ingress headers are dropped (`IngressMiddleware`). |
+| Web | `web/server.py`, `web/templates/` | Flask: Jinja pages (each an HTML shell), and JSON routes they fetch from. See [api.md](api.md). A request is ingress only from the Supervisor (`172.30.32.2`) on an add-on install; from anywhere else, or standalone, the ingress headers are dropped (`IngressMiddleware`), and the direct port asks for Home Assistant's sign-in (`web/signin.py`; [api.md](api.md#who-may-ask)). |
 | Home Assistant | `ha_client.py` | Reads sensors, their history and live state. **EMT writes nothing to Home Assistant**: it creates no entities, and the client has no call that could. |
 
 ## Reading and writing the database
@@ -86,7 +86,7 @@ query budgets, reachability (`check_reachability.py`, whose headline the archite
 the GraphQL deprecation and field watch. A change that moves one of these updates its baseline in the
 same PR.
 
-**Reachability today: 10 of 1,556 definitions unreachable** (`check_reachability.py`). The suite
+**Reachability today: 10 of 1,579 definitions unreachable** (`check_reachability.py`). The suite
 asserts this line (`tests/test_b_design_figures.py`): a PR that adds or removes a definition updates it.
 The history of the figure is in the [architecture record](../history/design/EMT-v5_architecture.md) §4.
 
