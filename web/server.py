@@ -2917,9 +2917,32 @@ def api_save_config():
         return _error_reply(e)
 
 
+def _rebuild_refuses_backup():
+    """A device history rebuild is running: a backup now would hold it half done (interrupted
+    rebuild design §3, Phase 3). The reply that says so, naming the device, or None."""
+    eng = _sys.modules.get("engine")
+    try:
+        if not (eng and eng.attribution_running()):
+            return None
+        runs = (eng.api_attribution_status() or {}).get("runs") or []
+    except Exception:
+        return None
+    meters = (load_config() or {}).get("meters") or {}
+    names = [((meters.get(r.get("device")) or {}).get("meta") or {}).get("device") or r.get("device")
+             for r in runs if r.get("status") in ("claimed", "running", "paused") and r.get("device")]
+    who = ", ".join(n for n in names if n) or "a device"
+    return jsonify({"ok": False, "error": "rebuild_running",
+                    "message": "Not now: %s's history is being rebuilt, and a backup taken now would "
+                               "hold it half done. Try again when it finishes — its card on Settings "
+                               "shows the progress." % who}), 409
+
+
 @app.route("/api/backup/create", methods=["POST"])
 def api_backup_create():
     """Create a manual backup zip with an optional label."""
+    refused = _rebuild_refuses_backup()
+    if refused:
+        return refused
     try:
         data  = request.get_json(force=True) or {}
         label = data.get("label", "manual")
@@ -2932,7 +2955,11 @@ def api_backup_create():
 @app.route("/api/backup", methods=["POST"])
 def api_backup():
     """Create a manual backup zip of all data files. Returns the filename and its
-    size so the UI can confirm 'Backup ready: <name> (<size>)'."""
+    size so the UI can confirm 'Backup ready: <name> (<size>)'. Refused while a device
+    history rebuild runs (`_rebuild_refuses_backup`)."""
+    refused = _rebuild_refuses_backup()
+    if refused:
+        return refused
     try:
         path = _create_backup_zip(label="manual")
         try:

@@ -7,6 +7,9 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Backups wait for a device's history rebuild.** *Backup now* is refused while *Rebuild history* or
+  *Replace history* is running, saying which device, as a backup then would hold its history half done.
+  The nightly copy waits for it too, unless the last copy is two days old.
 - **A device's history rebuild that was cut off says so.** If EMT restarts, the power goes, or a backup
   taken mid-rebuild is restored while *Rebuild history* or *Replace history* is running, the device's card
   now says the rebuild was cut off and that *Rebuild history* finishes it. Before, a part-done history

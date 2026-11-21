@@ -616,7 +616,7 @@ async function doManualBackup() {
       loadBackupList();
     } else {
       if (el) el.classList.remove('show');
-      showError(data.error || 'Backup failed');
+      showError(data.message || data.error || 'Backup failed');
     }
   } catch(e) {
     if (el) el.classList.remove('show');

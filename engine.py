@@ -1498,6 +1498,16 @@ _SHARE_BACKUP_HOUR = 3
 _SHARE_BACKUP_STARTS = (15, 45)       # minute of the hour a start window opens
 _SHARE_BACKUP_SPAN = 10               # minutes each start window stays open
 _share_backup_tried_day = None        # one attempt per local day per process
+_SHARE_BACKUP_REBUILD_CAP_H = 48      # a rebuild holds the copy back only while the last is younger
+
+
+def _share_copy_age_h(now) -> float:
+    """Hours from the daily share copy's last write to `now` (tz-aware); infinite where none."""
+    try:
+        _p = f"{SHARE_BACKUP_DIR}/blocks.db"
+        return (now - datetime.fromtimestamp(os.path.getmtime(_p), now.tzinfo)).total_seconds() / 3600
+    except Exception:
+        return float("inf")
 
 
 def _maybe_daily_share_backup(now_utc=None) -> bool:
@@ -1533,6 +1543,12 @@ def _maybe_daily_share_backup(now_utc=None) -> bool:
         pass
     if settle_history_in_progress() or delete_in_progress() or any(
             _coord.running(j) for j in ("import", "delete", "restore")):
+        return False
+    if attribution_running() and _share_copy_age_h(now) < _SHARE_BACKUP_REBUILD_CAP_H:
+        # A device history rebuild: a copy now would hold it half done (interrupted rebuild design
+        # §3, Phase 3). Only while the last copy is recent — a rebuild stuck or long paused must not
+        # stop the copies, and a run cut off is marked on restore (Phase 1).
+        logger.info("_maybe_daily_share_backup: a device history rebuild is running — waiting")
         return False
     _share_backup_tried_day = today
     logger.info("_maybe_daily_share_backup: starting the daily share copy")
