@@ -39,7 +39,7 @@ window.EMTBilling = (function () {
 
   var state = {root: null, inited: false, mode: 'month', view: 'vanilla', censor: false,
                asc: false, showData: false, lists: {}, sel: {}, bills: {}, months: {},
-               monthLoading: {}, charts: {}, forceLight: false, section: null, cur: null, corr: false};
+               monthLoading: {}, gen: 0, charts: {}, forceLight: false, section: null, cur: null, corr: false};
 
   // ── storage (per-viewer conveniences; never required) ─────────────────────
   function sget(k, d) { try { var v = sessionStorage.getItem('emtBill.' + k); return v === null ? d : v; } catch (e) { return d; } }
@@ -529,13 +529,17 @@ window.EMTBilling = (function () {
   function loadMonth(key) {
     if (state.months[key]) return Promise.resolve(state.months[key]);
     if (state.monthLoading[key]) return state.monthLoading[key];
+    // A refresh drops the months while one may still be on its way. That one was asked for before the
+    // data moved: it keeps no place in the cache (`gen`), or the refreshed section's days would be
+    // filled from it, the old figures under the new token.
+    var gen = state.gen;
     var p = fetchJSON('/api/energy?resolution=day&kind=month&year=' + (+key.slice(0, 4)) + '&month=' + (+key.slice(5, 7)) +
                       '&include=billing').then(function (j) {
       var byDay = {};
       (j.billing.days || []).forEach(function (r) { byDay[r.day] = r; });
-      state.months[key] = byDay; delete state.monthLoading[key];
+      if (state.gen === gen) { state.months[key] = byDay; delete state.monthLoading[key]; }
       return byDay;
-    }, function (e) { delete state.monthLoading[key]; throw e; });
+    }, function (e) { if (state.gen === gen) delete state.monthLoading[key]; throw e; });
     state.monthLoading[key] = p;
     return p;
   }
@@ -940,7 +944,7 @@ window.EMTBilling = (function () {
   // month. Each is one small request again when next shown; what the reader had is kept (keepView).
   function refresh() {
     if (!state.inited) return;
-    state.lists = {}; state.bills = {}; state.months = {};
+    state.lists = {}; state.bills = {}; state.months = {}; state.monthLoading = {}; state.gen++;
     return show(true);
   }
   // PDF: every filled day's chart drawn on white, as a PNG. Not only the built ones: a chart is built

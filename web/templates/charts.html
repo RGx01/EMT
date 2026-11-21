@@ -783,23 +783,39 @@ window.addEventListener('message', function(e) {
   }
 });
 
-async function loadChartContent(name, force) {
+async function loadChartContent(name, force, ver) {
   // The heatmap is drawn in the page (heatmap_module.html), not an iframe. Every caller —
   // tab switch, resize, orientation, theme message, auto-refresh, data-version poll —
   // comes through here: `force` re-draws the loaded years (new theme or dimensions);
   // otherwise it is a first load or a fingerprint-checked refresh.
   if (name === 'heatmap') {
     if (!window.EMTHeatmap) return;
-    // chart mode: the energy views, read-only — the data views and tools are on Data Management
-    if (!EMTHeatmap._state.inited) return EMTHeatmap.init(document.getElementById('chart-heatmap-content'), {mode: 'chart'});
-    return force ? EMTHeatmap.rerender() : EMTHeatmap.refresh();
+    if (force) return EMTHeatmap.rerender();
+    return _loadNotingToken(ver, function() {
+      // chart mode: the energy views, read-only — the data views and tools are on Data Management
+      if (!EMTHeatmap._state.inited) return EMTHeatmap.init(document.getElementById('chart-heatmap-content'), {mode: 'chart'});
+      return EMTHeatmap.refresh();
+    });
   }
   // The Billing tab likewise (billing_module.html) — same contract.
   if (name === 'daily') {
     if (!window.EMTBilling) return;
-    if (!EMTBilling._state.inited) return EMTBilling.init(document.getElementById('chart-daily-content'), {corrections: true, remember: true});
-    return force ? EMTBilling.rerender() : EMTBilling.refresh();
+    if (force) return EMTBilling.rerender();
+    return _loadNotingToken(ver, function() {
+      if (!EMTBilling._state.inited) return EMTBilling.init(document.getElementById('chart-daily-content'), {corrections: true, remember: true});
+      return EMTBilling.refresh();
+    });
   }
+}
+
+// A load notes the change token, read BEFORE it, as Usage Stats does (_barFetchFresh): if the data
+// moves during or after the load, the next poll sees a new token and refreshes. Billing and the
+// heatmap noted none, so the first poll only seeded it, and a half-hour landing in the minute after a
+// load stayed off the page until the next one (21 Nov 2026, the user). `ver` is the poll's own read.
+async function _loadNotingToken(ver, load) {
+  var v = ver !== undefined ? ver : await _fetchDataVersion();
+  await load();
+  if (v) _lastDataVersion = v;
 }
 
 // Auto-refresh charts every 2 minutes — force reload of active chart
@@ -828,7 +844,9 @@ function scheduleChartRefresh() {
       if (activeTab) {
         var name = activeTab.dataset.chart || (activeTab.textContent.indexOf('Heatmap') !== -1 ? 'heatmap' : 'daily');
         if (name === 'daily' || name === 'heatmap') {
-          loadChartContent(name, true);
+          // The change poll, now: a forced load only redraws what these tabs hold (it is the resize
+          // and theme path), so the new half-hour waited for the next minute's poll.
+          _refreshIfChanged(false);
         } else if (name === 'bar') {
           barInit();
         }
@@ -5523,7 +5541,7 @@ async function _refreshIfChanged(force) {
     barLastFetch  = 0;      // force barInit past its TTL
     barHHDataDate = null;   // force today's HH to refetch on next render
     if (_activeChart === 'bar') { await barInit(); }
-    else { chartsLoaded = {}; await loadChartContent(_activeChart || 'daily'); }
+    else { chartsLoaded = {}; await loadChartContent(_activeChart || 'daily', false, v); }
     if (v) _lastDataVersion = v;
     _refreshSettleNote();
     return true;

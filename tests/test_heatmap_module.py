@@ -206,7 +206,7 @@ class ThePageUsesIt(unittest.TestCase):
         self.assertNotIn("heatmap_exists", _PAGE)
 
     def test_every_loader_path_routes_the_heatmap_to_the_module(self):
-        fn = _PAGE[_PAGE.index("async function loadChartContent(name, force) {"):]
+        fn = _PAGE[_PAGE.index("async function loadChartContent(name, force, ver) {"):]
         fn = fn[:fn.index("\n}\n")]
         self.assertIn("if (name === 'heatmap') {", fn)
         self.assertIn("EMTHeatmap.rerender()", fn)

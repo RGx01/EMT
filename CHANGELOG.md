@@ -5,6 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **Billing shows a new half-hour without a reload.** Opened or reloaded just before a half-hour arrived,
+  Billing (and Heatmaps) could miss it until something else changed, often the next half-hour, and the refresh just after
+  each half-hour only redrew what was already on the page. Billing now takes each new half-hour within
+  about a minute, however recently the page was opened.
+
 ## [2026.11.0b30] — 2026-11-21
 
 - **EMT pauses less on an SD card.** Every ten seconds EMT checked for devices' half-hours that were waiting

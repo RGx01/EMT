@@ -12,7 +12,9 @@ There are no dashboard-card pages: v4's `/lovelace/billing` and `/lovelace/heatm
 20 Nov 2026, so the direct port serves the signed-in app and nothing else.
 
 Charts and its heatmap poll a fingerprint (`/api/energy?fields=fingerprint`) and
-refetch only what changed.
+refetch only what changed. The poll runs every minute while the page is in view, and again 90 s after each
+half-hour boundary. A tab notes the fingerprint it read just before loading, so a half-hour that lands while it
+loads still counts as a change at the next poll.
 
 ## Who may ask
 
