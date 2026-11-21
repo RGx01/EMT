@@ -31,7 +31,8 @@ sys.path.insert(0, _ROOT)
 
 import engine                                     # noqa: E402
 
-CHARTS = open(os.path.join(_ROOT, "web", "templates", "charts.html"), encoding="utf-8").read()
+# The pill moved into _settle_pill.html (21 Nov 2026), included by Charts and the Overview.
+CHARTS = open(os.path.join(_ROOT, "web", "templates", "_settle_pill.html"), encoding="utf-8").read()
 HEATMAP = open(os.path.join(_ROOT, "web", "templates", "heatmap_module.html"), encoding="utf-8").read()
 DM = open(os.path.join(_ROOT, "web", "templates", "data_management.html"), encoding="utf-8").read()
 

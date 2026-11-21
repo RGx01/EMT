@@ -85,7 +85,7 @@ class ThePageUsesIt(unittest.TestCase):
 
     def test_it_is_included_and_the_billing_tab_routes_to_it(self):
         self.assertIn('{% include "billing_module.html" %}', _PAGE)
-        fn = _PAGE[_PAGE.index("async function loadChartContent(name, force) {"):]
+        fn = _PAGE[_PAGE.index("async function loadChartContent(name, force, ver) {"):]
         fn = fn[:fn.index("\n}\n")]
         self.assertIn("if (name === 'daily') {", fn)
         self.assertIn("EMTBilling.init(document.getElementById('chart-daily-content'), {corrections: true, remember: true})", fn)

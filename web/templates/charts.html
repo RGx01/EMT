@@ -95,20 +95,13 @@
   }
   .chart-tab:hover { background: rgba(255,255,255,0.05); color: var(--text); }
   .chart-tab.active { background: rgba(0,212,170,0.1); color: var(--accent); border-color: var(--accent); }
-  .dcc-settle-note { display:inline-flex; align-items:center; gap:5px; margin-left:10px; padding:5px 10px; border-radius:14px; font-size:12px; font-weight:600; background:rgba(130,140,150,0.14); color:var(--muted); border:1px solid rgba(130,140,150,0.30); white-space:nowrap; cursor:default; }
-  .dcc-settle-note.amber { background:rgba(230,160,30,0.14); color:#e0a020; border-color:rgba(230,160,30,0.35); }
-  .dcc-settle-note.actionable { cursor:pointer; }
-  .settle-menu { position:fixed; z-index:70; min-width:200px; background:var(--surface); border:1px solid var(--border);
-                 border-radius:8px; padding:4px; box-shadow:0 6px 18px rgba(0,0,0,.35); }
-  .settle-menu button { display:block; width:100%; text-align:left; background:none; border:none; color:var(--text);
-                        padding:8px 10px; font-size:13px; border-radius:6px; cursor:pointer; }
-  .settle-menu button:hover, .settle-menu button:focus { background:rgba(127,127,127,.15); outline:none; }
-  @media (max-width:768px){ .dcc-settle-note { margin-left:6px; padding:4px 8px; font-size:11px; } }
   /* A phone: the note goes last in the wrapping topbar, onto a row of its own under the title, tabs
      and PDF, and may wrap there. On one nowrap row the note and PDF ran past a phone's width (410 px:
      the header 506 px wide) and the whole page scrolled sideways. Wider, it all fits one row, in
      its own order. */
   @media (max-width: 560px) {
+    /* the pill's group (_settle_pill.html) opens up, so the note can still go last, under the rest */
+    .topbar .topbar-end, .topbar .topbar-end-tail { display: contents; }
     .topbar .dcc-settle-note { order: 3; margin-left: 0; max-width: 100%; white-space: normal; }
   }
 
@@ -386,10 +379,15 @@
     <button class="chart-tab"        data-chart="heatmap" onclick="showChart('heatmap', this)" title="Heatmaps">🔥<span class="tab-label"> Heatmaps</span></button>
     <button class="chart-tab"        data-chart="bar"     onclick="showChart('bar', this)" title="Usage Stats">📈<span class="tab-label"> Usage Stats</span></button>
   </div>
-  <span id="dcc-settle-note" class="dcc-settle-note" style="display:none;"></span>
-  <button class="btn btn-secondary" onclick="chartsCogMenu(this)" title="Home eras and chart settings" id="charts-cog-btn"
-          aria-haspopup="menu" aria-label="Home eras and chart settings"><span class="cog-glyph">⚙︎</span></button>
-  <button class="btn btn-secondary" onclick="chartsPdfExport()" title="Export current view as PDF" id="charts-pdf-btn">⬇ PDF</button>
+  {# the pill, then its tail: the same place as on the Overview (_settle_pill.html) #}
+  <div class="topbar-end">
+    <span id="dcc-settle-note" class="dcc-settle-note" style="display:none;"></span>
+    <div class="topbar-end-tail">
+      <button class="btn btn-secondary" onclick="chartsCogMenu(this)" title="Home eras and chart settings" id="charts-cog-btn"
+              aria-haspopup="menu" aria-label="Home eras and chart settings"><span class="cog-glyph">⚙︎</span></button>
+      <button class="btn btn-secondary" onclick="chartsPdfExport()" title="Export current view as PDF" id="charts-pdf-btn">⬇ PDF</button>
+    </div>
+  </div>
 </div>
 {% endblock %}
 
@@ -783,23 +781,39 @@ window.addEventListener('message', function(e) {
   }
 });
 
-async function loadChartContent(name, force) {
+async function loadChartContent(name, force, ver) {
   // The heatmap is drawn in the page (heatmap_module.html), not an iframe. Every caller —
   // tab switch, resize, orientation, theme message, auto-refresh, data-version poll —
   // comes through here: `force` re-draws the loaded years (new theme or dimensions);
   // otherwise it is a first load or a fingerprint-checked refresh.
   if (name === 'heatmap') {
     if (!window.EMTHeatmap) return;
-    // chart mode: the energy views, read-only — the data views and tools are on Data Management
-    if (!EMTHeatmap._state.inited) return EMTHeatmap.init(document.getElementById('chart-heatmap-content'), {mode: 'chart'});
-    return force ? EMTHeatmap.rerender() : EMTHeatmap.refresh();
+    if (force) return EMTHeatmap.rerender();
+    return _loadNotingToken(ver, function() {
+      // chart mode: the energy views, read-only — the data views and tools are on Data Management
+      if (!EMTHeatmap._state.inited) return EMTHeatmap.init(document.getElementById('chart-heatmap-content'), {mode: 'chart'});
+      return EMTHeatmap.refresh();
+    });
   }
   // The Billing tab likewise (billing_module.html) — same contract.
   if (name === 'daily') {
     if (!window.EMTBilling) return;
-    if (!EMTBilling._state.inited) return EMTBilling.init(document.getElementById('chart-daily-content'), {corrections: true, remember: true});
-    return force ? EMTBilling.rerender() : EMTBilling.refresh();
+    if (force) return EMTBilling.rerender();
+    return _loadNotingToken(ver, function() {
+      if (!EMTBilling._state.inited) return EMTBilling.init(document.getElementById('chart-daily-content'), {corrections: true, remember: true});
+      return EMTBilling.refresh();
+    });
   }
+}
+
+// A load notes the change token, read BEFORE it, as Usage Stats does (_barFetchFresh): if the data
+// moves during or after the load, the next poll sees a new token and refreshes. Billing and the
+// heatmap noted none, so the first poll only seeded it, and a half-hour landing in the minute after a
+// load stayed off the page until the next one (21 Nov 2026, the user). `ver` is the poll's own read.
+async function _loadNotingToken(ver, load) {
+  var v = ver !== undefined ? ver : await _fetchDataVersion();
+  await load();
+  if (v) _lastDataVersion = v;
 }
 
 // Auto-refresh charts every 2 minutes — force reload of active chart
@@ -828,7 +842,9 @@ function scheduleChartRefresh() {
       if (activeTab) {
         var name = activeTab.dataset.chart || (activeTab.textContent.indexOf('Heatmap') !== -1 ? 'heatmap' : 'daily');
         if (name === 'daily' || name === 'heatmap') {
-          loadChartContent(name, true);
+          // The change poll, now: a forced load only redraws what these tabs hold (it is the resize
+          // and theme path), so the new half-hour waited for the next minute's poll.
+          _refreshIfChanged(false);
         } else if (name === 'bar') {
           barInit();
         }
@@ -5238,181 +5254,8 @@ if (!window.Chart) {
   document.head.appendChild(s);
 }
 
-// ── The settlement pill as a way in (BL-95, 1 Nov 2026) ─────────────────────────────────────
-// While half-hours wait at a stage of settlement: a click opens Data Management with Issues only on;
-// a right-click (a long press on touch) offers Retry settlement — the 6-hourly poll's cycle run now —
-// and Data Management. The retry's progress is the pill's own text until the cycle ends.
-var settleNoteBusy = false;
-function settleOpenDM() { window.location.href = BASE_PATH + '/data-management?issues=1'; }
-function settleCloseMenu() { var m = document.getElementById('settle-menu'); if (m) m.remove(); }
-function settleMenu(el, x, y) {
-  settleCloseMenu();
-  var menu = document.createElement('div');
-  menu.id = 'settle-menu'; menu.className = 'settle-menu'; menu.setAttribute('role', 'menu');
-  [['Retry settlement', function() { settleRetry(el); }], ['Data Management', settleOpenDM]].forEach(function(it) {
-    var b = document.createElement('button');
-    b.type = 'button'; b.setAttribute('role', 'menuitem'); b.textContent = it[0];
-    b.onclick = function() { settleCloseMenu(); it[1](); };
-    menu.appendChild(b);
-  });
-  document.body.appendChild(menu);
-  var w = menu.offsetWidth, h = menu.offsetHeight;
-  menu.style.left = Math.max(4, Math.min(x, window.innerWidth - w - 4)) + 'px';
-  menu.style.top = Math.max(4, Math.min(y, window.innerHeight - h - 4)) + 'px';
-  menu.querySelector('button').focus();
-  setTimeout(function() {
-    function away(e) {
-      if (e.type === 'keydown' && e.key !== 'Escape') return;
-      if (e.type !== 'keydown' && menu.contains(e.target)) return;
-      settleCloseMenu();
-      ['mousedown', 'touchstart', 'keydown'].forEach(function(k) { document.removeEventListener(k, away, true); });
-    }
-    // a click elsewhere or Escape; not a scroll — the Billing tab's own panel scrolls as it loads
-    ['mousedown', 'touchstart', 'keydown'].forEach(function(k) { document.addEventListener(k, away, true); });
-  }, 0);
-}
-function settleSay(el, text, ms) {
-  el.textContent = text;
-  setTimeout(function() { settleNoteBusy = false; if (window._loadSettleNote) window._loadSettleNote(); }, ms || 0);
-}
-function settleRetry(el) {
-  if (settleNoteBusy) return;
-  settleNoteBusy = true;
-  el.textContent = '\u23f3 Asking Octopus\u2026';
-  fetch(apiUrl('/api/settlement/poll-now'), {method: 'POST'}).then(function(r) {
-    return r.json().then(function(j) { return {ok: r.ok && j.ok, j: j}; });
-  }).then(function(res) {
-    if (!res.ok) { settleSay(el, '\u26a0 ' + (res.j.error || 'Retry refused'), 5000); return; }
-    var since = res.j.since, t0 = Date.now();
-    (function wait() {
-      fetch(apiUrl('/api/settlement/poll-now')).then(function(r) { return r.json(); }).then(function(s) {
-        if ((s.started === since || s.running) && Date.now() - t0 < 10 * 60000) { setTimeout(wait, 3000); return; }
-        settleSay(el, '\u2713 Octopus asked', 2500);
-        if (typeof _refreshIfChanged === 'function') _refreshIfChanged(false);
-      }).catch(function() { settleSay(el, '\u26a0 Retry status unavailable', 5000); });
-    })();
-  }).catch(function(e) { settleSay(el, '\u26a0 Retry failed', 5000); });
-}
-function settleNoteWire(el) {
-  if (!el) return;
-  var pressed = false;      // a long press opened the menu: the click its lift makes is not a click
-  el.addEventListener('click', function() {
-    if (pressed) { pressed = false; return; }
-    if (el.classList.contains('actionable') && !settleNoteBusy) settleOpenDM();
-  });
-  el.addEventListener('keydown', function(e) {
-    if (!el.classList.contains('actionable')) return;
-    if (e.key === 'Enter') settleOpenDM();
-    else if (e.key === 'ContextMenu' || (e.shiftKey && e.key === 'F10')) {
-      e.preventDefault(); var r = el.getBoundingClientRect(); settleMenu(el, r.left, r.bottom + 4);
-    }
-  });
-  el.addEventListener('contextmenu', function(e) {
-    if (!el.classList.contains('actionable') || settleNoteBusy) return;
-    e.preventDefault(); settleMenu(el, e.clientX, e.clientY);
-  });
-  var timer = null, t0 = null;
-  el.addEventListener('touchstart', function(e) {
-    if (e.touches.length !== 1 || !el.classList.contains('actionable')) return;
-    t0 = {x: e.touches[0].clientX, y: e.touches[0].clientY};
-    pressed = false;
-    timer = setTimeout(function() { timer = null; pressed = true; settleMenu(el, t0.x, t0.y); }, 550);
-  }, {passive: true});
-  ['touchend', 'touchcancel', 'touchmove'].forEach(function(k) {
-    el.addEventListener(k, function(e) {
-      if (!timer) return;
-      if (k === 'touchmove' && t0 && Math.abs(e.touches[0].clientX - t0.x) + Math.abs(e.touches[0].clientY - t0.y) <= 10) return;
-      clearTimeout(timer); timer = null;
-    }, {passive: true});
-  });
-}
 
 document.addEventListener('DOMContentLoaded', function() {
-  // Billing-source status indicator. Reflects the actual source config so the
-  // "N blocks awaiting DCC settlement" message only appears when DCC settlement
-  // can actually happen (an API is configured). Without an API the unsettled
-  // count is expected and permanent (local/CAD billing), so it must NOT read as
-  // "awaiting settlement" (issue: alarmed a user who had no API configured).
-  // The stages of settlement with half-hours waiting at them, in order: the kWh (DCC), then the
-  // bill, then on IOG-SMB the House/EV split. Falls back to `unsettled` (the kWh stage) on a
-  // server that does not send `awaiting`.
-  function _settleStages(d) {
-    var a = d.awaiting || {kwh: d.unsettled || 0, bill: 0, split: 0};
-    return [
-      {n: a.kwh || 0, what: 'kWh',
-       why: 'Octopus has not yet sent the settled meter reading for these half-hours.'},
-      {n: a.bill || 0, what: 'bill',
-       why: 'the settled reading is in; Octopus\u2019s cost for the half-hour is not yet.'},
-      {n: a.split || 0, what: 'split',
-       why: 'Octopus\u2019s bill has no EV share where EMT saw your car charge, so EMT keeps its own split and asks again (up to 28 days).'}
-    ].filter(function(x){ return x.n > 0; });
-  }
-  function loadSettleNote(){
-    try {
-      fetch(apiUrl('/api/billing-source')).then(function(r){return r.json();}).then(function(d){
-        var el = document.getElementById('dcc-settle-note');
-        if (!el || !d) return;
-        var label = '', tip = '', amber = false, show = true, actionable = false;
-        if (d.unsupported_tariff) {
-          // BL-6: an unsupported tariff breaks billing app-wide, not just on this
-          // page — surface it in the GLOBAL notification region, not a pill in the
-          // charts topbar. Persistent (not dismissible): it must not be hidden
-          // while the bill is wrong.
-          var _tc = (d.unsupported_tariff && d.unsupported_tariff.tariff) || '';
-          if (window.EMT && EMT.notify) {
-            EMT.notify({
-              id: 'unsupported-tariff',
-              level: 'critical',
-              html: '\u26a0 <strong>Tariff not supported \u2014 rates unavailable.</strong> Your import tariff' +
-                    (_tc ? ' (' + _tc + ')' : '') + ' returns no standard unit rates. Billing for this meter will be incorrect until support is added.'
-            });
-          }
-          show = false;   // the pill is superseded by the global notification
-        } else if (d.credentials_missing) {
-          // API/DCC mode is set but the stored key is gone (typically after a
-          // restore onto a fresh install; creds are not in the backup). NOT the
-          // same as "no API" - this is a broken API config the user must fix.
-          label = '⚠ API mode · credentials missing';
-          tip = 'This meter is in supplier-API/DCC mode, but no API credentials are stored — usually after restoring a backup onto a fresh install (credentials aren’t part of the backup). Import readings and settlement are paused. Re-enter your API key in Settings to resume.';
-          amber = true;
-        } else if (!d.api_available) {
-          // No supplier API — billing is on the local/CAD figure, never reconciled
-          label = 'No API \u00b7 local billing';
-          tip = 'No supplier API is configured, so blocks are billed on the local/CAD meter figure and are never reconciled to a settled DCC figure. The unsettled count is expected \u2014 not a problem.';
-        } else if (d.source !== 'dcc') {
-          // API available but billing uses the local CAD figure as the source
-          label = 'CAD source \u00b7 API ready';
-          tip = 'A supplier API is available, but billing uses the local CAD meter figure as the source rather than cost settlement.';
-        } else if (_settleStages(d).length) {
-          // DCC path: name each stage half-hours are waiting at (BL-85, 13 Oct 2026). It read
-          // "N awaiting cost settlement" while counting only half-hours without their kWh.
-          var st = _settleStages(d);
-          label = '\u23f3 ' + st.map(function(x){ return x.n + ' awaiting ' + x.what; }).join(' \u00b7 ');
-          tip = st.map(function(x){ return x.n + ' awaiting ' + x.what + ': ' + x.why; }).join('\n') +
-                '\nA half-hour settles in that order; until then it is priced on EMT\u2019s own figure.' +
-                '\nClick for Data Management\u2019s issues; right-click to retry settlement.';
-          amber = true; actionable = true;
-        } else {
-          // DCC path, everything settled — nothing to flag
-          show = false;
-        }
-        if (settleNoteBusy) return;      // a retry's own words stand until it ends
-        el.textContent = label;
-        el.title = tip;
-        el.classList.toggle('amber', amber);
-        el.classList.toggle('actionable', actionable);
-        if (actionable) { el.setAttribute('role', 'button'); el.tabIndex = 0; }
-        else { el.removeAttribute('role'); el.removeAttribute('tabindex'); }
-        el.style.display = show ? 'inline-flex' : 'none';
-      }).catch(function(){});
-    } catch(e) {}
-  }
-  // Drawn at load, and again whenever the page's own refresh sees new data or the tab comes back
-  // (17 Oct 2026, the Pi: it was drawn once, so its counts stood still until a reload).
-  window._loadSettleNote = loadSettleNote;
-  loadSettleNote();
-  settleNoteWire(document.getElementById('dcc-settle-note'));
-
   // Sync theme toggle icon immediately
   var theme = document.documentElement.getAttribute('data-theme') || 'dark';
   var btn = document.getElementById('bar-theme-btn');
@@ -5523,7 +5366,7 @@ async function _refreshIfChanged(force) {
     barLastFetch  = 0;      // force barInit past its TTL
     barHHDataDate = null;   // force today's HH to refetch on next render
     if (_activeChart === 'bar') { await barInit(); }
-    else { chartsLoaded = {}; await loadChartContent(_activeChart || 'daily'); }
+    else { chartsLoaded = {}; await loadChartContent(_activeChart || 'daily', false, v); }
     if (v) _lastDataVersion = v;
     _refreshSettleNote();
     return true;
@@ -5564,6 +5407,7 @@ function showError(msg) {
   el.classList.add('show');
 }
 </script>
+{% include "_settle_pill.html" %}
 {% include "heatmap_module.html" %}
 {% include "billing_module.html" %}
 {% endblock %}
