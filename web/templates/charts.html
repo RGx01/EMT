@@ -1496,6 +1496,11 @@ var barHHDate = barTodayStr();   // HH view: local day being viewed (YYYY-MM-DD)
 var barHHRows = null;            // cached 48-slot rows for barHHDataDate
 var barHHDataDate = null;        // date barHHRows currently holds
 var barActiveYears = null;
+// The years saved on Running total, when the page opens on it: there a year is the year its start began in,
+// which waits on the tariffs and eras, so barLoadState's calendar years would drop one (20 Nov 2026: an
+// era starting in October made 2023/24, and it came back unticked). Applied once they are known: whichever
+// of the two lands last draws again while these wait, even when it brought none.
+var barAccYearsWanted = null;
 var barChartInstance = null;
 var barInited = false;
 var barLastFetch = 0;        // timestamp of last successful fetch
@@ -1582,6 +1587,7 @@ function barLoadState(availableYears) {
     }
     // Restore active years — only keep those that still exist in the data
     if (st.years && st.years.length) {
+      if (st.show === 'running') barAccYearsWanted = st.years.slice();
       var validYears = st.years.filter(function(y){ return availableYears.indexOf(y) !== -1; });
       if (validYears.length) barActiveYears = new Set(validYears);
     }
@@ -1885,7 +1891,7 @@ function barLoadTariffs() {
   fetch(apiUrl('/api/tariff-agreements')).then(function(r) { return r.json(); }).then(function(j) {
     barTariffs = j.agreements || [];
     // a remembered Span may be a tariff's, drawn when they land
-    if ((barTariffs.length || barPeriod === 'span') && barInited && barData) barRender();
+    if ((barTariffs.length || barPeriod === 'span' || barAccYearsWanted) && barInited && barData) barRender();
   }).catch(function() { barTariffs = []; });
 }
 
@@ -2171,7 +2177,7 @@ function barLoadEras() {
   fetch(apiUrl('/api/home-eras')).then(function(r) { return r.json(); }).then(function(j) {
     barEras = j.eras || [];
     // and with none, a remembered Era (Flow's) falls back to Monthly
-    if ((barEras.length || barPeriod === 'span') && barInited && barData) barRender();
+    if ((barEras.length || barPeriod === 'span' || barAccYearsWanted) && barInited && barData) barRender();
   }).catch(function() { barEras = []; });
 }
 function barErasAvailable() {
@@ -2490,7 +2496,10 @@ function barBrSyncPicker() {
   var sel = document.getElementById('bar-br-series');
   if (!sel) return;
   var list = barBrSeriesList();
-  if (!list.some(function(o) { return o.id === barBrSeries; })) barBrSeries = 'meter';
+  // a device or Export is among the choices only once the brackets have landed: until then the remembered
+  // one is kept, not replaced by Import (20 Nov 2026, the user: back from the Overview it had gone)
+  var src = barPeriod === 'hh' ? barBrHH : barBrDays;
+  if (src && !list.some(function(o) { return o.id === barBrSeries; })) barBrSeries = 'meter';
   sel.innerHTML = list.map(function(o) {
     return '<option value="' + o.id + '"' + (o.id === barBrSeries ? ' selected' : '') + '>'
       + o.label.replace(/</g, '&lt;') + '</option>';
@@ -4133,6 +4142,13 @@ function barTariffVatOnly(a, iso) {
     return !!prev && prev.exc === p.exc;
   });
 }
+// The year's start to show: the remembered one while the tariffs and eras are still on their way, since a
+// tariff's or an era's start is not among the choices until they land (20 Nov 2026, the user: back from
+// the Overview, Year by year had gone back to 1 January); 1 January once they are known and it is gone.
+function barAccStartKept(starts) {
+  if (barSpansPending() || starts.some(function(o) { return o.id === barAccStart; })) return barAccStart;
+  return 'jan';
+}
 // The picker's options, an <optgroup> a run of one group
 function barAccStartOptions(starts, cur) {
   var esc = function(v) { return String(v).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;'); };
@@ -4233,8 +4249,17 @@ function barAccFmt(v, unit) {
   return (v < 0 ? '\u2212' : '') + a.toLocaleString(undefined, {minimumFractionDigits: 0, maximumFractionDigits: d}) + ' ' + unit;
 }
 // What the view shows and hides: the series and winding, not the period, metric or overlays
+// The saved Running total years, once the tariffs and eras say which years there are (barAccYearsWanted)
+function barAccYearsApply(on) {
+  if (!on) { barAccYearsWanted = null; return; }
+  if (!barAccYearsWanted || barSpansPending()) return;
+  var have = barGetYears(), want = barAccYearsWanted.filter(function(y) { return have.indexOf(y) !== -1; });
+  if (want.length) barActiveYears = new Set(want);
+  barAccYearsWanted = null;
+}
 function barAccSyncUI() {
   var on = barRunning();
+  barAccYearsApply(on);
   function vis(id, show, how) { var e = document.getElementById(id); if (e) e.style.display = show ? (how || '') : 'none'; }
   vis('bar-acc-wrap', on, 'flex');
   vis('bar-acc-series', on, '');
@@ -4846,7 +4871,7 @@ function barBuildSubBar() {
     if (barRunning()) {
       // the year's start, where Span's picker sits in the other views (5 Nov 2026, the user)
       var starts = barAccStartChoices();
-      if (!starts.some(function(o) { return o.id === barAccStart; })) barAccStart = 'jan';
+      barAccStart = barAccStartKept(starts);
       var ss = document.createElement('select');
       ss.id = 'bar-acc-start';
       ss.setAttribute('aria-label', 'When the year starts');

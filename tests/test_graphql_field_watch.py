@@ -56,6 +56,26 @@ class TestFieldWatch(unittest.TestCase):
         self.assertEqual(report["UpsideDispatchMetaType"]["added"], ["location", "source"])
 
 
+class TestSmartFlexDeviceStateWatched(unittest.TestCase):
+    """The onboarded-device test reads SmartFlexDeviceState; a value Octopus adds to it must
+    show in the weekly watch, since EMT counts an unknown state as not onboarded."""
+
+    def test_the_device_state_enum_is_watched(self):
+        schema = {"types": [{"name": "SmartFlexDeviceState", "kind": "ENUM", "fields": None,
+                             "enumValues": [{"name": "SETUP_COMPLETE"}, {"name": "RETIRED"}]},
+                            {"name": "SmartFlexDeviceStatus", "kind": "OBJECT",
+                             "fields": [{"name": "currentState"}]}]}
+        w = fw.watched_fields(schema)
+        self.assertEqual(w.get("SmartFlexDeviceState"), ["enum:RETIRED", "enum:SETUP_COMPLETE"])
+        self.assertNotIn("SmartFlexDeviceStatus", w)     # the status objects stay out
+
+    def test_the_baseline_carries_it(self):
+        import json
+        with open(os.path.join(_ROOT, ".build", "graphql_field_watch_baseline.json")) as fh:
+            base = json.load(fh)
+        self.assertIn("enum:SMART_CONTROL_NOT_AVAILABLE", base.get("SmartFlexDeviceState", []))
+
+
 if __name__ == "__main__":
     unittest.main()
 

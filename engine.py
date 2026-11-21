@@ -5128,6 +5128,17 @@ def _fetch_carbon_intensity(postcode: str) -> list:
 _CARBON_BACKFILL_MARKER = "carbon_backfill_state"   # store_meta key
 _CARBON_RETRY_HOURS = 24                             # cool-down before re-attempting gaps
 _carbon_backfill_running = False                    # in-process re-entry guard
+# Half-hours the source has no intensity for. The national API has none for some
+# old stretches (a 2023 weekend, a 2024 night on the soak Pi), so without this the
+# backfill swept them, filled nothing and warned every day for ever. A slot that
+# comes back empty from a fetch that succeeded, on _CARBON_UNAVAILABLE_PASSES
+# passes at least _CARBON_MISS_SPACING_HOURS apart, is recorded here and no longer
+# asked for. Keyed by block_start with the region it was asked for, so a region
+# change re-opens it. The block keeps its NULL: charts show it as missing.
+_CARBON_UNAVAILABLE_KEY = "carbon_unavailable"       # store_meta key
+_CARBON_UNAVAILABLE_PASSES = 3                       # empty passes before giving up on a slot
+_CARBON_MISS_SPACING_HOURS = 12                      # rapid retries count as one pass
+_CARBON_MISS_MIN_AGE_DAYS = 7                        # a recent slot may still settle
 _delete_active = False                              # a delete/purge job is mutating blocks
 
 
@@ -5289,7 +5300,78 @@ async def _run_historical_carbon_backfill(window_days: int = 13,
     if state.get("done"):
         return 0
 
-    rng = _store.get_missing_carbon_date_range()
+    # The slots already given up on, and the empty passes counted so far. A slot
+    # whose region is no longer the one it was asked for is asked again.
+    _ua = _store.get_meta(_CARBON_UNAVAILABLE_KEY, {}) or {}
+    _ua = _ua if isinstance(_ua, dict) else {}
+    unavailable = dict(_ua.get("unavailable") or {})
+    misses = dict(_ua.get("misses") or {})
+    _oc_of = lambda start: _store.get_postcode_prefix_at(start)[0] or postcode
+    _ua_dirty = False
+    for _tbl in (unavailable, misses):
+        for _s in list(_tbl):
+            _v = _tbl[_s]
+            if (_v if isinstance(_v, str) else (_v or {}).get("oc")) != _oc_of(_s):
+                del _tbl[_s]
+                _ua_dirty = True
+    newly_unavailable: list = []
+
+    def _record_miss(start, oc):
+        """A fetch that succeeded had nothing for `start`. Count it once per
+        _CARBON_MISS_SPACING_HOURS; at _CARBON_UNAVAILABLE_PASSES, give up on it."""
+        nonlocal _ua_dirty
+        now = _dt.now(_tz.utc).replace(tzinfo=None)
+        try:
+            bs = _dt.fromisoformat(str(start).replace("Z", "").split("+")[0])
+        except Exception:
+            return
+        if now - bs < _td(days=_CARBON_MISS_MIN_AGE_DAYS):
+            return
+        e = misses.get(start) or {}
+        n = 1
+        if e.get("oc") == oc and e.get("last"):
+            try:
+                if now - _dt.fromisoformat(e["last"]) < _td(hours=_CARBON_MISS_SPACING_HOURS):
+                    return
+            except Exception:
+                pass
+            n = int(e.get("n", 0)) + 1
+        if n >= _CARBON_UNAVAILABLE_PASSES:
+            misses.pop(start, None)
+            unavailable[start] = oc
+            newly_unavailable.append(start)
+        else:
+            misses[start] = {"n": n, "last": now.isoformat(), "oc": oc}
+        _ua_dirty = True
+
+    def _forget_miss(start):
+        nonlocal _ua_dirty
+        if misses.pop(start, None) is not None:
+            _ua_dirty = True
+
+    def _save_unavailable():
+        nonlocal _ua_dirty
+        if _ua_dirty:
+            _store.set_meta(_CARBON_UNAVAILABLE_KEY,
+                            {"unavailable": unavailable, "misses": misses})
+            _ua_dirty = False
+
+    def _flush_unavailable():
+        """Save the record, and name what this run gave up on — once."""
+        try:
+            _save_unavailable()
+        except Exception as e:
+            logger.warning("_run_historical_carbon_backfill: could not record "
+                           "unavailable slots: %s", e)
+        if newly_unavailable:
+            logger.info("_run_historical_carbon_backfill: the Carbon Intensity API "
+                        "has no intensity for %d half-hour(s) after %d passes — "
+                        "no longer asking for them (left without carbon): %s",
+                        len(newly_unavailable), _CARBON_UNAVAILABLE_PASSES,
+                        _carbon_runs(newly_unavailable))
+            newly_unavailable.clear()
+
+    rng = _store.get_missing_carbon_date_range(exclude=unavailable)
     if not rng:
         _store.set_meta(_CARBON_BACKFILL_MARKER,
                         {"done": True, "completed_at": _now()})
@@ -5344,10 +5426,10 @@ async def _run_historical_carbon_backfill(window_days: int = 13,
         # old blocks, not the current postcode. Blocks with no resolvable region
         # were already excluded by get_block_starts_missing_carbon_in_range.
         starts = _store.get_block_starts_missing_carbon_in_range(
-            cur_dt.isoformat(), win_end.isoformat())
+            cur_dt.isoformat(), win_end.isoformat(), exclude=unavailable)
         by_oc: dict = {}
         for start in starts:
-            oc = _store.get_postcode_prefix_at(start)[0] or postcode
+            oc = _oc_of(start)
             if oc:
                 by_oc.setdefault(oc, []).append(start)
         for oc, oc_starts in by_oc.items():
@@ -5364,12 +5446,14 @@ async def _run_historical_carbon_backfill(window_days: int = 13,
                                f_iso, t_iso, oc, e)
                 _store.set_meta(_CARBON_BACKFILL_MARKER,
                                 {"cursor": cur_dt.isoformat(), "done": False})
+                _flush_unavailable()
                 return backfilled
             missing = []
             for start in oc_starts:
                 r = _apply_from_map(start, ci_map)
                 if r is True:
                     backfilled += 1
+                    _forget_miss(start)
                 elif r is None:
                     missing.append(start)     # fetch gap → narrow refetch below
                 # False (block/persist error) → leave for the next pass
@@ -5393,13 +5477,19 @@ async def _run_historical_carbon_backfill(window_days: int = 13,
                                 "%s (%s) failed: %s", _day, oc, e)
                     continue
                 for start in [m for m in missing if m[:10] == _day]:
-                    if _apply_from_map(start, day_map) is True:
+                    r = _apply_from_map(start, day_map)
+                    if r is True:
                         backfilled += 1
+                        _forget_miss(start)
+                    elif r is None:
+                        # Both the window and the day came back without it.
+                        _record_miss(start, oc)
 
         cur_dt = win_end
         windows += 1
         _store.set_meta(_CARBON_BACKFILL_MARKER,
                         {"cursor": cur_dt.isoformat(), "done": False})
+        _save_unavailable()
         if loop is not None:
             await _aio.sleep(0)   # yield so ticks/reads interleave between windows
 
@@ -5407,13 +5497,14 @@ async def _run_historical_carbon_backfill(window_days: int = 13,
         # Hit the per-invocation window cap; resume next trigger from the cursor.
         logger.info("_run_historical_carbon_backfill: paused after %d window(s), "
                     "%d block(s); will resume from cursor", windows, backfilled)
+        _flush_unavailable()
         return backfilled
 
     # Full span swept. Decide the marker by what NULL blocks ACTUALLY remain — not
     # by the cursor. A per-block persist failure leaves a gap the forward cursor
     # has already moved past; marking done on cursor alone (the original bug) would
     # strand it. Re-query the truth instead.
-    remaining = _store.get_missing_carbon_date_range()
+    remaining = _store.get_missing_carbon_date_range(exclude=unavailable)
     if remaining is None:
         _store.set_meta(_CARBON_BACKFILL_MARKER,
                         {"done": True, "completed_at": _now()})
@@ -5451,7 +5542,28 @@ async def _run_historical_carbon_backfill(window_days: int = 13,
         logger.warning("_run_historical_carbon_backfill: span swept but NULL "
                        "blocks remain from %s and none filled this pass — cooling "
                        "down, will re-attempt after %s", remaining[0], _retry_after())
+    _flush_unavailable()
     return backfilled
+
+
+def _carbon_runs(starts) -> str:
+    """'A→B (n), …' for contiguous half-hour runs of block_start values."""
+    from datetime import datetime as _dt, timedelta as _td
+    parsed = []
+    for s in sorted(set(starts)):
+        try:
+            parsed.append(_dt.fromisoformat(str(s).replace("Z", "").split("+")[0]))
+        except Exception:
+            continue
+    runs = []
+    for t in parsed:
+        if runs and t - runs[-1][1] == _td(minutes=30):
+            runs[-1][1] = t
+            runs[-1][2] += 1
+        else:
+            runs.append([t, t, 1])
+    fmt = lambda t: t.strftime("%Y-%m-%dT%H:%M")
+    return ", ".join(f"{fmt(a)}→{fmt(b)} ({n})" for a, b, n in runs)
 
 
 def _maybe_backfill_historical_carbon() -> None:
@@ -5484,7 +5596,9 @@ def _maybe_backfill_historical_carbon() -> None:
             return
         state = _store.get_meta(_CARBON_BACKFILL_MARKER, {}) or {}
         if state.get("done"):
-            remaining = _store.get_missing_carbon_date_range()
+            _ua = _store.get_meta(_CARBON_UNAVAILABLE_KEY, {}) or {}
+            remaining = _store.get_missing_carbon_date_range(
+                exclude=(_ua.get("unavailable") or {}) if isinstance(_ua, dict) else None)
             if remaining is None:
                 return   # genuinely complete — no eligible NULL carbon blocks left
             # Gaps remain. A prior pass may have tombstoned them (unfilled_from) after

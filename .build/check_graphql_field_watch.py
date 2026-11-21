@@ -53,8 +53,11 @@ BASELINE_PATH = os.path.join(os.path.dirname(__file__), "graphql_field_watch_bas
 # "band" and "ratetype" catch the enums the bucket vocabulary is drawn from: AllBandSubCategories,
 # NonBespokeElectricityRateTypeChoices, BespokeNonHalfHourlyElectricityUnitRateRateType. Bare
 # "rate" is deliberately NOT here — it matches most of the tariff surface and would drown the diff.
+# "smartflexdevicestate" is the enum `kraken_api_client._ONBOARDED_DEVICE_STATES` is drawn from: a
+# state Octopus adds counts as not onboarded until it is placed there or left out on purpose.
 WATCH_PATTERNS = ("dispatch", "measurement", "consumption", "intelligent",
-                  "interval", "statistic", "tou", "cap", "band", "ratetype")
+                  "interval", "statistic", "tou", "cap", "band", "ratetype",
+                  "smartflexdevicestate")
 
 INTROSPECTION_QUERY = ("{ __schema { types { name kind fields { name } "
                        "enumValues(includeDeprecated: true) { name } } } }")

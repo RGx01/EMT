@@ -76,7 +76,7 @@ How the coordinator came to be, and the figures as they stood then:
 | `deleted_ranges` | Tombstones over deleted spans, so nothing refills them unasked. |
 | `config_periods`, `meters`, `meter_channels` | The configuration over time: the site, billing day, timezone, supplier; the meters and their channels. |
 | `dispatch_slots`, `dispatch_history` | Intelligent Octopus Go's dispatches, as captured. |
-| `store_meta`, `kraken_state` | Small keyed state: `written_by`, `emt_schema`, the import audit, home eras, the EV's style; Octopus's account and discovery state. |
+| `store_meta`, `kraken_state` | Small keyed state: `written_by`, `emt_schema`, the import audit, home eras, the EV's style, the carbon backfill's cursor and the half-hours it has stopped asking for (`carbon_unavailable`: empty from the Carbon Intensity API on three passes at least 12 hours apart, a week old or more; they keep no carbon, and a region change asks again); Octopus's account and discovery state. |
 
 ## Checks that keep it this way
 
@@ -86,7 +86,7 @@ query budgets, reachability (`check_reachability.py`, whose headline the archite
 the GraphQL deprecation and field watch. A change that moves one of these updates its baseline in the
 same PR.
 
-**Reachability today: 10 of 1,581 definitions unreachable** (`check_reachability.py`). The suite
+**Reachability today: 10 of 1,586 definitions unreachable** (`check_reachability.py`). The suite
 asserts this line (`tests/test_b_design_figures.py`): a PR that adds or removes a definition updates it.
 The history of the figure is in the [architecture record](../history/design/EMT-v5_architecture.md) §4.
 

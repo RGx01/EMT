@@ -1733,7 +1733,7 @@ class BlockStore:
         # they reference columns that only exist after the ALTER loop above on an
         # upgrade DB. IF NOT EXISTS makes this idempotent on fresh installs too.
         _b_cols_now = {r[1] for r in self._conn.execute("PRAGMA table_info(blocks)").fetchall()}
-        if {"is_provisional", "needs_pass2_rerun", "needs_review"} <= _b_cols_now:
+        if {"is_provisional", "needs_pass2_rerun", "needs_review", "imp_provisional"} <= _b_cols_now:
             self._conn.executescript(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_blocks_start_meter "
                 "    ON blocks (block_start, meter_id);"
@@ -1743,6 +1743,10 @@ class BlockStore:
                 "    ON blocks (needs_pass2_rerun) WHERE needs_pass2_rerun = 1;"
                 "CREATE INDEX IF NOT EXISTS idx_blocks_needs_review "
                 "    ON blocks (needs_review)      WHERE needs_review = 1;"
+                # get_provisional_sub_meter_blocks, every engine tick: the sub-meters' provisional
+                # half-hours only, which are few or none (20 Nov 2026, the soak Pi).
+                "CREATE INDEX IF NOT EXISTS idx_blocks_imp_provisional "
+                "    ON blocks (meter_id, block_start) WHERE imp_provisional = 1;"
             )
             self._conn.commit()
 
@@ -1875,30 +1879,52 @@ class BlockStore:
     RECORDER_ATTRIBUTED_SOURCE = "recorder_attributed"
     _ATTRIBUTION_RUNS_KEY = "recorder_attribution_runs"   # store_meta ledger
 
-    def get_missing_carbon_date_range(self) -> tuple | None:
+    def get_missing_carbon_date_range(self, exclude=None) -> tuple | None:
         """(min_block_start, max_block_start) over energy-bearing blocks whose
         carbon_intensity_g IS NULL AND that are region-eligible (see
         _CARBON_ELIGIBLE). None when there are no such blocks.
 
         Bounds the historical carbon backfill: every block before CI first became
         available carries a NULL intensity; imported history joins the span once
-        its period's region is known."""
-        row = self._conn.execute(
-            "SELECT MIN(block_start) AS lo, MAX(block_start) AS hi FROM blocks "
-            "WHERE carbon_intensity_g IS NULL "
-            "  AND (imp_kwh IS NOT NULL OR exp_kwh IS NOT NULL) "
-            "  AND " + self._CARBON_ELIGIBLE
-        ).fetchone()
-        if row and row["lo"] and row["hi"]:
-            return (row["lo"], row["hi"])
-        return None
+        its period's region is known.
+
+        `exclude` is a set of block_start values to leave out — the half-hours the
+        backfill has recorded as unavailable at the source. With it the bounds are
+        the first and last NULL starts NOT in the set (read in order, so at most
+        len(exclude) + 1 rows each way)."""
+        where = ("WHERE carbon_intensity_g IS NULL "
+                 "  AND (imp_kwh IS NOT NULL OR exp_kwh IS NOT NULL) "
+                 "  AND " + self._CARBON_ELIGIBLE)
+        if not exclude:
+            row = self._conn.execute(
+                "SELECT MIN(block_start) AS lo, MAX(block_start) AS hi FROM blocks "
+                + where
+            ).fetchone()
+            if row and row["lo"] and row["hi"]:
+                return (row["lo"], row["hi"])
+            return None
+        ends = []
+        for order in ("ASC", "DESC"):
+            sql = ("SELECT DISTINCT block_start FROM blocks " + where
+                   + " ORDER BY block_start " + order)
+            found = None
+            for r in self._conn.execute(sql):
+                if r["block_start"] not in exclude:
+                    found = r["block_start"]
+                    break
+            if found is None:
+                return None
+            ends.append(found)
+        return (ends[0], ends[1])
 
     def get_block_starts_missing_carbon_in_range(
-        self, from_iso: str, to_iso: str, limit: Optional[int] = None
+        self, from_iso: str, to_iso: str, limit: Optional[int] = None,
+        exclude=None
     ) -> list:
         """Distinct NULL-carbon, region-eligible block_start values within
         [from_iso, to_iso), oldest-first. Used per fetched window by the
-        historical backfill."""
+        historical backfill. `exclude`: block_start values to leave out (see
+        get_missing_carbon_date_range)."""
         sql = (
             "SELECT DISTINCT block_start FROM blocks "
             "WHERE carbon_intensity_g IS NULL "
@@ -1908,11 +1934,16 @@ class BlockStore:
             "ORDER BY block_start"
         )
         params: list = [from_iso, to_iso]
-        if limit is not None:
+        if limit is not None and not exclude:
             sql += " LIMIT ?"
             params.append(limit)
-        return [r["block_start"]
-                for r in self._conn.execute(sql, params).fetchall()]
+        out = [r["block_start"]
+               for r in self._conn.execute(sql, params).fetchall()]
+        if exclude:
+            out = [s for s in out if s not in exclude]
+            if limit is not None:
+                out = out[:limit]
+        return out
 
     def extend_earliest_period_to(self, block_start_iso: str) -> bool:
         """Move the earliest config period's `effective_from` back to cover
@@ -7262,6 +7293,12 @@ class BlockStore:
         sub-meter whose previous block was written as provisional (no post-boundary
         read at block-close time).  Returns one single-meter block dict per
         provisional sub-meter row.
+
+        Runs every engine tick, so it starts from idx_blocks_imp_provisional (the provisional rows
+        only) and reaches each meter's latest through it. It used to read every row of `blocks`,
+        and an SD card busy with a commit or the backup held the tick on that read: 38 of 111
+        engine-loop stalls on the soak Pi, 16-20 Nov 2026, up to 186 s, on a database with no
+        provisional row at all. A partial index alone did not move SQLite off the scan.
         """
         try:
             cur = self._conn.execute(
@@ -7273,16 +7310,15 @@ class BlockStore:
                        m.v2x_capable, m.meter_type, m.soc_sensor,
                        m.inverter_power_sensor, m.inverter_power_invert,
                        m.device_power_sensor, m.retired_at, m.retired_reason
-                FROM blocks b
+                FROM (SELECT meter_id, MAX(block_start) AS latest
+                      FROM blocks
+                      WHERE imp_provisional = 1 GROUP BY meter_id) p
+                JOIN blocks b ON b.meter_id = p.meter_id AND b.block_start = p.latest
                 JOIN config_periods cp ON b.config_period_id = cp.id
                 LEFT JOIN meters m ON m.meter_id = b.meter_id
                                    AND m.config_period_id = b.config_period_id
                 WHERE b.imp_provisional = 1
                   AND m.is_sub_meter = 1
-                  AND b.block_start = (
-                      SELECT MAX(b2.block_start) FROM blocks b2
-                      WHERE b2.meter_id = b.meter_id AND b2.imp_provisional = 1
-                  )
                 ORDER BY b.block_start, b.meter_id
                 """
             )

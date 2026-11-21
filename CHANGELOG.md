@@ -5,6 +5,28 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+## [2026.11.0b30] — 2026-11-21
+
+- **EMT pauses less on an SD card.** Every ten seconds EMT checked for devices' half-hours that were waiting
+  on a later reading, and did it by reading your whole history, so a busy SD card could hold EMT for
+  seconds, once for over three minutes. It now looks only at those half-hours, of which there are usually
+  none.
+- **Charts keeps what you chose when you come back to it.** Returning to Charts from another page, three
+  choices could quietly reset: Running total's year start (a tariff or an era) went back to 1 January, a
+  year ticked before the first calendar year of your data came back unticked, and Rate brackets' device or
+  Export went back to Import. They now stay where you left them.
+- **EMT no longer reads a field Octopus is retiring.** From May 2027 Octopus is removing the field
+  that said whether a smart charger or car was set up, and EMT has warned about it at every start
+  since 17 November. It now reads the device's state instead, and still picks the same charger
+  for your planned charges, plugged in or not, when the account lists more than one device.
+- **The carbon backfill stops warning every day about half-hours that have no carbon figure.** The Carbon
+  Intensity API has nothing for some old stretches, so EMT asked for them again each day, filled nothing and
+  logged a warning, for ever. A half-hour that comes back empty on three days is now set aside: EMT stops
+  asking for it, says so once in the log, naming the stretches, and charts show it as missing, as before.
+  Newer half-hours without carbon are still fetched, and changing your region asks again.
+
 ## [2026.11.0b29] — 2026-11-20
 
 - **Signing in to one EMT no longer signs you out of another on the same machine.** A browser keeps one
