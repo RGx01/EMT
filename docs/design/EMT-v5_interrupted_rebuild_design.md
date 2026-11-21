@@ -1,7 +1,8 @@
 # EMT v5 — a device history rebuild that is cut off
 
 *Status: decided 21 Nov 2026 (the user: "write the design note and start Phase 2"). Phase 2 built
-21 Nov 2026 (`_restore_worker` step 1c, `engine.database_replaced`); Phases 1 and 3 to follow. Evidence from the owner's soak Pi on `dev`, 21 Nov 2026.*
+21 Nov 2026 (`_restore_worker` step 1c, `engine.database_replaced`); Phase 1 built 21 Nov 2026
+(the ledger run from its start, `mark_cut_off_rebuilds`, the card); Phase 3 to follow. Evidence from the owner's soak Pi on `dev`, 21 Nov 2026.*
 
 ---
 
@@ -79,6 +80,10 @@ device drew nothing, whose split does not depend on it.
   is) and closed done, cancelled or failed.
 - **On startup** a record still open was cut off: the card says so — *"Replacing history stopped at
   ⟨date⟩; Rebuild history finishes it"* — and the undo list covers what the run wrote.
+- **As built:** the record is the ledger run itself (`recorder_attribution_runs`), entered when the run
+  starts with `status`, `kind` (rebuild, replace, refill), `step` (dropping, re-splitting, writing),
+  `done_to`. A replace stopped after its drop closes `interrupted`, not `cancelled`: its history is
+  dropped. A run that finishes having written nothing leaves the ledger, as before.
 - **No new resume path.** *Rebuild history* already finishes a cut-off run exactly (§2).
 
 ### Phase 3 — EMT's own backups are whole

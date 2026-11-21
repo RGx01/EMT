@@ -5873,7 +5873,14 @@ def api_attribute_runs():
     """The attribution run ledger + a summary of the reconstructed device layer,
     for the runs/undo list."""
     store = store_access.store()
-    return jsonify({"ok": True, "runs": store.get_attribution_runs(),
+    runs = store.get_attribution_runs()
+    # each device's cut-off run, newest first (interrupted rebuild design, Phase 1): its card says so
+    cut_off: dict = {}
+    for r in sorted(runs, key=lambda x: x.get("created_at") or "", reverse=True):
+        if r.get("status") == "interrupted" and r.get("meter_id") not in cut_off:
+            cut_off[r["meter_id"]] = {k: r.get(k) for k in ("kind", "step", "done_to", "from",
+                                                             "blocks_written", "created_at")}
+    return jsonify({"ok": True, "runs": runs, "cut_off": cut_off,
                     "summary": store.count_recorder_attributed(),
                     # the sensors each device's kept history came from (replace device history §4)
                     "sources": store.device_history_sources()})

@@ -1412,7 +1412,18 @@ function buildHistorySection(meterId, retired) {
       '<div class="js-hist-layer" style="font-size:13px;"></div>' +
     '</div>';
 }
-var _hist = {runs: {}, layer: {}, sources: {}, timer: null, removing: false};
+var _hist = {runs: {}, layer: {}, sources: {}, cutOff: {}, timer: null, removing: false};
+// A device's history rebuild cut off — a restart, a power cut, a backup restored from mid-run
+// (interrupted rebuild design, Phase 1): what the card says, from its ledger run.
+function _histCutOffText(c) {
+  var what = c.kind === 'replace' ? 'Replacing' : 'Rebuilding';
+  var at = c.done_to ? ' at ' + esc(String(c.done_to).substr(0, 10)) : '';
+  var wrote = c.blocks_written ? ', ' + Number(c.blocks_written).toLocaleString() + ' half-hours in' : '';
+  var lost = c.kind === 'replace' && !c.blocks_written
+    ? ' before it wrote anything, so its rebuilt history is missing until' : wrote + '.';
+  return '\u26a0 ' + what + ' this device\u2019s history was cut off' + at + lost +
+    ' <strong>Rebuild history</strong> finishes it.';
+}
 function _histEl(m, cls) {
   var box = document.querySelector('.dev-history[data-meter="' + m + '"]');
   return box ? box.querySelector('.' + cls) : null;
@@ -1453,6 +1464,8 @@ function _renderHistoryState() {
         esc(String(run.device_kwh)) + ' kWh against the house\u2019s ' + esc(String(run.house_kwh)) + ' kWh, ' +
         (run.verdict === 'device_exceeds_house' ? 'more than the house drew' : 'far less than expected') +
         ' \u2014 check the sensor, then use Rebuild history.</span>';
+    } else if (_hist.cutOff[m]) {
+      pr.innerHTML = '<span style="color:#b45309;">' + _histCutOffText(_hist.cutOff[m]) + '</span>';
     } else if (!pr.dataset.keep) { pr.innerHTML = ''; }
     ly.innerHTML = (layer
       ? '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;">' +
@@ -1499,6 +1512,7 @@ function _loadHistoryState() {
     _hist.layer = {};
     (((res[1] || {}).summary || {}).meters || []).forEach(function(m) { _hist.layer[m.meter_id] = m; });
     _hist.sources = (res[1] || {}).sources || {};
+    _hist.cutOff = (res[1] || {}).cut_off || {};
     _renderHistoryState();
     var active = Object.keys(_hist.runs).some(function(k) {
       var t = _hist.runs[k].status; return t === 'claimed' || t === 'running' || t === 'paused'; });

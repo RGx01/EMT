@@ -7,6 +7,10 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **A device's history rebuild that was cut off says so.** If EMT restarts, the power goes, or a backup
+  taken mid-rebuild is restored while *Rebuild history* or *Replace history* is running, the device's card
+  now says the rebuild was cut off and that *Rebuild history* finishes it. Before, a part-done history
+  looked finished. The run is in the undo list from its start, so it covers what was written.
 - **Restoring a backup stops a device's history rebuild first.** A restore while *Rebuild history* or
   *Replace history* was running let the rebuild carry on: it went on writing the old database during the
   restore's checks, and could, with the timing against it, have written into the restored one. The restore
