@@ -7,6 +7,9 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **EMT talks to Octopus at its new address.** Octopus has moved its API to `api.oegb-kraken.energy`; EMT
+  now asks there for your history, rates and bills. The old address still answers for now, and nothing
+  else changes: the same API key, the same data.
 - **A heat-pump tariff keeps the car's split.** Octopus has added a heat-pump band to its tariffs.
   If a heat pump's use arrives in Octopus's house/car breakdown under a name EMT did not know, EMT set
   aside that half-hour's whole breakdown, car included. It now counts the heat pump as part of the house,

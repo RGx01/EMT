@@ -25,7 +25,7 @@ import job_coordinator as C                       # noqa: E402
 import kraken_api_client as K                     # noqa: E402
 
 ACCOUNT, MPAN, SERIAL = "A-0000ABC7", "2600000000001", "99Z0000001"
-URL = ("https://api.octopus.energy/v1/electricity-meter-points/%s/meters/%s/consumption/"
+URL = ("https://api.oegb-kraken.energy/v1/electricity-meter-points/%s/meters/%s/consumption/"
        % (MPAN, SERIAL))
 
 
@@ -37,7 +37,7 @@ def _rest_404():
 class PersonMessage(unittest.TestCase):
 
     def assert_no_identifiers(self, text):
-        for s in (ACCOUNT, MPAN, SERIAL, "http", "octopus.energy/"):
+        for s in (ACCOUNT, MPAN, SERIAL, "http", "octopus.energy/", "kraken.energy/"):
             self.assertNotIn(s, text)
 
     def test_a_rest_error_says_its_status_not_its_url(self):
