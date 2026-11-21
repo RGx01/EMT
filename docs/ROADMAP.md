@@ -35,9 +35,6 @@ missing and where it stands; the done history, with every decision's story, is i
 - **A settlement re-run flag per channel.** `blocks.needs_pass2_rerun` is one flag a block for both
   channels (block_store.py, the `blocks` DDL); the schema notes (§4) proposed one per channel.
   Undecided.
-- **EMT's own `/share` folder.** Backups still go to v4's namespace,
-  `/share/energy_meter_tracker_backup[_<site>]` (instance.py). Instance isolation keeps v4's and EMT's
-  apart, so nothing collides, but the import spec's §7a proposal of an `emt` folder is undecided.
 - **Comparing eras.** Home eras mark the home's changes on the charts; usage, cost and carbon *per
   era*, compared like for like, is not built (history G.1).
 - **The writer thread, held in reserve** (A.1). On an SD card single commits stall the loop 2–6 s for
@@ -57,6 +54,11 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Resolved since the record
 
+- **EMT's own `/share` folder** (21 Nov 2026; the user: "we just leave as is"). Backups stay in v4's
+  namespace, `/share/energy_meter_tracker_backup[_<site>]`, as v4 names them: each install owns its
+  folder by the `.emt_instance` marker, so v4 and EMT installs on one machine never share one
+  (`instance.py` `resolve_backup_dir`; [reference](reference/data-management-and-devices.md)). The
+  import spec's §7a `emt` folder is not taken.
 - **The importer's time on a Pi** (20 Nov 2026). The soak's v4 backup imports in about 80 s on the Pi
   from an SD card (importer design §8a); there was no target, and the user accepted that time: "80 secs
   is acceptable".

@@ -4,7 +4,7 @@
 version** (§1.1) — into the new EMT app. This is the artefact the rest of v5 depends on: the new schema, the charting rebuild and the
 legacy-column removal all assume history arrives correctly once, from here.*
 
-**Status:** v35 — revised 15 Nov 2026, up to ten half-hours whose v4 segments miss its EV columns are carried and named (v34: a moved block's legs take the block's own rate, and a refusal names its half-hours; v33: a below-floor refusal's way on does not depend on v4 being offered; v32: the tariff prices table is v5's and the import leaves it empty; v31: an imported block's standing charge is its local day's; v30: the import reports devices that cost more than the meter; v29: the agreements table left empty by the import (G1); v28: v4's live rate from its sensor era kept as a fact, transform 3d; v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
+**Status:** v36 — revised 21 Nov 2026, §7a decided: EMT's backups stay in v4's `/share` namespace (v35: up to ten half-hours whose v4 segments miss its EV columns are carried and named; v34: a moved block's legs take the block's own rate, and a refusal names its half-hours; v33: a below-floor refusal's way on does not depend on v4 being offered; v32: the tariff prices table is v5's and the import leaves it empty; v31: an imported block's standing charge is its local day's; v30: the import reports devices that cost more than the meter; v29: the agreements table left empty by the import (G1); v28: v4's live rate from its sensor era kept as a fact, transform 3d; v27: what the import heard becomes a bill, transform 3c; v26: the October VAT resync not carried; v25: the settlement source not carried (§6, transform 5); v24: HA's reads kept apart, transform 7; v23: a device's sensors in one place, transform 6; v22: a settled IOG-SMB block takes its cached bill's split, §5.2 BILL SPLIT; v21: the floor rises to 4.5.23; v20: §3a, a mismatch on the fork asks and imports, it does not stop the import; v19: the `night` relabel dropped; v18: the importer as built; v17: floor raised to 4.5.22; v16: a held-rate block's segments are refitted to its kWh; v15: `imp_cost_exc` carried; v14: EV segments written before the EV columns drop). §3's gate verified end to end against a real 4.5.14 database (v7). Numbers below
 are measured from a real 4.5.12 production database (135,482 blocks, 3 meters, ~2 years) unless
 stated; provenance counts in §9 are refreshed from a 4.5.13 prod-dev DB.
 
@@ -28,7 +28,7 @@ runs today, step by step, in [reference/v4-import-and-first-run.md](../reference
   cost as an `IMPORTED` bill, v4's sensor rates, the standing charge by local day, device sensors,
   `ha_reads`); v4's `off_peak` band is carried as it is. Tariff agreements and prices are left empty.
 - **How it is checked:** the acceptance gates of §9, run inside the transaction.
-- **Still open:** §7a, EMT's own `/share` folder (backups still use v4's namespace), and §10's questions.
+- **Still open:** §10's questions. (§7a, EMT's own `/share` folder, was decided on 21 Nov 2026: none.)
 
 ---
 
@@ -1035,6 +1035,13 @@ in v5**, so the importer cannot assume a single global database.
 ---
 
 ### 7a. `/share` backup ownership is namespaced by the v4 NAME, and v5 must claim its own
+
+**Decided 21 Nov 2026 (the user: "we just leave as is"): EMT keeps v4's namespace.** None of the
+proposals below is taken. What made step 2 a risk — a v5 install adopting a LIVE v4 install's
+unmarked folder — cannot arise from a v4 EMT imports: v4 writes its marker at every start since
+3.2.0 (July 2026; `resolve_backup_dir`), and the floor is 4.5.23, so a v4 a user is moving from has
+marked its folder. Step 2 can only adopt a stale unmarked leftover, as the soak instance did. The
+finding below is kept as it was written.
 
 **Found 24 Sep 2026, by running a second instance on the reference Pi.** Not a design review
 finding — a log line from a real start-up.
