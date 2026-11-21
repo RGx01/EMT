@@ -2,15 +2,22 @@
 (5 Oct 2026).
 
 Every real database on hand is Intelligent Octopus Go, so a parity check on them alone cannot see
-a regression for anyone else. These are the other shapes:
+a regression for anyone else. These are the other shapes, and Intelligent with what no real
+database on hand has (21 Nov 2026):
 
   flat    one rate all day
   e7      Economy 7: a clock-determined night (00:30–07:30 local) and day
   go      Octopus Go: a short cheap window (00:30–04:30 local)
   agile   a different rate every half-hour, including zero and negative (plunge) slots
+  iog     Intelligent Octopus Go: off-peak 23:30–05:30 local, and a car charged in Octopus's
+          dispatches — overnight inside the window, and 13:00–14:00 outside it, which the
+          dispatch makes off-peak (21 Nov 2026)
 
 each with or without devices (an EV charger and a battery), and Economy 7 with many (five heat
-pumps and three batteries) and with devices that exceed the main meter. 20 Sep – 10 Oct 2026, so the 1 Oct
+pumps and three batteries) and with devices that exceed the main meter. Intelligent comes four
+ways: no devices, an EV charger metered beside the dispatches (True), the car seen only through its
+dispatches ("ev_only": the EV split carved from the main), and that car beside a battery
+("dispatch"). 20 Sep – 10 Oct 2026, so the 1 Oct
 VAT change (5% → 0%) falls inside. Segments and ex-VAT are built the way production builds them:
 the stored inc rate, then v5's own historical re-price sweep with a rate schedule matching the
 tariff. Deterministic — the same arguments give the same database.
@@ -26,7 +33,10 @@ LONDON = ZoneInfo("Europe/London")
 FROM = datetime(2026, 9, 20, tzinfo=LONDON)
 TO = datetime(2026, 10, 11, tzinfo=LONDON)
 VAT_CHANGE = datetime(2026, 10, 1).date()
-TARIFFS = ("flat", "e7", "go", "agile")
+TARIFFS = ("flat", "e7", "go", "agile", "iog")
+IOG_TARIFF = "E-1R-INTELLI-VAR-24-10-29-C"
+IOG_PRODUCT = "INTELLI-VAR-24-10-29"
+EV_DISPATCH_KWH = 3.2
 
 
 def vat_on(local_day):
@@ -43,6 +53,8 @@ def exc_rate(tariff, utc):
         return 0.115 if 30 <= hm < 450 else 0.29
     if tariff == "go":
         return 0.08 if 30 <= hm < 270 else 0.27
+    if tariff == "iog":
+        return 0.07 if (hm >= 1410 or hm < 330) else 0.27
     if tariff == "agile":                             # a day's curve, a peak, plunges
         # `utc` is naive: .timestamp() on it reads it as HOST-LOCAL time, so the jitter below
         # shifted with the machine's timezone and CI (UTC) disagreed with a Mac in London on
@@ -113,11 +125,28 @@ def _devices(devices):
                  (lambda k: lambda loc, hm, cheap: k if cheap else 0.0)(round(0.4 + 0.1 * i, 2)))
                 for i in range(1, 4)]
         return hps + bats
+    if devices == "ev_only":
+        return []
+    if devices == "dispatch":
+        return [("house_battery", "battery", lambda loc, hm, cheap: 1.1 if cheap else 0.0)]
     if devices:
         return [("ev_charger", "ev_charger",
                  lambda loc, hm, cheap: 3.2 if (cheap and loc.day % 2 == 0) else 0.0),
                 ("house_battery", "battery", lambda loc, hm, cheap: 1.1 if cheap else 0.0)]
     return []
+
+
+def dispatched(loc, hm):
+    """An Intelligent fixture's dispatches: on even days 00:00–04:00 local (inside the window) and
+    13:00–14:00 (outside it, which the dispatch makes off-peak)."""
+    return loc.day % 2 == 0 and (0 <= hm < 240 or 780 <= hm < 840)
+
+
+def _ev_draw(tariff, devices, loc, hm):
+    """What the car draws in this half-hour on an Intelligent fixture (0 elsewhere): its dispatches."""
+    if tariff == "iog" and devices in (True, "dispatch", "ev_only") and dispatched(loc, hm):
+        return EV_DISPATCH_KWH
+    return 0.0
 
 
 def _unmetered(devices, loc, hm, cheap):
@@ -177,6 +206,8 @@ def build(path, tariff, devices=False):
     t = FROM.astimezone(timezone.utc).replace(tzinfo=None)
     end = TO.astimezone(timezone.utc).replace(tzinfo=None)
     rows = []
+    dispatches = []
+    bs_of = lambda x: x.isoformat()
     while t < end:
         loc = t.replace(tzinfo=timezone.utc).astimezone(LONDON)
         hm = loc.hour * 60 + loc.minute
@@ -184,10 +215,16 @@ def build(path, tariff, devices=False):
         cheap = rate < 0.13
         house = 0.18 + 0.25 * (1 if 1020 <= hm < 1320 else 0) + 0.02 * (t.minute // 30)
         extra = _unmetered(devices, loc, hm, cheap)
-        draws = [(mid, draw(loc, hm, cheap) + extra.get(mid, 0.0))
-                 for mid, _, draw in _devices(devices)]
+        ev = _ev_draw(tariff, devices, loc, hm)
+        draws = [(mid, (ev if (tariff == "iog" and mtype == "ev_charger") else draw(loc, hm, cheap))
+                  + extra.get(mid, 0.0))
+                 for mid, mtype, draw in _devices(devices)]
         dev_total = sum(k for _, k in draws)
-        main = round(house + dev_total - sum(extra.values()), 4)
+        # A car seen only through its dispatches is in the main meter and no device's reading.
+        main = round(house + dev_total - sum(extra.values())
+                     + (ev if devices in ("dispatch", "ev_only") else 0.0), 4)
+        if ev:
+            dispatches.append((bs_of(t), ev))
         bs, be = t.isoformat(), (t + timedelta(minutes=30)).isoformat()
         interp = 1 if (devices == "gap" and extra) else 0
         # What _apply_pass2 writes on a finalised block: each device's grid share
@@ -211,6 +248,14 @@ def build(path, tariff, devices=False):
             "imp_kwh, imp_kwh_grid, imp_cost, imp_rate, "
             "standing_charge, carbon_g, exp_kwh, exp_cost, source) "
             "VALUES (?, ?, ?, %d, ?, ?, ?, ?, ?, ?, ?, 0, 0, 'imported_api')" % cp, rows)
+    for slot, kwh in dispatches:
+        # As the dispatch capture records them: the slot, and Octopus's completed energy (negative,
+        # drawn), seen an hour after the slot.
+        seen = (datetime.fromisoformat(slot) + timedelta(hours=1)).isoformat()
+        st.upsert_dispatch_slot(slot, off_peak=True, source="smart-charge", state="completed",
+                                energy_completed=kwh, captured_at=seen)
+        st.record_dispatch_history(slot, "completed", energy_kwh=-kwh, seen_at=seen,
+                                   refresh_seen=False)
     _sweep(st, tariff)
     st.close()
     return path
@@ -221,11 +266,40 @@ def _sweep(st, tariff):
     the history reprice sweep until 4e), priced from the fixture's schedule."""
     import engine
     import job_coordinator
-    sched = Schedule(tariff)
+    sched = rate_schedule(tariff) if tariff == "iog" else Schedule(tariff)
     job_coordinator.reset_for_tests()
+    engine._AGREEMENT_WINDOWS.clear()
     with mock.patch.object(engine, "_store", st), \
+         mock.patch.object(engine, "_kraken_discovery", discovery(tariff)), \
+         mock.patch.object(engine, "_stored_agreements", None), \
          mock.patch.object(engine, "_kraken_rate_schedules", {"import": sched}), \
          mock.patch.object(engine, "_SETTLE_HISTORY_PACE_S", 0), \
          mock.patch.object(engine, "_iog_site_tz", lambda store=None: "Europe/London"):
         asyncio.run(engine._run_settle_history_sweep(force=True))
+    engine._AGREEMENT_WINDOWS.clear()
     job_coordinator.reset_for_tests()
+
+
+def discovery(tariff):
+    """What Octopus's discovery holds for the fixture: an Intelligent agreement for `iog`, so
+    `tariff_kind_at` reads it Intelligent; nothing for the others, as before."""
+    if tariff != "iog":
+        return None
+    return {"import": {"mpan": "2600000000001", "tariff_code": IOG_TARIFF, "product_code": IOG_PRODUCT,
+                       "agreements": [{"tariff_code": IOG_TARIFF, "valid_from": "2026-01-01T00:00:00Z",
+                                       "valid_to": None}]}}
+
+
+def rate_schedule(tariff):
+    """A real `kraken_rates.RateSchedule` for the fixture's span — half-hourly periods, inc and ex
+    VAT in pence — for the Intelligent paths that read the day's two rates and its window."""
+    import kraken_rates
+    inc, exc = [], []
+    t = (FROM - timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+    end = (TO + timedelta(days=1)).astimezone(timezone.utc).replace(tzinfo=None)
+    while t < end:
+        a, b = t.isoformat(), (t + timedelta(minutes=30)).isoformat()
+        inc.append((a, b, round(inc_rate(tariff, t) * 100, 6)))
+        exc.append((a, b, round(exc_rate(tariff, t) * 100, 6)))
+        t += timedelta(minutes=30)
+    return kraken_rates.RateSchedule(inc, exc)

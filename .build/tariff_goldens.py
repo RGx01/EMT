@@ -7,7 +7,8 @@ charger and a battery), request every data surface the pages draw — bills, Usa
 heatmap, Insights, the period picker — over September, October and the periods spanning the 1 Oct
 VAT change, and record the answers. `tests/test_tariff_goldens.py` asserts they are unchanged.
 
-Every real database on hand is IOG; these are the other tariffs. Left out, because they answer
+Every real database on hand is IOG; these are the other tariffs, and since 21 Nov 2026 Intelligent too
+(`iog`: no devices, an EV charger, the car through its dispatches alone and beside a battery). Left out, because they answer
 with the clock rather than the data: the change poll's token, the per-day fingerprints, and Live
 Power's today / this bill. Keys that say whether a period is current are stripped for the same
 reason, and floats are rounded to 6 dp.
@@ -68,7 +69,8 @@ def _normalise(v):
 
 def fixtures():
     import tariff_fixtures as T
-    return [(t, d) for t in T.TARIFFS for d in (False, True)] + [("e7", "many"), ("e7", "over"), ("e7", "gap")]
+    return [(t, d) for t in T.TARIFFS for d in (False, True)] + [("e7", "many"), ("e7", "over"), ("e7", "gap"),
+                                                                         ("iog", "dispatch"), ("iog", "ev_only")]
 
 
 def name(tariff, devices):

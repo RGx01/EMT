@@ -32,9 +32,6 @@ missing and where it stands; the done history, with every decision's story, is i
   (`TimeOfUseBandUsageType`, 5 Oct 2026). Whether a domestic IOG account may query it, whether it is
   populated, and whether its band totals match the bill would make it a settlement cross-check. Needs
   an authenticated query on a real account.
-- **The IOG Direct reader, unasserted.** `tests/test_direct_import.py` holds every Direct reader to
-  one rule on every fixture, but no fixture is Intelligent: the bill carving the EV out of Direct per
-  rate, and the Overview counting it as a device, agree untested there.
 - **A settlement re-run flag per channel.** `blocks.needs_pass2_rerun` is one flag a block for both
   channels (block_store.py, the `blocks` DDL); the schema notes (§4) proposed one per channel.
   Undecided.

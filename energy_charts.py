@@ -430,8 +430,8 @@ def _has_stored_split(b):
 def _dispatch_ev_slot_map(store, blocks, cfg, gated=True):
     """{slot_start(UTC ISO): {"kwh","cost","rate"}} — per-slot EV reconstructed from
     COMPLETED dispatches (Octopus's own per-slot EV energy), grid-clipped to that slot's
-    main import and cost-apportioned from the slot's import cost. Gated to no-sub-meter
-    accounts. Empty when gated off / no store / no dispatch. This is the display-only
+    main import and cost-apportioned from the slot's import cost. Gated by the EV meter's own coverage (below), not by other
+    devices. Empty when gated off / no store / no dispatch. This is the display-only
     source for the derived-EV billing breakdown; it never affects a bill total."""
     if store is None or not blocks:
         return {}
@@ -586,15 +586,16 @@ def _inject_ev_breakdown_into_summary(summary, period_blocks, ev_slot_map,
     main_import_raw ('Import — total grid'), standing, and total_cost are untouched, so
     the bill stays byte-identical — only the 'Breakdown by meter' section subdivides.
     Whatever EV is added is subtracted from the remainder, so the two always sum back to
-    the original Direct import. No-op if a real sub-meter already exists, there's no
-    remainder key, or there's no EV. Mutates summary in place; returns True if applied."""
+    the original Direct import. Beside other devices too (21 Nov 2026): it was a no-op where
+    any sub-meter existed, so an account with a battery and no EV sensor kept the car in Direct
+    here while the day charts and the Overview carved it out. The split reserves the car's share
+    before the devices' (`settle.device_grid_shares`), so it is within the remainder. No-op if
+    there's no remainder key or no EV. Mutates summary in place; returns True if applied."""
     if not summary or not ev_slot_map:
         return False
     totals = summary.get("totals") or {}
     if fold_devices:                              # hybrid: fold the physical EV line into remainder,
         _fold_ev_submeter_into_remainder(summary, fold_devices)   # then carve the hybrid EV from it
-    elif any(t.get("is_submeter") for t in totals.values()):
-        return False                              # no-meter path: unchanged (byte-identical)
     remainder_key = next((k for k in totals
                           if k.endswith("/ Import") and not totals[k].get("is_submeter")), None)
     if not remainder_key:
@@ -914,7 +915,7 @@ def day_chart_data(day, day_blocks, meter_colors, *, cap_from, import_schedule, 
             # Re-partition the house slot into house + EV AFTER the total-import (ti)
             # figures are set, so the grid total is untouched — this only subdivides
             # the 'Direct import' segment. No-op unless an ev_slot_map is supplied
-            # (gated to no-sub-meter accounts upstream).
+            # (none where an EV meter covers the slot; see _dispatch_ev_slot_map).
             if ev_slot_map:
                 _ev = ev_slot_map.get(block.get("start"))
                 _mk = meter_kwh["electricity_main"][hh]
@@ -1281,8 +1282,8 @@ def billing_context(cfg, store, blocks, has_exc=None):
                     else build_meter_colors(blocks))
     meter_rate_dashed = {m: st["dashed"] for m, st in (_styles or {}).items()}
 
-    # Derived-EV split (display-only; BL-22): no-op unless this is a no-sub-meter
-    # account with completed dispatches. Gives the Billing tab an "EV"
+    # Derived-EV split (display-only; BL-22): where no EV meter covers a half-hour, whatever
+    # other devices there are (21 Nov 2026). Gives the Billing tab an "EV"
     # breakdown line + per-day trace without moving any bill total.
     # Hybrid EV for the billing breakdown (H6): a has-EV-meter account gets one continuous
     # 'EV' line (synthetic post-seam, recorded physical pre-seam) via the fold-back; a no-EV-
