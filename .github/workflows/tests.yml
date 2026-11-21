@@ -17,6 +17,8 @@ name: Tests
 #              the only one): editing it still runs the tests. There is
 #              no required check to wait on (a private repo on the free plan has no branch
 #              protection), so a skipped run blocks no merge.
+# 21 Nov 2026  CHANGELOG.md runs the tests too (tests/test_changelog_shape.py): the b30 bump left
+#              an empty [Unreleased] heading above the release, and a changelog-only fix ran nothing.
 
 on:
   push:
@@ -28,6 +30,7 @@ on:
       - "!LICENSE"
       - "!screenshots/**"
       - "docs/reference/architecture.md"
+      - "CHANGELOG.md"
   pull_request:
     paths:
       - "**"
@@ -36,6 +39,7 @@ on:
       - "!LICENSE"
       - "!screenshots/**"
       - "docs/reference/architecture.md"
+      - "CHANGELOG.md"
 
 permissions:
   contents: read

@@ -109,8 +109,11 @@ Versions are CalVer, `YYYY.M.PATCH`, the month the release's: `2026.11.0`, `2026
 A beta is Home Assistant's `bN` on the version it leads to: `2026.11.0b1`, `2026.11.0b2`, then
 `2026.11.0`. `_version_key` (`web/server.py`) sorts a beta before its release.
 
-1. On a branch from `dev`: `config.yaml`'s `version:`, and `CHANGELOG.md`'s `[Unreleased]` becomes
-   that version with its date. PR to `dev`, merge.
+1. On a branch from `dev`: `config.yaml`'s `version:`, and `CHANGELOG.md`'s `[Unreleased]` heading is
+   **renamed** to that version with its date (`## [2026.11.0b1] — 2026-11-02`), leaving no `[Unreleased]`
+   above it: the add-on store shows the top of the file, and an empty one there made b30 read as
+   unreleased. The next change's entry adds the heading back. `tests/test_changelog_shape.py` checks it,
+   and on a PR into `main` that no `[Unreleased]` heading is left at all. PR to `dev`, merge.
 2. PR `dev` → `main`; the PR body is the release note. Merge once its **CodeQL** check is green with no new alerts (below).
 3. Tag `main` and push the tag: `git tag -s v2026.11.0b1 -m 2026.11.0b1 && git push origin v2026.11.0b1`.
 4. A GitHub release on the tag. **Until the first release, `2026.11.0`, a beta is a full release marked
