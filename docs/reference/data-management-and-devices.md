@@ -223,6 +223,13 @@ it. A size estimate warns over 10 MB.
   Once the file is swapped, `engine.database_replaced()` counts it: a rebuild, replace or queued refill
   rebuild started on the old database stops at its next half-hour, writing nothing into the new one,
   and finished runs' progress and errors are forgotten.
+- **The ledger run from its start** (`recorder_attribution_runs`): a rebuild, replace or refill rebuild
+  is entered when it starts — `status` running, its `kind` and `step` — its progress (`blocks_written`,
+  `done_to`) every 200 hours, and closed done, cancelled or error; a replace stopped after its drop
+  `interrupted`. At startup (`mark_cut_off_rebuilds`) a run still running with no run of its device alive
+  is marked `interrupted` and logged; `/api/historical/attribute/runs` names each device's (`cut_off`),
+  and its card says it was cut off and that *Rebuild history* finishes it. A later run of the device that
+  finishes marks it `resumed`.
 - **A device with no read sensor** is allowed: nothing is read for it, its usage counts in the house,
   and its Overview cards (which read only its power and SoC sensors) still work. Emptying the sensor
   skips the change dialog, and the old one comes off the stitch; after the save's reload the page asks

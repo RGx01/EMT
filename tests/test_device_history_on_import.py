@@ -156,7 +156,8 @@ class TheImport(unittest.TestCase):
         self.st.record_recorder_hours("ev_charger", "import", {H: 2.0})
         got, started = self._refill(None, fetch_new=True)
         self.assertEqual(got, ["ev_charger"])
-        self.assertEqual(started, [{"pace_s": 0.05, "window": (S1, END), "fetch": False}])
+        self.assertEqual(started, [{"pace_s": 0.05, "window": (S1, END), "fetch": False,
+                                    "kind": "refill"}])
 
 
 class TheCallers(unittest.TestCase):

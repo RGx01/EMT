@@ -5616,6 +5616,23 @@ class TestAttributionEndpoints(unittest.TestCase):
         self.assertEqual(d["runs"][0]["run_id"], "r1")
         self.assertEqual(d["summary"]["total"], 10)
 
+    def test_runs_name_each_device_s_cut_off_rebuild(self):
+        """Interrupted rebuild design, Phase 1 (21 Nov 2026): the card says a device's rebuild was cut
+        off; the newest interrupted run per device. Fails on the parent: no `cut_off`."""
+        store = MagicMock()
+        store.get_attribution_runs.return_value = [
+            {"run_id": "a", "meter_id": "ev", "status": "interrupted", "kind": "rebuild",
+             "created_at": "2026-11-20T10:00:00", "blocks_written": 5},
+            {"run_id": "b", "meter_id": "ev", "status": "interrupted", "kind": "replace",
+             "created_at": "2026-11-21T10:00:00", "blocks_written": 0, "step": "re-splitting"},
+            {"run_id": "c", "meter_id": "battery", "status": "resumed", "created_at": "2026-11-21"},
+            {"run_id": "d", "meter_id": "heat_pump", "blocks_written": 9}]
+        store.count_recorder_attributed.return_value = {"total": 0, "meters": []}
+        store.device_history_sources.return_value = {}
+        d = make_client(store=store).get("/api/historical/attribute/runs").get_json()
+        self.assertEqual(list(d["cut_off"]), ["ev"])
+        self.assertEqual((d["cut_off"]["ev"]["kind"], d["cut_off"]["ev"]["step"]), ("replace", "re-splitting"))
+
     def test_backout_calls_engine_and_refuses_while_running(self):
         import engine
         seen = {}

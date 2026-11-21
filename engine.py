@@ -3295,6 +3295,7 @@ async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
     Never raises; a failure is the run's error, on its card."""
     from datetime import datetime as _dt, timedelta as _td
     gen = _db_generation
+    run_id = None
     if _engine_ha is None:
         return _replace_refused(meter_id, "Home Assistant is not connected — nothing was replaced",
                                 "no_ha")
@@ -3315,10 +3316,15 @@ async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
         if _replace_stopping(meter_id, gen):
             return _replace_refused(meter_id, "stopped before anything was replaced", "cancelled")
         get_store().record_recorder_hours(meter_id, "import", fetched, src_of)
+        # Entered before the drop (interrupted rebuild design, Phase 1): a replace cut off from
+        # here on has dropped the device's history, and must be said on its card at the next start.
+        run_id = _dt_now_iso_safe() + "|" + meter_id
+        _run_open(run_id, meter_id, "replace", sensor_ids, step="dropping")
         _replace_state(meter_id, phase="Dropping the old history…")
         off = get_store().device_off_stitch_sensors(meter_id)
         res = get_store().drop_device_history(meter_id, [o["id"] for o in off])
         lo, hi = res.get("from"), res.get("to")
+        _run_update(run_id, step="re-splitting", **{"from": lo, "to": hi})
         if lo and hi:
             _replace_state(meter_id, phase="Giving the house back its share…")
             hi_excl = (_dt.fromisoformat(hi) + _td(minutes=int(get_block_minutes() or 30))).isoformat()
@@ -3329,12 +3335,15 @@ async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
             # Cut short after the drop: Rebuild history finishes it exactly (interrupted rebuild
             # design §2) — on this database; on a replaced one there is nothing left to do.
             _replace_state(meter_id, status="cancelled", phase=_DB_REPLACED if _db_moved(gen) else None)
+            if not _db_moved(gen):
+                # its history is dropped: said on the card as cut off, not quietly cancelled
+                _run_close(run_id, meter_id, "interrupted", 0)
             _coord.release("attribution", meter_id)        # still the claim: the run never started
             logger.info("replace_device_history: %s stopped after the drop (%s)", meter_id,
                         "the database was replaced" if _db_moved(gen) else "cancelled")
             return {"ok": False, "error": "cancelled"}
         for r in get_store().get_attribution_runs():
-            if r.get("meter_id") == meter_id and r.get("run_id"):
+            if r.get("meter_id") == meter_id and r.get("run_id") and r["run_id"] != run_id:
                 get_store().remove_attribution_run(r["run_id"])
         logger.info("replace_device_history: %s — %d hour(s) kept from %s; dropped %d half-hour(s) "
                     "and %d read(s) (%s); rebuilding", meter_id, len(fetched), ", ".join(sensor_ids),
@@ -3342,10 +3351,12 @@ async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
                     ", ".join(o["entity_id"] for o in off) or "no sensor it no longer uses")
     except Exception as e:
         logger.error("replace_device_history failed (%s): %s", meter_id, e, exc_info=e)
+        if run_id and not _db_moved(gen):
+            _run_close(run_id, meter_id, "interrupted", 0)    # it may have dropped the history
         return _replace_refused(meter_id, "the history could not be replaced", "replace_failed")
     _replace_state(meter_id, phase=None)
     return await run_attribution_job(meter_id, sensor_ids, pace_s=0.05, fetch=False,
-                                     db_generation=gen)
+                                     db_generation=gen, run_id=run_id, kind="replace")
 
 
 def _stitch_hourly_energy(series_by_sensor: dict, priority: list,
@@ -3568,6 +3579,78 @@ def _db_moved(gen: int) -> bool:
     return gen != _db_generation
 
 
+# ── The rebuild's ledger entry, from its start (interrupted rebuild design §3, Phase 1) ─────────
+# A run is entered in the ledger when it starts and closed when it ends, so one cut off by a
+# restart, a power cut or a backup copied mid-run is still there, `running`, and the next start
+# marks it `interrupted`: the card says so, and undo by run covers what it wrote. Its progress goes
+# in every 200 hours, where the in-memory progress already does — a small write each, fine on an
+# SD card. Statuses: running → done | cancelled | error | interrupted; an interrupted run becomes
+# `resumed` once a later run of the device finishes.
+_RUN_KINDS = ("rebuild", "replace", "refill")
+
+
+def _run_open(run_id: str, meter_id: str, kind: str, sensor_ids, *, step: str,
+              frm=None, to=None) -> None:
+    try:
+        get_store().record_attribution_run({
+            "run_id": run_id, "meter_id": meter_id, "sensor_ids": list(sensor_ids or []),
+            "from": frm, "to": to, "blocks_written": 0, "created_at": _dt_now_iso_safe(),
+            "status": "running", "kind": kind, "step": step})
+    except Exception as e:
+        logger.warning("rebuild ledger: opening %s failed: %s", run_id, e)
+
+
+def _run_update(run_id: str, **fields) -> None:
+    try:
+        get_store().update_attribution_run(run_id, **fields)
+    except Exception as e:
+        logger.warning("rebuild ledger: updating %s failed: %s", run_id, e)
+
+
+def _run_close(run_id: str, meter_id: str, status: str, written: int) -> None:
+    """End a run's entry. A run that finished having written nothing leaves the ledger, as before
+    (there is nothing for undo to take); one that finished marks the device's interrupted runs
+    resumed — Rebuild history finishes a cut-off run exactly (design §2)."""
+    try:
+        st = get_store()
+        if status == "done" and not written:
+            st.remove_attribution_run(run_id)
+        else:
+            st.update_attribution_run(run_id, status=status, blocks_written=written)
+        if status == "done":
+            for r in st.get_attribution_runs():
+                if r.get("meter_id") == meter_id and r.get("status") == "interrupted":
+                    st.update_attribution_run(r["run_id"], status="resumed")
+    except Exception as e:
+        logger.warning("rebuild ledger: closing %s failed: %s", run_id, e)
+
+
+def mark_cut_off_rebuilds() -> list:
+    """At startup: a ledger run still `running` with no run of its device alive in this process was
+    cut off — by a restart, a power cut, or a restore of a backup taken mid-run. Marked
+    `interrupted`, and said once in the log. Startup also runs on a config save or an HA reconnect,
+    so a device whose run is alive here is left alone. Returns the runs marked."""
+    try:
+        st = get_store()
+        runs = st.get_attribution_runs()
+    except Exception as e:
+        logger.warning("mark_cut_off_rebuilds: %s", e)
+        return []
+    with _attribution_lock:
+        alive = {m for m, j in _attribution_jobs.items() if j.get("status") in _ACTIVE}
+    marked = []
+    for r in runs:
+        if r.get("status") != "running" or r.get("meter_id") in alive:
+            continue
+        st.update_attribution_run(r["run_id"], status="interrupted")
+        marked.append(r)
+        logger.warning("device history %s for %s was cut off (%s, %d half-hour(s) written%s) — "
+                       "Rebuild history on its card finishes it", r.get("kind") or "rebuild",
+                       r.get("meter_id"), r.get("step") or "writing", int(r.get("blocks_written") or 0),
+                       (", up to " + str(r["done_to"])) if r.get("done_to") else "")
+    return marked
+
+
 def attribution_claim(meter_id: str, sensor_ids: list) -> bool:
     """Reserve `meter_id` for a run, atomically. False if it is already taken.
 
@@ -3729,7 +3812,8 @@ async def _fetch_device_series(sensor_ids: list, start: str, end: str) -> tuple:
      exclusive_with=("delete",), on_conflict=WAIT)
 async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
                               pace_s: float = 0.0, window: tuple | None = None,
-                              fetch: bool = True, db_generation: int | None = None) -> dict:
+                              fetch: bool = True, db_generation: int | None = None,
+                              run_id: str | None = None, kind: str = "rebuild") -> dict:
     """Background: attribute a device's HA recorder history onto the house blocks it
     isn't on yet. Fetch stats (on the loop's WS listener), stitch to hourly energy,
     walk oldest-first writing recorder_attributed device blocks — skipping any block
@@ -3743,7 +3827,10 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
     it to the refilled span.
 
     `db_generation`: the database it was asked on (a replace's, a queued refill's); it stops,
-    writing nothing more, once a restore has replaced that database (`database_replaced`)."""
+    writing nothing more, once a restore has replaced that database (`database_replaced`).
+
+    `run_id` / `kind`: its ledger entry, entered when it starts (`_run_open`) — a replace passes the
+    entry it opened before its drop."""
     import asyncio as _aio
     gen = _db_generation if db_generation is None else db_generation
     # This device's own entry — created by `attribution_claim()` when the route
@@ -3763,7 +3850,9 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
               "written": 0, "skipped": 0, "gaps": 0, "done_hours": 0,
               "total_hours": 0,
               "started_at": j.get("started_at") or _dt_now_iso_safe()})
-    run_id = _dt_now_iso_safe() + "|" + device_meter_id
+    own_entry = run_id is None             # a replace's entry was opened by the replace
+    run_id = run_id or (_dt_now_iso_safe() + "|" + device_meter_id)
+    opened = not own_entry
     try:
         if fetch and _engine_ha is None:
             j.update({"status": "error", "error": "no HA connection"})
@@ -3826,6 +3915,14 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
         j["seam"] = seam
         bm = int(get_block_minutes() or 30)
         j.update({"phase": "attributing", "total_hours": len(hours)})
+        if hours and not _db_moved(gen):
+            if opened:
+                _run_update(run_id, step="writing", sensor_ids=list(sensor_ids or []),
+                            **{"from": hours[0], "to": hours[-1]})
+            else:
+                _run_open(run_id, device_meter_id, kind, sensor_ids, step="writing",
+                          frm=hours[0], to=hours[-1])
+                opened = True
         written = skipped = gaps = 0
         global _pass2_quiet
         _prev_p2q = _pass2_quiet
@@ -3882,17 +3979,17 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
             if (i % 200) == 0:
                 j.update({"written": written, "skipped": skipped, "gaps": gaps,
                           "done_hours": i})
+                if opened and written and not _db_moved(gen):
+                    _run_update(run_id, blocks_written=written, done_to=hour)
                 await _aio.sleep(pace_s)        # yield to the live tick / drain
         _pass2_quiet = _prev_p2q
         j.update({"written": written, "skipped": skipped, "gaps": gaps,
                   "done_hours": len(hours)})
-        if written and not _db_moved(gen):     # never into a database it did not write to
-            get_store().record_attribution_run({
-                "run_id": run_id, "meter_id": device_meter_id,
-                "sensor_ids": list(sensor_ids or []),
-                "from": hours[0] if hours else None,
-                "to": hours[-1] if hours else None,
-                "blocks_written": written, "created_at": _dt_now_iso_safe()})
+        if opened and not _db_moved(gen):     # never into a database it did not write to
+            # a replace stopped part-way has dropped the device's history: said as cut off
+            _end = ("done" if j.get("status") != "cancelled"
+                    else "interrupted" if kind == "replace" else "cancelled")
+            _run_close(run_id, device_meter_id, _end, written)
         if j.get("status") != "cancelled":
             j["status"] = "done"
             _coord.mark("attribution", device_meter_id, status="done")
@@ -3903,6 +4000,8 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
                 "run_id": run_id, "status": j["status"]}
     except Exception as e:
         logger.warning("run_attribution_job failed: %s", e, exc_info=e)
+        if opened and not _db_moved(gen):
+            _run_close(run_id, device_meter_id, "error", int(j.get("written") or 0))
         j.update({"status": "error", "error": _error_text("attribution", e)})
         _coord.mark("attribution", device_meter_id, status="error")
         return {"ok": False, "error": j["error"]}
@@ -3973,7 +4072,7 @@ async def _rebuild_when_admitted(mid: str, sensors: list, lo: str, hi: str, *,
         return
     logger.info("rebuild_devices_after_refill: %s %s..%s — rebuilding from HA's reads", mid, lo, hi)
     r = await run_attribution_job(mid, sensors, pace_s=0.05, window=(lo, hi), fetch=False,
-                                  db_generation=gen)
+                                  db_generation=gen, kind="refill")
     if settle_after and (r or {}).get("written") and not _db_moved(gen):
         _queue_settle_spans([[lo, hi]], "device rebuild")
         asyncio.create_task(_settle_history_to_done())
@@ -14255,6 +14354,9 @@ async def _engine_startup_impl(ha: HAClient):
         logger.info("engine_startup: new install — initial config period created")
 
     logger.info("engine_startup: %d existing blocks in store", _store.count_blocks())
+    # A device history rebuild cut off — a restart, a power cut, a backup restored from mid-run —
+    # is marked, for its card (interrupted rebuild design, Phase 1). Alive runs are left alone.
+    mark_cut_off_rebuilds()
 
     # ── One-off (versioned): zero-fill blank export slots on imported days that
     # already carry export. A PDF/CSV/API historical import of a solar export meter

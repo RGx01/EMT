@@ -97,7 +97,10 @@ class ARebuild(_Base):
         self.assertEqual(sorted(_rows(self.st)), ["2026-10-01T10:00:00", "2026-10-01T10:30:00"],
                          "it went on writing after the database was replaced")
         self.assertEqual(res["status"], "cancelled")
-        self.assertEqual(self.st.get_attribution_runs(), [], "the old run entered in the new ledger")
+        # its entry, opened at the start on the old database (one store here), is never touched
+        # after the move: not closed, not updated (interrupted rebuild design, Phase 1)
+        self.assertEqual([(r["status"], r["blocks_written"]) for r in self.st.get_attribution_runs()],
+                         [("running", 0)], "the run went on writing its ledger entry after the move")
 
     def test_GUARD_an_ordinary_rebuild_runs_to_the_end(self):
         res = self._run()

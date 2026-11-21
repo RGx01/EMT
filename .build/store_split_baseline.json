@@ -77,6 +77,7 @@
     "set_vat_calendar",
     "split_config_period_at",
     "unretire_meter",
+    "update_attribution_run",
     "upsert_carbon_intensity",
     "upsert_carbon_slots",
     "upsert_dispatch_slot",

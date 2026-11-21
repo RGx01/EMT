@@ -3336,6 +3336,19 @@ class BlockStore:
     def get_attribution_runs(self) -> list:
         return self.get_meta(self._ATTRIBUTION_RUNS_KEY, None) or []
 
+    def update_attribution_run(self, run_id: str, **fields) -> None:
+        """Change a ledger run's fields in place — a rebuild's progress, its status, its span
+        (interrupted rebuild design, Phase 1: the run is entered when it starts, not when it ends,
+        so a run cut off is still in the ledger). A run_id not in the ledger is left alone."""
+        runs = self.get_meta(self._ATTRIBUTION_RUNS_KEY, None) or []
+        hit = False
+        for r in runs:
+            if r.get("run_id") == run_id:
+                r.update(fields)
+                hit = True
+        if hit:
+            self.set_meta(self._ATTRIBUTION_RUNS_KEY, runs)
+
     def remove_attribution_run(self, run_id: str) -> None:
         runs = self.get_meta(self._ATTRIBUTION_RUNS_KEY, None) or []
         self.set_meta(self._ATTRIBUTION_RUNS_KEY,
