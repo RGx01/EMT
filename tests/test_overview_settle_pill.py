@@ -31,6 +31,12 @@ class TheOverview(unittest.TestCase):
         self.assertIn(SPAN, top)
         self.assertIn('{% include "_settle_pill.html" %}', self.PAGE)
 
+    def test_it_comes_before_live_as_on_charts(self):
+        """21 Nov 2026, the user: the pill where Charts has it, first of the right-hand items (Charts: the
+        pill, then the gear and PDF). It was after Live, at the far right."""
+        top = self.PAGE[self.PAGE.index("{% block topbar %}"):]
+        self.assertLess(top.index(SPAN), top.index('id="status-text"'))
+
     def test_it_redraws_with_the_cards_and_when_the_tab_comes_back(self):
         i = self.PAGE.index("function refreshBilling()")
         self.assertIn("_billRedrawPill();", self.PAGE[i:self.PAGE.index("\n}\n", i)])
