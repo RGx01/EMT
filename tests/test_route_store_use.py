@@ -98,9 +98,9 @@ class TestGetRoutesThatWrite(unittest.TestCase):
          that one connection and corrupts it: 'cannot commit - no transaction is
          active' / 'error return without exception set'"
 
-    None of the three hops to the engine loop first. Under A's model `writer()`
-    raises off the engine thread, so all three must move to asking the engine to
-    perform the write — which is the boundary workstream B formalises.
+    None of the three hops to the engine loop first. The engine's connection refuses
+    any other thread, so all three must move to asking the engine to perform the
+    write — which is the boundary workstream B formalises.
     """
 
     @classmethod

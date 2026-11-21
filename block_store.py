@@ -1275,7 +1275,7 @@ class BlockStore:
         self._read_only = read_only
         # `uri=True` for a `file:...` path so a NAMED shared-cache in-memory
         # database can be opened by more than one connection — the fixture story
-        # for the ReadStore/WriteStore split (A §7 q2). `":memory:"` is anonymous:
+        # for the ReadStore split (A §7 q2). `":memory:"` is anonymous:
         # a second connection to it is a different, empty database, which is why
         # v4's read companion had to fall back to the shared handle.
         # check_same_thread is left at its DEFAULT (True). It was False from the

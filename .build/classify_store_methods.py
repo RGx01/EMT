@@ -4,7 +4,8 @@ Partition BlockStore's methods into READ-ONLY and WRITE, by the SQL they execute
 
 WHY THIS EXISTS
     Workstream A (docs/history/design/EMT-v5_A_storage_design.md) splits the store into
-    `ReadStore` and `WriteStore` so that a read path CANNOT write — not by
+    `ReadStore` and the engine's `BlockStore` (`WriteStore` until 21 Nov 2026) so
+    that a read path CANNOT write — not by
     convention but because the object has no such attribute. That split has to be
     drawn somewhere, and drawing it by hand across 204 methods is how you end up
     with one wrong and no way to notice.
@@ -20,8 +21,8 @@ WHICH WAY TO BE WRONG
       * A writer mislabelled READ-ONLY lands on `ReadStore`, where `query_only`
         refuses it at runtime. Loud, immediate, caught by any test that exercises
         the path. Recoverable.
-      * A reader mislabelled WRITE lands only on `WriteStore`, so a route that
-        needs it must reach for `writer()`. Nothing breaks, nothing complains, and
+      * A reader mislabelled WRITE is missing from `ReadStore`, so a route that
+        needs it must hop to the engine's store. Nothing breaks, nothing complains, and
         the codebase drifts straight back toward v4's 4% adoption — the exact
         failure this workstream exists to prevent.
 

@@ -45,12 +45,6 @@ missing and where it stands; the done history, with every decision's story, is i
   ([design/EMT-v5_A1_writer_thread_design.md](design/EMT-v5_A1_writer_thread_design.md)), not built;
   the stall was accepted on 5 Oct 2026.
 
-## Code to tidy
-
-- **`WriteStore` and `store_access.writer()` have no production caller.** The engine writes through
-  its own `BlockStore` and pages hand writes to it (`_engine_write`); the typed write path is unused.
-  A candidate for the deletion protocol.
-
 ## Open questions
 
 - **Per-request reads or a summary?** Is computing each view from the half-hours on request cheap

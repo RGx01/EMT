@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Generate `store_types.py` — the ReadStore / WriteStore split — from the classifier.
+Generate `store_types.py` — the ReadStore side of the read/write split — from the classifier.
 
 WHY GENERATED
     The split is 102 read methods against 93 write methods across a 7,329-line
