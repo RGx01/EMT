@@ -3329,7 +3329,7 @@ async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
             # Cut short after the drop: Rebuild history finishes it exactly (interrupted rebuild
             # design §2) — on this database; on a replaced one there is nothing left to do.
             _replace_state(meter_id, status="cancelled", phase=_DB_REPLACED if _db_moved(gen) else None)
-            _coord.mark("attribution", meter_id, status="cancelled")
+            _coord.release("attribution", meter_id)        # still the claim: the run never started
             logger.info("replace_device_history: %s stopped after the drop (%s)", meter_id,
                         "the database was replaced" if _db_moved(gen) else "cancelled")
             return {"ok": False, "error": "cancelled"}
