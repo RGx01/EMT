@@ -19,7 +19,7 @@ import types
 import urllib.request
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GRAPHQL = "https://api.octopus.energy/v1/graphql/"
+GRAPHQL = "https://api.oegb-kraken.energy/v1/graphql/"
 
 
 def _bucket_side(path):

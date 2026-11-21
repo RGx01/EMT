@@ -9,7 +9,7 @@ Design notes
 ------------
 - Async (aiohttp), to sit alongside the engine loop and the ingester task.
 - HTTP Basic auth: the Octopus API key is the username, password empty.
-  (Confirmed: docs.octopus.energy/rest — "Basic HTTP auth using your API key
+  (Confirmed in Octopus's REST docs, then at docs.octopus.energy/rest — "Basic HTTP auth using your API key
   as the username, password blank".)
 - Read-only. This module never writes to the user's account and never stores
   the API key anywhere; the key is held only for the lifetime of the client
@@ -36,8 +36,12 @@ import aiohttp
 
 logger = logging.getLogger("kraken_api_client")
 
-DEFAULT_BASE_URL = "https://api.octopus.energy"
-DEFAULT_GRAPHQL_URL = "https://api.octopus.energy/v1/graphql/"
+# Octopus moved its API to api.oegb-kraken.energy (its developer docs and announcements moved to
+# developer.oegb-kraken.energy). Checked 21 Nov 2026: both hosts answer REST and GraphQL the same, with
+# links naming the host asked; no shutdown date for api.octopus.energy was published. KRAKEN_BASE_URL
+# still overrides the REST host.
+DEFAULT_BASE_URL = "https://api.oegb-kraken.energy"
+DEFAULT_GRAPHQL_URL = "https://api.oegb-kraken.energy/v1/graphql/"
 _DEFAULT_TIMEOUT = 30  # seconds per request
 _PAGE_SIZE = 1500      # consumption rows per page (API max is large; keep sane)
 
@@ -1092,7 +1096,7 @@ class KrakenAPIClient:
                 logger.error(
                     "kraken_schema_drift: Octopus/Kraken rejected fields this query "
                     "depends on — a schema change has likely broken it. Check "
-                    "https://developer.octopus.energy/announcements and migrate. "
+                    "https://developer.oegb-kraken.energy/announcements and migrate. "
                     "operation=%s errors=%s",
                     _operation_name(query),
                     [d.get("message") for d in drift])

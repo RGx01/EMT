@@ -27,7 +27,7 @@ import re
 import sys
 import urllib.request
 
-DEFAULT_ENDPOINT = "https://api.octopus.energy/v1/graphql/"
+DEFAULT_ENDPOINT = "https://api.oegb-kraken.energy/v1/graphql/"
 _REMOVAL_RE = re.compile(r"on or after (\d{4}-\d{2}-\d{2})")
 
 # Introspection scoped to exactly what a deprecation check needs: every type's
