@@ -74,9 +74,10 @@ class DispatchHistoryForSlot(unittest.TestCase):
             self.st.get_dispatch_history(self.slot, self.next, kind="completed"))
 
     def test_both_surfaces_carry_it(self):
-        from store_types import ReadStore, WriteStore
+        from store_types import ReadStore
+        from block_store import BlockStore
         self.assertTrue(hasattr(ReadStore, "get_dispatch_history_for_slot"))
-        self.assertTrue(hasattr(WriteStore, "get_dispatch_history_for_slot"))
+        self.assertTrue(hasattr(BlockStore, "get_dispatch_history_for_slot"))
 
 
 class ConfigPeriodDeDuplication(unittest.TestCase):

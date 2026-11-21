@@ -318,7 +318,7 @@ _event_loop = None  # asyncio event loop — captured at init time
 import sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(__file__)))
 
-import store_access                 # workstream A: store() / writer()
+import store_access                 # workstream A: store(), the per-thread read store
 import chart_style as _chart_style   # a meter's bar colour and rate line (Settings)
 import carbon as _carbon             # the export displacement intensity (Settings)
 from job_coordinator import job     # workstream B: coordinator membership
@@ -490,8 +490,8 @@ def _engine_write(op, timeout: float = 30.0):
     engine.py names the consequence: *"a DB write from the executor thread races
     the loop-thread writers on that one connection and corrupts it: 'cannot
     commit - no transaction is active' / 'error return without exception
-    set'"*. Under workstream A `writer()` raises off the engine thread, so this
-    hop is the only way a route can cause a write.
+    set'"*. The engine's connection refuses any other thread, and a page's own
+    store() cannot write, so this hop is the only way a route can cause a write.
 
     `op` receives the engine's store and runs on the loop.
     """

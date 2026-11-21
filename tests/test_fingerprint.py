@@ -210,10 +210,11 @@ class TheEpoch(_Base):
             self.assertIn(expected, found, "%s no longer bumps the epoch" % expected)
 
     def test_it_is_a_write_and_reading_it_is_not(self):
-        from store_types import ReadStore, WriteStore
+        from store_types import ReadStore
+        from block_store import BlockStore
         self.assertTrue(hasattr(ReadStore, "get_data_epoch"))
         self.assertTrue(hasattr(ReadStore, "day_fingerprints"))
-        self.assertTrue(hasattr(WriteStore, "bump_data_epoch"))
+        self.assertTrue(hasattr(BlockStore, "bump_data_epoch"))
         self.assertFalse(hasattr(ReadStore, "bump_data_epoch"))
 
 

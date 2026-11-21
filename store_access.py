@@ -1,10 +1,11 @@
 """
-store_access.py — `store()` and `writer()` (workstream A §3.1, §3.3).
+store_access.py — `store()` (workstream A §3.1, §3.3).
 
 **The default is the safe one.** Reads are the overwhelming majority of call
 sites, so reads get the short, obvious name. A developer reaching for the store
-gets an object that cannot write, without deciding anything; getting the writer
-means typing something different and meaning it.
+gets an object that cannot write, without deciding anything. Writes are the
+engine's: its own `BlockStore` on the engine thread, which a page reaches by
+handing the write to the engine (`web/server._engine_write`).
 
 That inversion is the whole mechanism. v4 already had a read companion — built
 three separate times, after three production incidents — and it reached 0%
@@ -12,17 +13,18 @@ adoption, because nothing about the wrong choice is punished at the moment it is
 made. `_get_store()` was shorter, older, and worked perfectly in development.
 A safe path that is opt-in stays opt-in.
 
-Thread affinity lives here rather than on `WriteStore` so that constructing a
-store in a test does not need an engine loop.
+`writer()` and `WriteStore` were deleted on 21 Nov 2026: no production code called
+them (the engine opens its own store), and a call would have opened a second
+write connection beside the engine's rather than the engine's own. `WrongThread`
+stays, for `engine.reset_store`.
 """
 import threading
 
-from store_types import ReadStore, WriteStore
+from store_types import ReadStore
 
 _lock = threading.Lock()
 _db_path = None
 _engine_thread = None
-_writer = None
 _local = threading.local()
 # Bumped when the database FILE is replaced (restore, upload). Each thread's
 # ReadStore remembers the generation it opened at; `store()` reopens on a mismatch.
@@ -30,7 +32,7 @@ _generation = 0
 
 
 class WrongThread(RuntimeError):
-    """The writer was reached from somewhere other than the engine thread.
+    """Engine-thread work was asked for from somewhere other than the engine thread.
 
     Every cross-thread incident in v4 was this: one connection, opened
     `check_same_thread=False`, touched from a worker. The engine's own comment
@@ -43,13 +45,12 @@ class WrongThread(RuntimeError):
 
 def bind(db_path: str, *, engine_thread: int = None) -> None:
     """Call once from the engine thread at startup, before any task runs."""
-    global _db_path, _engine_thread, _writer
+    global _db_path, _engine_thread
     global _generation
     with _lock:
         _db_path = db_path
         _engine_thread = (engine_thread if engine_thread is not None
                           else threading.get_ident())
-        _writer = None
         _generation += 1
 
 
@@ -67,10 +68,9 @@ def invalidate() -> None:
     so this cannot close them. It bumps a generation; each thread's next
     `store()` sees the mismatch, closes its own connection and reopens.
     """
-    global _generation, _writer
+    global _generation
     with _lock:
         _generation += 1
-        _writer = None
 
 
 def on_engine_thread() -> bool:
@@ -125,29 +125,6 @@ def close_retired() -> None:
     _local.retired = []
 
 
-def writer() -> WriteStore:
-    """The engine's write store. Raises off the engine thread.
-
-    A route never calls this. A route that needs a write asks the engine to
-    perform it — which is the boundary workstream B formalises into a
-    coordinator.
-    """
-    global _writer
-    if _db_path is None:
-        raise RuntimeError("store_access.bind() has not been called")
-    here = threading.get_ident()
-    if here != _engine_thread:
-        raise WrongThread(
-            "writer() called from thread %s; the write store belongs to the "
-            "engine thread %s. Read with store(), or ask the engine to perform "
-            "the write." % (here, _engine_thread))
-    if _writer is None:
-        with _lock:
-            if _writer is None:
-                _writer = WriteStore(_db_path)
-    return _writer
-
-
 def bind_object_for_tests(obj) -> None:
     """Make `store()` return `obj` verbatim. TEST INFRASTRUCTURE ONLY.
 
@@ -157,11 +134,10 @@ def bind_object_for_tests(obj) -> None:
     never reaches this — `bind()` takes a path and nothing else — and the name is
     meant to be obvious in a diff if it ever appears outside `tests/`.
     """
-    global _db_path, _engine_thread, _writer
+    global _db_path, _engine_thread
     with _lock:
         _db_path = _OBJECT
         _engine_thread = threading.get_ident()
-        _writer = obj
     _local.read = obj
     _local.generation = _generation
 
@@ -178,9 +154,9 @@ def reset_for_tests() -> None:
     loophole anyone can walk through. One visible exception beats a general
     excuse.
     """
-    global _db_path, _engine_thread, _writer
+    global _db_path, _engine_thread
     with _lock:
-        _db_path = _engine_thread = _writer = None
+        _db_path = _engine_thread = None
     if hasattr(_local, "read"):
         del _local.read
     if hasattr(_local, "generation"):

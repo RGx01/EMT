@@ -4225,8 +4225,9 @@ class BlockStore:
         On the WRITE surface deliberately. A checkpoint rewrites the main
         database file, and the restore path in `web/server.py` records what
         issuing one from the wrong thread costs -- *"a concurrent use of one
-        SQLite connection from two threads -> Segmentation fault"*. Reaching it
-        through `writer()` turns that from a comment into a `WrongThread`.
+        SQLite connection from two threads -> Segmentation fault"*. Off the read
+        surface, it is reachable only from the engine's own store, whose connection
+        SQLite refuses on any other thread.
 
         An unrecognised mode is rejected rather than passed through: SQLite does
         NOT error on `PRAGMA wal_checkpoint(NONSENSE)`, it silently performs a

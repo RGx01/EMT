@@ -101,9 +101,10 @@ class LastStandingCharge(unittest.TestCase):
         """A read method that landed on WriteStore would be reachable only from
         the engine thread -- and two of the three call sites are on it, which is
         precisely how such a mistake would survive review."""
-        from store_types import ReadStore, WriteStore
+        from store_types import ReadStore
+        from block_store import BlockStore
         self.assertTrue(hasattr(ReadStore, "last_standing_charge"))
-        self.assertTrue(hasattr(WriteStore, "last_standing_charge"))
+        self.assertTrue(hasattr(BlockStore, "last_standing_charge"))
 
 
 if __name__ == "__main__":

@@ -55,11 +55,12 @@ def _carve_segs(ev_kwh=2.0, house_kwh=3.0, rate=0.25, ev_band="off_peak",
 class Surfaces(unittest.TestCase):
 
     def test_reads_read_write_writes(self):
-        from store_types import ReadStore, WriteStore
+        from store_types import ReadStore
+        from block_store import BlockStore
         self.assertTrue(hasattr(ReadStore, "get_blocks_off_dispatch_split"))
         # the carve's own write (carve_ev_split) went with engine step 4c: it settles each
         # half-hour, through write_predicted / apply_measured_to_main
-        self.assertTrue(hasattr(WriteStore, "write_predicted"))
+        self.assertTrue(hasattr(BlockStore, "write_predicted"))
         self.assertFalse(hasattr(ReadStore, "write_predicted"),
                          "a write on the read surface has no thread guard")
 
