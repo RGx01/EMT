@@ -87,18 +87,20 @@ class TheEngine(_Stages):
 
 
 class ThePill(unittest.TestCase):
+    # The pill's own code is in _settle_pill.html since 21 Nov 2026; Charts' refresh hooks stay in charts.html.
+    PILL = open(os.path.join(_ROOT, "web", "templates", "_settle_pill.html"), encoding="utf-8").read()
     PAGE = open(os.path.join(_ROOT, "web", "templates", "charts.html"), encoding="utf-8").read()
 
     def test_it_names_the_stages_from_awaiting(self):
-        i = self.PAGE.index("function _settleStages(d)")
-        body = self.PAGE[i:self.PAGE.index("\n  }\n", i)]
+        i = self.PILL.index("function _settleStages(d)")
+        body = self.PILL[i:self.PILL.index("\n    }\n", i)]
         for what in ("'kWh'", "'bill'", "'split'"):
             self.assertIn(what, body)
         self.assertIn("d.awaiting", body)
 
     def test_it_no_longer_calls_the_kwh_count_cost_settlement(self):
-        j = self.PAGE.index("function loadSettleNote(){")
-        body = self.PAGE[j:self.PAGE.index("window._loadSettleNote = loadSettleNote", j)]
+        j = self.PILL.index("function loadSettleNote(){")
+        body = self.PILL[j:self.PILL.index("window._loadSettleNote = loadSettleNote", j)]
         self.assertNotIn("awaiting cost settlement'", body)
         self.assertIn("_settleStages(d)", body)
 
@@ -109,8 +111,8 @@ class ThePillRefreshes(unittest.TestCase):
     PAGE = ThePill.PAGE
 
     def test_it_is_a_function_the_page_can_call_again(self):
-        self.assertIn("window._loadSettleNote = loadSettleNote;", self.PAGE)
-        self.assertNotIn("(function loadSettleNote(){", self.PAGE)
+        self.assertIn("window._loadSettleNote = loadSettleNote;", ThePill.PILL)
+        self.assertNotIn("(function loadSettleNote(){", ThePill.PILL)
 
     def test_the_data_refresh_redraws_it(self):
         i = self.PAGE.index("async function _refreshIfChanged(force)")

@@ -47,6 +47,7 @@ var BILL_CURRENCY = '£', BILL_CARDS = [['today', 'today']];
 var _billTimer = null, _billDue = false, _billToken = null;
 function updateBillingCard(id, total) { drawn.push(total); }
 function scheduleBillingRefresh() {}
+function _billRedrawPill() {}            // the settlement pill (#199): not under test here
 function settle() { return new Promise(function (r) { setTimeout(r, 0); }); }
 %s
 %s
