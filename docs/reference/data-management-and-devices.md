@@ -215,6 +215,14 @@ it. A size estimate warns over 10 MB.
   (`drop_device_history`); the house over the span again, yielding to the loop every 50 blocks
   (`recompute_remainders_for_window_async`); and the rebuild from the kept hours, with no second
   fetch. A rebuild whose every fetch failed is an error, not "done".
+- **A rebuild cut off** — by a restart, a power cut, or a backup copied mid-run — is finished exactly
+  by *Rebuild history*: the recorder hours are kept before anything is dropped, and it re-splits each
+  half-hour it writes (interrupted rebuild design, soak 21 Nov 2026). **A restore stops a rebuild
+  first** (`_restore_worker` step 1c): it cancels any rebuild or replace and waits for it, as for an
+  import, and aborts if it will not stop; a replace checks for cancel between its re-split chunks.
+  Once the file is swapped, `engine.database_replaced()` counts it: a rebuild, replace or queued refill
+  rebuild started on the old database stops at its next half-hour, writing nothing into the new one,
+  and finished runs' progress and errors are forgotten.
 - **A device with no read sensor** is allowed: nothing is read for it, its usage counts in the house,
   and its Overview cards (which read only its power and SoC sensors) still work. Emptying the sensor
   skips the change dialog, and the old one comes off the stitch; after the save's reload the page asks

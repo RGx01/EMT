@@ -3063,7 +3063,8 @@ def _recompute_pass3_totals(block: dict) -> None:
 
 
 async def recompute_remainders_for_window_async(parent_meter_id: str, utc_start: str,
-                                                utc_end: str, *, every: int = 50) -> int:
+                                                utc_end: str, *, every: int = 50,
+                                                stop=None) -> int:
     """`recompute_remainders_for_window`, yielding to the loop every `every` blocks: over a
     device's whole history it is tens of thousands of blocks, and run straight through it held
     the loop for 104 s on an SSD — long enough for HA's WebSocket to drop (4 Nov 2026, b7)."""
@@ -3072,6 +3073,12 @@ async def recompute_remainders_for_window_async(parent_meter_id: str, utc_start:
     starts = get_store().get_block_starts_in_range(parent_meter_id, utc_start, utc_end)
     done = 0
     for i in range(0, len(starts), every):
+        if stop is not None and stop():
+            # A replace asked to stop (a restore): what is re-split stays, the rest is the rebuild's
+            # (interrupted rebuild design §2 — it re-splits each half-hour it writes).
+            logger.info("recompute_remainders_for_window: stopped after %d block(s) for parent %s",
+                        done, parent_meter_id)
+            return done
         chunk = starts[i:i + every]
         done += recompute_remainders_for_window(parent_meter_id, chunk[0],
                                                 (chunk[-1] + "\x7f"), quiet_total=True)
@@ -3257,6 +3264,13 @@ def _replace_state(meter_id: str, **fields) -> None:
         j.update(fields)
 
 
+def _replace_stopping(meter_id: str, gen: int) -> bool:
+    """A replace asked to stop — cancelled (a restore cancels it) — or on a database since replaced."""
+    with _attribution_lock:
+        ctl = (_attribution_jobs.get(meter_id) or {}).get("control")
+    return ctl == "cancel" or _db_moved(gen)
+
+
 def _replace_refused(meter_id: str, error: str, code: str) -> dict:
     """End a replace before its run, nothing dropped: the error on the card, the claim freed."""
     _replace_state(meter_id, status="error", error=error, phase=None)
@@ -3280,6 +3294,7 @@ async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
 
     Never raises; a failure is the run's error, on its card."""
     from datetime import datetime as _dt, timedelta as _td
+    gen = _db_generation
     if _engine_ha is None:
         return _replace_refused(meter_id, "Home Assistant is not connected — nothing was replaced",
                                 "no_ha")
@@ -3297,6 +3312,8 @@ async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
         if not fetched:
             return _replace_refused(meter_id, "Home Assistant has no history for " +
                                     ", ".join(sensor_ids) + " — nothing was replaced", "no_data")
+        if _replace_stopping(meter_id, gen):
+            return _replace_refused(meter_id, "stopped before anything was replaced", "cancelled")
         get_store().record_recorder_hours(meter_id, "import", fetched, src_of)
         _replace_state(meter_id, phase="Dropping the old history…")
         off = get_store().device_off_stitch_sensors(meter_id)
@@ -3306,7 +3323,16 @@ async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
             _replace_state(meter_id, phase="Giving the house back its share…")
             hi_excl = (_dt.fromisoformat(hi) + _td(minutes=int(get_block_minutes() or 30))).isoformat()
             for parent in res.get("parents") or []:
-                await recompute_remainders_for_window_async(parent, lo, hi_excl)
+                await recompute_remainders_for_window_async(
+                    parent, lo, hi_excl, stop=lambda: _replace_stopping(meter_id, gen))
+        if _replace_stopping(meter_id, gen):
+            # Cut short after the drop: Rebuild history finishes it exactly (interrupted rebuild
+            # design §2) — on this database; on a replaced one there is nothing left to do.
+            _replace_state(meter_id, status="cancelled", phase=_DB_REPLACED if _db_moved(gen) else None)
+            _coord.mark("attribution", meter_id, status="cancelled")
+            logger.info("replace_device_history: %s stopped after the drop (%s)", meter_id,
+                        "the database was replaced" if _db_moved(gen) else "cancelled")
+            return {"ok": False, "error": "cancelled"}
         for r in get_store().get_attribution_runs():
             if r.get("meter_id") == meter_id and r.get("run_id"):
                 get_store().remove_attribution_run(r["run_id"])
@@ -3318,7 +3344,8 @@ async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
         logger.error("replace_device_history failed (%s): %s", meter_id, e, exc_info=e)
         return _replace_refused(meter_id, "the history could not be replaced", "replace_failed")
     _replace_state(meter_id, phase=None)
-    return await run_attribution_job(meter_id, sensor_ids, pace_s=0.05, fetch=False)
+    return await run_attribution_job(meter_id, sensor_ids, pace_s=0.05, fetch=False,
+                                     db_generation=gen)
 
 
 def _stitch_hourly_energy(series_by_sensor: dict, priority: list,
@@ -3514,6 +3541,32 @@ _attribution_lock = threading.Lock()
 
 _ACTIVE = ("claimed", "running", "paused")
 
+# Bumped when the database FILE is replaced — a restore (`database_replaced`). A rebuild or replace
+# started on the old file stops when it sees it move, whatever the timing (interrupted rebuild
+# design §3, Phase 2): its next half-hour would otherwise be written into the restored database.
+_db_generation = 0
+_DB_REPLACED = "the database was replaced"
+
+
+def database_replaced() -> None:
+    """The restore has swapped in another database file. Any rebuild still running belongs to the
+    old one: cancel it (the generation stops it even if it never reads the control again). A
+    finished run's state — its progress, its error — describes the old file, so it is forgotten:
+    the device's card shows the restored database's own history (T3 on the soak Pi, 21 Nov 2026:
+    the card kept a dead run's error and its last progress after the restore)."""
+    global _db_generation
+    with _attribution_lock:
+        _db_generation += 1
+        for mid in list(_attribution_jobs):
+            if _attribution_jobs[mid].get("status") in _ACTIVE:
+                _attribution_jobs[mid]["control"] = "cancel"
+            else:
+                del _attribution_jobs[mid]
+
+
+def _db_moved(gen: int) -> bool:
+    return gen != _db_generation
+
 
 def attribution_claim(meter_id: str, sensor_ids: list) -> bool:
     """Reserve `meter_id` for a run, atomically. False if it is already taken.
@@ -3676,7 +3729,7 @@ async def _fetch_device_series(sensor_ids: list, start: str, end: str) -> tuple:
      exclusive_with=("delete",), on_conflict=WAIT)
 async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
                               pace_s: float = 0.0, window: tuple | None = None,
-                              fetch: bool = True) -> dict:
+                              fetch: bool = True, db_generation: int | None = None) -> dict:
     """Background: attribute a device's HA recorder history onto the house blocks it
     isn't on yet. Fetch stats (on the loop's WS listener), stitch to hourly energy,
     walk oldest-first writing recorder_attributed device blocks — skipping any block
@@ -3687,8 +3740,12 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
     It rebuilds from `ha_reads` too (soft delete design §2): the hours it keeps, and the
     half-hours HA recorded live, which go back as they were. `fetch=False` asks HA's recorder
     nothing — a refill's rebuild (`rebuild_devices_after_refill`); `window` (lo, hi) bounds
-    it to the refilled span."""
+    it to the refilled span.
+
+    `db_generation`: the database it was asked on (a replace's, a queued refill's); it stops,
+    writing nothing more, once a restore has replaced that database (`database_replaced`)."""
     import asyncio as _aio
+    gen = _db_generation if db_generation is None else db_generation
     # This device's own entry — created by `attribution_claim()` when the route
     # reserved it, or here if the job was started directly (tests, a future
     # scheduler). Never `clear()`: that is what let a second start wipe the
@@ -3811,8 +3868,10 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
                 await _aio.sleep(1.0)
                 if j.get("control") == "cancel":
                     break
-            if j.get("control") == "cancel":
+            if j.get("control") == "cancel" or _db_moved(gen):
                 j["status"] = "cancelled"
+                if _db_moved(gen):
+                    j["phase"] = _DB_REPLACED
                 _coord.mark("attribution", device_meter_id, status="cancelled")
                 break
             j["status"] = "running"
@@ -3827,7 +3886,7 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
         _pass2_quiet = _prev_p2q
         j.update({"written": written, "skipped": skipped, "gaps": gaps,
                   "done_hours": len(hours)})
-        if written:
+        if written and not _db_moved(gen):     # never into a database it did not write to
             get_store().record_attribution_run({
                 "run_id": run_id, "meter_id": device_meter_id,
                 "sensor_ids": list(sensor_ids or []),
@@ -3875,7 +3934,12 @@ async def _rebuild_when_admitted(mid: str, sensors: list, lo: str, hi: str, *,
     main's single rate and settle() prices them by its legs; the fill's own pass starts as this does,
     so it may already have been past them. An import's walk from the start needs no second pass."""
     waited = 0.0
+    gen = _db_generation
     while True:
+        if _db_moved(gen):
+            logger.info("rebuild_devices_after_refill: %s not rebuilt — %s while it waited", mid,
+                        _DB_REPLACED)
+            return
         cur = (_attribution_jobs.get(mid) or {}).get("status")
         if cur in _ACTIVE:
             logger.info("rebuild_devices_after_refill: %s already rebuilding — left to its run", mid)
@@ -3905,11 +3969,12 @@ async def _rebuild_when_admitted(mid: str, sensors: list, lo: str, hi: str, *,
             return
         logger.info("rebuild_devices_after_refill: %s — its history EMT never had, from HA's "
                     "recorder", mid)
-        await run_attribution_job(mid, sensors, pace_s=0.05)
+        await run_attribution_job(mid, sensors, pace_s=0.05, db_generation=gen)
         return
     logger.info("rebuild_devices_after_refill: %s %s..%s — rebuilding from HA's reads", mid, lo, hi)
-    r = await run_attribution_job(mid, sensors, pace_s=0.05, window=(lo, hi), fetch=False)
-    if settle_after and (r or {}).get("written"):
+    r = await run_attribution_job(mid, sensors, pace_s=0.05, window=(lo, hi), fetch=False,
+                                  db_generation=gen)
+    if settle_after and (r or {}).get("written") and not _db_moved(gen):
         _queue_settle_spans([[lo, hi]], "device rebuild")
         asyncio.create_task(_settle_history_to_done())
 

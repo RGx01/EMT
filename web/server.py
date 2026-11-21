@@ -3377,6 +3377,35 @@ def _restore_worker(zipname, selected, from_flat, staged=None, checked=False):
                                "Try again in a moment.")
                 return
 
+        # ── Step 1c: STOP any device history rebuild (interrupted rebuild design §3) ──
+        # A rebuild waits only for an import or a delete, so through a restore it kept writing
+        # the old database — into the safety backup — and then either failed on the closed store
+        # or, with a quicker file copy, wrote the old run into the restored database (T3, soak
+        # Pi, 21 Nov 2026). Cancel it and wait, as for the import; one that will not stop aborts.
+        if getattr(_eng_r, "attribution_running", None) and _eng_r.attribution_running():
+            _step("stopping the device history rebuild")
+            import time as _t_a
+            try:
+                _eng_r.attribution_control("cancel")
+            except Exception:
+                pass
+            stopped = False
+            for _ in range(120):        # up to ~60s: it stops between half-hours
+                if not _eng_r.attribution_running():
+                    stopped = True
+                    break
+                _t_a.sleep(0.5)
+            if not stopped:
+                if hasattr(_eng_r, "resume_engine"):
+                    _eng_r.resume_engine()
+                if staged and os.path.exists(staged):
+                    try: os.remove(staged)
+                    except Exception: pass
+                _j["status"] = "error"
+                _j["error"] = ("A device's history rebuild was still stopping — restore aborted. "
+                               "Try again in a moment.")
+                return
+
         # ── Step 2: pre-restore backup (stores still open — backup needs them) ─
         _step("taking a safety backup")
         _create_backup_zip(label="pre_restore")
@@ -3513,6 +3542,10 @@ def _restore_worker(zipname, selected, from_flat, staged=None, checked=False):
 
         # ── Reset stores and fix WAL before any further DB access ────────────
         _step("reinitialising")
+        if "blocks.db" in restored and getattr(_eng_r, "database_replaced", None):
+            # Another database now: a rebuild of the old one stops, and finished runs' progress
+            # and errors are forgotten, so a device's card shows this database's history.
+            _eng_r.database_replaced()
         if "blocks.db" in restored or "blocks.json" in restored:
             # Close web server store
             if _store:

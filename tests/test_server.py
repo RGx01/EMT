@@ -2058,6 +2058,7 @@ class TestApiRestoreStaged(unittest.TestCase):
         eng = MagicMock()
         eng._norm_account = lambda x: str(x or "").strip().upper()
         eng.api_import_running.return_value = False
+        eng.attribution_running.return_value = False      # no device rebuild (restore step 1c)
         eng.save_kraken_credentials = lambda *a: self.saved.append(a)
         self._eng = patch.dict(sys.modules, {"engine": eng})
         self._eng.start()

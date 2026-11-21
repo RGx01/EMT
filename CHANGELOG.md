@@ -7,6 +7,11 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Restoring a backup stops a device's history rebuild first.** A restore while *Rebuild history* or
+  *Replace history* was running let the rebuild carry on: it went on writing the old database during the
+  restore's checks, and could, with the timing against it, have written into the restored one. The restore
+  now stops it first (and says so if it will not stop), and afterwards the device's card shows the
+  restored history, not the stopped run's error. *Rebuild history* finishes a rebuild that was cut off.
 - **Your car is its own line beside a battery too.** On Intelligent Octopus Go with no EV sensor in EMT,
   the car shows as an "EV" line, from Octopus's split and its dispatches. With another device set up — a
   battery, a heat pump — the Overview and Billing's day charts showed it, but the Bill card's breakdown,
