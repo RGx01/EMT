@@ -102,15 +102,21 @@ class TestInjectEvBreakdown(unittest.TestCase):
         self.assertAlmostEqual(s["meters"]["Home / Import"][0.05]["kwh"], 4.0, places=3)
         self.assertAlmostEqual(s["meters"]["Home / Import"][0.30]["kwh"], 2.0, places=3)
 
-    def test_noop_when_submeter_present(self):
+    def test_carves_beside_another_device(self):
+        """21 Nov 2026: a device other than an EV meter (a battery) no longer stops the car's line —
+        the Bill card kept the car in Direct where the day charts and the Overview carved it out.
+        On the parent this was a no-op (the replaced test_noop_when_submeter_present)."""
         s = _summary()
-        s["totals"]["Zappi / Import"] = {"kwh": 1.0, "cost": 0.05, "is_submeter": True}
-        before = copy.deepcopy(s)
+        s["totals"]["Battery / Import"] = {"kwh": 1.0, "cost": 0.05, "is_submeter": True}
+        s["meters"]["Battery / Import"] = {0.05: {"kwh": 1.0, "cost": 0.05,
+                                                  "read_start": None, "read_end": None}}
+        battery = copy.deepcopy(s["meters"]["Battery / Import"])
         applied = ec._inject_ev_breakdown_into_summary(
             s, [{"start": "2026-08-04T00:00:00"}],
             {"2026-08-04T00:00:00": {"kwh": 4.0, "cost": 0.22, "rate": 0.05}})
-        self.assertFalse(applied)
-        self.assertEqual(s, before)
+        self.assertTrue(applied)
+        self.assertEqual(s["meters"]["Battery / Import"], battery)
+        self.assertAlmostEqual(s["meters"]["Home / Import"][0.05]["kwh"], 4.0, places=3)
 
     def test_noop_without_ev(self):
         s = _summary()

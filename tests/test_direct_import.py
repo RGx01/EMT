@@ -24,6 +24,13 @@ kWh are compared to the 3 dp every surface prints. £ to a penny: the bill sums 
 rows each rounded to 2 dp, the Overview rounds once, and on a long section the two can sit a penny
 apart — a display rounding, not a rule.
 
+Intelligent (21 Nov 2026): `iog` with no devices, a metered EV charger beside the dispatches, the
+car seen only through its dispatches (`iog_ev_only`), and that car beside a battery
+(`iog_dispatch`), and that on IOG-SMB with Octopus's breakdown cached for part of it (`iog_smb`). The
+car beside a battery is where the surfaces parted: the Bill card and Usage Stats kept the car in
+Direct where the Overview and the day charts carved it out; the agreement tests fail on it on the
+parent.
+
 DISCRIMINATING: on the tree before the rule (2026-10-06, 97f40a5) the agreement tests failed on the
 over-the-main fixture and on Agile; with every grid share clipped by the split as it now is, they
 are guards there. `e7_gap` is the one fixture the rule's floor still acts on.
@@ -105,6 +112,8 @@ class _Fixture:
         for mid, m in (self.cfg.get("meters") or {}).items():
             if ((m.get("meta") or {}).get("meter_type") or "").startswith("ev"):
                 self.ev = mid
+        # The car's line: its meter's id, or "ev" where Octopus's dispatches are all there is of it.
+        self.ev_key = self.ev or "ev"
 
     def close(self):
         import store_access
@@ -156,7 +165,7 @@ class _Fixture:
         direct = out.pop("Direct import")
         # The card prints a section for a device that drew nothing; the other surfaces leave
         # it out (as on the flat fixture, where nothing is cheap enough for the devices).
-        return direct, {(self.ev if _norm(k) == "ev" else _norm(k)): v for k, v in out.items()
+        return direct, {(self.ev_key if _norm(k) == "ev" else _norm(k)): v for k, v in out.items()
                         if v[0] > 0.001 or v[1] > 0.001}
 
     def overview(self, days):
@@ -172,7 +181,7 @@ class _Fixture:
             if name == "Direct import":
                 direct = (kwh, r["cost"])
             elif r["label"].startswith("↳"):
-                devs[_norm(self.ev if name == "EV" else name)] = (kwh, r["cost"])
+                devs[self.ev_key if name == "EV" else _norm(name)] = (kwh, r["cost"])
         return direct, devs
 
     def usage(self, days):
@@ -185,7 +194,26 @@ class _Fixture:
                 a[0] += m.get("imp_kwh") or 0.0
                 a[1] += m.get("imp_cost") or 0.0
         direct = tuple(acc.pop("electricity_main"))
-        return direct, {_norm(k): tuple(v) for k, v in acc.items() if v[0] > 0.001 or v[1] > 0.001}
+        return direct, {(self.ev_key if k == "ev_dispatch" else _norm(k)): tuple(v)
+                        for k, v in acc.items() if v[0] > 0.001 or v[1] > 0.001}
+
+    def flow(self, days):
+        """Flow's rate brackets (`fields=brackets`) over the window, each series' kWh and £ summed —
+        the house (Direct), each device and the car (`ev_dispatch`)."""
+        j = self.client.get("/api/energy?resolution=day&kind=range&start=%s&end=%s&fields=brackets"
+                            % days).get_json()["brackets"]
+        acc = {}
+        for r in j["rows"]:
+            for series, brackets in r["b"].items():
+                if series in ("meter", "export"):
+                    continue
+                a = acc.setdefault(series, [0.0, 0.0])
+                for k, c, _g in brackets.values():
+                    a[0] += k
+                    a[1] += c
+        direct = tuple(acc.pop("electricity_main", (0.0, 0.0)))
+        return direct, {(self.ev_key if k == "ev_dispatch" else _norm(k)): tuple(v)
+                        for k, v in acc.items() if v[0] > 0.001 or v[1] > 0.001}
 
     def insights(self, days):
         lo, hi = self._utc(days)
@@ -207,7 +235,7 @@ class _Fixture:
                 a[0] += line["kwh"] or 0.0
                 a[1] += line["cost"] or 0.0
         direct = tuple(acc.pop("electricity_main"))
-        return direct, {(self.ev if _norm(k) in ("ev", "ev_dispatch") else _norm(k)): tuple(v)
+        return direct, {(self.ev_key if _norm(k) in ("ev", "ev_dispatch") else _norm(k)): tuple(v)
                         for k, v in acc.items() if v[0] > 0.001 or v[1] > 0.001}
 
 
@@ -279,6 +307,102 @@ class EverySurfaceAgrees(unittest.TestCase):
                     self.assertGreater(s["excess"][0], 1.0)
                 elif not key[0].startswith("e7_gap"):
                     self.assertAlmostEqual(s["excess"][0], 0.0, places=6)
+
+
+class TheCarBesideADevice(unittest.TestCase):
+    """Intelligent, no EV sensor, a battery (21 Nov 2026): the car is its own line on every surface,
+    Flow's brackets included. Before, the Bill card and Usage Stats showed it only where there were
+    no devices at all and left it inside Direct here, while the Overview and the day charts carved it
+    out — 128 kWh apart in the billing period. DISCRIMINATING: fails on the parent (no `ev` on the
+    Bill card; on Flow, no `ev_dispatch` series beside a device)."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.fx = _Fixture("iog", "dispatch")
+        cls.days = WINDOWS[0][2]
+        cls.bill = cls.fx.bill(WINDOWS[0][1])
+        cls.flow = cls.fx.flow(cls.days)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.fx.close()
+
+    def test_the_bill_has_the_car_and_the_battery(self):
+        self.assertEqual(sorted(self.bill[1]), ["ev", "house_battery"])
+        self.assertGreater(self.bill[1]["ev"][0], 100.0)
+
+    def test_flow_has_the_car_beside_the_battery_as_the_bill_does(self):
+        self.assertEqual(sorted(self.flow[1]), sorted(self.bill[1]))
+        for series in ("ev", "house_battery"):
+            with self.subTest(series=series):
+                self.assertAlmostEqual(self.flow[1][series][0], self.bill[1][series][0], places=2)
+                self.assertLessEqual(abs(self.flow[1][series][1] - self.bill[1][series][1]), PENNY)
+        self.assertAlmostEqual(self.flow[0][0], self.bill[0][0], places=2)
+
+
+class OctopusSplitBesideADevice(unittest.TestCase):
+    """IOG-SMB, no EV sensor, a battery (`iog_smb`, 21 Nov 2026): where Octopus's house/EV breakdown is
+    cached (to 30 Sep), the car's line on every surface is Octopus's EV, not the dispatches' — less on
+    the 24th, none on the 26th, and a charge on the 21st no dispatch recorded (`smb_bill`). After it,
+    the dispatches. DISCRIMINATING: on the parent the Bill card, Usage Stats and Flow had no car line
+    beside the battery (#207's gate)."""
+
+    SURFACES = ("Bill card", "Overview card", "Usage Stats", "Day charts", "Flow")
+
+    @classmethod
+    def setUpClass(cls):
+        import tariff_fixtures as T
+        cls.T = T
+        cls.fx = _Fixture("iog", "smb")
+        cls.seen = {}
+        for label, query, days in WINDOWS:
+            cls.seen[label] = {"Bill card": cls.fx.bill(query), "Overview card": cls.fx.overview(days),
+                               "Usage Stats": cls.fx.usage(days), "Day charts": cls.fx.day_charts(days),
+                               "Flow": cls.fx.flow(days)}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.fx.close()
+
+    def _expected(self, days):
+        """(Octopus's EV kWh, the dispatches' EV kWh) over the window's half-hours."""
+        from datetime import date, datetime, timedelta, timezone
+        T = self.T
+        lo, hi = _Fixture._utc(days)
+        span = lambda x: x.astimezone(timezone.utc).replace(tzinfo=None)
+        t = max(datetime.fromisoformat(lo), span(T.FROM))          # the fixture's half-hours only
+        end = min(datetime.fromisoformat(hi), span(T.TO))
+        bill = disp = 0.0
+        while t < end:
+            loc = t.replace(tzinfo=timezone.utc).astimezone(T.LONDON)
+            hm = loc.hour * 60 + loc.minute
+            ev = T._ev_draw("iog", "smb", loc, hm)
+            b = T.smb_bill(loc, hm, 0.0)
+            bill += b["ev_kwh"] if b else (ev if T.dispatched(loc, hm) else 0.0)
+            disp += ev if T.dispatched(loc, hm) else 0.0
+            t += timedelta(minutes=30)
+        return bill, disp
+
+    def test_september_is_octopus_split_on_every_surface(self):
+        want, disp = self._expected(WINDOWS[1][2])
+        self.assertGreater(abs(want - disp), 10.0, "the fixture's bills must disagree with the dispatches")
+        for surface in self.SURFACES:
+            with self.subTest(surface=surface):
+                got = self.seen["September"][surface][1].get("ev", (0.0, 0.0))[0]
+                self.assertAlmostEqual(got, want, places=2)
+
+    def test_the_battery_keeps_its_line(self):
+        for surface in self.SURFACES:
+            with self.subTest(surface=surface):
+                self.assertIn("house_battery", self.seen["September"][surface][1])
+
+    def test_after_the_bills_the_dispatches(self):
+        want, disp = self._expected(WINDOWS[0][2])
+        self.assertAlmostEqual(want, disp, places=6)              # the window is all unbilled
+        for surface in self.SURFACES:
+            with self.subTest(surface=surface):
+                self.assertAlmostEqual(self.seen["billing period from 3 Oct"][surface][1]["ev"][0],
+                                       want, places=2)
 
 
 class TheDeviceReadingsAreKept(unittest.TestCase):

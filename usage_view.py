@@ -644,7 +644,9 @@ def _ev_rows(store, cfg, meters, utc_start, utc_end):
     returned, in block order. The instants are the ones that can carry EV: an EV split
     (ev_split), a completed dispatch, or, with an EV sub-meter, that meter's blocks."""
     ev_mid = _configured_ev_meter_id(cfg)
-    dispatch = ev_mid is None and len(meters) == 1 and meters[0]["id"] == "electricity_main"
+    # Octopus's car wherever no EV meter is configured, whatever other devices there are
+    # (21 Nov 2026, as the day charts, the Overview and the bill's breakdown have it).
+    dispatch = ev_mid is None
     if ev_mid is None and not dispatch:
         return []
     instants = _evsplit.sql_instants()
@@ -676,8 +678,10 @@ def _apply_ev(store, cfg, raw, rows, meters, utc_start, utc_end, bucket_of, key_
               per_slot=False):
     """The display-only EV split onto `rows` (in place), bucketed by `bucket_of`.
     `per_slot`: the rows ARE half-hour slots (the HH view)."""
-    if (_configured_ev_meter_id(cfg) is None
-            and len(meters) == 1 and meters[0]["id"] == "electricity_main"):
+    if _configured_ev_meter_id(cfg) is None:
+        # No EV meter: the car is Octopus's split, or a completed dispatch, beside any other device
+        # (21 Nov 2026; it was shown only on an account with no devices at all, while the day
+        # charts and the Overview showed it beside a battery — Direct import 128 kWh apart).
         try:
             drows = store._conn.execute(
                 "SELECT slot_start, kind, energy_kwh FROM dispatch_history "
@@ -941,7 +945,7 @@ def rate_bracket(rate: float) -> int:
     return math.floor(round(float(rate) * 100.0, 4) / RATE_BRACKET_P)
 
 
-EV_SERIES = "ev_dispatch"       # an account with no devices: Octopus's EV split, as the Devices view's
+EV_SERIES = "ev_dispatch"       # an account with no EV meter: Octopus's EV split, as the Devices view's
 
 
 def _add(acc, n, k, c, g=0.0):
@@ -977,7 +981,7 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
       the car's and the house's rates in one half-hour stay apart;
     - a device: its grid kWh (`COALESCE(imp_kwh_grid, imp_kwh)`) at its stored rate, with its
       stored £, so its brackets sum to its device cost;
-    - `ev_dispatch`, on an account with no devices: the car as the Devices view has it
+    - `ev_dispatch`, on an account with no EV meter: the car as the Devices view has it
       (`_ev_slot_share`) — its stored EV slices at their own rates, or a pro-rata share at the
       half-hour's blended rate (Flow design §5, 4 Nov 2026);
     - `electricity_main` (the house, Direct): per half-hour, the meter's bracket less the devices'
@@ -1055,9 +1059,10 @@ def _rate_brackets(store, utc_start, utc_end, bucket_of) -> dict:
             _add(devs.setdefault(bs, {}).setdefault(mid, {}), rate_bracket(rate), k, cost, g)
         if ev_mid is not None:
             _hybrid_ev_brackets(store, ev_mid, ev_main, phys_ev, ev_slices, devs)
-    else:
-        # The car of an account with no devices, half-hour by half-hour as the Devices view splits
-        # it (`_apply_ev`): its dispatches, its stored split, and whether the bill has spoken.
+    if ev_mid is None:
+        # The car of an account with no EV meter, half-hour by half-hour as the Devices view splits
+        # it (`_apply_ev`): its dispatches, its stored split, and whether the bill has spoken. Beside
+        # any other device since 21 Nov 2026 (it was only where there were none).
         ev_by_slot = _dispatch_derived_ev_kwh([
             {"slot_start": r[0], "kind": r[1], "energy_kwh": r[2]} for r in c.execute(
                 "SELECT slot_start, kind, energy_kwh FROM dispatch_history "

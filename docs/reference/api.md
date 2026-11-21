@@ -51,7 +51,7 @@ and `HA_PUBLIC_URL` says where the browser reaches Home Assistant. The design:
 - `include` = `usage`, `carbon`, `billing`, `stats`, `settle` (each half-hour's settlement state), `gaps`.
 - `fields=brackets` (at `day` or `block`): grid import by 2.5p rate bracket (`usage_view._rate_brackets`),
   `{series: {n: [kWh, £, g]}}` per day or half-hour, for `meter`, the house (`electricity_main`), each
-  device, `export`, and on an account with no devices the car (`ev_series`, `ev_dispatch`) by the Devices
+  device, `export`, and on an account with no EV meter the car (`ev_series`, `ev_dispatch`) by the Devices
   view's split. `g` is grams of CO₂ (since 4 Nov 2026, for Flow).
 - Capped: 31 days at `block`, 366 at `period` (`_ENERGY_MAX_DAYS`).
 - `/api/periods` lists the periods to choose from (`kind` = billing, month, quarter, year, live).

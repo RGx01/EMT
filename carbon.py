@@ -83,9 +83,13 @@ def period_ev_saving(rows, unclipped_by_slot: dict) -> dict:
                          renders nothing ⇒ byte-identical.
 
     Shape-agnostic and pure so both carbon surfaces (heatmap, Insights) can consume it without
-    re-implementing the methodology. Single-source: a slot is counted only when dispatch covers
-    it, so the physical EV device is ignored on IOG (mirrors the cost side). Returns the summed
-    grid_g / saving_g / gross_g and the count of blocks that carried a saving.
+    re-implementing the methodology. Single-source: the rows are the MAIN meter's EV split, so the
+    physical EV device is ignored on IOG (mirrors the cost side). A slot with a split and no
+    completed dispatch — Octopus's breakdown stating a charge EMT saw no dispatch for — counts its
+    split as the car's grid kWh with no saving (21 Nov 2026: it was skipped, and its kWh stayed in
+    Insights' house while the bill and every other surface gave it to the car); a saving needs the
+    dispatch's full draw. Returns the summed grid_g / saving_g / gross_g and the count of blocks
+    that carried a saving.
     """
     grid = save = gross = 0.0
     clipped_kwh = 0.0
@@ -99,7 +103,7 @@ def period_ev_saving(rows, unclipped_by_slot: dict) -> dict:
             continue
         u = unclipped_by_slot.get(slot)
         if u is None:
-            continue
+            u = clip                                  # no dispatch: the split, no saving
         e = ev_carbon(unclipped_kwh=u, clipped_kwh=clip,
                       intensity_g=float(intensity or 0.0))
         grid += e["grid_g"]

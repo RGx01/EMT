@@ -69,15 +69,17 @@ class TestHybridEvBilling(unittest.TestCase):
         self.assertEqual(_total_import(sm), ti_before)                # Total Import invariant
         self.assertAlmostEqual(sm["totals"]["EV / Import"]["kwh"], 4.0, places=3)
 
-    def test_no_ev_meter_account_unchanged(self):
-        # no fold_devices + a real sub-meter present -> original bail (byte-identical)
+    def test_no_ev_meter_account_carves_beside_its_devices(self):
+        """No EV meter configured (no fold), other sub-meters present: the car is carved from Direct
+        and the devices are left as they are (21 Nov 2026; the parent bailed, byte-identical, and
+        the Bill card kept the car in Direct where the day charts and the Overview carved it out)."""
         sm = _summary()
-        snap = {k: dict(v) for k, v in sm["totals"].items()}
+        subs = {k: dict(v) for k, v in sm["totals"].items() if v["is_submeter"]}
         ok = ec._inject_ev_breakdown_into_summary(
             sm, [{"start": S1}], {S1: {"kwh": 4.0, "cost": 1.2, "rate": R}}, fold_devices=None)
-        self.assertFalse(ok)
-        self.assertEqual({k: dict(v) for k, v in sm["totals"].items()}, snap)
-
+        self.assertTrue(ok)
+        self.assertEqual({k: dict(v) for k, v in sm["totals"].items() if k in subs}, subs)
+        self.assertAlmostEqual(sm["meters"]["electricity_main / Import"][R]["kwh"], 6.0, places=3)
 
 if __name__ == "__main__":
     unittest.main()
