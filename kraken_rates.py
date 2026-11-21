@@ -681,6 +681,20 @@ def _synthesize_iog_tou_windowed(day_records, night_records,
         return day_records + night_records
 
 
+def _flag_unreadable(kind: str, product_code: str, tariff_code: str, records, sched) -> None:
+    """The REST watch's shape half (21 Nov 2026): Octopus's REST products API has no schema to
+    introspect, so a renamed or reshaped rate record reaches EMT as records that build nothing.
+    Records came back and none was readable: say so loudly, with a greppable token and the fields
+    the first record now carries (names only, no values). Flag only; the caller's empty schedule
+    is handled as it was."""
+    if records and sched.is_empty():
+        first = records[0] if isinstance(records[0], dict) else {}
+        logger.error("kraken_rest_drift: %s for %s/%s — Octopus returned %d record(s) and none "
+                     "was readable; the first carries %s. Octopus's REST API may have changed "
+                     "shape (expected value_inc_vat, valid_from).", kind, product_code,
+                     tariff_code, len(records), sorted(first) or type(records[0]).__name__)
+
+
 async def build_rate_schedule(
     client, product_code: str, tariff_code: str,
     *, vat, period_from: Optional[str] = None, period_to: Optional[str] = None,
@@ -794,6 +808,7 @@ async def build_rate_schedule(
     # rate refresh or first-time connect (the reported setup timeout).
     sched = await asyncio.get_event_loop().run_in_executor(
         None, _build_schedule_and_diag, records, product_code, tariff_code, vat)
+    _flag_unreadable("unit rates", product_code, tariff_code, records, sched)
     return sched
 
 
@@ -905,6 +920,7 @@ async def build_standing_charge_schedule(
                        product_code, tariff_code, str(e) or type(e).__name__)
         return RateSchedule([])
     sched = RateSchedule.from_api_records(records).with_vat(vat)
+    _flag_unreadable("standing charges", product_code, tariff_code, records, sched)
     logger.info("build_standing_charge_schedule: %s/%s → %d periods",
                 product_code, tariff_code, len(sched))
     return sched

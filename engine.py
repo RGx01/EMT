@@ -218,6 +218,10 @@ _kraken_current_agreement_from = None   # current import agreement valid_from (n
 # Standing-charge schedule (single, import-side — the daily standing charge).
 # Stored as £/day after conversion at resolve time, like rates.
 _kraken_standing_schedule = None    # RateSchedule | None
+# The REST watch (21 Nov 2026): the tariff code each cached schedule ("import", "export",
+# "standing") was built for, and the (schedule, tariff) pairs flagged as gone empty.
+_rate_schedule_tariff: dict = {}
+_rest_drift_flagged: set = set()
 _rate_schedule_unsupported: dict | None = None  # set when an active tariff returns
 #   NO standard unit rates — the new IOG time-of-use / 6-hour-cap tariff signature.
 #   Surfaced so a migrated user sees a clear "not yet supported" state, not £0 bills.
@@ -9732,6 +9736,34 @@ def _rate_history_from(channel: str) -> "str | None":
     return since.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _rest_went_empty(key: str, tariff: str, prev, kind: str) -> bool:
+    """The REST watch's emptiness half: True when Octopus's REST API answered a refresh with no
+    `kind` for `tariff`, and the last schedule EMT built for that same tariff had periods.
+
+    Octopus's REST products API has no schema to introspect, so this is how a change there first
+    shows: a tariff that had rates suddenly has none. Said loudly, with a greppable token, once
+    until it answers again; the caller keeps the last-known schedule, as it does when the fetch
+    fails outright, rather than drop working rates. A tariff code EMT had not priced before (a new
+    agreement) is not this, and goes on as it did."""
+    if prev is None or prev.is_empty() or _rate_schedule_tariff.get(key) != tariff:
+        return False
+    if (key, tariff) not in _rest_drift_flagged:
+        _rest_drift_flagged.add((key, tariff))
+        logger.error("kraken_rest_drift: Octopus's REST API returned no %s for %s (%s), which had "
+                     "%d period(s) at the last refresh; keeping those. Octopus's REST API may have "
+                     "changed — check https://developer.oegb-kraken.energy/announcements.",
+                     kind, tariff, key, len(prev))
+    return True
+
+
+def _rest_answered(key: str, tariff: str) -> None:
+    """A schedule built with periods: note its tariff, and say once if it had gone empty."""
+    _rate_schedule_tariff[key] = tariff
+    if (key, tariff) in _rest_drift_flagged:
+        _rest_drift_flagged.discard((key, tariff))
+        logger.info("kraken_rest_drift: %s (%s) has rates from Octopus again", tariff, key)
+
+
 async def _refresh_kraken_rate_schedules() -> None:
     """Build/refresh the cached rate schedules for import and export from the
     discovered tariffs. Cheap (fixed tariffs ≈ 1 record). Failures leave the
@@ -9774,10 +9806,16 @@ async def _refresh_kraken_rate_schedules() -> None:
             logger.warning("_refresh_kraken_rate_schedules: %s build failed: %s",
                            ch, e)
             continue
+        if sched.is_empty() and _rest_went_empty(
+                ch, tariff, (_kraken_rate_schedules or {}).get(ch), "unit rates"):
+            # Not determined: the banner stays as it was, as for a failed fetch.
+            new_cache[ch] = _kraken_rate_schedules[ch]
+            continue
         if ch == "import":
             import_determined = True
         if not sched.is_empty():
             new_cache[ch] = sched
+            _rest_answered(ch, tariff)
             _keep_current_tariff_prices(ch, tariff, "rate", sched)
         elif ch == "import":
             # Fetch SUCCEEDED but the tariff genuinely returns no standard AND no
@@ -9892,7 +9930,12 @@ async def _refresh_kraken_rate_schedules() -> None:
                 vat=_vat_context("import"), period_from=_rate_history_from("import"))
             if not sc.is_empty():
                 _kraken_standing_schedule = sc
+                _rest_answered("standing", imp["tariff_code"])
                 _keep_current_tariff_prices("import", imp["tariff_code"], "standing", sc)
+            else:
+                # Kept either way (an empty answer never replaced it); said when it had periods.
+                _rest_went_empty("standing", imp["tariff_code"], _kraken_standing_schedule,
+                                 "standing charges")
                 logger.info("_refresh_kraken_rate_schedules: standing_charge=%d periods",
                             len(sc))
         except Exception as e:

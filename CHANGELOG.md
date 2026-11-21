@@ -10,6 +10,10 @@ internal name for everything before the first public release and never appears i
 - **EMT talks to Octopus at its new address.** Octopus has moved its API to `api.oegb-kraken.energy`; EMT
   now asks there for your history, rates and bills. The old address still answers for now, and nothing
   else changes: the same API key, the same data.
+- **A change to Octopus's rates feed is said, and your rates are kept.** If Octopus's rates feed answers
+  with no rates for a tariff that had them, or with rates EMT cannot read, EMT now says so in the log
+  (`kraken_rest_drift`), and keeps the rates it had rather than dropping them. Before, the import's rates
+  were dropped and the "tariff not supported" banner showed, and an export tariff's went quietly.
 - **A heat-pump tariff keeps the car's split.** Octopus has added a heat-pump band to its tariffs.
   If a heat pump's use arrives in Octopus's house/car breakdown under a name EMT did not know, EMT set
   aside that half-hour's whole breakdown, car included. It now counts the heat pump as part of the house,
