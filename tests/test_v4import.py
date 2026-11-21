@@ -1023,6 +1023,7 @@ class TheRestore(unittest.TestCase):
         self.live_bytes = open(self.live, "rb").read()
         eng = mock.MagicMock()
         eng.api_import_running.return_value = False
+        eng.attribution_running.return_value = False      # no device rebuild (restore step 1c)
         self.p = [mock.patch.object(self.srv, "DATA_DIR", self.data),
                   mock.patch.object(self.srv, "_share_backup_dir", lambda: self.share),
                   mock.patch.object(self.srv, "_create_backup_zip", lambda label="b": None),
