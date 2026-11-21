@@ -12,6 +12,9 @@ internal name for everything before the first public release and never appears i
   battery, a heat pump — the Overview and Billing's day charts showed it, but the Bill card's breakdown,
   Usage Stats and Flow left it inside Direct import. Every view now shows it the same way. Bill totals do
   not change.
+- **Insights counts a charge Octopus billed to your car.** On IOG-SMB, where Octopus's bill splits house
+  and car, a charge it put on the car that EMT had no dispatch for stayed in the house on Insights'
+  carbon figures. It is the car's now, as on the bill.
 - **EMT talks to Octopus at its new address.** Octopus has moved its API to `api.oegb-kraken.energy`; EMT
   now asks there for your history, rates and bills. The old address still answers for now, and nothing
   else changes: the same API key, the same data.

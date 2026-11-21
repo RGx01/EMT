@@ -26,7 +26,8 @@ apart — a display rounding, not a rule.
 
 Intelligent (21 Nov 2026): `iog` with no devices, a metered EV charger beside the dispatches, the
 car seen only through its dispatches (`iog_ev_only`), and that car beside a battery
-(`iog_dispatch`). The last is where the surfaces parted: the Bill card and Usage Stats kept the car in
+(`iog_dispatch`), and that on IOG-SMB with Octopus's breakdown cached for part of it (`iog_smb`). The
+car beside a battery is where the surfaces parted: the Bill card and Usage Stats kept the car in
 Direct where the Overview and the day charts carved it out; the agreement tests fail on it on the
 parent.
 
@@ -337,6 +338,71 @@ class TheCarBesideADevice(unittest.TestCase):
                 self.assertAlmostEqual(self.flow[1][series][0], self.bill[1][series][0], places=2)
                 self.assertLessEqual(abs(self.flow[1][series][1] - self.bill[1][series][1]), PENNY)
         self.assertAlmostEqual(self.flow[0][0], self.bill[0][0], places=2)
+
+
+class OctopusSplitBesideADevice(unittest.TestCase):
+    """IOG-SMB, no EV sensor, a battery (`iog_smb`, 21 Nov 2026): where Octopus's house/EV breakdown is
+    cached (to 30 Sep), the car's line on every surface is Octopus's EV, not the dispatches' — less on
+    the 24th, none on the 26th, and a charge on the 21st no dispatch recorded (`smb_bill`). After it,
+    the dispatches. DISCRIMINATING: on the parent the Bill card, Usage Stats and Flow had no car line
+    beside the battery (#207's gate)."""
+
+    SURFACES = ("Bill card", "Overview card", "Usage Stats", "Day charts", "Flow")
+
+    @classmethod
+    def setUpClass(cls):
+        import tariff_fixtures as T
+        cls.T = T
+        cls.fx = _Fixture("iog", "smb")
+        cls.seen = {}
+        for label, query, days in WINDOWS:
+            cls.seen[label] = {"Bill card": cls.fx.bill(query), "Overview card": cls.fx.overview(days),
+                               "Usage Stats": cls.fx.usage(days), "Day charts": cls.fx.day_charts(days),
+                               "Flow": cls.fx.flow(days)}
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.fx.close()
+
+    def _expected(self, days):
+        """(Octopus's EV kWh, the dispatches' EV kWh) over the window's half-hours."""
+        from datetime import date, datetime, timedelta, timezone
+        T = self.T
+        lo, hi = _Fixture._utc(days)
+        span = lambda x: x.astimezone(timezone.utc).replace(tzinfo=None)
+        t = max(datetime.fromisoformat(lo), span(T.FROM))          # the fixture's half-hours only
+        end = min(datetime.fromisoformat(hi), span(T.TO))
+        bill = disp = 0.0
+        while t < end:
+            loc = t.replace(tzinfo=timezone.utc).astimezone(T.LONDON)
+            hm = loc.hour * 60 + loc.minute
+            ev = T._ev_draw("iog", "smb", loc, hm)
+            b = T.smb_bill(loc, hm, 0.0)
+            bill += b["ev_kwh"] if b else (ev if T.dispatched(loc, hm) else 0.0)
+            disp += ev if T.dispatched(loc, hm) else 0.0
+            t += timedelta(minutes=30)
+        return bill, disp
+
+    def test_september_is_octopus_split_on_every_surface(self):
+        want, disp = self._expected(WINDOWS[1][2])
+        self.assertGreater(abs(want - disp), 10.0, "the fixture's bills must disagree with the dispatches")
+        for surface in self.SURFACES:
+            with self.subTest(surface=surface):
+                got = self.seen["September"][surface][1].get("ev", (0.0, 0.0))[0]
+                self.assertAlmostEqual(got, want, places=2)
+
+    def test_the_battery_keeps_its_line(self):
+        for surface in self.SURFACES:
+            with self.subTest(surface=surface):
+                self.assertIn("house_battery", self.seen["September"][surface][1])
+
+    def test_after_the_bills_the_dispatches(self):
+        want, disp = self._expected(WINDOWS[0][2])
+        self.assertAlmostEqual(want, disp, places=6)              # the window is all unbilled
+        for surface in self.SURFACES:
+            with self.subTest(surface=surface):
+                self.assertAlmostEqual(self.seen["billing period from 3 Oct"][surface][1]["ev"][0],
+                                       want, places=2)
 
 
 class TheDeviceReadingsAreKept(unittest.TestCase):

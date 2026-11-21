@@ -72,18 +72,25 @@ class TestPeriodEvSaving(unittest.TestCase):
         rows = [
             ("s1", 2.18, I),   # dispatch present, unclipped 2.31 → 0.13 saving
             ("s2", 3.0,  I),   # dispatch present, unclipped 3.0  → no saving
-            ("s3", 1.0,  I),   # NO dispatch for this slot → ignored (physical-only / non-IOG)
+            ("s3", 1.0,  I),   # NO dispatch: Octopus's split alone → the car's grid kWh, no saving
             ("s4", 0.0,  I),   # zero clipped → skipped
         ]
         unclipped = {"s1": 2.31, "s2": 3.0}
         out = carbon.period_ev_saving(rows, unclipped)
         self.assertEqual(out["credit_blocks"], 1)
         self.assertAlmostEqual(out["saving_g"], round(0.13 * I, 4), places=4)
-        # s3 excluded (no dispatch) — single-source: physical device ignored
-        self.assertAlmostEqual(out["clipped_kwh"], round(2.18 + 3.0, 6), places=6)
+        # s3 counted (21 Nov 2026; it was skipped and stayed in Insights' house): grid only
+        self.assertAlmostEqual(out["clipped_kwh"], round(2.18 + 3.0 + 1.0, 6), places=6)
+        self.assertAlmostEqual(out["grid_g"], round((2.18 + 3.0 + 1.0) * I, 4), places=3)
 
     def test_non_iog_zero(self):
-        # no dispatch map at all → zero everything → caller renders nothing (byte-identical)
+        # non-IOG: no EV split rows at all → zero everything → caller renders nothing
+        out = carbon.period_ev_saving([], {})
+        self.assertEqual(out["clipped_kwh"], 0.0)
+        self.assertEqual(out["credit_blocks"], 0)
+
+    def test_a_split_without_a_dispatch_saves_nothing(self):
         out = carbon.period_ev_saving([("s1", 2.0, I)], {})
         self.assertEqual(out["saving_g"], 0.0)
         self.assertEqual(out["credit_blocks"], 0)
+        self.assertAlmostEqual(out["clipped_kwh"], 2.0, places=6)

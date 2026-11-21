@@ -14,10 +14,11 @@ database on hand has (21 Nov 2026):
           dispatch makes off-peak (21 Nov 2026)
 
 each with or without devices (an EV charger and a battery), and Economy 7 with many (five heat
-pumps and three batteries) and with devices that exceed the main meter. Intelligent comes four
+pumps and three batteries) and with devices that exceed the main meter. Intelligent comes five
 ways: no devices, an EV charger metered beside the dispatches (True), the car seen only through its
-dispatches ("ev_only": the EV split carved from the main), and that car beside a battery
-("dispatch"). 20 Sep – 10 Oct 2026, so the 1 Oct
+dispatches ("ev_only": the EV split carved from the main), that car beside a battery
+("dispatch"), and the same on IOG-SMB with Octopus's house/EV breakdown cached to 30 Sep ("smb"),
+disagreeing with the dispatches in places (`smb_bill`). 20 Sep – 10 Oct 2026, so the 1 Oct
 VAT change (5% → 0%) falls inside. Segments and ex-VAT are built the way production builds them:
 the stored inc rate, then v5's own historical re-price sweep with a rate schedule matching the
 tariff. Deterministic — the same arguments give the same database.
@@ -36,6 +37,11 @@ VAT_CHANGE = datetime(2026, 10, 1).date()
 TARIFFS = ("flat", "e7", "go", "agile", "iog")
 IOG_TARIFF = "E-1R-INTELLI-VAR-24-10-29-C"
 IOG_PRODUCT = "INTELLI-VAR-24-10-29"
+# IOG-SMB (Octopus's house/EV breakdown per half-hour): the "smb" variant's agreement. A placeholder
+# code — `split_at` reads "IOG-SMB" in it, `_is_intelligent_code` "IOG".
+SMB_TARIFF = "E-1R-IOG-SMB-25-01-01-C"
+SMB_PRODUCT = "IOG-SMB-25-01-01"
+SMB_BILLED_TO = datetime(2026, 9, 30).date()     # Octopus's breakdown is cached to here (local days)
 EV_DISPATCH_KWH = 3.2
 
 
@@ -127,7 +133,7 @@ def _devices(devices):
         return hps + bats
     if devices == "ev_only":
         return []
-    if devices == "dispatch":
+    if devices in ("dispatch", "smb"):
         return [("house_battery", "battery", lambda loc, hm, cheap: 1.1 if cheap else 0.0)]
     if devices:
         return [("ev_charger", "ev_charger",
@@ -143,10 +149,44 @@ def dispatched(loc, hm):
 
 
 def _ev_draw(tariff, devices, loc, hm):
-    """What the car draws in this half-hour on an Intelligent fixture (0 elsewhere): its dispatches."""
-    if tariff == "iog" and devices in (True, "dispatch", "ev_only") and dispatched(loc, hm):
+    """What the car draws in this half-hour on an Intelligent fixture (0 elsewhere): its dispatches,
+    and on "smb" also 1.5 kWh at 15:00 on the 21st that no dispatch recorded (a charge Octopus's
+    breakdown states and EMT's record does not)."""
+    if tariff != "iog" or devices not in (True, "dispatch", "ev_only", "smb"):
+        return 0.0
+    if dispatched(loc, hm):
         return EV_DISPATCH_KWH
+    if devices == "smb" and _undispatched(loc, hm):
+        return 1.5
     return 0.0
+
+
+def _undispatched(loc, hm):
+    return loc.day == 21 and loc.month == 9 and hm == 900
+
+
+def smb_bill(loc, hm, main, tariff="iog"):
+    """Octopus's breakdown for an "smb" half-hour, as the four-bucket fetch caches it, or None where
+    none is cached (after SMB_BILLED_TO): {home_kwh, home_rate, ev_kwh, ev_rate} (£/kWh inc VAT).
+    Against the dispatches it says: the same EV on most; less on the 24th (2.0 of 3.2 kWh); none on
+    the 26th, its daytime charge billed to the house at peak; and the undispatched 1.5 kWh on the
+    21st at peak. A dispatched half-hour is off-peak, as Intelligent bills one."""
+    if loc.date() > SMB_BILLED_TO:
+        return None
+    utc = loc.astimezone(timezone.utc).replace(tzinfo=None)
+    day = datetime(loc.year, loc.month, loc.day, 2, tzinfo=LONDON).astimezone(timezone.utc).replace(tzinfo=None)
+    lo = inc_rate(tariff, day)                                 # 02:00 local: the window
+    hi = inc_rate(tariff, day + timedelta(hours=10))           # 12:00 local: peak
+    clock = inc_rate(tariff, utc)
+    ev, ev_rate, home_rate = 0.0, lo, clock
+    if dispatched(loc, hm):
+        if loc.day == 26:
+            ev, home_rate = 0.0, (hi if clock > lo else lo)
+        else:
+            ev, home_rate = (2.0 if loc.day == 24 else EV_DISPATCH_KWH), lo
+    elif _undispatched(loc, hm):
+        ev, ev_rate = 1.5, hi
+    return {"home_kwh": round(main - ev, 4), "home_rate": home_rate, "ev_kwh": ev, "ev_rate": ev_rate}
 
 
 def _unmetered(devices, loc, hm, cheap):
@@ -207,6 +247,7 @@ def build(path, tariff, devices=False):
     end = TO.astimezone(timezone.utc).replace(tzinfo=None)
     rows = []
     dispatches = []
+    bills = []
     bs_of = lambda x: x.isoformat()
     while t < end:
         loc = t.replace(tzinfo=timezone.utc).astimezone(LONDON)
@@ -222,9 +263,13 @@ def build(path, tariff, devices=False):
         dev_total = sum(k for _, k in draws)
         # A car seen only through its dispatches is in the main meter and no device's reading.
         main = round(house + dev_total - sum(extra.values())
-                     + (ev if devices in ("dispatch", "ev_only") else 0.0), 4)
-        if ev:
+                     + (ev if devices in ("dispatch", "ev_only", "smb") else 0.0), 4)
+        if ev and dispatched(loc, hm):
             dispatches.append((bs_of(t), ev))
+        if devices == "smb":
+            b = smb_bill(loc, hm, main, tariff)
+            if b:
+                bills.append((bs_of(t), main, b))
         bs, be = t.isoformat(), (t + timedelta(minutes=30)).isoformat()
         interp = 1 if (devices == "gap" and extra) else 0
         # What _apply_pass2 writes on a finalised block: each device's grid share
@@ -256,12 +301,19 @@ def build(path, tariff, devices=False):
                                 energy_completed=kwh, captured_at=seen)
         st.record_dispatch_history(slot, "completed", energy_kwh=-kwh, seen_at=seen,
                                    refresh_seen=False)
-    _sweep(st, tariff)
+    for slot, main, b in bills:
+        # As the measurement fetch and the four-bucket fetch cache them: the half-hour's cost, then
+        # its house/EV split on the same row.
+        st.upsert_measured_cost(slot, mpan="2600000000001", label="IOG-SMB",
+                                cost_incl=round(b["home_kwh"] * b["home_rate"] + b["ev_kwh"] * b["ev_rate"], 6),
+                                kwh=main, fetched_at="2026-10-02T00:00:00")
+        st.upsert_measured_breakdown(slot, mpan="2600000000001", **b)
+    _sweep(st, tariff, devices)
     st.close()
     return path
 
 
-def _sweep(st, tariff):
+def _sweep(st, tariff, devices=False):
     """The history settled as an upgrade or an import leaves it: the settle sweep (engine step 4d;
     the history reprice sweep until 4e), priced from the fixture's schedule."""
     import engine
@@ -270,7 +322,7 @@ def _sweep(st, tariff):
     job_coordinator.reset_for_tests()
     engine._AGREEMENT_WINDOWS.clear()
     with mock.patch.object(engine, "_store", st), \
-         mock.patch.object(engine, "_kraken_discovery", discovery(tariff)), \
+         mock.patch.object(engine, "_kraken_discovery", discovery(tariff, devices)), \
          mock.patch.object(engine, "_stored_agreements", None), \
          mock.patch.object(engine, "_kraken_rate_schedules", {"import": sched}), \
          mock.patch.object(engine, "_SETTLE_HISTORY_PACE_S", 0), \
@@ -280,13 +332,15 @@ def _sweep(st, tariff):
     job_coordinator.reset_for_tests()
 
 
-def discovery(tariff):
+def discovery(tariff, devices=False):
     """What Octopus's discovery holds for the fixture: an Intelligent agreement for `iog`, so
-    `tariff_kind_at` reads it Intelligent; nothing for the others, as before."""
+    `tariff_kind_at` reads it Intelligent — IOG-SMB for "smb", so `split_at` takes Octopus's split;
+    nothing for the others, as before."""
     if tariff != "iog":
         return None
-    return {"import": {"mpan": "2600000000001", "tariff_code": IOG_TARIFF, "product_code": IOG_PRODUCT,
-                       "agreements": [{"tariff_code": IOG_TARIFF, "valid_from": "2026-01-01T00:00:00Z",
+    code, product = (SMB_TARIFF, SMB_PRODUCT) if devices == "smb" else (IOG_TARIFF, IOG_PRODUCT)
+    return {"import": {"mpan": "2600000000001", "tariff_code": code, "product_code": product,
+                       "agreements": [{"tariff_code": code, "valid_from": "2026-01-01T00:00:00Z",
                                        "valid_to": None}]}}
 
 
