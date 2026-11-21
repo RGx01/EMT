@@ -1,8 +1,14 @@
 # EMT v5 — a device history rebuild that is cut off
 
+> **History — a design record.** What was decided, when and why, as it stood then; parts describe code
+> that has since changed. How it works today: [reference/data-management-and-devices.md](../../reference/data-management-and-devices.md)
+> and the code. PR numbers (`#NNN`) are in this repository, `RGx01/EMT`: Phase 2 #211, Phase 1 #212,
+> Phase 3 the PR after.
+
 *Status: decided 21 Nov 2026 (the user: "write the design note and start Phase 2"). Phase 2 built
 21 Nov 2026 (`_restore_worker` step 1c, `engine.database_replaced`); Phase 1 built 21 Nov 2026
-(the ledger run from its start, `mark_cut_off_rebuilds`, the card); Phase 3 to follow. Evidence from the owner's soak Pi on `dev`, 21 Nov 2026.*
+(the ledger run from its start, `mark_cut_off_rebuilds`, the card); Phase 3 built 21 Nov 2026
+(`_rebuild_refuses_backup`, the daily copy's wait). All three built: the note moved to history. Evidence from the owner's soak Pi on `dev`, 21 Nov 2026.*
 
 ---
 
@@ -91,6 +97,11 @@ device drew nothing, whose split does not depend on it.
 - *Backup now* is refused while a rebuild runs, saying which device.
 - The daily copy waits for it to end, and is taken anyway after a few hours, so a stuck run cannot
   stop backups.
+- **As built:** `/api/backup` and `/api/backup/create` answer 409 `rebuild_running`, naming the device
+  (the restore page's pre-restore copy is non-fatal; the restore stops the rebuild and takes its own).
+  The daily copy already runs only in two 10-minute windows from 03:15 and 03:45 and skips busy ones; a
+  rebuild is busy while the last copy is under 48 hours old, so a stuck or long-paused rebuild costs at
+  most a night's copy. EMT's own pre-change backups are not refused: they are taken before the run.
 
 ## 4. Rejected
 

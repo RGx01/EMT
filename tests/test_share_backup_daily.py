@@ -35,7 +35,7 @@ from block_store import BlockStore                # noqa: E402
 BST_0316 = datetime(2026, 10, 4, 2, 16)
 
 
-class TheDailyCopy(unittest.TestCase):
+class _Daily(unittest.TestCase):
 
     def setUp(self):
         C.reset_for_tests()
@@ -60,6 +60,9 @@ class TheDailyCopy(unittest.TestCase):
 
     def _due(self, when):
         return engine._maybe_daily_share_backup(when)
+
+
+class TheDailyCopy(_Daily):
 
     def test_it_runs_once_in_the_early_hours(self):
         self.assertTrue(self._due(BST_0316))
@@ -93,6 +96,32 @@ class TheDailyCopy(unittest.TestCase):
             self.assertFalse(self._due(BST_0316), job)
             C.mark(job, status="done")
         self.assertTrue(self._due(BST_0316), "free again: the next window runs it")
+
+
+class ADeviceHistoryRebuild(_Daily):
+    """Interrupted rebuild design §3, Phase 3 (21 Nov 2026): a copy taken while a device's history is
+    being rebuilt holds it half done, so the copy waits — but only while the last copy is under 48
+    hours old: a rebuild stuck or long paused must not stop the copies. The first fails on the parent,
+    which copies through the rebuild; the second is a GUARD and passes there."""
+
+    def _last_copy(self, hours_before):
+        p = os.path.join(self.dir, "blocks.db")
+        open(p, "w").close()
+        t = (BST_0316.replace(tzinfo=__import__("datetime").timezone.utc).timestamp()
+             - hours_before * 3600)
+        os.utime(p, (t, t))
+
+    def test_it_waits_while_a_rebuild_runs(self):
+        self._last_copy(24)
+        with mock.patch.object(engine, "attribution_running", lambda m=None: True):
+            self.assertFalse(self._due(BST_0316))
+        self.assertEqual(self.started, [])
+        self.assertTrue(self._due(BST_0316), "rebuild done: the next window runs it")
+
+    def test_GUARD_not_when_the_last_copy_is_two_days_old(self):
+        self._last_copy(49)
+        with mock.patch.object(engine, "attribution_running", lambda m=None: True):
+            self.assertTrue(self._due(BST_0316))
 
 
 class TheFinalise(unittest.TestCase):
