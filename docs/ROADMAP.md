@@ -32,9 +32,6 @@ missing and where it stands; the done history, with every decision's story, is i
   (`TimeOfUseBandUsageType`, 5 Oct 2026). Whether a domestic IOG account may query it, whether it is
   populated, and whether its band totals match the bill would make it a settlement cross-check. Needs
   an authenticated query on a real account.
-- **A settlement re-run flag per channel.** `blocks.needs_pass2_rerun` is one flag a block for both
-  channels (block_store.py, the `blocks` DDL); the schema notes (§4) proposed one per channel.
-  Undecided.
 - **Comparing eras.** Home eras mark the home's changes on the charts; usage, cost and carbon *per
   era*, compared like for like, is not built (history G.1).
 - **The writer thread, held in reserve** (A.1). On an SD card single commits stall the loop 2–6 s for
@@ -54,6 +51,12 @@ missing and where it stands; the done history, with every decision's story, is i
 
 ## Resolved since the record
 
+- **A settlement re-run flag per channel** (21 Nov 2026; the user: "close the re-run flag per
+  channel"). `blocks.needs_pass2_rerun` stays one flag a block. The schema notes (§4) proposed one per
+  channel for v4 #453: an export-only settlement re-priced the import against unchanged kWh and
+  rewrote a settled-looking block. Since engine step 4b the re-run prices the import through
+  `settle()`, from the facts (`_rerun_pass2_for_settled_block`), so with the import's facts unchanged
+  it derives what the block holds; a single flag costs a redundant pass, not a wrong figure.
 - **EMT's own `/share` folder** (21 Nov 2026; the user: "we just leave as is"). Backups stay in v4's
   namespace, `/share/energy_meter_tracker_backup[_<site>]`, as v4 names them: each install owns its
   folder by the `.emt_instance` marker, so v4 and EMT installs on one machine never share one
