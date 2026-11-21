@@ -818,11 +818,13 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
     <h2>Overview {{ help_q('overview') }}</h2>
     <div class="sub">Your energy at a glance</div>
   </div>
-  <div style="font-size:12px;color:var(--muted);">
+  <div style="font-size:12px;color:var(--muted);display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px;">
     {% if has_power_sensor %}
-    <span class="status-dot live" id="status-dot"></span>
-    <span id="status-text">Connecting...</span>
+    <span><span class="status-dot live" id="status-dot"></span>
+    <span id="status-text">Connecting...</span></span>
     {% endif %}
+    {# the settlement pill (_settle_pill.html), as on Charts (21 Nov 2026, the user) #}
+    <span id="dcc-settle-note" class="dcc-settle-note" style="display:none;"></span>
   </div>
 </div>
 {% endblock %}
@@ -2318,6 +2320,7 @@ function refreshBilling() {
         if (p) updateBillingCard(c[0], p.net_cost, p.rows, p.label, BILL_CURRENCY);
       });
       if (tok) _billToken = tok;
+      _billRedrawPill();
     })
     // A failed refresh keeps the cards as they are — it showed "undefinedNaN" on a
     // card already drawn, from an error body read as data.
@@ -2383,6 +2386,10 @@ function checkBillingChanged() {
   });
 }
 setInterval(checkBillingChanged, 60000);
+
+// The settlement pill (_settle_pill.html) is redrawn with the cards, and when the tab comes back.
+function _billRedrawPill() { try { if (window._loadSettleNote) window._loadSettleNote(); } catch (e) {} }
+document.addEventListener('visibilitychange', function() { if (!document.hidden) _billRedrawPill(); });
 
 // Load billing immediately on page load, then schedule future refreshes
 // Billing — defer 300ms so power gauge renders first
@@ -3654,4 +3661,5 @@ setInterval(_phLoad, 30000);
 })();
 {% endif %}
 </script>
+{% include "_settle_pill.html" %}
 {% endblock %}

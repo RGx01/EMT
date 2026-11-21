@@ -14,6 +14,10 @@ internal name for everything before the first public release and never appears i
 - **Live Power's cost cards keep up.** Today, This Bill and This Year updated once, a minute after each
   half-hour, so a half-hour EMT finished later than that, or a bill arriving in between, waited half an
   hour to show. They now update within about a minute of anything changing.
+- **The settlement pill is on the Overview too.** The pill at the top of Charts that counts half-hours still
+  waiting for Octopus (their kWh, their bill, their split) now shows at the top of the Overview as well,
+  and works the same: a click opens Data Management on them, a right-click or long press retries
+  settlement.
 
 ## [2026.11.0b30] — 2026-11-21
 
