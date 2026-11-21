@@ -28,10 +28,6 @@ missing and where it stands; the done history, with every decision's story, is i
   `bucket_side`, `_parse_breakdown_node`). Before, a bare `HP_DEVICE` refused the whole half-hour's
   breakdown. Still unseen: whether a heat-pump tariff's bill should price the heat-pump device apart
   from the house, the work when the first log line appears.
-- **Octopus's REST API is not watched.** GraphQL deprecations and schema changes open issues weekly
-  (`.github/workflows/graphql-deprecations.yml`); the REST products API, where tariff rates come from,
-  has no schema to introspect. A refresh that suddenly returns nothing, or a different shape, for a
-  tariff that had rates is the signal to surface.
 - **`timeOfUseUsage`, unprobed** (BL-77 item 3). Kraken added per-band usage
   (`TimeOfUseBandUsageType`, 5 Oct 2026). Whether a domestic IOG account may query it, whether it is
   populated, and whether its band totals match the bill would make it a settlement cross-check. Needs
