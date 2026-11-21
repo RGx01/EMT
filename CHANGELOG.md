@@ -5,13 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b31] — 2026-11-21
 
 - **Billing shows a new half-hour without a reload.** Opened or reloaded just before a half-hour arrived,
   Billing (and Heatmaps) could miss it until something else changed, often the next half-hour, and the refresh just after
   each half-hour only redrew what was already on the page. Billing now takes each new half-hour within
   about a minute, however recently the page was opened.
-- **Live Power's cost cards keep up.** Today, This Bill and This Year updated once, a minute after each
+- **The Overview's cost cards keep up.** Today, This Bill and This Year updated once, a minute after each
   half-hour, so a half-hour EMT finished later than that, or a bill arriving in between, waited half an
   hour to show. They now update within about a minute of anything changing.
 - **The settlement pill is on the Overview too.** The pill at the top of Charts that counts half-hours still
