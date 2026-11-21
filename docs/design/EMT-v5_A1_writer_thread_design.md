@@ -106,9 +106,13 @@ than step 0's question suggested it might be.
 
 ### Step 1 — the writer
 
-- A `WriterThread`: one thread, owning the engine's `WriteStore` (opened on that thread), with
-  `await run_write(unit)`. Exceptions propagate to the awaiting coroutine. `store_access.writer()`'s
-  affinity check moves to the writer thread.
+- A `WriterThread`: one thread, owning the engine's `BlockStore` (opened on that thread), with
+  `await run_write(unit)`. Exceptions propagate to the awaiting coroutine. The thread check is the
+  connection's own — SQLite refuses it on any other thread — so a write reached from the loop fails
+  at once. *(Amended 21 Nov 2026: this said the engine's `WriteStore`, and that
+  `store_access.writer()`'s affinity check would move here. Both were deleted that day, unused:
+  `WriteStore` was `BlockStore` with nothing added, and `writer()` would have opened a second write
+  connection beside the engine's.)*
 - **A ratchet**, as A's was: a structural tool counts engine code that touches `_store` on the loop
   thread outside a unit. It may only fall. Test fixtures keep a synchronous path (the writer runs
   units inline when no thread is started), so the suite's direct `engine._store` use keeps working.

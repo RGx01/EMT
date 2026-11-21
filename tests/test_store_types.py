@@ -8,7 +8,12 @@ thing genuinely unreachable" — the two properties that make the split structur
 rather than a naming convention:
 
   1. a read path cannot write, because the attribute is absent;
-  2. the writer cannot be reached from the wrong thread.
+  2. reads are per thread, and see what the engine's store commits.
+
+The writer side was `store_access.writer()` / `WriteStore` until 21 Nov 2026, when both were
+deleted: nothing in production called them, the engine writes through its own `BlockStore`, and
+that connection's thread affinity is SQLite's own check (`tests/test_thread_affinity.py`). Here a
+`BlockStore` opened on the test's thread stands in for the engine's.
 """
 import json
 import os
@@ -23,7 +28,7 @@ sys.path.insert(0, _ROOT)
 
 import store_access                                    # noqa: E402
 from block_store import BlockStore                     # noqa: E402
-from store_types import ReadStore, WriteStore          # noqa: E402
+from store_types import ReadStore                      # noqa: E402
 
 _BASE = os.path.join(_ROOT, ".build", "store_split_baseline.json")
 _GEN = os.path.join(_ROOT, ".build", "gen_store_types.py")
@@ -41,9 +46,9 @@ class TestAcceptance1_NoReadPathCanWrite(unittest.TestCase):
             cls.base = json.load(fh)
 
     def test_no_write_method_appears_on_readstore(self):
-        """The invariant is ONE-WAY. `WriteStore` must be able to read — 40 of
-        the 93 writers (43%) run their own SELECT or call a read method — so the
-        two types are not disjoint. What must never happen is a writer showing up
+        """The invariant is ONE-WAY. The engine's `BlockStore` must be able to read
+        — 40 of the 93 writers (43%) run their own SELECT or call a read method —
+        so the two are not disjoint. What must never happen is a writer showing up
         on the read type."""
         # Dunders are excluded: `__init__` is classified a writer because
         # BlockStore's builds the schema, but ReadStore defines its OWN, which is
@@ -61,10 +66,10 @@ class TestAcceptance1_NoReadPathCanWrite(unittest.TestCase):
                          "a read path would have to reach for the writer to get: "
                          "%s" % missing)
 
-    def test_readstore_is_a_subset_of_the_writer(self):
+    def test_readstore_is_a_subset_of_the_engines_store(self):
         pub = lambda t: {m for m in dir(t) if not m.startswith("_")}
-        self.assertTrue(pub(ReadStore) <= pub(WriteStore),
-                        "the writer must be able to do anything a reader can")
+        self.assertTrue(pub(ReadStore) <= pub(BlockStore),
+                        "the engine's store must be able to do anything a reader can")
 
     def test_there_is_no_getattr_escape_hatch(self):
         """A catch-all forwarder would restore every attribute the type exists to
@@ -88,41 +93,25 @@ class TestAcceptance1_NoReadPathCanWrite(unittest.TestCase):
         its own connection. A safe call that can hand back the unsafe object is
         not a boundary."""
         src = open(os.path.join(_ROOT, "store_access.py"), encoding="utf-8").read()
-        body = src.split("def store()")[1].split("def writer()")[0]
-        self.assertNotIn("WriteStore(", body)
-        self.assertNotIn("writer()", body)
+        body = src.split("def store()")[1].split("def close_retired()")[0]
+        self.assertNotIn("BlockStore(", body)
+        self.assertNotIn("_store", body.replace("store()", ""))
 
 
-class TestAcceptance2_WriterIsThreadAffine(unittest.TestCase):
+class TestAcceptance2_ReadsPerThread(unittest.TestCase):
 
     def setUp(self):
         store_access.reset_for_tests()
-        store_access.bind(_tmpdb_with_schema())
+        self.path = _tmpdb_with_schema()
+        store_access.bind(self.path)
+        self.engine_store = BlockStore(self.path)       # the engine's, on this thread
 
     def tearDown(self):
+        self.engine_store.close()
         store_access.reset_for_tests()
 
-    def test_writer_on_the_engine_thread_works(self):
-        store_access.writer().set_meta("k", "v")
-        self.assertEqual(store_access.store().get_meta("k"), "v")
-
-    def test_writer_from_another_thread_raises(self):
-        caught = []
-
-        def worker():
-            try:
-                store_access.writer()
-            except Exception as e:
-                caught.append(e)
-
-        t = threading.Thread(target=worker)
-        t.start()
-        t.join()
-        self.assertEqual(len(caught), 1)
-        self.assertIsInstance(caught[0], store_access.WrongThread)
-
     def test_reading_from_another_thread_is_fine(self):
-        store_access.writer().set_meta("k", "cross-thread")
+        self.engine_store.set_meta("k", "cross-thread")
         got = []
         t = threading.Thread(target=lambda: got.append(store_access.store().get_meta("k")))
         t.start()
@@ -136,6 +125,11 @@ class TestAcceptance2_WriterIsThreadAffine(unittest.TestCase):
         t.start()
         t.join()
         self.assertIsNot(main, seen[0])
+
+    def test_there_is_no_writer_accessor(self):
+        """GUARD (21 Nov 2026): a writer reached through `store_access` would open a second write
+        connection beside the engine's, not the engine's own."""
+        self.assertFalse(hasattr(store_access, "writer"))
 
 
 class TestAcceptance6_NoStaleSnapshot(unittest.TestCase):
@@ -166,8 +160,10 @@ class TestAcceptance6_NoStaleSnapshot(unittest.TestCase):
         self.path = _tmpdb()
         BlockStore(self.path).close()          # real file, WAL
         store_access.bind(self.path)
+        self.engine_store = BlockStore(self.path)       # the engine's, on this thread
 
     def tearDown(self):
+        self.engine_store.close()
         store_access.reset_for_tests()
 
     def test_the_fixture_really_is_wal(self):
@@ -180,7 +176,7 @@ class TestAcceptance6_NoStaleSnapshot(unittest.TestCase):
     def test_a_reader_sees_a_write_committed_after_it_first_read(self):
         r = store_access.store()
         self.assertIsNone(r.get_meta("later", None))     # opens the read
-        store_access.writer().set_meta("later", "committed")
+        self.engine_store.set_meta("later", "committed")
         self.assertEqual(store_access.store().get_meta("later", None), "committed",
                          "the reader is pinned to the snapshot it opened with")
 
@@ -201,7 +197,7 @@ class TestAcceptance6_NoStaleSnapshot(unittest.TestCase):
     def test_it_holds_across_several_writes(self):
         r = store_access.store()
         for i in range(3):
-            store_access.writer().set_meta("n", i)
+            self.engine_store.set_meta("n", i)
             self.assertEqual(r.get_meta("n", None), i)
 
 

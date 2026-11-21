@@ -70,7 +70,7 @@ sys.modules["ha_client"] = hc
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import store_access                     # workstream A: store() / writer()
+import store_access                     # workstream A: store(), the per-thread read store
 # Remove any cached stub from previous test runs before importing the real module
 if "block_store" in sys.modules:
     del sys.modules["block_store"]
@@ -279,8 +279,8 @@ def make_client(blocks=None, store=None):
     # Workstream A: routes no longer write through the request thread — mutations
     # hop to the engine via `_engine_write`. There is no engine loop here, so it
     # is stood in for by a direct call on the test store. The hop ITSELF is not
-    # what these tests are about: `writer()`'s thread affinity is covered in
-    # tests/test_store_types.py, and that no route writes directly is covered by
+    # what these tests are about: the engine connection's thread affinity is covered
+    # in tests/test_thread_affinity.py, and that no route writes directly is covered by
     # the structural check in tests/test_route_store_use.py.
     server._engine_write = lambda op, timeout=30.0: op(server._store)
     # Allow caller to inject a pre-built store (e.g. with custom config periods)

@@ -189,8 +189,9 @@ class ClassifierPutsItOnTheWriteSurface(unittest.TestCase):
     check, which is the documented segfault."""
 
     def test_checkpoint_is_on_the_writer_only(self):
-        from store_types import ReadStore, WriteStore
-        self.assertTrue(hasattr(WriteStore, "checkpoint"))
+        from store_types import ReadStore
+        from block_store import BlockStore
+        self.assertTrue(hasattr(BlockStore, "checkpoint"))
         self.assertFalse(hasattr(ReadStore, "checkpoint"),
                          "a checkpoint on the read surface has no thread guard")
 

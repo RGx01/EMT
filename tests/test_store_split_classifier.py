@@ -1,6 +1,7 @@
 """
 The read/write classifier (.build/classify_store_methods.py) decides which of
-BlockStore's 204 methods lives on `ReadStore` and which on `WriteStore`. That is
+BlockStore's 204 methods lives on `ReadStore` and which stay only on the engine's
+`BlockStore` (`WriteStore` until 21 Nov 2026). That is
 workstream A's central boundary, so the classifier is checked against cases
 established by hand before its output is built on.
 
@@ -8,12 +9,13 @@ The two errors are not symmetric, and the tests below are shaped by that:
 
   * a writer mislabelled READ lands on ReadStore and is refused at runtime by
     `query_only` — loud, and any test touching the path catches it;
-  * a reader mislabelled WRITE lands only on WriteStore, so a route needing it
-    reaches for `writer()`. Nothing breaks, nothing complains, and adoption drifts
-    back to v4's 4% — which is the failure this whole workstream exists to stop.
+  * a reader mislabelled WRITE is missing from ReadStore, so a route needing it
+    must hop to the engine's store to read. Nothing breaks, nothing complains, and
+    adoption drifts back to v4's 4% — which is the failure this whole workstream
+    exists to stop.
 
 So `test_no_method_is_undecided` matters more than it looks: an UNDECIDED method
-cannot go on either type, and the temptation is to sweep it into WriteStore.
+cannot go on ReadStore, and the temptation is to leave it to the engine's store.
 """
 import json
 import os
@@ -81,7 +83,7 @@ class TestClassifier(unittest.TestCase):
 
     def test_no_method_is_undecided(self):
         """An undecided method belongs to neither type. Leaving any here invites
-        the safe-looking fix — put it on WriteStore — which is the error that
+        the safe-looking fix — leave it off ReadStore — which is the error that
         silently erodes adoption."""
         self.assertEqual(self.d["undecided"], [],
                          "adjudicate these before building the split")

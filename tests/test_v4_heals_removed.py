@@ -94,10 +94,11 @@ class TheHealsAreGone(unittest.TestCase):
         import sys
         sys.path.insert(0, _ROOT)
         from block_store import BlockStore
-        from store_types import ReadStore, WriteStore
+        from store_types import ReadStore
+        from block_store import BlockStore
         for name in _REMOVED_STORE:
             self.assertFalse(hasattr(BlockStore, name), name)
-            self.assertFalse(hasattr(WriteStore, name), name)
+            self.assertFalse(hasattr(BlockStore, name), name)
             self.assertFalse(hasattr(ReadStore, name), name)
 
     def test_the_done_markers_are_gone_too(self):

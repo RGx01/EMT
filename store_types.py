@@ -6,7 +6,9 @@ DO NOT EDIT: regenerate instead. tests/test_store_types.py fails if this file an
 the classifier disagree.
 
     store()   -> ReadStore   per-thread, read-only, the default
-    writer()  -> WriteStore  engine thread only, raises elsewhere
+
+Writes go through the engine's own `BlockStore` (`engine._store`), on the engine
+thread; a page hands its write to the engine (`_engine_write`).
 
 `ReadStore` binds BlockStore's read methods directly and simply does not define
 the write ones, so a read path cannot write: the attribute is absent. It opens
@@ -15,7 +17,7 @@ reached another way.
 """
 from block_store import BlockStore as _BS
 
-__all__ = ["ReadStore", "WriteStore"]
+__all__ = ["ReadStore"]
 
 
 class ReadStore:
@@ -226,16 +228,3 @@ class ReadStore:
     vat_rate_at = _BS.vat_rate_at
     vat_rate_lookup = _BS.vat_rate_lookup
     whole_house_evidence = _BS.whole_house_evidence
-
-
-class WriteStore(_BS):
-    """The full store: every read method, plus the 90 writers.
-
-    Not a sibling of `ReadStore` but a superset of it — measured, 40 of the 93
-    write methods (43%) need read access, either running their own SELECT or
-    calling a read method. Splitting them would put a read-then-write across two
-    connections and lose the consistency v4 gets for free.
-
-    Thread affinity is enforced by the `writer()` accessor rather than here, so
-    that constructing one in a test does not need the engine loop.
-    """

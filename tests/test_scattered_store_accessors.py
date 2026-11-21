@@ -3,7 +3,7 @@ The last five raw-connection sites in engine.py — A acceptance 5.
 
 Five single SELECTs across five unrelated functions. After this, `engine.py`
 holds NO raw database connection: every read goes through a `ReadStore` method
-and every write through a `WriteStore` one.
+and every write through a `BlockStore` write method (`WriteStore` until 21 Nov 2026).
 
 One of the five needed no new method — `_iog_slot_is_boost` wanted the sources on
 a slot's dispatch rows, which `get_dispatch_history_for_slot` (A2) already
