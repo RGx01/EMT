@@ -11,6 +11,9 @@ internal name for everything before the first public release and never appears i
   Billing (and Heatmaps) could miss it until something else changed, often the next half-hour, and the refresh just after
   each half-hour only redrew what was already on the page. Billing now takes each new half-hour within
   about a minute, however recently the page was opened.
+- **Live Power's cost cards keep up.** Today, This Bill and This Year updated once, a minute after each
+  half-hour, so a half-hour EMT finished later than that, or a bill arriving in between, waited half an
+  hour to show. They now update within about a minute of anything changing.
 
 ## [2026.11.0b30] — 2026-11-21
 
