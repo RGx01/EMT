@@ -16,9 +16,16 @@
                         padding:8px 10px; font-size:13px; border-radius:6px; cursor:pointer; }
   .settle-menu button:hover, .settle-menu button:focus { background:rgba(127,127,127,.15); outline:none; }
   @media (max-width:768px){ .dcc-settle-note { margin-left:6px; padding:4px 8px; font-size:11px; } }
+  /* Where the pill sits: the top bar's right end is one group on every page that shows it, the pill and
+     then a tail of one width (Charts: the gear and PDF; the Overview: Live). The pill's right edge is then
+     the same distance from the window's edge on each page, and it stays put moving between them
+     (21 Nov 2026, the user). The tail is wider than Charts' two buttons (about 125 px). */
+  .topbar-end { display:flex; align-items:center; justify-content:flex-end; flex-wrap:wrap; gap:10px; }
+  .topbar-end .dcc-settle-note { margin-left:0; }
+  .topbar-end-tail { display:flex; align-items:center; justify-content:flex-end; gap:10px; min-width:140px; }
   /* A phone: the pill may wrap, within the page's width. All three stages ran 27 px past a 375 px
      Overview on one line. (Charts also puts it last in its wrapping topbar: charts.html.) */
-  @media (max-width: 560px) { .dcc-settle-note { white-space: normal; max-width: 100%; } }
+  @media (max-width: 560px) { .dcc-settle-note { white-space: normal; max-width: 100%; } .topbar-end-tail { min-width: 0; } }
 </style>
 <script>
 // ── The settlement pill as a way in (BL-95, 1 Nov 2026) ─────────────────────────────────────

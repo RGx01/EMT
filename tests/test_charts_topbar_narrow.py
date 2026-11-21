@@ -31,7 +31,11 @@ class TheNarrowTopbar(unittest.TestCase):
         self.assertNotIn(".topbar { padding: 8px 12px; gap: 6px; flex-wrap: nowrap;", PAGE)
 
     def test_on_a_phone_the_note_goes_last_and_may_wrap(self):
-        m = re.search(r"@media \(max-width: 560px\) \{\s*(\.topbar \.dcc-settle-note \{[^}]*\})", PAGE)
+        # The pill's group (_settle_pill.html, 21 Nov 2026) opens up on a phone, so the note is a child of the
+        # topbar again and can go last.
+        m = re.search(r"@media \(max-width: 560px\) \{\s*/\*[^*]*\*/\s*"
+                      r"\.topbar \.topbar-end, \.topbar \.topbar-end-tail \{ display: contents; \}\s*"
+                      r"(\.topbar \.dcc-settle-note \{[^}]*\})", PAGE)
         self.assertIsNotNone(m)
         rule = m.group(1)
         for part in ("order: 3;", "max-width: 100%;", "white-space: normal;"):

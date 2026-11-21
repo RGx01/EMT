@@ -100,6 +100,8 @@
      the header 506 px wide) and the whole page scrolled sideways. Wider, it all fits one row, in
      its own order. */
   @media (max-width: 560px) {
+    /* the pill's group (_settle_pill.html) opens up, so the note can still go last, under the rest */
+    .topbar .topbar-end, .topbar .topbar-end-tail { display: contents; }
     .topbar .dcc-settle-note { order: 3; margin-left: 0; max-width: 100%; white-space: normal; }
   }
 
@@ -377,10 +379,15 @@
     <button class="chart-tab"        data-chart="heatmap" onclick="showChart('heatmap', this)" title="Heatmaps">🔥<span class="tab-label"> Heatmaps</span></button>
     <button class="chart-tab"        data-chart="bar"     onclick="showChart('bar', this)" title="Usage Stats">📈<span class="tab-label"> Usage Stats</span></button>
   </div>
-  <span id="dcc-settle-note" class="dcc-settle-note" style="display:none;"></span>
-  <button class="btn btn-secondary" onclick="chartsCogMenu(this)" title="Home eras and chart settings" id="charts-cog-btn"
-          aria-haspopup="menu" aria-label="Home eras and chart settings"><span class="cog-glyph">⚙︎</span></button>
-  <button class="btn btn-secondary" onclick="chartsPdfExport()" title="Export current view as PDF" id="charts-pdf-btn">⬇ PDF</button>
+  {# the pill, then its tail: the same place as on the Overview (_settle_pill.html) #}
+  <div class="topbar-end">
+    <span id="dcc-settle-note" class="dcc-settle-note" style="display:none;"></span>
+    <div class="topbar-end-tail">
+      <button class="btn btn-secondary" onclick="chartsCogMenu(this)" title="Home eras and chart settings" id="charts-cog-btn"
+              aria-haspopup="menu" aria-label="Home eras and chart settings"><span class="cog-glyph">⚙︎</span></button>
+      <button class="btn btn-secondary" onclick="chartsPdfExport()" title="Export current view as PDF" id="charts-pdf-btn">⬇ PDF</button>
+    </div>
+  </div>
 </div>
 {% endblock %}
 

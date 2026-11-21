@@ -818,14 +818,16 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
     <h2>Overview {{ help_q('overview') }}</h2>
     <div class="sub">Your energy at a glance</div>
   </div>
-  <div style="font-size:12px;color:var(--muted);display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:6px;">
-    {# the settlement pill (_settle_pill.html), first on the right as on Charts, where the gear and PDF
-       follow it (21 Nov 2026, the user) #}
+  {# the settlement pill (_settle_pill.html), then its tail: the same place as on Charts, where the gear and
+     PDF are the tail (21 Nov 2026, the user: it should not move between the two pages) #}
+  <div class="topbar-end" style="font-size:12px;color:var(--muted);">
     <span id="dcc-settle-note" class="dcc-settle-note" style="display:none;"></span>
-    {% if has_power_sensor %}
-    <span><span class="status-dot live" id="status-dot"></span>
-    <span id="status-text">Connecting...</span></span>
-    {% endif %}
+    <div class="topbar-end-tail">
+      {% if has_power_sensor %}
+      <span><span class="status-dot live" id="status-dot"></span>
+      <span id="status-text">Connecting...</span></span>
+      {% endif %}
+    </div>
   </div>
 </div>
 {% endblock %}

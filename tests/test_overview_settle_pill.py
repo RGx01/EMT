@@ -37,6 +37,26 @@ class TheOverview(unittest.TestCase):
         top = self.PAGE[self.PAGE.index("{% block topbar %}"):]
         self.assertLess(top.index(SPAN), top.index('id="status-text"'))
 
+    def test_it_sits_where_charts_has_it(self):
+        """21 Nov 2026, the user: the pill jumped between Charts and the Overview. Both now end their topbar
+        with the same group, the pill and a tail of one width, so its right edge is the same distance from
+        the window's edge on each (measured: 1048-1266 px on both at 1440 px, 1608-1826 at 2000)."""
+        pill = _read("_settle_pill.html")
+        self.assertIn(".topbar-end-tail { display:flex; align-items:center; justify-content:flex-end; gap:10px; "
+                      "min-width:140px; }", pill)
+        for page in (self.PAGE, _read("charts.html")):
+            top = page[page.index("{% block topbar %}"):]
+            top = top[:top.index("{% endblock %}")]
+            end = top[top.index('<div class="topbar-end"'):]
+            self.assertLess(end.index(SPAN), end.index('<div class="topbar-end-tail">'))
+        charts = _read("charts.html")
+        tail = charts[charts.index('<div class="topbar-end-tail">'):]
+        tail = tail[:tail.index("</div>")]
+        self.assertIn('id="charts-cog-btn"', tail)
+        self.assertIn('id="charts-pdf-btn"', tail)
+        live = self.PAGE[self.PAGE.index('<div class="topbar-end-tail">'):]
+        self.assertIn('id="status-text"', live[:live.index("</div>")])
+
     def test_it_redraws_with_the_cards_and_when_the_tab_comes_back(self):
         i = self.PAGE.index("function refreshBilling()")
         self.assertIn("_billRedrawPill();", self.PAGE[i:self.PAGE.index("\n}\n", i)])
