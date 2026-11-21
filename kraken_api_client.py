@@ -482,6 +482,17 @@ _UNKNOWN_BUCKET_LABELS: set = set()
 # Boost-labelled buckets already reported: the first one is news (Octopus has shipped EV_BOOST),
 # logged once per label.
 _BOOST_BUCKET_LABELS: set = set()
+# Heat-pump buckets already reported, likewise: the first one means a heat-pump tariff's breakdown
+# (Octopus's HP_DEVICE, in its band enums by 2 Nov 2026) has reached this account.
+_HP_BUCKET_LABELS: set = set()
+
+
+def _is_heat_pump_label(lab: str) -> bool:
+    """A heat-pump bucket, however it is spelled: the enum's `HP_DEVICE` anywhere in the label
+    (`HP_DEVICE`, `CONSUMPTION_CHARGE_HP_DEVICE_…`), a label starting `HP_` or `HP `, or one
+    naming HEAT PUMP. `lab` is already upper-cased and stripped."""
+    return ("HP_DEVICE" in lab or lab.startswith("HP_") or lab.startswith("HP ")
+            or "HEAT PUMP" in lab)
 
 
 def bucket_side(label) -> Optional[str]:
@@ -500,10 +511,22 @@ def bucket_side(label) -> Optional[str]:
     was refused — that half-hour's EV split lost — and `EV_BOOST_PEAK` fell to the pre-SMB
     catch-all and was booked to the HOUSE. Its band is left to label_band (no band word in
     `EV_BOOST`: None, so the rate is resolved by time of day; a boost is a charge outside a
-    dispatch, at the EV's standard rate). The first boost label seen is logged once."""
+    dispatch, at the EV's standard rate). The first boost label seen is logged once.
+
+    A heat-pump bucket is the HOUSE's (21 Nov 2026): Octopus's split is house/EV, and a heat pump
+    is part of the house there; EMT's own device rows meter it. Before, a bare `HP_DEVICE` (or any
+    spelling without a band word) matched nothing and refused the whole half-hour — its EV split
+    withheld — while `HP_DEVICE_PEAK` reached the house only by its band word, unlogged. Tested
+    before BOOST, so a heat-pump boost is not booked to the car. The first one seen is logged once."""
     lab = (label or "").upper().strip()
     if not lab:
         return None
+    if _is_heat_pump_label(lab):
+        if lab not in _HP_BUCKET_LABELS:
+            _HP_BUCKET_LABELS.add(lab)
+            logger.info("bucket_side: first heat-pump bucket %r — Octopus's HP_DEVICE is in use; "
+                        "booked to the house", label)
+        return "home"
     if "BOOST" in lab:
         if lab not in _BOOST_BUCKET_LABELS:
             _BOOST_BUCKET_LABELS.add(lab)
@@ -1523,6 +1546,11 @@ class KrakenAPIClient:
         home_rate = ev_rate = None
         home_band = ev_band = None
         home_rate_x = ev_rate_x = None
+        # A heat-pump bucket adds to the house's kWh and cost, but its rate and band stand for the
+        # house only when no other house bucket carried energy: a heat-pump tariff may price the
+        # heat pump apart, and the house's rate must not depend on the order of the buckets.
+        hp_rate = hp_rate_x = hp_band = None
+        home_own = False
         saw = False
         for s2 in (((node.get("metaData") or {}).get("statistics")) or []):
             if s2.get("type") == "STANDING_CHARGE_COST":
@@ -1555,14 +1583,22 @@ class KrakenAPIClient:
                     if _ppu(ci) is not None:
                         ev_rate = _ppu(ci); ev_rate_x = _ppu(ce)
                     ev_band = "off_peak" if label_band(lab) else "peak"
-            else:                                        # ECO7_* / HOME * / pre-SMB
+            else:                                        # ECO7_* / HOME * / HP_* / pre-SMB
                 home_kwh += val; home_cost += _amt(ci)
                 if val > 1e-9:
+                    if _is_heat_pump_label(lab):
+                        if _ppu(ci) is not None:
+                            hp_rate = _ppu(ci); hp_rate_x = _ppu(ce)
+                        hp_band = "off_peak" if label_band(lab) else "peak"
+                        continue
+                    home_own = True
                     if _ppu(ci) is not None:
                         home_rate = _ppu(ci); home_rate_x = _ppu(ce)
                     home_band = "off_peak" if label_band(lab) else "peak"
         if not saw:
             return None
+        if not home_own and hp_band is not None:
+            home_rate, home_rate_x, home_band = hp_rate, hp_rate_x, hp_band
         _p = lambda v: round(v / 100.0, 6) if v is not None else None
         return {
             "start": _iso_naive_utc(st),
