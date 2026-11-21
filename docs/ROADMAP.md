@@ -44,13 +44,20 @@ missing and where it stands; the done history, with every decision's story, is i
 - **Per-request reads or a summary?** Is computing each view from the half-hours on request cheap
   enough on a Pi, or should the writer keep a period summary? Measured so far: a month's bill 0.42 s, a
   year's 4.8 s at p50 on the Pi under load (4 Oct 2026); no summary built.
-- **A backup taken mid-attribution.** Does a database with a device rebuild part-done import wrongly,
-  or does the ask/attribution record make it recoverable?
 - **The test suite's shape.** It was carried from v4 and grew to ~5,000 tests; whether to rebuild
   parts of it against the API rather than the store is undecided.
 
 ## Resolved since the record
 
+- **A backup taken mid-attribution** (21 Nov 2026; the user: "close it"). Recoverable, and now said.
+  A half-done rebuild comes from a restart, a power cut, Home Assistant's own hot backups, or a backup
+  restored from mid-run, not only from EMT's backups. On the owner's soak Pi a *Replace history* cut
+  off in its re-split and in its writing was finished exactly by *Rebuild history* — every device and
+  meter figure matched the database from before, to the Wh. What was wrong: nothing said a rebuild was
+  cut off, undo by run missed it, and a restore did not stop a running rebuild. Built: a restore stops
+  a rebuild first (#211); the ledger run from its start, and the card says a run was cut off (#212);
+  *Backup now* and the daily copy wait for a rebuild (#213). The record:
+  [history/design/EMT-v5_interrupted_rebuild_design.md](history/design/EMT-v5_interrupted_rebuild_design.md).
 - **A settlement re-run flag per channel** (21 Nov 2026; the user: "close the re-run flag per
   channel"). `blocks.needs_pass2_rerun` stays one flag a block. The schema notes (§4) proposed one per
   channel for v4 #453: an export-only settlement re-priced the import against unchanged kWh and
