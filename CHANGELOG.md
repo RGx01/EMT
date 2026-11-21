@@ -7,6 +7,8 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+## [2026.11.0b30] — 2026-11-21
+
 - **EMT pauses less on an SD card.** Every ten seconds EMT checked for devices' half-hours that were waiting
   on a later reading, and did it by reading your whole history, so a busy SD card could hold EMT for
   seconds, once for over three minutes. It now looks only at those half-hours, of which there are usually
@@ -19,7 +21,6 @@ internal name for everything before the first public release and never appears i
   that said whether a smart charger or car was set up, and EMT has warned about it at every start
   since 17 November. It now reads the device's state instead, and still picks the same charger
   for your planned charges, plugged in or not, when the account lists more than one device.
-
 - **The carbon backfill stops warning every day about half-hours that have no carbon figure.** The Carbon
   Intensity API has nothing for some old stretches, so EMT asked for them again each day, filled nothing and
   logged a warning, for ever. A half-hour that comes back empty on three days is now set aside: EMT stops
