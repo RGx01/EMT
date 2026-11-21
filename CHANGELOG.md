@@ -5,6 +5,13 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [Unreleased]
+
+- **A heat-pump tariff keeps the car's split.** Octopus has added a heat-pump band to its tariffs.
+  If a heat pump's use arrives in Octopus's house/car breakdown under a name EMT did not know, EMT set
+  aside that half-hour's whole breakdown, car included. It now counts the heat pump as part of the house,
+  says so in the log the first time, and keeps the house's own rate apart from the heat pump's.
+
 ## [2026.11.0b31] — 2026-11-21
 
 - **Billing shows a new half-hour without a reload.** Opened or reloaded just before a half-hour arrived,

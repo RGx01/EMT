@@ -170,3 +170,60 @@ class TestParseBreakdownNode(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHeatPumpBucket(unittest.TestCase):
+    """Octopus added HP_DEVICE to its band enums by 2 Nov 2026; no product carries it yet, and its
+    bucket spelling is unknown. Before 21 Nov 2026 a bare HP_DEVICE matched nothing — the whole
+    half-hour refused, its EV split withheld — and HP_DEVICE_BOOST went to the EV. Discriminating:
+    the bare and BOOST spellings, the log, the node tests; HP_DEVICE_PEAK already reached the house
+    by its band word (a guard)."""
+
+    def test_every_heat_pump_spelling_is_house(self):
+        for lab in ("HP_DEVICE", "HP_DEVICE_PEAK", "HP_DEVICE_OFF_PEAK", "HP LOW RATE",
+                    "CONSUMPTION_CHARGE_HP_DEVICE_B", "HEAT PUMP RATE", "HP_DEVICE_BOOST"):
+            with self.subTest(label=lab):
+                self.assertEqual(bucket_side(lab), "home")
+
+    def test_the_first_heat_pump_label_is_logged_once(self):
+        import kraken_api_client as k
+        k._HP_BUCKET_LABELS.discard("HP_DEVICE")
+        with self.assertLogs("kraken_api_client", level="INFO") as logs:
+            bucket_side("HP_DEVICE")
+            bucket_side("HP_DEVICE")
+        self.assertEqual(sum("first heat-pump bucket" in m for m in logs.output), 1)
+
+    def test_a_heat_pump_node_keeps_the_ev_split(self):
+        p = KrakenAPIClient._parse_breakdown_node(_node([
+            _stat("HOME STANDARD RATE", 0.5, 32.30924, 16.15),
+            _stat("HP_DEVICE", 1.0, 20.0, 20.0),
+            _stat("EV LOW RATE", 3.0, 7.0, 21.0),
+        ]))
+        self.assertIsNotNone(p, "a heat-pump bucket refused the whole node")
+        self.assertAlmostEqual(p["ev_kwh"], 3.0, places=6)
+        self.assertAlmostEqual(p["home_kwh"], 1.5, places=6)
+        self.assertAlmostEqual(p["home_cost"], 0.3615, places=6)
+
+    def test_the_house_rate_is_the_house_buckets_whatever_the_order(self):
+        for stats in ([_stat("HOME STANDARD RATE", 0.5, 32.30924, 16.15),
+                       _stat("HP_DEVICE_OFF_PEAK", 1.0, 20.0, 20.0)],
+                      [_stat("HP_DEVICE_OFF_PEAK", 1.0, 20.0, 20.0),
+                       _stat("HOME STANDARD RATE", 0.5, 32.30924, 16.15)]):
+            with self.subTest(first=stats[0]["label"]):
+                p = KrakenAPIClient._parse_breakdown_node(_node(stats))
+                self.assertAlmostEqual(p["home_rate"], 0.3230924, places=6)
+                self.assertEqual(p["home_band"], "peak")
+
+    def test_a_heat_pump_alone_gives_the_house_its_rate(self):
+        """GUARD: HP_DEVICE_OFF_PEAK already reached the house by its band word."""
+        p = KrakenAPIClient._parse_breakdown_node(_node([
+            _stat("HOME STANDARD RATE", 0.0, 32.30924, 0.0),
+            _stat("HP_DEVICE_OFF_PEAK", 1.0, 20.0, 20.0),
+        ]))
+        self.assertAlmostEqual(p["home_rate"], 0.2, places=6)
+        self.assertEqual(p["home_band"], "off_peak")
+
+    def test_an_unknown_label_still_refuses(self):
+        """GUARD: the heat-pump rule widens the house by name, not the catch-all."""
+        self.assertIsNone(bucket_side("HPX CREDIT"))
+        self.assertIsNone(bucket_side("BATTERY DISCHARGE CREDIT"))

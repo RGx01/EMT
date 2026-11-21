@@ -6,7 +6,7 @@ missing and where it stands; the done history, with every decision's story, is i
 [changelog](../CHANGELOG.md). Numbers like BL-80 carry over from that record. A PR number written
 `EMT-archive#NNN` is in the private pre-release archive.*
 
-*Checked against the code on 2 Nov 2026: an item is here only if the code shows it open.*
+*Checked against the code on 21 Nov 2026: an item is here only if the code shows it open.*
 
 ## Before the first release
 
@@ -21,9 +21,13 @@ missing and where it stands; the done history, with every decision's story, is i
   (kraken_api_client.py `bucket_side`), but no reader knows a `boost` band: when one appears in a bill,
   the EV band word and the readers that test an EV band by name (`energy_charts`'s `peak` / `mixed`)
   are the work.
-- **`HP_DEVICE`, flagged.** Added to the same enums by 2 Nov 2026. An `HP_DEVICE…` bucket would be
-  booked to the house by `bucket_side`'s catch-all — the right side for the house/EV split, but
-  silently. A heat-pump tariff's breakdown is where to look if one appears.
+- **`HP_DEVICE`, when Octopus bills it.** Added to the same enums by 2 Nov 2026. Since 21 Nov 2026
+  `bucket_side` books any heat-pump bucket (`HP_DEVICE`, `HP_…`, `HP …`, `HEAT PUMP`) to the house,
+  before the boost test, and logs the first one it sees; the house's rate and band come from its own
+  buckets, the heat pump's only when no other house bucket carried energy (kraken_api_client.py
+  `bucket_side`, `_parse_breakdown_node`). Before, a bare `HP_DEVICE` refused the whole half-hour's
+  breakdown. Still unseen: whether a heat-pump tariff's bill should price the heat-pump device apart
+  from the house, the work when the first log line appears.
 - **Octopus's REST API is not watched.** GraphQL deprecations and schema changes open issues weekly
   (`.github/workflows/graphql-deprecations.yml`); the REST products API, where tariff rates come from,
   has no schema to introspect. A refresh that suddenly returns nothing, or a different shape, for a
