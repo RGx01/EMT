@@ -2280,7 +2280,15 @@ function msUntilNextBillingRefresh() {
 // and the card's rows, from one per-day pass on the server.
 var BILL_CURRENCY = {{ currency|tojson }};
 var BILL_CARDS = [['today', 'today'], ['month', 'bill'], ['year', 'year']];   // card id, window key
-var _billTimer = null, _billDue = false;
+var _billTimer = null, _billDue = false, _billToken = null;
+
+// The change token Charts polls (/api/energy?fields=fingerprint); null when it cannot be read.
+function _billFetchToken() {
+  return fetch(apiUrl('/api/energy?fields=fingerprint'), {cache: 'no-store'})
+    .then(function(r) { return r.ok ? r.json() : null; })
+    .then(function(j) { return (j && j.fingerprint && j.fingerprint.token) || null; },
+          function() { return null; });
+}
 
 // Row labels carry device names from the config, so they are text, not HTML.
 function _billEsc(s) {
@@ -2293,7 +2301,13 @@ function refreshBilling() {
   // A hidden tab does not poll: the refresh waits until the tab is shown again.
   if (document.hidden) { _billDue = true; return; }
   _billDue = false;
-  fetch(apiUrl('/api/periods?kind=live&include=net_cost,rows'), {cache: 'no-store'})
+  // The token is read FIRST, as Charts does: data moving during the fetch leaves the older one, so
+  // the next minute's check refreshes again.
+  var tok = null;
+  _billFetchToken().then(function(t) {
+    tok = t;
+    return fetch(apiUrl('/api/periods?kind=live&include=net_cost,rows'), {cache: 'no-store'});
+  })
     .then(function(r) { return r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status)); })
     .then(function(d) {
       if (d.error) throw new Error(d.error);
@@ -2303,6 +2317,7 @@ function refreshBilling() {
         var p = P[c[1]];
         if (p) updateBillingCard(c[0], p.net_cost, p.rows, p.label, BILL_CURRENCY);
       });
+      if (tok) _billToken = tok;
     })
     // A failed refresh keeps the cards as they are — it showed "undefinedNaN" on a
     // card already drawn, from an error body read as data.
@@ -2355,6 +2370,19 @@ function scheduleBillingRefresh() {
 document.addEventListener('visibilitychange', function() {
   if (!document.hidden && _billDue) refreshBilling();
 });
+
+// Between boundaries, a minute's check of the change token: a half-hour EMT finished more than a minute
+// after its boundary (a slow SD card) waited for the next boundary, half an hour, and so did a bill or a
+// settled reading arriving mid-half-hour (21 Nov 2026, the user). Only a moved token fetches the cards.
+function checkBillingChanged() {
+  if (document.hidden || _billToken === null) return Promise.resolve(false);
+  return _billFetchToken().then(function(t) {
+    if (!t || t === _billToken) return false;
+    refreshBilling();
+    return true;
+  });
+}
+setInterval(checkBillingChanged, 60000);
 
 // Load billing immediately on page load, then schedule future refreshes
 // Billing — defer 300ms so power gauge renders first
