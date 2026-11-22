@@ -448,6 +448,40 @@ class TheSpans(unittest.TestCase):
         self.assertEqual(out, [["All"], 5.0])
 
 
+@unittest.skipUnless(shutil.which("node"), "node not available")
+class ThePureControls(unittest.TestCase):
+
+    def _js(self, expr):
+        src = _fn("barOrderResShown") + _fn("barGroupBreaks") + _fn("barGroupLines") + \
+              "\nconsole.log(JSON.stringify(%s));" % expr
+        with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
+            fh.write(src)
+            path = fh.name
+        try:
+            res = subprocess.run(["node", path], capture_output=True, text=True, timeout=30)
+        finally:
+            os.unlink(path)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        return json.loads(res.stdout)
+
+    def test_which_controls_show(self):
+        cases = [("monthly", "devices", None), ("span", "devices", "day"), ("span", "devices", "year"),
+                 ("span", "flow", "month"), ("span", "running", "day"), ("monthly", "running", None),
+                 ("daily", "devices", None)]
+        got = self._js("[%s]" % ",".join("barOrderResShown(%s,%s,%s)" % tuple(json.dumps(x) for x in c) for c in cases))
+        self.assertEqual([(g["order"], g["res"]) for g in got],
+                         [(True, False), (True, True), (False, True), (False, False), (False, False),
+                          (False, False), (False, False)])
+
+    def test_bold_where_the_calendar_month_changes(self):
+        # by the day in month order: Jan '24's days, Jan '25's, then Feb '24's — a thin line, then a bold one
+        got = self._js("barGroupLines(['2024-01','2024-01','2025-01','2024-02'], [1,1,1,2])")
+        self.assertEqual(got, [[2, False], [3, True]])
+
+    def test_monthly_every_separator_bold(self):
+        self.assertEqual(self._js("barGroupLines([1,1,2,2,3], [1,1,2,2,3])"), [[2, True], [4, True]])
+
+
 class TheWiring(unittest.TestCase):
 
     def test_the_plugin_is_pinned(self):
@@ -548,16 +582,23 @@ class TheWiring(unittest.TestCase):
     def test_month_order_draws_separators_and_breaks_the_net_line(self):
         f = _fn("barRender")
         self.assertIn("if (pd.groups) barBreakNetAtGroups(datasets, pd.groups);", f)
-        self.assertIn(".concat(pd.groups ? [barGroupSepPlugin(pd.groups)] : [])", f)
+        self.assertIn(".concat(pd.groups ? [barGroupSepPlugin(pd.groups, _majors)] : [])", f)
         self.assertIn("groups[c.p0DataIndex] !== groups[c.p1DataIndex] ? 'rgba(0,0,0,0)' : undefined", _fn("barBreakNetAtGroups"))
         # Monthly in month order carries its groups, by calendar month
         self.assertIn("groups: monthFirst ? buckets.map(function(b){ return b.m; }) : null", PAGE)
 
     def test_span_has_its_resolution_and_the_order(self):
         self.assertIn('<div class="bar-seg" id="bar-spanres-seg"', PAGE)
-        f = _fn("barSyncUI")
-        self.assertIn("(_spanBars && barSpanResolution(barSpanCurrent()) !== 'year')) ? 'inline-flex' : 'none';", f)
         self.assertIn("if (['day','month','year'].indexOf(st.spanRes) !== -1)     barSpanRes = st.spanRes;", PAGE)
+
+    def test_one_place_decides_both_controls(self):
+        # 22 Nov 2026, the user: "sometimes they disappear, page refresh only half brings them back" — barRender
+        # had its own line showing the order on Monthly only, and hid it on a Span at every redraw
+        self.assertIn("barOrderResSync();", _fn("barSyncUI"))
+        r = _fn("barRender")
+        self.assertIn("barOrderResSync();", r)
+        self.assertNotIn("_orderSeg.style.display = (barPeriod === 'monthly')", r)
+        self.assertIn("['bar-cal-seg', 'bar-order-seg', 'bar-spanres-seg',", PAGE)   # Running total hides both
 
     def test_flow_names_its_periods_by_what_it_totals(self):
         # 4 Nov 2026, the user: in Flow HH is a day, Daily a month, Monthly the years ticked

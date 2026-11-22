@@ -1171,6 +1171,7 @@ function barPdfSettings() {
   var acc = document.getElementById('bar-acc-series');
   if (shown(acc) && acc.selectedIndex >= 0) add('Series', acc.options[acc.selectedIndex].text);
   add('Winding', seg('bar-acc-mode'));
+  add('Bars', seg('bar-spanres-seg'));
   add('Order', seg('bar-order-seg'));
   var lbl = document.querySelector('#bar-sub-bar .bar-period-label');
   add(lbl ? 'Range' : 'Years', lbl ? lbl.textContent.trim()
@@ -1765,17 +1766,7 @@ function barSyncUI() {
   document.querySelectorAll('#bar-metric-seg .bar-seg-btn').forEach(function(b){
     b.classList.toggle('active', b.getAttribute('onclick') && b.getAttribute('onclick').indexOf("'"+barMetric+"'") !== -1);
   });
-  // Order toggle — Monthly, and Span by the day or the month (not by the year, not Flow's one bar)
-  var _spanBars = barPeriod === 'span' && !barFlow();
-  var orderSeg = document.getElementById('bar-order-seg');
-  if (orderSeg) orderSeg.style.display = (barPeriod === 'monthly' ||
-      (_spanBars && barSpanResolution(barSpanCurrent()) !== 'year')) ? 'inline-flex' : 'none';
-  var resSeg = document.getElementById('bar-spanres-seg');
-  if (resSeg) resSeg.style.display = _spanBars ? 'inline-flex' : 'none';
-  var _res = _spanBars ? barSpanResolution(barSpanCurrent()) : null;
-  document.querySelectorAll('#bar-spanres-seg .bar-seg-btn').forEach(function(b){
-    b.classList.toggle('active', !!_res && (b.getAttribute('onclick') || '').indexOf("'" + _res + "'") !== -1);
-  });
+  barOrderResSync();
   document.querySelectorAll('#bar-order-seg .bar-seg-btn').forEach(function(b){
     b.classList.toggle('active', b.getAttribute('onclick') && b.getAttribute('onclick').indexOf("'"+barMonthOrder+"'") !== -1);
   });
@@ -2727,6 +2718,7 @@ function barSpanData(sp) {
   }
   if (monthFirst) {
     out.monthOrder = true;
+    out.majors = out.keys.map(function(k) { return +k.slice(5, 7); });      // the calendar month: the 12 divisions
     // a month of days is its own group (Jan '24's days, then Jan '25's): its Net line does not run on into the next
     // year's; months by the month, every January one group
     out.groups = out.keys.map(function(k) { return res === 'day' ? k.slice(0, 7) : +k.slice(5, 7); });
@@ -3526,9 +3518,9 @@ function barRender() {
   }
   if ((barBrackets() || barFlow()) && !barBrReady()) return;     // the brackets' read renders again when it lands
   barBrSyncUI();
-  // Order toggle (Date/Month) is only meaningful for the monthly view
-  var _orderSeg = document.getElementById('bar-order-seg');
-  if (_orderSeg) _orderSeg.style.display = (barPeriod === 'monthly') ? 'inline-flex' : 'none';
+  // the Date/Month order and Span's Day/Month/Year: one place decides both (22 Nov 2026: this line knew only
+  // Monthly, and hid the order on a Span at every redraw)
+  barOrderResSync();
   // Show/hide standing charge toggle (cost mode only)
   var sw = document.getElementById('bar-standing-wrap');
   if (sw) sw.style.display = barMetric === 'cost' && !barBrackets() ? 'flex' : 'none';
@@ -3602,6 +3594,7 @@ function barRender() {
   if (pd.monthOrder && pd.bucketYears) barApplyYearGradient(datasets, pd.bucketYears);
   // Month order: a line between the months, and the Net line is each month's own (22 Nov 2026, the user)
   if (pd.groups) barBreakNetAtGroups(datasets, pd.groups);
+  var _majors = pd.majors || pd.groups;     // Monthly's groups are the calendar months already
   var ctx = document.getElementById('barChart');
   var wrap = document.getElementById('bar-chart-wrap');
   if (barChartInstance) { barChartInstance.destroy(); barChartInstance = null; }
@@ -3614,7 +3607,7 @@ function barRender() {
     // the eras first: a chip's hover wins over the tariff band's under it
     plugins: (showEras ? [barErasPlugin(pd.bucketRanges, tariffLanes)] : [])
                .concat(tariffLanes ? [barTariffPlugin(pd.bucketRanges, tariffLanes)] : [])
-               .concat(pd.groups ? [barGroupSepPlugin(pd.groups)] : []),
+               .concat(pd.groups ? [barGroupSepPlugin(pd.groups, _majors)] : []),
     options: {
       responsive: true, maintainAspectRatio: false,
       plugins: {
@@ -3857,17 +3850,23 @@ function barBreakNetAtGroups(datasets, groups) {
     }};
   });
 }
-// A line down the plot between the groups, under the bars.
-function barGroupSepPlugin(groups) {
-  var breaks = barGroupBreaks(groups);
+// A line down the plot between the groups, under the bars: bold where the calendar month changes (`majors`, the 12
+// divisions), thin where only the group does (by the day: Jan '24's days, then Jan '25's — 22 Nov 2026, the user).
+// [[i, bold]] for the boundaries before bar i. Pure.
+function barGroupLines(groups, majors) {
+  return barGroupBreaks(groups).map(function(i) { return [i, !!majors && majors[i] !== majors[i - 1]]; });
+}
+function barGroupSepPlugin(groups, majors) {
+  var lines = barGroupLines(groups, majors);
   return {id: 'barGroupSep', beforeDatasetsDraw: function(chart) {
     var x = chart.scales.x, a = chart.chartArea, g = chart.ctx;
-    if (!x || !breaks.length) return;
+    if (!x || !lines.length) return;
     g.save();
-    g.strokeStyle = 'rgba(128,128,128,0.45)';
-    g.lineWidth = 1;
-    breaks.forEach(function(i) {
-      var px = Math.round((x.getPixelForValue(i - 1) + x.getPixelForValue(i)) / 2) + 0.5;
+    lines.forEach(function(l) {
+      var bold = l[1];
+      g.strokeStyle = bold ? 'rgba(128,128,128,0.85)' : 'rgba(128,128,128,0.35)';
+      g.lineWidth = bold ? 2 : 1;
+      var px = Math.round((x.getPixelForValue(l[0] - 1) + x.getPixelForValue(l[0])) / 2) + (bold ? 0 : 0.5);
       g.beginPath(); g.moveTo(px, a.top); g.lineTo(px, a.bottom); g.stroke();
     });
     g.restore();
@@ -4379,7 +4378,7 @@ function barAccSyncUI() {
   vis('bar-acc', on, 'grid');
   // its own standing charge box is with the toggles now, outside bar-acc-wrap: hidden with the view
   if (!on) { vis('bar-acc-standing-wrap', false); return; }
-  ['bar-cal-seg', 'bar-order-seg', 'bar-standing-wrap', 'bar-net-wrap',
+  ['bar-cal-seg', 'bar-order-seg', 'bar-spanres-seg', 'bar-standing-wrap', 'bar-net-wrap',
    'bar-sort-btn', 'bar-br-wrap', 'bar-br-series', 'bar-br-note'].forEach(function(id) { vis(id, false); });
   // PR 4: the eras on every drawing; the tariffs along the Lifetime line
   vis('bar-eras-wrap', !!(barEras && barEras.length), 'flex');
@@ -5338,6 +5337,22 @@ function barSetActive(segId, el) { document.querySelectorAll('#'+segId+' .bar-se
 function barSetPeriod(v, el) { barPeriod = v; barSetActive('bar-period-seg', el); barSaveState(); barRender(); }
 function barSetMetric(v, el) { barMetric = v; barSetActive('bar-metric-seg', el); barSaveState(); barRender(); }
 function barSetOrder(v, el)  { barMonthOrder = v; barSetActive('bar-order-seg', el); barSaveState(); barRender(); }
+// Whether the Date/Month order and Span's Day/Month/Year show: the order on Monthly, and on a span by the day or the
+// month (not by the year, nor Flow's one bar); the resolution on a span (not Flow's). Neither on Running total. Pure.
+function barOrderResShown(period, show, res) {
+  var spanBars = period === 'span' && show !== 'flow' && show !== 'running';
+  return {order: (period === 'monthly' && show !== 'running') || (spanBars && res !== 'year'), res: spanBars};
+}
+function barOrderResSync() {
+  var res = barPeriod === 'span' ? barSpanResolution(barSpanCurrent()) : null;
+  var v = barOrderResShown(barPeriod, barShow, res);
+  var o = document.getElementById('bar-order-seg'), r = document.getElementById('bar-spanres-seg');
+  if (o) o.style.display = v.order ? 'inline-flex' : 'none';
+  if (r) r.style.display = v.res ? 'inline-flex' : 'none';
+  document.querySelectorAll('#bar-spanres-seg .bar-seg-btn').forEach(function(b) {
+    b.classList.toggle('active', !!res && (b.getAttribute('onclick') || '').indexOf("'" + res + "'") !== -1);
+  });
+}
 function barSetSpanRes(v, el) { barSpanRes = v; barSetActive('bar-spanres-seg', el); barSaveState(); barSyncUI(); barRender(); }
 function barSetCalendar(v, el) { barCalendar = v; barSetActive('bar-cal-seg', el); barSaveState(); barRender(); }
 
