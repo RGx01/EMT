@@ -1815,7 +1815,7 @@ window.addEventListener('resize', function(){
 });
 
 // ── Hide any Overview card (7 Nov 2026, the user, after the Agile cards' own). Every card marked `data-ov-card`
-// gets the button; the Agile cards keep theirs, as hiding those also stops fetching their prices. ──
+// gets the button; the Agile cards keep their own (their own setting, agile_hide_*). ──
 var _OV_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">'
   + '<path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/><path d="M3 13L13 3"/></svg>';
 function _ovToggled(hidden, key, hide){

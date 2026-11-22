@@ -235,34 +235,29 @@ class Hiding(_Engine):
     def _hide(self, **kw):
         self.st.save_settings(kw)
 
-    def test_a_hidden_direction_is_not_fetched(self):
+    # 22 Nov 2026, the user: "always fetch both" — a hidden card's prices were skipped, a public call a day saved, and
+    # shown again it was a day behind (and its card did not appear, #fix/agile-hidden-card). Hiding only hides now.
+    def test_a_hidden_direction_is_fetched_all_the_same(self):
         self._hide(agile_hide_export=True)
-        self.assertEqual(self.engine._agile_public_channels(), ["import"])
+        self.assertEqual(self.engine._agile_public_channels(), ["import", "export"])
         oct_ = _Octopus(datetime(2030, 1, 1))
         self._fetch(oct_)
-        self.assertEqual(oct_.asked, ["E-1R-AGILE-24-10-01-C"])
+        self.assertEqual(oct_.asked, ["E-1R-AGILE-24-10-01-C", "E-1R-AGILE-OUTGOING-19-05-13-C"])
 
-    def test_both_hidden_nothing_is_due(self):
+    def test_both_hidden_both_still_kept_up(self):
         self._hide(agile_hide_import=True, agile_hide_export=True)
-        self.assertEqual(self.engine._agile_public_channels(), [])
-        self.assertFalse(self.engine._agile_public_due())
+        self.assertEqual(self.engine._agile_public_channels(), ["import", "export"])
 
-    def test_shown_again_it_picks_up_from_what_it_holds(self):
+    def test_hidden_and_behind_it_is_due(self):
         through = A.target_through(datetime.now(LON), LON)
         self._fetch(_Octopus(through))
         self._hide(agile_hide_export=True)
         rec = self.st.get_meta(A.META_KEY)
-        rec["export"]["prices"] = rec["export"]["prices"][:-96]       # two days behind while hidden
+        rec["export"]["prices"] = rec["export"]["prices"][:-96]       # two days behind
         rec["asked"] = "2020-01-01T00:00:00"
         rec["tries"] = {}
         self.st.set_meta(A.META_KEY, rec)
-        self.assertFalse(self.engine._agile_public_due())
-        self._hide(agile_hide_export=False)
         self.assertTrue(self.engine._agile_public_due())
-        oct_ = _Octopus(through)
-        self._fetch(oct_)
-        self.assertEqual(oct_.asked, ["E-1R-AGILE-OUTGOING-19-05-13-C"])
-        self.assertEqual(A.through_of(self.st.get_meta(A.META_KEY)["export"]["prices"]), through)
 
     def test_GUARD_a_settings_read_that_fails_does_not_stop_the_tick(self):
         class Bad:

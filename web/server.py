@@ -645,7 +645,7 @@ SETTINGS_DEFAULTS = {
     "gas_co2_g_per_kwh":            203.0, # BEIS/DESNZ 2023 GHG conversion factors
     "gas_boiler_efficiency":         0.90, # typical modern condensing boiler
 }
-# Overview's Agile cards: hidden, and their public prices not fetched. Beside the defaults, not in them:
+# Overview's Agile cards: hidden (their public prices are fetched all the same). Beside the defaults, not in them:
 # Insights' carbon answer carries the defaults whole, and these are nothing to do with it.
 SETTINGS_FLAGS = {"agile_hide_import": False, "agile_hide_export": False,
                   # the Overview's cost cards as totals only, its power cards as gauges only (22 Nov 2026, the user)
