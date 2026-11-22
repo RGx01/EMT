@@ -7,6 +7,10 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Today against yesterday on the Overview's power cards.** Live Power shows your import and export since
+  midnight, today's line over yesterday's. Each device card shows the energy its power sensor measured since
+  midnight; a battery or a V2X car shows what went out as well as in. A battery with a charge sensor switches
+  between its charge and its energy. The cards keep their size: the gauges are a little smaller.
 - **Arrange the Overview.** The Overview's cards now sit in rows: Power (Live Power and your devices), Grid
   and carbon (the generation mix, carbon intensity and the 48-hour history together), Smart Charging and Agile
   prices, with the cost cards last. *Arrange the Overview*, at the foot of the page, moves the rows and the

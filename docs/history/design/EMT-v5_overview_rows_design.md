@@ -1,7 +1,10 @@
 # Overview: rows, and today against yesterday
 
-*Design — being decided and built (22 Nov 2026). Once built it moves to `docs/history/design/` and what
-it settles goes into `docs/reference/`.*
+> **History — a design record.** What was decided, when and why, as it stood then; parts describe code
+> that has since changed. How it works today: [reference/api.md](../../reference/api.md#the-overview) and the
+> code. PR numbers (`#NNN`) are in this repository, `RGx01/EMT`: part 1 (layout) #216, part 2 (lines) the PR after.
+
+*Status: decided 22 Nov 2026 (the user, answering six questions); both parts built the same day.*
 
 ## Why
 
@@ -82,3 +85,14 @@ Cards **do not get taller**. To make room for the line, the gauges (and the batt
 - The lines are not the billed figures, except Live Power's. A device's line is its sensor's view.
   Reconciling a device's sensor against its billed grid share belongs on Billing, not here.
 - No drag and drop.
+
+## As built (part 2)
+
+- `overview_days.py` (pure) and `/api/overview/days`. A device line holds level through a stretch with no energy
+  and runs level to its day's last sample; drawn straight from point to point it climbed through idle hours.
+- `minutes()` subtracts in UTC: Python subtracts two times in the same zone by the wall clock, which made the day
+  the clocks go back 24 hours, not 25 (caught by its test).
+- The half-hour in progress is added only when it starts where the finished half-hours end.
+- Heights: on a copy of a real database with a battery, a V2X car and a heat pump, the Power row was 244.8 px at
+  1,400 px before and after. The charts first made it 20 px taller; 6 px gaps in the power cards (were 10) and
+  gauges 112 × 62 px (were 180 × 100) won it back.

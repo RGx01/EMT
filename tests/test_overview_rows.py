@@ -1,5 +1,5 @@
 """
-The Overview's rows (docs/design/EMT-v5_overview_rows_design.md, 22 Nov 2026, the user): the page is rows of cards —
+The Overview's rows (docs/history/design/EMT-v5_overview_rows_design.md, 22 Nov 2026, the user): the page is rows of cards —
 Power, Grid and carbon, Smart Charging, Agile — the user orders the rows and the Power row's cards, the Power row is
 spread evenly, and the cost cards can be totals only. The orders are saved beside the hidden cards
 (`overview_rows`, `overview_power_order`), the compact switch as `overview_costs_compact`.

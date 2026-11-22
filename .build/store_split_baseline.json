@@ -176,6 +176,7 @@
     "get_generation_mix",
     "get_generation_mix_for_range",
     "get_generation_mix_since",
+    "get_half_hour_kwh",
     "get_imp_kwh",
     "get_kraken_state",
     "get_last_block",
