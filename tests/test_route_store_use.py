@@ -79,7 +79,8 @@ class TestRouteStoreUse(unittest.TestCase):
         # +1: /api/chart-styles, the bar colours modal (BL-101 PR 4, 1 Nov 2026).
         # +1: /api/agile-prices, now reading the region's prices kept in the store (BL-103, 1 Nov 2026).
         # +1: /api/customisations, the eras and colours file (19 Nov 2026).
-        self.assertEqual(len(self.d["get_on_companion"]), 41)
+        # +1: /api/overview/days, the Overview's today-against-yesterday lines (22 Nov 2026).
+        self.assertEqual(len(self.d["get_on_companion"]), 42)
 
     def test_adoption_is_total(self):
         """Measured at 0% before the port: v4 credited one route with the read
@@ -98,9 +99,9 @@ class TestGetRoutesThatWrite(unittest.TestCase):
          that one connection and corrupts it: 'cannot commit - no transaction is
          active' / 'error return without exception set'"
 
-    None of the three hops to the engine loop first. Under A's model `writer()`
-    raises off the engine thread, so all three must move to asking the engine to
-    perform the write — which is the boundary workstream B formalises.
+    None of the three hops to the engine loop first. The engine's connection refuses
+    any other thread, so all three must move to asking the engine to perform the
+    write — which is the boundary workstream B formalises.
     """
 
     @classmethod

@@ -10,7 +10,7 @@ fixed.*
 |---|---|---|
 | Entry | `main.py`, `run.sh` | `run.sh` picks the mode — supervised when a Supervisor token is present, else standalone (`HA_URL`, `HA_TOKEN` required) — and starts `main.py`, which opens the store, binds the readers (`store_access.bind`), and starts the engine loop and the web server. |
 | Engine | `engine.py` | One asyncio loop: Home Assistant's WebSocket, finalising half-hours, the Octopus calls, the settle sweep, the asker, backups. |
-| Domain | `settle.py`, `settlement_state.py`, `billing.py`, `iog_cap.py`, `kraken_rates.py`, `vat_calendar.py`, `pricing_segments.py`, `direct_import.py`, `ev_split.py`, `carbon.py` | Pure rules: pricing a half-hour, its settlement state, the bill, the 6-hour cap, rate schedules, VAT, the house's Direct import, the EV split, carbon. No store, no clock. |
+| Domain | `settle.py`, `settlement_state.py`, `billing.py`, `iog_cap.py`, `kraken_rates.py`, `vat_calendar.py`, `pricing_segments.py`, `direct_import.py`, `ev_split.py`, `carbon.py`, `overview_days.py` | Pure rules: pricing a half-hour, its settlement state, the bill, the 6-hour cap, rate schedules, VAT, the house's Direct import, the EV split, carbon, the Overview's today-against-yesterday lines. No store, no clock. |
 | Storage | `block_store.py`, `store_access.py`, `store_types.py` | One SQLite database, `blocks.db`; the schema (`EMT_SCHEMA = 5`); typed readers. |
 | Suppliers | `kraken_api_client.py`, `kraken_ingester.py`, `kraken_mini.py`, `agile_public.py`, `suppliers.py` | Octopus's GraphQL and REST APIs; the Home Mini; public Agile prices. |
 | Import | `v4import/` | Bringing a v4 database across: the gate, the carry, the transforms, the checks. See [v4-import-and-first-run.md](v4-import-and-first-run.md). |
@@ -28,7 +28,6 @@ fixed.*
 - **Writes from a page** go to the engine's thread: `_engine_write` / `_engine_call` in
   `web/server.py` run the write on the loop and wait for it. Long background workers (a restore, a
   delete) open their own connection (`_own_store`).
-- `store_access.writer()` and `WriteStore` exist but have no production caller.
 - The database runs in WAL mode with `synchronous=NORMAL`. On an SD card a single commit can stall the
   loop for seconds for about a minute after a restore or an update; a writer thread is designed for
   it and held in reserve ([ROADMAP](../ROADMAP.md)).
@@ -86,7 +85,7 @@ query budgets, reachability (`check_reachability.py`, whose headline the archite
 the GraphQL deprecation and field watch. A change that moves one of these updates its baseline in the
 same PR.
 
-**Reachability today: 10 of 1,586 definitions unreachable** (`check_reachability.py`). The suite
+**Reachability today: 10 of 1,622 definitions unreachable** (`check_reachability.py`). The suite
 asserts this line (`tests/test_b_design_figures.py`): a PR that adds or removes a definition updates it.
 The history of the figure is in the [architecture record](../history/design/EMT-v5_architecture.md) §4.
 

@@ -49,7 +49,11 @@ required `pre-purge-import` backup, and keeps `ha_reads`.
 - Made by *Backup now*, before every change that cannot be undone (the labels above, and
   `pre_config_save`, `pre_restore`, `pre-attribution`, `pre-api-import`, `pre-csv-import`), and once per
   new version before it starts (`pre_upgrade_<version>`, a raw copy).
-- A daily copy of `blocks.db` beside them, at about 03:15 or 03:45 local.
+- A daily copy of `blocks.db` beside them, at about 03:15 or 03:45 local. It skips a window while the
+  settle sweep, an import, a delete, a restore or a device history rebuild runs — a rebuild only while
+  the last copy is under 48 hours old (`_SHARE_BACKUP_REBUILD_CAP_H`).
+- *Backup now* (`/api/backup`, and `/api/backup/create`) is refused while a device history rebuild
+  runs — 409, naming the device — as a backup then would hold it half done (`_rebuild_refuses_backup`).
 - The `/share` folder is claimed by an instance-id marker, so two installs never share or restore each
   other's backups (`instance.py`) — below.
 
@@ -215,6 +219,21 @@ it. A size estimate warns over 10 MB.
   (`drop_device_history`); the house over the span again, yielding to the loop every 50 blocks
   (`recompute_remainders_for_window_async`); and the rebuild from the kept hours, with no second
   fetch. A rebuild whose every fetch failed is an error, not "done".
+- **A rebuild cut off** — by a restart, a power cut, or a backup copied mid-run — is finished exactly
+  by *Rebuild history*: the recorder hours are kept before anything is dropped, and it re-splits each
+  half-hour it writes ([interrupted rebuild design](../history/design/EMT-v5_interrupted_rebuild_design.md), soak 21 Nov 2026). **A restore stops a rebuild
+  first** (`_restore_worker` step 1c): it cancels any rebuild or replace and waits for it, as for an
+  import, and aborts if it will not stop; a replace checks for cancel between its re-split chunks.
+  Once the file is swapped, `engine.database_replaced()` counts it: a rebuild, replace or queued refill
+  rebuild started on the old database stops at its next half-hour, writing nothing into the new one,
+  and finished runs' progress and errors are forgotten.
+- **The ledger run from its start** (`recorder_attribution_runs`): a rebuild, replace or refill rebuild
+  is entered when it starts — `status` running, its `kind` and `step` — its progress (`blocks_written`,
+  `done_to`) every 200 hours, and closed done, cancelled or error; a replace stopped after its drop
+  `interrupted`. At startup (`mark_cut_off_rebuilds`) a run still running with no run of its device alive
+  is marked `interrupted` and logged; `/api/historical/attribute/runs` names each device's (`cut_off`),
+  and its card says it was cut off and that *Rebuild history* finishes it. A later run of the device that
+  finishes marks it `resumed`.
 - **A device with no read sensor** is allowed: nothing is read for it, its usage counts in the house,
   and its Overview cards (which read only its power and SoC sensors) still work. Emptying the sensor
   skips the change dialog, and the old one comes off the stitch; after the save's reload the page asks

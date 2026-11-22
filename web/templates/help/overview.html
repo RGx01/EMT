@@ -5,18 +5,56 @@
   <div class="card-title">👁 Hiding a card</div>
   <p>
     The eye on a card hides it, for everyone using this EMT. Links at the foot of the page bring it back.
-    Hiding only changes what the page shows: EMT keeps recording. The one exception is the Agile cards, where EMT
-    also stops fetching the prices.
+    Hiding only changes what the page shows: EMT keeps recording, the Agile cards' prices included.
   </p>
 </div>
 
 <div class="card help-section">
-  <div class="card-title">⚡ Live power and the devices</div>
+  <div class="card-title">↕ Arranging the page</div>
+  <p>
+    The cards sit in rows: <strong>Power</strong> (Live Power and your devices), <strong>Grid and carbon</strong>
+    (the generation mix, carbon intensity and the 48-hour history), <strong>Smart Charging</strong>, the
+    <strong>Agile</strong> import and export prices, and the <strong>costs</strong>. Unlock the
+    <strong>padlock</strong> at the top right, then drag a row by the strip above it, or a card along its row by its
+    <strong>⠿ drag</strong> handle; a gentle wave runs down the rows now and then while it is unlocked. Lock it
+    again when you are done. The order is kept for everyone using this EMT.
+  </p>
+  <p>
+    The Power row shares its width evenly: when its cards do not fit on one line, they split as evenly as they
+    can, three and two rather than four and one. A hidden card's neighbours fill its place. The
+    <strong>compact</strong> button on a power or cost card folds its whole row: the power cards to their gauges,
+    the cost cards to a total each.
+  </p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">⚡ Power</div>
   <ul>
-    <li><strong>Live Power</strong> — your grid power now: importing, exporting or net zero. It needs a
+    <li><strong>🏠 Meter</strong> — your grid power now: importing, exporting or net zero. It needs a
       power sensor for the main meter, or an Octopus Home Mini.</li>
     <li><strong>A gauge for each device</strong> with a power sensor: a battery's charge and its
-      inverter (charging or discharging), an EV charger's draw, a heat pump's.</li>
+      inverter (charging or discharging), an EV charger's draw, a heat pump's. On Intelligent Octopus Go's
+      capped agreement (IOG-SMB) the car's card also shows today's 6 hours, noon to noon: about how much
+      smart charging is used, how much tonight's plan adds, and what is left or over. A heat pump given an outdoor
+      temperature sensor in Meter Config shows the temperature too, beside its power and dashed on its chart,
+      on a scale of its own.</li>
+  </ul>
+  <p>
+    Beneath each gauge, <strong>today against yesterday</strong>: the energy since midnight, today's line over
+    yesterday's (dimmed), with today's figure and yesterday's by the same time. Live Power shows your import and
+    export, from the meter's half-hours. A device shows what its power sensor measured — what it used, from
+    any source, which is not the share of the bill Billing gives it — and a battery or a V2X car what went
+    out too, below the line. A battery with a charge sensor switches between its charge (SoC) and its energy
+    (kWh); EMT remembers which. Point at a chart, or tap it, for the figures at that time. The expand button
+    opens a card large, with its times and scale.
+  </p>
+</div>
+
+<div class="card help-section">
+  <div class="card-title">🌐 Grid and carbon</div>
+  <ul>
+    <li><strong>🌐 Current Grid Generation Mix</strong> — what the grid is burning and spinning now. It needs a
+      postcode.</li>
     <li><strong>🌿 Carbon Intensity</strong> — the grid's carbon now in your region, and its forecast for
       the next 48 hours. It needs a postcode.</li>
     <li><strong>48-Hour Power History</strong> — your grid power over the last two days (kW); with a

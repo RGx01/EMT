@@ -45,7 +45,7 @@ import re
 import sys
 import urllib.request
 
-DEFAULT_ENDPOINT = "https://api.octopus.energy/v1/graphql/"
+DEFAULT_ENDPOINT = "https://api.oegb-kraken.energy/v1/graphql/"
 BASELINE_PATH = os.path.join(os.path.dirname(__file__), "graphql_field_watch_baseline.json")
 
 # Reconstruction-relevant type surface — matched as case-insensitive substrings on the type NAME,

@@ -132,13 +132,14 @@ class ThePage(unittest.TestCase):
 
     def test_where_a_bar_is_one_stretch_of_time_with_agreements(self):
         avail = _fn("barTariffsAvailable")
-        self.assertIn("var view = (barPeriod === 'monthly' && barMonthOrder === 'date') || barPeriod === 'daily' || barPeriod === 'hh' || barPeriod === 'span';",
-                      avail)
+        # a span in month order is not one stretch of time a bar (22 Nov 2026)
+        self.assertIn("var view = (barPeriod === 'monthly' && barMonthOrder === 'date') || barPeriod === 'daily' || barPeriod === 'hh' ||\n"
+                      "             (barPeriod === 'span' && !barSpanMonthFirst());", avail)
         self.assertIn("return view && !!barTariffs && barTariffs.length > 0;", avail)
         self.assertIn("if (_tw) _tw.style.display = barTariffsAvailable() ? 'flex' : 'none';", _fn("barRender"))
 
     def test_each_bar_carries_its_dates(self):
-        data = _fn("barGetDataForPeriod")
+        data = _fn("barGetDataForPeriodAll")
         self.assertIn("bucketRanges: keys.map(function(bk){ return { from: bk, to: barAddMonth(bk) }; }),", data)
         self.assertIn("return { from: from, to: barAddMonth(from) };", data)
         self.assertIn("return { from: from, to: barAddDay(from) };", data)                        # Daily

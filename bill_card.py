@@ -208,6 +208,19 @@ def _standing_groups(standing):
     return sorted(groups.items())
 
 
+def bill_total(summary):
+    """The card's Total Bill (BL-78). With the bill method (ex-VAT figures held), the supplier's
+    bill: import incl. VAT and standing rounded once, less each export credit as printed. Without
+    it, `total_cost` (each local day's net to the penny, summed). Overview's This Bill card shows
+    this figure too, so the two cards agree (22 Nov 2026, the user: they were 2p apart)."""
+    bm = summary.get("bill_method")
+    if not bm:
+        return summary["total_cost"]
+    return round(bm["inc_total"] + sum(
+        float((summary["totals"].get(k) or {}).get("cost") or 0.0)
+        for k in summary["meters"] if k.endswith("/ Export")), 2)
+
+
 def card(summary, currency="£", site_name=None):
     """The card for one period: {"site", "rows"}. `site_name`, when given, heads it;
     otherwise the main meter's own site from the summary, if any."""
@@ -317,12 +330,7 @@ def card(summary, currency="£", site_name=None):
     # bill method's import incl. VAT less each export credit as printed above. Off, Total Bill is
     # compute_period_net (each local day's net to the penny, summed), which agrees with Usage
     # Stats day by day. The two can differ by pennies; each matches its own lines.
-    if bm:
-        total_val = round(bm["inc_total"] + sum(
-            float((summary["totals"].get(k) or {}).get("cost") or 0.0) for k in export_keys), 2)
-    else:
-        total_val = summary["total_cost"]
-    total = f"{currency}{total_val:.2f}"
+    total = f"{currency}{bill_total(summary):.2f}"
     rows.append({"type": "line_block", "cls": "grand-total", "text": "Total Bill", "value": total})
     return {"site": site_name, "total": total, "rows": rows}
 

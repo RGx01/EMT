@@ -5,6 +5,81 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
+## [2026.11.0b32] — 2026-11-22
+
+- **A hidden Agile card comes back up to date.** Hiding an Agile card stopped EMT fetching its prices, so
+  shown again it was a day behind, and the link at the foot of the page could fail to bring it back at all
+  until a hard refresh. EMT now keeps both directions' prices whatever is hidden — hiding only hides — and
+  the page never reuses an old answer from the browser's cache. In Safari a card shown again, Agile or any
+  other alone in its row, stayed invisible until the page was reloaded; it appears at once now.
+- **Usage Stats: zoom.** A bar in the data table's heading is a window on the chart: drag either end to zoom
+  from that side, the middle to move along, ↺ to see everything again. The table follows it.
+- **Usage Stats: Rate brackets' colours in month order.** Ordered by Month, the brackets' legend lost its colours
+  and pointing at a bracket did not pick it out. Both work again.
+- **Usage Stats: Month order separates the months.** On Monthly, ordered by Month, a line now separates each
+  month's group of bars, and the Net line runs within a month instead of joining it to the next.
+- **Usage Stats: Span by the day, the month or the year, and by Month.** A span's bars can be a day, a month or
+  a year each, and grouped by month across the years as Monthly's can.
+- **The car's 6 hours on its Overview card.** On Intelligent Octopus Go's capped agreement (IOG-SMB), the EV
+  card shows today's noon-to-noon allowance beside its gauge: about how much smart charging has been used, how
+  much Octopus's current plan would add, and how much is left — or how far the plan runs over — with the next
+  planned window. These are EMT's estimates, counted as the Smart Charging card counts them.
+- **A heat pump's outdoor temperature.** Give your heat pump an outdoor temperature sensor in Meter Config and
+  its Overview card shows a temperature gauge beside its power, and its chart draws the temperature since
+  midnight, today over yesterday, on a scale of its own. A °F sensor is shown in °C.
+- **Today against yesterday on the Overview's power cards.** The 🏠 Meter card (was Live Power) shows your
+  import and export since midnight, today's line over yesterday's, export below the line. Each device card
+  shows the energy its power sensor measured since midnight; a battery or a V2X car shows what went out, below
+  the line, as well as in. A battery with a charge sensor switches between its charge and its energy. Point at
+  a chart (or tap it) for the figures at that time; the expand button opens a card large, with its times and
+  scale. The compact button on any power card shows them all as gauges only. The gauges are smaller and line
+  up across the row, the Meter's import/export pill sits beside its gauge, and a battery's level stands upright
+  beside its inverter and solar gauges, which are now the same size.
+- **Arrange the Overview.** The Overview's cards now sit in rows: Power (the Meter and your devices), Grid
+  and carbon (the generation mix, carbon intensity and the 48-hour history together), Smart Charging, Agile
+  import and Agile export prices, and the cost cards. Unlock the padlock at the top of the page and drag the
+  rows, and the cards along each row, into place; while it is unlocked a gentle wave runs down the rows now and
+  then (not if your device asks for less motion). When the Power row's cards do not fit on one line, they
+  split evenly, three and two rather than four and one. Carbon Intensity no longer grows and shrinks beside
+  the gauges, a hidden card's neighbours fill its place, and the 48-hour history fills the height of its row.
+  The compact button on any cost card shows them all as a total each, on one line. The Agile chart is drawn
+  at its card's size from the start (on a Pi it could load stretched until expanded).
+- **The Overview's bill card shows the Billing tab's total.** The two worked out the same money with
+  different rounding: the Overview rounded each day to the penny and added up the days, the Billing tab
+  rounds once, as your Octopus statement does. They could sit a few pence apart (£19.86 against £19.88).
+  The Overview's *This Bill* now shows the statement figure. Today and This Year are unchanged.
+- **Backups wait for a device's history rebuild.** *Backup now* is refused while *Rebuild history* or
+  *Replace history* is running, saying which device, as a backup then would hold its history half done.
+  The nightly copy waits for it too, unless the last copy is two days old.
+- **A device's history rebuild that was cut off says so.** If EMT restarts, the power goes, or a backup
+  taken mid-rebuild is restored while *Rebuild history* or *Replace history* is running, the device's card
+  now says the rebuild was cut off and that *Rebuild history* finishes it. Before, a part-done history
+  looked finished. The run is in the undo list from its start, so it covers what was written.
+- **Restoring a backup stops a device's history rebuild first.** A restore while *Rebuild history* or
+  *Replace history* was running let the rebuild carry on: it went on writing the old database during the
+  restore's checks, and could, with the timing against it, have written into the restored one. The restore
+  now stops it first (and says so if it will not stop), and afterwards the device's card shows the
+  restored history, not the stopped run's error. *Rebuild history* finishes a rebuild that was cut off.
+- **Your car is its own line beside a battery too.** On Intelligent Octopus Go with no EV sensor in EMT,
+  the car shows as an "EV" line, from Octopus's split and its dispatches. With another device set up — a
+  battery, a heat pump — the Overview and Billing's day charts showed it, but the Bill card's breakdown,
+  Usage Stats and Flow left it inside Direct import. Every view now shows it the same way. Bill totals do
+  not change.
+- **Insights counts a charge Octopus billed to your car.** On IOG-SMB, where Octopus's bill splits house
+  and car, a charge it put on the car that EMT had no dispatch for stayed in the house on Insights'
+  carbon figures. It is the car's now, as on the bill.
+- **EMT talks to Octopus at its new address.** Octopus has moved its API to `api.oegb-kraken.energy`; EMT
+  now asks there for your history, rates and bills. The old address still answers for now, and nothing
+  else changes: the same API key, the same data.
+- **A change to Octopus's rates feed is said, and your rates are kept.** If Octopus's rates feed answers
+  with no rates for a tariff that had them, or with rates EMT cannot read, EMT now says so in the log
+  (`kraken_rest_drift`), and keeps the rates it had rather than dropping them. Before, the import's rates
+  were dropped and the "tariff not supported" banner showed, and an export tariff's went quietly.
+- **A heat-pump tariff keeps the car's split.** Octopus has added a heat-pump band to its tariffs.
+  If a heat pump's use arrives in Octopus's house/car breakdown under a name EMT did not know, EMT set
+  aside that half-hour's whole breakdown, car included. It now counts the heat pump as part of the house,
+  says so in the log the first time, and keeps the house's own rate apart from the heat pump's.
+
 ## [2026.11.0b31] — 2026-11-21
 
 - **Billing shows a new half-hour without a reload.** Opened or reloaded just before a half-hour arrived,

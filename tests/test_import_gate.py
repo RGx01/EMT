@@ -344,6 +344,7 @@ class TheRestorePaths(unittest.TestCase):
         eng = mock.MagicMock()
         eng.api_import_running.return_value = True          # an import is running
         eng.api_import_control.side_effect = lambda a: self.cancels.append(a)
+        eng.attribution_running.return_value = False      # no device rebuild (restore step 1c)
         self.p = [mock.patch.object(self.srv, "DATA_DIR", self.data),
                   mock.patch.object(self.srv, "_share_backup_dir", lambda: self.share),
                   mock.patch.object(self.srv, "_create_backup_zip",
@@ -426,6 +427,38 @@ class TheRestorePaths(unittest.TestCase):
         make_db(os.path.join(self.share, "blocks.db"), written_by=None)
         self.srv._restore_worker("", None, True)
         self._refused_untouched()
+
+    def _admitted_zip(self):
+        src = make_db(os.path.join(self.share, "new.db"), written_by=G.FLOOR_VERSION,
+                      blocks=[HEALTHY, ("2026-09-16T00:00:00", MAIN, 0.1, 0.095, 0.1, 0.095)])
+        mock.patch.object(sys.modules["engine"], "api_import_running", lambda: False).start()
+        return self._zip("new.zip", src)
+
+    def test_a_running_rebuild_is_stopped_before_the_safety_backup(self):
+        """Interrupted rebuild design §3, Phase 2 (21 Nov 2026): T3 on the soak Pi — the rebuild kept
+        writing through the restore. Fails on the parent: nothing cancels it."""
+        eng = sys.modules["engine"]
+        eng.attribution_running.side_effect = [True, True, False]
+        z = self._admitted_zip()
+        with mock.patch("time.sleep", lambda s: None):
+            self.srv._restore_worker(z, None, False)
+        self.assertEqual(self.srv._restore_job["status"], "done", self.srv._restore_job)
+        eng.attribution_control.assert_called_with("cancel")
+        self.assertEqual(self.backups, ["pre_restore"])
+        eng.database_replaced.assert_called_once_with()
+
+    def test_a_rebuild_that_will_not_stop_aborts_the_restore(self):
+        eng = sys.modules["engine"]
+        eng.attribution_running.return_value = True
+        z = self._admitted_zip()
+        with mock.patch("time.sleep", lambda s: None):
+            self.srv._restore_worker(z, None, False)
+        j = self.srv._restore_job
+        self.assertEqual(j["status"], "error", j)
+        self.assertIn("history rebuild was still stopping", j["error"])
+        self.assertEqual(open(self.live, "rb").read(), self.live_bytes, "the live database changed")
+        self.assertEqual(self.backups, [], "a safety backup was taken for an aborted restore")
+        eng.database_replaced.assert_not_called()
 
     def test_an_admitted_zip_is_swapped_in_from_the_checked_copy(self):
         """GUARD: the zip's blocks.db is extracted once, checked, and renamed into

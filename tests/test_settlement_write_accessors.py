@@ -146,9 +146,10 @@ class TheDevicesGoWithTheMain(unittest.TestCase):
 class Surfaces(unittest.TestCase):
 
     def test_both_are_writes(self):
-        from store_types import ReadStore, WriteStore
+        from store_types import ReadStore
+        from block_store import BlockStore
         for name in ("apply_measured_to_main",):
-            self.assertTrue(hasattr(WriteStore, name), name)
+            self.assertTrue(hasattr(BlockStore, name), name)
             self.assertFalse(hasattr(ReadStore, name),
                              "%s on the read surface has no thread guard" % name)
 

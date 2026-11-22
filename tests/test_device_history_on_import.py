@@ -107,8 +107,12 @@ class TheImport(unittest.TestCase):
     def _refill(self, ha, **kw):
         started, real = [], engine.run_attribution_job
 
+        gen = engine._db_generation
+
         async def _job(mid, sensors, **k):
-            started.append(k)
+            # the database it was queued on goes with it (interrupted rebuild design, Phase 2)
+            self.assertEqual(k.get("db_generation"), gen)
+            started.append({x: v for x, v in k.items() if x != "db_generation"})
             return await real(mid, sensors, **k)
 
         async def go():
@@ -152,7 +156,8 @@ class TheImport(unittest.TestCase):
         self.st.record_recorder_hours("ev_charger", "import", {H: 2.0})
         got, started = self._refill(None, fetch_new=True)
         self.assertEqual(got, ["ev_charger"])
-        self.assertEqual(started, [{"pace_s": 0.05, "window": (S1, END), "fetch": False}])
+        self.assertEqual(started, [{"pace_s": 0.05, "window": (S1, END), "fetch": False,
+                                    "kind": "refill"}])
 
 
 class TheCallers(unittest.TestCase):

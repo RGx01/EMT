@@ -124,7 +124,7 @@ class ThePure(unittest.TestCase):
 class ThePage(unittest.TestCase):
 
     def test_every_card_is_marked(self):
-        for key, near in (("mix", 'id="mix-card"'), ("power", 'class="power-card"'), ("charge", 'id="charge-card-wrap"'),
+        for key, near in (("mix", 'id="mix-card"'), ("power", 'class="power-card expandable-card"'), ("charge", 'id="charge-card-wrap"'),
                           ("carbon", 'id="carbon-card-wrap"'), ("history", 'id="power-history-card-wrap"')):
             with self.subTest(key):
                 self.assertRegex(PAGE, r'%s[^>]*data-ov-card="%s"' % (re.escape(near), key))
@@ -138,9 +138,25 @@ class ThePage(unittest.TestCase):
         i = PAGE.index("container.appendChild(tmp.firstChild);")
         self.assertIn("_ovRefresh();", PAGE[i:i + 80])
 
-    def test_a_hidden_gauge_does_not_count_towards_the_layout(self):
-        i = PAGE.index("function _applyLayout(")
-        self.assertIn("_ovHidden.indexOf('power') < 0", PAGE[i:i + 600])
+    def test_a_hidden_card_does_not_count_towards_the_power_rows_spread(self):
+        # the overview rows design replaced _applyLayout: the spread counts the cards that show
+        i = PAGE.index("function _ovLayoutNow(")
+        self.assertIn("cards.filter(_ovShown).length", PAGE[i:PAGE.index("\n}\n", i)])
+
+    def test_a_rows_cards_are_measured_with_it_shown(self):
+        # 22 Nov 2026, the user (Safari): an Agile card shown again stayed invisible until a reload. Its row had been
+        # hidden with it, and inside a hidden row a browser may answer for a card "hidden" whatever its own style, so
+        # the row never came back. Measured with the row shown, in the same step.
+        i = PAGE.index("function _ovLayoutNow(")
+        body = PAGE[i:PAGE.index("\n}\n", i)]
+        self.assertIn("var was = r.hidden;\n    if (was) r.hidden = false;\n    var shown = Array.prototype.some.call(r.children, _ovShown);",
+                      body)
+
+    def test_showing_or_hiding_a_card_lays_the_rows_out_at_once(self):
+        i = PAGE.index("function _ovRefresh(")
+        self.assertIn("_ovLayoutNow();", PAGE[i:PAGE.index("\n}\n", i)])
+        i = PAGE.index("function _agileApply(")
+        self.assertIn("if (typeof _ovLayoutNow === 'function') _ovLayoutNow();", PAGE[i:PAGE.index("\n}\n", i)])
 
     def test_GUARD_an_expanded_card_leaves_the_button_out(self):
         # `_expandCard` clones the card's children but skips `.expand-btn`

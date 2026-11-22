@@ -70,7 +70,7 @@ sys.modules["ha_client"] = hc
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import store_access                     # workstream A: store() / writer()
+import store_access                     # workstream A: store(), the per-thread read store
 # Remove any cached stub from previous test runs before importing the real module
 if "block_store" in sys.modules:
     del sys.modules["block_store"]
@@ -279,8 +279,8 @@ def make_client(blocks=None, store=None):
     # Workstream A: routes no longer write through the request thread — mutations
     # hop to the engine via `_engine_write`. There is no engine loop here, so it
     # is stood in for by a direct call on the test store. The hop ITSELF is not
-    # what these tests are about: `writer()`'s thread affinity is covered in
-    # tests/test_store_types.py, and that no route writes directly is covered by
+    # what these tests are about: the engine connection's thread affinity is covered
+    # in tests/test_thread_affinity.py, and that no route writes directly is covered by
     # the structural check in tests/test_route_store_use.py.
     server._engine_write = lambda op, timeout=30.0: op(server._store)
     # Allow caller to inject a pre-built store (e.g. with custom config periods)
@@ -2058,6 +2058,7 @@ class TestApiRestoreStaged(unittest.TestCase):
         eng = MagicMock()
         eng._norm_account = lambda x: str(x or "").strip().upper()
         eng.api_import_running.return_value = False
+        eng.attribution_running.return_value = False      # no device rebuild (restore step 1c)
         eng.save_kraken_credentials = lambda *a: self.saved.append(a)
         self._eng = patch.dict(sys.modules, {"engine": eng})
         self._eng.start()
@@ -2825,7 +2826,7 @@ class TestOverviewGating(unittest.TestCase):
         r = self._get(power=True, postcode=False)
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"Overview", r.data)
-        self.assertIn(b'class="power-card"', r.data)        # gauge present
+        self.assertIn(b'class="power-card expandable-card"', r.data)        # gauge present
         self.assertNotIn(b'id="power-hint"', r.data)        # no hint
         self.assertNotIn(b'id="carbon-card-wrap"', r.data)  # no carbon
         self.assertIn(b'id="status-text"', r.data)          # status indicator shown
@@ -2836,7 +2837,7 @@ class TestOverviewGating(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn(b'id="power-hint"', r.data)           # dismissible hint
         self.assertIn(b'id="carbon-card-wrap"', r.data)     # carbon present
-        self.assertNotIn(b'class="power-card"', r.data)     # teeth: gauge gated out
+        self.assertNotIn(b'class="power-card expandable-card"', r.data)     # teeth: gauge gated out
         # no power source → no status indicator (was showing a false "Error")
         self.assertNotIn(b'id="status-text"', r.data)
         self.assertNotIn(b'id="status-dot"', r.data)
@@ -2852,7 +2853,7 @@ class TestOverviewGating(unittest.TestCase):
     def test_both_gates(self):
         r = self._get(power=True, postcode=True)
         self.assertEqual(r.status_code, 200)
-        self.assertIn(b'class="power-card"', r.data)
+        self.assertIn(b'class="power-card expandable-card"', r.data)
         self.assertIn(b'id="carbon-card-wrap"', r.data)
         self.assertNotIn(b'id="power-hint"', r.data)
 
@@ -2860,7 +2861,7 @@ class TestOverviewGating(unittest.TestCase):
         # reachable by direct URL though hidden from nav; must not error
         r = self._get(power=False, postcode=False)
         self.assertEqual(r.status_code, 200)
-        self.assertNotIn(b'class="power-card"', r.data)
+        self.assertNotIn(b'class="power-card expandable-card"', r.data)
         self.assertNotIn(b'id="carbon-card-wrap"', r.data)
 
 
@@ -2899,7 +2900,7 @@ class TestMiniPowerSource(unittest.TestCase):
              patch.object(server, "_mini_device_id", return_value="dev-1"):
             r = client.get("/live-power")
         self.assertEqual(r.status_code, 200)
-        self.assertIn(b'class="power-card"', r.data)   # gauge revealed by the marker
+        self.assertIn(b'class="power-card expandable-card"', r.data)   # gauge revealed by the marker
 
     def test_api_power_mini_import(self):
         d = self._power(self._cfg(power_source="mini"),
@@ -3012,7 +3013,7 @@ class TestMiniPowerSource(unittest.TestCase):
              patch.object(server, "_mini_device_id", return_value="dev-1"):
             r = client.get("/live-power")
         self.assertIn(b'id="mini-active-note"', r.data)
-        self.assertIn(b'class="power-card"', r.data)   # gauge revealed
+        self.assertIn(b'class="power-card expandable-card"', r.data)   # gauge revealed
         self.assertNotIn(b'id="mini-enable"', r.data)
 
     def test_render_generic_hint_when_no_mini(self):
@@ -3078,7 +3079,7 @@ class TestMiniPowerSource(unittest.TestCase):
                           {"bcd": {"found": True, "demand_sensor": "sensor.bcd_demand"}}, create=True), \
              patch.object(server, "_mini_device_id", return_value="dev-1"):
             r = client.get("/live-power")
-        self.assertIn(b'class="power-card"', r.data)    # gauge revealed via BCD
+        self.assertIn(b'class="power-card expandable-card"', r.data)    # gauge revealed via BCD
         self.assertNotIn(b'id="mini-enable"', r.data)   # Mini NOT offered when BCD present
         self.assertNotIn(b'id="power-hint"', r.data)
 
@@ -5614,6 +5615,23 @@ class TestAttributionEndpoints(unittest.TestCase):
         self.assertTrue(d["ok"])
         self.assertEqual(d["runs"][0]["run_id"], "r1")
         self.assertEqual(d["summary"]["total"], 10)
+
+    def test_runs_name_each_device_s_cut_off_rebuild(self):
+        """Interrupted rebuild design, Phase 1 (21 Nov 2026): the card says a device's rebuild was cut
+        off; the newest interrupted run per device. Fails on the parent: no `cut_off`."""
+        store = MagicMock()
+        store.get_attribution_runs.return_value = [
+            {"run_id": "a", "meter_id": "ev", "status": "interrupted", "kind": "rebuild",
+             "created_at": "2026-11-20T10:00:00", "blocks_written": 5},
+            {"run_id": "b", "meter_id": "ev", "status": "interrupted", "kind": "replace",
+             "created_at": "2026-11-21T10:00:00", "blocks_written": 0, "step": "re-splitting"},
+            {"run_id": "c", "meter_id": "battery", "status": "resumed", "created_at": "2026-11-21"},
+            {"run_id": "d", "meter_id": "heat_pump", "blocks_written": 9}]
+        store.count_recorder_attributed.return_value = {"total": 0, "meters": []}
+        store.device_history_sources.return_value = {}
+        d = make_client(store=store).get("/api/historical/attribute/runs").get_json()
+        self.assertEqual(list(d["cut_off"]), ["ev"])
+        self.assertEqual((d["cut_off"]["ev"]["kind"], d["cut_off"]["ev"]["step"]), ("replace", "re-splitting"))
 
     def test_backout_calls_engine_and_refuses_while_running(self):
         import engine

@@ -218,6 +218,10 @@ _kraken_current_agreement_from = None   # current import agreement valid_from (n
 # Standing-charge schedule (single, import-side — the daily standing charge).
 # Stored as £/day after conversion at resolve time, like rates.
 _kraken_standing_schedule = None    # RateSchedule | None
+# The REST watch (21 Nov 2026): the tariff code each cached schedule ("import", "export",
+# "standing") was built for, and the (schedule, tariff) pairs flagged as gone empty.
+_rate_schedule_tariff: dict = {}
+_rest_drift_flagged: set = set()
 _rate_schedule_unsupported: dict | None = None  # set when an active tariff returns
 #   NO standard unit rates — the new IOG time-of-use / 6-hour-cap tariff signature.
 #   Surfaced so a migrated user sees a clear "not yet supported" state, not £0 bills.
@@ -1494,6 +1498,19 @@ _SHARE_BACKUP_HOUR = 3
 _SHARE_BACKUP_STARTS = (15, 45)       # minute of the hour a start window opens
 _SHARE_BACKUP_SPAN = 10               # minutes each start window stays open
 _share_backup_tried_day = None        # one attempt per local day per process
+# Device power samples kept (overview rows design, part 2): yesterday from local midnight until late tonight,
+# across a clock change.
+SUB_METER_HISTORY_HOURS = 50
+_SHARE_BACKUP_REBUILD_CAP_H = 48      # a rebuild holds the copy back only while the last is younger
+
+
+def _share_copy_age_h(now) -> float:
+    """Hours from the daily share copy's last write to `now` (tz-aware); infinite where none."""
+    try:
+        _p = f"{SHARE_BACKUP_DIR}/blocks.db"
+        return (now - datetime.fromtimestamp(os.path.getmtime(_p), now.tzinfo)).total_seconds() / 3600
+    except Exception:
+        return float("inf")
 
 
 def _maybe_daily_share_backup(now_utc=None) -> bool:
@@ -1529,6 +1546,12 @@ def _maybe_daily_share_backup(now_utc=None) -> bool:
         pass
     if settle_history_in_progress() or delete_in_progress() or any(
             _coord.running(j) for j in ("import", "delete", "restore")):
+        return False
+    if attribution_running() and _share_copy_age_h(now) < _SHARE_BACKUP_REBUILD_CAP_H:
+        # A device history rebuild: a copy now would hold it half done (interrupted rebuild design
+        # §3, Phase 3). Only while the last copy is recent — a rebuild stuck or long paused must not
+        # stop the copies, and a run cut off is marked on restore (Phase 1).
+        logger.info("_maybe_daily_share_backup: a device history rebuild is running — waiting")
         return False
     _share_backup_tried_day = today
     logger.info("_maybe_daily_share_backup: starting the daily share copy")
@@ -3059,7 +3082,8 @@ def _recompute_pass3_totals(block: dict) -> None:
 
 
 async def recompute_remainders_for_window_async(parent_meter_id: str, utc_start: str,
-                                                utc_end: str, *, every: int = 50) -> int:
+                                                utc_end: str, *, every: int = 50,
+                                                stop=None) -> int:
     """`recompute_remainders_for_window`, yielding to the loop every `every` blocks: over a
     device's whole history it is tens of thousands of blocks, and run straight through it held
     the loop for 104 s on an SSD — long enough for HA's WebSocket to drop (4 Nov 2026, b7)."""
@@ -3068,6 +3092,12 @@ async def recompute_remainders_for_window_async(parent_meter_id: str, utc_start:
     starts = get_store().get_block_starts_in_range(parent_meter_id, utc_start, utc_end)
     done = 0
     for i in range(0, len(starts), every):
+        if stop is not None and stop():
+            # A replace asked to stop (a restore): what is re-split stays, the rest is the rebuild's
+            # (interrupted rebuild design §2 — it re-splits each half-hour it writes).
+            logger.info("recompute_remainders_for_window: stopped after %d block(s) for parent %s",
+                        done, parent_meter_id)
+            return done
         chunk = starts[i:i + every]
         done += recompute_remainders_for_window(parent_meter_id, chunk[0],
                                                 (chunk[-1] + "\x7f"), quiet_total=True)
@@ -3253,6 +3283,13 @@ def _replace_state(meter_id: str, **fields) -> None:
         j.update(fields)
 
 
+def _replace_stopping(meter_id: str, gen: int) -> bool:
+    """A replace asked to stop — cancelled (a restore cancels it) — or on a database since replaced."""
+    with _attribution_lock:
+        ctl = (_attribution_jobs.get(meter_id) or {}).get("control")
+    return ctl == "cancel" or _db_moved(gen)
+
+
 def _replace_refused(meter_id: str, error: str, code: str) -> dict:
     """End a replace before its run, nothing dropped: the error on the card, the claim freed."""
     _replace_state(meter_id, status="error", error=error, phase=None)
@@ -3276,6 +3313,8 @@ async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
 
     Never raises; a failure is the run's error, on its card."""
     from datetime import datetime as _dt, timedelta as _td
+    gen = _db_generation
+    run_id = None
     if _engine_ha is None:
         return _replace_refused(meter_id, "Home Assistant is not connected — nothing was replaced",
                                 "no_ha")
@@ -3293,18 +3332,37 @@ async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
         if not fetched:
             return _replace_refused(meter_id, "Home Assistant has no history for " +
                                     ", ".join(sensor_ids) + " — nothing was replaced", "no_data")
+        if _replace_stopping(meter_id, gen):
+            return _replace_refused(meter_id, "stopped before anything was replaced", "cancelled")
         get_store().record_recorder_hours(meter_id, "import", fetched, src_of)
+        # Entered before the drop (interrupted rebuild design, Phase 1): a replace cut off from
+        # here on has dropped the device's history, and must be said on its card at the next start.
+        run_id = _dt_now_iso_safe() + "|" + meter_id
+        _run_open(run_id, meter_id, "replace", sensor_ids, step="dropping")
         _replace_state(meter_id, phase="Dropping the old history…")
         off = get_store().device_off_stitch_sensors(meter_id)
         res = get_store().drop_device_history(meter_id, [o["id"] for o in off])
         lo, hi = res.get("from"), res.get("to")
+        _run_update(run_id, step="re-splitting", **{"from": lo, "to": hi})
         if lo and hi:
             _replace_state(meter_id, phase="Giving the house back its share…")
             hi_excl = (_dt.fromisoformat(hi) + _td(minutes=int(get_block_minutes() or 30))).isoformat()
             for parent in res.get("parents") or []:
-                await recompute_remainders_for_window_async(parent, lo, hi_excl)
+                await recompute_remainders_for_window_async(
+                    parent, lo, hi_excl, stop=lambda: _replace_stopping(meter_id, gen))
+        if _replace_stopping(meter_id, gen):
+            # Cut short after the drop: Rebuild history finishes it exactly (interrupted rebuild
+            # design §2) — on this database; on a replaced one there is nothing left to do.
+            _replace_state(meter_id, status="cancelled", phase=_DB_REPLACED if _db_moved(gen) else None)
+            if not _db_moved(gen):
+                # its history is dropped: said on the card as cut off, not quietly cancelled
+                _run_close(run_id, meter_id, "interrupted", 0)
+            _coord.release("attribution", meter_id)        # still the claim: the run never started
+            logger.info("replace_device_history: %s stopped after the drop (%s)", meter_id,
+                        "the database was replaced" if _db_moved(gen) else "cancelled")
+            return {"ok": False, "error": "cancelled"}
         for r in get_store().get_attribution_runs():
-            if r.get("meter_id") == meter_id and r.get("run_id"):
+            if r.get("meter_id") == meter_id and r.get("run_id") and r["run_id"] != run_id:
                 get_store().remove_attribution_run(r["run_id"])
         logger.info("replace_device_history: %s — %d hour(s) kept from %s; dropped %d half-hour(s) "
                     "and %d read(s) (%s); rebuilding", meter_id, len(fetched), ", ".join(sensor_ids),
@@ -3312,9 +3370,12 @@ async def replace_device_history(meter_id: str, sensor_ids: list) -> dict:
                     ", ".join(o["entity_id"] for o in off) or "no sensor it no longer uses")
     except Exception as e:
         logger.error("replace_device_history failed (%s): %s", meter_id, e, exc_info=e)
+        if run_id and not _db_moved(gen):
+            _run_close(run_id, meter_id, "interrupted", 0)    # it may have dropped the history
         return _replace_refused(meter_id, "the history could not be replaced", "replace_failed")
     _replace_state(meter_id, phase=None)
-    return await run_attribution_job(meter_id, sensor_ids, pace_s=0.05, fetch=False)
+    return await run_attribution_job(meter_id, sensor_ids, pace_s=0.05, fetch=False,
+                                     db_generation=gen, run_id=run_id, kind="replace")
 
 
 def _stitch_hourly_energy(series_by_sensor: dict, priority: list,
@@ -3510,6 +3571,104 @@ _attribution_lock = threading.Lock()
 
 _ACTIVE = ("claimed", "running", "paused")
 
+# Bumped when the database FILE is replaced — a restore (`database_replaced`). A rebuild or replace
+# started on the old file stops when it sees it move, whatever the timing (interrupted rebuild
+# design §3, Phase 2): its next half-hour would otherwise be written into the restored database.
+_db_generation = 0
+_DB_REPLACED = "the database was replaced"
+
+
+def database_replaced() -> None:
+    """The restore has swapped in another database file. Any rebuild still running belongs to the
+    old one: cancel it (the generation stops it even if it never reads the control again). A
+    finished run's state — its progress, its error — describes the old file, so it is forgotten:
+    the device's card shows the restored database's own history (T3 on the soak Pi, 21 Nov 2026:
+    the card kept a dead run's error and its last progress after the restore)."""
+    global _db_generation
+    with _attribution_lock:
+        _db_generation += 1
+        for mid in list(_attribution_jobs):
+            if _attribution_jobs[mid].get("status") in _ACTIVE:
+                _attribution_jobs[mid]["control"] = "cancel"
+            else:
+                del _attribution_jobs[mid]
+
+
+def _db_moved(gen: int) -> bool:
+    return gen != _db_generation
+
+
+# ── The rebuild's ledger entry, from its start (interrupted rebuild design §3, Phase 1) ─────────
+# A run is entered in the ledger when it starts and closed when it ends, so one cut off by a
+# restart, a power cut or a backup copied mid-run is still there, `running`, and the next start
+# marks it `interrupted`: the card says so, and undo by run covers what it wrote. Its progress goes
+# in every 200 hours, where the in-memory progress already does — a small write each, fine on an
+# SD card. Statuses: running → done | cancelled | error | interrupted; an interrupted run becomes
+# `resumed` once a later run of the device finishes.
+_RUN_KINDS = ("rebuild", "replace", "refill")
+
+
+def _run_open(run_id: str, meter_id: str, kind: str, sensor_ids, *, step: str,
+              frm=None, to=None) -> None:
+    try:
+        get_store().record_attribution_run({
+            "run_id": run_id, "meter_id": meter_id, "sensor_ids": list(sensor_ids or []),
+            "from": frm, "to": to, "blocks_written": 0, "created_at": _dt_now_iso_safe(),
+            "status": "running", "kind": kind, "step": step})
+    except Exception as e:
+        logger.warning("rebuild ledger: opening %s failed: %s", run_id, e)
+
+
+def _run_update(run_id: str, **fields) -> None:
+    try:
+        get_store().update_attribution_run(run_id, **fields)
+    except Exception as e:
+        logger.warning("rebuild ledger: updating %s failed: %s", run_id, e)
+
+
+def _run_close(run_id: str, meter_id: str, status: str, written: int) -> None:
+    """End a run's entry. A run that finished having written nothing leaves the ledger, as before
+    (there is nothing for undo to take); one that finished marks the device's interrupted runs
+    resumed — Rebuild history finishes a cut-off run exactly (design §2)."""
+    try:
+        st = get_store()
+        if status == "done" and not written:
+            st.remove_attribution_run(run_id)
+        else:
+            st.update_attribution_run(run_id, status=status, blocks_written=written)
+        if status == "done":
+            for r in st.get_attribution_runs():
+                if r.get("meter_id") == meter_id and r.get("status") == "interrupted":
+                    st.update_attribution_run(r["run_id"], status="resumed")
+    except Exception as e:
+        logger.warning("rebuild ledger: closing %s failed: %s", run_id, e)
+
+
+def mark_cut_off_rebuilds() -> list:
+    """At startup: a ledger run still `running` with no run of its device alive in this process was
+    cut off — by a restart, a power cut, or a restore of a backup taken mid-run. Marked
+    `interrupted`, and said once in the log. Startup also runs on a config save or an HA reconnect,
+    so a device whose run is alive here is left alone. Returns the runs marked."""
+    try:
+        st = get_store()
+        runs = st.get_attribution_runs()
+    except Exception as e:
+        logger.warning("mark_cut_off_rebuilds: %s", e)
+        return []
+    with _attribution_lock:
+        alive = {m for m, j in _attribution_jobs.items() if j.get("status") in _ACTIVE}
+    marked = []
+    for r in runs:
+        if r.get("status") != "running" or r.get("meter_id") in alive:
+            continue
+        st.update_attribution_run(r["run_id"], status="interrupted")
+        marked.append(r)
+        logger.warning("device history %s for %s was cut off (%s, %d half-hour(s) written%s) — "
+                       "Rebuild history on its card finishes it", r.get("kind") or "rebuild",
+                       r.get("meter_id"), r.get("step") or "writing", int(r.get("blocks_written") or 0),
+                       (", up to " + str(r["done_to"])) if r.get("done_to") else "")
+    return marked
+
 
 def attribution_claim(meter_id: str, sensor_ids: list) -> bool:
     """Reserve `meter_id` for a run, atomically. False if it is already taken.
@@ -3672,7 +3831,8 @@ async def _fetch_device_series(sensor_ids: list, start: str, end: str) -> tuple:
      exclusive_with=("delete",), on_conflict=WAIT)
 async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
                               pace_s: float = 0.0, window: tuple | None = None,
-                              fetch: bool = True) -> dict:
+                              fetch: bool = True, db_generation: int | None = None,
+                              run_id: str | None = None, kind: str = "rebuild") -> dict:
     """Background: attribute a device's HA recorder history onto the house blocks it
     isn't on yet. Fetch stats (on the loop's WS listener), stitch to hourly energy,
     walk oldest-first writing recorder_attributed device blocks — skipping any block
@@ -3683,8 +3843,15 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
     It rebuilds from `ha_reads` too (soft delete design §2): the hours it keeps, and the
     half-hours HA recorded live, which go back as they were. `fetch=False` asks HA's recorder
     nothing — a refill's rebuild (`rebuild_devices_after_refill`); `window` (lo, hi) bounds
-    it to the refilled span."""
+    it to the refilled span.
+
+    `db_generation`: the database it was asked on (a replace's, a queued refill's); it stops,
+    writing nothing more, once a restore has replaced that database (`database_replaced`).
+
+    `run_id` / `kind`: its ledger entry, entered when it starts (`_run_open`) — a replace passes the
+    entry it opened before its drop."""
     import asyncio as _aio
+    gen = _db_generation if db_generation is None else db_generation
     # This device's own entry — created by `attribution_claim()` when the route
     # reserved it, or here if the job was started directly (tests, a future
     # scheduler). Never `clear()`: that is what let a second start wipe the
@@ -3702,7 +3869,9 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
               "written": 0, "skipped": 0, "gaps": 0, "done_hours": 0,
               "total_hours": 0,
               "started_at": j.get("started_at") or _dt_now_iso_safe()})
-    run_id = _dt_now_iso_safe() + "|" + device_meter_id
+    own_entry = run_id is None             # a replace's entry was opened by the replace
+    run_id = run_id or (_dt_now_iso_safe() + "|" + device_meter_id)
+    opened = not own_entry
     try:
         if fetch and _engine_ha is None:
             j.update({"status": "error", "error": "no HA connection"})
@@ -3765,6 +3934,14 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
         j["seam"] = seam
         bm = int(get_block_minutes() or 30)
         j.update({"phase": "attributing", "total_hours": len(hours)})
+        if hours and not _db_moved(gen):
+            if opened:
+                _run_update(run_id, step="writing", sensor_ids=list(sensor_ids or []),
+                            **{"from": hours[0], "to": hours[-1]})
+            else:
+                _run_open(run_id, device_meter_id, kind, sensor_ids, step="writing",
+                          frm=hours[0], to=hours[-1])
+                opened = True
         written = skipped = gaps = 0
         global _pass2_quiet
         _prev_p2q = _pass2_quiet
@@ -3807,8 +3984,10 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
                 await _aio.sleep(1.0)
                 if j.get("control") == "cancel":
                     break
-            if j.get("control") == "cancel":
+            if j.get("control") == "cancel" or _db_moved(gen):
                 j["status"] = "cancelled"
+                if _db_moved(gen):
+                    j["phase"] = _DB_REPLACED
                 _coord.mark("attribution", device_meter_id, status="cancelled")
                 break
             j["status"] = "running"
@@ -3819,17 +3998,17 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
             if (i % 200) == 0:
                 j.update({"written": written, "skipped": skipped, "gaps": gaps,
                           "done_hours": i})
+                if opened and written and not _db_moved(gen):
+                    _run_update(run_id, blocks_written=written, done_to=hour)
                 await _aio.sleep(pace_s)        # yield to the live tick / drain
         _pass2_quiet = _prev_p2q
         j.update({"written": written, "skipped": skipped, "gaps": gaps,
                   "done_hours": len(hours)})
-        if written:
-            get_store().record_attribution_run({
-                "run_id": run_id, "meter_id": device_meter_id,
-                "sensor_ids": list(sensor_ids or []),
-                "from": hours[0] if hours else None,
-                "to": hours[-1] if hours else None,
-                "blocks_written": written, "created_at": _dt_now_iso_safe()})
+        if opened and not _db_moved(gen):     # never into a database it did not write to
+            # a replace stopped part-way has dropped the device's history: said as cut off
+            _end = ("done" if j.get("status") != "cancelled"
+                    else "interrupted" if kind == "replace" else "cancelled")
+            _run_close(run_id, device_meter_id, _end, written)
         if j.get("status") != "cancelled":
             j["status"] = "done"
             _coord.mark("attribution", device_meter_id, status="done")
@@ -3840,6 +4019,8 @@ async def run_attribution_job(device_meter_id: str, sensor_ids: list, *,
                 "run_id": run_id, "status": j["status"]}
     except Exception as e:
         logger.warning("run_attribution_job failed: %s", e, exc_info=e)
+        if opened and not _db_moved(gen):
+            _run_close(run_id, device_meter_id, "error", int(j.get("written") or 0))
         j.update({"status": "error", "error": _error_text("attribution", e)})
         _coord.mark("attribution", device_meter_id, status="error")
         return {"ok": False, "error": j["error"]}
@@ -3871,7 +4052,12 @@ async def _rebuild_when_admitted(mid: str, sensors: list, lo: str, hi: str, *,
     main's single rate and settle() prices them by its legs; the fill's own pass starts as this does,
     so it may already have been past them. An import's walk from the start needs no second pass."""
     waited = 0.0
+    gen = _db_generation
     while True:
+        if _db_moved(gen):
+            logger.info("rebuild_devices_after_refill: %s not rebuilt — %s while it waited", mid,
+                        _DB_REPLACED)
+            return
         cur = (_attribution_jobs.get(mid) or {}).get("status")
         if cur in _ACTIVE:
             logger.info("rebuild_devices_after_refill: %s already rebuilding — left to its run", mid)
@@ -3901,11 +4087,12 @@ async def _rebuild_when_admitted(mid: str, sensors: list, lo: str, hi: str, *,
             return
         logger.info("rebuild_devices_after_refill: %s — its history EMT never had, from HA's "
                     "recorder", mid)
-        await run_attribution_job(mid, sensors, pace_s=0.05)
+        await run_attribution_job(mid, sensors, pace_s=0.05, db_generation=gen)
         return
     logger.info("rebuild_devices_after_refill: %s %s..%s — rebuilding from HA's reads", mid, lo, hi)
-    r = await run_attribution_job(mid, sensors, pace_s=0.05, window=(lo, hi), fetch=False)
-    if settle_after and (r or {}).get("written"):
+    r = await run_attribution_job(mid, sensors, pace_s=0.05, window=(lo, hi), fetch=False,
+                                  db_generation=gen, kind="refill")
+    if settle_after and (r or {}).get("written") and not _db_moved(gen):
         _queue_settle_spans([[lo, hi]], "device rebuild")
         asyncio.create_task(_settle_history_to_done())
 
@@ -6072,9 +6259,17 @@ async def _engine_tick(ha: HAClient):
             soc_s = meta.get("soc_sensor")
             inv_s = meta.get("inverter_power_sensor")
             dev_s = meta.get("device_power_sensor")
-            if not soc_s and not inv_s and not dev_s:
+            temp_s = meta.get("outdoor_temp_sensor")       # a heat pump's outdoor temperature
+            if not soc_s and not inv_s and not dev_s and not temp_s:
                 continue  # no sensors configured for this sub-meter
-            soc_val = inv_val = None
+            soc_val = inv_val = temp_val = None
+            if temp_s and ha:
+                import overview_days as _od_t
+                try:
+                    _tu = (ha.get_attributes(temp_s) or {}).get("unit_of_measurement", "")
+                except Exception:
+                    _tu = ""
+                temp_val = _od_t.to_celsius(ha.get_state(temp_s), _tu)
             if soc_s and ha:
                 v = ha.get_state(soc_s)
                 if v not in (None, "unknown", "unavailable"):
@@ -6105,10 +6300,11 @@ async def _engine_tick(ha: HAClient):
                     # magnitude heuristic when the unit is missing (previously this
                     # path assumed kW on a missing unit — a W sensor read 1000× high).
                     inv_val = _power_value_to_kw(v, unit, _sub_unit_ov, _sub_invert)
-            if soc_val is not None or inv_val is not None:
-                _store.append_sub_meter_history(now.isoformat(), mid, soc_val, inv_val)
+            if soc_val is not None or inv_val is not None or temp_val is not None:
+                _store.append_sub_meter_history(now.isoformat(), mid, soc_val, inv_val, temp_val)
                 if not _pruned_sub:
-                    _store.prune_sub_meter_history(hours=48)
+                    # 50 h: the Overview's device lines need yesterday whole from midnight, late in the day
+                    _store.prune_sub_meter_history(hours=SUB_METER_HISTORY_HOURS)
                     _pruned_sub = True
     except Exception as e:
         logger.warning("_engine_tick: sub_meter_history write skipped: %s", e)
@@ -6696,19 +6892,15 @@ _agile_public_running = False
 
 def _agile_public_channels() -> list:
     """The directions to fetch Agile's public prices for: import unless the account is on Agile
-    itself (its own schedule has them), export where it exports and is not on Agile Outgoing; not
-    a direction whose card is hidden."""
-    import agile_public as _ap
+    itself (its own schedule has them), export where it exports and is not on Agile Outgoing.
+    Whether its card is hidden or not (22 Nov 2026, the user: "always fetch both" — skipping a hidden
+    card's saved about a public call a day, and left its prices a day behind when it was shown again)."""
     import tariff_prices as _tp
     disc = _kraken_discovery or {}
-    try:
-        hidden = _ap.hidden_channels(_reader().get_settings())
-    except Exception:
-        hidden = set()                      # read in the tick: a bad read must not stop it
     out = []
     for ch in ("import", "export"):
         d = disc.get(ch) or {}
-        if ch in hidden or (ch == "export" and not d):
+        if ch == "export" and not d:
             continue
         if not _tp.is_dynamic_code(d.get("tariff_code") or ""):
             out.append(ch)
@@ -6773,6 +6965,7 @@ async def _fetch_agile_public() -> dict:
         region = _ap.region_of(((_kraken_discovery or {}).get("import") or {}).get("tariff_code") or "")
         key = _ap.try_key(now_local)
         rec["asked"] = now_utc.isoformat()
+        rec["asked_for"] = _agile_public_channels()        # whose 90 minutes the next ask waits out
         rec["tries"] = {key: int((rec.get("tries") or {}).get(key, 0)) + 1}
         rec["region"] = region
         if _ap.products_due(rec, now_utc) or not all((rec.get(ch) or {}).get("product") for ch in _agile_public_channels()):
@@ -9732,6 +9925,34 @@ def _rate_history_from(channel: str) -> "str | None":
     return since.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _rest_went_empty(key: str, tariff: str, prev, kind: str) -> bool:
+    """The REST watch's emptiness half: True when Octopus's REST API answered a refresh with no
+    `kind` for `tariff`, and the last schedule EMT built for that same tariff had periods.
+
+    Octopus's REST products API has no schema to introspect, so this is how a change there first
+    shows: a tariff that had rates suddenly has none. Said loudly, with a greppable token, once
+    until it answers again; the caller keeps the last-known schedule, as it does when the fetch
+    fails outright, rather than drop working rates. A tariff code EMT had not priced before (a new
+    agreement) is not this, and goes on as it did."""
+    if prev is None or prev.is_empty() or _rate_schedule_tariff.get(key) != tariff:
+        return False
+    if (key, tariff) not in _rest_drift_flagged:
+        _rest_drift_flagged.add((key, tariff))
+        logger.error("kraken_rest_drift: Octopus's REST API returned no %s for %s (%s), which had "
+                     "%d period(s) at the last refresh; keeping those. Octopus's REST API may have "
+                     "changed — check https://developer.oegb-kraken.energy/announcements.",
+                     kind, tariff, key, len(prev))
+    return True
+
+
+def _rest_answered(key: str, tariff: str) -> None:
+    """A schedule built with periods: note its tariff, and say once if it had gone empty."""
+    _rate_schedule_tariff[key] = tariff
+    if (key, tariff) in _rest_drift_flagged:
+        _rest_drift_flagged.discard((key, tariff))
+        logger.info("kraken_rest_drift: %s (%s) has rates from Octopus again", tariff, key)
+
+
 async def _refresh_kraken_rate_schedules() -> None:
     """Build/refresh the cached rate schedules for import and export from the
     discovered tariffs. Cheap (fixed tariffs ≈ 1 record). Failures leave the
@@ -9774,10 +9995,16 @@ async def _refresh_kraken_rate_schedules() -> None:
             logger.warning("_refresh_kraken_rate_schedules: %s build failed: %s",
                            ch, e)
             continue
+        if sched.is_empty() and _rest_went_empty(
+                ch, tariff, (_kraken_rate_schedules or {}).get(ch), "unit rates"):
+            # Not determined: the banner stays as it was, as for a failed fetch.
+            new_cache[ch] = _kraken_rate_schedules[ch]
+            continue
         if ch == "import":
             import_determined = True
         if not sched.is_empty():
             new_cache[ch] = sched
+            _rest_answered(ch, tariff)
             _keep_current_tariff_prices(ch, tariff, "rate", sched)
         elif ch == "import":
             # Fetch SUCCEEDED but the tariff genuinely returns no standard AND no
@@ -9892,7 +10119,12 @@ async def _refresh_kraken_rate_schedules() -> None:
                 vat=_vat_context("import"), period_from=_rate_history_from("import"))
             if not sc.is_empty():
                 _kraken_standing_schedule = sc
+                _rest_answered("standing", imp["tariff_code"])
                 _keep_current_tariff_prices("import", imp["tariff_code"], "standing", sc)
+            else:
+                # Kept either way (an empty answer never replaced it); said when it had periods.
+                _rest_went_empty("standing", imp["tariff_code"], _kraken_standing_schedule,
+                                 "standing charges")
                 logger.info("_refresh_kraken_rate_schedules: standing_charge=%d periods",
                             len(sc))
         except Exception as e:
@@ -14147,6 +14379,9 @@ async def _engine_startup_impl(ha: HAClient):
         logger.info("engine_startup: new install — initial config period created")
 
     logger.info("engine_startup: %d existing blocks in store", _store.count_blocks())
+    # A device history rebuild cut off — a restart, a power cut, a backup restored from mid-run —
+    # is marked, for its card (interrupted rebuild design, Phase 1). Alive runs are left alone.
+    mark_cut_off_rebuilds()
 
     # ── One-off (versioned): zero-fill blank export slots on imported days that
     # already carry export. A PDF/CSV/API historical import of a solar export meter

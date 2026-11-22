@@ -49,7 +49,8 @@ function chart(sets) { barChartInstance = {data: {datasets: sets}, update: funct
 class TheScale(unittest.TestCase):
 
     def _run(self, body):
-        names = ("barBrPence", "barBrLabel", "barBrScaleTicks", "barBrTicksHidden", "barBrFaded", "barBrHighlight", "barBrScale", "barBuildLegend")
+        names = ("barBrPence", "barBrLabel", "barBrScaleTicks", "barBrTicksHidden", "barParseColor", "barBrFaded", "barDsColor",
+                 "barBrHighlight", "barBrScale", "barBuildLegend")
         src = (HARNESS + "var BAR_BR_KEYS_MAX = 12;\n" + "\n".join(_fn(n) for n in names) + "\n" + body)
         with tempfile.TemporaryDirectory() as d:
             p = os.path.join(d, "t.js")

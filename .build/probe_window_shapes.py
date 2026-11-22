@@ -85,7 +85,7 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GRAPHQL = "https://api.octopus.energy/v1/graphql/"
+GRAPHQL = "https://api.oegb-kraken.energy/v1/graphql/"
 LONDON = ZoneInfo("Europe/London")
 MATCH_GBP = 0.0006            # the statement prints pence to three places; VAT rounds the rest
 SHAPES = ("ladder", "day/500", "day/48", "day/10", "60-day")

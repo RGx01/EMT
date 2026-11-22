@@ -105,15 +105,22 @@ def try_key(now_local: datetime) -> str:
 
 def due(rec: dict, now_utc: datetime, now_local: datetime, tz, channels) -> bool:
     """Whether to ask Octopus now: a channel's prices short of `target_through`, and not asked in the
-    last 90 minutes, nor more than MAX_TRIES times on this side of PUBLISH_LOCAL (try_key). Pure."""
+    last 90 minutes, nor more than MAX_TRIES times on this side of PUBLISH_LOCAL (try_key). Pure.
+
+    The 90 minutes are the last ask's channels' (`asked_for`): a short channel that ask was not for — a
+    card hidden then, shown since — need not wait them out (22 Nov 2026, the user: the Agile import card,
+    shown at 17:18, had no new prices until the export ask's 90 minutes passed). It still counts against
+    the tries. A record from before `asked_for` waits, as it did."""
     rec = rec or {}
     want = target_through(now_local, tz)
-    short = any((through_of((rec.get(ch) or {}).get("prices") or []) or datetime.min) < want - timedelta(minutes=30)
-                for ch in channels)
+    short = [ch for ch in channels
+             if (through_of((rec.get(ch) or {}).get("prices") or []) or datetime.min) < want - timedelta(minutes=30)]
     if not short:
         return False
     last = rec.get("asked")
-    if last and now_utc - datetime.fromisoformat(last) < RETRY_AFTER:
+    asked_for = rec.get("asked_for")
+    new = asked_for is not None and any(ch not in asked_for for ch in short)
+    if last and now_utc - datetime.fromisoformat(last) < RETRY_AFTER and not new:
         return False
     return int((rec.get("tries") or {}).get(try_key(now_local), 0)) < MAX_TRIES
 

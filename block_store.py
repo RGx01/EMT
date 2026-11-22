@@ -165,6 +165,7 @@ CREATE TABLE IF NOT EXISTS meters (
     inverter_power_sensor TEXT,            -- HA entity_id for inverter power W/kW (informational)
     device_power_sensor TEXT,              -- HA entity_id for EV/heat pump power W/kW (informational)
     pv_power_sensor     TEXT,              -- HA entity_id for battery PV/solar power W/kW (informational)
+    outdoor_temp_sensor TEXT,              -- HA entity_id for a heat pump's outdoor temperature (informational)
     retired_at          TEXT,              -- ISO date from which this meter is retired (NULL = active)
     retired_reason      TEXT,              -- optional note e.g. "Device replaced", "Moved property"
     FOREIGN KEY (config_period_id) REFERENCES config_periods(id),
@@ -420,7 +421,10 @@ CREATE TABLE IF NOT EXISTS sub_meter_history (
     captured_at TEXT    NOT NULL,  -- UTC ISO
     meter_id    TEXT    NOT NULL,  -- battery sub-meter ID
     soc_pct     REAL,              -- state of charge 0-100, NULL if no SoC sensor
-    inverter_kw REAL               -- inverter power kW, positive=charging, negative=discharging, NULL if no sensor
+    inverter_kw REAL,              -- inverter power kW, positive=charging, negative=discharging, NULL if no sensor
+    -- a heat pump's outdoor temperature, °C, NULL if no sensor (22 Nov 2026). The comment sits above the
+    -- column: after the last one, an older SQLite's DROP COLUMN reads it as eating the ")" (CI, 22 Nov 2026)
+    temp_c      REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sub_meter_history_time ON sub_meter_history (captured_at);
@@ -1275,7 +1279,7 @@ class BlockStore:
         self._read_only = read_only
         # `uri=True` for a `file:...` path so a NAMED shared-cache in-memory
         # database can be opened by more than one connection — the fixture story
-        # for the ReadStore/WriteStore split (A §7 q2). `":memory:"` is anonymous:
+        # for the ReadStore split (A §7 q2). `":memory:"` is anonymous:
         # a second connection to it is a different, empty database, which is why
         # v4's read companion had to fall back to the shared handle.
         # check_same_thread is left at its DEFAULT (True). It was False from the
@@ -1507,6 +1511,7 @@ class BlockStore:
         _ds_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(dispatch_slots)").fetchall()} if self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='dispatch_slots'").fetchone() else set()
         _dh_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(dispatch_history)").fetchall()} if self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='dispatch_history'").fetchone() else set()
         _ph_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(power_history)").fetchall()} if self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='power_history'").fetchone() else set()
+        _smh_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(sub_meter_history)").fetchall()} if self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='sub_meter_history'").fetchone() else set()
         _mc_cost_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(measured_cost)").fetchall()} if self._conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='measured_cost'").fetchone() else set()
 
         for _col, _tbl, _defn, _col_set in [
@@ -1526,6 +1531,9 @@ class BlockStore:
             ("inverter_power_sensor","meters",         "TEXT",               _m_cols),
             ("device_power_sensor",  "meters",         "TEXT",               _m_cols),
             ("pv_power_sensor",      "meters",         "TEXT",               _m_cols),
+            # ── a heat pump's outdoor temperature, on its Overview card (22 Nov 2026)
+            ("outdoor_temp_sensor",  "meters",         "TEXT",               _m_cols),
+            ("temp_c",               "sub_meter_history", "REAL",            _smh_cols),
             ("retired_at",            "meters",         "TEXT",               _m_cols),
             ("retired_reason",        "meters",         "TEXT",               _m_cols),
             ("supplier",              "config_periods",  "TEXT",              _cp_cols),
@@ -2717,13 +2725,14 @@ class BlockStore:
 
     def append_sub_meter_history(self, captured_at: str, meter_id: str,
                                 soc_pct: float | None,
-                                inverter_kw: float | None) -> None:
-        """Append a battery history row for one battery meter."""
+                                inverter_kw: float | None,
+                                temp_c: float | None = None) -> None:
+        """Append one device's sample: its SoC, its power, and a heat pump's outdoor temperature."""
         with self._conn:
             self._conn.execute(
-                """INSERT INTO sub_meter_history (captured_at, meter_id, soc_pct, inverter_kw)
-                   VALUES (?, ?, ?, ?)""",
-                (captured_at, meter_id, soc_pct, inverter_kw)
+                """INSERT INTO sub_meter_history (captured_at, meter_id, soc_pct, inverter_kw, temp_c)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (captured_at, meter_id, soc_pct, inverter_kw, temp_c)
             )
 
     def prune_sub_meter_history(self, hours: int = 48) -> int:
@@ -2741,13 +2750,84 @@ class BlockStore:
         cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
                   - timedelta(hours=hours)).isoformat()
         rows = self._conn.execute(
-            """SELECT captured_at, soc_pct, inverter_kw
+            """SELECT captured_at, soc_pct, inverter_kw, temp_c
                FROM sub_meter_history
                WHERE meter_id = ? AND captured_at >= ?
                ORDER BY captured_at ASC""",
             (meter_id, cutoff)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def get_sample_energy_steps(self, meter_id: str, day0: str, day1: str, upto: str,
+                                step_min: int = 5, gap_s: int = 300, from_m: float = 0.0) -> dict:
+        """One device's power samples summed in SQLite into `step_min` steps of one local day [day0, day1) —
+        the Overview's today-against-yesterday lines (overview_days.energy_lines), which summed every
+        sample in Python once a minute: 0.44 s for three devices' 50 hours on a Mac, seconds on a Pi.
+
+        Each segment between consecutive samples (power known, captured no later than `upto`) no more than
+        `gap_s` apart is the trapezoid of its ends — positive power in, negative out — and is the day's
+        its START falls in, its end held at `day1`. A step is its segments' END minute (since `day0`, to the
+        hundredth) // `step_min`. Per step and direction: the kWh, the first such segment's start minute and
+        the last one's end minute. `last_m`: the day's last sample's minute (None if none). All naive UTC.
+        `from_m`: only the steps of segments ending from that minute on — what a caller keeping the day's
+        finished steps still needs."""
+        from datetime import datetime as _dt, timedelta as _td
+        lo = (_dt.fromisoformat(day0) + _td(minutes=from_m) - _td(seconds=gap_s)).isoformat()
+        hi = min(upto, (_dt.fromisoformat(day1) + _td(seconds=gap_s)).isoformat())
+        rows = self._conn.execute(
+            """WITH s AS (
+                   SELECT julianday(captured_at) AS jt, inverter_kw AS k,
+                          LAG(julianday(captured_at)) OVER w AS jpt, LAG(inverter_kw) OVER w AS pk
+                   FROM sub_meter_history
+                   WHERE meter_id = :mid AND inverter_kw IS NOT NULL
+                     AND captured_at >= :lo AND captured_at <= :hi
+                   WINDOW w AS (ORDER BY captured_at)),
+               d AS (SELECT julianday(:day0) AS j0, julianday(:day1) AS j1),
+               e AS (
+                   SELECT ROUND((MIN(jt, j1) - j0) * 1440.0, 2) AS m,
+                          ROUND((jpt - j0) * 1440.0, 2) AS sm,
+                          (jt - jpt) * 86400.0 AS dt, k, pk
+                   FROM s, d WHERE jpt IS NOT NULL AND jpt >= j0 AND jpt < j1
+                     AND ROUND((MIN(jt, j1) - j0) * 1440.0, 2) >= :from_m),
+               a AS (
+                   SELECT m, sm,
+                          (MAX(pk, 0.0) + MAX(k, 0.0)) / 2.0 * dt / 3600.0 AS a_in,
+                          (MAX(-pk, 0.0) + MAX(-k, 0.0)) / 2.0 * dt / 3600.0 AS a_out
+                   FROM e WHERE dt > 0 AND dt <= :gap)
+               SELECT CAST(m / :step AS INTEGER) AS b,
+                      SUM(CASE WHEN a_in > 0 THEN a_in END) AS in_kwh,
+                      MIN(CASE WHEN a_in > 0 THEN sm END) AS in_start,
+                      MAX(CASE WHEN a_in > 0 THEN m END) AS in_end,
+                      SUM(CASE WHEN a_out > 0 THEN a_out END) AS out_kwh,
+                      MIN(CASE WHEN a_out > 0 THEN sm END) AS out_start,
+                      MAX(CASE WHEN a_out > 0 THEN m END) AS out_end
+               FROM a GROUP BY b ORDER BY b""",
+            {"mid": meter_id, "lo": lo, "hi": hi, "day0": day0, "day1": day1,
+             "gap": gap_s, "step": step_min, "from_m": from_m}).fetchall()
+        last = self._conn.execute(
+            "SELECT ROUND((julianday(MAX(captured_at)) - julianday(?)) * 1440.0, 2) FROM sub_meter_history "
+            "WHERE meter_id = ? AND inverter_kw IS NOT NULL AND captured_at >= ? AND captured_at < ? "
+            "AND captured_at <= ?", (day0, meter_id, day0, day1, upto)).fetchone()[0]
+        return {"steps": [dict(r) for r in rows], "last_m": last}
+
+    def get_sample_level_steps(self, meter_id: str, column: str, day0: str, day1: str, upto: str,
+                               step_min: int = 5, from_m: float = 0.0) -> list:
+        """A level one device's samples carry — `soc_pct` or `temp_c` — as [minute, value]: the last reading in
+        each `step_min` step of one local day [day0, day1) (minutes since `day0`, to the hundredth), readings
+        no later than `upto`, and from minute `from_m` on. All naive UTC."""
+        if column not in ("soc_pct", "temp_c"):
+            raise ValueError("column must be soc_pct or temp_c")
+        from datetime import datetime as _dt, timedelta as _td
+        lo = max(day0, (_dt.fromisoformat(day0) + _td(minutes=from_m)).isoformat())
+        rows = self._conn.execute(
+            "SELECT CAST(ROUND((julianday(captured_at) - julianday(:day0)) * 1440.0, 2) / :step AS INTEGER) AS b, "
+            "       ROUND((julianday(MAX(captured_at)) - julianday(:day0)) * 1440.0, 2) AS m, "
+            "       " + column + " AS v "
+            "FROM sub_meter_history WHERE meter_id = :mid AND " + column + " IS NOT NULL "
+            "AND captured_at >= :lo AND captured_at < :day1 AND captured_at <= :upto "
+            "GROUP BY b ORDER BY b",
+            {"mid": meter_id, "day0": day0, "day1": day1, "upto": upto, "step": step_min, "lo": lo}).fetchall()
+        return [[r["m"], round(float(r["v"]), 1)] for r in rows]
 
     def close(self) -> None:
         try:
@@ -3335,6 +3415,19 @@ class BlockStore:
 
     def get_attribution_runs(self) -> list:
         return self.get_meta(self._ATTRIBUTION_RUNS_KEY, None) or []
+
+    def update_attribution_run(self, run_id: str, **fields) -> None:
+        """Change a ledger run's fields in place — a rebuild's progress, its status, its span
+        (interrupted rebuild design, Phase 1: the run is entered when it starts, not when it ends,
+        so a run cut off is still in the ledger). A run_id not in the ledger is left alone."""
+        runs = self.get_meta(self._ATTRIBUTION_RUNS_KEY, None) or []
+        hit = False
+        for r in runs:
+            if r.get("run_id") == run_id:
+                r.update(fields)
+                hit = True
+        if hit:
+            self.set_meta(self._ATTRIBUTION_RUNS_KEY, runs)
 
     def remove_attribution_run(self, run_id: str) -> None:
         runs = self.get_meta(self._ATTRIBUTION_RUNS_KEY, None) or []
@@ -4225,8 +4318,9 @@ class BlockStore:
         On the WRITE surface deliberately. A checkpoint rewrites the main
         database file, and the restore path in `web/server.py` records what
         issuing one from the wrong thread costs -- *"a concurrent use of one
-        SQLite connection from two threads -> Segmentation fault"*. Reaching it
-        through `writer()` turns that from a comment into a `WrongThread`.
+        SQLite connection from two threads -> Segmentation fault"*. Off the read
+        surface, it is reachable only from the engine's own store, whose connection
+        SQLite refuses on any other thread.
 
         An unrecognised mode is rejected rather than passed through: SQLite does
         NOT error on `PRAGMA wal_checkpoint(NONSENSE)`, it silently performs a
@@ -6121,6 +6215,7 @@ class BlockStore:
             dev_invert   = 1 if meta.get("device_power_invert") else 0
             dev_pwr_s   = meta.get("device_power_sensor")
             pv_pwr_s    = meta.get("pv_power_sensor")
+            temp_s      = meta.get("outdoor_temp_sensor")
 
             postcode_src = meta.get("postcode_source")
             cur = self._conn.execute(
@@ -6130,8 +6225,8 @@ class BlockStore:
                         power_sensor, power_source, postcode_prefix, postcode_source, v2x_capable,
                         meter_type, soc_sensor, inverter_power_sensor, inverter_power_invert,
                         device_power_sensor, pv_power_sensor, rate_source, power_invert,
-                        device_power_invert)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        device_power_invert, outdoor_temp_sensor)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(config_period_id, meter_id) DO UPDATE SET
                        is_sub_meter            = excluded.is_sub_meter,
                        parent_meter_id         = excluded.parent_meter_id,
@@ -6152,12 +6247,13 @@ class BlockStore:
                        device_power_invert     = excluded.device_power_invert,
                        device_power_sensor     = excluded.device_power_sensor,
                        pv_power_sensor         = excluded.pv_power_sensor,
+                       outdoor_temp_sensor     = excluded.outdoor_temp_sensor,
                        retired_at              = COALESCE(meters.retired_at, excluded.retired_at),
                        retired_reason          = COALESCE(meters.retired_reason, excluded.retired_reason)""",
                 (period_id, meter_id, is_sub, parent, device,
                  protected, inv_poss, power_s, power_src, postcode, postcode_src, v2x,
                  meter_type, soc_s, inv_pwr_s, inv_invert, dev_pwr_s, pv_pwr_s, rate_src, pwr_invert,
-                 dev_invert)
+                 dev_invert, temp_s)
             )
             meter_row_id = cur.lastrowid or self._conn.execute(
                 "SELECT id FROM meters WHERE config_period_id=? AND meter_id=?",
@@ -6591,6 +6687,8 @@ class BlockStore:
                     meta["device_power_sensor"] = m["device_power_sensor"]
                 if m["pv_power_sensor"]:
                     meta["pv_power_sensor"] = m["pv_power_sensor"]
+                if "outdoor_temp_sensor" in m.keys() and m["outdoor_temp_sensor"]:
+                    meta["outdoor_temp_sensor"] = m["outdoor_temp_sensor"]
                 if m["retired_at"]:
                     meta["retired_at"] = m["retired_at"]
                 if m["retired_reason"]:
@@ -7852,6 +7950,15 @@ class BlockStore:
             (mpan or "", mpan or "", meter_id, floor, before)).fetchall()
         return [dict(r) for r in rows]
 
+
+    def get_half_hour_kwh(self, meter_id: str, utc_start: str, utc_end: str) -> list:
+        """[{block_start, imp_kwh, exp_kwh}] for one meter's half-hours in [utc_start, utc_end), oldest
+        first — the Overview's today-against-yesterday lines (overview rows design, part 2)."""
+        rows = self._conn.execute(
+            "SELECT block_start, imp_kwh, exp_kwh FROM blocks WHERE meter_id = ? "
+            "AND block_start >= ? AND block_start < ? ORDER BY block_start",
+            (meter_id, utc_start, utc_end)).fetchall()
+        return [dict(r) for r in rows]
 
     def get_imp_kwh(self, starts, meter_id: str = "electricity_main") -> dict:
         """{block_start: imp_kwh} for the blocks in `starts` (absent where there is no block) —

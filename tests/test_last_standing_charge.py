@@ -98,12 +98,13 @@ class LastStandingCharge(unittest.TestCase):
             self.st.last_standing_charge("electricity_main"), 0.47)
 
     def test_it_is_on_the_read_surface_not_the_write_surface(self):
-        """A read method that landed on WriteStore would be reachable only from
+        """A read method left off ReadStore would be reachable only from
         the engine thread -- and two of the three call sites are on it, which is
         precisely how such a mistake would survive review."""
-        from store_types import ReadStore, WriteStore
+        from store_types import ReadStore
+        from block_store import BlockStore
         self.assertTrue(hasattr(ReadStore, "last_standing_charge"))
-        self.assertTrue(hasattr(WriteStore, "last_standing_charge"))
+        self.assertTrue(hasattr(BlockStore, "last_standing_charge"))
 
 
 if __name__ == "__main__":

@@ -91,7 +91,7 @@ class TheEngineNoLongerCheckpointsBeforeABackup(unittest.TestCase):
     def test_startup_keeps_its_own_checkpoint(self):
         """The startup TRUNCATE is NOT part of this removal. It bounds the WAL
         file at boot, which is a different job from making a backup complete, and
-        it now runs through `WriteStore.checkpoint()` rather than a raw pragma."""
+        it now runs through the engine store's `checkpoint()` rather than a raw pragma."""
         import ast
         tree = ast.parse(open(os.path.join(_ROOT, "engine.py")).read())
         for n in ast.walk(tree):

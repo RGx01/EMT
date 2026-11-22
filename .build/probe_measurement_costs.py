@@ -29,7 +29,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote
 
-GRAPHQL = "https://api.octopus.energy/v1/graphql/"
+GRAPHQL = "https://api.oegb-kraken.energy/v1/graphql/"
 
 QUERY = (
     "query meas($acc: String!, $mpan: String!, $start: DateTime!, $end: DateTime!) {"

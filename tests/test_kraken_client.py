@@ -210,7 +210,7 @@ class TestClientRequests(unittest.TestCase):
         page1 = {"results": [{"consumption": 0.1,
                               "interval_start": "2026-05-01T00:00:00Z",
                               "interval_end": "2026-05-01T00:30:00Z"}],
-                 "next": "https://api.octopus.energy/next-page"}
+                 "next": "https://api.oegb-kraken.energy/next-page"}
 
         def route(url, params):
             return FakeResp(200, page2 if "next-page" in url else page1)

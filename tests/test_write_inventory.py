@@ -70,8 +70,8 @@ class TestEngineInventory(unittest.TestCase):
         them, which is why this inventory looks for raw SQL at all.
 
         There are now none. `apply_measured_to_block` was the last (A16); every
-        write in `engine.py` goes through a `WriteStore` method, so thread
-        affinity is enforceable at the type boundary rather than trusted.
+        write in `engine.py` goes through a `BlockStore` write method, so thread
+        affinity is the engine connection's own (SQLite refuses another thread).
 
         This asserts EMPTY rather than a shrinking list, because the number it
         replaced was a count of the problem: the remaining `_conn` uses in

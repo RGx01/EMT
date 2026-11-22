@@ -710,6 +710,7 @@ var FIELD_FILTERS = {
   inverter_power_sensor:   { units: ['W', 'w', 'kW'], unitSuffixes: [], device_class: ['power'] },
   pv_power_sensor:         { units: ['W', 'w', 'kW'], unitSuffixes: [], device_class: ['power'] },
   device_power_sensor:     { units: ['W', 'w', 'kW'], unitSuffixes: [], device_class: ['power'] },
+  outdoor_temp_sensor:     { units: ['°C', '°F', 'C', 'F', 'K'], unitSuffixes: [], device_class: ['temperature'] },
 };
 
 async function loadEntities() {
@@ -1344,6 +1345,15 @@ function buildSubCard(meterId, meter) {
         '</div>'
       : '') +
 
+    // A heat pump's outdoor temperature (22 Nov 2026): a gauge beside its power, and its chart's second axis
+    (isHeatPump
+      ? '<div class="form-group" style="grid-column:1/-1;margin-bottom:16px;">' +
+          '<label>Outdoor Temperature Sensor <span style="color:var(--muted);font-weight:400;">(optional — a temperature gauge on the Overview card, and on its chart)</span></label>' +
+          buildEntityInput(meterId + '__outdoor_temp__outdoor_temp_sensor', meta.outdoor_temp_sensor||'', meterId, 'outdoor_temp', 'outdoor_temp_sensor', true) +
+          '<small style="color:var(--muted);">The outside temperature your heat pump works against, from its own integration or a weather sensor; °F is shown in °C. ⓘ Informational only — not recorded in blocks or used in calculations.</small>' +
+        '</div>'
+      : '') +
+
     '<hr>' +
     '<div class="section-divider">Import Channel' + helpPoint('device-sensors', 'Choosing a device\'s sensor') + '</div>' +
     '<div class="channel-card">' +
@@ -1412,7 +1422,18 @@ function buildHistorySection(meterId, retired) {
       '<div class="js-hist-layer" style="font-size:13px;"></div>' +
     '</div>';
 }
-var _hist = {runs: {}, layer: {}, sources: {}, timer: null, removing: false};
+var _hist = {runs: {}, layer: {}, sources: {}, cutOff: {}, timer: null, removing: false};
+// A device's history rebuild cut off — a restart, a power cut, a backup restored from mid-run
+// (interrupted rebuild design, Phase 1): what the card says, from its ledger run.
+function _histCutOffText(c) {
+  var what = c.kind === 'replace' ? 'Replacing' : 'Rebuilding';
+  var at = c.done_to ? ' at ' + esc(String(c.done_to).substr(0, 10)) : '';
+  var wrote = c.blocks_written ? ', ' + Number(c.blocks_written).toLocaleString() + ' half-hours in' : '';
+  var lost = c.kind === 'replace' && !c.blocks_written
+    ? ' before it wrote anything, so its rebuilt history is missing until' : wrote + '.';
+  return '\u26a0 ' + what + ' this device\u2019s history was cut off' + at + lost +
+    ' <strong>Rebuild history</strong> finishes it.';
+}
 function _histEl(m, cls) {
   var box = document.querySelector('.dev-history[data-meter="' + m + '"]');
   return box ? box.querySelector('.' + cls) : null;
@@ -1453,6 +1474,8 @@ function _renderHistoryState() {
         esc(String(run.device_kwh)) + ' kWh against the house\u2019s ' + esc(String(run.house_kwh)) + ' kWh, ' +
         (run.verdict === 'device_exceeds_house' ? 'more than the house drew' : 'far less than expected') +
         ' \u2014 check the sensor, then use Rebuild history.</span>';
+    } else if (_hist.cutOff[m]) {
+      pr.innerHTML = '<span style="color:#b45309;">' + _histCutOffText(_hist.cutOff[m]) + '</span>';
     } else if (!pr.dataset.keep) { pr.innerHTML = ''; }
     ly.innerHTML = (layer
       ? '<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 0;">' +
@@ -1499,6 +1522,7 @@ function _loadHistoryState() {
     _hist.layer = {};
     (((res[1] || {}).summary || {}).meters || []).forEach(function(m) { _hist.layer[m.meter_id] = m; });
     _hist.sources = (res[1] || {}).sources || {};
+    _hist.cutOff = (res[1] || {}).cut_off || {};
     _renderHistoryState();
     var active = Object.keys(_hist.runs).some(function(k) {
       var t = _hist.runs[k].status; return t === 'claimed' || t === 'running' || t === 'paused'; });
@@ -1861,6 +1885,10 @@ function onContainerChange(e) {
       // pv_power_sensor stored in meter meta (battery PV/solar dial)
       if (el.value) config.meters[m].meta['pv_power_sensor'] = el.value;
       else delete config.meters[m].meta['pv_power_sensor'];
+    } else if (ch === 'outdoor_temp') {
+      // outdoor_temp_sensor stored in meter meta (a heat pump's outdoor temperature)
+      if (el.value) config.meters[m].meta['outdoor_temp_sensor'] = el.value;
+      else delete config.meters[m].meta['outdoor_temp_sensor'];
     } else {
       if (!config.meters[m].channels[ch]) config.meters[m].channels[ch] = {};
       if (el.value) config.meters[m].channels[ch][f] = el.value;

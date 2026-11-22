@@ -17,6 +17,37 @@ half-hour boundary. A tab notes the fingerprint it read just before loading, so 
 loads still counts as a change at the next poll. Live Power's cost cards check it every minute too, and fetch
 `/api/periods?kind=live` again only when it has moved.
 
+## The Overview
+
+Rows of cards ([design record](../history/design/EMT-v5_overview_rows_design.md)): Power (Live Power and the
+device cards), Grid and carbon, Smart Charging, Agile import, Agile export, Costs — every row orderable, and the
+cards along each (22 Nov 2026, the user, after the record: the costs were fixed last and only the Power row's
+cards moved). The user's choices are settings beside `overview_hidden`: `overview_rows` (row order),
+`overview_card_order` (every row's cards, one list), `overview_costs_compact` (cost totals only) and
+`overview_power_compact` (the power cards as gauges only) — each switched from a button on every card of its
+row, the same icon on both — and
+`overview_battery_view` ({card key: `soc` | `energy`}). Unlocked (the padlock), a row is dragged by its strip and a
+card along its row by its handle, with the pointer, so a finger works as a mouse does. The Power row is spread evenly: as few
+lines as fit at 220 px, then as even as they can be. In the Grid and carbon row a hidden card's neighbours fill
+its place.
+
+`/api/overview/days` also carries `ev_cap` with a car on a capped agreement — today's noon-to-noon 6 hours,
+used, planned and the plan's windows ([pricing](pricing-and-settlement.md#the-6-hour-cap-iog-smb)) — and gives
+each power card today against yesterday, as cumulative [minute, value] points since
+each day's local midnight (`overview_days.py`):
+
+- **Live Power**: the main meter's half-hours, plus the half-hour in progress from its register reads.
+- **A device**: its power sensor's samples (`sub_meter_history`, kept 50 hours), trapezoid-summed in SQLite into
+  5-minute steps (`BlockStore.get_sample_energy_steps`). A gap over 5 minutes adds nothing. The route keeps a
+  day's finished steps and sums only the samples from the first unfinished one (`_ov_day_steps`; a restore
+  starts again): about 2 ms a minute where the per-sample sum in Python took 0.44 s for three devices on a Mac
+  (22 Nov 2026). Positive is in; negative is out, shown for a battery or a V2X car. The charts draw
+  export and out below zero. This is the
+  device's own measurement, not its billed grid share. A device without a power sensor: its half-hours, in only.
+- **A battery's SoC**, the last reading in each 5 minutes; and **a heat pump's outdoor temperature** the same
+  way (`outdoor_temp_sensor` on the heat pump, sampled with its power into `sub_meter_history.temp_c`, °C — °F
+  and K converted), drawn on the chart's second axis.
+
 ## Who may ask
 
 Through Home Assistant's sidebar (ingress, a request from the Supervisor) every page and route is open:
@@ -51,16 +82,20 @@ and `HA_PUBLIC_URL` says where the browser reaches Home Assistant. The design:
 - `include` = `usage`, `carbon`, `billing`, `stats`, `settle` (each half-hour's settlement state), `gaps`.
 - `fields=brackets` (at `day` or `block`): grid import by 2.5p rate bracket (`usage_view._rate_brackets`),
   `{series: {n: [kWh, £, g]}}` per day or half-hour, for `meter`, the house (`electricity_main`), each
-  device, `export`, and on an account with no devices the car (`ev_series`, `ev_dispatch`) by the Devices
+  device, `export`, and on an account with no EV meter the car (`ev_series`, `ev_dispatch`) by the Devices
   view's split. `g` is grams of CO₂ (since 4 Nov 2026, for Flow).
 - Capped: 31 days at `block`, 366 at `period` (`_ENERGY_MAX_DAYS`).
 - `/api/periods` lists the periods to choose from (`kind` = billing, month, quarter, year, live).
+  With `include=net_cost`, each period's total is each local day's net to the penny, summed — except
+  `kind=live`'s *This Bill*, which is the Billing card's Total Bill (`bill_card.bill_total`): the
+  statement's rounding, import and standing rounded once less the export credit. The two can differ by
+  pennies; the Overview card matches the Billing tab (22 Nov 2026).
 
 ## Route families
 
 | Family | For |
 |---|---|
-| `/api/power*`, `/api/carbon*`, `/api/charge-sessions`, `/api/agile-prices` | the Overview: live power, carbon, the smart-charging card, Agile in your region |
+| `/api/power*`, `/api/carbon*`, `/api/charge-sessions`, `/api/agile-prices`, `/api/overview/days` | the Overview: live power, carbon, the smart-charging card, Agile in your region, the cards' today against yesterday |
 | `/api/blocks/settlement`, `/api/data-health`, `/api/settlement/*` (re-fetch, the asker's state, parity) | Data Management: a half-hour's details, the health strip, the re-fetch |
 | `/api/gaps/*`, `/api/backfill/*`, `/api/historical/*` | filling gaps; importing from Octopus, a CSV or PDF bills |
 | `/api/blocks/delete*` | deletes |

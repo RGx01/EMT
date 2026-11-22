@@ -181,10 +181,11 @@ class GapFilledDisagreement(unittest.TestCase):
 class Surfaces(unittest.TestCase):
 
     def test_the_read_reads_and_the_write_writes(self):
-        from store_types import ReadStore, WriteStore
+        from store_types import ReadStore
+        from block_store import BlockStore
         self.assertTrue(hasattr(ReadStore, "get_blocks_off_dispatch_split"))
         # replace_ev_split and carve_ev_split went with engine step 4c (the carve settles)
-        self.assertFalse(hasattr(WriteStore, "replace_ev_split"))
+        self.assertFalse(hasattr(BlockStore, "replace_ev_split"))
 
 
 if __name__ == "__main__":

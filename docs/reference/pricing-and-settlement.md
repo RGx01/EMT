@@ -28,6 +28,12 @@ half-hour you corrected is skipped.
   Each channel keeps its own top from its first call (`api_import_top_<channel>` in kraken_state,
   cleared on a restart): until a chunk lands a channel has no checkpoint, and the oldest block of any
   source — the other channel's rows — must not become its ceiling.
+- **When Octopus's rates feed changes** (21 Nov 2026). The REST products API has no schema to watch, so a
+  refresh watches its answers. Records none of which builds a period log `kraken_rest_drift` with the
+  fields the first one carries (`kraken_rates._flag_unreadable`). A refresh that answers no rates, or no
+  standing charge, for the tariff whose last schedule had periods logs `kraken_rest_drift` once until it
+  answers again, and keeps the last-known schedule, as a failed fetch does (`engine._rest_went_empty`);
+  the "tariff unsupported" banner is left as it was. A tariff code not priced before still raises it.
 - **Economy 7** (BL-102): a two-rate tariff (`E-2R-…`) has no standard rates — Octopus answers 400 —
   so its `day-unit-rates` and `night-unit-rates` are fetched and placed by Octopus's smart-meter rule,
   night **00:30–07:30 UTC** all year (01:30–08:30 in summer; `kraken_rates._E7_*`, the IOG synthesis
@@ -65,6 +71,10 @@ The bill wins over the prediction; where they disagree the detail panel notes it
   window. A charge past the 6 hours not yet billed still counts.
 - On a capped half-hour with EV, the cap's four rates price the legs (EV off-peak within the allowance,
   EV peak past it, the house's).
+- **Shown** on the Smart Charging card per cap-day, and on the Overview's EV card for today's: the minutes
+  counted so far, the minutes Octopus's current plan would charge before the next noon (planned kWh over the
+  plan's fullest half-hour), and what is left or over (`server._ev_cap_now`). Both count with
+  `server._cap_rows`.
 
 ## "Settled" is two events
 

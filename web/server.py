@@ -59,6 +59,11 @@ def _pages_revalidate(response):
         ctype = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype == "text/html" and "Cache-Control" not in response.headers:
             response.headers["Cache-Control"] = "no-cache"
+        elif ctype == "application/json" and "Cache-Control" not in response.headers:
+            # An answer is the data as it is now, never reused (22 Nov 2026, the user: an Agile card shown again
+            # stayed away until a hard refresh — its prices re-read with no header, a browser or the ingress
+            # could hand back the answer from while it was hidden, that direction left out)
+            response.headers["Cache-Control"] = "no-store"
     except Exception:
         pass
     return response
@@ -318,7 +323,7 @@ _event_loop = None  # asyncio event loop — captured at init time
 import sys as _sys
 _sys.path.insert(0, _os.path.dirname(_os.path.dirname(__file__)))
 
-import store_access                 # workstream A: store() / writer()
+import store_access                 # workstream A: store(), the per-thread read store
 import chart_style as _chart_style   # a meter's bar colour and rate line (Settings)
 import carbon as _carbon             # the export displacement intensity (Settings)
 from job_coordinator import job     # workstream B: coordinator membership
@@ -490,8 +495,8 @@ def _engine_write(op, timeout: float = 30.0):
     engine.py names the consequence: *"a DB write from the executor thread races
     the loop-thread writers on that one connection and corrupts it: 'cannot
     commit - no transaction is active' / 'error return without exception
-    set'"*. Under workstream A `writer()` raises off the engine thread, so this
-    hop is the only way a route can cause a write.
+    set'"*. The engine's connection refuses any other thread, and a page's own
+    store() cannot write, so this hop is the only way a route can cause a write.
 
     `op` receives the engine's store and runs on the loop.
     """
@@ -640,21 +645,46 @@ SETTINGS_DEFAULTS = {
     "gas_co2_g_per_kwh":            203.0, # BEIS/DESNZ 2023 GHG conversion factors
     "gas_boiler_efficiency":         0.90, # typical modern condensing boiler
 }
-# Overview's Agile cards: hidden, and their public prices not fetched. Beside the defaults, not in them:
+# Overview's Agile cards: hidden (their public prices are fetched all the same). Beside the defaults, not in them:
 # Insights' carbon answer carries the defaults whole, and these are nothing to do with it.
-SETTINGS_FLAGS = {"agile_hide_import": False, "agile_hide_export": False}
+SETTINGS_FLAGS = {"agile_hide_import": False, "agile_hide_export": False,
+                  # the Overview's cost cards as totals only, its power cards as gauges only (22 Nov 2026, the user)
+                  "overview_costs_compact": False, "overview_power_compact": False}
 # The other Overview cards the user has hidden, by the page's `data-ov-card` key; a device's includes its meter id,
 # so these cannot be a fixed set of flags. Keys go into the page's CSS, hence the narrow alphabet.
 _OVERVIEW_CARD_KEY = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 _OVERVIEW_HIDDEN_MAX = 64
 
 
-def _overview_hidden(settings):
-    """The hidden card keys in `settings`, keeping only well-formed ones. Pure."""
-    v = (settings or {}).get("overview_hidden")
+# The Overview's key lists (overview rows design): the hidden cards, the rows' order, and the Power row's
+# card order. Each is card or row keys, in the same alphabet.
+_OVERVIEW_LISTS = ("overview_hidden", "overview_rows", "overview_card_order")
+
+
+def _overview_list(settings, name):
+    """The keys saved under `name` (one of _OVERVIEW_LISTS), keeping only well-formed ones. Pure."""
+    v = (settings or {}).get(name)
     if not isinstance(v, list):
         return []
     return [k for k in v if isinstance(k, str) and _OVERVIEW_CARD_KEY.match(k)][:_OVERVIEW_HIDDEN_MAX]
+
+
+_BATTERY_VIEWS = ("soc", "energy")
+
+
+def _overview_battery_view(settings):
+    """{device card key: "soc" | "energy"} — what each battery card shows, keeping only well-formed
+    entries (overview rows design, part 2). Pure."""
+    v = (settings or {}).get("overview_battery_view")
+    if not isinstance(v, dict):
+        return {}
+    return {k: x for k, x in list(v.items())[:_OVERVIEW_HIDDEN_MAX]
+            if isinstance(k, str) and _OVERVIEW_CARD_KEY.match(k) and x in _BATTERY_VIEWS}
+
+
+def _overview_hidden(settings):
+    """The hidden card keys in `settings`, keeping only well-formed ones. Pure."""
+    return _overview_list(settings, "overview_hidden")
 
 
 SETTINGS_NUMERIC = {
@@ -1116,7 +1146,8 @@ def live_power_page():
             if _mm.get("retired_at") and _mm["retired_at"] <= _today_sd:
                 continue
             if (_mm.get("soc_sensor") or _mm.get("inverter_power_sensor")
-                    or _mm.get("device_power_sensor") or _mm.get("pv_power_sensor")):
+                    or _mm.get("device_power_sensor") or _mm.get("pv_power_sensor")
+                    or _mm.get("outdoor_temp_sensor")):
                 has_sub_devices = True
                 break
     except Exception:
@@ -1157,12 +1188,20 @@ def live_power_page():
         has_agile = False
     agile_hidden = {"import": False, "export": False}
     overview_hidden = []
+    overview_rows, overview_card_order, overview_costs_compact = [], [], False
+    overview_battery_view = {}
+    overview_power_compact = False
     try:
         import agile_public as _ap_h
         _saved = store_access.store().get_settings()
         _hid = _ap_h.hidden_channels(_saved)
         agile_hidden = {ch: ch in _hid for ch in agile_hidden}
         overview_hidden = _overview_hidden(_saved)
+        overview_rows = _overview_list(_saved, "overview_rows")
+        overview_card_order = _overview_list(_saved, "overview_card_order")
+        overview_costs_compact = bool(_saved.get("overview_costs_compact"))
+        overview_power_compact = bool(_saved.get("overview_power_compact"))
+        overview_battery_view = _overview_battery_view(_saved)
     except Exception:
         pass
 
@@ -1172,6 +1211,11 @@ def live_power_page():
         has_agile=has_agile,
         agile_hidden=agile_hidden,
         overview_hidden=overview_hidden,
+        overview_rows=overview_rows,
+        overview_card_order=overview_card_order,
+        overview_costs_compact=overview_costs_compact,
+        overview_power_compact=overview_power_compact,
+        overview_battery_view=overview_battery_view,
         active="live_power",
         currency=currency,
         today_total=today_total,
@@ -1231,6 +1275,19 @@ def _build_soc_response(soc_sensors, ha_client):
                         v, unit, info.get("power_unit"), info.get("power_invert"))
         except (ValueError, TypeError):
             pass
+        # A heat pump's outdoor temperature, °C (22 Nov 2026).
+        temp_c = None
+        try:
+            if ha_client and info.get("temp_entity"):
+                import overview_days as _od_t
+                _tu = ""
+                try:
+                    _tu = (ha_client.get_attributes(info["temp_entity"]) or {}).get("unit_of_measurement", "")
+                except Exception:
+                    pass
+                temp_c = _od_t.to_celsius(ha_client.get_state(info["temp_entity"]), _tu)
+        except (ValueError, TypeError):
+            pass
         # PV / solar generation — always positive, auto unit, no invert.
         try:
             if ha_client and info.get("pv_entity"):
@@ -1252,7 +1309,9 @@ def _build_soc_response(soc_sensors, ha_client):
             "soc_entity":   info.get("soc_entity"),
             "power_entity": info.get("power_entity"),
             "pv_entity":    info.get("pv_entity"),
+            "temp_entity":  info.get("temp_entity"),
             "soc":          soc_val,
+            "temp_c":       temp_c,
             "power_kw":     power_kw,
             "pv_kw":        pv_kw,
         }
@@ -1384,9 +1443,10 @@ def api_power():
                         "v2x":          bool(meta.get("v2x_capable")),
                     }
             elif _is_meter_type(meta, m_id, "heat_pump"):
-                if meta.get("device_power_sensor"):
+                if meta.get("device_power_sensor") or meta.get("outdoor_temp_sensor"):
                     soc_sensors[m_id] = {
                         "soc_entity":   None,
+                        "temp_entity":  meta.get("outdoor_temp_sensor"),
                         "power_entity": meta.get("device_power_sensor"),
                         "power_invert": bool(meta.get("device_power_invert", False)),
                         "power_unit":   meta.get("device_power_unit") or None,
@@ -1563,6 +1623,144 @@ def api_power():
             "generation_mix":   current_mix,
         })
     except Exception as e:
+        return _error_reply(e)
+
+
+# The Overview's device steps, kept once finished (22 Nov 2026): a finished 5-minute step cannot change, and
+# every open tab asked for every step of two days once a minute. Keyed by what, which device, which day and the
+# database's generation (a restore is new data). Each call sums only the samples from the first unfinished step.
+_OV_DAY_CACHE = {}
+
+
+def _ov_step_of(row, step_min):
+    """A step's number: an energy step carries its own (`b`), a level point is [minute, value]."""
+    return row["b"] if isinstance(row, dict) else int(row[0] // step_min)
+
+
+def _ov_day_steps(key, kind, now, day0, day1, fetch, keep_days):
+    """The day's steps — `fetch(from_m)` for what is not kept yet, joined to what is. `kind` "energy" (a dict of
+    `steps` and `last_m`, BlockStore.get_sample_energy_steps) or "level" (points). A step is finished a minute
+    after its end; a day, ten minutes after its midnight (the segment across it has its end). Keys for days
+    not in `keep_days` are dropped."""
+    import overview_days as _odk
+    from datetime import timedelta as _tdk
+    step = _odk.STEP_MIN
+    try:
+        import engine as _eng_g
+        gen = getattr(_eng_g, "_db_generation", 0)
+    except Exception:
+        gen = 0
+    k = key + (gen,)
+    for old in [x for x in _OV_DAY_CACHE if x[2] not in keep_days or x[3] != gen]:
+        _OV_DAY_CACHE.pop(old, None)
+    kept = _OV_DAY_CACHE.get(k)
+    if kept and kept.get("done"):
+        return kept["value"]
+    final_b = kept["final_b"] if kept else -1
+    got = fetch((final_b + 1) * step)
+    if kind == "energy":
+        rows = (kept["rows"] if kept else []) + got["steps"]
+        value = {"steps": rows, "last_m": got["last_m"]}
+    else:
+        rows = (kept["rows"] if kept else []) + got
+        value = rows
+    if now >= day1 + _tdk(minutes=10):
+        _OV_DAY_CACHE[k] = {"done": True, "value": value}
+    else:
+        now_m = (now - day0).total_seconds() / 60.0
+        fb = max(final_b, int((now_m - 1.0) // step) - 1)
+        _OV_DAY_CACHE[k] = {"final_b": fb, "rows": [r for r in rows if _ov_step_of(r, step) <= fb]}
+    return value
+
+
+@app.route("/api/overview/days")
+def api_overview_days():
+    """Today against yesterday on the Overview's cards (overview rows design, part 2): cumulative
+    energy since each day's local midnight, as [minute, value] points (overview_days).
+
+    `main` — the main meter's import and export, from its half-hours, plus the half-hour in progress
+    from its register reads. `devices` — each device card's: from its power sensor's samples
+    (`sub_meter_history`; in, and out for a battery or a V2X car), else its half-hours (in); and a
+    battery's state of charge. Minutes are real time since that day's midnight: a clock-change day
+    is 23 or 25 hours, `day_min` says which."""
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        from datetime import datetime as _dt, timezone as _tzu
+        import overview_days as _od
+        cfg = load_config()
+        tz = _ZI(_config_timezone())
+        store = store_access.store()
+        now = _dt.now(_tzu.utc)
+        y0, t0, t1 = _od.day_bounds(now.astimezone(tz))
+
+        def u(d):
+            return d.astimezone(_tzu.utc).replace(tzinfo=None).isoformat()
+
+        meters = cfg.get("meters") or {}
+        main_id = next((m for m, d in meters.items()
+                        if not ((d or {}).get("meta") or {}).get("sub_meter")), "electricity_main")
+        main_meta = (meters.get(main_id) or {}).get("meta") or {}
+        bm = int(main_meta.get("block_minutes") or 30)
+        main = _od.half_hour_lines(store.get_half_hour_kwh(main_id, u(y0), u(t1)), y0, t0, t1, bm)
+        try:
+            cb = store.load_current_block() or {}
+            ch = ((cb.get("meters") or {}).get(main_id) or {}).get("channels") or {}
+            if cb.get("start"):
+                _od.with_partial(main["today"], _od.minutes(now, t0),
+                                 {"imp": _od.partial_kwh((ch.get("import") or {}).get("reads")),
+                                  "exp": _od.partial_kwh((ch.get("export") or {}).get("reads"))},
+                                 starts_min=_od.minutes(_od.parse_utc(cb["start"]), t0))
+        except Exception as e:
+            logger.debug("overview days: the half-hour in progress: %s", e)
+
+        devices = {}
+        upto = u(now)
+        days = (("yesterday", y0, t0), ("today", t0, t1))
+        keep = (u(y0), u(t0))
+        for mid, d in meters.items():
+            meta = (d or {}).get("meta") or {}
+            if not meta.get("sub_meter"):
+                continue
+            power = meta.get("inverter_power_sensor") or meta.get("device_power_sensor")
+            soc = meta.get("soc_sensor")
+            temp = meta.get("outdoor_temp_sensor")
+            if not (power or soc or temp or meta.get("pv_power_sensor")):
+                continue                              # no card
+            out_too = _is_meter_type(meta, mid, "battery") or bool(meta.get("v2x_capable"))
+            if power:
+                # summed in SQLite into 5-minute steps, yesterday's kept once its day is done (22 Nov 2026: the
+                # per-sample sum in Python took 0.44 s for three devices on a Mac, once a minute per open tab)
+                energy = {name: _od.energy_lines(_ov_day_steps(
+                              ("energy", mid, u(a)), "energy", now, a, b,
+                              lambda f, a=a, b=b: store.get_sample_energy_steps(mid, u(a), u(b), upto, from_m=f),
+                              keep), out_too=out_too) for name, a, b in days}
+                entry = {"source": "power", "out": out_too, "energy": energy}
+            else:
+                entry = {"source": "half_hours", "out": False,
+                         "energy": _od.half_hour_lines(store.get_half_hour_kwh(mid, u(y0), u(t1)),
+                                                       y0, t0, t1, bm, names=("in",), cols=("imp_kwh",))}
+            for key, col, on in (("soc", "soc_pct", soc), ("temp", "temp_c", temp)):
+                # a battery's SoC; a heat pump's outdoor temperature, drawn on the chart's second axis
+                if on:
+                    entry[key] = {name: _ov_day_steps(
+                                      (col, mid, u(a)), "level", now, a, b,
+                                      lambda f, a=a, b=b, col=col: store.get_sample_level_steps(
+                                          mid, col, u(a), u(b), upto, from_m=f), keep)
+                                  for name, a, b in days}
+            devices[mid] = entry
+        ev_cap = None
+        if any(_is_meter_type((d or {}).get("meta") or {}, m, "ev") for m, d in meters.items()):
+            try:
+                ev_cap = _ev_cap_now(store, main_id, tz, now.replace(tzinfo=None))
+            except Exception as e:
+                logger.debug("overview days: the EV's cap: %s", e)
+        return jsonify({"today": t0.date().isoformat(),
+                        "ev_cap": ev_cap,
+                        "now_min": _od.minutes(now, t0),
+                        "day_min": {"yesterday": _od.minutes(t0, y0), "today": _od.minutes(t1, t0)},
+                        "main": main, "devices": devices})
+    except Exception as e:
+        logger.exception("api_overview_days failed")
         return _error_reply(e)
 
 
@@ -2917,9 +3115,32 @@ def api_save_config():
         return _error_reply(e)
 
 
+def _rebuild_refuses_backup():
+    """A device history rebuild is running: a backup now would hold it half done (interrupted
+    rebuild design §3, Phase 3). The reply that says so, naming the device, or None."""
+    eng = _sys.modules.get("engine")
+    try:
+        if not (eng and eng.attribution_running()):
+            return None
+        runs = (eng.api_attribution_status() or {}).get("runs") or []
+    except Exception:
+        return None
+    meters = (load_config() or {}).get("meters") or {}
+    names = [((meters.get(r.get("device")) or {}).get("meta") or {}).get("device") or r.get("device")
+             for r in runs if r.get("status") in ("claimed", "running", "paused") and r.get("device")]
+    who = ", ".join(n for n in names if n) or "a device"
+    return jsonify({"ok": False, "error": "rebuild_running",
+                    "message": "Not now: %s's history is being rebuilt, and a backup taken now would "
+                               "hold it half done. Try again when it finishes — its card on Settings "
+                               "shows the progress." % who}), 409
+
+
 @app.route("/api/backup/create", methods=["POST"])
 def api_backup_create():
     """Create a manual backup zip with an optional label."""
+    refused = _rebuild_refuses_backup()
+    if refused:
+        return refused
     try:
         data  = request.get_json(force=True) or {}
         label = data.get("label", "manual")
@@ -2932,7 +3153,11 @@ def api_backup_create():
 @app.route("/api/backup", methods=["POST"])
 def api_backup():
     """Create a manual backup zip of all data files. Returns the filename and its
-    size so the UI can confirm 'Backup ready: <name> (<size>)'."""
+    size so the UI can confirm 'Backup ready: <name> (<size>)'. Refused while a device
+    history rebuild runs (`_rebuild_refuses_backup`)."""
+    refused = _rebuild_refuses_backup()
+    if refused:
+        return refused
     try:
         path = _create_backup_zip(label="manual")
         try:
@@ -3377,6 +3602,35 @@ def _restore_worker(zipname, selected, from_flat, staged=None, checked=False):
                                "Try again in a moment.")
                 return
 
+        # ── Step 1c: STOP any device history rebuild (interrupted rebuild design §3) ──
+        # A rebuild waits only for an import or a delete, so through a restore it kept writing
+        # the old database — into the safety backup — and then either failed on the closed store
+        # or, with a quicker file copy, wrote the old run into the restored database (T3, soak
+        # Pi, 21 Nov 2026). Cancel it and wait, as for the import; one that will not stop aborts.
+        if getattr(_eng_r, "attribution_running", None) and _eng_r.attribution_running():
+            _step("stopping the device history rebuild")
+            import time as _t_a
+            try:
+                _eng_r.attribution_control("cancel")
+            except Exception:
+                pass
+            stopped = False
+            for _ in range(120):        # up to ~60s: it stops between half-hours
+                if not _eng_r.attribution_running():
+                    stopped = True
+                    break
+                _t_a.sleep(0.5)
+            if not stopped:
+                if hasattr(_eng_r, "resume_engine"):
+                    _eng_r.resume_engine()
+                if staged and os.path.exists(staged):
+                    try: os.remove(staged)
+                    except Exception: pass
+                _j["status"] = "error"
+                _j["error"] = ("A device's history rebuild was still stopping — restore aborted. "
+                               "Try again in a moment.")
+                return
+
         # ── Step 2: pre-restore backup (stores still open — backup needs them) ─
         _step("taking a safety backup")
         _create_backup_zip(label="pre_restore")
@@ -3513,6 +3767,10 @@ def _restore_worker(zipname, selected, from_flat, staged=None, checked=False):
 
         # ── Reset stores and fix WAL before any further DB access ────────────
         _step("reinitialising")
+        if "blocks.db" in restored and getattr(_eng_r, "database_replaced", None):
+            # Another database now: a rebuild of the old one stops, and finished runs' progress
+            # and errors are forgotten, so a device's card shows this database's history.
+            _eng_r.database_replaced()
         if "blocks.db" in restored or "blocks.json" in restored:
             # Close web server store
             if _store:
@@ -3724,7 +3982,9 @@ def api_settings_get():
     # Merge saved over defaults — any missing key falls back to default
     result = dict(SETTINGS_DEFAULTS, **SETTINGS_FLAGS)
     result.update(saved)
-    result["overview_hidden"] = _overview_hidden(saved)
+    for name in _OVERVIEW_LISTS:
+        result[name] = _overview_list(saved, name)
+    result["overview_battery_view"] = _overview_battery_view(saved)
     return jsonify(result)
 
 
@@ -3745,12 +4005,21 @@ def api_settings_post():
                 except (TypeError, ValueError):
                     return jsonify({"error": f"{key} must be a number"}), 400
             saved[key] = val
-    if "overview_hidden" in data:
-        val = data["overview_hidden"]
+    for name in _OVERVIEW_LISTS:
+        if name not in data:
+            continue
+        val = data[name]
         if (not isinstance(val, list) or len(val) > _OVERVIEW_HIDDEN_MAX
                 or not all(isinstance(k, str) and _OVERVIEW_CARD_KEY.match(k) for k in val)):
-            return jsonify({"error": "overview_hidden must be a list of card keys"}), 400
-        saved["overview_hidden"] = list(dict.fromkeys(val))
+            return jsonify({"error": "%s must be a list of card keys" % name}), 400
+        saved[name] = list(dict.fromkeys(val))
+    if "overview_battery_view" in data:
+        val = data["overview_battery_view"]
+        if (not isinstance(val, dict) or len(val) > _OVERVIEW_HIDDEN_MAX
+                or not all(isinstance(k, str) and _OVERVIEW_CARD_KEY.match(k) and x in _BATTERY_VIEWS
+                           for k, x in val.items())):
+            return jsonify({"error": "overview_battery_view must map card keys to soc or energy"}), 400
+        saved["overview_battery_view"] = dict(val)
     _engine_write(lambda st: st.save_settings(saved))
     return jsonify({"ok": True})
 
@@ -5840,7 +6109,14 @@ def api_attribute_runs():
     """The attribution run ledger + a summary of the reconstructed device layer,
     for the runs/undo list."""
     store = store_access.store()
-    return jsonify({"ok": True, "runs": store.get_attribution_runs(),
+    runs = store.get_attribution_runs()
+    # each device's cut-off run, newest first (interrupted rebuild design, Phase 1): its card says so
+    cut_off: dict = {}
+    for r in sorted(runs, key=lambda x: x.get("created_at") or "", reverse=True):
+        if r.get("status") == "interrupted" and r.get("meter_id") not in cut_off:
+            cut_off[r["meter_id"]] = {k: r.get(k) for k in ("kind", "step", "done_to", "from",
+                                                             "blocks_written", "created_at")}
+    return jsonify({"ok": True, "runs": runs, "cut_off": cut_off,
                     "summary": store.count_recorder_attributed(),
                     # the sensors each device's kept history came from (replace device history §4)
                     "sources": store.device_history_sources()})
@@ -7099,6 +7375,20 @@ def api_periods():
                 p["net_cost"] = _billing.bill_net_from_day_rollups(rs)
                 p["net_cost_text"] = "%s%.2f" % (currency, p["net_cost"])   # as the picker prints it
                 p["has_data"] = bool(rs)
+            if kind == "live":
+                # This Bill shows the Billing card's Total Bill — the statement's rounding (import
+                # and standing rounded once, less the export credit), not the per-day rule, which
+                # can sit pennies away (22 Nov 2026, the user: 2p apart). One bill summary, the
+                # Billing tab's own (billing_view.period_summary_raw → bill_card.bill_total).
+                import billing_view as _bv
+                import bill_card as _bc_t
+                for p in out:
+                    if p.get("key") == "bill" and p["has_data"]:
+                        _summ = _bv.period_summary_raw(store, load_config(), tz_name,
+                                                       p["start_utc"], p["end_utc"])[0]
+                        if _summ:
+                            p["net_cost"] = _bc_t.bill_total(_summ)
+                            p["net_cost_text"] = "%s%.2f" % (currency, p["net_cost"])
         if "rows" in include and out:
             # Live Power's card rows per window, folded from ONE per-day pass
             # (get_day_live_rollups) — the rows /api/billing built with six queries per
@@ -9643,6 +9933,57 @@ def _build_upcoming_dispatches(history, rates, day_peak, now_iso,
     return out   # soonest-first
 
 
+def _cap_rows(cap_hist, store):
+    """The charges the 6-hour count takes, as iog_cap.cap_usage wants them: completed dispatches, less
+    a bump charge and anything the pricing leaves out of the cap (engine.cap_excluded: a bump Octopus
+    labels `unknown`, a peak-billed charge). The Smart Charging card's rule, and the EV card's."""
+    import engine as _eng
+    bump = {r["slot_start"] for r in cap_hist if (r.get("source") or "") in _BUMP_SOURCES}
+    return [(r["raw_start"], r["raw_end"], r["energy_kwh"]) for r in cap_hist
+            if r.get("kind") == "completed" and r.get("raw_start") and r.get("raw_end")
+            and r["slot_start"] not in bump and not _eng.cap_excluded(r["slot_start"], store)]
+
+
+def _ev_cap_now(store, main_id, tz, now):
+    """Today's noon-to-noon cap-day on IOG-SMB, for the Overview's EV card (22 Nov 2026, the user): the
+    minutes charged so far (EMT's estimate, `iog_cap.cap_usage`, as the Smart Charging card counts them),
+    the minutes Octopus's current plan would charge before the next noon (each planned session's
+    planned kWh over its fullest half-hour, `_build_upcoming_dispatches`), and the plan's windows,
+    local. None where the agreement in force is not capped. `now` is naive UTC."""
+    import engine as _eng
+    import iog_cap as _cap
+    from datetime import timedelta as _td
+    from zoneinfo import ZoneInfo as _ZI
+    now_iso = now.isoformat()
+    if not _eng.capped_at(now_iso):
+        return None
+    tz_name = str(tz)
+    key = _cap.cap_day_key(now_iso, tz_name)
+    lo, hi = (now - _td(days=2)).isoformat(), (now + _td(days=2)).isoformat()
+    hist = store.get_dispatch_history(lo, hi)
+    ev = {}
+    for r in store._conn.execute(
+            "SELECT block_start, kwh, inc_rate FROM block_segments WHERE meter_id = ? "
+            "AND channel = 'import' AND attribution = 'ev' AND kwh > 0 "
+            "AND block_start >= ? AND block_start < ?", (main_id, lo, hi)):
+        ev.setdefault(r["block_start"], []).append((float(r["kwh"]), r["inc_rate"]))
+    cap_hist = hist + _split_charge_rows(ev, store.first_dispatch_record())
+    used_h = float((_cap.cap_usage(_cap_rows(cap_hist, store), tz_name, None).get(key) or {})
+                   .get("used_hours") or 0.0)
+    plans = [u for u in _build_upcoming_dispatches(hist, {}, {}, now_iso)
+             if _cap.cap_day_key(u["start"], tz_name) == key]
+
+    def _hm(iso):
+        from datetime import datetime as _dt
+        return _dt.fromisoformat(iso).replace(tzinfo=_ZI("UTC")).astimezone(tz).strftime("%H:%M")
+    return {"cap_day": key,
+            "cap_minutes": round(_cap.CAP_HOURS * 60),
+            "used_minutes": round(used_h * 60),
+            "planned_minutes": sum(int(u.get("charge_minutes") or 0) for u in plans),
+            "plans": [{"start": _hm(u.get("exact_start") or u["start"]), "end": _hm(u.get("exact_end") or u["end"]),
+                       "minutes": int(u.get("charge_minutes") or 0), "kwh": u.get("kwh")} for u in plans]}
+
+
 @app.route("/api/chart-styles", methods=["GET", "POST"])
 def api_chart_styles():
     """BL-101 PR 4 (home eras design §4): every meter's chart style in one place, for the Charts
@@ -9942,12 +10283,7 @@ def api_charge_sessions():
         # the cap-days from a day before the range, so the first one is counted whole
         cap_hist = (store.get_dispatch_history((now - _t2(days=days + 1)).isoformat(), win_end)
                     + _split_charge_rows(ev_wide, first_record))
-        bump = {r["slot_start"] for r in cap_hist if (r.get("source") or "") in _BUMP_SOURCES}
-        # a bump Octopus labels `unknown`, or a peak-billed charge: the pricing's rule (engine.cap_excluded)
-        cap = _cap.cap_usage([(r["raw_start"], r["raw_end"], r["energy_kwh"]) for r in cap_hist
-                              if r.get("kind") == "completed" and r.get("raw_start") and r.get("raw_end")
-                              and r["slot_start"] not in bump
-                              and not _eng.cap_excluded(r["slot_start"], store)], tz_name, None)
+        cap = _cap.cap_usage(_cap_rows(cap_hist, store), tz_name, None)
         try:
             bill_slots = set(store.slots_with_bill_split(win_start, win_end))
         except Exception:
