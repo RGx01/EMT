@@ -18,6 +18,23 @@ STEP_MIN = 5          # a device's line is one point per 5 minutes: 288 a day
 GAP_S = 300           # samples further apart than this are a gap, not a slope
 
 
+def to_celsius(value, unit=""):
+    """A temperature sensor's state in °C: °F and K converted, anything else taken as °C; None when the state
+    is not a number (a heat pump's outdoor temperature, 22 Nov 2026)."""
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return None
+    if v != v:                                     # NaN
+        return None
+    u = (unit or "").strip().upper().replace("°", "").replace("DEG", "")
+    if u == "F":
+        v = (v - 32.0) * 5.0 / 9.0
+    elif u == "K":
+        v = v - 273.15
+    return round(v, 1)
+
+
 def day_bounds(now_local):
     """(yesterday's, today's and tomorrow's local midnight), aware, for an aware `now_local`."""
     tz = now_local.tzinfo
@@ -157,11 +174,12 @@ def sample_lines(samples, y0, t0, t1, now, gap_s=GAP_S, step_min=STEP_MIN, out_t
     return out
 
 
-def soc_lines(samples, y0, t0, t1, now, step_min=STEP_MIN):
-    """{"yesterday": points, "today": points}: the state of charge, the last reading in each step."""
+def soc_lines(samples, y0, t0, t1, now, step_min=STEP_MIN, key="soc_pct"):
+    """{"yesterday": points, "today": points}: a level — the state of charge, or (`key="temp_c"`) a heat
+    pump's outdoor temperature — the last reading in each step."""
     out = {"yesterday": [], "today": []}
     for s in samples:
-        pct = s.get("soc_pct")
+        pct = s.get(key)
         if pct is None:
             continue
         t = parse_utc(s["captured_at"])

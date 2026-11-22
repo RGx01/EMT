@@ -7,6 +7,9 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **A heat pump's outdoor temperature.** Give your heat pump an outdoor temperature sensor in Meter Config and
+  its Overview card shows a temperature gauge beside its power, and its chart draws the temperature since
+  midnight, today over yesterday, on a scale of its own. A °F sensor is shown in °C.
 - **Today against yesterday on the Overview's power cards.** Live Power shows your import and export since
   midnight, today's line over yesterday's, export below the line. Each device card shows the energy its power
   sensor measured since midnight; a battery or a V2X car shows what went out, below the line, as well as in. A

@@ -39,7 +39,9 @@ each day's local midnight (`overview_days.py`):
   5 minutes adds nothing. Positive is in; negative is out, shown for a battery or a V2X car. The charts draw
   export and out below zero. This is the
   device's own measurement, not its billed grid share. A device without a power sensor: its half-hours, in only.
-- **A battery's SoC**, the last reading in each 5 minutes.
+- **A battery's SoC**, the last reading in each 5 minutes; and **a heat pump's outdoor temperature** the same
+  way (`outdoor_temp_sensor` on the heat pump, sampled with its power into `sub_meter_history.temp_c`, °C — °F
+  and K converted), drawn on the chart's second axis.
 
 ## Who may ask
 

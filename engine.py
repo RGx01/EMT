@@ -6259,9 +6259,17 @@ async def _engine_tick(ha: HAClient):
             soc_s = meta.get("soc_sensor")
             inv_s = meta.get("inverter_power_sensor")
             dev_s = meta.get("device_power_sensor")
-            if not soc_s and not inv_s and not dev_s:
+            temp_s = meta.get("outdoor_temp_sensor")       # a heat pump's outdoor temperature
+            if not soc_s and not inv_s and not dev_s and not temp_s:
                 continue  # no sensors configured for this sub-meter
-            soc_val = inv_val = None
+            soc_val = inv_val = temp_val = None
+            if temp_s and ha:
+                import overview_days as _od_t
+                try:
+                    _tu = (ha.get_attributes(temp_s) or {}).get("unit_of_measurement", "")
+                except Exception:
+                    _tu = ""
+                temp_val = _od_t.to_celsius(ha.get_state(temp_s), _tu)
             if soc_s and ha:
                 v = ha.get_state(soc_s)
                 if v not in (None, "unknown", "unavailable"):
@@ -6292,8 +6300,8 @@ async def _engine_tick(ha: HAClient):
                     # magnitude heuristic when the unit is missing (previously this
                     # path assumed kW on a missing unit — a W sensor read 1000× high).
                     inv_val = _power_value_to_kw(v, unit, _sub_unit_ov, _sub_invert)
-            if soc_val is not None or inv_val is not None:
-                _store.append_sub_meter_history(now.isoformat(), mid, soc_val, inv_val)
+            if soc_val is not None or inv_val is not None or temp_val is not None:
+                _store.append_sub_meter_history(now.isoformat(), mid, soc_val, inv_val, temp_val)
                 if not _pruned_sub:
                     # 50 h: the Overview's device lines need yesterday whole from midnight, late in the day
                     _store.prune_sub_meter_history(hours=SUB_METER_HISTORY_HOURS)

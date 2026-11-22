@@ -24,7 +24,9 @@ CARRY = (
                 "inverter_power_invert", "power_invert", "device_power_invert",
                 "soc_sensor", "inverter_power_sensor", "device_power_sensor",
                 "pv_power_sensor", "retired_at", "retired_reason", "power_source",
-                "rate_source")),
+                "rate_source",
+                # v5-only (22 Nov 2026): a v4 database has none, a v5 one carried as it is
+                "outdoor_temp_sensor")),
     ("meter_channels", ("id", "meter_id", "channel", "read_sensor", "rate_sensor",
                         "standing_charge_sensor", "mpan", "tariff", "rate_source",
                         "standing_charge_source")),
@@ -52,7 +54,8 @@ CARRY = (
                                "confirmed_value", "method_version", "derived_at", "source",
                                "superseded_by", "notes")),
     ("deleted_ranges", ("id", "meter_id", "start_utc", "end_utc", "created_at", "reason")),
-    ("sub_meter_history", ("id", "captured_at", "meter_id", "soc_pct", "inverter_kw")),
+    ("sub_meter_history", ("id", "captured_at", "meter_id", "soc_pct", "inverter_kw",
+                           "temp_c")),                       # v5-only, 22 Nov 2026
     ("power_history", ("captured_at", "net_kw", "intensity", "carbon_gco2_min")),
     ("mix_history", ("captured_at", "fuel", "perc")),
     ("carbon_intensity", ("captured_at", "postcode", "intensity_forecast",
