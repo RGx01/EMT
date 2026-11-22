@@ -6,7 +6,8 @@ On an agreement the 6-hour cap prices (`engine.capped_at`, IOG-SMB), `/api/overv
 today's noon-to-noon cap-day (`server._ev_cap_now`): the minutes EMT counts as charged so far — the Smart Charging
 card's count, `iog_cap.cap_usage` over the same rows (`server._cap_rows`, now shared by both) — the minutes
 Octopus's current plan would charge before the next noon (`_build_upcoming_dispatches`), and the plan's windows,
-local. The EV card shows it as a bar and two lines: used and planned; left (or over), and the next window.
+local. The EV card shows it beside its gauge (22 Nov 2026, the user: not below it) as a bar and short lines: used
+of the 6 hours, planned, left (or over), and the next window.
 
 Driven in a browser on a scratch copy with a car: the strip with 1h 40m used and 2h 30m planned, and with a plan
 past the cap (red, "over the cap"); the row kept its height. The copy loads no agreements, so the cap was fed to
@@ -113,15 +114,20 @@ class TheCapToday(unittest.TestCase):
 
 class ThePage(unittest.TestCase):
 
-    def test_the_car_card_has_the_strip(self):
+    def test_the_car_card_has_it_beside_its_gauge(self):
+        # in the gauge row, after the gauge (22 Nov 2026, the user: beside it, not below)
         i = PAGE.index("function buildSocCard(")
-        self.assertIn("(isEV ? '<div class=\"ev-cap\" id=\"ev-cap-' + meterId + '\" style=\"display:none;\"></div>' : '')",
-                      PAGE[i:PAGE.index("\n}\n", i)])
+        body = PAGE[i:PAGE.index("\n}\n", i)]
+        self.assertIn("var capSection = isEV ? '<div class=\"ev-cap\" id=\"ev-cap-' + meterId + '\" style=\"display:none;\"></div>' : '';",
+                      body)
+        self.assertIn("'<div class=\"dev-gauges\">' + battSection + _invHtml + pvGauge + tempGauge + capSection + '</div>'", body)
         i = PAGE.index("function _tdRenderAll(")
         self.assertIn("_evCapRender(el, _tdData && _tdData.ev_cap)", PAGE[i:PAGE.index("\n}\n", i)])
 
-    def test_compact_hides_it(self):
-        self.assertIn(".ov-power-row.compact .td, .ov-power-row.compact .ev-cap { display: none !important; }", PAGE)
+    def test_compact_keeps_it_with_the_gauges(self):
+        # compact is the gauges only, and the cap sits among them now
+        self.assertIn(".ov-power-row.compact .td { display: none; }", PAGE)
+        self.assertNotIn(".ov-power-row.compact .ev-cap", PAGE)
 
 
 @unittest.skipUnless(shutil.which("node"), "node not available")

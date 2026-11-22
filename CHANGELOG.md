@@ -8,8 +8,9 @@ internal name for everything before the first public release and never appears i
 ## [Unreleased]
 
 - **The car's 6 hours on its Overview card.** On Intelligent Octopus Go's capped agreement (IOG-SMB), the EV
-  card shows today's noon-to-noon allowance: about how much smart charging has been used, how much Octopus's
-  current plan would add, and how much is left — or how far the plan runs over — with the next planned window.
+  card shows today's noon-to-noon allowance beside its gauge: about how much smart charging has been used, how
+  much Octopus's current plan would add, and how much is left — or how far the plan runs over — with the next
+  planned window.
   These are EMT's estimates, counted as the Smart Charging card counts them.
 - **A heat pump's outdoor temperature.** Give your heat pump an outdoor temperature sensor in Meter Config and
   its Overview card shows a temperature gauge beside its power, and its chart draws the temperature since
