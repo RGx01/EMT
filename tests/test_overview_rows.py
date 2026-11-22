@@ -101,11 +101,19 @@ class ThePage(unittest.TestCase):
         i, j = PAGE.index("{% block topbar %}"), PAGE.index("{% endblock %}", PAGE.index("{% block topbar %}"))
         self.assertIn('id="ov-arrange-btn"', PAGE[i:j])
 
-    def test_the_compact_switch_is_on_the_today_card(self):
-        i = PAGE.index("{% macro billing_card(")
-        body = PAGE[i:PAGE.index("{% endmacro %}", i)]
-        self.assertIn('{% if card_id == "today" %}', body)
-        self.assertIn('id="ov-compact-btn"', body)
+    def test_every_card_of_a_compact_row_has_the_rows_button(self):
+        # one button on every card of the row, the same icon on both rows (22 Nov 2026, the user: it was on the first
+        # card only, a different icon on each)
+        self.assertIn('data-ov-row="power" data-ov-row-label="Power" data-ov-compact="power"', PAGE)
+        self.assertIn('data-ov-row="costs" data-ov-row-label="Costs" data-ov-compact="costs"', PAGE)
+        i = PAGE.index("function _ovDecorate(")
+        body = PAGE[i:PAGE.index("\n}\n", i)]
+        self.assertIn("var row = el.closest('.ov-row[data-ov-compact]');", body)
+        self.assertIn("c.className = 'expand-btn ov-compact-btn';", body)
+        self.assertNotIn('id="ov-compact-btn"', PAGE)
+        self.assertNotIn('id="ov-power-compact-btn"', PAGE)
+        i = PAGE.index("function _ovToolsText(")
+        self.assertIn("b.innerHTML = on ? _OV_COMPACT_OUT : _OV_COMPACT_IN;", PAGE[i:PAGE.index("\n}\n", i)])
 
     def test_every_rows_cards_are_ordered_and_moved(self):
         i = PAGE.index("function _ovLayoutNow(")
@@ -116,7 +124,7 @@ class ThePage(unittest.TestCase):
     def test_a_cards_title_leaves_room_for_its_buttons(self):
         self.assertIn(".soc-card > .card-title, .power-card > .card-title { display: block; align-self: stretch !important;",
                       PAGE)
-        self.assertIn(".power-card > .card-title { padding-right: 84px; }", PAGE)       # hide, expand, compact
+        self.assertIn(".power-card > .card-title, .ov-power-row .soc-card > .card-title { padding-right: 84px; }", PAGE)
 
     def test_the_grid_rows_cards_fill_a_dropped_ones_place(self):
         for rule in (".ov-grid-row #mix-card { flex: 1 1 280px;", ".ov-grid-row #carbon-card-wrap { flex: 4 1 340px;",
@@ -189,9 +197,10 @@ class ThePage(unittest.TestCase):
         i = PAGE.index("</div><!-- /.live-power-page -->")
         self.assertLess(PAGE.index("_ovApplyRowOrder();", i), PAGE.index("{% block scripts %}"))
 
-    def test_the_cost_cards_can_be_totals_only(self):
-        self.assertIn('<div class="billing-grid{% if overview_costs_compact %} compact{% endif %}" id="ov-costs">', PAGE)
-        self.assertIn(".billing-grid.compact .billing-rows { display: none; }", PAGE)
+    def test_the_cost_cards_can_be_totals_only_on_one_line(self):
+        self.assertIn('ov-costs-row{% if overview_costs_compact %} compact{% endif %}"', PAGE)
+        self.assertIn(".ov-costs-row.compact .billing-rows { display: none; }", PAGE)
+        self.assertIn(".ov-costs-row.compact .billing-card { display: flex; flex-wrap: wrap; align-items: baseline;", PAGE)
 
     def test_the_old_two_layouts_are_gone(self):
         for old in ("layout-a", "layout-b", "_applyLayout", "gauge-ci-row", "summary-grid"):
