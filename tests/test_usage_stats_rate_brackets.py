@@ -79,7 +79,7 @@ class TheData(unittest.TestCase):
         agg = _fn("barAggRows")
         self.assertIn("var _b = barBrDays && barBrDays[barBrDayKey(row)];", agg)
         self.assertIn("_a[0] += _b[sr][n][0]; _a[1] += _b[sr][n][1];", agg)
-        hh = _fn("barGetDataForPeriod")
+        hh = _fn("barGetDataForPeriodAll")
         self.assertIn("rows = rows.map(function(r) { return Object.assign({}, r, { br: barBrHH[r.slot] || {} }); });", hh)
 
 

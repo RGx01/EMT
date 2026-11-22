@@ -139,7 +139,7 @@ class ThePage(unittest.TestCase):
         self.assertIn("if (_tw) _tw.style.display = barTariffsAvailable() ? 'flex' : 'none';", _fn("barRender"))
 
     def test_each_bar_carries_its_dates(self):
-        data = _fn("barGetDataForPeriod")
+        data = _fn("barGetDataForPeriodAll")
         self.assertIn("bucketRanges: keys.map(function(bk){ return { from: bk, to: barAddMonth(bk) }; }),", data)
         self.assertIn("return { from: from, to: barAddMonth(from) };", data)
         self.assertIn("return { from: from, to: barAddDay(from) };", data)                        # Daily

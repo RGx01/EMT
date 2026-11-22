@@ -7,6 +7,10 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Usage Stats: zoom.** A bar in the data table's heading is a window on the chart: drag either end to zoom
+  from that side, the middle to move along, ↺ to see everything again. The table follows it.
+- **Usage Stats: Rate brackets' colours in month order.** Ordered by Month, the brackets' legend lost its colours
+  and pointing at a bracket did not pick it out. Both work again.
 - **Usage Stats: Month order separates the months.** On Monthly, ordered by Month, a line now separates each
   month's group of bars, and the Net line runs within a month instead of joining it to the next.
 - **Usage Stats: Span by the day, the month or the year, and by Month.** A span's bars can be a day, a month or
