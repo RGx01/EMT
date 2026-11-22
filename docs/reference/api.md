@@ -17,6 +17,23 @@ half-hour boundary. A tab notes the fingerprint it read just before loading, so 
 loads still counts as a change at the next poll. Live Power's cost cards check it every minute too, and fetch
 `/api/periods?kind=live` again only when it has moved.
 
+## The Overview
+
+Rows of cards ([design record](../history/design/EMT-v5_overview_rows_design.md)): Power (Live Power and the
+device cards), Grid and carbon, Smart Charging, Agile prices; the cost cards last. The user's choices are settings
+beside `overview_hidden`: `overview_rows` (row order), `overview_power_order` (the Power row's cards),
+`overview_costs_compact` (cost totals only) and `overview_battery_view` ({card key: `soc` | `energy`}). The Power
+row is spread evenly: as few lines as fit at 220 px, then as even as they can be.
+
+`/api/overview/days` gives each power card today against yesterday, as cumulative [minute, value] points since
+each day's local midnight (`overview_days.py`):
+
+- **Live Power**: the main meter's half-hours, plus the half-hour in progress from its register reads.
+- **A device**: its power sensor's samples (`sub_meter_history`, kept 50 hours), trapezoid-summed. A gap over
+  5 minutes adds nothing. Positive is in; negative is out, shown for a battery or a V2X car. This is the
+  device's own measurement, not its billed grid share. A device without a power sensor: its half-hours, in only.
+- **A battery's SoC**, the last reading in each 5 minutes.
+
 ## Who may ask
 
 Through Home Assistant's sidebar (ingress, a request from the Supervisor) every page and route is open:
@@ -64,7 +81,7 @@ and `HA_PUBLIC_URL` says where the browser reaches Home Assistant. The design:
 
 | Family | For |
 |---|---|
-| `/api/power*`, `/api/carbon*`, `/api/charge-sessions`, `/api/agile-prices` | the Overview: live power, carbon, the smart-charging card, Agile in your region |
+| `/api/power*`, `/api/carbon*`, `/api/charge-sessions`, `/api/agile-prices`, `/api/overview/days` | the Overview: live power, carbon, the smart-charging card, Agile in your region, the cards' today against yesterday |
 | `/api/blocks/settlement`, `/api/data-health`, `/api/settlement/*` (re-fetch, the asker's state, parity) | Data Management: a half-hour's details, the health strip, the re-fetch |
 | `/api/gaps/*`, `/api/backfill/*`, `/api/historical/*` | filling gaps; importing from Octopus, a CSV or PDF bills |
 | `/api/blocks/delete*` | deletes |

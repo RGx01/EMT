@@ -1498,6 +1498,9 @@ _SHARE_BACKUP_HOUR = 3
 _SHARE_BACKUP_STARTS = (15, 45)       # minute of the hour a start window opens
 _SHARE_BACKUP_SPAN = 10               # minutes each start window stays open
 _share_backup_tried_day = None        # one attempt per local day per process
+# Device power samples kept (overview rows design, part 2): yesterday from local midnight until late tonight,
+# across a clock change.
+SUB_METER_HISTORY_HOURS = 50
 _SHARE_BACKUP_REBUILD_CAP_H = 48      # a rebuild holds the copy back only while the last is younger
 
 
@@ -6292,7 +6295,8 @@ async def _engine_tick(ha: HAClient):
             if soc_val is not None or inv_val is not None:
                 _store.append_sub_meter_history(now.isoformat(), mid, soc_val, inv_val)
                 if not _pruned_sub:
-                    _store.prune_sub_meter_history(hours=48)
+                    # 50 h: the Overview's device lines need yesterday whole from midnight, late in the day
+                    _store.prune_sub_meter_history(hours=SUB_METER_HISTORY_HOURS)
                     _pruned_sub = True
     except Exception as e:
         logger.warning("_engine_tick: sub_meter_history write skipped: %s", e)

@@ -664,6 +664,19 @@ def _overview_list(settings, name):
     return [k for k in v if isinstance(k, str) and _OVERVIEW_CARD_KEY.match(k)][:_OVERVIEW_HIDDEN_MAX]
 
 
+_BATTERY_VIEWS = ("soc", "energy")
+
+
+def _overview_battery_view(settings):
+    """{device card key: "soc" | "energy"} — what each battery card shows, keeping only well-formed
+    entries (overview rows design, part 2). Pure."""
+    v = (settings or {}).get("overview_battery_view")
+    if not isinstance(v, dict):
+        return {}
+    return {k: x for k, x in list(v.items())[:_OVERVIEW_HIDDEN_MAX]
+            if isinstance(k, str) and _OVERVIEW_CARD_KEY.match(k) and x in _BATTERY_VIEWS}
+
+
 def _overview_hidden(settings):
     """The hidden card keys in `settings`, keeping only well-formed ones. Pure."""
     return _overview_list(settings, "overview_hidden")
@@ -1170,6 +1183,7 @@ def live_power_page():
     agile_hidden = {"import": False, "export": False}
     overview_hidden = []
     overview_rows, overview_power_order, overview_costs_compact = [], [], False
+    overview_battery_view = {}
     try:
         import agile_public as _ap_h
         _saved = store_access.store().get_settings()
@@ -1179,6 +1193,7 @@ def live_power_page():
         overview_rows = _overview_list(_saved, "overview_rows")
         overview_power_order = _overview_list(_saved, "overview_power_order")
         overview_costs_compact = bool(_saved.get("overview_costs_compact"))
+        overview_battery_view = _overview_battery_view(_saved)
     except Exception:
         pass
 
@@ -1191,6 +1206,7 @@ def live_power_page():
         overview_rows=overview_rows,
         overview_power_order=overview_power_order,
         overview_costs_compact=overview_costs_compact,
+        overview_battery_view=overview_battery_view,
         active="live_power",
         currency=currency,
         today_total=today_total,
@@ -1582,6 +1598,77 @@ def api_power():
             "generation_mix":   current_mix,
         })
     except Exception as e:
+        return _error_reply(e)
+
+
+@app.route("/api/overview/days")
+def api_overview_days():
+    """Today against yesterday on the Overview's cards (overview rows design, part 2): cumulative
+    energy since each day's local midnight, as [minute, value] points (overview_days).
+
+    `main` — the main meter's import and export, from its half-hours, plus the half-hour in progress
+    from its register reads. `devices` — each device card's: from its power sensor's samples
+    (`sub_meter_history`; in, and out for a battery or a V2X car), else its half-hours (in); and a
+    battery's state of charge. Minutes are real time since that day's midnight: a clock-change day
+    is 23 or 25 hours, `day_min` says which."""
+    try:
+        from zoneinfo import ZoneInfo as _ZI
+        from datetime import datetime as _dt, timezone as _tzu
+        import overview_days as _od
+        cfg = load_config()
+        tz = _ZI(_config_timezone())
+        store = store_access.store()
+        now = _dt.now(_tzu.utc)
+        y0, t0, t1 = _od.day_bounds(now.astimezone(tz))
+
+        def u(d):
+            return d.astimezone(_tzu.utc).replace(tzinfo=None).isoformat()
+
+        meters = cfg.get("meters") or {}
+        main_id = next((m for m, d in meters.items()
+                        if not ((d or {}).get("meta") or {}).get("sub_meter")), "electricity_main")
+        main_meta = (meters.get(main_id) or {}).get("meta") or {}
+        bm = int(main_meta.get("block_minutes") or 30)
+        main = _od.half_hour_lines(store.get_half_hour_kwh(main_id, u(y0), u(t1)), y0, t0, t1, bm)
+        try:
+            cb = store.load_current_block() or {}
+            ch = ((cb.get("meters") or {}).get(main_id) or {}).get("channels") or {}
+            if cb.get("start"):
+                _od.with_partial(main["today"], _od.minutes(now, t0),
+                                 {"imp": _od.partial_kwh((ch.get("import") or {}).get("reads")),
+                                  "exp": _od.partial_kwh((ch.get("export") or {}).get("reads"))},
+                                 starts_min=_od.minutes(_od.parse_utc(cb["start"]), t0))
+        except Exception as e:
+            logger.debug("overview days: the half-hour in progress: %s", e)
+
+        hours = int((now - y0).total_seconds() // 3600) + 2
+        devices = {}
+        for mid, d in meters.items():
+            meta = (d or {}).get("meta") or {}
+            if not meta.get("sub_meter"):
+                continue
+            power = meta.get("inverter_power_sensor") or meta.get("device_power_sensor")
+            soc = meta.get("soc_sensor")
+            if not (power or soc or meta.get("pv_power_sensor")):
+                continue                              # no card
+            out_too = _is_meter_type(meta, mid, "battery") or bool(meta.get("v2x_capable"))
+            samples = store.get_sub_meter_history(mid, hours=hours) if (power or soc) else []
+            if power:
+                entry = {"source": "power", "out": out_too,
+                         "energy": _od.sample_lines(samples, y0, t0, t1, now, out_too=out_too)}
+            else:
+                entry = {"source": "half_hours", "out": False,
+                         "energy": _od.half_hour_lines(store.get_half_hour_kwh(mid, u(y0), u(t1)),
+                                                       y0, t0, t1, bm, names=("in",), cols=("imp_kwh",))}
+            if soc:
+                entry["soc"] = _od.soc_lines(samples, y0, t0, t1, now)
+            devices[mid] = entry
+        return jsonify({"today": t0.date().isoformat(),
+                        "now_min": _od.minutes(now, t0),
+                        "day_min": {"yesterday": _od.minutes(t0, y0), "today": _od.minutes(t1, t0)},
+                        "main": main, "devices": devices})
+    except Exception as e:
+        logger.exception("api_overview_days failed")
         return _error_reply(e)
 
 
@@ -3805,6 +3892,7 @@ def api_settings_get():
     result.update(saved)
     for name in _OVERVIEW_LISTS:
         result[name] = _overview_list(saved, name)
+    result["overview_battery_view"] = _overview_battery_view(saved)
     return jsonify(result)
 
 
@@ -3833,6 +3921,13 @@ def api_settings_post():
                 or not all(isinstance(k, str) and _OVERVIEW_CARD_KEY.match(k) for k in val)):
             return jsonify({"error": "%s must be a list of card keys" % name}), 400
         saved[name] = list(dict.fromkeys(val))
+    if "overview_battery_view" in data:
+        val = data["overview_battery_view"]
+        if (not isinstance(val, dict) or len(val) > _OVERVIEW_HIDDEN_MAX
+                or not all(isinstance(k, str) and _OVERVIEW_CARD_KEY.match(k) and x in _BATTERY_VIEWS
+                           for k, x in val.items())):
+            return jsonify({"error": "overview_battery_view must map card keys to soc or energy"}), 400
+        saved["overview_battery_view"] = dict(val)
     _engine_write(lambda st: st.save_settings(saved))
     return jsonify({"ok": True})
 

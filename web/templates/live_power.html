@@ -116,6 +116,47 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
 #ov-tools a { color: inherit; }
 .billing-grid.compact .billing-rows { display: none; }
 
+/* Today against yesterday (overview rows design, part 2): a small chart at the foot of the Live Power and device
+   cards. The cards do not grow for it: the gauges and the battery level are smaller, and the chart takes the
+   height the row leaves. Yesterday is drawn dimmed under today. */
+.td {
+  width: 100%;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 56px;
+  min-height: 56px;
+}
+.td-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--muted);
+  min-height: 16px;
+}
+.td-legend { display: flex; flex-wrap: wrap; gap: 2px 10px; }
+.td-legend i { display: inline-block; width: 8px; height: 2px; vertical-align: middle; margin-right: 4px; }
+.td-legend b { color: var(--text); font-weight: 600; font-family: var(--mono); }
+.td-plot { position: relative; flex: 1 1 40px; min-height: 40px; }
+.td-plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
+.td-switch { display: flex; gap: 2px; }
+.td-switch button {
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 4px; font-size: 10px; line-height: 1; padding: 2px 6px; cursor: pointer;
+}
+.td-switch button.active { color: var(--text); border-color: var(--muted); }
+.ov-power-row > .power-card, .ov-power-row .soc-card { gap: 6px; }
+.ov-power-row .gauge-wrap, .ov-power-row .inv-gauge-wrap { max-width: 112px; height: 62px; margin-top: 0; }
+.ov-power-row .gauge-kw { font-size: 17px; }
+.ov-power-row .inv-gauge-kw { font-size: 15px; }
+.ov-power-row .battery-icon { width: 56px; height: 22px; }
+.ov-power-row .battery-icon::after { height: 10px; right: -6px; width: 4px; }
+.ov-power-row .battery-pct { font-size: 16px; }
+.ov-power-row .pv-gauge { width: 64px; }
+
 /* ── Expand overlay ── */
 .expand-btn {
   position: absolute;
@@ -880,6 +921,8 @@ function setMiniSource(enabled){
       </div>
     </div>
 
+    <div class="td" id="td-power" data-td-kind="main"></div>
+
     <!-- Hidden elements retained for JS compatibility -->
     <span id="import-kw" style="display:none;"></span>
     <span id="export-kw" style="display:none;"></span>
@@ -1288,6 +1331,140 @@ function _ovToolsText(){
 
 {% block scripts %}
 <script>
+// ── Today against yesterday (overview rows design, part 2, 22 Nov 2026, the user) ──
+// Cumulative energy since local midnight on the Live Power card (import, export: the meter's half-hours) and each
+// device card (its power sensor's in, and out for a battery or a V2X car), today drawn over yesterday, dimmed. A
+// battery with an SoC sensor switches between its SoC and its energy; the choice is kept per card.
+var _tdData = null;
+var _tdBattView = {{ overview_battery_view|default({})|tojson }};
+var TD_COL = {imp: '#ff6b6b', exp: '#00d4aa', 'in': '#7c6af7', out: '#00d4aa', soc: '#f5b942'};
+var TD_NAME = {imp: 'Import', exp: 'Export', 'in': 'In', out: 'Out', soc: 'SoC'};
+
+// A cumulative line's value at minute m: straight between its points, level after the last. Pure.
+function _tdAt(pts, m){
+  if (!pts || !pts.length) return null;
+  if (m <= pts[0][0]) return pts[0][1];
+  for (var i = 1; i < pts.length; i++) {
+    if (pts[i][0] >= m) {
+      var a = pts[i - 1], b = pts[i];
+      return a[1] + (b[1] - a[1]) * ((m - a[0]) / ((b[0] - a[0]) || 1));
+    }
+  }
+  return pts[pts.length - 1][1];
+}
+function _tdFmt(v, unit){
+  if (v === null || v === undefined) return '—';
+  if (unit === '%') return Math.round(v) + '%';
+  return v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2);
+}
+// What a card's chart shows: [{name, today, yesterday}], the unit and the top of the scale. Pure.
+function _tdSeries(d, kind, meterId, view){
+  if (!d) return null;
+  if (kind === 'main') {
+    var m = d.main || {};
+    return {unit: 'kWh', lines: ['imp', 'exp'].map(function(n){
+      return {name: n, today: ((m.today || {})[n]) || [], yesterday: ((m.yesterday || {})[n]) || []}; })};
+  }
+  var dev = (d.devices || {})[meterId];
+  if (!dev) return null;
+  if (view === 'soc' && dev.soc)
+    return {unit: '%', top: 100, lines: [{name: 'soc', today: dev.soc.today || [], yesterday: dev.soc.yesterday || []}]};
+  var e = dev.energy || {};
+  return {unit: 'kWh', lines: (dev.out ? ['in', 'out'] : ['in']).map(function(n){
+    return {name: n, today: ((e.today || {})[n]) || [], yesterday: ((e.yesterday || {})[n]) || []}; })};
+}
+function _tdDraw(canvas, ser, xmax, nowMin){
+  var dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!w || !h) return;
+  canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+  var g = canvas.getContext('2d');
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, w, h);
+  var top = ser.top || 0;
+  if (!top) ser.lines.forEach(function(l){ l.today.concat(l.yesterday).forEach(function(p){ if (p[1] > top) top = p[1]; }); });
+  if (!top) top = 1;
+  var pad = 2, X = function(m){ return pad + (w - 2 * pad) * (m / xmax); }, Y = function(v){ return h - pad - (h - 2 * pad) * (v / top); };
+  g.strokeStyle = 'rgba(128,128,128,0.25)'; g.lineWidth = 1;          // the baseline, and noon
+  g.beginPath(); g.moveTo(pad, h - pad + 0.5); g.lineTo(w - pad, h - pad + 0.5);
+  g.moveTo(Math.round(X(720)) + 0.5, h - pad); g.lineTo(Math.round(X(720)) + 0.5, h - pad - 4); g.stroke();
+  function line(pts, col, alpha, width){
+    if (!pts.length) return;
+    g.globalAlpha = alpha; g.strokeStyle = col; g.lineWidth = width; g.lineJoin = 'round';
+    g.beginPath();
+    pts.forEach(function(p, i){ if (i) g.lineTo(X(p[0]), Y(p[1])); else g.moveTo(X(p[0]), Y(p[1])); });
+    g.stroke();
+    g.globalAlpha = 1;
+  }
+  ser.lines.forEach(function(l){ line(l.yesterday, TD_COL[l.name], 0.3, 1.5); });
+  ser.lines.forEach(function(l){ line(l.today, TD_COL[l.name], 1, 2); });
+  if (nowMin != null) {                                                 // where today has got to
+    g.fillStyle = 'rgba(128,128,128,0.5)';
+    g.fillRect(Math.round(X(nowMin)), h - pad - 3, 1, 3);
+  }
+}
+function _tdRender(el){
+  if (!el || !_tdData) return;
+  var kind = el.getAttribute('data-td-kind'), mid = el.id.replace(/^td-/, '');
+  var hasSoc = el.getAttribute('data-td-soc') === '1';
+  var view = hasSoc ? (_tdBattView['device-' + mid] || 'soc') : 'energy';
+  var ser = _tdSeries(_tdData, kind, mid, view);
+  if (!ser) { el.style.display = 'none'; return; }
+  el.style.display = '';
+  if (!el.querySelector('canvas')) {
+    el.innerHTML = '<div class="td-head"><span class="td-legend"></span>' +
+      (hasSoc ? '<span class="td-switch"><button type="button" data-v="soc">SoC</button>' +
+                '<button type="button" data-v="energy">kWh</button></span>' : '') +
+      '</div><div class="td-plot"><canvas></canvas></div>';
+    el.querySelectorAll('.td-switch button').forEach(function(b){
+      b.onclick = function(){ _tdSetView(mid, b.getAttribute('data-v')); };
+    });
+    // a card resized by the layout (a row moved, a card added) redraws; the canvas sits absolutely in its
+    // plot, so drawing it does not resize the plot again
+    if (window.ResizeObserver) new ResizeObserver(function(){ _tdRender(el); }).observe(el.querySelector('.td-plot'));
+  }
+  el.querySelectorAll('.td-switch button').forEach(function(b){
+    b.classList.toggle('active', b.getAttribute('data-v') === view);
+  });
+  var now = _tdData.now_min, legend = el.querySelector('.td-legend');
+  legend.innerHTML = '';
+  ser.lines.forEach(function(l){
+    var t = _tdAt(l.today, now), y = _tdAt(l.yesterday, now), sp = document.createElement('span');
+    sp.title = TD_NAME[l.name] + ' since midnight' + (ser.unit === '%' ? '' : ' (kWh)') + ': today, and yesterday by this time';
+    sp.innerHTML = '<i style="background:' + TD_COL[l.name] + '"></i>' + TD_NAME[l.name] + ' <b></b> · yday <span></span>';
+    sp.querySelector('b').textContent = _tdFmt(t, ser.unit);
+    sp.querySelector('span').textContent = _tdFmt(y, ser.unit);
+    legend.appendChild(sp);
+  });
+  var dm = _tdData.day_min || {};
+  _tdDraw(el.querySelector('canvas'), ser, Math.max(dm.today || 1440, dm.yesterday || 1440), now);
+}
+function _tdRenderAll(){ document.querySelectorAll('.td[data-td-kind]').forEach(_tdRender); }
+function _tdSetView(mid, view){
+  var next = {};
+  Object.keys(_tdBattView).forEach(function(k){ next[k] = _tdBattView[k]; });
+  next['device-' + mid] = view;
+  _tdBattView = next;                        // the switch answers at once; the save follows
+  _tdRender(document.getElementById('td-' + mid));
+  fetch(apiUrl('/api/settings'), {method: 'POST', headers: {'Content-Type': 'application/json'},
+                                  body: JSON.stringify({overview_battery_view: next})}).catch(function(){});
+}
+function _tdLoad(){
+  if (document.hidden || !document.querySelector('.td[data-td-kind]')) return;
+  fetch(apiUrl('/api/overview/days'), {cache: 'no-store'})
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){ if (d && !d.error) { _tdData = d; _tdRenderAll(); } })
+    .catch(function(){});
+}
+setTimeout(_tdLoad, 400);
+setInterval(_tdLoad, 60000);
+document.addEventListener('visibilitychange', function(){ if (!document.hidden) _tdLoad(); });
+var _tdResizeDue = false;
+window.addEventListener('resize', function(){
+  if (_tdResizeDue) return;
+  _tdResizeDue = true;
+  requestAnimationFrame(function(){ _tdResizeDue = false; _tdRenderAll(); });
+});
+
 // ── Hide any Overview card (7 Nov 2026, the user, after the Agile cards' own). Every card marked `data-ov-card`
 // gets the button; the Agile cards keep theirs, as hiding those also stops fetching their prices. ──
 var _OV_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">'
@@ -2171,6 +2348,8 @@ function buildSocCard(meterId, info) {
     '<div class="card-title" style="font-size:12px;align-self:flex-start;">' + icon + ' ' + label + '</div>' +
     battSection +
     gaugeSection +
+    // today against yesterday; a battery with an SoC sensor can switch to its SoC
+    '<div class="td" id="td-' + meterId + '" data-td-kind="device" data-td-soc="' + (isBatt && info.soc_entity ? '1' : '') + '"></div>' +
   '</div>';
 }
 
@@ -2338,6 +2517,7 @@ function updateSocCards(socSensors) {
       tmp.innerHTML = buildSocCard(mid, info);
       container.appendChild(tmp.firstChild);
       _ovRefresh();
+      _tdRender(document.getElementById('td-' + mid));
       // Initialise gauge arc after DOM insertion
       if (info.power_entity) {
         setTimeout(function() { setInvGauge(mid, info.power_kw); }, 0);

@@ -7867,6 +7867,15 @@ class BlockStore:
         return [dict(r) for r in rows]
 
 
+    def get_half_hour_kwh(self, meter_id: str, utc_start: str, utc_end: str) -> list:
+        """[{block_start, imp_kwh, exp_kwh}] for one meter's half-hours in [utc_start, utc_end), oldest
+        first — the Overview's today-against-yesterday lines (overview rows design, part 2)."""
+        rows = self._conn.execute(
+            "SELECT block_start, imp_kwh, exp_kwh FROM blocks WHERE meter_id = ? "
+            "AND block_start >= ? AND block_start < ? ORDER BY block_start",
+            (meter_id, utc_start, utc_end)).fetchall()
+        return [dict(r) for r in rows]
+
     def get_imp_kwh(self, starts, meter_id: str = "electricity_main") -> dict:
         """{block_start: imp_kwh} for the blocks in `starts` (absent where there is no block) —
         what EMT holds against a bill's answer (bill and split paths design §6 (a))."""
