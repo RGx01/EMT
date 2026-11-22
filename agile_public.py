@@ -130,8 +130,9 @@ def products_due(rec: dict, now_utc: datetime) -> bool:
     return not last or now_utc - datetime.fromisoformat(last) >= PRODUCTS_EVERY
 
 
-def window(prices: list, now_utc: datetime, back_hours: int = 24, ahead_hours: int = 24) -> list:
-    """The kept prices from `back_hours` before now to `ahead_hours` after."""
+def window(prices: list, now_utc: datetime, back_hours: int = 24, ahead_hours: int = 36) -> list:
+    """The kept prices from `back_hours` before now to `ahead_hours` after — everything published ahead
+    (to 23:00 tomorrow at most: under 32 hours; 22 Nov 2026, the user: show everything published)."""
     lo = (now_utc - timedelta(hours=back_hours)).isoformat()
     hi = (now_utc + timedelta(hours=ahead_hours)).isoformat()
     return [[s, p] for s, p in prices or [] if lo <= s < hi]

@@ -9876,7 +9876,7 @@ def _vat_context(channel: str):
     return _store.get_vat_calendar() if _store is not None else []
 
 
-def agile_prices(now=None, back_hours: int = 24, ahead_hours: int = 24) -> dict:
+def agile_prices(now=None, back_hours: int = 24, ahead_hours: int = 36) -> dict:
     """BL-100 (1 Nov 2026): the half-hourly prices of a dynamic (Agile) tariff, import and export,
     for the Overview's card: {channel: {"tariff", "prices": [[slot, pence]]}} from `back_hours`
     before now to the last published half-hour within `ahead_hours`. From the schedules the poll's

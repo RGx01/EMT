@@ -10154,7 +10154,7 @@ def api_home_eras():
 @app.route("/api/agile-prices", methods=["GET"])
 def api_agile_prices():
     """BL-100: an Agile account's half-hourly import and export prices, 24 h back and as far ahead
-    as Octopus has published (up to 24 h), for the Overview's card — {import?, export?, now}, pence,
+    as Octopus has published (to 23:00 tomorrow at most), for the Overview's card — {import?, export?, now}, pence,
     import inc VAT. From the rate schedules the poll holds; no Octopus call."""
     from datetime import datetime as _d, timedelta as _td, timezone as _tzu
     import engine as _eng
