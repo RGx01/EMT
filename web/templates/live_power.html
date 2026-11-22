@@ -81,6 +81,21 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
   border-radius: 4px;
   padding-top: 30px;
 }
+/* Unlocked, a gentle wave runs down the rows now and then, so the page reads as unlocked (22 Nov 2026, the user):
+   each row lifts 3 px in turn (--ov-i, its place), then all rest. Still while a row or card is dragged, and for
+   anyone who has asked for less motion. */
+@keyframes ov-wave {
+  0%, 12%, 100% { transform: translateY(0); }
+  6% { transform: translateY(-3px); }
+}
+.ov-arranging .ov-row:not([hidden]) {
+  animation: ov-wave 5s ease-in-out infinite;
+  animation-delay: calc(var(--ov-i, 0) * 0.12s);
+}
+body.ov-drag-active .ov-arranging .ov-row { animation: none; }
+@media (prefers-reduced-motion: reduce) {
+  .ov-arranging .ov-row:not([hidden]) { animation: none; }
+}
 .ov-arranging .ov-row-tools {
   display: flex;
   position: absolute;
@@ -1421,6 +1436,8 @@ function _ovArrangeTools(){
   _ovToolsSig = sig;
   document.querySelectorAll('.ov-row-tools, .ov-move').forEach(function(el){ el.remove(); });
   if (!_ovArranging) return;
+  // each row's place, for the wave's turn
+  rows.forEach(function(r, i){ r.style.setProperty('--ov-i', String(i)); });
   rows.forEach(function(r){
     var t = document.createElement('div');
     t.className = 'ov-row-tools ov-drag-handle';

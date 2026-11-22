@@ -166,6 +166,18 @@ class ThePage(unittest.TestCase):
         i = PAGE.index("function _ovDragMove(")
         self.assertIn("_ovCardOrder = all;", PAGE[i:PAGE.index("\n}\n", i)])
 
+    def test_unlocked_a_wave_runs_down_the_rows(self):
+        # 22 Nov 2026, the user: "a subtle wave through the rows whilst the overview is unlocked and a panel is not
+        # being dragged"; each row takes its turn by its place, and those who ask for less motion get none
+        self.assertIn("animation: ov-wave 5s ease-in-out infinite;", PAGE)
+        self.assertIn("animation-delay: calc(var(--ov-i, 0) * 0.12s);", PAGE)
+        self.assertIn("body.ov-drag-active .ov-arranging .ov-row { animation: none; }", PAGE)
+        i = PAGE.index("@media (prefers-reduced-motion: reduce) {")
+        self.assertIn(".ov-arranging .ov-row:not([hidden]) { animation: none; }", PAGE[i:i + 120])
+        i = PAGE.index("function _ovArrangeTools(")
+        self.assertIn("rows.forEach(function(r, i){ r.style.setProperty('--ov-i', String(i)); });",
+                      PAGE[i:PAGE.index("\n}\n", i)])
+
     def test_the_padlock(self):
         i = PAGE.index("{% block topbar %}")
         self.assertIn('class="ov-head-btn ov-lock"', PAGE[i:PAGE.index("{% endblock %}", i)])

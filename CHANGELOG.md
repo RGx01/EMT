@@ -26,7 +26,8 @@ internal name for everything before the first public release and never appears i
 - **Arrange the Overview.** The Overview's cards now sit in rows: Power (Live Power and your devices), Grid
   and carbon (the generation mix, carbon intensity and the 48-hour history together), Smart Charging, Agile
   import and Agile export prices, and the cost cards. Unlock the padlock at the top of the page and drag the
-  rows, and the cards along each row, into place. When the Power row's cards do not fit on one line, they split evenly, three and two
+  rows, and the cards along each row, into place; while it is unlocked a gentle wave runs down the rows now and
+  then (not if your device asks for less motion). When the Power row's cards do not fit on one line, they split evenly, three and two
   rather than four and one. Carbon Intensity no longer grows and shrinks beside the gauges, and a hidden card's
   neighbours fill its place, and the 48-hour history fills the height of its row. The compact button on any
   cost card shows them all as a total each, on one line.
