@@ -1307,8 +1307,12 @@ function _ovLayoutNow(){
     });
   });
   var cards = _ovPowerCards();
-  // a row with nothing shown takes no space
+  // a row with nothing shown takes no space. Its cards are measured with it shown, in this same step (no frame is
+  // drawn between): inside a hidden row a browser may answer for a card "hidden" whatever its own style, and then a
+  // card shown again never brought its row back — Safari, 22 Nov 2026, the Agile cards, until a reload
   _ovRowEls().forEach(function(r){
+    var was = r.hidden;
+    if (was) r.hidden = false;
     var shown = Array.prototype.some.call(r.children, _ovShown);
     if (r.hidden === shown) r.hidden = !shown;
   });
@@ -1872,7 +1876,7 @@ function _ovRefresh(){
   document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
   _ovDecorate();
   _ovFoot();
-  _ovLayout();
+  _ovLayoutNow();             // at once, not on the next frame: a card shown or hidden moves its row now
 }
 function _ovSet(key, hide){
   var next = _ovToggled(_ovHidden, key, hide);
@@ -2324,6 +2328,7 @@ function _agileApply(){
   var foot = document.getElementById('agile-restore'), gap = document.getElementById('agile-restore-gap');
   if (foot) foot.style.display = _agileHidden['import'] || _agileHidden['export'] ? '' : 'none';
   if (gap) gap.style.display = _agileHidden['import'] && _agileHidden['export'] ? '' : 'none';
+  if (typeof _ovLayoutNow === 'function') _ovLayoutNow();     // its row shown or hidden with it, at once
 }
 function _agileRender(){
   _agileApply();
