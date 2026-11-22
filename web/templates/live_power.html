@@ -2199,7 +2199,10 @@ var AGILE_PW_COLOR = {'import': ['#b45309', '#fbbf24'], 'export': ['#0f766e', '#
 function _agileDraw(ch){
   var cv = document.getElementById('agile-canvas-' + ch); if (!cv || !_agile) return;
   var dpr = window.devicePixelRatio || 1, rect = cv.getBoundingClientRect();
-  var W = rect.width || 600, H = rect.height || 120;
+  // not laid out yet (its row still hidden, or the page still settling — the Pi, 22 Nov 2026): drawn at a made-up
+  // 600 px it was stretched to the card's width, its labels with it. Its size observer draws it when it has one.
+  if (!rect.width || !rect.height) return;
+  var W = rect.width, H = rect.height;
   cv.width = W * dpr; cv.height = H * dpr;
   var ctx = cv.getContext('2d'); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, W, H);
   var dark = document.documentElement.getAttribute('data-theme') !== 'light';
@@ -2372,6 +2375,17 @@ _AGILE_CHS.forEach(function(ch){
   cv.addEventListener('mouseleave', function(){ tip.style.display = 'none'; });
 });
 window.addEventListener('resize', function(){ _AGILE_CHS.forEach(_agileDraw); });
+// and whenever its own space changes size — a row shown, the layout settling, a card moved — not the window's only:
+// as the 48-hour history and the power cards' charts are
+if (window.ResizeObserver) _AGILE_CHS.forEach(function(ch){
+  var cv = document.getElementById('agile-canvas-' + ch), due = false;
+  if (!cv || !cv.parentElement) return;
+  new ResizeObserver(function(){
+    if (due) return;
+    due = true;
+    requestAnimationFrame(function(){ due = false; if (_agile) _agileDraw(ch); });
+  }).observe(cv.parentElement);
+});
 document.addEventListener('DOMContentLoaded', loadAgilePrices);
 // the prices move at the poll's rate refresh; every 10 minutes keeps "now" moving
 setInterval(loadAgilePrices, 600000);
@@ -3552,8 +3566,11 @@ function _phDraw() {
   if (!_phCanvas) return;
   var dpr  = window.devicePixelRatio || 1;
   var rect = _phCanvas.getBoundingClientRect();
-  var W    = rect.width  || 600;
-  var H    = rect.height || 180;
+  // not laid out yet: drawn at a made-up size it was stretched to the card (22 Nov 2026, the Agile card's on the Pi);
+  // its size observer draws it when it has one
+  if (!rect.width || !rect.height) return;
+  var W    = rect.width;
+  var H    = rect.height;
   _phCanvas.width  = W * dpr;
   _phCanvas.height = H * dpr;
   var ctx = _phCanvas.getContext('2d');
