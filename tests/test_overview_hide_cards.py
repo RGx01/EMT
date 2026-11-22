@@ -138,9 +138,10 @@ class ThePage(unittest.TestCase):
         i = PAGE.index("container.appendChild(tmp.firstChild);")
         self.assertIn("_ovRefresh();", PAGE[i:i + 80])
 
-    def test_a_hidden_gauge_does_not_count_towards_the_layout(self):
-        i = PAGE.index("function _applyLayout(")
-        self.assertIn("_ovHidden.indexOf('power') < 0", PAGE[i:i + 600])
+    def test_a_hidden_card_does_not_count_towards_the_power_rows_spread(self):
+        # the overview rows design replaced _applyLayout: the spread counts the cards that show
+        i = PAGE.index("function _ovLayoutNow(")
+        self.assertIn("cards.filter(_ovShown).length", PAGE[i:PAGE.index("\n}\n", i)])
 
     def test_GUARD_an_expanded_card_leaves_the_button_out(self):
         # `_expandCard` clones the card's children but skips `.expand-btn`

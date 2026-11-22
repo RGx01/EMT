@@ -249,7 +249,8 @@ class Hiding(_Engine):
 class TheRoute(unittest.TestCase):
 
     def test_settings_know_the_keys_so_the_post_keeps_them(self):
-        self.assertIn('SETTINGS_FLAGS = {"agile_hide_import": False, "agile_hide_export": False}', SERVER)
+        # the Overview's compact-costs flag joined them (overview rows design, 22 Nov 2026)
+        self.assertIn('SETTINGS_FLAGS = {"agile_hide_import": False, "agile_hide_export": False,', SERVER)
         self.assertIn("for key in list(SETTINGS_DEFAULTS) + list(SETTINGS_FLAGS):", SERVER)
         self.assertIn("result = dict(SETTINGS_DEFAULTS, **SETTINGS_FLAGS)", SERVER)
 
