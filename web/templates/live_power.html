@@ -1815,7 +1815,7 @@ window.addEventListener('resize', function(){
 });
 
 // ── Hide any Overview card (7 Nov 2026, the user, after the Agile cards' own). Every card marked `data-ov-card`
-// gets the button; the Agile cards keep theirs, as hiding those also stops fetching their prices. ──
+// gets the button; the Agile cards keep their own (their own setting, agile_hide_*). ──
 var _OV_ICON = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">'
   + '<path d="M1.5 8s2.5-4.5 6.5-4.5S14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z"/><circle cx="8" cy="8" r="2"/><path d="M3 13L13 3"/></svg>';
 function _ovToggled(hidden, key, hide){
@@ -2338,7 +2338,9 @@ function _agileSetHidden(ch, hide){
     .then(function(r){ return r.json(); }).then(function(d){
       if (!d.ok) throw new Error(d.error || 'not saved');
       _agileHidden[ch] = hide;
-      if (hide) { _agileRender(); } else { _agileApply(); loadAgilePrices(); }
+      // shown again: what is kept now, and again once the engine has asked Octopus for what it skipped while
+      // the card was hidden (a tick and the call; 22 Nov 2026 — it waited for the 10-minute refresh)
+      if (hide) { _agileRender(); } else { _agileApply(); loadAgilePrices(); setTimeout(loadAgilePrices, 45000); }
     }).catch(function(e){
       if (window.EMT && EMT.notify) EMT.notify({id: 'agile-hide-failed', level: 'critical', dismissible: true,
         html: 'Could not ' + (hide ? 'hide' : 'show') + ' the Agile card. Please try again.'});
@@ -2347,7 +2349,7 @@ function _agileSetHidden(ch, hide){
 function loadAgilePrices(){
   if (!document.getElementById('agile-card-import')) return;
   if (_agileHidden['import'] && _agileHidden['export']) { _agileApply(); return; }
-  fetch(apiUrl('/api/agile-prices')).then(function(r){ return r.json(); }).then(function(d){
+  fetch(apiUrl('/api/agile-prices'), {cache: 'no-store'}).then(function(r){ return r.json(); }).then(function(d){
     if (!d || d.error) return;
     _agile = d; _agileRender();
   }).catch(function(){});

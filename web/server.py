@@ -59,6 +59,11 @@ def _pages_revalidate(response):
         ctype = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype == "text/html" and "Cache-Control" not in response.headers:
             response.headers["Cache-Control"] = "no-cache"
+        elif ctype == "application/json" and "Cache-Control" not in response.headers:
+            # An answer is the data as it is now, never reused (22 Nov 2026, the user: an Agile card shown again
+            # stayed away until a hard refresh — its prices re-read with no header, a browser or the ingress
+            # could hand back the answer from while it was hidden, that direction left out)
+            response.headers["Cache-Control"] = "no-store"
     except Exception:
         pass
     return response
@@ -640,7 +645,7 @@ SETTINGS_DEFAULTS = {
     "gas_co2_g_per_kwh":            203.0, # BEIS/DESNZ 2023 GHG conversion factors
     "gas_boiler_efficiency":         0.90, # typical modern condensing boiler
 }
-# Overview's Agile cards: hidden, and their public prices not fetched. Beside the defaults, not in them:
+# Overview's Agile cards: hidden (their public prices are fetched all the same). Beside the defaults, not in them:
 # Insights' carbon answer carries the defaults whole, and these are nothing to do with it.
 SETTINGS_FLAGS = {"agile_hide_import": False, "agile_hide_export": False,
                   # the Overview's cost cards as totals only, its power cards as gauges only (22 Nov 2026, the user)

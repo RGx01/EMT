@@ -6892,19 +6892,15 @@ _agile_public_running = False
 
 def _agile_public_channels() -> list:
     """The directions to fetch Agile's public prices for: import unless the account is on Agile
-    itself (its own schedule has them), export where it exports and is not on Agile Outgoing; not
-    a direction whose card is hidden."""
-    import agile_public as _ap
+    itself (its own schedule has them), export where it exports and is not on Agile Outgoing.
+    Whether its card is hidden or not (22 Nov 2026, the user: "always fetch both" — skipping a hidden
+    card's saved about a public call a day, and left its prices a day behind when it was shown again)."""
     import tariff_prices as _tp
     disc = _kraken_discovery or {}
-    try:
-        hidden = _ap.hidden_channels(_reader().get_settings())
-    except Exception:
-        hidden = set()                      # read in the tick: a bad read must not stop it
     out = []
     for ch in ("import", "export"):
         d = disc.get(ch) or {}
-        if ch in hidden or (ch == "export" and not d):
+        if ch == "export" and not d:
             continue
         if not _tp.is_dynamic_code(d.get("tariff_code") or ""):
             out.append(ch)
@@ -6969,6 +6965,7 @@ async def _fetch_agile_public() -> dict:
         region = _ap.region_of(((_kraken_discovery or {}).get("import") or {}).get("tariff_code") or "")
         key = _ap.try_key(now_local)
         rec["asked"] = now_utc.isoformat()
+        rec["asked_for"] = _agile_public_channels()        # whose 90 minutes the next ask waits out
         rec["tries"] = {key: int((rec.get("tries") or {}).get(key, 0)) + 1}
         rec["region"] = region
         if _ap.products_due(rec, now_utc) or not all((rec.get(ch) or {}).get("product") for ch in _agile_public_channels()):
