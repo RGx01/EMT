@@ -204,7 +204,21 @@ body.ov-drag-active .ov-arranging .ov-row { animation: none; }
 .expand-modal .td { flex: 1 1 auto; min-height: 0; margin-top: 8px; }
 .expand-modal .td-head { font-size: 12px; }
 .expand-modal .td-tip { font-size: 12px; }
-.expand-modal .dev-gauges { justify-content: flex-start; }
+/* Expanded, the gauges as on the card — one size, labels level, the reading inside the arc — a little larger
+   (22 Nov 2026, the user: the card's sizes applied in the Power row only, so the overlay mixed old and new) */
+.expand-modal .dev-gauges { justify-content: flex-start; align-items: flex-end; gap: 28px; margin: 6px 0 4px; }
+.expand-modal .dev-gauge { flex: 0 0 150px; }
+.expand-modal .dev-gauge .inv-gauge-wrap, .expand-modal .dev-gauge .pv-gauge-wrap, .expand-modal .dev-gauge .gauge-wrap {
+  width: 150px; max-width: 150px; height: 84px; margin-top: 0; }
+.expand-modal .gauge-kw { font-size: 20px; }
+.expand-modal .inv-gauge-kw { font-size: 18px; }
+.expand-modal .dev-gauge-label { font-size: 11px; }
+.expand-modal .batt-v { align-self: flex-end; }
+.expand-modal .battery-icon.v { width: 28px; height: 56px; }
+.expand-modal .battery-pct { font-size: 18px; }
+.expand-modal .ev-cap { flex: 0 1 220px; max-width: 220px; align-self: center; }
+.expand-modal .ev-cap-text { font-size: 12px; line-height: 16px; }
+.expand-modal .lp-pill { font-size: 13px; padding: 5px 14px; }
 /* the 48-hour history fills the height its row gives it */
 .ov-row .power-history-card { display: flex; flex-direction: column; }
 .ov-row .power-history-card .power-history-wrap { flex: 1 1 120px; height: auto; min-height: 120px; }
@@ -1565,7 +1579,7 @@ function _tdY2Range(y2){
 }
 function _tdDraw(canvas, ser, xmax, nowMin, hoverMin){
   var dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
-  if (!w || !h) return;
+  if (!w || !h) return 2;
   canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
   var g = canvas.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
@@ -1579,9 +1593,18 @@ function _tdDraw(canvas, ser, xmax, nowMin, hoverMin){
   });
   if (!top && !bot) top = 1;
   // a big chart (expanded) gets its times along the foot and its scale at the side
-  var big = h > 160, padL = big ? 40 : 2, padB = big ? 18 : 2, pad = 2;
+  // big: room at the top for the scale's top label, which was cut in half (22 Nov 2026)
+  var big = h > 160, padL = big ? 40 : 2, padB = big ? 18 : 2, pad = 2, padT = big ? 12 : 2;
+  // big: the scale's labels, and room on the left as wide as the widest (a "28.0 kWh" was cut, 22 Nov 2026)
+  var u = ser.unit === '%' ? '%' : '', scale = [];
+  if (big) {
+    scale = [[top, _tdFmt(top, ser.unit) + (u ? '' : ' kWh')], [0, '0']];
+    if (bot) scale.push([-bot, _tdFmt(bot, ser.unit, true)]);
+    g.font = '11px sans-serif';
+    padL = Math.max(40, Math.ceil(Math.max.apply(null, scale.map(function(x){ return g.measureText(x[1]).width; }))) + 12);
+  }
   var X = function(m){ return padL + (w - padL - pad) * (m / xmax); };
-  var Y = function(v){ return pad + (h - pad - padB) * ((top - v) / (top + bot)); };
+  var Y = function(v){ return padT + (h - padT - padB) * ((top - v) / (top + bot)); };
   if (big) {
     g.fillStyle = 'rgba(128,128,128,0.8)'; g.font = '11px sans-serif';
     g.textAlign = 'center'; g.textBaseline = 'top';
@@ -1590,10 +1613,7 @@ function _tdDraw(canvas, ser, xmax, nowMin, hoverMin){
       g.fillText(_tdClock(m === 1440 ? 0 : m), X(m), h - padB + 4);
     });
     g.textAlign = 'right'; g.textBaseline = 'middle';
-    var u = ser.unit === '%' ? '%' : '';
-    g.fillText(_tdFmt(top, ser.unit) + (u ? '' : ' kWh'), padL - 6, Y(top));
-    if (bot) g.fillText(_tdFmt(bot, ser.unit, true), padL - 6, Y(-bot));
-    g.fillText('0', padL - 6, Y(0));
+    scale.forEach(function(x){ g.fillText(x[1], padL - 6, Y(x[0])); });
   }
   var y0 = Math.round(Y(0)) + 0.5;
   g.strokeStyle = 'rgba(128,128,128,0.25)'; g.lineWidth = 1;          // zero, and noon
@@ -1612,7 +1632,7 @@ function _tdDraw(canvas, ser, xmax, nowMin, hoverMin){
   // the second axis: the outdoor temperature over the plot's whole height, dashed, its scale on the right
   var r2 = ser.y2 ? _tdY2Range(ser.y2) : null, Y2 = null;
   if (r2) {
-    Y2 = function(v){ return pad + (h - pad - padB) * ((r2[1] - v) / (r2[1] - r2[0])); };
+    Y2 = function(v){ return padT + (h - padT - padB) * ((r2[1] - v) / (r2[1] - r2[0])); };
     g.setLineDash([4, 3]);
     [[ser.y2.yesterday, 0.3, 1.5], [ser.y2.today, 1, 1.5]].forEach(function(a){
       if (!a[0].length) return;
@@ -1625,7 +1645,7 @@ function _tdDraw(canvas, ser, xmax, nowMin, hoverMin){
     g.setLineDash([]);
     if (big) {
       g.fillStyle = TD_COL.temp; g.font = '11px sans-serif'; g.textAlign = 'right'; g.textBaseline = 'middle';
-      g.fillText(r2[1] + '°C', w - pad, Y2(r2[1]) + 6);
+      g.fillText(r2[1] + '°C', w - pad, Y2(r2[1]));
       g.fillText(r2[0] + '°C', w - pad, Y2(r2[0]) - 6);
     }
   }
@@ -1635,7 +1655,7 @@ function _tdDraw(canvas, ser, xmax, nowMin, hoverMin){
   }
   if (hoverMin != null) {                                               // the pointer's time, and each line there
     g.strokeStyle = 'rgba(128,128,128,0.6)'; g.lineWidth = 1;
-    g.beginPath(); g.moveTo(Math.round(X(hoverMin)) + 0.5, pad); g.lineTo(Math.round(X(hoverMin)) + 0.5, h - padB); g.stroke();
+    g.beginPath(); g.moveTo(Math.round(X(hoverMin)) + 0.5, padT); g.lineTo(Math.round(X(hoverMin)) + 0.5, h - padB); g.stroke();
     ser.lines.forEach(function(l){
       var sign = TD_NEG[l.name] ? -1 : 1;
       [[l.yesterday, 0.45], [hoverMin <= nowMin ? l.today : [], 1]].forEach(function(pa){
@@ -1654,6 +1674,7 @@ function _tdDraw(canvas, ser, xmax, nowMin, hoverMin){
       g.globalAlpha = 1;
     });
   }
+  return padL;                                                          // the hover maps the pointer back through it
 }
 // The pointer over a chart: a line at its time, and a tip with each line's value then, today and yesterday.
 function _tdClock(m){
@@ -1664,7 +1685,7 @@ function _tdHover(el, e){
   var st = el._td, cv = el.querySelector('canvas'), tip = el.querySelector('.td-tip');
   if (!st || !cv || !tip) return;
   if (!e) { tip.style.display = 'none'; _tdDraw(cv, st.ser, st.xmax, st.now); return; }
-  var r = cv.getBoundingClientRect(), x = e.clientX - r.left, padL = r.height > 160 ? 40 : 2;
+  var r = cv.getBoundingClientRect(), x = e.clientX - r.left, padL = st.padL || 2;
   var m = Math.max(0, Math.min(st.xmax, (x - padL) / ((r.width - padL - 2) || 1) * st.xmax));
   _tdDraw(cv, st.ser, st.xmax, st.now, m);
   var html = '<div class="m">' + _tdClock(m) + '</div>';
@@ -1732,7 +1753,7 @@ function _tdRender(el){
   }
   var dm = _tdData.day_min || {};
   el._td = {ser: ser, xmax: Math.max(dm.today || 1440, dm.yesterday || 1440), now: now};
-  _tdDraw(el.querySelector('canvas'), ser, el._td.xmax, now);
+  el._td.padL = _tdDraw(el.querySelector('canvas'), ser, el._td.xmax, now);
 }
 function _tdRenderAll(){
   document.querySelectorAll('.td[data-td-kind]').forEach(_tdRender);

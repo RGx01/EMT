@@ -177,6 +177,21 @@ class ThePage(unittest.TestCase):
         i = PAGE.index("function _expandPower(")
         self.assertIn("td.setAttribute('data-td-mid', src.id.replace(/^td-/, ''));", PAGE[i:PAGE.index("\n}\n", i)])
 
+    def test_expanded_the_gauges_are_one_size(self):
+        # 22 Nov 2026, the user: "some of the expanded views don't present the gauges and info in a tidy aligned
+        # manner" — the card's sizes applied in the Power row only, so the overlay mixed the old and the new
+        self.assertIn(".expand-modal .dev-gauge .inv-gauge-wrap, .expand-modal .dev-gauge .pv-gauge-wrap, "
+                      ".expand-modal .dev-gauge .gauge-wrap {\n  width: 150px; max-width: 150px; height: 84px;", PAGE)
+
+    def test_expanded_the_scale_is_not_cut(self):
+        i = PAGE.index("function _tdDraw(")
+        body = PAGE[i:PAGE.index("\n}\n", i)]
+        self.assertIn("padT = big ? 12 : 2;", body)                    # room above for the top label
+        self.assertIn("padL = Math.max(40, Math.ceil(Math.max.apply(null, scale.map(function(x){ return g.measureText(x[1]).width; }))) + 12);", body)
+        self.assertIn("return padL;", body)
+        i = PAGE.index("function _tdHover(")
+        self.assertIn("padL = st.padL || 2;", PAGE[i:PAGE.index("\n}\n", i)])   # the hover maps through the same margin
+
     def test_a_new_device_card_draws_its_chart(self):
         i = PAGE.index("container.appendChild(tmp.firstChild);")
         self.assertIn("_tdRender(document.getElementById('td-' + mid));", PAGE[i:i + 200])
