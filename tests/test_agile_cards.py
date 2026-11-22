@@ -357,3 +357,28 @@ class ThePage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheChartIsDrawnAtItsOwnSize(unittest.TestCase):
+    """22 Nov 2026, the user: "on the pi, but not on a higher spec machine, the agile chart initially loads with
+    different x axis size. expanding and collapsing the chart resolves it". Drawn before its row was laid out it took
+    a made-up 600 px and was stretched to the card, its labels with it; and it redrew on the window's resize only.
+    Now it is not drawn unsized, and redraws when its own space changes size, as the 48-hour history does.
+    Fails on the parent tree."""
+
+    PAGE = open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "web", "templates", "live_power.html"), encoding="utf-8").read()
+
+    def _fn(self, name):
+        i = self.PAGE.index("function %s(" % name)
+        return self.PAGE[i:self.PAGE.index("\n}\n", i)]
+
+    def test_not_drawn_before_it_has_a_size(self):
+        f = self._fn("_agileDraw")
+        self.assertIn("if (!rect.width || !rect.height) return;", f)
+        self.assertNotIn("rect.width || 600", f)
+        self.assertNotIn("rect.width  || 600", self._fn("_phDraw"))
+
+    def test_redrawn_when_its_space_changes_size(self):
+        i = self.PAGE.index("if (window.ResizeObserver) _AGILE_CHS.forEach(function(ch){")
+        self.assertIn("}).observe(cv.parentElement);", self.PAGE[i:i + 500])
