@@ -86,45 +86,48 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
   position: absolute;
   top: 0;
   left: 0;
+  right: 0;
+  height: 24px;
+  padding: 0 8px;
   align-items: center;
   gap: 6px;
   font-size: 12px;
   color: var(--muted);
+  background: rgba(128,128,128,0.08);
+  border-radius: 4px;
 }
-.ov-arranging .ov-row [data-ov-card] { padding-top: 42px; }
+.ov-arranging .ov-row [data-ov-card] { padding-top: 40px; }
 .ov-arranging .ov-move {
   display: flex;
+  align-items: center;
   position: absolute;
-  top: 10px;
-  left: 10px;
-  gap: 4px;
+  top: 8px;
+  left: 8px;
   z-index: 2;
-}
-.ov-tool-btn {
+  font-size: 11px;
+  color: var(--muted);
   background: var(--bg);
   border: 1px solid var(--border);
-  color: var(--text);
   border-radius: 4px;
-  font-size: 11px;
-  line-height: 1;
-  padding: 4px 7px;
-  cursor: pointer;
+  padding: 2px 8px;
 }
-.ov-tool-btn:disabled { opacity: 0.35; cursor: default; }
-.ov-tool-btn:not(:disabled):hover { border-color: var(--muted); }
 .ov-head-btn {
   background: transparent; border: 1px solid var(--border); color: var(--muted);
   border-radius: 12px; font-size: 12px; line-height: 1.6; padding: 1px 12px; cursor: pointer;
 }
 .ov-head-btn:hover { color: var(--text); }
+.ov-head-btn.ov-lock { padding: 3px 8px; line-height: 0; }
 .ov-head-btn.active { color: var(--text); border-color: var(--accent); }
 .ov-costs-row > .billing-grid { flex: 1 1 100%; min-width: 0; }
 /* a card's title leaves room for the buttons in its corner, and a long one is cut short (the Mix card's hid its
    hide button, 22 Nov 2026) */
-.soc-card > .card-title { display: block; align-self: stretch !important; padding-right: 28px; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis; }
+.soc-card > .card-title, .power-card > .card-title { display: block; align-self: stretch !important; font-size: 12px;
+  padding-right: 28px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
+.soc-card.expandable-card > .card-title { padding-right: 56px; }
+.power-card > .card-title { padding-right: 84px; }
 /* the gauge with its pill beside it */
-.lp-head { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; width: 100%; }
+.lp-head { flex-wrap: wrap; }
+.lp-head .lp-pill { align-self: center; }
 .lp-pill {
   font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 14px; white-space: nowrap;
   background: var(--bg); border: 1px solid var(--border); color: var(--muted);
@@ -140,8 +143,8 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
   display: flex;
   flex-direction: column;
   gap: 3px;
-  flex: 1 1 56px;
-  min-height: 56px;
+  flex: 1 1 110px;
+  min-height: 110px;
 }
 .td-head {
   display: flex;
@@ -155,7 +158,27 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
 .td-legend { display: flex; flex-wrap: wrap; gap: 2px 10px; }
 .td-legend i { display: inline-block; width: 8px; height: 2px; vertical-align: middle; margin-right: 4px; }
 .td-legend b { color: var(--text); font-weight: 600; font-family: var(--mono); }
-.td-plot { position: relative; flex: 1 1 40px; min-height: 40px; }
+.td-plot { position: relative; flex: 1 1 80px; min-height: 80px; }
+.td-tip {
+  position: absolute; pointer-events: none; display: none; z-index: 3; white-space: nowrap;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 4px 7px;
+  font-size: 10px; line-height: 1.45; color: var(--text); box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+}
+.td-tip .m { color: var(--muted); }
+/* compact: the power cards as gauges only (22 Nov 2026, the user) */
+.ov-power-row.compact .td { display: none; }
+/* expanded: the chart takes the modal */
+.expand-modal .td { flex: 1 1 auto; min-height: 0; margin-top: 8px; }
+.expand-modal .td-head { font-size: 12px; }
+.expand-modal .td-tip { font-size: 12px; }
+.expand-modal .dev-gauges { justify-content: flex-start; }
+/* the 48-hour history fills the height its row gives it */
+.ov-row .power-history-card { display: flex; flex-direction: column; }
+.ov-row .power-history-card .power-history-wrap { flex: 1 1 120px; height: auto; min-height: 120px; }
+/* dragging (unlocked): a row by its strip, a card by its handle */
+.ov-drag-handle { cursor: grab; touch-action: none; user-select: none; -webkit-user-select: none; }
+.ov-dragging { opacity: 0.55; outline: 2px dashed var(--accent) !important; }
+body.ov-drag-active, body.ov-drag-active * { cursor: grabbing !important; }
 .td-plot canvas { position: absolute; inset: 0; width: 100%; height: 100%; }
 .td-switch { display: flex; gap: 2px; }
 .td-switch button {
@@ -857,8 +880,10 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
   <div class="topbar-end" style="font-size:12px;color:var(--muted);">
     <span id="dcc-settle-note" class="dcc-settle-note" style="display:none;"></span>
     <div class="topbar-end-tail">
-      <button type="button" id="ov-arrange-btn" class="ov-head-btn" onclick="_ovToggleArrange()"
-              title="Move the rows, and the cards along them">Arrange</button>
+      <button type="button" id="ov-arrange-btn" class="ov-head-btn ov-lock" onclick="_ovToggleArrange()"
+              title="Unlock to drag the rows and cards into place" aria-label="Unlock to drag the rows and cards into place">
+        <svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>
+      </button>
       {% if has_power_sensor %}
       <span><span class="status-dot live" id="status-dot"></span>
       <span id="status-text">Connecting...</span></span>
@@ -943,15 +968,27 @@ function setMiniSource(enabled){
 <div class="live-power-page" id="ov-rows">
 <!-- Rows (overview rows design): each a fixed group of cards; the user orders the rows and the Power row's cards.
      The default order is the DOM's: power, grid, charge, agile. -->
-<div class="ov-row ov-power-row" data-ov-row="power" data-ov-row-label="Power">
+<div class="ov-row ov-power-row{% if overview_power_compact %} compact{% endif %}" data-ov-row="power" data-ov-row-label="Power">
 
 
   {% if has_power_sensor %}
   <!-- Main gauge -->
-  <div class="power-card" data-ov-card="power">
-    <div class="card-title">⚡ Live Power</div>
-    <!-- the gauge with its pill beside it (22 Nov 2026, the user: the pill above it dominated) -->
-    <div class="lp-head">
+  <div class="power-card expandable-card" data-ov-card="power">
+    <button class="expand-btn" title="Expand" onclick="_expandPower(this)">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
+        <path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4"/>
+      </svg>
+    </button>
+    <button class="expand-btn ov-compact-btn" id="ov-power-compact-btn" style="right:68px;"
+            onclick="_ovSetPowerCompact(!document.querySelector('.ov-power-row').classList.contains('compact'))">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5l5 4 5-4M3 11h10"/></svg>
+    </button>
+    <!-- titled as a device card is, with its gauge labelled, so the gauges line up across the row (22 Nov 2026,
+         the user); the pill beside the gauge -->
+    <div class="card-title">🏠 Meter</div>
+    <div class="dev-gauges lp-head">
+    <div class="dev-gauge">
+    <div class="dev-gauge-label">⚡ Grid</div>
     <div class="gauge-wrap">
       <svg viewBox="0 0 220 120" xmlns="http://www.w3.org/2000/svg">
         <!-- Background arc -->
@@ -977,6 +1014,7 @@ function setMiniSource(enabled){
         <div class="gauge-kw" id="net-kw">—</div>
         <div class="gauge-unit" id="gauge-unit-label">kW net</div>
       </div>
+    </div>
     </div>
     <div id="power-status" class="lp-pill">—</div>
     </div>
@@ -1270,46 +1308,99 @@ function _ovSave(body, then){
         html: 'Could not save the Overview\'s layout. Please try again.'});
     });
 }
-// `keys` with the item at `i` moved one step `dir` among the ones `shown` says are visible. Pure.
-function _ovMoved(keys, shown, i, dir){
-  var j = i + dir;
-  while (j >= 0 && j < keys.length && !shown[j]) j += dir;
-  if (j < 0 || j >= keys.length) return keys.slice();
-  var out = keys.slice(), t = out[i];
-  out[i] = out[j]; out[j] = t;
+// `keys` with the item at `from` taken out and put back at `to` (an index in the list without it). Pure.
+function _ovMovedTo(keys, from, to){
+  var out = keys.slice(), k = out.splice(from, 1)[0];
+  out.splice(Math.max(0, Math.min(to, out.length)), 0, k);
   return out;
 }
-function _ovMoveRow(key, dir){
-  var rows = _ovRowEls(), keys = rows.map(function(r){ return r.getAttribute('data-ov-row'); });
-  var next = _ovMoved(keys, rows.map(function(r){ return !r.hidden; }), keys.indexOf(key), dir);
-  _ovSave({overview_rows: next}, function(){ _ovRows = next; _ovApplyRowOrder(); _ovLayout();
-                                             window.dispatchEvent(new Event('resize')); });
-}
-// A card moved along its row; the saved order is every row's cards in their order, rows in page order.
-function _ovMoveCard(key, dir){
-  var next = [];
-  _ovRowEls().forEach(function(r){
-    var rc = _ovByOrder(_ovRowCards(r)), keys = rc.map(function(c){ return c.getAttribute('data-ov-card'); });
-    if (keys.indexOf(key) >= 0) keys = _ovMoved(keys, rc.map(_ovShown), keys.indexOf(key), dir);
-    next = next.concat(keys);
-  });
-  _ovSave({overview_card_order: next}, function(){ _ovCardOrder = next; _ovLayout();
-                                                    window.dispatchEvent(new Event('resize')); });
-}
+var _OV_LOCK = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5">'
+  + '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg>';
+var _OV_UNLOCK = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5">'
+  + '<rect x="3" y="7" width="10" height="7" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 4.9-.7"/></svg>';
+// The padlock: unlocked, rows and cards are dragged into place (22 Nov 2026, the user).
 function _ovToggleArrange(){
   _ovArranging = !_ovArranging;
   document.getElementById('ov-rows').classList.toggle('ov-arranging', _ovArranging);
   var b = document.getElementById('ov-arrange-btn');
-  if (b) { b.textContent = _ovArranging ? 'Done' : 'Arrange'; b.classList.toggle('active', _ovArranging); }
+  if (b) {
+    b.innerHTML = _ovArranging ? _OV_UNLOCK : _OV_LOCK;
+    b.classList.toggle('active', _ovArranging);
+    b.title = _ovArranging ? 'Lock the layout' : 'Unlock to drag the rows and cards into place';
+    b.setAttribute('aria-label', b.title);
+  }
   _ovLayout();
 }
-function _ovBtn(text, title, disabled, onclick){
-  var b = document.createElement('button');
-  b.type = 'button'; b.className = 'ov-tool-btn'; b.textContent = text; b.title = title;
-  b.setAttribute('aria-label', title); b.disabled = disabled; b.onclick = onclick;
-  return b;
+
+// ── Dragging, with the pointer (a mouse, a finger or a pen) ──
+// A row by its strip: it moves among the rows as the pointer passes their middles. A card by its handle: it moves
+// along its own row to the place of the card under the pointer. The order is saved when it is let go.
+var _ovDrag = null;
+function _ovDragStart(e, kind, el){
+  if (e.button !== undefined && e.button !== 0) return;
+  e.preventDefault();
+  _ovDrag = {kind: kind, el: el, moved: false};
+  el.classList.add('ov-dragging');
+  document.body.classList.add('ov-drag-active');
+  try { e.target.setPointerCapture(e.pointerId); } catch (x) {}
 }
-// The ▲▼ strip on each row and ◀▶ on each card of a row with two or more, rebuilt with the layout while arranging.
+function _ovDragMove(e){
+  if (!_ovDrag) return;
+  var d = _ovDrag;
+  if (d.kind === 'row') {
+    var rows = _ovRowEls().filter(function(r){ return !r.hidden && r !== d.el; });
+    var before = null;
+    for (var i = 0; i < rows.length; i++) {
+      var b = rows[i].getBoundingClientRect();
+      if (e.clientY < b.top + b.height / 2) { before = rows[i]; break; }
+    }
+    var page = document.getElementById('ov-rows');
+    if (before ? d.el.nextElementSibling !== before : page.lastElementChild !== d.el) {
+      page.insertBefore(d.el, before);
+      d.moved = true;
+    }
+    return;
+  }
+  // a card: the card of the same row under the pointer takes the dragged one's place
+  var row = d.el.closest('.ov-row');
+  var under = document.elementsFromPoint(e.clientX, e.clientY).filter(function(x){
+    return x !== d.el && x.hasAttribute && x.hasAttribute('data-ov-card') && x.closest('.ov-row') === row;
+  })[0];
+  if (!under) return;
+  var cards = _ovByOrder(_ovRowCards(row)), keys = cards.map(function(c){ return c.getAttribute('data-ov-card'); });
+  var from = keys.indexOf(d.el.getAttribute('data-ov-card')), to = keys.indexOf(under.getAttribute('data-ov-card'));
+  if (from < 0 || to < 0 || from === to) return;
+  // the order the layout applies, so its next pass keeps the move (it rewrites every card's CSS order)
+  var moved = _ovMovedTo(keys, from, to), all = [];
+  _ovRowEls().forEach(function(r){
+    all = all.concat(r === row ? moved : _ovByOrder(_ovRowCards(r)).map(function(c){ return c.getAttribute('data-ov-card'); }));
+  });
+  _ovCardOrder = all;
+  _ovLayoutNow();
+  d.moved = true;
+}
+function _ovDragEnd(){
+  if (!_ovDrag) return;
+  var d = _ovDrag;
+  _ovDrag = null;
+  d.el.classList.remove('ov-dragging');
+  document.body.classList.remove('ov-drag-active');
+  if (!d.moved) return;
+  if (d.kind === 'row') {
+    var rows = _ovRowEls().map(function(r){ return r.getAttribute('data-ov-row'); });
+    _ovSave({overview_rows: rows}, function(){ _ovRows = rows; });
+  } else {
+    _ovSave({overview_card_order: _ovCardOrder}, function(){});    // the order the drag left
+  }
+  _ovLayout();
+  window.dispatchEvent(new Event('resize'));
+}
+document.addEventListener('pointermove', _ovDragMove);
+document.addEventListener('pointerup', _ovDragEnd);
+document.addEventListener('pointercancel', _ovDragEnd);
+
+// The drag strip on each row and the handle on each card of a row with two or more, rebuilt with the layout while
+// unlocked.
 var _ovToolsSig = '';
 function _ovArrangeTools(){
   // rebuilt only when what they show has changed: building them is itself a change the observer sees
@@ -1322,24 +1413,34 @@ function _ovArrangeTools(){
   _ovToolsSig = sig;
   document.querySelectorAll('.ov-row-tools, .ov-move').forEach(function(el){ el.remove(); });
   if (!_ovArranging) return;
-  rows.forEach(function(r, i){
-    var key = r.getAttribute('data-ov-row'), t = document.createElement('div');
-    t.className = 'ov-row-tools';
-    t.appendChild(_ovBtn('▲', 'Move this row up', i === 0, function(){ _ovMoveRow(key, -1); }));
-    t.appendChild(_ovBtn('▼', 'Move this row down', i === rows.length - 1, function(){ _ovMoveRow(key, 1); }));
-    var lb = document.createElement('span'); lb.textContent = r.getAttribute('data-ov-row-label') || key;
-    t.appendChild(lb);
+  rows.forEach(function(r){
+    var t = document.createElement('div');
+    t.className = 'ov-row-tools ov-drag-handle';
+    t.title = 'Drag to move this row';
+    t.textContent = '⠿ ' + (r.getAttribute('data-ov-row-label') || r.getAttribute('data-ov-row'));
+    t.addEventListener('pointerdown', function(e){ _ovDragStart(e, 'row', r); });
     r.insertBefore(t, r.firstChild);
   });
   perRow.forEach(function(cards){
     if (cards.length < 2) return;
-    cards.forEach(function(c, i){
-      var key = c.getAttribute('data-ov-card'), m = document.createElement('div');
-      m.className = 'ov-move';
-      m.appendChild(_ovBtn('◀', 'Move this card earlier', i === 0, function(){ _ovMoveCard(key, -1); }));
-      m.appendChild(_ovBtn('▶', 'Move this card later', i === cards.length - 1, function(){ _ovMoveCard(key, 1); }));
+    cards.forEach(function(c){
+      var m = document.createElement('div');
+      m.className = 'ov-move ov-drag-handle';
+      m.title = 'Drag to move this card along its row';
+      m.textContent = '⠿ drag';
+      m.addEventListener('pointerdown', function(e){ _ovDragStart(e, 'card', c); });
       c.appendChild(m);
     });
+  });
+}
+
+// ── Compact power cards: the gauges only ──
+function _ovSetPowerCompact(on){
+  _ovSave({overview_power_compact: !!on}, function(){
+    var r = document.querySelector('.ov-power-row');
+    if (r) r.classList.toggle('compact', !!on);
+    _ovToolsText();
+    window.dispatchEvent(new Event('resize'));
   });
 }
 
@@ -1354,9 +1455,15 @@ function _ovSetCompact(on){
 // The compact switch on the Today card says what it will do.
 function _ovToolsText(){
   var g = document.getElementById('ov-costs'), b = document.getElementById('ov-compact-btn');
-  if (!g || !b) return;
-  var t = g.classList.contains('compact') ? 'Show the cost breakdowns' : 'Costs as totals only';
-  b.title = t; b.setAttribute('aria-label', t);
+  if (g && b) {
+    var t = g.classList.contains('compact') ? 'Show the cost breakdowns' : 'Costs as totals only';
+    b.title = t; b.setAttribute('aria-label', t);
+  }
+  var r = document.querySelector('.ov-power-row'), pb = document.getElementById('ov-power-compact-btn');
+  if (r && pb) {
+    var pt = r.classList.contains('compact') ? 'Show the charts' : 'The power cards as gauges only';
+    pb.title = pt; pb.setAttribute('aria-label', pt);
+  }
 }
 _ovToolsText();
 </script>
@@ -1421,7 +1528,7 @@ function _tdSeries(d, kind, meterId, view){
   return {unit: 'kWh', lines: (dev.out ? ['in', 'out'] : ['in']).map(function(n){
     return {name: n, today: ((e.today || {})[n]) || [], yesterday: ((e.yesterday || {})[n]) || []}; })};
 }
-function _tdDraw(canvas, ser, xmax, nowMin){
+function _tdDraw(canvas, ser, xmax, nowMin, hoverMin){
   var dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
   if (!w || !h) return;
   canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
@@ -1436,11 +1543,26 @@ function _tdDraw(canvas, ser, xmax, nowMin){
     });
   });
   if (!top && !bot) top = 1;
-  var pad = 2, X = function(m){ return pad + (w - 2 * pad) * (m / xmax); };
-  var Y = function(v){ return pad + (h - 2 * pad) * ((top - v) / (top + bot)); };
+  // a big chart (expanded) gets its times along the foot and its scale at the side
+  var big = h > 160, padL = big ? 40 : 2, padB = big ? 18 : 2, pad = 2;
+  var X = function(m){ return padL + (w - padL - pad) * (m / xmax); };
+  var Y = function(v){ return pad + (h - pad - padB) * ((top - v) / (top + bot)); };
+  if (big) {
+    g.fillStyle = 'rgba(128,128,128,0.8)'; g.font = '11px sans-serif';
+    g.textAlign = 'center'; g.textBaseline = 'top';
+    [0, 180, 360, 540, 720, 900, 1080, 1260, 1440].forEach(function(m){
+      if (m > xmax) return;
+      g.fillText(_tdClock(m === 1440 ? 0 : m), X(m), h - padB + 4);
+    });
+    g.textAlign = 'right'; g.textBaseline = 'middle';
+    var u = ser.unit === '%' ? '%' : '';
+    g.fillText(_tdFmt(top, ser.unit) + (u ? '' : ' kWh'), padL - 6, Y(top));
+    if (bot) g.fillText(_tdFmt(bot, ser.unit, true), padL - 6, Y(-bot));
+    g.fillText('0', padL - 6, Y(0));
+  }
   var y0 = Math.round(Y(0)) + 0.5;
   g.strokeStyle = 'rgba(128,128,128,0.25)'; g.lineWidth = 1;          // zero, and noon
-  g.beginPath(); g.moveTo(pad, y0); g.lineTo(w - pad, y0);
+  g.beginPath(); g.moveTo(padL, y0); g.lineTo(w - pad, y0);
   g.moveTo(Math.round(X(720)) + 0.5, y0 - 2); g.lineTo(Math.round(X(720)) + 0.5, y0 + 2); g.stroke();
   function line(pts, col, alpha, width, sign){
     if (!pts.length) return;
@@ -1456,10 +1578,48 @@ function _tdDraw(canvas, ser, xmax, nowMin){
     g.fillStyle = 'rgba(128,128,128,0.5)';
     g.fillRect(Math.round(X(nowMin)), y0 - 2, 1, 4);
   }
+  if (hoverMin != null) {                                               // the pointer's time, and each line there
+    g.strokeStyle = 'rgba(128,128,128,0.6)'; g.lineWidth = 1;
+    g.beginPath(); g.moveTo(Math.round(X(hoverMin)) + 0.5, pad); g.lineTo(Math.round(X(hoverMin)) + 0.5, h - padB); g.stroke();
+    ser.lines.forEach(function(l){
+      var sign = TD_NEG[l.name] ? -1 : 1;
+      [[l.yesterday, 0.45], [hoverMin <= nowMin ? l.today : [], 1]].forEach(function(pa){
+        var v = _tdAt(pa[0], hoverMin);
+        if (v === null || !pa[0].length) return;
+        g.globalAlpha = pa[1]; g.fillStyle = TD_COL[l.name];
+        g.beginPath(); g.arc(X(hoverMin), Y(sign * v), 2.5, 0, 2 * Math.PI); g.fill();
+        g.globalAlpha = 1;
+      });
+    });
+  }
+}
+// The pointer over a chart: a line at its time, and a tip with each line's value then, today and yesterday.
+function _tdClock(m){
+  var h = Math.floor(m / 60) % 24, mm = Math.floor(m % 60);
+  return (h < 10 ? '0' : '') + h + ':' + (mm < 10 ? '0' : '') + mm;
+}
+function _tdHover(el, e){
+  var st = el._td, cv = el.querySelector('canvas'), tip = el.querySelector('.td-tip');
+  if (!st || !cv || !tip) return;
+  if (!e) { tip.style.display = 'none'; _tdDraw(cv, st.ser, st.xmax, st.now); return; }
+  var r = cv.getBoundingClientRect(), x = e.clientX - r.left, padL = r.height > 160 ? 40 : 2;
+  var m = Math.max(0, Math.min(st.xmax, (x - padL) / ((r.width - padL - 2) || 1) * st.xmax));
+  _tdDraw(cv, st.ser, st.xmax, st.now, m);
+  var html = '<div class="m">' + _tdClock(m) + '</div>';
+  st.ser.lines.forEach(function(l){
+    var neg = TD_NEG[l.name], t = m <= st.now ? _tdAt(l.today, m) : null, y = _tdAt(l.yesterday, m);
+    html += '<div><span style="color:' + TD_COL[l.name] + '">●</span> ' + TD_NAME[l.name] + ' <b>'
+      + _tdFmt(t, st.ser.unit, neg) + '</b> <span class="m">· yday ' + _tdFmt(y, st.ser.unit, neg) + '</span></div>';
+  });
+  tip.innerHTML = html;
+  tip.style.display = 'block';
+  var tw = tip.offsetWidth, th = tip.offsetHeight;
+  tip.style.left = Math.max(0, Math.min(r.width - tw, x + 10 + tw > r.width ? x - tw - 10 : x + 10)) + 'px';
+  tip.style.top = Math.max(0, (r.height - th) / 2) + 'px';
 }
 function _tdRender(el){
   if (!el || !_tdData) return;
-  var kind = el.getAttribute('data-td-kind'), mid = el.id.replace(/^td-/, '');
+  var kind = el.getAttribute('data-td-kind'), mid = el.getAttribute('data-td-mid') || el.id.replace(/^td-/, '');
   var hasSoc = el.getAttribute('data-td-soc') === '1';
   var view = hasSoc ? (_tdBattView['device-' + mid] || 'soc') : 'energy';
   var ser = _tdSeries(_tdData, kind, mid, view);
@@ -1469,7 +1629,11 @@ function _tdRender(el){
     el.innerHTML = '<div class="td-head"><span class="td-legend"></span>' +
       (hasSoc ? '<span class="td-switch"><button type="button" data-v="soc">SoC</button>' +
                 '<button type="button" data-v="energy">kWh</button></span>' : '') +
-      '</div><div class="td-plot"><canvas></canvas></div>';
+      '</div><div class="td-plot"><canvas></canvas><div class="td-tip"></div></div>';
+    var cv0 = el.querySelector('canvas');
+    cv0.addEventListener('pointermove', function(e){ _tdHover(el, e); });
+    cv0.addEventListener('pointerdown', function(e){ _tdHover(el, e); });      // a tap, on a phone
+    cv0.addEventListener('pointerleave', function(){ _tdHover(el, null); });
     el.querySelectorAll('.td-switch button').forEach(function(b){
       b.onclick = function(){ _tdSetView(mid, b.getAttribute('data-v')); };
     });
@@ -1491,7 +1655,8 @@ function _tdRender(el){
     legend.appendChild(sp);
   });
   var dm = _tdData.day_min || {};
-  _tdDraw(el.querySelector('canvas'), ser, Math.max(dm.today || 1440, dm.yesterday || 1440), now);
+  el._td = {ser: ser, xmax: Math.max(dm.today || 1440, dm.yesterday || 1440), now: now};
+  _tdDraw(el.querySelector('canvas'), ser, el._td.xmax, now);
 }
 function _tdRenderAll(){ document.querySelectorAll('.td[data-td-kind]').forEach(_tdRender); }
 function _tdSetView(mid, view){
@@ -1499,7 +1664,7 @@ function _tdSetView(mid, view){
   Object.keys(_tdBattView).forEach(function(k){ next[k] = _tdBattView[k]; });
   next['device-' + mid] = view;
   _tdBattView = next;                        // the switch answers at once; the save follows
-  _tdRender(document.getElementById('td-' + mid));
+  _tdRenderAll();                            // the card, and its expanded view if open
   fetch(apiUrl('/api/settings'), {method: 'POST', headers: {'Content-Type': 'application/json'},
                                   body: JSON.stringify({overview_battery_view: next})}).catch(function(){});
 }
@@ -2396,7 +2561,9 @@ function buildSocCard(meterId, info) {
   if (battSection || _invHtml || pvGauge)
     gaugeSection = '<div class="dev-gauges">' + battSection + _invHtml + pvGauge + '</div>';
 
-  return '<div class="soc-card" id="soc-card-' + meterId + '" data-ov-card="device-' + meterId + '" data-type="' + type + '" data-v2x="' + v2x + '">' +
+  return '<div class="soc-card expandable-card" id="soc-card-' + meterId + '" data-ov-card="device-' + meterId + '" data-type="' + type + '" data-v2x="' + v2x + '">' +
+    '<button class="expand-btn" title="Expand" onclick="_expandPower(this)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">' +
+      '<path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4"/></svg></button>' +
     '<div class="card-title" style="font-size:12px;align-self:flex-start;">' + icon + ' ' + label + '</div>' +
     gaugeSection +
     // today against yesterday; a battery with an SoC sensor can switch to its SoC
@@ -2520,6 +2687,37 @@ function _expandCard(which) {
   }
 
   _backdrop.classList.add('active');
+}
+
+// A power card expanded (22 Nov 2026, the user): its title and gauges as they are now, and its chart at the
+// modal's size, kept up to date with the cards'.
+function _expandPower(btn) {
+  if (window.event) window.event.stopPropagation();
+  var card = btn.closest('[data-ov-card]');
+  var src = card && card.querySelector('.td[data-td-kind]');
+  if (!src) return;
+  _expandWhich = 'power';
+  _expandModal.innerHTML = '';
+  var closeBtn = document.createElement('button');
+  closeBtn.className = 'expand-modal-close';
+  closeBtn.innerHTML = '✕';
+  closeBtn.addEventListener('click', _collapseAll);
+  _expandModal.appendChild(closeBtn);
+  ['.card-title', '.dev-gauges'].forEach(function(sel){
+    var el = card.querySelector(sel);
+    if (!el) return;
+    var c = el.cloneNode(true);
+    c.querySelectorAll('[id]').forEach(function(x){ x.removeAttribute('id'); });
+    _expandModal.appendChild(c);
+  });
+  var td = document.createElement('div');
+  td.className = 'td';
+  td.setAttribute('data-td-kind', src.getAttribute('data-td-kind'));
+  td.setAttribute('data-td-soc', src.getAttribute('data-td-soc') || '');
+  td.setAttribute('data-td-mid', src.id.replace(/^td-/, ''));
+  _expandModal.appendChild(td);
+  _backdrop.classList.add('active');
+  setTimeout(function(){ _tdRender(td); }, 50);
 }
 
 function _collapseAll() {
@@ -2903,6 +3101,15 @@ setTimeout(function() { loadCarbonAndSchedule(); }, 600);
 {% if has_power_sensor or has_postcode %}
 // ── Rolling power history chart ──────────────────────────────────────────────
 var _phCanvas   = document.getElementById('power-history-canvas');
+// the chart fills its card, which the row can make taller than its own (22 Nov 2026, the user): redraw on a resize
+if (_phCanvas && window.ResizeObserver) (function(){
+  var due = false;
+  new ResizeObserver(function(){
+    if (due) return;
+    due = true;
+    requestAnimationFrame(function(){ due = false; if (typeof _phDraw === 'function') _phDraw(); });
+  }).observe(_phCanvas.parentElement);
+})();
 var _phHasCI    = {{ 'true' if has_postcode else 'false' }};
 var _phData     = [];   // [{captured_at, net_kw, intensity, carbon_gco2_min}]
 var _phTimer    = null;

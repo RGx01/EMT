@@ -2826,7 +2826,7 @@ class TestOverviewGating(unittest.TestCase):
         r = self._get(power=True, postcode=False)
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"Overview", r.data)
-        self.assertIn(b'class="power-card"', r.data)        # gauge present
+        self.assertIn(b'class="power-card expandable-card"', r.data)        # gauge present
         self.assertNotIn(b'id="power-hint"', r.data)        # no hint
         self.assertNotIn(b'id="carbon-card-wrap"', r.data)  # no carbon
         self.assertIn(b'id="status-text"', r.data)          # status indicator shown
@@ -2837,7 +2837,7 @@ class TestOverviewGating(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn(b'id="power-hint"', r.data)           # dismissible hint
         self.assertIn(b'id="carbon-card-wrap"', r.data)     # carbon present
-        self.assertNotIn(b'class="power-card"', r.data)     # teeth: gauge gated out
+        self.assertNotIn(b'class="power-card expandable-card"', r.data)     # teeth: gauge gated out
         # no power source → no status indicator (was showing a false "Error")
         self.assertNotIn(b'id="status-text"', r.data)
         self.assertNotIn(b'id="status-dot"', r.data)
@@ -2853,7 +2853,7 @@ class TestOverviewGating(unittest.TestCase):
     def test_both_gates(self):
         r = self._get(power=True, postcode=True)
         self.assertEqual(r.status_code, 200)
-        self.assertIn(b'class="power-card"', r.data)
+        self.assertIn(b'class="power-card expandable-card"', r.data)
         self.assertIn(b'id="carbon-card-wrap"', r.data)
         self.assertNotIn(b'id="power-hint"', r.data)
 
@@ -2861,7 +2861,7 @@ class TestOverviewGating(unittest.TestCase):
         # reachable by direct URL though hidden from nav; must not error
         r = self._get(power=False, postcode=False)
         self.assertEqual(r.status_code, 200)
-        self.assertNotIn(b'class="power-card"', r.data)
+        self.assertNotIn(b'class="power-card expandable-card"', r.data)
         self.assertNotIn(b'id="carbon-card-wrap"', r.data)
 
 
@@ -2900,7 +2900,7 @@ class TestMiniPowerSource(unittest.TestCase):
              patch.object(server, "_mini_device_id", return_value="dev-1"):
             r = client.get("/live-power")
         self.assertEqual(r.status_code, 200)
-        self.assertIn(b'class="power-card"', r.data)   # gauge revealed by the marker
+        self.assertIn(b'class="power-card expandable-card"', r.data)   # gauge revealed by the marker
 
     def test_api_power_mini_import(self):
         d = self._power(self._cfg(power_source="mini"),
@@ -3013,7 +3013,7 @@ class TestMiniPowerSource(unittest.TestCase):
              patch.object(server, "_mini_device_id", return_value="dev-1"):
             r = client.get("/live-power")
         self.assertIn(b'id="mini-active-note"', r.data)
-        self.assertIn(b'class="power-card"', r.data)   # gauge revealed
+        self.assertIn(b'class="power-card expandable-card"', r.data)   # gauge revealed
         self.assertNotIn(b'id="mini-enable"', r.data)
 
     def test_render_generic_hint_when_no_mini(self):
@@ -3079,7 +3079,7 @@ class TestMiniPowerSource(unittest.TestCase):
                           {"bcd": {"found": True, "demand_sensor": "sensor.bcd_demand"}}, create=True), \
              patch.object(server, "_mini_device_id", return_value="dev-1"):
             r = client.get("/live-power")
-        self.assertIn(b'class="power-card"', r.data)    # gauge revealed via BCD
+        self.assertIn(b'class="power-card expandable-card"', r.data)    # gauge revealed via BCD
         self.assertNotIn(b'id="mini-enable"', r.data)   # Mini NOT offered when BCD present
         self.assertNotIn(b'id="power-hint"', r.data)
 

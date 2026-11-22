@@ -76,6 +76,10 @@ class TheSettings(unittest.TestCase):
                     self.assertEqual(self._post({name: bad}).status_code, 400)
                     self.assertNotIn(name, self.store.saved)
 
+    def test_compact_power_saves(self):
+        self.assertEqual(self._post({"overview_power_compact": True}).status_code, 200)
+        self.assertIs(self.store.saved["overview_power_compact"], True)
+
     def test_compact_costs_saves(self):
         self.assertEqual(self._post({"overview_costs_compact": True}).status_code, 200)
         self.assertIs(self.store.saved["overview_costs_compact"], True)
@@ -110,8 +114,9 @@ class ThePage(unittest.TestCase):
         self.assertIn("perRow.forEach(function(cards){", PAGE[i:PAGE.index("\n}\n", i)])
 
     def test_a_cards_title_leaves_room_for_its_buttons(self):
-        self.assertIn(".soc-card > .card-title { display: block; align-self: stretch !important; padding-right: 28px;",
+        self.assertIn(".soc-card > .card-title, .power-card > .card-title { display: block; align-self: stretch !important;",
                       PAGE)
+        self.assertIn(".power-card > .card-title { padding-right: 84px; }", PAGE)       # hide, expand, compact
 
     def test_the_grid_rows_cards_fill_a_dropped_ones_place(self):
         for rule in (".ov-grid-row #mix-card { flex: 1 1 280px;", ".ov-grid-row #carbon-card-wrap { flex: 4 1 340px;",
@@ -125,8 +130,45 @@ class ThePage(unittest.TestCase):
         self.assertIn("gaugeSection = '<div class=\"dev-gauges\">' + battSection + _invHtml + pvGauge + '</div>';", body)
         self.assertIn("fill.style.height = (pct !== null ? pctVal + '%' : '0%');", PAGE)
 
+    def test_the_meter_card_is_titled_and_its_gauge_labelled_as_a_devices(self):
+        i = PAGE.index('data-ov-card="power"')
+        card = PAGE[i:i + 2500]
+        self.assertIn('<div class="card-title">🏠 Meter</div>', card)
+        self.assertIn('<div class="dev-gauge-label">⚡ Grid</div>', card)
+
+    def test_every_power_card_expands(self):
+        i = PAGE.index('data-ov-card="power"')
+        self.assertIn('onclick="_expandPower(this)"', PAGE[i:i + 600])
+        i = PAGE.index("function buildSocCard(")
+        self.assertIn("onclick=\"_expandPower(this)\"", PAGE[i:PAGE.index("\n}\n", i)])
+
+    def test_the_power_cards_can_be_gauges_only(self):
+        self.assertIn('ov-power-row{% if overview_power_compact %} compact{% endif %}"', PAGE)
+        self.assertIn(".ov-power-row.compact .td { display: none; }", PAGE)
+
+    def test_unlocked_rows_and_cards_are_dragged(self):
+        i = PAGE.index("function _ovArrangeTools(")
+        body = PAGE[i:PAGE.index("\n}\n", i)]
+        self.assertIn("_ovDragStart(e, 'row', r)", body)
+        self.assertIn("_ovDragStart(e, 'card', c)", body)
+        self.assertIn("document.addEventListener('pointermove', _ovDragMove);", PAGE)
+
+    def test_a_card_drag_changes_the_order_the_layout_applies(self):
+        # the layout rewrites every card's CSS order from _ovCardOrder: a drag that set styles alone was undone
+        i = PAGE.index("function _ovDragMove(")
+        self.assertIn("_ovCardOrder = all;", PAGE[i:PAGE.index("\n}\n", i)])
+
+    def test_the_padlock(self):
+        i = PAGE.index("{% block topbar %}")
+        self.assertIn('class="ov-head-btn ov-lock"', PAGE[i:PAGE.index("{% endblock %}", i)])
+
+    def test_the_history_fills_its_card(self):
+        self.assertIn(".ov-row .power-history-card .power-history-wrap { flex: 1 1 120px; height: auto;", PAGE)
+        i = PAGE.index("var _phCanvas   = document.getElementById('power-history-canvas');")
+        self.assertIn("}).observe(_phCanvas.parentElement);", PAGE[i:i + 600])
+
     def test_the_live_power_pill_sits_beside_its_gauge(self):
-        i = PAGE.index('<div class="lp-head">')
+        i = PAGE.index('<div class="dev-gauges lp-head">')
         self.assertLess(PAGE.index('<div class="gauge-wrap">', i), PAGE.index('id="power-status" class="lp-pill"', i))
 
     def test_the_grid_row_holds_mix_carbon_and_history(self):
@@ -138,7 +180,7 @@ class ThePage(unittest.TestCase):
     def test_the_power_row_holds_the_gauge_and_the_devices(self):
         i = PAGE.index('data-ov-row="power"')
         j = PAGE.index("</div><!-- /power row -->")
-        self.assertIn('class="power-card"', PAGE[i:j])
+        self.assertIn('class="power-card expandable-card"', PAGE[i:j])
         self.assertIn('id="soc-cards-container"', PAGE[i:j])
         self.assertNotIn('id="mix-card"', PAGE[i:j])
 
@@ -163,7 +205,7 @@ class ThePure(unittest.TestCase):
         def fn(n):
             i = PAGE.index("function %s(" % n)
             return PAGE[i:PAGE.index("\n}\n", i) + 2]
-        src = "\n".join(fn(n) for n in ("_ovOrdered", "_ovPerLine", "_ovMoved"))
+        src = "\n".join(fn(n) for n in ("_ovOrdered", "_ovPerLine", "_ovMovedTo"))
         src += "\nconsole.log(JSON.stringify(%s));" % expr
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
             fh.write(src)
@@ -186,11 +228,12 @@ class ThePure(unittest.TestCase):
         self.assertEqual(self._js("_ovOrdered(['grid','gone','power','grid'], ['power','charge','grid','agile'])"),
                          ["grid", "power", "charge", "agile"])
 
-    def test_a_move_skips_what_is_not_shown(self):
-        self.assertEqual(self._js("_ovMoved(['a','b','c'], [true,false,true], 2, -1)"), ["c", "b", "a"])
+    def test_a_dragged_card_takes_the_place_it_is_dropped_on(self):
+        self.assertEqual(self._js("_ovMovedTo(['a','b','c','d'], 3, 1)"), ["a", "d", "b", "c"])
+        self.assertEqual(self._js("_ovMovedTo(['a','b','c','d'], 0, 2)"), ["b", "c", "a", "d"])
 
-    def test_a_move_past_the_end_changes_nothing(self):
-        self.assertEqual(self._js("_ovMoved(['a','b'], [true,true], 0, -1)"), ["a", "b"])
+    def test_a_drop_past_the_end_lands_at_the_end(self):
+        self.assertEqual(self._js("_ovMovedTo(['a','b'], 0, 9)"), ["b", "a"])
 
 
 if __name__ == "__main__":
