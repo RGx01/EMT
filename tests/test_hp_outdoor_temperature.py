@@ -136,7 +136,14 @@ class Celsius(unittest.TestCase):
         y0, t0, t1 = od.day_bounds(datetime(2026, 11, 22, 12, 0, tzinfo=ZoneInfo(TZ)))
         s = [{"captured_at": _iso(t0 + timedelta(minutes=m)), "temp_c": c, "soc_pct": None}
              for m, c in ((1, 3.0), (4, 3.5), (6, 4.0))]
-        self.assertEqual(od.soc_lines(s, y0, t0, t1, t1, key="temp_c")["today"], [[4.0, 3.5], [6.0, 4.0]])
+        st = new_store()
+        try:
+            for x in s:
+                st.append_sub_meter_history(x["captured_at"], "hp_1", None, None, x["temp_c"])
+            self.assertEqual(st.get_sample_level_steps("hp_1", "temp_c", _iso(t0), _iso(t1), _iso(t1)),
+                             [[4.0, 3.5], [6.0, 4.0]])
+        finally:
+            st.close()
 
 
 class TheRoute(unittest.TestCase):

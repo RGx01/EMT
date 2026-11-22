@@ -17,6 +17,7 @@ _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, _ROOT)
 
 import overview_days as od     # noqa: E402
+from block_store import BlockStore  # noqa: E402
 
 LON = ZoneInfo("Europe/London")
 NOW = datetime(2026, 11, 22, 12, 0, tzinfo=LON)          # GMT: local = UTC
@@ -34,6 +35,22 @@ def _samples(start, minutes_, kw, step_s=30, soc=None):
         out.append({"captured_at": _iso(t), "inverter_kw": kw, "soc_pct": soc})
         t += timedelta(seconds=step_s)
     return out
+
+
+def _store_with(samples):
+    import tempfile
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
+    st._conn.executemany(
+        "INSERT INTO sub_meter_history (captured_at, meter_id, soc_pct, inverter_kw) VALUES (?, 'dev', ?, ?)",
+        [(x["captured_at"], x.get("soc_pct"), x.get("inverter_kw")) for x in samples])
+    st._conn.commit()
+    return st
+
+
+def _device_lines(samples, out_too=True):
+    st = _store_with(samples)
+    return {name: od.energy_lines(st.get_sample_energy_steps("dev", _iso(a), _iso(b), _iso(NOW)), out_too=out_too)
+            for name, a, b in (("yesterday", Y0, T0), ("today", T0, T1))}
 
 
 class TheDays(unittest.TestCase):
@@ -80,7 +97,9 @@ class TheMainMeter(unittest.TestCase):
 class ADevice(unittest.TestCase):
 
     def _lines(self, samples, out_too=True):
-        return od.sample_lines(samples, Y0, T0, T1, NOW, out_too=out_too)
+        # through a real store: the steps are summed in SQLite (get_sample_energy_steps) and drawn by
+        # energy_lines — 22 Nov 2026, moved out of a per-sample sum in Python; these expectations are that sum's
+        return _device_lines(samples, out_too)
 
     def test_an_hour_at_2kw_is_2kwh_in(self):
         got = self._lines(_samples(T0 + timedelta(hours=1), 60, 2.0))
@@ -132,7 +151,9 @@ class TheSoc(unittest.TestCase):
     def test_the_last_reading_in_each_step(self):
         s = [{"captured_at": _iso(T0 + timedelta(minutes=m)), "soc_pct": p, "inverter_kw": None}
              for m, p in ((1, 40.0), (3, 41.0), (6, 45.5))]
-        self.assertEqual(od.soc_lines(s, Y0, T0, T1, NOW)["today"], [[3.0, 41.0], [6.0, 45.5]])
+        st = _store_with(s)
+        self.assertEqual(st.get_sample_level_steps("dev", "soc_pct", _iso(T0), _iso(T1), _iso(NOW)),
+                         [[3.0, 41.0], [6.0, 45.5]])
 
 
 if __name__ == "__main__":

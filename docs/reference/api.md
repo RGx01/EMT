@@ -37,8 +37,11 @@ each power card today against yesterday, as cumulative [minute, value] points si
 each day's local midnight (`overview_days.py`):
 
 - **Live Power**: the main meter's half-hours, plus the half-hour in progress from its register reads.
-- **A device**: its power sensor's samples (`sub_meter_history`, kept 50 hours), trapezoid-summed. A gap over
-  5 minutes adds nothing. Positive is in; negative is out, shown for a battery or a V2X car. The charts draw
+- **A device**: its power sensor's samples (`sub_meter_history`, kept 50 hours), trapezoid-summed in SQLite into
+  5-minute steps (`BlockStore.get_sample_energy_steps`). A gap over 5 minutes adds nothing. The route keeps a
+  day's finished steps and sums only the samples from the first unfinished one (`_ov_day_steps`; a restore
+  starts again): about 2 ms a minute where the per-sample sum in Python took 0.44 s for three devices on a Mac
+  (22 Nov 2026). Positive is in; negative is out, shown for a battery or a V2X car. The charts draw
   export and out below zero. This is the
   device's own measurement, not its billed grid share. A device without a power sensor: its half-hours, in only.
 - **A battery's SoC**, the last reading in each 5 minutes; and **a heat pump's outdoor temperature** the same
