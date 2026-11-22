@@ -2,7 +2,7 @@
 The Overview's rows (docs/history/design/EMT-v5_overview_rows_design.md, 22 Nov 2026, the user): the page is rows of cards —
 Power, Grid and carbon, Smart Charging, Agile — the user orders the rows and the Power row's cards, the Power row is
 spread evenly, and the cost cards can be totals only. The orders are saved beside the hidden cards
-(`overview_rows`, `overview_power_order`), the compact switch as `overview_costs_compact`.
+(`overview_rows`, `overview_card_order`), the compact switch as `overview_costs_compact`.
 
 Driven by hand in a browser on a copy of a real database: five device cards at 1,132 px wide sat 3 + 2; a row and a
 card moved, the compact switch set, all kept across a reload; at 375 px every card one column, no sideways scroll.
@@ -57,7 +57,7 @@ class TheSettings(unittest.TestCase):
 
     def test_the_orders_save_and_read_back(self):
         for name, val in (("overview_rows", ["grid", "power", "grid"]),
-                          ("overview_power_order", ["device-sub_meter_2", "power"])):
+                          ("overview_card_order", ["device-sub_meter_2", "power"])):
             with self.subTest(name):
                 self.assertEqual(self._post({name: val}).status_code, 200)
                 want = list(dict.fromkeys(val))
@@ -66,11 +66,11 @@ class TheSettings(unittest.TestCase):
 
     def test_they_start_empty(self):
         got = self.client.get("/api/settings").get_json()
-        self.assertEqual((got["overview_rows"], got["overview_power_order"], got["overview_costs_compact"]),
+        self.assertEqual((got["overview_rows"], got["overview_card_order"], got["overview_costs_compact"]),
                          ([], [], False))
 
     def test_a_bad_key_is_refused(self):
-        for name in ("overview_rows", "overview_power_order"):
+        for name in ("overview_rows", "overview_card_order"):
             for bad in (['a"]{}'], "grid", [3]):
                 with self.subTest(name=name, bad=str(bad)):
                     self.assertEqual(self._post({name: bad}).status_code, 400)
@@ -84,7 +84,50 @@ class TheSettings(unittest.TestCase):
 class ThePage(unittest.TestCase):
 
     def test_the_rows(self):
-        self.assertEqual(re.findall(r'data-ov-row="([a-z]+)"', PAGE), ["power", "charge", "grid", "agile"])
+        # each Agile card its own row, and the cost cards a row like the others (22 Nov 2026, the user)
+        self.assertEqual(re.findall(r'data-ov-row="([^"]+)"', PAGE),
+                         ["power", "charge", "grid", "agile-{{ ch }}", "costs"])
+
+    def test_the_costs_row_is_inside_the_rows(self):
+        i, j = PAGE.index('data-ov-row="costs"'), PAGE.index("</div><!-- /.live-power-page -->")
+        self.assertLess(i, j)
+        self.assertIn('id="ov-costs"', PAGE[i:j])
+
+    def test_arrange_is_in_the_header_bar(self):
+        i, j = PAGE.index("{% block topbar %}"), PAGE.index("{% endblock %}", PAGE.index("{% block topbar %}"))
+        self.assertIn('id="ov-arrange-btn"', PAGE[i:j])
+
+    def test_the_compact_switch_is_on_the_today_card(self):
+        i = PAGE.index("{% macro billing_card(")
+        body = PAGE[i:PAGE.index("{% endmacro %}", i)]
+        self.assertIn('{% if card_id == "today" %}', body)
+        self.assertIn('id="ov-compact-btn"', body)
+
+    def test_every_rows_cards_are_ordered_and_moved(self):
+        i = PAGE.index("function _ovLayoutNow(")
+        self.assertIn("_ovRowEls().forEach(function(r){\n    var rc = _ovRowCards(r)", PAGE[i:i + 600])
+        i = PAGE.index("function _ovArrangeTools(")
+        self.assertIn("perRow.forEach(function(cards){", PAGE[i:PAGE.index("\n}\n", i)])
+
+    def test_a_cards_title_leaves_room_for_its_buttons(self):
+        self.assertIn(".soc-card > .card-title { display: block; align-self: stretch !important; padding-right: 28px;",
+                      PAGE)
+
+    def test_the_grid_rows_cards_fill_a_dropped_ones_place(self):
+        for rule in (".ov-grid-row #mix-card { flex: 1 1 280px;", ".ov-grid-row #carbon-card-wrap { flex: 4 1 340px;",
+                     ".ov-grid-row #power-history-card-wrap { flex: 12 1 420px;"):
+            self.assertIn(rule, PAGE)
+
+    def test_the_battery_stands_upright_beside_its_gauges(self):
+        i = PAGE.index("function buildSocCard(")
+        body = PAGE[i:PAGE.index("\n}\n", i)]
+        self.assertIn("'<div class=\"battery-icon v\"", body)
+        self.assertIn("gaugeSection = '<div class=\"dev-gauges\">' + battSection + _invHtml + pvGauge + '</div>';", body)
+        self.assertIn("fill.style.height = (pct !== null ? pctVal + '%' : '0%');", PAGE)
+
+    def test_the_live_power_pill_sits_beside_its_gauge(self):
+        i = PAGE.index('<div class="lp-head">')
+        self.assertLess(PAGE.index('<div class="gauge-wrap">', i), PAGE.index('id="power-status" class="lp-pill"', i))
 
     def test_the_grid_row_holds_mix_carbon_and_history(self):
         i = PAGE.index('data-ov-row="grid"')
@@ -105,7 +148,7 @@ class ThePage(unittest.TestCase):
         self.assertLess(PAGE.index("_ovApplyRowOrder();", i), PAGE.index("{% block scripts %}"))
 
     def test_the_cost_cards_can_be_totals_only(self):
-        self.assertIn('{% if overview_costs_compact %} compact{% endif %}" id="ov-costs"', PAGE)
+        self.assertIn('<div class="billing-grid{% if overview_costs_compact %} compact{% endif %}" id="ov-costs">', PAGE)
         self.assertIn(".billing-grid.compact .billing-rows { display: none; }", PAGE)
 
     def test_the_old_two_layouts_are_gone(self):

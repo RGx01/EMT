@@ -41,11 +41,12 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
   max-width: 1400px;
 }
 
-/* Grid and carbon: Mix and Carbon at their own width, the history takes the rest and wraps below them
-   when the three do not fit. */
-.ov-grid-row #mix-card { flex: 0 0 auto; min-width: 280px; max-width: none; }
-.ov-grid-row #carbon-card-wrap { flex: 0 0 340px; min-width: 340px; width: auto; box-sizing: border-box; }
-.ov-grid-row #power-history-card-wrap { flex: 1 1 420px; min-width: 0; }
+/* Grid and carbon: the three share what the row has over their minimum widths, the history most of it; one
+   hidden, the others fill its place (22 Nov 2026, the user: Carbon stayed at 340 px with the history hidden).
+   The history wraps below the others when the three do not fit. */
+.ov-grid-row #mix-card { flex: 1 1 280px; min-width: 280px; max-width: none; }
+.ov-grid-row #carbon-card-wrap { flex: 4 1 340px; min-width: 340px; width: auto; box-sizing: border-box; }
+.ov-grid-row #power-history-card-wrap { flex: 12 1 420px; min-width: 0; }
 
 /* Power: spread evenly. _ovLayout sets --ov-per, the cards on each line, from how many fit at the
    minimum width; each card's basis is that share of the line, and a short last line grows to fill. */
@@ -90,8 +91,7 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
   font-size: 12px;
   color: var(--muted);
 }
-.ov-arranging .ov-power-row > .power-card,
-.ov-arranging .ov-power-row .soc-card { padding-top: 42px; }
+.ov-arranging .ov-row [data-ov-card] { padding-top: 42px; }
 .ov-arranging .ov-move {
   display: flex;
   position: absolute;
@@ -112,8 +112,23 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
 }
 .ov-tool-btn:disabled { opacity: 0.35; cursor: default; }
 .ov-tool-btn:not(:disabled):hover { border-color: var(--muted); }
-#ov-tools { margin-top: 16px; font-size: 12px; color: var(--muted); text-align: center; }
-#ov-tools a { color: inherit; }
+.ov-head-btn {
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+  border-radius: 12px; font-size: 12px; line-height: 1.6; padding: 1px 12px; cursor: pointer;
+}
+.ov-head-btn:hover { color: var(--text); }
+.ov-head-btn.active { color: var(--text); border-color: var(--accent); }
+.ov-costs-row > .billing-grid { flex: 1 1 100%; min-width: 0; }
+/* a card's title leaves room for the buttons in its corner, and a long one is cut short (the Mix card's hid its
+   hide button, 22 Nov 2026) */
+.soc-card > .card-title { display: block; align-self: stretch !important; padding-right: 28px; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+/* the gauge with its pill beside it */
+.lp-head { display: flex; align-items: center; justify-content: center; gap: 10px; flex-wrap: wrap; width: 100%; }
+.lp-pill {
+  font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 14px; white-space: nowrap;
+  background: var(--bg); border: 1px solid var(--border); color: var(--muted);
+}
 .billing-grid.compact .billing-rows { display: none; }
 
 /* Today against yesterday (overview rows design, part 2): a small chart at the foot of the Live Power and device
@@ -152,10 +167,19 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
 .ov-power-row .gauge-wrap, .ov-power-row .inv-gauge-wrap { max-width: 112px; height: 62px; margin-top: 0; }
 .ov-power-row .gauge-kw { font-size: 17px; }
 .ov-power-row .inv-gauge-kw { font-size: 15px; }
-.ov-power-row .battery-icon { width: 56px; height: 22px; }
-.ov-power-row .battery-icon::after { height: 10px; right: -6px; width: 4px; }
-.ov-power-row .battery-pct { font-size: 16px; }
-.ov-power-row .pv-gauge { width: 64px; }
+.ov-power-row .battery-pct { font-size: 14px; }
+/* a device's level and gauges on one row: the battery upright, the inverter and PV gauges one size */
+.dev-gauges { display: flex; align-items: flex-end; justify-content: center; gap: 10px; width: 100%; }
+.dev-gauge { display: flex; flex-direction: column; align-items: center; gap: 2px; flex: 0 1 112px; min-width: 0; }
+.dev-gauge-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em;
+  white-space: nowrap; }
+.ov-power-row .dev-gauge .inv-gauge-wrap, .pv-gauge-wrap { width: 100%; max-width: 112px; height: 62px; }
+.pv-gauge-wrap svg { width: 100%; height: 100%; overflow: visible; }
+.batt-v { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 0 0 auto; }
+.battery-icon.v { width: 22px; height: 44px; margin-top: 6px; }
+.battery-icon.v::after { top: -6px; right: auto; left: 50%; transform: translateX(-50%); width: 10px; height: 4px;
+  border-radius: 2px 2px 0 0; }
+.battery-icon.v .battery-fill { left: 0; right: 0; top: auto; bottom: 0; transition: height 0.5s ease, background 0.5s ease; }
 
 /* ── Expand overlay ── */
 .expand-btn {
@@ -833,6 +857,8 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
   <div class="topbar-end" style="font-size:12px;color:var(--muted);">
     <span id="dcc-settle-note" class="dcc-settle-note" style="display:none;"></span>
     <div class="topbar-end-tail">
+      <button type="button" id="ov-arrange-btn" class="ov-head-btn" onclick="_ovToggleArrange()"
+              title="Move the rows, and the cards along them">Arrange</button>
       {% if has_power_sensor %}
       <span><span class="status-dot live" id="status-dot"></span>
       <span id="status-text">Connecting...</span></span>
@@ -883,6 +909,37 @@ function setMiniSource(enabled){
 </script>
 {% endif %}
 
+{# Macro for a billing card #}
+{% macro billing_card(title, total, rows, period, card_id) %}
+<div class="billing-card" data-ov-card="{{ card_id }}">
+  {% if card_id == "today" %}
+  <button type="button" class="expand-btn ov-compact-btn" id="ov-compact-btn" style="right:40px;"
+          onclick="_ovSetCompact(!document.getElementById('ov-costs').classList.contains('compact'))">
+    <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 4h10M3 8h10M3 12h6"/></svg>
+  </button>
+  {% endif %}
+  <div class="card-title">{{ title }}</div>
+  {% if total is not none %}
+  <div class="billing-total" id="billing-total-{{ card_id }}">
+    {% if total < 0 %}-{% endif %}{{ currency }}{{ "%.2f"|format(total|abs) }}
+  </div>
+  <div class="billing-period" id="billing-period-{{ card_id }}">{{ period }}</div>
+  <div class="billing-rows" id="billing-rows-{{ card_id }}">
+    {% for row in rows %}
+    <div class="billing-row" {% if row.bold %}style="background:rgba(255,255,255,0.04);border-color:var(--muted);"{% endif %}>
+      <div class="billing-row-label" {% if row.bold %}style="color:var(--text);font-weight:600;"{% endif %}>{{ row.label }}</div>
+      <div class="billing-row-value" style="color:{% if row.cost < 0 %}var(--accent){% else %}var(--text){% endif %};{% if row.bold %}font-weight:600;{% endif %}">
+        {% if row.cost < 0 %}-{% endif %}{{ currency }}{{ "%.2f"|format(row.cost|abs) }}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="no-data" id="billing-loading-{{ card_id }}" style="color:var(--muted);font-size:13px;">Loading…</div>
+  {% endif %}
+</div>
+{% endmacro %}
+
 <div class="live-power-page" id="ov-rows">
 <!-- Rows (overview rows design): each a fixed group of cards; the user orders the rows and the Power row's cards.
      The default order is the DOM's: power, grid, charge, agile. -->
@@ -893,7 +950,8 @@ function setMiniSource(enabled){
   <!-- Main gauge -->
   <div class="power-card" data-ov-card="power">
     <div class="card-title">⚡ Live Power</div>
-    <div id="power-status" style="font-size:13px;font-weight:600;padding:6px 16px;border-radius:20px;background:var(--bg);border:1px solid var(--border);color:var(--muted);">—</div>
+    <!-- the gauge with its pill beside it (22 Nov 2026, the user: the pill above it dominated) -->
+    <div class="lp-head">
     <div class="gauge-wrap">
       <svg viewBox="0 0 220 120" xmlns="http://www.w3.org/2000/svg">
         <!-- Background arc -->
@@ -919,6 +977,8 @@ function setMiniSource(enabled){
         <div class="gauge-kw" id="net-kw">—</div>
         <div class="gauge-unit" id="gauge-unit-label">kW net</div>
       </div>
+    </div>
+    <div id="power-status" class="lp-pill">—</div>
     </div>
 
     <div class="td" id="td-power" data-td-kind="main"></div>
@@ -1062,8 +1122,8 @@ function setMiniSource(enabled){
 <!-- ── BL-100: Agile prices — the 48-hour history card's style and size: 24 h back, and as far ahead
      as Octopus has published. A card each for import and export (6 Nov 2026, the user), so each has its
      own scale and can be hidden. Export shows once there are prices: not every account exports. ── -->
-<div class="ov-row ov-agile-row" data-ov-row="agile" data-ov-row-label="Agile prices">
 {% for ch in ('import', 'export') %}
+<div class="ov-row ov-agile-row" data-ov-row="agile-{{ ch }}" data-ov-row-label="Agile {{ ch }} prices">
 <div class="wide-row" id="agile-row-{{ ch }}"{% if agile_hidden[ch] or ch == 'export' %} style="display:none;"{% endif %}>
   <div class="card power-history-card expandable-card" id="agile-card-{{ ch }}">
     <button class="expand-btn" title="Hide this card" aria-label="Hide this card" style="right:40px;" onclick="_agileSetHidden('{{ ch }}', true)">
@@ -1098,17 +1158,25 @@ function setMiniSource(enabled){
     <div id="agile-compare-{{ ch }}" style="display:none;font-size:12px;color:var(--muted);margin-top:6px;"></div>
   </div>
 </div>
-{% endfor %}
 </div><!-- /agile row -->
+{% endfor %}
 {% endif %}
+<!-- 6: the cost cards, a row like the others (22 Nov 2026, the user) -->
+<div class="ov-row ov-costs-row" data-ov-row="costs" data-ov-row-label="Costs">
+<div class="billing-grid{% if overview_costs_compact %} compact{% endif %}" id="ov-costs">
+  {{ billing_card("☀️ Today", today_total, today_rows, today_date, "today") }}
+  {{ billing_card("📅 This Bill", month_total, month_rows, month_period, "month") }}
+  {{ billing_card("📆 This Year", year_total, year_rows, year_period, "year") }}
+</div>
+</div><!-- /costs row -->
 </div><!-- /.live-power-page -->
 
 <script>
 // ── Rows (overview rows design, 22 Nov 2026, the user) ──
-// The rows' order and the Power row's card order are the user's, saved beside the hidden cards. Run here, straight
-// after the rows, so a saved order is in place before the page paints.
+// The rows' order and the cards' order along each row are the user's, saved beside the hidden cards. Run here,
+// straight after the rows, so a saved order is in place before the page paints.
 var _ovRows = {{ overview_rows|default([])|tojson }};
-var _ovPowerOrder = {{ overview_power_order|default([])|tojson }};
+var _ovCardOrder = {{ overview_card_order|default([])|tojson }};
 var _OV_MIN_CARD = 220, _OV_GAP = 12;
 
 // The keys in their saved order: saved keys that are present first, then the rest in their own order. Pure.
@@ -1133,10 +1201,12 @@ function _ovShown(el){
   return d !== 'none';
 }
 function _ovRowEls(){ return Array.prototype.slice.call(document.querySelectorAll('#ov-rows > .ov-row')); }
-function _ovPowerCards(){
-  var row = document.querySelector('.ov-power-row');
-  return row ? Array.prototype.slice.call(row.querySelectorAll('.power-card, .soc-card[data-ov-card]')) : [];
+// A row's cards, in the page's order (a device card is in a display:contents wrapper, a cost card in its grid).
+function _ovRowCards(row){
+  return row ? Array.prototype.slice.call(row.querySelectorAll('[data-ov-card]')) : [];
 }
+function _ovPowerCards(){ return _ovRowCards(document.querySelector('.ov-power-row')); }
+function _ovByOrder(cards){ return cards.slice().sort(function(a, b){ return (+a.style.order) - (+b.style.order); }); }
 function _ovApplyRowOrder(){
   var page = document.getElementById('ov-rows');
   if (!page) return;
@@ -1152,13 +1222,16 @@ function _ovLayout(){
   requestAnimationFrame(function(){ _ovLayoutDue = false; _ovLayoutNow(); });
 }
 function _ovLayoutNow(){
-  // the Power row's cards in the user's order (CSS order, so a device card built later needs no move)
-  var cards = _ovPowerCards(), keys = cards.map(function(c){ return c.getAttribute('data-ov-card'); });
-  var order = _ovOrdered(_ovPowerOrder, keys);
-  cards.forEach(function(c, i){
-    var o = String(order.indexOf(keys[i]));
-    if (c.style.order !== o) c.style.order = o;
+  // each row's cards in the user's order (CSS order, so a device card built later needs no move)
+  _ovRowEls().forEach(function(r){
+    var rc = _ovRowCards(r), keys = rc.map(function(c){ return c.getAttribute('data-ov-card'); });
+    var order = _ovOrdered(_ovCardOrder, keys);
+    rc.forEach(function(c, i){
+      var o = String(order.indexOf(keys[i]));
+      if (c.style.order !== o) c.style.order = o;
+    });
   });
+  var cards = _ovPowerCards();
   // a row with nothing shown takes no space
   _ovRowEls().forEach(function(r){
     var shown = Array.prototype.some.call(r.children, _ovShown);
@@ -1212,18 +1285,22 @@ function _ovMoveRow(key, dir){
   _ovSave({overview_rows: next}, function(){ _ovRows = next; _ovApplyRowOrder(); _ovLayout();
                                              window.dispatchEvent(new Event('resize')); });
 }
+// A card moved along its row; the saved order is every row's cards in their order, rows in page order.
 function _ovMoveCard(key, dir){
-  var cards = _ovPowerCards().sort(function(a, b){ return (+a.style.order) - (+b.style.order); });
-  var keys = cards.map(function(c){ return c.getAttribute('data-ov-card'); });
-  var next = _ovMoved(keys, cards.map(_ovShown), keys.indexOf(key), dir);
-  _ovSave({overview_power_order: next}, function(){ _ovPowerOrder = next; _ovLayout();
+  var next = [];
+  _ovRowEls().forEach(function(r){
+    var rc = _ovByOrder(_ovRowCards(r)), keys = rc.map(function(c){ return c.getAttribute('data-ov-card'); });
+    if (keys.indexOf(key) >= 0) keys = _ovMoved(keys, rc.map(_ovShown), keys.indexOf(key), dir);
+    next = next.concat(keys);
+  });
+  _ovSave({overview_card_order: next}, function(){ _ovCardOrder = next; _ovLayout();
                                                     window.dispatchEvent(new Event('resize')); });
 }
 function _ovToggleArrange(){
   _ovArranging = !_ovArranging;
   document.getElementById('ov-rows').classList.toggle('ov-arranging', _ovArranging);
   var b = document.getElementById('ov-arrange-btn');
-  if (b) b.textContent = _ovArranging ? 'Done arranging' : 'Arrange the Overview';
+  if (b) { b.textContent = _ovArranging ? 'Done' : 'Arrange'; b.classList.toggle('active', _ovArranging); }
   _ovLayout();
 }
 function _ovBtn(text, title, disabled, onclick){
@@ -1232,14 +1309,15 @@ function _ovBtn(text, title, disabled, onclick){
   b.setAttribute('aria-label', title); b.disabled = disabled; b.onclick = onclick;
   return b;
 }
-// The ▲▼ strip on each row and ◀▶ on each Power card, rebuilt with the layout while arranging.
+// The ▲▼ strip on each row and ◀▶ on each card of a row with two or more, rebuilt with the layout while arranging.
 var _ovToolsSig = '';
 function _ovArrangeTools(){
   // rebuilt only when what they show has changed: building them is itself a change the observer sees
   var rows = _ovRowEls().filter(function(r){ return !r.hidden; });
-  var cardsNow = _ovPowerCards().filter(_ovShown).sort(function(a, b){ return (+a.style.order) - (+b.style.order); });
-  var sig = _ovArranging ? rows.map(function(r){ return r.getAttribute('data-ov-row'); }).join(',') + '|'
-            + cardsNow.map(function(c){ return c.getAttribute('data-ov-card'); }).join(',') : '';
+  var perRow = rows.map(function(r){ return _ovByOrder(_ovRowCards(r).filter(_ovShown)); });
+  var sig = _ovArranging ? rows.map(function(r, i){
+    return r.getAttribute('data-ov-row') + ':' + perRow[i].map(function(c){ return c.getAttribute('data-ov-card'); }).join('+');
+  }).join(',') : '';
   if (sig === _ovToolsSig) return;
   _ovToolsSig = sig;
   document.querySelectorAll('.ov-row-tools, .ov-move').forEach(function(el){ el.remove(); });
@@ -1253,14 +1331,15 @@ function _ovArrangeTools(){
     t.appendChild(lb);
     r.insertBefore(t, r.firstChild);
   });
-  var cards = cardsNow;
-  if (cards.length < 2) return;
-  cards.forEach(function(c, i){
-    var key = c.getAttribute('data-ov-card'), m = document.createElement('div');
-    m.className = 'ov-move';
-    m.appendChild(_ovBtn('◀', 'Move this card earlier', i === 0, function(){ _ovMoveCard(key, -1); }));
-    m.appendChild(_ovBtn('▶', 'Move this card later', i === cards.length - 1, function(){ _ovMoveCard(key, 1); }));
-    c.appendChild(m);
+  perRow.forEach(function(cards){
+    if (cards.length < 2) return;
+    cards.forEach(function(c, i){
+      var key = c.getAttribute('data-ov-card'), m = document.createElement('div');
+      m.className = 'ov-move';
+      m.appendChild(_ovBtn('◀', 'Move this card earlier', i === 0, function(){ _ovMoveCard(key, -1); }));
+      m.appendChild(_ovBtn('▶', 'Move this card later', i === cards.length - 1, function(){ _ovMoveCard(key, 1); }));
+      c.appendChild(m);
+    });
   });
 }
 
@@ -1272,53 +1351,19 @@ function _ovSetCompact(on){
     _ovToolsText();
   });
 }
+// The compact switch on the Today card says what it will do.
 function _ovToolsText(){
-  var g = document.getElementById('ov-costs'), a = document.getElementById('ov-compact-link');
-  if (!g || !a) return;
-  var on = g.classList.contains('compact');
-  a.textContent = on ? 'Show the cost breakdowns' : 'Costs as totals only';
-  a.onclick = function(){ _ovSetCompact(!on); return false; };
+  var g = document.getElementById('ov-costs'), b = document.getElementById('ov-compact-btn');
+  if (!g || !b) return;
+  var t = g.classList.contains('compact') ? 'Show the cost breakdowns' : 'Costs as totals only';
+  b.title = t; b.setAttribute('aria-label', t);
 }
+_ovToolsText();
 </script>
 
 <!-- ── Billing Summary ── -->
 
-{# Macro for a billing card #}
-{% macro billing_card(title, total, rows, period, card_id) %}
-<div class="billing-card" data-ov-card="{{ card_id }}">
-  <div class="card-title">{{ title }}</div>
-  {% if total is not none %}
-  <div class="billing-total" id="billing-total-{{ card_id }}">
-    {% if total < 0 %}-{% endif %}{{ currency }}{{ "%.2f"|format(total|abs) }}
-  </div>
-  <div class="billing-period" id="billing-period-{{ card_id }}">{{ period }}</div>
-  <div class="billing-rows" id="billing-rows-{{ card_id }}">
-    {% for row in rows %}
-    <div class="billing-row" {% if row.bold %}style="background:rgba(255,255,255,0.04);border-color:var(--muted);"{% endif %}>
-      <div class="billing-row-label" {% if row.bold %}style="color:var(--text);font-weight:600;"{% endif %}>{{ row.label }}</div>
-      <div class="billing-row-value" style="color:{% if row.cost < 0 %}var(--accent){% else %}var(--text){% endif %};{% if row.bold %}font-weight:600;{% endif %}">
-        {% if row.cost < 0 %}-{% endif %}{{ currency }}{{ "%.2f"|format(row.cost|abs) }}
-      </div>
-    </div>
-    {% endfor %}
-  </div>
-  {% else %}
-  <div class="no-data" id="billing-loading-{{ card_id }}" style="color:var(--muted);font-size:13px;">Loading…</div>
-  {% endif %}
-</div>
-{% endmacro %}
 
-<div class="billing-grid{% if overview_costs_compact %} compact{% endif %}" id="ov-costs">
-  {{ billing_card("☀️ Today", today_total, today_rows, today_date, "today") }}
-  {{ billing_card("📅 This Bill", month_total, month_rows, month_period, "month") }}
-  {{ billing_card("📆 This Year", year_total, year_rows, year_period, "year") }}
-</div>
-
-<div id="ov-tools">
-  <a href="#" id="ov-arrange-btn" onclick="_ovToggleArrange(); return false;">Arrange the Overview</a> ·
-  <a href="#" id="ov-compact-link"></a>
-</div>
-<script>_ovToolsText();</script>
 <div id="ov-restore" style="display:none;margin-top:16px;font-size:12px;color:var(--muted);text-align:center;"></div>
 {% if has_agile %}
 <div id="agile-restore" style="display:none;margin-top:16px;font-size:12px;color:var(--muted);text-align:center;">
@@ -1339,6 +1384,8 @@ var _tdData = null;
 var _tdBattView = {{ overview_battery_view|default({})|tojson }};
 var TD_COL = {imp: '#ff6b6b', exp: '#00d4aa', 'in': '#7c6af7', out: '#00d4aa', soc: '#f5b942'};
 var TD_NAME = {imp: 'Import', exp: 'Export', 'in': 'In', out: 'Out', soc: 'SoC'};
+// what leaves — export, a battery's or a car's out — is drawn below zero and written negative (22 Nov 2026, the user)
+var TD_NEG = {exp: true, out: true};
 
 // A cumulative line's value at minute m: straight between its points, level after the last. Pure.
 function _tdAt(pts, m){
@@ -1352,10 +1399,11 @@ function _tdAt(pts, m){
   }
   return pts[pts.length - 1][1];
 }
-function _tdFmt(v, unit){
+function _tdFmt(v, unit, neg){
   if (v === null || v === undefined) return '—';
   if (unit === '%') return Math.round(v) + '%';
-  return v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2);
+  var t = v >= 100 ? v.toFixed(0) : v >= 10 ? v.toFixed(1) : v.toFixed(2);
+  return neg && v > 0 ? '−' + t : t;
 }
 // What a card's chart shows: [{name, today, yesterday}], the unit and the top of the scale. Pure.
 function _tdSeries(d, kind, meterId, view){
@@ -1380,26 +1428,33 @@ function _tdDraw(canvas, ser, xmax, nowMin){
   var g = canvas.getContext('2d');
   g.setTransform(dpr, 0, 0, dpr, 0, 0);
   g.clearRect(0, 0, w, h);
-  var top = ser.top || 0;
-  if (!top) ser.lines.forEach(function(l){ l.today.concat(l.yesterday).forEach(function(p){ if (p[1] > top) top = p[1]; }); });
-  if (!top) top = 1;
-  var pad = 2, X = function(m){ return pad + (w - 2 * pad) * (m / xmax); }, Y = function(v){ return h - pad - (h - 2 * pad) * (v / top); };
-  g.strokeStyle = 'rgba(128,128,128,0.25)'; g.lineWidth = 1;          // the baseline, and noon
-  g.beginPath(); g.moveTo(pad, h - pad + 0.5); g.lineTo(w - pad, h - pad + 0.5);
-  g.moveTo(Math.round(X(720)) + 0.5, h - pad); g.lineTo(Math.round(X(720)) + 0.5, h - pad - 4); g.stroke();
-  function line(pts, col, alpha, width){
+  // the scale: in above zero, out below, each to its own largest value
+  var top = ser.top || 0, bot = 0;
+  if (!ser.top) ser.lines.forEach(function(l){
+    l.today.concat(l.yesterday).forEach(function(p){
+      if (TD_NEG[l.name]) { if (p[1] > bot) bot = p[1]; } else if (p[1] > top) top = p[1];
+    });
+  });
+  if (!top && !bot) top = 1;
+  var pad = 2, X = function(m){ return pad + (w - 2 * pad) * (m / xmax); };
+  var Y = function(v){ return pad + (h - 2 * pad) * ((top - v) / (top + bot)); };
+  var y0 = Math.round(Y(0)) + 0.5;
+  g.strokeStyle = 'rgba(128,128,128,0.25)'; g.lineWidth = 1;          // zero, and noon
+  g.beginPath(); g.moveTo(pad, y0); g.lineTo(w - pad, y0);
+  g.moveTo(Math.round(X(720)) + 0.5, y0 - 2); g.lineTo(Math.round(X(720)) + 0.5, y0 + 2); g.stroke();
+  function line(pts, col, alpha, width, sign){
     if (!pts.length) return;
     g.globalAlpha = alpha; g.strokeStyle = col; g.lineWidth = width; g.lineJoin = 'round';
     g.beginPath();
-    pts.forEach(function(p, i){ if (i) g.lineTo(X(p[0]), Y(p[1])); else g.moveTo(X(p[0]), Y(p[1])); });
+    pts.forEach(function(p, i){ if (i) g.lineTo(X(p[0]), Y(sign * p[1])); else g.moveTo(X(p[0]), Y(sign * p[1])); });
     g.stroke();
     g.globalAlpha = 1;
   }
-  ser.lines.forEach(function(l){ line(l.yesterday, TD_COL[l.name], 0.3, 1.5); });
-  ser.lines.forEach(function(l){ line(l.today, TD_COL[l.name], 1, 2); });
+  ser.lines.forEach(function(l){ line(l.yesterday, TD_COL[l.name], 0.3, 1.5, TD_NEG[l.name] ? -1 : 1); });
+  ser.lines.forEach(function(l){ line(l.today, TD_COL[l.name], 1, 2, TD_NEG[l.name] ? -1 : 1); });
   if (nowMin != null) {                                                 // where today has got to
     g.fillStyle = 'rgba(128,128,128,0.5)';
-    g.fillRect(Math.round(X(nowMin)), h - pad - 3, 1, 3);
+    g.fillRect(Math.round(X(nowMin)), y0 - 2, 1, 4);
   }
 }
 function _tdRender(el){
@@ -1431,8 +1486,8 @@ function _tdRender(el){
     var t = _tdAt(l.today, now), y = _tdAt(l.yesterday, now), sp = document.createElement('span');
     sp.title = TD_NAME[l.name] + ' since midnight' + (ser.unit === '%' ? '' : ' (kWh)') + ': today, and yesterday by this time';
     sp.innerHTML = '<i style="background:' + TD_COL[l.name] + '"></i>' + TD_NAME[l.name] + ' <b></b> · yday <span></span>';
-    sp.querySelector('b').textContent = _tdFmt(t, ser.unit);
-    sp.querySelector('span').textContent = _tdFmt(y, ser.unit);
+    sp.querySelector('b').textContent = _tdFmt(t, ser.unit, TD_NEG[l.name]);
+    sp.querySelector('span').textContent = _tdFmt(y, ser.unit, TD_NEG[l.name]);
     legend.appendChild(sp);
   });
   var dm = _tdData.day_min || {};
@@ -2274,12 +2329,13 @@ function buildSocCard(meterId, info) {
     var pct    = info.soc;
     var col    = socColour(pct);
     var pctVal = pct !== null && pct !== undefined ? Math.max(0, Math.min(100, pct)) : 0;
-    var fillW  = pct !== null ? pctVal + '%' : '0%';
+    var fillH  = pct !== null ? pctVal + '%' : '0%';
     var pctStr = pct !== null && pct !== undefined ? Math.round(pct) + '%' : '—';
+    // upright, beside the gauges (22 Nov 2026, the user): the level fills from the bottom
     battSection =
-      '<div class="battery-icon-wrap">' +
-        '<div class="battery-icon" id="batt-icon-' + meterId + '">' +
-          '<div class="battery-fill" id="batt-fill-' + meterId + '" style="width:' + fillW + ';background:' + col + ';"></div>' +
+      '<div class="batt-v">' +
+        '<div class="battery-icon v" id="batt-icon-' + meterId + '">' +
+          '<div class="battery-fill" id="batt-fill-' + meterId + '" style="height:' + fillH + ';background:' + col + ';"></div>' +
         '</div>' +
         '<div class="battery-pct" id="batt-pct-' + meterId + '" style="color:' + col + ';">' + pctStr + '</div>' +
       '</div>';
@@ -2289,13 +2345,13 @@ function buildSocCard(meterId, info) {
   var pvGauge = '';
   if (isBatt && info.pv_entity) {
     pvGauge =
-      '<div class="pv-gauge" id="pv-gauge-' + meterId + '">' +
-        '<div class="pv-gauge-label">☀️ PV</div>' +
-        '<svg viewBox="0 0 90 54" xmlns="http://www.w3.org/2000/svg">' +
+      '<div class="dev-gauge" id="pv-gauge-' + meterId + '">' +
+        '<div class="dev-gauge-label">☀️ PV</div>' +
+        '<div class="pv-gauge-wrap"><svg viewBox="0 0 90 54" xmlns="http://www.w3.org/2000/svg">' +
           '<path d="M 9 48 A 36 36 0 0 1 81 48" class="gauge-arc-bg" fill="none" stroke="#2a2d3a" stroke-width="8" stroke-linecap="round"/>' +
           '<path id="pv-arc-' + meterId + '" d="M 9 48 A 36 36 0 0 1 81 48" fill="none" stroke="#00d4aa" stroke-width="8" stroke-linecap="round" stroke-dasharray="0 113" stroke-dashoffset="0"/>' +
           '<text x="45" y="42" font-size="15" font-weight="700" class="pv-gauge-value" fill="#00d4aa" text-anchor="middle" id="pv-kw-' + meterId + '">—</text>' +
-        '</svg>' +
+        '</svg></div>' +
       '</div>';
   }
 
@@ -2313,7 +2369,8 @@ function buildSocCard(meterId, info) {
     var zeroMarkerY2 = bidir ? '36' : '98';
     var zeroLabel = bidir ? '0' : '';
     _invHtml =
-      '<div style="font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;align-self:flex-start;margin-top:4px;">' + gaugeLabel + '</div>' +
+      '<div class="dev-gauge">' +
+      '<div class="dev-gauge-label">' + gaugeLabel + '</div>' +
       '<div class="inv-gauge-wrap">' +
         '<svg viewBox="0 0 220 120" xmlns="http://www.w3.org/2000/svg">' +
           '<path d="M 20 110 A 90 90 0 0 1 200 110" class="gauge-arc-bg" fill="none" stroke="#2a2d3a" stroke-width="14" stroke-linecap="round"/>' +
@@ -2331,22 +2388,16 @@ function buildSocCard(meterId, info) {
           '<div class="inv-gauge-kw" id="inv-kw-' + meterId + '">—</div>' +
           '<div class="inv-gauge-unit" id="inv-dir-' + meterId + '">kW</div>' +
         '</div>' +
+      '</div>' +
       '</div>';
   }
 
-  // Assemble the gauge section. Wrap in a relative container only when the PV
-  // dial is present, so a battery card WITHOUT a PV sensor stays byte-identical.
-  if (_invHtml && pvGauge) {
-    gaugeSection = '<div class="soc-gauge-section" style="position:relative;min-height:190px;">' + _invHtml + pvGauge + '</div>';
-  } else if (_invHtml) {
-    gaugeSection = _invHtml;
-  } else if (pvGauge) {
-    gaugeSection = '<div class="soc-gauge-section" style="position:relative;min-height:64px;">' + pvGauge + '</div>';
-  }
+  // The battery's level and the gauges side by side on one row, the gauges the same size (22 Nov 2026, the user).
+  if (battSection || _invHtml || pvGauge)
+    gaugeSection = '<div class="dev-gauges">' + battSection + _invHtml + pvGauge + '</div>';
 
   return '<div class="soc-card" id="soc-card-' + meterId + '" data-ov-card="device-' + meterId + '" data-type="' + type + '" data-v2x="' + v2x + '">' +
     '<div class="card-title" style="font-size:12px;align-self:flex-start;">' + icon + ' ' + label + '</div>' +
-    battSection +
     gaugeSection +
     // today against yesterday; a battery with an SoC sensor can switch to its SoC
     '<div class="td" id="td-' + meterId + '" data-td-kind="device" data-td-soc="' + (isBatt && info.soc_entity ? '1' : '') + '"></div>' +
@@ -2545,7 +2596,7 @@ function updateSocCards(socSensors) {
         var pctVal = pct !== null && pct !== undefined ? Math.max(0, Math.min(100, pct)) : 0;
         var fill = document.getElementById('batt-fill-' + mid);
         var pctEl = document.getElementById('batt-pct-' + mid);
-        if (fill) { fill.style.width = (pct !== null ? pctVal + '%' : '0%'); fill.style.background = col; }
+        if (fill) { fill.style.height = (pct !== null ? pctVal + '%' : '0%'); fill.style.background = col; }
         if (pctEl) { pctEl.style.color = col; pctEl.textContent = pct !== null && pct !== undefined ? Math.round(pct) + '%' : '—'; }
       }
 
