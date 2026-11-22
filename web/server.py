@@ -653,7 +653,7 @@ _OVERVIEW_HIDDEN_MAX = 64
 
 # The Overview's key lists (overview rows design): the hidden cards, the rows' order, and the Power row's
 # card order. Each is card or row keys, in the same alphabet.
-_OVERVIEW_LISTS = ("overview_hidden", "overview_rows", "overview_power_order")
+_OVERVIEW_LISTS = ("overview_hidden", "overview_rows", "overview_card_order")
 
 
 def _overview_list(settings, name):
@@ -1182,7 +1182,7 @@ def live_power_page():
         has_agile = False
     agile_hidden = {"import": False, "export": False}
     overview_hidden = []
-    overview_rows, overview_power_order, overview_costs_compact = [], [], False
+    overview_rows, overview_card_order, overview_costs_compact = [], [], False
     overview_battery_view = {}
     try:
         import agile_public as _ap_h
@@ -1191,7 +1191,7 @@ def live_power_page():
         agile_hidden = {ch: ch in _hid for ch in agile_hidden}
         overview_hidden = _overview_hidden(_saved)
         overview_rows = _overview_list(_saved, "overview_rows")
-        overview_power_order = _overview_list(_saved, "overview_power_order")
+        overview_card_order = _overview_list(_saved, "overview_card_order")
         overview_costs_compact = bool(_saved.get("overview_costs_compact"))
         overview_battery_view = _overview_battery_view(_saved)
     except Exception:
@@ -1204,7 +1204,7 @@ def live_power_page():
         agile_hidden=agile_hidden,
         overview_hidden=overview_hidden,
         overview_rows=overview_rows,
-        overview_power_order=overview_power_order,
+        overview_card_order=overview_card_order,
         overview_costs_compact=overview_costs_compact,
         overview_battery_view=overview_battery_view,
         active="live_power",

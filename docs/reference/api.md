@@ -20,17 +20,21 @@ loads still counts as a change at the next poll. Live Power's cost cards check i
 ## The Overview
 
 Rows of cards ([design record](../history/design/EMT-v5_overview_rows_design.md)): Power (Live Power and the
-device cards), Grid and carbon, Smart Charging, Agile prices; the cost cards last. The user's choices are settings
-beside `overview_hidden`: `overview_rows` (row order), `overview_power_order` (the Power row's cards),
-`overview_costs_compact` (cost totals only) and `overview_battery_view` ({card key: `soc` | `energy`}). The Power
-row is spread evenly: as few lines as fit at 220 px, then as even as they can be.
+device cards), Grid and carbon, Smart Charging, Agile import, Agile export, Costs — every row orderable, and the
+cards along each (22 Nov 2026, the user, after the record: the costs were fixed last and only the Power row's
+cards moved). The user's choices are settings beside `overview_hidden`: `overview_rows` (row order),
+`overview_card_order` (every row's cards, one list), `overview_costs_compact` (cost totals only; its switch is on
+the Today card) and `overview_battery_view` ({card key: `soc` | `energy`}). The Power row is spread evenly: as few
+lines as fit at 220 px, then as even as they can be. In the Grid and carbon row a hidden card's neighbours fill
+its place.
 
 `/api/overview/days` gives each power card today against yesterday, as cumulative [minute, value] points since
 each day's local midnight (`overview_days.py`):
 
 - **Live Power**: the main meter's half-hours, plus the half-hour in progress from its register reads.
 - **A device**: its power sensor's samples (`sub_meter_history`, kept 50 hours), trapezoid-summed. A gap over
-  5 minutes adds nothing. Positive is in; negative is out, shown for a battery or a V2X car. This is the
+  5 minutes adds nothing. Positive is in; negative is out, shown for a battery or a V2X car. The charts draw
+  export and out below zero. This is the
   device's own measurement, not its billed grid share. A device without a power sensor: its half-hours, in only.
 - **A battery's SoC**, the last reading in each 5 minutes.
 

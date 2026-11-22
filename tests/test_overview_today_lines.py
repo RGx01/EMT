@@ -203,6 +203,11 @@ class ThePure(unittest.TestCase):
         self.assertEqual([x["name"] for x in self._js("_tdSeries(%s,'device','b','energy')" % d)["lines"]],
                          ["in", "out"])
 
+    def test_what_leaves_is_written_negative(self):
+        # export and out are drawn below zero and written so (22 Nov 2026, the user)
+        self.assertEqual(self._js("[_tdFmt(1.5,'kWh',true), _tdFmt(0,'kWh',true), _tdFmt(1.5,'kWh',false), _tdFmt(40,'%',true)]"),
+                         ["−1.50", "0.00", "1.50", "40%"])
+
     def test_a_card_with_no_data_has_no_chart(self):
         self.assertIsNone(self._js("_tdSeries({devices:{}},'device','gone','energy')"))
 

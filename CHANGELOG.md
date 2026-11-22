@@ -8,15 +8,17 @@ internal name for everything before the first public release and never appears i
 ## [Unreleased]
 
 - **Today against yesterday on the Overview's power cards.** Live Power shows your import and export since
-  midnight, today's line over yesterday's. Each device card shows the energy its power sensor measured since
-  midnight; a battery or a V2X car shows what went out as well as in. A battery with a charge sensor switches
-  between its charge and its energy. The cards keep their size: the gauges are a little smaller.
+  midnight, today's line over yesterday's, export below the line. Each device card shows the energy its power
+  sensor measured since midnight; a battery or a V2X car shows what went out, below the line, as well as in. A
+  battery with a charge sensor switches between its charge and its energy. The cards keep their size: the
+  gauges are smaller, Live Power's import/export pill sits beside its gauge, and a battery's level stands
+  upright beside its inverter and solar gauges, which are now the same size.
 - **Arrange the Overview.** The Overview's cards now sit in rows: Power (Live Power and your devices), Grid
-  and carbon (the generation mix, carbon intensity and the 48-hour history together), Smart Charging and Agile
-  prices, with the cost cards last. *Arrange the Overview*, at the foot of the page, moves the rows and the
-  Power row's cards. When the Power row's cards do not fit on one line, they split evenly, three and two rather
-  than four and one. Carbon Intensity no longer grows and shrinks beside the gauges. *Costs as totals only*
-  hides the cost cards' breakdowns.
+  and carbon (the generation mix, carbon intensity and the 48-hour history together), Smart Charging, Agile
+  import and Agile export prices, and the cost cards. *Arrange*, at the top of the page, moves the rows, and the
+  cards along each row. When the Power row's cards do not fit on one line, they split evenly, three and two
+  rather than four and one. Carbon Intensity no longer grows and shrinks beside the gauges, and a hidden card's
+  neighbours fill its place. The button on the Today card shows the cost cards as totals only.
 - **The Overview's bill card shows the Billing tab's total.** The two worked out the same money with
   different rounding: the Overview rounded each day to the penny and added up the days, the Billing tab
   rounds once, as your Octopus statement does. They could sit a few pence apart (£19.86 against £19.88).
