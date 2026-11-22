@@ -59,6 +59,11 @@ def _pages_revalidate(response):
         ctype = (response.headers.get("Content-Type") or "").split(";")[0].strip().lower()
         if ctype == "text/html" and "Cache-Control" not in response.headers:
             response.headers["Cache-Control"] = "no-cache"
+        elif ctype == "application/json" and "Cache-Control" not in response.headers:
+            # An answer is the data as it is now, never reused (22 Nov 2026, the user: an Agile card shown again
+            # stayed away until a hard refresh — its prices re-read with no header, a browser or the ingress
+            # could hand back the answer from while it was hidden, that direction left out)
+            response.headers["Cache-Control"] = "no-store"
     except Exception:
         pass
     return response

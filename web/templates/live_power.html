@@ -2349,7 +2349,7 @@ function _agileSetHidden(ch, hide){
 function loadAgilePrices(){
   if (!document.getElementById('agile-card-import')) return;
   if (_agileHidden['import'] && _agileHidden['export']) { _agileApply(); return; }
-  fetch(apiUrl('/api/agile-prices')).then(function(r){ return r.json(); }).then(function(d){
+  fetch(apiUrl('/api/agile-prices'), {cache: 'no-store'}).then(function(r){ return r.json(); }).then(function(d){
     if (!d || d.error) return;
     _agile = d; _agileRender();
   }).catch(function(){});
