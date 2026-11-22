@@ -5,7 +5,7 @@ All notable changes to EMT are recorded here.
 Versions are CalVer — `YYYY.M.PATCH` — matching Home Assistant's own convention. `v5` is the
 internal name for everything before the first public release and never appears in a version string.
 
-## [Unreleased]
+## [2026.11.0b32] — 2026-11-22
 
 - **A hidden Agile card comes back up to date.** Hiding an Agile card stopped EMT fetching its prices, so
   shown again it was a day behind, and the link at the foot of the page could fail to bring it back at all
@@ -23,27 +23,27 @@ internal name for everything before the first public release and never appears i
 - **The car's 6 hours on its Overview card.** On Intelligent Octopus Go's capped agreement (IOG-SMB), the EV
   card shows today's noon-to-noon allowance beside its gauge: about how much smart charging has been used, how
   much Octopus's current plan would add, and how much is left — or how far the plan runs over — with the next
-  planned window.
-  These are EMT's estimates, counted as the Smart Charging card counts them.
+  planned window. These are EMT's estimates, counted as the Smart Charging card counts them.
 - **A heat pump's outdoor temperature.** Give your heat pump an outdoor temperature sensor in Meter Config and
   its Overview card shows a temperature gauge beside its power, and its chart draws the temperature since
   midnight, today over yesterday, on a scale of its own. A °F sensor is shown in °C.
-- **Today against yesterday on the Overview's power cards.** Live Power shows your import and export since
-  midnight, today's line over yesterday's, export below the line. Each device card shows the energy its power
-  sensor measured since midnight; a battery or a V2X car shows what went out, below the line, as well as in. A
-  battery with a charge sensor switches between its charge and its energy. Point at a chart (or tap it) for the
-  figures at that time; the expand button opens a card large, with its times and scale. The compact button on
-  any power card shows them all as gauges only. Live Power is now the 🏠 Meter card. The gauges are smaller and line up across the row,
-  the Meter's import/export pill sits beside its gauge, and a battery's level stands upright beside its inverter
-  and solar gauges, which are now the same size.
-- **Arrange the Overview.** The Overview's cards now sit in rows: Power (Live Power and your devices), Grid
+- **Today against yesterday on the Overview's power cards.** The 🏠 Meter card (was Live Power) shows your
+  import and export since midnight, today's line over yesterday's, export below the line. Each device card
+  shows the energy its power sensor measured since midnight; a battery or a V2X car shows what went out, below
+  the line, as well as in. A battery with a charge sensor switches between its charge and its energy. Point at
+  a chart (or tap it) for the figures at that time; the expand button opens a card large, with its times and
+  scale. The compact button on any power card shows them all as gauges only. The gauges are smaller and line
+  up across the row, the Meter's import/export pill sits beside its gauge, and a battery's level stands upright
+  beside its inverter and solar gauges, which are now the same size.
+- **Arrange the Overview.** The Overview's cards now sit in rows: Power (the Meter and your devices), Grid
   and carbon (the generation mix, carbon intensity and the 48-hour history together), Smart Charging, Agile
   import and Agile export prices, and the cost cards. Unlock the padlock at the top of the page and drag the
   rows, and the cards along each row, into place; while it is unlocked a gentle wave runs down the rows now and
-  then (not if your device asks for less motion). When the Power row's cards do not fit on one line, they split evenly, three and two
-  rather than four and one. Carbon Intensity no longer grows and shrinks beside the gauges, and a hidden card's
-  neighbours fill its place, and the 48-hour history fills the height of its row. The compact button on any
-  cost card shows them all as a total each, on one line.
+  then (not if your device asks for less motion). When the Power row's cards do not fit on one line, they
+  split evenly, three and two rather than four and one. Carbon Intensity no longer grows and shrinks beside
+  the gauges, a hidden card's neighbours fill its place, and the 48-hour history fills the height of its row.
+  The compact button on any cost card shows them all as a total each, on one line. The Agile chart is drawn
+  at its card's size from the start (on a Pi it could load stretched until expanded).
 - **The Overview's bill card shows the Billing tab's total.** The two worked out the same money with
   different rounding: the Overview rounded each day to the penny and added up the days, the Billing tab
   rounds once, as your Octopus statement does. They could sit a few pence apart (£19.86 against £19.88).
