@@ -1687,7 +1687,14 @@ def api_overview_days():
                 # a heat pump's outdoor temperature, drawn on the chart's second axis
                 entry["temp"] = _od.soc_lines(samples, y0, t0, t1, now, key="temp_c")
             devices[mid] = entry
+        ev_cap = None
+        if any(_is_meter_type((d or {}).get("meta") or {}, m, "ev") for m, d in meters.items()):
+            try:
+                ev_cap = _ev_cap_now(store, main_id, tz, now.replace(tzinfo=None))
+            except Exception as e:
+                logger.debug("overview days: the EV's cap: %s", e)
         return jsonify({"today": t0.date().isoformat(),
+                        "ev_cap": ev_cap,
                         "now_min": _od.minutes(now, t0),
                         "day_min": {"yesterday": _od.minutes(t0, y0), "today": _od.minutes(t1, t0)},
                         "main": main, "devices": devices})
@@ -9865,6 +9872,57 @@ def _build_upcoming_dispatches(history, rates, day_peak, now_iso,
     return out   # soonest-first
 
 
+def _cap_rows(cap_hist, store):
+    """The charges the 6-hour count takes, as iog_cap.cap_usage wants them: completed dispatches, less
+    a bump charge and anything the pricing leaves out of the cap (engine.cap_excluded: a bump Octopus
+    labels `unknown`, a peak-billed charge). The Smart Charging card's rule, and the EV card's."""
+    import engine as _eng
+    bump = {r["slot_start"] for r in cap_hist if (r.get("source") or "") in _BUMP_SOURCES}
+    return [(r["raw_start"], r["raw_end"], r["energy_kwh"]) for r in cap_hist
+            if r.get("kind") == "completed" and r.get("raw_start") and r.get("raw_end")
+            and r["slot_start"] not in bump and not _eng.cap_excluded(r["slot_start"], store)]
+
+
+def _ev_cap_now(store, main_id, tz, now):
+    """Today's noon-to-noon cap-day on IOG-SMB, for the Overview's EV card (22 Nov 2026, the user): the
+    minutes charged so far (EMT's estimate, `iog_cap.cap_usage`, as the Smart Charging card counts them),
+    the minutes Octopus's current plan would charge before the next noon (each planned session's
+    planned kWh over its fullest half-hour, `_build_upcoming_dispatches`), and the plan's windows,
+    local. None where the agreement in force is not capped. `now` is naive UTC."""
+    import engine as _eng
+    import iog_cap as _cap
+    from datetime import timedelta as _td
+    from zoneinfo import ZoneInfo as _ZI
+    now_iso = now.isoformat()
+    if not _eng.capped_at(now_iso):
+        return None
+    tz_name = str(tz)
+    key = _cap.cap_day_key(now_iso, tz_name)
+    lo, hi = (now - _td(days=2)).isoformat(), (now + _td(days=2)).isoformat()
+    hist = store.get_dispatch_history(lo, hi)
+    ev = {}
+    for r in store._conn.execute(
+            "SELECT block_start, kwh, inc_rate FROM block_segments WHERE meter_id = ? "
+            "AND channel = 'import' AND attribution = 'ev' AND kwh > 0 "
+            "AND block_start >= ? AND block_start < ?", (main_id, lo, hi)):
+        ev.setdefault(r["block_start"], []).append((float(r["kwh"]), r["inc_rate"]))
+    cap_hist = hist + _split_charge_rows(ev, store.first_dispatch_record())
+    used_h = float((_cap.cap_usage(_cap_rows(cap_hist, store), tz_name, None).get(key) or {})
+                   .get("used_hours") or 0.0)
+    plans = [u for u in _build_upcoming_dispatches(hist, {}, {}, now_iso)
+             if _cap.cap_day_key(u["start"], tz_name) == key]
+
+    def _hm(iso):
+        from datetime import datetime as _dt
+        return _dt.fromisoformat(iso).replace(tzinfo=_ZI("UTC")).astimezone(tz).strftime("%H:%M")
+    return {"cap_day": key,
+            "cap_minutes": round(_cap.CAP_HOURS * 60),
+            "used_minutes": round(used_h * 60),
+            "planned_minutes": sum(int(u.get("charge_minutes") or 0) for u in plans),
+            "plans": [{"start": _hm(u.get("exact_start") or u["start"]), "end": _hm(u.get("exact_end") or u["end"]),
+                       "minutes": int(u.get("charge_minutes") or 0), "kwh": u.get("kwh")} for u in plans]}
+
+
 @app.route("/api/chart-styles", methods=["GET", "POST"])
 def api_chart_styles():
     """BL-101 PR 4 (home eras design §4): every meter's chart style in one place, for the Charts
@@ -10164,12 +10222,7 @@ def api_charge_sessions():
         # the cap-days from a day before the range, so the first one is counted whole
         cap_hist = (store.get_dispatch_history((now - _t2(days=days + 1)).isoformat(), win_end)
                     + _split_charge_rows(ev_wide, first_record))
-        bump = {r["slot_start"] for r in cap_hist if (r.get("source") or "") in _BUMP_SOURCES}
-        # a bump Octopus labels `unknown`, or a peak-billed charge: the pricing's rule (engine.cap_excluded)
-        cap = _cap.cap_usage([(r["raw_start"], r["raw_end"], r["energy_kwh"]) for r in cap_hist
-                              if r.get("kind") == "completed" and r.get("raw_start") and r.get("raw_end")
-                              and r["slot_start"] not in bump
-                              and not _eng.cap_excluded(r["slot_start"], store)], tz_name, None)
+        cap = _cap.cap_usage(_cap_rows(cap_hist, store), tz_name, None)
         try:
             bill_slots = set(store.slots_with_bill_split(win_start, win_end))
         except Exception:

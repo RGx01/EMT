@@ -125,7 +125,9 @@ class TheUsers(unittest.TestCase):
         charts = open(os.path.join(root, "energy_charts.py"), encoding="utf-8").read()
         server = open(os.path.join(root, "web", "server.py"), encoding="utf-8").read()
         self.assertIn("exclude=lambda s: _eng_oc.cap_excluded(s, store))", charts)
-        self.assertIn("and not _eng.cap_excluded(r[\"slot_start\"], store)], tz_name, None)", server)
+        # the rule is in _cap_rows since the EV card shares it (22 Nov 2026)
+        self.assertIn("and r[\"slot_start\"] not in bump and not _eng.cap_excluded(r[\"slot_start\"], store)]", server)
+        self.assertIn("cap = _cap.cap_usage(_cap_rows(cap_hist, store), tz_name, None)", server)
 
 
 if __name__ == "__main__":

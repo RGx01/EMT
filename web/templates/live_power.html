@@ -172,7 +172,17 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
 }
 .td-tip .m { color: var(--muted); }
 /* compact: the power cards as gauges only (22 Nov 2026, the user) */
-.ov-power-row.compact .td { display: none; }
+.ov-power-row.compact .td, .ov-power-row.compact .ev-cap { display: none !important; }
+/* the car's 6 hours on IOG-SMB: charged, planned, left */
+.ev-cap { width: 100%; align-self: stretch; display: flex; flex-direction: column; gap: 2px; }
+.ev-cap-bar { display: flex; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
+.ev-cap-bar .u { background: #7c6af7; }
+.ev-cap-bar .p { background: repeating-linear-gradient(45deg, rgba(124,106,247,0.55) 0 3px, rgba(124,106,247,0.2) 3px 6px); }
+.ev-cap-bar .p.over { background: repeating-linear-gradient(45deg, rgba(255,107,107,0.7) 0 3px, rgba(255,107,107,0.25) 3px 6px); }
+.ev-cap-text { font-size: 10px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ev-cap-text .over { color: #ff6b6b; }
+.soc-card.has-cap .td { flex-basis: 62px; min-height: 62px; }
+.soc-card.has-cap .td-plot { flex-basis: 36px; min-height: 36px; }
 /* expanded: the chart takes the modal */
 .expand-modal .td { flex: 1 1 auto; min-height: 0; margin-top: 8px; }
 .expand-modal .td-head { font-size: 12px; }
@@ -1705,7 +1715,40 @@ function _tdRender(el){
   el._td = {ser: ser, xmax: Math.max(dm.today || 1440, dm.yesterday || 1440), now: now};
   _tdDraw(el.querySelector('canvas'), ser, el._td.xmax, now);
 }
-function _tdRenderAll(){ document.querySelectorAll('.td[data-td-kind]').forEach(_tdRender); }
+function _tdRenderAll(){
+  document.querySelectorAll('.td[data-td-kind]').forEach(_tdRender);
+  document.querySelectorAll('.ev-cap').forEach(function(el){ _evCapRender(el, _tdData && _tdData.ev_cap); });
+}
+// The car's 6 hours on IOG-SMB, from noon to noon: what EMT counts as charged so far, what Octopus's current plan
+// would add before the next noon, and what is left; over the cap, by how much. Shown only on a capped agreement.
+// Pure but for the element it fills.
+function _evCapParts(c){
+  var cap = c.cap_minutes || 360, used = c.used_minutes || 0, plan = c.planned_minutes || 0;
+  var left = cap - used - plan;
+  return {cap: cap, used: used, plan: plan, left: Math.max(0, left), over: Math.max(0, -left),
+          usedPct: Math.min(100, used / cap * 100),
+          planPct: Math.max(0, Math.min(100 - Math.min(100, used / cap * 100), plan / cap * 100))};
+}
+function _evCapRender(el, c){
+  var card = el.closest('.soc-card');
+  if (card) card.classList.toggle('has-cap', !!c);      // its chart gives the strip its height
+  if (!c) { el.style.display = 'none'; el.innerHTML = ''; return; }
+  var p = _evCapParts(c);
+  var plans = (c.plans || []).map(function(x){ return x.start + '–' + x.end + ' (≈' + _fmtDur(x.minutes) + ')'; });
+  el.style.display = '';
+  el.title = 'The 6 hours of smart charging Octopus allows from noon to noon, as EMT estimates them from the'
+    + ' completed dispatches and the current plan' + (plans.length ? '. Planned: ' + plans.join(', ') : '');
+  el.innerHTML =
+    '<div class="ev-cap-bar">'
+    + '<span class="u" style="width:' + p.usedPct.toFixed(1) + '%"></span>'
+    + '<span class="p' + (p.over ? ' over' : '') + '" style="width:' + p.planPct.toFixed(1) + '%"></span>'
+    + '</div>'
+    + '<div class="ev-cap-text">' + _fmtDur(p.cap) + ' cap: ≈' + _fmtDur(p.used) + ' used'
+    + (p.plan ? ', ≈' + _fmtDur(p.plan) + ' planned' : '') + '</div>'
+    + '<div class="ev-cap-text">'
+    + (p.over ? '<span class="over">≈' + _fmtDur(p.over) + ' over the cap</span>' : '≈' + _fmtDur(p.left) + ' left')
+    + (plans.length ? ' · next ' + (c.plans[0].start + '–' + c.plans[0].end) : '') + '</div>';
+}
 function _tdSetView(mid, view){
   var next = {};
   Object.keys(_tdBattView).forEach(function(k){ next[k] = _tdBattView[k]; });
@@ -2655,6 +2698,8 @@ function buildSocCard(meterId, info) {
       '<path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4"/></svg></button>' +
     '<div class="card-title" style="font-size:12px;align-self:flex-start;">' + icon + ' ' + label + '</div>' +
     gaugeSection +
+    // the car on IOG-SMB: today's noon-to-noon 6 hours, charged and planned (22 Nov 2026, the user)
+    (isEV ? '<div class="ev-cap" id="ev-cap-' + meterId + '" style="display:none;"></div>' : '') +
     // today against yesterday; a battery with an SoC sensor can switch to its SoC
     '<div class="td" id="td-' + meterId + '" data-td-kind="device" data-td-soc="' + (isBatt && info.soc_entity ? '1' : '') + '"></div>' +
   '</div>';
@@ -2792,7 +2837,7 @@ function _expandPower(btn) {
   closeBtn.innerHTML = '✕';
   closeBtn.addEventListener('click', _collapseAll);
   _expandModal.appendChild(closeBtn);
-  ['.card-title', '.dev-gauges'].forEach(function(sel){
+  ['.card-title', '.dev-gauges', '.ev-cap'].forEach(function(sel){
     var el = card.querySelector(sel);
     if (!el) return;
     var c = el.cloneNode(true);
