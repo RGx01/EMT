@@ -94,7 +94,7 @@ class TheView(unittest.TestCase):
 
     def test_the_eras_plugin_first(self):
         self.assertIn("plugins: (showEras ? [barErasPlugin(pd.bucketRanges, tariffLanes)] : [])\n"
-                      "               .concat(tariffLanes ? [barTariffPlugin(pd.bucketRanges, tariffLanes)] : []),", PAGE)
+                      "               .concat(tariffLanes ? [barTariffPlugin(pd.bucketRanges, tariffLanes)] : [])", PAGE)
 
     def test_a_chip_s_hover_is_the_era(self):
         i = PAGE.index("function barErasPlugin(")

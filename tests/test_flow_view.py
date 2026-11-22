@@ -322,17 +322,20 @@ class TheSpans(unittest.TestCase):
 
     DAYS = ["2024-06-01", "2024-12-15", "2025-01-10", "2025-02-20", "2025-06-30"]
 
-    def _js(self, tail, eras=(), tariffs=(), flow=False):
+    def _js(self, tail, eras=(), tariffs=(), flow=False, res=None, order="date"):
         rows = [{"year": int(d[:4]), "month": int(d[5:7]), "day": int(d[8:]), "imp_kwh": 1.0} for d in self.DAYS]
         kinds = PAGE[PAGE.index("var ERA_KINDS = {"):PAGE.index("\n};\n", PAGE.index("var ERA_KINDS = {")) + 3]
         js = (kinds + "var BAR_ACC_MON = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];\n"
               "var barEras = %s, barTariffs = %s, barData = %s, FLOW_SPAN_DAILY_MAX = 62;\n" % (
                   json.dumps(list(eras)), json.dumps(list(tariffs)), json.dumps(rows)) +
+              "var barSpanRes = %s, barMonthOrder = %s, barPeriod = 'span', barSpanId = null;\n" % (
+                  json.dumps(res), json.dumps(order)) +
               "function barFlow() { return %s; }\n" % ("true" if flow else "false") +
               "function barAggRows(f) { return {imp_kwh: barData.filter(f).reduce(function (t, r) { return t + r.imp_kwh; }, 0)}; }\n" +
               "".join(_fn(n) for n in ("barAddDay", "barAddMonth", "barDayNo", "barFlowYmd", "erasGroups", "barEraLabel",
                                        "barTariffPriceStarts", "barTariffChangeDays", "barTariffVatOnly", "barAccDateLabel",
-                                       "barSpans", "barSpanData")) + tail)
+                                       "barSpans", "barSpanCurrent", "barSpanResolution", "barSpanMonthFirst",
+                                       "barSpanOrder", "barGroupBreaks", "barSpanData")) + tail)
         with tempfile.NamedTemporaryFile("w", suffix=".js", delete=False) as fh:
             fh.write(js)
             path = fh.name
@@ -404,6 +407,40 @@ class TheSpans(unittest.TestCase):
         self.assertEqual(labels, ["Dec 2024", "Jan 2025", "Feb 2025", "Jun 2025"])     # 1 Jun 2024 is before it
         self.assertEqual(first, {"from": "2024-12-01", "to": "2025-01-01"})
         self.assertEqual(sum(kwh), 4.0)
+
+    # 22 Nov 2026, the user: a span's bars a day, a month or a year, by Date or by Month as Monthly's
+    def test_a_long_span_by_the_day_when_chosen(self):
+        out = self._js("\nvar d = barSpanData({from: '2024-06-15', to: '2025-07-01'});"
+                       "\nconsole.log(JSON.stringify(d.labels));", res="day")
+        self.assertEqual(out, ["15 Dec", "10 Jan", "20 Feb", "30 Jun"])
+
+    def test_by_the_year_clipped_to_its_dates(self):
+        out = self._js("\nvar d = barSpanData({from: '2024-06-15', to: '2025-07-01'});"
+                       "\nconsole.log(JSON.stringify([d.labels, d.bucketRanges, d.aggList.map(function (a) { return a.imp_kwh; })]));",
+                       res="year")
+        self.assertEqual(out, [["2024", "2025"],
+                               [{"from": "2024-06-15", "to": "2025-01-01"}, {"from": "2025-01-01", "to": "2025-07-01"}],
+                               [1.0, 3.0]])
+
+    def test_by_the_year_there_is_no_month_order(self):
+        out = self._js("\nvar d = barSpanData({from: '2024-01-01', to: '2025-07-01'});"
+                       "\nconsole.log(JSON.stringify([d.labels, !!d.groups]));", res="year", order="month")
+        self.assertEqual(out, [["2024", "2025"], False])
+
+    def test_months_in_month_order_grouped_by_the_month(self):
+        self.DAYS = ["2024-06-01", "2024-12-15", "2025-06-10", "2025-12-20", "2025-01-30"]
+        out = self._js("\nvar d = barSpanData({from: '2024-01-01', to: '2026-01-01'});"
+                       "\nconsole.log(JSON.stringify([d.labels, d.groups, d.bucketYears, barGroupBreaks(d.groups)]));",
+                       res="month", order="month")
+        self.assertEqual(out, [["Jan 2025", "Jun 2024", "Jun 2025", "Dec 2024", "Dec 2025"],
+                               [1, 6, 6, 12, 12], [2025, 2024, 2025, 2024, 2025], [1, 3]])
+
+    def test_days_in_month_order_each_month_of_days_its_own_group(self):
+        # the Net line does not run on from 31 Jan '24 to 1 Jan '25
+        self.DAYS = ["2024-01-31", "2025-01-01", "2024-02-02"]
+        out = self._js("\nvar d = barSpanData({from: '2024-01-01', to: '2026-01-01'});"
+                       "\nconsole.log(JSON.stringify([d.labels, d.groups]));", res="day", order="month")
+        self.assertEqual(out, [["31 Jan 24", "1 Jan 25", "2 Feb 24"], ["2024-01", "2025-01", "2024-02"]])
 
     def test_flow_one_bucket(self):
         out = self._js("\nvar d = barSpanData({from: '2024-06-01', to: '2025-07-01', label: 'All'});"
@@ -504,8 +541,23 @@ class TheWiring(unittest.TestCase):
         self.assertIn("if ((barTariffs.length || barPeriod === 'span' || barAccYearsWanted) && barInited && barData) barRender();", _fn("barLoadTariffs"))
 
     def test_the_overlays_on_a_span(self):
-        self.assertIn("|| barPeriod === 'span';", _fn("barTariffsAvailable"))
-        self.assertIn("|| barPeriod === 'span';", _fn("barErasAvailable"))
+        # on a span in date order; in month order (22 Nov 2026) the bars are not a time axis
+        self.assertIn("(barPeriod === 'span' && !barSpanMonthFirst());", _fn("barTariffsAvailable"))
+        self.assertIn("(barPeriod === 'span' && !barSpanMonthFirst());", _fn("barErasAvailable"))
+
+    def test_month_order_draws_separators_and_breaks_the_net_line(self):
+        f = _fn("barRender")
+        self.assertIn("if (pd.groups) barBreakNetAtGroups(datasets, pd.groups);", f)
+        self.assertIn(".concat(pd.groups ? [barGroupSepPlugin(pd.groups)] : [])", f)
+        self.assertIn("groups[c.p0DataIndex] !== groups[c.p1DataIndex] ? 'rgba(0,0,0,0)' : undefined", _fn("barBreakNetAtGroups"))
+        # Monthly in month order carries its groups, by calendar month
+        self.assertIn("groups: monthFirst ? buckets.map(function(b){ return b.m; }) : null", PAGE)
+
+    def test_span_has_its_resolution_and_the_order(self):
+        self.assertIn('<div class="bar-seg" id="bar-spanres-seg"', PAGE)
+        f = _fn("barSyncUI")
+        self.assertIn("(_spanBars && barSpanResolution(barSpanCurrent()) !== 'year')) ? 'inline-flex' : 'none';", f)
+        self.assertIn("if (['day','month','year'].indexOf(st.spanRes) !== -1)     barSpanRes = st.spanRes;", PAGE)
 
     def test_flow_names_its_periods_by_what_it_totals(self):
         # 4 Nov 2026, the user: in Flow HH is a day, Daily a month, Monthly the years ticked
