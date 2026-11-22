@@ -1,6 +1,5 @@
 {% extends "base.html" %}
 {% from "_help_q.html" import help_q %}
-<!-- EMT layout variant: WRAP-FILL (ACTIVE) — Cards wrap-and-fill: one filled row when wide; wraps left-aligned filling each row when narrow. -->
 
 {% block head %}
 <style id="ov-hidden-style"></style>
@@ -16,26 +15,25 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
 </script>
 <style>
 [data-ov-card] { position: relative; }
-/* ── Summary page ── */
-/* Outer row — in layout-a contains both gauges and CI side by side */
-.gauge-ci-row {
+/* ── Summary page: rows (overview rows design, 22 Nov 2026) ──
+   The page is a column of rows, each a fixed group of cards, in the user's order (_ovLayout). */
+.live-power-page {
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: 12px;
-  margin-bottom: 12px;
   max-width: 1400px;
-  align-items: stretch;
+  margin-bottom: 12px;
 }
-
-/* Gauge grid sits inside gauge-ci-row */
-.summary-grid {
+.ov-row {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
   align-items: stretch;
-  flex: 0 0 auto;
+  position: relative;
   min-width: 0;
 }
+.ov-row[hidden] { display: none; }
+.ov-row .card, .ov-row .carbon-card, .ov-row .power-history-card { margin-bottom: 0; }
 
 /* Info banners (Mini enable / disable / add-sensor hint) align to the card
    grid's max width instead of running full-bleed edge-to-edge. */
@@ -43,97 +41,80 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
   max-width: 1400px;
 }
 
-/* In layout-b gauges get own full row */
-.layout-b .gauge-ci-row {
-  display: block;
-  margin-bottom: 12px;
-}
-.layout-b .summary-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  gap: 12px;
-  max-width: 1400px;
+/* Grid and carbon: Mix and Carbon at their own width, the history takes the rest and wraps below them
+   when the three do not fit. */
+.ov-grid-row #mix-card { flex: 0 0 auto; min-width: 280px; max-width: none; }
+.ov-grid-row #carbon-card-wrap { flex: 0 0 340px; min-width: 340px; width: auto; box-sizing: border-box; }
+.ov-grid-row #power-history-card-wrap { flex: 1 1 420px; min-width: 0; }
+
+/* Power: spread evenly. _ovLayout sets --ov-per, the cards on each line, from how many fit at the
+   minimum width; each card's basis is that share of the line, and a short last line grows to fill. */
+.ov-power-row > .power-card,
+.ov-power-row .soc-card {
+  flex: 1 1 calc((100% - (var(--ov-per, 4) - 1) * 12px) / var(--ov-per, 4) - 0.5px);
+  min-width: 220px;
+  max-width: none;
+  box-sizing: border-box;
 }
 
-/* CI card in layout-a — flex child of gauge-ci-row, expands to fill remaining space */
-.layout-a #carbon-card-wrap {
-  flex: 1 1 340px;
-  min-width: 340px;
-  margin-bottom: 0;
-}
-.layout-a #carbon-card-wrap .carbon-card {
-  height: 100%;
-  margin-bottom: 0;
-}
+.ov-row > #charge-card-wrap { flex: 1 1 100%; }
+.ov-agile-row { flex-direction: column; flex-wrap: nowrap; }
 
-/* ── Gauge row (layout-a): fill the row, wrap tidily when forced ──
-   The gauge cards sit in a wrapping flex row where every card flex-grows, so:
-   • while they all fit, they share one row and stretch to fill its full width
-     (no trailing gap on the right);
-   • when the window is too narrow, they wrap LEFT-ALIGNED and the cards on each
-     wrapped row grow to fill that row — so a wrapped card is never stranded at a
-     fixed width with dead space beside it.
-   Mix flexes too (cap lifted) and keeps a wider 280px basis so it stays the
-   roomy card. Carbon lives in the outer .gauge-ci-row (which wraps), so Carbon
-   drops to its own row. Scoped above the 600px mobile breakpoint so the
-   single-column mobile rules below are left completely untouched. */
-@media (min-width: 601px) {
-  .layout-a .summary-grid {
-    flex-wrap: wrap;
-    justify-content: flex-start;
-    flex: 1 1 auto;
-  }
-  .layout-a #mix-card {
-    flex: 1 1 280px;
-    max-width: none;
-  }
-  .layout-a .power-card,
-  .layout-a .soc-card {
-    flex: 1 1 220px;
-    max-width: none;
-  }
-}
-
-/* CI card in layout-b — fixed width beside history */
-.layout-b #carbon-card-wrap {
-  flex: 0 0 auto;
-}
-
-/* ── Wide row: CI + Power History side by side ── */
+/* The Agile cards' rows */
 .wide-row {
   display: flex;
   gap: 12px;
-  margin-bottom: 12px;
   align-items: stretch;
-  max-width: 1400px;
-}
-
-/* In layout-a the wide-row only contains history — goes full width */
-.layout-a .wide-row {
-  display: block;
-  margin-bottom: 12px;
-  max-width: 1400px;
-}
-.layout-a #power-history-card-wrap {
-  margin-bottom: 0;
-}
-.layout-a #power-history-card-wrap .power-history-card {
-  margin-bottom: 0;
-}
-
-/* In layout-b CI is in wide-row beside history */
-.wide-row .carbon-card {
-  flex: 0 0 auto;
-  min-width: 340px;
-  width: 340px;
-  align-self: stretch;
-  margin-bottom: 0;
 }
 .wide-row .power-history-card {
   flex: 1 1 0;
   min-width: 0;
   margin-bottom: 0;
 }
+
+/* Arrange: each orderable row gets ▲▼ in a strip above it, each Power card ◀▶. */
+.ov-row-tools, .ov-move { display: none; }
+.ov-arranging .ov-row:not([hidden]) {
+  outline: 1px dashed var(--border);
+  outline-offset: 4px;
+  border-radius: 4px;
+  padding-top: 30px;
+}
+.ov-arranging .ov-row-tools {
+  display: flex;
+  position: absolute;
+  top: 0;
+  left: 0;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.ov-arranging .ov-power-row > .power-card,
+.ov-arranging .ov-power-row .soc-card { padding-top: 42px; }
+.ov-arranging .ov-move {
+  display: flex;
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  gap: 4px;
+  z-index: 2;
+}
+.ov-tool-btn {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  font-size: 11px;
+  line-height: 1;
+  padding: 4px 7px;
+  cursor: pointer;
+}
+.ov-tool-btn:disabled { opacity: 0.35; cursor: default; }
+.ov-tool-btn:not(:disabled):hover { border-color: var(--muted); }
+#ov-tools { margin-top: 16px; font-size: 12px; color: var(--muted); text-align: center; }
+#ov-tools a { color: inherit; }
+.billing-grid.compact .billing-rows { display: none; }
 
 /* ── Expand overlay ── */
 .expand-btn {
@@ -775,36 +756,24 @@ document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
   padding: 20px 0;
 }/* ── Responsive breakpoints ── */
 
-/* Tablet / HA app portrait ~600-900px — billing 1 col, gauges flex */
+/* Tablet / HA app portrait ~600-900px — billing 1 col; the history takes its own line */
 @media (max-width: 900px) {
   .billing-grid {
     grid-template-columns: 1fr;
   }
-  .wide-row { flex-direction: column; }
-  .wide-row .carbon-card { width: 100%; min-width: 0; }
-  .gauge-ci-row { flex-wrap: wrap; }
-  .layout-a #carbon-card-wrap { min-width: 0; max-width: 100%; flex: 1 1 100%; }
+  .ov-grid-row #carbon-card-wrap { flex: 1 1 300px; min-width: 0; }
+  .ov-grid-row #power-history-card-wrap { flex: 1 1 100%; }
 }
 
-/* Mobile portrait ≤600px — everything single column */
+/* Mobile portrait ≤600px — every row one column */
 @media (max-width: 600px) {
-  .gauge-ci-row { flex-direction: column; }
-  .layout-a #carbon-card-wrap { min-width: 0; width: 100%; max-width: 100%; }
-
-  .power-card,
-  .soc-card {
+  .ov-row { flex-direction: column; flex-wrap: nowrap; }
+  .ov-row > *, .ov-power-row .soc-card,
+  .ov-grid-row #mix-card, .ov-grid-row #carbon-card-wrap, .ov-grid-row #power-history-card-wrap {
     min-width: 0;
     max-width: 100%;
     width: 100%;
-    flex: 1 1 100%;
-  }
-
-  .summary-grid {
-    display: flex;
-    flex-direction: column;
-  }
-  .layout-b .summary-grid {
-    grid-template-columns: 1fr;
+    flex: 0 0 auto;
   }
 }
 
@@ -873,29 +842,11 @@ function setMiniSource(enabled){
 </script>
 {% endif %}
 
-<div class="live-power-page">
-<div class="gauge-ci-row">
-<div class="summary-grid">
+<div class="live-power-page" id="ov-rows">
+<!-- Rows (overview rows design): each a fixed group of cards; the user orders the rows and the Power row's cards.
+     The default order is the DOM's: power, grid, charge, agile. -->
+<div class="ov-row ov-power-row" data-ov-row="power" data-ov-row-label="Power">
 
-  <!-- Generation Mix card — first card, only shown when postcode configured -->
-  {% if has_postcode %}
-  <div class="soc-card" id="mix-card" data-ov-card="mix" style="min-width:280px;align-items:flex-start;">
-    <div class="card-title" style="font-size:12px;align-self:flex-start;">🌐 Current Grid Generation Mix</div>
-    <div style="display:flex;gap:12px;align-items:center;width:100%;">
-      <div id="mix-donut-wrap" style="position:relative;width:120px;height:120px;flex-shrink:0;">
-        <canvas id="mix-donut-canvas" width="120" height="120"></canvas>
-        <div id="mix-donut-centre" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;">
-          <div id="mix-centre-fuel" style="font-size:10px;color:var(--muted);"></div>
-          <div id="mix-centre-perc" style="font-size:16px;font-weight:700;color:var(--text);"></div>
-        </div>
-      </div>
-      <div style="flex:1;min-width:0;">
-        <div id="mix-legend" style="font-size:11px;display:flex;flex-direction:column;gap:2px;"></div>
-        <div id="mix-loading" style="color:var(--muted);font-size:12px;">Loading...</div>
-      </div>
-    </div>
-  </div>
-  {% endif %}
 
   {% if has_power_sensor %}
   <!-- Main gauge -->
@@ -942,17 +893,13 @@ function setMiniSource(enabled){
   <div id="soc-cards-container" style="display:contents;"></div>
   {% endif %}
 
-</div><!-- /.summary-grid -->
-
-<!-- ── CI card slot (moves here in layout-a, stays in wide-row in layout-b) ── -->
-<!-- In layout-a JS moves #carbon-card-wrap here; in layout-b it stays in wide-row -->
-</div><!-- /.gauge-ci-row -->
+</div><!-- /power row -->
 
 {% if has_dispatch_data %}
-<!-- ── BL-10: IOG smart-charging card (full-width row; server-gated on dispatch
-     data, so it sits outside the gauge-ci-row flex system and leaves no gap when
-     absent). Hidden until the sessions API confirms data. ── -->
-<div class="card expandable-card" id="charge-card-wrap" data-ov-card="charge" style="display:none;margin-top:16px;">
+<!-- ── BL-10: IOG smart-charging card (its own row; server-gated on dispatch data, and hidden until the
+     sessions API confirms data — a row with nothing shown takes no space). ── -->
+<div class="ov-row" data-ov-row="charge" data-ov-row-label="Smart Charging">
+<div class="card expandable-card" id="charge-card-wrap" data-ov-card="charge" style="display:none;">
   <button class="expand-btn" title="Recent sessions" onclick="_openChargeModal()">
     <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5">
       <path d="M3 3h4M3 3v4M13 3h-4M13 3v4M3 13h4M3 13v-4M13 13h-4M13 13v-4"/>
@@ -962,6 +909,7 @@ function setMiniSource(enabled){
   <div style="font-size:11px;color:var(--muted);margin:-2px 0 4px;">Your car's smart charges, as Octopus reports and bills them</div>
   <div id="charge-summary" style="color:var(--muted);font-size:13px;">Loading…</div>
 </div>
+</div><!-- /charge row -->
 
 <div class="expand-backdrop" id="charge-backdrop"
      onclick="if(event.target===this)_closeChargeModal()">
@@ -979,8 +927,28 @@ function setMiniSource(enabled){
 </div>
 {% endif %}
 
-<!-- ── Wide row: CI + Power History ── -->
-<div class="wide-row">
+<!-- ── Grid and carbon row: Mix, Carbon Intensity, the 48-hour history ── -->
+<div class="ov-row ov-grid-row" data-ov-row="grid" data-ov-row-label="Grid and carbon">
+
+  <!-- Generation Mix card — only shown when postcode configured -->
+  {% if has_postcode %}
+  <div class="soc-card" id="mix-card" data-ov-card="mix" style="min-width:280px;align-items:flex-start;">
+    <div class="card-title" style="font-size:12px;align-self:flex-start;">🌐 Current Grid Generation Mix</div>
+    <div style="display:flex;gap:12px;align-items:center;width:100%;">
+      <div id="mix-donut-wrap" style="position:relative;width:120px;height:120px;flex-shrink:0;">
+        <canvas id="mix-donut-canvas" width="120" height="120"></canvas>
+        <div id="mix-donut-centre" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center;pointer-events:none;">
+          <div id="mix-centre-fuel" style="font-size:10px;color:var(--muted);"></div>
+          <div id="mix-centre-perc" style="font-size:16px;font-weight:700;color:var(--text);"></div>
+        </div>
+      </div>
+      <div style="flex:1;min-width:0;">
+        <div id="mix-legend" style="font-size:11px;display:flex;flex-direction:column;gap:2px;"></div>
+        <div id="mix-loading" style="color:var(--muted);font-size:12px;">Loading...</div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 
   {% if has_postcode %}
   <!-- Carbon intensity card -->
@@ -1045,12 +1013,13 @@ function setMiniSource(enabled){
   </div>
   {% endif %}
 
-</div><!-- /.wide-row -->
+</div><!-- /grid row -->
 
 {% if has_agile %}
 <!-- ── BL-100: Agile prices — the 48-hour history card's style and size: 24 h back, and as far ahead
      as Octopus has published. A card each for import and export (6 Nov 2026, the user), so each has its
      own scale and can be hidden. Export shows once there are prices: not every account exports. ── -->
+<div class="ov-row ov-agile-row" data-ov-row="agile" data-ov-row-label="Agile prices">
 {% for ch in ('import', 'export') %}
 <div class="wide-row" id="agile-row-{{ ch }}"{% if agile_hidden[ch] or ch == 'export' %} style="display:none;"{% endif %}>
   <div class="card power-history-card expandable-card" id="agile-card-{{ ch }}">
@@ -1087,8 +1056,187 @@ function setMiniSource(enabled){
   </div>
 </div>
 {% endfor %}
+</div><!-- /agile row -->
 {% endif %}
 </div><!-- /.live-power-page -->
+
+<script>
+// ── Rows (overview rows design, 22 Nov 2026, the user) ──
+// The rows' order and the Power row's card order are the user's, saved beside the hidden cards. Run here, straight
+// after the rows, so a saved order is in place before the page paints.
+var _ovRows = {{ overview_rows|default([])|tojson }};
+var _ovPowerOrder = {{ overview_power_order|default([])|tojson }};
+var _OV_MIN_CARD = 220, _OV_GAP = 12;
+
+// The keys in their saved order: saved keys that are present first, then the rest in their own order. Pure.
+function _ovOrdered(saved, present){
+  var out = saved.filter(function(k, i){ return present.indexOf(k) >= 0 && saved.indexOf(k) === i; });
+  present.forEach(function(k){ if (out.indexOf(k) < 0) out.push(k); });
+  return out;
+}
+// Cards per line for n cards in a row `width` wide: as few lines as fit at the minimum card width, then as even as
+// they can be — with room for 4, 5 cards are 3 + 2 and 7 are 4 + 3. Pure.
+function _ovPerLine(n, width, min, gap){
+  if (n <= 0) return 1;
+  var k = Math.max(1, Math.floor((width + gap) / (min + gap)));
+  var lines = Math.ceil(n / k);
+  return Math.ceil(n / lines);
+}
+// Whether an element shows: a display:contents wrapper shows when a child does.
+function _ovShown(el){
+  if (el.classList && (el.classList.contains('ov-row-tools') || el.classList.contains('ov-move'))) return false;
+  var d = getComputedStyle(el).display;
+  if (d === 'contents') return Array.prototype.some.call(el.children, _ovShown);
+  return d !== 'none';
+}
+function _ovRowEls(){ return Array.prototype.slice.call(document.querySelectorAll('#ov-rows > .ov-row')); }
+function _ovPowerCards(){
+  var row = document.querySelector('.ov-power-row');
+  return row ? Array.prototype.slice.call(row.querySelectorAll('.power-card, .soc-card[data-ov-card]')) : [];
+}
+function _ovApplyRowOrder(){
+  var page = document.getElementById('ov-rows');
+  if (!page) return;
+  var rows = _ovRowEls(), keys = rows.map(function(r){ return r.getAttribute('data-ov-row'); });
+  _ovOrdered(_ovRows, keys).forEach(function(k){ page.appendChild(rows[keys.indexOf(k)]); });
+}
+_ovApplyRowOrder();
+
+var _ovLayoutDue = false;
+function _ovLayout(){
+  if (_ovLayoutDue) return;
+  _ovLayoutDue = true;
+  requestAnimationFrame(function(){ _ovLayoutDue = false; _ovLayoutNow(); });
+}
+function _ovLayoutNow(){
+  // the Power row's cards in the user's order (CSS order, so a device card built later needs no move)
+  var cards = _ovPowerCards(), keys = cards.map(function(c){ return c.getAttribute('data-ov-card'); });
+  var order = _ovOrdered(_ovPowerOrder, keys);
+  cards.forEach(function(c, i){
+    var o = String(order.indexOf(keys[i]));
+    if (c.style.order !== o) c.style.order = o;
+  });
+  // a row with nothing shown takes no space
+  _ovRowEls().forEach(function(r){
+    var shown = Array.prototype.some.call(r.children, _ovShown);
+    if (r.hidden === shown) r.hidden = !shown;
+  });
+  // the Power row spread evenly
+  var row = document.querySelector('.ov-power-row');
+  if (row && !row.hidden) {
+    var n = cards.filter(_ovShown).length;
+    var per = String(_ovPerLine(n, row.clientWidth, _OV_MIN_CARD, _OV_GAP));
+    if (row.style.getPropertyValue('--ov-per') !== per) row.style.setProperty('--ov-per', per);
+  }
+  _ovArrangeTools();
+}
+(function(){
+  var page = document.getElementById('ov-rows');
+  if (!page) return;
+  // a card shown, hidden or built anywhere in the rows (Smart Charging's card shows when its data comes, the Agile
+  // rows when prices do) lays the rows out again; _ovLayoutNow writes only what changed, so it settles
+  if (window.MutationObserver)
+    new MutationObserver(_ovLayout).observe(page, {subtree: true, childList: true,
+                                                   attributes: true, attributeFilter: ['style', 'class']});
+  window.addEventListener('resize', _ovLayout);
+  _ovLayout();
+})();
+
+// ── Arrange ──
+var _ovArranging = false;
+function _ovSave(body, then){
+  fetch(apiUrl('/api/settings'), {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)})
+    .then(function(r){ return r.json(); }).then(function(d){
+      if (!d.ok) throw new Error(d.error || 'not saved');
+      then();
+    }).catch(function(){
+      if (window.EMT && EMT.notify) EMT.notify({id: 'overview-arrange-failed', level: 'critical', dismissible: true,
+        html: 'Could not save the Overview\'s layout. Please try again.'});
+    });
+}
+// `keys` with the item at `i` moved one step `dir` among the ones `shown` says are visible. Pure.
+function _ovMoved(keys, shown, i, dir){
+  var j = i + dir;
+  while (j >= 0 && j < keys.length && !shown[j]) j += dir;
+  if (j < 0 || j >= keys.length) return keys.slice();
+  var out = keys.slice(), t = out[i];
+  out[i] = out[j]; out[j] = t;
+  return out;
+}
+function _ovMoveRow(key, dir){
+  var rows = _ovRowEls(), keys = rows.map(function(r){ return r.getAttribute('data-ov-row'); });
+  var next = _ovMoved(keys, rows.map(function(r){ return !r.hidden; }), keys.indexOf(key), dir);
+  _ovSave({overview_rows: next}, function(){ _ovRows = next; _ovApplyRowOrder(); _ovLayout();
+                                             window.dispatchEvent(new Event('resize')); });
+}
+function _ovMoveCard(key, dir){
+  var cards = _ovPowerCards().sort(function(a, b){ return (+a.style.order) - (+b.style.order); });
+  var keys = cards.map(function(c){ return c.getAttribute('data-ov-card'); });
+  var next = _ovMoved(keys, cards.map(_ovShown), keys.indexOf(key), dir);
+  _ovSave({overview_power_order: next}, function(){ _ovPowerOrder = next; _ovLayout();
+                                                    window.dispatchEvent(new Event('resize')); });
+}
+function _ovToggleArrange(){
+  _ovArranging = !_ovArranging;
+  document.getElementById('ov-rows').classList.toggle('ov-arranging', _ovArranging);
+  var b = document.getElementById('ov-arrange-btn');
+  if (b) b.textContent = _ovArranging ? 'Done arranging' : 'Arrange the Overview';
+  _ovLayout();
+}
+function _ovBtn(text, title, disabled, onclick){
+  var b = document.createElement('button');
+  b.type = 'button'; b.className = 'ov-tool-btn'; b.textContent = text; b.title = title;
+  b.setAttribute('aria-label', title); b.disabled = disabled; b.onclick = onclick;
+  return b;
+}
+// The ▲▼ strip on each row and ◀▶ on each Power card, rebuilt with the layout while arranging.
+var _ovToolsSig = '';
+function _ovArrangeTools(){
+  // rebuilt only when what they show has changed: building them is itself a change the observer sees
+  var rows = _ovRowEls().filter(function(r){ return !r.hidden; });
+  var cardsNow = _ovPowerCards().filter(_ovShown).sort(function(a, b){ return (+a.style.order) - (+b.style.order); });
+  var sig = _ovArranging ? rows.map(function(r){ return r.getAttribute('data-ov-row'); }).join(',') + '|'
+            + cardsNow.map(function(c){ return c.getAttribute('data-ov-card'); }).join(',') : '';
+  if (sig === _ovToolsSig) return;
+  _ovToolsSig = sig;
+  document.querySelectorAll('.ov-row-tools, .ov-move').forEach(function(el){ el.remove(); });
+  if (!_ovArranging) return;
+  rows.forEach(function(r, i){
+    var key = r.getAttribute('data-ov-row'), t = document.createElement('div');
+    t.className = 'ov-row-tools';
+    t.appendChild(_ovBtn('▲', 'Move this row up', i === 0, function(){ _ovMoveRow(key, -1); }));
+    t.appendChild(_ovBtn('▼', 'Move this row down', i === rows.length - 1, function(){ _ovMoveRow(key, 1); }));
+    var lb = document.createElement('span'); lb.textContent = r.getAttribute('data-ov-row-label') || key;
+    t.appendChild(lb);
+    r.insertBefore(t, r.firstChild);
+  });
+  var cards = cardsNow;
+  if (cards.length < 2) return;
+  cards.forEach(function(c, i){
+    var key = c.getAttribute('data-ov-card'), m = document.createElement('div');
+    m.className = 'ov-move';
+    m.appendChild(_ovBtn('◀', 'Move this card earlier', i === 0, function(){ _ovMoveCard(key, -1); }));
+    m.appendChild(_ovBtn('▶', 'Move this card later', i === cards.length - 1, function(){ _ovMoveCard(key, 1); }));
+    c.appendChild(m);
+  });
+}
+
+// ── Compact costs: the cost cards' totals only ──
+function _ovSetCompact(on){
+  _ovSave({overview_costs_compact: !!on}, function(){
+    var g = document.getElementById('ov-costs');
+    if (g) g.classList.toggle('compact', !!on);
+    _ovToolsText();
+  });
+}
+function _ovToolsText(){
+  var g = document.getElementById('ov-costs'), a = document.getElementById('ov-compact-link');
+  if (!g || !a) return;
+  var on = g.classList.contains('compact');
+  a.textContent = on ? 'Show the cost breakdowns' : 'Costs as totals only';
+  a.onclick = function(){ _ovSetCompact(!on); return false; };
+}
+</script>
 
 <!-- ── Billing Summary ── -->
 
@@ -1117,12 +1265,17 @@ function setMiniSource(enabled){
 </div>
 {% endmacro %}
 
-<div class="billing-grid">
+<div class="billing-grid{% if overview_costs_compact %} compact{% endif %}" id="ov-costs">
   {{ billing_card("☀️ Today", today_total, today_rows, today_date, "today") }}
   {{ billing_card("📅 This Bill", month_total, month_rows, month_period, "month") }}
   {{ billing_card("📆 This Year", year_total, year_rows, year_period, "year") }}
 </div>
 
+<div id="ov-tools">
+  <a href="#" id="ov-arrange-btn" onclick="_ovToggleArrange(); return false;">Arrange the Overview</a> ·
+  <a href="#" id="ov-compact-link"></a>
+</div>
+<script>_ovToolsText();</script>
 <div id="ov-restore" style="display:none;margin-top:16px;font-size:12px;color:var(--muted);text-align:center;"></div>
 {% if has_agile %}
 <div id="agile-restore" style="display:none;margin-top:16px;font-size:12px;color:var(--muted);text-align:center;">
@@ -1183,7 +1336,7 @@ function _ovRefresh(){
   document.getElementById('ov-hidden-style').textContent = _ovCss(_ovHidden);
   _ovDecorate();
   _ovFoot();
-  if (typeof _applyLayout === 'function') _applyLayout();
+  _ovLayout();
 }
 function _ovSet(key, hide){
   var next = _ovToggled(_ovHidden, key, hide);
@@ -2168,14 +2321,6 @@ document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape') _collapseAll();
 });
 
-// ── Grid layout adjustment ─────────────────────────────────────────────────
-// Adjust CI card column span so it never sits as a thin orphan.
-// CI card is now in the wide-row, not the summary-grid — this function
-// is retained for future use but currently a no-op.
-function _adjustGridLayout() {
-  _applyLayout();
-}
-
 function updateSocCards(socSensors) {
   var container = document.getElementById('soc-cards-container');
   if (!container) return;
@@ -2240,7 +2385,7 @@ function updateSocCards(socSensors) {
     if (!socSensors[mid]) card.remove();
   });
 
-  _adjustGridLayout();
+  _ovLayout();
 }
 
 
@@ -2261,7 +2406,7 @@ updatePower();
 pollTimer = setInterval(updatePower, POWER_POLL_MS);
 {% endif %}
 // Initial layout adjustment — runs after first card render settles
-setTimeout(_adjustGridLayout, 500);
+setTimeout(_ovLayout, 500);
 
 window.addEventListener('beforeunload', function() {
   if (pollTimer) clearInterval(pollTimer);
@@ -2526,46 +2671,6 @@ setTimeout(function() { loadCarbonAndSchedule(); }, 600);
 
 {% if has_power_sensor or has_postcode %}
 // ── Rolling power history chart ──────────────────────────────────────────────
-// ── Layout switcher ──────────────────────────────────────────────────────
-function _applyLayout() {
-  var container = document.getElementById('soc-cards-container');
-  // Count the live-power gauge only when it's actually rendered — on API-only
-  // setups (no main power source) there is no .power-card, so assuming +1 here
-  // over-counted and flipped a 3-device page into the wide layout-b prematurely.
-  var hasLivePower = !!document.querySelector('.power-card') && _ovHidden.indexOf('power') < 0;
-  var devices = container ? Array.prototype.filter.call(container.children, function(el){
-    return _ovHidden.indexOf(el.getAttribute('data-ov-card')) < 0; }).length : 0;
-  var gaugeCount = devices + (hasLivePower ? 1 : 0);
-  var page = document.querySelector('.live-power-page');
-  if (!page) return;
-
-  var gaugeCiRow = document.querySelector('.gauge-ci-row');
-  var wideRow    = document.querySelector('.wide-row');
-  var carbonWrap = document.getElementById('carbon-card-wrap');
-
-  if (gaugeCount <= 8) {
-    page.classList.add('layout-a');
-    page.classList.remove('layout-b');
-    // Move CI card into gauge-ci-row so it sits beside gauges, expanding to fill
-    if (gaugeCiRow && carbonWrap && !gaugeCiRow.contains(carbonWrap)) {
-      gaugeCiRow.appendChild(carbonWrap);
-    }
-  } else {
-    page.classList.add('layout-b');
-    page.classList.remove('layout-a');
-    // Move CI card back into wide-row beside history
-    if (wideRow && carbonWrap && !wideRow.contains(carbonWrap)) {
-      wideRow.insertBefore(carbonWrap, wideRow.firstChild);
-    }
-  }
-}
-
-
-// Run on load and whenever soc cards update
-document.addEventListener('DOMContentLoaded', function() {
-  setTimeout(_applyLayout, 100);
-});
-
 var _phCanvas   = document.getElementById('power-history-canvas');
 var _phHasCI    = {{ 'true' if has_postcode else 'false' }};
 var _phData     = [];   // [{captured_at, net_kw, intensity, carbon_gco2_min}]
@@ -3367,7 +3472,7 @@ async function _phLoad() {
 window.addEventListener('resize', function() {
   clearTimeout(_phTimer);
   _phTimer = setTimeout(_phDraw, 200);
-  _adjustGridLayout();
+  _ovLayout();
 }, { passive: true });
 
 // Load immediately then refresh every 30s (synced with power poll cadence)

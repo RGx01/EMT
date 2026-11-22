@@ -642,19 +642,31 @@ SETTINGS_DEFAULTS = {
 }
 # Overview's Agile cards: hidden, and their public prices not fetched. Beside the defaults, not in them:
 # Insights' carbon answer carries the defaults whole, and these are nothing to do with it.
-SETTINGS_FLAGS = {"agile_hide_import": False, "agile_hide_export": False}
+SETTINGS_FLAGS = {"agile_hide_import": False, "agile_hide_export": False,
+                  # the Overview's cost cards as totals only (22 Nov 2026, the user)
+                  "overview_costs_compact": False}
 # The other Overview cards the user has hidden, by the page's `data-ov-card` key; a device's includes its meter id,
 # so these cannot be a fixed set of flags. Keys go into the page's CSS, hence the narrow alphabet.
 _OVERVIEW_CARD_KEY = re.compile(r"^[A-Za-z0-9_.:-]{1,80}$")
 _OVERVIEW_HIDDEN_MAX = 64
 
 
-def _overview_hidden(settings):
-    """The hidden card keys in `settings`, keeping only well-formed ones. Pure."""
-    v = (settings or {}).get("overview_hidden")
+# The Overview's key lists (overview rows design): the hidden cards, the rows' order, and the Power row's
+# card order. Each is card or row keys, in the same alphabet.
+_OVERVIEW_LISTS = ("overview_hidden", "overview_rows", "overview_power_order")
+
+
+def _overview_list(settings, name):
+    """The keys saved under `name` (one of _OVERVIEW_LISTS), keeping only well-formed ones. Pure."""
+    v = (settings or {}).get(name)
     if not isinstance(v, list):
         return []
     return [k for k in v if isinstance(k, str) and _OVERVIEW_CARD_KEY.match(k)][:_OVERVIEW_HIDDEN_MAX]
+
+
+def _overview_hidden(settings):
+    """The hidden card keys in `settings`, keeping only well-formed ones. Pure."""
+    return _overview_list(settings, "overview_hidden")
 
 
 SETTINGS_NUMERIC = {
@@ -1157,12 +1169,16 @@ def live_power_page():
         has_agile = False
     agile_hidden = {"import": False, "export": False}
     overview_hidden = []
+    overview_rows, overview_power_order, overview_costs_compact = [], [], False
     try:
         import agile_public as _ap_h
         _saved = store_access.store().get_settings()
         _hid = _ap_h.hidden_channels(_saved)
         agile_hidden = {ch: ch in _hid for ch in agile_hidden}
         overview_hidden = _overview_hidden(_saved)
+        overview_rows = _overview_list(_saved, "overview_rows")
+        overview_power_order = _overview_list(_saved, "overview_power_order")
+        overview_costs_compact = bool(_saved.get("overview_costs_compact"))
     except Exception:
         pass
 
@@ -1172,6 +1188,9 @@ def live_power_page():
         has_agile=has_agile,
         agile_hidden=agile_hidden,
         overview_hidden=overview_hidden,
+        overview_rows=overview_rows,
+        overview_power_order=overview_power_order,
+        overview_costs_compact=overview_costs_compact,
         active="live_power",
         currency=currency,
         today_total=today_total,
@@ -3784,7 +3803,8 @@ def api_settings_get():
     # Merge saved over defaults — any missing key falls back to default
     result = dict(SETTINGS_DEFAULTS, **SETTINGS_FLAGS)
     result.update(saved)
-    result["overview_hidden"] = _overview_hidden(saved)
+    for name in _OVERVIEW_LISTS:
+        result[name] = _overview_list(saved, name)
     return jsonify(result)
 
 
@@ -3805,12 +3825,14 @@ def api_settings_post():
                 except (TypeError, ValueError):
                     return jsonify({"error": f"{key} must be a number"}), 400
             saved[key] = val
-    if "overview_hidden" in data:
-        val = data["overview_hidden"]
+    for name in _OVERVIEW_LISTS:
+        if name not in data:
+            continue
+        val = data[name]
         if (not isinstance(val, list) or len(val) > _OVERVIEW_HIDDEN_MAX
                 or not all(isinstance(k, str) and _OVERVIEW_CARD_KEY.match(k) for k in val)):
-            return jsonify({"error": "overview_hidden must be a list of card keys"}), 400
-        saved["overview_hidden"] = list(dict.fromkeys(val))
+            return jsonify({"error": "%s must be a list of card keys" % name}), 400
+        saved[name] = list(dict.fromkeys(val))
     _engine_write(lambda st: st.save_settings(saved))
     return jsonify({"ok": True})
 

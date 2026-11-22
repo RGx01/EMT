@@ -7,6 +7,12 @@ internal name for everything before the first public release and never appears i
 
 ## [Unreleased]
 
+- **Arrange the Overview.** The Overview's cards now sit in rows: Power (Live Power and your devices), Grid
+  and carbon (the generation mix, carbon intensity and the 48-hour history together), Smart Charging and Agile
+  prices, with the cost cards last. *Arrange the Overview*, at the foot of the page, moves the rows and the
+  Power row's cards. When the Power row's cards do not fit on one line, they split evenly, three and two rather
+  than four and one. Carbon Intensity no longer grows and shrinks beside the gauges. *Costs as totals only*
+  hides the cost cards' breakdowns.
 - **The Overview's bill card shows the Billing tab's total.** The two worked out the same money with
   different rounding: the Overview rounded each day to the penny and added up the days, the Billing tab
   rounds once, as your Octopus statement does. They could sit a few pence apart (£19.86 against £19.88).
