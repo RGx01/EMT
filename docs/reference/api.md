@@ -55,6 +55,10 @@ and `HA_PUBLIC_URL` says where the browser reaches Home Assistant. The design:
   view's split. `g` is grams of CO₂ (since 4 Nov 2026, for Flow).
 - Capped: 31 days at `block`, 366 at `period` (`_ENERGY_MAX_DAYS`).
 - `/api/periods` lists the periods to choose from (`kind` = billing, month, quarter, year, live).
+  With `include=net_cost`, each period's total is each local day's net to the penny, summed — except
+  `kind=live`'s *This Bill*, which is the Billing card's Total Bill (`bill_card.bill_total`): the
+  statement's rounding, import and standing rounded once less the export credit. The two can differ by
+  pennies; the Overview card matches the Billing tab (22 Nov 2026).
 
 ## Route families
 

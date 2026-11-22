@@ -7166,6 +7166,20 @@ def api_periods():
                 p["net_cost"] = _billing.bill_net_from_day_rollups(rs)
                 p["net_cost_text"] = "%s%.2f" % (currency, p["net_cost"])   # as the picker prints it
                 p["has_data"] = bool(rs)
+            if kind == "live":
+                # This Bill shows the Billing card's Total Bill — the statement's rounding (import
+                # and standing rounded once, less the export credit), not the per-day rule, which
+                # can sit pennies away (22 Nov 2026, the user: 2p apart). One bill summary, the
+                # Billing tab's own (billing_view.period_summary_raw → bill_card.bill_total).
+                import billing_view as _bv
+                import bill_card as _bc_t
+                for p in out:
+                    if p.get("key") == "bill" and p["has_data"]:
+                        _summ = _bv.period_summary_raw(store, load_config(), tz_name,
+                                                       p["start_utc"], p["end_utc"])[0]
+                        if _summ:
+                            p["net_cost"] = _bc_t.bill_total(_summ)
+                            p["net_cost_text"] = "%s%.2f" % (currency, p["net_cost"])
         if "rows" in include and out:
             # Live Power's card rows per window, folded from ONE per-day pass
             # (get_day_live_rollups) — the rows /api/billing built with six queries per

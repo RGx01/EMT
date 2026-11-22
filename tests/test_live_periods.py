@@ -147,5 +147,73 @@ class TheLiveCards(unittest.TestCase):
         self.assertEqual(self._get("kind=billing&include=rows").status_code, 400)
 
 
+def _penny_store():
+    """Two days of the bill (29 and 30 Sep, local) on the main meter alone: one block a day of
+    0.1 kWh costing £0.004 (ex-VAT held, so the Billing card uses the bill method), standing
+    £0.48 a day. Each day's net rounds to £0.48 — the per-day rule says £0.96 — but the
+    statement rounds once: £0.008 + £0.96 = £0.968 → £0.97."""
+    st = BlockStore(os.path.join(tempfile.mkdtemp(), "blocks.db"))
+    st._conn.execute("PRAGMA foreign_keys=OFF")
+    st._conn.execute("INSERT INTO config_periods (id, effective_from, billing_day, block_minutes, "
+                     "timezone) VALUES (1, '2026-01-01T00:00:00', 3, 30, ?)", (TZ,))
+    st._conn.execute("INSERT INTO meters (config_period_id, meter_id, is_sub_meter) "
+                     "VALUES (1, 'electricity_main', 0)")
+    for bs in ("2026-09-29T10:00:00", "2026-09-30T10:00:00"):
+        be = (datetime.fromisoformat(bs) + timedelta(minutes=30)).isoformat()
+        st._conn.execute(
+            "INSERT INTO blocks (block_start, block_end, meter_id, config_period_id, imp_kwh, "
+            "imp_rate, imp_cost, imp_cost_exc, exp_kwh, exp_cost, standing_charge, "
+            "is_provisional, interpolated) "
+            "VALUES (?, ?, 'electricity_main', 1, 0.1, 0.04, 0.004, 0.0038, 0, 0, 0.48, 0, 0)",
+            (bs, be))
+    st._conn.commit()
+    return st
+
+
+class ThisBillIsTheBillingCardsTotal(TheLiveCards):
+    """22 Nov 2026, the user: This Bill read £19.86 and the Billing tab's Total Bill £19.88 for
+    the same period — the per-day rule against the statement's rounding. This Bill now shows the
+    Billing card's figure. Fails on the parent tree (it gave the per-day £0.96)."""
+
+    CFG1 = {"meters": {"electricity_main": {"meta": {"timezone": TZ, "currency_symbol": "£",
+                                                     "billing_day": 3}}}}
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.st = _penny_store()
+
+    def _get(self, q):
+        with mock.patch.dict(CFG, self.CFG1, clear=True):
+            return super()._get(q)
+
+    def test_this_bill_is_the_statement_total(self):
+        p = self._live()["bill"]
+        self.assertEqual((p["net_cost"], p["net_cost_text"]), (0.97, "£0.97"))
+
+    def test_it_is_the_billing_cards_total_bill(self):
+        # A guard (passes on the parent tree too): the store does split the two rules, and the
+        # Billing card does show the statement figure the test above expects of This Bill.
+        r = self._get("kind=billing&include=net_cost")      # the period list keeps the day rule
+        self.assertEqual([x["net_cost"] for x in r.get_json()["periods"] if x["is_current"]], [0.96])
+        with mock.patch.dict(CFG, self.CFG1, clear=True):
+            class _DT(datetime):
+                @classmethod
+                def now(cls, tz=None):
+                    return NOW.replace(tzinfo=tz) if tz else NOW
+            with mock.patch.object(self.srv.store_access, "store", lambda: self.st), \
+                 mock.patch.object(self.srv, "load_config", lambda: CFG), \
+                 mock.patch.object(self.srv, "_config_timezone", lambda: TZ), \
+                 mock.patch("datetime.datetime", _DT):
+                b = self.srv.app.test_client().get(
+                    "/api/energy?resolution=period&kind=billing&period_start=2026-09-03"
+                    "&include=billing").get_json()
+        self.assertTrue(b["billing"]["bill_rounding"])
+        self.assertEqual(b["billing"]["card"]["total"], "£0.97")
+
+    # the inherited figures belong to the other store
+    test_the_three_windows = test_the_total_is_the_bills_day_rule = test_the_rows = None
+
+
 if __name__ == "__main__":
     unittest.main()
