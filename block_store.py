@@ -422,7 +422,9 @@ CREATE TABLE IF NOT EXISTS sub_meter_history (
     meter_id    TEXT    NOT NULL,  -- battery sub-meter ID
     soc_pct     REAL,              -- state of charge 0-100, NULL if no SoC sensor
     inverter_kw REAL,              -- inverter power kW, positive=charging, negative=discharging, NULL if no sensor
-    temp_c      REAL               -- a heat pump's outdoor temperature, °C, NULL if no sensor (22 Nov 2026)
+    -- a heat pump's outdoor temperature, °C, NULL if no sensor (22 Nov 2026). The comment sits above the
+    -- column: after the last one, an older SQLite's DROP COLUMN reads it as eating the ")" (CI, 22 Nov 2026)
+    temp_c      REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sub_meter_history_time ON sub_meter_history (captured_at);

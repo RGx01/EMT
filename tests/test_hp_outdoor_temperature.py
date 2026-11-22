@@ -39,6 +39,16 @@ ENGINE = open(os.path.join(_ROOT, "engine.py"), encoding="utf-8").read()
 TZ = "Europe/London"
 
 
+# sub_meter_history before 22 Nov 2026, as block_store.py created it
+OLD_SAMPLES_TABLE = """CREATE TABLE IF NOT EXISTS sub_meter_history (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    captured_at TEXT    NOT NULL,  -- UTC ISO
+    meter_id    TEXT    NOT NULL,  -- battery sub-meter ID
+    soc_pct     REAL,              -- state of charge 0-100, NULL if no SoC sensor
+    inverter_kw REAL               -- inverter power kW, positive=charging, negative=discharging, NULL if no sensor
+)"""
+
+
 def _server():
     spec = importlib.util.spec_from_file_location("server_hptemp", os.path.join(_ROOT, "web", "server.py"))
     srv = importlib.util.module_from_spec(spec)
@@ -74,12 +84,18 @@ class TheSetting(unittest.TestCase):
             BlockStore(path).close()
             raw = sqlite3.connect(path)
             raw.execute("ALTER TABLE meters DROP COLUMN outdoor_temp_sensor")
-            raw.execute("ALTER TABLE sub_meter_history DROP COLUMN temp_c")
+            # the samples table as it was, word for word — a comment trailing its last column, which an older
+            # SQLite (CI's) could not DROP COLUMN past; the column must still be added to it on open
+            raw.execute("DROP TABLE sub_meter_history")
+            raw.execute(OLD_SAMPLES_TABLE)
             raw.commit()
             raw.close()
             st = BlockStore(path)
             self.assertIn("outdoor_temp_sensor", {r[1] for r in st._conn.execute("PRAGMA table_info(meters)")})
             self.assertIn("temp_c", {r[1] for r in st._conn.execute("PRAGMA table_info(sub_meter_history)")})
+            # and a sample with a temperature goes into it and comes back
+            st.append_sub_meter_history(datetime.now(timezone.utc).replace(tzinfo=None).isoformat(), "hp_1", None, 1.0, 3.5)
+            self.assertEqual(st.get_sub_meter_history("hp_1")[0]["temp_c"], 3.5)
             st.close()
         finally:
             os.remove(path)
